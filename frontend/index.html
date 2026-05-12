@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="css/sidebar.css">
     <link rel="stylesheet" href="css/views/image-viewer.css">
     <link rel="stylesheet" href="css/views/manga-library.css">
+    <link rel="stylesheet" href="css/views/download-center.css">
 </head>
 <body>
     <div class="app-container">
@@ -136,10 +137,119 @@
                     </div>
                 </div>
             </div>
+            <!-- 下载中心视图 -->
             <div class="view" id="view-download-center">
                 <div class="view-body">
-                    <div class="view-content">
-                        <div class="empty-state">⬇️ 下载中心 — 开发中</div>
+                    <!-- 工具栏 -->
+                    <div class="view-toolbar">
+                        <div class="toolbar-group">
+                            <button id="dc-add-task" class="btn btn-primary">+ 添加任务</button>
+                            <button id="dc-start-all" class="btn">▶ 全部开始</button>
+                            <button id="dc-pause-all" class="btn">⏸ 全部暂停</button>
+                            <button id="dc-clear-completed" class="btn">🗑 清除已完成</button>
+                        </div>
+                        <div class="toolbar-group" style="margin-left:auto;">
+                            <div class="dc-filter-group">
+                                <button class="btn dc-filter-btn active" data-filter="all">全部</button>
+                                <button class="btn dc-filter-btn" data-filter="downloading">下载中</button>
+                                <button class="btn dc-filter-btn" data-filter="paused">已暂停</button>
+                                <button class="btn dc-filter-btn" data-filter="completed">已完成</button>
+                                <button class="btn dc-filter-btn" data-filter="failed">失败</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 统计概览 -->
+                    <div class="dc-stats-bar">
+                        <div class="dc-stat-item">
+                            <span class="dc-stat-value" id="dc-stat-total">0</span>
+                            <span class="dc-stat-label">总任务</span>
+                        </div>
+                        <div class="dc-stat-item">
+                            <span class="dc-stat-value dc-stat-active" id="dc-stat-active">0</span>
+                            <span class="dc-stat-label">活跃中</span>
+                        </div>
+                        <div class="dc-stat-item">
+                            <span class="dc-stat-value dc-stat-completed" id="dc-stat-completed">0</span>
+                            <span class="dc-stat-label">已完成</span>
+                        </div>
+                        <div class="dc-stat-item">
+                            <span class="dc-stat-value dc-stat-speed" id="dc-stat-speed">0 B/s</span>
+                            <span class="dc-stat-label">下载速度</span>
+                        </div>
+                        <div class="dc-stat-item">
+                            <span class="dc-stat-value" id="dc-stat-queue">0</span>
+                            <span class="dc-stat-label">排队中</span>
+                        </div>
+                    </div>
+
+                    <!-- 任务列表 -->
+                    <div class="view-content dc-task-list" id="dc-task-list">
+                        <!-- 空状态 -->
+                        <div class="dc-empty-state" id="dc-empty-state">
+                            <div class="dc-empty-icon">⬇️</div>
+                            <div class="dc-empty-text">暂无下载任务</div>
+                            <div class="dc-empty-hint">点击「添加任务」开始下载漫画</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 添加任务模态框 -->
+            <div id="dc-add-modal" class="modal">
+                <div class="modal-box" style="width:480px;">
+                    <h3>添加下载任务</h3>
+                    <div style="padding:20px;">
+                        <div style="margin-bottom:16px;">
+                            <label style="display:block;margin-bottom:6px;font-size:14px;font-weight:500;">漫画 ID 或 URL</label>
+                            <input type="text" id="dc-input-id" class="search-input" 
+                                placeholder="例如: 123456 或 https://18comic.vip/album/123456"
+                                style="width:100%;max-width:none;">
+                        </div>
+                        <div style="margin-bottom:16px;">
+                            <label style="display:block;margin-bottom:6px;font-size:14px;font-weight:500;">下载目录</label>
+                            <div style="display:flex;gap:8px;">
+                                <input type="text" id="dc-input-dir" class="search-input" 
+                                    value="./本子" style="flex:1;">
+                                <button id="dc-browse-dir" class="btn">浏览</button>
+                            </div>
+                        </div>
+                        <div style="display:flex;gap:16px;margin-bottom:16px;">
+                            <div style="flex:1;">
+                                <label style="display:block;margin-bottom:6px;font-size:14px;font-weight:500;">并发数</label>
+                                <input type="number" id="dc-input-concurrency" class="search-input" 
+                                    value="3" min="1" max="10" style="width:80px;">
+                            </div>
+                            <div style="flex:1;">
+                                <label style="display:block;margin-bottom:6px;font-size:14px;font-weight:500;">优先级</label>
+                                <select id="dc-input-priority" class="search-input" style="width:120px;">
+                                    <option value="high">高</option>
+                                    <option value="normal" selected>普通</option>
+                                    <option value="low">低</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div>
+                            <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+                                <input type="checkbox" id="dc-input-auto-start" checked>
+                                添加后自动开始下载
+                            </label>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button id="dc-cancel-add" class="btn">取消</button>
+                        <button id="dc-confirm-add" class="btn btn-primary">添加任务</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 任务详情模态框 -->
+            <div id="dc-detail-modal" class="modal">
+                <div class="modal-box" style="width:560px;">
+                    <h3>任务详情</h3>
+                    <div id="dc-detail-content" style="padding:20px;overflow-y:auto;max-height:60vh;"></div>
+                    <div class="modal-footer">
+                        <button id="dc-close-detail" class="btn">关闭</button>
                     </div>
                 </div>
             </div>
@@ -219,30 +329,34 @@
     <script src="js/views/image-viewer.js"></script>
     <script src="js/views/manga-reader.js"></script>
     <script src="js/views/manga-library.js"></script>
+    <script src="js/views/download-center.js"></script>
 
     <script>
-        let imageViewer, mangaLibrary;
+        // 确保这些变量在全局作用域
+        let imageViewer, mangaLibrary, downloadCenter;
 
         async function initApp() {
             try {
                 await bridge.init();
 
-                // 初始化视图管理器
                 const viewManager = new ViewManager();
 
                 // 初始化各视图
                 imageViewer = new ImageViewer();
                 mangaLibrary = new MangaLibrary();
+                downloadCenter = new DownloadCenter();
 
-                // 注册视图：视图ID → 初始化函数
+                // 注册视图
                 viewManager.register('image-viewer', async () => {
                     await imageViewer.init();
                 });
                 viewManager.register('manga-library', async () => {
                     await mangaLibrary.init();
                 });
+                viewManager.register('download-center', async () => {
+                    await downloadCenter.init();
+                });
                 viewManager.register('novel-reader', () => {});
-                viewManager.register('download-center', () => {});
                 viewManager.register('settings', () => {});
 
                 // 默认显示图片浏览
