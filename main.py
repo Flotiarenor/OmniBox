@@ -1,3 +1,4 @@
+# main.py
 import threading
 import time
 import webview
@@ -14,6 +15,7 @@ FILE_SERVER_PORT = 18080
 def main():
     api = AppAPI(IMAGE_DIR, MANGA_DIR)
 
+    # 启动文件服务器（用于提供图片和缩略图）
     file_app = create_file_server(
         image_dir=api.image_module.image_dir,
         thumb_dir=api.image_module.thumb_dir,
@@ -29,6 +31,7 @@ def main():
     ).start()
     time.sleep(0.5)
 
+    # 创建 WebView 窗口
     webview.create_window(
         title='个人数字中心',
         url='frontend/index.html',
