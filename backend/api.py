@@ -44,11 +44,20 @@ class AppAPI:
     def manga_search(self, keyword):
         return self.manga_module.search(keyword)
 
-    def manga_get_filters(self):
-        return self.manga_module.get_filters()
+    def manga_get_state(self):
+        return self.manga_module.get_state()
 
-    def manga_filter(self, filter_type, value):
-        return self.manga_module.filter(filter_type, value)
+    def manga_toggle_favorite(self, folder_name):
+        return self.manga_module.toggle_favorite(folder_name)
+
+    def manga_update_recent(self, folder_name, page=0):
+        return self.manga_module.update_recent(folder_name, page)
+    
+    def manga_get_detail(self, folder_name):
+        return self.manga_module.get_detail(folder_name)
+
+    def manga_get_pages(self, folder_name, chapter_path=""):
+        return self.manga_module.get_pages(folder_name, chapter_path)
 
     # ===== 设置操作 =====
     def settings_get(self, path=''):
@@ -56,3 +65,4 @@ class AppAPI:
 
     def settings_save(self, path, settings):
         return self.settings_module.save(path, settings)
+    
