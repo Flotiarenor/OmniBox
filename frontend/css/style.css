@@ -1,0 +1,200 @@
+/* ===== 变量与重置 ===== */
+:root {
+    --bg-primary: #f5f5f5;
+    --bg-sidebar: #252526;
+    --bg-card: #fff;
+    --text-primary: #ccc;
+    --text-sidebar: #ccc;
+    --border-color: #1e1e1e;
+    --accent: #007bff;
+    --accent-hover: #0056b3;
+    --danger: #dc3545;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg-primary);
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* ===== 布局 ===== */
+.sidebar {
+    width: 280px;
+    background: var(--bg-sidebar);
+    color: var(--text-sidebar);
+    overflow-y: auto;
+    flex-shrink: 0;
+    border-right: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+}
+.sidebar h3 {
+    margin: 0; padding: 15px;
+    background: #333; color: #fff;
+    font-size: 14px; letter-spacing: 1px;
+    flex-shrink: 0;
+}
+.tree-container { flex: 1; overflow-y: auto; padding-bottom: 20px; }
+.folder-stats {
+    padding: 10px 15px; background: #333;
+    font-size: 12px; color: #aaa;
+    border-top: 1px solid var(--border-color);
+    flex-shrink: 0;
+}
+
+.main-content {
+    flex: 1; display: flex; flex-direction: column; overflow: hidden;
+}
+
+/* ===== 工具栏 ===== */
+.toolbar {
+    height: 50px; background: #fff;
+    border-bottom: 1px solid #eee;
+    display: flex; align-items: center; padding: 0 20px;
+    flex-shrink: 0;
+}
+.tool-group { display: flex; align-items: center; margin-right: 20px; }
+.tool-btn {
+    padding: 6px 12px; border: 1px solid #ccc; border-radius: 4px;
+    background: #fff; cursor: pointer; font-size: 13px;
+    margin-right: 8px; transition: all 0.2s;
+}
+.tool-btn:hover { background: #f0f0f0; }
+.tool-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.tool-btn.primary:hover { background: var(--accent-hover); }
+.tool-btn.danger { color: var(--danger); border-color: var(--danger); }
+.tool-btn.danger:hover { background: var(--danger); color: #fff; }
+.tool-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hidden { display: none !important; }
+
+/* ===== 树组件 ===== */
+.tree-item { user-select: none; }
+.tree-label {
+    display: flex; align-items: center;
+    padding: 5px 10px; cursor: pointer;
+    font-size: 13px; transition: background 0.2s;
+}
+.tree-label:hover { background: #2a2d2e; }
+.tree-label.active { background: #094771; color: #fff; }
+.tree-arrow {
+    width: 16px; text-align: center;
+    font-size: 10px; transition: transform 0.2s; flex-shrink: 0;
+}
+.tree-arrow.collapsed { transform: rotate(-90deg); }
+.tree-icon { margin-right: 5px; font-size: 14px; }
+.tree-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tree-children { padding-left: 15px; display: none; }
+.tree-children.expanded { display: block; }
+
+/* ===== 图片网格 ===== */
+.image-grid-container {
+    flex: 1; overflow-y: auto; padding: 15px; background: var(--bg-primary);
+}
+.grid { position: relative; width: 100%; transition: height 0.2s ease; }
+.card {
+    position: absolute; background: var(--bg-card);
+    border-radius: 4px; overflow: hidden;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+    cursor: pointer; transition: transform 0.2s, box-shadow 0.2s, outline 0.1s;
+}
+.card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 10; }
+.card.selected { outline: 3px solid var(--accent); outline-offset: -3px; z-index: 11; }
+.card img { width: 100%; height: 100%; object-fit: cover; display: block; background: #eee; }
+.card p {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    margin: 0; padding: 4px 6px; font-size: 11px; color: #fff;
+    background: rgba(0,0,0,0.5); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+    opacity: 0; transition: opacity 0.2s;
+}
+.card:hover p { opacity: 1; }
+
+/* ===== 分页 ===== */
+.pagination {
+    height: 50px; background: #fff;
+    display: flex; align-items: center; justify-content: center;
+    border-top: 1px solid #eee; flex-shrink: 0; gap: 4px;
+}
+.pagination a, .pagination span {
+    text-decoration: none; color: #333; background: #fff;
+    padding: 6px 12px; border: 1px solid #ddd; border-radius: 4px;
+    font-size: 13px; cursor: pointer; transition: all 0.2s;
+}
+.pagination a:hover { background: #f0f0f0; }
+.pagination a.current { background: var(--accent); color: #fff; border-color: var(--accent); pointer-events: none; }
+.pagination a.disabled { color: #ccc; pointer-events: none; border-color: #eee; background: #fff; }
+.pagination span.ellipsis { border: none; background: transparent; cursor: default; padding: 6px 8px; }
+
+/* ===== 右键菜单 ===== */
+.context-menu {
+    position: fixed; background: #fff; border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    padding: 5px 0; z-index: 2000; list-style: none;
+    margin: 0; display: none; min-width: 150px;
+}
+.context-menu li {
+    padding: 8px 15px; cursor: pointer; font-size: 13px;
+    color: #333; display: flex; align-items: center;
+}
+.context-menu li:hover { background: #f5f5f5; }
+.context-menu li.danger { color: var(--danger); }
+
+/* ===== 灯箱 ===== */
+.lightbox {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.9); display: none; z-index: 1000;
+    justify-content: center; align-items: center; cursor: zoom-out;
+}
+.lightbox.active { display: flex; }
+.lightbox img {
+    max-width: 90vw; max-height: 90vh; object-fit: contain;
+    box-shadow: 0 0 20px rgba(0,0,0,0.5);
+    transition: transform 0.1s ease-out; transform-origin: center center;
+    user-select: none; -webkit-user-drag: none;
+}
+.lightbox-arrow {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    font-size: 30px; color: rgba(255,255,255,0.6);
+    cursor: pointer; padding: 20px; user-select: none; z-index: 1001;
+}
+.lightbox-arrow:hover { color: #fff; }
+.lightbox-arrow.left { left: 20px; }
+.lightbox-arrow.right { right: 20px; }
+.lightbox-close {
+    position: absolute; top: 20px; right: 20px;
+    font-size: 24px; color: rgba(255,255,255,0.6);
+    cursor: pointer; padding: 10px;
+}
+.lightbox-close:hover { color: #fff; }
+
+/* ===== 模态框 ===== */
+.modal {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.5); display: none;
+    justify-content: center; align-items: center; z-index: 1500;
+}
+.modal.active { display: flex; }
+.modal-content {
+    background: #fff; border-radius: 8px; width: 400px;
+    max-height: 80vh; display: flex; flex-direction: column;
+}
+.modal-content h3 { margin: 0; padding: 15px; border-bottom: 1px solid #eee; }
+.move-tree { flex: 1; overflow-y: auto; padding: 15px; color: #333; }
+.modal-footer { padding: 15px; border-top: 1px solid #eee; text-align: right; }
+
+/* ===== 设置 ===== */
+.setting-item { display: flex; align-items: center; justify-content: space-between; }
+.setting-item label { font-size: 14px; color: #333; font-weight: 500; }
+.setting-item input[type="range"] { width: 120px; }
+.setting-item input[type="number"] {
+    width: 70px; padding: 4px 8px;
+    border: 1px solid #ccc; border-radius: 4px; text-align: center;
+}
+.setting-item span { font-size: 13px; color: #666; width: 30px; text-align: right; }
+
+/* ===== 通用 ===== */
+.loading { text-align: center; padding: 50px; color: #888; font-size: 16px; }
