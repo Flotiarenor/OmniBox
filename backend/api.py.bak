@@ -1,14 +1,12 @@
 from backend.modules.file_module import FileModule
 from backend.modules.image_module import ImageModule
-from backend.modules.manga_module import MangaModule
 from backend.modules.settings_module import SettingsModule
 
 
 class AppAPI:
-    def __init__(self, image_dir: str, manga_dir: str):
+    def __init__(self, image_dir: str):
         self.file_module = FileModule(image_dir)
         self.image_module = ImageModule(image_dir)
-        self.manga_module = MangaModule(manga_dir)
         self.settings_module = SettingsModule()
 
     # ===== 文件操作 =====
@@ -22,8 +20,7 @@ class AppAPI:
         return self.file_module.move(paths, dest)
 
     # ===== 图片操作 =====
-    def image_list(self, path='', page=1, per_page=None,
-                   sort_by=None, sort_order=None):
+    def image_list(self, path='', page=1, per_page=None, sort_by=None, sort_order=None):
         settings = self.settings_module.get(path)
         if per_page is None:
             per_page = settings.get('per_page', 40)
@@ -31,24 +28,10 @@ class AppAPI:
             sort_by = settings.get('sort_by', 'mtime')
         if sort_order is None:
             sort_order = settings.get('sort_order', 'desc')
-        result = self.image_module.list_images(
-            path, page, per_page, sort_by, sort_order
-        )
+
+        result = self.image_module.list_images(path, page, per_page, sort_by, sort_order)
         result['settings'] = settings
         return result
-
-    # ===== 漫画操作 =====
-    def manga_list(self):
-        return self.manga_module.list_manga()
-
-    def manga_search(self, keyword):
-        return self.manga_module.search(keyword)
-
-    def manga_get_filters(self):
-        return self.manga_module.get_filters()
-
-    def manga_filter(self, filter_type, value):
-        return self.manga_module.filter(filter_type, value)
 
     # ===== 设置操作 =====
     def settings_get(self, path=''):
