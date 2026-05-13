@@ -3,21 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>个人数字中心</title>
+        <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230078d4'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='Arial'>O</text></svg>">
+    <title>OmniBox</title>
     <link rel="stylesheet" href="css/base.css">
     <link rel="stylesheet" href="css/sidebar.css">
     <link rel="stylesheet" href="css/views/image-viewer.css">
     <link rel="stylesheet" href="css/views/manga-library.css">
+    <link rel="stylesheet" href="css/views/novel-reader.css">
     <link rel="stylesheet" href="css/views/download-center.css">
 </head>
 <body>
     <div class="app-container">
 
         <!-- 左侧导航栏 -->
-        <aside class="nav-sidebar" id="nav-sidebar">
+        <aside class="nav-sidebar no-select" id="nav-sidebar">
             <div class="nav-sidebar-header">
                 <span class="nav-logo">🏠</span>
-                <span class="nav-title">数字中心</span>
+                <span class="nav-title">OmniBox</span>
             </div>
             <nav class="nav-menu" id="nav-menu">
                 <div class="nav-item active" data-view="image-viewer">
@@ -47,7 +49,7 @@
         <main class="main-area" id="main-area">
 
             <!-- ===== 图片浏览视图 ===== -->
-            <div class="view active" id="view-image-viewer">
+            <div class="view no-select" id="view-image-viewer">
                 <div class="view-sub-sidebar">
                     <div class="sub-sidebar-header">资源管理器</div>
                     <div id="folder-tree" class="tree-container"></div>
@@ -72,7 +74,7 @@
             </div>
 
             <!-- ===== 漫画库视图 ===== -->
-            <div class="view" id="view-manga-library">
+            <div class="view no-select" id="view-manga-library">
                 <div class="view-body">
                     <div class="view-toolbar">
                         <div class="toolbar-group">
@@ -117,7 +119,7 @@
             </div>
 
             <!-- 沉浸式漫画阅读器 (全局覆盖层) -->
-            <div id="manga-reader-container" class="manga-reader">
+            <div id="manga-reader-container no-select" class="manga-reader">
                 <div class="reader-toolbar">
                     <button class="reader-close btn-icon">✕</button>
                     <span class="reader-info">1 / 1</span>
@@ -129,16 +131,101 @@
                 <button class="reader-arrow reader-next">›</button>
             </div>
 
-            <!-- ===== 占位视图 ===== -->
             <div class="view" id="view-novel-reader">
-                <div class="view-body">
-                    <div class="view-content">
-                        <div class="empty-state">📖 小说阅读 — 开发中</div>
+            <div class="view-body">
+                <!-- 工具栏 -->
+                <div class="view-toolbar">
+                    <div class="toolbar-group">
+                        <input type="text" id="novel-search" class="search-input" 
+                            placeholder="搜索小说标题或作者...">
+                    </div>
+                </div>
+                
+                <!-- 小说列表视图 -->
+                <div class="view-content" id="novel-list-view">
+                    <div id="novel-grid" class="novel-grid"></div>
+                </div>
+                
+                <!-- 阅读器视图（默认隐藏） -->
+                <div class="novel-reader-container" id="novel-reader-view" style="display:none;">
+                    <!-- 工具栏 -->
+                    <div class="novel-reader-toolbar">
+                        <button id="novel-back" class="btn-icon" title="返回 (Esc)">←</button>
+                        <div class="novel-reader-title" id="novel-chapter-title">章节标题</div>
+                        <button id="novel-chapter-btn" class="btn-icon" title="章节列表">☰</button>
+                        <button id="novel-prev" class="btn-icon" title="上一章 (←)">‹</button>
+                        <button id="novel-next" class="btn-icon" title="下一章 (→)">›</button>
+                    </div>
+                    
+                    <!-- 设置栏 -->
+                    <div class="novel-reader-settings">
+                        <label>
+                            字号:
+                            <input type="range" id="novel-font-size" min="12" max="32" value="16" step="1">
+                            <span class="setting-value" id="novel-font-size-value">16</span>
+                        </label>
+                        <label>
+                            行距:
+                            <input type="range" id="novel-line-height" min="1.2" max="2.5" value="1.8" step="0.1">
+                            <span class="setting-value" id="novel-line-height-value">1.8</span>
+                        </label>
+                        <label>
+                            字间距:
+                            <input type="range" id="novel-letter-spacing" min="0" max="5" value="0" step="0.5">
+                            <span class="setting-value" id="novel-letter-spacing-value">0px</span>
+                        </label>
+                        <label>
+                            主题:
+                            <select id="novel-theme-select">
+                                <option value="light">明亮</option>
+                                <option value="dark">暗黑</option>
+                                <option value="sepia">护眼</option>
+                                <option value="green">绿色</option>
+                                <option value="blue">蓝色</option>
+                                <option value="custom">自定义</option>
+                            </select>
+                        </label>
+                        <label id="custom-color-label" style="display:none;">
+                            背景:
+                            <input type="color" id="novel-bg-color" value="#ffffff">
+                        </label>
+                        <label id="custom-text-label" style="display:none;">
+                            文字:
+                            <input type="color" id="novel-text-color" value="#1a1a1a">
+                        </label>
+                        <label>
+                            编码:
+                            <select id="novel-encoding">
+                                <option value="auto">自动检测</option>
+                                <option value="utf-8">UTF-8</option>
+                                <option value="gbk">GBK</option>
+                                <option value="gb2312">GB2312</option>
+                            </select>
+                        </label>
+                    </div>
+                    
+                    <!-- 内容区 -->
+                    <div class="novel-content-area" id="novel-content-area"></div>
+                    
+                    <!-- 进度条 -->
+                    <div class="novel-progress-bar">
+                        <div class="novel-progress-fill" id="novel-progress-fill" style="width:0%"></div>
                     </div>
                 </div>
             </div>
+        </div>
+
+        <!-- 章节选择器（全局覆盖层） -->
+        <div class="novel-chapter-selector" id="novel-chapter-selector">
+            <div class="novel-chapter-list" id="novel-chapter-list"></div>
+        </div>
+
+        <!-- 章节选择器（全局覆盖层） -->
+        <div class="novel-chapter-selector" id="novel-chapter-selector">
+            <div class="novel-chapter-list" id="novel-chapter-list"></div>
+        </div>
             <!-- 下载中心视图 -->
-            <div class="view" id="view-download-center">
+            <div class="view no-select" id="view-download-center">
                 <div class="view-body">
                     <!-- 工具栏 -->
                     <div class="view-toolbar">
@@ -253,7 +340,7 @@
                     </div>
                 </div>
             </div>
-            <div class="view" id="view-settings">
+            <div class="view no-select" id="view-settings">
                 <div class="view-body">
                     <div class="view-content">
                         <div class="empty-state">⚙️ 设置 — 开发中</div>
@@ -329,45 +416,46 @@
     <script src="js/views/image-viewer.js"></script>
     <script src="js/views/manga-reader.js"></script>
     <script src="js/views/manga-library.js"></script>
+    <script src="js/views/novel-reader.js"></script>
     <script src="js/views/download-center.js"></script>
 
     <script>
         // 确保这些变量在全局作用域
-        let imageViewer, mangaLibrary, downloadCenter;
+        let imageViewer, mangaLibrary, downloadCenter, novelReader;
 
         async function initApp() {
-            try {
-                await bridge.init();
+        try {
+            await bridge.init();
+            const viewManager = new ViewManager();
 
-                const viewManager = new ViewManager();
+            // 初始化各视图
+            imageViewer = new ImageViewer();
+            mangaLibrary = new MangaLibrary();
+            downloadCenter = new DownloadCenter();
+            novelReader = new NovelReader();
 
-                // 初始化各视图
-                imageViewer = new ImageViewer();
-                mangaLibrary = new MangaLibrary();
-                downloadCenter = new DownloadCenter();
+            // 注册视图
+            viewManager.register('image-viewer', async () => {
+                await imageViewer.init();
+            });
+            viewManager.register('manga-library', async () => {
+                await mangaLibrary.init();
+            });
+            viewManager.register('download-center', async () => {
+                await downloadCenter.init();
+            });
+            viewManager.register('novel-reader', async () => {
+                await novelReader.init();
+            });
+            viewManager.register('settings', () => {});
 
-                // 注册视图
-                viewManager.register('image-viewer', async () => {
-                    await imageViewer.init();
-                });
-                viewManager.register('manga-library', async () => {
-                    await mangaLibrary.init();
-                });
-                viewManager.register('download-center', async () => {
-                    await downloadCenter.init();
-                });
-                viewManager.register('novel-reader', () => {});
-                viewManager.register('settings', () => {});
-
-                // 默认显示图片浏览
-                viewManager.switchTo('image-viewer');
-
-            } catch (error) {
-                console.error('应用初始化失败:', error);
-            }
+            viewManager.switchTo('image-viewer');
+        } catch (error) {
+            console.error('应用初始化失败:', error);
         }
+    }
 
-        document.addEventListener('DOMContentLoaded', initApp);
-    </script>
+    document.addEventListener('DOMContentLoaded', initApp);
+</script>
 </body>
 </html>

@@ -75,6 +75,21 @@ const bridge = {
     async mangaUpdateRecent(folderName, page = 0) {
         return this.call('manga_update_recent', folderName, page);
     },
+    async novelList() {
+    return this.call('novel_list');
+    },
+    async novelGetChapters(novelId) {
+        return this.call('novel_get_chapters', novelId);
+    },
+    async novelGetContent(novelId, chapterIndex, encoding = 'auto') {
+        return this.call('novel_get_content', novelId, chapterIndex, encoding);
+    },
+    async novelUpdateProgress(novelId, chapterIndex, scrollPosition, encoding = 'auto') {
+        return this.call('novel_update_progress', novelId, chapterIndex, scrollPosition, encoding);
+    },
+    async novelGetContentStream(novelId, chapterIndex, chunkSize = 4096, chunkIndex = 0) {
+        return this.call('novel_get_content_stream', novelId, chapterIndex, chunkSize, chunkIndex);
+    },
 
     // ===== 下载操作（精简后） =====
     async downloadSubmit(albumId) {
