@@ -76,40 +76,19 @@ const bridge = {
         return this.call('manga_update_recent', folderName, page);
     },
 
-    // ===== 下载操作 =====
+    // ===== 下载操作（精简后） =====
+    async downloadSubmit(albumId) {
+        return this.call('download_submit', albumId);
+    },
+
     async downloadList() {
         return this.call('download_list');
     },
-    async downloadAdd(albumId, downloadDir = null, concurrency = 3, priority = 'normal', autoStart = true) {
-        return this.call('download_add', albumId, downloadDir, concurrency, priority, autoStart);
-    },
-    async downloadPause(taskId) {
-        return this.call('download_pause', taskId);
-    },
-    async downloadResume(taskId) {
-        return this.call('download_resume', taskId);
-    },
-    async downloadRetry(taskId) {
-        return this.call('download_retry', taskId);
-    },
-    async downloadDelete(taskId) {
-        return this.call('download_delete', taskId);
-    },
-    async downloadStartAll() {
-        return this.call('download_start_all');
-    },
-    async downloadPauseAll() {
-        return this.call('download_pause_all');
-    },
-    async downloadDetail(taskId) {
-        return this.call('download_detail', taskId);
-    },
-    async downloadClearCompleted() {
-        return this.call('download_clear_completed');
-    },
+
     async downloadGetAlbumInfo(albumId) {
         return this.call('download_get_album_info', albumId);
     },
+
     async dialogSelectDirectory() {
         return this.call('dialog_select_directory');
     },

@@ -69,58 +69,23 @@ class AppAPI:
     def settings_save(self, path, settings):
         return self.settings_module.save(path, settings)
 
-    # ===== 下载中心操作 =====
+    # ===== 下载中心操作（精简后） =====
+    def download_submit(self, album_id):
+        """
+        提交下载任务
+        """
+        return self.download_module.submit(album_id)
+
     def download_list(self):
-        """获取所有下载任务列表"""
-        return self.download_module.list_tasks()
-
-    def download_add(self, album_id, download_dir=None, 
-                     concurrency=3, priority='normal', auto_start=True):
-        """添加下载任务"""
-        return self.download_module.add_task(
-            album_id=album_id,
-            download_dir=download_dir,
-            concurrency=concurrency,
-            priority=priority,
-            auto_start=auto_start
-        )
-
-    def download_pause(self, task_id):
-        """暂停任务"""
-        return self.download_module.pause_task(task_id)
-
-    def download_resume(self, task_id):
-        """恢复任务"""
-        return self.download_module.resume_task(task_id)
-
-    def download_retry(self, task_id):
-        """重试失败任务"""
-        return self.download_module.retry_task(task_id)
-
-    def download_delete(self, task_id):
-        """删除任务"""
-        return self.download_module.delete_task(task_id)
-
-    def download_start_all(self):
-        """全部开始"""
-        return self.download_module.start_all()
-
-    def download_pause_all(self):
-        """全部暂停"""
-        return self.download_module.pause_all()
-
-    def download_detail(self, task_id):
-        """获取任务详情（含章节级进度）"""
-        return self.download_module.get_detail(task_id)
-
-    def download_clear_completed(self):
-        """清除所有已完成任务"""
-        return self.download_module.clear_completed()
+        """
+        获取下载列表（只读）
+        返回当前所有下载任务的状态摘要
+        """
+        return self.download_module.get_summary()
 
     def download_get_album_info(self, album_id):
         """
-        获取已下载漫画的 album_info.json 内容
-        用于前端展示漫画简介
+        获取已下载漫画的简介信息
         """
         import os
         import json
