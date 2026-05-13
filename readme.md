@@ -245,13 +245,45 @@ async call(method, ...args) {
 
 ### 1. 环境依赖
 
-- Python 3.8+
-- [Microsoft Edge WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) 
+- Python 3.12+
+- [Microsoft Edge WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)
 
-### 2. 安装依赖
+### 2. 一键部署（推荐）
+
+> 项目已内置 `requirements.txt` 依赖文件，使用 PowerShell 脚本可自动完成虚拟环境创建和依赖安装。
+
+```powershell
+# 在项目根目录下执行
+.\deploy.ps1
+```
+
+脚本会自动：
+
+- 检测系统已安装的 Python 版本
+- 在项目目录下创建 `venv` 虚拟环境
+- 从 `requirements.txt` 安装所有依赖
+
+### 3. 手动安装（备选）
+
+如果你希望手动管理环境，也可以按传统方式操作：
 
 ```bash
-pip install jmcomic Pillow natsort pywebview
+# 创建虚拟环境（可选）
+python -m venv venv
+.\venv\Scripts\activate
+
+# 安装依赖
+pip install -r requirements.txt
+```
+
+### 4. 启动项目
+
+```bash
+# 确保虚拟环境已激活
+.\venv\Scripts\activate
+
+# 运行主程序
+python main.py
 ```
 
 ### 3. 配置目录
