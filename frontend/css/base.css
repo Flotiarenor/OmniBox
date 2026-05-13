@@ -41,7 +41,7 @@ body {
     background: var(--bg-app);
     color: var(--text-primary);
     overflow: hidden;
-    user-select: none;
+    /*user-select: none;*/
 }
 
 /* ===== 主布局 ===== */
@@ -388,4 +388,10 @@ body {
     min-height: 300px;
     color: var(--text-secondary);
     font-size: 16px;
+}
+.no-select {
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
 }

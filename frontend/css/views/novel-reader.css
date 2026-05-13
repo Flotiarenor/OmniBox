@@ -1,0 +1,401 @@
+/* frontend/css/views/novel-reader.css */
+
+/* ===== 小说列表 ===== */
+.novel-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 16px;
+    padding: 16px;
+}
+
+.novel-card {
+    background: var(--bg-surface);
+    border-radius: var(--radius);
+    padding: 16px;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    border: 1px solid var(--border);
+}
+
+.novel-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    border-color: var(--accent);
+}
+
+.novel-card-title {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.novel-card-author {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.novel-card-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.novel-card-progress {
+    color: var(--accent);
+    font-weight: 500;
+}
+
+/* ===== 阅读器 ===== */
+.novel-reader-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: var(--bg-surface);
+}
+
+/* 阅读器工具栏 */
+.novel-reader-toolbar {
+    display: flex;
+    align-items: center;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.novel-reader-toolbar .btn-icon {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    font-size: 18px;
+    color: var(--text-primary);
+}
+
+.novel-reader-toolbar .btn-icon:hover {
+    background: var(--bg-hover);
+}
+
+.novel-reader-title {
+    flex: 1;
+    font-size: 14px;
+    font-weight: 500;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* 阅读器设置 */
+.novel-reader-settings {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+    flex-shrink: 0;
+}
+
+.novel-reader-settings label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.novel-reader-settings select,
+.novel-reader-settings input[type="range"] {
+    font-size: 12px;
+}
+
+/* 章节选择器 */
+.novel-chapter-selector {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.5);
+    display: none;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+
+.novel-chapter-selector.active {
+    display: flex;
+}
+
+.novel-chapter-list {
+    background: var(--bg-surface);
+    border-radius: var(--radius);
+    width: 400px;
+    max-height: 80vh;
+    overflow-y: auto;
+    padding: 16px;
+}
+
+.novel-chapter-item {
+    padding: 8px 12px;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    transition: background var(--transition-fast);
+    font-size: 14px;
+}
+
+.novel-chapter-item:hover {
+    background: var(--bg-hover);
+}
+
+.novel-chapter-item.active {
+    background: var(--accent);
+    color: white;
+}
+
+/* 阅读内容区 */
+.novel-content-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px 48px;
+    line-height: 1.8;
+    font-size: 16px;
+    color: var(--text-primary);
+}
+
+/* 主题变体 */
+.novel-content-area.theme-dark {
+    background: #1a1a1a;
+    color: #cccccc;
+}
+
+.novel-content-area.theme-sepia {
+    background: #f5e6c8;
+    color: #5b4636;
+}
+
+/* 段落样式 */
+.novel-content-area p {
+    margin-bottom: 8px;
+    text-indent: 2em;
+}
+
+/* 章节标题 */
+.novel-content-area .chapter-title {
+    text-align: center;
+    font-size: 1.2em;
+    font-weight: 600;
+    margin-bottom: 24px;
+    text-indent: 0;
+}
+
+/* 进度指示器 */
+.novel-progress-bar {
+    height: 3px;
+    background: var(--border);
+    flex-shrink: 0;
+}
+
+.novel-progress-fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.3s ease;
+}
+
+/* 空状态 */
+.novel-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-secondary);
+    gap: 16px;
+}
+
+.novel-empty-icon {
+    font-size: 64px;
+    opacity: 0.5;
+}
+
+.novel-empty-text {
+    font-size: 16px;
+}
+
+/* frontend/css/views/novel-reader.css (新增设置样式) */
+
+/* 阅读器设置栏增强 */
+.novel-reader-settings {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+}
+
+.novel-reader-settings label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+.novel-reader-settings select,
+.novel-reader-settings input[type="range"] {
+    font-size: 12px;
+    padding: 2px 4px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--bg-surface);
+}
+
+.novel-reader-settings input[type="range"] {
+    width: 80px;
+    cursor: pointer;
+}
+
+.novel-reader-settings .setting-value {
+    font-size: 11px;
+    color: var(--text-secondary);
+    min-width: 20px;
+    text-align: center;
+}
+
+/* 阅读内容区 - 支持字间距 */
+.novel-content-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px 48px;
+    line-height: var(--reader-line-height, 1.8);
+    font-size: var(--reader-font-size, 16px);
+    letter-spacing: var(--reader-letter-spacing, 0px);
+    color: var(--reader-text-color, var(--text-primary));
+    background: var(--reader-bg-color, var(--bg-surface));
+}
+
+/* 主题变体 */
+.novel-content-area.theme-dark {
+    --reader-bg-color: #1a1a1a;
+    --reader-text-color: #cccccc;
+}
+
+.novel-content-area.theme-sepia {
+    --reader-bg-color: #f5e6c8;
+    --reader-text-color: #5b4636;
+}
+
+.novel-content-area.theme-green {
+    --reader-bg-color: #c7edcc;
+    --reader-text-color: #2d4a2d;
+}
+
+.novel-content-area.theme-blue {
+    --reader-bg-color: #d4e8f5;
+    --reader-text-color: #1a3a5c;
+}
+
+/* 章节分隔符 */
+.chapter-separator {
+    margin: 32px 0;
+    text-align: center;
+    color: var(--text-secondary);
+}
+
+.chapter-separator hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 8px 0;
+}
+
+.chapter-separator-title {
+    font-size: 14px;
+    font-weight: 500;
+    padding: 8px 0;
+}
+
+/* 加载动画 */
+.novel-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 20px;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.novel-content-area {
+    user-select: text !important;  /* 允许文本选择 */
+    -webkit-user-select: text !important;
+    -moz-user-select: text !important;
+    -ms-user-select: text !important;
+}
+/* 确保右键菜单可用 */
+.novel-content-area * {
+    user-select: text !important;
+    -webkit-user-select: text !important;
+}
+
+/* frontend/css/views/novel-reader.css - 添加章节分隔符样式 */
+
+/* 章节分隔符*/
+.chapter-separator {
+    margin: 30px 0;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 13px;
+    opacity: 0.5;
+    letter-spacing: 2px;
+}
+
+/* 章节内容容器 */
+.chapter-content {
+    margin-bottom: 10px;
+}
+
+/* 移除多余的章节标题样式（标题在工具栏显示） */
+.chapter-title {
+    display: none;
+}
+
+/* 段落样式 */
+.novel-content-area p {
+    margin-bottom: 8px;
+    text-indent: 2em;
+    line-height: inherit;
+}
+
+/* 首段落特殊处理 */
+.novel-content-area p:first-of-type {
+    margin-top: 0;
+}
