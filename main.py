@@ -33,7 +33,7 @@ def main():
 
     # 创建 WebView 窗口
     webview.create_window(
-        title='个人数字中心',
+        title='OmniBox',
         url='frontend/index.html',
         width=1200, height=800,
         min_size=(800, 600),
