@@ -43,11 +43,8 @@ class DownloadModule:
 
     def __init__(self, manga_dir: str):
         self.manga_dir = manga_dir
-        
-        # 状态文件存储在运行目录的隐藏文件夹中
         self._state_dir = self._get_state_dir()
         self._state_file = os.path.join(self._state_dir, 'download_state.json')
-        
         self.tasks: Dict[str, DownloadTask] = {}
         self._lock = threading.Lock()
         self._load_state()
@@ -227,8 +224,49 @@ class DownloadModule:
                 return {'error': '任务不存在'}
             return self._task_to_dict(task, detail=True)
 
-    # ===== 下载核心逻辑 =====
+    
+    def submit(self, album_id: str) -> Dict[str, Any]:
+        """
+        提交下载任务（前端唯一需要的操作）
+        后端自动处理：创建任务 → 加入队列 → 开始下载 → 管理重试
+        """
+        task_id = str(uuid.uuid4())
+        download_dir = os.path.join(self.manga_dir, album_id)
+        task = DownloadTask(
+            id=task_id,
+            album_id=album_id,
+            download_dir=download_dir,
+            status='queued',
+            start_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        )
+        with self._lock:
+            self.tasks[task_id] = task
+            self._save_state()
+        # 自动开始下载
+        self._start_download(task_id)
+        return {'taskId': task_id, 'success': True}
+    def get_summary(self) -> Dict[str, Any]:
+        """
+        获取下载列表摘要（只读）
+        前端只需要知道：任务ID、标题、状态、进度、速度
+        """
+        with self._lock:
+            tasks = []
+            for task in self.tasks.values():
+                tasks.append({
+                    'id': task.id,
+                    'albumId': task.album_id,
+                    'title': task.title,
+                    'thumbUrl': task.thumb_url,
+                    'status': task.status,
+                    'totalImages': task.total_images,
+                    'completedImages': task.completed_images,
+                    'speed': task.speed,
+                    'eta': task.eta,
+                })
+            return {'tasks': tasks}
 
+    # ===== 下载核心逻辑 =====
     def _start_download(self, task_id: str):
         """启动下载线程"""
         with self._lock:
