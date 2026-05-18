@@ -3662,3 +3662,5 @@ venv/Lib/site-packages/chardet-7.4.3.dist-info/licenses/LICENSE
 venv/Scripts/chardetect.exe
 backend/modules/__pycache__/novel_module.cpython-312.pyc
 backend/modules/__pycache__/novel_parser.cpython-312.pyc
+.jmcomic_state/progress_8acd1eac-0fa9-4f54-a783-0894bbf16327.json
+.jmcomic_state/progress_ca9a8478-a9b8-4ea1-b483-2762cf2fb7b5.json
