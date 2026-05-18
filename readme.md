@@ -1,10 +1,8 @@
-## 🤖 Assistant
-
 # 个人数字中心
 
 <p align="center">
 <strong>一个基于 PyWebView + 原生 JavaScript 构建的本地多媒体管理应用</strong><br>
-集图片浏览、漫画库管理与阅读、在线漫画下载于一体。采用极简解耦设计，后端 Python 负责核心逻辑与文件操作，前端负责交互与展示。
+集图片浏览、漫画库管理与阅读、在线漫画下载、**小说阅读**于一体。采用极简解耦设计，后端 Python 负责核心逻辑与文件操作，前端负责交互与展示。
 </p>
 
 <p align="center">
@@ -22,6 +20,7 @@
 - **🔒 路径安全沙箱**：后端所有文件操作强制校验路径前缀，杜绝路径穿越攻击（`../`）。
 - **📚 多级视图状态机**：漫画库采用 `home -> chapters -> images` 视图栈管理，支持无限层级返回。
 - **📄 元数据驱动**：漫画信息完全依赖本地 `album_info.json`，离线可用，无需联网即可浏览详情。
+- **📖 小说阅读器**：支持 TXT 格式小说，自动章节分割、编码检测、阅读进度保存、自定义阅读设置。
 
 ---
 
@@ -81,10 +80,17 @@
 │       ├── file_module.py      # 文件操作（移动/删除/目录树）
 │       ├── image_module.py     # 图片扫描与尺寸缓存
 │       ├── manga_module.py     # 漫画库逻辑与状态管理
+│       ├── novel_module.py     # 小说管理模块
+│       ├── novel_parser.py     # 小说解析器（章节分割、编码检测）
 │       └── jm_tool.py          # jmcomic 库封装
 ├── frontend/
 │   ├── index.html              # 单页应用入口
 │   ├── css/                    # 样式文件
+│   │   └── views/
+│   │       ├── download-center.css # 下载样式
+│   │       ├── image-viewer.css # 图片浏览器样式
+│   │       ├── manga-library.css # 漫画库首页样式
+│   │       └── novel-reader.css # 小说阅读器样式
 │   └── js/
 │       ├── bridge.js           # 通信桥接器
 │       ├── view-manager.js     # 视图路由管理
@@ -92,19 +98,26 @@
 │       └── views/              # 视图业务逻辑
 │           ├── image-viewer.js
 │           ├── manga-library.js
-│           └── manga-reader.js
+│           ├── manga-reader.js
+│           └── novel-reader.js # 小说阅读器逻辑
 └── [图库根目录]/
-    ├── .cache/             	# 缩略图与状态缓存
+    ├── .cache/                 # 缩略图与状态缓存
     │   └── thumbs/             # 图片缩略图
     ├── [图片子目录]/            # 图片浏览模块管理
-    └── [本子根目录]/
-        ├── .cache/             # 缩略图与状态缓存
-        │   ├── covers/         # 漫画封面
-        │   └── manga_state.json# 收藏与阅读历史
-        └── 123456/             # 以漫画ID命名
-            ├── album_info.json # 漫画元数据
-            ├── 00001.jpg       # 漫画图片
-            └── ...
+    ├── [本子根目录]/
+    │   ├── .cache/             # 缩略图与状态缓存
+    │   │   ├── covers/         # 漫画封面
+    │   │   └── manga_state.json# 收藏与阅读历史
+    │   └── 123456/             # 以漫画ID命名
+    │       ├── album_info.json # 漫画元数据
+    │       ├── 00001.jpg       # 漫画图片
+    │       └── ...
+    └── [小说根目录]/
+        ├── .novel_state/       # 小说状态缓存
+        │   ├── .novel_cache.json    # 章节信息缓存
+        │   └── .novel_progress.json # 阅读进度缓存
+        ├── 小说名-作者.txt     # 小说文件（命名格式：标题-作者.txt）
+        └── ...
 ```
 
 ---
@@ -156,6 +169,69 @@
 - **全局单例**：挂载在 `window.mangaReader` 上，整个应用生命周期只初始化一次 DOM。
 - **键盘导航**：监听 `ArrowLeft`/`A` 上一页，`ArrowRight`/`D` 下一页，`Escape` 退出。
 - **URL 智能拼接**：自动判断后端返回的 URL 是否包含 `http`，决定是否拼接 `FILE_SERVER` 前缀。
+
+### 📖 前端：NovelReader (小说阅读器)
+
+**文件**: `js/views/novel-reader.js` | `css/views/novel-reader.css`
+
+**功能特性**：
+
+- **自动章节分割**：支持多种章节标题格式（第X章、第X节、数字序号等），自动识别并分割章节。
+- **编码自动检测**：使用 `chardet` 库自动检测文件编码，支持 UTF-8、GBK、GB2312 等常见编码，也可手动切换。
+- **平滑阅读体验**：
+  - 滚动到章节末尾时自动加载下一章（无缝衔接）
+  - 键盘快捷键导航（← 上一章、→ 下一章、↑↓ 滚动、Esc 返回）
+  - 章节选择器快速跳转
+- **阅读进度保存**：自动保存当前阅读位置（章节 + 滚动位置），下次打开自动恢复。
+- **个性化设置**：
+  - 字号调节（12px - 32px）
+  - 行距调节（1.2 - 2.5）
+  - 字间距调节（0px - 5px）
+  - 多主题切换（明亮/暗黑/护眼/绿色/蓝色/自定义）
+  - 自定义背景色和文字色
+- **文本选择**：阅读区域支持文本选择和右键复制，方便摘录。
+
+**后端架构**：
+
+```python
+# backend/modules/novel_parser.py
+class NovelParser:
+    """
+    小说文件解析器
+    - 使用 chardet 自动检测编码
+    - 支持正则匹配章节标题
+    - 按段落边界分割，避免截断突兀
+    """
+  
+# backend/modules/novel_module.py
+class NovelModule:
+    """
+    小说管理模块
+    - 列表只返回元信息（标题、作者、进度）
+    - 章节信息延迟加载（点击后才解析）
+    - 内容缓存（LRU策略，缓存最近5章）
+    - 进度持久化（JSON文件）
+    """
+```
+
+**交互流程**：
+
+```text
+[小说列表] 
+   ├── 显示所有 TXT 文件
+   ├── 显示阅读进度百分比
+   └── 点击进入阅读器
+        ├── [阅读器视图]
+        │   ├── 工具栏（返回、章节选择、上下章）
+        │   ├── 设置栏（字号、行距、字间距、主题、编码）
+        │   ├── 内容区（支持文本选择）
+        │   └── 进度条
+        └── 键盘快捷键
+            ├── ← → 切换章节
+            ├── ↑↓ 滚动页面
+            ├── Space 翻页
+            └── Esc 返回列表
+```
 
 ---
 
@@ -232,12 +308,14 @@ async call(method, ...args) {
 
 应用采用轻量级的文件系统持久化，无需数据库：
 
-| 数据类型      | 存储位置                               | 格式 | 读写模块             |
-| ------------- | -------------------------------------- | ---- | -------------------- |
-| 图片尺寸缓存  | `[图库]/.cache/meta/[hash].json`     | JSON | ImageModule          |
-| 漫画收藏/历史 | `[本子]/.cache/manga_state.json`     | JSON | MangaModule          |
-| 漫画元数据    | `[本子]/[ID]/album_info.json`        | JSON | JMTool / MangaModule |
-| 下载任务状态  | `.jmcomic_state/download_state.json` | JSON | DownloadModule       |
+| 数据类型      | 存储位置                                     | 格式 | 读写模块             |
+| ------------- | -------------------------------------------- | ---- | -------------------- |
+| 图片尺寸缓存  | `[图库]/.cache/meta/[hash].json`           | JSON | ImageModule          |
+| 漫画收藏/历史 | `[本子]/.cache/manga_state.json`           | JSON | MangaModule          |
+| 漫画元数据    | `[本子]/[ID]/album_info.json`              | JSON | JMTool / MangaModule |
+| 下载任务状态  | `.jmcomic_state/download_state.json`       | JSON | DownloadModule       |
+| 小说章节缓存  | `[小说]/.novel_state/.novel_cache.json`    | JSON | NovelModule          |
+| 小说阅读进度  | `[小说]/.novel_state/.novel_progress.json` | JSON | NovelModule          |
 
 ---
 
@@ -245,7 +323,7 @@ async call(method, ...args) {
 
 ### 1. 环境依赖
 
-- Python 3.12+
+- Python 3.8+
 - [Microsoft Edge WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)
 
 ### 2. 一键部署（推荐）
@@ -286,16 +364,17 @@ pip install -r requirements.txt
 python main.py
 ```
 
-### 3. 配置目录
+### 5. 配置目录
 
 修改 `main.py` 顶部的路径常量：
 
 ```python
 IMAGE_DIR = r"G:\图库"        # 图片浏览模块的根目录
 MANGA_DIR = r"G:\图库\本子"   # 漫画库模块的根目录
+NOVEL_DIR = r"G:\图库\小说"   # 小说阅读模块的根目录
 ```
 
-### 4. 启动应用
+### 6. 启动应用
 
 ```bash
 python main.py
