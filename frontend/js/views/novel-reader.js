@@ -2,38 +2,32 @@
 
 class NovelReader {
     constructor() {
-        // 状态
         this.novels = [];
         this.currentNovel = null;
         this.currentChapterIndex = 0;
         this.chapters = [];
-        this.scrollPosition = 0;
         
-        // 设置
         this.fontSize = 16;
         this.lineHeight = 1.8;
         this.letterSpacing = 0;
         this.theme = 'light';
         this.bgColor = '#ffffff';
         this.textColor = '#1a1a1a';
-        this.encoding = 'auto';  // 编码设置
+        this.encoding = 'auto';
         
-        // 加载状态
         this._isLoading = false;
         this._isReaderMode = false;
-        this._isAutoLoading = false;
         
-        // 滚动和预加载
-        this._preloadThreshold = 0.85;
+        // 无限滚动状态
+        this.loadedChapterStart = -1;
+        this.loadedChapterEnd = -1;
         this._lastScrollTop = 0;
         this._scrollDirection = 'down';
         
-        // 进度保存
         this._progressVersion = 0;
         this._lastSavedChapter = -1;
         this._lastSavedPosition = -1;
         
-        // DOM 缓存
         this._dom = {};
     }
 
@@ -77,13 +71,10 @@ class NovelReader {
     }
 
     _bindEvents() {
-        // 搜索
         if (this._dom.searchInput) {
             this._dom.searchInput.addEventListener('input', 
                 debounce((e) => this._search(e.target.value), 300));
         }
-
-        // 导航按钮
         if (this._dom.backBtn) {
             this._dom.backBtn.addEventListener('click', () => this._showList());
         }
@@ -93,118 +84,86 @@ class NovelReader {
         if (this._dom.nextBtn) {
             this._dom.nextBtn.addEventListener('click', () => this._nextChapter());
         }
-
-        // 章节选择
         if (this._dom.chapterBtn) {
             this._dom.chapterBtn.addEventListener('click', () => this._toggleChapterSelector());
         }
-
-        // 设置事件
         this._bindSettingsEvents();
-
-        // 键盘快捷键
         this._bindKeyboard();
 
-        // 滚动监听
         if (this._dom.contentArea) {
             let scrollTimer = null;
             this._dom.contentArea.addEventListener('scroll', () => {
                 const { scrollTop, scrollHeight, clientHeight } = this._dom.contentArea;
-                
-                // 检测滚动方向
                 this._scrollDirection = scrollTop > this._lastScrollTop ? 'down' : 'up';
                 this._lastScrollTop = scrollTop;
                 
-                // 只在向下滚动时自动加载
                 if (this._scrollDirection === 'down' && scrollHeight > clientHeight) {
                     const scrollPercent = scrollTop / (scrollHeight - clientHeight);
-                    if (scrollPercent > this._preloadThreshold && !this._isAutoLoading) {
+                    if (scrollPercent > 0.85 && !this._isLoading && this.loadedChapterEnd < this.chapters.length - 1) {
                         this._autoLoadNextChapter();
                     }
                 }
                 
-                // 节流保存进度
+                if (this._scrollDirection === 'up' && scrollTop < 100 && !this._isLoading && this.loadedChapterStart > 0) {
+                    this._autoLoadPrevChapter();
+                }
+                
                 clearTimeout(scrollTimer);
                 scrollTimer = setTimeout(() => this._autoSaveProgress(), 2000);
             });
         }
 
-        // 窗口关闭前保存
         window.addEventListener('beforeunload', () => this._saveProgress());
     }
 
     _bindSettingsEvents() {
-        // 字号
         if (this._dom.fontSizeSlider) {
             this._dom.fontSizeSlider.addEventListener('input', (e) => {
                 this.fontSize = parseInt(e.target.value);
-                if (this._dom.fontSizeValue) {
-                    this._dom.fontSizeValue.textContent = this.fontSize;
-                }
+                if (this._dom.fontSizeValue) this._dom.fontSizeValue.textContent = this.fontSize;
                 this._applySettings();
             });
         }
-
-        // 行距
         if (this._dom.lineHeightSlider) {
             this._dom.lineHeightSlider.addEventListener('input', (e) => {
                 this.lineHeight = parseFloat(e.target.value);
-                if (this._dom.lineHeightValue) {
-                    this._dom.lineHeightValue.textContent = this.lineHeight.toFixed(1);
-                }
+                if (this._dom.lineHeightValue) this._dom.lineHeightValue.textContent = this.lineHeight.toFixed(1);
                 this._applySettings();
             });
         }
-
-        // 字间距
         if (this._dom.letterSpacingSlider) {
             this._dom.letterSpacingSlider.addEventListener('input', (e) => {
                 this.letterSpacing = parseFloat(e.target.value);
-                if (this._dom.letterSpacingValue) {
-                    this._dom.letterSpacingValue.textContent = `${this.letterSpacing}px`;
-                }
+                if (this._dom.letterSpacingValue) this._dom.letterSpacingValue.textContent = `${this.letterSpacing}px`;
                 this._applySettings();
             });
         }
-
-        // 主题
         if (this._dom.themeSelect) {
             this._dom.themeSelect.addEventListener('change', (e) => {
                 this.theme = e.target.value;
                 const isCustom = this.theme === 'custom';
-                if (this._dom.customColorLabel) {
-                    this._dom.customColorLabel.style.display = isCustom ? 'inline-flex' : 'none';
-                }
-                if (this._dom.customTextLabel) {
-                    this._dom.customTextLabel.style.display = isCustom ? 'inline-flex' : 'none';
-                }
+                if (this._dom.customColorLabel) this._dom.customColorLabel.style.display = isCustom ? 'inline-flex' : 'none';
+                if (this._dom.customTextLabel) this._dom.customTextLabel.style.display = isCustom ? 'inline-flex' : 'none';
                 this._applySettings();
             });
         }
-
-        // 自定义背景色
         if (this._dom.bgColorInput) {
             this._dom.bgColorInput.addEventListener('change', (e) => {
                 this.bgColor = e.target.value;
                 this._applySettings();
             });
         }
-
-        // 自定义文字色
         if (this._dom.textColorInput) {
             this._dom.textColorInput.addEventListener('change', (e) => {
                 this.textColor = e.target.value;
                 this._applySettings();
             });
         }
-
-        // 编码选择
         if (this._dom.encodingSelect) {
             this._dom.encodingSelect.addEventListener('change', (e) => {
                 this.encoding = e.target.value;
-                // 重新加载当前章节
                 if (this.currentNovel && this._isReaderMode) {
-                    this._loadChapter();
+                    this._resetAndLoadChapter();
                 }
             });
         }
@@ -213,7 +172,6 @@ class NovelReader {
     _bindKeyboard() {
         document.addEventListener('keydown', (e) => {
             if (!this._isReaderMode) return;
-            
             switch(e.key) {
                 case 'ArrowLeft':
                     e.preventDefault();
@@ -295,7 +253,6 @@ class NovelReader {
             </div>
         `).join('');
 
-        // 绑定点击事件
         container.querySelectorAll('.novel-card').forEach(card => {
             card.addEventListener('click', () => {
                 const novelId = card.dataset.id;
@@ -307,23 +264,16 @@ class NovelReader {
     async _openNovel(novelId) {
         try {
             this._showLoading(true);
-            
-            // 获取小说信息
             this.currentNovel = this.novels.find(n => n.id === novelId);
             
-            // 恢复编码设置
             if (this.currentNovel && this.currentNovel.encoding) {
                 this.encoding = this.currentNovel.encoding;
-                if (this._dom.encodingSelect) {
-                    this._dom.encodingSelect.value = this.encoding;
-                }
+                if (this._dom.encodingSelect) this._dom.encodingSelect.value = this.encoding;
             }
             
-            // 获取章节列表
             const result = await bridge.novelGetChapters(novelId, this.encoding);
             this.chapters = result.chapters || [];
             
-            // 获取上次阅读位置
             if (this.currentNovel) {
                 this.currentChapterIndex = this.currentNovel.last_read_chapter || 0;
                 this._progressVersion = this.currentNovel.version || 0;
@@ -332,8 +282,10 @@ class NovelReader {
             }
             
             this._showReader();
+            this.loadedChapterStart = this.currentChapterIndex;
+            this.loadedChapterEnd = this.currentChapterIndex;
+            if (this._dom.contentArea) this._dom.contentArea.innerHTML = '';
             await this._loadChapter();
-            
             this._showLoading(false);
         } catch (e) {
             console.error('打开小说失败:', e);
@@ -364,31 +316,20 @@ class NovelReader {
             }
 
             const chapter = this.chapters[this.currentChapterIndex];
-            
-            // 更新标题
             if (this._dom.chapterTitle) {
                 this._dom.chapterTitle.textContent = chapter ? chapter.title : '未知章节';
             }
 
-            // 渲染内容
             if (this._dom.contentArea) {
-                if (!this._isAutoLoading) {
-                    // 手动切换：清空并重新渲染
-                    this._dom.contentArea.innerHTML = `
-                        <div class="chapter-content" data-chapter-index="${chapter.index}">
-                            ${this._formatContent(result.content)}
-                        </div>
-                    `;
-                } else {
-                    // 自动加载：追加内容
-                    this._appendChapterContent(result.content, chapter);
-                }
+                this._dom.contentArea.innerHTML = `
+                    <div class="chapter-content" data-chapter-index="${chapter.index}">
+                        ${this._formatContent(result.content)}
+                    </div>
+                `;
             }
 
-            // 更新进度条和按钮
             this._updateProgressBar();
             this._updateNavButtons();
-
             this._isLoading = false;
 
         } catch (e) {
@@ -397,17 +338,75 @@ class NovelReader {
         }
     }
 
+    async _autoLoadNextChapter() {
+        this._isLoading = true;
+        const nextIndex = this.loadedChapterEnd + 1;
+        
+        try {
+            const result = await bridge.novelGetContent(
+                this.currentNovel.id, 
+                nextIndex,
+                this.encoding
+            );
+            
+            if (!result.error) {
+                const chapter = this.chapters[nextIndex];
+                this._appendChapterContent(result.content, chapter);
+                this.loadedChapterEnd = nextIndex;
+                this.currentChapterIndex = nextIndex;
+                this._updateProgressBar();
+                this._updateNavButtons();
+            }
+        } catch (e) {
+            console.error('自动加载下一章失败:', e);
+        }
+        
+        this._isLoading = false;
+    }
+
+    async _autoLoadPrevChapter() {
+        this._isLoading = true;
+        const prevIndex = this.loadedChapterStart - 1;
+        
+        try {
+            const result = await bridge.novelGetContent(
+                this.currentNovel.id, 
+                prevIndex,
+                this.encoding
+            );
+            
+            if (!result.error) {
+                const chapter = this.chapters[prevIndex];
+                const prevHeight = this._dom.contentArea.scrollHeight;
+                
+                this._prependChapterContent(result.content, chapter);
+                this.loadedChapterStart = prevIndex;
+                this.currentChapterIndex = prevIndex;
+                
+                // 关键：保持滚动位置不跳动
+                const newHeight = this._dom.contentArea.scrollHeight;
+                this._dom.contentArea.scrollTop += (newHeight - prevHeight);
+                
+                this._updateProgressBar();
+                this._updateNavButtons();
+            }
+        } catch (e) {
+            console.error('自动加载上一章失败:', e);
+        }
+        
+        this._isLoading = false;
+    }
+
     _appendChapterContent(content, chapter) {
         const contentArea = this._dom.contentArea;
         if (!contentArea) return;
 
-        // 添加章节分隔符
+        // 简单的换行分隔，不再使用分隔符
         const separator = document.createElement('div');
         separator.className = 'chapter-separator';
-        separator.innerHTML = `— ${this._escapeHtml(chapter.title)} —`;
+        separator.style.height = '2em'; // 空行高度
         contentArea.appendChild(separator);
 
-        // 添加章节内容
         const contentDiv = document.createElement('div');
         contentDiv.className = 'chapter-content';
         contentDiv.dataset.chapterIndex = chapter.index;
@@ -415,60 +414,54 @@ class NovelReader {
         contentArea.appendChild(contentDiv);
     }
 
-    _autoLoadNextChapter() {
-        const nextIndex = this.currentChapterIndex + 1;
-        if (nextIndex < this.chapters.length && !this._isLoading) {
-            this._isAutoLoading = true;
-            this.currentChapterIndex = nextIndex;
-            this._loadChapter().then(() => {
-                this._isAutoLoading = false;
-            });
-        }
+    _prependChapterContent(content, chapter) {
+        const contentArea = this._dom.contentArea;
+        if (!contentArea) return;
+
+        const fragment = document.createDocumentFragment();
+
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'chapter-content';
+        contentDiv.dataset.chapterIndex = chapter.index;
+        contentDiv.innerHTML = this._formatContent(content);
+        fragment.appendChild(contentDiv);
+
+        const separator = document.createElement('div');
+        separator.className = 'chapter-separator';
+        separator.style.height = '2em';
+        fragment.appendChild(separator);
+
+        contentArea.insertBefore(fragment, contentArea.firstChild);
+    }
+
+    async _resetAndLoadChapter() {
+        this._saveProgress();
+        this.loadedChapterStart = this.currentChapterIndex;
+        this.loadedChapterEnd = this.currentChapterIndex;
+        if (this._dom.contentArea) this._dom.contentArea.innerHTML = '';
+        await this._loadChapter();
+        setTimeout(() => {
+            if (this._dom.contentArea) this._dom.contentArea.scrollTop = 0;
+        }, 100);
     }
 
     _prevChapter() {
         if (this.currentChapterIndex > 0) {
-            this._isAutoLoading = false;
             this.currentChapterIndex--;
-            
-            // 先保存当前进度，再加载上一章
-            this._saveProgress().then(() => {
-                this._loadChapter().then(() => {
-                    // 滚动到底部（上一章的末尾）
-                    setTimeout(() => {
-                        if (this._dom.contentArea) {
-                            this._dom.contentArea.scrollTop = this._dom.contentArea.scrollHeight;
-                        }
-                    }, 100);
-                });
-            });
+            this._resetAndLoadChapter();
         }
     }
 
     _nextChapter() {
         if (this.currentChapterIndex < this.chapters.length - 1) {
-            this._isAutoLoading = false;
             this.currentChapterIndex++;
-            
-            // 先保存当前进度，再加载下一章
-            this._saveProgress().then(() => {
-                this._loadChapter().then(() => {
-                    // 滚动到顶部
-                    setTimeout(() => {
-                        if (this._dom.contentArea) {
-                            this._dom.contentArea.scrollTop = 0;
-                        }
-                    }, 100);
-                });
-            });
+            this._resetAndLoadChapter();
         }
     }
 
     _showList() {
-        // 离开时强制保存进度
         this._saveProgress().then(() => {
             this._isReaderMode = false;
-            this._isAutoLoading = false;
             if (this._dom.listView) this._dom.listView.style.display = 'block';
             if (this._dom.readerView) this._dom.readerView.style.display = 'none';
         });
@@ -488,26 +481,20 @@ class NovelReader {
                 loadingEl.id = 'novel-loading';
                 loadingEl.className = 'novel-loading';
                 loadingEl.innerHTML = '<div class="spinner"></div><span>加载中...</span>';
-                if (this._dom.contentArea) {
-                    this._dom.contentArea.appendChild(loadingEl);
-                }
+                if (this._dom.contentArea) this._dom.contentArea.appendChild(loadingEl);
             }
             loadingEl.style.display = 'flex';
         } else {
-            if (loadingEl) {
-                loadingEl.style.display = 'none';
-            }
+            if (loadingEl) loadingEl.style.display = 'none';
         }
     }
 
     _formatContent(text) {
         if (!text) return '';
-        
         const paragraphs = text
             .split('\n')
             .filter(line => line.trim())
             .map(line => `<p>${this._escapeHtml(line.trim())}</p>`);
-        
         return paragraphs.join('');
     }
 
@@ -542,30 +529,24 @@ class NovelReader {
     _toggleChapterSelector() {
         const selector = this._dom.chapterSelector;
         if (!selector) return;
-        
         if (selector.classList.contains('active')) {
             selector.classList.remove('active');
         } else {
             this._renderChapterList();
             selector.classList.add('active');
-            
-            // 点击外部关闭
             const closeHandler = (e) => {
                 if (e.target === selector) {
                     selector.classList.remove('active');
                     selector.removeEventListener('click', closeHandler);
                 }
             };
-            setTimeout(() => {
-                selector.addEventListener('click', closeHandler);
-            }, 0);
+            setTimeout(() => selector.addEventListener('click', closeHandler), 0);
         }
     }
 
     _renderChapterList() {
         const list = this._dom.chapterList;
         if (!list) return;
-
         list.innerHTML = this.chapters.map((chapter, index) => `
             <div class="novel-chapter-item ${index === this.currentChapterIndex ? 'active' : ''}"
                  data-index="${index}">
@@ -575,16 +556,12 @@ class NovelReader {
                 </span>
             </div>
         `).join('');
-
         list.querySelectorAll('.novel-chapter-item').forEach(item => {
             item.addEventListener('click', () => {
                 const index = parseInt(item.dataset.index);
                 this.currentChapterIndex = index;
-                if (this._dom.chapterSelector) {
-                    this._dom.chapterSelector.classList.remove('active');
-                }
-                this._isAutoLoading = false;
-                this._loadChapter();
+                if (this._dom.chapterSelector) this._dom.chapterSelector.classList.remove('active');
+                this._resetAndLoadChapter();
             });
         });
     }
@@ -592,11 +569,9 @@ class NovelReader {
     _applySettings() {
         const contentArea = this._dom.contentArea;
         if (!contentArea) return;
-
         contentArea.style.setProperty('--reader-font-size', `${this.fontSize}px`);
         contentArea.style.setProperty('--reader-line-height', this.lineHeight);
         contentArea.style.setProperty('--reader-letter-spacing', `${this.letterSpacing}px`);
-        
         if (this.theme === 'custom') {
             contentArea.style.setProperty('--reader-bg-color', this.bgColor);
             contentArea.style.setProperty('--reader-text-color', this.textColor);
@@ -604,7 +579,6 @@ class NovelReader {
         } else {
             contentArea.className = `novel-content-area theme-${this.theme}`;
         }
-        
         this._saveSettings();
     }
 
@@ -637,8 +611,6 @@ class NovelReader {
         } catch (e) {
             console.error('加载设置失败:', e);
         }
-        
-        // 更新UI
         if (this._dom.fontSizeSlider) this._dom.fontSizeSlider.value = this.fontSize;
         if (this._dom.fontSizeValue) this._dom.fontSizeValue.textContent = this.fontSize;
         if (this._dom.lineHeightSlider) this._dom.lineHeightSlider.value = this.lineHeight;
@@ -649,42 +621,42 @@ class NovelReader {
         if (this._dom.bgColorInput) this._dom.bgColorInput.value = this.bgColor;
         if (this._dom.textColorInput) this._dom.textColorInput.value = this.textColor;
         if (this._dom.encodingSelect) this._dom.encodingSelect.value = this.encoding;
-        
-        // 显示/隐藏自定义颜色
         const isCustom = this.theme === 'custom';
-        if (this._dom.customColorLabel) {
-            this._dom.customColorLabel.style.display = isCustom ? 'inline-flex' : 'none';
-        }
-        if (this._dom.customTextLabel) {
-            this._dom.customTextLabel.style.display = isCustom ? 'inline-flex' : 'none';
-        }
-        
+        if (this._dom.customColorLabel) this._dom.customColorLabel.style.display = isCustom ? 'inline-flex' : 'none';
+        if (this._dom.customTextLabel) this._dom.customTextLabel.style.display = isCustom ? 'inline-flex' : 'none';
         this._applySettings();
+    }
+
+    _getCurrentChapterIndexFromScroll() {
+        if (!this._dom.contentArea) return this.currentChapterIndex;
+        const contentArea = this._dom.contentArea;
+        const viewCenter = contentArea.scrollTop + contentArea.clientHeight / 2;
+        const chapterDivs = contentArea.querySelectorAll('.chapter-content');
+        for (let div of chapterDivs) {
+            const top = div.offsetTop;
+            const bottom = top + div.offsetHeight;
+            if (viewCenter >= top && viewCenter <= bottom) {
+                return parseInt(div.dataset.chapterIndex);
+            }
+        }
+        return this.currentChapterIndex;
     }
 
     async _autoSaveProgress() {
         if (!this.currentNovel) return;
-        
         const contentArea = this._dom.contentArea;
         if (!contentArea) return;
-        
+        this.currentChapterIndex = this._getCurrentChapterIndexFromScroll();
         const scrollHeight = contentArea.scrollHeight - contentArea.clientHeight;
         const scrollPosition = scrollHeight > 0 ? contentArea.scrollTop / scrollHeight : 0;
-        
-        // 检查是否有变化
         if (this.currentChapterIndex === this._lastSavedChapter && 
-            Math.abs(scrollPosition - this._lastSavedPosition) < 0.01) {
-            return;
-        }
-        
+            Math.abs(scrollPosition - this._lastSavedPosition) < 0.01) return;
         await this._saveProgress(scrollPosition);
     }
 
     async _saveProgress(scrollPosition) {
         if (!this.currentNovel) return;
-        
         const position = scrollPosition || 0;
-        
         try {
             const result = await bridge.novelUpdateProgress(
                 this.currentNovel.id,
@@ -692,7 +664,6 @@ class NovelReader {
                 position,
                 this.encoding
             );
-            
             if (result.success) {
                 this._progressVersion = result.version;
                 this._lastSavedChapter = this.currentChapterIndex;
@@ -708,7 +679,6 @@ class NovelReader {
             this._renderGrid();
             return;
         }
-        
         const filtered = this.novels.filter(novel => 
             novel.title.includes(keyword) || 
             novel.author.includes(keyword)
@@ -721,11 +691,9 @@ class NovelReader {
         this.currentNovel = null;
         this.chapters = [];
         this._isReaderMode = false;
-        this._isAutoLoading = false;
     }
 }
 
-// 工具函数：防抖
 function debounce(func, wait) {
     let timeout;
     return function(...args) {
