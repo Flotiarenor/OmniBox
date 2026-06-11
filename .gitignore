@@ -4,3 +4,4 @@ shell/backend/__pycache__/
 shell/frontend/dist
 shell/frontend/node_modules/
 shell/frontend/package-lock.json
+python虚拟环境管理脚本.ps1
