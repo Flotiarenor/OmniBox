@@ -3,3 +3,4 @@ plugins/
 shell/backend/__pycache__/
 shell/frontend/dist
 shell/frontend/node_modules/
+shell/frontend/package-lock.json
