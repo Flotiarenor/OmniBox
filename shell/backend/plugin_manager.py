@@ -8,7 +8,7 @@ import json
 import importlib
 from pathlib import Path
 from collections import deque
-from typing import Dict, List
+from typing import Dict, List, Callable
 
 class PluginManager:
     def __init__(self, plugins_dir: str, config: dict):
@@ -27,7 +27,7 @@ class PluginManager:
         
         print(f"[PluginManager] 加载完成，顺序: {' → '.join(load_order)}")
 
-    def get_api_methods(self) -> Dict[str, callable]:
+    def get_api_methods(self) -> Dict[str, Callable]:
         return self._api_methods
 
     def get_frontend_manifests(self) -> List[dict]:
