@@ -4,7 +4,7 @@ import { resolve } from 'path'
 
 export default defineConfig({
   plugins: [vue()],
-  base: '/',  // Flask 统一在根路径服务
+  base: '/',
   resolve: {
     alias: { '@': resolve(__dirname, 'src') }
   }
