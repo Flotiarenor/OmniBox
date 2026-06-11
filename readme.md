@@ -22,7 +22,7 @@ graph TB
     subgraph Container["🖥️ PyWebView 桌面容器"]
         subgraph Shell["前端壳 — Vue 3 应用壳 (Shell)"]
             Nav["导航栏"]
-            Iframe["&lt;iframe&gt; 插件容器"]
+            Iframe["<iframe> 插件容器"]
         end
         Bridge["🔗 PyWebView JS Bridge"]
         subgraph Backend["后端壳 — Python 后端壳"]
@@ -64,6 +64,7 @@ cd OmniBox
 
 # 运行一键部署脚本
 .\deploy.ps1
+```
 
 首次启动后，你将看到一个空白的窗口，左侧导航栏仅显示 “OmniBox”。接下来安装插件。
 
@@ -72,12 +73,9 @@ cd OmniBox
 1. 将插件文件夹放入项目根目录下的 `plugins/` 目录。
 2. 重启应用，插件将自动出现在导航栏中。
 
-示例插件 `hello-world` 已包含在仓库中，可直接测试。
----
-
 ## 🧩 插件开发
 
-完整的插件开发指南请参阅 [插件开发文档](./docs/plugin-guide.md)。  
+完整的插件开发指南请参阅 [插件开发文档](./docs/plugin-guide.md)。
 该文档包含插件结构、`manifest.json` 规范、后端与前端开发示例、调试技巧以及最佳实践。
 
 ---
@@ -130,4 +128,3 @@ limitations under the License.
 
 - 项目主页：[https://github.com/Flotiarenor/OmniBox](https://github.com/Flotiarenor/OmniBox)
 - 问题反馈：[Issues](https://github.com/Flotiarenor/OmniBox/issues)
-
