@@ -9,7 +9,8 @@ import importlib
 from pathlib import Path
 from collections import deque
 from typing import Dict, List, Callable
-
+import importlib.util
+import importlib.machinery
 class PluginManager:
     def __init__(self, plugins_dir: str, config: dict):
         self.plugins_dir = Path(plugins_dir).resolve()
@@ -79,23 +80,38 @@ class PluginManager:
         backend_cfg = manifest.get('backend', {})
         entry_file = backend_cfg.get('entry', 'backend/main.py')
         class_name = backend_cfg.get('class', 'Plugin')
-        
+
         plugin_dir = self.plugins_dir / name
-        # 动态导入：将插件根目录加入 sys.path
-        if str(plugin_dir) not in sys.path:
-            sys.path.insert(0, str(plugin_dir))
-            
-        module_name = entry_file.replace('/', '.').replace('.py', '')
-        
+        module_path = plugin_dir / entry_file
+
+        if not module_path.exists():
+            print(f"[PluginManager] ❌ 加载失败 {name}: 入口文件不存在 {module_path}")
+            return
+
+        # 构造唯一模块名，避免不同插件间的冲突
+        unique_module_name = f"{name}.backend.main"
+        print(f"[PluginManager] 尝试加载插件: {name}.backend.main")
+
         try:
-            mod = importlib.import_module(module_name)
+            # 从文件路径创建模块规格
+            spec= importlib.util.spec_from_file_location(unique_module_name,str(module_path))
+            if spec is None:
+                print(f"[PluginManager] ❌ 加载失败 {name}: 模块规格创建失败")
+                return
+            mod = importlib.util.module_from_spec(spec)
+            if spec.loader is None:
+                print(f"[PluginManager] ❌ 加载失败 {name}: 模块加载器创建失败")
+                return
+            # 执行模块（将代码加载到 mod 的命名空间中）
+            spec.loader.exec_module(mod)
+
             cls = getattr(mod, class_name)
             instance = cls(manifest=manifest, config=self.config)
-            
+
             # 注册 API (带命名空间)
             for method_name, method_fn in instance.register_api().items():
                 self._api_methods[f"{name}__{method_name}"] = method_fn
-            
+
             instance.on_load()
             self._instances[name] = instance
             self._manifests[name] = manifest
