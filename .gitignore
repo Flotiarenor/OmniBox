@@ -1,5 +1,4 @@
 venv/
-plugins/
 shell/backend/__pycache__/
 shell/frontend/dist
 shell/frontend/node_modules/

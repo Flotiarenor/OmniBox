@@ -1,0 +1,15 @@
+{
+  "name": "hello-world",
+  "version": "1.0.0",
+  "displayName": "Hello",
+  "icon": "👋",
+  "dependencies": [],
+  "backend": {
+    "entry": "backend/main.py",
+    "class": "HelloPlugin"
+  },
+  "frontend": {
+    "route": "/hello",
+    "entry": "frontend/index.html"
+  }
+}

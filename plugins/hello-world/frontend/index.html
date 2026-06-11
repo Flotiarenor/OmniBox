@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Hello</title></head>
+<body style="background:white; padding:40px; font-family:sans-serif;">
+  <h1>👋 Hello World 插件</h1>
+  <p>这是一个测试插件，运行在 iframe 中。</p>
+  <button onclick="callBackend()">调用后端</button>
+  <pre id="result"></pre>
+  <script>
+    async function callBackend() {
+      // 直接访问父窗口的 pywebview.api（同源）
+      const result = await parent.pywebview.api['hello-world__greet']('OmniBox')
+      document.getElementById('result').textContent = result
+    }
+  </script>
+</body>
+</html>

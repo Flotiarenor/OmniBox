@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>图片浏览</title>
+  <link rel="stylesheet" href="image-viewer.css">
+</head>
+<body>
+  <div id="app">
+    <div class="view-sub-sidebar">
+      <div class="sub-sidebar-header">资源管理器</div>
+      <div id="folder-tree" class="tree-container"></div>
+      <div id="folder-stats" class="sub-sidebar-footer">共 0 张图片</div>
+    </div>
+    <div class="view-body">
+      <div class="view-toolbar">
+        <div class="toolbar-group">
+          <button id="btn-multi-select" class="btn">开启多选</button>
+          <button id="btn-delete-selected" class="btn btn-danger hidden">删除选中</button>
+          <button id="btn-move-selected" class="btn hidden">移动选中</button>
+        </div>
+        <div class="toolbar-group" style="margin-left:auto;">
+          <button id="btn-settings" class="btn">⚙ 设置</button>
+        </div>
+      </div>
+      <div class="view-content" id="image-grid-container">
+        <div id="image-grid" class="grid"></div>
+      </div>
+      <div id="pagination" class="pagination-bar"></div>
+    </div>
+  </div>
+
+  <!-- 移动模态框 -->
+  <div id="move-modal" class="modal">
+    <div class="modal-box">
+      <h3>移动到文件夹</h3>
+      <div id="move-tree" class="tree-container move-tree"></div>
+      <div class="modal-footer">
+        <button class="btn" onclick="imageViewer.closeMoveModal()">取消</button>
+        <button class="btn btn-primary" onclick="imageViewer.confirmMove()">确认移动</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 设置模态框 -->
+  <div id="settings-modal" class="modal">
+    <div class="modal-box" style="width:380px;">
+      <h3>显示与排序设置</h3>
+      <div style="padding:20px;">
+        <div class="setting-item" style="margin-top:20px;">
+          <label>数据根目录</label>
+          <input type="text" id="setting-root-dir" class="search-input" style="width:200px;" placeholder="默认: ./data">
+        </div>
+        <div class="setting-item">
+          <label>图片行高</label>
+          <input type="range" id="setting-row-height" min="100" max="400" value="200">
+          <span id="setting-row-height-val">200</span>
+        </div>
+        <div class="setting-item" style="margin-top:20px;">
+          <label>每页图片数</label>
+          <input type="number" id="setting-per-page" min="10" max="200" step="10" value="40">
+        </div>
+        <div class="setting-item" style="margin-top:20px;">
+          <label>排序方式</label>
+          <select id="setting-sort-by">
+            <option value="mtime">修改时间</option>
+            <option value="name">文件名</option>
+          </select>
+        </div>
+        <div class="setting-item" style="margin-top:20px;">
+          <label>排序方向</label>
+          <select id="setting-sort-order">
+            <option value="desc">倒序</option>
+            <option value="asc">正序</option>
+          </select>
+        </div>
+        <div style="margin-top:25px;padding-top:15px;border-top:1px solid var(--border);">
+          <label style="display:flex;align-items:center;font-size:13px;color:var(--text-secondary);cursor:pointer;">
+            <input type="checkbox" id="setting-apply-to-folder" style="margin-right:8px;">
+            仅应用于当前文件夹 (<span id="setting-current-folder-name">根目录</span>)
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" onclick="imageViewer.closeSettingsModal()">取消</button>
+        <button class="btn btn-primary" onclick="imageViewer.saveSettings()">保存并刷新</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="image-viewer.js"></script>
+  <script>
+    const imageViewer = new ImageViewer();
+    imageViewer.init();
+  </script>
+</body>
+</html>
