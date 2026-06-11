@@ -1,0 +1,1 @@
+import{d as s,u as t,c as r,a as o,b as n,o as c,_}from"./index-hi8BqYr2.js";const l={class:"plugin-frame-container"},u=["src"],m=s({__name:"PluginFrame",setup(i){const e=t(),a=n(()=>e.meta.entryUrl);return(p,d)=>(c(),r("div",l,[o("iframe",{src:a.value,frameborder:"0",class:"plugin-iframe"},null,8,u)]))}}),g=_(m,[["__scopeId","data-v-77f120e8"]]);export{g as default};

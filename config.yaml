@@ -1,0 +1,5 @@
+server:
+  host: "127.0.0.1"
+  port: 18080
+directories:
+  data_root: "./data"
