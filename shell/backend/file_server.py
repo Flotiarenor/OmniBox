@@ -1,4 +1,4 @@
-from flask import Flask, send_from_directory, abort
+from flask import Flask, request, send_from_directory, abort
 from pathlib import Path
 
 def create_app(config, plugin_manager):
@@ -14,19 +14,75 @@ def create_app(config, plugin_manager):
         if not (frontend_dist / filename).exists() and not filename.startswith('assets'):
             return send_from_directory(frontend_dist, 'index.html')
         return send_from_directory(frontend_dist, filename)
+    @app.route('/files/<path:filepath>')
+    def serve_file(filepath):
+        # 获取插件名（从查询参数）
+        plugin_name = request.args.get('plugin', '')
+        
+        # 确定根目录
+        if plugin_name and plugin_name in plugin_manager._instances:
+            data_root = plugin_manager._instances[plugin_name].get_data_root()
+        else:
+            # 回退到全局根目录
+            data_root = Path(config['directories']['data_root']).resolve()
+        
+        # 安全检查
+        try:
+            full_path = (data_root / filepath).resolve()
+            if not str(full_path).startswith(str(data_root)):
+                abort(403)
+        except Exception:
+            abort(400)
+        
+        if not full_path.exists():
+            abort(404)
+        
+        return send_from_directory(data_root, filepath)
+    @app.route('/thumbs/<path:filepath>')
+    def serve_thumb(filepath):
+        plugin_name = request.args.get('plugin', '')
+        if plugin_name and plugin_name in plugin_manager._instances:
+            thumb_dir = plugin_manager._instances[plugin_name].thumb_dir
+        else:
+            # 回退到全局缩略图目录（通常不存在）
+            data_root = Path(config['directories']['data_root']).resolve()
+            thumb_dir = data_root / '.cache' / 'thumbs'
+        
+        # 安全检查
+        try:
+            full_path = (thumb_dir / filepath).resolve()
+            if not str(full_path).startswith(str(thumb_dir)):
+                abort(403)
+        except Exception:
+            abort(400)
+        
+        if not full_path.exists():
+            abort(404)
+        
+        return send_from_directory(thumb_dir, filepath)
+    @app.route('/shell/<path:filename>')
+    def serve_shell_assets(filename):
+        shell_dir = Path(__file__).parent.parent / 'frontend' / 'dist' / 'shell'
+        return send_from_directory(shell_dir, filename)
 
     @app.route('/plugins/<plugin_name>/frontend/<path:filename>')
     def serve_plugin_frontend(plugin_name, filename):
         plugin_dir = plugin_manager.plugins_dir / plugin_name / 'frontend'
-        if not plugin_dir.exists(): abort(404)
+        if not plugin_dir.exists():
+            abort(404)
+        if filename == 'index.html':
+            html_path = plugin_dir / 'index.html'
+            if html_path.exists():
+                with open(html_path, 'r', encoding='utf-8') as f:
+                    html = f.read()
+                inject = f'''
+        <link rel="stylesheet" href="/shell/variables.css">
+        <link rel="stylesheet" href="/shell/base.css">
+        <script src="/shell/base.js"></script>
+        <script>Bridge.setPrefix('{plugin_name}');</script>
+    '''
+                html = html.replace('</head>', inject + '</head>')
+                return html
         return send_from_directory(plugin_dir, filename)
-
-    @app.route('/files/<path:filepath>')
-    def serve_user_file(filepath):
-        data_root = Path(config['directories']['data_root'])
-        file_path = data_root / filepath
-        if file_path.exists() and file_path.is_file():
-            return send_from_directory(data_root, filepath)
-        abort(404)
 
     return app

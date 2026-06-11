@@ -13,18 +13,6 @@ const entryUrl = computed(() => route.meta.entryUrl as string)
 </template>
 
 <style scoped>
-.plugin-frame-container {
-  width: 100%;
-  height: 100%;
-  border: none;
-  outline: none;
-}
-
-.plugin-iframe {
-  width: 100%;
-  height: 100%;
-  border: 0;                  /* 移除默认边框 */
-  outline: none;              /* 移除聚焦轮廓 */
-  display: block;             /* 消除 iframe 底部空隙 */
-}
+.plugin-frame-container {width: 100%;height: 100%;border: none;outline: none;}
+.plugin-iframe {width: 100%;height: 100%;border: 0;outline: none;display: block;}
 </style>

@@ -1,0 +1,31 @@
+/* ===== Shell 注入的 CSS 变量 ===== */
+:root {
+  --bg-app: #f3f3f3;
+  --bg-surface: #ffffff;
+  --bg-sidebar: #2b2b2b;
+  --bg-sub-sidebar: #ffffff;
+  --bg-hover: #e9ecef;
+  --bg-active: #0078d4;
+
+  --text-primary: #1a1a1a;
+  --text-secondary: #6c757d;
+  --text-sidebar: #cccccc;
+  --text-sidebar-active: #ffffff;
+
+  --border: #dee2e6;
+  --border-dark: #1e1e1e;
+
+  --accent: #0078d4;
+  --accent-hover: #0056b3;
+  --danger: #dc3545;
+  --success: #28a745;
+
+  --nav-width: 200px;
+  --sub-sidebar-width: 240px;
+  --toolbar-height: 48px;
+  --radius: 6px;
+  --radius-sm: 4px;
+
+  --transition-fast: 0.15s ease;
+  --transition-normal: 0.25s ease;
+}
