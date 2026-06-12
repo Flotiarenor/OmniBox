@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>视频播放</title>
+  <link rel="stylesheet" href="video-player.css">
+</head>
+<body>
+  <div id="app">
+    <!-- 左侧播放列表侧边栏 -->
+    <div id="sidebar" class="sidebar">
+      <div class="sidebar-header">
+        <span class="sidebar-title">播放列表</span>
+        <button id="btn-toggle-sidebar" class="btn-icon" title="折叠侧边栏">◀</button>
+      </div>
+      <div class="sidebar-nav">
+        <button id="btn-parent-dir" class="btn btn-sm" title="上级目录">📁 ..</button>
+        <span id="current-dir-label" class="dir-label">根目录</span>
+      </div>
+      <!-- 搜索过滤框 -->
+      <div class="sidebar-search">
+        <input type="text" id="playlist-filter" class="search-input" placeholder="搜索文件...">
+      </div>
+      <div id="playlist-container" class="playlist-container">
+        <!-- 动态填充文件列表 -->
+      </div>
+      <div class="sidebar-footer">
+        <button id="btn-settings" class="btn btn-sm">⚙ 设置</button>
+      </div>
+    </div>
+
+    <!-- 右侧播放器主区域 -->
+    <div class="player-main">
+      <div id="player-placeholder" class="player-placeholder">
+        <span>选择一个媒体文件开始播放</span>
+      </div>
+      <div id="player-wrapper" class="player-wrapper hidden">
+        <video id="video-player" controlsList="nodownload" disablePictureInPicture></video>
+        <audio id="audio-player" controlsList="nodownload"></audio>
+      </div>
+      <!-- 控件栏固定在底部 -->
+      <div class="custom-controls" id="custom-controls">
+        <!-- 第一行：进度条 -->
+        <div class="progress-row">
+          <input type="range" id="progress-bar" class="progress-bar" value="0" step="0.1" title="进度">
+        </div>
+        <!-- 第二行：时间显示 -->
+        <div class="time-row">
+          <span id="time-display" class="time-display">00:00 / 00:00</span>
+        </div>
+        <!-- 第三行：控制按钮 -->
+        <div class="controls-row">
+          <button id="btn-expand-sidebar" class="ctrl-btn" title="展开列表" style="display:none;">📋</button>
+          <button id="btn-prev" class="ctrl-btn" title="上一个">⏮</button>
+          <button id="btn-play-pause" class="ctrl-btn" title="播放/暂停">▶</button>
+          <button id="btn-stop" class="ctrl-btn" title="停止">⏹</button>
+          <button id="btn-next" class="ctrl-btn" title="下一个">⏭</button>
+          <div class="volume-group">
+            <span class="volume-icon">🔊</span>
+            <input type="range" id="volume-bar" class="volume-bar" min="0" max="1" step="0.05" value="1" title="音量">
+          </div>
+          <button id="btn-play-mode" class="ctrl-btn" title="播放模式">🔁</button>
+          <button id="btn-fullscreen" class="ctrl-btn" title="全屏">⛶</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 设置模态框 -->
+  <div id="settings-modal" class="modal">
+    <div class="modal-box">
+      <h3>媒体库设置</h3>
+      <div class="setting-item">
+        <label>根目录路径</label>
+        <input type="text" id="setting-root-dir" class="search-input" placeholder="默认: ./data">
+      </div>
+      <div class="modal-footer">
+        <button class="btn" onclick="closeSettingsModal()">取消</button>
+        <button class="btn btn-primary" onclick="player.saveSettings()">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="video-player.js"></script>
+  <script>
+    const player = new VideoPlayer();
+    player.init();
+  </script>
+</body>
+</html>

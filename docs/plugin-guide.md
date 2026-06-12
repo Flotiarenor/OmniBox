@@ -1,550 +1,373 @@
-## 🤖 Assistant
 
-## OmniBox v3 插件开发指南
+# OmniBox v3 插件开发指南
 
 本指南将带你从零开始创建一个完整的 OmniBox v3 插件，并说明如何将现有的 `image-viewer` 插件迁移到新架构。
 
 ---
 
-### 1. 插件目录结构
+## 1. 插件目录结构
 
 每个插件是一个独立文件夹，放置在项目根目录的 `plugins/` 下。结构如下：
 
 ```
-
 plugins/
-
 └── <plugin-name>/
-
-    ├── manifest.json          # 插件声明（必填）
-
-    ├── backend/               # Python 后端代码（必填）
-
-    │   ├── __init__.py
-
-    │   └── main.py            # 插件入口，必须包含 Plugin 类
-
-    └── frontend/              # 前端静态文件（必填）
-
-        ├── index.html         # 插件入口 HTML
-
-        ├── assets/            # JS、CSS、图片等
-
-        └── ...
-
+ ├── manifest.json # 插件声明（必填）
+ ├── backend/ # Python 后端代码（必填）
+ │ ├── __init__.py
+ │ └── main.py # 插件入口，必须包含 Plugin 类
+ └── frontend/ # 前端静态文件（必填）
+ ├── index.html # 插件入口 HTML
+ ├── *.css # 插件专属样式
+ ├── *.js # 插件专属脚本
+ └── assets/ # 其他静态资源（可选）
 ```
 
 **命名约定**：
-
 - 文件夹名使用 `kebab-case`（如 `image-viewer`），与 `manifest.json` 中的 `name` 字段一致。
 - 后端入口文件固定为 `backend/main.py`（可在 manifest 中自定义）。
 - 前端入口文件固定为 `frontend/index.html`（可在 manifest 中自定义）。
 
 ---
 
-### 2. manifest.json 规范
+## 2. manifest.json 规范
 
 ```json
-
 {
-
-  "name": "image-viewer",
-
-  "version": "1.0.0",
-
-  "displayName": "图片浏览器",
-
-  "description": "浏览本地图片，支持缩略图和灯箱",
-
-  "icon": "🖼️",
-
-  "author": "Your Name",
-
-  "dependencies": [],
-
-  "permissions": ["filesystem:read", "filesystem:write"],
-
-  "backend": {
-
-    "entry": "backend/main.py",
-
-    "class": "ImageViewerPlugin"
-
-  },
-
-  "frontend": {
-
-    "entry": "frontend/index.html",
-
-    "route": "/image-viewer"
-
-  },
-
-  "minShellVersion": "3.0.0"
-
+"name": "image-viewer",
+"version": "1.0.0",
+"displayName": "图片浏览",
+"description": "浏览本地图片，支持缩略图和灯箱",
+"icon": "🖼️",
+"author": "Your Name",
+"dependencies": [],
+"permissions": ["filesystem:read", "filesystem:write"],
+"backend": {
+ "entry": "backend/main.py",
+ "class": "ImageViewerPlugin"
+},
+"frontend": {
+ "entry": "frontend/index.html",
+ "route": "/image-viewer"
+},
+"minShellVersion": "3.0.0"
 }
-
 ```
 
 **字段说明**：
 
 | 字段 | 必填 | 说明 |
-
 |------|------|------|
-
 | `name` | ✅ | 插件唯一标识，必须与文件夹名一致，使用 `kebab-case` |
-
 | `version` | ✅ | 语义化版本号 |
-
 | `displayName` | ✅ | 在导航栏显示的名称 |
-
 | `icon` | ✅ | 导航栏图标（Emoji 或文字） |
-
 | `backend.entry` | ✅ | 后端入口文件路径，相对于插件根目录 |
-
 | `backend.class` | ✅ | 后端插件类名，必须继承 `PluginBase` |
-
 | `frontend.entry` | ✅ | 前端入口 HTML 文件路径，相对于插件根目录 |
-
 | `frontend.route` | ✅ | 前端路由路径，必须以 `/` 开头 |
-
 | `dependencies` | ❌ | 依赖的其他插件名称列表 |
-
 | `permissions` | ❌ | 权限声明（当前仅做记录，未强制执行） |
-
 | `minShellVersion` | ❌ | 要求的最低 Shell 版本 |
 
 ---
 
-### 3. 后端开发
+## 3. 后端开发
 
-#### 3.1 插件基类
+### 3.1 插件基类
 
 所有后端插件必须继承 `shell.backend.plugin_base.PluginBase`，并实现 `register_api()` 方法。
 
 ```python
-
 # shell/backend/plugin_base.py（已由框架提供，无需修改）
-
 from abc import ABC, abstractmethod
 
+class PluginBase(ABC):
+ def __init__(self, manifest: dict, config: dict):
+ self.manifest = manifest
+ self.config = config # 全局配置（config.yaml 内容）
+ self.name = manifest['name']
 
-classPluginBase(ABC):
+ @abstractmethod
+ def register_api(self) -> dict:
+ """返回暴露给前端的 API 字典，格式：{'method_name': callable}"""
+ pass
 
-    def__init__(self, manifest: dict, config: dict):
+ def on_load(self):
+ """插件加载后调用（可选）"""
+ pass
 
-        self.manifest = manifest
+ def on_unload(self):
+ """插件卸载前调用（可选）"""
+ pass
 
-        self.config = config          # 全局配置（config.yaml 内容）
-
-        self.name = manifest['name']
-
-
-    @abstractmethod
-
-    defregister_api(self) -> dict:
-
-        """返回暴露给前端的 API 字典，格式：{'method_name': callable}"""
-
-        pass
-
-
-    defon_load(self):
-
-        """插件加载后调用（可选）"""
-
-        pass
-
-
-    defon_unload(self):
-
-        """插件卸载前调用（可选）"""
-
-        pass
-
+ def get_data_root(self) -> Path:
+ """返回该插件使用的数据根目录，默认使用全局配置。
+ 插件可重写此方法以支持自定义根目录。"""
+ return Path(self.config['directories']['data_root']).resolve()
 ```
 
-#### 3.2 编写插件类
+### 3.2 编写插件类
 
 ```python
-
 # plugins/image-viewer/backend/main.py
-
+from pathlib import Path
 from shell.backend.plugin_base import PluginBase
 
+class ImageViewerPlugin(PluginBase):
+ def __init__(self, manifest, config):
+ super().__init__(manifest, config)
+ # 插件本地设置文件（持久化）
+ self.settings_file = Path(__file__).parent.parent / 'settings.json'
+ self._settings = self._load_settings()
+ # 自定义根目录（优先使用本地设置中的 root_dir）
+ self.root_dir = Path(self._settings.get('root_dir', str(self.get_data_root()))).resolve()
 
-classImageViewerPlugin(PluginBase):
+ def _load_settings(self) -> dict:
+ if self.settings_file.exists():
+ try:
+ with open(self.settings_file, 'r', encoding='utf-8') as f:
+ return json.load(f)
+ except Exception:
+ pass
+ return {}
 
-    def__init__(self, manifest, config):
+ def register_api(self) -> dict:
+ return {
+ 'list_images': self.list_images,
+ 'list_dir': self.list_dir,
+ 'delete_files': self.delete_files,
+ 'move_files': self.move_files,
+ 'get_settings': self.get_settings,
+ 'save_settings': self.save_settings,
+ 'get_root_dir': self.get_root_dir,
+ 'clear_folder_settings': self.clear_folder_settings,
+ }
 
-        super().__init__(manifest, config)
-
-        # 从全局配置中获取图片目录
-
-        self.image_dir = config['directories'].get('data_root', './data')
-
-        # 可在此处进行初始化操作
-
-
-    defregister_api(self):
-
-        return {
-
-            'list_images': self.list_images,
-
-            'get_image_info': self.get_image_info,
-
-        }
-
-
-    deflist_images(self, folder: str = ''):
-
-        """返回指定文件夹下的图片列表"""
-
-        import os
-
-        target = os.path.join(self.image_dir, folder)
-
-        ifnot os.path.exists(target):
-
-            return []
-
-        files = []
-
-        for f in os.listdir(target):
-
-            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
-
-                files.append({
-
-                    'name': f,
-
-                    'url': f'/files/{folder}/{f}'if folder elsef'/files/{f}',
-
-                    'size': os.path.getsize(os.path.join(target, f))
-
-                })
-
-        return files
-
-
-    defget_image_info(self, path: str):
-
-        """获取单张图片信息（示例）"""
-
-        import os
-
-        full_path = os.path.join(self.image_dir, path)
-
-        ifnot os.path.exists(full_path):
-
-            returnNone
-
-        return {
-
-            'name': os.path.basename(path),
-
-            'size': os.path.getsize(full_path)
-
-        }
-
+ def list_images(self, rel_path: str = '', page: int = 1,
+ per_page: int = 40, sort_by: str = 'mtime',
+ sort_order: str = 'desc') -> dict:
+ # 实现略...
+ pass
 ```
 
 **关键点**：
-
-- 所有方法自动获得命名空间前缀 `插件名__`，前端调用时使用 `image-viewer__list_images`。
+- 所有方法自动获得命名空间前缀 `插件名__`，前端调用时使用 `Bridge.call('method_name', ...)`（无需手动加前缀，`Bridge` 会自动处理）。
 - 方法参数和返回值必须是 JSON 可序列化的类型（dict、list、str、int、float、bool、None）。
-- 文件访问应通过 `/files/` 路由（由 Shell 提供），避免直接返回本地绝对路径。
+- 文件访问应通过 `/files/` 和 `/thumbs/` 路由（由 Shell 提供），避免直接返回本地绝对路径。
+- 插件可通过重写 `get_data_root()` 方法支持自定义数据根目录，Flask 路由会根据 `?plugin=插件名` 动态获取根目录。
+
+### 3.3 完整 API 列表（以 image-viewer 为例）
+
+| API 方法 | 参数 | 返回值 | 说明 |
+|----------|------|--------|------|
+| `list_images` | `rel_path, page, per_page, sort_by, sort_order` | `{images, page, total, has_next, has_prev, settings}` | 获取图片列表（含尺寸缓存） |
+| `list_dir` | `rel_path` | `[{name, path}]` | 列出子目录 |
+| `delete_files` | `[rel_paths]` | `{deleted, errors}` | 批量删除文件 |
+| `move_files` | `[rel_paths], dest_rel` | `{moved, errors}` | 批量移动文件 |
+| `get_settings` | `rel_path` | `{row_height, per_page, sort_by, sort_order}` | 获取文件夹设置（含全局回退） |
+| `save_settings` | `rel_path, settings` | `{success}` | 保存文件夹设置（支持 root_dir） |
+| `get_root_dir` | 无 | `str` | 获取当前使用的根目录 |
+| `clear_folder_settings` | `rel_path` | `{success}` | 清除文件夹独立设置，回退到全局 |
 
 ---
 
-### 4. 前端开发
+## 4. 前端开发
 
-#### 4.1 技术选型
+### 4.1 Shell 注入的资源
 
-插件前端可以是**任何静态网页技术**（纯 HTML/JS、Vue、React 等），只要最终构建产物是一个 `index.html` 及其依赖的静态资源。
+插件前端运行在 iframe 中，Shell 会自动注入以下资源：
 
-**推荐方案**：
+- **CSS 变量**：`/shell/variables.css`（提供主题颜色、间距等）
+- **基础样式**：`/shell/base.css`（按钮、布局、滚动条等）
+- **基础脚本**：`/shell/base.js`（提供全局 `Bridge` 对象和通用 UI 组件）
 
-- 简单插件：纯 HTML + Vanilla JS
-- 复杂插件：Vue 3 + Vite（独立项目，构建后复制到 `frontend/`）
+**你无需在 HTML 中手动引入这些文件**，Shell 会在加载插件时自动注入到 `<head>` 中。
 
-#### 4.2 纯 HTML 示例（最小可行插件）
+### 4.2 全局 Bridge 对象
+
+`Bridge` 对象挂载在 `window` 上，提供以下方法：
+
+| 方法 | 说明 |
+|------|------|
+| `Bridge.call(method, ...args)` | 调用后端 API（自动添加插件名前缀） |
+| `Bridge.thumbUrl(relPath)` | 获取缩略图 URL（自动附加 `?plugin=插件名`） |
+| `Bridge.originalUrl(relPath)` | 获取原图 URL（自动附加 `?plugin=插件名`） |
+| `Bridge.setPrefix(prefix)` | 设置 API 前缀（Shell 在加载插件时自动调用） |
+
+**示例**：
+```javascript
+// 调用后端 list_images 方法
+const data = await Bridge.call('list_images', '', 1, 40, 'mtime', 'desc');
+
+// 获取缩略图 URL
+const thumbSrc = Bridge.thumbUrl('subdir/photo.jpg');
+// 返回：/thumbs/subdir/photo.jpg?plugin=image-viewer
+
+// 获取原图 URL
+const originalSrc = Bridge.originalUrl('subdir/photo.jpg');
+// 返回：/files/subdir/photo.jpg?plugin=image-viewer
+```
+
+### 4.3 全局 UI 组件
+
+Shell 还注入了以下可复用的 UI 组件函数（无需引入，直接使用）：
+
+| 函数 | 说明 |
+|------|------|
+| `createTree(container, options)` | 创建目录树组件 |
+| `createLightbox(options)` | 创建灯箱组件 |
+| `createPagination(container, options)` | 创建分页组件 |
+| `createContextMenu(options)` | 创建右键菜单组件 |
+
+**示例**：
+```javascript
+// 创建目录树
+createTree(document.getElementById('folder-tree'), {
+ data: [{ name: '根目录', path: '' }],
+ onLoadChildren: async (path) => await Bridge.call('list_dir', path),
+ onClick: (item) => console.log('选中', item.path)
+});
+
+// 创建灯箱
+const lightbox = createLightbox({
+ getImageUrl: (item) => item.url
+});
+lightbox.show(images, 0);
+```
+
+### 4.4 插件专属文件
+
+插件只需提供自己的 HTML、CSS 和 JS 文件，并在 HTML 中引用它们：
 
 ```html
-
 <!-- plugins/image-viewer/frontend/index.html -->
-
-<!DOCTYPEhtml>
-
-<htmllang="zh">
-
+<!DOCTYPE html>
+<html lang="zh">
 <head>
-
-  <metacharset="UTF-8">
-
-  <metaname="viewport"content="width=device-width, initial-scale=1.0">
-
-  <title>图片浏览器</title>
-
-  <style>
-
-    body { font-family: sans-serif; padding: 20px; background: #fff; }
-
-    .image-list { display: flex; flex-wrap: wrap; gap: 10px; }
-
-    .image-item { width: 150px; text-align: center; }
-
-    img { max-width: 100%; height: auto; }
-
-  </style>
-
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>图片浏览</title>
+<link rel="stylesheet" href="image-viewer.css">
 </head>
-
 <body>
-
-  <h1>🖼️ 图片浏览器</h1>
-
-  <divid="app">
-
-    <buttononclick="loadImages()">加载图片</button>
-
-    <divid="image-container"class="image-list"></div>
-
-  </div>
-
-
-  <script>
-
-    // 直接访问父窗口的 pywebview.api（因为同源）
-
-    constapi = parent.pywebview.api;
-
-
-    asyncfunctionloadImages() {
-
-      try {
-
-        constimages = awaitapi['image-viewer__list_images']('');
-
-        constcontainer = document.getElementById('image-container');
-
-        container.innerHTML = images.map(img=>`
-
-          <div class="image-item">
-
-            <img src="${img.url}" alt="${img.name}" />
-
-            <p>${img.name}</p>
-
-          </div>
-
-        `).join('');
-
-      } catch (e) {
-
-        alert('加载失败: ' + e.message);
-
-      }
-
-    }
-
-  </script>
-
+<div id="app">
+ <!-- 插件界面 -->
+</div>
+<script src="image-viewer.js"></script>
+<script>
+ const imageViewer = new ImageViewer();
+ imageViewer.init();
+</script>
 </body>
-
 </html>
-
 ```
 
-**关键点**：
-
-- 通过 `parent.pywebview.api` 调用后端 API，方法名格式为 `插件名__方法名`。
-- 图片 URL 使用 Shell 提供的 `/files/` 路由，例如 `/files/subdir/photo.jpg`。
-
-#### 4.3 Vue 3 插件示例（独立构建）
-
-如果插件较复杂，建议使用 Vue 3 独立项目：
-
-1. 在插件目录外创建 Vue 项目：
-
-```bash
-
-   npmcreatevite@latestimage-viewer-frontend----templatevue-ts
-
-   cdimage-viewer-frontend
-
-   npminstall
-
-```
-
-2. 开发完成后构建：
-
-   ```bash
-
-   npm run build
-
-   ```
-3. 将 `dist/` 目录下的所有文件复制到 `plugins/image-viewer/frontend/`。
-4. 在 Vue 组件中调用后端 API：
-
-   ```typescript
-
-   // 在 Vue 组件中
-
-   constapi = (window.parentasany).pywebview.api;
-
-   constimages = awaitapi['image-viewer__list_images']('');
-
-   ```
+**注意**：
+- 不要引入 `/shell/` 下的文件，它们已自动注入。
+- 所有路径相对于插件 `frontend/` 目录。
+- 使用 CSS 变量（如 `var(--bg-surface)`）以适配主题。
 
 ---
 
-### 5. 迁移现有 image_viewer 插件
+## 5. 文件服务与动态根目录
 
-#### 5.1 目录调整
+### 5.1 文件路由
 
-原结构：
+Shell 提供两个文件服务路由：
 
+- `/files/<path:filepath>?plugin=插件名`：提供原始文件
+- `/thumbs/<path:filepath>?plugin=插件名`：提供缩略图
+
+这两个路由会根据 `plugin` 参数动态获取对应插件的 `get_data_root()` 返回值作为根目录，并进行路径安全检查。
+
+### 5.2 插件如何生成缩略图
+
+插件后端应在 `list_images` 等方法中按需生成缩略图，保存到 `self.thumb_dir`（通常为 `数据根目录/.cache/thumbs/`）。前端通过 `Bridge.thumbUrl()` 获取正确的 URL。
+
+**示例**：
+```python
+def _get_thumb(self, rel_path: str) -> Path:
+ thumb_path = self.thumb_dir / rel_path
+ if thumb_path.exists():
+ return thumb_path
+ thumb_path.parent.mkdir(parents=True, exist_ok=True)
+ try:
+ from PIL import Image
+ img = Image.open(self.root_dir / rel_path)
+ img.thumbnail((300, 300))
+ img.save(thumb_path)
+ except Exception:
+ shutil.copy(self.root_dir / rel_path, thumb_path)
+ return thumb_path
 ```
 
-plugins/image_viewer/
+---
 
-├── manifest.json
+## 6. 设置持久化
 
-├── backend/
-
-│ └── module.py
-
-└── frontend/
-
- ├── Index.vue
-
- ├── store.ts
-
- └── components/
-
-```
-
-新结构：
-
-```
-
-plugins/image-viewer/
-
-├── manifest.json # 更新字段
-
-├── backend/
-
-│ ├── __init__.py
-
-│ └── main.py # 原 module.py 重命名，类名保持一致
-
-└── frontend/ # 将原 Vue 项目构建产物放入
-
- ├── index.html
-
- ├── assets/
-
- └── ...
-
-```
-
-#### 5.2 manifest.json 更新
+插件可以将用户设置保存到插件目录下的 `settings.json` 文件中，实现持久化。推荐结构：
 
 ```json
-
 {
-
-"name": "image-viewer",
-
-"version": "1.0.0",
-
-"displayName": "图片浏览",
-
-"icon": "🖼️",
-
-"dependencies": [],
-
-"backend": {
-
- "entry": "backend/main.py",
-
- "class": "ImageViewerPlugin"
-
-},
-
-"frontend": {
-
- "entry": "frontend/index.html",
-
- "route": "/image-viewer"
-
-},
-
-"permissions": ["file:read", "file:delete", "file:move"]
-
+"root_dir": "/custom/path",
+"folders": {
+ "__global__": {
+ "row_height": 200,
+ "per_page": 40,
+ "sort_by": "mtime",
+ "sort_order": "desc"
+ },
+ "subdir": {
+ "row_height": 150
+ }
 }
-
+}
 ```
 
-#### 5.3 后端适配
+- `root_dir`：自定义数据根目录（可选）
+- `folders.__global__`：全局默认设置
+- `folders.<path>`：特定文件夹的独立设置（优先级高于全局）
 
-- 将 `module.py` 重命名为 `main.py`。
-- 确保类继承 `PluginBase`（路径改为 `from shell.backend.plugin_base import PluginBase`）。
-- 所有文件路径操作改为基于 `self.config['directories']['data_root']`，并通过 `/files/` 路由返回 URL。
-- 移除对 `safe_path` 的依赖（或保留，但路径基目录改为 `data_root`）。
-
-#### 5.4 前端适配
-
-- 将原 Vue 项目构建为静态文件，放入 `frontend/`。
-- 修改 API 调用方式：不再使用 `bridge.call('image_viewer__list_images')`，改为 `parent.pywebview.api['image-viewer__list_images'](...)`。
-- 图片 URL 改为 `/files/...` 格式。
+后端 `get_settings` 应实现回退逻辑：硬编码默认值 → 全局设置 → 文件夹设置。
 
 ---
 
-### 6. 调试与测试
+## 7. 调试与测试
 
-1.**查看插件是否被加载**：启动主程序，控制台会输出 `[PluginManager] ✅ 加载成功: <name>`。
-
-2.**检查前端资源**：在浏览器中直接访问 `http://127.0.0.1:18080/plugins/<name>/frontend/index.html`，确认能正常打开。
-
-3.**检查 API 调用**：在插件前端控制台执行 `parent.pywebview.api['<name>__<method>'](...)`，观察返回结果。
-
-4.**查看 Flask 日志**：所有文件请求都会显示在控制台，便于排查 404 错误。
+1. **查看插件是否被加载**：启动主程序，控制台会输出 `[PluginManager] ✅ 加载成功: <name>`。
+2. **检查前端资源**：在浏览器中直接访问 `http://127.0.0.1:18080/plugins/<name>/frontend/index.html`，确认能正常打开。
+3. **检查 API 调用**：在插件前端控制台执行 `Bridge.call('method', ...)`，观察返回结果。
+4. **查看 Flask 日志**：所有文件请求都会显示在控制台，便于排查 404 错误。
+5. **检查注入是否成功**：在控制台输入 `typeof Bridge`，应返回 `"object"`；输入 `typeof createTree`，应返回 `"function"`。
 
 ---
 
-### 7. 常见问题
+## 8. 常见问题
 
 | 问题 | 原因 | 解决 |
-
 |------|------|------|
-
 | 导航栏不显示插件 | `manifest.json` 格式错误或缺少必填字段 | 检查 JSON 语法，确保 `name`、`frontend.route` 等字段存在 |
-
 | 点击导航无反应 | 前端路由未正确注入 | 检查 `frontend.route` 是否以 `/` 开头，且不与其他插件冲突 |
-
 | iframe 白屏 | 前端入口文件不存在或路径错误 | 确认 `frontend/entry` 指向的文件存在，且 Flask 能访问 |
-
-| API 调用失败 | 方法名拼写错误或后端未注册 | 检查方法名是否与 `register_api` 返回的键一致，调用时使用 `插件名__方法名` |
-
-| 图片无法显示 | URL 路径错误或文件不存在 | 确保图片通过 `/files/` 路由访问，且文件在 `data_root` 下 |
-
----
-
-### 8. 最佳实践
-
--**插件命名**：使用 `kebab-case`，避免与 Python 模块名冲突。
-
--**前端资源**：尽量轻量，避免引入大型框架（除非必要）。
-
--**权限声明**：如实填写 `permissions`，未来版本将强制执行。
-
--**版本管理**：遵循语义化版本，方便依赖解析。
-
--**错误处理**：后端方法应捕获异常并返回有意义的错误信息，避免前端收到 Python 堆栈。
+| API 调用失败 | 方法名拼写错误或后端未注册 | 检查方法名是否与 `register_api` 返回的键一致，调用时使用 `Bridge.call('method')` |
+| 图片无法显示 | URL 路径错误或文件不存在 | 确保图片通过 `Bridge.thumbUrl()` 或 `Bridge.originalUrl()` 获取 URL，且文件在 `data_root` 下 |
+| 缩略图不显示 | 缩略图未生成或路由错误 | 检查后端是否在 `list_images` 中调用了缩略图生成方法，Flask 路由是否正确传递 `plugin` 参数 |
+| 设置不生效 | 前端未传递设置参数或后端未应用 | 确保 `loadImages` 传递了 `per_page`、`sort_by` 等参数，后端 `list_images` 接收并应用这些参数 |
 
 ---
 
-按照本指南，你可以快速创建新插件，或将现有功能迁移到 OmniBox v3 架构中。如有疑问，请参考 `hello-world` 示例插件。
+## 9. 最佳实践
+
+- **插件命名**：使用 `kebab-case`，避免与 Python 模块名冲突。
+- **前端资源**：尽量轻量，避免引入大型框架（除非必要）。
+- **权限声明**：如实填写 `permissions`，未来版本将强制执行。
+- **版本管理**：遵循语义化版本，方便依赖解析。
+- **错误处理**：后端方法应捕获异常并返回有意义的错误信息，避免前端收到 Python 堆栈。
+- **设置持久化**：使用插件目录下的 `settings.json`，支持全局和文件夹级设置。
+- **性能优化**：使用内存缓存（如目录列表缓存、聚合元数据缓存）减少 I/O，提升响应速度。
+
+---
+
+按照本指南，你可以快速创建新插件，或将现有功能迁移到 OmniBox v3 架构中。如有疑问，请参考 `hello-world` 和 `image-viewer` 示例插件。
+

@@ -1,4 +1,5 @@
 /**
+ * This product includes software developed by flotiarenor.Copyright 2026 flotiarenor
  * Shell 注入的基础运行时
  * 提供：Bridge（通信）、Utils（工具）、通用 UI 组件函数
  */
