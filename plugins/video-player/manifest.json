@@ -1,0 +1,17 @@
+{
+  "name": "video-player",
+  "version": "1.0.0",
+  "displayName": "视频播放",
+  "icon": "🎬",
+  "dependencies": [],
+  "permissions": ["filesystem:read"],
+  "backend": {
+    "entry": "backend/main.py",
+    "class": "VideoPlayerPlugin"
+  },
+  "frontend": {
+    "entry": "frontend/index.html",
+    "route": "/video-player"
+  },
+  "minShellVersion": "3.0.0"
+}

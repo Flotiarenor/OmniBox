@@ -1,3 +1,4 @@
+<!--This product includes software developed by flotiarenor.Copyright 2026 flotiarenor -->
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'

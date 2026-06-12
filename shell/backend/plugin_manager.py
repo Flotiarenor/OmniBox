@@ -1,7 +1,18 @@
-"""
-插件管理器 — 负责扫描、拓扑排序、动态加载、沙箱校验
-为什么不用符号链接：插件完全外置，后端动态 import，前端由 Flask 统一 serve
-"""
+'''
+Copyright 2026 flotiarenor
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+'''
 import os
 import sys
 import json
@@ -85,7 +96,7 @@ class PluginManager:
         module_path = plugin_dir / entry_file
 
         if not module_path.exists():
-            print(f"[PluginManager] ❌ 加载失败 {name}: 入口文件不存在 {module_path}")
+            print(f"[PluginManager]  加载失败 {name}: 入口文件不存在 {module_path}")
             return
 
         # 构造唯一模块名，避免不同插件间的冲突
@@ -96,11 +107,11 @@ class PluginManager:
             # 从文件路径创建模块规格
             spec= importlib.util.spec_from_file_location(unique_module_name,str(module_path))
             if spec is None:
-                print(f"[PluginManager] ❌ 加载失败 {name}: 模块规格创建失败")
+                print(f"[PluginManager]  加载失败 {name}: 模块规格创建失败")
                 return
             mod = importlib.util.module_from_spec(spec)
             if spec.loader is None:
-                print(f"[PluginManager] ❌ 加载失败 {name}: 模块加载器创建失败")
+                print(f"[PluginManager]  加载失败 {name}: 模块加载器创建失败")
                 return
             # 执行模块（将代码加载到 mod 的命名空间中）
             spec.loader.exec_module(mod)
@@ -115,6 +126,6 @@ class PluginManager:
             instance.on_load()
             self._instances[name] = instance
             self._manifests[name] = manifest
-            print(f"[PluginManager] ✅ 加载成功: {name}")
+            print(f"[PluginManager]  加载成功: {name}")
         except Exception as e:
-            print(f"[PluginManager] ❌ 加载失败 {name}: {e}")
+            print(f"[PluginManager]  加载失败 {name}: {e}")

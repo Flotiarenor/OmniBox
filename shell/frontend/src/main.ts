@@ -1,3 +1,4 @@
+/*This product includes software developed by flotiarenor.Copyright 2026 flotiarenor*/
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
