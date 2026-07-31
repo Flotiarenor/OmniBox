@@ -1,5 +1,6 @@
 // shell/frontend/src/router/index.ts
 import { createRouter as createVueRouter, createWebHistory } from 'vue-router'
+import SettingsView from '../views/SettingsView.vue'
 
 export function createRouter() {
   return createVueRouter({
@@ -8,6 +9,11 @@ export function createRouter() {
       {
         path: '/',
         component: { template: '<div class="loading">正在加载插件...</div>' }
+      },
+      {
+        path: '/settings',
+        name: 'settings',
+        component: SettingsView
       }
     ]
   })

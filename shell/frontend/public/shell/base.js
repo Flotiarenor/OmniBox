@@ -58,6 +58,235 @@ window.Utils = {
   }
 };
 
+// ==================== Toast 通知 ====================
+window.Toast = (function() {
+  let container = null;
+  function ensureContainer() {
+    if (!container) {
+      container = document.createElement('div');
+      container.className = 'toast-container';
+      document.body.appendChild(container);
+    }
+    return container;
+  }
+  function show(message, type = 'info', duration = 2600) {
+    const el = document.createElement('div');
+    el.className = `toast toast-${type}`;
+    el.textContent = message;
+    ensureContainer().appendChild(el);
+    requestAnimationFrame(() => el.classList.add('show'));
+    setTimeout(() => {
+      el.classList.remove('show');
+      setTimeout(() => el.remove(), 250);
+    }, duration);
+    return el;
+  }
+  return {
+    show,
+    info: (msg) => show(msg, 'info'),
+    success: (msg) => show(msg, 'success'),
+    warning: (msg) => show(msg, 'warning'),
+    error: (msg) => show(msg, 'error')
+  };
+})();
+
+// ==================== 确认对话框（替代原生 confirm） ====================
+function confirmDialog(message, options = {}) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal active';
+    overlay.innerHTML = `
+      <div class="modal-box modal-confirm">
+        <div class="modal-body">
+          <div class="confirm-message">${Utils.escapeHtml(message)}</div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" data-act="cancel">取消</button>
+          <button class="btn ${options.danger ? 'btn-danger-solid' : 'btn-primary'}" data-act="ok">${options.okText || '确定'}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const close = (val) => { overlay.remove(); resolve(val); };
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
+    overlay.querySelector('[data-act="cancel"]').addEventListener('click', () => close(false));
+    overlay.querySelector('[data-act="ok"]').addEventListener('click', () => close(true));
+  });
+}
+
+// ==================== 设置表单（按 schema 渲染） ====================
+function createSettingsForm(container, schema, values = {}) {
+  const fieldEls = {};
+  const baseId = 'cfg-' + Math.random().toString(36).slice(2, 8);
+
+  (schema || []).forEach((field) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'field' + (field.type === 'checkbox' ? ' field-checkbox' : '');
+    wrap.dataset.key = field.key;
+
+    const label = document.createElement('label');
+    label.className = 'field-label';
+    label.htmlFor = `${baseId}-${field.key}`;
+    label.textContent = field.label || field.key;
+    if (field.required) label.classList.add('required');
+
+    const current = values[field.key] !== undefined ? values[field.key] : field.default;
+    let input;
+
+    if (field.type === 'checkbox') {
+      input = document.createElement('input');
+      input.type = 'checkbox';
+      input.id = `${baseId}-${field.key}`;
+      input.checked = !!current;
+      wrap.append(input, label);
+    } else if (field.type === 'select') {
+      input = document.createElement('select');
+      input.id = `${baseId}-${field.key}`;
+      (field.options || []).forEach(opt => {
+        const o = document.createElement('option');
+        o.value = (typeof opt === 'object') ? opt.value : opt;
+        o.textContent = (typeof opt === 'object') ? opt.label : opt;
+        input.appendChild(o);
+      });
+      if (current !== undefined) input.value = String(current);
+    } else if (field.type === 'textarea') {
+      input = document.createElement('textarea');
+      input.id = `${baseId}-${field.key}`;
+      input.value = current !== undefined ? current : '';
+      if (field.placeholder) input.placeholder = field.placeholder;
+    } else {
+      const isRange = field.type === 'range';
+      const isNumber = field.type === 'number';
+      input = document.createElement('input');
+      input.type = isRange ? 'range' : (isNumber ? 'number' : 'text');
+      input.id = `${baseId}-${field.key}`;
+      if (isRange || isNumber) {
+        if (field.min !== undefined) input.min = field.min;
+        if (field.max !== undefined) input.max = field.max;
+        if (field.step !== undefined) input.step = field.step;
+        input.value = current !== undefined ? current : (field.default !== undefined ? field.default : 0);
+      } else {
+        input.value = current !== undefined ? current : (field.default !== undefined ? field.default : '');
+        if (field.placeholder) input.placeholder = field.placeholder;
+      }
+    }
+
+    if (field.type === 'range') {
+      const valueSpan = document.createElement('span');
+      valueSpan.className = 'field-range-value';
+      valueSpan.textContent = input.value;
+      input.addEventListener('input', () => { valueSpan.textContent = input.value; });
+      const row = document.createElement('div');
+      row.className = 'field-range';
+      row.append(input, valueSpan);
+      wrap.append(label, row);
+      fieldEls[field.key] = input;
+    } else if (field.type === 'checkbox') {
+      fieldEls[field.key] = input;
+    } else {
+      wrap.append(label, input);
+      fieldEls[field.key] = input;
+    }
+
+    if (field.help) {
+      const help = document.createElement('p');
+      help.className = 'field-help';
+      help.textContent = field.help;
+      wrap.appendChild(help);
+    }
+    container.appendChild(wrap);
+  });
+
+  function getValues() {
+    const out = {};
+    (schema || []).forEach((field) => {
+      const el = fieldEls[field.key];
+      if (!el) return;
+      if (field.type === 'checkbox') out[field.key] = el.checked;
+      else if (field.type === 'number' || field.type === 'range') out[field.key] = Number(el.value);
+      else out[field.key] = el.value;
+    });
+    return out;
+  }
+
+  function setValues(newValues) {
+    (schema || []).forEach((field) => {
+      const el = fieldEls[field.key];
+      if (!el || newValues[field.key] === undefined) return;
+      if (field.type === 'checkbox') el.checked = !!newValues[field.key];
+      else if (field.type === 'range') {
+        el.value = newValues[field.key];
+        const span = el.parentElement.querySelector('.field-range-value');
+        if (span) span.textContent = el.value;
+      } else el.value = newValues[field.key];
+    });
+  }
+
+  return { getValues, setValues, element: container };
+}
+
+// ==================== 统一设置弹窗（插件按需调用） ====================
+async function openSettingsModal(options = {}) {
+  const title = options.title || '设置';
+  let schema = options.schema;
+  let values = options.values;
+  const onSave = options.onSave;
+
+  if (!schema) {
+    try { schema = await Bridge.call('get_settings_schema'); } catch (e) { schema = []; }
+  }
+  if (values === undefined) {
+    try { values = await Bridge.call('get_settings'); } catch (e) { values = {}; }
+  }
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal active';
+  overlay.innerHTML = `
+    <div class="modal-box">
+      <h3>${Utils.escapeHtml(title)}</h3>
+      <div class="modal-body settings-form"></div>
+      <div class="modal-footer">
+        <button class="btn" data-act="cancel">取消</button>
+        <button class="btn btn-primary" data-act="save">保存</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const body = overlay.querySelector('.modal-body');
+  let form = null;
+  if (!schema || schema.length === 0) {
+    body.innerHTML = '<div class="empty-state" style="min-height:120px;">该插件暂无设置项</div>';
+  } else {
+    form = createSettingsForm(body, schema, values || {});
+  }
+
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector('[data-act="cancel"]').addEventListener('click', close);
+
+  overlay.querySelector('[data-act="save"]').addEventListener('click', async () => {
+    const saveBtn = overlay.querySelector('[data-act="save"]');
+    const cancelBtn = overlay.querySelector('[data-act="cancel"]');
+    saveBtn.disabled = true;
+    try {
+      const newValues = form ? form.getValues() : {};
+      let result = newValues;
+      if (onSave) {
+        result = await onSave(newValues);
+      } else {
+        result = await Bridge.call('save_settings', newValues);
+      }
+      if (result && result.success === false) {
+        throw new Error(result.error || '保存失败');
+      }
+      close();
+      Toast.success((options.successMessage) || (result && result.message) || '设置已保存');
+    } catch (e) {
+      saveBtn.disabled = false;
+      Toast.error(e.message || '保存失败');
+    }
+  });
+}
+
 // ==================== 树组件 ====================
 function createTree(container, options = {}) {
   const icon = options.icon || '📁';

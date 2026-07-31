@@ -37,24 +37,6 @@
     flex-shrink: 0;
 }
 
-/* 树容器：允许滚动，显示滚动条 */
-.tree-container {
-    flex: 1;
-    overflow-y: auto;
-    padding: 8px 0;
-    /* 恢复滚动条 */
-    scrollbar-width: thin;
-    -ms-overflow-style: auto;
-}
-.tree-container::-webkit-scrollbar {
-    display: block;
-    width: 6px;
-}
-.tree-container::-webkit-scrollbar-thumb {
-    background: var(--border);
-    border-radius: 3px;
-}
-
 /* 右侧主区域 */
 .view-body {
     flex: 1;
@@ -99,14 +81,14 @@
     background: var(--bg-surface);
     border-radius: var(--radius-sm);
     overflow: hidden;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    box-shadow: var(--shadow-sm);
     cursor: pointer;
     transition: transform var(--transition-fast),
                 box-shadow var(--transition-fast);
 }
 .card:hover {
     transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+    box-shadow: var(--shadow-md);
     z-index: 10;
 }
 .card.selected {

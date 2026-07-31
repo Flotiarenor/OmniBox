@@ -384,12 +384,20 @@ class VideoPlayer {
         // 播放模式
         playModeBtn.addEventListener('click', () => this.cyclePlayMode());
 
-        // 设置按钮
-        document.getElementById('btn-settings').addEventListener('click', async () => {
-            const modal = document.getElementById('settings-modal');
-            modal.classList.add('active');
-            const rootDir = await Bridge.call('get_root_dir');
-            document.getElementById('setting-root-dir').value = rootDir;
+        // 设置按钮（统一设置弹窗）
+        document.getElementById('btn-settings').addEventListener('click', () => {
+            openSettingsModal({
+                title: '媒体库设置',
+                successMessage: '媒体库设置已保存',
+                onSave: async (values) => {
+                    const result = await Bridge.call('save_settings', values);
+                    if (result.success) {
+                        await this.navigateTo(this.currentPath);
+                        return { success: true };
+                    }
+                    return result;
+                }
+            });
         });
 
         // 监听全屏变化（按 ESC 退出时同步状态）
@@ -469,19 +477,6 @@ class VideoPlayer {
         });
     }
 
-    // ---------- 设置 ----------
-    async saveSettings() {
-        const newRoot = document.getElementById('setting-root-dir').value.trim();
-        const result = await Bridge.call('save_settings', { root_dir: newRoot });
-        if (result.success) {
-            alert('根目录已更新，正在刷新...');
-            closeSettingsModal();
-            await this.navigateTo(this.currentPath);
-        } else {
-            alert('保存失败：' + (result.error || '路径无效'));
-        }
-    }
-
     // ---------- 工具函数 ----------
     formatTime(seconds) {
         if (isNaN(seconds)) return '00:00';
@@ -489,9 +484,4 @@ class VideoPlayer {
         const s = Math.floor(seconds % 60);
         return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
     }
-}
-
-// 全局关闭模态框函数
-function closeSettingsModal() {
-    document.getElementById('settings-modal').classList.remove('active');
 }
