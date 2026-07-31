@@ -1,31 +1,86 @@
-/* ===== Shell 注入的 CSS 变量 ===== */
+/* ===== Shell 注入的 CSS 变量（统一主题 token，全插件唯一换肤入口） ===== */
+/* 插件如需暗色主题，在自身 <html> 上加 data-theme="dark" 即可 */
+
 :root {
+  /* 背景 */
   --bg-app: #f3f3f3;
   --bg-surface: #ffffff;
-  --bg-sidebar: #2b2b2b;
   --bg-sub-sidebar: #ffffff;
+  --bg-sidebar: #ffffff;
   --bg-hover: #e9ecef;
-  --bg-active: #0078d4;
+  --bg-active: #cfe6fa;
+  --bg-overlay: rgba(0, 0, 0, 0.45);
+  --bg-overlay-strong: rgba(0, 0, 0, 0.92);
 
+  /* 文本 */
   --text-primary: #1a1a1a;
   --text-secondary: #6c757d;
-  --text-sidebar: #cccccc;
+  --text-muted: #adb5bd;
+  --text-sidebar: #1a1a1a;
   --text-sidebar-active: #ffffff;
+  --text-on-accent: #ffffff;
 
+  /* 边框 */
   --border: #dee2e6;
-  --border-dark: #1e1e1e;
+  --border-dark: #ced4da;
 
+  /* 强调色 */
   --accent: #0078d4;
   --accent-hover: #0056b3;
   --danger: #dc3545;
+  --danger-hover: #b02a37;
+  --danger-soft: rgba(220, 53, 69, 0.1);
   --success: #28a745;
+  --warning: #ffc107;
 
+  /* 尺寸 */
   --nav-width: 200px;
   --sub-sidebar-width: 240px;
   --toolbar-height: 48px;
   --radius: 6px;
   --radius-sm: 4px;
+  --radius-lg: 10px;
 
+  /* 阴影 */
+  --shadow-sm: 0 1px 4px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.12);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.15);
+
+  /* 动效 */
   --transition-fast: 0.15s ease;
   --transition-normal: 0.25s ease;
+}
+
+/* ===== 暗色主题（GitHub 暗色调） ===== */
+[data-theme="dark"] {
+  --bg-app: #0d1117;
+  --bg-surface: #161b22;
+  --bg-sub-sidebar: #161b22;
+  --bg-sidebar: #161b22;
+  --bg-hover: rgba(255, 255, 255, 0.08);
+  --bg-active: rgba(0, 120, 212, 0.2);
+  --bg-overlay: rgba(0, 0, 0, 0.6);
+  --bg-overlay-strong: rgba(0, 0, 0, 0.95);
+
+  --text-primary: #c9d1d9;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+  --text-sidebar: #c9d1d9;
+  --text-sidebar-active: #ffffff;
+  --text-on-accent: #ffffff;
+
+  --border: #30363d;
+  --border-dark: #21262d;
+
+  --accent: #2f81f7;
+  --accent-hover: #58a6ff;
+  --danger: #f85149;
+  --danger-hover: #ff7b72;
+  --danger-soft: rgba(248, 81, 73, 0.15);
+  --success: #3fb950;
+  --warning: #d29922;
+
+  --shadow-sm: 0 1px 4px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.6);
 }

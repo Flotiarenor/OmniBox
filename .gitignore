@@ -4,3 +4,9 @@ shell/frontend/dist
 shell/frontend/node_modules/
 shell/frontend/package-lock.json
 python虚拟环境管理脚本.ps1
+
+# Python 编译缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd

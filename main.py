@@ -44,6 +44,8 @@ def main():
     api = ShellAPI()
     setattr(api, 'system_get_plugins', manager.get_frontend_manifests)
     setattr(api, 'system_get_config', lambda: config)
+    setattr(api, 'system_settings_list', manager.get_settings_panels)
+    setattr(api, 'system_settings_save', manager.save_settings_panel)
     for method_name, method_fn in manager.get_api_methods().items():
         setattr(api, method_name, method_fn)
 

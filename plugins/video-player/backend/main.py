@@ -11,6 +11,11 @@ ALLOWED_EXTENSIONS = {
 }
 
 class VideoPlayerPlugin(PluginBase):
+    settings_schema = [
+        {"key": "root_dir", "label": "媒体库根目录", "type": "text",
+         "placeholder": "默认: ./data", "help": "视频/音频文件所在根目录"},
+    ]
+
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
         self.global_data_root = Path(config['directories']['data_root']).resolve()

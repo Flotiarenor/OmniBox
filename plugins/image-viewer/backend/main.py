@@ -9,6 +9,21 @@ from shell.backend.plugin_base import PluginBase
 ALLOWED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'}
 
 class ImageViewerPlugin(PluginBase):
+    settings_schema = [
+        {"key": "root_dir", "label": "数据根目录", "type": "text",
+         "placeholder": "默认: ./data", "help": "图片浏览的数据根目录"},
+        {"key": "row_height", "label": "图片行高", "type": "range",
+         "min": 100, "max": 400, "default": 200, "help": "Justified 布局的每行目标高度"},
+        {"key": "per_page", "label": "每页图片数", "type": "number",
+         "min": 10, "max": 200, "default": 40},
+        {"key": "sort_by", "label": "排序方式", "type": "select",
+         "default": "mtime",
+         "options": [{"label": "修改时间", "value": "mtime"}, {"label": "文件名", "value": "name"}]},
+        {"key": "sort_order", "label": "排序方向", "type": "select",
+         "default": "desc",
+         "options": [{"label": "倒序", "value": "desc"}, {"label": "正序", "value": "asc"}]},
+    ]
+
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
         self.global_data_root = Path(config['directories']['data_root']).resolve()
@@ -251,9 +266,15 @@ class ImageViewerPlugin(PluginBase):
         }
         key = rel_path or '__global__'
         folder_settings = folders.get(key, {})
-        return {**hard_defaults, **global_settings, **folder_settings}
+        result = {**hard_defaults, **global_settings, **folder_settings}
+        result['root_dir'] = str(self.root_dir)
+        return result
 
-    def save_settings(self, rel_path: str, settings: Dict) -> Dict:
+    def save_settings(self, rel_path='', settings=None) -> Dict:
+        """兼容两种调用：save_settings(path, settings) 或 save_settings(values)"""
+        if settings is None:
+            settings = rel_path or {}
+            rel_path = ''
         if 'folders' not in self._settings:
             self._settings['folders'] = {}
         key = rel_path or '__global__'

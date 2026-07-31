@@ -23,6 +23,8 @@ onMounted(async () => {
     })
     if (plugins.length > 0 && route.path === '/') {
       router.replace(plugins[0].route)
+    } else if (route.path === '/') {
+      router.replace('/settings')
     }
     isReady.value = true
   } catch (e: any) {
@@ -33,24 +35,35 @@ onMounted(async () => {
 
 const plugins = computed(() => getPlugins())
 const currentPlugin = computed(() => route.meta.pluginName as string || '')
+const isSettings = computed(() => route.path === '/settings')
 </script>
 
 <template>
   <div class="app-shell">
     <aside class="nav-sidebar">
       <div class="logo">OmniBox</div>
-      <nav v-if="isReady && plugins.length > 0">
+      <nav v-if="isReady">
+        <template v-if="plugins.length > 0">
+          <div
+            v-for="p in plugins" :key="p.name"
+            class="nav-item" :class="{ active: currentPlugin === p.name }"
+            @click="router.push(p.route)"
+          >
+            <span class="icon">{{ p.icon }}</span>
+            <span class="text">{{ p.displayName }}</span>
+          </div>
+        </template>
+        <div v-else-if="error" class="error">{{ error }}</div>
+        <div v-else class="hint">暂无插件</div>
+        <div class="nav-divider"></div>
         <div
-          v-for="p in plugins" :key="p.name"
-          class="nav-item" :class="{ active: currentPlugin === p.name }"
-          @click="router.push(p.route)"
+          class="nav-item" :class="{ active: isSettings }"
+          @click="router.push('/settings')"
         >
-          <span class="icon">{{ p.icon }}</span>
-          <span class="text">{{ p.displayName }}</span>
+          <span class="icon">⚙️</span>
+          <span class="text">设置</span>
         </div>
       </nav>
-      <div v-else-if="error" class="error">{{ error }}</div>
-      <div v-else class="hint">暂无插件</div>
     </aside>
     <main class="main-view">
       <router-view v-if="isReady" />

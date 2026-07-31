@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="zh" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -67,20 +67,7 @@
     </div>
   </div>
 
-  <!-- 设置模态框 -->
-  <div id="settings-modal" class="modal">
-    <div class="modal-box">
-      <h3>媒体库设置</h3>
-      <div class="setting-item">
-        <label>根目录路径</label>
-        <input type="text" id="setting-root-dir" class="search-input" placeholder="默认: ./data">
-      </div>
-      <div class="modal-footer">
-        <button class="btn" onclick="closeSettingsModal()">取消</button>
-        <button class="btn btn-primary" onclick="player.saveSettings()">保存</button>
-      </div>
-    </div>
-  </div>
+  <!-- 设置弹窗由 base.js 的 openSettingsModal 统一提供 -->
 
   <script src="video-player.js"></script>
   <script>
