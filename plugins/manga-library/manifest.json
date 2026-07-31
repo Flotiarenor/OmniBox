@@ -1,0 +1,15 @@
+{
+  "name": "manga-library",
+  "version": "1.0.0",
+  "displayName": "漫画库",
+  "icon": "📚",
+  "dependencies": [],
+  "backend": {
+    "entry": "backend/main.py",
+    "class": "MangaLibraryPlugin"
+  },
+  "frontend": {
+    "entry": "frontend/index.html",
+    "route": "/manga-library"
+  }
+}
