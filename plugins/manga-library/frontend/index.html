@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>漫画库</title>
+  <link rel="stylesheet" href="manga-library.css">
+</head>
+<body>
+  <div id="app">
+    <div class="view-body">
+      <div class="view-toolbar">
+        <div class="toolbar-group">
+          <input type="text" id="manga-search" class="search-input" placeholder="搜索漫画、作者...">
+        </div>
+        <div class="toolbar-group" style="margin-left:auto;">
+          <button id="btn-settings" class="btn">⚙ 设置</button>
+        </div>
+      </div>
+
+      <!-- 首页 -->
+      <div class="view-content manga-home" id="manga-home">
+        <section class="home-section">
+          <h3 class="section-title">🕐 最近阅读</h3>
+          <div id="recent-grid" class="card-grid"></div>
+        </section>
+        <section class="home-section">
+          <h3 class="section-title">⭐ 我的收藏</h3>
+          <div id="favorites-grid" class="card-grid"></div>
+        </section>
+        <section class="home-section">
+          <h3 class="section-title">📚 全部漫画</h3>
+          <div id="manga-grid" class="card-grid"></div>
+        </section>
+      </div>
+
+      <!-- 详情页 (默认隐藏) -->
+      <div class="view-content" id="manga-detail-view" style="display: none;">
+        <div class="detail-header">
+          <button id="detail-back" class="btn">← 返回</button>
+          <div class="detail-title-row">
+            <h2 id="detail-title"></h2>
+            <button id="detail-fav-btn" class="btn btn-fav">☆ 收藏</button>
+          </div>
+          <p id="detail-author" class="detail-author"></p>
+        </div>
+
+        <!-- 详细信息区 -->
+        <div id="detail-info-box" class="detail-info-box"></div>
+
+        <!-- 章节或图片列表容器 -->
+        <div id="detail-content-grid" class="card-grid"></div>
+      </div>
+    </div>
+
+    <!-- 沉浸式漫画阅读器 (全局覆盖层) -->
+    <div class="manga-reader no-select" id="manga-reader-container">
+      <div class="reader-toolbar">
+        <button class="reader-close btn-icon">✕</button>
+        <span class="reader-info">1 / 1</span>
+      </div>
+      <button class="reader-arrow reader-prev">‹</button>
+      <div class="reader-image-wrapper">
+        <img src="" alt="manga page">
+      </div>
+      <button class="reader-arrow reader-next">›</button>
+    </div>
+  </div>
+
+  <script src="manga-library.js"></script>
+  <script>
+    const mangaLibrary = new MangaLibrary();
+    mangaLibrary.init();
+  </script>
+</body>
+</html>
