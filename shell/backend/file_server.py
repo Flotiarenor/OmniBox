@@ -95,7 +95,17 @@ def create_app(config, plugin_manager):
         <link rel="stylesheet" href="/shell/variables.css">
         <link rel="stylesheet" href="/shell/base.css">
         <script src="/shell/base.js"></script>
-        <script>Bridge.setPrefix('{plugin_name}');</script>
+        <script>
+          Bridge.setPrefix('{plugin_name}');
+          (function(){{
+            var t = parent.document.documentElement.getAttribute('data-theme') || 'light';
+            document.documentElement.setAttribute('data-theme', t);
+            new MutationObserver(function(){{
+              var nt = parent.document.documentElement.getAttribute('data-theme') || 'light';
+              document.documentElement.setAttribute('data-theme', nt);
+            }}).observe(parent.document.documentElement, {{attributes:true,attributeFilter:['data-theme']}});
+          }})();
+        </script>
     '''
                 html = html.replace('</head>', inject + '</head>')
                 return html

@@ -224,6 +224,54 @@ body {
 .toast-warning::before { content: '⚠ '; color: var(--warning); font-weight: 600; }
 .toast-info::before { content: 'ℹ '; color: var(--accent); font-weight: 600; }
 
+/* ===== 插件通用布局（每个插件均可按需覆盖） ===== */
+.view-body { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; min-height: 0; }
+
+.view-toolbar {
+  height: var(--toolbar-height, 48px);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.toolbar-group { display: flex; align-items: center; gap: 8px; }
+
+.view-sub-sidebar {
+  width: var(--sub-sidebar-width, 240px);
+  background: var(--bg-sub-sidebar);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.sub-sidebar-header {
+  padding: 12px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.sub-sidebar-footer {
+  padding: 10px 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.view-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  background: var(--bg-app);
+}
+
 /* 通用状态 */
 .loading { text-align: center; padding: 50px; color: var(--text-secondary); font-size: 15px; }
 .empty-state {

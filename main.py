@@ -46,6 +46,7 @@ def main():
     setattr(api, 'system_get_config', lambda: config)
     setattr(api, 'system_settings_list', manager.get_settings_panels)
     setattr(api, 'system_settings_save', manager.save_settings_panel)
+    setattr(api, 'system_toggle_fullscreen', lambda: webview.windows[0].toggle_fullscreen())
     for method_name, method_fn in manager.get_api_methods().items():
         setattr(api, method_name, method_fn)
 

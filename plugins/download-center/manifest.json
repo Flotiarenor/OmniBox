@@ -1,0 +1,15 @@
+{
+  "name": "download-center",
+  "version": "1.0.0",
+  "displayName": "下载中心",
+  "icon": "⬇️",
+  "dependencies": [],
+  "backend": {
+    "entry": "backend/main.py",
+    "class": "DownloadCenterPlugin"
+  },
+  "frontend": {
+    "entry": "frontend/index.html",
+    "route": "/download-center"
+  }
+}

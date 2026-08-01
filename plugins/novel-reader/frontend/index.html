@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>小说阅读</title>
+  <link rel="stylesheet" href="novel-reader.css">
+</head>
+<body>
+  <div id="app">
+    <!-- 左侧边栏：书架 / 章节目录 -->
+    <div class="view-sub-sidebar">
+      <div class="sub-sidebar-header">小说阅读</div>
+      <div class="sidebar-toggle">
+        <button id="sidebar-toggle-shelf" class="btn btn-sm active">📚 书架</button>
+        <button id="sidebar-toggle-chapters" class="btn btn-sm">📖 章节</button>
+      </div>
+
+      <!-- 书架面板 -->
+      <div id="novel-shelf-panel" class="sidebar-panel">
+        <div id="novel-shelf-list" class="novel-shelf-list"></div>
+      </div>
+
+      <!-- 章节目录面板 -->
+      <div id="novel-chapter-panel" class="sidebar-panel" style="display:none;">
+        <div id="novel-chapter-list" class="novel-chapter-list"></div>
+      </div>
+    </div>
+
+    <!-- 右侧主区域 -->
+    <div class="view-body">
+      <!-- 单排工具栏：书架模式显示搜索，阅读模式显示导航；设置固定在右上角 -->
+      <div class="view-toolbar">
+        <div class="toolbar-group" id="novel-browse-group">
+          <input type="text" id="novel-search" class="search-input" placeholder="搜索小说标题或作者...">
+        </div>
+        <div class="toolbar-group" id="novel-reader-nav" style="display:none;">
+          <button id="novel-back" class="btn-icon" title="返回书架 (Esc)">←</button>
+          <div class="novel-reader-title" id="novel-chapter-title">未打开小说</div>
+          <button id="novel-chapter-btn" class="btn-icon" title="章节目录">☰</button>
+          <button id="novel-prev" class="btn-icon" title="上一章 (←)">‹</button>
+          <button id="novel-next" class="btn-icon" title="下一章 (→)">›</button>
+        </div>
+        <div class="toolbar-group" style="margin-left:auto;">
+          <button id="novel-font-toggle" class="btn" title="阅读设置" style="display:none;">A·文</button>
+          <button id="btn-settings" class="btn">⚙ 设置</button>
+        </div>
+      </div>
+
+      <!-- 阅读设置栏（仅阅读时显示，可折叠） -->
+      <div class="novel-reader-settings" id="novel-reader-settings-bar" style="display:none;">
+        <label>
+          字号:
+          <input type="range" id="novel-font-size" min="12" max="32" value="16" step="1">
+          <span class="setting-value" id="novel-font-size-value">16</span>
+        </label>
+        <label>
+          行距:
+          <input type="range" id="novel-line-height" min="1.2" max="2.5" value="1.8" step="0.1">
+          <span class="setting-value" id="novel-line-height-value">1.8</span>
+        </label>
+        <label>
+          字间距:
+          <input type="range" id="novel-letter-spacing" min="0" max="5" value="0" step="0.5">
+          <span class="setting-value" id="novel-letter-spacing-value">0px</span>
+        </label>
+        <label>
+          主题:
+          <select id="novel-theme-select">
+            <option value="light">明亮</option>
+            <option value="dark">暗黑</option>
+            <option value="sepia">护眼</option>
+            <option value="green">绿色</option>
+            <option value="blue">蓝色</option>
+            <option value="custom">自定义</option>
+          </select>
+        </label>
+        <label id="custom-color-label" style="display:none;">
+          背景:
+          <input type="color" id="novel-bg-color" value="#ffffff">
+        </label>
+        <label id="custom-text-label" style="display:none;">
+          文字:
+          <input type="color" id="novel-text-color" value="#1a1a1a">
+        </label>
+        <label>
+          编码:
+          <select id="novel-encoding">
+            <option value="auto">自动检测</option>
+            <option value="utf-8">UTF-8</option>
+            <option value="gbk">GBK</option>
+            <option value="gb2312">GB2312</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="novel-content-area" id="novel-content-area">
+        <div class="novel-empty">
+          <div class="novel-empty-icon">📖</div>
+          <div class="novel-empty-text">在左侧书架选择一本小说开始阅读</div>
+        </div>
+      </div>
+
+      <div class="novel-progress-bar">
+        <div class="novel-progress-fill" id="novel-progress-fill" style="width:0%"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="novel-reader.js"></script>
+  <script>
+    const novelReader = new NovelReader();
+    novelReader.init();
+  </script>
+</body>
+</html>
