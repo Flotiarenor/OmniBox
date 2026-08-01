@@ -1,8 +1,8 @@
 {
   "folders": {
     "__global__": {
-      "row_height": 230,
-      "per_page": 50,
+      "row_height": 273,
+      "per_page": 100,
       "sort_by": "mtime",
       "sort_order": "desc"
     }

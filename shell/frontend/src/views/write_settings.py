@@ -1,4 +1,9 @@
-<!--This product includes software developed by flotiarenor.Copyright 2026 flotiarenor -->
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+
+path = r'D:\project\Python\通用架构程序工具组\shell\frontend\src\views\SettingsView.vue'
+
+content = '''<!--This product includes software developed by flotiarenor.Copyright 2026 flotiarenor -->
 <script setup lang="ts">
 import { onMounted, reactive, ref, computed } from 'vue'
 import { useBridge } from '../core/bridge'
@@ -269,3 +274,8 @@ function optionValue(opt: any): string { return typeof opt === 'object' ? opt.va
     </div>
   </div>
 </template>
+'''
+
+with open(path, 'w', encoding='utf-8') as f:
+    f.write(content)
+print('Written OK')
