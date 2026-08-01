@@ -1,4 +1,6 @@
-<!--This product includes software developed by flotiarenor.Copyright 2026 flotiarenor -->
+path = r'D:\project\Python\通用架构程序工具组\shell\frontend\src\views\SettingsView.vue'
+
+content = '''<!--This product includes software developed by flotiarenor.Copyright 2026 flotiarenor -->
 <script setup lang="ts">
 import { onMounted, reactive, ref, computed } from 'vue'
 import { useBridge } from '../core/bridge'
@@ -22,27 +24,20 @@ const saving = ref('')
 const error = ref('')
 const drafts = reactive<Record<string, Record<string, any>>>({})
 
-// ——— Theme & Color ———
 const theme = ref<'light' | 'dark'>(
   (localStorage.getItem('omni-theme') as 'light' | 'dark') ||
   (document.documentElement.getAttribute('data-theme') as 'light' | 'dark') || 'dark'
 )
 
-type ColorVar = {
-  key: string; label: string
-  presets: { name: string; value: string }[]
-}
-type ColorGroup = {
-  label: string; expanded: boolean
-  variables: ColorVar[]
-}
+type ColorVar = { key: string; label: string; presets: { name: string; value: string }[] }
+type ColorGroup = { label: string; expanded: boolean; variables: ColorVar[] }
 
-const _bgPresets = (light: string, dark: string): { name: string; value: string }[] => [
+const _bgPresets = (light: string, dark: string) => [
   { name: '深色默认', value: dark }, { name: '浅色默认', value: light },
   { name: '纯黑', value: '#000000' }, { name: '纯白', value: '#ffffff' },
   { name: '蓝灰', value: '#1e293b' }, { name: '暖灰', value: '#3d3d3d' },
 ]
-const _textPresets = (light: string, dark: string): { name: string; value: string }[] => [
+const _textPresets = (light: string, dark: string) => [
   { name: '深色默认', value: dark }, { name: '浅色默认', value: light },
   { name: '纯黑', value: '#000000' }, { name: '纯白', value: '#ffffff' },
   { name: '柔和', value: '#9ca3af' },
@@ -56,16 +51,16 @@ const _accentPresets: { name: string; value: string }[] = [
 
 const colorGroups = reactive<ColorGroup[]>([
   { label: '背景色', expanded: false, variables: [
-    { key: '--bg-app', label: '应用背景', presets: _bgPresets('#f3f3f3','#0d1117') },
-    { key: '--bg-surface', label: '面板背景', presets: _bgPresets('#ffffff','#161b22') },
-    { key: '--bg-sub-sidebar', label: '侧边栏背景', presets: _bgPresets('#ffffff','#161b22') },
-    { key: '--bg-hover', label: '悬停背景', presets: _bgPresets('#e9ecef','rgba(255,255,255,0.08)') },
-    { key: '--bg-active', label: '选中背景', presets: _bgPresets('#cfe6fa','rgba(0,120,212,0.2)') },
+    { key: '--bg-app', label: '应用背景', presets: _bgPresets('#f3f3f3', '#0d1117') },
+    { key: '--bg-surface', label: '面板背景', presets: _bgPresets('#ffffff', '#161b22') },
+    { key: '--bg-sub-sidebar', label: '侧边栏背景', presets: _bgPresets('#ffffff', '#161b22') },
+    { key: '--bg-hover', label: '悬停背景', presets: _bgPresets('#e9ecef', 'rgba(255,255,255,0.08)') },
+    { key: '--bg-active', label: '选中背景', presets: _bgPresets('#cfe6fa', 'rgba(0,120,212,0.2)') },
   ]},
   { label: '文本色', expanded: false, variables: [
-    { key: '--text-primary', label: '主文本', presets: _textPresets('#1a1a1a','#c9d1d9') },
-    { key: '--text-secondary', label: '次要文本', presets: _textPresets('#6c757d','#8b949e') },
-    { key: '--text-muted', label: '弱化文本', presets: _textPresets('#adb5bd','#6e7681') },
+    { key: '--text-primary', label: '主文本', presets: _textPresets('#1a1a1a', '#c9d1d9') },
+    { key: '--text-secondary', label: '次要文本', presets: _textPresets('#6c757d', '#8b949e') },
+    { key: '--text-muted', label: '弱化文本', presets: _textPresets('#adb5bd', '#6e7681') },
   ]},
   { label: '边框色', expanded: false, variables: [
     { key: '--border', label: '边框', presets: [
@@ -173,7 +168,6 @@ function optionValue(opt: any): string { return typeof opt === 'object' ? opt.va
       <p>集中管理所有配置。</p>
     </div>
 
-    <!-- 外观设置 -->
     <div class="settings-panel">
       <div class="settings-panel-header">
         <span class="panel-icon">🎨</span>
@@ -199,16 +193,8 @@ function optionValue(opt: any): string { return typeof opt === 'object' ? opt.va
               <span class="color-label">{{ v.label }}</span>
               <div class="color-select-wrap">
                 <span class="color-dot" :style="{ background: customColors[v.key] || '#000' }" />
-                <select
-                  class="color-select"
-                  :value="customColors[v.key] || ''"
-                  @change="setColorVar(v.key, ($event.target as HTMLSelectElement).value)"
-                >
-                  <option
-                    v-for="p in v.presets" :key="p.value"
-                    :value="p.value"
-                    :selected="customColors[v.key] === p.value"
-                  >{{ p.name }}</option>
+                <select class="color-select" :value="customColors[v.key] || ''" @change="setColorVar(v.key, ($event.target as HTMLSelectElement).value)">
+                  <option v-for="p in v.presets" :key="p.value" :value="p.value" :selected="customColors[v.key] === p.value">{{ p.name }}</option>
                 </select>
               </div>
             </div>
@@ -221,12 +207,10 @@ function optionValue(opt: any): string { return typeof opt === 'object' ? opt.va
       </div>
     </div>
 
-    <!-- 加载/错误 -->
     <div v-if="loading" class="loading">设置加载中...</div>
     <div v-else-if="error" class="error">{{ error }}</div>
     <div v-else-if="panels.length === 0" class="settings-empty">当前没有插件声明设置项</div>
 
-    <!-- 插件设置面板 -->
     <div v-else class="settings-grid">
       <div v-for="p in panels" :key="p.name" class="settings-panel">
         <div class="settings-panel-header">
@@ -269,3 +253,8 @@ function optionValue(opt: any): string { return typeof opt === 'object' ? opt.va
     </div>
   </div>
 </template>
+'''
+
+with open(path, 'w', encoding='utf-8') as f:
+    f.write(content)
+print('Written OK')

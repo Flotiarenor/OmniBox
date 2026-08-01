@@ -91,22 +91,38 @@ def create_app(config, plugin_manager):
             if html_path.exists():
                 with open(html_path, 'r', encoding='utf-8') as f:
                     html = f.read()
-                inject = f'''
-        <link rel="stylesheet" href="/shell/variables.css">
-        <link rel="stylesheet" href="/shell/base.css">
-        <script src="/shell/base.js"></script>
-        <script>
-          Bridge.setPrefix('{plugin_name}');
-          (function(){{
-            var t = parent.document.documentElement.getAttribute('data-theme') || 'light';
-            document.documentElement.setAttribute('data-theme', t);
-            new MutationObserver(function(){{
-              var nt = parent.document.documentElement.getAttribute('data-theme') || 'light';
-              document.documentElement.setAttribute('data-theme', nt);
-            }}).observe(parent.document.documentElement, {{attributes:true,attributeFilter:['data-theme']}});
-          }})();
-        </script>
-    '''
+                SCRIPT_TPL = (
+                    '<link rel="stylesheet" href="/shell/variables.css">'
+                    '<link rel="stylesheet" href="/shell/base.css">'
+                    '<script src="/shell/base.js"></script>'
+                    '<script>'
+                    "Bridge.setPrefix('PLACEHOLDER_NAME');"
+                    '(function(){'
+                    'var pd = parent.document.documentElement;'
+                    "var t = pd.getAttribute('data-theme') || 'light';"
+                    "document.documentElement.setAttribute('data-theme', t);"
+                    'new MutationObserver(function(){'
+                    "var nt = pd.getAttribute('data-theme') || 'light';"
+                    "document.documentElement.setAttribute('data-theme', nt);"
+                    '}).observe(pd, {attributes:true,attributeFilter:["data-theme"]});'
+                    'var cc = pd.getAttribute("data-custom-colors");'
+                    'if (cc) { try {'
+                    'var map = JSON.parse(cc);'
+                    'Object.keys(map).forEach(function(k){'
+                    "document.documentElement.style.setProperty(k, map[k]); });"
+                    '} catch(e) {} }'
+                    'new MutationObserver(function(){'
+                    'var ncc = pd.getAttribute("data-custom-colors");'
+                    'if (ncc) { try {'
+                    'var nmap = JSON.parse(ncc);'
+                    'Object.keys(nmap).forEach(function(k){'
+                    "document.documentElement.style.setProperty(k, nmap[k]); });"
+                    '} catch(e) {} }'
+                    '}).observe(pd, {attributes:true,attributeFilter:["data-custom-colors"]});'
+                    '})();'
+                    '</script>'
+                )
+                inject = SCRIPT_TPL.replace('PLACEHOLDER_NAME', plugin_name)
                 html = html.replace('</head>', inject + '</head>')
                 return html
         return send_from_directory(plugin_dir, filename)
