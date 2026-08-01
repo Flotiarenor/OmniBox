@@ -1,0 +1,15 @@
+{
+  "name": "novel-reader",
+  "version": "1.0.0",
+  "displayName": "小说阅读",
+  "icon": "📖",
+  "dependencies": [],
+  "backend": {
+    "entry": "backend/main.py",
+    "class": "NovelReaderPlugin"
+  },
+  "frontend": {
+    "entry": "frontend/index.html",
+    "route": "/novel-reader"
+  }
+}

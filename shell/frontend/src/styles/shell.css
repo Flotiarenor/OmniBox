@@ -9,31 +9,7 @@ html, body {
 }
 
 .app-shell {
-  /* 与插件共享的语义 token（亮色主题值，与 variables.css 对齐） */
-  --bg-app: #f3f3f3;
-  --bg-surface: #ffffff;
-  --bg-sub-sidebar: #ffffff;
-  --bg-hover: #e9ecef;
-  --bg-active: #cfe6fa;
-  --text-primary: #1a1a1a;
-  --text-secondary: #6c757d;
-  --text-muted: #adb5bd;
-  --border: #dee2e6;
-  --accent: #0078d4;
-  --accent-hover: #0056b3;
-  --danger: #dc3545;
-  --danger-hover: #b02a37;
-  --success: #28a745;
-  --radius: 6px;
-  --radius-sm: 4px;
-  --radius-lg: 10px;
-  --shadow-sm: 0 1px 4px rgba(0, 0, 0, 0.08);
-  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.12);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.15);
-  --transition-fast: 0.15s ease;
-  --transition-normal: 0.25s ease;
-
-  /* Shell 专属（深色侧边栏） */
+  /* Shell 专属变量（深色侧边栏，不随主题变化） */
   --sidebar-bg: #1e2a3a;
   --sidebar-width: 200px;
 
@@ -56,6 +32,7 @@ html, body {
   -ms-overflow-style: none;
 }
 .nav-sidebar::-webkit-scrollbar { display: none; }
+.nav-sidebar.nav-hidden { display: none; }
 
 .logo {
   padding: 24px 20px;

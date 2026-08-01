@@ -8,6 +8,7 @@ const router = useRouter()
 const route = useRoute()
 const isReady = ref(false)
 const error = ref('')
+const navHidden = ref(false)
 
 onMounted(async () => {
   try {
@@ -31,6 +32,11 @@ onMounted(async () => {
     error.value = e.message || '未知错误'
     console.error('插件加载失败:', e)
   }
+
+  const fsObserver = new MutationObserver(() => {
+    navHidden.value = document.documentElement.getAttribute('data-video-fullscreen') === 'true'
+  })
+  fsObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-video-fullscreen'] })
 })
 
 const plugins = computed(() => getPlugins())
@@ -40,7 +46,7 @@ const isSettings = computed(() => route.path === '/settings')
 
 <template>
   <div class="app-shell">
-    <aside class="nav-sidebar">
+    <aside class="nav-sidebar" :class="{ 'nav-hidden': navHidden }">
       <div class="logo">OmniBox</div>
       <nav v-if="isReady">
         <template v-if="plugins.length > 0">

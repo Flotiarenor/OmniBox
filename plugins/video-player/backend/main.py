@@ -4,51 +4,54 @@ from pathlib import Path
 from typing import List, Dict
 from shell.backend.plugin_base import PluginBase
 
-# 支持的媒体扩展名
 ALLOWED_EXTENSIONS = {
     '.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv', '.wmv',
     '.mp3', '.flac', '.wav', '.aac', '.ogg', '.wma'
 }
 
+
 class VideoPlayerPlugin(PluginBase):
     settings_schema = [
         {"key": "root_dir", "label": "媒体库根目录", "type": "text",
-         "placeholder": "默认: ./data", "help": "视频/音频文件所在根目录"},
+         "placeholder": "默认: ./data",
+         "help": "视频/音频文件所在根目录"},
     ]
 
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
-        self.global_data_root = Path(config['directories']['data_root']).resolve()
-        self.settings_file = Path(__file__).parent.parent / 'settings.json'
-        self._settings = self._load_settings()
-        # 自定义根目录（优先使用设置中的 root_dir）
-        self.root_dir = Path(self._settings.get('root_dir', str(self.global_data_root))).resolve()
+        self._migrate_old_settings()
 
-    def _load_settings(self) -> dict:
-        if self.settings_file.exists():
-            try:
-                with open(self.settings_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception:
-                pass
-        return {}
-
-    def _save_settings_to_file(self):
+    def _migrate_old_settings(self):
+        old_file = Path(__file__).parent.parent / 'settings.json'
+        if not old_file.exists():
+            return
         try:
-            with open(self.settings_file, 'w', encoding='utf-8') as f:
-                json.dump(self._settings, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            print(f"[VideoPlayer] 保存设置失败: {e}")
+            with open(old_file, 'r', encoding='utf-8') as f:
+                old = json.load(f)
+            old_root = old.get('root_dir')
+            if old_root and self._settings_store:
+                current = self._settings_store.get(self.name) or {}
+                if 'root_dir' not in current:
+                    self._settings_store.set(self.name, {**current, 'root_dir': old_root})
+            old_file.unlink()
+        except Exception:
+            pass
 
     def get_data_root(self) -> Path:
-        """重写以支持自定义根目录"""
-        return self.root_dir
+        settings = self.get_settings()
+        root_dir = settings.get('root_dir')
+        if root_dir:
+            return Path(root_dir).resolve()
+        return Path(self.config['directories']['data_root']).resolve()
+
+    @property
+    def media_dir(self) -> Path:
+        return self.get_data_root()
 
     def _is_safe(self, rel_path: str) -> bool:
-        """路径穿越检查"""
         try:
-            target = (self.root_dir / rel_path).resolve()
-            return str(target).startswith(str(self.root_dir))
+            target = (self.media_dir / rel_path).resolve()
+            return str(target).startswith(str(self.media_dir))
         except Exception:
             return False
 
@@ -58,17 +61,12 @@ class VideoPlayerPlugin(PluginBase):
             'list_media': self.list_media,
             'get_settings': self.get_settings,
             'save_settings': self.save_settings,
-            'get_root_dir': self.get_root_dir,
         }
 
-    def get_root_dir(self) -> str:
-        return str(self.root_dir)
-
     def list_dir(self, rel_path: str = '') -> List[Dict]:
-        """列出子目录（仅文件夹，排除隐藏和缓存目录）"""
         if not self._is_safe(rel_path):
             return []
-        target = self.root_dir / rel_path
+        target = self.media_dir / rel_path
         if not target.exists() or not target.is_dir():
             return []
         children = []
@@ -83,16 +81,21 @@ class VideoPlayerPlugin(PluginBase):
         return children
 
     def list_media(self, rel_path: str = '') -> Dict:
-        """列出当前目录下的媒体文件"""
         if not self._is_safe(rel_path):
-            return {"files": [], "path": rel_path}
-        target = self.root_dir / rel_path
+            return {"dirs": [], "files": [], "path": rel_path}
+        target = self.media_dir / rel_path
         if not target.exists() or not target.is_dir():
-            return {"files": [], "path": rel_path}
+            return {"dirs": [], "files": [], "path": rel_path}
+        dirs = []
         files = []
         try:
             for entry in os.scandir(target):
-                if entry.is_file() and Path(entry.name).suffix.lower() in ALLOWED_EXTENSIONS:
+                if entry.name.startswith('.') or entry.name == '.cache':
+                    continue
+                if entry.is_dir():
+                    child_path = (Path(rel_path) / entry.name).as_posix()
+                    dirs.append({"name": entry.name, "path": child_path})
+                elif entry.is_file() and Path(entry.name).suffix.lower() in ALLOWED_EXTENSIONS:
                     stat = entry.stat()
                     files.append({
                         "name": entry.name,
@@ -102,20 +105,14 @@ class VideoPlayerPlugin(PluginBase):
                     })
         except PermissionError:
             pass
-        # 默认按文件名排序
+        dirs.sort(key=lambda x: x['name'].lower())
         files.sort(key=lambda x: x['name'].lower())
-        return {"files": files, "path": rel_path}
+        return {"dirs": dirs, "files": files, "path": rel_path}
 
     def get_settings(self) -> Dict:
-        """获取当前设置（仅全局根目录）"""
-        return {"root_dir": str(self.root_dir)}
+        settings = super().get_settings()
+        return {k: v for k, v in settings.items() if v is not None}
 
     def save_settings(self, settings: Dict) -> Dict:
-        """保存设置，支持修改根目录"""
-        new_root = settings.get('root_dir')
-        if new_root and Path(new_root).is_dir():
-            self._settings['root_dir'] = new_root
-            self.root_dir = Path(new_root).resolve()
-            self._save_settings_to_file()
-            return {"success": True}
-        return {"success": False, "error": "无效的根目录路径"}
+        result = super().save_settings(settings)
+        return result

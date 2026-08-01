@@ -1,4 +1,4 @@
-/* ===== 视频播放器专属样式（布局为主；通用组件/表单样式由 base.css 提供，颜色只用 token） ===== */
+/* ===== 视频播放器专属样式 ===== */
 
 /* ========== 主布局 ========== */
 #app {
@@ -18,13 +18,6 @@
   overflow: hidden;
   color: var(--text-primary);
 }
-.sidebar.collapsed {
-  width: 0;
-  border-right: none;
-  opacity: 0;
-  pointer-events: none;
-}
-
 .sidebar-header {
   display: flex;
   justify-content: space-between;
@@ -35,22 +28,6 @@
 .sidebar-title {
   font-weight: 600;
   font-size: 14px;
-  color: var(--text-primary);
-}
-
-/* 图标按钮（无边框） */
-.btn-icon {
-  background: transparent;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 14px;
-  padding: 4px;
-  border-radius: var(--radius-sm);
-  transition: background var(--transition-fast);
-}
-.btn-icon:hover {
-  background: var(--bg-hover);
   color: var(--text-primary);
 }
 
@@ -67,11 +44,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.sidebar-search {
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--border);
 }
 
 .playlist-container {
@@ -107,11 +79,6 @@
   flex-shrink: 0;
 }
 
-.sidebar-footer {
-  padding: 8px 16px;
-  border-top: 1px solid var(--border);
-}
-
 /* ========== 播放器主区域 ========== */
 .player-main {
   flex: 1;
@@ -120,6 +87,7 @@
   position: relative;
   background: #000;
   overflow: hidden;
+  min-height: 0;
 }
 
 .player-placeholder {
@@ -137,12 +105,19 @@
   align-items: center;
   justify-content: center;
   background: #000;
+  min-height: 0;
+  overflow: hidden;
 }
 .player-wrapper video,
 .player-wrapper audio {
   max-width: 100%;
   max-height: 100%;
   outline: none;
+}
+.player-wrapper video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 /* ========== 自定义控件栏 ========== */
@@ -157,6 +132,7 @@
   gap: 6px;
   z-index: 10;
   color: var(--text-primary);
+  transition: opacity 0.3s ease, transform 0.3s ease;
 }
 
 .progress-row {
@@ -239,16 +215,62 @@
   background: var(--accent);
 }
 
-/* ========== 全屏浮层控制 ========== */
-.player-main.fullscreen .custom-controls {
+/* ========== 全屏模式 ========== */
+#app.fs-mode .sidebar {
+  width: 0;
+  opacity: 0;
+  overflow: hidden;
+  border-right: none;
+}
+
+#app.fs-mode .view-toolbar {
+  display: none;
+}
+
+#app.fs-mode .player-main {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: #000;
+}
+
+#app.fs-mode .custom-controls {
   position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
-  opacity: 0;
-  transition: opacity 0.3s;
-  background: var(--bg-overlay-strong);
-}
-.player-main.fullscreen.show-controls .custom-controls {
+  background: linear-gradient(transparent, rgba(0,0,0,0.85));
+  backdrop-filter: blur(4px);
+  border-top: none;
+  padding: 32px 16px 12px;
   opacity: 1;
+  transition: opacity 0.4s ease;
+}
+#app.fs-mode .custom-controls.controls-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+#app.fs-mode .progress-bar {
+  background: rgba(255,255,255,0.2);
+}
+#app.fs-mode .progress-bar::-webkit-slider-thumb {
+  background: var(--accent);
+}
+#app.fs-mode .ctrl-btn {
+  color: rgba(255,255,255,0.85);
+}
+#app.fs-mode .ctrl-btn:hover {
+  background: rgba(255,255,255,0.15);
+  color: #fff;
+}
+#app.fs-mode .time-display {
+  color: rgba(255,255,255,0.7);
+}
+#app.fs-mode .volume-icon {
+  color: rgba(255,255,255,0.7);
+}
+
+/* ========== 全屏时鼠标隐藏 ========== */
+#app.fs-mode.custom-hidden {
+  cursor: none;
 }

@@ -8,7 +8,7 @@ const entryUrl = computed(() => route.meta.entryUrl as string)
 
 <template>
   <div class="plugin-frame-container">
-    <iframe :src="entryUrl" frameborder="0" class="plugin-iframe"></iframe>
+    <iframe :src="entryUrl" frameborder="0" class="plugin-iframe" allow="fullscreen *"></iframe>
   </div>
 </template>
 

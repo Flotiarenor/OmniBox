@@ -7,28 +7,6 @@
   overflow: hidden;
 }
 
-/* ===== 主布局 ===== */
-.view-body { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-
-.view-toolbar {
-  height: var(--toolbar-height, 48px);
-  background: var(--bg-surface);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  padding: 0 16px;
-  gap: 8px;
-  flex-shrink: 0;
-}
-.toolbar-group { display: flex; align-items: center; gap: 8px; }
-
-.view-content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 20px 28px;
-  background: var(--bg-app);
-}
-
 /* ===== 漫画库首页样式 ===== */
 .manga-home { padding: 20px 28px; }
 .home-section { margin-bottom: 32px; }
