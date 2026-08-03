@@ -6,6 +6,7 @@ export interface PluginManifest {
   icon: string
   route: string
   entryUrl: string
+  destroyOnLeave?: boolean
 }
 
 let _plugins: PluginManifest[] = []

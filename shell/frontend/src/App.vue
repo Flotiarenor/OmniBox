@@ -1,14 +1,18 @@
 <!--This product includes software developed by flotiarenor.Copyright 2026 flotiarenor -->
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { loadPlugins, getPlugins } from './core/plugin-loader'
+import SettingsView from './views/SettingsView.vue'
 
 const router = useRouter()
 const route = useRoute()
 const isReady = ref(false)
 const error = ref('')
 const navHidden = ref(false)
+
+const visitedPlugins = reactive<Record<string, boolean>>({})
+const activePlugin = ref<string | null>(null)
 
 onMounted(async () => {
   try {
@@ -18,7 +22,7 @@ onMounted(async () => {
       router.addRoute({
         path: p.route,
         name: p.name,
-        component: () => import('./views/PluginFrame.vue'),
+        component: { template: '<div></div>' },
         meta: { entryUrl: p.entryUrl, pluginName: p.name }
       })
     })
@@ -39,7 +43,22 @@ onMounted(async () => {
   fsObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-video-fullscreen'] })
 })
 
+watch(
+  () => route.meta.pluginName,
+  (name) => {
+    if (name && typeof name === 'string') {
+      visitedPlugins[name] = true
+      activePlugin.value = name
+    } else if (route.path === '/settings') {
+      activePlugin.value = null
+    }
+  },
+  { immediate: true }
+)
+
 const plugins = computed(() => getPlugins())
+const keepAlivePlugins = computed(() => plugins.value.filter(p => !p.destroyOnLeave))
+const destroyOnLeavePlugins = computed(() => plugins.value.filter(p => p.destroyOnLeave))
 const currentPlugin = computed(() => route.meta.pluginName as string || '')
 const isSettings = computed(() => route.path === '/settings')
 </script>
@@ -72,7 +91,19 @@ const isSettings = computed(() => route.path === '/settings')
       </nav>
     </aside>
     <main class="main-view">
-      <router-view v-if="isReady" />
+      <template v-if="isReady">
+        <template v-for="p in keepAlivePlugins" :key="p.name">
+          <div v-if="visitedPlugins[p.name]" v-show="activePlugin === p.name" class="plugin-frame-container">
+            <iframe :src="p.entryUrl" frameborder="0" class="plugin-iframe" allow="fullscreen *"></iframe>
+          </div>
+        </template>
+        <template v-for="p in destroyOnLeavePlugins" :key="p.name">
+          <div v-if="activePlugin === p.name" class="plugin-frame-container">
+            <iframe :src="p.entryUrl" frameborder="0" class="plugin-iframe" allow="fullscreen *"></iframe>
+          </div>
+        </template>
+        <SettingsView v-show="isSettings" />
+      </template>
       <div v-else-if="error" class="loading">插件加载失败: {{ error }}</div>
       <div v-else class="loading">框架加载中...</div>
     </main>
@@ -80,4 +111,6 @@ const isSettings = computed(() => route.path === '/settings')
 </template>
 
 <style scoped>
+.plugin-frame-container {width: 100%;height: 100%;border: none;outline: none;}
+.plugin-iframe {width: 100%;height: 100%;border: 0;outline: none;display: block;}
 </style>
