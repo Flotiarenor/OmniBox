@@ -109,18 +109,7 @@ cd OmniBox
 ## 📦 打包发布
 
 使用 PyInstaller 将主程序打包为独立可执行文件：
-
-```bash
-pyinstaller --onefile \
---add-data "shell/frontend/dist:shell/frontend/dist" \
---add-data "config.yaml:." \
---add-data "shell/backend:shell/backend" \
-main.py
-```
-
-用户拿到 exe 后，只需在同目录下创建 `plugins/` 文件夹并放入插件即可使用。
-
----
+.\docs\Releases下内置build-release.ps1和配置文件omnibox.spec,虚拟环境下运行ps1文件即可完成打包编译操作
 
 ## 📄 许可证
 
