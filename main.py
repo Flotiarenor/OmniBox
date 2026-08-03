@@ -63,7 +63,7 @@ def main():
         print("[OmniBox] Flask 启动超时"); return
 
     webview.create_window('OmniBox', f'http://{host}:{port}', js_api=api, width=1400, height=900, text_select=True)
-    webview.start(debug=True, http_server=True) 
+    webview.start(debug=not getattr(sys, 'frozen', False), http_server=True) 
 
 if __name__ == '__main__':
     main()
