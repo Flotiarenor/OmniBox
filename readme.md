@@ -12,6 +12,8 @@
 - **安全隔离**：插件运行在独立 iframe 中，后端 API 通过命名空间隔离，权限可声明。
 - **易于分发**：主程序打包为单个可执行文件，插件可离线安装或通过内置商店获取（规划中）。
 - **跨平台**：基于 PyWebView，支持 Windows、macOS、Linux。
+- **统一外观**：内置浅色/深色主题切换，支持自定义 CSS 变量级颜色配置，全插件自动同步。
+- **通用布局**：统一的工具栏、侧边栏、内容区样式（`.view-toolbar`、`.view-sub-sidebar` 等），插件无需重复定义。
 
 ---
 
@@ -41,6 +43,30 @@ graph TB
 - **后端壳**：Python 插件管理器，负责插件的发现、依赖解析、加载和 API 聚合。
 - **通信**：所有页面同源（`http://127.0.0.1`），插件前端可直接调用 `parent.pywebview.api` 访问后端方法。
 - **插件**：每个插件是一个独立文件夹，包含 `manifest.json`、`backend/`（Python 代码）和 `frontend/`（静态网页资源）。
+
+### 插件通用布局
+
+Shell 在 `base.css` 中统一注入以下布局类，**所有插件应直接使用，无需在自己的 CSS 中重复定义**：
+
+| CSS 类 | 用途 |
+|--------|------|
+| `.view-body` | 主内容区容器（flex 列，自动伸缩） |
+| `.view-toolbar` | 顶部工具栏（48px，统一背景/边框） |
+| `.toolbar-group` | 工具栏内的按钮组（flex 行，8px 间距） |
+| `.view-sub-sidebar` | 左侧子侧边栏（240px） |
+| `.sub-sidebar-header` | 侧边栏标题行 |
+| `.sub-sidebar-footer` | 侧边栏底部统计区 |
+| `.view-content` | 内容滚动区（flex: 1，自动 overflow） |
+
+### 外观主题
+
+- 通过 `document.documentElement` 上的 `data-theme="dark"` / `data-theme="light"` 属性切换主题。
+- 设置页提供 🎨 **外观设置面板**：浅色/深色切换 + 14 项 CSS 变量颜色自定义（下拉框选择预设色）。
+- 自定义颜色通过 `data-custom-colors` 属性 **自动同步到所有插件 iframe**，插件前端的 CSS 变量实时更新。
+
+### 全屏联动
+
+视频播放器等需要全屏的插件可通过设置 `parent.document.documentElement` 的 `data-video-fullscreen` 属性隐藏导航栏，Shell 端通过 MutationObserver 监听并自动处理。
 
 ---
 

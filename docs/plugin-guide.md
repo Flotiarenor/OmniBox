@@ -184,6 +184,40 @@ class ImageViewerPlugin(PluginBase):
 
 **你无需在 HTML 中手动引入这些文件**，Shell 会在加载插件时自动注入到 `<head>` 中。
 
+#### 通用布局类（base.css 已提供，插件无需重复定义）
+
+以下 CSS 类已由 Shell 统一注入，插件 HTML 直接使用即可，**不应在自己 CSS 中重复定义**（否则将不兼容未来主题变更）：
+
+| CSS 类 | 用途 |
+|--------|------|
+| `.view-body` | 主内容区容器（`flex: 1; flex-direction: column; overflow: hidden`） |
+| `.view-toolbar` | 顶部工具栏（高 48px，`var(--bg-surface)` 背景，底部边框） |
+| `.toolbar-group` | 工具栏内的按钮组（`flex; align-items: center; gap: 8px`） |
+| `.view-sub-sidebar` | 左侧子侧边栏（宽 `var(--sub-sidebar-width)`，默认 240px） |
+| `.sub-sidebar-header` | 侧边栏标题行（大写标签，底部边框） |
+| `.sub-sidebar-footer` | 侧边栏底部统计区（小字体，顶部边框） |
+| `.view-content` | 内容滚动区（`flex: 1; overflow-y: auto; padding: 16px`） |
+
+**示例 HTML 结构**：
+```html
+<div id="app">
+  <div class="view-sub-sidebar">
+    <div class="sub-sidebar-header">浏览目录</div>
+    <!-- 目录树等 -->
+    <div class="sub-sidebar-footer">共 0 项</div>
+  </div>
+  <div class="view-body">
+    <div class="view-toolbar">
+      <div class="toolbar-group">...</div>
+      <div class="toolbar-group" style="margin-left:auto;">⚙ 设置</div>
+    </div>
+    <div class="view-content">
+      <!-- 主内容区 -->
+    </div>
+  </div>
+</div>
+```
+
 ### 4.2 全局 Bridge 对象
 
 `Bridge` 对象挂载在 `window` 上，提供以下方法：
@@ -219,19 +253,50 @@ Shell 还注入了以下可复用的 UI 组件函数（无需引入，直接使�
 | `createLightbox(options)` | 创建灯箱组件 |
 | `createPagination(container, options)` | 创建分页组件 |
 | `createContextMenu(options)` | 创建右键菜单组件 |
+| `createCardGrid(container, options)` | 创建卡片网格组件 |
+| `createSettingsForm(container, schema, values)` | 按 schema 渲染设置表单 |
+| `openSettingsModal(options)` | 打开统一设置弹窗 |
+| `confirmDialog(message, options)` | 替代原生 confirm |
+| `Toast.success(msg)` / `Toast.error(msg)` / `Toast.info(msg)` | 显示 Toast 通知 |
+| `Utils.formatFileSize(bytes)` | 格式化文件大小 |
+| `Utils.debounce(func, wait)` | 防抖函数 |
 
 **示例**：
 ```javascript
-// 创建目录树
-createTree(document.getElementById('folder-tree'), {
- data: [{ name: '根目录', path: '' }],
- onLoadChildren: async (path) => await Bridge.call('list_dir', path),
- onClick: (item) => console.log('选中', item.path)
+// 创建卡片网格
+const grid = createCardGrid(document.getElementById('grid'), {
+  cardRenderer: (item) => ({
+    image: item.cover_url,
+    title: item.title,
+    subtitle: item.author,
+    badge: `${item.count} 项`,
+  }),
+  onClick: (item, index) => openDetail(item),
+});
+grid.render(items);
+
+// 打开设置弹窗
+openSettingsModal({
+  title: '媒体库设置',
+  successMessage: '设置已保存',
+  onSave: async (values) => {
+    return await Bridge.call('save_settings', values);
+  },
 });
 
-// 创建灯箱
+// 确认对话框
+const ok = await confirmDialog('删除后不可恢复，确定？', { danger: true });
+
+// 目录树
+createTree(document.getElementById('folder-tree'), {
+  data: [{ name: '根目录', path: '' }],
+  onLoadChildren: async (path) => await Bridge.call('list_dir', path),
+  onClick: (item) => console.log('选中', item.path)
+});
+
+// 灯箱
 const lightbox = createLightbox({
- getImageUrl: (item) => item.url
+  getImageUrl: (item) => item.url
 });
 lightbox.show(images, 0);
 ```
@@ -270,9 +335,40 @@ lightbox.show(images, 0);
 
 ---
 
-## 5. 文件服务与动态根目录
+## 5. 外观主题与颜色同步
 
-### 5.1 文件路由
+### 5.1 主题切换
+
+Shell 通过 `<html>` 元素上的 `data-theme` 属性控制主题（`"light"` / `"dark"`）。插件 iframe 的注入脚本自动监听父窗口的 `data-theme` 变化，并同步设置自身的主题属性。
+
+**插件无需编写任何主题同步代码**。只需在 CSS 中使用 CSS 变量（如 `var(--bg-surface)`），主题切换会自动生效。
+
+### 5.2 自定义颜色同步
+
+用户在设置页的「外观设置」面板中修改颜色（如强调色、背景色等）时，Shell 会将修改后的 CSS 变量值序列化为 JSON 写入父文档的 `data-custom-colors` 属性。插件 iframe 的注入脚本自动监听该属性变化，并应用 `document.documentElement.style.setProperty()` 更新所有对应变量。
+
+**对插件开发的影响**：
+- 所有 CSS 变量均可被用户覆盖，插件设计时不应依赖特定颜色值。
+- 若需要在 JS 中读取当前有效颜色，使用 `getComputedStyle(document.documentElement).getPropertyValue('--accent')`。
+
+### 5.3 全屏联动
+
+需要全屏的插件（如视频播放器）可设置 `parent.document.documentElement` 的 `data-video-fullscreen` 属性（`"true"` / `"false"`）来通知 Shell 隐藏/显示左侧导航栏：
+
+```javascript
+// 进入全屏
+parent.document.documentElement.setAttribute('data-video-fullscreen', 'true');
+// 退出全屏
+parent.document.documentElement.removeAttribute('data-video-fullscreen');
+```
+
+Shell 端的 `App.vue` 通过 MutationObserver 监听此属性变化并自动控制导航栏显示。
+
+---
+
+## 7. 文件服务与动态根目录
+
+### 7.1 文件路由
 
 Shell 提供两个文件服务路由：
 
@@ -281,7 +377,7 @@ Shell 提供两个文件服务路由：
 
 这两个路由会根据 `plugin` 参数动态获取对应插件的 `get_data_root()` 返回值作为根目录，并进行路径安全检查。
 
-### 5.2 插件如何生成缩略图
+### 7.2 插件如何生成缩略图
 
 插件后端应在 `list_images` 等方法中按需生成缩略图，保存到 `self.thumb_dir`（通常为 `数据根目录/.cache/thumbs/`）。前端通过 `Bridge.thumbUrl()` 获取正确的 URL。
 
@@ -304,7 +400,7 @@ def _get_thumb(self, rel_path: str) -> Path:
 
 ---
 
-## 6. 设置持久化
+## 8. 设置持久化
 
 插件可以将用户设置保存到插件目录下的 `settings.json` 文件中，实现持久化。推荐结构：
 
@@ -333,7 +429,7 @@ def _get_thumb(self, rel_path: str) -> Path:
 
 ---
 
-## 7. 调试与测试
+## 9. 调试与测试
 
 1. **查看插件是否被加载**：启动主程序，控制台会输出 `[PluginManager] ✅ 加载成功: <name>`。
 2. **检查前端资源**：在浏览器中直接访问 `http://127.0.0.1:18080/plugins/<name>/frontend/index.html`，确认能正常打开。
@@ -343,7 +439,7 @@ def _get_thumb(self, rel_path: str) -> Path:
 
 ---
 
-## 8. 常见问题
+## 10. 常见问题
 
 | 问题 | 原因 | 解决 |
 |------|------|------|
@@ -357,14 +453,17 @@ def _get_thumb(self, rel_path: str) -> Path:
 
 ---
 
-## 9. 最佳实践
+## 11. 最佳实践
 
 - **插件命名**：使用 `kebab-case`，避免与 Python 模块名冲突。
+- **布局复用**：优先使用 Shell 提供的通用布局类（`.view-body`、`.view-toolbar`、`.view-sub-sidebar` 等），**不要在插件 CSS 中重复定义**，以便统一维护和未来主题升级。
+- **颜色适配**：所有颜色使用 CSS 变量（如 `var(--bg-surface)`），避免硬编码颜色值。如需在 JS 中获取当前颜色，使用 `getComputedStyle(document.documentElement).getPropertyValue('--accent')`。
+- **主题无感知**：插件无需编写主题切换逻辑，Shell 已通过 MutationObserver 自动同步 `data-theme` 和 `data-custom-colors` 到所有 iframe。
 - **前端资源**：尽量轻量，避免引入大型框架（除非必要）。
 - **权限声明**：如实填写 `permissions`，未来版本将强制执行。
 - **版本管理**：遵循语义化版本，方便依赖解析。
 - **错误处理**：后端方法应捕获异常并返回有意义的错误信息，避免前端收到 Python 堆栈。
-- **设置持久化**：使用插件目录下的 `settings.json`，支持全局和文件夹级设置。
+- **设置持久化**：使用 `settings_schema` 声明式配置 + `PluginBase` 的 `get_settings`/`save_settings` 方法，插件自动获得 Shell 设置页面集成。
 - **性能优化**：使用内存缓存（如目录列表缓存、聚合元数据缓存）减少 I/O，提升响应速度。
 
 ---
