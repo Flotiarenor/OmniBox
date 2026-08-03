@@ -51,10 +51,23 @@ class MusicPlayerPlugin(PluginBase):
 
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
-        self._migrate_old_settings()
-        self._config_default_root = Path(super().get_data_root()).resolve()
+        self.settings_file = Path(__file__).parent.parent / 'settings.json'
+        self._settings = self._load_local_settings()
         self._applied_root = None
-        self._init_with_root(str(self._config_default_root))
+        root = self._resolve_root_dir()
+        self._init_with_root(root)
+
+    def on_load(self):
+        self._migrate_old_settings()
+
+    def _load_local_settings(self) -> dict:
+        if self.settings_file.exists():
+            try:
+                with open(self.settings_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
 
     def _init_with_root(self, root_dir: str):
         self.music_dir = Path(root_dir).resolve()
@@ -67,41 +80,35 @@ class MusicPlayerPlugin(PluginBase):
         self._scanned = False
         self._applied_root = str(self.music_dir)
 
-    def _ensure_ready(self):
-        saved_root = self._resolve_root_dir()
-        if saved_root != self._applied_root:
-            print(f"[MusicPlayer] root_dir 变更: {self._applied_root} → {saved_root}")
-            self._init_with_root(saved_root)
-
     def _resolve_root_dir(self) -> str:
-        settings = super().get_settings()
-        root = settings.get('root_dir')
+        if self._settings_store:
+            stored = super().get_settings()
+            root = stored.get('root_dir')
+            if root and Path(root).is_dir():
+                return str(Path(root).resolve())
+        root = self._settings.get('root_dir')
         if root and Path(root).is_dir():
             return str(Path(root).resolve())
-        return str(self._config_default_root)
+        return str(Path(super().get_data_root()).resolve())
 
     def _migrate_old_settings(self):
-        old_file = Path(__file__).parent.parent / 'settings.json'
-        if not old_file.exists():
+        if not self.settings_file.exists() or not self._settings_store:
             return
         try:
-            with open(old_file, 'r', encoding='utf-8') as f:
-                old = json.load(f)
-            old_root = old.get('root_dir')
-            if old_root and self._settings_store:
+            old_root = self._settings.get('root_dir')
+            if old_root:
                 current = self._settings_store.get(self.name) or {}
                 if 'root_dir' not in current:
                     self._settings_store.set(self.name, {**current, 'root_dir': old_root})
-            old_file.unlink()
+            self.settings_file.unlink()
+            self._settings = {}
         except Exception:
             pass
 
     def get_data_root(self) -> Path:
-        self._ensure_ready()
         return self.music_dir
 
     def _ensure_scanned(self):
-        self._ensure_ready()
         if not self._scanned:
             self.scanner.scan()
             self._scanned = True
@@ -163,7 +170,6 @@ class MusicPlayerPlugin(PluginBase):
         }
 
     def scan(self, force: bool = False) -> dict:
-        self._ensure_ready()
         print(f"[MusicPlayer] 开始扫描, force={force}, root_dir={self.music_dir}")
         updated = self.scanner.scan(force=force)
         self._scanned = True
