@@ -109,7 +109,8 @@ cd OmniBox
 ## 📦 打包发布
 
 使用 PyInstaller 将主程序打包为独立可执行文件：
-.\docs\Releases下内置build-release.ps1和配置文件omnibox.spec,虚拟环境下运行ps1文件即可完成打包编译操作
+.\docs\Releases文件夹下内置build-release.ps1和配置文件omnibox.spec
+虚拟环境下运行ps1文件即可完成打包编译操作
 
 ## 📄 许可证
 
