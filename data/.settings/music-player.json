@@ -1,0 +1,11 @@
+{
+  "root_dir": "G:\\音频\\音乐",
+  "lyrics_enabled": true,
+  "lyrics_font_size": 16,
+  "lyrics_active_size": 24,
+  "lyrics_line_height": 1.6,
+  "lyrics_glow": true,
+  "lyrics_align": "center",
+  "lyrics_bg_color": "",
+  "lyrics_bg_image": ".cache/cover/photo_2026-07-22_15-36-55.jpg"
+}

@@ -1,0 +1,18 @@
+{
+  "name": "music-player",
+  "version": "1.0.0",
+  "displayName": "音乐播放",
+  "description": "本地音乐播放器，支持专辑浏览、歌单管理、歌词显示",
+  "icon": "🎵",
+  "author": "OmniBox",
+  "dependencies": [],
+  "permissions": ["filesystem:read"],
+  "backend": {
+    "entry": "backend/main.py",
+    "class": "MusicPlayerPlugin"
+  },
+  "frontend": {
+    "entry": "frontend/index.html",
+    "route": "/music-player"
+  }
+}

@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>音乐播放</title>
+  <link rel="stylesheet" href="css/layout.css">
+  <link rel="stylesheet" href="css/player.css">
+  <link rel="stylesheet" href="css/content.css">
+</head>
+<body>
+  <div id="app">
+    <!-- 左侧边栏: 歌单 + 快捷入口 -->
+    <div class="music-sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <span class="sidebar-title">音乐库</span>
+        <button id="btn-rescan" class="btn btn-icon btn-sm" title="重新扫描">🔄</button>
+      </div>
+
+      <!-- 快捷导航 -->
+      <div class="sidebar-nav">
+        <div class="nav-item active" data-view="albums">
+          <span class="nav-icon">📀</span><span>专辑</span>
+        </div>
+        <div class="nav-item" data-view="songs">
+          <span class="nav-icon">🎶</span><span>全部歌曲</span>
+        </div>
+        <div class="nav-item" data-view="favorites">
+          <span class="nav-icon">❤️</span><span>我喜欢</span>
+        </div>
+        <div class="nav-item" data-view="recent">
+          <span class="nav-icon">🕐</span><span>最近播放</span>
+        </div>
+      </div>
+
+      <!-- 歌单列表 -->
+      <div class="sidebar-section">
+        <div class="sidebar-section-header">
+          <span>我的歌单</span>
+          <button id="btn-new-playlist" class="btn btn-icon btn-sm" title="新建歌单">＋</button>
+        </div>
+        <div class="playlist-list" id="playlist-list">
+          <div class="playlist-item-empty">暂无歌单</div>
+        </div>
+      </div>
+
+      <div class="sidebar-footer" id="sidebar-stats">
+        准备扫描...
+      </div>
+    </div>
+
+    <!-- 主区域 -->
+    <div class="view-body">
+      <div class="view-toolbar">
+        <div class="toolbar-group">
+          <input type="text" id="search-input" class="search-input" placeholder="搜索歌曲、专辑、艺术家...">
+        </div>
+        <div class="toolbar-group" style="margin-left:auto;">
+          <button id="btn-settings" class="btn">⚙ 设置</button>
+        </div>
+      </div>
+
+      <!-- 专辑网格视图 -->
+      <div class="view-content" id="view-albums">
+        <div id="album-grid" class="album-grid"></div>
+      </div>
+
+      <!-- 歌曲列表视图 -->
+      <div class="view-content hidden" id="view-songs">
+        <div id="song-list-header" class="song-list-header"></div>
+        <div id="song-list" class="song-list"></div>
+      </div>
+
+      <!-- 收藏视图 -->
+      <div class="view-content hidden" id="view-favorites">
+        <div id="favorites-list" class="song-list"></div>
+      </div>
+
+      <!-- 最近播放视图 -->
+      <div class="view-content hidden" id="view-recent">
+        <div id="recent-list" class="song-list"></div>
+      </div>
+
+      <!-- 歌单详情视图 -->
+      <div class="view-content hidden" id="view-playlist-detail">
+        <div class="song-list-header" id="playlist-detail-header"></div>
+        <div id="playlist-detail-list" class="song-list"></div>
+      </div>
+    </div>
+
+    <!-- 底部播放器栏 -->
+    <div class="player-bar" id="player-bar">
+      <div class="player-bar-left">
+        <div class="player-cover" id="player-cover" title="点击查看歌词">
+          <div class="cover-placeholder">🎵</div>
+        </div>
+        <div class="player-info">
+          <div class="player-title" id="player-title">未在播放</div>
+          <div class="player-artist" id="player-artist"></div>
+        </div>
+        <button class="btn btn-icon btn-sm" id="btn-toggle-fav" title="收藏">♡</button>
+      </div>
+
+      <div class="player-bar-center">
+        <div class="player-controls">
+          <button class="ctrl-btn" id="btn-play-mode" title="顺序播放">🔁</button>
+          <button class="ctrl-btn" id="btn-prev" title="上一曲">⏮</button>
+          <button class="ctrl-btn ctrl-btn-main" id="btn-play-pause" title="播放/暂停">▶</button>
+          <button class="ctrl-btn" id="btn-next" title="下一曲">⏭</button>
+        </div>
+        <div class="player-progress-row">
+          <span class="time-label" id="time-current">00:00</span>
+          <input type="range" id="progress-bar" class="progress-bar" value="0" step="0.1">
+          <span class="time-label" id="time-duration">00:00</span>
+        </div>
+      </div>
+
+      <div class="player-bar-right">
+        <button class="btn btn-icon btn-sm" id="btn-queue" title="播放队列">📋</button>
+        <button class="btn btn-icon btn-sm" id="btn-eq" title="均衡器">🎚</button>
+        <div class="volume-group">
+          <button class="btn btn-icon btn-sm" id="btn-volume-icon" title="静音">🔊</button>
+          <input type="range" id="volume-bar" class="volume-bar" min="0" max="1" step="0.05" value="1">
+        </div>
+      </div>
+    </div>
+
+    <!-- 歌词全屏页 (从底部滑入) -->
+    <div class="lyrics-page" id="lyrics-page">
+      <div class="lyrics-page-bg" id="lyrics-page-bg"></div>
+      <div class="lyrics-page-toolbar">
+        <button class="btn btn-icon" id="btn-lyrics-back" title="返回">←</button>
+        <span class="lyrics-song-title" id="lyrics-page-title">未在播放</span>
+        <button class="btn btn-sm" id="btn-lyrics-settings-page" title="歌词设置">⚙</button>
+      </div>
+      <div class="lyrics-page-body" id="lyrics-page-body">
+        <canvas id="lyrics-viz-canvas" class="lyrics-page-viz"></canvas>
+        <div class="lyrics-page-content" id="lyrics-page-content">
+          <div class="lyrics-empty">暂无歌词</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 播放队列弹出层 -->
+    <div class="queue-popup hidden" id="queue-popup">
+      <div class="queue-header">
+        <span>播放队列 (<span id="queue-count">0</span>)</span>
+        <button class="btn btn-sm" id="btn-clear-queue">清空</button>
+      </div>
+      <div class="queue-list" id="queue-list"></div>
+    </div>
+
+    <!-- 新建歌单弹窗 -->
+    <div class="music-modal-overlay" id="modal-new-playlist">
+      <div class="music-modal-box">
+        <h3>新建歌单</h3>
+        <div class="music-modal-body">
+          <input type="text" id="input-playlist-name" placeholder="歌单名称">
+        </div>
+        <div class="music-modal-footer">
+          <button class="btn" id="btn-modal-cancel">取消</button>
+          <button class="btn btn-primary" id="btn-modal-confirm">创建</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 均衡器面板 -->
+    <div class="eq-panel hidden" id="eq-panel">
+      <div class="eq-header">
+        <span>均衡器</span>
+        <div class="eq-header-right">
+          <select id="eq-preset-select" class="eq-preset-select">
+            <option value="">内置预设</option>
+          </select>
+          <button class="btn btn-sm" id="btn-eq-reset">重置</button>
+          <button class="btn btn-sm" id="btn-eq-save">保存</button>
+          <button class="btn btn-sm" id="btn-eq-close">✕</button>
+        </div>
+      </div>
+      <div class="eq-bands" id="eq-bands">
+        <!-- 动态填充 10 段 EQ -->
+      </div>
+    </div>
+  </div>
+
+  <script src="js/utils.js"></script>
+  <script src="js/player-core.js"></script>
+  <script src="js/playlist-manager.js"></script>
+  <script src="js/lyrics-parser.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    const musicPlayer = new MusicPlayer();
+    musicPlayer.init();
+  </script>
+</body>
+</html>
