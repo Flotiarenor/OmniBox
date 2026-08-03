@@ -53,7 +53,8 @@ class PluginManager:
                 'displayName': m.get('displayName', m['name']),
                 'icon': m.get('icon', '📦'),
                 'route': m['frontend']['route'],
-                'entryUrl': f"/plugins/{m['name']}/frontend/index.html" # Flask 将 serve 这个路径
+                'entryUrl': f"/plugins/{m['name']}/frontend/index.html", # Flask 将 serve 这个路径
+                'destroyOnLeave': m.get('destroyOnLeave', False)
             }
             for m in self._manifests.values()
         ]
