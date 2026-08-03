@@ -14,12 +14,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 '''
 
-import os, time, yaml, webview, threading
+import os, sys, time, yaml, webview, threading
+from pathlib import Path
 from shell.backend.file_server import create_app
 from shell.backend.plugin_manager import PluginManager
 
 def load_config():
-    with open('config.yaml', 'r', encoding='utf-8') as f:
+    if getattr(sys, 'frozen', False):
+        cfg_path = Path(sys._MEIPASS) / 'config.yaml'
+    else:
+        cfg_path = Path('config.yaml')
+    with open(cfg_path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
 def wait_for_server(host, port, timeout=5):
@@ -37,7 +42,8 @@ def main():
     config = load_config()
     os.makedirs(config['directories']['data_root'], exist_ok=True)
 
-    manager = PluginManager(plugins_dir='plugins', config=config)
+    plugins_dir = Path(sys._MEIPASS) / 'plugins' if getattr(sys, 'frozen', False) else Path('plugins')
+    manager = PluginManager(plugins_dir=str(plugins_dir), config=config)
     manager.load_all()
 
     class ShellAPI: pass
