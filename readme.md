@@ -11,7 +11,7 @@
 - **热插拔**：将插件文件夹放入 `plugins/` 目录即可启用，删除即卸载，无需重启或重新构建。
 - **安全隔离**：插件运行在独立 iframe 中，后端 API 通过命名空间隔离，权限可声明。
 - **易于分发**：主程序打包为单个可执行文件，插件可离线安装或通过内置商店获取（规划中）。
-- **跨平台**：基于 PyWebView，支持 Windows、macOS、Linux。
+- **跨平台**：基于 PyWebView，后续可支持 Windows、macOS、Linux。
 - **统一外观**：内置浅色/深色主题切换，支持自定义 CSS 变量级颜色配置，全插件自动同步。
 - **通用布局**：统一的工具栏、侧边栏、内容区样式（`.view-toolbar`、`.view-sub-sidebar` 等），插件无需重复定义。
 
@@ -109,18 +109,8 @@ cd OmniBox
 ## 📦 打包发布
 
 使用 PyInstaller 将主程序打包为独立可执行文件：
-
-```bash
-pyinstaller --onefile \
---add-data "shell/frontend/dist:shell/frontend/dist" \
---add-data "config.yaml:." \
---add-data "shell/backend:shell/backend" \
-main.py
-```
-
-用户拿到 exe 后，只需在同目录下创建 `plugins/` 文件夹并放入插件即可使用。
-
----
+.\docs\Releases文件夹下内置build-release.ps1和配置文件omnibox.spec
+虚拟环境下运行ps1文件即可完成打包编译操作
 
 ## 📄 许可证
 
