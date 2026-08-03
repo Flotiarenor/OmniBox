@@ -5,9 +5,15 @@ shell/frontend/node_modules/
 shell/frontend/package-lock.json
 python虚拟环境管理脚本.ps1
 
-# Python 编译缓存
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 opencode.json
+
+docs/Releases/*.exe
+docs/Releases/*.7z
+docs/Releases/*.zip
+docs/Releases/omnibox/
+docs/Releases/__pycache__/
+.build/

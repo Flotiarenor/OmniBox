@@ -14,12 +14,20 @@ See the License for the specific language governing permissions and
 limitations under the License.
 '''
 
+import sys
 from flask import Flask, request, send_from_directory, abort
 from pathlib import Path
 
+def _get_shell_dir() -> Path:
+    if getattr(sys, 'frozen', False):
+        return Path(sys._MEIPASS) / 'shell'
+    return Path(__file__).resolve().parent.parent
+
+_SHELL_DIR = _get_shell_dir()
+
 def create_app(config, plugin_manager):
     app = Flask(__name__)
-    frontend_dist = Path(__file__).parent.parent / 'frontend' / 'dist'
+    frontend_dist = _SHELL_DIR / 'frontend' / 'dist'
 
     @app.route('/health')
     def health(): return 'OK'
@@ -78,7 +86,7 @@ def create_app(config, plugin_manager):
         return send_from_directory(thumb_dir, filepath)
     @app.route('/shell/<path:filename>')
     def serve_shell_assets(filename):
-        shell_dir = Path(__file__).parent.parent / 'frontend' / 'dist' / 'shell'
+        shell_dir = _SHELL_DIR / 'frontend' / 'dist' / 'shell'
         return send_from_directory(shell_dir, filename)
 
     @app.route('/plugins/<plugin_name>/frontend/<path:filename>')
