@@ -3,18 +3,25 @@ shell/backend/__pycache__/
 shell/frontend/dist
 shell/frontend/node_modules/
 shell/frontend/package-lock.json
-python虚拟环境管理脚本.ps1
+setup-venv.ps1
 
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 opencode.json
-.config
+
+# 运行时代码
+data/
+.config/plugins/
+.build/
+
+# 脚本
+scripts/
 
 docs/Releases/*.exe
 docs/Releases/*.7z
 docs/Releases/*.zip
 docs/Releases/omnibox/
 docs/Releases/__pycache__/
-.build/
+
