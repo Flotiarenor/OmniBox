@@ -128,6 +128,7 @@
     <!-- 歌词全屏页 (从底部滑入) -->
     <div class="lyrics-page" id="lyrics-page">
       <div class="lyrics-page-bg" id="lyrics-page-bg"></div>
+      <div class="lyrics-page-blur" id="lyrics-page-blur"></div>
       <div class="lyrics-page-toolbar">
         <button class="btn btn-icon" id="btn-lyrics-back" title="返回">←</button>
         <span class="lyrics-song-title" id="lyrics-page-title">未在播放</span>
@@ -138,6 +139,11 @@
         <div class="lyrics-page-content" id="lyrics-page-content">
           <div class="lyrics-empty">暂无歌词</div>
         </div>
+      </div>
+      <div class="lyrics-page-progress" id="lyrics-page-progress">
+        <span class="time-label" id="lyrics-time-current">00:00</span>
+        <input type="range" id="lyrics-progress-bar" class="progress-bar" value="0" step="0.1">
+        <span class="time-label" id="lyrics-time-duration">00:00</span>
       </div>
     </div>
 

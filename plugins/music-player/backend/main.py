@@ -45,14 +45,23 @@ class MusicPlayerPlugin(PluginBase):
          "placeholder": "如 #1a1a2e 留空为默认",
          "help": "纯色背景，支持 #RRGGBB 格式"},
         {"key": "lyrics_bg_image", "label": "歌词背景图路径", "type": "text",
-         "placeholder": "如 /files/bg.jpg 留空使用纯色",
-         "help": "图片路径，相对于音乐库根目录"},
+          "placeholder": "如 /files/bg.jpg 留空使用纯色",
+          "help": "图片路径，相对于音乐库根目录"},
+        {"key": "lyrics_font_color", "label": "歌词字体颜色", "type": "text",
+          "default": "#ffffff", "placeholder": "#ffffff",
+          "help": "歌词文字颜色，支持 #RRGGBB 格式"},
+        {"key": "lyrics_bg_blur", "label": "背景模糊度", "type": "range",
+          "default": 8, "min": 0, "max": 50, "help": "背景模糊效果强度"},
+        {"key": "lyrics_bg_brightness", "label": "背景明亮度", "type": "range",
+          "default": 0.25, "min": 0.05, "max": 1.0, "step": 0.05,
+          "help": "背景亮度调节"},
     ]
 
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
         self.settings_file = Path(__file__).parent.parent / 'settings.json'
         self._settings = self._load_local_settings()
+        self._merge_store_settings(config)
         self._applied_root = None
         root = self._resolve_root_dir()
         self._init_with_root(root)
@@ -69,6 +78,17 @@ class MusicPlayerPlugin(PluginBase):
                 pass
         return {}
 
+    def _merge_store_settings(self, config):
+        store_dir = Path(config['directories']['data_root']).resolve() / '.settings'
+        store_file = store_dir / f'{self.name}.json'
+        if store_file.exists():
+            try:
+                with open(store_file, 'r', encoding='utf-8') as f:
+                    stored = json.load(f)
+                self._settings = {**stored, **self._settings}
+            except Exception:
+                pass
+
     def _init_with_root(self, root_dir: str):
         self.music_dir = Path(root_dir).resolve()
         self._cache_dir = self.music_dir / '.cache'
@@ -81,14 +101,14 @@ class MusicPlayerPlugin(PluginBase):
         self._applied_root = str(self.music_dir)
 
     def _resolve_root_dir(self) -> str:
+        root = self._settings.get('root_dir')
+        if root and Path(root).is_dir():
+            return str(Path(root).resolve())
         if self._settings_store:
             stored = super().get_settings()
             root = stored.get('root_dir')
             if root and Path(root).is_dir():
                 return str(Path(root).resolve())
-        root = self._settings.get('root_dir')
-        if root and Path(root).is_dir():
-            return str(Path(root).resolve())
         return str(Path(super().get_data_root()).resolve())
 
     def _migrate_old_settings(self):
@@ -114,13 +134,14 @@ class MusicPlayerPlugin(PluginBase):
             self._scanned = True
 
     def _load_state(self) -> dict:
+        defaults = {"favorites": [], "recent": [], "playlists": [], "playback": {}}
         if self._state_file.exists():
             try:
                 with open(self._state_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    return {**defaults, **json.load(f)}
             except Exception:
                 pass
-        return {"favorites": [], "recent": [], "playlists": []}
+        return defaults
 
     def _save_state(self):
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
@@ -163,6 +184,8 @@ class MusicPlayerPlugin(PluginBase):
             'music_update_recent': self.update_recent,
             'music_get_state': self.get_state,
             'music_get_lyrics': self.get_lyrics,
+            'music_save_playback': self.save_playback,
+            'music_get_playback': self.get_playback,
             'music_list_eq_presets': self.list_eq_presets,
             'music_save_eq_preset': self.save_eq_preset,
             'get_settings': self.get_settings,
@@ -287,6 +310,28 @@ class MusicPlayerPlugin(PluginBase):
         self._state['recent'] = recent[:50]
         self._save_state()
         return {'success': True}
+
+    def save_playback(self, song_id: str = '', loop_mode: str = 'none', shuffle: bool = False, volume: float = 1.0) -> dict:
+        self._state['playback'] = {
+            'song_id': song_id,
+            'loop_mode': loop_mode,
+            'shuffle': shuffle,
+            'volume': volume,
+        }
+        self._save_state()
+        return {'success': True}
+
+    def get_playback(self) -> dict:
+        pb = self._state.get('playback', {})
+        song_id = pb.get('song_id', '')
+        if song_id:
+            self._ensure_scanned()
+            song = self.scanner.get_song(song_id)
+            if not song:
+                self._state['playback'] = {}
+                self._save_state()
+                return {}
+        return pb
 
     def get_state(self) -> dict:
         self._ensure_scanned()
