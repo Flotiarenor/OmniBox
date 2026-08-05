@@ -26,10 +26,10 @@ class ImageViewerPlugin(PluginBase):
 
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
-        self.global_data_root = Path(config['directories']['data_root']).resolve()
         self.settings_file = Path(__file__).parent.parent / 'settings.json'
-        self._settings = self._load_settings()
-        self.root_dir = Path(self._settings.get('root_dir', str(self.global_data_root))).resolve()
+        self._settings = {}
+        root = self._resolved_config.get('root_dir') or str(super().get_data_root())
+        self.root_dir = Path(root).resolve()
         self.cache_dir = self.root_dir / '.cache'
         self.thumb_dir = self.cache_dir / 'thumbs'
         self.meta_file = self.cache_dir / 'image_meta.json'
@@ -271,26 +271,30 @@ class ImageViewerPlugin(PluginBase):
         return result
 
     def save_settings(self, rel_path='', settings=None) -> Dict:
-        """兼容两种调用：save_settings(path, settings) 或 save_settings(values)"""
+        """兼容两种调用。标准字段走 super() 触发 on_settings_changed，per-folder 走旧文件。"""
         if settings is None:
             settings = rel_path or {}
             rel_path = ''
+        # 标准字段走 SettingsStore，触发 on_settings_changed
+        result = super().save_settings(settings)
         if 'folders' not in self._settings:
             self._settings['folders'] = {}
         key = rel_path or '__global__'
-        root_dir = settings.pop('root_dir', None)
         self._settings['folders'][key] = settings
-        if root_dir is not None and root_dir and Path(root_dir).is_dir():
-            self._settings['root_dir'] = root_dir
-            self.root_dir = Path(root_dir).resolve()
-            self.cache_dir = self.root_dir / '.cache'
-            self.thumb_dir = self.cache_dir / 'thumbs'
-            self.meta_file = self.cache_dir / 'image_meta.json'
-            self.thumb_dir.mkdir(parents=True, exist_ok=True)
-            self._meta_cache = self._load_meta()
-            self._list_cache.clear()
         self._save_settings_to_file()
-        return {"success": True}
+        return result
+
+    def on_settings_changed(self, changed_keys):
+        if 'root_dir' in changed_keys:
+            new_dir = self.setting('root_dir')
+            if new_dir and Path(new_dir).is_dir():
+                self.root_dir = Path(new_dir).resolve()
+                self.cache_dir = self.root_dir / '.cache'
+                self.thumb_dir = self.cache_dir / 'thumbs'
+                self.meta_file = self.cache_dir / 'image_meta.json'
+                self.thumb_dir.mkdir(parents=True, exist_ok=True)
+                self._meta_cache = self._load_meta()
+                self._list_cache.clear()
 
     def clear_folder_settings(self, rel_path: str) -> Dict:
         """删除指定文件夹的独立设置，使其回退到全局设置"""

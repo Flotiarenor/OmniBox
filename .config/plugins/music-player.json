@@ -7,8 +7,9 @@
   "lyrics_glow": true,
   "lyrics_align": "center",
   "lyrics_bg_color": "",
-  "lyrics_bg_image": ".cache/cover/1.png",
+  "lyrics_bg_image": "",
   "lyrics_font_color": "#ffffff",
-  "lyrics_bg_blur": 0,
-  "lyrics_bg_brightness": 1
+  "lyrics_bg_blur": 8,
+  "lyrics_bg_brightness": 0.25,
+  "last_volume": 1
 }

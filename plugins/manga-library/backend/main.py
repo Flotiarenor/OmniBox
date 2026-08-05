@@ -23,9 +23,10 @@ class MangaLibraryPlugin(PluginBase):
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
         self.settings_file = Path(__file__).parent.parent / 'settings.json'
-        self._settings = self._load_settings()
-        self.recent_count = int(self._settings.get('recent_count', 10))
-        self.manga_dir = Path(self._settings.get('root_dir', str(super().get_data_root()))).resolve()
+        self._settings = {}
+        root = self._resolved_config.get('root_dir') or str(super().get_data_root())
+        self.recent_count = int(self._resolved_config.get('recent_count', 10))
+        self.manga_dir = Path(root).resolve()
         self.cover_dir = self.manga_dir / '.cache' / 'covers'
         self.cover_dir.mkdir(parents=True, exist_ok=True)
         self.state_file = self.manga_dir / '.cache' / 'manga_state.json'
@@ -61,22 +62,17 @@ class MangaLibraryPlugin(PluginBase):
             "recent_count": self.recent_count,
         }
 
-    def save_settings(self, settings: Dict) -> Dict:
-        if not isinstance(settings, dict):
-            return {"success": False, "error": "设置必须是字典"}
-        if settings.get('root_dir'):
-            root_dir = settings['root_dir']
-            if Path(root_dir).is_dir():
-                self._settings['root_dir'] = root_dir
-                self._apply_root_dir(Path(root_dir).resolve())
-        if settings.get('recent_count') is not None:
+    def on_settings_changed(self, changed_keys):
+        if 'root_dir' in changed_keys:
+            new_dir = self.setting('root_dir')
+            if new_dir and Path(new_dir).is_dir():
+                self._apply_root_dir(Path(new_dir).resolve())
+        if 'recent_count' in changed_keys:
+            count = self.setting('recent_count', 10)
             try:
-                self.recent_count = max(1, min(50, int(settings['recent_count'])))
-                self._settings['recent_count'] = self.recent_count
+                self.recent_count = max(1, min(50, int(count)))
             except (ValueError, TypeError):
                 pass
-        self._save_settings_to_file()
-        return {"success": True}
 
     def _apply_root_dir(self, new_dir: Path):
         self.manga_dir = new_dir

@@ -194,6 +194,7 @@ class PlayerCore {
     set volume(v) {
         this.audio.volume = Math.max(0, Math.min(1, v));
         localStorage.setItem('musicPlayerVolume', v);
+        Bridge.call('music_set_config', 'last_volume', v).catch(() => {});
         clearTimeout(this._volumeSaveTimer);
         this._volumeSaveTimer = setTimeout(() => this._savePlaybackState(), 500);
     }
@@ -226,6 +227,7 @@ class PlayerCore {
         const titles = ['顺序播放', '随机播放', '单曲循环'];
         btn.textContent = icons[this.playMode];
         btn.title = titles[this.playMode];
+        Bridge.call('music_set_config', 'last_play_mode', this.playMode).catch(() => {});
         this._savePlaybackState();
     }
 

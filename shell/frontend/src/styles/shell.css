@@ -145,6 +145,21 @@ html, body {
 .field-label { font-size: 13px; font-weight: 500; color: var(--text-primary); }
 .field-label.required::after { content: ' *'; color: var(--danger); }
 .field-help { font-size: 12px; color: var(--text-secondary); }
+.field-tip {
+  display: inline-block;
+  width: 16px; height: 16px;
+  line-height: 16px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-hover);
+  border-radius: 50%;
+  cursor: help;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+.field-tip:hover { color: var(--accent); background: var(--bg-active); }
 .field input[type="text"],
 .field input[type="number"],
 .field select,
