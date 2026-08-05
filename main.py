@@ -21,9 +21,9 @@ from shell.backend.plugin_manager import PluginManager
 
 def load_config():
     if getattr(sys, 'frozen', False):
-        cfg_path = Path(sys._MEIPASS) / 'config.yaml'
+        cfg_path = Path(sys._MEIPASS) / '.config' / 'app.yaml'
     else:
-        cfg_path = Path('config.yaml')
+        cfg_path = Path('.config') / 'app.yaml'
     with open(cfg_path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
