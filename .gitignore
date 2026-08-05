@@ -10,6 +10,7 @@ __pycache__/
 *.pyo
 *.pyd
 opencode.json
+.config
 
 docs/Releases/*.exe
 docs/Releases/*.7z
