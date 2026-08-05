@@ -20,7 +20,7 @@ class MusicPlayer {
 
         this.player = new PlayerCore(this);
         this.playlists = new PlaylistManager(this);
-        this.lyrics = new LyricsDisplay();
+        this.lyrics = new LyricsDisplay(this);
 
         this._bindUI();
         this._bindKeyboard();
@@ -28,6 +28,7 @@ class MusicPlayer {
 
         await this._scanAndLoad();
         this._updateStats();
+        this._restorePlayback();
     }
 
     // ===== 扫描与加载 =====
@@ -96,6 +97,15 @@ class MusicPlayer {
                 this.player.audio.currentTime = progressBar.value;
             }
         });
+
+        const lyricsProgressBar = document.getElementById('lyrics-progress-bar');
+        if (lyricsProgressBar) {
+            lyricsProgressBar.addEventListener('input', () => {
+                if (this.player.audio.duration) {
+                    this.player.audio.currentTime = parseFloat(lyricsProgressBar.value);
+                }
+            });
+        }
 
         const volumeBar = document.getElementById('volume-bar');
         volumeBar.addEventListener('input', () => {
@@ -786,6 +796,17 @@ class MusicPlayer {
             const vol = parseFloat(saved);
             this.player.volume = vol;
             document.getElementById('volume-bar').value = vol;
+        }
+    }
+
+    async _restorePlayback() {
+        try {
+            const pb = await Bridge.call('music_get_playback');
+            if (!pb || !pb.song_id) return;
+            await this._loadAllSongs();
+            this.player.restorePlaybackState(pb, this._allSongs);
+        } catch (e) {
+            console.log('恢复播放状态失败:', e);
         }
     }
 

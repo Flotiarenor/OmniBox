@@ -11,6 +11,8 @@ class PlayerCore {
         this.playMode = 0; // 0=顺序 1=随机 2=单曲循环
         this.isPlaying = false;
         this._progressInterval = null;
+        this._volumeSaveTimer = null;
+        this._lastBackendSave = 0;
 
         this._bindAudioEvents();
     }
@@ -96,6 +98,7 @@ class PlayerCore {
         this.audio.play().catch(e => console.log('自动播放被阻止:', e));
         this._updateNowPlaying(song);
         this.app._onSongChange(song);
+        this._savePlaybackState();
     }
 
     play() {
@@ -191,6 +194,8 @@ class PlayerCore {
     set volume(v) {
         this.audio.volume = Math.max(0, Math.min(1, v));
         localStorage.setItem('musicPlayerVolume', v);
+        clearTimeout(this._volumeSaveTimer);
+        this._volumeSaveTimer = setTimeout(() => this._savePlaybackState(), 500);
     }
 
     toggleMute() {
@@ -221,6 +226,7 @@ class PlayerCore {
         const titles = ['顺序播放', '随机播放', '单曲循环'];
         btn.textContent = icons[this.playMode];
         btn.title = titles[this.playMode];
+        this._savePlaybackState();
     }
 
     // ===== UI 更新 =====
@@ -292,6 +298,22 @@ class PlayerCore {
             data[song.id] = this.audio.currentTime;
             localStorage.setItem('musicProgress', JSON.stringify(data));
         } catch (e) {}
+        const now = Date.now();
+        if (now - this._lastBackendSave > 10000) {
+            this._lastBackendSave = now;
+            this._savePlaybackState();
+        }
+    }
+
+    _savePlaybackState() {
+        const song = this.queue.length > 0 && this.currentIndex >= 0 ? this.queue[this.currentIndex] : null;
+        const loopMap = { 0: 'all', 1: 'all', 2: 'one' };
+        Bridge.call('music_save_playback',
+            song ? song.id : '',
+            loopMap[this.playMode] || 'none',
+            this.playMode === 1,
+            this.volume
+        ).catch(() => {});
     }
 
     getSavedProgress(songId) {
@@ -365,5 +387,39 @@ class PlayerCore {
     getAudioContext() {
         this._ensureEQ();
         return this._analyser.context;
+    }
+
+    restorePlaybackState(pb, allSongs) {
+        if (!pb || !pb.song_id) return false;
+        const song = allSongs.find(s => s.id === pb.song_id);
+        if (!song) return false;
+        this.queue = allSongs;
+        this.currentIndex = allSongs.indexOf(song);
+        this.audio.src = Bridge.originalUrl(song.file_path || song.id);
+        const savedPos = this.getSavedProgress(song.id);
+        if (savedPos > 0) {
+            this.audio.addEventListener('loadedmetadata', () => {
+                this.audio.currentTime = savedPos;
+            }, { once: true });
+        }
+        if (pb.loop_mode === 'one') this.playMode = 2;
+        else if (pb.shuffle) this.playMode = 1;
+        else this.playMode = 0;
+        const btn = document.getElementById('btn-play-mode');
+        if (btn) {
+            const icons = ['🔁', '🔀', '🔂'];
+            const titles = ['顺序播放', '随机播放', '单曲循环'];
+            btn.textContent = icons[this.playMode];
+            btn.title = titles[this.playMode];
+        }
+        if (pb.volume !== undefined && pb.volume !== null) {
+            this.volume = pb.volume;
+            const vb = document.getElementById('volume-bar');
+            if (vb) vb.value = pb.volume;
+        }
+        this._updateNowPlaying(song);
+        this._updatePlayButton();
+        this.app._onSongChange(song);
+        return true;
     }
 }
