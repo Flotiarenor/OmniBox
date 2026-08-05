@@ -1,6 +1,7 @@
 <!--This product includes software developed by flotiarenor.Copyright 2026 flotiarenor -->
 <script setup lang="ts">
-import { onMounted, reactive, ref, computed } from 'vue'
+import { onMounted, reactive, ref, computed, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useBridge } from '../core/bridge'
 import { toastError, toastSuccess } from '../core/toast'
 
@@ -9,6 +10,7 @@ interface SchemaField {
   placeholder?: string; help?: string
   options?: Array<{ label: string; value: string } | string>
   min?: number; max?: number; step?: number; required?: boolean
+  central?: boolean
 }
 interface SettingsPanel {
   name: string; displayName: string; icon: string
@@ -16,6 +18,7 @@ interface SettingsPanel {
 }
 
 const bridge = useBridge()
+const route = useRoute()
 const panels = ref<SettingsPanel[]>([])
 const loading = ref(true)
 const saving = ref('')
@@ -130,8 +133,8 @@ function loadCustomColors() {
   }
 }
 
-onMounted(async () => {
-  loadCustomColors()
+async function fetchSettings() {
+  loading.value = true
   try {
     const list = await bridge.call('system_settings_list')
     panels.value = list
@@ -139,6 +142,15 @@ onMounted(async () => {
   } catch (e: any) {
     error.value = e.message || '加载设置失败'
   } finally { loading.value = false }
+}
+
+onMounted(() => {
+  loadCustomColors()
+  fetchSettings()
+})
+
+watch(() => route.path, (path) => {
+  if (path === '/settings') fetchSettings()
 })
 
 function fieldDefault(f: SchemaField): unknown {
@@ -154,7 +166,13 @@ async function savePanel(p: SettingsPanel) {
   try {
     const result = await bridge.call('system_settings_save', p.name, drafts[p.name])
     if (result && result.success === false) toastError(result.error || '保存失败')
-    else toastSuccess(`「${p.displayName}」设置已保存`)
+    else {
+      toastSuccess(`「${p.displayName}」设置已保存`)
+      const iframe = document.querySelector(`iframe[data-plugin-name="${p.name}"]`) as HTMLIFrameElement | null
+      if (iframe?.contentWindow) {
+        iframe.contentWindow.postMessage({ type: 'omnibox:settings-changed' }, '*')
+      }
+    }
   } catch (e: any) { toastError(e.message || '保存失败') }
   finally { saving.value = '' }
 }
@@ -244,7 +262,10 @@ function optionValue(opt: any): string { return typeof opt === 'object' ? opt.va
                 </div>
               </template>
               <template v-else>
-                <label class="field-label" :class="{ required: f.required }">{{ f.label || f.key }}</label>
+                <label class="field-label" :class="{ required: f.required }">
+                  {{ f.label || f.key }}
+                  <span v-if="f.help" class="field-tip" :title="f.help">?</span>
+                </label>
                 <div v-if="f.type === 'range'" class="field-range">
                   <input type="range" v-model.number="drafts[p.name][f.key]" :min="f.min" :max="f.max" :step="f.step" />
                   <span class="field-range-value">{{ drafts[p.name][f.key] }}</span>
@@ -255,7 +276,6 @@ function optionValue(opt: any): string { return typeof opt === 'object' ? opt.va
                 <textarea v-else-if="f.type === 'textarea'" v-model="drafts[p.name][f.key]" :placeholder="f.placeholder"></textarea>
                 <input v-else :type="f.type === 'number' ? 'number' : 'text'" v-model="drafts[p.name][f.key]" :min="f.min" :max="f.max" :placeholder="f.placeholder" />
               </template>
-              <p v-if="f.help" class="field-help">{{ f.help }}</p>
             </div>
           </div>
         </div>

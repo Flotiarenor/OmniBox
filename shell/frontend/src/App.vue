@@ -94,12 +94,12 @@ const isSettings = computed(() => route.path === '/settings')
       <template v-if="isReady">
         <template v-for="p in keepAlivePlugins" :key="p.name">
           <div v-if="visitedPlugins[p.name]" v-show="activePlugin === p.name" class="plugin-frame-container">
-            <iframe :src="p.entryUrl" frameborder="0" class="plugin-iframe" allow="fullscreen *"></iframe>
+            <iframe :src="p.entryUrl" :data-plugin-name="p.name" frameborder="0" class="plugin-iframe" allow="fullscreen *"></iframe>
           </div>
         </template>
         <template v-for="p in destroyOnLeavePlugins" :key="p.name">
           <div v-if="activePlugin === p.name" class="plugin-frame-container">
-            <iframe :src="p.entryUrl" frameborder="0" class="plugin-iframe" allow="fullscreen *"></iframe>
+            <iframe :src="p.entryUrl" :data-plugin-name="p.name" frameborder="0" class="plugin-iframe" allow="fullscreen *"></iframe>
           </div>
         </template>
         <SettingsView v-show="isSettings" />

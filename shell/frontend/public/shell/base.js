@@ -4,6 +4,13 @@
  * 提供：Bridge（通信）、Utils（工具）、通用 UI 组件函数
  */
 
+// ===== 集中设置变更通知：接收 shell 的 postMessage 后自动刷新 =====
+window.addEventListener('message', function(event) {
+  if (event.data && event.data.type === 'omnibox:settings-changed') {
+    window.location.href = window.location.href.split('?')[0] + '?_t=' + Date.now();
+  }
+});
+
 // ==================== Bridge ====================
 window.Bridge = (function() {
   let API_PREFIX = '';
@@ -280,6 +287,7 @@ async function openSettingsModal(options = {}) {
       }
       close();
       Toast.success((options.successMessage) || (result && result.message) || '设置已保存');
+      setTimeout(() => { window.location.href = window.location.href.split('?')[0] + '?_t=' + Date.now(); }, 400);
     } catch (e) {
       saveBtn.disabled = false;
       Toast.error(e.message || '保存失败');

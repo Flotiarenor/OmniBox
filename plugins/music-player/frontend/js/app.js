@@ -29,6 +29,23 @@ class MusicPlayer {
         await this._scanAndLoad();
         this._updateStats();
         this._restorePlayback();
+        this._restorePlayMode();
+    }
+
+    async _restorePlayMode() {
+        try {
+            const mode = await Bridge.call('music_get_config', 'last_play_mode', 0);
+            if (typeof mode === 'number' && mode >= 0 && mode <= 2) {
+                this.player.playMode = mode;
+                const btn = document.getElementById('btn-play-mode');
+                if (btn) {
+                    const icons = ['🔁', '🔀', '🔂'];
+                    const titles = ['顺序播放', '随机播放', '单曲循环'];
+                    btn.textContent = icons[mode];
+                    btn.title = titles[mode];
+                }
+            }
+        } catch (e) {}
     }
 
     // ===== 扫描与加载 =====
@@ -790,12 +807,19 @@ class MusicPlayer {
     }
 
     // ===== 音量 =====
-    _loadVolume() {
-        const saved = localStorage.getItem('musicPlayerVolume');
-        if (saved !== null) {
-            const vol = parseFloat(saved);
-            this.player.volume = vol;
-            document.getElementById('volume-bar').value = vol;
+    async _loadVolume() {
+        try {
+            const vol = await Bridge.call('music_get_config', 'last_volume', 1.0);
+            if (vol !== null && vol !== undefined) {
+                this.player.volume = vol;
+                document.getElementById('volume-bar').value = vol;
+            }
+        } catch (e) {
+            const saved = localStorage.getItem('musicPlayerVolume');
+            if (saved !== null) {
+                this.player.volume = parseFloat(saved);
+                document.getElementById('volume-bar').value = parseFloat(saved);
+            }
         }
     }
 

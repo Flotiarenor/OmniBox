@@ -46,8 +46,9 @@ class DownloadCenterPlugin(PluginBase):
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
         self.settings_file = Path(__file__).parent.parent / 'settings.json'
-        self._settings = self._load_settings()
-        self.manga_dir = str(Path(self._settings.get('root_dir', str(super().get_data_root()))).resolve())
+        self._settings = {}
+        root = self._resolved_config.get('root_dir') or str(super().get_data_root())
+        self.manga_dir = str(Path(root).resolve())
         self._state_dir = self._get_state_dir()
         self._state_file = os.path.join(self._state_dir, 'download_state.json')
         self.tasks: Dict[str, DownloadTask] = {}
@@ -77,19 +78,11 @@ class DownloadCenterPlugin(PluginBase):
         except Exception as e:
             print(f"[DownloadCenter] 保存设置失败: {e}")
 
-    def get_settings(self) -> Dict:
-        return {"root_dir": self.manga_dir}
-
-    def save_settings(self, settings: Dict) -> Dict:
-        if not isinstance(settings, dict):
-            return {"success": False, "error": "设置必须是字典"}
-        if settings.get('root_dir'):
-            root_dir = settings['root_dir']
-            if Path(root_dir).is_dir():
-                self._settings['root_dir'] = root_dir
-                self._save_settings_to_file()
-                self._apply_root_dir(str(Path(root_dir).resolve()))
-        return {"success": True}
+    def on_settings_changed(self, changed_keys):
+        if 'root_dir' in changed_keys:
+            new_dir = self.setting('root_dir')
+            if new_dir and Path(new_dir).is_dir():
+                self._apply_root_dir(str(Path(new_dir).resolve()))
 
     def _apply_root_dir(self, new_dir: str):
         self.manga_dir = new_dir

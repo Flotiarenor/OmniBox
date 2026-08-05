@@ -20,7 +20,7 @@ from typing import Dict
 
 
 class SettingsStore:
-    """统一的插件设置存储，每个插件一个 JSON 文件，位于 <data_root>/.settings/<plugin>.json"""
+    """统一的插件设置存储，每个插件一个 JSON 文件，位于 <config_dir>/<plugin>.json"""
 
     def __init__(self, settings_dir: str):
         self.settings_dir = Path(settings_dir)
@@ -51,3 +51,8 @@ class SettingsStore:
         file = self._file(plugin_name)
         if file.exists():
             file.unlink()
+
+    def update(self, plugin_name: str, values: Dict):
+        current = self.get(plugin_name)
+        current.update(values)
+        self.set(plugin_name, current)

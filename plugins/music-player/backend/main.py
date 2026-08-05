@@ -25,69 +25,49 @@ MetadataReader = _metadata_mod.MetadataReader
 class MusicPlayerPlugin(PluginBase):
     settings_schema = [
         {"key": "root_dir", "label": "音乐库根目录", "type": "text",
-         "placeholder": "默认: ./data",
+         "placeholder": "默认: ./data", "central": True,
          "help": "存放音乐文件的根目录"},
         {"key": "lyrics_enabled", "label": "启用歌词显示", "type": "checkbox",
-         "default": True, "help": "关闭后不显示歌词入口"},
+         "default": True, "central": False, "help": "关闭后不显示歌词入口"},
         {"key": "lyrics_font_size", "label": "歌词字号", "type": "range",
-         "default": 16, "min": 12, "max": 40, "help": "未激活行的字号"},
+         "default": 16, "min": 12, "max": 40, "central": False, "help": "未激活行的字号"},
         {"key": "lyrics_active_size", "label": "当前行字号", "type": "range",
-         "default": 24, "min": 16, "max": 52, "help": "当前播放行的字号"},
+         "default": 24, "min": 16, "max": 52, "central": False, "help": "当前播放行的字号"},
         {"key": "lyrics_line_height", "label": "行高倍率", "type": "range",
-         "default": 1.6, "min": 1.2, "max": 3.0, "step": 0.1,
+         "default": 1.6, "min": 1.2, "max": 3.0, "step": 0.1, "central": False,
          "help": "行间距倍率"},
         {"key": "lyrics_glow", "label": "文字发光效果", "type": "checkbox",
-         "default": True, "help": "当前行文字发光"},
+         "default": True, "central": False, "help": "当前行文字发光"},
         {"key": "lyrics_align", "label": "歌词对齐", "type": "select",
          "options": [{"label": "居中", "value": "center"}, {"label": "左对齐", "value": "left"}],
-         "default": "center", "help": "歌词文本对齐方式"},
+         "default": "center", "central": False, "help": "歌词文本对齐方式"},
         {"key": "lyrics_bg_color", "label": "歌词背景色", "type": "text",
-         "placeholder": "如 #1a1a2e 留空为默认",
+         "placeholder": "如 #1a1a2e 留空为默认", "central": False,
          "help": "纯色背景，支持 #RRGGBB 格式"},
         {"key": "lyrics_bg_image", "label": "歌词背景图路径", "type": "text",
-          "placeholder": "如 /files/bg.jpg 留空使用纯色",
+          "placeholder": "如 /files/bg.jpg 留空使用纯色", "central": False,
           "help": "图片路径，相对于音乐库根目录"},
         {"key": "lyrics_font_color", "label": "歌词字体颜色", "type": "text",
-          "default": "#ffffff", "placeholder": "#ffffff",
+          "default": "#ffffff", "placeholder": "#ffffff", "central": False,
           "help": "歌词文字颜色，支持 #RRGGBB 格式"},
         {"key": "lyrics_bg_blur", "label": "背景模糊度", "type": "range",
-          "default": 8, "min": 0, "max": 50, "help": "背景模糊效果强度"},
+          "default": 8, "min": 0, "max": 50, "central": False, "help": "背景模糊效果强度"},
         {"key": "lyrics_bg_brightness", "label": "背景明亮度", "type": "range",
-          "default": 0.25, "min": 0.05, "max": 1.0, "step": 0.05,
+          "default": 0.25, "min": 0.05, "max": 1.0, "step": 0.05, "central": False,
           "help": "背景亮度调节"},
     ]
 
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
-        self.settings_file = Path(__file__).parent.parent / 'settings.json'
-        self._settings = self._load_local_settings()
-        self._merge_store_settings(config)
         self._applied_root = None
-        root = self._resolve_root_dir()
+        root = self._resolved_config.get('root_dir') or self._resolve_root_dir()
         self._init_with_root(root)
 
     def on_load(self):
-        self._migrate_old_settings()
-
-    def _load_local_settings(self) -> dict:
-        if self.settings_file.exists():
-            try:
-                with open(self.settings_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception:
-                pass
-        return {}
-
-    def _merge_store_settings(self, config):
-        store_dir = Path(config['directories']['data_root']).resolve() / '.settings'
-        store_file = store_dir / f'{self.name}.json'
-        if store_file.exists():
-            try:
-                with open(store_file, 'r', encoding='utf-8') as f:
-                    stored = json.load(f)
-                self._settings = {**stored, **self._settings}
-            except Exception:
-                pass
+        if self._resolved_config and self._settings_store:
+            current = self._settings_store.get(self.name) or {}
+            if 'root_dir' in self._resolved_config and 'root_dir' not in current:
+                self._settings_store.set(self.name, {**current, 'root_dir': self._resolved_config['root_dir']})
 
     def _init_with_root(self, root_dir: str):
         self.music_dir = Path(root_dir).resolve()
@@ -101,29 +81,10 @@ class MusicPlayerPlugin(PluginBase):
         self._applied_root = str(self.music_dir)
 
     def _resolve_root_dir(self) -> str:
-        root = self._settings.get('root_dir')
+        root = self.setting('root_dir')
         if root and Path(root).is_dir():
             return str(Path(root).resolve())
-        if self._settings_store:
-            stored = super().get_settings()
-            root = stored.get('root_dir')
-            if root and Path(root).is_dir():
-                return str(Path(root).resolve())
         return str(Path(super().get_data_root()).resolve())
-
-    def _migrate_old_settings(self):
-        if not self.settings_file.exists() or not self._settings_store:
-            return
-        try:
-            old_root = self._settings.get('root_dir')
-            if old_root:
-                current = self._settings_store.get(self.name) or {}
-                if 'root_dir' not in current:
-                    self._settings_store.set(self.name, {**current, 'root_dir': old_root})
-            self.settings_file.unlink()
-            self._settings = {}
-        except Exception:
-            pass
 
     def get_data_root(self) -> Path:
         return self.music_dir
@@ -153,17 +114,11 @@ class MusicPlayerPlugin(PluginBase):
 
     # ===== Settings =====
 
-    def get_settings(self) -> Dict:
-        settings = super().get_settings()
-        return {k: v for k, v in settings.items() if v is not None}
-
-    def save_settings(self, settings: Dict) -> Dict:
-        result = super().save_settings(settings)
-        if result.get('success') and settings.get('root_dir'):
-            new_dir = Path(settings['root_dir']).resolve()
-            if new_dir.is_dir() and str(new_dir) != self._applied_root:
-                self._init_with_root(str(new_dir))
-        return result
+    def on_settings_changed(self, changed_keys):
+        if 'root_dir' in changed_keys:
+            new_dir = self.setting('root_dir')
+            if new_dir and Path(new_dir).is_dir() and str(Path(new_dir).resolve()) != self._applied_root:
+                self._init_with_root(str(Path(new_dir).resolve()))
 
     # ===== API =====
 
@@ -190,6 +145,8 @@ class MusicPlayerPlugin(PluginBase):
             'music_save_eq_preset': self.save_eq_preset,
             'get_settings': self.get_settings,
             'save_settings': self.save_settings,
+            'music_get_config': lambda key, default=None: self.setting(key, default),
+            'music_set_config': lambda key, value: {'success': self.update_setting(key, value)},
         }
 
     def scan(self, force: bool = False) -> dict:

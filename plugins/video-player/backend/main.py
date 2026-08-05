@@ -19,34 +19,24 @@ class VideoPlayerPlugin(PluginBase):
 
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
-        self._migrate_old_settings()
-
-    def _migrate_old_settings(self):
-        old_file = Path(__file__).parent.parent / 'settings.json'
-        if not old_file.exists():
-            return
-        try:
-            with open(old_file, 'r', encoding='utf-8') as f:
-                old = json.load(f)
-            old_root = old.get('root_dir')
-            if old_root and self._settings_store:
-                current = self._settings_store.get(self.name) or {}
-                if 'root_dir' not in current:
-                    self._settings_store.set(self.name, {**current, 'root_dir': old_root})
-            old_file.unlink()
-        except Exception:
-            pass
+        root = self._resolved_config.get('root_dir')
+        if root and Path(root).is_dir():
+            self._root_dir = Path(root).resolve()
+        else:
+            self._root_dir = Path(self.config['directories']['data_root']).resolve()
 
     def get_data_root(self) -> Path:
-        settings = self.get_settings()
-        root_dir = settings.get('root_dir')
-        if root_dir:
-            return Path(root_dir).resolve()
-        return Path(self.config['directories']['data_root']).resolve()
+        return self._root_dir
 
     @property
     def media_dir(self) -> Path:
-        return self.get_data_root()
+        return self._root_dir
+
+    def on_settings_changed(self, changed_keys):
+        if 'root_dir' in changed_keys:
+            new_dir = self.setting('root_dir')
+            if new_dir and Path(new_dir).is_dir():
+                self._root_dir = Path(new_dir).resolve()
 
     def _is_safe(self, rel_path: str) -> bool:
         try:
@@ -108,11 +98,3 @@ class VideoPlayerPlugin(PluginBase):
         dirs.sort(key=lambda x: x['name'].lower())
         files.sort(key=lambda x: x['name'].lower())
         return {"dirs": dirs, "files": files, "path": rel_path}
-
-    def get_settings(self) -> Dict:
-        settings = super().get_settings()
-        return {k: v for k, v in settings.items() if v is not None}
-
-    def save_settings(self, settings: Dict) -> Dict:
-        result = super().save_settings(settings)
-        return result

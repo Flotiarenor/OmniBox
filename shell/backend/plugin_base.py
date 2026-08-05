@@ -24,6 +24,9 @@ from typing import Dict, Any, Callable, List
 #    "default": 40, "min": 1, "max": 500, "help": "说明文字"}
 #   {"key": "sort_by", "label": "排序方式", "type": "select",
 #    "options": [{"label": "修改时间", "value": "mtime"}, {"label": "文件名", "value": "name"}]}
+# 可选字段：
+#   "central": False   — 不在集中设置面板显示（默认显示）
+#   "help": "..."      — 设置面板悬浮提示
 
 class PluginBase(ABC):
     # 子类覆盖：声明该插件的统一设置项
@@ -35,10 +38,13 @@ class PluginBase(ABC):
         self.name = manifest.get('name', 'unknown')
         # 由 PluginManager 注入
         self._settings_store = None
+        # PluginManager 在构造前预加载的已解决设置
+        self._resolved_config = getattr(self.__class__, '_resolved_config', {})
 
     @abstractmethod
     def register_api(self) -> Dict[str, Callable]:
         pass
+
     def get_data_root(self) -> Path:
         """返回该插件使用的数据根目录，默认使用全局配置"""
         return Path(self.config['directories']['data_root']).resolve()
@@ -47,22 +53,79 @@ class PluginBase(ABC):
         return {item.get('key'): item.get('default') for item in self.settings_schema if item.get('key')}
 
     def get_settings(self) -> Dict:
-        """从统一设置存储读取设置（合并默认值），子类可覆盖实现自定义逻辑"""
+        """从统一设置存储读取设置（合并默认值）。子类可覆盖，但必须调用 super() 以保证 on_settings_changed 检测正确"""
         stored = self._settings_store.get(self.name) if self._settings_store else {}
         return {**self._default_settings(), **stored}
 
     def save_settings(self, settings: Dict) -> Dict:
-        """校验并写入统一设置存储，子类可覆盖实现自定义逻辑"""
+        """校验、写入 SettingsStore、检测变更、调用 on_settings_changed。
+        子类一般不需要覆盖此方法——覆盖 on_settings_changed() 即可响应设置变更。"""
         if not isinstance(settings, dict):
             return {"success": False, "error": "设置必须是字典"}
+
+        old = self.get_settings()
         allowed = {item['key'] for item in self.settings_schema if item.get('key')}
         clean = {k: v for k, v in settings.items() if k in allowed} if allowed else settings
+
         if self._settings_store:
             try:
                 self._settings_store.set(self.name, clean)
             except Exception as e:
                 return {"success": False, "error": f"保存失败: {e}"}
+
+        # 检测变更并通知插件
+        changed = set()
+        for k, v in clean.items():
+            old_val = old.get(k)
+            new_val = v
+            if isinstance(old_val, float) and isinstance(new_val, (int, float)):
+                if abs(old_val - new_val) > 0.001:
+                    changed.add(k)
+            elif old_val != new_val:
+                changed.add(k)
+
+        if changed:
+            try:
+                self.on_settings_changed(changed)
+            except Exception as e:
+                print(f"[{self.name}] on_settings_changed 异常: {e}")
+
         return {"success": True}
+
+    def on_settings_changed(self, changed_keys: set):
+        """设置变更时由 save_settings 自动调用。子类覆盖此方法以响应特定设置变更。
+
+        示例:
+            def on_settings_changed(self, changed_keys):
+                if 'root_dir' in changed_keys:
+                    self._reinit(self.setting('root_dir'))
+        """
+        pass
+
+    def setting(self, key, default=None):
+        """读取单个设置项。SettingsStore（运行时）→ _resolved_config（启动时预设）→ schema.default → 传入 default"""
+        if self._settings_store:
+            stored = self._settings_store.get(self.name)
+            if key in stored:
+                return stored[key]
+        if key in self._resolved_config:
+            return self._resolved_config[key]
+        for item in self.settings_schema:
+            if item.get('key') == key:
+                return item.get('default')
+        return default
+
+    def update_setting(self, key, value):
+        """更新单个设置项（保留其他设置不变），不校验 schema 以支持运行时状态持久化"""
+        if self._settings_store:
+            current = self._settings_store.get(self.name) or {}
+            current[key] = value
+            try:
+                self._settings_store.set(self.name, current)
+                return True
+            except Exception:
+                return False
+        return False
 
     def clear_settings(self) -> Dict:
         """清空统一设置存储中的该插件设置"""
