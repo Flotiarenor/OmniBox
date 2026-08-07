@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from pathlib import Path
 from typing import Dict, List
 from datetime import datetime
@@ -9,7 +10,12 @@ from shell.backend.plugin_base import PluginBase
 try:
     from natsort import natsorted
 except ImportError:
-    natsorted = sorted
+    _NUM_RE = re.compile(r'\d+')
+    def natsorted(seq):
+        # 内置自然排序兜底：将数字零填充后按字典序比较，兼容 1/01/00001/10 等命名
+        return sorted(seq, key=lambda x: _NUM_RE.sub(lambda m: m.group(0).zfill(16), str(x)))
+
+_IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp'}
 
 
 class MangaLibraryPlugin(PluginBase):
@@ -67,9 +73,12 @@ class MangaLibraryPlugin(PluginBase):
             new_dir = self.setting('root_dir')
             if new_dir and Path(new_dir).is_dir():
                 self._apply_root_dir(Path(new_dir).resolve())
-        if 'recent_count' in changed_keys:
-            count = self.setting('recent_count', 10)
+        if 'recent_count' in changed_keys:     
+            count = self.setting('recent_count', 10)  
             try:
+                if count == None:
+                    print("[MangaLibrary] recent_count is None")
+                    raise ValueError
                 self.recent_count = max(1, min(50, int(count)))
             except (ValueError, TypeError):
                 pass
@@ -122,12 +131,26 @@ class MangaLibraryPlugin(PluginBase):
         search_dirs.append(folder_path)
 
         for d in search_dirs:
-            for prefix in ['00001', 'cover', '01']:
-                for ext in ['.jpg', '.jpeg', '.png', '.webp']:
-                    cover_file = d / f"{prefix}{ext}"
-                    if cover_file.exists():
-                        rel_path = cover_file.relative_to(self.manga_dir)
-                        return rel_path.as_posix()
+            try:
+                images = [f for f in d.iterdir()
+                          if f.is_file() and f.suffix.lower() in _IMAGE_EXTS]
+            except OSError:
+                continue
+            if not images:
+                continue
+
+            # 显式封面优先
+            for f in images:
+                if 'cover' in f.stem.lower() or '封面' in f.stem:
+                    return f.relative_to(self.manga_dir).as_posix()
+
+            # 纯数字命名的第一页（兼容 00001 / 01 / 1 / 00000 等）
+            numeric = [f for f in images if f.stem.isdigit()]
+            if numeric:
+                return natsorted(numeric)[0].relative_to(self.manga_dir).as_posix()
+
+            # 其余情况取自然序第一张
+            return natsorted(images)[0].relative_to(self.manga_dir).as_posix()
         return ""
 
     def _scan_manga(self):
