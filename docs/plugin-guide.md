@@ -69,6 +69,7 @@ plugins/
 | `dependencies` | ❌ | 依赖的其他插件名称列表 |
 | `permissions` | ❌ | 权限声明（当前仅做记录，未强制执行） |
 | `minShellVersion` | ❌ | 要求的最低 Shell 版本 |
+| `destroyOnLeave` | ❌ | `true` 时离开页面销毁 iframe 重新加载（默认保持存活） |
 
 ---
 
@@ -83,72 +84,89 @@ plugins/
 from abc import ABC, abstractmethod
 
 class PluginBase(ABC):
- def __init__(self, manifest: dict, config: dict):
- self.manifest = manifest
- self.config = config # 全局配置（config.yaml 内容）
- self.name = manifest['name']
+    def __init__(self, manifest: dict, config: dict):
+        self.manifest = manifest
+        self.config = config            # 全局配置（.config/app.yaml 内容）
+        self.name = manifest['name']
+        self._settings_store = None     # 由 PluginManager 注入
+        self._resolved_config = {}      # 构造前预加载的已解析设置
 
- @abstractmethod
- def register_api(self) -> dict:
- """返回暴露给前端的 API 字典，格式：{'method_name': callable}"""
- pass
+    @abstractmethod
+    def register_api(self) -> dict:
+        """返回暴露给前端的 API 字典，格式：{'method_name': callable}"""
+        pass
 
- def on_load(self):
- """插件加载后调用（可选）"""
- pass
+    # ===== 设置 API（框架统一实现） =====
 
- def on_unload(self):
- """插件卸载前调用（可选）"""
- pass
+    def setting(self, key, default=None):
+        """读取单个设置。优先级：SettingsStore → _resolved_config → schema.default"""
 
- def get_data_root(self) -> Path:
- """返回该插件使用的数据根目录，默认使用全局配置。
- 插件可重写此方法以支持自定义根目录。"""
- return Path(self.config['directories']['data_root']).resolve()
+    def update_setting(self, key, value):
+        """写入单个设置（保留其他设置），不校验 schema，用于运行时状态持久化"""
+
+    def save_settings(self, settings: dict) -> dict:
+        """批量保存 + 自动检测变更 + 调用 on_settings_changed()，子类一般无需覆写"""
+
+    def on_settings_changed(self, changed_keys: set):
+        """设置变更时自动调用。子类覆写此方法以响应变更（如 root_dir 变化后重建缓存）"""
+
+    def get_settings(self) -> dict:
+        """读取全部设置（schema 默认值 + 存储值合并），子类可覆写"""
+
+    # ===== 生命周期 =====
+
+    def on_load(self):
+        """插件加载后调用（可选）"""
+
+    def on_unload(self):
+        """插件卸载前调用（可选）"""
+
+    def get_data_root(self) -> Path:
+        """返回该插件使用的数据根目录，默认使用全局配置。
+        插件可重写此方法以支持自定义根目录。"""
+        return Path(self.config['directories']['data_root']).resolve()
 ```
 
 ### 3.2 编写插件类
 
 ```python
-# plugins/image-viewer/backend/main.py
+# plugins/my-plugin/backend/main.py
 from pathlib import Path
 from shell.backend.plugin_base import PluginBase
 
-class ImageViewerPlugin(PluginBase):
- def __init__(self, manifest, config):
- super().__init__(manifest, config)
- # 插件本地设置文件（持久化）
- self.settings_file = Path(__file__).parent.parent / 'settings.json'
- self._settings = self._load_settings()
- # 自定义根目录（优先使用本地设置中的 root_dir）
- self.root_dir = Path(self._settings.get('root_dir', str(self.get_data_root()))).resolve()
+class MyPlugin(PluginBase):
+    # 声明设置项：集中设置面板 + SettingsStore 持久化由框架自动处理
+    settings_schema = [
+        {"key": "root_dir", "label": "数据根目录", "type": "text", "central": True,
+         "help": "存放数据的根目录"},
+        {"key": "per_page", "label": "每页数量", "type": "number",
+         "default": 40, "min": 10, "max": 200},
+    ]
 
- def _load_settings(self) -> dict:
- if self.settings_file.exists():
- try:
- with open(self.settings_file, 'r', encoding='utf-8') as f:
- return json.load(f)
- except Exception:
- pass
- return {}
+    def __init__(self, manifest, config):
+        super().__init__(manifest, config)
+        # _resolved_config 由 PluginManager 在构造前预加载（含用户已保存的设置）
+        root = self._resolved_config.get('root_dir') or str(super().get_data_root())
+        self.root_dir = Path(root).resolve()
 
- def register_api(self) -> dict:
- return {
- 'list_images': self.list_images,
- 'list_dir': self.list_dir,
- 'delete_files': self.delete_files,
- 'move_files': self.move_files,
- 'get_settings': self.get_settings,
- 'save_settings': self.save_settings,
- 'get_root_dir': self.get_root_dir,
- 'clear_folder_settings': self.clear_folder_settings,
- }
+    def on_settings_changed(self, changed_keys):
+        """设置变更时自动调用。无需覆写 save_settings，只需响应变更。"""
+        if 'root_dir' in changed_keys:
+            new_dir = self.setting('root_dir')  # 读取最新值（SettingsStore）
+            if new_dir and Path(new_dir).is_dir():
+                self.root_dir = Path(new_dir).resolve()
+                self._list_cache.clear()  # 清缓存，让下次请求扫描新目录
 
- def list_images(self, rel_path: str = '', page: int = 1,
- per_page: int = 40, sort_by: str = 'mtime',
- sort_order: str = 'desc') -> dict:
- # 实现略...
- pass
+    def register_api(self) -> dict:
+        return {
+            'list_items': self.list_items,
+            'get_settings': self.get_settings,
+            'save_settings': self.save_settings,
+        }
+
+    def list_items(self):
+        # 使用 self.root_dir 扫描...
+        pass
 ```
 
 **关键点**：
@@ -156,6 +174,7 @@ class ImageViewerPlugin(PluginBase):
 - 方法参数和返回值必须是 JSON 可序列化的类型（dict、list、str、int、float、bool、None）。
 - 文件访问应通过 `/files/` 和 `/thumbs/` 路由（由 Shell 提供），避免直接返回本地绝对路径。
 - 插件可通过重写 `get_data_root()` 方法支持自定义数据根目录，Flask 路由会根据 `?plugin=插件名` 动态获取根目录。
+- **不要覆写 `save_settings()`**——基类已统一实现「校验 → 持久化 → 变更检测 → 调用 `on_settings_changed()`」。需要响应设置变更时，覆写 `on_settings_changed()` 即可。
 
 ### 3.3 完整 API 列表（以 image-viewer 为例）
 
@@ -283,6 +302,8 @@ openSettingsModal({
     return await Bridge.call('save_settings', values);
   },
 });
+// 注意：保存成功后框架会自动刷新页面以应用新设置（无需手动处理）
+// 若插件需要自定义保存后行为，使用 onSave 回调并在其中完成刷新
 
 // 确认对话框
 const ok = await confirmDialog('删除后不可恢复，确定？', { danger: true });
@@ -402,30 +423,82 @@ def _get_thumb(self, rel_path: str) -> Path:
 
 ## 8. 设置持久化
 
-插件可以将用户设置保存到插件目录下的 `settings.json` 文件中，实现持久化。推荐结构：
+### 8.1 存储位置
 
-```json
-{
-"root_dir": "/custom/path",
-"folders": {
- "__global__": {
- "row_height": 200,
- "per_page": 40,
- "sort_by": "mtime",
- "sort_order": "desc"
- },
- "subdir": {
- "row_height": 150
- }
-}
-}
+所有插件设置统一存储在 `.config/plugins/<插件名>.json`（由 `SettingsStore` 管理），**不要**在插件目录下创建 `settings.json` 文件。
+
+```
+.config/
+├── app.yaml                    ← 主程序配置
+└── plugins/
+    ├── music-player.json       ← 各插件设置（git 忽略）
+    └── image-viewer.json
 ```
 
-- `root_dir`：自定义数据根目录（可选）
-- `folders.__global__`：全局默认设置
-- `folders.<path>`：特定文件夹的独立设置（优先级高于全局）
+### 8.2 声明设置项
 
-后端 `get_settings` 应实现回退逻辑：硬编码默认值 → 全局设置 → 文件夹设置。
+在插件类中通过 `settings_schema` 声明设置项，框架自动完成持久化 + 集中设置面板集成：
+
+```python
+class MyPlugin(PluginBase):
+    settings_schema = [
+        {"key": "root_dir", "label": "数据根目录", "type": "text", "central": True},
+        {"key": "per_page", "label": "每页数量", "type": "number", "default": 40},
+        {"key": "sort_by", "label": "排序方式", "type": "select",
+         "options": [{"label": "修改时间", "value": "mtime"}, {"label": "文件名", "value": "name"}]},
+    ]
+```
+
+字段说明：
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `key` | ✅ | 设置键名 |
+| `label` | ✅ | 设置面板显示名 |
+| `type` | ✅ | `text` / `number` / `range` / `select` / `checkbox` / `textarea` / `folder` |
+| `default` | ❌ | 默认值（未保存过时使用） |
+| `help` | ❌ | 悬浮 `?` 提示文本（鼠标悬停显示） |
+| `central` | ❌ | `True` 在集中设置面板显示；默认仅显示 `root_dir` 或有 `central` 标记的字段 |
+| `min` / `max` / `step` | ❌ | number/range 类型约束 |
+| `options` | ❌ | select 类型的选项列表 |
+
+### 8.3 读取与写入
+
+| 场景 | 方法 |
+|------|------|
+| `__init__` 中读取 | `self._resolved_config.get('root_dir')`（构造前已预加载） |
+| 运行时读取单个 | `self.setting('root_dir')` |
+| 读取全部（合并默认值） | `self.get_settings()` |
+| 保存全部 | `self.save_settings({...})` |
+| 保存单个（运行时状态） | `self.update_setting('last_volume', 0.8)` |
+
+### 8.4 响应设置变更
+
+**不要覆写 `save_settings()`**。设置变更时，基类会自动调用 `on_settings_changed(changed_keys)`，只需覆写它：
+
+```python
+def on_settings_changed(self, changed_keys):
+    if 'root_dir' in changed_keys:
+        new_dir = self.setting('root_dir')
+        if new_dir and Path(new_dir).is_dir():
+            self.root_dir = Path(new_dir).resolve()
+            self._list_cache.clear()
+```
+
+保存设置后前端会自动刷新（集中面板 → postMessage → iframe reload；插件弹窗 → 保存后自动 reload），无需手动实现刷新逻辑。
+
+### 8.5 特殊案例：image-viewer 的 per-folder 设置
+
+image-viewer 需要在不同文件夹应用不同设置（如行高、排序），这类设置不在 `settings_schema` 中，保留在插件自己的状态文件里。它覆写了 `save_settings()` 但**必须调用 `super().save_settings(settings)`** 以保持框架的持久化 + 变更检测链路。
+
+### 8.6 运行时状态 vs 用户设置
+
+| 类型 | 存放位置 | 示例 |
+|------|---------|------|
+| 用户设置 | `.config/plugins/{name}.json` | root_dir、字号、排序方式 |
+| 运行时状态 | 数据目录 `.cache/` 或插件状态文件 | 播放进度、收藏列表、扫描缓存 |
+
+用户设置跟程序走（换机器拷贝程序即携带），运行时状态跟数据走（换数据目录自动重建）。
 
 ---
 
@@ -463,7 +536,8 @@ def _get_thumb(self, rel_path: str) -> Path:
 - **权限声明**：如实填写 `permissions`，未来版本将强制执行。
 - **版本管理**：遵循语义化版本，方便依赖解析。
 - **错误处理**：后端方法应捕获异常并返回有意义的错误信息，避免前端收到 Python 堆栈。
-- **设置持久化**：使用 `settings_schema` 声明式配置 + `PluginBase` 的 `get_settings`/`save_settings` 方法，插件自动获得 Shell 设置页面集成。
+- **设置持久化**：使用 `settings_schema` 声明式配置，设置自动存储在 `.config/plugins/<name>.json`。读取用 `setting()`，保存用 `save_settings()`，响应变更用 `on_settings_changed()`。**不要**覆写 `save_settings()`，**不要**在插件目录创建 `settings.json`。
+- **运行时状态**：播放进度、收藏、缓存等数据派生状态放在数据目录（如 `data/.cache/`），跟随数据走。
 - **性能优化**：使用内存缓存（如目录列表缓存、聚合元数据缓存）减少 I/O，提升响应速度。
 
 ---
