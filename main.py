@@ -14,16 +14,37 @@ See the License for the specific language governing permissions and
 limitations under the License.
 '''
 
-import os, sys, time, yaml, webview, threading
+import os, sys, time, yaml, webview, threading, shutil
 from pathlib import Path
 from shell.backend.file_server import create_app
 from shell.backend.plugin_manager import PluginManager
 
-def load_config():
+DEFAULT_CONFIG = {
+    'server': {'host': '127.0.0.1', 'port': 18080},
+    'directories': {'data_root': './data'},
+}
+
+def _app_dir() -> Path:
     if getattr(sys, 'frozen', False):
-        cfg_path = Path(sys._MEIPASS) / '.config' / 'app.yaml'
-    else:
-        cfg_path = Path('.config') / 'app.yaml'
+        return Path(sys.executable).resolve().parent
+    return Path.cwd()
+
+def load_config():
+    app_dir = _app_dir()
+    cfg_path = app_dir / '.config' / 'app.yaml'
+
+    # 缺失时：尝试从旧 config.yaml 迁移，否则创建默认配置
+    if not cfg_path.exists():
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        old_path = app_dir / 'config.yaml'
+        if old_path.exists():
+            shutil.copy(old_path, cfg_path)
+            print(f"[OmniBox] 迁移配置: config.yaml → {cfg_path}")
+        else:
+            with open(cfg_path, 'w', encoding='utf-8') as f:
+                yaml.safe_dump(DEFAULT_CONFIG, f, allow_unicode=True, sort_keys=False)
+            print(f"[OmniBox] 创建默认配置: {cfg_path}")
+
     with open(cfg_path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
