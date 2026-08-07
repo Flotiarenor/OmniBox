@@ -36,9 +36,9 @@ def collect_data_files():
     datas = []
 
     # 配置文件（绝对路径）
-    config_file = PROJECT_ROOT / 'config.yaml'
+    config_file = PROJECT_ROOT / '.config' / 'app.yaml'
     if config_file.exists():
-        datas += [(str(config_file), '.')]   # 打包到根目录
+        datas += [(str(config_file), '.config')]   # 打包到 .config/app.yaml
 
 # 前端构建产物 -- 以 PROJECT_ROOT 为基准，保持完整相对路径
     frontend_dist = PROJECT_ROOT / 'shell' / 'frontend' / 'dist'
