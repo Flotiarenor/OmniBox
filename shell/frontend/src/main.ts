@@ -5,8 +5,11 @@ import App from './App.vue'
 import { createRouter } from './router'
 import { useBridge } from './core/bridge'
 import './styles/shell.css'  // 引入 Shell 样式
+import { applyStoredAppearance } from './core/appearance'
 
 async function bootstrap() {
+  // 在挂载 Vue 前恢复主题/自定义颜色，确保插件 iframe 首次加载时就能同步到。
+  applyStoredAppearance()
   const bridge = useBridge()
   await bridge.init()
 

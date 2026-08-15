@@ -3,6 +3,25 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script>
+    // 首屏前恢复持久化的主题/自定义颜色，避免闪烁；完整逻辑见 src/core/appearance.ts。
+    (function () {
+      try {
+        var theme = localStorage.getItem('omni-theme');
+        if (theme === 'light' || theme === 'dark') {
+          document.documentElement.setAttribute('data-theme', theme);
+        }
+        var colors = localStorage.getItem('omni-custom-colors');
+        if (colors) {
+          var map = JSON.parse(colors);
+          Object.keys(map).forEach(function (key) {
+            document.documentElement.style.setProperty(key, map[key]);
+          });
+          document.documentElement.setAttribute('data-custom-colors', colors);
+        }
+      } catch (e) {}
+    })();
+  </script>
   <title>OmniBox</title>
   <link rel="stylesheet" href="/shell/variables.css">
   <style>html, body {margin: 0;padding: 0}</style>

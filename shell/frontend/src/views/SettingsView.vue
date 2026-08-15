@@ -4,6 +4,7 @@ import { onMounted, reactive, ref, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useBridge } from '../core/bridge'
 import { toastError, toastSuccess } from '../core/toast'
+import { applyStoredAppearance } from '../core/appearance'
 
 interface SchemaField {
   key: string; label?: string; type?: string; default?: unknown
@@ -123,6 +124,7 @@ function resetColors() {
   persistCustomColors()
 }
 function loadCustomColors() {
+  applyStoredAppearance()
   const saved = localStorage.getItem('omni-custom-colors')
   if (saved) {
     try {

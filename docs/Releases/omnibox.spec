@@ -20,6 +20,7 @@ EXCLUDES = []
 
 # ── 需要手动包含的隐藏模块 ──────────────────────────────────────────
 HIDDEN_IMPORTS = [
+    'shell.backend.paths',
     'shell.backend.plugin_base',
     'shell.backend.plugin_manager',
     'shell.backend.settings_store',
