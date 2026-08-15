@@ -23,9 +23,10 @@ backend 包 - 插件化后端核心
 - create_app   : Flask 应用工厂（位于 file_server 模块）
 
 典型用法:
-    from backend import PluginManager, create_app
+    from shell.backend import PluginManager, create_app
+    from shell.backend.paths import get_plugin_search_dirs
 
-    manager = PluginManager(plugins_dir='./plugins', config=config)
+    manager = PluginManager([str(p) for p in get_plugin_search_dirs()], config=config)
     manager.load_all()
     app = create_app(config, manager)
     app.run()

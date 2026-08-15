@@ -36,12 +36,11 @@ HIDDEN_IMPORTS = [
 def collect_data_files():
     datas = []
 
-    # 配置文件（绝对路径）
-    config_file = PROJECT_ROOT / '.config' / 'app.yaml'
-    if config_file.exists():
-        datas += [(str(config_file), '.config')]   # 打包到 .config/app.yaml
+    # 注意：不要把开发机的 .config/app.yaml 打进去。
+    # frozen 运行时配置位于 <exe旁>/.config（或 APPDATA/OmniBox/.config），
+    # 首次启动由 main.load_config() 生成默认 app.yaml。
 
-# 前端构建产物 -- 以 PROJECT_ROOT 为基准，保持完整相对路径
+    # 前端构建产物 -- 以 PROJECT_ROOT 为基准，保持完整相对路径
     frontend_dist = PROJECT_ROOT / 'shell' / 'frontend' / 'dist'
     if frontend_dist.exists():
         for f in frontend_dist.rglob('*'):
