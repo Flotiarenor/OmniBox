@@ -26,9 +26,7 @@ class ImageViewerPlugin(PluginBase):
 
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
-        self.settings_file = Path(__file__).parent.parent / 'settings.json'
-        self._settings = {}
-        root = self._resolved_config.get('root_dir') or str(super().get_data_root())
+        root = self.setting('root_dir') or str(super().get_data_root())
         self.root_dir = Path(root).resolve()
         self.cache_dir = self.root_dir / '.cache'
         self.thumb_dir = self.cache_dir / 'thumbs'
@@ -36,22 +34,6 @@ class ImageViewerPlugin(PluginBase):
         self.thumb_dir.mkdir(parents=True, exist_ok=True)
         self._meta_cache = self._load_meta()
         self._list_cache = {}
-
-    def _load_settings(self) -> dict:
-        if self.settings_file.exists():
-            try:
-                with open(self.settings_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception:
-                pass
-        return {}
-
-    def _save_settings_to_file(self):
-        try:
-            with open(self.settings_file, 'w', encoding='utf-8') as f:
-                json.dump(self._settings, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            print(f"[ImageViewer] 保存设置失败: {e}")
 
     def _load_meta(self) -> dict:
         if self.meta_file.exists():
@@ -256,7 +238,9 @@ class ImageViewerPlugin(PluginBase):
         return {"moved": moved, "errors": errors}
 
     def get_settings(self, rel_path: str = '') -> Dict:
-        folders = self._settings.get('folders', {})
+        folders = self.setting('folders') or {}
+        if not isinstance(folders, dict):
+            folders = {}
         global_settings = folders.get('__global__', {})
         hard_defaults = {
             "row_height": 200,
@@ -271,17 +255,20 @@ class ImageViewerPlugin(PluginBase):
         return result
 
     def save_settings(self, rel_path='', settings=None) -> Dict:
-        """兼容两种调用。标准字段走 super() 触发 on_settings_changed，per-folder 走旧文件。"""
+        """兼容两种调用。全局设置走 super()；per-folder 设置只写入 folders，避免污染全局。"""
         if settings is None:
             settings = rel_path or {}
             rel_path = ''
-        # 标准字段走 SettingsStore，触发 on_settings_changed
-        result = super().save_settings(settings)
-        if 'folders' not in self._settings:
-            self._settings['folders'] = {}
+        result = {"success": True}
         key = rel_path or '__global__'
-        self._settings['folders'][key] = settings
-        self._save_settings_to_file()
+        if not rel_path:
+            # 标准字段走 SettingsStore，触发 on_settings_changed
+            result = super().save_settings(settings)
+        folders = self.setting('folders') or {}
+        if not isinstance(folders, dict):
+            folders = {}
+        folders[key] = settings
+        self.update_setting('folders', folders)
         return result
 
     def on_settings_changed(self, changed_keys):
@@ -298,7 +285,8 @@ class ImageViewerPlugin(PluginBase):
 
     def clear_folder_settings(self, rel_path: str) -> Dict:
         """删除指定文件夹的独立设置，使其回退到全局设置"""
-        if 'folders' in self._settings and rel_path in self._settings['folders']:
-            del self._settings['folders'][rel_path]
-            self._save_settings_to_file()
+        folders = self.setting('folders') or {}
+        if isinstance(folders, dict) and rel_path in folders:
+            del folders[rel_path]
+            self.update_setting('folders', folders)
         return {"success": True}

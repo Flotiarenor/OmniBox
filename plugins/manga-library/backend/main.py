@@ -28,10 +28,8 @@ class MangaLibraryPlugin(PluginBase):
 
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
-        self.settings_file = Path(__file__).parent.parent / 'settings.json'
-        self._settings = {}
-        root = self._resolved_config.get('root_dir') or str(super().get_data_root())
-        self.recent_count = int(self._resolved_config.get('recent_count', 10))
+        root = self.setting('root_dir') or str(super().get_data_root())
+        self.recent_count = int(self.setting('recent_count', 10))
         self.manga_dir = Path(root).resolve()
         self.cover_dir = self.manga_dir / '.cache' / 'covers'
         self.cover_dir.mkdir(parents=True, exist_ok=True)
@@ -46,21 +44,7 @@ class MangaLibraryPlugin(PluginBase):
 
     # ===== 设置持久化 =====
 
-    def _load_settings(self) -> dict:
-        if self.settings_file.exists():
-            try:
-                with open(self.settings_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception:
-                pass
-        return {}
 
-    def _save_settings_to_file(self):
-        try:
-            with open(self.settings_file, 'w', encoding='utf-8') as f:
-                json.dump(self._settings, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            print(f"[MangaLibrary] 保存设置失败: {e}")
 
     def get_settings(self) -> Dict:
         return {

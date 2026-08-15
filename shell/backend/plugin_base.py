@@ -28,6 +28,10 @@ from typing import Dict, Any, Callable, List
 #   "central": False   — 不在集中设置面板显示（默认显示）
 #   "help": "..."      — 设置面板悬浮提示
 
+# 注意：docs/adapter-spec.md 中描述的 adapter_* 方法目前处于规划阶段，
+# 尚未在本基类实现；adapter_process.py 也不应提前引入。
+
+
 class PluginBase(ABC):
     # 子类覆盖：声明该插件的统一设置项
     settings_schema: List[Dict] = []

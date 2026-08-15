@@ -177,9 +177,7 @@ class NovelReaderPlugin(PluginBase):
 
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
-        self.settings_file = Path(__file__).parent.parent / 'settings.json'
-        self._settings = {}
-        root = self._resolved_config.get('root_dir') or str(super().get_data_root())
+        root = self.setting('root_dir') or str(super().get_data_root())
         self.novel_dir = str(Path(root).resolve())
 
         self._cache_dir = os.path.join(self.novel_dir, '.novel_state')
@@ -199,21 +197,7 @@ class NovelReaderPlugin(PluginBase):
 
     # ===== 设置持久化 =====
 
-    def _load_settings(self) -> dict:
-        if self.settings_file.exists():
-            try:
-                with open(self.settings_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception:
-                pass
-        return {}
 
-    def _save_settings_to_file(self):
-        try:
-            with open(self.settings_file, 'w', encoding='utf-8') as f:
-                json.dump(self._settings, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            print(f"[NovelReader] 保存设置失败: {e}")
 
     def on_settings_changed(self, changed_keys):
         if 'root_dir' in changed_keys:
