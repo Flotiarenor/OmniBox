@@ -1,7 +1,7 @@
 # OmniBox 外部程序接入规范（Adapter Spec）
 
-> 版本：**v1.0（方向定稿）**
-> 状态：接入规范定稿。外部程序按自身形态选择接入方式，见 §3；各外部程序的接入实例见 `docs/adapter-guide.md`。
+> 版本：**v1.0（RFC）**
+> 状态：**规划中，尚未实装（RFC）**。当前代码中没有 `shell/backend/adapter_process.py`，`PluginBase` 没有 `adapter_*` 方法，`PluginManager` 也不处理 `kind: "local-adapter"`。本文档只描述未来实现目标，当前不要按此开发。
 > 适用对象：任何希望作为 OmniBox 插件被接入的**外部大型程序**（独立项目、独立 venv、独立可运行，如 ALAS、战报识别系统）。
 > 参考原型：**AzurLaneAutoScript（ALAS）**——控制台 + 独立引擎进程，以「文件/数据库契约 + 进程生命周期 + 日志流 + 状态轮询」弱耦合，验证了管理类重系统接入无需协议握手。
 > 相关文档：
@@ -154,6 +154,9 @@
 ---
 
 ## 5. OmniBox 侧基建接口（shell/backend/adapter_process.py）
+
+> **状态：未实装。** 本节的 `adapter_process.py`、`PluginBase.adapter_*` 均为规划接口；只有真正开始做进程桥时再创建对应文件。
+
 
 ```python
 class AdapterProcessError(Exception):

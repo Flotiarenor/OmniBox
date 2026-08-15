@@ -21,6 +21,10 @@ from typing import Dict, List, Callable
 from shell.backend.settings_store import SettingsStore
 from shell.backend.paths import get_plugins_config_dir
 
+# kind: "local-adapter" 与 docs/adapter-spec.md 描述的外部程序接入能力尚未实装，
+# 该字段目前只在规范检查器中作为“规划中”提示，不会影响加载行为。
+
+
 
 def _resolve_config_dir() -> Path:
     return get_plugins_config_dir()
@@ -62,32 +66,40 @@ class PluginManager:
     # ---------- 设置迁移 ----------
 
     def _migrate_settings(self, plugin_name: str):
-        new_file = self._config_dir / f'{plugin_name}.json'
-        if new_file.exists():
-            return
+        """把旧设置迁入 SettingsStore 并删除旧文件。
 
-        # 查找旧设置文件
+        - 新设置文件已存在时也继续处理旧文件：合并后删除，避免插件目录里
+          残留 settings.json（新值优先，旧值补缺）。
+        - 支持插件目录 settings.json 和旧 data/.settings/<plugin>.json。
+        """
+        new_file = self._config_dir / f'{plugin_name}.json'
+        current = self._settings_store.get(plugin_name)
+
+        # 插件目录里的 settings.json 比 data/.settings 更接近当前版本，先处理。
+        plugin_dir = self._plugin_dirs.get(plugin_name)
+        legacy_plugin_file = (plugin_dir / 'settings.json') if plugin_dir else (self.plugins_dir / plugin_name / 'settings.json')
         old_paths = [
+            legacy_plugin_file,
             self._old_settings_dir / f'{plugin_name}.json',
-            self._plugin_dirs.get(plugin_name, self.plugins_dir) / plugin_name / 'settings.json',
         ]
         for old_file in old_paths:
             if not old_file.exists():
                 continue
             try:
                 with open(old_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                if isinstance(data, dict) and data:
-                    new_file.parent.mkdir(parents=True, exist_ok=True)
-                    with open(new_file, 'w', encoding='utf-8') as f:
-                        json.dump(data, f, indent=2, ensure_ascii=False)
-                    old_file.unlink()
-                    print(f"[PluginManager] 迁移设置: {old_file} → {new_file}")
-                elif isinstance(data, dict):
-                    old_file.unlink()
+                    old_data = json.load(f)
+                if not isinstance(old_data, dict):
+                    print(f"[PluginManager] 忽略格式错误的旧设置: {old_file}")
+                    continue
+                # 旧值补缺，SettingsStore 中已有值优先。
+                merged = {**old_data, **current}
+                if old_data or merged != current:
+                    self._settings_store.set(plugin_name, merged)
+                    current = merged
+                old_file.unlink()
+                print(f"[PluginManager] 迁移设置: {old_file} → {new_file}")
             except Exception as e:
                 print(f"[PluginManager] 迁移设置失败 {plugin_name}: {e}")
-            break
 
     # ---------- API ----------
 
