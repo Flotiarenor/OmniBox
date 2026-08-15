@@ -25,6 +25,13 @@ def _get_shell_dir() -> Path:
 
 _SHELL_DIR = _get_shell_dir()
 
+def _is_safe_path(full_path: Path, root: Path) -> bool:
+    """路径包含检查：必须位于 root 内，避免字符串前缀误判。"""
+    try:
+        return full_path.is_relative_to(root)
+    except ValueError:
+        return False
+
 def create_app(config, plugin_manager):
     app = Flask(__name__)
     frontend_dist = _SHELL_DIR / 'frontend' / 'dist'
@@ -42,18 +49,20 @@ def create_app(config, plugin_manager):
     def serve_file(filepath):
         # 获取插件名（从查询参数）
         plugin_name = request.args.get('plugin', '')
+        instance = plugin_manager.get_plugin_instance(plugin_name) if plugin_name else None
         
         # 确定根目录
         if plugin_name and plugin_name in plugin_manager._instances:
-            data_root = plugin_manager._instances[plugin_name].get_data_root()
+            data_root = instance.get_data_root()
         else:
             # 回退到全局根目录
             data_root = Path(config['directories']['data_root']).resolve()
+        data_root = Path(data_root).resolve()
         
         # 安全检查
         try:
             full_path = (data_root / filepath).resolve()
-            if not str(full_path).startswith(str(data_root)):
+            if not _is_safe_path(full_path, data_root):
                 abort(403)
         except Exception:
             abort(400)
@@ -65,17 +74,21 @@ def create_app(config, plugin_manager):
     @app.route('/thumbs/<path:filepath>')
     def serve_thumb(filepath):
         plugin_name = request.args.get('plugin', '')
+        instance = plugin_manager.get_plugin_instance(plugin_name) if plugin_name else None
         if plugin_name and plugin_name in plugin_manager._instances:
-            thumb_dir = plugin_manager._instances[plugin_name].thumb_dir
+            thumb_dir = getattr(instance, 'thumb_dir', None) if instance is not None else None
+            if thumb_dir is None:
+                thumb_dir = instance.get_data_root() / '.cache' / 'thumbs'
         else:
             # 回退到全局缩略图目录（通常不存在）
             data_root = Path(config['directories']['data_root']).resolve()
             thumb_dir = data_root / '.cache' / 'thumbs'
+        thumb_dir = Path(thumb_dir).resolve()
         
         # 安全检查
         try:
             full_path = (thumb_dir / filepath).resolve()
-            if not str(full_path).startswith(str(thumb_dir)):
+            if not _is_safe_path(full_path, thumb_dir):
                 abort(403)
         except Exception:
             abort(400)
@@ -91,7 +104,10 @@ def create_app(config, plugin_manager):
 
     @app.route('/plugins/<plugin_name>/frontend/<path:filename>')
     def serve_plugin_frontend(plugin_name, filename):
-        plugin_dir = plugin_manager.plugins_dir / plugin_name / 'frontend'
+        plugin_root = plugin_manager.get_plugin_dir(plugin_name)
+        if not plugin_root:
+            abort(404)
+        plugin_dir = plugin_root / 'frontend'
         if not plugin_dir.exists():
             abort(404)
         if filename == 'index.html':
