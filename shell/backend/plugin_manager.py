@@ -13,22 +13,16 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 '''
-import os
-import sys
 import json
-import importlib
+import importlib.util
 from pathlib import Path
 from collections import deque
 from typing import Dict, List, Callable
-import importlib.util
-import importlib.machinery
 from shell.backend.settings_store import SettingsStore
 from shell.backend.paths import get_plugins_config_dir
 
 
 def _resolve_config_dir() -> Path:
-    if getattr(sys, 'frozen', False):
-        return get_plugins_config_dir()
     return get_plugins_config_dir()
 
 
@@ -154,7 +148,9 @@ class PluginManager:
                 try:
                     with open(mf_path, 'r', encoding='utf-8') as f:
                         data = json.load(f)
-                except (json.JSONDecodeError, OSError) as e:
+                except Exception as e:
+                    # 任何损坏的 manifest（非法 JSON、非 UTF-8 编码、读取失败等）
+                    # 只影响当前插件，不能中断整批插件加载。
                     print(f"[PluginManager] 跳过 {folder_name}: manifest 读取失败: {e}")
                     continue
 
@@ -191,6 +187,12 @@ class PluginManager:
                     print(f"[PluginManager] 跳过 {folder_name}: backend.entry / backend.class 缺失或无效")
                     continue
 
+                dependencies = data.get('dependencies', [])
+                if (not isinstance(dependencies, list)
+                        or not all(isinstance(dep, str) and dep.strip() for dep in dependencies)):
+                    print(f"[PluginManager] 跳过 {folder_name}: dependencies 必须是字符串数组")
+                    continue
+
                 if manifest_name in manifests:
                     print(f"[PluginManager] 跳过重复插件 {manifest_name} (来源: {root})")
                     continue
@@ -207,20 +209,53 @@ class PluginManager:
         return manifests
 
     def _resolve_dependencies(self, manifests: dict) -> List[str]:
-        in_degree = {name: 0 for name in manifests}
-        for name, m in manifests.items():
-            for dep in m.get('dependencies', []):
-                if dep in in_degree:
-                    in_degree[name] += 1
+        """拓扑排序依赖：被依赖的插件先加载。
 
-        queue = deque([name for name, deg in in_degree.items() if deg == 0])
-        order = []
+        对缺失依赖给出告警但不阻断；存在循环依赖时先加载无环部分，
+        再把剩余插件按名称排序兜底加载。
+        """
+        dependency_of: Dict[str, List[str]] = {}
+        for name, m in manifests.items():
+            deps = m.get('dependencies', [])
+            resolved = []
+            for dep in deps:
+                if dep == name:
+                    print(f"[PluginManager] 插件 {name} 依赖自身，已忽略该依赖")
+                    continue
+                if dep in manifests:
+                    resolved.append(dep)
+            # 去重，保持声明顺序
+            dependency_of[name] = list(dict.fromkeys(resolved))
+
+        dependents: Dict[str, set] = {name: set() for name in manifests}
+        for name, deps in dependency_of.items():
+            for dep in deps:
+                dependents[dep].add(name)
+
+        in_degree = {name: len(dependency_of[name]) for name in manifests}
+        queue = deque(sorted(name for name, degree in in_degree.items() if degree == 0))
+        order: List[str] = []
         while queue:
-            curr = queue.popleft()
-            order.append(curr)
-        for name in manifests:
-            if name not in order:
-                order.append(name)
+            current = queue.popleft()
+            order.append(current)
+            for dependent in sorted(dependents[current]):
+                in_degree[dependent] -= 1
+                if in_degree[dependent] == 0:
+                    queue.append(dependent)
+
+        if len(order) != len(manifests):
+            cyclic = sorted(set(manifests) - set(order))
+            print(f"[PluginManager] 检测到循环依赖，无法完全排序: {', '.join(cyclic)}")
+            order.extend(cyclic)
+
+        missing = {
+            name: [dep for dep in m.get('dependencies', []) if dep not in manifests]
+            for name, m in manifests.items()
+        }
+        missing = {name: deps for name, deps in missing.items() if deps}
+        for name, unknown in sorted(missing.items()):
+            print(f"[PluginManager] 插件 {name} 声明了不存在的依赖: {', '.join(unknown)}")
+
         return order
 
     def _load_plugin(self, name: str, manifest: dict):
