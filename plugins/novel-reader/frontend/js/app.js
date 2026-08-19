@@ -28,13 +28,15 @@ class NovelReader {
         this._lastSavedPosition = -1;
 
         this._dom = {};
+        this.settings = null;
     }
 
     async init() {
         this._cacheDom();
         this._bindEvents();
         this._bindSettingsButton();
-        this._loadSettings();
+        this.settings = new ReaderSettingsStore(this);
+        this.settings.load();
         await this._loadNovels();
     }
 
@@ -142,21 +144,21 @@ class NovelReader {
             this._dom.fontSizeSlider.addEventListener('input', (e) => {
                 this.fontSize = parseInt(e.target.value);
                 if (this._dom.fontSizeValue) this._dom.fontSizeValue.textContent = this.fontSize;
-                this._applySettings();
+                this.settings.apply();
             });
         }
         if (this._dom.lineHeightSlider) {
             this._dom.lineHeightSlider.addEventListener('input', (e) => {
                 this.lineHeight = parseFloat(e.target.value);
                 if (this._dom.lineHeightValue) this._dom.lineHeightValue.textContent = this.lineHeight.toFixed(1);
-                this._applySettings();
+                this.settings.apply();
             });
         }
         if (this._dom.letterSpacingSlider) {
             this._dom.letterSpacingSlider.addEventListener('input', (e) => {
                 this.letterSpacing = parseFloat(e.target.value);
                 if (this._dom.letterSpacingValue) this._dom.letterSpacingValue.textContent = `${this.letterSpacing}px`;
-                this._applySettings();
+                this.settings.apply();
             });
         }
         if (this._dom.themeSelect) {
@@ -165,19 +167,19 @@ class NovelReader {
                 const isCustom = this.theme === 'custom';
                 if (this._dom.customColorLabel) this._dom.customColorLabel.style.display = isCustom ? 'inline-flex' : 'none';
                 if (this._dom.customTextLabel) this._dom.customTextLabel.style.display = isCustom ? 'inline-flex' : 'none';
-                this._applySettings();
+                this.settings.apply();
             });
         }
         if (this._dom.bgColorInput) {
             this._dom.bgColorInput.addEventListener('change', (e) => {
                 this.bgColor = e.target.value;
-                this._applySettings();
+                this.settings.apply();
             });
         }
         if (this._dom.textColorInput) {
             this._dom.textColorInput.addEventListener('change', (e) => {
                 this.textColor = e.target.value;
-                this._applySettings();
+                this.settings.apply();
             });
         }
         if (this._dom.encodingSelect) {
@@ -310,7 +312,7 @@ class NovelReader {
                 <div class="novel-shelf-author">${Utils.escapeHtml(novel.author)}</div>
                 <div class="novel-shelf-meta">
                     <span>${novel.chapter_count || '?'} 章</span>
-                    <span class="novel-shelf-progress">${Math.round(novel.progress * 100)}%</span>
+                    <span class="novel-shelf-progress">${Math.round((novel.progress || 0) * 100)}%</span>
                 </div>
             </div>
         `).join('');
@@ -336,7 +338,8 @@ class NovelReader {
             this.chapters = result.chapters || [];
 
             if (this.currentNovel) {
-                this.currentChapterIndex = this.currentNovel.last_read_chapter || 0;
+                const savedChapter = this.currentNovel.last_read_chapter || 0;
+                this.currentChapterIndex = Math.max(0, Math.min(savedChapter, this.chapters.length - 1));
                 this._progressVersion = this.currentNovel.version || 0;
             } else {
                 this.currentChapterIndex = 0;
@@ -546,12 +549,7 @@ class NovelReader {
     }
 
     _formatContent(text) {
-        if (!text) return '';
-        const paragraphs = text
-            .split('\n')
-            .filter(line => line.trim())
-            .map(line => `<p>${Utils.escapeHtml(line.trim())}</p>`);
-        return paragraphs.join('');
+        return NovelUtils.formatContent(text);
     }
 
     _updateProgressBar() {
@@ -595,67 +593,6 @@ class NovelReader {
         });
         const active = list.querySelector('.novel-chapter-item.active');
         if (active) active.scrollIntoView({ block: 'nearest' });
-    }
-
-    _applySettings() {
-        const contentArea = this._dom.contentArea;
-        if (!contentArea) return;
-        contentArea.style.setProperty('--reader-font-size', `${this.fontSize}px`);
-        contentArea.style.setProperty('--reader-line-height', this.lineHeight);
-        contentArea.style.setProperty('--reader-letter-spacing', `${this.letterSpacing}px`);
-        if (this.theme === 'custom') {
-            contentArea.style.setProperty('--reader-bg-color', this.bgColor);
-            contentArea.style.setProperty('--reader-text-color', this.textColor);
-            contentArea.className = 'novel-content-area';
-        } else {
-            contentArea.className = `novel-content-area theme-${this.theme}`;
-        }
-        this._saveSettings();
-    }
-
-    _saveSettings() {
-        const settings = {
-            fontSize: this.fontSize,
-            lineHeight: this.lineHeight,
-            letterSpacing: this.letterSpacing,
-            theme: this.theme,
-            bgColor: this.bgColor,
-            textColor: this.textColor,
-            encoding: this.encoding
-        };
-        localStorage.setItem('novel-reader-settings', JSON.stringify(settings));
-    }
-
-    _loadSettings() {
-        try {
-            const saved = localStorage.getItem('novel-reader-settings');
-            if (saved) {
-                const settings = JSON.parse(saved);
-                this.fontSize = settings.fontSize || 16;
-                this.lineHeight = settings.lineHeight || 1.8;
-                this.letterSpacing = settings.letterSpacing || 0;
-                this.theme = settings.theme || 'light';
-                this.bgColor = settings.bgColor || '#ffffff';
-                this.textColor = settings.textColor || '#1a1a1a';
-                this.encoding = settings.encoding || 'auto';
-            }
-        } catch (e) {
-            console.error('加载设置失败:', e);
-        }
-        if (this._dom.fontSizeSlider) this._dom.fontSizeSlider.value = this.fontSize;
-        if (this._dom.fontSizeValue) this._dom.fontSizeValue.textContent = this.fontSize;
-        if (this._dom.lineHeightSlider) this._dom.lineHeightSlider.value = this.lineHeight;
-        if (this._dom.lineHeightValue) this._dom.lineHeightValue.textContent = this.lineHeight.toFixed(1);
-        if (this._dom.letterSpacingSlider) this._dom.letterSpacingSlider.value = this.letterSpacing;
-        if (this._dom.letterSpacingValue) this._dom.letterSpacingValue.textContent = `${this.letterSpacing}px`;
-        if (this._dom.themeSelect) this._dom.themeSelect.value = this.theme;
-        if (this._dom.bgColorInput) this._dom.bgColorInput.value = this.bgColor;
-        if (this._dom.textColorInput) this._dom.textColorInput.value = this.textColor;
-        if (this._dom.encodingSelect) this._dom.encodingSelect.value = this.encoding;
-        const isCustom = this.theme === 'custom';
-        if (this._dom.customColorLabel) this._dom.customColorLabel.style.display = isCustom ? 'inline-flex' : 'none';
-        if (this._dom.customTextLabel) this._dom.customTextLabel.style.display = isCustom ? 'inline-flex' : 'none';
-        this._applySettings();
     }
 
     _getCurrentChapterIndexFromScroll() {

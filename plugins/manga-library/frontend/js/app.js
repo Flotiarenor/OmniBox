@@ -87,9 +87,11 @@ class MangaLibrary {
         try {
             const isFav = await Bridge.call('manga_toggle_favorite', folderName);
             // 手动更新DOM，避免重新渲染整个列表导致闪烁
-            document.querySelectorAll(`.fav-star[data-folder="${folderName}"]`).forEach(el => {
-                el.classList.toggle('active', isFav);
-                el.textContent = isFav ? '★' : '☆';
+            document.querySelectorAll('.fav-star').forEach(el => {
+                if (el.dataset.folder === folderName) {
+                    el.classList.toggle('active', isFav);
+                    el.textContent = isFav ? '★' : '☆';
+                }
             });
             // 静默刷新收藏和最近阅读列表数据
             const state = await Bridge.call('manga_get_state');
@@ -201,9 +203,11 @@ class MangaLibrary {
                 const isFav = await Bridge.call('manga_toggle_favorite', folderName);
                 favBtn.className = `btn btn-fav ${isFav ? 'is-fav' : ''}`;
                 favBtn.textContent = isFav ? '★ 已收藏' : '☆ 收藏';
-                document.querySelectorAll(`.fav-star[data-folder="${folderName}"]`).forEach(el => {
-                    el.classList.toggle('active', isFav);
-                    el.textContent = isFav ? '★' : '☆';
+                document.querySelectorAll('.fav-star').forEach(el => {
+                    if (el.dataset.folder === folderName) {
+                        el.classList.toggle('active', isFav);
+                        el.textContent = isFav ? '★' : '☆';
+                    }
                 });
             };
             this.renderDetailInfo(detail.info);
@@ -261,77 +265,5 @@ class MangaLibrary {
                 console.error('搜索失败', e);
             }
         }, 300));
-    }
-}
-
-class MangaReader {
-    constructor() {
-        this.container = document.getElementById('manga-reader-container');
-        this.pages = [];
-        this.currentIndex = 0;
-        this._bindEvents();
-    }
-
-    open(pages, startIndex = 0) {
-        this.pages = pages;
-        this.currentIndex = startIndex || 0;
-        this.container.style.display = 'flex';
-        this.renderPage();
-    }
-
-    close() {
-        this.container.style.display = 'none';
-        this.container.querySelector('img').src = '';
-    }
-
-    renderPage() {
-        const img = this.container.querySelector('img');
-
-        if (this.currentIndex >= 0 && this.currentIndex < this.pages.length) {
-            const pageUrl = this.pages[this.currentIndex];
-            img.src = pageUrl.startsWith('http') ? pageUrl : Bridge.originalUrl(pageUrl);
-        }
-
-        const info = this.container.querySelector('.reader-info');
-        info.textContent = `${this.currentIndex + 1} / ${this.pages.length}`;
-    }
-
-    prev() {
-        if (this.currentIndex > 0) {
-            this.currentIndex--;
-            this.renderPage();
-        }
-    }
-
-    next() {
-        if (this.currentIndex < this.pages.length - 1) {
-            this.currentIndex++;
-            this.renderPage();
-        }
-    }
-
-    _bindEvents() {
-        this.container.querySelector('.reader-close').addEventListener('click', () => this.close());
-        this.container.querySelector('.reader-prev').addEventListener('click', () => this.prev());
-        this.container.querySelector('.reader-next').addEventListener('click', () => this.next());
-
-        // 鼠标左键点击阅读区 -> 向后翻页
-        const wrapper = this.container.querySelector('.reader-image-wrapper');
-        wrapper.addEventListener('click', (e) => {
-            if (e.target.closest('.reader-arrow')) return;
-            this.next();
-        });
-
-        document.addEventListener('keydown', (e) => {
-            if (this.container.style.display !== 'flex') return;
-            if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
-            if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'a' || e.key === 'w') this.prev();
-            if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === 'd' || e.key === 's') this.next();
-            if (e.key === ' ' || e.key === 'Spacebar') {
-                e.preventDefault();
-                this.next();
-            }
-            if (e.key === 'Escape') this.close();
-        });
     }
 }

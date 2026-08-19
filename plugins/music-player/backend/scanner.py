@@ -1,21 +1,14 @@
 import os
 import json
 import time
-import importlib.util
 from pathlib import Path
 from typing import Dict, List, Optional
+from shell.backend.plugin_utils import load_sibling
 
 
-def _load_sibling(name):
-    path = Path(__file__).parent / f'{name}.py'
-    spec = importlib.util.spec_from_file_location(f'music_player_{name}', str(path))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
-
-_models = _load_sibling('models')
-_metadata = _load_sibling('metadata')
+_models = load_sibling(__file__, 'models', 'music_player')
+_metadata = load_sibling(__file__, 'metadata', 'music_player')
 
 SongMeta = _models.SongMeta
 AlbumMeta = _models.AlbumMeta

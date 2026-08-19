@@ -10,6 +10,7 @@ class VideoPlayer {
         this.isVideo = true;
         this.playMode = 0;
         this.progressSaveInterval = null;
+        this.volume = 1;
         this.isFullscreen = false;
         this.hideTimer = null;
         this.controlsVisible = true;
@@ -79,9 +80,7 @@ class VideoPlayer {
             if (realIndex === this.currentIndex) {
                 item.classList.add('active');
             }
-            const ext = file.name.split('.').pop().toLowerCase();
-            const videoExts = ['mp4', 'mkv', 'webm', 'avi', 'mov', 'flv', 'wmv'];
-            const icon = videoExts.includes(ext) ? '🎬' : '🎵';
+            const icon = VideoUtils.isVideoName(file.name) ? '🎬' : '🎵';
             item.innerHTML = `<span class="file-icon">${icon}</span>${file.name}`;
             item.title = file.name;
             item.addEventListener('click', () => {
@@ -110,9 +109,7 @@ class VideoPlayer {
         this.currentIndex = index;
         const file = this.playlist[index];
         const url = Bridge.originalUrl(file.path);
-        const ext = file.name.split('.').pop().toLowerCase();
-        const videoExts = ['mp4', 'mkv', 'webm', 'avi', 'mov', 'flv', 'wmv'];
-        this.isVideo = videoExts.includes(ext);
+        this.isVideo = VideoUtils.isVideoName(file.name);
 
         document.getElementById('player-placeholder').classList.add('hidden');
         document.getElementById('player-wrapper').classList.remove('hidden');
@@ -125,9 +122,10 @@ class VideoPlayer {
 
         this.mediaElement = this.isVideo ? videoPlayer : audioPlayer;
         this.mediaElement.src = url;
+        this.mediaElement.volume = this.volume;
         this.mediaElement.load();
 
-        const savedTime = this.getSavedProgress(file.path);
+        const savedTime = VideoProgressStore.get(file.path);
         if (savedTime > 0) {
             this.mediaElement.currentTime = savedTime;
         }
@@ -163,6 +161,7 @@ class VideoPlayer {
     }
 
     stopPlayback() {
+        this.saveProgress();
         this.stopProgressSave();
         if (this.mediaElement) {
             this.mediaElement.pause();
@@ -193,19 +192,22 @@ class VideoPlayer {
     }
 
     adjustVolume(delta) {
+        this.volume = Math.min(Math.max(this.volume + delta, 0), 1);
         if (this.mediaElement) {
-            let newVol = Math.min(Math.max(this.mediaElement.volume + delta, 0), 1);
-            this.mediaElement.volume = newVol;
-            document.getElementById('volume-bar').value = newVol;
-            localStorage.setItem('videoPlayerVolume', newVol);
+            this.mediaElement.volume = this.volume;
         }
+        document.getElementById('volume-bar').value = this.volume;
+        localStorage.setItem('videoPlayerVolume', this.volume);
     }
 
     loadVolume() {
         const saved = localStorage.getItem('videoPlayerVolume');
         if (saved !== null) {
             const vol = parseFloat(saved);
-            document.getElementById('volume-bar').value = vol;
+            if (isFinite(vol) && vol >= 0 && vol <= 1) {
+                this.volume = vol;
+                document.getElementById('volume-bar').value = vol;
+            }
         }
     }
 
@@ -324,25 +326,14 @@ class VideoPlayer {
 
     // ---------- 记忆播放进度 ----------
     getSavedProgress(filePath) {
-        try {
-            const data = JSON.parse(localStorage.getItem('videoProgress') || '{}');
-            return data[filePath] || 0;
-        } catch {
-            return 0;
-        }
+        return VideoProgressStore.get(filePath);
     }
 
     saveProgress() {
         if (!this.mediaElement || !this.mediaElement.src || this.currentIndex < 0) return;
         const file = this.playlist[this.currentIndex];
         if (!file) return;
-        try {
-            const data = JSON.parse(localStorage.getItem('videoProgress') || '{}');
-            data[file.path] = this.mediaElement.currentTime;
-            localStorage.setItem('videoProgress', JSON.stringify(data));
-        } catch (e) {
-            console.warn('保存进度失败', e);
-        }
+        VideoProgressStore.save(file.path, this.mediaElement.currentTime);
     }
 
     startProgressSave() {
@@ -354,6 +345,7 @@ class VideoPlayer {
         if (this.progressSaveInterval) {
             clearInterval(this.progressSaveInterval);
             this.progressSaveInterval = null;
+        this.volume = 1;
         }
     }
 
@@ -386,7 +378,7 @@ class VideoPlayer {
                 progressBar.max = this.mediaElement.duration;
                 progressBar.value = this.mediaElement.currentTime;
                 timeDisplay.textContent =
-                    `${this.formatTime(this.mediaElement.currentTime)} / ${this.formatTime(this.mediaElement.duration)}`;
+                    `${VideoUtils.formatTime(this.mediaElement.currentTime)} / ${VideoUtils.formatTime(this.mediaElement.duration)}`;
             }
         };
 
@@ -423,10 +415,11 @@ class VideoPlayer {
         });
 
         volumeBar.addEventListener('input', () => {
+            this.volume = parseFloat(volumeBar.value);
             if (this.mediaElement) {
-                this.mediaElement.volume = volumeBar.value;
-                localStorage.setItem('videoPlayerVolume', volumeBar.value);
+                this.mediaElement.volume = this.volume;
             }
+            localStorage.setItem('videoPlayerVolume', this.volume);
         });
         if (this.mediaElement) {
             volumeBar.value = this.mediaElement.volume;
@@ -514,9 +507,6 @@ class VideoPlayer {
 
     // ---------- 工具函数 ----------
     formatTime(seconds) {
-        if (isNaN(seconds)) return '00:00';
-        const m = Math.floor(seconds / 60);
-        const s = Math.floor(seconds % 60);
-        return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+        return VideoUtils.formatTime(seconds);
     }
 }

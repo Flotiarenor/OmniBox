@@ -22,6 +22,7 @@ EXCLUDES = []
 HIDDEN_IMPORTS = [
     'shell.backend.paths',
     'shell.backend.plugin_base',
+    'shell.backend.plugin_utils',
     'shell.backend.plugin_manager',
     'shell.backend.settings_store',
     'shell.backend.file_server',

@@ -1,22 +1,20 @@
 import os
 import json
-import re
 from pathlib import Path
 from typing import Dict, List
 from datetime import datetime
 
 from shell.backend.plugin_base import PluginBase
+from shell.backend.plugin_utils import load_sibling
 
-try:
-    from natsort import natsorted
-except ImportError:
-    _NUM_RE = re.compile(r'\d+')
-    def natsorted(seq):
-        # 内置自然排序兜底：将数字零填充后按字典序比较，兼容 1/01/00001/10 等命名
-        return sorted(seq, key=lambda x: _NUM_RE.sub(lambda m: m.group(0).zfill(16), str(x)))
 
-_IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp'}
 
+_scanner = load_sibling(__file__, 'scanner', 'manga_library')
+find_cover = _scanner.find_cover
+list_pages = _scanner.list_pages
+natural_sorted = _scanner.natural_sorted
+resolve_safe_path = _scanner.resolve_safe_path
+scan_manga = _scanner.scan_manga
 
 class MangaLibraryPlugin(PluginBase):
     settings_schema = [
@@ -93,86 +91,32 @@ class MangaLibraryPlugin(PluginBase):
     # ===== 核心业务（由旧版 MangaModule 迁移） =====
 
     def _load_state(self) -> Dict:
+        defaults = {"favorites": [], "recent": []}
         if self.state_file.exists():
             try:
                 with open(self.state_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    favorites = data.get("favorites", [])
+                    recent = data.get("recent", [])
+                    return {
+                        "favorites": favorites if isinstance(favorites, list) else [],
+                        "recent": recent if isinstance(recent, list) else [],
+                    }
             except Exception:
                 pass
-        return {"favorites": [], "recent": []}
+        return defaults
 
     def _save_state(self):
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         with open(self.state_file, 'w', encoding='utf-8') as f:
             json.dump(self._state, f, ensure_ascii=False, indent=2)
 
-    def _find_cover(self, folder_path: Path) -> str:
-        search_dirs = []
-        sub_dirs = [d for d in folder_path.iterdir()
-                    if d.is_dir() and not d.name.startswith('.') and d.name != 'ai']
-        if sub_dirs:
-            search_dirs.append(natsorted(sub_dirs)[0])
-        search_dirs.append(folder_path)
-
-        for d in search_dirs:
-            try:
-                images = [f for f in d.iterdir()
-                          if f.is_file() and f.suffix.lower() in _IMAGE_EXTS]
-            except OSError:
-                continue
-            if not images:
-                continue
-
-            # 显式封面优先
-            for f in images:
-                if 'cover' in f.stem.lower() or '封面' in f.stem:
-                    return f.relative_to(self.manga_dir).as_posix()
-
-            # 纯数字命名的第一页（兼容 00001 / 01 / 1 / 00000 等）
-            numeric = [f for f in images if f.stem.isdigit()]
-            if numeric:
-                return natsorted(numeric)[0].relative_to(self.manga_dir).as_posix()
-
-            # 其余情况取自然序第一张
-            return natsorted(images)[0].relative_to(self.manga_dir).as_posix()
-        return ""
-
     def _scan_manga(self):
-        if self._cache is not None:
-            return self._cache
-        manga_list = []
-        if not self.manga_dir.exists():
-            self._cache = manga_list
-            return manga_list
+        if self._cache is None:
+            self._cache = scan_manga(self.manga_dir, self._state['favorites'])
+        return self._cache
 
-        fav_set = set(self._state['favorites'])
-
-        for entry in os.scandir(self.manga_dir):
-            if not entry.is_dir() or entry.name.startswith('.') or entry.name == 'ai':
-                continue
-            info_path = os.path.join(entry.path, 'album_info.json')
-            info = {}
-            if os.path.exists(info_path):
-                try:
-                    with open(info_path, 'r', encoding='utf-8') as f:
-                        info = json.load(f)
-                except Exception:
-                    pass
-
-            cover_url = self._find_cover(Path(entry.path))
-
-            manga_list.append({
-                'comic_id': info.get('album_id', entry.name),
-                'title': info.get('title', entry.name),
-                'author': info.get('author', '未知'),
-                'tags': info.get('tags', []),
-                'page_count': info.get('total_page_count', 0),
-                'cover_url': cover_url,
-                'folder_name': entry.name,
-                'is_fav': entry.name in fav_set
-            })
-        self._cache = manga_list
-        return manga_list
 
     def list_manga(self) -> List[Dict]:
         self._cache = None
@@ -214,8 +158,8 @@ class MangaLibraryPlugin(PluginBase):
         return {"status": "ok"}
 
     def get_detail(self, folder_name: str) -> Dict:
-        folder_path = self.manga_dir / folder_name
-        if not folder_path.exists():
+        folder_path = resolve_safe_path(self.manga_dir, folder_name)
+        if folder_path is None or not folder_path.exists():
             return {}
 
         info_path = folder_path / 'album_info.json'
@@ -233,10 +177,10 @@ class MangaLibraryPlugin(PluginBase):
 
         chapters = []
         if is_multi_chapter:
-            for d in natsorted(sub_dirs):
+            for d in natural_sorted(sub_dirs):
                 chapters.append({
                     "name": d.name,
-                    "cover_url": self._find_cover(d),
+                    "cover_url": find_cover(d, self.manga_dir),
                     "path": d.name
                 })
 
@@ -251,20 +195,4 @@ class MangaLibraryPlugin(PluginBase):
         }
 
     def get_pages(self, folder_name: str, chapter_path: str = "") -> List[str]:
-        base_dir = self.manga_dir / folder_name
-        target_dir = base_dir / chapter_path if chapter_path else base_dir
-
-        if not target_dir.exists():
-            return []
-
-        image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.webp']
-        image_files = []
-        all_files = []
-        for ext in image_extensions:
-            all_files.extend(target_dir.glob(ext))
-
-        for f in natsorted(all_files):
-            rel_path = f.relative_to(self.manga_dir)
-            image_files.append(rel_path.as_posix())
-
-        return image_files
+        return list_pages(self.manga_dir, folder_name, chapter_path)

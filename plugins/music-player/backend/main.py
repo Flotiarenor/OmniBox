@@ -1,23 +1,16 @@
 import json
 import time
 import uuid
-import importlib.util
 from pathlib import Path
 from typing import Dict, List
 
 from shell.backend.plugin_base import PluginBase
+from shell.backend.plugin_utils import load_sibling
 
 
-def _load_sibling(name):
-    path = Path(__file__).parent / f'{name}.py'
-    spec = importlib.util.spec_from_file_location(f'music_player_{name}', str(path))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
-
-_scanner_mod = _load_sibling('scanner')
-_metadata_mod = _load_sibling('metadata')
+_scanner_mod = load_sibling(__file__, 'scanner', 'music_player')
+_metadata_mod = load_sibling(__file__, 'metadata', 'music_player')
 MusicScanner = _scanner_mod.MusicScanner
 MetadataReader = _metadata_mod.MetadataReader
 

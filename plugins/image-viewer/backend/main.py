@@ -1,12 +1,20 @@
 import os
 import json
 import shutil
-import hashlib
 from pathlib import Path
 from typing import List, Dict
 from shell.backend.plugin_base import PluginBase
+from shell.backend.plugin_utils import load_sibling
 
-ALLOWED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'}
+
+
+_fs = load_sibling(__file__, 'filesystem', 'image_viewer')
+ALLOWED_EXTENSIONS = _fs.ALLOWED_EXTENSIONS
+ensure_thumbnail = _fs.ensure_thumbnail
+get_image_size = _fs.get_image_size
+is_safe_path = _fs.is_safe_path
+list_directory = _fs.list_directory
+stat_mtime = _fs.stat_mtime
 
 class ImageViewerPlugin(PluginBase):
     settings_schema = [
@@ -55,11 +63,8 @@ class ImageViewerPlugin(PluginBase):
         return self.root_dir
 
     def _is_safe(self, rel_path: str) -> bool:
-        try:
-            target = (self.root_dir / rel_path).resolve()
-            return str(target).startswith(str(self.root_dir))
-        except Exception:
-            return False
+        return is_safe_path(self.root_dir, rel_path)
+
 
     def register_api(self) -> dict:
         return {
@@ -77,46 +82,27 @@ class ImageViewerPlugin(PluginBase):
         return str(self.root_dir)
 
     def _get_dir_mtime(self, rel_path: str) -> float:
-        try:
-            return os.stat(self.root_dir / rel_path).st_mtime
-        except:
-            return 0
+        return stat_mtime(self.root_dir, rel_path)
+
 
     def _get_image_size(self, abs_path: str, mtime: float) -> tuple:
-        key = hashlib.md5(abs_path.encode()).hexdigest()
-        if key in self._meta_cache:
-            data = self._meta_cache[key]
-            if data.get('mtime') == mtime:
-                return data.get('width', 0), data.get('height', 0)
-        width, height = 0, 0
-        try:
-            from PIL import Image
-            with Image.open(abs_path) as img:
-                width, height = img.size
-        except Exception:
-            pass
-        self._meta_cache[key] = {'mtime': mtime, 'width': width, 'height': height}
-        return width, height
+        return get_image_size(abs_path, mtime, self._meta_cache)
+
 
     def _get_thumb(self, rel_path: str) -> Path:
-        thumb_path = self.thumb_dir / rel_path
-        if thumb_path.exists():
-            return thumb_path
-        thumb_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            from PIL import Image
-            img = Image.open(self.root_dir / rel_path)
-            img.thumbnail((300, 300))
-            img.save(thumb_path)
-        except Exception:
-            shutil.copy(self.root_dir / rel_path, thumb_path)
-        return thumb_path
+        return ensure_thumbnail(self.root_dir, rel_path, self.thumb_dir)
+
 
     def list_images(self, rel_path: str = '', page: int = 1,
                     per_page: int = 40, sort_by: str = 'mtime',
                     sort_order: str = 'desc') -> Dict:
         if not self._is_safe(rel_path):
             return {"images": [], "page": 1, "total": 0, "settings": {}}
+        try:
+            page = max(1, int(page))
+            per_page = max(1, int(per_page))
+        except (TypeError, ValueError):
+            page, per_page = 1, 40
 
         cache_key = (rel_path, sort_by, sort_order)
         dir_mtime = self._get_dir_mtime(rel_path)
@@ -177,21 +163,8 @@ class ImageViewerPlugin(PluginBase):
         }
 
     def list_dir(self, rel_path: str = '') -> List[Dict]:
-        if not self._is_safe(rel_path):
-            return []
-        target = self.root_dir / rel_path
-        if not target.exists() or not target.is_dir():
-            return []
-        children = []
-        try:
-            for entry in os.scandir(target):
-                if entry.is_dir() and not entry.name.startswith('.') and entry.name != '.cache':
-                    child_path = (Path(rel_path) / entry.name).as_posix()
-                    children.append({"name": entry.name, "path": child_path})
-        except PermissionError:
-            pass
-        children.sort(key=lambda x: x['name'])
-        return children
+        return list_directory(self.root_dir, rel_path)
+
 
     def delete_files(self, rel_paths: List[str]) -> Dict:
         deleted, errors = [], []
