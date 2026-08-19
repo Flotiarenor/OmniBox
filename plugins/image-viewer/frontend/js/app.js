@@ -153,11 +153,12 @@ class ImageViewer {
         try {
             const result = await Bridge.call('delete_files', imgs);
             if (result.errors.length > 0) alert(`部分删除失败:\n${result.errors.join('\n')}`);
-            result.deleted.forEach(url => {
-                const card = document.querySelector(`.card[data-url="${url}"]`);
-                if (card) card.remove();
-                this.selectedImages.delete(url);
+            const deletedSet = new Set(result.deleted || []);
+            [...document.querySelectorAll('.card')].forEach(card => {
+                if (deletedSet.has(card.dataset.url)) card.remove();
             });
+            this.currentImages = this.currentImages.filter(img => !deletedSet.has(img.url));
+            this.selectedImages.clear();
         } catch (e) { alert('删除请求失败'); }
     }
 
@@ -177,11 +178,12 @@ class ImageViewer {
         try {
             const result = await Bridge.call('move_files', imgs, this.moveDestPath);
             if (result.errors.length > 0) alert(`部分移动失败:\n${result.errors.join('\n')}`);
-            result.moved.forEach(url => {
-                const card = document.querySelector(`.card[data-url="${url}"]`);
-                if (card) card.remove();
-                this.selectedImages.delete(url);
+            const movedSet = new Set(result.moved || []);
+            [...document.querySelectorAll('.card')].forEach(card => {
+                if (movedSet.has(card.dataset.url)) card.remove();
             });
+            this.currentImages = this.currentImages.filter(img => !movedSet.has(img.url));
+            this.selectedImages.clear();
             this.closeMoveModal();
         } catch (e) { alert('移动请求失败'); }
     }
@@ -277,35 +279,8 @@ class ImageViewer {
         if (containerWidth === 0 || images.length === 0) return;
         const targetHeight = this.currentRowHeight;
         const gap = 5;
-        const rows = [];
-        let currentRow = { items: [], width: 0 };
-        images.forEach(img => {
-            const ratio = (img.width || 1) / (img.height || 1);
-            const itemWidth = ratio * targetHeight;
-            currentRow.items.push({ ...img, ratio, itemWidth });
-            currentRow.width += itemWidth + gap;
-            if (currentRow.width - gap >= containerWidth) {
-                rows.push(currentRow);
-                currentRow = { items: [], width: 0 };
-            }
-        });
-        if (currentRow.items.length > 0) rows.push(currentRow);
-        let currentTop = 0;
-        const cards = [];
-        rows.forEach(row => {
-            const isLastRow = row === rows[rows.length - 1] && row.width - gap < containerWidth;
-            const actualRowHeight = isLastRow ? targetHeight
-                : (containerWidth - (row.items.length - 1) * gap) / (row.width - gap - (row.items.length - 1) * gap) * targetHeight;
-            let currentLeft = 0;
-            row.items.forEach(item => {
-                const w = item.ratio * actualRowHeight;
-                const h = actualRowHeight;
-                cards.push({ url: item.url, x: currentLeft, y: currentTop, w, h });
-                currentLeft += w + gap;
-            });
-            currentTop += actualRowHeight + gap;
-        });
-        grid.style.height = `${currentTop - gap}px`;
+        const { cards, totalHeight } = JustifiedLayout.compute(images, containerWidth, targetHeight, gap);
+        grid.style.height = `${totalHeight}px`;
         cards.forEach((cardData, index) => {
             const card = document.createElement('div');
             card.className = 'card';

@@ -34,6 +34,7 @@ RESERVED_ROUTES = {'/', '/settings'}
 ALLOWED_SCHEMA_TYPES = {'text', 'number', 'range', 'select', 'checkbox', 'textarea', 'folder'}
 PLUGIN_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9-_]*$')
 LEGACY_SETTINGS_MARKERS = ('settings_file', '_save_settings_to_file')
+LOCAL_SIBLING_LOADER_MARKER = 'def _load_sibling'
 
 
 def get_shell_version() -> str:
@@ -66,6 +67,28 @@ def _entry_is_safe(plugin_dir: Path, entry: str) -> bool:
         return full.is_relative_to(plugin_dir.resolve()) and full.is_file()
     except Exception:
         return False
+
+
+def _check_frontend_assets(plugin_dir: Path, frontend_entry: str) -> List[str]:
+    """校验 index.html 引用的本地 script/css 资源都存在且不越界。"""
+    errors: List[str] = []
+    index_path = plugin_dir / frontend_entry
+    try:
+        html = index_path.read_text(encoding='utf-8')
+    except Exception as exc:
+        return [f'frontend.entry 无法读取: {exc}']
+    base_dir = index_path.parent
+    for match in re.findall(r'(?:src|href)="([^"]+)"', html):
+        if match.startswith(('/', 'http://', 'https://', '//', 'data:', '#')):
+            continue
+        try:
+            asset = (base_dir / match.split('?', 1)[0].split('#', 1)[0]).resolve()
+            if not asset.is_relative_to(plugin_dir.resolve()) or not asset.is_file():
+                errors.append(f'frontend 资源缺失或越界: {match}')
+        except Exception:
+            errors.append(f'frontend 资源路径无效: {match}')
+    return errors
+
 
 
 def _check_schema(cls) -> List[str]:
@@ -205,6 +228,9 @@ def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -
             errors.append(f'{where} frontend.entry 缺失或无效')
         elif not _entry_is_safe(plugin_dir, frontend_entry):
             errors.append(f'{where} frontend.entry 不存在或越界: {frontend_entry}')
+        else:
+            errors.extend(f'[{folder_name}] {error}' for error in _check_frontend_assets(plugin_dir, frontend_entry))
+
 
         backend = data.get('backend')
         if not isinstance(backend, dict):
@@ -244,6 +270,9 @@ def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -
                 if marker in code:
                     errors.append(f'{where} {py_file.name} 仍包含旧设置文件代码标记 {marker!r}')
                     break
+            if LOCAL_SIBLING_LOADER_MARKER in code:
+                errors.append(f'{where} {py_file.name} 不应自定义 _load_sibling，请使用 shell.backend.plugin_utils.load_sibling')
+
 
         if data.get('kind') == 'local-adapter':
             warnings.append(

@@ -1,14 +1,14 @@
-import os
-import json
 from pathlib import Path
 from typing import List, Dict
 from shell.backend.plugin_base import PluginBase
+from shell.backend.plugin_utils import load_sibling
 
-ALLOWED_EXTENSIONS = {
-    '.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv', '.wmv',
-    '.mp3', '.flac', '.wav', '.aac', '.ogg', '.wma'
-}
 
+
+_media = load_sibling(__file__, 'media', 'video_player')
+is_safe_path = _media.is_safe_path
+list_directory = _media.list_directory
+list_media_files = _media.list_media
 
 class VideoPlayerPlugin(PluginBase):
     settings_schema = [
@@ -19,7 +19,7 @@ class VideoPlayerPlugin(PluginBase):
 
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
-        root = self._resolved_config.get('root_dir')
+        root = self.setting('root_dir')
         if root and Path(root).is_dir():
             self._root_dir = Path(root).resolve()
         else:
@@ -39,11 +39,8 @@ class VideoPlayerPlugin(PluginBase):
                 self._root_dir = Path(new_dir).resolve()
 
     def _is_safe(self, rel_path: str) -> bool:
-        try:
-            target = (self.media_dir / rel_path).resolve()
-            return str(target).startswith(str(self.media_dir))
-        except Exception:
-            return False
+        return is_safe_path(self.media_dir, rel_path)
+
 
     def register_api(self) -> dict:
         return {
@@ -54,47 +51,8 @@ class VideoPlayerPlugin(PluginBase):
         }
 
     def list_dir(self, rel_path: str = '') -> List[Dict]:
-        if not self._is_safe(rel_path):
-            return []
-        target = self.media_dir / rel_path
-        if not target.exists() or not target.is_dir():
-            return []
-        children = []
-        try:
-            for entry in os.scandir(target):
-                if entry.is_dir() and not entry.name.startswith('.') and entry.name != '.cache':
-                    child_path = (Path(rel_path) / entry.name).as_posix()
-                    children.append({"name": entry.name, "path": child_path})
-        except PermissionError:
-            pass
-        children.sort(key=lambda x: x['name'].lower())
-        return children
+        return list_directory(self.media_dir, rel_path)
+
 
     def list_media(self, rel_path: str = '') -> Dict:
-        if not self._is_safe(rel_path):
-            return {"dirs": [], "files": [], "path": rel_path}
-        target = self.media_dir / rel_path
-        if not target.exists() or not target.is_dir():
-            return {"dirs": [], "files": [], "path": rel_path}
-        dirs = []
-        files = []
-        try:
-            for entry in os.scandir(target):
-                if entry.name.startswith('.') or entry.name == '.cache':
-                    continue
-                if entry.is_dir():
-                    child_path = (Path(rel_path) / entry.name).as_posix()
-                    dirs.append({"name": entry.name, "path": child_path})
-                elif entry.is_file() and Path(entry.name).suffix.lower() in ALLOWED_EXTENSIONS:
-                    stat = entry.stat()
-                    files.append({
-                        "name": entry.name,
-                        "path": (Path(rel_path) / entry.name).as_posix(),
-                        "size": stat.st_size,
-                        "mtime": stat.st_mtime
-                    })
-        except PermissionError:
-            pass
-        dirs.sort(key=lambda x: x['name'].lower())
-        files.sort(key=lambda x: x['name'].lower())
-        return {"dirs": dirs, "files": files, "path": rel_path}
+        return list_media_files(self.media_dir, rel_path)

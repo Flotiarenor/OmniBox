@@ -100,11 +100,9 @@ class DownloadCenter {
         if (this.pollTimer) {
             clearInterval(this.pollTimer);
         }
-        this.pollTimer = setInterval(async () => {
-            const hasActive = this.tasks.some(t => t.status === 'downloading');
-            if (hasActive) {
-                await this.loadTasks();
-            }
+        this.pollTimer = setInterval(() => {
+            // 始终刷新，避免最后一个活动任务完成后界面停在“下载中”。
+            this.loadTasks();
         }, 2000);
     }
 
@@ -125,7 +123,7 @@ class DownloadCenter {
         this.tasks.forEach(t => {
             if (t.speed) totalSpeed += t.speed;
         });
-        const speedText = totalSpeed > 0 ? this.formatSpeed(totalSpeed) : '0 B/s';
+        const speedText = totalSpeed > 0 ? DownloadUtils.formatSpeed(totalSpeed) : '0 B/s';
 
         const statsEls = {
             total: document.getElementById('dc-stat-total'),
@@ -193,10 +191,10 @@ class DownloadCenter {
         const meta = document.createElement('div');
         meta.className = 'dc-task-meta';
         meta.innerHTML = `
-            <span class="dc-status-badge ${task.status}">${this.getStatusText(task.status)}</span>
+            <span class="dc-status-badge ${task.status}">${DownloadUtils.getStatusText(task.status)}</span>
             <span>${task.completedImages || 0}/${task.totalImages || '?'} 页</span>
-            ${task.speed ? `<span>${this.formatSpeed(task.speed)}</span>` : ''}
-            ${task.eta ? `<span>剩余 ${this.formatTime(task.eta)}</span>` : ''}
+            ${task.speed ? `<span>${DownloadUtils.formatSpeed(task.speed)}</span>` : ''}
+            ${task.eta ? `<span>剩余 ${DownloadUtils.formatTime(task.eta)}</span>` : ''}
         `;
 
         info.appendChild(title);
@@ -396,7 +394,7 @@ class DownloadCenter {
                 </div>
                 <div class="dc-detail-row">
                     <span class="label">状态</span>
-                    <span class="value"><span class="dc-status-badge ${task.status}">${this.getStatusText(task.status)}</span></span>
+                    <span class="value"><span class="dc-status-badge ${task.status}">${DownloadUtils.getStatusText(task.status)}</span></span>
                 </div>
             </div>
             <div class="dc-detail-section">
@@ -407,11 +405,11 @@ class DownloadCenter {
                 </div>
                 <div class="dc-detail-row">
                     <span class="label">下载速度</span>
-                    <span class="value">${task.speed ? this.formatSpeed(task.speed) : '0 B/s'}</span>
+                    <span class="value">${task.speed ? DownloadUtils.formatSpeed(task.speed) : '0 B/s'}</span>
                 </div>
                 <div class="dc-detail-row">
                     <span class="label">剩余时间</span>
-                    <span class="value">${task.eta ? this.formatTime(task.eta) : '--'}</span>
+                    <span class="value">${task.eta ? DownloadUtils.formatTime(task.eta) : '--'}</span>
                 </div>
             </div>
             ${info.chapters && info.chapters.length > 0 ? `
@@ -428,40 +426,6 @@ class DownloadCenter {
             </div>
             ` : ''}
         `;
-    }
-
-    // ===== 工具方法 =====
-
-    getStatusText(status) {
-        const map = {
-            'downloading': '下载中',
-            'paused': '已暂停',
-            'completed': '已完成',
-            'failed': '失败',
-            'queued': '排队中'
-        };
-        return map[status] || status;
-    }
-
-    formatSpeed(bytesPerSecond) {
-        if (!bytesPerSecond || bytesPerSecond === 0) return '0 B/s';
-        const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
-        let i = 0;
-        let speed = bytesPerSecond;
-        while (speed >= 1024 && i < units.length - 1) {
-            speed /= 1024;
-            i++;
-        }
-        return `${speed.toFixed(1)} ${units[i]}`;
-    }
-
-    formatTime(seconds) {
-        if (!seconds || seconds <= 0) return '--';
-        if (seconds < 60) return `${Math.round(seconds)}秒`;
-        if (seconds < 3600) return `${Math.floor(seconds / 60)}分${Math.round(seconds % 60)}秒`;
-        const h = Math.floor(seconds / 3600);
-        const m = Math.floor((seconds % 3600) / 60);
-        return `${h}时${m}分`;
     }
 
     destroy() {
