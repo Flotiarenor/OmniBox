@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>媒体播放器</title>
+  <link rel="stylesheet" href="media-player.css">
+</head>
+<body>
+  <div id="app">
+    <!-- ===== 左侧导航 ===== -->
+    <aside class="mp-sidebar view-sub-sidebar">
+      <div class="mp-brand">
+        <div class="mp-brand-icon">🎧</div>
+        <div class="mp-brand-text">
+          <div class="mp-brand-title">媒体库</div>
+          <div class="mp-brand-sub">Music · Video</div>
+        </div>
+      </div>
+
+      <nav class="mp-nav">
+        <button class="mp-nav-item active" data-view="recent">
+          <span class="mp-nav-ico">🕘</span><span>最近播放</span>
+        </button>
+        <button class="mp-nav-item" data-view="audio-albums">
+          <span class="mp-nav-ico">💿</span><span>音乐专辑</span>
+        </button>
+        <button class="mp-nav-item" data-view="all-audio">
+          <span class="mp-nav-ico">🎵</span><span>全部音乐</span>
+        </button>
+        <button class="mp-nav-item" data-view="video-albums">
+          <span class="mp-nav-ico">📀</span><span>视频专辑</span>
+        </button>
+        <button class="mp-nav-item" data-view="all-video">
+          <span class="mp-nav-ico">🎬</span><span>全部视频</span>
+        </button>
+        <button class="mp-nav-item" data-view="favorites">
+          <span class="mp-nav-ico">❤️</span><span>我的喜欢</span>
+        </button>
+      </nav>
+
+      <div class="mp-playlist-section">
+        <div class="mp-section-label">
+          <span>我的歌单</span>
+          <button id="btn-new-playlist" class="mp-ghost-btn" title="新建歌单">＋</button>
+        </div>
+        <div id="mp-playlist-list" class="mp-playlist-list"></div>
+      </div>
+
+      <div class="mp-sidebar-footer" id="mp-stats">
+        <div class="mp-mini-eq" id="mp-mini-eq" aria-hidden="true">
+          <span></span><span></span><span></span><span></span>
+        </div>
+        <span id="mp-stats-text">正在读取媒体库…</span>
+      </div>
+    </aside>
+
+    <!-- ===== 主区域 ===== -->
+    <div class="view-body">
+      <div class="view-toolbar mp-toolbar">
+        <div class="toolbar-group mp-view-heading">
+          <span class="mp-view-title" id="mp-view-title">最近播放</span>
+          <span class="mp-view-sub" id="mp-view-sub"></span>
+        </div>
+        <div class="toolbar-group mp-toolbar-right">
+          <div class="mp-search">
+            <span class="mp-search-ico">🔍</span>
+            <input type="text" id="media-search" placeholder="搜索媒体、专辑、艺术家…" autocomplete="off">
+            <button id="btn-search-clear" class="mp-search-clear hidden" title="清除">✕</button>
+          </div>
+          <button id="btn-scan" class="btn mp-tool-btn">🔄 扫描</button>
+          <button id="btn-settings" class="btn mp-tool-btn">⚙ 设置</button>
+        </div>
+      </div>
+
+      <div class="mp-main">
+        <!-- ===== 播放舞台 ===== -->
+        <section class="mp-stage" id="mp-stage">
+          <div class="mp-stage-backdrop" id="mp-stage-backdrop"></div>
+          <div class="mp-stage-scrim"></div>
+
+          <div class="mp-stage-viewport">
+            <div class="mp-stage-art" id="mp-stage-art">
+              <div class="mp-stage-cover" id="mp-stage-cover">
+                <img id="mp-stage-cover-img" alt="" draggable="false">
+              </div>
+              <div class="mp-stage-info">
+                <div class="mp-stage-kind" id="mp-stage-kind">现在播放</div>
+                <div class="mp-stage-title" id="mp-stage-title">未在播放</div>
+                <div class="mp-stage-sub" id="mp-stage-sub">从左侧选择音乐或视频开始</div>
+                <div class="mp-stage-meta" id="mp-stage-meta"></div>
+              </div>
+              <div class="mp-stage-lyrics" id="mp-stage-lyrics" title="点击打开完整歌词"></div>
+            </div>
+
+            <div class="mp-stage-empty" id="mp-stage-empty">
+              <div class="mp-stage-empty-icon">🎧</div>
+              <div class="mp-stage-empty-text">选择一首音乐或视频开始播放</div>
+            </div>
+
+            <video id="video-player" class="mp-video" controlsList="nodownload" disablePictureInPicture></video>
+
+            <div class="mp-video-hint" id="mp-video-hint">
+              <div class="mp-video-hint-title" id="mp-video-hint-title"></div>
+            </div>
+            <button id="btn-stage-play" class="mp-stage-big-btn" title="播放/暂停">▶</button>
+          </div>
+
+          <!-- ===== 底部播放栏（舞台内，全屏时叠加在视频上） ===== -->
+          <div class="mp-playerbar" id="player-bar">
+            <div class="mp-pb-left">
+              <div class="mp-pb-cover" id="player-cover" title="歌词 / 沉浸模式">
+                <img id="player-cover-img" alt="" draggable="false">
+              </div>
+              <div class="mp-pb-info">
+                <div class="mp-pb-title" id="player-title">未在播放</div>
+                <div class="mp-pb-artist" id="player-artist"></div>
+              </div>
+              <button id="btn-toggle-fav" class="mp-icon-btn" title="喜欢">♡</button>
+            </div>
+
+            <div class="mp-pb-center">
+              <div class="mp-controls">
+                <button id="btn-play-mode" class="mp-icon-btn" title="顺序播放">🔁</button>
+                <button id="btn-prev" class="mp-icon-btn" title="上一曲">⏮</button>
+                <button id="btn-play-pause" class="mp-play-btn" title="播放/暂停">▶</button>
+                <button id="btn-next" class="mp-icon-btn" title="下一曲">⏭</button>
+                <button id="btn-stop" class="mp-icon-btn" title="停止">⏹</button>
+              </div>
+              <div class="mp-progress-row">
+                <span id="time-current" class="mp-time">00:00</span>
+                <input type="range" id="progress-bar" class="mp-range mp-progress" min="0" max="100" value="0" step="0.1">
+                <span id="time-duration" class="mp-time">00:00</span>
+              </div>
+            </div>
+
+            <div class="mp-pb-right">
+              <button id="btn-queue" class="mp-icon-btn" title="播放队列">📋</button>
+              <button id="btn-eq" class="mp-icon-btn" title="均衡器">🎚</button>
+              <div class="mp-volume">
+                <button id="btn-volume-icon" class="mp-icon-btn" title="静音">🔊</button>
+                <input type="range" id="volume-bar" class="mp-range mp-volume-bar" min="0" max="1" step="0.02" value="1">
+              </div>
+              <button id="btn-video-mode" class="mp-icon-btn hidden" title="画面 / 仅声音">🎬</button>
+              <button id="btn-wide" class="mp-icon-btn" title="宽屏模式">🖥</button>
+              <button id="btn-fullscreen" class="mp-icon-btn" title="沉浸歌词">⛶</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===== 内容区 ===== -->
+        <div class="view-content mp-content" id="media-content"></div>
+      </div>
+    </div>
+
+    <!-- ===== 歌词沉浸页 ===== -->
+    <div class="mp-lyrics-page" id="lyrics-page">
+      <div class="mp-lyrics-bg" id="lyrics-page-bg"></div>
+      <div class="mp-lyrics-aurora" id="lyrics-page-aurora"></div>
+      <canvas id="lyrics-viz-canvas" class="mp-lyrics-viz"></canvas>
+      <div class="mp-lyrics-toolbar">
+        <button class="mp-ghost-btn mp-ghost-light" id="btn-lyrics-back" title="返回">←</button>
+        <span class="mp-lyrics-title" id="lyrics-page-title">未在播放</span>
+        <button class="mp-ghost-btn mp-ghost-light" id="btn-lyrics-settings" title="歌词设置">⚙</button>
+      </div>
+      <div class="mp-lyrics-body">
+        <div class="mp-lyrics-content" id="lyrics-page-content">
+          <div class="mp-lyrics-empty">暂无歌词</div>
+        </div>
+      </div>
+      <div class="mp-lyrics-progress">
+        <span class="mp-time" id="lyrics-time-current">00:00</span>
+        <input type="range" id="lyrics-progress-bar" class="mp-range mp-progress" min="0" max="100" value="0" step="0.1">
+        <span class="mp-time" id="lyrics-time-duration">00:00</span>
+      </div>
+    </div>
+
+    <!-- ===== 播放队列 ===== -->
+    <div class="mp-pop mp-queue-pop hidden" id="queue-popup">
+      <div class="mp-pop-head">
+        <span>播放队列 · <span id="queue-count">0</span></span>
+        <button class="mp-ghost-btn" id="btn-clear-queue">清空</button>
+      </div>
+      <div class="mp-pop-body mp-queue-list" id="queue-list"></div>
+    </div>
+
+    <!-- ===== 均衡器 ===== -->
+    <div class="mp-pop mp-eq-pop hidden" id="eq-panel">
+      <div class="mp-pop-head">
+        <span>🎚 均衡器</span>
+        <div class="mp-eq-actions">
+          <select id="eq-preset-select" class="mp-select"><option value="">内置预设</option></select>
+          <button class="mp-ghost-btn" id="btn-eq-reset">重置</button>
+          <button class="mp-ghost-btn mp-ghost-accent" id="btn-eq-save">保存</button>
+          <button class="mp-ghost-btn" id="btn-eq-close">✕</button>
+        </div>
+      </div>
+      <div class="mp-pop-body mp-eq-body">
+        <div class="mp-eq-bands" id="eq-bands"></div>
+      </div>
+    </div>
+
+    <!-- ===== 新建 / 重命名歌单 ===== -->
+    <div class="mp-modal" id="modal-playlist">
+      <div class="mp-modal-box">
+        <div class="mp-modal-head">
+          <h3 id="playlist-modal-title">新建歌单</h3>
+          <button class="mp-ghost-btn" id="btn-playlist-cancel">✕</button>
+        </div>
+        <div class="mp-modal-body">
+          <input type="text" id="input-playlist-name" class="mp-input" placeholder="歌单名称" maxlength="40">
+        </div>
+        <div class="mp-modal-foot">
+          <button class="btn" id="btn-playlist-cancel-2">取消</button>
+          <button class="btn btn-primary" id="btn-playlist-confirm">创建</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 加入歌单 ===== -->
+    <div class="mp-modal" id="modal-add-to-playlist">
+      <div class="mp-modal-box">
+        <div class="mp-modal-head">
+          <h3>加入歌单</h3>
+          <button class="mp-ghost-btn" id="btn-add-pl-close">✕</button>
+        </div>
+        <div class="mp-modal-body">
+          <div id="add-pl-list" class="mp-add-pl-list"></div>
+        </div>
+        <div class="mp-modal-foot">
+          <button class="btn" id="btn-add-pl-new">＋ 新建歌单</button>
+          <button class="btn btn-primary hidden" id="btn-add-pl-confirm">加入</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 保存 EQ 预设 ===== -->
+    <div class="mp-modal" id="modal-eq-name">
+      <div class="mp-modal-box mp-modal-sm">
+        <div class="mp-modal-head">
+          <h3>保存均衡器预设</h3>
+          <button class="mp-ghost-btn" id="btn-eq-name-cancel">✕</button>
+        </div>
+        <div class="mp-modal-body">
+          <input type="text" id="input-eq-name" class="mp-input" placeholder="预设名称" maxlength="40">
+        </div>
+        <div class="mp-modal-foot">
+          <button class="btn" id="btn-eq-name-cancel-2">取消</button>
+          <button class="btn btn-primary" id="btn-eq-name-confirm">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/utils.js"></script>
+  <script src="js/lyrics-parser.js"></script>
+  <script src="js/progress-store.js"></script>
+  <script src="js/player-core.js"></script>
+  <script src="js/playlist-manager.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    window.mediaPlayerApp = new MediaPlayerApp();
+    mediaPlayerApp.init();
+  </script>
+</body>
+</html>

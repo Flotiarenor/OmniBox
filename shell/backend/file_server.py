@@ -15,7 +15,7 @@ limitations under the License.
 '''
 
 import sys
-from flask import Flask, request, send_from_directory, abort
+from flask import Flask, request, send_from_directory, send_file, abort
 from pathlib import Path
 
 def _get_shell_dir() -> Path:
@@ -50,27 +50,44 @@ def create_app(config, plugin_manager):
         # 获取插件名（从查询参数）
         plugin_name = request.args.get('plugin', '')
         instance = plugin_manager.get_plugin_instance(plugin_name) if plugin_name else None
-        
-        # 确定根目录
+
+        # 确定允许访问的根目录（支持插件跨多个媒体目录）
         if plugin_name and plugin_name in plugin_manager._instances:
-            data_root = instance.get_data_root()
+            getter = getattr(instance, 'get_file_roots', None)
+            roots = getter() if callable(getter) else [instance.get_data_root()]
         else:
             # 回退到全局根目录
-            data_root = Path(config['directories']['data_root']).resolve()
-        data_root = Path(data_root).resolve()
-        
-        # 安全检查
+            roots = [Path(config['directories']['data_root']).resolve()]
         try:
-            full_path = (data_root / filepath).resolve()
-            if not _is_safe_path(full_path, data_root):
-                abort(403)
+            roots = [Path(root).resolve() for root in roots if root]
         except Exception:
             abort(400)
-        
-        if not full_path.exists():
-            abort(404)
-        
-        return send_from_directory(data_root, filepath)
+
+        # 安全检查
+        try:
+            decoded_path = Path(filepath)
+            if decoded_path.is_absolute():
+                # 绝对路径：逐根目录校验（media-player 等跨根插件使用）
+                full_path = decoded_path.resolve()
+                if not any(_is_safe_path(full_path, root) for root in roots):
+                    abort(403)
+                if not full_path.is_file():
+                    abort(404)
+                return send_file(full_path, conditional=True)
+            else:
+                # 相对路径：沿用「插件数据根目录」语义
+                data_root = roots[0]
+                full_path = (data_root / filepath).resolve()
+                if not _is_safe_path(full_path, data_root):
+                    abort(403)
+                if not full_path.exists():
+                    abort(404)
+                return send_from_directory(data_root, filepath)
+        except Exception as e:
+            code = getattr(e, 'code', None)
+            if code in (400, 403, 404):
+                abort(code)
+            abort(400)
     @app.route('/thumbs/<path:filepath>')
     def serve_thumb(filepath):
         plugin_name = request.args.get('plugin', '')
@@ -99,8 +116,12 @@ def create_app(config, plugin_manager):
         return send_from_directory(thumb_dir, filepath)
     @app.route('/shell/<path:filename>')
     def serve_shell_assets(filename):
-        shell_dir = _SHELL_DIR / 'frontend' / 'dist' / 'shell'
-        return send_from_directory(shell_dir, filename)
+        dist_shell = _SHELL_DIR / 'frontend' / 'dist' / 'shell'
+        if (dist_shell / filename).exists():
+            return send_from_directory(dist_shell, filename)
+        # 开发期未构建进 dist 的新共享组件直接从 public/shell 提供。
+        public_shell = _SHELL_DIR / 'frontend' / 'public' / 'shell'
+        return send_from_directory(public_shell, filename)
 
     @app.route('/plugins/<plugin_name>/frontend/<path:filename>')
     def serve_plugin_frontend(plugin_name, filename):

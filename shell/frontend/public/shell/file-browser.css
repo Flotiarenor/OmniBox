@@ -1,0 +1,104 @@
+/* OmniBox 统一文件浏览器样式 */
+.filebrowser-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border, #30363d);
+}
+.filebrowser-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.filebrowser-crumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+.filebrowser-crumb {
+  color: var(--text-secondary, #8b949e);
+  cursor: pointer;
+  font-size: 13px;
+}
+.filebrowser-crumb.active {
+  color: var(--text-primary, #c9d1d9);
+  cursor: default;
+}
+.filebrowser-crumb-sep {
+  color: var(--text-muted, #6e7681);
+  margin: 0 2px;
+}
+.filebrowser-body {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+}
+.filebrowser-tree {
+  width: 220px;
+  min-width: 180px;
+  max-width: 300px;
+  border-right: 1px solid var(--border, #30363d);
+  overflow: auto;
+  padding: 8px 4px;
+}
+.filebrowser-content {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 12px;
+}
+.filebrowser-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.filebrowser-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-primary, #c9d1d9);
+}
+.filebrowser-row:hover {
+  background: var(--bg-hover, rgba(255,255,255,0.08));
+}
+.filebrowser-row.selected {
+  background: var(--bg-active, rgba(0,120,212,0.2));
+}
+.filebrowser-row input[type="checkbox"] {
+  margin: 0;
+}
+.filebrowser-icon {
+  width: 20px;
+  text-align: center;
+}
+.filebrowser-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.filebrowser-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-secondary, #8b949e);
+}
+.filebrowser-selectionbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border, #30363d);
+  color: var(--text-primary, #c9d1d9);
+}
+
+.filebrowser-row.active {
+  background: var(--bg-active, rgba(0,120,212,0.2));
+  color: var(--accent, #58a6ff);
+}

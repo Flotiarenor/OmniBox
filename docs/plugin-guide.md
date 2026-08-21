@@ -398,6 +398,17 @@ Shell 提供两个文件服务路由：
 
 这两个路由会根据 `plugin` 参数动态获取对应插件的 `get_data_root()` 返回值作为根目录，并进行路径安全检查。
 
+需要跨多个媒体根目录提供文件的插件（如 `media-player`）可以覆写 `get_file_roots()`，
+返回所有允许访问的根目录列表；`/files/` 路由会对每个根目录做安全检查。
+此时前端应使用 URL 编码后的绝对路径访问文件：
+
+```javascript
+// 绝对路径（media-player 跨根场景）
+const src = Bridge.originalUrl(encodeURIComponent('G:/音乐/cover.jpg'));
+// 相对路径（普通单根插件）
+const src = Bridge.originalUrl('subdir/photo.jpg');
+```
+
 ### 7.2 插件如何生成缩略图
 
 插件后端应在 `list_images` 等方法中按需生成缩略图，保存到 `self.thumb_dir`（通常为 `数据根目录/.cache/thumbs/`）。前端通过 `Bridge.thumbUrl()` 获取正确的 URL。
@@ -431,7 +442,7 @@ def _get_thumb(self, rel_path: str) -> Path:
 .config/
 ├── app.yaml                    ← 主程序配置
 └── plugins/
-    ├── music-player.json       ← 各插件设置（git 忽略）
+    ├── media-player.json       ← 各插件设置（git 忽略）
     └── image-viewer.json
 ```
 
