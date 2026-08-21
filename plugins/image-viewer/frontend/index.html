@@ -3,88 +3,146 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>图片浏览</title>
+  <title>图片相册</title>
   <link rel="stylesheet" href="image-viewer.css">
 </head>
 <body>
   <div id="app">
-    <div class="view-sub-sidebar">
-      <div class="sub-sidebar-header">资源管理器</div>
-      <div id="folder-tree" class="tree-container"></div>
-      <div id="folder-stats" class="sub-sidebar-footer">共 0 张图片</div>
-    </div>
+    <aside class="iv-sidebar view-sub-sidebar obx-glass">
+      <div class="iv-brand">
+        <div class="iv-brand-icon">🖼️</div>
+        <div class="iv-brand-text">
+          <div class="iv-brand-title">图片相册</div>
+          <div class="iv-brand-sub">Gallery</div>
+        </div>
+      </div>
+      <nav class="iv-nav">
+        <div class="iv-nav-label">浏览</div>
+        <button class="iv-nav-item active" data-view="albums"><span>🗂️</span>全部相册</button>
+        <button class="iv-nav-item" data-view="timeline"><span>🕐</span>时间线</button>
+        <button class="iv-nav-item" data-view="latest"><span>✨</span>最近添加</button>
+      </nav>
+      <div class="iv-nav-footer">
+        <button id="iv-new-album" class="iv-nav-item"><span>＋</span>新建相册</button>
+      </div>
+      <div class="iv-sidebar-footer" id="iv-stats">正在读取…</div>
+    </aside>
+
     <div class="view-body">
-      <div class="view-toolbar">
-        <div class="toolbar-group">
-          <button id="btn-multi-select" class="btn">开启多选</button>
-          <button id="btn-delete-selected" class="btn btn-danger hidden">删除选中</button>
-          <button id="btn-move-selected" class="btn hidden">移动选中</button>
+      <div class="view-toolbar iv-toolbar">
+        <div class="toolbar-group iv-view-heading">
+          <button id="iv-back" class="btn btn-sm hidden">← 返回</button>
+          <div>
+            <div class="iv-view-title" id="iv-view-title">全部相册</div>
+            <div class="iv-view-sub" id="iv-view-sub"></div>
+          </div>
         </div>
         <div class="toolbar-group" style="margin-left:auto;">
+          <div class="iv-search" id="iv-search-wrap">
+            <span class="iv-search-ico">🔍</span>
+            <input type="text" id="iv-search" placeholder="搜索相册…" autocomplete="off">
+            <button id="iv-search-clear" class="iv-search-clear hidden">✕</button>
+          </div>
+          <button id="btn-slideshow" class="btn hidden">▶ 幻灯片</button>
+          <button id="btn-cleanup" class="btn hidden">🧹 清理</button>
+          <button id="btn-multi-select" class="btn hidden">开启多选</button>
+          <button id="btn-delete-selected" class="btn btn-danger hidden">删除选中</button>
+          <button id="btn-move-selected" class="btn hidden">移动选中</button>
           <button id="btn-settings" class="btn">⚙ 设置</button>
         </div>
       </div>
-      <div class="view-content" id="image-grid-container">
-        <div id="image-grid" class="grid"></div>
+
+      <div class="view-content iv-content obx-scroll" id="iv-content">
+        <div id="iv-albums"></div>
+        <div id="image-grid" class="iv-image-grid"></div>
       </div>
       <div id="pagination" class="pagination-bar"></div>
     </div>
-  </div>
 
-  <!-- 移动模态框 -->
-  <div id="move-modal" class="modal">
-    <div class="modal-box">
-      <h3>移动到文件夹</h3>
-      <div id="move-tree" class="tree-container move-tree"></div>
-      <div class="modal-footer">
-        <button class="btn" onclick="imageViewer.closeMoveModal()">取消</button>
-        <button class="btn btn-primary" onclick="imageViewer.confirmMove()">确认移动</button>
+    <div id="new-album-modal" class="modal">
+      <div class="modal-box obx-anim-scale" style="width:360px;">
+        <h3>新建相册</h3>
+        <div class="modal-body">
+          <div class="iv-field">
+            <label>相册名称</label>
+            <input type="text" id="iv-new-album-name" class="search-input" placeholder="例如：2026 旅行照片" style="width:100%;max-width:none;">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" id="iv-new-album-cancel">取消</button>
+          <button class="btn btn-primary" id="iv-new-album-confirm">创建</button>
+        </div>
       </div>
     </div>
-  </div>
 
-  <!-- 设置模态框 -->
-  <div id="settings-modal" class="modal">
-    <div class="modal-box" style="width:380px;">
-      <h3>显示与排序设置</h3>
-      <div style="padding:20px;">
-        <div class="setting-item" style="margin-top:20px;">
-          <label>数据根目录</label>
-          <input type="text" id="setting-root-dir" class="search-input" style="width:200px;" placeholder="默认: ./data">
+    <div id="cleanup-modal" class="modal">
+      <div class="modal-box obx-anim-scale" style="width:640px;max-width:96vw;">
+        <h3>🧹 清理重复 / 相似图片</h3>
+        <div class="modal-body">
+          <div class="iv-cleanup-tabs">
+            <button id="cleanup-tab-dupe" class="btn btn-sm active">完全重复</button>
+            <button id="cleanup-tab-similar" class="btn btn-sm">相似图片</button>
+            <span id="cleanup-scanned" style="margin-left:auto;font-size:12px;color:var(--text-secondary);"></span>
+          </div>
+          <div id="cleanup-results" class="iv-cleanup-results obx-scroll"></div>
         </div>
-        <div class="setting-item">
-          <label>图片行高</label>
-          <input type="range" id="setting-row-height" min="100" max="400" value="200">
-          <span id="setting-row-height-val">200</span>
-        </div>
-        <div class="setting-item" style="margin-top:20px;">
-          <label>每页图片数</label>
-          <input type="number" id="setting-per-page" min="10" max="200" step="10" value="40">
-        </div>
-        <div class="setting-item" style="margin-top:20px;">
-          <label>排序方式</label>
-          <select id="setting-sort-by">
-            <option value="mtime">修改时间</option>
-            <option value="name">文件名</option>
-          </select>
-        </div>
-        <div class="setting-item" style="margin-top:20px;">
-          <label>排序方向</label>
-          <select id="setting-sort-order">
-            <option value="desc">倒序</option>
-            <option value="asc">正序</option>
-          </select>
-        </div>
-        <div style="margin-top:25px;padding-top:15px;border-top:1px solid var(--border);">
-          <label style="display:flex;align-items:center;font-size:13px;color:var(--text-secondary);cursor:pointer;">
-            <input type="checkbox" id="setting-apply-to-folder" style="margin-right:8px;">
-            仅应用于当前文件夹 (<span id="setting-current-folder-name">根目录</span>)
-          </label>
+        <div class="modal-footer">
+          <span id="cleanup-selected" style="margin-right:auto;font-size:13px;color:var(--text-secondary);">已选 0 张</span>
+          <button id="cleanup-close" class="btn">关闭</button>
+          <button id="cleanup-delete" class="btn btn-danger">删除选中</button>
         </div>
       </div>
-      <div class="modal-footer">
-        <button class="btn" onclick="imageViewer.closeSettingsModal()">取消</button>
-        <button class="btn btn-primary" onclick="imageViewer.saveSettings()">保存并刷新</button>
+    </div>
+
+    <div id="move-modal" class="modal">
+      <div class="modal-box obx-anim-scale">
+        <h3>移动到文件夹</h3>
+        <div id="move-tree" class="tree-container move-tree" style="min-height:200px;"></div>
+        <div class="modal-footer">
+          <button class="btn" id="move-cancel">取消</button>
+          <button class="btn btn-primary" id="move-confirm">确认移动</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="settings-modal" class="modal">
+      <div class="modal-box obx-anim-scale" style="width:400px;">
+        <h3>显示与排序设置</h3>
+        <div style="padding:20px;">
+          <div class="iv-setting-item">
+            <label>数据根目录</label>
+            <input type="text" id="setting-root-dir" class="search-input" placeholder="默认: ./data">
+          </div>
+          <div class="iv-setting-item">
+            <label>图片行高 <span id="setting-row-height-val">200</span></label>
+            <input type="range" id="setting-row-height" min="100" max="400" value="200" class="iv-range">
+          </div>
+          <div class="iv-setting-item">
+            <label>每页图片数</label>
+            <input type="number" id="setting-per-page" min="10" max="200" step="10" value="40">
+          </div>
+          <div class="iv-setting-item">
+            <label>排序方式</label>
+            <select id="setting-sort-by">
+              <option value="mtime">修改时间</option>
+              <option value="name">文件名</option>
+            </select>
+          </div>
+          <div class="iv-setting-item">
+            <label>排序方向</label>
+            <select id="setting-sort-order">
+              <option value="desc">倒序</option>
+              <option value="asc">正序</option>
+            </select>
+          </div>
+          <label class="iv-check">
+            <input type="checkbox" id="setting-apply-to-folder"> 仅应用于当前文件夹（<span id="setting-current-folder-name">根目录</span>）
+          </label>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" id="settings-cancel">取消</button>
+          <button class="btn btn-primary" id="settings-save">保存并刷新</button>
+        </div>
       </div>
     </div>
   </div>
@@ -92,7 +150,7 @@
   <script src="js/justified-layout.js"></script>
   <script src="js/app.js"></script>
   <script>
-    const imageViewer = new ImageViewer();
+    window.imageViewer = new ImageViewer();
     imageViewer.init();
   </script>
 </body>

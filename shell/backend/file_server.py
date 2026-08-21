@@ -101,7 +101,15 @@ def create_app(config, plugin_manager):
             data_root = Path(config['directories']['data_root']).resolve()
             thumb_dir = data_root / '.cache' / 'thumbs'
         thumb_dir = Path(thumb_dir).resolve()
-        
+
+        # 按需生成缩略图（如 image-viewer）：文件不存在时交给插件现场生成
+        ensure = getattr(instance, 'ensure_thumb', None) if instance is not None else None
+        if callable(ensure):
+            try:
+                ensure(filepath)
+            except Exception:
+                pass
+
         # 安全检查
         try:
             full_path = (thumb_dir / filepath).resolve()
@@ -139,7 +147,9 @@ def create_app(config, plugin_manager):
                 SCRIPT_TPL = (
                     '<link rel="stylesheet" href="/shell/variables.css">'
                     '<link rel="stylesheet" href="/shell/base.css">'
+                    '<link rel="stylesheet" href="/shell/effects.css">'
                     '<script src="/shell/base.js"></script>'
+                    '<script src="/shell/motion.js"></script>'
                     '<script>'
                     "Bridge.setPrefix('PLACEHOLDER_NAME');"
                     '(function(){'

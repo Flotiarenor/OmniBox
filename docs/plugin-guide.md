@@ -203,6 +203,23 @@ class MyPlugin(PluginBase):
 
 **你无需在 HTML 中手动引入这些文件**，Shell 会在加载插件时自动注入到 `<head>` 中。
 
+另外 Shell 还自动注入通用动效资源，所有插件可直接使用：
+
+- `/shell/effects.css` — 通用动效样式类：
+  - 入场动画：`.obx-anim-fade-up` / `.obx-anim-fade-down` / `.obx-anim-fade` / `.obx-anim-pop` / `.obx-anim-scale`
+  - 常驻动画：`.obx-anim-float` / `.obx-anim-spin` / `.obx-anim-pulse` / `.obx-anim-heart`
+  - 交错列表：容器加 `.obx-stagger`，子元素设置 `--obx-i`（JS 可调用 `Motion.stagger(container)` 自动编号）
+  - 玻璃面板：`.obx-glass` / `.obx-glass-strong`
+  - 卡片悬浮抬升：`.obx-card-lift`
+  - 骨架屏：`.obx-skeleton`
+  - 现代窄滚动条（鼠标悬停渐显、深浅色兼容）：`.obx-scroll`
+- `/shell/motion.js` — `window.Motion`：
+  - `Motion.stagger(container, selector?)` 为子元素写入交错延迟
+  - `Motion.retrigger(el, className?)` 重新触发动画（默认 `obx-anim-heart`）
+  - `Motion.show(el, className?)` 淡入上移显示
+
+所有动画均遵循 `prefers-reduced-motion`，用户开启减少动态效果时自动降级。
+
 #### 通用布局类（base.css 已提供，插件无需重复定义）
 
 以下 CSS 类已由 Shell 统一注入，插件 HTML 直接使用即可，**不应在自己 CSS 中重复定义**（否则将不兼容未来主题变更）：
