@@ -317,6 +317,7 @@ class NovelReader {
             </div>
         `).join('');
 
+        if (window.Motion) Motion.stagger(container, '.novel-shelf-item');
         container.querySelectorAll('.novel-shelf-item').forEach(item => {
             item.addEventListener('click', () => {
                 this._openNovel(item.dataset.id);
@@ -584,6 +585,7 @@ class NovelReader {
                 <span class="chapter-words">${chapter.word_count}字</span>
             </div>
         `).join('');
+        if (window.Motion) Motion.stagger(list, '.novel-chapter-item');
         list.querySelectorAll('.novel-chapter-item').forEach(item => {
             item.addEventListener('click', () => {
                 const index = parseInt(item.dataset.index);
