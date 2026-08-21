@@ -1,5 +1,6 @@
 import os
 import json
+import hashlib
 import shutil
 from pathlib import Path
 from typing import List, Dict
@@ -40,8 +41,12 @@ class ImageViewerPlugin(PluginBase):
         self.thumb_dir = self.cache_dir / 'thumbs'
         self.meta_file = self.cache_dir / 'image_meta.json'
         self.thumb_dir.mkdir(parents=True, exist_ok=True)
+        self.album_cache_file = self.cache_dir / 'albums_index.json'
+        self.album_config_file = self.cache_dir / 'albums_config.json'
         self._meta_cache = self._load_meta()
         self._list_cache = {}
+        self._album_config = self._load_album_config()
+        self._album_cache = self._load_album_cache()
 
     def _load_meta(self) -> dict:
         if self.meta_file.exists():
@@ -70,6 +75,12 @@ class ImageViewerPlugin(PluginBase):
         return {
             'list_images': self.list_images,
             'list_dir': self.list_dir,
+            'list_albums': self.list_albums,
+            'create_folder': self.create_folder,
+            'get_album_config': self.get_album_config,
+            'set_album_config': self.set_album_config,
+            'duplicate_scan': self.duplicate_scan,
+            'similar_scan': self.similar_scan,
             'delete_files': self.delete_files,
             'move_files': self.move_files,
             'get_settings': self.get_settings,
@@ -80,6 +91,16 @@ class ImageViewerPlugin(PluginBase):
 
     def get_root_dir(self) -> str:
         return str(self.root_dir)
+
+    def ensure_thumb(self, rel_path: str) -> str:
+        # 供 Shell /thumbs 路由按需调用：缩略图不存在时现场生成。
+        if not self._is_safe(rel_path):
+            return ''
+        try:
+            thumb = self._get_thumb(rel_path)
+            return str(thumb) if thumb and thumb.exists() else ''
+        except Exception:
+            return ''
 
     def _get_dir_mtime(self, rel_path: str) -> float:
         return stat_mtime(self.root_dir, rel_path)
@@ -131,7 +152,6 @@ class ImageViewerPlugin(PluginBase):
                         mtime = entry.stat().st_mtime
                         url_path = (Path(rel_path) / entry.name).as_posix()
                         width, height = self._get_image_size(entry.path, mtime)
-                        self._get_thumb(url_path)
                         images.append({
                             'url': url_path,
                             'mtime': mtime,
@@ -164,6 +184,363 @@ class ImageViewerPlugin(PluginBase):
 
     def list_dir(self, rel_path: str = '') -> List[Dict]:
         return list_directory(self.root_dir, rel_path)
+    # ===== 相册索引（持久化 + 按目录 mtime 增量更新） =====
+
+    def _load_album_cache(self) -> dict:
+        if self.album_cache_file.exists():
+            try:
+                with open(self.album_cache_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and data.get('version') == 2:
+                    return data
+            except Exception:
+                pass
+        return {'version': 2, 'dirs': {}}
+
+    def _save_album_cache(self):
+        try:
+            self.album_cache_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.album_cache_file, 'w', encoding='utf-8') as f:
+                json.dump(self._album_cache, f, ensure_ascii=False)
+        except Exception as e:
+            print(f'[ImageViewer] 保存相册索引失败: {e}')
+
+    def _load_album_config(self) -> dict:
+        defaults = {'collapsed': [], 'promoted': []}
+        if self.album_config_file.exists():
+            try:
+                with open(self.album_config_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return {**defaults, **data}
+            except Exception:
+                pass
+        return defaults
+
+    def _save_album_config(self):
+        try:
+            self.album_config_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.album_config_file, 'w', encoding='utf-8') as f:
+                json.dump(self._album_config, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f'[ImageViewer] 保存相册配置失败: {e}')
+
+    def _list_album_dirs(self) -> dict:
+        """只遍历目录树本身（不读文件），返回 {rel_path: dir_mtime}。"""
+        dirs = {}
+        try:
+            stat = self.root_dir.stat()
+            dirs[''] = stat.st_mtime
+        except OSError:
+            return dirs
+        for current, dir_names, _files in os.walk(self.root_dir):
+            dir_names[:] = [d for d in dir_names
+                            if not d.startswith('.') and d != '.cache']
+            current = Path(current)
+            if current == self.root_dir:
+                continue
+            try:
+                rel = current.relative_to(self.root_dir).as_posix()
+                dirs[rel] = current.stat().st_mtime
+            except (OSError, ValueError):
+                continue
+        return dirs
+
+    def _scan_dir_direct(self, dir_path: Path, rel_path: str) -> dict:
+        """只扫描一个目录的直接图片（一次 os.scandir，开销可控）。"""
+        images = []
+        children = []
+        try:
+            with os.scandir(dir_path) as entries:
+                for entry in entries:
+                    if entry.name.startswith('.') or entry.name == '.cache':
+                        continue
+                    if entry.is_dir():
+                        children.append(entry.name)
+                    elif entry.is_file() and Path(entry.name).suffix.lower() in ALLOWED_EXTENSIONS:
+                        try:
+                            stat = entry.stat()
+                        except OSError:
+                            continue
+                        images.append({
+                            'rel': (Path(rel_path) / entry.name).as_posix() if rel_path else entry.name,
+                            'mtime': stat.st_mtime,
+                        })
+        except OSError:
+            pass
+        images.sort(key=lambda x: x['mtime'], reverse=True)
+        return {
+            'path': rel_path,
+            'name': dir_path.name if rel_path else '未分类',
+            'depth': rel_path.count('/') + (1 if rel_path else 0),
+            'parent': '/'.join(rel_path.split('/')[:-1]) if rel_path else None,
+            'direct_count': len(images),
+            'direct_cover': images[0]['rel'] if images else '',
+            'direct_mtime': images[0]['mtime'] if images else 0.0,
+            'has_children': len(children) > 0,
+            'children': sorted(children),
+        }
+
+    def _build_albums(self, dirs: dict, cache_dirs: dict) -> tuple:
+        """直接扫描变化目录，再自底向上聚合出递归统计。"""
+        cache_dirs = cache_dirs or {}
+        entries = {}
+        changed = 0
+        for rel, mtime in dirs.items():
+            cached = cache_dirs.get(rel)
+            if cached and cached.get('mtime') is not None \
+                    and abs(float(cached.get('mtime', 0)) - float(mtime)) < 0.5:
+                entries[rel] = cached
+                continue
+            dir_path = self.root_dir / rel if rel else self.root_dir
+            entry = self._scan_dir_direct(dir_path, rel)
+            entry['mtime'] = mtime
+            entries[rel] = entry
+            changed += 1
+
+        # 自底向上聚合 image_count / cover / mtime
+        ordered = sorted(entries.values(), key=lambda e: e['depth'], reverse=True)
+        totals = {}
+        for entry in ordered:
+            rel = entry['path']
+            total = entry['direct_count']
+            cover = entry['direct_cover']
+            newest = entry['direct_mtime']
+            for child_name in entry['children']:
+                child_rel = f"{rel}/{child_name}" if rel else child_name
+                child_totals = totals.get(child_rel)
+                if not child_totals:
+                    continue
+                total += child_totals[0]
+                if child_totals[2] > newest:
+                    newest = child_totals[2]
+                    cover = child_totals[1]
+            totals[rel] = (total, cover, newest)
+
+        albums = []
+        for entry in entries.values():
+            total, cover, newest = totals[entry['path']]
+            albums.append({
+                'name': entry['name'],
+                'path': entry['path'],
+                'parent': entry['parent'],
+                'image_count': total,
+                'direct_count': entry['direct_count'],
+                'has_children': entry['has_children'],
+                'cover': cover,
+                'mtime': newest,
+                'depth': entry['depth'],
+            })
+
+        # 为有封面的相册预生成缩略图（之后 /thumbs 请求直接命中缓存）
+        for album in albums:
+            if album['cover']:
+                try:
+                    ensure_thumbnail(self.root_dir, album['cover'], self.thumb_dir)
+                except Exception:
+                    pass
+
+        return albums, entries, changed
+
+    def list_albums(self) -> Dict:
+        """相册列表：目录 mtime 未变时直接复用持久化索引，避免每次重启全量扫描。"""
+        dirs = self._list_album_dirs()
+        albums, entries, changed = self._build_albums(dirs, self._album_cache.get('dirs', {}))
+        self._album_cache = {'version': 2, 'dirs': entries}
+        if changed:
+            self._save_album_cache()
+        return {'albums': albums, 'config': self._album_config, 'changed': changed}
+
+    # ===== 重复 / 相似图片清理（按相册范围扫描） =====
+
+    def _album_files(self, rel_path: str) -> list:
+        """返回指定相册直接包含的图片文件信息（不递归）。"""
+        if not self._is_safe(rel_path):
+            return []
+        target = self.root_dir / rel_path if rel_path else self.root_dir
+        files = []
+        try:
+            with os.scandir(target) as entries:
+                for entry in entries:
+                    if entry.is_file() and Path(entry.name).suffix.lower() in ALLOWED_EXTENSIONS:
+                        try:
+                            stat = entry.stat()
+                        except OSError:
+                            continue
+                        files.append({
+                            'rel': (Path(rel_path) / entry.name).as_posix() if rel_path else entry.name,
+                            'abs': entry.path,
+                            'size': stat.st_size,
+                            'mtime': stat.st_mtime,
+                        })
+        except OSError:
+            pass
+        return files
+
+    @staticmethod
+    def _file_quick_hash(abs_path: str, size: int) -> str:
+        """先读首尾各 64KB + 文件大小做快速指纹，避免整文件 MD5。"""
+        h = hashlib.md5()
+        h.update(str(size).encode())
+        try:
+            with open(abs_path, 'rb') as f:
+                h.update(f.read(65536))
+                if size > 131072:
+                    f.seek(max(0, size - 65536))
+                    h.update(f.read(65536))
+        except OSError:
+            pass
+        return h.hexdigest()
+
+    @staticmethod
+    def _file_full_hash(abs_path: str) -> str:
+        h = hashlib.md5()
+        try:
+            with open(abs_path, 'rb') as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                    h.update(chunk)
+        except OSError:
+            pass
+        return h.hexdigest()
+
+    def duplicate_scan(self, rel_path: str = '') -> Dict:
+        """扫描相册内完全重复的图片（大小分组 + 快速指纹 + 精确 MD5）。"""
+        files = self._album_files(rel_path)
+        if not files:
+            return {'groups': [], 'scanned': 0}
+        scanned = len(files)
+        by_size = {}
+        for f in files:
+            by_size.setdefault(f['size'], []).append(f)
+        groups = []
+        for size, batch in by_size.items():
+            if len(batch) < 2:
+                continue
+            by_quick = {}
+            for f in batch:
+                scanned += 1
+                key = self._file_quick_hash(f['abs'], f['size'])
+                by_quick.setdefault(key, []).append(f)
+            for key, candidates in by_quick.items():
+                if len(candidates) < 2:
+                    continue
+                by_full = {}
+                for f in candidates:
+                    digest = self._file_full_hash(f['abs'])
+                    by_full.setdefault(digest, []).append(f)
+                for digest, dups in by_full.items():
+                    if len(dups) >= 2:
+                        groups.append({
+                            'hash': digest,
+                            'size': size,
+                            'files': [d['rel'] for d in dups],
+                        })
+        groups.sort(key=lambda g: -len(g['files']))
+        return {'groups': groups, 'scanned': scanned}
+
+    def _image_dhash(self, abs_path: str, mtime: float) -> int:
+        """64-bit 差异哈希（dHash），结果写入 image_meta 缓存。"""
+        key = 'dhash:' + hashlib.md5(abs_path.encode()).hexdigest()
+        cached = self._meta_cache.get(key)
+        if cached and cached.get('mtime') == mtime:
+            return int(cached.get('hash', 0))
+        value = 0
+        try:
+            from PIL import Image
+            with Image.open(abs_path) as img:
+                small = img.convert('L').resize((9, 8))
+            pixels = list(small.getdata())
+            for row in range(8):
+                for col in range(8):
+                    value <<= 1
+                    if pixels[row * 9 + col] > pixels[row * 9 + col + 1]:
+                        value |= 1
+        except Exception:
+            value = 0
+        self._meta_cache[key] = {'mtime': mtime, 'hash': value}
+        return value
+
+    def similar_scan(self, rel_path: str = '', threshold: int = 8) -> Dict:
+        """扫描相册内视觉相似图片（dHash + 汉明距离 + 并查集聚类）。"""
+        files = self._album_files(rel_path)
+        if len(files) < 2:
+            return {'groups': [], 'scanned': len(files)}
+        threshold = max(0, min(16, int(threshold)))
+        hashes = []
+        valid = []
+        for f in files:
+            h = self._image_dhash(f['abs'], f['mtime'])
+            if h:
+                hashes.append(h)
+                valid.append(f)
+        n = len(valid)
+        parent = list(range(n))
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        for i in range(n):
+            hi = hashes[i]
+            for j in range(i + 1, n):
+                # 尺寸差异过大不可能是相似图
+                if max(valid[i]['size'], valid[j]['size']) > min(valid[i]['size'], valid[j]['size']) * 6:
+                    continue
+                if (hi ^ hashes[j]).bit_count() <= threshold:
+                    union(i, j)
+
+        clusters = {}
+        for i in range(n):
+            clusters.setdefault(find(i), []).append(valid[i]['rel'])
+        groups = [{'files': sorted(files)} for files in clusters.values() if len(files) >= 2]
+        groups.sort(key=lambda g: -len(g['files']))
+        if groups:
+            self._save_meta()
+        return {'groups': groups, 'scanned': n}
+
+    def get_album_config(self) -> Dict:
+        return self._album_config
+
+    def set_album_config(self, rel_path: str, action: str) -> Dict:
+        """album 层级控制：collapse/expand（收纳子相册）、promote/unpromote（提升到全部相册）。"""
+        rel_path = (rel_path or '').strip().strip('/')
+        collapsed = set(self._album_config.get('collapsed', []))
+        promoted = set(self._album_config.get('promoted', []))
+        if action == 'collapse':
+            collapsed.add(rel_path)
+        elif action == 'expand':
+            collapsed.discard(rel_path)
+        elif action == 'promote':
+            promoted.add(rel_path)
+        elif action == 'unpromote':
+            promoted.discard(rel_path)
+        else:
+            return {'success': False, 'error': f'未知操作: {action}'}
+        self._album_config = {
+            'collapsed': sorted(collapsed),
+            'promoted': sorted(promoted),
+        }
+        self._save_album_config()
+        return {'success': True, 'config': self._album_config}
+
+    def create_folder(self, rel_path: str) -> Dict:
+        """在根目录（或指定相对目录）下新建相册文件夹。"""
+        rel_path = (rel_path or '').replace('\\', '/').strip('/')
+        if not rel_path or not self._is_safe(rel_path):
+            return {'success': False, 'error': '文件夹名称非法'}
+        target = self.root_dir / rel_path
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+        return {'success': True, 'path': rel_path}
 
 
     def delete_files(self, rel_paths: List[str]) -> Dict:

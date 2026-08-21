@@ -1,7 +1,7 @@
 {
   "name": "image-viewer",
-  "version": "1.0.0",
-  "displayName": "图片浏览",
+  "version": "2.2.0",
+  "displayName": "图片相册",
   "icon": "🖼️",
   "dependencies": [],
   "backend": {

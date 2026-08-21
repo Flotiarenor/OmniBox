@@ -1,0 +1,179 @@
+/* ============================================================
+   OmniBox Shell 通用动效库（自动注入所有插件 iframe）
+   使用方式：
+   - 直接给元素加类：obx-anim-fade-up / obx-anim-pop / obx-anim-scale ...
+   - 列表批量交错入场：容器加 .obx-stagger，JS 调用
+     Motion.stagger(container) 或子元素手动设置 --obx-i
+   - 玻璃面板：.obx-glass / .obx-glass-strong
+   - 现代窄滚动条（悬停渐显）：.obx-scroll
+   所有动画遵循 prefers-reduced-motion。
+   ============================================================ */
+
+/* ---------- 通用 tokens ---------- */
+:root {
+  --obx-radius: 14px;
+  --obx-radius-sm: 10px;
+  --obx-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --obx-ease-spring: cubic-bezier(0.34, 1.45, 0.64, 1);
+  --obx-glass-blur: 18px;
+  --obx-shadow-1: 0 6px 24px rgba(0, 0, 0, 0.10);
+  --obx-shadow-2: 0 14px 44px rgba(0, 0, 0, 0.18);
+  --obx-accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/* ---------- 关键帧 ---------- */
+@keyframes obxFadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes obxFadeDown {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes obxFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes obxPopIn {
+  from { opacity: 0; transform: scale(0.94) translateY(6px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes obxScaleIn {
+  from { opacity: 0; transform: scale(0.92) translateY(10px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes obxSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes obxFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-7px); }
+}
+
+@keyframes obxPulse {
+  0%, 100% { box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 35%, transparent); }
+  50% { box-shadow: 0 8px 26px color-mix(in srgb, var(--accent) 55%, transparent); }
+}
+
+@keyframes obxShimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+@keyframes obxHeart {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.45); }
+  100% { transform: scale(1); }
+}
+
+/* ---------- 入场动画工具类 ---------- */
+.obx-anim-fade-up { animation: obxFadeUp 0.45s var(--obx-ease) both; }
+.obx-anim-fade-down { animation: obxFadeDown 0.35s var(--obx-ease) both; }
+.obx-anim-fade { animation: obxFade 0.25s ease both; }
+.obx-anim-pop { animation: obxPopIn 0.24s var(--obx-ease-spring) both; }
+.obx-anim-scale { animation: obxScaleIn 0.24s var(--obx-ease-spring) both; }
+.obx-anim-float { animation: obxFloat 4s ease-in-out infinite; }
+.obx-anim-spin { animation: obxSpin 0.8s linear infinite; }
+.obx-anim-pulse { animation: obxPulse 2.2s ease-in-out infinite; }
+.obx-anim-heart { animation: obxHeart 0.4s var(--obx-ease-spring); }
+
+/* ---------- 交错入场容器 ---------- */
+.obx-stagger > * {
+  animation: obxFadeUp 0.45s var(--obx-ease) both;
+  animation-delay: calc(var(--obx-i, 0) * 30ms);
+}
+
+/* ---------- 玻璃拟态 ---------- */
+.obx-glass {
+  background: color-mix(in srgb, var(--bg-surface) 84%, transparent);
+  backdrop-filter: blur(var(--obx-glass-blur));
+  -webkit-backdrop-filter: blur(var(--obx-glass-blur));
+}
+
+.obx-glass-strong {
+  background: color-mix(in srgb, var(--bg-surface) 92%, transparent);
+  backdrop-filter: blur(var(--obx-glass-blur));
+  -webkit-backdrop-filter: blur(var(--obx-glass-blur));
+}
+
+/* ---------- 卡片悬浮抬升 ---------- */
+.obx-card-lift {
+  transition: transform 0.22s var(--obx-ease), box-shadow 0.22s var(--obx-ease),
+              border-color 0.22s var(--obx-ease);
+}
+
+.obx-card-lift:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--obx-shadow-2);
+}
+
+/* ---------- 骨架屏 ---------- */
+.obx-skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--bg-hover) 25%,
+    color-mix(in srgb, var(--bg-surface) 60%, var(--bg-hover)) 50%,
+    var(--bg-hover) 75%
+  );
+  background-size: 800px 100%;
+  animation: obxShimmer 1.4s linear infinite;
+  border-radius: var(--obx-radius-sm);
+  color: transparent !important;
+  user-select: none;
+  pointer-events: none;
+}
+
+/* ---------- 现代窄滚动条：悬停渐显 ---------- */
+.obx-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.obx-scroll:hover {
+  scrollbar-color: color-mix(in srgb, var(--text-secondary) 38%, transparent) transparent;
+}
+
+.obx-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.obx-scroll::-webkit-scrollbar-track { background: transparent; }
+.obx-scroll::-webkit-scrollbar-corner { background: transparent; }
+
+.obx-scroll::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 0.25s ease;
+}
+
+.obx-scroll:hover::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--text-secondary) 38%, transparent);
+}
+
+.obx-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--text-secondary) 62%, transparent);
+}
+
+/* ---------- 降低动态效果偏好 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .obx-anim-fade-up,
+  .obx-anim-fade-down,
+  .obx-anim-fade,
+  .obx-anim-pop,
+  .obx-anim-scale,
+  .obx-anim-float,
+  .obx-anim-spin,
+  .obx-anim-pulse,
+  .obx-anim-heart,
+  .obx-stagger > * {
+    animation-duration: 0.001s !important;
+    animation-iteration-count: 1 !important;
+  }
+  .obx-card-lift { transition-duration: 0.001s !important; }
+}
