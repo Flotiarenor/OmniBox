@@ -1,11 +1,12 @@
 # OmniBox 外部程序接入实例（Adapter Guide）
 
-> 版本：**v1.0（RFC，按 adapter-spec v1.0 重写，取代 v0.2）**
-> 上游通用规范：[adapter-spec.md](./adapter-spec.md)（v1.0）— 接入方式唯一事实源，本文档不重新定义规范。
-> 状态：**规划中，尚未实装（RFC）**。本文是两个未来接入实例的设计稿；涉及的 `adapter_process.py`、`PluginBase.adapter_*`、`kind: "local-adapter"` 当前均未实现。
-> 本文档：两个接入实例的落地设计
+> 版本：**v1.1（设计稿）**
+> 上游通用规范：[adapter-spec.md](./adapter-spec.md)（v1.1）— 接入方式唯一事实源，本文档不重新定义规范。
+> 状态：**规划中，尚未实装**。本文是未来接入实例的设计稿；涉及的 `adapter_process.py`、`PluginBase.adapter_*`、`kind: "local-adapter"` 当前均未实现。
+> 本文档：接入实例的落地设计
 > - 实例一：**ALAS**（形态 A，自带 Web UI → iframe 嵌入）
 > - 实例二：**战报识别系统**（形态 B，只有 DB → 直连）
+> - 实例三：**image-tagger**（形态 D，stdio-worker）→ 独立设计文档：[image-tagger-design.md](./image-tagger-design.md)
 
 ---
 

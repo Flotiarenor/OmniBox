@@ -1,12 +1,15 @@
 # OmniBox 外部程序接入规范（Adapter Spec）
 
-> 版本：**v1.0（RFC）**
-> 状态：**规划中，尚未实装（RFC）**。当前代码中没有 `shell/backend/adapter_process.py`，`PluginBase` 没有 `adapter_*` 方法，`PluginManager` 也不处理 `kind: "local-adapter"`。本文档只描述未来实现目标，当前不要按此开发。
-> 适用对象：任何希望作为 OmniBox 插件被接入的**外部大型程序**（独立项目、独立 venv、独立可运行，如 ALAS、战报识别系统）。
+> 版本：**v1.1（设计定稿，尚未实装）**
+> 状态：**规划中**。当前代码中没有 `shell/backend/adapter_process.py`，`PluginBase` 没有 `adapter_*` 方法，`PluginManager` 也不处理 `kind: "local-adapter"`。
+> v1.1 变更：按「Companion 插件 + 自带 venv / 独立环境」方向收窄落地范围，新增 **§3.4 长驻 Worker（stdio-worker）** 形态，并作为 image-tagger 的接入方式。
+> 适用对象：任何希望作为 OmniBox 插件被接入的**外部大型程序**（独立项目、独立 venv、独立可运行，如 ALAS、战报识别系统、本地模型推理工具）。
 > 参考原型：**AzurLaneAutoScript（ALAS）**——控制台 + 独立引擎进程，以「文件/数据库契约 + 进程生命周期 + 日志流 + 状态轮询」弱耦合，验证了管理类重系统接入无需协议握手。
 > 相关文档：
 > - `docs/plugin-guide.md` — 常规（内嵌）插件开发指南，插件的前端/后端/设置规范仍适用
 > - `docs/adapter-guide.md` — 接入实例（ALAS = iframe 嵌入；战报识别系统 = DB 直连）
+> - `docs/core-direction.md` — 主程序方向：Companion 插件与独立运行环境
+> - `docs/image-tagger-design.md` — stdio-worker 形态的首个落地规格
 
 ---
 
@@ -48,6 +51,7 @@
 
 - 无 HTTP 常驻服务约定、无端口分配、无 CORS、无 /health。
 - 所有相对路径基于外部程序项目根（下称 `root`）。
+- 外部程序可通过 **Companion 插件**接入：宿主插件零改动，接入插件声明 `dependencies`，通过 `PluginBase.get_dependency()` 复用宿主数据根与文件服务。
 
 ---
 
@@ -130,6 +134,44 @@
 | 超时 | 单次调用超时（默认 120s）→ 强杀并报 OmniBox 侧错误 |
 | 长任务 | 若需进度/停止：进度走 stdout JSON 行流；停止走外部程序自身机制（如 `--stop`、配置文件标志），**禁止依赖 SIGTERM 优雅退出**（Windows 为硬杀） |
 
+### 3.4 形态 D：长驻 Worker（stdio-worker，本地模型推理工具推荐）
+
+适用于需要**常驻内存模型**、任务频繁的本地工具（自动打标、OCR、图像增强）。该形态是本规范 v1.1 的首个落地目标，协议要求最严格。
+
+```
+插件后端 ── Popen ──▶ <root>/<runtime.venv>/Scripts/python.exe <runtime.entry>
+                          │
+                          │ stdin  = 控制行（JSON-lines）
+                          │ stdout = 数据行（JSON-lines）
+                          │ stderr = 人类诊断日志
+```
+
+| 项 | 约定 |
+|----|------|
+| 拉起 | `startup: "lazy"`：应用启动不拉起；首次任务时拉起，模型加载完成后输出 `{"type":"ready"}` |
+| 协议 | 每行一个 JSON 对象；控制行下行、进度/结果上行；字段见 `docs/image-tagger-design.md` §7 |
+| 进度 | Worker 输出 `progress` 行；控制器持久化到任务文件，前端轮询 |
+| 取消 | 控制行 `{"type":"cancel","taskId":...}`；Worker 在下一个检查点响应 |
+| 崩溃 | EOF → `ERR_WORKER_CRASH`；重启后按任务断点恢复 |
+| 环境 | `<runtime.venv>` 由部署脚本按 `<runtime.requirements>` 创建；模型文件不进 OmniBox 主包 |
+| 超时 | `runtime.timeoutSeconds` 为任务软上限；超时提示但不强制杀（可取消） |
+
+manifest 扩展：
+
+```json
+{
+  "kind": "local-adapter",
+  "runtime": {
+    "kind": "stdio-worker",
+    "entry": "backend/runtime/worker.py",
+    "venv": "backend/runtime/venv",
+    "requirements": "backend/runtime/requirements.txt",
+    "startup": "lazy",
+    "timeoutSeconds": 3600
+  }
+}
+```
+
 ---
 
 ## 4. 错误处理（OmniBox 侧补充，不进外部程序错误码表）
@@ -141,6 +183,8 @@
 | `ERR_TIMEOUT` | 单次调用超时 | §3.3 |
 | `ERR_DB_NOT_FOUND` | 直连的 DB 不存在 | §3.2（透传外部程序语义） |
 | `ERR_PROCESS_BUSY` | 已有实例在运行 | 串行约束 |
+| `ERR_WORKER_CRASH` | stdio-worker 异常退出 | EOF / 存活轮询发现 |
+| `ERR_RUNTIME_NOT_READY` | 独立 venv 或模型未就绪 | 部署脚本未完成 / modelDir 为空 |
 
 **插件后端 API 返回统一结构**：
 
@@ -222,6 +266,13 @@ def adapter_root(self) -> Path                          # 校验过的外部程�
 - [ ] stdout = 结构化 JSON；stderr = 人类日志；退出码 0/1/2
 - [ ] 长任务支持进度输出 + 自身停止机制（不用 SIGTERM）
 
+### 形态 D（stdio-worker）
+- [ ] 提供独立 `runtime/venv` 与 `runtime/requirements.txt`
+- [ ] 提供 `runtime.entry`，stdin/stdout 走 JSON-lines 协议
+- [ ] 支持 `ready` / `progress` / `result` / `task_done` 数据行
+- [ ] 支持 `config` / `task` / `cancel` / `shutdown` 控制行
+- [ ] 模型只加载一次；崩溃可重启并按任务断点恢复
+
 ### 所有形态
 - [ ] 保持自身独立可运行（旧入口不受影响）
 - [ ] 不依赖 OmniBox 的任何常驻服务
@@ -241,6 +292,11 @@ def adapter_root(self) -> Path                          # 校验过的外部程�
 | 7 | 日志流 | 外部进程日志持续进入插件日志面板 |
 | 8 | 应用退出 | `cleanup_all()` 杀全部子进程，无僵尸 |
 | 9 | 两个插件共享同一 root | 进程管理按 root 复用/隔离正确 |
+| 10 | stdio-worker 首次任务 | 懒拉起 → `ready` → 任务进度持续输出 |
+| 11 | stdio-worker 被 kill | `ERR_WORKER_CRASH`，重启后断点续跑 |
+| 12 | 独立 venv 未安装 | `ERR_RUNTIME_NOT_READY`，UI 引导运行部署脚本 |
+| 13 | Companion 访问宿主 | `get_dependency('image-viewer')` 拿到实例与文件根目录 |
+| 14 | 应用退出 | worker 随 `cleanup_all()` 全部退出，无残留进程 |
 
 ---
 
@@ -249,3 +305,4 @@ def adapter_root(self) -> Path                          # 校验过的外部程�
 | 版本 | 日期 | 说明 |
 |------|------|------|
 | v1.0 | 方向定稿 | 收敛自 LSP 会话草案：按外部程序形态分 A/B/C 三路接入；吸收 ALAS 的「进程生命周期 + 日志流 + 文件契约」模式；去除协议握手/进度/取消/RPC |
+| v1.1 | 2026-08-21 | 目标收敛为 Companion 插件 + 自带 venv / 独立环境；新增形态 D stdio-worker；明确 image-tagger 为首个落地规格 |

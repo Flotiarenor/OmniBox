@@ -119,6 +119,10 @@ directories:
 完整的插件开发指南请参阅 [插件开发文档](./docs/plugin-guide.md)。
 该文档包含插件结构、`manifest.json` 规范、后端与前端开发示例、调试技巧以及最佳实践。
 
+插件生态方向（Companion 插件 / 独立运行环境）见
+[主程序方向文档](./docs/core-direction.md)；
+图像自动打标插件设计见 [image-tagger 设计文档](./docs/image-tagger-design.md)。
+
 ---
 
 ## 📦 打包发布
