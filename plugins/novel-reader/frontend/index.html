@@ -41,11 +41,7 @@
           <input type="text" id="novel-search" class="search-input" placeholder="搜索小说标题或作者...">
         </div>
         <div class="toolbar-group" id="novel-reader-nav" style="display:none;">
-          <button id="novel-back" class="btn-icon" title="返回书架 (Esc)">←</button>
           <div class="novel-reader-title" id="novel-chapter-title">未打开小说</div>
-          <button id="novel-chapter-btn" class="btn-icon" title="章节目录">☰</button>
-          <button id="novel-prev" class="btn-icon" title="上一章 (←)">‹</button>
-          <button id="novel-next" class="btn-icon" title="下一章 (→)">›</button>
         </div>
         <div class="toolbar-group" style="margin-left:auto;">
           <button id="novel-font-toggle" class="btn" title="阅读设置" style="display:none;">A·文</button>
@@ -73,9 +69,9 @@
         <label>
           主题:
           <select id="novel-theme-select">
-            <option value="light">明亮</option>
-            <option value="dark">暗黑</option>
-            <option value="sepia">护眼</option>
+            <option value="auto">跟随主题</option>
+            <option value="sepia">护眼纸</option>
+            <option value="dark">夜间</option>
             <option value="green">绿色</option>
             <option value="blue">蓝色</option>
             <option value="custom">自定义</option>
@@ -88,6 +84,13 @@
         <label id="custom-text-label" style="display:none;">
           文字:
           <input type="color" id="novel-text-color" value="#1a1a1a">
+        </label>
+        <label>
+          阅读模式:
+          <select id="novel-mode-select">
+            <option value="page">翻页（章内滚动）</option>
+            <option value="scroll">连续滚动</option>
+          </select>
         </label>
         <label>
           编码:
@@ -114,10 +117,11 @@
   </div>
 
   <script src="js/utils.js"></script>
+  <script src="js/reader-engine.js"></script>
   <script src="js/settings.js"></script>
   <script src="js/app.js"></script>
   <script>
-    const novelReader = new NovelReader();
+    window.novelReader = new NovelReader();
     novelReader.init();
   </script>
 </body>

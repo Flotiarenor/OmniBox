@@ -13,10 +13,11 @@ class ReaderSettingsStore {
                 app.fontSize = settings.fontSize || 16;
                 app.lineHeight = settings.lineHeight || 1.8;
                 app.letterSpacing = settings.letterSpacing || 0;
-                app.theme = settings.theme || 'light';
+                app.theme = settings.theme || 'auto';
                 app.bgColor = settings.bgColor || '#ffffff';
                 app.textColor = settings.textColor || '#1a1a1a';
                 app.encoding = settings.encoding || 'auto';
+                app.mode = settings.mode || 'page';
             }
         } catch (e) {
             console.error('加载设置失败:', e);
@@ -30,6 +31,7 @@ class ReaderSettingsStore {
         if (dom.letterSpacingSlider) dom.letterSpacingSlider.value = app.letterSpacing;
         if (dom.letterSpacingValue) dom.letterSpacingValue.textContent = `${app.letterSpacing}px`;
         if (dom.themeSelect) dom.themeSelect.value = app.theme;
+        if (dom.modeSelect) dom.modeSelect.value = app.mode || 'page';
         if (dom.bgColorInput) dom.bgColorInput.value = app.bgColor;
         if (dom.textColorInput) dom.textColorInput.value = app.textColor;
         if (dom.encodingSelect) dom.encodingSelect.value = app.encoding;
@@ -47,11 +49,20 @@ class ReaderSettingsStore {
         contentArea.style.setProperty('--reader-font-size', `${app.fontSize}px`);
         contentArea.style.setProperty('--reader-line-height', app.lineHeight);
         contentArea.style.setProperty('--reader-letter-spacing', `${app.letterSpacing}px`);
-        if (app.theme === 'custom') {
+
+        // 主题设计：默认「跟随主题」，完全使用 Shell 的 CSS 变量，
+        // 与设置中的浅色 / 深色 / 自定义配色自动同步。
+        if (app.theme === 'auto') {
+            contentArea.className = 'novel-content-area theme-auto';
+            contentArea.style.removeProperty('--reader-bg-color');
+            contentArea.style.removeProperty('--reader-text-color');
+        } else if (app.theme === 'custom') {
+            contentArea.className = 'novel-content-area theme-custom';
             contentArea.style.setProperty('--reader-bg-color', app.bgColor);
             contentArea.style.setProperty('--reader-text-color', app.textColor);
-            contentArea.className = 'novel-content-area';
         } else {
+            contentArea.style.removeProperty('--reader-bg-color');
+            contentArea.style.removeProperty('--reader-text-color');
             contentArea.className = `novel-content-area theme-${app.theme}`;
         }
         this.save();
@@ -67,6 +78,7 @@ class ReaderSettingsStore {
             bgColor: app.bgColor,
             textColor: app.textColor,
             encoding: app.encoding,
+            mode: app.mode,
         };
         localStorage.setItem('novel-reader-settings', JSON.stringify(settings));
     }

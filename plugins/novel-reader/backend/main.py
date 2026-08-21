@@ -34,6 +34,7 @@ class NovelReaderPlugin(PluginBase):
         self._chapter_cache: Dict[str, List[dict]] = {}
         self._offset_cache: Dict[str, List] = {}
         self._full_content_cache: Dict[str, str] = {}
+        self._progress_cache: Optional[dict] = None
 
         self._load_cache()
 
@@ -110,16 +111,22 @@ class NovelReaderPlugin(PluginBase):
             pass
 
     def _load_progress(self) -> dict:
+        if self._progress_cache is not None:
+            return self._progress_cache
         progress_file = self._cache_path(self.PROGRESS_FILE)
+        self._progress_cache = {}
         if os.path.exists(progress_file):
             try:
                 with open(progress_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    self._progress_cache = data
             except Exception:
-                pass
-        return {}
+                self._progress_cache = {}
+        return self._progress_cache
 
     def _save_progress(self, progress: dict):
+        self._progress_cache = progress
         progress_file = self._cache_path(self.PROGRESS_FILE)
         try:
             with open(progress_file, 'w', encoding='utf-8') as f:
@@ -150,10 +157,13 @@ class NovelReaderPlugin(PluginBase):
                cached.get('mtime') != info['mtime'] or \
                cached.get('size') != info['size']:
                 needs_update = True
-                # 清除该小说的章节和内容缓存
-                self._chapter_cache.pop(novel_id, None)
-                self._offset_cache.pop(novel_id, None)
-                self._full_content_cache.pop(novel_id, None)
+                # 清除该小说所有编码下的章节和内容缓存
+                for key in [k for k in self._chapter_cache if k == novel_id or k.startswith(novel_id + ':')]:
+                    self._chapter_cache.pop(key, None)
+                for key in [k for k in self._offset_cache if k == novel_id or k.startswith(novel_id + ':')]:
+                    self._offset_cache.pop(key, None)
+                for key in [k for k in self._full_content_cache if k == novel_id or k.startswith(novel_id + ':')]:
+                    self._full_content_cache.pop(key, None)
 
         # 检查是否有文件被删除
         cached_ids = set(self._novel_cache.keys())
@@ -202,6 +212,7 @@ class NovelReaderPlugin(PluginBase):
                 'last_read_time': novel_progress.get('last_read_time', ''),
                 'last_read_chapter': novel_progress.get('last_read_chapter', 0),
                 'progress': novel_progress.get('progress', 0.0),
+                'scroll_position': novel_progress.get('scroll_position', 0.0),
                 'encoding': novel_progress.get('encoding', 'auto')
             }
         except Exception as e:
@@ -209,9 +220,10 @@ class NovelReaderPlugin(PluginBase):
             return None
 
     def get_chapters(self, novel_id: str, encoding: str = 'auto') -> Dict[str, Any]:
-        """获取章节列表"""
-        if novel_id in self._chapter_cache:
-            return {'chapters': self._chapter_cache[novel_id]}
+        """获取章节列表（缓存按小说 + 编码隔离）"""
+        key = f"{novel_id}:{encoding}"
+        if key in self._chapter_cache:
+            return {'chapters': self._chapter_cache[key]}
 
         novel_info = self._novel_cache.get(novel_id)
         if not novel_info:
@@ -220,8 +232,8 @@ class NovelReaderPlugin(PluginBase):
         try:
             chapters, offsets = NovelParser.parse_txt(novel_info['file_path'], encoding)
 
-            self._chapter_cache[novel_id] = chapters
-            self._offset_cache[novel_id] = offsets
+            self._chapter_cache[key] = chapters
+            self._offset_cache[key] = offsets
             self._save_cache()
 
             if novel_id in self._novel_cache:
@@ -232,9 +244,10 @@ class NovelReaderPlugin(PluginBase):
             return {'error': f'解析章节失败: {e}', 'chapters': []}
 
     def get_full_content(self, novel_id: str, encoding: str = 'auto') -> Dict[str, Any]:
-        """获取小说完整内容"""
-        if novel_id in self._full_content_cache:
-            return {'content': self._full_content_cache[novel_id]}
+        """获取小说完整内容（缓存按小说 + 编码隔离）"""
+        key = f"{novel_id}:{encoding}"
+        if key in self._full_content_cache:
+            return {'content': self._full_content_cache[key]}
 
         novel_info = self._novel_cache.get(novel_id)
         if not novel_info:
@@ -242,7 +255,11 @@ class NovelReaderPlugin(PluginBase):
 
         try:
             content = NovelParser.read_full_content(novel_info['file_path'], encoding)
-            self._full_content_cache[novel_id] = content
+            if key not in self._full_content_cache and len(self._full_content_cache) >= 3:
+                for old_id in list(self._full_content_cache.keys()):
+                    self._full_content_cache.pop(old_id, None)
+                    break
+            self._full_content_cache[key] = content
             return {'content': content}
         except Exception as e:
             return {'error': f'读取小说失败: {e}', 'content': ''}
@@ -255,13 +272,14 @@ class NovelReaderPlugin(PluginBase):
             return content_result
 
         full_content = content_result['content']
+        key = f"{novel_id}:{encoding}"
 
-        if novel_id not in self._offset_cache:
+        if key not in self._offset_cache:
             chapters_result = self.get_chapters(novel_id, encoding)
             if chapters_result.get('error'):
                 return {'error': chapters_result['error'], 'content': ''}
 
-        offsets = self._offset_cache.get(novel_id)
+        offsets = self._offset_cache.get(key)
         if not offsets or not isinstance(chapter_index, int) or chapter_index < 0 or chapter_index >= len(offsets):
             return {'error': '章节索引无效', 'content': ''}
 
@@ -282,7 +300,7 @@ class NovelReaderPlugin(PluginBase):
         """更新阅读进度"""
         progress = self._load_progress()
 
-        chapters = self._chapter_cache.get(novel_id, [])
+        chapters = self._chapter_cache.get(f"{novel_id}:{encoding}", [])
         total_chapters = len(chapters)
         if not isinstance(chapter_index, int) or chapter_index < 0:
             chapter_index = 0

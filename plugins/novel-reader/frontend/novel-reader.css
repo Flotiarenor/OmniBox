@@ -441,3 +441,152 @@
   .nr-sidebar { width: 210px; }
   #novel-browse-group .search-input, #novel-browse-group .search-input:focus { width: 170px; }
 }
+
+/* ============================================================
+   阅读性能优化：稳定的滚动容器与轻量章节布局
+   ============================================================ */
+.novel-content-area {
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.chapter-content {
+  contain: layout;
+}
+
+.chapter-content p {
+  margin: 0 0 0.75em;
+  line-height: var(--reader-line-height, 1.8);
+  letter-spacing: var(--reader-letter-spacing, 0);
+}
+
+.chapter-separator {
+  height: 2em;
+  flex-shrink: 0;
+}
+
+.novel-chapter-item,
+.novel-shelf-item {
+  contain: content;
+}
+
+.novel-chapter-list,
+.novel-shelf-list {
+  overscroll-behavior: contain;
+}
+
+#novel-loading {
+  position: sticky;
+  bottom: 12px;
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  width: max-content;
+  z-index: 5;
+}
+
+/* ============================================================
+   v4 滑动窗口：隐藏阅读区滚动条，锚定基准修正
+   ============================================================ */
+.novel-content-area {
+  position: relative;
+  scrollbar-width: none;          /* Firefox */
+  -ms-overflow-style: none;       /* 旧 Edge */
+}
+
+.novel-content-area::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* 关键修复：禁用浏览器滚动锚定（scroll anchoring）。
+   滚动锚定会在 DOM 顶部增删内容时自动补偿 scrollTop，
+   与我们的窗口滑动补偿叠加后就是「偶发往前跳」的元凶之一。 */
+.novel-content-area {
+  overflow-anchor: none;
+}
+
+.chapter-content {
+  overflow-anchor: none;
+}
+
+/* ============================================================
+   v6 分页模式：阅读区不滚动，页面固定
+   ============================================================ */
+.novel-content-area {
+  overflow: hidden;
+  display: block;
+}
+
+.novel-page {
+  height: 100%;
+  overflow: hidden;
+}
+
+.novel-page p {
+  margin: 0 0 0.75em;
+  line-height: var(--reader-line-height, 1.8);
+  letter-spacing: var(--reader-letter-spacing, 0);
+}
+
+/* 隐形分页测量容器：与正文完全相同的排版上下文 */
+.novel-measure {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: -1;
+}
+
+.novel-measure p {
+  margin: 0 0 0.75em;
+  line-height: var(--reader-line-height, 1.8);
+  letter-spacing: var(--reader-letter-spacing, 0);
+}
+
+/* 连续分页流：页面内章节小标题 */
+.novel-page-chapter {
+  margin: 0 0 0.9em;
+  padding-bottom: 0.4em;
+  border-bottom: 1px solid var(--border);
+  font-size: calc(var(--reader-font-size, 16px) * 1.15);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+/* 双模式：阅读区恢复为单章滚动容器（滚动条保持隐藏） */
+.novel-content-area {
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: block;
+}
+
+/* 翻页模式：章节间不连续，自然滚动到底即止 */
+.chapter-content p {
+  margin: 0 0 0.75em;
+}
+
+/* 窗口拖动期间隐藏阅读内容，避免大段文字反复重排造成卡顿 */
+.novel-content-area.resizing {
+  display: none;
+}
+
+/* 主题跟随模式：完全使用 Shell 变量，不做任何覆盖 */
+.novel-content-area.theme-auto {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+/* 主题跟随与自定义：明确覆盖所有旧规则 */
+.novel-content-area.theme-auto {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.novel-content-area.theme-custom {
+  background: var(--reader-bg-color, var(--bg-surface));
+  color: var(--reader-text-color, var(--text-primary));
+}
