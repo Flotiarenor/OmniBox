@@ -3,57 +3,64 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>漫画库</title>
+  <title>漫画中心</title>
   <link rel="stylesheet" href="manga-library.css">
 </head>
 <body>
   <div id="app">
-    <div class="view-body">
-      <div class="view-toolbar">
-        <div class="toolbar-group">
-          <input type="text" id="manga-search" class="search-input" placeholder="搜索漫画、作者...">
+    <!-- ===== 左侧导航：漫画库 + 下载中心 ===== -->
+    <aside class="ml-sidebar view-sub-sidebar obx-glass">
+      <div class="ml-brand">
+        <div class="ml-brand-icon">📚</div>
+        <div class="ml-brand-text">
+          <div class="ml-brand-title">漫画中心</div>
+          <div class="ml-brand-sub">Library · Download</div>
         </div>
-        <div class="toolbar-group" style="margin-left:auto;">
+      </div>
+
+      <nav class="ml-nav">
+        <div class="ml-nav-label">漫画库</div>
+        <button class="ml-nav-item active" data-view="all"><span>📚</span>全部漫画</button>
+        <button class="ml-nav-item" data-view="favorites"><span>⭐</span>我的收藏</button>
+        <button class="ml-nav-item" data-view="recent"><span>🕐</span>最近阅读</button>
+
+        <div class="ml-nav-label">下载中心</div>
+        <button class="ml-nav-item" data-view="downloads" data-dl-filter="all"><span>⬇️</span>全部任务</button>
+        <button class="ml-nav-item" data-view="downloads" data-dl-filter="downloading"><span>▶</span>下载中</button>
+        <button class="ml-nav-item" data-view="downloads" data-dl-filter="queued"><span>🕓</span>排队中</button>
+        <button class="ml-nav-item" data-view="downloads" data-dl-filter="paused"><span>⏸</span>已暂停</button>
+        <button class="ml-nav-item" data-view="downloads" data-dl-filter="completed"><span>✅</span>已完成</button>
+        <button class="ml-nav-item" data-view="downloads" data-dl-filter="failed"><span>⚠️</span>失败</button>
+      </nav>
+
+      <div class="ml-sidebar-footer" id="ml-stats">正在读取…</div>
+    </aside>
+
+    <!-- ===== 主区域 ===== -->
+    <div class="view-body">
+      <div class="view-toolbar ml-toolbar">
+        <div class="toolbar-group ml-view-heading">
+          <span class="ml-view-title" id="ml-view-title">全部漫画</span>
+          <span class="ml-view-sub" id="ml-view-sub"></span>
+        </div>
+        <div class="toolbar-group ml-toolbar-right">
+          <div class="ml-search" id="ml-search-wrap">
+            <span class="ml-search-ico">🔍</span>
+            <input type="text" id="manga-search" placeholder="搜索漫画、作者…" autocomplete="off">
+            <button id="ml-search-clear" class="ml-search-clear hidden" title="清除">✕</button>
+          </div>
+          <button id="ml-add-task" class="btn btn-primary hidden">＋ 添加任务</button>
+          <button id="ml-start-all" class="btn hidden">▶ 全部开始</button>
+          <button id="ml-pause-all" class="btn hidden">⏸ 全部暂停</button>
+          <button id="ml-clear-completed" class="btn hidden">🗑 清除已完成</button>
           <button id="btn-settings" class="btn">⚙ 设置</button>
         </div>
       </div>
 
-      <!-- 首页 -->
-      <div class="view-content manga-home" id="manga-home">
-        <section class="home-section">
-          <h3 class="section-title">🕐 最近阅读</h3>
-          <div id="recent-grid" class="card-grid"></div>
-        </section>
-        <section class="home-section">
-          <h3 class="section-title">⭐ 我的收藏</h3>
-          <div id="favorites-grid" class="card-grid"></div>
-        </section>
-        <section class="home-section">
-          <h3 class="section-title">📚 全部漫画</h3>
-          <div id="manga-grid" class="card-grid"></div>
-        </section>
-      </div>
-
-      <!-- 详情页 (默认隐藏) -->
-      <div class="view-content" id="manga-detail-view" style="display: none;">
-        <div class="detail-header">
-          <button id="detail-back" class="btn">← 返回</button>
-          <div class="detail-title-row">
-            <h2 id="detail-title"></h2>
-            <button id="detail-fav-btn" class="btn btn-fav">☆ 收藏</button>
-          </div>
-          <p id="detail-author" class="detail-author"></p>
-        </div>
-
-        <!-- 详细信息区 -->
-        <div id="detail-info-box" class="detail-info-box"></div>
-
-        <!-- 章节或图片列表容器 -->
-        <div id="detail-content-grid" class="card-grid"></div>
-      </div>
+      <div class="view-content ml-content obx-scroll" id="ml-content"></div>
     </div>
 
-    <!-- 沉浸式漫画阅读器 (全局覆盖层) -->
+    <!-- ===== 沉浸式阅读器 ===== -->
     <div class="manga-reader no-select" id="manga-reader-container">
       <div class="reader-toolbar">
         <button class="reader-close btn-icon">✕</button>
@@ -65,13 +72,59 @@
       </div>
       <button class="reader-arrow reader-next">›</button>
     </div>
+
+    <!-- ===== 添加任务 ===== -->
+    <div id="ml-add-modal" class="modal">
+      <div class="modal-box obx-anim-scale" style="width:480px;">
+        <h3>添加下载任务</h3>
+        <div class="modal-body">
+          <div class="ml-field">
+            <label>漫画 ID 或 URL</label>
+            <input type="text" id="ml-input-id" class="search-input" placeholder="例如: 123456 或 https://18comic.vip/album/123456" style="width:100%;max-width:none;">
+          </div>
+          <div class="ml-field-row">
+            <div class="ml-field">
+              <label>并发数</label>
+              <input type="number" id="ml-input-concurrency" class="search-input" value="3" min="1" max="10" style="width:80px;">
+            </div>
+            <div class="ml-field">
+              <label>优先级</label>
+              <select id="ml-input-priority" class="search-input" style="width:120px;">
+                <option value="high">高</option>
+                <option value="normal" selected>普通</option>
+                <option value="low">低</option>
+              </select>
+            </div>
+          </div>
+          <label class="ml-check">
+            <input type="checkbox" id="ml-input-auto-start" checked> 添加后自动开始下载
+          </label>
+        </div>
+        <div class="modal-footer">
+          <button id="ml-cancel-add" class="btn">取消</button>
+          <button id="ml-confirm-add" class="btn btn-primary">添加任务</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 任务详情 ===== -->
+    <div id="ml-detail-modal" class="modal">
+      <div class="modal-box obx-anim-scale" style="width:560px;">
+        <h3>任务详情</h3>
+        <div class="modal-body" id="ml-detail-content"></div>
+        <div class="modal-footer">
+          <button id="ml-close-detail" class="btn">关闭</button>
+        </div>
+      </div>
+    </div>
   </div>
 
+  <script src="js/utils.js"></script>
   <script src="js/reader.js"></script>
   <script src="js/app.js"></script>
   <script>
-    const mangaLibrary = new MangaLibrary();
-    mangaLibrary.init();
+    window.mangaLibraryApp = new MangaLibraryApp();
+    mangaLibraryApp.init();
   </script>
 </body>
 </html>

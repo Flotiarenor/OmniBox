@@ -1,4 +1,19 @@
-// ===== 下载中心工具函数 =====
+// ===== 漫画中心工具函数 =====
+const MangaUtils = {
+    escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str == null ? '' : String(str);
+        return div.innerHTML;
+    },
+
+    coverImg(url, fallback = '📚') {
+        if (!url) return `<div class="ml-cover-fallback">${fallback}</div>`;
+        return `<img src="${url}" loading="lazy" alt=""
+            onerror="this.parentElement.classList.add('ml-cover-fallback-parent');
+                     this.outerHTML='<div class=\\'ml-cover-fallback\\'>${fallback}</div>';">`;
+    },
+};
+
 const DownloadUtils = {
     getStatusText(status) {
         const map = {
