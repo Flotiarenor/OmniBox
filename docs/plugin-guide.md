@@ -3,6 +3,8 @@
 
 本指南将带你从零开始创建一个完整的 OmniBox v3 插件，并说明如何将现有的 `image-viewer` 插件迁移到新架构。
 
+插件分为两类：**常规内嵌插件**（本指南主体）与**独立运行环境插件 / Companion 插件**（见 §2.1、§2.2 及 `docs/adapter-spec.md`）。
+
 ---
 
 ## 1. 插件目录结构
@@ -70,6 +72,87 @@ plugins/
 | `permissions` | ❌ | 权限声明（当前仅做记录，未强制执行） |
 | `minShellVersion` | ❌ | 要求的最低 Shell 版本 |
 | `destroyOnLeave` | ❌ | `true` 时离开页面销毁 iframe 重新加载（默认保持存活） |
+| `kind` | ❌ | `local-adapter`：声明本插件管理独立运行环境（重依赖插件使用） |
+| `runtime` | ❌ | 独立运行环境声明（venv / 入口 / requirements），见 §2.2 |
+
+---
+
+## 2.1 Companion 插件（跨插件协作，防污染宿主）
+
+需要扩展另一个插件功能时，**不要修改宿主插件**，而是创建独立的 Companion 插件：
+
+```json
+{
+  "name": "image-tagger",
+  "dependencies": ["image-viewer"],
+  ...
+}
+```
+
+`PluginManager` 已按依赖拓扑排序加载，`image-viewer` 一定先于 `image-tagger` 初始化。
+
+**后端访问依赖插件**（框架计划接口，见 `docs/core-direction.md`）：
+
+```python
+class ImageTaggerPlugin(PluginBase):
+    def register_api(self):
+        return {'tag_album': self.tag_album}
+
+    def tag_album(self, rel_path):
+        host = self.get_dependency('image-viewer')   # 未声明依赖时返回 None
+        roots = host.get_file_roots()                # 复用宿主的安全文件根目录
+        ...
+```
+
+**前端跨插件调用**（Shell `base.js` 计划接口）：
+
+```javascript
+await Bridge.callPlugin('image-tagger', 'tag_album', 'PIXEVAL/画师A');
+// 等价于 parent.pywebview.api['image-tagger__tag_album']('PIXEVAL/画师A')
+```
+
+**扩展注册表**（宿主只写泛化渲染点）：
+
+```python
+class ImageTaggerPlugin(PluginBase):
+    def get_extensions(self):
+        return [{
+            'host': 'image-viewer',
+            'id': 'tag-selected',
+            'label': '🏷️ 打标',
+            'method': 'tag_album',
+            'scope': 'album',
+        }]
+```
+
+宿主前端：
+
+```javascript
+const exts = await Bridge.call('system_get_plugin_extensions', 'image-viewer');
+exts.forEach(ext => addToolbarButton(ext.label, () => Bridge.callPlugin(ext.plugin, ext.method)));
+```
+
+## 2.2 重型依赖与独立运行环境（runtime）
+
+torch / onnxruntime 等重依赖**不得**写在插件 `backend/main.py` 顶层 import（会拖慢整个应用启动且与主进程环境冲突）。正确做法：
+
+1. **manifest 声明独立环境**：
+
+```json
+"runtime": {
+  "kind": "stdio-worker",
+  "entry": "backend/runtime/worker.py",
+  "venv": "backend/runtime/venv",
+  "requirements": "backend/runtime/requirements.txt",
+  "startup": "lazy",
+  "timeoutSeconds": 3600
+}
+```
+
+2. **控制器保持轻量**：`backend/main.py` 只做任务管理 / 进度 / 结果索引，通过 `shell.backend.adapter_process`（规划中）拉起 `<runtime.venv>/Scripts/python.exe` 子进程。
+3. **通信**：stdio JSON-lines，每行一个 JSON 对象；控制行下行、进度/结果上行（协议见 `docs/image-tagger-design.md`）。
+4. **部署**：`deploy.ps1` / `setup-venv.ps1` 按 `runtime.requirements` 创建插件独立 venv；失败不阻塞主程序。
+5. **原型阶段**允许懒 import 兜底：首次调用时才 `import torch`，并把任务放进后台线程；正式版切独立环境。
 
 ---
 
