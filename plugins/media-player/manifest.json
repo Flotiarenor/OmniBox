@@ -1,0 +1,18 @@
+{
+  "name": "media-player",
+  "version": "1.0.0",
+  "displayName": "媒体播放器",
+  "icon": "🎧",
+  "description": "统一音频/视频媒体库：音乐专辑、视频专辑、最近播放、混编歌单、歌词沉浸页、EQ 与全屏播放。",
+  "dependencies": [],
+  "permissions": ["filesystem:read"],
+  "backend": {
+    "entry": "backend/main.py",
+    "class": "MediaPlayerPlugin"
+  },
+  "frontend": {
+    "entry": "frontend/index.html",
+    "route": "/media-player"
+  },
+  "minShellVersion": "3.0.0"
+}

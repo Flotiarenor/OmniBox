@@ -53,6 +53,14 @@ class PluginBase(ABC):
         """返回该插件使用的数据根目录，默认使用全局配置"""
         return Path(self.config['directories']['data_root']).resolve()
 
+    def get_file_roots(self) -> List[Path]:
+        """返回文件服务允许访问的根目录列表。
+
+        需要跨多个媒体目录提供文件的插件（如 media-player）可覆写本方法，
+        返回所有已配置的根目录。`/files/` 路由会依次进行路径安全检查。
+        """
+        return [self.get_data_root()]
+
     def _default_settings(self) -> Dict:
         return {item.get('key'): item.get('default') for item in self.settings_schema if item.get('key')}
 
