@@ -9,20 +9,26 @@
 <body>
   <div id="app">
     <!-- 左侧边栏：书架 / 章节目录 -->
-    <div class="view-sub-sidebar">
-      <div class="sub-sidebar-header">小说阅读</div>
+    <div class="view-sub-sidebar nr-sidebar obx-glass">
+      <div class="nr-brand">
+        <div class="nr-brand-icon">📖</div>
+        <div>
+          <div class="nr-brand-title">小说阅读</div>
+          <div class="nr-brand-sub">Reader</div>
+        </div>
+      </div>
       <div class="sidebar-toggle">
         <button id="sidebar-toggle-shelf" class="btn btn-sm active">📚 书架</button>
         <button id="sidebar-toggle-chapters" class="btn btn-sm">📖 章节</button>
       </div>
 
       <!-- 书架面板 -->
-      <div id="novel-shelf-panel" class="sidebar-panel">
+      <div id="novel-shelf-panel" class="sidebar-panel obx-scroll">
         <div id="novel-shelf-list" class="novel-shelf-list"></div>
       </div>
 
       <!-- 章节目录面板 -->
-      <div id="novel-chapter-panel" class="sidebar-panel" style="display:none;">
+      <div id="novel-chapter-panel" class="sidebar-panel obx-scroll" style="display:none;">
         <div id="novel-chapter-list" class="novel-chapter-list"></div>
       </div>
     </div>

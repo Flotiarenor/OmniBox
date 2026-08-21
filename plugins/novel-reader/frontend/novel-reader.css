@@ -351,3 +351,93 @@
 @keyframes spin {
     to { transform: rotate(360deg); }
 }
+
+/* ============================================================
+   现代化覆盖（漫画中心 / 图片相册同款风格）
+   ============================================================ */
+:root {
+  --nr-radius: 14px;
+  --nr-radius-sm: 10px;
+  --nr-gradient: linear-gradient(135deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 55%, #f59e0b) 100%);
+  --nr-accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+#app {
+  background:
+    radial-gradient(1000px 420px at 92% -12%, var(--nr-accent-soft), transparent 62%),
+    var(--bg-app);
+}
+
+.nr-sidebar { width: 252px; }
+
+.nr-brand { display: flex; align-items: center; gap: 12px; padding: 18px 16px 14px; }
+.nr-brand-icon {
+  width: 40px; height: 40px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 21px; color: var(--text-on-accent); background: var(--nr-gradient);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.nr-brand-title { font-size: 15px; font-weight: 700; color: var(--text-primary); }
+.nr-brand-sub { font-size: 11px; color: var(--text-secondary); margin-top: 1px; letter-spacing: 0.4px; }
+
+.sidebar-toggle { padding: 8px 10px; gap: 6px; }
+.sidebar-toggle .btn { border-radius: 999px; padding: 6px 10px; }
+.sidebar-toggle .btn.active {
+  background: var(--nr-gradient); color: var(--text-on-accent);
+  border-color: transparent; box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
+.novel-shelf-item { border-radius: var(--nr-radius-sm); padding: 10px 12px; }
+.novel-shelf-item:hover { background: var(--bg-hover); transform: translateX(2px); }
+.novel-shelf-item.active { background: var(--nr-accent-soft); border-left-color: var(--accent); }
+.novel-chapter-item { border-radius: var(--nr-radius-sm); }
+.novel-chapter-item.active {
+  background: var(--nr-gradient); color: var(--text-on-accent);
+  box-shadow: 0 6px 14px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* 搜索框胶囊化 */
+#novel-browse-group .search-input {
+  width: 260px; border-radius: 999px; padding: 7px 14px;
+  transition: width 0.25s ease, border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+#novel-browse-group .search-input:focus {
+  width: 320px; border-color: var(--accent); box-shadow: 0 0 0 3px var(--nr-accent-soft);
+}
+
+/* 阅读区卡片化 */
+.novel-content-area { background: transparent; padding: 14px 18px; }
+.novel-content-area > * {
+  border-radius: var(--nr-radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.novel-reader-settings {
+  margin: 0 18px 10px; border-radius: var(--nr-radius);
+  background: var(--bg-surface); border: 1px solid var(--border);
+  padding: 10px 16px; flex-wrap: wrap; gap: 12px;
+}
+.novel-reader-settings input[type="range"] { accent-color: var(--accent); }
+.novel-reader-settings select {
+  border: 1px solid var(--border); border-radius: var(--nr-radius-sm);
+  background: var(--bg-surface); color: var(--text-primary); padding: 4px 8px;
+}
+
+/* 底部进度条 */
+.novel-progress-bar { height: 4px; background: var(--bg-hover); border-radius: 999px; overflow: hidden; }
+.novel-progress-fill {
+  background: var(--nr-gradient); border-radius: 999px;
+  transition: width 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* 空状态动效 */
+.novel-empty-icon { animation: obxFloat 4s ease-in-out infinite; }
+.novel-shelf-item, .novel-chapter-item {
+  animation: obxFadeUp 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--obx-i, 0) * 20ms);
+}
+
+@media (max-width: 860px) {
+  .nr-sidebar { width: 210px; }
+  #novel-browse-group .search-input, #novel-browse-group .search-input:focus { width: 170px; }
+}
