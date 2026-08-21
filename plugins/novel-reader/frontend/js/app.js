@@ -1,9 +1,11 @@
+// ============================================================
+// 小说阅读器 — UI 控制器
+// 分页 / 测量 / 翻页逻辑位于 reader-engine.js。
+// ============================================================
 class NovelReader {
     constructor() {
         this.novels = [];
         this.currentNovel = null;
-        this.currentChapterIndex = 0;
-        this.chapters = [];
 
         this.fontSize = 16;
         this.lineHeight = 1.8;
@@ -12,21 +14,15 @@ class NovelReader {
         this.bgColor = '#ffffff';
         this.textColor = '#1a1a1a';
         this.encoding = 'auto';
+        this.mode = 'page'; // 'page' | 'scroll'
 
-        this._isLoading = false;
         this._isReaderMode = false;
         this._sidebarMode = 'shelf';
-
-        // 无限滚动状态
-        this.loadedChapterStart = -1;
-        this.loadedChapterEnd = -1;
-        this._lastScrollTop = 0;
-        this._scrollDirection = 'down';
-
-        this._progressVersion = 0;
         this._lastSavedChapter = -1;
         this._lastSavedPosition = -1;
 
+        this.engine = new NovelReaderEngine(this);
+        this._chapterListBuiltFor = null;
         this._dom = {};
         this.settings = null;
     }
@@ -37,7 +33,29 @@ class NovelReader {
         this._bindSettingsButton();
         this.settings = new ReaderSettingsStore(this);
         this.settings.load();
+        this.engine.setMode(this.mode);
         await this._loadNovels();
+
+        let resizeTimer = null;
+        let savedScrollTop = 0;
+        let resizing = false;
+        window.addEventListener('resize', () => {
+            if (!this._isReaderMode || !this._dom.contentArea) return;
+            if (!resizing) {
+                resizing = true;
+                savedScrollTop = this._dom.contentArea.scrollTop;
+                this._dom.contentArea.classList.add('resizing');
+            }
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(() => {
+                resizing = false;
+                this._dom.contentArea.classList.remove('resizing');
+                requestAnimationFrame(() => {
+                    this._dom.contentArea.scrollTop = savedScrollTop;
+                    this._updateProgressBar();
+                });
+            }, 220);
+        });
     }
 
     _cacheDom() {
@@ -45,10 +63,7 @@ class NovelReader {
             contentArea: document.getElementById('novel-content-area'),
             chapterTitle: document.getElementById('novel-chapter-title'),
             progressFill: document.getElementById('novel-progress-fill'),
-            backBtn: document.getElementById('novel-back'),
-            prevBtn: document.getElementById('novel-prev'),
-            nextBtn: document.getElementById('novel-next'),
-            chapterBtn: document.getElementById('novel-chapter-btn'),
+            modeSelect: document.getElementById('novel-mode-select'),
             searchInput: document.getElementById('novel-search'),
             browseGroup: document.getElementById('novel-browse-group'),
             readerNav: document.getElementById('novel-reader-nav'),
@@ -77,11 +92,7 @@ class NovelReader {
 
     _bindSettingsButton() {
         const btn = document.getElementById('btn-settings');
-        if (btn) {
-            btn.addEventListener('click', () => {
-                openSettingsModal({ title: '小说阅读设置' });
-            });
-        }
+        if (btn) btn.addEventListener('click', () => openSettingsModal({ title: '小说阅读设置' }));
     }
 
     _bindEvents() {
@@ -89,54 +100,43 @@ class NovelReader {
             this._dom.searchInput.addEventListener('input',
                 Utils.debounce((e) => this._search(e.target.value), 300));
         }
-        if (this._dom.backBtn) {
-            this._dom.backBtn.addEventListener('click', () => this._exitReader());
-        }
-        if (this._dom.prevBtn) {
-            this._dom.prevBtn.addEventListener('click', () => this._prevChapter());
-        }
-        if (this._dom.nextBtn) {
-            this._dom.nextBtn.addEventListener('click', () => this._nextChapter());
-        }
-        if (this._dom.chapterBtn) {
-            this._dom.chapterBtn.addEventListener('click', () => this._switchSidebar('chapters'));
-        }
-        if (this._dom.shelfToggle) {
-            this._dom.shelfToggle.addEventListener('click', () => this._switchSidebar('shelf'));
-        }
-        if (this._dom.chapterToggle) {
-            this._dom.chapterToggle.addEventListener('click', () => this._switchSidebar('chapters'));
-        }
-        if (this._dom.fontToggle) {
-            this._dom.fontToggle.addEventListener('click', () => this._toggleReaderSettings());
-        }
-        this._bindSettingsEvents();
-        this._bindKeyboard();
-
-        if (this._dom.contentArea) {
-            let scrollTimer = null;
-            this._dom.contentArea.addEventListener('scroll', () => {
-                const { scrollTop, scrollHeight, clientHeight } = this._dom.contentArea;
-                this._scrollDirection = scrollTop > this._lastScrollTop ? 'down' : 'up';
-                this._lastScrollTop = scrollTop;
-
-                if (this._scrollDirection === 'down' && scrollHeight > clientHeight) {
-                    const scrollPercent = scrollTop / (scrollHeight - clientHeight);
-                    if (scrollPercent > 0.85 && !this._isLoading && this.loadedChapterEnd < this.chapters.length - 1) {
-                        this._autoLoadNextChapter();
-                    }
-                }
-
-                if (this._scrollDirection === 'up' && scrollTop < 100 && !this._isLoading && this.loadedChapterStart > 0) {
-                    this._autoLoadPrevChapter();
-                }
-
-                clearTimeout(scrollTimer);
-                scrollTimer = setTimeout(() => this._autoSaveProgress(), 2000);
+        if (this._dom.modeSelect) {
+            this._dom.modeSelect.addEventListener('change', (e) => {
+                this.mode = e.target.value === 'scroll' ? 'scroll' : 'page';
+                this.engine.setMode(this.mode);
+                this.settings.save();
+                Toast.info(this.mode === 'scroll' ? '已切换到连续滚动模式' : '已切换到翻页模式');
             });
         }
 
-        window.addEventListener('beforeunload', () => this._saveProgress());
+        // 滚动模式：轻量节流地让引擎处理连续加载
+        let lastScroll = 0;
+        if (this._dom.contentArea) {
+            this._dom.contentArea.addEventListener('scroll', () => {
+                const now = performance.now();
+                if (now - lastScroll < 80) return;
+                lastScroll = now;
+                this.engine.handleScroll();
+                this._scheduleProgressSave();
+            }, { passive: true });
+        }
+        if (this._dom.shelfToggle) this._dom.shelfToggle.addEventListener('click', () => this._switchSidebar('shelf'));
+        if (this._dom.chapterToggle) this._dom.chapterToggle.addEventListener('click', () => this._switchSidebar('chapters'));
+        if (this._dom.fontToggle) this._dom.fontToggle.addEventListener('click', () => this._toggleReaderSettings());
+
+        if (this._dom.contentArea) {
+            this._dom.contentArea.addEventListener('click', (e) => {
+                if (!this._isReaderMode) return;
+                const rect = this._dom.contentArea.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                if (x < rect.width * 0.25) this._turnPage(-1);
+                else if (x > rect.width * 0.75) this._turnPage(1);
+            });
+        }
+
+        this._bindSettingsEvents();
+        this._bindKeyboard();
+        window.addEventListener('beforeunload', () => this._saveCurrentProgress(true));
     }
 
     _bindSettingsEvents() {
@@ -145,6 +145,7 @@ class NovelReader {
                 this.fontSize = parseInt(e.target.value);
                 if (this._dom.fontSizeValue) this._dom.fontSizeValue.textContent = this.fontSize;
                 this.settings.apply();
+                this._updateProgressBar();
             });
         }
         if (this._dom.lineHeightSlider) {
@@ -152,6 +153,7 @@ class NovelReader {
                 this.lineHeight = parseFloat(e.target.value);
                 if (this._dom.lineHeightValue) this._dom.lineHeightValue.textContent = this.lineHeight.toFixed(1);
                 this.settings.apply();
+                this._updateProgressBar();
             });
         }
         if (this._dom.letterSpacingSlider) {
@@ -159,6 +161,7 @@ class NovelReader {
                 this.letterSpacing = parseFloat(e.target.value);
                 if (this._dom.letterSpacingValue) this._dom.letterSpacingValue.textContent = `${this.letterSpacing}px`;
                 this.settings.apply();
+                this._updateProgressBar();
             });
         }
         if (this._dom.themeSelect) {
@@ -183,11 +186,9 @@ class NovelReader {
             });
         }
         if (this._dom.encodingSelect) {
-            this._dom.encodingSelect.addEventListener('change', (e) => {
+            this._dom.encodingSelect.addEventListener('change', () => {
                 this.encoding = e.target.value;
-                if (this.currentNovel && this._isReaderMode) {
-                    this._resetAndLoadChapter();
-                }
+                if (this.currentNovel && this._isReaderMode) this._reloadNovel();
             });
         }
     }
@@ -195,48 +196,29 @@ class NovelReader {
     _bindKeyboard() {
         document.addEventListener('keydown', (e) => {
             if (!this._isReaderMode) return;
-            switch(e.key) {
-                case 'ArrowLeft':
-                    e.preventDefault();
-                    this._prevChapter();
-                    break;
-                case 'ArrowRight':
-                    e.preventDefault();
-                    this._nextChapter();
-                    break;
+            switch (e.key) {
                 case 'ArrowUp':
+                case 'PageUp':
                     e.preventDefault();
-                    if (this._dom.contentArea) {
-                        this._dom.contentArea.scrollBy({
-                            top: -this._dom.contentArea.clientHeight * 0.8,
-                            behavior: 'smooth'
-                        });
-                    }
+                    this._scrollArea(-0.8);
                     break;
                 case 'ArrowDown':
+                case 'PageDown':
+                case ' ':
                     e.preventDefault();
-                    if (this._dom.contentArea) {
-                        this._dom.contentArea.scrollBy({
-                            top: this._dom.contentArea.clientHeight * 0.8,
-                            behavior: 'smooth'
-                        });
-                    }
+                    this._scrollArea(0.8);
                     break;
                 case 'Escape':
                     e.preventDefault();
                     this._exitReader();
                     break;
-                case ' ':
-                    e.preventDefault();
-                    if (this._dom.contentArea) {
-                        this._dom.contentArea.scrollBy({
-                            top: this._dom.contentArea.clientHeight * 0.8,
-                            behavior: 'smooth'
-                        });
-                    }
-                    break;
             }
         });
+    }
+
+    _scrollArea(factor) {
+        const el = this._dom.contentArea;
+        if (el) el.scrollBy({ top: el.clientHeight * factor, behavior: 'smooth' });
     }
 
     _switchSidebar(mode) {
@@ -262,8 +244,18 @@ class NovelReader {
         this._dom.readerSettingsBar.style.display = show ? 'flex' : 'none';
     }
 
+    async _turnPage(dir) {
+        if (!this._isReaderMode) return;
+        const result = dir > 0 ? await this.engine.nextPage() : await this.engine.prevPage();
+        if (result === 'end') {
+            Toast.info(dir > 0 ? '已经是最后一页了' : '已经是第一页了');
+            return;
+        }
+        if (result === 'moved') this._afterPageRender(false);
+    }
+
     async _exitReader() {
-        await this._saveProgress();
+        this._saveCurrentProgress(true);
         this._isReaderMode = false;
         this._setToolbarMode('browse');
         this._switchSidebar('shelf');
@@ -294,8 +286,7 @@ class NovelReader {
         const container = this._dom.shelfList;
         if (!container) return;
         const novels = filteredNovels || this.novels;
-
-        if (novels.length === 0) {
+        if (!novels.length) {
             container.innerHTML = `
                 <div class="novel-empty">
                     <div class="novel-empty-icon">📖</div>
@@ -305,7 +296,6 @@ class NovelReader {
             `;
             return;
         }
-
         container.innerHTML = novels.map(novel => `
             <div class="novel-shelf-item ${this.currentNovel && novel.id === this.currentNovel.id ? 'active' : ''}" data-id="${novel.id}">
                 <div class="novel-shelf-title">${Utils.escapeHtml(novel.title)}</div>
@@ -316,45 +306,44 @@ class NovelReader {
                 </div>
             </div>
         `).join('');
-
         if (window.Motion) Motion.stagger(container, '.novel-shelf-item');
         container.querySelectorAll('.novel-shelf-item').forEach(item => {
-            item.addEventListener('click', () => {
-                this._openNovel(item.dataset.id);
-            });
+            item.addEventListener('click', () => this._openNovel(item.dataset.id));
         });
     }
 
-    async _openNovel(novelId) {
+    async _openNovel(novelId, startChapter = null, fraction = 0) {
         try {
             this._showLoading(true);
             this.currentNovel = this.novels.find(n => n.id === novelId);
-
-            if (this.currentNovel && this.currentNovel.encoding) {
+            if (!this.currentNovel) return;
+            if (this.currentNovel.encoding) {
                 this.encoding = this.currentNovel.encoding;
                 if (this._dom.encodingSelect) this._dom.encodingSelect.value = this.encoding;
             }
 
             const result = await Bridge.call('novel_get_chapters', novelId, this.encoding);
-            this.chapters = result.chapters || [];
-
-            if (this.currentNovel) {
-                const savedChapter = this.currentNovel.last_read_chapter || 0;
-                this.currentChapterIndex = Math.max(0, Math.min(savedChapter, this.chapters.length - 1));
-                this._progressVersion = this.currentNovel.version || 0;
-            } else {
-                this.currentChapterIndex = 0;
-            }
+            const chapters = result.chapters || [];
+            this.engine.setMode(this.mode);
+            this.engine.reset(novelId, chapters, this.encoding);
 
             this._isReaderMode = true;
             this._setToolbarMode('reader');
             this._switchSidebar('chapters');
             this._renderShelf();
+            this._chapterListBuiltFor = null;
             this._renderChapterList();
-            this.loadedChapterStart = this.currentChapterIndex;
-            this.loadedChapterEnd = this.currentChapterIndex;
-            if (this._dom.contentArea) this._dom.contentArea.innerHTML = '';
-            await this._loadChapter();
+
+            const saved = startChapter !== null && startChapter !== undefined
+                ? startChapter
+                : (this.currentNovel.last_read_chapter || 0);
+            const savedFraction = startChapter !== null && startChapter !== undefined
+                ? fraction
+                : (Number(this.currentNovel.scroll_position) || 0);
+
+            await this.engine.goToChapter(
+                Math.max(0, Math.min(saved, chapters.length - 1)), savedFraction);
+            this._afterPageRender(true);
             this._showLoading(false);
         } catch (e) {
             console.error('打开小说失败:', e);
@@ -362,174 +351,97 @@ class NovelReader {
         }
     }
 
-    async _loadChapter() {
-        if (this._isLoading) return;
-        this._isLoading = true;
+    async _reloadNovel() {
+        if (!this.currentNovel) return;
+        const chapter = this.engine.currentChapterIndex;
+        const fraction = this.engine.chapterFraction();
+        await this._saveCurrentProgress(true);
+        await this._openNovel(this.currentNovel.id, chapter, fraction);
+    }
 
-        if (!this.currentNovel || this.chapters.length === 0) {
-            this._isLoading = false;
-            return;
+    _scheduleProgressSave() {
+        clearTimeout(this._progressTimer);
+        this._progressTimer = setTimeout(() => this._saveCurrentProgress(false), 900);
+    }
+
+    _afterPageRender(scrollList = false) {
+        this._updateChapterListActive(scrollList);
+        this._updateChapterTitle();
+        this._updateProgressBar();
+    }
+
+    _updateChapterTitle() {
+        const chapter = this.engine.chapters[this.engine.currentChapterIndex];
+        if (this._dom.chapterTitle && chapter) {
+            this._dom.chapterTitle.textContent = chapter.title;
         }
+    }
 
+    _updateProgressBar() {
+        const fill = this._dom.progressFill;
+        const chapters = this.engine.chapters;
+        if (!fill || !chapters.length) return;
+        const progress = (this.engine.currentChapterIndex + this.engine.chapterFraction()) / chapters.length;
+        fill.style.width = `${(progress * 100).toFixed(2)}%`;
+    }
+
+    async _saveCurrentProgress(force = false) {
+        if (!this.currentNovel || !this._isReaderMode) return;
+        const chapter = this.engine.currentChapterIndex;
+        const position = this.engine.chapterFraction();
+        if (!force && chapter === this._lastSavedChapter
+            && Math.abs(position - this._lastSavedPosition) < 0.001) return;
         try {
             const result = await Bridge.call(
-                'novel_get_content',
+                'novel_update_progress',
                 this.currentNovel.id,
-                this.currentChapterIndex,
+                chapter,
+                position,
                 this.encoding
             );
-
-            if (result.error) {
-                console.error(result.error);
-                this._isLoading = false;
-                return;
-            }
-
-            const chapter = this.chapters[this.currentChapterIndex];
-            if (this._dom.chapterTitle) {
-                this._dom.chapterTitle.textContent = chapter ? chapter.title : '未知章节';
-            }
-
-            if (this._dom.contentArea) {
-                this._dom.contentArea.innerHTML = `
-                    <div class="chapter-content" data-chapter-index="${chapter.index}">
-                        ${this._formatContent(result.content)}
-                    </div>
-                `;
-            }
-
-            this._renderChapterList();
-            this._updateProgressBar();
-            this._updateNavButtons();
-            this._isLoading = false;
-
-        } catch (e) {
-            console.error('加载章节失败:', e);
-            this._isLoading = false;
-        }
-    }
-
-    async _autoLoadNextChapter() {
-        this._isLoading = true;
-        const nextIndex = this.loadedChapterEnd + 1;
-
-        try {
-            const result = await Bridge.call(
-                'novel_get_content',
-                this.currentNovel.id,
-                nextIndex,
-                this.encoding
-            );
-
-            if (!result.error) {
-                const chapter = this.chapters[nextIndex];
-                this._appendChapterContent(result.content, chapter);
-                this.loadedChapterEnd = nextIndex;
-                this.currentChapterIndex = nextIndex;
-                this._renderChapterList();
-                this._updateProgressBar();
-                this._updateNavButtons();
+            if (result.success) {
+                this._lastSavedChapter = chapter;
+                this._lastSavedPosition = position;
             }
         } catch (e) {
-            console.error('自动加载下一章失败:', e);
-        }
-
-        this._isLoading = false;
-    }
-
-    async _autoLoadPrevChapter() {
-        this._isLoading = true;
-        const prevIndex = this.loadedChapterStart - 1;
-
-        try {
-            const result = await Bridge.call(
-                'novel_get_content',
-                this.currentNovel.id,
-                prevIndex,
-                this.encoding
-            );
-
-            if (!result.error) {
-                const chapter = this.chapters[prevIndex];
-                const prevHeight = this._dom.contentArea.scrollHeight;
-
-                this._prependChapterContent(result.content, chapter);
-                this.loadedChapterStart = prevIndex;
-                this.currentChapterIndex = prevIndex;
-
-                // 关键：保持滚动位置不跳动
-                const newHeight = this._dom.contentArea.scrollHeight;
-                this._dom.contentArea.scrollTop += (newHeight - prevHeight);
-
-                this._renderChapterList();
-                this._updateProgressBar();
-                this._updateNavButtons();
-            }
-        } catch (e) {
-            console.error('自动加载上一章失败:', e);
-        }
-
-        this._isLoading = false;
-    }
-
-    _appendChapterContent(content, chapter) {
-        const contentArea = this._dom.contentArea;
-        if (!contentArea) return;
-
-        const separator = document.createElement('div');
-        separator.className = 'chapter-separator';
-        separator.style.height = '2em';
-        contentArea.appendChild(separator);
-
-        const contentDiv = document.createElement('div');
-        contentDiv.className = 'chapter-content';
-        contentDiv.dataset.chapterIndex = chapter.index;
-        contentDiv.innerHTML = this._formatContent(content);
-        contentArea.appendChild(contentDiv);
-    }
-
-    _prependChapterContent(content, chapter) {
-        const contentArea = this._dom.contentArea;
-        if (!contentArea) return;
-
-        const fragment = document.createDocumentFragment();
-
-        const contentDiv = document.createElement('div');
-        contentDiv.className = 'chapter-content';
-        contentDiv.dataset.chapterIndex = chapter.index;
-        contentDiv.innerHTML = this._formatContent(content);
-        fragment.appendChild(contentDiv);
-
-        const separator = document.createElement('div');
-        separator.className = 'chapter-separator';
-        separator.style.height = '2em';
-        fragment.appendChild(separator);
-
-        contentArea.insertBefore(fragment, contentArea.firstChild);
-    }
-
-    async _resetAndLoadChapter() {
-        this._saveProgress();
-        this.loadedChapterStart = this.currentChapterIndex;
-        this.loadedChapterEnd = this.currentChapterIndex;
-        if (this._dom.contentArea) this._dom.contentArea.innerHTML = '';
-        await this._loadChapter();
-        setTimeout(() => {
-            if (this._dom.contentArea) this._dom.contentArea.scrollTop = 0;
-        }, 100);
-    }
-
-    _prevChapter() {
-        if (this.currentChapterIndex > 0) {
-            this.currentChapterIndex--;
-            this._resetAndLoadChapter();
+            console.error('保存进度失败:', e);
         }
     }
 
-    _nextChapter() {
-        if (this.currentChapterIndex < this.chapters.length - 1) {
-            this.currentChapterIndex++;
-            this._resetAndLoadChapter();
+    _renderChapterList() {
+        const list = this._dom.chapterList;
+        const chapters = this.engine.chapters;
+        if (!list || !this.currentNovel) return;
+        if (this._chapterListBuiltFor !== this.currentNovel.id) {
+            list.innerHTML = chapters.map((chapter, index) => `
+                <div class="novel-chapter-item" data-index="${index}">
+                    <span>${Utils.escapeHtml(chapter.title)}</span>
+                    <span class="chapter-words">${chapter.word_count}字</span>
+                </div>
+            `).join('');
+            if (window.Motion) Motion.stagger(list, '.novel-chapter-item');
+            list.querySelectorAll('.novel-chapter-item').forEach(item => {
+                item.addEventListener('click', async () => {
+                    this._saveCurrentProgress(true);
+                    await this.engine.goToChapter(parseInt(item.dataset.index, 10), 0);
+                    this._afterPageRender(true);
+                });
+            });
+            this._chapterListBuiltFor = this.currentNovel.id;
+        }
+        this._updateChapterListActive(true);
+    }
+
+    _updateChapterListActive(scrollList = false) {
+        const list = this._dom.chapterList;
+        if (!list) return;
+        list.querySelectorAll('.novel-chapter-item').forEach(item => {
+            item.classList.toggle('active',
+                parseInt(item.dataset.index, 10) === this.engine.currentChapterIndex);
+        });
+        if (scrollList) {
+            const active = list.querySelector('.novel-chapter-item.active');
+            if (active) active.scrollIntoView({ block: 'nearest' });
         }
     }
 
@@ -544,104 +456,8 @@ class NovelReader {
                 if (this._dom.contentArea) this._dom.contentArea.appendChild(loadingEl);
             }
             loadingEl.style.display = 'flex';
-        } else {
-            if (loadingEl) loadingEl.style.display = 'none';
-        }
-    }
-
-    _formatContent(text) {
-        return NovelUtils.formatContent(text);
-    }
-
-    _updateProgressBar() {
-        if (this._dom.progressFill && this.chapters.length > 0) {
-            const progress = (this.currentChapterIndex + 1) / this.chapters.length;
-            this._dom.progressFill.style.width = `${progress * 100}%`;
-        }
-    }
-
-    _updateNavButtons() {
-        if (this._dom.prevBtn) {
-            const isFirst = this.currentChapterIndex <= 0;
-            this._dom.prevBtn.disabled = isFirst;
-            this._dom.prevBtn.style.opacity = isFirst ? '0.5' : '1';
-            this._dom.prevBtn.style.cursor = isFirst ? 'not-allowed' : 'pointer';
-        }
-        if (this._dom.nextBtn) {
-            const isLast = this.currentChapterIndex >= this.chapters.length - 1;
-            this._dom.nextBtn.disabled = isLast;
-            this._dom.nextBtn.style.opacity = isLast ? '0.5' : '1';
-            this._dom.nextBtn.style.cursor = isLast ? 'not-allowed' : 'pointer';
-        }
-    }
-
-    _renderChapterList() {
-        const list = this._dom.chapterList;
-        if (!list) return;
-        list.innerHTML = this.chapters.map((chapter, index) => `
-            <div class="novel-chapter-item ${index === this.currentChapterIndex ? 'active' : ''}"
-                 data-index="${index}">
-                <span>${Utils.escapeHtml(chapter.title)}</span>
-                <span class="chapter-words">${chapter.word_count}字</span>
-            </div>
-        `).join('');
-        if (window.Motion) Motion.stagger(list, '.novel-chapter-item');
-        list.querySelectorAll('.novel-chapter-item').forEach(item => {
-            item.addEventListener('click', () => {
-                const index = parseInt(item.dataset.index);
-                this.currentChapterIndex = index;
-                this._resetAndLoadChapter();
-            });
-        });
-        const active = list.querySelector('.novel-chapter-item.active');
-        if (active) active.scrollIntoView({ block: 'nearest' });
-    }
-
-    _getCurrentChapterIndexFromScroll() {
-        if (!this._dom.contentArea) return this.currentChapterIndex;
-        const contentArea = this._dom.contentArea;
-        const viewCenter = contentArea.scrollTop + contentArea.clientHeight / 2;
-        const chapterDivs = contentArea.querySelectorAll('.chapter-content');
-        for (let div of chapterDivs) {
-            const top = div.offsetTop;
-            const bottom = top + div.offsetHeight;
-            if (viewCenter >= top && viewCenter <= bottom) {
-                return parseInt(div.dataset.chapterIndex);
-            }
-        }
-        return this.currentChapterIndex;
-    }
-
-    async _autoSaveProgress() {
-        if (!this.currentNovel) return;
-        const contentArea = this._dom.contentArea;
-        if (!contentArea) return;
-        this.currentChapterIndex = this._getCurrentChapterIndexFromScroll();
-        const scrollHeight = contentArea.scrollHeight - contentArea.clientHeight;
-        const scrollPosition = scrollHeight > 0 ? contentArea.scrollTop / scrollHeight : 0;
-        if (this.currentChapterIndex === this._lastSavedChapter &&
-            Math.abs(scrollPosition - this._lastSavedPosition) < 0.01) return;
-        await this._saveProgress(scrollPosition);
-    }
-
-    async _saveProgress(scrollPosition) {
-        if (!this.currentNovel) return;
-        const position = scrollPosition || 0;
-        try {
-            const result = await Bridge.call(
-                'novel_update_progress',
-                this.currentNovel.id,
-                this.currentChapterIndex,
-                position,
-                this.encoding
-            );
-            if (result.success) {
-                this._progressVersion = result.version;
-                this._lastSavedChapter = this.currentChapterIndex;
-                this._lastSavedPosition = position;
-            }
-        } catch (e) {
-            console.error('保存进度失败:', e);
+        } else if (loadingEl) {
+            loadingEl.style.display = 'none';
         }
     }
 
@@ -658,9 +474,8 @@ class NovelReader {
     }
 
     destroy() {
-        this._saveProgress();
+        this._saveCurrentProgress(true);
         this.currentNovel = null;
-        this.chapters = [];
         this._isReaderMode = false;
     }
 }
