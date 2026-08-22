@@ -25,3 +25,5 @@ docs/Releases/*.zip
 docs/Releases/omnibox/
 docs/Releases/__pycache__/
 
+#linux 启动脚本
+OmniBox-OneClick.ps1
