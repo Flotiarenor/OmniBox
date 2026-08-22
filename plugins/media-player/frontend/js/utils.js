@@ -31,10 +31,10 @@ const MPUtils = {
     },
 
     // 媒体文件 / 封面都以绝对路径存储（支持跨多个媒体根目录），
-    // 统一编码后交给 /files 路由，由后端做逐根目录安全检查。
+    // 交给 Bridge.originalUrl 统一编码后走 /file?path= 路由，由后端做逐根目录安全检查。
     mediaUrl(path) {
         if (!path) return '';
-        return Bridge.originalUrl(encodeURIComponent(path));
+        return Bridge.originalUrl(path);
     },
 
     coverUrl(item) {
