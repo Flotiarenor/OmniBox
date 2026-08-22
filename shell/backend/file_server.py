@@ -39,16 +39,39 @@ def create_app(config, plugin_manager):
     @app.route('/health')
     def health(): return 'OK'
 
+    @app.route('/api/<path:method>', methods=['POST'])
+    def api_proxy(method):
+        """普通浏览器模式：把前端 window.pywebview.api 调用映射为 HTTP POST。"""
+        api_methods = dict(plugin_manager.get_api_methods())
+        api_methods.update({
+            'system_get_plugins': plugin_manager.get_frontend_manifests,
+            'system_settings_list': plugin_manager.get_settings_panels,
+            'system_settings_save': plugin_manager.save_settings_panel,
+            'system_get_config': lambda: config,
+            'system_toggle_fullscreen': lambda: None,
+        })
+
+        fn = api_methods.get(method)
+        if fn is None:
+            abort(404)
+
+        try:
+            payload = request.get_json(silent=True) or {}
+            args = payload.get('args', []) if isinstance(payload.get('args'), list) else []
+            kwargs = payload.get('kwargs', {}) if isinstance(payload.get('kwargs'), dict) else {}
+            result = fn(*args, **kwargs)
+            return {'result': result}
+        except Exception as e:
+            return {'error': str(e)}, 500
+
     @app.route('/')
     @app.route('/<path:filename>')
     def serve_shell(filename='index.html'):
         if not (frontend_dist / filename).exists() and not filename.startswith('assets'):
             return send_from_directory(frontend_dist, 'index.html')
         return send_from_directory(frontend_dist, filename)
-    @app.route('/files/<path:filepath>')
-    def serve_file(filepath):
-        # 获取插件名（从查询参数）
-        plugin_name = request.args.get('plugin', '')
+    def serve_media_file(filepath, plugin_name):
+        """媒体/文件访问：支持相对路径和绝对路径，并做越权目录校验。"""
         instance = plugin_manager.get_plugin_instance(plugin_name) if plugin_name else None
 
         # 确定允许访问的根目录（支持插件跨多个媒体目录）
@@ -88,6 +111,19 @@ def create_app(config, plugin_manager):
             if code in (400, 403, 404):
                 abort(code)
             abort(400)
+
+    @app.route('/files/<path:filepath>')
+    def serve_file(filepath):
+        # 兼容旧路径：/files/<path>
+        return serve_media_file(filepath, request.args.get('plugin', ''))
+
+    @app.route('/file')
+    def serve_file_query():
+        # 新路径：/file?path=<urlencoded>&plugin=<name>
+        # 使用 query 参数避免绝对路径中的 / 被 Flask 路由吃掉。
+        filepath = request.args.get('path', '')
+        plugin_name = request.args.get('plugin', '')
+        return serve_media_file(filepath, plugin_name)
     @app.route('/thumbs/<path:filepath>')
     def serve_thumb(filepath):
         plugin_name = request.args.get('plugin', '')

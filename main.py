@@ -109,6 +109,15 @@ def main():
     manager = PluginManager([str(p) for p in plugin_search_dirs], config=config)
     manager.load_all()
 
+    # Web-only 模式：不启动 PyWebView 桌面窗口，只运行 Flask 服务。
+    # 适用于通过 nginx/SSH 隧道在浏览器中访问 OmniBox UI。
+    if '--web-only' in sys.argv:
+        app = create_app(config, manager)
+        host, port = config['server']['host'], config['server']['port']
+        print(f"[OmniBox] Web-only 模式启动: http://{host}:{port}")
+        app.run(host=host, port=port, debug=False, use_reloader=False)
+        return
+
     class ShellAPI: pass
     api = ShellAPI()
     setattr(api, 'system_get_plugins', manager.get_frontend_manifests)
