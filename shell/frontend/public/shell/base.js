@@ -24,7 +24,8 @@ window.Bridge = (function() {
 
   function originalUrl(path) {
     const plugin = API_PREFIX; // 如 'image-viewer'
-    return `/files/${path}?plugin=${plugin}`;
+    // 使用 query 参数传递 path，避免绝对路径中的 / 被 Flask 路由吞掉
+    return `/file?path=${encodeURIComponent(path)}&plugin=${plugin}`;
   }
 
   function thumbUrl(path) {
