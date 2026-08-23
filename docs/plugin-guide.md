@@ -72,6 +72,7 @@ plugins/
 | `permissions` | ❌ | 权限声明（当前仅做记录，未强制执行） |
 | `minShellVersion` | ❌ | 要求的最低 Shell 版本 |
 | `destroyOnLeave` | ❌ | `true` 时离开页面销毁 iframe 重新加载（默认保持存活） |
+| `hidden` | ❌ | `true` 时不显示在 Shell 主导航，但仍可被宿主内嵌或通过插件 URL 访问 |
 | `kind` | ❌ | `local-adapter`：声明本插件管理独立运行环境（重依赖插件使用） |
 | `runtime` | ❌ | 独立运行环境声明（venv / 入口 / requirements），见 §2.2 |
 
@@ -91,7 +92,7 @@ plugins/
 
 `PluginManager` 已按依赖拓扑排序加载，`image-viewer` 一定先于 `image-tagger` 初始化。
 
-**后端访问依赖插件**（框架计划接口，见 `docs/core-direction.md`）：
+**后端访问依赖插件**（已实装，见 `docs/core-direction.md`）：
 
 ```python
 class ImageTaggerPlugin(PluginBase):
@@ -104,7 +105,7 @@ class ImageTaggerPlugin(PluginBase):
         ...
 ```
 
-**前端跨插件调用**（Shell `base.js` 计划接口）：
+**前端跨插件调用**（Shell `base.js` 已实装）：
 
 ```javascript
 await Bridge.callPlugin('image-tagger', 'tag_album', 'PIXEVAL/画师A');
@@ -122,15 +123,23 @@ class ImageTaggerPlugin(PluginBase):
             'label': '🏷️ 打标',
             'method': 'tag_album',
             'scope': 'album',
+            # 如果希望宿主内嵌 iframe 打开，则使用 embedUrl 而不是 route：
+            # 'embedUrl': '/plugins/image-cleaner/frontend/index.html',
         }]
 ```
 
 宿主前端：
 
 ```javascript
-const exts = await Bridge.call('system_get_plugin_extensions', 'image-viewer');
+// 方式一：使用通用渲染器（推荐，Shell base.js 已提供）
+renderExtensions(document.getElementById('extensions'), 'image-viewer', 'sidebar');
+
+// 方式二：手动拉取扩展后自行渲染
+const exts = await Bridge.callSystem('system_get_plugin_extensions', 'image-viewer', 'sidebar');
 exts.forEach(ext => addToolbarButton(ext.label, () => Bridge.callPlugin(ext.plugin, ext.method)));
 ```
+
+> 目前已落地的 Companion 插件示例：`image-cleaner`（全相册重复/相似清理），设计见 `docs/image-cleaner-design.md`。
 
 ## 2.2 重型依赖与独立运行环境（runtime）
 
@@ -344,6 +353,8 @@ class MyPlugin(PluginBase):
 | 方法 | 说明 |
 |------|------|
 | `Bridge.call(method, ...args)` | 调用后端 API（自动添加插件名前缀） |
+| `Bridge.callSystem(method, ...args)` | 调用 Shell 系统 API（不加插件前缀，如 `system_get_plugin_extensions`） |
+| `Bridge.callPlugin(plugin, method, ...args)` | 跨插件调用其他插件后端 API |
 | `Bridge.thumbUrl(relPath)` | 获取缩略图 URL（自动附加 `?plugin=插件名`） |
 | `Bridge.originalUrl(relPath)` | 获取原图 URL（自动附加 `?plugin=插件名`） |
 | `Bridge.setPrefix(prefix)` | 设置 API 前缀（Shell 在加载插件时自动调用） |
@@ -374,6 +385,7 @@ Shell 还注入了以下可复用的 UI 组件函数（无需引入，直接使�
 | `createContextMenu(options)` | 创建右键菜单组件 |
 | `createCardGrid(container, options)` | 创建卡片网格组件 |
 | `createSettingsForm(container, schema, values)` | 按 schema 渲染设置表单 |
+| `renderExtensions(container, host, placement, options?)` | 渲染注册到宿主侧边栏/工具栏的扩展插件入口 |
 | `openSettingsModal(options)` | 打开统一设置弹窗 |
 | `confirmDialog(message, options)` | 替代原生 confirm |
 | `Toast.success(msg)` / `Toast.error(msg)` / `Toast.info(msg)` | 显示 Toast 通知 |

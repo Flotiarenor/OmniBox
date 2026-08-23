@@ -18,8 +18,6 @@ class ImageViewer {
         this.selectedImages = new Set();
         this.moveDestPath = '';
         this.slideshowTimer = null;
-        this.cleanupMode = 'dupe';
-        this.cleanupSelected = new Set();
 
         this.lightbox = null;
         this.pagination = null;
@@ -48,6 +46,7 @@ class ImageViewer {
         this._bindUI();
         await this.loadSettings();
         await this.loadAlbums();
+        this.loadExtensions();
 
         window.addEventListener('resize', () => {
             if (this.mode === 'images' && this.currentImages.length) {
@@ -61,6 +60,37 @@ class ImageViewer {
             this.currentSettings = await Bridge.call('get_settings', '');
             this.currentRowHeight = this.currentSettings.row_height || 200;
         } catch (e) { }
+    }
+
+    async loadExtensions() {
+        const container = document.getElementById('iv-extensions');
+        if (!container || typeof renderExtensions !== 'function') return;
+        try {
+            await renderExtensions(container, 'image-viewer', 'sidebar', {
+                title: '扩展',
+                onEmbed: (ext) => this.openExtensionEmbed(ext)
+            });
+        } catch (e) {
+            console.error('加载扩展入口失败:', e);
+        }
+    }
+
+    openExtensionEmbed(ext) {
+        const modal = document.getElementById('extension-modal');
+        const frame = document.getElementById('extension-frame');
+        const title = document.getElementById('extension-modal-title');
+        if (!modal || !frame) return;
+        if (title) title.textContent = ext.label || '扩展';
+        frame.src = ext.embedUrl || 'about:blank';
+        modal.classList.add('active');
+    }
+
+    closeExtensionEmbed() {
+        const modal = document.getElementById('extension-modal');
+        const frame = document.getElementById('extension-frame');
+        if (!modal || !frame) return;
+        modal.classList.remove('active');
+        frame.src = 'about:blank';
     }
 
     _bindUI() {
@@ -80,11 +110,6 @@ class ImageViewer {
         document.getElementById('btn-delete-selected').addEventListener('click', () => this.deleteSelectedImages());
         document.getElementById('btn-move-selected').addEventListener('click', () => this.openMoveModal());
         document.getElementById('btn-slideshow').addEventListener('click', () => this.toggleSlideshow());
-        document.getElementById('btn-cleanup').addEventListener('click', () => this.openCleanup());
-        document.getElementById('cleanup-close').addEventListener('click', () => this.closeCleanup());
-        document.getElementById('cleanup-delete').addEventListener('click', () => this.deleteCleanupSelected());
-        document.getElementById('cleanup-tab-dupe').addEventListener('click', () => this.switchCleanupMode('dupe'));
-        document.getElementById('cleanup-tab-similar').addEventListener('click', () => this.switchCleanupMode('similar'));
         document.getElementById('btn-settings').addEventListener('click', () => this.openSettingsModal());
         document.getElementById('settings-cancel').addEventListener('click', () => this.closeSettingsModal());
         document.getElementById('settings-save').addEventListener('click', () => this.saveSettings());
@@ -93,6 +118,7 @@ class ImageViewer {
         document.getElementById('iv-new-album').addEventListener('click', () => this.openNewAlbumModal());
         document.getElementById('iv-new-album-cancel').addEventListener('click', () => this.closeNewAlbumModal());
         document.getElementById('iv-new-album-confirm').addEventListener('click', () => this.createAlbum());
+        document.getElementById('extension-modal-close').addEventListener('click', () => this.closeExtensionEmbed());
 
         const search = document.getElementById('iv-search');
         search.addEventListener('input', Utils.debounce(() => {
@@ -130,7 +156,12 @@ class ImageViewer {
 
         document.querySelectorAll('.modal').forEach(modal => {
             modal.addEventListener('click', (e) => {
-                if (e.target === modal) modal.classList.remove('active');
+                if (e.target !== modal) return;
+                if (modal.id === 'extension-modal') {
+                    this.closeExtensionEmbed();
+                } else {
+                    modal.classList.remove('active');
+                }
             });
         });
         document.addEventListener('click', () => this._closeAlbumMenu());
@@ -317,7 +348,6 @@ class ImageViewer {
         this.mode = 'images';
         document.getElementById('iv-back').classList.remove('hidden');
         document.getElementById('btn-slideshow').classList.remove('hidden');
-        document.getElementById('btn-cleanup').classList.remove('hidden');
         document.getElementById('btn-multi-select').classList.remove('hidden');
         document.getElementById('iv-view-title').textContent = album ? album.name : (path || '未分类');
         document.getElementById('iv-view-sub').textContent = path || '根目录 · 未分类';
@@ -518,113 +548,6 @@ class ImageViewer {
         }
         const btn = document.getElementById('btn-slideshow');
         if (btn) btn.textContent = '▶ 幻灯片';
-    }
-
-    // ============================================================
-    // 清理：完全重复 / 相似图片
-    // ============================================================
-    openCleanup() {
-        document.getElementById('cleanup-modal').classList.add('active');
-        this.cleanupSelected.clear();
-        this.runCleanup();
-    }
-
-    closeCleanup() {
-        document.getElementById('cleanup-modal').classList.remove('active');
-    }
-
-    switchCleanupMode(mode) {
-        this.cleanupMode = mode;
-        document.getElementById('cleanup-tab-dupe').classList.toggle('active', mode === 'dupe');
-        document.getElementById('cleanup-tab-similar').classList.toggle('active', mode === 'similar');
-        this.cleanupSelected.clear();
-        this.runCleanup();
-    }
-
-    async runCleanup() {
-        const box = document.getElementById('cleanup-results');
-        box.innerHTML = '<div class="loading">扫描中…请稍候</div>';
-        document.getElementById('cleanup-selected').textContent = '已选 0 张';
-        document.getElementById('cleanup-scanned').textContent = '';
-        try {
-            const method = this.cleanupMode === 'dupe' ? 'duplicate_scan' : 'similar_scan';
-            const result = await Bridge.call(method, this.currentPath);
-            this.renderCleanupGroups(result.groups || [], result.scanned || 0);
-        } catch (e) {
-            box.innerHTML = `<div class="iv-empty"><div class="iv-empty-icon">⚠️</div><div class="iv-empty-text">扫描失败</div></div>`;
-        }
-    }
-
-    renderCleanupGroups(groups, scanned) {
-        const box = document.getElementById('cleanup-results');
-        document.getElementById('cleanup-scanned').textContent = `已扫描 ${scanned} 张`;
-        if (!groups.length) {
-            box.innerHTML = `<div class="iv-empty"><div class="iv-empty-icon">✨</div><div class="iv-empty-text">未发现${this.cleanupMode === 'dupe' ? '完全重复' : '相似'}图片</div></div>`;
-            return;
-        }
-        box.innerHTML = groups.map((group, gi) => `
-            <div class="iv-cleanup-group">
-                <div class="iv-cleanup-group-head">
-                    <span>${this.cleanupMode === 'dupe' ? `重复组 · ${group.files.length} 张 · ${(group.size / 1024 / 1024).toFixed(2)} MB` : `相似组 · ${group.files.length} 张`}</span>
-                    <button class="btn btn-sm" data-select-group="${gi}">全选组</button>
-                </div>
-                <div class="iv-cleanup-files">
-                    ${group.files.map(f => `
-                        <label class="iv-cleanup-file">
-                            <input type="checkbox" data-file="${this._escapeAttr(f)}">
-                            <img src="${Bridge.thumbUrl(f)}" loading="lazy" alt="" onerror="this.style.display='none'">
-                            <span>${this._escapeHtml(f.split('/').pop())}</span>
-                        </label>`).join('')}
-                </div>
-            </div>`).join('');
-
-        box.querySelectorAll('[data-select-group]').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const idx = parseInt(btn.dataset.selectGroup, 10);
-                const group = groups[idx];
-                const checkboxes = box.querySelectorAll(`input[type="checkbox"][data-file]`);
-                const inGroup = new Set(group.files);
-                checkboxes.forEach(cb => {
-                    if (inGroup.has(cb.dataset.file)) {
-                        cb.checked = true;
-                        this.cleanupSelected.add(cb.dataset.file);
-                    }
-                });
-                this.updateCleanupSelected();
-            });
-        });
-
-        box.querySelectorAll('input[type="checkbox"][data-file]').forEach(cb => {
-            cb.addEventListener('change', () => {
-                if (cb.checked) this.cleanupSelected.add(cb.dataset.file);
-                else this.cleanupSelected.delete(cb.dataset.file);
-                this.updateCleanupSelected();
-            });
-        });
-    }
-
-    updateCleanupSelected() {
-        document.getElementById('cleanup-selected').textContent = `已选 ${this.cleanupSelected.size} 张`;
-    }
-
-    async deleteCleanupSelected() {
-        const files = [...this.cleanupSelected];
-        if (!files.length) {
-            Toast.warning('请先勾选要删除的图片');
-            return;
-        }
-        const ok = await confirmDialog(`确定删除选中的 ${files.length} 张图片吗？`, { danger: true });
-        if (!ok) return;
-        try {
-            const result = await Bridge.call('delete_files', files);
-            if (result.errors.length) Toast.error(`部分删除失败: ${result.errors.join('; ')}`);
-            else Toast.success(`已删除 ${files.length} 张图片`);
-            this.cleanupSelected.clear();
-            if (this.mode === 'images') await this.loadImages(this.currentPath, this.currentPage);
-            await this.runCleanup();
-        } catch (e) {
-            Toast.error('删除请求失败');
-        }
     }
 
     // ============================================================

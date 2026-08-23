@@ -272,6 +272,60 @@ body {
   background: var(--bg-app);
 }
 
+/* ===== 通用扩展入口（Companion 插件挂载到宿主侧边栏/工具栏） ===== */
+.obx-extensions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+}
+.obx-extensions-title {
+  padding: 8px 8px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.obx-extension {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-sidebar, var(--text-primary));
+  border-radius: 8px;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast, 0.15s ease);
+}
+.obx-extension:hover {
+  background: var(--bg-hover, rgba(128, 128, 128, 0.12));
+}
+.obx-extension-icon {
+  width: 20px;
+  flex-shrink: 0;
+  text-align: center;
+}
+.obx-extension-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 通用内嵌 iframe（宿主未提供 onEmbed 时可直接放入容器） */
+.obx-embed-frame {
+  width: 100%;
+  height: 100%;
+  min-height: 480px;
+  border: none;
+  border-radius: 12px;
+  background: var(--bg-surface);
+}
+
 /* 通用状态 */
 .loading { text-align: center; padding: 50px; color: var(--text-secondary); font-size: 15px; }
 .empty-state {

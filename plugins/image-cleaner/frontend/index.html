@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>相册清理</title>
+  <link rel="stylesheet" href="image-cleaner.css">
+</head>
+<body>
+  <div id="app" class="view-body">
+    <div class="view-toolbar cleaner-toolbar">
+      <div class="toolbar-group cleaner-meta">
+        <span class="cleaner-scope">全部相册</span>
+        <span class="cleaner-root" id="cleaner-root" title="相册根目录">读取中…</span>
+      </div>
+      <div class="toolbar-group" style="margin-left:auto;">
+        <button id="btn-rescan" class="btn btn-sm">重新扫描</button>
+      </div>
+    </div>
+
+    <div class="view-content cleaner-content obx-scroll">
+      <div class="cleaner-tabs">
+        <button id="tab-dupe" class="btn btn-sm active">完全重复</button>
+        <button id="tab-similar" class="btn btn-sm">相似图片</button>
+        <span id="cleaner-scanned" class="cleaner-scanned"></span>
+      </div>
+      <div id="cleaner-results" class="cleaner-results"></div>
+    </div>
+
+    <div class="cleaner-footer">
+      <span id="cleaner-selected" class="cleaner-selected">已选 0 张</span>
+      <button id="btn-delete" class="btn btn-danger">删除选中</button>
+    </div>
+  </div>
+
+  <script src="js/app.js"></script>
+  <script>
+    window.imageCleaner = new ImageCleaner();
+    imageCleaner.init();
+  </script>
+</body>
+</html>

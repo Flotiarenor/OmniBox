@@ -42,6 +42,7 @@ class PluginBase(ABC):
         self.name = manifest.get('name', 'unknown')
         # 由 PluginManager 注入
         self._settings_store = None
+        self._plugin_manager = getattr(self.__class__, '_plugin_manager', None)
         # PluginManager 在构造前预加载的已解决设置
         self._resolved_config = getattr(self.__class__, '_resolved_config', {})
 
@@ -60,6 +61,20 @@ class PluginBase(ABC):
         返回所有已配置的根目录。`/files/` 路由会依次进行路径安全检查。
         """
         return [self.get_data_root()]
+
+    def get_dependency(self, name: str):
+        """返回已加载依赖插件实例；未声明依赖或未加载时返回 None。"""
+        dependencies = self.manifest.get('dependencies', []) or []
+        if name not in dependencies:
+            print(f"[{self.name}] 尝试访问未声明依赖的插件: {name}")
+            return None
+        if self._plugin_manager is None:
+            return None
+        return self._plugin_manager.get_plugin_instance(name)
+
+    def get_extensions(self) -> List[dict]:
+        """宿主前端可渲染的动作。默认空。"""
+        return []
 
     def _default_settings(self) -> Dict:
         return {item.get('key'): item.get('default') for item in self.settings_schema if item.get('key')}

@@ -23,9 +23,9 @@
 | 能力 | 现状 | 目标 | 缺口 |
 |------|------|------|------|
 | 插件依赖声明 | `manifest.dependencies` + 拓扑排序已实装 | 依赖实例可被访问 | 小 |
-| 跨插件后端访问 | `PluginManager.get_plugin_instance(name)` 存在，但未注入插件 | `PluginBase.get_dependency(name)` | 小 |
-| 跨插件前端调用 | 前端只能调本插件 API | `Bridge.callPlugin(plugin, method, ...)` | 小 |
-| 扩展注册 | 无 | `system_get_plugin_extensions(host)` | 小 |
+| 跨插件后端访问 | `PluginBase.get_dependency(name)` 已实装 | 依赖实例可被访问 | 已满足 |
+| 跨插件前端调用 | `Bridge.callPlugin(plugin, method, ...)` 已实装 | 跨插件 API 调用 | 已满足 |
+| 扩展注册 | `system_get_plugin_extensions(host, placement)` 已实装 | 宿主侧扩展入口渲染 | 已满足 |
 | 独立 venv | 无；全部插件共享主 venv | manifest `runtime` + 部署脚本按插件建 env | 中 |
 | 子进程生命周期 | 未实装（adapter-spec 为 RFC） | `shell/backend/adapter_process.py` 最小实装 | 中 |
 | 长驻 Worker 通信 | 无 | stdio JSON-lines 协议 | 中 |
