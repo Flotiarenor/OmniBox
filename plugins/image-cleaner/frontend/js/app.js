@@ -6,10 +6,14 @@ class ImageCleaner {
     this.selected = new Set();
     this.pageSize = 20;
     this.visibleCount = 20;
+    this.lightbox = null;
   }
 
   async init() {
     this._bind();
+    if (typeof createLightbox === 'function') {
+      this.lightbox = createLightbox({ getImageUrl: (item) => item.url || item });
+    }
     this.updateStatus();
     await this.runScan();
   }
@@ -103,7 +107,7 @@ class ImageCleaner {
           ${group.files.map(f => `
             <label class="cleaner-file">
               <input type="checkbox" data-file="${this._escapeAttr(f)}">
-              <img src="${Bridge.thumbUrl(f)}" loading="lazy" alt="" onerror="this.style.display='none'">
+              <img src="${Bridge.thumbUrl(f)}" loading="lazy" alt="" data-view-file="${this._escapeAttr(f)}" data-group-index="${gi}" onerror="this.style.display='none'">
               <span title="${this._escapeAttr(f)}">${this._escapeHtml(f.split('/').pop())}</span>
             </label>`).join('')}
         </div>
@@ -126,6 +130,25 @@ class ImageCleaner {
 
     box.querySelectorAll('[data-keep-one]').forEach(btn => {
       btn.addEventListener('click', () => this.keepOneInGroup(parseInt(btn.dataset.keepOne, 10)));
+    });
+
+    box.querySelectorAll('[data-view-file]').forEach(img => {
+      img.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const group = this.groups[parseInt(img.dataset.groupIndex, 10)];
+        const file = img.dataset.viewFile;
+        if (!group) return;
+        const items = group.files.map(f => ({ url: f }));
+        const index = group.files.indexOf(file);
+        const parentIv = parent && parent.imageViewer;
+        if (parentIv && parentIv.lightbox) {
+          // 优先使用 image-viewer 的全屏查看器，这样可以看到图片信息
+          parentIv.lightbox.show(items, index);
+        } else if (this.lightbox) {
+          this.lightbox.show(items, index);
+        }
+      });
     });
 
     box.querySelectorAll('input[type="checkbox"][data-file]').forEach(cb => {
@@ -204,7 +227,21 @@ class ImageCleaner {
       } else {
         Toast.success(`已删除 ${files.length} 张图片`);
       }
-      await this.runScan(true);
+
+      // 删除后不自动重新扫描，只从当前结果中移除已删除项；
+      // 需要更新结果时由用户点击“重新扫描”触发。
+      const deleted = new Set(result.deleted || []);
+      if (deleted.size) {
+        this.groups = this.groups
+          .map(group => ({
+            ...group,
+            files: group.files.filter(f => !deleted.has(f))
+          }))
+          .filter(group => group.files.length >= 2);
+        this.selected.clear();
+        this.render();
+        this.updateSelected();
+      }
     } catch (e) {
       Toast.error('删除请求失败');
     }
