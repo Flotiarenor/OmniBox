@@ -55,6 +55,7 @@ class ImageCleanerPlugin(PluginBase):
         return {
             'duplicate_scan': self.duplicate_scan,
             'similar_scan': self.similar_scan,
+            'get_cached_scan': self.get_cached_scan,
             'delete_files': self.delete_files,
             'get_status': self.get_status,
         }
@@ -79,6 +80,55 @@ class ImageCleanerPlugin(PluginBase):
             'placement': 'sidebar',
             'scope': 'all',
         }]
+
+    # ---------- 扫描结果缓存 ----------
+
+    def _scan_cache_path(self) -> Path:
+        return self._get_host().get_data_root() / '.cache' / 'image-cleaner' / 'scan_cache.json'
+
+    def _load_scan_cache(self) -> dict:
+        try:
+            path = self._scan_cache_path()
+            if path.exists():
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+        return {}
+
+    def _save_scan_cache(self, cache: dict):
+        try:
+            path = self._scan_cache_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(cache, f, ensure_ascii=False)
+        except Exception as e:
+            print(f"[{self.name}] 保存扫描结果缓存失败: {e}")
+
+    def _save_scan_result(self, mode: str, groups: list, scanned: int):
+        cache = self._load_scan_cache()
+        cache[mode] = {
+            'groups': groups,
+            'scanned': scanned,
+            'saved_at': __import__('time').time(),
+        }
+        self._save_scan_cache(cache)
+
+    def get_cached_scan(self, mode: str) -> Dict:
+        """返回上次扫描结果；没有缓存时返回空结果。"""
+        if mode not in ('dupe', 'similar'):
+            return {'groups': [], 'scanned': 0, 'cached': False}
+        cache = self._load_scan_cache()
+        item = cache.get(mode)
+        if not item or not isinstance(item, dict):
+            return {'groups': [], 'scanned': 0, 'cached': False}
+        return {
+            'groups': item.get('groups', []),
+            'scanned': item.get('scanned', 0),
+            'cached': True,
+        }
 
     # ---------- 全相册文件收集 ----------
 
@@ -181,6 +231,7 @@ class ImageCleanerPlugin(PluginBase):
                             'files': [d['rel'] for d in dups],
                         })
         groups.sort(key=lambda g: -len(g['files']))
+        self._save_scan_result('dupe', groups, scanned)
         return {'groups': groups, 'scanned': scanned}
 
     # ---------- 视觉相似 ----------
@@ -282,6 +333,7 @@ class ImageCleanerPlugin(PluginBase):
         groups = [{'files': sorted(files)} for files in clusters.values() if len(files) >= 2]
         groups.sort(key=lambda g: -len(g['files']))
         self._save_dhash_cache()
+        self._save_scan_result('similar', groups, n)
         return {'groups': groups, 'scanned': n}
 
     # ---------- 删除 ----------

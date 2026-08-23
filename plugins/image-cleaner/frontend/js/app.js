@@ -4,6 +4,8 @@ class ImageCleaner {
     this.mode = 'dupe';
     this.groups = [];
     this.selected = new Set();
+    this.pageSize = 20;
+    this.visibleCount = 20;
   }
 
   async init() {
@@ -13,7 +15,8 @@ class ImageCleaner {
   }
 
   _bind() {
-    document.getElementById('btn-rescan').addEventListener('click', () => this.runScan());
+    document.getElementById('btn-rescan').addEventListener('click', () => this.runScan(true));
+    document.getElementById('btn-keep-one-all').addEventListener('click', () => this.keepOneForAll());
     document.getElementById('btn-delete').addEventListener('click', () => this.deleteSelected());
     document.getElementById('tab-dupe').addEventListener('click', () => this.switchMode('dupe'));
     document.getElementById('tab-similar').addEventListener('click', () => this.switchMode('similar'));
@@ -42,7 +45,7 @@ class ImageCleaner {
     this.runScan();
   }
 
-  async runScan() {
+  async runScan(force = false) {
     const box = document.getElementById('cleaner-results');
     box.innerHTML = '<div class="cleaner-empty">扫描中…请稍候</div>';
     document.getElementById('cleaner-scanned').textContent = '';
@@ -50,9 +53,25 @@ class ImageCleaner {
     this.selected.clear();
     try {
       const method = this.mode === 'dupe' ? 'duplicate_scan' : 'similar_scan';
-      const result = await Bridge.call(method);
+      let result;
+
+      // 非强制扫描时优先读取上次缓存，避免退出重进后全部重扫。
+      if (!force) {
+        try {
+          result = await Bridge.call('get_cached_scan', this.mode);
+        } catch (e) {
+          result = null;
+        }
+        if (!result || !result.cached) {
+          result = await Bridge.call(method);
+        }
+      } else {
+        result = await Bridge.call(method);
+      }
+
       this.groups = result.groups || [];
       const scanned = result.scanned || 0;
+      this.visibleCount = this.pageSize;
       document.getElementById('cleaner-scanned').textContent = `已扫描 ${scanned} 张`;
       this.render();
     } catch (e) {
@@ -63,15 +82,22 @@ class ImageCleaner {
 
   render() {
     const box = document.getElementById('cleaner-results');
-    if (!this.groups.length) {
+    const visibleGroups = this.groups.slice(0, this.visibleCount);
+    if (!visibleGroups.length) {
       box.innerHTML = '<div class="cleaner-empty">✨ 未发现' + (this.mode === 'dupe' ? '完全重复' : '相似') + '图片</div>';
       return;
     }
-    box.innerHTML = this.groups.map((group, gi) => `
+
+    const moreHtml = this.groups.length > this.visibleCount
+      ? `<button class="btn btn-sm cleaner-more" id="cleaner-more">显示更多（还有 ${this.groups.length - this.visibleCount} 组）</button>`
+      : '';
+
+    box.innerHTML = visibleGroups.map((group, gi) => `
       <div class="cleaner-group">
         <div class="cleaner-group-head">
           <span>${this.mode === 'dupe' ? `重复组 · ${group.files.length} 张 · ${(group.size / 1024 / 1024).toFixed(2)} MB` : `相似组 · ${group.files.length} 张`}</span>
           <button class="btn btn-sm" data-select-group="${gi}">全选组</button>
+          <button class="btn btn-sm" data-keep-one="${gi}">只留一张</button>
         </div>
         <div class="cleaner-files">
           ${group.files.map(f => `
@@ -81,7 +107,7 @@ class ImageCleaner {
               <span title="${this._escapeAttr(f)}">${this._escapeHtml(f.split('/').pop())}</span>
             </label>`).join('')}
         </div>
-      </div>`).join('');
+      </div>`).join('') + moreHtml;
 
     box.querySelectorAll('[data-select-group]').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -98,6 +124,10 @@ class ImageCleaner {
       });
     });
 
+    box.querySelectorAll('[data-keep-one]').forEach(btn => {
+      btn.addEventListener('click', () => this.keepOneInGroup(parseInt(btn.dataset.keepOne, 10)));
+    });
+
     box.querySelectorAll('input[type="checkbox"][data-file]').forEach(cb => {
       cb.addEventListener('change', () => {
         if (cb.checked) this.selected.add(cb.dataset.file);
@@ -105,6 +135,54 @@ class ImageCleaner {
         this.updateSelected();
       });
     });
+
+    const moreBtn = box.querySelector('#cleaner-more');
+    if (moreBtn) moreBtn.addEventListener('click', () => this.showMore());
+  }
+
+  keepOneInGroup(index) {
+    const box = document.getElementById('cleaner-results');
+    const group = this.groups[index];
+    if (!group || !box) return;
+    const keep = group.files[0];
+    const files = new Set(group.files);
+    box.querySelectorAll('input[type="checkbox"][data-file]').forEach(cb => {
+      if (!files.has(cb.dataset.file)) return;
+      if (cb.dataset.file === keep) {
+        cb.checked = false;
+        this.selected.delete(keep);
+      } else {
+        cb.checked = true;
+        this.selected.add(cb.dataset.file);
+      }
+    });
+    this.updateSelected();
+  }
+
+  keepOneForAll() {
+    this.groups.forEach(group => {
+      const keep = group.files[0];
+      group.files.forEach(f => {
+        if (f === keep) this.selected.delete(f);
+        else this.selected.add(f);
+      });
+    });
+    this.render();
+    this._syncCheckboxes();
+    this.updateSelected();
+  }
+
+  _syncCheckboxes() {
+    const box = document.getElementById('cleaner-results');
+    if (!box) return;
+    box.querySelectorAll('input[type="checkbox"][data-file]').forEach(cb => {
+      cb.checked = this.selected.has(cb.dataset.file);
+    });
+  }
+
+  showMore() {
+    this.visibleCount += this.pageSize;
+    this.render();
   }
 
   updateSelected() {
@@ -126,7 +204,7 @@ class ImageCleaner {
       } else {
         Toast.success(`已删除 ${files.length} 张图片`);
       }
-      await this.runScan();
+      await this.runScan(true);
     } catch (e) {
       Toast.error('删除请求失败');
     }
