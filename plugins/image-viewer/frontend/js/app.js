@@ -68,39 +68,48 @@ class ImageViewer {
         try {
             await renderExtensions(container, 'image-viewer', 'sidebar', {
                 title: '扩展',
-                onEmbed: (ext) => this.openExtensionEmbed(ext)
+                onEmbed: (ext) => this.openExtensionView(ext)
+            });
+            container.querySelectorAll('.obx-extension').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    document.querySelectorAll('.iv-nav-item[data-view]').forEach(b => b.classList.remove('active'));
+                    container.querySelectorAll('.obx-extension').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                });
             });
         } catch (e) {
             console.error('加载扩展入口失败:', e);
         }
     }
 
-    openExtensionEmbed(ext) {
-        const modal = document.getElementById('extension-modal');
+    openExtensionView(ext) {
+        const view = document.getElementById('extension-view');
         const frame = document.getElementById('extension-frame');
-        const title = document.getElementById('extension-modal-title');
-        if (!modal || !frame) return;
+        const title = document.getElementById('extension-view-title');
+        if (!view || !frame) return;
         if (title) title.textContent = ext.label || '扩展';
         frame.src = ext.embedUrl || 'about:blank';
-        modal.classList.add('active');
+        view.classList.remove('hidden');
     }
 
-    closeExtensionEmbed() {
-        const modal = document.getElementById('extension-modal');
+    closeExtensionView() {
+        const view = document.getElementById('extension-view');
         const frame = document.getElementById('extension-frame');
-        if (!modal || !frame) return;
-        modal.classList.remove('active');
+        if (!view || !frame) return;
+        view.classList.add('hidden');
         frame.src = 'about:blank';
     }
 
     _bindUI() {
         document.querySelectorAll('.iv-nav-item[data-view]').forEach(btn => {
             btn.addEventListener('click', () => {
+                this.closeExtensionView();
                 this.currentView = btn.dataset.view;
                 this.mode = 'albums';
                 this.childParentPath = '';
                 this.fromChildren = false;
                 document.querySelectorAll('.iv-nav-item[data-view]').forEach(b => b.classList.toggle('active', b === btn));
+                document.querySelectorAll('#iv-extensions .obx-extension').forEach(b => b.classList.remove('active'));
                 this.showAlbums();
             });
         });
@@ -118,7 +127,7 @@ class ImageViewer {
         document.getElementById('iv-new-album').addEventListener('click', () => this.openNewAlbumModal());
         document.getElementById('iv-new-album-cancel').addEventListener('click', () => this.closeNewAlbumModal());
         document.getElementById('iv-new-album-confirm').addEventListener('click', () => this.createAlbum());
-        document.getElementById('extension-modal-close').addEventListener('click', () => this.closeExtensionEmbed());
+        document.getElementById('extension-view-close').addEventListener('click', () => this.closeExtensionView());
 
         const search = document.getElementById('iv-search');
         search.addEventListener('input', Utils.debounce(() => {
@@ -156,12 +165,7 @@ class ImageViewer {
 
         document.querySelectorAll('.modal').forEach(modal => {
             modal.addEventListener('click', (e) => {
-                if (e.target !== modal) return;
-                if (modal.id === 'extension-modal') {
-                    this.closeExtensionEmbed();
-                } else {
-                    modal.classList.remove('active');
-                }
+                if (e.target === modal) modal.classList.remove('active');
             });
         });
         document.addEventListener('click', () => this._closeAlbumMenu());
