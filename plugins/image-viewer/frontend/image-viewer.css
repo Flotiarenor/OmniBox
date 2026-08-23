@@ -51,6 +51,11 @@
   box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 32%, transparent);
 }
 .iv-nav-item span { width: 18px; text-align: center; }
+#iv-extensions .obx-extension.active {
+  background: var(--iv-gradient);
+  color: var(--text-on-accent);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 32%, transparent);
+}
 .iv-sidebar-footer { padding: 11px 14px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-secondary); }
 
 /* ===== 工具栏 ===== */
@@ -238,36 +243,41 @@
 }
 .iv-context-menu button:hover { background: var(--bg-hover); }
 
-/* ===== 扩展插件内嵌面板 ===== */
-.extension-modal-box {
-  width: min(720px, 92vw);
-  max-width: 92vw;
-  height: min(80vh, 720px);
+/* ===== 扩展插件内嵌视图（替换主内容区，不遮挡全屏查看器） ===== */
+.view-body {
+  position: relative;
+}
+.extension-view {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
   display: flex;
   flex-direction: column;
-  padding: 0;
-  overflow: hidden;
+  background: var(--bg-app);
 }
-.extension-modal-header {
+.extension-view.hidden {
+  display: none;
+}
+.extension-view-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px;
+  padding: 8px 14px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-.extension-modal-box .extension-modal-header h3 {
-  margin: 0;
-  padding: 0;
-  border-bottom: none;
-  font-size: 15px;
+.extension-view-header span {
+  font-size: 14px;
+  font-weight: 600;
 }
-.extension-modal-body {
+.extension-view-body {
   flex: 1;
   min-height: 0;
 }
-.extension-modal-body iframe {
+.extension-view-body iframe {
   width: 100%;
   height: 100%;
   border: none;
-  background: var(--bg-surface);
+  background: var(--bg-app);
 }

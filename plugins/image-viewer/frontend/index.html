@@ -57,6 +57,16 @@
         <div id="image-grid" class="iv-image-grid"></div>
       </div>
       <div id="pagination" class="pagination-bar"></div>
+
+      <div id="extension-view" class="extension-view hidden">
+        <div class="extension-view-header">
+          <span id="extension-view-title">扩展</span>
+          <button class="btn btn-sm" id="extension-view-close">返回相册</button>
+        </div>
+        <div class="extension-view-body">
+          <iframe id="extension-frame" title="扩展插件"></iframe>
+        </div>
+      </div>
     </div>
 
     <div id="new-album-modal" class="modal">
@@ -71,18 +81,6 @@
         <div class="modal-footer">
           <button class="btn" id="iv-new-album-cancel">取消</button>
           <button class="btn btn-primary" id="iv-new-album-confirm">创建</button>
-        </div>
-      </div>
-    </div>
-
-    <div id="extension-modal" class="modal">
-      <div class="modal-box obx-anim-scale extension-modal-box">
-        <div class="extension-modal-header">
-          <h3 id="extension-modal-title">扩展</h3>
-          <button class="btn btn-sm" id="extension-modal-close">关闭</button>
-        </div>
-        <div class="extension-modal-body">
-          <iframe id="extension-frame" title="扩展插件"></iframe>
         </div>
       </div>
     </div>
