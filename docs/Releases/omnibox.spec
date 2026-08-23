@@ -16,7 +16,10 @@ DIST_DIR     = PROJECT_ROOT / 'docs' / 'Releases'
 BUILD_DIR    = PROJECT_ROOT / '.build'
 
 # ── 排除完全用不到的模块 ──────────────────────────────────────────────
-EXCLUDES = []
+EXCLUDES = [
+    # 体积较大且已改用 requests 后不再需要；如后续要恢复 curl_cffi 请移除此项
+    'curl_cffi',
+]
 
 # ── 需要手动包含的隐藏模块 ──────────────────────────────────────────
 HIDDEN_IMPORTS = [
@@ -32,6 +35,15 @@ HIDDEN_IMPORTS = [
     'jinja2.ext',              # Flask 内部依赖
     'markupsafe._native',
     'yaml.cyaml',
+# 插件动态加载的第三方依赖（插件 backend 由运行时 importlib 加载，需显式声明）
+    'mutagen',
+    'PIL',
+    'natsort',
+    'chardet',
+    'jmcomic',
+    'common',
+    'requests',
+    'Crypto',
 ]
 
 # ── 数据文件 ──────────────────────────────────────────────────────────

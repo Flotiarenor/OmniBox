@@ -130,9 +130,9 @@ def execute_download(task, manga_dir: str, state_dir: str, lock, logger=None) ->
             "impl": "api",
             "retry_times": 3,
             "postman": {
-                "type": "curl_cffi",
+                "type": "requests",
                 "meta_data": {
-                    "impersonate": "chrome",
+                    "headers": None,
                     "proxies": None
                 }
             }
