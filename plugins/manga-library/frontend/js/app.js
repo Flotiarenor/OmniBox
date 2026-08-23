@@ -105,8 +105,9 @@ class MangaLibraryApp {
         const isDownloads = this.currentView === 'downloads';
         const keyword = (document.getElementById('manga-search').value || '').trim();
 
+        const isDetail = this.viewLevel === 'chapters' || this.viewLevel === 'images';
         // 工具栏按视图切换
-        document.getElementById('ml-search-wrap').classList.toggle('hidden', isDownloads);
+        document.getElementById('ml-search-wrap').classList.toggle('hidden', isDownloads || isDetail);
         document.getElementById('ml-add-task').classList.toggle('hidden', !isDownloads);
         document.getElementById('ml-start-all').classList.toggle('hidden', !isDownloads);
         document.getElementById('ml-pause-all').classList.toggle('hidden', !isDownloads);
@@ -243,8 +244,8 @@ class MangaLibraryApp {
             this._chapterPath = '';
             this.viewLevel = this.isMultiChapter ? 'chapters' : 'images';
 
-            document.getElementById('ml-view-title').textContent = detail.title;
-            document.getElementById('ml-view-sub').textContent = detail.author || '';
+            document.getElementById('ml-view-title').textContent = '漫画详情';
+            document.getElementById('ml-view-sub').textContent = '';
             await this.loadView();
         } catch (e) {
             console.error('打开漫画详情失败', e);
@@ -307,6 +308,7 @@ class MangaLibraryApp {
                     <div class="ml-detail-author">${MangaUtils.escapeHtml(this._chapterPath ? this.currentDetail.chapters.find(c => c.path === this._chapterPath)?.name || '' : '')}</div>
                 </div>
             </div>
+            ${this._detailInfoHtml(detail.info)}
             <section class="ml-section">
                 <h3 class="ml-section-title">🖼 图片</h3>
                 <div id="ml-pages" class="ml-grid"></div>
@@ -351,6 +353,7 @@ class MangaLibraryApp {
         };
         add('ID', info.album_id);
         add('原名', info.oname);
+        add('作者', info.author);
         add('下载时间', info.download_time);
         if (Array.isArray(info.actors) && info.actors.length) add('演员', info.actors.join(', '));
         const tags = (info.tags || []).map(t => `<span class="ml-tag">${MangaUtils.escapeHtml(t)}</span>`).join('');

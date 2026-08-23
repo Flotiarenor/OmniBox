@@ -16,10 +16,7 @@ DIST_DIR     = PROJECT_ROOT / 'docs' / 'Releases'
 BUILD_DIR    = PROJECT_ROOT / '.build'
 
 # ── 排除完全用不到的模块 ──────────────────────────────────────────────
-EXCLUDES = [
-    # 体积较大且已改用 requests 后不再需要；如后续要恢复 curl_cffi 请移除此项
-    'curl_cffi',
-]
+EXCLUDES = []
 
 # ── 需要手动包含的隐藏模块 ──────────────────────────────────────────
 HIDDEN_IMPORTS = [
@@ -42,6 +39,7 @@ HIDDEN_IMPORTS = [
     'chardet',
     'jmcomic',
     'common',
+    'curl_cffi',
     'requests',
     'Crypto',
 ]
