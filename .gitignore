@@ -27,3 +27,9 @@ docs/Releases/__pycache__/
 
 #linux 启动脚本
 OmniBox-OneClick.ps1
+
+# Linux 构建产物
+.build-linux/
+docs/Releases/OmniBox/
+docs/Releases/OmniBox.bin
+docs/Releases/*.tar.gz
