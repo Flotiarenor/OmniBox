@@ -78,6 +78,7 @@ class ImageViewerPlugin(PluginBase):
             'create_folder': self.create_folder,
             'get_album_config': self.get_album_config,
             'set_album_config': self.set_album_config,
+            'get_image_info': self.get_image_info,
             'delete_files': self.delete_files,
             'move_files': self.move_files,
             'get_settings': self.get_settings,
@@ -98,6 +99,26 @@ class ImageViewerPlugin(PluginBase):
             return str(thumb) if thumb and thumb.exists() else ''
         except Exception:
             return ''
+
+    def get_image_info(self, rel_path: str) -> Dict:
+        """返回单张图片的存储大小与分辨率，供全屏查看器右侧信息面板使用。"""
+        if not self._is_safe(rel_path):
+            return {'success': False, 'error': '非法路径'}
+        abs_path = self.root_dir / rel_path
+        try:
+            if not abs_path.is_file():
+                return {'success': False, 'error': '不是图片文件'}
+            stat = abs_path.stat()
+            width, height = self._get_image_size(str(abs_path), stat.st_mtime)
+            return {
+                'success': True,
+                'rel_path': rel_path,
+                'size': stat.st_size,
+                'width': width,
+                'height': height,
+            }
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
 
     def _get_dir_mtime(self, rel_path: str) -> float:
         return stat_mtime(self.root_dir, rel_path)
@@ -146,12 +167,14 @@ class ImageViewerPlugin(PluginBase):
             with os.scandir(target_dir) as entries:
                 for entry in entries:
                     if entry.is_file() and Path(entry.name).suffix.lower() in ALLOWED_EXTENSIONS:
-                        mtime = entry.stat().st_mtime
+                        stat = entry.stat()
+                        mtime = stat.st_mtime
                         url_path = (Path(rel_path) / entry.name).as_posix()
                         width, height = self._get_image_size(entry.path, mtime)
                         images.append({
                             'url': url_path,
                             'mtime': mtime,
+                            'size': stat.st_size,
                             'width': width,
                             'height': height
                         })

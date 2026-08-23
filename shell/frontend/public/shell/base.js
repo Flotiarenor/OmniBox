@@ -483,6 +483,7 @@ function createLightbox(options = {}) {
     <img id="lightbox-img" src="" alt="原图查看" draggable="false">
     <div class="lightbox-arrow right">❯</div>
     <div class="lightbox-close">✕</div>
+    <div class="lightbox-info"></div>
   `;
   document.body.appendChild(overlay);
 
@@ -490,6 +491,7 @@ function createLightbox(options = {}) {
   const leftArrow = overlay.querySelector('.lightbox-arrow.left');
   const rightArrow = overlay.querySelector('.lightbox-arrow.right');
   const closeBtn = overlay.querySelector('.lightbox-close');
+  const infoEl = overlay.querySelector('.lightbox-info');
 
   let scale = 1, translate = { x: 0, y: 0 };
   let isDragging = false, dragStart = { x: 0, y: 0 };
@@ -501,10 +503,47 @@ function createLightbox(options = {}) {
     img.style.cursor = scale > 1 ? 'grab' : 'zoom-out';
   }
 
+  function updateInfo() {
+    const item = items[currentIndex];
+    if (!item) {
+      infoEl.innerHTML = '';
+      return;
+    }
+    const path = getImageUrl(item);
+    if (item.size || item.width || item.height) {
+      const sizeText = item.size ? Utils.formatFileSize(item.size) : '';
+      const resolutionText = (item.width && item.height) ? `${item.width} × ${item.height}` : '';
+      infoEl.innerHTML =
+        (sizeText ? `<div class="lightbox-info-item">${sizeText}</div>` : '') +
+        (resolutionText ? `<div class="lightbox-info-item">${resolutionText}</div>` : '');
+      return;
+    }
+
+    infoEl.innerHTML = '<div class="lightbox-info-item">读取中…</div>';
+    if (typeof Bridge.call !== 'function') return;
+    Bridge.call('get_image_info', path).then(data => {
+      if (currentIndex < 0 || !items[currentIndex]) return;
+      if (getImageUrl(items[currentIndex]) !== path) return;
+      if (data && data.success) {
+        item.size = data.size;
+        item.width = data.width;
+        item.height = data.height;
+        infoEl.innerHTML =
+          `<div class="lightbox-info-item">${Utils.formatFileSize(data.size)}</div>` +
+          `<div class="lightbox-info-item">${data.width} × ${data.height}</div>`;
+      } else {
+        infoEl.innerHTML = '<div class="lightbox-info-item">无信息</div>';
+      }
+    }).catch(() => {
+      infoEl.innerHTML = '<div class="lightbox-info-item">无信息</div>';
+    });
+  }
+
   function show(itemList, index) {
     items = itemList; currentIndex = index;
     img.src = Bridge.originalUrl(getImageUrl(items[currentIndex]));
     overlay.classList.add('active');
+    updateInfo();
     resetTransform();
     document.addEventListener('keydown', onKey);
     img.addEventListener('wheel', onWheel, { passive: false });
@@ -515,6 +554,7 @@ function createLightbox(options = {}) {
 
   function hide() {
     overlay.classList.remove('active'); img.src = '';
+    infoEl.innerHTML = '';
     document.removeEventListener('keydown', onKey);
     img.removeEventListener('wheel', onWheel);
     img.removeEventListener('mousedown', onDragStart);
@@ -527,6 +567,7 @@ function createLightbox(options = {}) {
     if (currentIndex < 0) currentIndex = items.length - 1;
     if (currentIndex >= items.length) currentIndex = 0;
     img.src = Bridge.originalUrl(getImageUrl(items[currentIndex]));
+    updateInfo();
     resetTransform();
   }
 
