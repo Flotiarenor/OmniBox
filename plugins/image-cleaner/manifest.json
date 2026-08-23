@@ -1,0 +1,23 @@
+{
+  "name": "image-cleaner",
+  "version": "0.1.0",
+  "displayName": "相册清理",
+  "icon": "🧹",
+  "description": "image-viewer 的 Companion 插件：扫描全部相册中的重复 / 相似图片",
+  "dependencies": [
+    "image-viewer"
+  ],
+  "permissions": [
+    "filesystem:read",
+    "filesystem:write"
+  ],
+  "backend": {
+    "entry": "backend/main.py",
+    "class": "ImageCleanerPlugin"
+  },
+  "frontend": {
+    "entry": "frontend/index.html",
+    "route": "/image-cleaner"
+  },
+  "hidden": true
+}

@@ -31,6 +31,9 @@ onMounted(async () => {
     } else if (route.path === '/') {
       router.replace('/settings')
     }
+    // 供插件 iframe 内通用扩展入口调用：跳转到某个插件路由
+    ;(window as any).__omniboxNavigate = (path: string) => router.push(path)
+
     isReady.value = true
   } catch (e: any) {
     error.value = e.message || '未知错误'

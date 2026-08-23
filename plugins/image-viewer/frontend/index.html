@@ -21,6 +21,7 @@
         <button class="iv-nav-item active" data-view="albums"><span>🗂️</span>全部相册</button>
         <button class="iv-nav-item" data-view="timeline"><span>🕐</span>时间线</button>
         <button class="iv-nav-item" data-view="latest"><span>✨</span>最近添加</button>
+        <div id="iv-extensions"></div>
       </nav>
       <div class="iv-nav-footer">
         <button id="iv-new-album" class="iv-nav-item"><span>＋</span>新建相册</button>
@@ -44,7 +45,6 @@
             <button id="iv-search-clear" class="iv-search-clear hidden">✕</button>
           </div>
           <button id="btn-slideshow" class="btn hidden">▶ 幻灯片</button>
-          <button id="btn-cleanup" class="btn hidden">🧹 清理</button>
           <button id="btn-multi-select" class="btn hidden">开启多选</button>
           <button id="btn-delete-selected" class="btn btn-danger hidden">删除选中</button>
           <button id="btn-move-selected" class="btn hidden">移动选中</button>
@@ -75,21 +75,14 @@
       </div>
     </div>
 
-    <div id="cleanup-modal" class="modal">
-      <div class="modal-box obx-anim-scale" style="width:640px;max-width:96vw;">
-        <h3>🧹 清理重复 / 相似图片</h3>
-        <div class="modal-body">
-          <div class="iv-cleanup-tabs">
-            <button id="cleanup-tab-dupe" class="btn btn-sm active">完全重复</button>
-            <button id="cleanup-tab-similar" class="btn btn-sm">相似图片</button>
-            <span id="cleanup-scanned" style="margin-left:auto;font-size:12px;color:var(--text-secondary);"></span>
-          </div>
-          <div id="cleanup-results" class="iv-cleanup-results obx-scroll"></div>
+    <div id="extension-modal" class="modal">
+      <div class="modal-box obx-anim-scale extension-modal-box">
+        <div class="extension-modal-header">
+          <h3 id="extension-modal-title">扩展</h3>
+          <button class="btn btn-sm" id="extension-modal-close">关闭</button>
         </div>
-        <div class="modal-footer">
-          <span id="cleanup-selected" style="margin-right:auto;font-size:13px;color:var(--text-secondary);">已选 0 张</span>
-          <button id="cleanup-close" class="btn">关闭</button>
-          <button id="cleanup-delete" class="btn btn-danger">删除选中</button>
+        <div class="extension-modal-body">
+          <iframe id="extension-frame" title="扩展插件"></iframe>
         </div>
       </div>
     </div>

@@ -45,6 +45,7 @@ def create_app(config, plugin_manager):
         api_methods = dict(plugin_manager.get_api_methods())
         api_methods.update({
             'system_get_plugins': plugin_manager.get_frontend_manifests,
+            'system_get_plugin_extensions': plugin_manager.get_plugin_extensions,
             'system_settings_list': plugin_manager.get_settings_panels,
             'system_settings_save': plugin_manager.save_settings_panel,
             'system_get_config': lambda: config,

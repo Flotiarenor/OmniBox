@@ -129,7 +129,37 @@ class PluginManager:
                 'destroyOnLeave': m.get('destroyOnLeave', False)
             }
             for m in self._manifests.values()
+            if not m.get('hidden')
         ]
+
+    def get_plugin_extensions(self, host: str = None, placement: str = None) -> List[dict]:
+        """聚合所有插件注册的扩展入口，可按宿主和位置过滤。
+
+        扩展数据结构由各插件的 get_extensions() 返回，Shell 会自动补上 plugin 字段。
+        """
+        extensions = []
+        for name, instance in self._instances.items():
+            getter = getattr(instance, 'get_extensions', None)
+            if not callable(getter):
+                continue
+            try:
+                items = getter() or []
+            except Exception as e:
+                print(f"[PluginManager] 读取插件 {name} 扩展失败: {e}")
+                continue
+            if not isinstance(items, list):
+                continue
+            for ext in items:
+                if not isinstance(ext, dict):
+                    continue
+                if host is not None and ext.get('host') != host:
+                    continue
+                if placement is not None and ext.get('placement') != placement:
+                    continue
+                normalized = dict(ext)
+                normalized.setdefault('plugin', name)
+                extensions.append(normalized)
+        return extensions
 
     def _discover(self) -> Dict[str, dict]:
         manifests: Dict[str, dict] = {}
@@ -304,11 +334,16 @@ class PluginManager:
             spec.loader.exec_module(mod)
 
             cls = getattr(mod, class_name)
-            # 预加载已解析的设置，注入到类上供 __init__ 读取
+            # 预加载已解析的设置与 PluginManager，注入到类上供 __init__ 读取
             cls._resolved_config = self._settings_store.get(name)
-            instance = cls(manifest=manifest, config=self.config)
-            del cls._resolved_config
+            cls._plugin_manager = self
+            try:
+                instance = cls(manifest=manifest, config=self.config)
+            finally:
+                del cls._resolved_config
+                del cls._plugin_manager
             instance._settings_store = self._settings_store
+            instance._plugin_manager = self
 
             for method_name, method_fn in instance.register_api().items():
                 self._api_methods[f"{name}__{method_name}"] = method_fn

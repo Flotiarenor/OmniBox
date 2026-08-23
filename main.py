@@ -121,6 +121,7 @@ def main():
     class ShellAPI: pass
     api = ShellAPI()
     setattr(api, 'system_get_plugins', manager.get_frontend_manifests)
+    setattr(api, 'system_get_plugin_extensions', manager.get_plugin_extensions)
     setattr(api, 'system_get_config', lambda: config)
     setattr(api, 'system_settings_list', manager.get_settings_panels)
     setattr(api, 'system_settings_save', manager.save_settings_panel)

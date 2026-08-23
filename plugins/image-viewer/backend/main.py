@@ -1,6 +1,5 @@
 import os
 import json
-import hashlib
 import shutil
 from pathlib import Path
 from typing import List, Dict
@@ -79,8 +78,6 @@ class ImageViewerPlugin(PluginBase):
             'create_folder': self.create_folder,
             'get_album_config': self.get_album_config,
             'set_album_config': self.set_album_config,
-            'duplicate_scan': self.duplicate_scan,
-            'similar_scan': self.similar_scan,
             'delete_files': self.delete_files,
             'move_files': self.move_files,
             'get_settings': self.get_settings,
@@ -350,160 +347,6 @@ class ImageViewerPlugin(PluginBase):
         if changed:
             self._save_album_cache()
         return {'albums': albums, 'config': self._album_config, 'changed': changed}
-
-    # ===== 重复 / 相似图片清理（按相册范围扫描） =====
-
-    def _album_files(self, rel_path: str) -> list:
-        """返回指定相册直接包含的图片文件信息（不递归）。"""
-        if not self._is_safe(rel_path):
-            return []
-        target = self.root_dir / rel_path if rel_path else self.root_dir
-        files = []
-        try:
-            with os.scandir(target) as entries:
-                for entry in entries:
-                    if entry.is_file() and Path(entry.name).suffix.lower() in ALLOWED_EXTENSIONS:
-                        try:
-                            stat = entry.stat()
-                        except OSError:
-                            continue
-                        files.append({
-                            'rel': (Path(rel_path) / entry.name).as_posix() if rel_path else entry.name,
-                            'abs': entry.path,
-                            'size': stat.st_size,
-                            'mtime': stat.st_mtime,
-                        })
-        except OSError:
-            pass
-        return files
-
-    @staticmethod
-    def _file_quick_hash(abs_path: str, size: int) -> str:
-        """先读首尾各 64KB + 文件大小做快速指纹，避免整文件 MD5。"""
-        h = hashlib.md5()
-        h.update(str(size).encode())
-        try:
-            with open(abs_path, 'rb') as f:
-                h.update(f.read(65536))
-                if size > 131072:
-                    f.seek(max(0, size - 65536))
-                    h.update(f.read(65536))
-        except OSError:
-            pass
-        return h.hexdigest()
-
-    @staticmethod
-    def _file_full_hash(abs_path: str) -> str:
-        h = hashlib.md5()
-        try:
-            with open(abs_path, 'rb') as f:
-                for chunk in iter(lambda: f.read(1024 * 1024), b''):
-                    h.update(chunk)
-        except OSError:
-            pass
-        return h.hexdigest()
-
-    def duplicate_scan(self, rel_path: str = '') -> Dict:
-        """扫描相册内完全重复的图片（大小分组 + 快速指纹 + 精确 MD5）。"""
-        files = self._album_files(rel_path)
-        if not files:
-            return {'groups': [], 'scanned': 0}
-        scanned = len(files)
-        by_size = {}
-        for f in files:
-            by_size.setdefault(f['size'], []).append(f)
-        groups = []
-        for size, batch in by_size.items():
-            if len(batch) < 2:
-                continue
-            by_quick = {}
-            for f in batch:
-                scanned += 1
-                key = self._file_quick_hash(f['abs'], f['size'])
-                by_quick.setdefault(key, []).append(f)
-            for key, candidates in by_quick.items():
-                if len(candidates) < 2:
-                    continue
-                by_full = {}
-                for f in candidates:
-                    digest = self._file_full_hash(f['abs'])
-                    by_full.setdefault(digest, []).append(f)
-                for digest, dups in by_full.items():
-                    if len(dups) >= 2:
-                        groups.append({
-                            'hash': digest,
-                            'size': size,
-                            'files': [d['rel'] for d in dups],
-                        })
-        groups.sort(key=lambda g: -len(g['files']))
-        return {'groups': groups, 'scanned': scanned}
-
-    def _image_dhash(self, abs_path: str, mtime: float) -> int:
-        """64-bit 差异哈希（dHash），结果写入 image_meta 缓存。"""
-        key = 'dhash:' + hashlib.md5(abs_path.encode()).hexdigest()
-        cached = self._meta_cache.get(key)
-        if cached and cached.get('mtime') == mtime:
-            return int(cached.get('hash', 0))
-        value = 0
-        try:
-            from PIL import Image
-            with Image.open(abs_path) as img:
-                small = img.convert('L').resize((9, 8))
-            pixels = list(small.getdata())
-            for row in range(8):
-                for col in range(8):
-                    value <<= 1
-                    if pixels[row * 9 + col] > pixels[row * 9 + col + 1]:
-                        value |= 1
-        except Exception:
-            value = 0
-        self._meta_cache[key] = {'mtime': mtime, 'hash': value}
-        return value
-
-    def similar_scan(self, rel_path: str = '', threshold: int = 8) -> Dict:
-        """扫描相册内视觉相似图片（dHash + 汉明距离 + 并查集聚类）。"""
-        files = self._album_files(rel_path)
-        if len(files) < 2:
-            return {'groups': [], 'scanned': len(files)}
-        threshold = max(0, min(16, int(threshold)))
-        hashes = []
-        valid = []
-        for f in files:
-            h = self._image_dhash(f['abs'], f['mtime'])
-            if h:
-                hashes.append(h)
-                valid.append(f)
-        n = len(valid)
-        parent = list(range(n))
-
-        def find(x):
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        def union(a, b):
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[rb] = ra
-
-        for i in range(n):
-            hi = hashes[i]
-            for j in range(i + 1, n):
-                # 尺寸差异过大不可能是相似图
-                if max(valid[i]['size'], valid[j]['size']) > min(valid[i]['size'], valid[j]['size']) * 6:
-                    continue
-                if (hi ^ hashes[j]).bit_count() <= threshold:
-                    union(i, j)
-
-        clusters = {}
-        for i in range(n):
-            clusters.setdefault(find(i), []).append(valid[i]['rel'])
-        groups = [{'files': sorted(files)} for files in clusters.values() if len(files) >= 2]
-        groups.sort(key=lambda g: -len(g['files']))
-        if groups:
-            self._save_meta()
-        return {'groups': groups, 'scanned': n}
 
     def get_album_config(self) -> Dict:
         return self._album_config
