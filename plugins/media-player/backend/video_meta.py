@@ -8,6 +8,9 @@ import subprocess
 import shutil
 from typing import Optional
 
+# Windows 下避免 ffprobe / ffmpeg 子进程弹出控制台窗口
+_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+
 
 def _ffmpeg_exe() -> Optional[str]:
     return shutil.which('ffmpeg')
@@ -49,7 +52,7 @@ def probe_duration(file_path: str) -> Optional[float]:
         completed = subprocess.run(
             ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
              '-of', 'default=noprint_wrappers=1:nokey=1', path],
-            capture_output=True, text=True, timeout=20)
+            capture_output=True, text=True, timeout=20, creationflags=_NO_WINDOW)
         value = (completed.stdout or '').strip()
         if value:
             return float(value)
@@ -83,7 +86,7 @@ def extract_thumbnail(file_path: str, out_path: str, at_seconds: float = 10.0,
                  '-q:v', '3',
                  target],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=60, check=True)
+                timeout=60, check=True, creationflags=_NO_WINDOW)
             import os
             if os.path.isfile(target) and os.path.getsize(target) > 0:
                 return True
