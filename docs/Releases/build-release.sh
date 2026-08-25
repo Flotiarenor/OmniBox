@@ -39,7 +39,6 @@ require_cmd() {
 
 require_cmd node "Node.js 18+ (https://nodejs.org)"
 require_cmd npm  "npm 9+"
-require_cmd python3 "Python 3.10+"
 
 # ── 1. 构建 Vue 前端 ──────────────────────────────────────────────
 info "构建 Vue 前端..."
@@ -58,18 +57,10 @@ if [ ! -f "$PROJECT_ROOT/shell/frontend/dist/index.html" ]; then
 fi
 success "前端构建完成"
 
-# ── 2. 准备 Python 虚拟环境 ───────────────────────────────────────
-if [ ! -x "$VENV_DIR/bin/python" ]; then
-    info "未找到 venv，创建虚拟环境..."
-    python3 -m venv "$VENV_DIR"
-fi
+# ── 2. 准备 Python 虚拟环境（统一入口 setup-venv.sh） ─────────────
+info "准备 Python 虚拟环境..."
+bash "$PROJECT_ROOT/setup-venv.sh"
 PY="$VENV_DIR/bin/python"
-
-if ! "$PY" -c "import flask, yaml, PyInstaller" >/dev/null 2>&1; then
-    info "安装 Python 依赖（首次构建需要较长时间）..."
-    "$PY" -m pip install --upgrade pip
-    "$PY" -m pip install -r "$PROJECT_ROOT/requirements.txt"
-fi
 success "Python 环境就绪"
 
 # ── 3. PyInstaller 打包 ───────────────────────────────────────────
