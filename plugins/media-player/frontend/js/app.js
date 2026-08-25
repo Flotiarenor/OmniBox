@@ -12,6 +12,8 @@ class MediaPlayerApp {
         this.currentView = 'recent';
         this.currentAlbum = null;
         this.currentPlaylist = null;
+        this.currentNeteasePlaylist = null;
+        this._neteasePlaylistBackView = 'ncm-playlists';
         this.favIds = new Set();
 
         this._initialized = false;
@@ -31,6 +33,8 @@ class MediaPlayerApp {
         this._currentListData = [];
         this._currentListOpts = {};
         this._scanning = false;
+        this._loadSeq = 0;
+        this._ncmCache = {};
     }
 
     async init() {
@@ -50,6 +54,7 @@ class MediaPlayerApp {
         this._bindUI();
         this._bindContentDelegation();
         this._bindKeyboard();
+        this.loadExtensions();
 
         try {
             const state = await Bridge.call('media_get_state');
@@ -104,6 +109,35 @@ class MediaPlayerApp {
         }
     }
 
+    async loadExtensions() {
+        const container = document.getElementById('mp-extensions');
+        if (!container || typeof renderExtensions !== 'function') return;
+        try {
+            await renderExtensions(container, 'media-player', 'sidebar', {
+                title: '网易云音乐',
+                onOpen: (ext) => this.openNeteaseView(ext)
+            });
+            container.querySelectorAll('.obx-extension').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    document.querySelectorAll('.mp-nav-item').forEach(b => b.classList.remove('active'));
+                    container.querySelectorAll('.obx-extension').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                });
+            });
+        } catch (e) {
+            console.error('加载扩展入口失败:', e);
+        }
+    }
+
+    openNeteaseView(ext) {
+        this.currentView = ext.view || 'ncm-daily';
+        this.currentAlbum = null;
+        this.currentPlaylist = null;
+        document.getElementById('media-search').value = '';
+        document.getElementById('btn-search-clear').classList.add('hidden');
+        this._loadCurrentView();
+    }
+
     // ============================================================
     // UI 事件绑定
     // ============================================================
@@ -116,7 +150,6 @@ class MediaPlayerApp {
         // 工具栏
         document.getElementById('btn-scan').addEventListener('click', () => this._doScan());
         document.getElementById('btn-settings').addEventListener('click', () => this._openSettings());
-
         const search = document.getElementById('media-search');
         this._searchDebounced = MPUtils.debounce(() => this._loadCurrentView(), 300);
         search.addEventListener('input', () => {
@@ -267,7 +300,23 @@ class MediaPlayerApp {
         this._scanning = true;
         const btn = document.getElementById('btn-scan');
         btn.disabled = true;
-        btn.textContent = '⏳ 扫描中…';
+        btn.textContent = this.currentView.startsWith('ncm-') ? '⏳ 刷新中…' : '⏳ 扫描中…';
+        if (this.currentView.startsWith('ncm-')) {
+            this._clearNeteaseCache();
+            try {
+                await this._loadCurrentView();
+                Toast.success('网易云数据已刷新');
+            } catch (e) {
+                Toast.error('刷新失败');
+            } finally {
+                this._scanning = false;
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = this.currentView.startsWith('ncm-') ? '🔄 刷新' : '🔄 扫描';
+                }
+            }
+            return;
+        }
         this._setLoading('正在重新扫描媒体库…<br>目录较大时请稍候');
         try {
             const result = await Bridge.call('media_scan', true);
@@ -335,10 +384,68 @@ class MediaPlayerApp {
         await this._loadCurrentView();
     }
 
+    _ncmCacheGet(key) {
+        try {
+            const raw = localStorage.getItem('ncmCache_' + key);
+            if (raw) return JSON.parse(raw);
+        } catch (e) { }
+        return null;
+    }
+
+    _ncmCacheSet(key, data) {
+        try {
+            localStorage.setItem('ncmCache_' + key, JSON.stringify(data));
+        } catch (e) { }
+    }
+
+    _isSameDay(dateStr) {
+        if (!dateStr) return false;
+        try {
+            const d = new Date(dateStr);
+            const now = new Date();
+            return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+        } catch (e) {
+            return false;
+        }
+    }
+
+    _clearNeteaseCache() {
+        ['ncm-daily', 'ncm-playlists', 'ncm-liked', 'ncm-my-playlists'].forEach(key => {
+            try { localStorage.removeItem('ncmCache_' + key); } catch (e) { }
+        });
+        // 同时清理所有歌单详情缓存
+        try {
+            const keys = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k && k.startsWith('ncmCache_ncm-playlist-detail-')) keys.push(k);
+            }
+            keys.forEach(k => localStorage.removeItem(k));
+        } catch (e) { }
+        this._ncmCache = {};
+    }
+
+    async _prepareNeteaseItems(items, onProgress) {
+        const list = items || [];
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i];
+            if (item && item.ncm_encrypted_id && !item.stream_url) {
+                try {
+                    const data = await Bridge.callPlugin('netease-music', 'get_song_url', item.ncm_encrypted_id, item.original_id);
+                    if (data && data.url) item.stream_url = data.url;
+                } catch (e) { }
+            }
+            if (onProgress) onProgress(i + 1, list.length);
+        }
+    }
+
     async _loadCurrentView() {
+        const seq = ++this._loadSeq;
         const keyword = (document.getElementById('media-search').value || '').trim();
         const titleEl = document.getElementById('mp-view-title');
         const subEl = document.getElementById('mp-view-sub');
+        const scanBtn = document.getElementById('btn-scan');
+        if (scanBtn) scanBtn.textContent = this.currentView.startsWith('ncm-') ? '🔄 刷新' : '🔄 扫描';
         const viewsTitle = {
             'recent': ['最近播放', '最近听过的媒体'],
             'audio-albums': ['音乐专辑', '按专辑标签聚合'],
@@ -346,11 +453,113 @@ class MediaPlayerApp {
             'video-albums': ['视频专辑', '按目录聚合'],
             'all-video': ['全部视频', '媒体库中的视频'],
             'favorites': ['我的喜欢', '收藏的音乐与视频'],
+            'ncm-daily': ['每日推荐', '网易云每日推荐'],
+            'ncm-playlists': ['推荐歌单', '网易云推荐歌单'],
+            'ncm-liked': ['我的喜欢', '网易云红心歌曲'],
+            'ncm-my-playlists': ['我的歌单', '网易云创建/收藏的歌单'],
+            'ncm-login': ['登录', '网易云账号登录'],
         };
 
         try {
             let data = [];
             let mode = 'list';
+
+            if (this.currentView.startsWith('ncm-')) {
+                if (this.currentView === 'ncm-login') {
+                    await this._renderNeteaseLogin();
+                    return;
+                }
+                if (keyword && this.currentView === 'ncm-playlists') {
+                    const ncm = await Bridge.callPlugin('netease-music', 'search_playlist', keyword);
+                    if (seq !== this._loadSeq) return;
+                    this._renderNeteasePlaylists(ncm.results || []);
+                    titleEl.textContent = `搜索 “${keyword}”`;
+                    subEl.textContent = `${(ncm.results || []).length} 个歌单`;
+                    return;
+                }
+                if (keyword) {
+                    const ncm = await Bridge.callPlugin('netease-music', 'search_song', keyword);
+                    if (seq !== this._loadSeq) return;
+                    data = (ncm.results || []).map(song => this._neteaseToMediaItem(song));
+                    titleEl.textContent = `搜索 “${keyword}”`;
+                    subEl.textContent = `${data.length} 个结果`;
+                    this._renderList(data, { showAlbum: true, showTag: true });
+                    return;
+                }
+                switch (this.currentView) {
+                    case 'ncm-daily': {
+                        const cacheKey = 'ncm-daily';
+                        const cached = this._ncmCacheGet(cacheKey);
+                        if (cached && this._isSameDay(cached.date)) {
+                            data = (cached.results || []).map(song => this._neteaseToMediaItem(song));
+                            if (seq !== this._loadSeq) return;
+                            this._renderList(data, { showAlbum: true, showTag: true });
+                            return;
+                        }
+                        const ncm = await Bridge.callPlugin('netease-music', 'get_daily_recommend');
+                        if (seq !== this._loadSeq) return;
+                        this._ncmCacheSet(cacheKey, { date: new Date().toISOString(), results: ncm.results || [] });
+                        data = (ncm.results || []).map(song => this._neteaseToMediaItem(song));
+                        this._renderList(data, { showAlbum: true, showTag: true });
+                        return;
+                    }
+                    case 'ncm-playlists': {
+                        const cacheKey = 'ncm-playlists';
+                        const cached = this._ncmCacheGet(cacheKey);
+                        const twoHours = 2 * 60 * 60 * 1000;
+                        if (cached && cached.ts && (Date.now() - cached.ts < twoHours)) {
+                            if (seq !== this._loadSeq) return;
+                            this._renderNeteasePlaylists(cached.results || []);
+                            return;
+                        }
+                        const ncm = await Bridge.callPlugin('netease-music', 'search_playlist', '推荐');
+                        if (seq !== this._loadSeq) return;
+                        this._ncmCacheSet(cacheKey, { ts: Date.now(), results: ncm.results || [] });
+                        this._renderNeteasePlaylists(ncm.results || []);
+                        return;
+                    }
+                    case 'ncm-liked': {
+                        const cacheKey = 'ncm-liked';
+                        const cached = this._ncmCacheGet(cacheKey);
+                        if (cached && cached.results) {
+                            data = (cached.results || []).map(song => this._neteaseToMediaItem(song));
+                            if (seq !== this._loadSeq) return;
+                            this._renderList(data, { showAlbum: true, showTag: true });
+                            return;
+                        }
+                        const ncm = await Bridge.callPlugin('netease-music', 'get_liked_songs', 100);
+                        if (seq !== this._loadSeq) return;
+                        this._ncmCacheSet(cacheKey, { results: ncm.results || [] });
+                        data = (ncm.results || []).map(song => this._neteaseToMediaItem(song));
+                        this._renderList(data, { showAlbum: true, showTag: true });
+                        return;
+                    }
+                    case 'ncm-my-playlists': {
+                        const cacheKey = 'ncm-my-playlists';
+                        const cached = this._ncmCacheGet(cacheKey);
+                        if (cached && cached.results) {
+                            if (seq !== this._loadSeq) return;
+                            this._renderNeteasePlaylists(cached.results || []);
+                            return;
+                        }
+                        const [created, collected] = await Promise.allSettled([
+                            Bridge.callPlugin('netease-music', 'get_created_playlists', 100),
+                            Bridge.callPlugin('netease-music', 'get_collected_playlists', 100),
+                        ]);
+                        if (seq !== this._loadSeq) return;
+                        const map = new Map();
+                        const add = (arr) => (arr || []).forEach(p => {
+                            if (p && p.id && !map.has(p.id)) map.set(p.id, p);
+                        });
+                        add(created.status === 'fulfilled' ? created.value.results : []);
+                        add(collected.status === 'fulfilled' ? collected.value.results : []);
+                        const results = Array.from(map.values());
+                        this._ncmCacheSet(cacheKey, { results });
+                        this._renderNeteasePlaylists(results);
+                        return;
+                    }
+                }
+            }
 
             if (keyword) {
                 data = await Bridge.call('media_search', keyword);
@@ -570,6 +779,105 @@ class MediaPlayerApp {
             </div>`;
     }
 
+    _neteaseToMediaItem(song) {
+        return {
+            id: 'ncm:' + (song.original_id || song.id || ''),
+            original_id: song.original_id || song.id || '',
+            ncm_encrypted_id: song.id || '',
+            kind: 'audio',
+            title: song.name || '未知歌曲',
+            artist: (song.artists || []).join(', '),
+            album: song.album || '',
+            duration: (song.duration || 0) / 1000,
+            cover_path: song.cover_url || '',
+            path: '',
+            online: true,
+            is_fav: false,
+        };
+    }
+
+    async _renderNeteaseLogin() {
+        const content = document.getElementById('media-content');
+        try {
+            const login = await Bridge.callPlugin('netease-music', 'check_login');
+            if (login && login.success) {
+                content.innerHTML = '<div class="mp-empty-state"><div class="empty-icon">✅</div><div class="empty-text">已登录网易云音乐</div></div>';
+                return;
+            }
+        } catch (e) { }
+        content.innerHTML = `
+            <div class="mp-empty-state">
+                <div class="empty-icon">👤</div>
+                <div class="empty-text">未登录网易云音乐</div>
+                <div class="empty-hint">请先在终端执行：ncm-cli configure 和 ncm-cli login</div>
+                <button class="btn btn-primary" id="ncm-login-btn" style="margin-top:12px;">我已登录</button>
+            </div>`;
+        document.getElementById('ncm-login-btn').addEventListener('click', () => this._loadCurrentView());
+    }
+
+    async openNeteasePlaylist(playlist) {
+        if (!playlist) return;
+        const seq = ++this._loadSeq;
+        this.currentNeteasePlaylist = playlist;
+        this._neteasePlaylistBackView = this.currentView;
+        this.currentView = 'ncm-playlist-detail';
+        this.currentAlbum = null;
+        this.currentPlaylist = null;
+        document.getElementById('media-search').value = '';
+        document.getElementById('btn-search-clear').classList.add('hidden');
+        const content = document.getElementById('media-content');
+        if (!content) return;
+        const cacheKey = 'ncm-playlist-detail-' + playlist.id;
+        const cached = this._ncmCacheGet(cacheKey);
+        const twoHours = 2 * 60 * 60 * 1000;
+        if (cached && cached.ts && (Date.now() - cached.ts < twoHours) && cached.results) {
+            if (seq !== this._loadSeq) return;
+            const items = (cached.results || []).map(song => this._neteaseToMediaItem(song));
+            this._renderDetail(items, {
+                label: '歌单',
+                title: playlist.name || '歌单',
+                sub: `${playlist.track_count || 0} 首 · 播放 ${playlist.play_count || 0}`,
+                cover: playlist.cover_url || '',
+                kind: 'ncm-playlist',
+            });
+            return;
+        }
+        content.innerHTML = '<div class="mp-loading"><div class="mp-spinner"></div><div>加载歌单…</div></div>';
+        try {
+            const data = await Bridge.callPlugin('netease-music', 'get_playlist_tracks', playlist.id, 100, 0);
+            if (seq !== this._loadSeq) return;
+            this._ncmCacheSet(cacheKey, { ts: Date.now(), results: data.results || [] });
+            const items = (data.results || []).map(song => this._neteaseToMediaItem(song));
+            this._renderDetail(items, {
+                label: '歌单',
+                title: playlist.name || '歌单',
+                sub: `${playlist.track_count || 0} 首 · 播放 ${playlist.play_count || 0}`,
+                cover: playlist.cover_url || '',
+                kind: 'ncm-playlist',
+            });
+        } catch (e) {
+            content.innerHTML = '<div class="mp-empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">歌单加载失败</div></div>';
+        }
+    }
+
+    _renderNeteasePlaylists(playlists) {
+        const content = document.getElementById('media-content');
+        if (!playlists || !playlists.length) {
+            this._renderEmpty('📋', '暂无推荐歌单');
+            return;
+        }
+        content.innerHTML = `<div class="mp-list">${playlists.map((p, i) => `
+            <div class="mp-row" data-idx="${i}">
+                <span class="mp-row-index">${i + 1}</span>
+                <div class="mp-row-cover">${p.cover_url ? `<img src="${MPUtils.escapeHtml(p.cover_url)}" onerror="this.outerHTML='📋'">` : '📋'}</div>
+                <div class="mp-row-info">
+                    <div class="mp-row-title">${MPUtils.escapeHtml(p.name)}</div>
+                    <div class="mp-row-sub">${p.track_count} 首 · 播放 ${p.play_count}</div>
+                </div>
+            </div>`).join('')}</div>`;
+        this._currentListData = playlists;
+    }
+
     _bindContentDelegation() {
         document.getElementById('media-content').addEventListener('click', async (e) => {
             const playBtn = e.target.closest('.mp-card-play');
@@ -600,6 +908,26 @@ class MediaPlayerApp {
             const row = e.target.closest('.mp-row');
             if (row && !isNaN(parseInt(row.dataset.idx, 10))) {
                 const idx = parseInt(row.dataset.idx, 10);
+                if (this.currentView === 'ncm-playlists' || this.currentView === 'ncm-my-playlists') {
+                    const playlist = this._currentListData[idx];
+                    if (playlist) this.openNeteasePlaylist(playlist);
+                    return;
+                }
+                if (this.currentView.startsWith('ncm-')) {
+                    const item = this._currentListData[idx];
+                    if (!item) return;
+                    try {
+                        const urlData = await Bridge.callPlugin('netease-music', 'get_song_url', item.ncm_encrypted_id || item.original_id, item.original_id);
+                        if (!urlData || !urlData.url) {
+                            Toast.error('获取播放地址失败');
+                            return;
+                        }
+                        item.stream_url = urlData.url;
+                    } catch (err) {
+                        Toast.error('获取播放地址失败');
+                        return;
+                    }
+                }
                 this.core.setQueue(this._currentListData, idx);
             }
         });
@@ -666,7 +994,7 @@ class MediaPlayerApp {
     // ============================================================
     _renderDetail(items, header) {
         const content = document.getElementById('media-content');
-        const coverUrl = header.cover ? MPUtils.mediaUrl(header.cover) : '';
+        const coverUrl = header.cover ? MPUtils.coverUrl({ cover_path: header.cover }) : '';
         const totalDuration = items.reduce((sum, i) => sum + (i.duration || 0), 0);
 
         content.innerHTML = `
@@ -699,9 +1027,21 @@ class MediaPlayerApp {
             btn.addEventListener('click', async () => {
                 const action = btn.dataset.heroAction;
                 if (action === 'back') {
+                    if (header.kind === 'ncm-playlist') {
+                        this.switchView(this._neteasePlaylistBackView || 'ncm-playlists');
+                        return;
+                    }
                     this.switchView(header.kind === 'video' ? 'video-albums' : (header.kind === 'playlist' ? 'recent' : 'audio-albums'));
                 } else if (action === 'play-all') {
-                    if (items.length) this.core.setQueue(items, 0);
+                    if (!items.length) return;
+                    if (header.kind === 'ncm-playlist') {
+                        // 立即开始播放，由 player-core 按需解析当前歌曲 URL；
+                        // 剩余歌曲在后台预解析，避免阻塞 UI。
+                        this.core.setQueue(items, 0);
+                        this._prepareNeteaseItems(items.slice(1));
+                    } else {
+                        this.core.setQueue(items, 0);
+                    }
                 } else if (action === 'rename-pl' && header.playlistId) {
                     this._openPlaylistModal('rename', this.currentPlaylist);
                 } else if (action === 'delete-pl' && header.playlistId) {

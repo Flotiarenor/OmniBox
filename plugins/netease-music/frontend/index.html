@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>网易云音乐</title>
+  <style>
+    body { margin:0; font-family: inherit; background: var(--bg-app); color: var(--text-primary); }
+    .wrap { padding:16px; }
+    input { width:100%; max-width:360px; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:var(--bg-surface); color:var(--text-primary); }
+    button { margin-left:8px; }
+    .item { display:flex; align-items:center; gap:10px; padding:8px 10px; border:1px solid var(--border); border-radius:8px; margin-bottom:6px; background:var(--bg-surface); cursor:pointer; }
+    .item .t { font-weight:600; }
+    .item .s { font-size:12px; color:var(--text-secondary); }
+    .empty { padding:40px; text-align:center; color:var(--text-secondary); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h3 id="title">网易云音乐</h3>
+    <div id="search-row" style="display:none;margin-bottom:10px;">
+      <input id="keyword" placeholder="搜索歌曲...">
+      <button class="btn btn-primary" id="search-btn">搜索</button>
+    </div>
+    <div id="content" class="empty">加载中...</div>
+  </div>
+  <script src="js/app.js"></script>
+  <script>window.neteaseApp = new NeteaseApp(); neteaseApp.init();</script>
+</body>
+</html>

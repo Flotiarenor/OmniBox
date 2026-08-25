@@ -100,6 +100,11 @@ function renderExtensions(container, host, placement, options = {}) {
           `<span class="obx-extension-label">${Utils.escapeHtml(ext.label || ext.id || '扩展')}</span>`;
 
         btn.addEventListener('click', () => {
+          // 0. 原生视图型扩展：由宿主直接渲染，复用宿主 UI/播放器
+          if (ext.view && typeof options.onOpen === 'function') {
+            options.onOpen(ext, btn);
+            return;
+          }
           // 1. 内嵌型扩展：在宿主内部打开 iframe 面板
           if (ext.embedUrl) {
             if (typeof options.onEmbed === 'function') {

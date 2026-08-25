@@ -1,0 +1,17 @@
+{
+  "name": "netease-music",
+  "version": "0.1.0",
+  "displayName": "网易云音乐",
+  "icon": "🎵",
+  "description": "media-player 的 Companion 插件：网易云在线音乐",
+  "dependencies": ["media-player"],
+  "backend": {
+    "entry": "backend/main.py",
+    "class": "NeteaseMusicPlugin"
+  },
+  "frontend": {
+    "entry": "frontend/index.html",
+    "route": "/netease-music"
+  },
+  "hidden": true
+}

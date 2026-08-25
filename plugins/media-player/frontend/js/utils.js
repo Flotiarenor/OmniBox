@@ -39,6 +39,10 @@ const MPUtils = {
 
     coverUrl(item) {
         if (!item || !item.cover_path) return '';
+        // 网络流封面（网易云等）直接使用绝对地址，不走本地 /file 代理
+        if (/^(https?:)?\/\//i.test(item.cover_path) || /^data:/i.test(item.cover_path)) {
+            return item.cover_path;
+        }
         return MPUtils.mediaUrl(item.cover_path);
     },
 

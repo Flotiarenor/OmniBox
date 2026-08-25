@@ -109,10 +109,21 @@ class MediaLyrics {
             return;
         }
         try {
-            const result = await Bridge.call('media_get_lyrics', item.id);
-            if (result && result.lyrics) {
-                this._lines = LyricsParser.parse(result.lyrics);
+            let lrcText = '';
+            if (item.ncm_encrypted_id) {
+                // 网易云网络流：从 ncm-cli / OpenAPI 获取 LRC
+                const data = await Bridge.callPlugin('netease-music', 'get_lyric', item.ncm_encrypted_id);
+                if (data && data.success && data.data) {
+                    lrcText = data.data.lyric || data.data.txtLyric || '';
+                }
+            } else {
+                // 本地媒体：沿用原媒体播放器的本地 .lrc 读取
+                const result = await Bridge.call('media_get_lyrics', item.id);
+                if (result && result.lyrics) {
+                    lrcText = result.lyrics;
+                }
             }
+            this._lines = LyricsParser.parse(lrcText);
         } catch (e) {
             this._lines = [];
         }
@@ -286,8 +297,11 @@ class MediaLyrics {
         if (this._title) this._title.textContent = titleText || item?.title || '未在播放';
         this._render();
         this._page.classList.add('active');
-        if (this.app.core) this.app.core.ensureAudioGraph();
-        this._startViz();
+        // 不在这里重建 AudioGraph，避免网络流播放被 AudioContext 重连打断
+        // 只有已经存在音频分析图时才启动可视化
+        if (this.app.core && this.app.core._audioCtx && this.app.core._audioCtx.state === 'running') {
+            this._startViz();
+        }
         this.update(this.mediaElement ? this.mediaElement.currentTime || 0 : 0);
     }
 
