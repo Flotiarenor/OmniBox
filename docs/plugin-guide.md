@@ -721,4 +721,4 @@ image-viewer 需要在不同文件夹应用不同设置（如行高、排序）�
 
 ---
 
-按照本指南，你可以快速创建新插件，或将现有功能迁移到 OmniBox 架构中。如有疑问，请参考 `hello-world` 和 `image-viewer` 示例插件。
+按照本指南，你可以快速创建新插件，或将现有功能迁移到 OmniBox 架构中。快速起步可运行 `python tools/new_plugin.py my-tool` 一键生成骨架（模板见 `tools/examples/hello-world`）；如有疑问，请参考 `image-viewer` 示例插件。
