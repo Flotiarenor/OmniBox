@@ -69,6 +69,7 @@ plugins/
 | `frontend.entry` | ✅ | 前端入口 HTML 文件路径，相对于插件根目录 |
 | `frontend.route` | ✅ | 前端路由路径，必须以 `/` 开头 |
 | `dependencies` | ❌ | 依赖的其他插件名称列表 |
+| `libs` | ❌ | 插件本地附加库目录列表，默认 `["backend/libs"]`，加载后端前会加入 `sys.path` |
 | `permissions` | ❌ | 权限声明（当前仅做记录，未强制执行） |
 | `minShellVersion` | ❌ | 要求的最低 Shell 版本 |
 | `destroyOnLeave` | ❌ | `true` 时离开页面销毁 iframe 重新加载（默认保持存活） |
@@ -268,7 +269,55 @@ class MyPlugin(PluginBase):
 - 插件可通过重写 `get_data_root()` 方法支持自定义数据根目录，Flask 路由会根据 `?plugin=插件名` 动态获取根目录。
 - **不要覆写 `save_settings()`**——基类已统一实现「校验 → 持久化 → 变更检测 → 调用 `on_settings_changed()`」。需要响应设置变更时，覆写 `on_settings_changed()` 即可。
 
-### 3.3 完整 API 列表（以 image-viewer 为例）
+
+### 3.3 插件本地附加库（libs）
+
+如果插件只需要少量纯 Python 依赖，可以把依赖放在插件目录下，例如：
+
+```text
+plugins/my-plugin/
+├── manifest.json
+└── backend/
+    ├── main.py
+    └── libs/
+        └── pyradios/
+```
+
+默认情况下，`PluginManager` 会在加载插件后端前把：
+
+```text
+<plugin>/backend/libs
+```
+
+加入 `sys.path`。插件代码里可以直接：
+
+```python
+from pyradios import RadioBrowser
+```
+
+也可以在 `manifest.json` 中自定义目录：
+
+```json
+{
+  "name": "my-plugin",
+  "libs": ["backend/libs", "vendor"]
+}
+```
+
+适合：
+
+- 纯 Python 库
+- 不想安装进主 venv 的小依赖
+- 希望随插件灵活分发/卸载的依赖
+
+不适合：
+
+- 需要编译的 C 扩展
+- 跨平台二进制库
+- 大型重依赖（建议走独立 runtime）
+
+### 3.4 完整 API 列表
+（以 image-viewer 为例）
 
 | API 方法 | 参数 | 返回值 | 说明 |
 |----------|------|--------|------|
