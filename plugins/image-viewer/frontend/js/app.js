@@ -67,7 +67,7 @@ class ImageViewer {
         if (!container || typeof renderExtensions !== 'function') return;
         try {
             await renderExtensions(container, 'image-viewer', 'sidebar', {
-                title: '扩展',
+                title: '相册清理',
                 onEmbed: (ext) => this.openExtensionView(ext)
             });
             container.querySelectorAll('.obx-extension').forEach(btn => {

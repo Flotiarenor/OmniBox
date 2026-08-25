@@ -20,6 +20,7 @@ class MediaPlayerCore {
         this._pendingResume = 0;
         this._lastBackendSave = 0;
         this._failedIds = new Set();
+        this._loadSeq = 0;
 
         this._audioCtx = null;
         this._sources = {};
@@ -72,8 +73,9 @@ class MediaPlayerCore {
         }
     }
 
-    _loadItem(item, autoplay = true) {
+    async _loadItem(item, autoplay = true) {
         if (!item) return;
+        const loadId = ++this._loadSeq;
         this._saveProgress();
         this.currentItem = item;
 
@@ -87,15 +89,36 @@ class MediaPlayerCore {
         this.audio.pause();
         this.video.pause();
 
-        const el = this.mediaElement;
-        el.src = MPUtils.mediaUrl(item.path);
-        el.volume = this._volume;
-        el.muted = this._muted;
-        el.load();
-
         this._startProgressSaver();
         this.app.onTrackChange(item);
         this.app.onPlayStateChange(false);
+
+        let src = item.stream_url || item.url || MPUtils.mediaUrl(item.path);
+
+        // 网易云网络流：如果还没有 URL，先临时解析，不跳歌、不报错
+        if (!src && item.ncm_encrypted_id) {
+            try {
+                const data = await Bridge.callPlugin('netease-music', 'get_song_url', item.ncm_encrypted_id, item.original_id);
+                if (data && data.url) {
+                    item.stream_url = data.url;
+                    src = data.url;
+                }
+            } catch (e) {
+                console.warn('获取网易云播放地址失败:', e);
+            }
+        }
+
+        if (loadId !== this._loadSeq) return;
+        if (!src) {
+            Toast.error('无法获取播放地址');
+            return;
+        }
+
+        const el = this.mediaElement;
+        el.src = src;
+        el.volume = this._volume;
+        el.muted = this._muted;
+        el.load();
 
         if (autoplay) {
             el.play().catch((e) => console.log('自动播放被阻止:', e));
@@ -290,7 +313,7 @@ class MediaPlayerCore {
         this._previousItem = item;
         this._pendingResume = savedPos;
         const el = this.mediaElement;
-        el.src = MPUtils.mediaUrl(item.path);
+        el.src = item.stream_url || item.url || MPUtils.mediaUrl(item.path);
         el.volume = this._volume;
         el.load();
         this._startProgressSaver();

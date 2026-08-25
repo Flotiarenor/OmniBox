@@ -14,8 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 '''
 
+import re
 import sys
-from flask import Flask, request, send_from_directory, send_file, abort
+from flask import Flask, request, send_from_directory, send_file, abort, Response
 from pathlib import Path
 
 def _get_shell_dir() -> Path:
@@ -218,5 +219,79 @@ def create_app(config, plugin_manager):
                 html = html.replace('</head>', inject + '</head>')
                 return html
         return send_from_directory(plugin_dir, filename)
+
+    @app.route('/netease-proxy/')
+    @app.route('/netease-proxy/<path:path>', methods=['GET', 'POST', 'HEAD', 'OPTIONS'])
+    def netease_proxy(path=''):
+        """轻量反向代理网易云音乐网页版，方便在 OmniBox 内直接登录/播放。"""
+        try:
+            from curl_cffi import requests as curl_requests
+        except Exception:
+            return 'curl_cffi 未安装，无法代理网易云页面', 500
+
+        target = 'https://music.163.com/' + path
+        if request.query_string:
+            target += '?' + request.query_string.decode('utf-8')
+
+        headers = {}
+        for name in ('User-Agent', 'Referer', 'Origin', 'Accept', 'Accept-Language', 'Content-Type'):
+            value = request.headers.get(name)
+            if value:
+                headers[name] = value
+        # 透传浏览器里已经通过代理种下的 Cookie，维持登录态
+        cookie = request.headers.get('Cookie')
+        if cookie:
+            headers['Cookie'] = cookie
+
+        try:
+            resp = curl_requests.request(
+                request.method,
+                target,
+                headers=headers,
+                data=request.get_data() if request.method in ('POST', 'PUT', 'PATCH') else None,
+                impersonate='chrome',
+                allow_redirects=True,
+                timeout=30,
+            )
+        except Exception as e:
+            return f'代理请求失败: {e}', 502
+
+        excluded = {'content-encoding', 'content-length', 'transfer-encoding', 'connection'}
+        response_headers = []
+        for key, value in resp.headers.items():
+            low = key.lower()
+            if low in excluded:
+                continue
+            if low == 'set-cookie':
+                # 去掉 Domain/Secure/SameSite，让 Cookie 能保存在 OmniBox 源下
+                cleaned = []
+                for part in value.split(';'):
+                    part = part.strip()
+                    if not part:
+                        continue
+                    low_part = part.lower()
+                    if low_part.startswith('domain=') or low_part.startswith('secure') or low_part.startswith('samesite='):
+                        continue
+                    cleaned.append(part)
+                value = '; '.join(cleaned)
+            response_headers.append((key, value))
+
+        content = resp.content
+        content_type = resp.headers.get('content-type', '')
+        if 'text/html' in content_type.lower():
+            try:
+                html = content.decode('utf-8', errors='replace')
+                html = html.replace('https://music.163.com/', '/netease-proxy/')
+                html = html.replace('http://music.163.com/', '/netease-proxy/')
+                html = re.sub(
+                    r"(href|src|action)=([\"'])/(?!/|netease-proxy/)",
+                    r"\1=\2/netease-proxy/",
+                    html,
+                )
+                content = html.encode('utf-8')
+            except Exception:
+                pass
+
+        return Response(content, status=resp.status_code, headers=response_headers)
 
     return app
