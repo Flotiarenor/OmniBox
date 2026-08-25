@@ -10,10 +10,12 @@
 - **完全解耦**：插件与主程序独立开发、独立构建，技术栈自由（前端可用 Vue、React 或纯 HTML）。
 - **热插拔**：将插件文件夹放入 `plugins/` 目录即可启用，删除即卸载，重启后生效。
 - **安全隔离**：插件运行在独立 iframe 中，后端 API 通过命名空间隔离，权限可声明。
-- **易于分发**：主程序打包为单个可执行文件，插件可离线安装或通过内置商店获取（规划中）。
-- **跨平台**：基于 PyWebView，后续可支持 Windows、macOS、Linux。
+- **易于分发**：主程序可打包为便携目录/压缩包，插件可离线安装或通过内置商店获取（规划中）。
+- **跨平台**：支持 Windows、Linux，并提供 Web-only 模式，可通过浏览器直接访问。
 - **统一外观**：内置浅色/深色主题切换，支持自定义 CSS 变量级颜色配置，全插件自动同步。
 - **通用布局**：统一的工具栏、侧边栏、内容区样式（`.view-toolbar`、`.view-sub-sidebar` 等），插件无需重复定义。
+- **轻量插件依赖**：插件可通过 `backend/libs` 携带纯 Python 依赖，无需安装进主 venv，删除目录即可卸载。
+- **Companion 插件体系**：支持扩展注册、宿主内嵌、跨插件调用，便于在宿主内部集成清理/打标等增强功能。
 
 ---
 
@@ -41,8 +43,9 @@ graph TB
 
 - **前端壳**：Vue 3 + Vue Router，动态加载插件清单并生成导航和 iframe 路由。插件 iframe 保持存活（keep-alive），切换时媒体播放不中断。
 - **后端壳**：Python 插件管理器，负责插件的发现、依赖解析、加载和 API 聚合。
-- **通信**：所有页面同源（`http://127.0.0.1`），插件前端可直接调用 `parent.pywebview.api` 访问后端方法。
-- **插件**：每个插件是一个独立文件夹，包含 `manifest.json`、`backend/`（Python 代码）和 `frontend/`（静态网页资源）。
+- **通信**：所有页面同源（`http://127.0.0.1`），插件前端可直接调用 `parent.pywebview.api` 访问后端方法；Web-only 模式下自动使用 HTTP API 桥接。
+- **Web-only 模式**：可通过 `python main.py --web-only` 启动，无需桌面窗口，适合 Linux 服务器 / NAS / 浏览器访问。
+- **插件**：每个插件是一个独立文件夹，包含 `manifest.json`、`backend/`（Python 代码）和 `frontend/`（静态网页资源）。插件可通过 `backend/libs` 携带纯 Python 依赖。
 - **配置**：主程序配置位于 `.config/app.yaml`，插件设置自动持久化到 `.config/plugins/<插件名>.json`（git 忽略）。设置变更后插件自动重载，无需重启应用。
 
 ### 插件通用布局
@@ -78,27 +81,48 @@ Shell 在 `base.css` 中统一注入以下布局类，**所有插件应直接使
 - Python 3.10+
 - Node.js 18+
 - npm 9+
-- PowerShell 5.1+ (Windows) 或兼容终端
+- Windows：PowerShell 5.1+
+- Linux：bash / Python venv
 
-### 一键安装与运行（推荐）
+### Windows 一键安装与运行
 
 项目提供了 `deploy.ps1` 脚本，可自动完成虚拟环境创建、Python 依赖安装以及前端壳的构建。
 
 ```powershell
-# 克隆仓库
 git clone https://github.com/Flotiarenor/OmniBox.git
 cd OmniBox
-
-# 运行一键部署脚本
 .\deploy.ps1
 ```
 
-首次启动后，你将看到一个空白的窗口，左侧导航栏仅显示 “OmniBox”。接下来安装插件。
+### Linux / Web-only 运行
+
+```bash
+git clone https://github.com/Flotiarenor/OmniBox.git
+cd OmniBox
+
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+cd shell/frontend
+npm install
+npm run build
+cd ../..
+
+python main.py --web-only
+```
+
+然后浏览器访问：
+
+```text
+http://127.0.0.1:18081
+```
 
 ### 安装插件
 
 1. 将插件文件夹放入项目根目录下的 `plugins/` 目录。
 2. 重启应用，插件将自动出现在导航栏中。
+3. 打包版还可以把插件放入可执行文件旁的 `plugins/` 目录，或用户数据目录下的 `plugins/`。
 
 ### 配置文件
 
@@ -107,7 +131,7 @@ cd OmniBox
 ```yaml
 server:
   host: "127.0.0.1"
-  port: 18080
+  port: 18081
 directories:
   data_root: "./data"
 ```
@@ -121,15 +145,35 @@ directories:
 
 插件生态方向（Companion 插件 / 独立运行环境）见
 [主程序方向文档](./docs/core-direction.md)；
-图像自动打标插件设计见 [image-tagger 设计文档](./docs/image-tagger-design.md)。
+图像自动打标插件设计见 [image-tagger 设计文档](./docs/image-tagger-design.md)；
+相册清理插件设计见 [image-cleaner 设计文档](./docs/image-cleaner-design.md)。
 
 ---
 
 ## 📦 打包发布
 
-使用 PyInstaller 将主程序打包为独立可执行文件：
-.\docs\Releases文件夹下内置build-release.ps1和配置文件omnibox.spec
-虚拟环境下运行ps1文件即可完成打包编译操作
+### Windows
+
+```powershell
+powershell -ExecutionPolicy Bypass -File docs/Releases/build-release.ps1
+```
+
+- 会自动构建前端
+- 使用 PyInstaller 打包
+- 输出到 `docs/Releases/`
+
+### Linux
+
+```bash
+bash docs/Releases/build-release.sh
+```
+
+- 会自动构建前端
+- 使用 PyInstaller 打包 Linux 可执行文件
+- 输出到 `docs/Releases/OmniBox/`
+- 并生成 `OmniBox_日期.tar.gz`
+
+> 打包前请先执行 `npm install && npm run build`，确保 `shell/frontend/dist` 存在。
 
 ## 📄 许可证
 
