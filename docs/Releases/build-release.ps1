@@ -76,12 +76,16 @@ if (-not $SkipFrontend) {
 if (-not $SkipPyInstaller) {
     Write-Host "[2/3] PyInstaller packaging..." -ForegroundColor $ColorInfo
 
-    # Check PyInstaller
-    $py = python -c "import PyInstaller; print('ok')" 2>&1
+    # 虚拟环境与依赖统一交给 setup-venv.ps1 处理（必须在 UseCleanPath 复制之前执行，
+    # 因为 venv 不随项目一起复制到临时路径）
+    Write-Host "  -> 确保虚拟环境与依赖 (setup-venv.ps1 -Install)..." -ForegroundColor $ColorWarning
+    & "$ProjectRoot/setup-venv.ps1" -Install -ProjectRoot $ProjectRoot
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "  -> Installing PyInstaller..." -ForegroundColor $ColorWarning
-        pip install pyinstaller
-        if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: pip install failed" -ForegroundColor $ColorError; exit 1 }
+        Write-Host "ERROR: 环境准备失败" -ForegroundColor $ColorError; exit 1
+    }
+    $venvPython = Join-Path $ProjectRoot "venv\Scripts\python.exe"
+    if (-not (Test-Path $venvPython)) {
+        Write-Host "ERROR: 未找到虚拟环境 Python: $venvPython" -ForegroundColor $ColorError; exit 1
     }
 
     # Check UPX
@@ -99,7 +103,7 @@ if (-not $SkipPyInstaller) {
     if ($UseCleanPath -and $hasNonAscii) {
         $cleanTempDir = Join-Path $env:TEMP "OmniBox_Build_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
         Write-Host "  -> Copying to ASCII path: $cleanTempDir" -ForegroundColor $ColorWarning
-        $excludeList = @('venv', '.git', 'node_modules', '.cache', '__pycache__', '.build', 'venv')
+        $excludeList = @('venv', '.git', 'node_modules', '.cache', '__pycache__', '.build')
         New-Item -ItemType Directory -Path $cleanTempDir -Force | Out-Null
         Get-ChildItem -Path $ProjectRoot -Exclude $excludeList | ForEach-Object {
             Copy-Item -Recurse $_.FullName -Destination $cleanTempDir -ErrorAction SilentlyContinue
@@ -115,7 +119,7 @@ if (-not $SkipPyInstaller) {
     if (Test-Path $oldDistDir) { Remove-Item -Recurse -Force $oldDistDir }
 
     Write-Host "  -> Running PyInstaller..." -ForegroundColor $ColorWarning
-    pyinstaller `
+    & $venvPython -m PyInstaller `
         --workpath "$BuildDir" `
         --distpath "$DistDir" `
         --noconfirm `

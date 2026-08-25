@@ -86,12 +86,19 @@ Shell 在 `base.css` 中统一注入以下布局类，**所有插件应直接使
 
 ### Windows 一键安装与运行
 
-项目提供了 `deploy.ps1` 脚本，可自动完成虚拟环境创建、Python 依赖安装以及前端壳的构建。
+项目提供了 `deploy.ps1` 脚本，可自动完成虚拟环境创建、Python 依赖安装以及前端壳的构建。环境与依赖的统一入口为 `setup-venv.ps1`（`deploy.ps1` 及发布构建脚本都会复用该入口，不再各自内联依赖管理）。
 
 ```powershell
 git clone https://github.com/Flotiarenor/OmniBox.git
 cd OmniBox
 .\deploy.ps1
+```
+
+如需单独准备 Python 环境（或使用交互式 pip 管理台）：
+
+```powershell
+.\setup-venv.ps1 -Install     # 非交互：确保 venv 并安装 requirements.txt
+.\setup-venv.ps1              # 交互式 pip 管理台
 ```
 
 ### Linux / Web-only 运行
@@ -100,16 +107,14 @@ cd OmniBox
 git clone https://github.com/Flotiarenor/OmniBox.git
 cd OmniBox
 
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+bash setup-venv.sh           # 统一环境入口：创建 venv + 安装依赖
 
 cd shell/frontend
 npm install
 npm run build
 cd ../..
 
-python main.py --web-only
+python main.py --web-only    # 或 venv/bin/python main.py --web-only
 ```
 
 然后浏览器访问：
@@ -159,7 +164,7 @@ powershell -ExecutionPolicy Bypass -File docs/Releases/build-release.ps1
 ```
 
 - 会自动构建前端
-- 使用 PyInstaller 打包
+- 自动通过 `setup-venv.ps1 -Install` 准备虚拟环境与依赖，再用项目 venv 的 Python 执行 PyInstaller
 - 输出到 `docs/Releases/`
 
 ### Linux
@@ -169,11 +174,11 @@ bash docs/Releases/build-release.sh
 ```
 
 - 会自动构建前端
-- 使用 PyInstaller 打包 Linux 可执行文件
+- 自动通过 `setup-venv.sh` 准备虚拟环境与依赖，再用项目 venv 的 Python 执行 PyInstaller
 - 输出到 `docs/Releases/OmniBox/`
 - 并生成 `OmniBox_日期.tar.gz`
 
-> 打包前请先执行 `npm install && npm run build`，确保 `shell/frontend/dist` 存在。
+> 构建脚本与部署脚本共享统一环境入口（`setup-venv.ps1` / `setup-venv.sh`），依赖管理不再各自内联。
 
 ## 📄 许可证
 
