@@ -30,7 +30,7 @@
 | 子进程生命周期 | 未实装（adapter-spec 为 RFC） | `shell/backend/adapter_process.py` 最小实装 | 中 |
 | 长驻 Worker 通信 | 无 | stdio JSON-lines 协议 | 中 |
 | 长任务进度/取消/续跑 | 无统一约定 | 插件级约定 + Shell 进度组件 | 小 |
-| 权限控制 | `permissions` 仅记录 | 继续记录，暂不强制 | 无 |
+| 权限控制 | `permissions` 仅记录 | 定位为「知情明示」：记录、不强制（最终立场，非临时收窄） | 无 |
 
 ---
 
@@ -140,12 +140,14 @@ class AdapterProcessManager:
 
 ## 4. 主程序不动什么
 
+> 权限立场说明：插件后端运行在主进程内，任何 API 层权限检查都能被直接的 Python 系统调用绕过，属于「假安全、真成本」。因此 **`permissions` 定位为知情明示，永不做运行时强制**；真正的隔离只来自独立的 runtime 进程/venv（§3.4、§3.5）。
+
 | 项 | 决定 |
 |----|------|
 | 设置存储 | 仍用 SettingsStore，每插件一 JSON |
 | 文件服务 | 复用 `/files`、`/thumbs`、`get_file_roots` |
 | 主题/动效 | 复用 shell/effects.css、motion.js |
-| 权限 | 继续只记录不强制，避免本期范围膨胀 |
+| 权限 | 仅记录、不强制：定位为「知情明示」而非沙箱（运行时无法真正拦截进程内插件，见 §4 说明） |
 | 插件发现 | 仍只扫描 `plugins/` 顶层；**不做**嵌套插件目录 |
 
 ---

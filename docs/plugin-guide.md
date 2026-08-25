@@ -1,7 +1,6 @@
+# OmniBox 插件开发指南
 
-# OmniBox v3 插件开发指南
-
-本指南将带你从零开始创建一个完整的 OmniBox v3 插件，并说明如何将现有的 `image-viewer` 插件迁移到新架构。
+本指南将带你从零开始创建一个完整的 OmniBox 插件，并说明如何将现有的 `image-viewer` 插件迁移到新架构。
 
 插件分为两类：**常规内嵌插件**（本指南主体）与**独立运行环境插件 / Companion 插件**（见 §2.1、§2.2 及 `docs/adapter-spec.md`）。
 
@@ -26,6 +25,7 @@ plugins/
 ```
 
 **命名约定**：
+
 - 文件夹名使用 `kebab-case`（如 `image-viewer`），与 `manifest.json` 中的 `name` 字段一致。
 - 后端入口文件固定为 `backend/main.py`（可在 manifest 中自定义）。
 - 前端入口文件固定为 `frontend/index.html`（可在 manifest 中自定义）。
@@ -58,24 +58,24 @@ plugins/
 
 **字段说明**：
 
-| 字段 | 必填 | 说明 |
-|------|------|------|
-| `name` | ✅ | 插件唯一标识，必须与文件夹名一致，使用 `kebab-case` |
-| `version` | ✅ | 语义化版本号 |
-| `displayName` | ✅ | 在导航栏显示的名称 |
-| `icon` | ✅ | 导航栏图标（Emoji 或文字） |
-| `backend.entry` | ✅ | 后端入口文件路径，相对于插件根目录 |
-| `backend.class` | ✅ | 后端插件类名，必须继承 `PluginBase` |
-| `frontend.entry` | ✅ | 前端入口 HTML 文件路径，相对于插件根目录 |
-| `frontend.route` | ✅ | 前端路由路径，必须以 `/` 开头 |
-| `dependencies` | ❌ | 依赖的其他插件名称列表 |
-| `libs` | ❌ | 插件本地附加库目录列表，默认 `["backend/libs"]`，加载后端前会加入 `sys.path` |
-| `permissions` | ❌ | 权限声明（当前仅做记录，未强制执行） |
-| `minShellVersion` | ❌ | 要求的最低 Shell 版本 |
-| `destroyOnLeave` | ❌ | `true` 时离开页面销毁 iframe 重新加载（默认保持存活） |
-| `hidden` | ❌ | `true` 时不显示在 Shell 主导航，但仍可被宿主内嵌或通过插件 URL 访问 |
-| `kind` | ❌ | `local-adapter`：声明本插件管理独立运行环境（重依赖插件使用） |
-| `runtime` | ❌ | 独立运行环境声明（venv / 入口 / requirements），见 §2.2 |
+| 字段                | 必填 | 说明                                                                            |
+| ------------------- | ---- | ------------------------------------------------------------------------------- |
+| `name`            | ✅   | 插件唯一标识，必须与文件夹名一致，使用`kebab-case`                            |
+| `version`         | ✅   | 语义化版本号                                                                    |
+| `displayName`     | ✅   | 在导航栏显示的名称                                                              |
+| `icon`            | ✅   | 导航栏图标（Emoji 或文字）                                                      |
+| `backend.entry`   | ✅   | 后端入口文件路径，相对于插件根目录                                              |
+| `backend.class`   | ✅   | 后端插件类名，必须继承`PluginBase`                                            |
+| `frontend.entry`  | ✅   | 前端入口 HTML 文件路径，相对于插件根目录                                        |
+| `frontend.route`  | ✅   | 前端路由路径，必须以`/` 开头                                                  |
+| `dependencies`    | ❌   | 依赖的其他插件名称列表                                                          |
+| `libs`            | ❌   | 插件本地附加库目录列表，默认`["backend/libs"]`，加载后端前会加入 `sys.path` |
+| `permissions`     | ❌   | 权限声明（仅作知情明示，供设置页展示，不做运行时强制）                     |
+| `minShellVersion` | ❌   | 要求的最低 Shell 版本                                                           |
+| `destroyOnLeave`  | ❌   | `true` 时离开页面销毁 iframe 重新加载（默认保持存活）                         |
+| `hidden`          | ❌   | `true` 时不显示在 Shell 主导航，但仍可被宿主内嵌或通过插件 URL 访问           |
+| `kind`            | ❌   | `local-adapter`：声明本插件管理独立运行环境（重依赖插件使用）                 |
+| `runtime`         | ❌   | 独立运行环境声明（venv / 入口 / requirements），见 §2.2                        |
 
 ---
 
@@ -263,12 +263,12 @@ class MyPlugin(PluginBase):
 ```
 
 **关键点**：
+
 - 所有方法自动获得命名空间前缀 `插件名__`，前端调用时使用 `Bridge.call('method_name', ...)`（无需手动加前缀，`Bridge` 会自动处理）。
 - 方法参数和返回值必须是 JSON 可序列化的类型（dict、list、str、int、float、bool、None）。
 - 文件访问应通过 `/files/` 和 `/thumbs/` 路由（由 Shell 提供），避免直接返回本地绝对路径。
 - 插件可通过重写 `get_data_root()` 方法支持自定义数据根目录，Flask 路由会根据 `?plugin=插件名` 动态获取根目录。
 - **不要覆写 `save_settings()`**——基类已统一实现「校验 → 持久化 → 变更检测 → 调用 `on_settings_changed()`」。需要响应设置变更时，覆写 `on_settings_changed()` 即可。
-
 
 ### 3.3 插件本地附加库（libs）
 
@@ -317,18 +317,19 @@ from pyradios import RadioBrowser
 - 大型重依赖（建议走独立 runtime）
 
 ### 3.4 完整 API 列表
+
 （以 image-viewer 为例）
 
-| API 方法 | 参数 | 返回值 | 说明 |
-|----------|------|--------|------|
-| `list_images` | `rel_path, page, per_page, sort_by, sort_order` | `{images, page, total, has_next, has_prev, settings}` | 获取图片列表（含尺寸缓存） |
-| `list_dir` | `rel_path` | `[{name, path}]` | 列出子目录 |
-| `delete_files` | `[rel_paths]` | `{deleted, errors}` | 批量删除文件 |
-| `move_files` | `[rel_paths], dest_rel` | `{moved, errors}` | 批量移动文件 |
-| `get_settings` | `rel_path` | `{row_height, per_page, sort_by, sort_order}` | 获取文件夹设置（含全局回退） |
-| `save_settings` | `rel_path, settings` | `{success}` | 保存文件夹设置（支持 root_dir） |
-| `get_root_dir` | 无 | `str` | 获取当前使用的根目录 |
-| `clear_folder_settings` | `rel_path` | `{success}` | 清除文件夹独立设置，回退到全局 |
+| API 方法                  | 参数                                              | 返回值                                                  | 说明                            |
+| ------------------------- | ------------------------------------------------- | ------------------------------------------------------- | ------------------------------- |
+| `list_images`           | `rel_path, page, per_page, sort_by, sort_order` | `{images, page, total, has_next, has_prev, settings}` | 获取图片列表（含尺寸缓存）      |
+| `list_dir`              | `rel_path`                                      | `[{name, path}]`                                      | 列出子目录                      |
+| `delete_files`          | `[rel_paths]`                                   | `{deleted, errors}`                                   | 批量删除文件                    |
+| `move_files`            | `[rel_paths], dest_rel`                         | `{moved, errors}`                                     | 批量移动文件                    |
+| `get_settings`          | `rel_path`                                      | `{row_height, per_page, sort_by, sort_order}`         | 获取文件夹设置（含全局回退）    |
+| `save_settings`         | `rel_path, settings`                            | `{success}`                                           | 保存文件夹设置（支持 root_dir） |
+| `get_root_dir`          | 无                                                | `str`                                                 | 获取当前使用的根目录            |
+| `clear_folder_settings` | `rel_path`                                      | `{success}`                                           | 清除文件夹独立设置，回退到全局  |
 
 ---
 
@@ -365,17 +366,18 @@ from pyradios import RadioBrowser
 
 以下 CSS 类已由 Shell 统一注入，插件 HTML 直接使用即可，**不应在自己 CSS 中重复定义**（否则将不兼容未来主题变更）：
 
-| CSS 类 | 用途 |
-|--------|------|
-| `.view-body` | 主内容区容器（`flex: 1; flex-direction: column; overflow: hidden`） |
-| `.view-toolbar` | 顶部工具栏（高 48px，`var(--bg-surface)` 背景，底部边框） |
-| `.toolbar-group` | 工具栏内的按钮组（`flex; align-items: center; gap: 8px`） |
-| `.view-sub-sidebar` | 左侧子侧边栏（宽 `var(--sub-sidebar-width)`，默认 240px） |
-| `.sub-sidebar-header` | 侧边栏标题行（大写标签，底部边框） |
-| `.sub-sidebar-footer` | 侧边栏底部统计区（小字体，顶部边框） |
-| `.view-content` | 内容滚动区（`flex: 1; overflow-y: auto; padding: 16px`） |
+| CSS 类                  | 用途                                                                  |
+| ----------------------- | --------------------------------------------------------------------- |
+| `.view-body`          | 主内容区容器（`flex: 1; flex-direction: column; overflow: hidden`） |
+| `.view-toolbar`       | 顶部工具栏（高 48px，`var(--bg-surface)` 背景，底部边框）           |
+| `.toolbar-group`      | 工具栏内的按钮组（`flex; align-items: center; gap: 8px`）           |
+| `.view-sub-sidebar`   | 左侧子侧边栏（宽`var(--sub-sidebar-width)`，默认 240px）            |
+| `.sub-sidebar-header` | 侧边栏标题行（大写标签，底部边框）                                    |
+| `.sub-sidebar-footer` | 侧边栏底部统计区（小字体，顶部边框）                                  |
+| `.view-content`       | 内容滚动区（`flex: 1; overflow-y: auto; padding: 16px`）            |
 
 **示例 HTML 结构**：
+
 ```html
 <div id="app">
   <div class="view-sub-sidebar">
@@ -399,16 +401,17 @@ from pyradios import RadioBrowser
 
 `Bridge` 对象挂载在 `window` 上，提供以下方法：
 
-| 方法 | 说明 |
-|------|------|
-| `Bridge.call(method, ...args)` | 调用后端 API（自动添加插件名前缀） |
-| `Bridge.callSystem(method, ...args)` | 调用 Shell 系统 API（不加插件前缀，如 `system_get_plugin_extensions`） |
-| `Bridge.callPlugin(plugin, method, ...args)` | 跨插件调用其他插件后端 API |
-| `Bridge.thumbUrl(relPath)` | 获取缩略图 URL（自动附加 `?plugin=插件名`） |
-| `Bridge.originalUrl(relPath)` | 获取原图 URL（自动附加 `?plugin=插件名`） |
-| `Bridge.setPrefix(prefix)` | 设置 API 前缀（Shell 在加载插件时自动调用） |
+| 方法                                           | 说明                                                                    |
+| ---------------------------------------------- | ----------------------------------------------------------------------- |
+| `Bridge.call(method, ...args)`               | 调用后端 API（自动添加插件名前缀）                                      |
+| `Bridge.callSystem(method, ...args)`         | 调用 Shell 系统 API（不加插件前缀，如`system_get_plugin_extensions`） |
+| `Bridge.callPlugin(plugin, method, ...args)` | 跨插件调用其他插件后端 API                                              |
+| `Bridge.thumbUrl(relPath)`                   | 获取缩略图 URL（自动附加`?plugin=插件名`）                            |
+| `Bridge.originalUrl(relPath)`                | 获取原图 URL（自动附加`?plugin=插件名`）                              |
+| `Bridge.setPrefix(prefix)`                   | 设置 API 前缀（Shell 在加载插件时自动调用）                             |
 
 **示例**：
+
 ```javascript
 // 调用后端 list_images 方法
 const data = await Bridge.call('list_images', '', 1, 40, 'mtime', 'desc');
@@ -426,22 +429,23 @@ const originalSrc = Bridge.originalUrl('subdir/photo.jpg');
 
 Shell 还注入了以下可复用的 UI 组件函数（无需引入，直接使用）：
 
-| 函数 | 说明 |
-|------|------|
-| `createTree(container, options)` | 创建目录树组件 |
-| `createLightbox(options)` | 创建灯箱组件 |
-| `createPagination(container, options)` | 创建分页组件 |
-| `createContextMenu(options)` | 创建右键菜单组件 |
-| `createCardGrid(container, options)` | 创建卡片网格组件 |
-| `createSettingsForm(container, schema, values)` | 按 schema 渲染设置表单 |
-| `renderExtensions(container, host, placement, options?)` | 渲染注册到宿主侧边栏/工具栏的扩展插件入口 |
-| `openSettingsModal(options)` | 打开统一设置弹窗 |
-| `confirmDialog(message, options)` | 替代原生 confirm |
-| `Toast.success(msg)` / `Toast.error(msg)` / `Toast.info(msg)` | 显示 Toast 通知 |
-| `Utils.formatFileSize(bytes)` | 格式化文件大小 |
-| `Utils.debounce(func, wait)` | 防抖函数 |
+| 函数                                                                | 说明                                      |
+| ------------------------------------------------------------------- | ----------------------------------------- |
+| `createTree(container, options)`                                  | 创建目录树组件                            |
+| `createLightbox(options)`                                         | 创建灯箱组件                              |
+| `createPagination(container, options)`                            | 创建分页组件                              |
+| `createContextMenu(options)`                                      | 创建右键菜单组件                          |
+| `createCardGrid(container, options)`                              | 创建卡片网格组件                          |
+| `createSettingsForm(container, schema, values)`                   | 按 schema 渲染设置表单                    |
+| `renderExtensions(container, host, placement, options?)`          | 渲染注册到宿主侧边栏/工具栏的扩展插件入口 |
+| `openSettingsModal(options)`                                      | 打开统一设置弹窗                          |
+| `confirmDialog(message, options)`                                 | 替代原生 confirm                          |
+| `Toast.success(msg)` / `Toast.error(msg)` / `Toast.info(msg)` | 显示 Toast 通知                           |
+| `Utils.formatFileSize(bytes)`                                     | 格式化文件大小                            |
+| `Utils.debounce(func, wait)`                                      | 防抖函数                                  |
 
 **示例**：
+
 ```javascript
 // 创建卡片网格
 const grid = createCardGrid(document.getElementById('grid'), {
@@ -511,6 +515,7 @@ lightbox.show(images, 0);
 ```
 
 **注意**：
+
 - 不要引入 `/shell/` 下的文件，它们已自动注入。
 - 所有路径相对于插件 `frontend/` 目录。
 - 使用 CSS 变量（如 `var(--bg-surface)`）以适配主题。
@@ -530,6 +535,7 @@ Shell 通过 `<html>` 元素上的 `data-theme` 属性控制主题（`"light"` /
 用户在设置页的「外观设置」面板中修改颜色（如强调色、背景色等）时，Shell 会将修改后的 CSS 变量值序列化为 JSON 写入父文档的 `data-custom-colors` 属性。插件 iframe 的注入脚本自动监听该属性变化，并应用 `document.documentElement.style.setProperty()` 更新所有对应变量。
 
 **对插件开发的影响**：
+
 - 所有 CSS 变量均可被用户覆盖，插件设计时不应依赖特定颜色值。
 - 若需要在 JS 中读取当前有效颜色，使用 `getComputedStyle(document.documentElement).getPropertyValue('--accent')`。
 
@@ -575,6 +581,7 @@ const src = Bridge.originalUrl('subdir/photo.jpg');
 插件后端应在 `list_images` 等方法中按需生成缩略图，保存到 `self.thumb_dir`（通常为 `数据根目录/.cache/thumbs/`）。前端通过 `Bridge.thumbUrl()` 获取正确的 URL。
 
 **示例**：
+
 ```python
 def _get_thumb(self, rel_path: str) -> Path:
  thumb_path = self.thumb_dir / rel_path
@@ -623,26 +630,26 @@ class MyPlugin(PluginBase):
 
 字段说明：
 
-| 字段 | 必填 | 说明 |
-|------|------|------|
-| `key` | ✅ | 设置键名 |
-| `label` | ✅ | 设置面板显示名 |
-| `type` | ✅ | `text` / `number` / `range` / `select` / `checkbox` / `textarea` / `folder` |
-| `default` | ❌ | 默认值（未保存过时使用） |
-| `help` | ❌ | 悬浮 `?` 提示文本（鼠标悬停显示） |
-| `central` | ❌ | `True` 在集中设置面板显示；默认仅显示 `root_dir` 或有 `central` 标记的字段 |
-| `min` / `max` / `step` | ❌ | number/range 类型约束 |
-| `options` | ❌ | select 类型的选项列表 |
+| 字段                         | 必填 | 说明                                                                                      |
+| ---------------------------- | ---- | ----------------------------------------------------------------------------------------- |
+| `key`                      | ✅   | 设置键名                                                                                  |
+| `label`                    | ✅   | 设置面板显示名                                                                            |
+| `type`                     | ✅   | `text` / `number` / `range` / `select` / `checkbox` / `textarea` / `folder` |
+| `default`                  | ❌   | 默认值（未保存过时使用）                                                                  |
+| `help`                     | ❌   | 悬浮`?` 提示文本（鼠标悬停显示）                                                        |
+| `central`                  | ❌   | `True` 在集中设置面板显示；默认仅显示 `root_dir` 或有 `central` 标记的字段          |
+| `min` / `max` / `step` | ❌   | number/range 类型约束                                                                     |
+| `options`                  | ❌   | select 类型的选项列表                                                                     |
 
 ### 8.3 读取与写入
 
-| 场景 | 方法 |
-|------|------|
-| `__init__` 中读取 | `self._resolved_config.get('root_dir')`（构造前已预加载） |
-| 运行时读取单个 | `self.setting('root_dir')` |
-| 读取全部（合并默认值） | `self.get_settings()` |
-| 保存全部 | `self.save_settings({...})` |
-| 保存单个（运行时状态） | `self.update_setting('last_volume', 0.8)` |
+| 场景                   | 方法                                                        |
+| ---------------------- | ----------------------------------------------------------- |
+| `__init__` 中读取    | `self._resolved_config.get('root_dir')`（构造前已预加载） |
+| 运行时读取单个         | `self.setting('root_dir')`                                |
+| 读取全部（合并默认值） | `self.get_settings()`                                     |
+| 保存全部               | `self.save_settings({...})`                               |
+| 保存单个（运行时状态） | `self.update_setting('last_volume', 0.8)`                 |
 
 ### 8.4 响应设置变更
 
@@ -665,10 +672,10 @@ image-viewer 需要在不同文件夹应用不同设置（如行高、排序）�
 
 ### 8.6 运行时状态 vs 用户设置
 
-| 类型 | 存放位置 | 示例 |
-|------|---------|------|
-| 用户设置 | `.config/plugins/{name}.json` | root_dir、字号、排序方式 |
-| 运行时状态 | 数据目录 `.cache/` 或插件状态文件 | 播放进度、收藏列表、扫描缓存 |
+| 类型       | 存放位置                           | 示例                         |
+| ---------- | ---------------------------------- | ---------------------------- |
+| 用户设置   | `.config/plugins/{name}.json`    | root_dir、字号、排序方式     |
+| 运行时状态 | 数据目录`.cache/` 或插件状态文件 | 播放进度、收藏列表、扫描缓存 |
 
 用户设置跟程序走（换机器拷贝程序即携带），运行时状态跟数据走（换数据目录自动重建）。
 
@@ -686,15 +693,15 @@ image-viewer 需要在不同文件夹应用不同设置（如行高、排序）�
 
 ## 10. 常见问题
 
-| 问题 | 原因 | 解决 |
-|------|------|------|
-| 导航栏不显示插件 | `manifest.json` 格式错误或缺少必填字段 | 检查 JSON 语法，确保 `name`、`frontend.route` 等字段存在 |
-| 点击导航无反应 | 前端路由未正确注入 | 检查 `frontend.route` 是否以 `/` 开头，且不与其他插件冲突 |
-| iframe 白屏 | 前端入口文件不存在或路径错误 | 确认 `frontend/entry` 指向的文件存在，且 Flask 能访问 |
-| API 调用失败 | 方法名拼写错误或后端未注册 | 检查方法名是否与 `register_api` 返回的键一致，调用时使用 `Bridge.call('method')` |
-| 图片无法显示 | URL 路径错误或文件不存在 | 确保图片通过 `Bridge.thumbUrl()` 或 `Bridge.originalUrl()` 获取 URL，且文件在 `data_root` 下 |
-| 缩略图不显示 | 缩略图未生成或路由错误 | 检查后端是否在 `list_images` 中调用了缩略图生成方法，Flask 路由是否正确传递 `plugin` 参数 |
-| 设置不生效 | 前端未传递设置参数或后端未应用 | 确保 `loadImages` 传递了 `per_page`、`sort_by` 等参数，后端 `list_images` 接收并应用这些参数 |
+| 问题             | 原因                                     | 解决                                                                                                |
+| ---------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| 导航栏不显示插件 | `manifest.json` 格式错误或缺少必填字段 | 检查 JSON 语法，确保`name`、`frontend.route` 等字段存在                                         |
+| 点击导航无反应   | 前端路由未正确注入                       | 检查`frontend.route` 是否以 `/` 开头，且不与其他插件冲突                                        |
+| iframe 白屏      | 前端入口文件不存在或路径错误             | 确认`frontend/entry` 指向的文件存在，且 Flask 能访问                                              |
+| API 调用失败     | 方法名拼写错误或后端未注册               | 检查方法名是否与`register_api` 返回的键一致，调用时使用 `Bridge.call('method')`                 |
+| 图片无法显示     | URL 路径错误或文件不存在                 | 确保图片通过`Bridge.thumbUrl()` 或 `Bridge.originalUrl()` 获取 URL，且文件在 `data_root` 下   |
+| 缩略图不显示     | 缩略图未生成或路由错误                   | 检查后端是否在`list_images` 中调用了缩略图生成方法，Flask 路由是否正确传递 `plugin` 参数        |
+| 设置不生效       | 前端未传递设置参数或后端未应用           | 确保`loadImages` 传递了 `per_page`、`sort_by` 等参数，后端 `list_images` 接收并应用这些参数 |
 
 ---
 
@@ -705,7 +712,7 @@ image-viewer 需要在不同文件夹应用不同设置（如行高、排序）�
 - **颜色适配**：所有颜色使用 CSS 变量（如 `var(--bg-surface)`），避免硬编码颜色值。如需在 JS 中获取当前颜色，使用 `getComputedStyle(document.documentElement).getPropertyValue('--accent')`。
 - **主题无感知**：插件无需编写主题切换逻辑，Shell 已通过 MutationObserver 自动同步 `data-theme` 和 `data-custom-colors` 到所有 iframe。
 - **前端资源**：尽量轻量，避免引入大型框架（除非必要）。
-- **权限声明**：如实填写 `permissions`，未来版本将强制执行。
+- **权限声明**：如实填写 `permissions`，作为面向用户的知情明示（安装/设置页可见）。框架**不设运行时权限墙**——插件后端运行在主进程内，任何声明都无法拦截 `import os` 之类直接系统访问；隔离与信任依赖进程级 runtime 方案（见 `docs/core-direction.md` §3.4、§3.5）。
 - **版本管理**：遵循语义化版本，方便依赖解析。
 - **错误处理**：后端方法应捕获异常并返回有意义的错误信息，避免前端收到 Python 堆栈。
 - **设置持久化**：使用 `settings_schema` 声明式配置，设置自动存储在 `.config/plugins/<name>.json`。读取用 `setting()`，保存用 `save_settings()`，响应变更用 `on_settings_changed()`。**不要**覆写 `save_settings()`，**不要**在插件目录创建 `settings.json`。
@@ -714,5 +721,4 @@ image-viewer 需要在不同文件夹应用不同设置（如行高、排序）�
 
 ---
 
-按照本指南，你可以快速创建新插件，或将现有功能迁移到 OmniBox v3 架构中。如有疑问，请参考 `hello-world` 和 `image-viewer` 示例插件。
-
+按照本指南，你可以快速创建新插件，或将现有功能迁移到 OmniBox 架构中。如有疑问，请参考 `hello-world` 和 `image-viewer` 示例插件。
