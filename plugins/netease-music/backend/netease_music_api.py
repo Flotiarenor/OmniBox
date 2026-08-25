@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shlex
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -67,18 +68,56 @@ class NeteaseMusicAPI:
         self._schedule_file = self._config_dir / "ncm-schedule.json"
         self._url_cache = {}
         self._url_cache_size = max(1, url_cache_size)
+        # 我们的假 mpv 方案依赖 ncm-cli 使用 mpv 播放器；
+        # 直接写入配置可以绕过 ncm-cli 对“真实 mpv 是否安装”的检查。
+        self._ensure_player_mpv_config()
         if check_install:
             self._check_installation()
 
-    def _run_command(self, cmd: str, timeout: int = 30) -> Dict[str, Any]:
+    def _ensure_player_mpv_config(self):
         try:
-            full_cmd = ["ncm-cli", "--output", "json"] + shlex.split(cmd)
-            result = subprocess.run(
-                full_cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
+            cfg = Path.home() / ".config" / "ncm-cli" / "config.json"
+            cfg.parent.mkdir(parents=True, exist_ok=True)
+            data = {}
+            if cfg.exists():
+                try:
+                    data = json.loads(cfg.read_text(encoding="utf-8"))
+                except Exception:
+                    data = {}
+            if not isinstance(data, dict):
+                data = {}
+            if data.get("player") != "mpv":
+                data["player"] = "mpv"
+                cfg.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            print(f"[netease-music] 写入 ncm-cli player=mpv 配置失败: {e}")
+
+    def _run_command(self, cmd: str, timeout: int = 30, env: dict = None) -> Dict[str, Any]:
+        try:
+            if os.name == 'nt':
+                # Windows 下 npm 安装的 ncm-cli 通常是 .cmd/.ps1 shim，
+                # 使用 shell=True 才能正确解析到命令。
+                result = subprocess.run(
+                    f"ncm-cli --output json {cmd}",
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    timeout=timeout,
+                    env=env,
+                )
+            else:
+                full_cmd = ["ncm-cli", "--output", "json"] + shlex.split(cmd)
+                result = subprocess.run(
+                    full_cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    timeout=timeout,
+                    env=env,
+                )
             return {
                 "success": result.returncode == 0,
                 "stdout": result.stdout.strip(),
@@ -269,11 +308,12 @@ class NeteaseMusicAPI:
         if song_id in self._url_cache:
             return self._url_cache[song_id]
 
-        fake_bin = Path("/tmp/omnibox-ncm-fake-mpv")
+        tmp_dir = Path(tempfile.gettempdir())
+        fake_bin = tmp_dir / "omnibox-ncm-fake-mpv"
         fake_mpv = self._ensure_fake_mpv(fake_bin)
-        captured = Path("/tmp/ncm-captured-url.txt")
-        log = Path("/tmp/ncm-fake-mpv.log")
-        sock = Path("/root/.config/ncm-cli/mpv.sock")
+        captured = tmp_dir / "ncm-captured-url.txt"
+        log = tmp_dir / "ncm-fake-mpv.log"
+        sock = Path.home() / ".config" / "ncm-cli" / "mpv.sock"
 
         # 首次初始化时清理一次旧 daemon / 真实 mpv，之后保持常驻
         if not NeteaseMusicAPI._resident_initialized:
@@ -293,15 +333,8 @@ class NeteaseMusicAPI:
         env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
 
         try:
-            subprocess.run(
-                [
-                    "ncm-cli", "play",
-                    "--song",
-                    "--encrypted-id", str(song_id),
-                    "--original-id", str(original_id),
-                ],
-                capture_output=True,
-                text=True,
+            self._run_command(
+                f'play --song --encrypted-id {song_id} --original-id {original_id}',
                 timeout=timeout,
                 env=env,
             )
@@ -331,13 +364,13 @@ class NeteaseMusicAPI:
 
     def _ensure_fake_mpv(self, bin_dir: Path) -> Path:
         bin_dir.mkdir(parents=True, exist_ok=True)
-        fake = bin_dir / "mpv"
-        fake.write_text(
+        script = bin_dir / "mpv.py"
+        script.write_text(
             r"""#!/usr/bin/env python3
-import json, os, socket, sys, time
+import json, os, socket, sys, tempfile, time
 from pathlib import Path
-LOG = Path("/tmp/ncm-fake-mpv.log")
-CAP = Path("/tmp/ncm-captured-url.txt")
+LOG = Path(tempfile.gettempdir()) / "ncm-fake-mpv.log"
+CAP = Path(tempfile.gettempdir()) / "ncm-captured-url.txt"
 def log(msg):
     with LOG.open("a", encoding="utf-8") as f:
         f.write(msg + "\n")
@@ -400,7 +433,20 @@ if __name__ == "__main__":
 """,
             encoding="utf-8",
         )
-        fake.chmod(0o755)
+        if os.name == 'nt':
+            fake = bin_dir / "mpv.cmd"
+            fake.write_text(
+                '@echo off\r\npython "%~dp0mpv.py" %*\r\n',
+                encoding="utf-8",
+            )
+        else:
+            fake = bin_dir / "mpv"
+            # Unix 直接软链/复制 Python 脚本为可执行的 mpv
+            try:
+                fake.symlink_to(script.name)
+            except OSError:
+                fake.write_bytes(script.read_bytes())
+            fake.chmod(0o755)
         return fake
 
     def play(self, song_id: str = None, playlist_id: str = None) -> bool:

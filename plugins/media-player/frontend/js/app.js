@@ -465,6 +465,15 @@ class MediaPlayerApp {
             let mode = 'list';
 
             if (this.currentView.startsWith('ncm-')) {
+                // 先确认 ncm-cli 是否可用，避免在 Windows 等环境里直接卡死
+                try {
+                    const status = await Bridge.callPlugin('netease-music', 'get_status');
+                    if (seq !== this._loadSeq) return;
+                    if (status && status.ncm_cli_available === false) {
+                        this._renderNeteaseCliMissing(status);
+                        return;
+                    }
+                } catch (e) { }
                 if (this.currentView === 'ncm-login') {
                     await this._renderNeteaseLogin();
                     return;
@@ -794,6 +803,29 @@ class MediaPlayerApp {
             online: true,
             is_fav: false,
         };
+    }
+
+    _renderNeteaseCliMissing(status = {}) {
+        const content = document.getElementById('media-content');
+        if (!content) return;
+        const version = status.ncm_cli_version || '';
+        const error = status.error || '';
+        content.innerHTML = `
+            <div class="mp-empty-state">
+                <div class="empty-icon">⚠️</div>
+                <div class="empty-text">未检测到 ncm-cli</div>
+                <div class="empty-hint">网易云音乐插件需要 ncm-cli 才能登录和播放。</div>
+                <div style="margin-top:14px;text-align:left;max-width:520px;margin-left:auto;margin-right:auto;line-height:1.9;font-size:13px;">
+                    <div>安装命令：</div>
+                    <pre style="background:var(--bg-hover);padding:8px 10px;border-radius:8px;overflow-x:auto;">npm install -g @music163/ncm-cli</pre>
+                    <div style="margin-top:8px;">或者参考：</div>
+                    <div><a href="https://www.npmjs.com/package/@music163/ncm-cli" target="_blank" rel="noopener">https://www.npmjs.com/package/@music163/ncm-cli</a></div>
+                    ${version ? `<div style="margin-top:8px;">当前版本：${MPUtils.escapeHtml(version)}</div>` : ''}
+                    ${error ? `<div style="margin-top:8px;color:var(--danger);">${MPUtils.escapeHtml(error)}</div>` : ''}
+                </div>
+                <button class="btn btn-primary" id="ncm-recheck-btn" style="margin-top:14px;">我已安装，重新检测</button>
+            </div>`;
+        document.getElementById('ncm-recheck-btn')?.addEventListener('click', () => this._loadCurrentView());
     }
 
     async _renderNeteaseLogin() {

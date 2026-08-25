@@ -48,7 +48,17 @@ class NeteaseMusicPlugin(PluginBase):
         }
 
     def get_status(self) -> dict:
-        return {'plugin': self.name, 'ncm_cli_available': True}
+        try:
+            result = self._get_api()._run_command('--version')
+            available = bool(result.get('success'))
+            return {
+                'plugin': self.name,
+                'ncm_cli_available': available,
+                'ncm_cli_version': (result.get('stdout') or '').strip() if available else '',
+                'error': result.get('stderr') or '' if not available else '',
+            }
+        except Exception as e:
+            return {'plugin': self.name, 'ncm_cli_available': False, 'error': str(e)}
 
     def search_song(self, keyword: str) -> dict:
         try:
