@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 '''
 import json
+import sys
 import importlib.util
 from pathlib import Path
 from collections import deque
@@ -300,12 +301,41 @@ class PluginManager:
 
         return order
 
+    def _plugin_lib_dirs(self, plugin_dir: Path, manifest: dict) -> List[Path]:
+        """返回插件本地附加库目录。
+
+        默认使用 <plugin>/backend/libs；也可在 manifest 中用 libs 字段自定义：
+            "libs": ["backend/libs", "vendor"]
+        这些目录会在加载插件后端前加入 sys.path，便于携带纯 Python 依赖。
+        """
+        raw = manifest.get('libs', ['backend/libs'])
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, list):
+            return []
+        dirs = []
+        for rel in raw:
+            if not isinstance(rel, str) or not rel.strip():
+                continue
+            try:
+                path = (plugin_dir / rel).resolve()
+                if path.is_relative_to(plugin_dir.resolve()) and path.is_dir():
+                    dirs.append(path)
+            except OSError:
+                continue
+        return dirs
+
     def _load_plugin(self, name: str, manifest: dict):
         backend_cfg = manifest.get('backend', {})
         entry_file = backend_cfg.get('entry', 'backend/main.py')
         class_name = backend_cfg.get('class', 'Plugin')
 
         plugin_dir = self._plugin_dirs.get(name) or (self.plugins_dir / name)
+
+        # 插件本地附加库：在加载后端前加入 sys.path，支持纯 Python 依赖随插件分发
+        for lib_dir in self._plugin_lib_dirs(plugin_dir, manifest):
+            sys.path.insert(0, str(lib_dir))
+
         try:
             module_path = (plugin_dir / entry_file).resolve()
             if not module_path.is_relative_to(plugin_dir):
