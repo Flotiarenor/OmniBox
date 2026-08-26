@@ -26,13 +26,15 @@ plugins/
 
 **命名约定**：
 
-- 文件夹名使用 `kebab-case`（如 `image-viewer`），与 `manifest.json` 中的 `name` 字段一致。
+- 文件夹名使用 `kebab-case`（如 `image-viewer`），与 `manifest.json` 中的 `name` 字段一致，缺省为文件夹名；（不一致告警，不阻断加载）。
 - 后端入口文件固定为 `backend/main.py`（可在 manifest 中自定义）。
 - 前端入口文件固定为 `frontend/index.html`（可在 manifest 中自定义）。
 
 ---
 
 ## 2. manifest.json 规范
+
+> **推荐用脚手架生成，而不是手写 manifest**：运行 `python tools/new_plugin.py my-tool` 一键生成目录结构、manifest 与示例前后端。手写时多数字段有缺省值（见下表）。
 
 ```json
 {
@@ -58,24 +60,26 @@ plugins/
 
 **字段说明**：
 
-| 字段                | 必填 | 说明                                                                            |
+> 标记说明：`必填` 必需；`默认` 表示理论上应填写、但省略时运行时取缺省值（`name`→文件夹名、`backend.entry`→`backend/main.py`、`backend.class`→`Plugin`、`frontend.route`→`/<name>`，`name` 与文件夹名不一致仅告警）；`可选` 可完全省略。`tools/check_plugins.py` 仍做严格校验（用于发布前自检）。
+
+| 字段                | 要求 | 说明                                                                            |
 | ------------------- | ---- | ------------------------------------------------------------------------------- |
-| `name`            | ✅   | 插件唯一标识，必须与文件夹名一致，使用`kebab-case`                            |
-| `version`         | ✅   | 语义化版本号                                                                    |
-| `displayName`     | ✅   | 在导航栏显示的名称                                                              |
-| `icon`            | ✅   | 导航栏图标（Emoji 或文字）                                                      |
-| `backend.entry`   | ✅   | 后端入口文件路径，相对于插件根目录                                              |
-| `backend.class`   | ✅   | 后端插件类名，必须继承`PluginBase`                                            |
-| `frontend.entry`  | ✅   | 前端入口 HTML 文件路径，相对于插件根目录                                        |
-| `frontend.route`  | ✅   | 前端路由路径，必须以`/` 开头                                                  |
-| `dependencies`    | ❌   | 依赖的其他插件名称列表                                                          |
-| `libs`            | ❌   | 插件本地附加库目录列表，默认`["backend/libs"]`，加载后端前会加入 `sys.path` |
-| `permissions`     | ❌   | 权限声明（仅作知情明示，供设置页展示，不做运行时强制）                     |
-| `minShellVersion` | ❌   | 要求的最低 Shell 版本                                                           |
-| `destroyOnLeave`  | ❌   | `true` 时离开页面销毁 iframe 重新加载（默认保持存活）                         |
-| `hidden`          | ❌   | `true` 时不显示在 Shell 主导航，但仍可被宿主内嵌或通过插件 URL 访问           |
-| `kind`            | ❌   | `local-adapter`：声明本插件管理独立运行环境（重依赖插件使用）                 |
-| `runtime`         | ❌   | 独立运行环境声明（venv / 入口 / requirements），见 §2.2                        |
+| `version`         | 必填   | 语义化版本号                                                                    |
+| `displayName`     | 必填   | 在导航栏显示的名称                                                              |
+| `icon`            | 必填   | 导航栏图标（Emoji 或文字）                                                      |
+| `frontend.entry`  | 必填   | 前端入口 HTML 文件路径，相对于插件根目录                                        |
+| `name`            | 默认   | 插件唯一标识，缺省为文件夹名；与文件夹名不一致告警                               |
+| `backend.entry`   | 默认   | 后端入口文件路径，默认 `backend/main.py`，相对于插件根目录                       |
+| `backend.class`   | 默认   | 后端插件类名，默认 `Plugin`，须继承 `PluginBase`                                |
+| `frontend.route`  | 默认   | 前端路由，默认 `/<name>`，须以 `/` 开头                                         |
+| `dependencies`    | 可选   | 依赖的其他插件名称列表                                                          |
+| `libs`            | 可选   | 插件本地附加库目录列表，默认`["backend/libs"]`，加载后端前会加入 `sys.path` |
+| `permissions`     | 可选   | 权限声明（仅作知情明示，供设置页展示，不做运行时强制）                     |
+| `minShellVersion` | 可选   | 要求的最低 Shell 版本                                                           |
+| `destroyOnLeave`  | 可选   | `true` 时离开页面销毁 iframe 重新加载（默认保持存活）                         |
+| `hidden`          | 可选   | `true` 时不显示在 Shell 主导航，但仍可被宿主内嵌或通过插件 URL 访问           |
+| `kind`            | 可选   | `local-adapter`：声明本插件管理独立运行环境（重依赖插件使用）                 |
+| `runtime`         | 可选   | 独立运行环境声明（venv / 入口 / requirements），见 §2.2                        |
 
 ---
 
@@ -323,6 +327,7 @@ from pyradios import RadioBrowser
 | API 方法                  | 参数                                              | 返回值                                                  | 说明                            |
 | ------------------------- | ------------------------------------------------- | ------------------------------------------------------- | ------------------------------- |
 | `list_images`           | `rel_path, page, per_page, sort_by, sort_order` | `{images, page, total, has_next, has_prev, settings}` | 获取图片列表（含尺寸缓存）      |
+| `list_folder_items`     | `rel_path, page, per_page, sort_by, sort_order` | `{items, all_images, all_offset, page, total, image_total, has_next, has_prev, settings}` | 混合瀑布流列表：直接图片 + 直接子相册 p0 瓦片（只处理一层嵌套）；`all_images` 为按瀑布流顺序展开的完整连续浏览序列，每个子文件夹内部按**它自己生效的设置**排序（自己有设置用自己，否则逐级继承父级），不受当前视图排序影响；`all_offset` 为当前页首项在完整序列中的起始偏移（分页对齐，防止灯箱错位）；卡片 `use_time_name` 标记该瓦片是否启用「时间+文件名」（控制圆圈数量角标显示）；`sort_by=time_name` 时：**图片一律按文件名自然序 p0→p1**（不受 mtime 差异影响），时间倒序只作用于作品/相册卡片之间的顶层排序，正序/倒序参数被忽略 |
 | `list_dir`              | `rel_path`                                      | `[{name, path}]`                                      | 列出子目录                      |
 | `delete_files`          | `[rel_paths]`                                   | `{deleted, errors}`                                   | 批量删除文件                    |
 | `move_files`            | `[rel_paths], dest_rel`                         | `{moved, errors}`                                     | 批量移动文件                    |
@@ -630,22 +635,22 @@ class MyPlugin(PluginBase):
 
 字段说明：
 
-| 字段                         | 必填 | 说明                                                                                      |
+| 字段                         | 要求 | 说明                                                                                      |
 | ---------------------------- | ---- | ----------------------------------------------------------------------------------------- |
-| `key`                      | ✅   | 设置键名                                                                                  |
-| `label`                    | ✅   | 设置面板显示名                                                                            |
-| `type`                     | ✅   | `text` / `number` / `range` / `select` / `checkbox` / `textarea` / `folder` |
-| `default`                  | ❌   | 默认值（未保存过时使用）                                                                  |
-| `help`                     | ❌   | 悬浮`?` 提示文本（鼠标悬停显示）                                                        |
-| `central`                  | ❌   | `True` 在集中设置面板显示；默认仅显示 `root_dir` 或有 `central` 标记的字段          |
-| `min` / `max` / `step` | ❌   | number/range 类型约束                                                                     |
-| `options`                  | ❌   | select 类型的选项列表                                                                     |
+| `key`                      | 必填   | 设置键名                                                                                  |
+| `label`                    | 必填   | 设置面板显示名                                                                            |
+| `type`                     | 必填   | `text` / `number` / `range` / `select` / `checkbox` / `textarea` / `folder`               |
+| `default`                  | 可选   | 默认值（未保存过时使用）                                                                  |
+| `help`                     | 可选   | 悬浮`?` 提示文本（鼠标悬停显示）                                                          |
+| `central`                  | 可选   | `True` 在集中设置面板显示；默认仅显示 `root_dir` 或有 `central` 标记的字段                 |
+| `min` / `max` / `step`     | 可选   | number/range 类型约束                                                                     |
+| `options`                  | 可选   | select 类型的选项列表                                                                     |
 
 ### 8.3 读取与写入
 
 | 场景                   | 方法                                                        |
 | ---------------------- | ----------------------------------------------------------- |
-| `__init__` 中读取    | `self._resolved_config.get('root_dir')`（构造前已预加载） |
+| `__init__` 中读取      | `self._resolved_config.get('root_dir')`（构造前已预加载）   |
 | 运行时读取单个         | `self.setting('root_dir')`                                |
 | 读取全部（合并默认值） | `self.get_settings()`                                     |
 | 保存全部               | `self.save_settings({...})`                               |
@@ -669,6 +674,8 @@ def on_settings_changed(self, changed_keys):
 ### 8.5 特殊案例：image-viewer 的 per-folder 设置
 
 image-viewer 需要在不同文件夹应用不同设置（如行高、排序），这类设置不在 `settings_schema` 中，保留在插件自己的状态文件里。它覆写了 `save_settings()` 但**必须调用 `super().save_settings(settings)`** 以保持框架的持久化 + 变更检测链路。
+
+**逐级向上继承**：`get_settings(rel_path)` 按「当前文件夹 → 父文件夹 → … → 全局 → 硬默认」合并设置。在父文件夹（如 `pixiv/following`）上启用 `time_name` 排序后，其下**所有子文件夹自动继承**同一排序，除非某个子文件夹被单独修改（`folders[该路径]` 存在）——单独修改的子文件夹以自己为准，并继续向其子文件夹传播。混合瀑布流中子文件夹图片的 p0→p1 顺序由该视图继承到的排序上下文决定。
 
 ### 8.6 运行时状态 vs 用户设置
 
@@ -721,4 +728,4 @@ image-viewer 需要在不同文件夹应用不同设置（如行高、排序）�
 
 ---
 
-按照本指南，你可以快速创建新插件，或将现有功能迁移到 OmniBox 架构中。如有疑问，请参考 `hello-world` 和 `image-viewer` 示例插件。
+按照本指南，你可以快速创建新插件，或将现有功能迁移到 OmniBox 架构中。快速起步可运行 `python tools/new_plugin.py my-tool` 一键生成骨架（模板见 `tools/examples/hello-world`）；如有疑问，请参考 `image-viewer` 示例插件。

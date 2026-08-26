@@ -9,7 +9,11 @@ class ImageViewer {
         this.fromChildren = false;
         this.currentPath = '';
         this.currentPage = 1;
+        this.currentItems = [];
         this.currentImages = [];
+        this.currentAllImages = [];      // 连续浏览序列：整个混合视图按瀑布流顺序展开的全部图片
+        this.currentAllOffset = 0;       // 当前页首项在连续序列中的起始偏移（分页对齐用）
+        this.navStack = [];              // 混合瀑布流逐层点入时的返回栈
         this.currentSettings = {};
         this.currentRowHeight = 200;
         this.albums = [];
@@ -49,8 +53,8 @@ class ImageViewer {
         this.loadExtensions();
 
         window.addEventListener('resize', () => {
-            if (this.mode === 'images' && this.currentImages.length) {
-                this.renderJustifiedLayout(this.currentImages);
+            if (this.mode === 'images' && this.currentItems.length) {
+                this.renderJustifiedLayout(this.currentItems);
             }
         });
     }
@@ -145,9 +149,14 @@ class ImageViewer {
             document.getElementById('setting-row-height-val').textContent = e.target.value;
         });
 
+        // 「时间+文件名」模式：正序/倒序选择无效，自动禁用
+        document.getElementById('setting-sort-by').addEventListener('change', (e) => {
+            this._syncSortOrderDisabled(e.target.value);
+        });
+
         document.getElementById('image-grid').addEventListener('contextmenu', (e) => {
             const card = e.target.closest('.iv-image-card');
-            if (!card) return;
+            if (!card || !card.dataset.url) return; // 相册卡片不参与图片右键菜单
             e.preventDefault();
             const imgUrl = card.dataset.url;
             if (!this.isMultiSelectMode || !this.selectedImages.has(imgUrl)) {
@@ -338,42 +347,92 @@ class ImageViewer {
     }
 
     openAlbum(path) {
+        // 从瀑布流点入时记录当前视图状态，返回时原样恢复
+        if (this.mode === 'images') {
+            this.navStack.push({
+                path: this.currentPath,
+                fromChildren: this.fromChildren,
+                childParentPath: this.childParentPath
+            });
+        }
         const album = this.albums.find(a => a.path === path);
         // 只有子文件夹、没有直接图片的相册 → 先展示其子相册
         if (album && album.has_children && album.direct_count === 0) {
             this.mode = 'children';
             this.childParentPath = path;
             this.fromChildren = true;
+            this.currentPath = path;   // 同步当前浏览目录，保证设置基于当前目录
             this.showAlbums();
             return;
         }
+        this._stopSlideshow();
+        this._showFolder(path);
+    }
+
+    _showFolder(path) {
+        const album = this.albums.find(a => a.path === path);
         this.currentPath = path;
         this.currentPage = 1;
         this.mode = 'images';
         document.getElementById('iv-back').classList.remove('hidden');
         document.getElementById('btn-slideshow').classList.remove('hidden');
         document.getElementById('btn-multi-select').classList.remove('hidden');
-        document.getElementById('iv-view-title').textContent = album ? album.name : (path || '未分类');
+        document.getElementById('iv-view-title').textContent = album ? album.name : (path.split('/').pop() || '未分类');
         document.getElementById('iv-view-sub').textContent = path || '根目录 · 未分类';
         document.getElementById('iv-albums').innerHTML = '';
         this.loadImages(path, 1);
     }
 
+    _popNavStack() {
+        const prev = this.navStack.pop();
+        if (!prev) return null;
+        this.fromChildren = prev.fromChildren;
+        this.childParentPath = prev.childParentPath;
+        return prev.path;
+    }
+
     _handleBack() {
         if (this.mode === 'images') {
             this._stopSlideshow();
+            if (this.navStack.length) {
+                const prev = this._popNavStack();
+                if (prev === '') {
+                    this.mode = 'albums';
+                    this.childParentPath = '';
+                    this.currentPath = '';
+                    this.showAlbums();
+                } else {
+                    this._showFolder(prev);
+                }
+                return;
+            }
             if (this.fromChildren && this.childParentPath) {
                 this.mode = 'children';
+                this.currentPath = this.childParentPath;
                 this.showAlbums();
             } else {
                 this.mode = 'albums';
                 this.childParentPath = '';
+                this.currentPath = '';
                 this.showAlbums();
             }
         } else if (this.mode === 'children') {
-            this.mode = 'albums';
-            this.childParentPath = '';
-            this.showAlbums();
+            if (this.navStack.length) {
+                const prev = this._popNavStack();
+                if (prev === '') {
+                    this.mode = 'albums';
+                    this.childParentPath = '';
+                    this.currentPath = '';
+                    this.showAlbums();
+                } else {
+                    this._showFolder(prev);
+                }
+            } else {
+                this.mode = 'albums';
+                this.childParentPath = '';
+                this.currentPath = '';
+                this.showAlbums();
+            }
         }
     }
 
@@ -476,24 +535,35 @@ class ImageViewer {
         grid.style.height = 'auto';
         paginationEl.innerHTML = '';
         try {
+            // 先取该文件夹生效的设置（含父文件夹/全局回退），保证 per-folder 设置首次进入即生效
+            const eff = await Bridge.call('get_settings', path);
+            if (eff) {
+                this.currentSettings = eff;
+                this.currentRowHeight = eff.row_height || 200;
+            }
             const perPage = this.currentSettings.per_page || 40;
             const sortBy = this.currentSettings.sort_by || 'mtime';
             const sortOrder = this.currentSettings.sort_order || 'desc';
-            const data = await Bridge.call('list_images', path, page, perPage, sortBy, sortOrder);
+            const data = await Bridge.call('list_folder_items', path, page, perPage, sortBy, sortOrder);
             this.currentPage = page;
-            this.currentImages = data.images;
+            this.currentItems = data.items || [];
+            this.currentImages = this.currentItems.filter(it => it.type !== 'album');
+            this.currentAllImages = data.all_images || this.currentImages;
+            this.currentAllOffset = data.all_offset || 0;
             if (data.settings) {
                 this.currentSettings = data.settings;
                 this.currentRowHeight = data.settings.row_height || 200;
             }
-            document.getElementById('iv-stats').textContent = `共 ${data.total} 张图片`;
+            const imgTotal = data.image_total != null ? data.image_total : this.currentImages.length;
+            document.getElementById('iv-stats').textContent =
+                (data.total === imgTotal) ? `共 ${data.total} 张图片` : `共 ${data.total} 项 · ${imgTotal} 张图片`;
             grid.innerHTML = '';
-            if (!data.images.length) {
+            if (!this.currentItems.length) {
                 grid.innerHTML = this._emptyHtml('🖼️', '此相册暂无图片');
                 grid.style.height = 'auto';
                 return;
             }
-            this.renderJustifiedLayout(data.images);
+            this.renderJustifiedLayout(this.currentItems);
             this.pagination.render(data.page, Math.ceil(data.total / perPage));
         } catch (error) {
             grid.innerHTML = this._emptyHtml('⚠️', '图片加载失败');
@@ -501,34 +571,92 @@ class ImageViewer {
         }
     }
 
-    renderJustifiedLayout(images) {
+    renderJustifiedLayout(items) {
         const grid = document.getElementById('image-grid');
         grid.innerHTML = '';
         const containerWidth = grid.clientWidth;
-        if (containerWidth === 0 || !images.length) return;
+        if (containerWidth === 0 || !items.length) return;
         const gap = 5;
-        const { cards, totalHeight } = JustifiedLayout.compute(images, containerWidth, this.currentRowHeight, gap);
+        const { cards, totalHeight } = JustifiedLayout.compute(items, containerWidth, this.currentRowHeight, gap);
         grid.style.height = `${totalHeight}px`;
+
+        // 每个瓦片在连续浏览序列中的起始位置（子文件夹 → 其 p0，单图 → 自身）。
+        // 分页时以 this.currentAllOffset 为基准：第 2+ 页的瓦片对应完整序列的中后段，
+        // 否则点击会错位打开到序列开头的图片。
+        const seqIndex = new Map();
+        let acc = this.currentAllOffset || 0;
+        items.forEach((it, i) => {
+            seqIndex.set(i, acc);
+            acc += (it.type === 'album' ? it.image_count : 1);
+        });
+
+        // 圆圈数量角标：仅在该瓦片对应子文件夹自身生效的排序为「时间+文件名」时显示
+        // （自己没设置则继承父级，后端 use_time_name 已算好）
+
         cards.forEach((cardData, index) => {
+            const item = items[index];
             const card = document.createElement('div');
             card.className = 'iv-image-card';
-            card.dataset.url = cardData.url;
             card.style.cssText = `left:${cardData.x}px;top:${cardData.y}px;width:${cardData.w}px;height:${cardData.h}px;`;
-            const img = document.createElement('img');
-            img.src = Bridge.thumbUrl(cardData.url);
-            img.loading = 'lazy';
-            img.alt = cardData.url.split('/').pop();
-            const p = document.createElement('p');
-            p.textContent = cardData.url.split('/').pop();
-            card.append(img, p);
-            grid.appendChild(card);
-            card.addEventListener('click', () => {
-                if (this.isMultiSelectMode) {
-                    this.toggleSelectImage(cardData.url, card);
+
+            if (item.type === 'album') {
+                // 子文件夹直接用 p0 图片瓦片展示（不做文件夹卡片），
+                // 点击从 p0 打开灯箱，向右可连续翻看该作品 p1 p2 … 及画师的其他作品
+                card.dataset.path = item.path;
+                const name = item.name;
+                if (item.cover) {
+                    const img = document.createElement('img');
+                    img.src = Bridge.thumbUrl(item.cover);
+                    img.loading = 'lazy';
+                    img.alt = name;
+                    img.onerror = function () {
+                        if (!this.dataset.r) {
+                            this.dataset.r = '1';
+                            const u = new URL(this.src, location.origin);
+                            u.searchParams.set('r', Date.now());
+                            this.src = u.toString();
+                        } else {
+                            this.outerHTML = '<div class="iv-cover-fallback">🖼️</div>';
+                        }
+                    };
+                    card.appendChild(img);
                 } else {
-                    this.lightbox.show(this.currentImages, index);
+                    const fb = document.createElement('div');
+                    fb.className = 'iv-cover-fallback';
+                    fb.textContent = '🖼️';
+                    card.appendChild(fb);
                 }
-            });
+                if (item.use_time_name) {
+                    const badge = document.createElement('span');
+                    badge.className = 'iv-count-badge';
+                    badge.textContent = item.image_count;
+                    card.appendChild(badge);
+                }
+                const p = document.createElement('p');
+                p.textContent = name;
+                card.appendChild(p);
+                card.addEventListener('click', () => {
+                    this.lightbox.show(this.currentAllImages, seqIndex.get(index));
+                });
+            } else {
+                // 单图卡片
+                card.dataset.url = item.url;
+                const img = document.createElement('img');
+                img.src = Bridge.thumbUrl(item.url);
+                img.loading = 'lazy';
+                img.alt = item.url.split('/').pop();
+                const p = document.createElement('p');
+                p.textContent = item.url.split('/').pop();
+                card.append(img, p);
+                card.addEventListener('click', () => {
+                    if (this.isMultiSelectMode) {
+                        this.toggleSelectImage(item.url, card);
+                    } else {
+                        this.lightbox.show(this.currentAllImages, seqIndex.get(index));
+                    }
+                });
+            }
+            grid.appendChild(card);
         });
     }
 
@@ -538,8 +666,8 @@ class ImageViewer {
             this._stopSlideshow();
             return;
         }
-        if (!this.currentImages.length) return;
-        this.lightbox.show(this.currentImages, 0);
+        if (!this.currentAllImages.length) return;
+        this.lightbox.show(this.currentAllImages, 0);
         this.slideshowTimer = setInterval(() => this.lightbox.navigate(1), 3000);
         document.getElementById('btn-slideshow').textContent = '⏸ 停止';
         Toast.info('幻灯片播放中，每 3 秒切换一张');
@@ -588,8 +716,8 @@ class ImageViewer {
         const imgs = [...this.selectedImages];
         if (!imgs.length) return;
         if (action === 'view') {
-            const idx = this.currentImages.findIndex(i => i.url === imgs[0]);
-            this.lightbox.show(this.currentImages, idx);
+            const idx = this.currentAllImages.findIndex(i => i.url === imgs[0]);
+            this.lightbox.show(this.currentAllImages, Math.max(0, idx));
         } else if (action === 'select' && !this.isMultiSelectMode) {
             this.toggleMultiSelectMode();
         } else if (action === 'move') {
@@ -647,6 +775,14 @@ class ImageViewer {
     // ============================================================
     // 设置
     // ============================================================
+    _syncSortOrderDisabled(sortBy) {
+        const disabled = sortBy === 'time_name';
+        const el = document.getElementById('setting-sort-order');
+        if (!el) return;
+        el.disabled = disabled;
+        if (disabled) el.value = 'asc';
+    }
+
     async openSettingsModal() {
         document.getElementById('settings-modal').classList.add('active');
         document.getElementById('setting-current-folder-name').textContent = this.currentPath || '根目录';
@@ -657,6 +793,7 @@ class ImageViewer {
             document.getElementById('setting-per-page').value = s.per_page;
             document.getElementById('setting-sort-by').value = s.sort_by;
             document.getElementById('setting-sort-order').value = s.sort_order;
+            this._syncSortOrderDisabled(s.sort_by);
             const rootDir = await Bridge.call('get_root_dir');
             document.getElementById('setting-root-dir').value = rootDir || '';
         } catch (e) { }

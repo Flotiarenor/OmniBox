@@ -14,6 +14,7 @@ ensure_thumbnail = _fs.ensure_thumbnail
 get_image_size = _fs.get_image_size
 is_safe_path = _fs.is_safe_path
 list_directory = _fs.list_directory
+natural_sort_key = _fs.natural_sort_key
 stat_mtime = _fs.stat_mtime
 
 class ImageViewerPlugin(PluginBase):
@@ -26,7 +27,9 @@ class ImageViewerPlugin(PluginBase):
          "min": 10, "max": 200, "default": 40},
         {"key": "sort_by", "label": "排序方式", "type": "select",
          "default": "mtime",
-         "options": [{"label": "修改时间", "value": "mtime"}, {"label": "文件名", "value": "name"}]},
+         "options": [{"label": "修改时间", "value": "mtime"},
+                     {"label": "文件名", "value": "name"},
+                     {"label": "时间+文件名", "value": "time_name"}]},
         {"key": "sort_order", "label": "排序方向", "type": "select",
          "default": "desc",
          "options": [{"label": "倒序", "value": "desc"}, {"label": "正序", "value": "asc"}]},
@@ -73,6 +76,7 @@ class ImageViewerPlugin(PluginBase):
     def register_api(self) -> dict:
         return {
             'list_images': self.list_images,
+            'list_folder_items': self.list_folder_items,
             'list_dir': self.list_dir,
             'list_albums': self.list_albums,
             'create_folder': self.create_folder,
@@ -183,7 +187,11 @@ class ImageViewerPlugin(PluginBase):
 
         reverse = (sort_order == 'desc')
         if sort_by == 'name':
-            images.sort(key=lambda x: x['url'].lower(), reverse=reverse)
+            images.sort(key=lambda x: natural_sort_key(Path(x['url']).name), reverse=reverse)
+        elif sort_by == 'time_name':
+            # 新标准「时间+文件名」：图片内部一律按文件名自然序（p0 → p1），
+            # 时间维度只作用于作品/相册卡片之间的顶层排序
+            images.sort(key=lambda x: natural_sort_key(Path(x['url']).name))
         else:
             images.sort(key=lambda x: x['mtime'], reverse=reverse)
 
@@ -202,6 +210,202 @@ class ImageViewerPlugin(PluginBase):
             "settings": self.get_settings(rel_path)
         }
 
+    # ===== 混合瀑布流（只处理一层嵌套）：直接图片 + 直接子相册 p0 瓦片 =====
+
+    def _scan_album_items(self, rel_path: str, sub_dirs: List[str]) -> tuple:
+        """扫描每个直接子目录。
+
+        返回 (卡片列表, {sub_rel: [直接图片 dict 列表]})。
+        卡片封面 = p0（文件名自然序第一张）；图片列表用于构建连续浏览序列。
+        """
+        cache_dirs = self._album_cache.get('dirs')
+        if not isinstance(cache_dirs, dict):
+            cache_dirs = self._album_cache['dirs'] = {}
+        cards = []
+        album_images = {}
+        for name in sorted(sub_dirs):
+            sub_rel = f"{rel_path}/{name}" if rel_path else name
+            dir_path = self.root_dir / sub_rel
+            try:
+                mtime = dir_path.stat().st_mtime
+            except OSError:
+                continue
+            cached = cache_dirs.get(sub_rel)
+            if cached and cached.get('mtime') is not None \
+                    and abs(float(cached.get('mtime', 0)) - float(mtime)) < 0.5:
+                entry = cached
+            else:
+                entry = self._scan_dir_direct(dir_path, sub_rel)
+                entry['mtime'] = mtime
+                cache_dirs[sub_rel] = entry
+            cover = entry.get('direct_cover', '')
+            cw, ch = 1, 1
+            images = []
+            try:
+                with os.scandir(dir_path) as entries:
+                    for e in entries:
+                        if e.name.startswith('.') or e.name == '.cache':
+                            continue
+                        if e.is_file() and Path(e.name).suffix.lower() in ALLOWED_EXTENSIONS:
+                            st = e.stat()
+                            url = (Path(sub_rel) / e.name).as_posix()
+                            w, h = self._get_image_size(e.path, st.st_mtime)
+                            images.append({'url': url, 'mtime': st.st_mtime,
+                                           'width': w, 'height': h})
+                            if url == cover:
+                                cw, ch = w, h
+            except OSError:
+                pass
+            album_images[sub_rel] = images
+            cards.append({
+                'type': 'album',
+                'path': sub_rel,
+                'name': name,
+                'cover': cover,
+                'image_count': len(images),
+                'has_children': entry.get('has_children', False),
+                'mtime': mtime,
+                'width': cw or 1,
+                'height': ch or 1,
+                'use_time_name': (self.get_settings(sub_rel).get('sort_by') == 'time_name'),
+            })
+        return cards, album_images
+
+    def _item_image_sort_key(self, sort_by: str):
+        """图片排序键：time_name 下图片一律按文件名自然序（p0 → p1），
+        时间维度只作用于作品/相册卡片之间的顶层排序；其余按设置。"""
+        if sort_by == 'time_name':
+            return lambda i: natural_sort_key(Path(i['url']).name)
+        if sort_by == 'mtime':
+            return lambda i: i.get('mtime', 0.0)
+        return lambda i: natural_sort_key(Path(i['url']).name)
+
+    def list_folder_items(self, rel_path: str = '', page: int = 1,
+                          per_page: int = 40, sort_by: str = 'name',
+                          sort_order: str = 'asc') -> Dict:
+        """混合列表：直接图片 + 直接子相册 p0 瓦片（只处理一层嵌套），瀑布流统一展示。
+
+        子文件夹以 p0 瓦片返回（封面 = p0，time_name 模式下带圆圈数量角标），
+        单图以 image 返回。`all_images` 为按瀑布流顺序展开的连续浏览序列：
+        每个子文件夹的图片（p0 → p1 → …）依次展开、随后是单图，
+        供灯箱向右连续翻看画师的其他作品（包括文件夹与单图）。
+        """
+        if not self._is_safe(rel_path):
+            return {"items": [], "all_images": [], "page": 1, "total": 0, "settings": {}}
+        try:
+            page = max(1, int(page))
+            per_page = max(1, int(per_page))
+        except (TypeError, ValueError):
+            page, per_page = 1, 40
+
+        cache_key = ('items', rel_path, sort_by, sort_order)
+        dir_mtime = self._get_dir_mtime(rel_path)
+        if cache_key in self._list_cache:
+            cached = self._list_cache[cache_key]
+            if cached[0] == dir_mtime:
+                cached_items = cached[1]
+                cached_all = cached[2] if len(cached) > 2 else None
+                total = len(cached_items)
+                start = (page - 1) * per_page
+                end = start + per_page
+                image_total = sum(1 for it in cached_items if it.get('type') == 'image')
+                all_offset = self._all_images_offset(cached_items, start)
+                return {
+                    "items": cached_items[start:end],
+                    "all_images": cached_all if cached_all is not None
+                                  else [im for im in cached_items if im.get('type') == 'image'],
+                    "all_offset": all_offset,
+                    "page": page, "total": total, "image_total": image_total,
+                    "has_next": end < total, "has_prev": page > 1,
+                    "settings": self.get_settings(rel_path)
+                }
+
+        target_dir = self.root_dir / rel_path
+        sub_dirs = []
+        images = []
+        try:
+            with os.scandir(target_dir) as entries:
+                for entry in entries:
+                    if entry.name.startswith('.') or entry.name == '.cache':
+                        continue
+                    if entry.is_dir():
+                        sub_dirs.append(entry.name)
+                    elif entry.is_file() and Path(entry.name).suffix.lower() in ALLOWED_EXTENSIONS:
+                        stat = entry.stat()
+                        url_path = (Path(rel_path) / entry.name).as_posix()
+                        width, height = self._get_image_size(entry.path, stat.st_mtime)
+                        images.append({
+                            'type': 'image', 'url': url_path,
+                            'mtime': stat.st_mtime, 'size': stat.st_size,
+                            'width': width, 'height': height
+                        })
+        except FileNotFoundError:
+            pass
+
+        cards, album_images = self._scan_album_items(rel_path, sub_dirs)
+
+        reverse = (sort_order == 'desc')
+        if sort_by == 'time_name':
+            # 新标准「时间+文件名」：时间维度只作用于作品/相册卡片（最新在前），
+            # 图片（含单图与子文件夹内图片）一律按文件名自然序 p0 → p1。
+            cards.sort(key=lambda x: (-float(x.get('mtime') or 0.0),
+                                      natural_sort_key(x['name'])))
+            images.sort(key=lambda x: natural_sort_key(Path(x['url']).name))
+            items = cards + images
+        else:
+            if sort_by == 'mtime':
+                cards.sort(key=lambda x: x['mtime'], reverse=reverse)
+                images.sort(key=lambda x: x['mtime'], reverse=reverse)
+            else:
+                cards.sort(key=lambda x: natural_sort_key(x['name']), reverse=reverse)
+                images.sort(key=lambda x: natural_sort_key(Path(x['url']).name), reverse=reverse)
+            items = cards + images
+
+        # 连续浏览序列：按瀑布流顺序展开；每个子文件夹内部按【它自己生效的设置】排序
+        # （自己有设置用自己，没有则逐级继承父级），不受当前视图排序影响——
+        # 这样改外层排序不会破坏子文件夹内部已设定好的 p0 → p1 顺序。
+        all_images = []
+        for it in items:
+            if it['type'] == 'image':
+                all_images.append({'url': it['url'], 'width': it['width'], 'height': it['height']})
+            else:
+                sub_settings = self.get_settings(it['path'])
+                sub_sort = sub_settings.get('sort_by') or sort_by
+                sub_reverse = (sub_settings.get('sort_order') or 'desc') == 'desc'
+                sub_imgs = sorted(album_images.get(it['path'], []),
+                                  key=self._item_image_sort_key(sub_sort),
+                                  reverse=(sub_sort != 'time_name' and sub_reverse))
+                for si in sub_imgs:
+                    all_images.append({'url': si['url'], 'width': si['width'], 'height': si['height']})
+
+        self._list_cache[cache_key] = (dir_mtime, items, all_images)
+        self._save_meta()
+
+        total = len(items)
+        start = (page - 1) * per_page
+        end = start + per_page
+        all_offset = self._all_images_offset(items, start)
+        return {
+            "items": items[start:end],
+            "all_images": all_images,
+            "all_offset": all_offset,
+            "page": page, "total": total,
+            "image_total": len(images),
+            "has_next": end < total, "has_prev": page > 1,
+            "settings": self.get_settings(rel_path)
+        }
+
+    def _all_images_offset(self, items: List[Dict], start: int) -> int:
+        """当前页首项之前，连续浏览序列 all_images 中已有多少张图片。
+
+        分页后前端用 items[0] 对应 all_images[all_offset]，
+        避免点击第 2+ 页的瓦片时灯箱打开到序列开头的错误图片。
+        """
+        offset = 0
+        for it in items[:start]:
+            offset += it.get('image_count', 0) if it.get('type') == 'album' else 1
+        return offset
+
     def list_dir(self, rel_path: str = '') -> List[Dict]:
         return list_directory(self.root_dir, rel_path)
     # ===== 相册索引（持久化 + 按目录 mtime 增量更新） =====
@@ -211,11 +415,13 @@ class ImageViewerPlugin(PluginBase):
             try:
                 with open(self.album_cache_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                if isinstance(data, dict) and data.get('version') == 2:
+                # 版本 3：封面改为文件名自然序第一张（p0）。
+                # 旧版（version 2）缓存里封面是按最新 mtime 取的，必须作废重扫。
+                if isinstance(data, dict) and data.get('version') == 3:
                     return data
             except Exception:
                 pass
-        return {'version': 2, 'dirs': {}}
+        return {'version': 3, 'dirs': {}}
 
     def _save_album_cache(self):
         try:
@@ -224,7 +430,6 @@ class ImageViewerPlugin(PluginBase):
                 json.dump(self._album_cache, f, ensure_ascii=False)
         except Exception as e:
             print(f'[ImageViewer] 保存相册索引失败: {e}')
-
     def _load_album_config(self) -> dict:
         defaults = {'collapsed': [], 'promoted': []}
         if self.album_config_file.exists():
@@ -288,15 +493,17 @@ class ImageViewerPlugin(PluginBase):
                         })
         except OSError:
             pass
-        images.sort(key=lambda x: x['mtime'], reverse=True)
+        # 封面 = 文件名自然序第一张（p0），相册新旧仍按最新 mtime 计算
+        newest = max((img['mtime'] for img in images), default=0.0)
+        cover = min(images, key=lambda img: natural_sort_key(Path(img['rel']).name))['rel'] if images else ''
         return {
             'path': rel_path,
             'name': dir_path.name if rel_path else '未分类',
             'depth': rel_path.count('/') + (1 if rel_path else 0),
             'parent': '/'.join(rel_path.split('/')[:-1]) if rel_path else None,
             'direct_count': len(images),
-            'direct_cover': images[0]['rel'] if images else '',
-            'direct_mtime': images[0]['mtime'] if images else 0.0,
+            'direct_cover': cover,
+            'direct_mtime': newest,
             'has_children': len(children) > 0,
             'children': sorted(children),
         }
@@ -454,6 +661,13 @@ class ImageViewerPlugin(PluginBase):
         return {"moved": moved, "errors": errors}
 
     def get_settings(self, rel_path: str = '') -> Dict:
+        """获取文件夹生效设置（含全局回退与逐级继承）。
+
+        文件夹设置按「当前文件夹 → 父文件夹 → … → 全局 → 硬默认」逐级
+        向上继承：在父文件夹（如 pixiv/following）上启用 time_name 后，
+        其下所有子文件夹自动继承同一排序；某个子文件夹被单独修改
+        （folders[该路径] 存在）时以它自己的设置优先，并继续向其子文件夹传播。
+        """
         folders = self.setting('folders') or {}
         if not isinstance(folders, dict):
             folders = {}
@@ -464,8 +678,13 @@ class ImageViewerPlugin(PluginBase):
             "sort_by": "mtime",
             "sort_order": "desc"
         }
-        key = rel_path or '__global__'
-        folder_settings = folders.get(key, {})
+        folder_settings = {}
+        parts = [p for p in (rel_path or '').split('/') if p]
+        for i in range(len(parts), 0, -1):
+            key = '/'.join(parts[:i])
+            if key in folders:
+                folder_settings = folders[key]
+                break
         result = {**hard_defaults, **global_settings, **folder_settings}
         result['root_dir'] = str(self.root_dir)
         return result
