@@ -327,7 +327,9 @@ from pyradios import RadioBrowser
 | API 方法                  | 参数                                              | 返回值                                                  | 说明                            |
 | ------------------------- | ------------------------------------------------- | ------------------------------------------------------- | ------------------------------- |
 | `list_images`           | `rel_path, page, per_page, sort_by, sort_order` | `{images, page, total, has_next, has_prev, settings}` | 获取图片列表（含尺寸缓存）      |
-| `list_folder_items`     | `rel_path, page, per_page, sort_by, sort_order` | `{items, all_images, all_offset, page, total, image_total, has_next, has_prev, settings}` | 混合瀑布流列表：直接图片 + 直接子相册 p0 瓦片（只处理一层嵌套）；`all_images` 为按瀑布流顺序展开的完整连续浏览序列，每个子文件夹内部按**它自己生效的设置**排序（自己有设置用自己，否则逐级继承父级），不受当前视图排序影响；`all_offset` 为当前页首项在完整序列中的起始偏移（分页对齐，防止灯箱错位）；卡片 `use_time_name` 标记该瓦片是否启用「时间+文件名」（控制圆圈数量角标显示）；`sort_by=time_name` 时：**图片一律按文件名自然序 p0→p1**（不受 mtime 差异影响），时间倒序只作用于作品/相册卡片之间的顶层排序，正序/倒序参数被忽略 |
+| `list_folder_items`     | `rel_path, page, per_page, sort_by, sort_order` | `{items, all_images, all_offset, page, total, image_total, has_next, has_prev, settings}` | 混合瀑布流列表：直接图片 + 直接子相册 p0 瓦片（只处理一层嵌套）；`all_images` 为按瀑布流顺序展开的完整连续浏览序列，每个子文件夹内部按**它自己生效的设置**排序（自己有设置用自己，否则逐级继承父级），不受当前视图排序影响；`all_offset` 为当前页首项在完整序列中的起始偏移（分页对齐，防止灯箱错位）；卡片 `use_time_name` 标记该瓦片是否启用「Pixiv 排序支持」（控制圆圈数量角标显示）；`sort_by=time_name`（Pixiv 排序支持）时：顶层作品/单图按**前导数字**（作品 ID）排序且方向生效（倒序 = 新作品在前），无数字名排最后，作品内部多图片仍按 p0→p1 |
+| `regenerate_thumbs`      | `[rel_paths]`                                   | `{regenerated, errors}`                             | 重新生成选中图片的缩略图（删除缓存并重建，修复坏缩略图） |
+| `refresh`                | 无                                                | `{success}`                                         | 清空内存缓存并作废旧相册索引，新增/替换图片立即生效 |
 | `list_dir`              | `rel_path`                                      | `[{name, path}]`                                      | 列出子目录                      |
 | `delete_files`          | `[rel_paths]`                                   | `{deleted, errors}`                                   | 批量删除文件                    |
 | `move_files`            | `[rel_paths], dest_rel`                         | `{moved, errors}`                                     | 批量移动文件                    |
@@ -675,7 +677,9 @@ def on_settings_changed(self, changed_keys):
 
 image-viewer 需要在不同文件夹应用不同设置（如行高、排序），这类设置不在 `settings_schema` 中，保留在插件自己的状态文件里。它覆写了 `save_settings()` 但**必须调用 `super().save_settings(settings)`** 以保持框架的持久化 + 变更检测链路。
 
-**逐级向上继承**：`get_settings(rel_path)` 按「当前文件夹 → 父文件夹 → … → 全局 → 硬默认」合并设置。在父文件夹（如 `pixiv/following`）上启用 `time_name` 排序后，其下**所有子文件夹自动继承**同一排序，除非某个子文件夹被单独修改（`folders[该路径]` 存在）——单独修改的子文件夹以自己为准，并继续向其子文件夹传播。混合瀑布流中子文件夹图片的 p0→p1 顺序由该视图继承到的排序上下文决定。
+**逐级向上继承**：`get_settings(rel_path)` 按「当前文件夹 → 父文件夹 → … → 全局 → 硬默认」合并设置。在父文件夹（如 `pixiv`）上启用 `time_name` 排序后，其下**所有子文件夹自动继承**同一排序，除非某个子文件夹被单独修改（`folders[该路径]` 存在）——单独修改的子文件夹以自己为准，并继续向其子文件夹传播。
+
+**Pixiv 排序只考虑两层嵌套**：`get_settings` 返回 `pixiv_explicit`（当前文件夹自身是否显式设置了 Pixiv 排序，即配置点）。配置点（如 pixiv 主文件夹）显示其子相册网格（作者卡片），继承 Pixiv 排序的子文件夹（作者层）才显示混合瀑布流（作品 p0 瓦片 + 连续浏览）。
 
 ### 8.6 运行时状态 vs 用户设置
 

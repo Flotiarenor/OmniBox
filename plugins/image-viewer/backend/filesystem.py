@@ -27,6 +27,18 @@ def natural_sort_key(text) -> list:
                 for part in _NUM_RE.split(str(text))]
 
 
+def pixiv_number(name) -> int:
+    """提取名称前导数字（Pixiv 作品 ID / 图片编号）；无前导数字返回 None。"""
+    m = _NUM_RE.match(str(name))
+    return int(m.group(1)) if m else None
+
+
+def drop_image_meta(meta_cache: dict, abs_path: str):
+    """删除某张图片的尺寸元数据缓存（文件被替换/重新生成缩略图时调用）。"""
+    key = hashlib.md5(abs_path.encode()).hexdigest()
+    meta_cache.pop(key, None)
+
+
 def stat_mtime(root: Path, rel_path: str) -> float:
     try:
         return os.stat(root / rel_path).st_mtime
