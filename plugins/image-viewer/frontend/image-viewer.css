@@ -131,6 +131,19 @@
 }
 .iv-image-card:hover p { opacity: 1; }
 
+/* ===== 圆圈数量角标（仅「时间+文件名」排序模式下显示在 p0 瓦片右下角） ===== */
+.iv-count-badge {
+  position: absolute; right: 8px; bottom: 8px; z-index: 4;
+  min-width: 22px; height: 22px; padding: 0 6px; box-sizing: border-box;
+  border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; color: #fff;
+  background: rgba(0, 0, 0, 0.62);
+  border: 1.5px solid rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
 /* ===== 设置 ===== */
 .iv-setting-item {
   display: flex; align-items: center; justify-content: space-between;
@@ -146,6 +159,9 @@
 .iv-setting-item select {
   padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--iv-radius-sm);
   background: var(--bg-surface); color: var(--text-primary);
+}
+.iv-setting-item select:disabled {
+  opacity: 0.5; cursor: not-allowed;
 }
 .iv-check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
 .iv-check input { accent-color: var(--accent); width: 16px; height: 16px; }
