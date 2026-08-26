@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>__DISPLAY__</title>
+</head>
+<body>
+  <div class="view-body">
+    <div class="view-toolbar">
+      <div class="toolbar-group">
+        <h1>👋 __DISPLAY__</h1>
+      </div>
+    </div>
+    <div class="view-content">
+      <p>这是由 <code>tools/new_plugin.py</code> 生成的插件，运行在 iframe 中。</p>
+      <button onclick="callBackend()">调用后端</button>
+      <pre id="result"></pre>
+    </div>
+  </div>
+  <script>
+    async function callBackend() {
+      const result = await Bridge.call('greet', '__NAME__')
+      document.getElementById('result').textContent = result
+    }
+  </script>
+</body>
+</html>

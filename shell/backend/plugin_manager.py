@@ -202,33 +202,39 @@ class PluginManager:
                     continue
 
                 manifest_name = data.get('name')
-                if not isinstance(manifest_name, str) or not manifest_name.strip():
-                    print(f"[PluginManager] 跳过 {folder_name}: manifest.name 缺失或无效")
-                    continue
-                if manifest_name != folder_name:
-                    print(
-                        f"[PluginManager] 跳过 {folder_name}: "
-                        f"manifest.name 必须与文件夹名一致 (当前为 {manifest_name!r})"
-                    )
-                    continue
+                if isinstance(manifest_name, str) and manifest_name.strip():
+                    if manifest_name != folder_name:
+                        print(f"[PluginManager] 警告 {folder_name}: manifest.name={manifest_name!r} 与文件夹名不一致，已使用文件夹名")
+                else:
+                    print(f"[PluginManager] 提示 {folder_name}: 未声明 manifest.name，已使用文件夹名")
+                name = folder_name
+                data['name'] = name
 
                 frontend = data.get('frontend')
-                route = frontend.get('route') if isinstance(frontend, dict) else None
+                if not isinstance(frontend, dict):
+                    frontend = {}
+                    data['frontend'] = frontend
+                route = frontend.get('route')
                 if not isinstance(route, str) or not route.strip() or not route.startswith('/'):
-                    print(f"[PluginManager] 跳过 {folder_name}: frontend.route 缺失或必须以 / 开头")
-                    continue
-                route = route.strip()
+                    route = f'/{name}'
+                    frontend['route'] = route
+                    print(f"[PluginManager] 提示 {name}: 未声明 frontend.route，已默认 {route}")
+                else:
+                    route = route.strip()
                 if route in ('/', '/settings'):
                     print(f"[PluginManager] 跳过 {folder_name}: frontend.route 不能使用保留路由 {route}")
                     continue
+
                 backend = data.get('backend')
-                if (not isinstance(backend, dict)
-                        or not isinstance(backend.get('entry'), str)
-                        or not backend['entry'].strip()
-                        or not isinstance(backend.get('class'), str)
-                        or not backend['class'].strip()):
-                    print(f"[PluginManager] 跳过 {folder_name}: backend.entry / backend.class 缺失或无效")
-                    continue
+                if not isinstance(backend, dict):
+                    backend = {}
+                    data['backend'] = backend
+                if not isinstance(backend.get('entry'), str) or not backend['entry'].strip():
+                    backend['entry'] = 'backend/main.py'
+                    print(f"[PluginManager] 提示 {name}: 未声明 backend.entry，已默认 backend/main.py")
+                if not isinstance(backend.get('class'), str) or not backend['class'].strip():
+                    backend['class'] = 'Plugin'
+                    print(f"[PluginManager] 提示 {name}: 未声明 backend.class，已默认 Plugin")
 
                 dependencies = data.get('dependencies', [])
                 if (not isinstance(dependencies, list)
@@ -236,8 +242,8 @@ class PluginManager:
                     print(f"[PluginManager] 跳过 {folder_name}: dependencies 必须是字符串数组")
                     continue
 
-                if manifest_name in manifests:
-                    print(f"[PluginManager] 跳过重复插件 {manifest_name} (来源: {root})")
+                if name in manifests:
+                    print(f"[PluginManager] 跳过重复插件 {name} (来源: {root})")
                     continue
                 if route in routes:
                     print(
@@ -246,9 +252,9 @@ class PluginManager:
                     )
                     continue
 
-                manifests[manifest_name] = data
-                routes[route] = manifest_name
-                self._plugin_dirs[manifest_name] = plugin_dir
+                manifests[name] = data
+                routes[route] = name
+                self._plugin_dirs[name] = plugin_dir
         return manifests
 
     def _resolve_dependencies(self, manifests: dict) -> List[str]:

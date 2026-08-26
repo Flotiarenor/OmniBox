@@ -1,5 +1,3 @@
-0
-
 # OmniBox
 
 **OmniBox** 是一个轻量级、可扩展的桌面应用框架。它本身不包含任何业务功能，所有能力均由可插拔的插件提供。你可以像安装浏览器扩展一样，自由添加、移除功能模块。
@@ -150,10 +148,13 @@ directories:
 完整的插件开发指南请参阅 [插件开发文档](./docs/plugin-guide.md)。
 该文档包含插件结构、`manifest.json` 规范、后端与前端开发示例、调试技巧以及最佳实践。
 
+快速起步：运行 `python tools/new_plugin.py my-tool` 一键生成插件骨架（模板见 `tools/examples/hello-world`）。
+
 插件生态方向（Companion 插件 / 独立运行环境）见
 [主程序方向文档](./docs/core-direction.md)；
 图像自动打标插件设计见 [image-tagger 设计文档](./docs/image-tagger-design.md)；
-相册清理插件设计见 [image-cleaner 设计文档](./docs/image-cleaner-design.md)。
+相册清理插件设计见 [image-cleaner 设计文档](./docs/image-cleaner-design.md)；
+Pixiv 同步插件设计见 [pixiv-sync 设计文档](./docs/pixiv-sync-design.md)。
 
 ---
 
