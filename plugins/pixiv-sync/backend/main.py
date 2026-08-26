@@ -28,6 +28,26 @@ from pixiv_mini import PixivClient, PixivError
 CACHE_SUBDIR = Path(".cache") / "pixiv-sync"
 
 
+class _RateLimiter:
+    """全局请求速率控制（令牌桶），避免触发 pixiv app-api 的 429 限流。
+
+    pixiv 实测限流阈值约 30 req/10s，这里保守限制为 rate 次/秒。
+    """
+
+    def __init__(self, rate: float = 3.0):
+        self._rate = rate
+        self._lock = threading.Lock()
+        self._last = 0.0
+
+    def wait(self):
+        with self._lock:
+            now = time.time()
+            wait = max(0.0, self._last + 1.0 / self._rate - now)
+            if wait:
+                time.sleep(wait)
+            self._last = time.time()
+
+
 class PixivSyncPlugin(PluginBase):
     settings_schema = [
         {
@@ -83,6 +103,7 @@ class PixivSyncPlugin(PluginBase):
         self._pixiv_client: Optional[PixivClient] = None
         self._lock = threading.Lock()
         self._task_lock = threading.Lock()  # 保护 task 计数 / ids 集合 / 断点文件写
+        self._rate_limiter = _RateLimiter(rate=3.0)  # app-api 请求限速 3/s
         self._task: Optional[Dict[str, Any]] = None
         self._thread: Optional[threading.Thread] = None
         self._cancel_flag = False
@@ -241,67 +262,106 @@ class PixivSyncPlugin(PluginBase):
             self._persist_task(task)
 
     def _sync_following(self, task: Dict[str, Any]):
-        """关注新作：先拉取全量新作流，按画师分组后逐画师完整下载。"""
+        """同步画师（完整作品库）：关注列表 → 逐画师 user_illusts 翻页拉全部作品 → 并行下载。
+
+        不再使用 illust_follow 新作流——那只会返回画师近期作品，历史作品会漏。
+        """
         client = self._client()
         ids = self._load_ids()
 
-        # 1. 翻页拉取全部关注新作（确定 total 后进度更准确）
-        all_illusts: List[Dict[str, Any]] = []
+        # 1. 翻页拉取全部关注画师（user_following）
+        following: List[tuple] = []  # (user_id, name)
         qs = None
         while not self._cancel_flag:
-            page = client.illust_follow(**qs) if qs else client.illust_follow()
-            all_illusts.extend(page.get("illusts", []) or [])
+            if qs:
+                qs.pop("user_id", None)
+                page = client.user_following(client.user_id, **qs)
+            else:
+                page = client.user_following(client.user_id)
+            for item in page.get("user_previews", []) or []:
+                user = item.get("user") or {}
+                if user.get("id"):
+                    following.append((int(user["id"]), str(user.get("name") or user["id"])))
             next_url = page.get("next_url")
             if not next_url:
                 break
             qs = client.parse_qs(next_url)
-        task["total"] = len(all_illusts)
+        task["current"] = f"拉取 {len(following)} 位画师的作品列表…"
         self._persist_task(task)
         if self._cancel_flag:
             return
 
-        # 2. 按画师分组（保持新作流中的首次出现顺序）
-        groups: Dict[int, Dict[str, Any]] = {}
-        order: List[int] = []
-        for illust in all_illusts:
-            user = illust.get("user") or {}
-            uid = int(user.get("id", 0))
-            if uid not in groups:
-                groups[uid] = {"name": str(user.get("name") or uid), "illusts": []}
-                order.append(uid)
-            groups[uid]["illusts"].append(illust)
+        # 2. 主线程预解析画师目录（含改名迁移），避免并发写 artists 缓存
+        subs = {uid: self._artist_dir(uid, name) for uid, name in following}
 
-        # 3. 主线程预解析画师目录（含改名迁移），避免并发写 artists 缓存
-        subs = {uid: self._artist_dir(uid, groups[uid]["name"]) for uid in order}
+        # 3. 并行拉取所有画师的全部作品列表（低并发 + 节流，避免触发 pixiv 限流）
+        def fetch_artist(uid: int) -> List[Dict[str, Any]]:
+            illusts: List[Dict[str, Any]] = []
+            q = None
+            retries_429 = 0
+            while not self._cancel_flag:
+                try:
+                    if q:
+                        q.pop("user_id", None)
+                        q.pop("type", None)
+                        page = client.user_illusts(uid, **q)
+                    else:
+                        page = client.user_illusts(uid)
+                    illusts.extend(page.get("illusts", []) or [])
+                    next_url = page.get("next_url")
+                    if not next_url:
+                        break
+                    q = client.parse_qs(next_url)
+                    time.sleep(0.25)  # 请求间隔，避免 429
+                except PixivError as e:
+                    if "429" in str(e):  # Rate Limit：退避后重试
+                        retries_429 += 1
+                        if retries_429 > 3:
+                            raise
+                        time.sleep(5 * retries_429)  # 5s / 10s / 15s
+                    else:
+                        raise
+            return illusts
+
+        all_illusts: List[tuple] = []  # (sub, illust)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(fetch_artist, uid) for uid, _ in following]
+            for future in futures:
+                try:
+                    illusts = future.result()
+                except Exception as e:  # noqa: BLE001
+                    print(f"[pixiv-sync] 拉取画师列表失败: {e}")
+                    continue
+                with self._task_lock:
+                    for illust in illusts:
+                        all_illusts.append((subs[uid], illust))
+                    task["total"] = len(all_illusts)  # 实时进度
+                    task["current"] = f"拉取作品列表 {len(all_illusts)}…"
+                    self._persist_task(task)
+        task["total"] = len(all_illusts)
+        task["current"] = ""
+        self._persist_task(task)
         if self._cancel_flag:
             return
+        if not all_illusts and following:
+            raise PixivError(
+                f"拉取 {len(following)} 位画师的作品列表全部失败（可能触发 pixiv 限流 429），请稍后重试"
+            )
+        task["current"] = f"开始下载 {len(all_illusts)} 个作品…"
+        self._persist_task(task)
 
-        # 4. 画师级并行下载：多个画师同时下载，单个画师内部仍连续完整
+        # 4. 全局并行下载（提交顺序按画师，线程池满载）
         workers = self._workers()
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [
-                pool.submit(self._download_artist, uid, groups[uid], subs[uid], task, ids)
-                for uid in order
+                pool.submit(self._process_illust, illust, task, ids, sub)
+                for sub, illust in all_illusts
             ]
             for future in futures:
                 try:
                     future.result()
                 except Exception as e:  # noqa: BLE001
-                    print(f"[pixiv-sync] 画师任务异常: {e}")
-
-    def _download_artist(
-        self,
-        uid: int,
-        group: Dict[str, Any],
-        sub: Path,
-        task: Dict[str, Any],
-        ids: Set[int],
-    ):
-        """下载一个画师的全部新作（内部串行，保证单画师完整性）。"""
-        for illust in group["illusts"]:
-            if self._cancel_flag:
-                return
-            self._process_illust(illust, task, ids, sub)
+                    print(f"[pixiv-sync] 下载任务异常: {e}")
 
     def _workers(self) -> int:
         try:
@@ -317,17 +377,28 @@ class PixivSyncPlugin(PluginBase):
 
         all_illusts: List[Dict[str, Any]] = []
         qs = None
+        retries_429 = 0
         while not self._cancel_flag:
-            if qs:
-                qs.pop("user_id", None)
-                page = client.user_bookmarks_illust(client.user_id, **qs)
-            else:
-                page = client.user_bookmarks_illust(client.user_id)
-            all_illusts.extend(page.get("illusts", []) or [])
-            next_url = page.get("next_url")
-            if not next_url:
-                break
-            qs = client.parse_qs(next_url)
+            try:
+                if qs:
+                    qs.pop("user_id", None)
+                    page = client.user_bookmarks_illust(client.user_id, **qs)
+                else:
+                    page = client.user_bookmarks_illust(client.user_id)
+                all_illusts.extend(page.get("illusts", []) or [])
+                next_url = page.get("next_url")
+                if not next_url:
+                    break
+                qs = client.parse_qs(next_url)
+                time.sleep(0.25)
+            except PixivError as e:
+                if "429" in str(e):
+                    retries_429 += 1
+                    if retries_429 > 3:
+                        raise
+                    time.sleep(5 * retries_429)
+                else:
+                    raise
         task["total"] = len(all_illusts)
         self._persist_task(task)
         if self._cancel_flag:
