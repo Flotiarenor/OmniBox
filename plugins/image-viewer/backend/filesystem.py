@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Dict, List
@@ -12,6 +13,18 @@ from shell.backend.media_catalog import (
 )
 
 ALLOWED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'}
+
+_NUM_RE = re.compile(r'(\d+)')
+
+
+def natural_sort_key(text) -> list:
+    """自然排序键：p0 < p1 < p2 < ... < p10。优先使用 venv 的 natsort，缺失时回退内置实现。"""
+    try:
+        from natsort import natsort_keygen
+        return natsort_keygen()(str(text))
+    except Exception:
+        return [int(part) if part.isdigit() else part.lower()
+                for part in _NUM_RE.split(str(text))]
 
 
 def stat_mtime(root: Path, rel_path: str) -> float:
