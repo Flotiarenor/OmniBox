@@ -106,8 +106,12 @@
             <span style="font-size:11px;color:var(--color-text,#999);">机械盘建议 1-2，SSD 可 4-8</span>
           </label>
         </div>
-        <div class="save-row">
-          <button id="btn-save" class="btn btn-sm">保存设置</button>
+        <div class="save-row" style="justify-content:space-between;align-items:center;">
+          <span style="font-size:11px;color:var(--color-text,#999);" id="st-selected">画师名单: 全部</span>
+          <div style="display:flex;gap:8px;">
+            <button id="btn-open-config" class="btn btn-sm" title="打开画师名单配置文件所在文件夹（编辑：每行一个画师名字或 id，空=全部）">📂 画师名单文件</button>
+            <button id="btn-save" class="btn btn-sm">保存设置</button>
+          </div>
         </div>
       </div>
       <div class="psync-tip">
@@ -132,6 +136,8 @@
           dot.title = t ? '已配置' : '未配置';
           $('st-root').textContent = '根目录: ' + (s.root_dir || '未知');
           $('st-total').textContent = '已下载 ' + s.downloaded_total + ' 张';
+          $('st-selected').textContent = '画师名单: ' + (s.selected_artists ? s.selected_artists + ' 位' : '全部');
+          $('st-selected').title = s.selected_file || '';
           renderTask(s.task, s.running);
           return s;
         } catch (e) {
@@ -240,9 +246,14 @@
         $('btn-cancel').addEventListener('click', async () => {
           try { await Bridge.call('cancel_task'); } catch (e) { /* ignore */ }
         });
+        $('btn-open-config').addEventListener('click', async () => {
+          try { await Bridge.call('open_config'); } catch (e) { alert('打开失败: ' + e.message); }
+        });
         $('btn-save').addEventListener('click', saveSettings);
         await loadSettings();
         await refreshStatus();
+        // 状态栏定时刷新（含画师名单数量），编辑名单文件后自动更新
+        setInterval(refreshStatus, 10000);
         const s = await refreshStatus();
         if (s && s.running) { polling = true; tick(); }
       });
