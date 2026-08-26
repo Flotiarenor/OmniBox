@@ -1,0 +1,24 @@
+{
+  "name": "pixiv-sync",
+  "version": "0.1.0",
+  "displayName": "Pixiv 同步",
+  "icon": "🎨",
+  "description": "image-viewer 的 Companion 插件：同步下载关注画师新作与收藏画作",
+  "dependencies": [
+    "image-viewer"
+  ],
+  "permissions": [
+    "filesystem:read",
+    "filesystem:write",
+    "network"
+  ],
+  "backend": {
+    "entry": "backend/main.py",
+    "class": "PixivSyncPlugin"
+  },
+  "frontend": {
+    "entry": "frontend/index.html",
+    "route": "/pixiv-sync"
+  },
+  "hidden": true
+}
