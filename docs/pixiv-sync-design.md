@@ -87,6 +87,7 @@ plugins/
 | `workers` | number | 并发下载数（1-8，默认 4）：画师间/作品间并行下载；机械盘建议 1-2，SSD 可 4-8 |
 | `max_download` | number | 单次同步上限（默认 100，0=不限）：每次「同步画师/同步喜欢」最多下载条数，下完再点同步继续（分批推进） |
 | `rate_limit` | number | API 请求速率次/秒（默认 3，1-10 可调）：间隔带随机抖动（-20%~+40%）；pixiv 阈值约 3/s，调高有 429 风险 |
+| `scan_workers` | number | 刷新名单的并行拉取画师数（滑动窗口，默认 4，1-8）：同时最多 N 个画师在拉，完成一个补充一个；总速率仍受 `rate_limit` 限制 |
 | `pixeval_dir` | text | 第三方客户端 pixeval 下载目录；设置后同步时自动导入（见下） |
 
 ### pixeval 目录导入（第三方客户端兼容）
@@ -115,9 +116,9 @@ plugins/
 | `get_status` | - | `{task, root_dir, token_configured, downloaded_total, running, selected_artists, selected_file}` | 状态轮询 |
 | `sync_following` | - | `{ok, data\|error}` | 启动「同步画师」任务（拉列表 + 下载） |
 | `sync_bookmarks` | - | `{ok, data\|error}` | 启动「同步喜欢」任务（拉列表 + 下载） |
-| `refresh_following_lists` | - | `{ok, data\|error}` | **刷新关注画师作品名单**：拉取列表生成待下载清单 `pending_following.json`（不下载；长任务） |
-| `refresh_bookmarks_lists` | - | `{ok, data\|error}` | **刷新喜欢画作名单**：拉取收藏列表生成待下载清单 `pending_bookmarks.json`（不下载；长任务） |
-| `sync_following` / `sync_bookmarks` | - | `{ok, data\|error}` | **按待下载清单下载**（先刷新名单再同步）：每次最多 `max_download` 条，下载后从清单移除，可重复点继续 |
+| `refresh_following_lists` | - | `{ok, data\|error}` | **刷新关注画师作品名单**：完整扫描 + 画师级断点（`scan.done_uids`），分批推进，清单存全部作品（含 done 标记），旧→新排序 |
+| `refresh_bookmarks_lists` | - | `{ok, data\|error}` | **刷新喜欢画作名单**：完整扫描 + 页级断点（`scan.offset`），分批推进，去重累积 |
+| `sync_following` / `sync_bookmarks` | - | `{ok, data\|error}` | **按清单下载**（先刷新再同步）：只下 `done=false` 的，每次最多 `max_download` 条，成功后标记 done 保留在清单，可重复点继续 |
 | `refresh_downloaded` | - | `{ok, total, zero_removed}` | **刷新已下载记录**：扫描本地重建 ids（手动删的移除、手动加的导入、0 字节清理） |
 | `verify_downloaded` | - | `{ok, stale_removed, zero_removed, total}` | **校验已下载内容**：移除记录中本地无有效文件的失效 id（下次同步重下），不导入新增 |
 | `cancel_task` | - | `{ok}` | 请求取消当前任务（下个检查点生效） |

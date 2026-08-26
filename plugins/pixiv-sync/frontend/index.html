@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Pixiv 同步</title>
   <style>
-    /* 极简样式：布局复用 Shell 的 .view-body / .view-toolbar / .view-content */
-    .psync-main { display: flex; flex-direction: column; height: 100%; }
+    /* 高度链：iframe 内 html/body 必须有高度，滚动才生效 */
+    html, body { height: 100%; margin: 0; }
+    .psync-main { display: flex; flex-direction: column; height: 100%; min-height: 0; }
     .psync-main .view-content { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
     .psync-status { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
       padding: 8px 16px; font-size: 12px; color: var(--color-text, #666); }
@@ -153,6 +154,10 @@
           <label>API 请求速率（次/秒）
             <input id="set-ratelimit" type="number" min="1" max="10" value="3">
             <span style="font-size:11px;color:var(--color-text,#999);">间隔带随机抖动；pixiv 阈值约 3/s，调高有 429 风险</span>
+          </label>
+          <label>并行拉取画师数（滑动窗口）
+            <input id="set-scanworkers" type="number" min="1" max="8" value="4">
+            <span style="font-size:11px;color:var(--color-text,#999);">刷新名单时同时拉取的画师数；总速率仍受 rate_limit 限制</span>
           </label>
         </div>
         <div class="save-row" style="justify-content:space-between;align-items:center;">
@@ -314,6 +319,7 @@
           $('set-maxdl').value = s.max_download != null ? s.max_download : 100;
           $('set-maxrefresh').value = s.max_refresh != null ? s.max_refresh : 500;
           $('set-ratelimit').value = s.rate_limit || 3;
+          $('set-scanworkers').value = s.scan_workers || 4;
         } catch (e) { /* 忽略 */ }
       }
 
@@ -329,6 +335,7 @@
           max_download: Math.max(0, parseInt($('set-maxdl').value, 10) || 0),
           max_refresh: Math.max(0, parseInt($('set-maxrefresh').value, 10) || 0),
           rate_limit: Math.max(1, Math.min(10, parseInt($('set-ratelimit').value, 10) || 3)),
+          scan_workers: Math.max(1, Math.min(8, parseInt($('set-scanworkers').value, 10) || 4)),
         };
         try {
           const r = await Bridge.call('save_settings', values);

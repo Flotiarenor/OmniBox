@@ -18,7 +18,7 @@ import shutil
 import threading
 import time
 import webbrowser
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urlparse
@@ -134,6 +134,15 @@ class PixivSyncPlugin(PluginBase):
             "min": 1,
             "max": 10,
             "help": "app-api 请求限速，间隔带随机抖动；pixiv 限流阈值约 3/s，调高有 429 风险",
+        },
+        {
+            "key": "scan_workers",
+            "label": "并行拉取画师数（滑动窗口）",
+            "type": "number",
+            "default": 4,
+            "min": 1,
+            "max": 8,
+            "help": "刷新名单时同时拉取列表的画师数；总速率仍受 rate_limit 限制，此值只是滑动窗口大小（非本插件被禁用时可独立生效）",
         },
         {
             "key": "pixeval_dir",
@@ -615,21 +624,32 @@ class PixivSyncPlugin(PluginBase):
     def _pending_file(self, kind: str) -> Path:
         return self._cache_dir() / f"pending_{kind}.json"
 
-    def _load_pending(self, kind: str) -> List[Dict[str, Any]]:
+    def _load_pending_data(self, kind: str) -> tuple:
+        """读取清单，返回 (items, scan)。scan 为刷新断点进度（dict 或 None）。"""
         try:
             data = json.loads(self._pending_file(kind).read_text(encoding="utf-8"))
-            if isinstance(data, dict) and isinstance(data.get("items"), list):
-                return data["items"]
+            if isinstance(data, dict):
+                items = data.get("items", []) if isinstance(data.get("items"), list) else []
+                scan = data.get("scan")
+                return items, (scan if isinstance(scan, dict) else None)
         except Exception:
             pass
-        return []
+        return [], None
 
-    def _save_pending(self, kind: str, items: List[Dict[str, Any]]):
+    def _load_pending(self, kind: str) -> List[Dict[str, Any]]:
+        items, _ = self._load_pending_data(kind)
+        return items
+
+    def _save_pending(self, kind: str, items: List[Dict[str, Any]], scan: Optional[dict] = None):
         try:
+            if scan is None:
+                _, scan = self._load_pending_data(kind)
+            data: Dict[str, Any] = {"saved_at": time.time(), "items": items}
+            if scan:
+                data["scan"] = scan
             self._cache_dir().mkdir(parents=True, exist_ok=True)
             self._pending_file(kind).write_text(
-                json.dumps({"saved_at": time.time(), "items": items}, ensure_ascii=False),
-                encoding="utf-8",
+                json.dumps(data, ensure_ascii=False), encoding="utf-8"
             )
         except Exception as e:
             print(f"[pixiv-sync] 保存待下载清单失败: {e}")
@@ -665,13 +685,17 @@ class PixivSyncPlugin(PluginBase):
             client.auth(refresh_token=token)
             ids = self._load_ids()
             if kind == "following":
-                items = self._collect_following_pending(client, task, ids)
+                items, scan = self._collect_following_pending(client, task, ids)
             else:
-                items = self._collect_bookmarks_pending(client, task, ids)
-            self._save_pending(kind, items)
+                items, scan = self._collect_bookmarks_pending(client, task, ids)
+            self._save_pending(kind, items, scan)
             task["state"] = "cancelled" if self._cancel_flag else "done"
             task["total"] = len(items)
-            task["current"] = f"待下载 {len(items)} 个（清单已保存）"
+            done_cnt = sum(1 for i in items if i.get("done"))
+            task["current"] = (
+                f"清单 {len(items)} 条（已下 {done_cnt}）· 已扫描"
+                + ("完成" if (scan or {}).get("complete") else "部分（可再点刷新继续）")
+            )
         except RateLimitError as e:
             task["state"] = "failed"
             task["error"] = str(e)
@@ -687,7 +711,16 @@ class PixivSyncPlugin(PluginBase):
 
     def _collect_following_pending(
         self, client, task: Dict[str, Any], ids: Set[int]
-    ) -> List[Dict[str, Any]]:
+    ) -> tuple:
+        """扫描关注画师作品，返回 (items, scan)。画师级断点：scan.done_uids 记录已处理画师。
+
+        每次刷新处理一批画师（受 max_refresh 待下载条数限制），未处理的画师下次继续；
+        全部画师处理完 scan.complete=True。清单按旧→新排序（老图优先下载）。
+        """
+        items, scan = self._load_pending_data("following")
+        done_uids = set(scan.get("done_uids", [])) if isinstance(scan, dict) else set()
+        if scan and scan.get("complete"):
+            done_uids = set()  # 上一轮完整结束，新一轮从头
         following = self._fetch_following(task)
         selected = self._load_selected_artists()
         if selected:
@@ -696,7 +729,10 @@ class PixivSyncPlugin(PluginBase):
         if not following:
             raise PixivError("关注列表为空或画师名单未匹配到任何画师")
 
+        refresh_limit = self._max_refresh()
+
         def fetch_artist(uid: int) -> List[Dict[str, Any]]:
+            """完整扫描一个画师的全部作品（从最新翻到最旧）。"""
             illusts: List[Dict[str, Any]] = []
             q = None
             while not self._cancel_flag:
@@ -719,71 +755,82 @@ class PixivSyncPlugin(PluginBase):
                     raise
             return illusts
 
-        items: List[Dict[str, Any]] = []
-        refresh_limit = self._max_refresh()
-        stop = threading.Event()  # 达到刷新上限时置位，让其他拉取线程退出
-        def fetch_artist(uid: int) -> List[Dict[str, Any]]:
-            """从最新（列表头部）开始拉取；本页全部已下载 → 更早必然已同步，停止（增量）。"""
-            illusts: List[Dict[str, Any]] = []
-            q = None
-            while not self._cancel_flag and not stop.is_set():
-                try:
-                    self._rate_limiter.wait()  # 全局限速（多线程共享）
-                    if q:
-                        q.pop("user_id", None)
-                        q.pop("type", None)
-                        page = client.user_illusts(uid, **q)
-                    else:
-                        page = client.user_illusts(uid)
-                    batch = page.get("illusts", []) or []
-                    illusts.extend(batch)
-                    # 增量优化：列表按时间倒序，本页全部已下载 → 更早的必然也下载过，停止
-                    if batch and all(int(i.get("id", -1)) in ids for i in batch):
-                        break
-                    nxt = page.get("next_url")
-                    if not nxt:
-                        break
-                    q = client.parse_qs(nxt)
-                except PixivError as e:
-                    if "429" in str(e):
-                        raise RateLimitError("触发 Pixiv 限流（429），任务已停止，请等待冷却后重试") from None
-                    raise
-            return illusts
+        def pending_count(it: List[Dict[str, Any]]) -> int:
+            return sum(1 for i in it if not i.get("done"))
 
-        items: List[Dict[str, Any]] = []
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            tasks = [(uid, pool.submit(fetch_artist, uid)) for uid, _ in following]
-            for uid, fut in tasks:
-                if refresh_limit and len(items) >= refresh_limit:
-                    stop.set()  # 达到刷新上限：通知其他线程退出
-                    break
+        todo = [uid for uid, _ in following if uid not in done_uids]
+        start_pending = pending_count(items)
+        window = self._scan_workers()  # 滑动窗口大小（可配置）
+        with ThreadPoolExecutor(max_workers=window) as pool:
+            it = iter(todo)
+            running: Dict[Any, int] = {}
+            # 填满窗口
+            for _ in range(window):
                 try:
-                    illusts = fut.result()
-                except RateLimitError:
-                    self._cancel_flag = True
-                    raise
-                except Exception as e:  # noqa: BLE001
-                    print(f"[pixiv-sync] 拉取列表失败: {e}")
-                    continue
-                for ill in reversed(illusts):  # 反转：旧作品在前，同步优先下载老图
-                    if refresh_limit and len(items) >= refresh_limit:
-                        stop.set()
-                        break
-                    iid = ill.get("id")
-                    if iid is not None:
-                        item = dict(ill)
-                        item["done"] = int(iid) in ids  # 保存全部作品，标记已下载状态
-                        items.append(item)
-                task["current"] = f"已收集 {len(items)} 个作品…"
-                self._persist_task(task)
-        return items
+                    uid = next(it)
+                except StopIteration:
+                    break
+                running[pool.submit(fetch_artist, uid)] = uid
+            while running:
+                if self._cancel_flag:
+                    break
+                # 本批新增待下载达到上限 → 剩余画师下次继续（断点）
+                if refresh_limit and (pending_count(items) - start_pending) >= refresh_limit:
+                    break
+                done, _ = wait(running, return_when=FIRST_COMPLETED)
+                for fut in done:
+                    uid = running.pop(fut)
+                    try:
+                        illusts = fut.result()
+                    except RateLimitError:
+                        self._cancel_flag = True
+                        raise
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[pixiv-sync] 拉取列表失败: {e}")
+                        continue
+                    # 替换该画师的 items（更新），其他画师保留（断点累积）
+                    kept = [i for i in items if (i.get("user") or {}).get("id") != uid]
+                    for ill in reversed(illusts):  # 反转：旧作品在前
+                        iid = ill.get("id")
+                        if iid is not None:
+                            item = dict(ill)
+                            item["done"] = int(iid) in ids
+                            kept.append(item)
+                    items = kept
+                    done_uids.add(uid)
+                    task["current"] = (
+                        f"已扫描画师 {len(done_uids)}/{len(following)}，清单 {len(items)} 条"
+                    )
+                    self._persist_task(task)
+                    self._save_pending("following", items, {"done_uids": sorted(done_uids)})
+                # 滑动：补充新画师进窗口
+                for _ in done:
+                    try:
+                        uid = next(it)
+                    except StopIteration:
+                        continue
+                    running[pool.submit(fetch_artist, uid)] = uid
+
+        complete = len(done_uids) >= len(following)
+        return items, {"done_uids": sorted(done_uids), "complete": complete}
 
     def _collect_bookmarks_pending(
         self, client, task: Dict[str, Any], ids: Set[int]
-    ) -> List[Dict[str, Any]]:
-        items: List[Dict[str, Any]] = []
+    ) -> tuple:
+        """扫描收藏列表，返回 (items, scan)。页级断点：scan.offset 记录已翻页位置。
+
+        每次刷新翻到 max_refresh 条待下载后暂停，下次从断点继续；翻完 scan.complete=True。
+        """
+        items, scan = self._load_pending_data("bookmarks")
+        offset = scan.get("offset") if isinstance(scan, dict) else None
+        if scan and scan.get("complete"):
+            items = []  # 上一轮完整结束，新一轮从头
+            offset = None
         refresh_limit = self._max_refresh()
-        qs = None
+        seen = {i.get("id") for i in items}
+        start_pending = sum(1 for i in items if not i.get("done"))
+        qs = {"offset": offset} if offset is not None else None
+
         while not self._cancel_flag:
             try:
                 self._rate_limiter.wait()
@@ -794,27 +841,32 @@ class PixivSyncPlugin(PluginBase):
                     page = client.user_bookmarks_illust(client.user_id)
                 batch = page.get("illusts", []) or []
                 for ill in reversed(batch):  # 反转：旧收藏在前
-                    if refresh_limit and len(items) >= refresh_limit:
-                        break  # 达到刷新上限
                     iid = ill.get("id")
-                    if iid is not None:
-                        item = dict(ill)
-                        item["done"] = int(iid) in ids  # 保存全部作品，标记已下载状态
-                        items.append(item)
-                # 增量优化：本页全部已下载 → 更早的必然也下载过，停止
-                if batch and all(int(i.get("id", -1)) in ids for i in batch):
-                    break
+                    if iid is None or iid in seen:
+                        continue
+                    item = dict(ill)
+                    item["done"] = int(iid) in ids
+                    items.append(item)
+                    seen.add(iid)
+                    # 本批新增待下载达上限 → 保存进度，下次从断点继续
+                    if refresh_limit and (sum(1 for i in items if not i.get("done")) - start_pending) >= refresh_limit:
+                        cur_offset = qs.get("offset") if qs else 0
+                        self._save_pending("bookmarks", items, {"offset": cur_offset, "complete": False})
+                        task["current"] = f"清单 {len(items)} 条（部分扫描，可再点刷新继续）"
+                        self._persist_task(task)
+                        return items, {"offset": cur_offset, "complete": False}
                 nxt = page.get("next_url")
-                if not nxt or (refresh_limit and len(items) >= refresh_limit):
+                if not nxt:
                     break
                 qs = client.parse_qs(nxt)
+                self._save_pending("bookmarks", items, {"offset": qs.get("offset"), "complete": False})
             except PixivError as e:
                 if "429" in str(e):
                     raise RateLimitError("触发 Pixiv 限流（429），任务已停止，请等待冷却后重试") from None
                 raise
-        task["current"] = f"待下载 {len(items)} 个"
+        task["current"] = f"清单 {len(items)} 条（扫描完成）"
         self._persist_task(task)
-        return items
+        return items, {"complete": True}
 
     def _max_download(self) -> int:
         try:
@@ -827,6 +879,13 @@ class PixivSyncPlugin(PluginBase):
             return max(0, int(self.setting("max_refresh", 500)))
         except (TypeError, ValueError):
             return 500
+
+    def _scan_workers(self) -> int:
+        """刷新名单的并行拉取画师数（滑动窗口）。"""
+        try:
+            return max(1, min(8, int(self.setting("scan_workers", 4))))
+        except (TypeError, ValueError):
+            return 4
 
     def _rebuild_downloaded(self) -> tuple:
         """扫描本地重建有效文件 id 集合（清理 0 字节文件），返回 (existing_ids, 清理数)。"""
