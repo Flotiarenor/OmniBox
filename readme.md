@@ -153,7 +153,8 @@ directories:
 插件生态方向（Companion 插件 / 独立运行环境）见
 [主程序方向文档](./docs/core-direction.md)；
 图像自动打标插件设计见 [image-tagger 设计文档](./docs/image-tagger-design.md)；
-相册清理插件设计见 [image-cleaner 设计文档](./docs/image-cleaner-design.md)。
+相册清理插件设计见 [image-cleaner 设计文档](./docs/image-cleaner-design.md)；
+Pixiv 同步插件设计见 [pixiv-sync 设计文档](./docs/pixiv-sync-design.md)。
 
 ---
 

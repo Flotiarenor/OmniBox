@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pixiv 同步</title>
+  <style>
+    /* 极简样式：布局复用 Shell 的 .view-body / .view-toolbar / .view-content */
+    .psync-main { display: flex; flex-direction: column; height: 100%; }
+    .psync-status { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+      padding: 8px 16px; font-size: 12px; color: var(--color-text, #666); }
+    .psync-status .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .dot.ok { background: #4caf50; }
+    .dot.bad { background: #f44336; }
+    .dot.idle { background: #9e9e9e; }
+    .psync-btns { display: flex; gap: 10px; padding: 10px 16px; }
+    .psync-btns .btn { flex: 1; }
+    .psync-progress { padding: 4px 16px 12px; }
+    .psync-bar { height: 10px; border-radius: 5px; background: var(--color-border, #e0e0e0);
+      overflow: hidden; }
+    .psync-bar > div { height: 100%; width: 0%; border-radius: 5px;
+      background: linear-gradient(90deg, #4caf50, #8bc34a); transition: width .3s ease; }
+    .psync-progress .meta { display: flex; justify-content: space-between; margin-top: 6px;
+      font-size: 12px; color: var(--color-text, #666); }
+    .psync-current { padding: 0 16px 8px; font-size: 12px; color: var(--color-text, #999);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .psync-settings { margin: 8px 16px; padding: 12px; border: 1px solid var(--color-border, #e0e0e0);
+      border-radius: 8px; display: flex; flex-direction: column; gap: 10px; }
+    .psync-settings h4 { margin: 0; font-size: 13px; }
+    .psync-settings label { font-size: 12px; color: var(--color-text, #666); display: flex;
+      flex-direction: column; gap: 4px; }
+    .psync-settings input { padding: 6px 8px; border: 1px solid var(--color-border, #ddd);
+      border-radius: 6px; background: var(--color-bg-input, #fff);
+      color: var(--color-text, #333); font-size: 13px; }
+    .psync-settings .save-row { display: flex; justify-content: flex-end; }
+    .psync-options { display: flex; flex-direction: column; gap: 8px;
+      padding: 10px; border: 1px dashed var(--color-border, #ddd); border-radius: 6px; }
+    .psync-options h4 { margin: 0 0 2px; font-size: 12px; color: var(--color-text, #888); }
+    .psync-tip { font-size: 11px; color: var(--color-text, #999); padding: 0 16px 12px; }
+    .psync-empty { color: var(--color-text, #999); font-size: 12px; text-align: center;
+      padding: 20px 0; }
+  </style>
+</head>
+<body>
+  <div id="app" class="view-body psync-main">
+
+    <!-- 顶部工具栏 -->
+    <div class="view-toolbar">
+      <div class="toolbar-group">
+        <span class="psync-title" style="font-weight:600;">🎨 Pixiv 同步</span>
+      </div>
+      <div class="toolbar-group" style="margin-left:auto;">
+        <button id="btn-cancel" class="btn btn-sm" style="display:none;">取消</button>
+      </div>
+    </div>
+
+    <div class="view-content obx-scroll">
+      <!-- 状态栏 -->
+      <div class="psync-status">
+        <span><span id="st-token" class="dot idle"></span> Token</span>
+        <span id="st-root" title="下载根目录">根目录: …</span>
+        <span id="st-total">已下载 0 张</span>
+        <span id="st-last"></span>
+      </div>
+
+      <!-- 操作按钮 -->
+      <div class="psync-btns">
+        <button id="btn-following" class="btn">🔄 同步画师</button>
+        <button id="btn-bookmarks" class="btn">❤️ 同步喜欢</button>
+      </div>
+
+      <!-- 进度条 -->
+      <div class="psync-progress" id="progress-box" style="display:none;">
+        <div class="psync-bar"><div id="bar"></div></div>
+        <div class="meta">
+          <span id="p-meta">准备中…</span>
+          <span id="p-pct">0%</span>
+        </div>
+      </div>
+      <div class="psync-current" id="p-current"></div>
+
+      <!-- 设置 -->
+      <div class="psync-settings">
+        <h4>设置</h4>
+        <label>Refresh Token
+          <input id="set-token" type="password" placeholder="粘贴 refresh_token">
+        </label>
+        <label>HTTP 代理
+          <input id="set-proxy" type="text" placeholder="http://127.0.0.1:7890（留空=直连）">
+        </label>
+        <label>下载目录
+          <input id="set-dir" type="text" placeholder="留空=写入 image-viewer 相册根目录">
+        </label>
+        <div class="psync-options">
+          <h4>下载选项</h4>
+          <label style="flex-direction:row;align-items:center;gap:8px;">
+            <input id="set-original" type="checkbox" style="width:auto;">
+            <span>下载原图（完整分辨率，文件较大；关闭=1200px 大图）</span>
+          </label>
+          <label style="flex-direction:row;align-items:center;gap:8px;">
+            <input id="set-subfolder" type="checkbox" style="width:auto;">
+            <span>多图作品放入 {作品id}/ 子文件夹（单图直接平铺）</span>
+          </label>
+          <label>并发下载数
+            <input id="set-workers" type="number" min="1" max="8" value="4">
+            <span style="font-size:11px;color:var(--color-text,#999);">机械盘建议 1-2，SSD 可 4-8</span>
+          </label>
+        </div>
+        <div class="save-row">
+          <button id="btn-save" class="btn btn-sm">保存设置</button>
+        </div>
+      </div>
+      <div class="psync-tip">
+        提示：下载画作会自动出现在「图片相册」中，重复作品按 Pixiv 作品 ID 自动跳过。
+        Token 获取：github.com/eggplants/get-pixivpy-token (gppt)
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const $ = id => document.getElementById(id);
+      let polling = false;
+
+      // ---------- 状态 ----------
+      async function refreshStatus() {
+        try {
+          const s = await Bridge.call('get_status');
+          const t = s.token_configured;
+          const dot = $('st-token');
+          dot.className = 'dot ' + (t ? 'ok' : 'bad');
+          dot.title = t ? '已配置' : '未配置';
+          $('st-root').textContent = '根目录: ' + (s.root_dir || '未知');
+          $('st-total').textContent = '已下载 ' + s.downloaded_total + ' 张';
+          renderTask(s.task, s.running);
+          return s;
+        } catch (e) {
+          $('st-last').textContent = 'Bridge 不可用';
+          return null;
+        }
+      }
+
+      function renderTask(task, running) {
+        const box = $('progress-box');
+        if (!task) {
+          box.style.display = 'none';
+          $('p-current').textContent = '';
+          $('st-last').textContent = '';
+          return;
+        }
+        const states = {
+          queued: '排队中', running: '同步中', done: '✅ 完成',
+          failed: '❌ 失败', cancelled: '⏹ 已取消', paused: '⏸ 已暂停(可重新同步续跑)'
+        };
+        const label = states[task.state] || task.state;
+        const done = task.done || 0, total = task.total || 0;
+        const pct = total > 0 ? Math.min(100, Math.round(done / total * 100)) : 0;
+        $('bar').style.width = pct + '%';
+        $('p-pct').textContent = pct + '%';
+        $('p-meta').textContent = `${label} — 作品 ${done}/${total}，下载 ${task.downloaded}，跳过 ${task.skipped}，失败 ${task.failed}`;
+        $('p-current').textContent = task.current ? '正在处理: ' + task.current : '';
+        box.style.display = 'block';
+
+        // 状态行
+        const fin = task.finished_at ? new Date(task.finished_at * 1000).toLocaleTimeString() : '';
+        $('st-last').textContent = task.error ? ('错误: ' + task.error) : (fin ? '上次结束: ' + fin : '');
+
+        $('btn-following').disabled = running || task.state === 'running' || task.state === 'queued';
+        $('btn-bookmarks').disabled = running || task.state === 'running' || task.state === 'queued';
+        $('btn-cancel').style.display = (task.state === 'running' || task.state === 'queued') ? '' : 'none';
+        $('btn-cancel').disabled = !running;
+      }
+
+      // ---------- 操作 ----------
+      async function startSync(kind) {
+        try {
+          const r = await Bridge.call(kind === 'following' ? 'sync_following' : 'sync_bookmarks');
+          if (r && r.ok === false) {
+            alert(r.error || '启动失败');
+            return;
+          }
+          polling = true;
+          tick();
+        } catch (e) {
+          alert('启动失败: ' + e.message);
+        }
+      }
+
+      // 轮询进度
+      async function tick() {
+        if (!polling) return;
+        const s = await refreshStatus();
+        if (s && s.running) {
+          setTimeout(tick, 1500);
+        } else {
+          polling = false;
+          await refreshStatus();
+        }
+      }
+
+      // ---------- 设置 ----------
+      async function loadSettings() {
+        try {
+          const s = await Bridge.call('get_settings') || {};
+          $('set-token').value = s.refresh_token || '';
+          $('set-proxy').value = s.proxy || '';
+          $('set-dir').value = s.download_dir || '';
+          $('set-original').checked = s.download_original !== false;
+          $('set-subfolder').checked = s.multi_page_subfolder !== false;
+          $('set-workers').value = s.workers || 4;
+        } catch (e) { /* 忽略 */ }
+      }
+
+      async function saveSettings() {
+        const values = {
+          refresh_token: $('set-token').value.trim(),
+          proxy: $('set-proxy').value.trim(),
+          download_dir: $('set-dir').value.trim(),
+          download_original: $('set-original').checked,
+          multi_page_subfolder: $('set-subfolder').checked,
+          workers: Math.max(1, Math.min(8, parseInt($('set-workers').value, 10) || 4)),
+        };
+        try {
+          const r = await Bridge.call('save_settings', values);
+          if (r && r.success === false) {
+            alert(r.error || '保存失败');
+          } else {
+            alert('设置已保存');
+            await refreshStatus();
+          }
+        } catch (e) {
+          alert('保存失败: ' + e.message);
+        }
+      }
+
+      // ---------- init ----------
+      window.addEventListener('DOMContentLoaded', async () => {
+        $('btn-following').addEventListener('click', () => startSync('following'));
+        $('btn-bookmarks').addEventListener('click', () => startSync('bookmarks'));
+        $('btn-cancel').addEventListener('click', async () => {
+          try { await Bridge.call('cancel_task'); } catch (e) { /* ignore */ }
+        });
+        $('btn-save').addEventListener('click', saveSettings);
+        await loadSettings();
+        await refreshStatus();
+        const s = await refreshStatus();
+        if (s && s.running) { polling = true; tick(); }
+      });
+    })();
+  </script>
+</body>
+</html>
