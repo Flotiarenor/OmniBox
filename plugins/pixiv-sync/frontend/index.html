@@ -7,6 +7,7 @@
   <style>
     /* 极简样式：布局复用 Shell 的 .view-body / .view-toolbar / .view-content */
     .psync-main { display: flex; flex-direction: column; height: 100%; }
+    .psync-main .view-content { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
     .psync-status { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
       padding: 8px 16px; font-size: 12px; color: var(--color-text, #666); }
     .psync-status .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
@@ -78,11 +79,24 @@
         <span id="st-total">已下载 0 张</span>
         <span id="st-last"></span>
       </div>
+      <div class="psync-status" style="padding-top:0;">
+        <span title="刷新关注名单后的作品总数 / 其中待下载 / 已同步的关注画师作品数">关注: 共 <b id="st-ft">0</b> · 待下 <b id="st-pf">0</b> · 已下 <b id="st-fd">0</b></span>
+        <span title="刷新喜欢名单后的作品总数 / 其中待下载 / 已同步的喜欢作品数">喜欢: 共 <b id="st-bt">0</b> · 待下 <b id="st-pb">0</b> · 已下 <b id="st-bd">0</b></span>
+        <span title="既不在关注名单也不在喜欢名单的已下载作品（旧图导入/手动放置等）">其他: <b id="st-od">0</b></span>
+      </div>
 
       <!-- 操作按钮 -->
       <div class="psync-btns">
-        <button id="btn-following" class="btn">🔄 同步画师</button>
+        <button id="btn-following" class="btn">⬇️ 同步画师</button>
         <button id="btn-bookmarks" class="btn">❤️ 同步喜欢</button>
+      </div>
+      <div class="psync-btns" style="padding-top:0;">
+        <button id="btn-refresh-following" class="btn btn-sm" title="拉取关注画师作品列表，生成待下载清单（不下载）">🔄 刷新关注名单</button>
+        <button id="btn-refresh-bookmarks" class="btn btn-sm" title="拉取收藏列表，生成待下载清单（不下载）">🔄 刷新喜欢名单</button>
+      </div>
+      <div class="psync-btns" style="padding-top:0;">
+        <button id="btn-refresh-dl" class="btn btn-sm" title="扫描本地文件重建已下载记录（手动删过的移除、手动加的导入、0字节清理）">📋 刷新记录</button>
+        <button id="btn-verify" class="btn btn-sm" title="校验已下载内容：移除记录中本地无有效文件的失效 id，下次同步重下">🔍 校验内容</button>
       </div>
 
       <!-- 进度条 -->
@@ -127,6 +141,18 @@
           <label>并发下载数
             <input id="set-workers" type="number" min="1" max="8" value="4">
             <span style="font-size:11px;color:var(--color-text,#999);">机械盘建议 1-2，SSD 可 4-8</span>
+          </label>
+          <label>单次同步上限（条）
+            <input id="set-maxdl" type="number" min="0" max="10000" value="100">
+            <span style="font-size:11px;color:var(--color-text,#999);">每次同步最多下载条数；0=不限。分批下载可设小值，下完再点同步继续</span>
+          </label>
+          <label>单次刷新上限（条）
+            <input id="set-maxrefresh" type="number" min="0" max="10000" value="500">
+            <span style="font-size:11px;color:var(--color-text,#999);">每次刷新名单最多拉取并加入清单的条数（列表请求受限速，分批更稳）；0=不限</span>
+          </label>
+          <label>API 请求速率（次/秒）
+            <input id="set-ratelimit" type="number" min="1" max="10" value="3">
+            <span style="font-size:11px;color:var(--color-text,#999);">间隔带随机抖动；pixiv 阈值约 3/s，调高有 429 风险</span>
           </label>
         </div>
         <div class="save-row" style="justify-content:space-between;align-items:center;">
@@ -184,6 +210,13 @@
           dot.title = t ? '已配置' : '未配置';
           $('st-root').textContent = '根目录: ' + (s.root_dir || '未知');
           $('st-total').textContent = '已下载 ' + s.downloaded_total + ' 张';
+          $('st-ft').textContent = s.following_total || 0;
+          $('st-pf').textContent = s.pending_following || 0;
+          $('st-fd').textContent = s.following_done || 0;
+          $('st-bt').textContent = s.bookmarks_total || 0;
+          $('st-pb').textContent = s.pending_bookmarks || 0;
+          $('st-bd').textContent = s.bookmarks_done || 0;
+          $('st-od').textContent = s.other_done || 0;
           $('st-selected').textContent = '画师名单: ' + (s.selected_artists ? s.selected_artists + ' 位' : '全部');
           $('st-selected').title = s.selected_file || '';
           renderTask(s.task, s.running);
@@ -221,6 +254,8 @@
 
         $('btn-following').disabled = running || task.state === 'running' || task.state === 'queued';
         $('btn-bookmarks').disabled = running || task.state === 'running' || task.state === 'queued';
+        $('btn-refresh-following').disabled = running || task.state === 'running' || task.state === 'queued';
+        $('btn-refresh-bookmarks').disabled = running || task.state === 'running' || task.state === 'queued';
         $('btn-import-pixeval').disabled = running || task.state === 'running' || task.state === 'queued';
         $('btn-cancel').style.display = (task.state === 'running' || task.state === 'queued') ? '' : 'none';
         $('btn-cancel').disabled = !running;
@@ -253,6 +288,18 @@
         }
       }
 
+      // 刷新名单（长任务，走进度条）
+      async function startRefresh(method) {
+        try {
+          const r = await Bridge.call(method);
+          if (r && r.ok === false) { alert(r.error || '启动失败'); return; }
+          polling = true;
+          tick();
+        } catch (e) {
+          alert('启动失败: ' + e.message);
+        }
+      }
+
       // ---------- 设置 ----------
       async function loadSettings() {
         try {
@@ -264,6 +311,9 @@
           $('set-original').checked = s.download_original !== false;
           $('set-subfolder').checked = s.multi_page_subfolder !== false;
           $('set-workers').value = s.workers || 4;
+          $('set-maxdl').value = s.max_download != null ? s.max_download : 100;
+          $('set-maxrefresh').value = s.max_refresh != null ? s.max_refresh : 500;
+          $('set-ratelimit').value = s.rate_limit || 3;
         } catch (e) { /* 忽略 */ }
       }
 
@@ -276,6 +326,9 @@
           download_original: $('set-original').checked,
           multi_page_subfolder: $('set-subfolder').checked,
           workers: Math.max(1, Math.min(8, parseInt($('set-workers').value, 10) || 4)),
+          max_download: Math.max(0, parseInt($('set-maxdl').value, 10) || 0),
+          max_refresh: Math.max(0, parseInt($('set-maxrefresh').value, 10) || 0),
+          rate_limit: Math.max(1, Math.min(10, parseInt($('set-ratelimit').value, 10) || 3)),
         };
         try {
           const r = await Bridge.call('save_settings', values);
@@ -336,6 +389,24 @@
           $('oauth-modal').style.display = 'none';
         });
         $('btn-save').addEventListener('click', saveSettings);
+        $('btn-refresh-following').addEventListener('click', () => startRefresh('refresh_following_lists'));
+        $('btn-refresh-bookmarks').addEventListener('click', () => startRefresh('refresh_bookmarks_lists'));
+        $('btn-refresh-dl').addEventListener('click', async () => {
+          try {
+            const r = await Bridge.call('refresh_downloaded');
+            if (r && r.ok === false) { alert(r.error); return; }
+            alert('已刷新记录：本地 ' + r.total + ' 个作品' + (r.zero_removed ? '，清理 0 字节 ' + r.zero_removed + ' 个' : ''));
+            await refreshStatus();
+          } catch (e) { alert('刷新失败: ' + e.message); }
+        });
+        $('btn-verify').addEventListener('click', async () => {
+          try {
+            const r = await Bridge.call('verify_downloaded');
+            if (r && r.ok === false) { alert(r.error); return; }
+            alert('校验完成：移除失效记录 ' + r.stale_removed + ' 条' + (r.zero_removed ? '，清理 0 字节 ' + r.zero_removed + ' 个' : '') + '，当前记录 ' + r.total + ' 条');
+            await refreshStatus();
+          } catch (e) { alert('校验失败: ' + e.message); }
+        });
         $('btn-import-pixeval').addEventListener('click', async () => {
           try {
             const r = await Bridge.call('import_pixeval');
