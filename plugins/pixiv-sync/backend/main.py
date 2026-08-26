@@ -15,6 +15,7 @@ import os
 import random
 import re
 import shutil
+import sqlite3
 import threading
 import time
 import webbrowser
@@ -165,6 +166,7 @@ class PixivSyncPlugin(PluginBase):
         self._cancel_flag = False
         self._downloaded_ids: Optional[Set[int]] = None
         self._oauth_verifier: Optional[str] = None
+        self._db_conn: Optional[sqlite3.Connection] = None
         self._task = self._load_task()
 
     # ---------- 宿主访问 ----------
@@ -619,40 +621,160 @@ class PixivSyncPlugin(PluginBase):
             self._persist_task(task)
         return following
 
-    # ---------- 待下载清单（刷新生成，同步按清单下载） ----------
+    # ---------- 待下载清单（SQLite：works.db） ----------
 
-    def _pending_file(self, kind: str) -> Path:
-        return self._cache_dir() / f"pending_{kind}.json"
+    def _db(self) -> "sqlite3.Connection":
+        """懒连接清单数据库（跨线程共享，写操作由 _task_lock 保护）。"""
+        if self._db_conn is None:
+            self._cache_dir().mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(
+                str(self._cache_dir() / "works.db"), check_same_thread=False
+            )
+            conn.execute("PRAGMA journal_mode=WAL")
+            self._db_conn = conn
+            self._db_init()
+            self._migrate_pending_json()
+        return self._db_conn
+
+    def _db_init(self):
+        conn = self._db_conn
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tags (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS works ("
+            " id INTEGER PRIMARY KEY, kind TEXT NOT NULL,"
+            " title TEXT, type TEXT, page_count INTEGER, create_date TEXT,"
+            " user_id INTEGER, user_name TEXT,"
+            " urls TEXT, tags_json TEXT,"
+            " done INTEGER DEFAULT 0)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS work_tags (work_id INTEGER, tag_id INTEGER, PRIMARY KEY(work_id, tag_id))"
+        )
+        conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_works_kind_done ON works(kind, done)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name)")
+        conn.commit()
+
+    def _migrate_pending_json(self):
+        """旧版 pending_*.json 迁移到 SQLite（一次性），迁移后改名 .bak。"""
+        for kind in ("following", "bookmarks"):
+            jf = self._cache_dir() / f"pending_{kind}.json"
+            if not jf.exists():
+                continue
+            try:
+                data = json.loads(jf.read_text(encoding="utf-8"))
+                items = data.get("items", []) if isinstance(data, dict) else []
+                scan = data.get("scan") if isinstance(data, dict) else None
+                if items:
+                    self._save_pending_db(kind, items, scan)
+                jf.rename(jf.with_suffix(".json.bak"))
+                print(f"[pixiv-sync] 旧清单 {jf.name} 已迁移到 SQLite")
+            except Exception as e:
+                print(f"[pixiv-sync] 迁移 {jf.name} 失败: {e}")
+
+    @staticmethod
+    def _item_to_work(item: Dict[str, Any]) -> tuple:
+        """item dict → works 行 + tags。"""
+        user = item.get("user") or {}
+        return (
+            int(item["id"]), item.get("type"), str(item.get("title") or ""),
+            int(item.get("page_count") or 1), item.get("create_date"),
+            int(user.get("id") or 0), str(user.get("name") or ""),
+            json.dumps(item.get("urls") or [], ensure_ascii=False),
+            json.dumps(item.get("tags") or [], ensure_ascii=False),
+            1 if item.get("done") else 0,
+        )
+
+    @staticmethod
+    def _work_to_item(row: tuple, tags: List[str]) -> Dict[str, Any]:
+        """works 行 → item dict（与旧格式兼容）。"""
+        (wid, wtype, title, page_count, create_date, uid, uname, urls_json, tags_json, done) = row
+        return {
+            "id": wid, "type": wtype, "title": title,
+            "page_count": page_count, "create_date": create_date,
+            "user": {"id": uid, "name": uname},
+            "urls": json.loads(urls_json or "[]"),
+            "tags": tags or json.loads(tags_json or "[]"),
+            "done": bool(done),
+        }
+
+    def _save_pending_db(self, kind: str, items: List[Dict[str, Any]], scan: Optional[dict] = None):
+        """把 kind 的清单整体写入 SQLite（事务内替换）。"""
+        self._db()  # 锁外初始化（迁移等），避免锁重入
+        conn = self._db_conn
+        with self._task_lock:
+            try:
+                conn.execute("BEGIN")
+                conn.execute("DELETE FROM works WHERE kind=?", (kind,))
+                for item in items:
+                    try:
+                        wid = int(item["id"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    conn.execute(
+                        "INSERT OR REPLACE INTO works"
+                        " (id, kind, type, title, page_count, create_date, user_id, user_name, urls, tags_json, done)"
+                        " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (wid, kind) + self._item_to_work(item)[1:],
+                    )
+                    # tags 去重字典表 + 关联
+                    for tname in item.get("tags") or []:
+                        tname = str(tname)
+                        conn.execute("INSERT OR IGNORE INTO tags(name) VALUES (?)", (tname,))
+                        row = conn.execute("SELECT id FROM tags WHERE name=?", (tname,)).fetchone()
+                        if row:
+                            conn.execute(
+                                "INSERT OR IGNORE INTO work_tags(work_id, tag_id) VALUES (?,?)",
+                                (wid, row[0]),
+                            )
+                if scan is not None:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)",
+                        (f"scan_{kind}", json.dumps(scan, ensure_ascii=False)),
+                    )
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                print(f"[pixiv-sync] 保存清单失败: {e}")
 
     def _load_pending_data(self, kind: str) -> tuple:
-        """读取清单，返回 (items, scan)。scan 为刷新断点进度（dict 或 None）。"""
+        """从 SQLite 读取清单，返回 (items, scan)。"""
         try:
-            data = json.loads(self._pending_file(kind).read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                items = data.get("items", []) if isinstance(data.get("items"), list) else []
-                scan = data.get("scan")
-                return items, (scan if isinstance(scan, dict) else None)
+            self._db()  # 锁外初始化（迁移在锁外完成，避免锁重入）
+            with self._task_lock:
+                conn = self._db_conn
+                rows = conn.execute(
+                    "SELECT id, type, title, page_count, create_date, user_id, user_name, urls, tags_json, done"
+                    " FROM works WHERE kind=?", (kind,)
+                ).fetchall()
+                tag_map = {}
+                for wid, tid in conn.execute(
+                    "SELECT wt.work_id, t.name FROM work_tags wt JOIN tags t ON t.id=wt.tag_id"
+                ).fetchall():
+                    tag_map.setdefault(wid, []).append(tid)
+                items = [self._work_to_item(r, tag_map.get(r[0])) for r in rows]
+                scan = None
+                row = conn.execute("SELECT value FROM meta WHERE key=?", (f"scan_{kind}",)).fetchone()
+                if row:
+                    try:
+                        scan = json.loads(row[0])
+                    except Exception:
+                        scan = None
+            return items, scan
         except Exception:
-            pass
-        return [], None
+            return [], None
 
     def _load_pending(self, kind: str) -> List[Dict[str, Any]]:
         items, _ = self._load_pending_data(kind)
         return items
 
     def _save_pending(self, kind: str, items: List[Dict[str, Any]], scan: Optional[dict] = None):
-        try:
-            if scan is None:
-                _, scan = self._load_pending_data(kind)
-            data: Dict[str, Any] = {"saved_at": time.time(), "items": items}
-            if scan:
-                data["scan"] = scan
-            self._cache_dir().mkdir(parents=True, exist_ok=True)
-            self._pending_file(kind).write_text(
-                json.dumps(data, ensure_ascii=False), encoding="utf-8"
-            )
-        except Exception as e:
-            print(f"[pixiv-sync] 保存待下载清单失败: {e}")
+        """保存清单（SQLite）。scan=None 时保留现有断点。"""
+        if scan is None:
+            _, scan = self._load_pending_data(kind)
+        self._save_pending_db(kind, items, scan)
 
     def refresh_following_lists(self) -> Dict:
         """刷新关注画师作品名单：拉取列表生成待下载清单（不下载）。"""
@@ -793,8 +915,7 @@ class PixivSyncPlugin(PluginBase):
                     for ill in reversed(illusts):  # 反转：旧作品在前
                         iid = ill.get("id")
                         if iid is not None:
-                            item = dict(ill)
-                            item["done"] = int(iid) in ids
+                            item = self._build_item(ill, ids)
                             kept.append(item)
                     items = kept
                     done_uids.add(uid)
@@ -844,9 +965,7 @@ class PixivSyncPlugin(PluginBase):
                     iid = ill.get("id")
                     if iid is None or iid in seen:
                         continue
-                    item = dict(ill)
-                    item["done"] = int(iid) in ids
-                    items.append(item)
+                    items.append(self._build_item(ill, ids))
                     seen.add(iid)
                     # 本批新增待下载达上限 → 保存进度，下次从断点继续
                     if refresh_limit and (sum(1 for i in items if not i.get("done")) - start_pending) >= refresh_limit:
@@ -1133,10 +1252,19 @@ class PixivSyncPlugin(PluginBase):
         just_done = {int(i["id"]) for i in todo if int(i.get("id", -1)) in ids}
         if just_done:
             self._mark_sources({iid: kind for iid in just_done})
-            for item in items:
-                if int(item.get("id", -1)) in just_done:
-                    item["done"] = True
-            self._save_pending(kind, items)
+            self._db()  # 锁外初始化
+            conn = self._db_conn
+            with self._task_lock:
+                try:
+                    conn.execute("BEGIN")
+                    for iid in just_done:
+                        conn.execute(
+                            "UPDATE works SET done=1 WHERE id=? AND kind=?", (iid, kind)
+                        )
+                    conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    print(f"[pixiv-sync] 更新清单 done 失败: {e}")
 
     def _workers(self) -> int:
         try:
@@ -1331,12 +1459,48 @@ class PixivSyncPlugin(PluginBase):
         self._save_artist_cache(cache)
         return base / new_name
 
+    def _build_item(self, ill: Dict[str, Any], ids: Set[int]) -> Dict[str, Any]:
+        """把列表响应中的 illust 精简为清单 item（只存下载/展示所需，含 urls/tags 名）。"""
+        user = ill.get("user") or {}
+        return {
+            "id": int(ill.get("id", 0)),
+            "type": ill.get("type"),
+            "title": ill.get("title"),
+            "page_count": ill.get("page_count"),
+            "create_date": ill.get("create_date"),
+            "user": {"id": user.get("id"), "name": user.get("name")},
+            "urls": self._collect_urls(ill),
+            "tags": [t.get("name") for t in (ill.get("tags") or []) if t.get("name")],
+            "done": int(ill.get("id", -1)) in ids,
+        }
+
+    def _collect_urls(self, illust: Dict[str, Any]) -> List[str]:
+        """提取全部页原图 URL（original 优先，回退 large）。"""
+        meta_pages = illust.get("meta_pages") or []
+        if meta_pages:
+            urls = []
+            for p in meta_pages:
+                iu = p.get("image_urls") or {}
+                u = iu.get("original") or iu.get("large")
+                if u:
+                    urls.append(u)
+            if urls:
+                return urls
+        orig = (illust.get("meta_single_page") or {}).get("original_image_url")
+        if orig:
+            return [orig]
+        u = (illust.get("image_urls") or {}).get("large")
+        return [u] if u else []
+
     def _all_image_urls(self, illust: Dict[str, Any]) -> List[str]:
         """多图作品返回全部页 URL，单图返回封面 URL。
 
         开启 download_original 时优先取画师原图（original，完整分辨率），
-        取不到时回退 1200px 大图（large）。
+        取不到时回退 1200px 大图（large）。清单 item 带预提取 urls 时直接使用。
         """
+        direct = illust.get("urls")
+        if direct:
+            return direct
         want_original = bool(self.setting("download_original", True))
 
         def pick(page: Dict[str, Any]) -> Optional[str]:
@@ -1375,12 +1539,29 @@ class PixivSyncPlugin(PluginBase):
         except Exception:
             pass
         ids = self._load_ids()
-        pf_items = self._load_pending("following")
-        pb_items = self._load_pending("bookmarks")
-        pf_pending = sum(1 for i in pf_items if not i.get("done"))
-        pb_pending = sum(1 for i in pb_items if not i.get("done"))
-        following_done = len(pf_items) - pf_pending
-        bookmarks_done = len(pb_items) - pb_pending
+        # SQL 聚合统计（快，不加载全量）
+        try:
+            self._db()  # 锁外初始化
+            with self._task_lock:
+                conn = self._db_conn
+                def cnt(kind: str, done: Optional[int] = None) -> int:
+                    if done is None:
+                        row = conn.execute(
+                            "SELECT COUNT(*) FROM works WHERE kind=?", (kind,)
+                        ).fetchone()
+                    else:
+                        row = conn.execute(
+                            "SELECT COUNT(*) FROM works WHERE kind=? AND done=?", (kind, done)
+                        ).fetchone()
+                    return int(row[0]) if row else 0
+                following_total = cnt("following")
+                following_done = cnt("following", 1)
+                bookmarks_total = cnt("bookmarks")
+                bookmarks_done = cnt("bookmarks", 1)
+        except Exception:
+            following_total = following_done = bookmarks_total = bookmarks_done = 0
+        pf_pending = following_total - following_done
+        pb_pending = bookmarks_total - bookmarks_done
         return {
             "task": task,
             "root_dir": root,
@@ -1391,10 +1572,10 @@ class PixivSyncPlugin(PluginBase):
             "selected_file": str(self._selected_file()),
             # 统计：清单全部/待下/已下 + 其他来源
             "pending_following": pf_pending,
-            "following_total": len(pf_items),
+            "following_total": following_total,
             "following_done": following_done,
             "pending_bookmarks": pb_pending,
-            "bookmarks_total": len(pb_items),
+            "bookmarks_total": bookmarks_total,
             "bookmarks_done": bookmarks_done,
             "other_done": max(0, len(ids) - following_done - bookmarks_done),
         }
