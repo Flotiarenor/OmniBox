@@ -39,6 +39,22 @@
     .psync-tip { font-size: 11px; color: var(--color-text, #999); padding: 0 16px 12px; }
     .psync-empty { color: var(--color-text, #999); font-size: 12px; text-align: center;
       padding: 20px 0; }
+    /* OAuth 引导弹窗 */
+    .psync-modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none;
+      align-items: center; justify-content: center; z-index: 999; }
+    .psync-modal .box { width: min(560px, 92vw); max-height: 86vh; overflow: auto;
+      background: var(--color-bg, #fff); border-radius: 10px; padding: 16px 18px;
+      box-shadow: 0 8px 30px rgba(0,0,0,.25); color: var(--color-text, #333);
+      display: flex; flex-direction: column; gap: 8px; }
+    .psync-modal h4 { margin: 0 0 4px; }
+    .psync-modal ol { margin: 0 0 6px; padding-left: 20px; font-size: 12px; line-height: 1.7; }
+    .psync-modal textarea { width: 100%; min-height: 120px; font-family: Consolas, monospace;
+      font-size: 11px; border: 1px solid var(--color-border, #ddd); border-radius: 6px;
+      padding: 8px; background: var(--color-bg-input, #fafafa); color: var(--color-text, #333);
+      box-sizing: border-box; resize: vertical; }
+    .psync-modal input { padding: 7px 9px; border: 1px solid var(--color-border, #ddd);
+      border-radius: 6px; background: var(--color-bg-input, #fff); color: var(--color-text, #333); }
+    .psync-modal .row { display: flex; gap: 8px; justify-content: flex-end; }
   </style>
 </head>
 <body>
@@ -91,6 +107,13 @@
         <label>下载目录
           <input id="set-dir" type="text" placeholder="留空=写入 image-viewer 相册根目录">
         </label>
+        <label>Pixeval 目录（导入用，留空=不导入）
+          <input id="set-pixeval" type="text" placeholder="如 G:\图库\PIXEVAL">
+          <span style="font-size:11px;color:var(--color-text,#999);">把该目录图片按画师导入本地（文件名规范化，重复的以本地为准并删除副本）</span>
+          <div style="display:flex;gap:8px;">
+            <button id="btn-import-pixeval" class="btn btn-sm">📥 导入 Pixeval</button>
+          </div>
+        </label>
         <div class="psync-options">
           <h4>下载选项</h4>
           <label style="flex-direction:row;align-items:center;gap:8px;">
@@ -109,6 +132,7 @@
         <div class="save-row" style="justify-content:space-between;align-items:center;">
           <span style="font-size:11px;color:var(--color-text,#999);" id="st-selected">画师名单: 全部</span>
           <div style="display:flex;gap:8px;">
+            <button id="btn-oauth" class="btn btn-sm" title="通过浏览器登录 Pixiv 重新获取 refresh_token（token 失效时使用）">🔑 获取 Token</button>
             <button id="btn-open-config" class="btn btn-sm" title="打开画师名单配置文件所在文件夹（编辑：每行一个画师名字或 id，空=全部）">📂 画师名单文件</button>
             <button id="btn-save" class="btn btn-sm">保存设置</button>
           </div>
@@ -117,6 +141,30 @@
       <div class="psync-tip">
         提示：下载画作会自动出现在「图片相册」中，重复作品按 Pixiv 作品 ID 自动跳过。
         Token 获取：github.com/eggplants/get-pixivpy-token (gppt)
+      </div>
+    </div>
+  </div>
+
+  <!-- OAuth 引导弹窗 -->
+  <div id="oauth-modal" class="psync-modal">
+    <div class="box">
+      <h4>🔑 获取 Pixiv Token</h4>
+      <p style="font-size:12px;color:#d33;margin:0 0 6px;">⚠️ 下面步骤中<b>不要重新点</b>「获取 Token」按钮，否则验证码会失效，需重来。</p>
+      <ol>
+        <li>浏览器会自动打开 Pixiv 登录页；若没打开或跳转异常，在<b>已登录</b>的浏览器新标签页粘贴下面地址回车</li>
+      </ol>
+      <textarea id="oauth-url" readonly></textarea>
+      <div class="row">
+        <button id="btn-copy-url" class="btn btn-sm">复制登录地址</button>
+      </div>
+      <ol start="2">
+        <li>登录后页面会跳转或报「协议未知，无法导航」——按 <b>F12</b> → <b>Console</b>，从报错或 Network 里找到 <code>callback?...&code=XXXX</code>，复制 <code>code=</code> 后面那串</li>
+        <li>粘贴到下面，点「完成」（验证码几分钟内有效）</li>
+      </ol>
+      <input id="oauth-code" placeholder="粘贴 code= 后面的字符串">
+      <div class="row">
+        <button id="btn-oauth-finish" class="btn btn-sm">完成</button>
+        <button id="btn-oauth-close" class="btn btn-sm">关闭</button>
       </div>
     </div>
   </div>
@@ -173,6 +221,7 @@
 
         $('btn-following').disabled = running || task.state === 'running' || task.state === 'queued';
         $('btn-bookmarks').disabled = running || task.state === 'running' || task.state === 'queued';
+        $('btn-import-pixeval').disabled = running || task.state === 'running' || task.state === 'queued';
         $('btn-cancel').style.display = (task.state === 'running' || task.state === 'queued') ? '' : 'none';
         $('btn-cancel').disabled = !running;
       }
@@ -211,6 +260,7 @@
           $('set-token').value = s.refresh_token || '';
           $('set-proxy').value = s.proxy || '';
           $('set-dir').value = s.download_dir || '';
+          $('set-pixeval').value = s.pixeval_dir || '';
           $('set-original').checked = s.download_original !== false;
           $('set-subfolder').checked = s.multi_page_subfolder !== false;
           $('set-workers').value = s.workers || 4;
@@ -222,6 +272,7 @@
           refresh_token: $('set-token').value.trim(),
           proxy: $('set-proxy').value.trim(),
           download_dir: $('set-dir').value.trim(),
+          pixeval_dir: $('set-pixeval').value.trim(),
           download_original: $('set-original').checked,
           multi_page_subfolder: $('set-subfolder').checked,
           workers: Math.max(1, Math.min(8, parseInt($('set-workers').value, 10) || 4)),
@@ -249,7 +300,52 @@
         $('btn-open-config').addEventListener('click', async () => {
           try { await Bridge.call('open_config'); } catch (e) { alert('打开失败: ' + e.message); }
         });
+        $('btn-oauth').addEventListener('click', async () => {
+          try {
+            const r = await Bridge.call('start_oauth');
+            if (r && r.ok === false) { alert(r.error || '打开登录页失败'); return; }
+            // 完整登录地址（含 code_challenge，浏览器导航可用；控制台 fetch 会被 CORS 拦）
+            $('oauth-url').value = r.url || '';
+            $('oauth-code').value = '';
+            $('oauth-modal').style.display = 'flex';
+          } catch (e) {
+            alert('获取 Token 失败: ' + e.message);
+          }
+        });
+        $('btn-copy-url').addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText($('oauth-url').value);
+          } catch (e) {
+            $('oauth-url').select(); document.execCommand('copy');
+          }
+        });
+        $('btn-oauth-finish').addEventListener('click', async () => {
+          const code = $('oauth-code').value.trim();
+          if (!code) { alert('请先粘贴 CODE'); return; }
+          const r2 = await Bridge.call('finish_oauth', code);
+          if (r2 && r2.ok) {
+            alert('Token 获取成功！已自动保存。');
+            $('oauth-modal').style.display = 'none';
+            await loadSettings();
+            await refreshStatus();
+          } else {
+            alert('获取失败: ' + ((r2 && r2.error) || '未知错误'));
+          }
+        });
+        $('btn-oauth-close').addEventListener('click', () => {
+          $('oauth-modal').style.display = 'none';
+        });
         $('btn-save').addEventListener('click', saveSettings);
+        $('btn-import-pixeval').addEventListener('click', async () => {
+          try {
+            const r = await Bridge.call('import_pixeval');
+            if (r && r.ok === false) { alert(r.error || '启动失败'); return; }
+            polling = true;
+            tick();
+          } catch (e) {
+            alert('启动失败: ' + e.message);
+          }
+        });
         await loadSettings();
         await refreshStatus();
         // 状态栏定时刷新（含画师名单数量），编辑名单文件后自动更新

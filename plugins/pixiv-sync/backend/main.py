@@ -16,6 +16,7 @@ import re
 import shutil
 import threading
 import time
+import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -95,6 +96,13 @@ class PixivSyncPlugin(PluginBase):
             "max": 8,
             "help": "同时下载的画师/作品数；机械盘建议 1-2，SSD 可 4-8",
         },
+        {
+            "key": "pixeval_dir",
+            "label": "Pixeval 目录（导入用）",
+            "type": "text",
+            "placeholder": "如 G:\\图库\\PIXEVAL，留空 = 不导入",
+            "help": "第三方客户端 pixeval 的下载目录。设置后同步时会自动把其中图片按画师导入（文件名规范化；与本地重复的以本地为准并删除 pixeval 副本）",
+        },
     ]
 
     def __init__(self, manifest, config):
@@ -108,6 +116,7 @@ class PixivSyncPlugin(PluginBase):
         self._thread: Optional[threading.Thread] = None
         self._cancel_flag = False
         self._downloaded_ids: Optional[Set[int]] = None
+        self._oauth_verifier: Optional[str] = None
         self._task = self._load_task()
 
     # ---------- 宿主访问 ----------
@@ -167,6 +176,251 @@ class PixivSyncPlugin(PluginBase):
         except Exception as e:
             print(f"[pixiv-sync] 保存去重记录失败: {e}")
 
+    # 图片文件名 → 作品 id：123456.jpg / 123456_p0.jpg / 123456_p0.png ...
+    _ID_NAME_RE = re.compile(r"^(\d+)(?:_p\d+)?\.(?:jpe?g|png|gif|webp)$", re.IGNORECASE)
+
+    def _collect_image_files(self, base: Path) -> List[tuple]:
+        """收集目录下所有按规则命名的图片文件，返回 [(作品id, 文件Path)]。"""
+        items: List[tuple] = []
+        try:
+            for current, dir_names, filenames in os.walk(base):
+                dir_names[:] = [d for d in dir_names if not d.startswith(".")]
+                for name in filenames:
+                    m = self._ID_NAME_RE.match(name)
+                    if m:
+                        items.append((int(m.group(1)), Path(current) / name))
+        except OSError:
+            pass
+        return items
+
+    @staticmethod
+    def _move_or_drop(src: Path, dest: Path):
+        """移动文件；目标已存在则删除源（视为重复副本）。"""
+        if dest.exists():
+            src.unlink()
+        else:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dest))
+
+    @staticmethod
+    def _merge_dir(src: Path, dest: Path):
+        """把 src 目录内容合并进 dest（不覆盖同名文件）。"""
+        for item in src.iterdir():
+            target = dest / item.name
+            if item.is_dir():
+                if target.exists():
+                    PixivSyncPlugin._merge_dir(item, target)
+                    item.rmdir()
+                else:
+                    item.rename(target)
+            elif not target.exists():
+                shutil.move(str(item), str(target))
+
+    def _migrate_legacy_layout(self) -> int:
+        """迁移旧目录结构（v0.1）到统一画师目录 <root>/pixiv/{画师名}/。
+
+        旧: pixiv/following/{画师}/...   +   pixiv/bookmarks/...
+        新: pixiv/{画师}/...
+        - following 目录整体上移；
+        - bookmarks 中与已有画师作品 id 相同的文件直接归位（画师名从目录推断，零联网）；
+        - 其余文件联网 illust_detail 查画师名归位（限速 3/s，失败保留原地）。
+        返回 bookmarks 归位/去重处理的文件数；无旧结构返回 0。
+        """
+        root = self._root() / "pixiv"
+        if not root.exists():
+            return 0
+
+        # 1. following/{画师} → {画师}（目录上移/合并）
+        following = root / "following"
+        if following.exists():
+            try:
+                for d in sorted(following.iterdir()):
+                    if not d.is_dir():
+                        continue
+                    dest = root / d.name
+                    if dest.exists():
+                        self._merge_dir(d, dest)
+                        d.rmdir()
+                    else:
+                        d.rename(dest)
+                following.rmdir()
+            except OSError as e:
+                print(f"[pixiv-sync] 迁移 following 目录失败: {e}")
+
+        # 2. bookmarks 归位
+        bookmarks = root / "bookmarks"
+        if not bookmarks.exists():
+            return 0
+
+        # 2.1 本地映射：作品 id → 所在画师目录（来自已有画师目录，跳过 bookmarks 自身）
+        id_to_dir: Dict[int, Path] = {}
+        bm_resolved = bookmarks.resolve()
+        for current, dir_names, filenames in os.walk(root):
+            dir_names[:] = [d for d in dir_names if not d.startswith(".")]
+            current_p = Path(current)
+            if current_p.resolve() == bm_resolved or bm_resolved in current_p.resolve().parents:
+                continue
+            for name in filenames:
+                m = self._ID_NAME_RE.match(name)
+                if m:
+                    id_to_dir.setdefault(int(m.group(1)), current_p)
+
+        # 2.2 归位
+        client = self._client()
+        migrated = 0
+        pending_lookup: List[Path] = []
+        for iid, src in self._collect_image_files(bookmarks):
+            artist_dir = id_to_dir.get(iid)
+            if artist_dir is not None:
+                rel = src.relative_to(bookmarks)
+                self._move_or_drop(src, artist_dir / rel)
+                migrated += 1
+            else:
+                pending_lookup.append(src)
+
+        # 2.3 联网查询画师名（限速 3/s），失败保留原地
+        for src in pending_lookup:
+            m = self._ID_NAME_RE.match(src.name)
+            if not m:
+                continue
+            iid = int(m.group(1))
+            try:
+                self._rate_limiter.wait()
+                detail = client.illust_detail(iid)
+                user = (detail.get("illust") or {}).get("user") or {}
+                uid = user.get("id")
+                if not uid:
+                    continue
+                artist_dir = self._artist_dir(int(uid), str(user.get("name") or uid))
+                rel = src.relative_to(bookmarks)
+                self._move_or_drop(src, artist_dir / rel)
+                migrated += 1
+            except Exception as e:  # noqa: BLE001
+                print(f"[pixiv-sync] 迁移 {src.name} 失败（保留原地）: {e}")
+
+        # 清理 bookmarks 下残留的空子目录（文件已归位），再尝试删除目录本身
+        for d in sorted(
+            (p for p in bookmarks.rglob("*") if p.is_dir()),
+            key=lambda p: len(p.parts),
+            reverse=True,
+        ):
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+        try:
+            bookmarks.rmdir()  # 空目录才删除；仍有无法识别的文件会失败忽略
+        except OSError:
+            pass
+        return migrated
+
+    def _scan_existing_ids(self) -> int:
+        """扫描下载目录（<root>/pixiv/）中已存在的图片，按命名规则提取作品 id 并入去重集合。
+
+        用于识别用户手动放入的旧图：文件名符合 `{id}.jpg` / `{id}_p0.jpg` 规则即可被识别，
+        之后全量更新会直接跳过，不会重复检查/下载。
+        """
+        root = self._root() / "pixiv"
+        if not root.exists():
+            return 0
+        ids = self._load_ids()
+        found = 0
+        try:
+            for current, dir_names, filenames in os.walk(root):
+                dir_names[:] = [d for d in dir_names if not d.startswith(".")]
+                for name in filenames:
+                    m = self._ID_NAME_RE.match(name)
+                    if not m:
+                        continue
+                    iid = int(m.group(1))
+                    if iid not in ids:
+                        ids.add(iid)
+                        found += 1
+        except OSError as e:
+            print(f"[pixiv-sync] 扫描已有作品失败: {e}")
+        if found:
+            self._save_ids()
+        return found
+
+    # ---------- pixeval 目录导入（第三方客户端兼容） ----------
+
+    # pixeval 文件名：135504321.png / 119079950p0.png / 100276361_p0.jpg / 87737976_p1(1).jpg
+    _PIXEVAL_RE = re.compile(
+        r"^(\d+)(?:_?p\d+)?(?:\(\d+\))?\.(?:jpe?g|png|gif|webp)$", re.IGNORECASE
+    )
+
+    @staticmethod
+    def _pixeval_page(name: str) -> Optional[int]:
+        m = re.search(r"p(\d+)", name, re.IGNORECASE)
+        return int(m.group(1)) if m else None
+
+    def _migrate_pixeval(self) -> int:
+        """导入 pixeval 下载目录（<pixeval_dir>/{画师名}/{图片}）到 pixiv/{画师名}/。
+
+        - 文件名规范化：单图 → {id}{ext}；多图 → {id}/{id}_p{页码}{ext}；
+        - 与本地重复（id 已在去重集合或 pixiv/ 已有）→ 删除 pixeval 副本（以本地为准）；
+        - 无法识别的文件保留原地。返回处理的文件数。
+        """
+        src_root = (self.setting("pixeval_dir") or "").strip()
+        if not src_root or not Path(src_root).is_dir():
+            return 0
+        src_root = Path(src_root)
+        ids = self._load_ids()
+        target_root = self._root() / "pixiv"
+        moved = deleted = 0
+
+        artist_dirs = sorted(
+            d for d in src_root.iterdir()
+            if d.is_dir() and not d.name.startswith(".")
+        )
+        for artist_dir in artist_dirs:
+            artist_name = self._sanitize(artist_dir.name) or "未分类"
+            target_artist = target_root / artist_name
+            # 按作品 id 分组
+            groups: Dict[int, List[Path]] = {}
+            for f in artist_dir.iterdir():
+                if not f.is_file() or f.name.startswith("."):
+                    continue
+                m = self._PIXEVAL_RE.match(f.name)
+                if m:
+                    groups.setdefault(int(m.group(1)), []).append(f)
+            for iid, files in groups.items():
+                if iid in ids:
+                    # 重复：以本地为准，删除 pixeval 副本
+                    for f in files:
+                        try:
+                            f.unlink()
+                            deleted += 1
+                        except OSError:
+                            pass
+                    continue
+                # 单图/多图判断：存在页码 >=1 的文件 → 多图
+                pages = [p for p in (self._pixeval_page(f.name) for f in files) if p is not None]
+                is_multi = any(p >= 1 for p in pages)
+                for f in files:
+                    ext = f.suffix.lower() or ".jpg"
+                    if is_multi:
+                        page = self._pixeval_page(f.name)
+                        dest = target_artist / str(iid) / f"{iid}_p{page}{ext}"
+                    else:
+                        dest = target_artist / f"{iid}{ext}"
+                    try:
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        if dest.exists():  # 目标已有同名文件（幂等）
+                            f.unlink()
+                            deleted += 1
+                        else:
+                            shutil.move(str(f), str(dest))
+                            moved += 1
+                    except OSError as e:
+                        print(f"[pixiv-sync] pixeval 迁移 {f.name} 失败: {e}")
+                ids.add(iid)
+        if moved or deleted:
+            self._save_ids()
+        if moved or deleted:
+            print(f"[pixiv-sync] pixeval 导入完成: 移动 {moved}，删除重复 {deleted}")
+        return moved + deleted
+
     # ---------- 任务状态（断点） ----------
 
     def _tasks_file(self) -> Path:
@@ -215,6 +469,37 @@ class PixivSyncPlugin(PluginBase):
     def sync_bookmarks(self) -> Dict:
         return self._start("bookmarks")
 
+    def import_pixeval(self) -> Dict:
+        """手动触发 pixeval 目录导入（纯本地文件操作，无需登录）。"""
+        src = (self.setting("pixeval_dir") or "").strip()
+        if not src or not Path(src).is_dir():
+            return {"ok": False, "error": "未配置有效的 Pixeval 目录（设置 → Pixeval 目录）"}
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return {"ok": False, "error": "已有任务在运行"}
+            self._cancel_flag = False
+            self._thread = threading.Thread(target=self._run_import_pixeval, daemon=True)
+            self._thread.start()
+        return {"ok": True}
+
+    def _run_import_pixeval(self):
+        task = self._new_task("pixeval")
+        task["state"] = "running"
+        task["current"] = "导入 pixeval 目录…"
+        self._persist_task(task)
+        try:
+            n = self._migrate_pixeval()
+            task["total"] = n
+            task["done"] = n
+            task["state"] = "cancelled" if self._cancel_flag else "done"
+        except Exception as e:  # noqa: BLE001
+            task["state"] = "failed"
+            task["error"] = f"{type(e).__name__}: {e}"
+        finally:
+            task["finished_at"] = time.time()
+            task["current"] = ""
+            self._persist_task(task)
+
     def _start(self, kind: str) -> Dict:
         with self._lock:
             if self._thread and self._thread.is_alive():
@@ -232,6 +517,43 @@ class PixivSyncPlugin(PluginBase):
                 self._cancel_flag = True
         return {"ok": True}
 
+    # ---------- OAuth 向导：重新获取 refresh_token（PKCE 授权码流程） ----------
+
+    def start_oauth(self) -> Dict:
+        """生成 PKCE 挑战并打开 Pixiv 登录页（第一步）。
+
+        返回 challenge 供前端拼控制台脚本：在已登录的 pixiv.net 页面
+        控制台执行同源 fetch 拿 code（cookie 自动带上，绕开重定向拦截）。
+        """
+        try:
+            verifier, challenge = self._client().generate_pkce()
+            self._oauth_verifier = verifier
+            url = self._client().login_url(challenge)
+            webbrowser.open(url)
+            return {"ok": True, "url": url, "challenge": challenge}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": f"打开登录页失败: {e}"}
+
+    def finish_oauth(self, code: str) -> Dict:
+        """用授权码换取 token 并自动保存 refresh_token（第二步）。"""
+        try:
+            if not getattr(self, "_oauth_verifier", None):
+                return {"ok": False, "error": "请先点击「获取 Token」打开登录页"}
+            code = (code or "").strip()
+            if not code:
+                return {"ok": False, "error": "code 为空，请从浏览器地址栏复制 code 参数值"}
+            client = self._client()
+            client.auth_with_code(code, self._oauth_verifier)
+            self._oauth_verifier = None
+            if client.refresh_token:
+                self.update_setting("refresh_token", client.refresh_token)
+                self._pixiv_client = None  # 新 token，重置客户端
+            return {"ok": True, "user_id": client.user_id}
+        except PixivError as e:
+            return {"ok": False, "error": str(e)}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
     def _run_sync(self, kind: str):
         task = self._new_task(kind)
         self._persist_task(task)
@@ -240,6 +562,21 @@ class PixivSyncPlugin(PluginBase):
             if not token:
                 raise PixivError("未配置 refresh_token，请先在设置中填写")
             self._client().auth(refresh_token=token)
+            # pixiv 可能在刷新时轮换 refresh_token：回写设置，避免下次用旧值失效
+            rotated = self._client().refresh_token
+            if rotated and rotated != token:
+                self.update_setting("refresh_token", rotated)
+                print("[pixiv-sync] refresh_token 已轮换，自动回写设置")
+            # 旧目录结构迁移（following/ + bookmarks/ → 统一 pixiv/{画师名}/，一次性）
+            task["current"] = "检查旧目录结构…"
+            self._persist_task(task)
+            migrated = self._migrate_legacy_layout()
+            if migrated:
+                print(f"[pixiv-sync] 旧目录迁移完成，处理 {migrated} 个文件")
+            # 识别用户手动放入的旧图（按命名规则提取 id 并入去重集合）
+            scanned = self._scan_existing_ids()
+            if scanned:
+                print(f"[pixiv-sync] 扫描到 {scanned} 个已存在作品，并入去重集合")
             task["state"] = "running"
             self._persist_task(task)
 
@@ -386,10 +723,13 @@ class PixivSyncPlugin(PluginBase):
             return 4
 
     def _sync_bookmarks(self, task: Dict[str, Any]):
-        """当前用户公开收藏：翻页拉全量后并行下载，统一放入 bookmarks 目录。"""
+        """当前用户公开收藏：翻页拉全量，按画师归入 pixiv/{画师名}/ 目录。
+
+        与画师同步共用统一去重集合：关注画师的作品若已被画师同步下载，
+        这里直接跳过（不重复下载）；非关注画师的作品下载到其画师目录。
+        """
         client = self._client()
         ids = self._load_ids()
-        sub = self._root() / "pixiv" / "bookmarks"
 
         all_illusts: List[Dict[str, Any]] = []
         qs = None
@@ -420,11 +760,27 @@ class PixivSyncPlugin(PluginBase):
         if self._cancel_flag:
             return
 
+        # 按画师解析目标目录（主线程，含改名迁移/缓存），作品归属画师
+        pending: List[tuple] = []  # (sub, illust)
+        for illust in all_illusts:
+            user = illust.get("user") or {}
+            uid = user.get("id")
+            if uid:
+                sub = self._artist_dir(int(uid), str(user.get("name") or uid))
+            else:  # 无画师信息兜底
+                sub = self._root() / "pixiv" / "未分类"
+            pending.append((sub, illust))
+        if self._cancel_flag:
+            return
+        if pending:
+            task["current"] = f"开始下载 {len(pending)} 个收藏作品…"
+            self._persist_task(task)
+
         workers = self._workers()
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [
                 pool.submit(self._process_illust, illust, task, ids, sub)
-                for illust in all_illusts
+                for sub, illust in pending
             ]
             for future in futures:
                 try:
@@ -456,8 +812,9 @@ class PixivSyncPlugin(PluginBase):
             ext = os.path.splitext(urlparse(url).path)[1] or ".jpg"
             name = f"{iid}{ext}" if len(urls) == 1 else f"{iid}_p{idx}{ext}"
             try:
-                if self._client().download(url, path=str(target), name=name):
-                    ok += 1
+                # True=新下载；False=文件已存在（视为已下载）；PixivError=失败
+                self._client().download(url, path=str(target), name=name)
+                ok += 1
             except PixivError:
                 fail += 1
         with self._task_lock:
@@ -563,12 +920,13 @@ class PixivSyncPlugin(PluginBase):
             print(f"[pixiv-sync] 保存画师缓存失败: {e}")
 
     def _artist_dir(self, uid: int, name: str) -> Path:
-        """返回画师作品目录（以名字命名）。
+        """返回画师作品目录（以名字命名，统一放在 <root>/pixiv/ 下）。
 
         - 画师 id → 名字 记入本地缓存，画师改名后仍能识别为同一人；
         - 检测到改名时把旧名字目录迁移合并到新名字目录，避免"分家"。
+        - 关注画师与收藏画师共用同一目录：作品归属画师，来源不再区分。
         """
-        base = self._root() / "pixiv" / "following"
+        base = self._root() / "pixiv"
         cache = self._load_artist_cache()
         key = str(uid)
         new_name = self._sanitize(name) or str(uid)
@@ -661,8 +1019,11 @@ class PixivSyncPlugin(PluginBase):
             "get_status": self.get_status,
             "sync_following": self.sync_following,
             "sync_bookmarks": self.sync_bookmarks,
+            "import_pixeval": self.import_pixeval,
             "cancel_task": self.cancel_task,
             "open_config": self.open_config,
+            "start_oauth": self.start_oauth,
+            "finish_oauth": self.finish_oauth,
             "get_settings": self.get_settings,
             "save_settings": self.save_settings,
         }
