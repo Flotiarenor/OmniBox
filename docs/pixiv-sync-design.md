@@ -85,6 +85,8 @@ plugins/
 | `download_original` | checkbox | 默认开启：下载画师原图（original，完整分辨率）；关闭 = 下载 1200px 大图（master1200） |
 | `multi_page_subfolder` | checkbox | 默认开启：多图作品放入 `{作品id}/` 子文件夹，单图直接平铺；关闭 = 全部平铺 |
 | `workers` | number | 并发下载数（1-8，默认 4）：画师间/作品间并行下载；机械盘建议 1-2，SSD 可 4-8 |
+| `max_download` | number | 单次同步上限（默认 100，0=不限）：每次「同步画师/同步喜欢」最多下载条数，下完再点同步继续（分批推进） |
+| `rate_limit` | number | API 请求速率次/秒（默认 3，1-10 可调）：间隔带随机抖动（-20%~+40%）；pixiv 阈值约 3/s，调高有 429 风险 |
 | `pixeval_dir` | text | 第三方客户端 pixeval 下载目录；设置后同步时自动导入（见下） |
 
 ### pixeval 目录导入（第三方客户端兼容）
@@ -111,8 +113,13 @@ plugins/
 | API | 参数 | 返回 | 说明 |
 |-----|------|------|------|
 | `get_status` | - | `{task, root_dir, token_configured, downloaded_total, running, selected_artists, selected_file}` | 状态轮询 |
-| `sync_following` | - | `{ok, data\|error}` | 启动「同步画师」任务（后台线程） |
-| `sync_bookmarks` | - | `{ok, data\|error}` | 启动「同步喜欢」任务（后台线程） |
+| `sync_following` | - | `{ok, data\|error}` | 启动「同步画师」任务（拉列表 + 下载） |
+| `sync_bookmarks` | - | `{ok, data\|error}` | 启动「同步喜欢」任务（拉列表 + 下载） |
+| `refresh_following_lists` | - | `{ok, data\|error}` | **刷新关注画师作品名单**：拉取列表生成待下载清单 `pending_following.json`（不下载；长任务） |
+| `refresh_bookmarks_lists` | - | `{ok, data\|error}` | **刷新喜欢画作名单**：拉取收藏列表生成待下载清单 `pending_bookmarks.json`（不下载；长任务） |
+| `sync_following` / `sync_bookmarks` | - | `{ok, data\|error}` | **按待下载清单下载**（先刷新名单再同步）：每次最多 `max_download` 条，下载后从清单移除，可重复点继续 |
+| `refresh_downloaded` | - | `{ok, total, zero_removed}` | **刷新已下载记录**：扫描本地重建 ids（手动删的移除、手动加的导入、0 字节清理） |
+| `verify_downloaded` | - | `{ok, stale_removed, zero_removed, total}` | **校验已下载内容**：移除记录中本地无有效文件的失效 id（下次同步重下），不导入新增 |
 | `cancel_task` | - | `{ok}` | 请求取消当前任务（下个检查点生效） |
 | `open_config` | - | `{ok, file}` | 打开画师名单配置文件所在文件夹（不存在则创建带说明的空文件） |
 | `start_oauth` | - | `{ok, url}` | OAuth PKCE 第一步：生成 code_verifier 并打开 Pixiv 登录页 |

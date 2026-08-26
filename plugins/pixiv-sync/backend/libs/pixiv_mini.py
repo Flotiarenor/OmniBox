@@ -293,6 +293,21 @@ class PixivClient:
         with self._request("GET", url, headers=headers, stream=True) as resp:
             if resp.status_code != 200:
                 raise PixivError(f"download HTTP {resp.status_code}: {url}")
-            with open(file, "wb") as f:
-                shutil.copyfileobj(resp.raw, f)
+            try:
+                with open(file, "wb") as f:
+                    shutil.copyfileobj(resp.raw, f)
+            except Exception:
+                # 流中断：清理半写/空文件，避免残留
+                try:
+                    os.remove(file)
+                except OSError:
+                    pass
+                raise PixivError(f"download 中断: {url}") from None
+        # 0 字节检查：空文件视为下载失败，删除后报错（下次重试）
+        if os.path.getsize(file) == 0:
+            try:
+                os.remove(file)
+            except OSError:
+                pass
+            raise PixivError(f"download 得到空文件: {url}")
         return True
