@@ -82,14 +82,22 @@ plugins/
 
 设置持久化于 `.config/plugins/pixiv-sync.json`（SettingsStore，git 忽略）。
 
+### 画师名单（selected_artists.txt：只同步指定画师）
+
+- 配置文件位置：`<root>/.cache/pixiv-sync/selected_artists.txt`（前端设置区「📂 画师名单文件」按钮一键打开所在文件夹）。
+- 格式：每行一个画师，填**画师名字或 Pixiv 用户 id**；`#` 开头为注释、空行忽略。
+- 语义：文件**存在且非空**时，同步画师只处理名单中匹配到的画师（按名字或 id 匹配；全部匹配不到则任务报错提示）；文件**不存在或为空** = 同步全部关注画师。
+- 前端不做名单编辑 UI（避免复杂表单），直接编辑文本文件即可。
+
 ## 4. 后端 API 契约（pixiv-sync__*）
 
 | API | 参数 | 返回 | 说明 |
 |-----|------|------|------|
-| `get_status` | - | `{task, root_dir, token_configured, downloaded_total, running}` | 状态轮询 |
+| `get_status` | - | `{task, root_dir, token_configured, downloaded_total, running, selected_artists, selected_file}` | 状态轮询 |
 | `sync_following` | - | `{ok, data\|error}` | 启动「同步画师」任务（后台线程） |
 | `sync_bookmarks` | - | `{ok, data\|error}` | 启动「同步喜欢」任务（后台线程） |
 | `cancel_task` | - | `{ok}` | 请求取消当前任务（下个检查点生效） |
+| `open_config` | - | `{ok, file}` | 打开画师名单配置文件所在文件夹（不存在则创建带说明的空文件） |
 | `get_settings` / `save_settings` | - | 设置读写（继承 PluginBase） | 前端设置表单使用 |
 
 调用约定：

@@ -291,10 +291,25 @@ class PixivSyncPlugin(PluginBase):
         if self._cancel_flag:
             return
 
-        # 2. 主线程预解析画师目录（含改名迁移），避免并发写 artists 缓存
+        # 2. 画师名单过滤：selected_artists.txt 存在且非空时只同步名单中的画师
+        selected = self._load_selected_artists()
+        if selected:
+            before = len(following)
+            following = [
+                (uid, name) for uid, name in following
+                if str(uid) in selected or name in selected
+            ]
+            task["current"] = f"名单过滤: {len(following)}/{before} 位画师"
+            self._persist_task(task)
+            if not following:
+                raise PixivError(
+                    "画师名单未匹配到任何关注画师，请检查 selected_artists.txt 中的名字或 id"
+                )
+
+        # 3. 主线程预解析画师目录（含改名迁移），避免并发写 artists 缓存
         subs = {uid: self._artist_dir(uid, name) for uid, name in following}
 
-        # 3. 并行拉取所有画师的全部作品列表（低并发 + 节流，避免触发 pixiv 限流）
+        # 4. 并行拉取所有画师的全部作品列表（低并发 + 节流，避免触发 pixiv 限流）
         def fetch_artist(uid: int) -> List[Dict[str, Any]]:
             illusts: List[Dict[str, Any]] = []
             q = None
@@ -325,8 +340,9 @@ class PixivSyncPlugin(PluginBase):
 
         all_illusts: List[tuple] = []  # (sub, illust)
         with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = [pool.submit(fetch_artist, uid) for uid, _ in following]
-            for future in futures:
+            # 把 uid 与 future 绑定，避免在结果循环中引用推导式变量
+            tasks = [(uid, pool.submit(fetch_artist, uid)) for uid, _ in following]
+            for uid, future in tasks:
                 try:
                     illusts = future.result()
                 except Exception as e:  # noqa: BLE001
@@ -452,6 +468,77 @@ class PixivSyncPlugin(PluginBase):
             task["done"] += 1
             self._persist_task(task)
 
+    # ---------- 画师名单（selected_artists.txt：只同步指定画师） ----------
+
+    _SELECTED_TEMPLATE = (
+        "# Pixiv 同步画师名单\n"
+        "# 每行一个画师：填画师名字或 Pixiv 用户 id（# 开头为注释，空行忽略）\n"
+        "# 示例:\n"
+        "#   柠檬静静静静\n"
+        "#   66477791\n"
+        "#\n"
+        "# 本文件存在且非空时，同步画师只处理名单中的画师；\n"
+        "# 删除本文件或清空内容 = 同步全部关注画师\n"
+    )
+
+    def _selected_file(self) -> Path:
+        return self._cache_dir() / "selected_artists.txt"
+
+    @staticmethod
+    def _read_text_robust(file: Path) -> str:
+        """读取文本文件，兼容 UTF-8 / UTF-8 BOM / GBK（记事本默认 ANSI 编码）。"""
+        for enc in ("utf-8-sig", "gb18030"):
+            try:
+                return file.read_text(encoding=enc)
+            except (UnicodeDecodeError, OSError):
+                continue
+        return ""
+
+    def _load_selected_artists(self) -> Set[str]:
+        """读取画师名单：每行一个画师（名字或 Pixiv 用户 id），# 注释、空行忽略。
+
+        文件不存在或为空 = 同步全部关注画师。
+        """
+        selected: Set[str] = set()
+        try:
+            text = self._read_text_robust(self._selected_file())
+        except FileNotFoundError:
+            return selected
+        except Exception as e:
+            print(f"[pixiv-sync] 读取画师名单失败: {e}")
+            return selected
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            selected.add(line)
+        return selected
+
+    def open_config(self) -> Dict:
+        """打开画师名单配置文件所在文件夹。
+
+        每次调用都会重写注释模板（保留用户填写的画师行，非注释行），
+        方便用户始终能看到用法说明。
+        """
+        try:
+            file = self._selected_file()
+            file.parent.mkdir(parents=True, exist_ok=True)
+            # 保留用户填写的画师行（非注释、非空），模板每次都写入
+            artists: List[str] = []
+            if file.exists():
+                for line in self._read_text_robust(file).splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        artists.append(line)
+            body = self._SELECTED_TEMPLATE
+            if artists:
+                body += "\n" + "\n".join(artists) + "\n"
+            file.write_text(body, encoding="utf-8")
+            os.startfile(str(file.parent))
+            return {"ok": True, "file": str(file)}
+        except Exception as e:
+            return {"ok": False, "error": f"打开失败: {e}"}
+
     # ---------- 画师目录（名字命名 + id 缓存 + 改名迁移） ----------
 
     def _artists_file(self) -> Path:
@@ -565,6 +652,8 @@ class PixivSyncPlugin(PluginBase):
             "token_configured": bool((self.setting("refresh_token") or "").strip()),
             "downloaded_total": len(self._load_ids()),
             "running": bool(self._thread and self._thread.is_alive()),
+            "selected_artists": len(self._load_selected_artists()),
+            "selected_file": str(self._selected_file()),
         }
 
     def register_api(self) -> dict:
@@ -573,6 +662,7 @@ class PixivSyncPlugin(PluginBase):
             "sync_following": self.sync_following,
             "sync_bookmarks": self.sync_bookmarks,
             "cancel_task": self.cancel_task,
+            "open_config": self.open_config,
             "get_settings": self.get_settings,
             "save_settings": self.save_settings,
         }
