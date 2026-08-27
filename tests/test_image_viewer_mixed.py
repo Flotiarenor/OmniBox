@@ -78,6 +78,7 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         workA = next(a for a in albums if a['path'] == 'workA')
         self.assertEqual(workA['direct_count'], 4)
         self.assertEqual(workA['cover'], 'workA/111_p0.png')
+        self.assertFalse(workA['use_time_name'])  # 默认插件无 Pixiv 设置
         workB = next(a for a in albums if a['path'] == 'workB')
         self.assertEqual(workB['cover'], 'workB/222_p0.png')
 
@@ -255,16 +256,109 @@ class ImageViewerMixedTestCase(unittest.TestCase):
             )
         finally:
             module.ImageViewerPlugin._resolved_config = orig
-        # 自身精确命中
-        self.assertEqual(plugin.get_settings('pixiv/following')['sort_by'], 'time_name')
-        # 子文件夹继承父文件夹的 time_name
-        self.assertEqual(plugin.get_settings('pixiv/following/artistB')['sort_by'], 'time_name')
+        # 自身精确命中（显式配置点）
+        s_self = plugin.get_settings('pixiv/following')
+        self.assertEqual(s_self['sort_by'], 'time_name')
+        self.assertTrue(s_self['pixiv_explicit'])
+        # 子文件夹继承父文件夹的 time_name，但自身非显式配置点
+        s_child = plugin.get_settings('pixiv/following/artistB')
+        self.assertEqual(s_child['sort_by'], 'time_name')
+        self.assertFalse(s_child['pixiv_explicit'])
         # 单独修改的子文件夹以自己为准（不继承父级）
         self.assertEqual(plugin.get_settings('pixiv/following/artistA')['sort_by'], 'name')
         # 单独修改的子文件夹继续向其子文件夹传播
         self.assertEqual(plugin.get_settings('pixiv/following/artistA/deep')['sort_by'], 'name')
         # 无关文件夹回退到全局/默认
         self.assertEqual(plugin.get_settings('photos/2026')['sort_by'], 'mtime')
+
+    def test_pixiv_sort_by_number(self):
+        """Pixiv 排序支持：顶层按前导数字（作品 ID）排序且方向生效，无数字名排最后；
+        作品内部多图片仍以 p0 开始（不受方向影响）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for fid in ['1000', '200', '9999', 'abc-artist']:
+                (root / fid).mkdir()
+                _make_image(root / fid / f'{fid}_p0.jpg', 100, 100)
+                _make_image(root / fid / f'{fid}_p1.jpg', 100, 100)
+            module = self.module
+            orig = module.ImageViewerPlugin._resolved_config
+            try:
+                # 全局启用 Pixiv 排序，作品文件夹内部继承 → p0 起
+                module.ImageViewerPlugin._resolved_config = {
+                    'root_dir': str(root),
+                    'folders': {'__global__': {'sort_by': 'time_name', 'sort_order': 'desc'}},
+                }
+                plugin = module.ImageViewerPlugin(
+                    {'name': 'image-viewer'},
+                    {'directories': {'data_root': str(root)}},
+                )
+            finally:
+                module.ImageViewerPlugin._resolved_config = orig
+            # 倒序：数字大在前（新作品在前），无数字名排最后
+            desc = plugin.list_folder_items('', 1, 40, 'time_name', 'desc')
+            self.assertEqual([it['path'] for it in desc['items']],
+                             ['9999', '1000', '200', 'abc-artist'])
+            # 正序：数字小在前
+            asc = plugin.list_folder_items('', 1, 40, 'time_name', 'asc')
+            self.assertEqual([it['path'] for it in asc['items']],
+                             ['200', '1000', '9999', 'abc-artist'])
+            # 作品内部多图片仍以 p0 开始（倒序下也从 p0 起）
+            seq = [im['url'] for im in desc['all_images']]
+            self.assertEqual(seq[:2], ['9999/9999_p0.jpg', '9999/9999_p1.jpg'])
+
+    def test_regenerate_thumbs(self):
+        """更新缩略图：删除缓存并重新生成；非法路径报错。"""
+        result = self.plugin.regenerate_thumbs(['workA/111_p0.png'])
+        self.assertEqual(result['errors'], [])
+        self.assertIn('workA/111_p0.png', result['regenerated'])
+        thumb = self.root / '.cache' / 'thumbs' / 'workA' / '111_p0.png'
+        self.assertTrue(thumb.exists())
+        # 非法路径报错
+        bad = self.plugin.regenerate_thumbs(['../evil.png'])
+        self.assertTrue(bad['errors'])
+
+    def test_refresh(self):
+        """全局刷新：清空缓存后视图仍可正常加载。"""
+        r = self.plugin.refresh()
+        self.assertTrue(r.get('success'))
+        data = self.plugin.list_folder_items('', 1, 40)
+        self.assertGreater(data['total'], 0)
+        albums = self.plugin.list_albums()['albums']
+        self.assertGreater(len(albums), 0)
+
+    def test_container_folder_card(self):
+        """纯容器子文件夹（只有子文件夹、无直接图片）：卡片带递归总数与代表封面
+        （画师文件夹 = 最新作品 p0 + 总图片数），image_count 仍为 0（不参与连续序列展开）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artist = root / 'artist100'
+            for wid in ['500', '9000']:
+                (artist / wid).mkdir(parents=True)
+                _make_image(artist / wid / f'{wid}_p0.jpg', 100, 100)
+                _make_image(artist / wid / f'{wid}_p1.jpg', 100, 100)
+            module = self.module
+            orig = module.ImageViewerPlugin._resolved_config
+            try:
+                module.ImageViewerPlugin._resolved_config = {
+                    'root_dir': str(root),
+                    'folders': {'__global__': {'sort_by': 'time_name', 'sort_order': 'desc'}},
+                }
+                plugin = module.ImageViewerPlugin(
+                    {'name': 'image-viewer'},
+                    {'directories': {'data_root': str(root)}},
+                )
+            finally:
+                module.ImageViewerPlugin._resolved_config = orig
+            data = plugin.list_folder_items('', 1, 40, 'time_name', 'desc')
+            card = data['items'][0]
+            self.assertEqual(card['path'], 'artist100')
+            self.assertEqual(card['image_count'], 0)          # 无直接图片
+            self.assertTrue(card['has_children'])
+            self.assertEqual(card['total_count'], 4)          # 递归总数 2 + 2
+            # pixiv 倒序第一个含图子目录（9000）的 p0 作为代表封面
+            self.assertEqual(card['cover'], 'artist100/9000/9000_p0.jpg')
+            # 容器不参与连续序列展开
+            self.assertEqual(data['all_images'], [])
 
 
 if __name__ == '__main__':

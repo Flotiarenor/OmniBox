@@ -80,67 +80,79 @@ function renderExtensions(container, host, placement, options = {}) {
     .then(list => {
       if (!Array.isArray(list) || list.length === 0) return;
 
-      const section = document.createElement('div');
-      section.className = 'obx-extensions' + (options.className ? ' ' + options.className : '');
-
-      if (options.title) {
-        const title = document.createElement('div');
-        title.className = 'obx-extensions-title';
-        title.textContent = options.title;
-        section.appendChild(title);
+      // 分组渲染：扩展可带 section 声明自己的区块标题（如「相册清理」/「Pixiv 同步」），
+      // 没有 section 的扩展归入 options.title 区块（兼容旧宿主）。
+      const groups = new Map();
+      for (const ext of list) {
+        const key = ext.section || options.title || '';
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(ext);
       }
 
-      list.forEach(ext => {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'obx-extension' + (options.itemClass ? ' ' + options.itemClass : '');
-        btn.title = ext.description || ext.label || ext.id || '';
-        btn.innerHTML =
-          `<span class="obx-extension-icon">${Utils.escapeHtml(ext.icon || '🧩')}</span>` +
-          `<span class="obx-extension-label">${Utils.escapeHtml(ext.label || ext.id || '扩展')}</span>`;
+      for (const [key, exts] of groups) {
+        const section = document.createElement('div');
+        section.className = 'obx-extensions' + (options.className ? ' ' + options.className : '');
 
-        btn.addEventListener('click', () => {
-          // 0. 原生视图型扩展：由宿主直接渲染，复用宿主 UI/播放器
-          if (ext.view && typeof options.onOpen === 'function') {
-            options.onOpen(ext, btn);
-            return;
-          }
-          // 1. 内嵌型扩展：在宿主内部打开 iframe 面板
-          if (ext.embedUrl) {
-            if (typeof options.onEmbed === 'function') {
-              options.onEmbed(ext, btn);
-            } else if (options.embedContainer) {
-              options.embedContainer.innerHTML = '';
-              const frame = document.createElement('iframe');
-              frame.src = ext.embedUrl;
-              frame.className = 'obx-embed-frame';
-              options.embedContainer.appendChild(frame);
+        const groupTitle = exts[0] && exts[0].section ? exts[0].section : (options.title || '');
+        if (groupTitle) {
+          const title = document.createElement('div');
+          title.className = 'obx-extensions-title';
+          title.textContent = groupTitle;
+          section.appendChild(title);
+        }
+
+        exts.forEach(ext => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'obx-extension' + (options.itemClass ? ' ' + options.itemClass : '');
+          btn.title = ext.description || ext.label || ext.id || '';
+          btn.innerHTML =
+            `<span class="obx-extension-icon">${Utils.escapeHtml(ext.icon || '🧩')}</span>` +
+            `<span class="obx-extension-label">${Utils.escapeHtml(ext.label || ext.id || '扩展')}</span>`;
+
+          btn.addEventListener('click', () => {
+            // 0. 原生视图型扩展：由宿主直接渲染，复用宿主 UI/播放器
+            if (ext.view && typeof options.onOpen === 'function') {
+              options.onOpen(ext, btn);
+              return;
             }
-            return;
-          }
-          // 2. 独立路由型扩展：跳转到插件自身页面
-          if (ext.route) {
-            const nav = parent && parent.__omniboxNavigate;
-            if (typeof nav === 'function') {
-              nav(ext.route);
-            } else if (parent) {
-              parent.location.href = ext.route;
+            // 1. 内嵌型扩展：在宿主内部打开 iframe 面板
+            if (ext.embedUrl) {
+              if (typeof options.onEmbed === 'function') {
+                options.onEmbed(ext, btn);
+              } else if (options.embedContainer) {
+                options.embedContainer.innerHTML = '';
+                const frame = document.createElement('iframe');
+                frame.src = ext.embedUrl;
+                frame.className = 'obx-embed-frame';
+                options.embedContainer.appendChild(frame);
+              }
+              return;
             }
-            return;
-          }
-          // 3. 纯后端方法型扩展：跨插件调用
-          if (ext.method && ext.plugin) {
-            Bridge.callPlugin(ext.plugin, ext.method).catch(err => {
-              console.error('扩展调用失败:', err);
-              if (window.Toast) Toast.error('扩展调用失败');
-            });
-          }
+            // 2. 独立路由型扩展：跳转到插件自身页面
+            if (ext.route) {
+              const nav = parent && parent.__omniboxNavigate;
+              if (typeof nav === 'function') {
+                nav(ext.route);
+              } else if (parent) {
+                parent.location.href = ext.route;
+              }
+              return;
+            }
+            // 3. 纯后端方法型扩展：跨插件调用
+            if (ext.method && ext.plugin) {
+              Bridge.callPlugin(ext.plugin, ext.method).catch(err => {
+                console.error('扩展调用失败:', err);
+                if (window.Toast) Toast.error('扩展调用失败');
+              });
+            }
+          });
+
+          section.appendChild(btn);
         });
 
-        section.appendChild(btn);
-      });
-
-      container.appendChild(section);
+        container.appendChild(section);
+      }
     })
     .catch(err => {
       console.error('加载扩展失败:', err);

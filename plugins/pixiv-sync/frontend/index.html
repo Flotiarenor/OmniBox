@@ -5,8 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Pixiv 同步</title>
   <style>
-    /* 极简样式：布局复用 Shell 的 .view-body / .view-toolbar / .view-content */
-    .psync-main { display: flex; flex-direction: column; height: 100%; }
+    /* 高度链：iframe 内 html/body 必须有高度，滚动才生效 */
+    html, body { height: 100%; margin: 0; }
+    .psync-main { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+    .psync-main .view-content { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
     .psync-status { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
       padding: 8px 16px; font-size: 12px; color: var(--color-text, #666); }
     .psync-status .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
@@ -39,6 +41,22 @@
     .psync-tip { font-size: 11px; color: var(--color-text, #999); padding: 0 16px 12px; }
     .psync-empty { color: var(--color-text, #999); font-size: 12px; text-align: center;
       padding: 20px 0; }
+    /* OAuth 引导弹窗 */
+    .psync-modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none;
+      align-items: center; justify-content: center; z-index: 999; }
+    .psync-modal .box { width: min(560px, 92vw); max-height: 86vh; overflow: auto;
+      background: var(--color-bg, #fff); border-radius: 10px; padding: 16px 18px;
+      box-shadow: 0 8px 30px rgba(0,0,0,.25); color: var(--color-text, #333);
+      display: flex; flex-direction: column; gap: 8px; }
+    .psync-modal h4 { margin: 0 0 4px; }
+    .psync-modal ol { margin: 0 0 6px; padding-left: 20px; font-size: 12px; line-height: 1.7; }
+    .psync-modal textarea { width: 100%; min-height: 120px; font-family: Consolas, monospace;
+      font-size: 11px; border: 1px solid var(--color-border, #ddd); border-radius: 6px;
+      padding: 8px; background: var(--color-bg-input, #fafafa); color: var(--color-text, #333);
+      box-sizing: border-box; resize: vertical; }
+    .psync-modal input { padding: 7px 9px; border: 1px solid var(--color-border, #ddd);
+      border-radius: 6px; background: var(--color-bg-input, #fff); color: var(--color-text, #333); }
+    .psync-modal .row { display: flex; gap: 8px; justify-content: flex-end; }
   </style>
 </head>
 <body>
@@ -62,11 +80,26 @@
         <span id="st-total">已下载 0 张</span>
         <span id="st-last"></span>
       </div>
+      <div class="psync-status" style="padding-top:0;">
+        <span title="刷新关注名单后的作品总数 / 其中待下载 / 已同步的关注画师作品数">关注: 共 <b id="st-ft">0</b> · 待下 <b id="st-pf">0</b> · 已下 <b id="st-fd">0</b></span>
+        <span title="刷新喜欢名单后的作品总数 / 其中待下载 / 已同步的喜欢作品数">喜欢: 共 <b id="st-bt">0</b> · 待下 <b id="st-pb">0</b> · 已下 <b id="st-bd">0</b></span>
+        <span title="既不在关注名单也不在喜欢名单的已下载作品（旧图导入/手动放置等）">其他: <b id="st-od">0</b></span>
+        <span title="同步时返回 404/已删除、被永久跳过的作品数；可用「重试失败作品」按钮一键清除并重新同步">失败跳过: <b id="st-failed">0</b></span>
+      </div>
 
       <!-- 操作按钮 -->
       <div class="psync-btns">
-        <button id="btn-following" class="btn">🔄 同步画师</button>
+        <button id="btn-following" class="btn">⬇️ 同步画师</button>
         <button id="btn-bookmarks" class="btn">❤️ 同步喜欢</button>
+      </div>
+      <div class="psync-btns" style="padding-top:0;">
+        <button id="btn-refresh-following" class="btn btn-sm" title="拉取关注画师作品列表，生成待下载清单（不下载）">🔄 刷新关注名单</button>
+        <button id="btn-refresh-bookmarks" class="btn btn-sm" title="拉取收藏列表，生成待下载清单（不下载）">🔄 刷新喜欢名单</button>
+      </div>
+      <div class="psync-btns" style="padding-top:0;">
+        <button id="btn-refresh-dl" class="btn btn-sm" title="扫描本地文件重建已下载记录（手动删过的移除、手动加的导入、0字节清理）">📋 刷新记录</button>
+        <button id="btn-verify" class="btn btn-sm" title="校验已下载内容：移除记录中本地无有效文件的失效 id，下次同步重下">🔍 校验内容</button>
+        <button id="btn-retry-failed" class="btn btn-sm btn-danger" title="清除失败的404（永久跳过）记录，并自动重新同步一次重试这些作品">🗑 重试失败作品</button>
       </div>
 
       <!-- 进度条 -->
@@ -91,28 +124,72 @@
         <label>下载目录
           <input id="set-dir" type="text" placeholder="留空=写入 image-viewer 相册根目录">
         </label>
+
         <div class="psync-options">
-          <h4>下载选项</h4>
-          <label style="flex-direction:row;align-items:center;gap:8px;">
-            <input id="set-original" type="checkbox" style="width:auto;">
-            <span>下载原图（完整分辨率，文件较大；关闭=1200px 大图）</span>
-          </label>
-          <label style="flex-direction:row;align-items:center;gap:8px;">
-            <input id="set-subfolder" type="checkbox" style="width:auto;">
-            <span>多图作品放入 {作品id}/ 子文件夹（单图直接平铺）</span>
-          </label>
+          <h4>下载行为（固定，无需配置）</h4>
+          <div class="psync-tip" style="margin:0;">
+            • 下载原图（original）：默认开启，未取到时回退 1200px 大图 — 固定行为
+            • 多图作品放入 {作品id}/ 子文件夹，单图直接平铺 — 固定行为
+            （如需调整，请直接修改插件 Python 代码的默认设定）
+          </div>
           <label>并发下载数
             <input id="set-workers" type="number" min="1" max="8" value="4">
             <span style="font-size:11px;color:var(--color-text,#999);">机械盘建议 1-2，SSD 可 4-8</span>
           </label>
+          <label>单次同步上限（条）
+            <input id="set-maxdl" type="number" min="0" max="10000" value="100">
+            <span style="font-size:11px;color:var(--color-text,#999);">每次同步最多下载条数；0=不限。分批下载可设小值，下完再点同步继续</span>
+          </label>
+          <label>单次刷新画师数上限
+            <input id="set-maxartists" type="number" min="0" max="500" value="30">
+            <span style="font-size:11px;color:var(--color-text,#999);">每次「刷新关注名单」最多扫描的画师数；实测约 30 个可能触发 429，建议保持默认。0=不限（有 429 风险）</span>
+          </label>
+          <label>API 请求速率（次/秒）
+            <input id="set-ratelimit" type="number" min="1" max="10" value="3">
+            <span style="font-size:11px;color:var(--color-text,#999);">间隔带随机抖动；pixiv 阈值约 3/s，调高有 429 风险</span>
+          </label>
+          <label>并行拉取画师数（滑动窗口）
+            <input id="set-scanworkers" type="number" min="1" max="8" value="4">
+            <span style="font-size:11px;color:var(--color-text,#999);">刷新名单时同时拉取的画师数；总速率仍受 rate_limit 限制</span>
+          </label>
         </div>
-        <div class="save-row">
-          <button id="btn-save" class="btn btn-sm">保存设置</button>
+        <div class="save-row" style="justify-content:space-between;align-items:center;">
+          <span style="font-size:11px;color:var(--color-text,#999);" id="st-selected">画师名单: 全部</span>
+          <div style="display:flex;gap:8px;">
+            <button id="btn-oauth" class="btn btn-sm" title="通过浏览器登录 Pixiv 重新获取 refresh_token（token 失效时使用）">🔑 获取 Token</button>
+            <button id="btn-open-config" class="btn btn-sm" title="打开画师名单配置文件所在文件夹（编辑：每行一个画师名字或 id，空=全部）">📂 画师名单文件</button>
+            <button id="btn-save" class="btn btn-sm">保存设置</button>
+          </div>
         </div>
       </div>
       <div class="psync-tip">
         提示：下载画作会自动出现在「图片相册」中，重复作品按 Pixiv 作品 ID 自动跳过。
         Token 获取：github.com/eggplants/get-pixivpy-token (gppt)
+      </div>
+      <div class="psync-tip" id="psync-cooldown" style="display:none;font-size:12px;color:#d33;"></div>
+    </div>
+  </div>
+
+  <!-- OAuth 引导弹窗 -->
+  <div id="oauth-modal" class="psync-modal">
+    <div class="box">
+      <h4>🔑 获取 Pixiv Token</h4>
+      <p style="font-size:12px;color:#d33;margin:0 0 6px;">⚠️ 下面步骤中<b>不要重新点</b>「获取 Token」按钮，否则验证码会失效，需重来。</p>
+      <ol>
+        <li>浏览器会自动打开 Pixiv 登录页；若没打开或跳转异常，在<b>已登录</b>的浏览器新标签页粘贴下面地址回车</li>
+      </ol>
+      <textarea id="oauth-url" readonly></textarea>
+      <div class="row">
+        <button id="btn-copy-url" class="btn btn-sm">复制登录地址</button>
+      </div>
+      <ol start="2">
+        <li>登录后页面会跳转或报「协议未知，无法导航」——按 <b>F12</b> → <b>Console</b>，从报错或 Network 里找到 <code>callback?...&code=XXXX</code>，复制 <code>code=</code> 后面那串</li>
+        <li>粘贴到下面，点「完成」（验证码几分钟内有效）</li>
+      </ol>
+      <input id="oauth-code" placeholder="粘贴 code= 后面的字符串">
+      <div class="row">
+        <button id="btn-oauth-finish" class="btn btn-sm">完成</button>
+        <button id="btn-oauth-close" class="btn btn-sm">关闭</button>
       </div>
     </div>
   </div>
@@ -121,17 +198,46 @@
     (function () {
       const $ = id => document.getElementById(id);
       let polling = false;
+      let cooldownUntil = 0;
+
+      function renderCooldown() {
+        const el = $('psync-cooldown');
+        if (!el) return;
+        const remain = cooldownUntil - Date.now();
+        if (remain > 0) {
+          const total = Math.floor(remain / 1000);
+          const mm = String(Math.floor(total / 60)).padStart(2, '0');
+          const ss = String(total % 60).padStart(2, '0');
+          el.style.display = 'block';
+          el.textContent = '⏳ Pixiv 限流冷却参考：' + mm + ':' + ss + '（建议等冷却结束再刷新）';
+        } else {
+          el.style.display = 'none';
+          el.textContent = '';
+        }
+      }
 
       // ---------- 状态 ----------
       async function refreshStatus() {
         try {
           const s = await Bridge.call('get_status');
           const t = s.token_configured;
+          cooldownUntil = s.rate_limit_cooldown > 0 ? Date.now() + s.rate_limit_cooldown * 1000 : 0;
+          renderCooldown();
           const dot = $('st-token');
           dot.className = 'dot ' + (t ? 'ok' : 'bad');
           dot.title = t ? '已配置' : '未配置';
           $('st-root').textContent = '根目录: ' + (s.root_dir || '未知');
           $('st-total').textContent = '已下载 ' + s.downloaded_total + ' 张';
+          $('st-ft').textContent = s.following_total || 0;
+          $('st-pf').textContent = s.pending_following || 0;
+          $('st-fd').textContent = s.following_done || 0;
+          $('st-bt').textContent = s.bookmarks_total || 0;
+          $('st-pb').textContent = s.pending_bookmarks || 0;
+          $('st-bd').textContent = s.bookmarks_done || 0;
+          $('st-od').textContent = s.other_done || 0;
+          $('st-failed').textContent = s.failed_skipped || 0;
+          $('st-selected').textContent = '画师名单: ' + (s.selected_artists ? s.selected_artists + ' 位' : '全部');
+          $('st-selected').title = s.selected_file || '';
           renderTask(s.task, s.running);
           return s;
         } catch (e) {
@@ -167,6 +273,9 @@
 
         $('btn-following').disabled = running || task.state === 'running' || task.state === 'queued';
         $('btn-bookmarks').disabled = running || task.state === 'running' || task.state === 'queued';
+        $('btn-refresh-following').disabled = running || task.state === 'running' || task.state === 'queued';
+        $('btn-refresh-bookmarks').disabled = running || task.state === 'running' || task.state === 'queued';
+        $('btn-retry-failed').disabled = running || task.state === 'running' || task.state === 'queued';
         $('btn-cancel').style.display = (task.state === 'running' || task.state === 'queued') ? '' : 'none';
         $('btn-cancel').disabled = !running;
       }
@@ -198,6 +307,18 @@
         }
       }
 
+      // 刷新名单（长任务，走进度条）
+      async function startRefresh(method) {
+        try {
+          const r = await Bridge.call(method);
+          if (r && r.ok === false) { alert(r.error || '启动失败'); return; }
+          polling = true;
+          tick();
+        } catch (e) {
+          alert('启动失败: ' + e.message);
+        }
+      }
+
       // ---------- 设置 ----------
       async function loadSettings() {
         try {
@@ -205,10 +326,21 @@
           $('set-token').value = s.refresh_token || '';
           $('set-proxy').value = s.proxy || '';
           $('set-dir').value = s.download_dir || '';
-          $('set-original').checked = s.download_original !== false;
-          $('set-subfolder').checked = s.multi_page_subfolder !== false;
-          $('set-workers').value = s.workers || 4;
+
+          $('set-workers').value = s.workers != null ? s.workers : 4;
+          $('set-maxdl').value = s.max_download != null ? s.max_download : 100;
+          $('set-maxartists').value = s.max_artists != null ? s.max_artists : 30;
+          $('set-ratelimit').value = s.rate_limit != null ? s.rate_limit : 3;
+          $('set-scanworkers').value = s.scan_workers != null ? s.scan_workers : 4;
         } catch (e) { /* 忽略 */ }
+      }
+
+      function intSetting(id, fallback, min, max) {
+        const raw = $(id).value.trim();
+        if (raw === '') return fallback;
+        const n = parseInt(raw, 10);
+        if (!Number.isFinite(n)) return fallback;
+        return Math.max(min, Math.min(max, n));
       }
 
       async function saveSettings() {
@@ -216,9 +348,11 @@
           refresh_token: $('set-token').value.trim(),
           proxy: $('set-proxy').value.trim(),
           download_dir: $('set-dir').value.trim(),
-          download_original: $('set-original').checked,
-          multi_page_subfolder: $('set-subfolder').checked,
-          workers: Math.max(1, Math.min(8, parseInt($('set-workers').value, 10) || 4)),
+          workers: intSetting('set-workers', 4, 1, 8),
+          max_download: intSetting('set-maxdl', 100, 0, 10000),
+          max_artists: intSetting('set-maxartists', 30, 0, 500),
+          rate_limit: intSetting('set-ratelimit', 3, 1, 10),
+          scan_workers: intSetting('set-scanworkers', 4, 1, 8),
         };
         try {
           const r = await Bridge.call('save_settings', values);
@@ -240,9 +374,83 @@
         $('btn-cancel').addEventListener('click', async () => {
           try { await Bridge.call('cancel_task'); } catch (e) { /* ignore */ }
         });
+        $('btn-open-config').addEventListener('click', async () => {
+          try { await Bridge.call('open_config'); } catch (e) { alert('打开失败: ' + e.message); }
+        });
+        $('btn-oauth').addEventListener('click', async () => {
+          try {
+            const r = await Bridge.call('start_oauth');
+            if (r && r.ok === false) { alert(r.error || '打开登录页失败'); return; }
+            // 完整登录地址（含 code_challenge，浏览器导航可用；控制台 fetch 会被 CORS 拦）
+            $('oauth-url').value = r.url || '';
+            $('oauth-code').value = '';
+            $('oauth-modal').style.display = 'flex';
+          } catch (e) {
+            alert('获取 Token 失败: ' + e.message);
+          }
+        });
+        $('btn-copy-url').addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText($('oauth-url').value);
+          } catch (e) {
+            $('oauth-url').select(); document.execCommand('copy');
+          }
+        });
+        $('btn-oauth-finish').addEventListener('click', async () => {
+          const code = $('oauth-code').value.trim();
+          if (!code) { alert('请先粘贴 CODE'); return; }
+          const r2 = await Bridge.call('finish_oauth', code);
+          if (r2 && r2.ok) {
+            alert('Token 获取成功！已自动保存。');
+            $('oauth-modal').style.display = 'none';
+            await loadSettings();
+            await refreshStatus();
+          } else {
+            alert('获取失败: ' + ((r2 && r2.error) || '未知错误'));
+          }
+        });
+        $('btn-oauth-close').addEventListener('click', () => {
+          $('oauth-modal').style.display = 'none';
+        });
         $('btn-save').addEventListener('click', saveSettings);
+        $('btn-refresh-following').addEventListener('click', () => startRefresh('refresh_following_lists'));
+        $('btn-refresh-bookmarks').addEventListener('click', () => startRefresh('refresh_bookmarks_lists'));
+        $('btn-refresh-dl').addEventListener('click', async () => {
+          try {
+            const r = await Bridge.call('refresh_downloaded');
+            if (r && r.ok === false) { alert(r.error); return; }
+            alert('已刷新记录：本地 ' + r.total + ' 个作品'
+              + (r.zero_removed ? '，清理 0 字节 ' + r.zero_removed + ' 个' : '')
+              + (r.stale_removed ? '，移除失效记录 ' + r.stale_removed + ' 条' : '')
+              + (r.failed_cleared ? '，清除失败跳过 ' + r.failed_cleared + ' 条' : ''));
+            await refreshStatus();
+          } catch (e) { alert('刷新失败: ' + e.message); }
+        });
+        $('btn-verify').addEventListener('click', async () => {
+          try {
+            const r = await Bridge.call('verify_downloaded');
+            if (r && r.ok === false) { alert(r.error); return; }
+            alert('校验完成：移除失效记录 ' + r.stale_removed + ' 条'
+              + (r.zero_removed ? '，清理 0 字节 ' + r.zero_removed + ' 个' : '')
+              + (r.failed_cleared ? '，清除失败跳过 ' + r.failed_cleared + ' 条' : '')
+              + '，当前记录 ' + r.total + ' 条');
+            await refreshStatus();
+          } catch (e) { alert('校验失败: ' + e.message); }
+        });
+        $('btn-retry-failed').addEventListener('click', async () => {
+          try {
+            const r = await Bridge.call('retry_failed');
+            if (r && r.ok === false) { alert(r.error || '启动失败'); return; }
+            alert('已清除 ' + r.cleared + ' 条失败跳过记录，自动重新同步：' + (r.kind === 'bookmarks' ? '喜欢' : '画师'));
+            polling = true;
+            tick();
+          } catch (e) { alert('启动失败: ' + e.message); }
+        });
         await loadSettings();
         await refreshStatus();
+        // 状态栏定时刷新（含画师名单数量），编辑名单文件后自动更新
+        setInterval(refreshStatus, 10000);
+        setInterval(renderCooldown, 1000);
         const s = await refreshStatus();
         if (s && s.running) { polling = true; tick(); }
       });

@@ -9,7 +9,7 @@ Pixiv 精简同步客户端 (pixiv-mini)
   4. 用户作品列表     (user_illusts)
   5. 用户收藏画作     (user_bookmarks_illust) —— 用户喜欢的画作(非关注来源)
   6. 图片下载         (download) + 翻页 (parse_qs)
-
+原地址:https://github.com/upbit/pixivpy
 已删除: pydantic 模型(models.py)、BypassSniApi(bapi.py)、小说/搜索/写操作等全部接口。
 所有接口直接返回原始 JSON dict，天然绕过 pixivpy v3.13.0 的 pydantic 校验 bug。
 
@@ -25,15 +25,18 @@ Pixiv 精简同步客户端 (pixiv-mini)
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
+import secrets
 import shutil
+import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import parse_qs as _split_qs
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import requests
 
@@ -47,6 +50,10 @@ _USER_AGENT = "PixivIOSApp/7.13.3 (iOS 14.6; iPhone13,2)"
 
 _API_HOST = "https://app-api.pixiv.net"
 _OAUTH_HOST = "https://oauth.secure.pixiv.net"
+
+# OAuth PKCE 流程（用于重新获取 refresh_token）
+_REDIRECT_URI = "https://app-api.pixiv.net/web/v1/users/auth/pixiv/callback"
+_LOGIN_URL = "https://app-api.pixiv.net/web/v1/login"
 
 
 class PixivError(Exception):
@@ -77,14 +84,26 @@ class PixivClient:
         proxies: dict[str, str] | None = None,
         timeout: int = 30,
     ) -> None:
-        self.session = requests.Session()
-        if proxies:
-            self.session.proxies.update(proxies)
+        # requests.Session 不是线程安全的；插件会在扫描/下载线程池里并发调用
+        # 同一个 client，因此这里改为“每个线程一个 Session”，token 等字段仍共享。
+        self._proxies = dict(proxies or {})
+        self._local = threading.local()
+        self.session = self._get_session()
         self.timeout = timeout
         self.access_token: str | None = None
         self.refresh_token: str | None = None
         self.user_id: int | None = None
         self.hosts = _API_HOST
+
+    def _get_session(self) -> requests.Session:
+        """返回当前线程独占的 requests.Session（懒创建，代理配置一致）。"""
+        session = getattr(self._local, "session", None)
+        if session is None:
+            session = requests.Session()
+            if self._proxies:
+                session.proxies.update(self._proxies)
+            self._local.session = session
+        return session
 
     # ------------------------------------------------------------------
     # 内部请求（带重试：代理抖动 / TLS 握手中断等连接层错误自动重试）
@@ -94,7 +113,7 @@ class PixivClient:
         last_exc: Exception | None = None
         for attempt in range(1, retries + 1):
             try:
-                return self.session.request(method, url, **kwargs)
+                return self._get_session().request(method, url, **kwargs)
             except (
                 requests.exceptions.ConnectionError,
                 requests.exceptions.SSLError,
@@ -107,10 +126,54 @@ class PixivClient:
         raise PixivError(f"请求失败（已重试 {retries} 次）: {last_exc}")
 
     # ------------------------------------------------------------------
+    # OAuth PKCE：重新获取 refresh_token（授权码流程，RFC 7636）
+    # ------------------------------------------------------------------
+    @staticmethod
+    def generate_pkce() -> tuple[str, str]:
+        """生成 (code_verifier, code_challenge)；challenge 用于拼登录 URL。"""
+        code_verifier = secrets.token_urlsafe(32)
+        digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+        code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+        return code_verifier, code_challenge
+
+    @staticmethod
+    def login_url(code_challenge: str) -> str:
+        return f"{_LOGIN_URL}?{urlencode({'code_challenge': code_challenge, 'code_challenge_method': 'S256', 'client': 'pixiv-android'})}"
+
+    def auth_with_code(self, code: str, code_verifier: str) -> JsonDict:
+        """用授权码 code + code_verifier 换取 access_token / refresh_token。"""
+        data = {
+            "client_id": _CLIENT_ID,
+            "client_secret": _CLIENT_SECRET,
+            "code": code,
+            "code_verifier": code_verifier,
+            "grant_type": "authorization_code",
+            "include_policy": "true",
+            "redirect_uri": _REDIRECT_URI,
+        }
+        headers = {"user-agent": "PixivAndroidApp/5.0.234 (Android 11; Pixel 5)"}
+        resp = self._request("POST", f"{_OAUTH_HOST}/auth/token", headers=headers, data=data)
+        if resp.status_code not in {200, 301, 302}:
+            raise PixivError(
+                f"auth_with_code() failed! HTTP {resp.status_code}: {resp.text[:200]}",
+                body=resp.text,
+            )
+        try:
+            token = json.loads(resp.text, object_hook=JsonDict)
+            self.user_id = token.response.user.id
+            self.access_token = token.response.access_token
+            self.refresh_token = token.response.refresh_token
+        except Exception as e:
+            raise PixivError(f"Get access_token error! {e}", body=resp.text) from None
+        return token
+
+    # ------------------------------------------------------------------
     # 认证：用 refresh_token 换取 access_token（密码登录已被 Pixiv 废弃）
     # ------------------------------------------------------------------
     def auth(self, refresh_token: str) -> JsonDict:
-        local_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        # 必须使用真实 UTC 时间（原实现用 naive 本地时间但硬编码 +00:00，
+        # 非 UTC 时区主机会出现 x-client-time 偏差，可能导致认证失败）。
+        local_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
         headers = {
             "x-client-time": local_time,
             "x-client-hash": hashlib.md5(
@@ -221,6 +284,10 @@ class PixivClient:
             params["max_bookmark_id"] = max_bookmark_id
         return self._call("/v1/user/bookmarks/illust", params)
 
+    def illust_detail(self, illust_id: int | str) -> JsonDict:
+        """作品详情（返回 illust 对象，含画师 user 信息；用于迁移/查询归属）"""
+        return self._call("/v1/illust/detail", {"illust_id": illust_id})
+
     # ------------------------------------------------------------------
     # 下载
     # ------------------------------------------------------------------
@@ -234,13 +301,37 @@ class PixivClient:
         """下载图片（i.pximg.net 需要 Referer 防盗链头）"""
         name = name or os.path.basename(url)
         file = os.path.join(path, name)
-        if os.path.exists(file) and not replace:
-            return False
+        if os.path.isfile(file) and not replace:
+            try:
+                if os.path.getsize(file) > 0:
+                    return False
+                # 0 字节文件是上次中断/崩溃留下的残片，不能视为已下载。
+                os.remove(file)
+            except OSError:
+                return False
         os.makedirs(path, exist_ok=True)
         headers = {"Referer": "https://app-api.pixiv.net/", "user-agent": _USER_AGENT}
         with self._request("GET", url, headers=headers, stream=True) as resp:
             if resp.status_code != 200:
                 raise PixivError(f"download HTTP {resp.status_code}: {url}")
-            with open(file, "wb") as f:
-                shutil.copyfileobj(resp.raw, f)
+            try:
+                with open(file, "wb") as f:
+                    shutil.copyfileobj(resp.raw, f)
+            except Exception:
+                # 流中断：清理半写/空文件，避免残留
+                try:
+                    os.remove(file)
+                except OSError:
+                    pass
+                raise PixivError(f"download 中断: {url}") from None
+            # 0 字节/截断检查：服务端给出 Content-Length 时校验完整性，
+            # 避免把“非 0 但截断”的残片当成已下载。
+            size = os.path.getsize(file)
+            expected = resp.headers.get("Content-Length")
+            if size == 0 or (expected and expected.isdigit() and size != int(expected)):
+                try:
+                    os.remove(file)
+                except OSError:
+                    pass
+                raise PixivError(f"download 得到不完整文件（{size} bytes）: {url}")
         return True
