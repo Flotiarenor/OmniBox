@@ -78,13 +78,13 @@ class PixivSyncPlugin(PluginBase):
             "help": "每次「同步画师/同步喜欢」最多下载的作品数；0 = 不限。想分批下载可设小值，下完再点同步继续",
         },
         {
-            "key": "max_refresh",
-            "label": "单次刷新上限（条）",
+            "key": "max_artists",
+            "label": "单次刷新画师数上限",
             "type": "number",
-            "default": 500,
+            "default": 30,
             "min": 0,
-            "max": 10000,
-            "help": "每次「刷新关注/喜欢名单」最多拉取并加入清单的待下载条数；列表请求受限速，设小值分批刷新更稳；0 = 不限",
+            "max": 500,
+            "help": "每次「刷新关注名单」最多扫描的画师数；实测约 30 个画师可能触发 429，建议保持默认。0 = 不限（有 429 风险）",
         },
         {
             "key": "rate_limit",
@@ -117,6 +117,7 @@ class PixivSyncPlugin(PluginBase):
         except (TypeError, ValueError):
             initial_rate = 3.0
         self._rate_limiter = RateLimiter(rate=initial_rate)  # app-api 请求限速
+        self._rate_limited_until: Optional[float] = None  # 429 后的冷却截止时间
         self._task: Optional[Dict[str, Any]] = None
         self._thread: Optional[threading.Thread] = None
         self._cancel_flag = False
@@ -250,6 +251,15 @@ class PixivSyncPlugin(PluginBase):
             self.update_setting("refresh_token", rotated)
             print("[pixiv-sync] refresh_token 已轮换，自动回写设置")
 
+    def _note_rate_limited(self, cooldown: float = 600.0) -> None:
+        self._rate_limited_until = time.time() + cooldown
+
+    def _rate_limit_cooldown(self) -> int:
+        if self._rate_limited_until is None:
+            return 0
+        return max(0, int(self._rate_limited_until - time.time()))
+
+
     # ---------- 已有图片扫描（手动放入的旧图并入去重） ----------
 
     def _scan_existing_ids(self) -> int:
@@ -313,6 +323,7 @@ class PixivSyncPlugin(PluginBase):
         except RateLimitError as e:
             task["state"] = "failed"
             task["error"] = str(e)
+            self._note_rate_limited()
         except PixivError as e:
             task["state"] = "failed"
             task["error"] = str(e)
@@ -370,6 +381,7 @@ class PixivSyncPlugin(PluginBase):
         except RateLimitError as e:
             task["state"] = "failed"
             task["error"] = str(e)
+            self._note_rate_limited()
         except PixivError as e:
             task["state"] = "failed"
             task["error"] = str(e)
@@ -522,11 +534,11 @@ class PixivSyncPlugin(PluginBase):
         except (TypeError, ValueError):
             return 100
 
-    def _max_refresh(self) -> int:
+    def _max_artists(self) -> int:
         try:
-            return max(0, int(self.setting("max_refresh", 500)))
+            return max(0, int(self.setting("max_artists", 30)))
         except (TypeError, ValueError):
-            return 500
+            return 30
 
     def _scan_workers(self) -> int:
         """刷新名单的并行拉取画师数（滑动窗口）。"""
@@ -651,6 +663,8 @@ class PixivSyncPlugin(PluginBase):
             "other_done": max(0, len(ids) - following_done - bookmarks_done),
             # 永久跳过（404/已删除）
             "failed_skipped": len(self._load_failed_ids()),
+            # 429 冷却倒计时（秒），0 表示无需冷却
+            "rate_limit_cooldown": self._rate_limit_cooldown(),
         }
 
     def register_api(self) -> dict:

@@ -37,13 +37,13 @@ class _StaticLimiter:
 class _FakeP:
     """只提供 pixiv_sync 模块需要的方法/属性。"""
 
-    def __init__(self, tmp: Path, *, max_refresh: int = 0, scan_workers: int = 1):
+    def __init__(self, tmp: Path, *, max_artists: int = 0, scan_workers: int = 1):
         self.tmp = tmp
         self._cancel_flag = False
         self._task_lock = threading.Lock()
         self._tasks_file = lambda: tmp / ".cache" / "pixiv-sync" / "tasks.json"
         self._rate_limiter = _StaticLimiter()
-        self._max_refresh = lambda: max_refresh
+        self._max_artists = lambda: max_artists
         self._scan_workers = lambda: scan_workers
         self._max_download = lambda: 0
         self._workers = lambda: 1
@@ -249,23 +249,23 @@ class PixivSyncCoreTests(unittest.TestCase):
     def test_bookmark_cursor_uses_max_bookmark_id(self):
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
-            p = _FakeP(tmp, max_refresh=1)
+            p = _FakeP(tmp)
             p.client = _FakeBookmarkClient(
                 {10: _bookmark_page(10, 9), 9: _bookmark_page(9, 8), 8: _bookmark_page(8, None)}
             )
+            # 模拟上次扫描只完成了首页：断点保存为 next_qs={}
+            p._db_wrapper.save_pending(
+                "bookmarks", [_work_item(10)],
+                {"next_qs": {}, "complete": False, "incremental": False},
+            )
             task = _new_task()
             items, info = scan.collect_bookmarks_pending(p, task, set())
-            self.assertEqual([i["id"] for i in items], [10])
-            self.assertIn("next_qs", info)
+            self.assertEqual({i["id"] for i in items}, {10, 9, 8})
+            self.assertTrue(info["complete"])
             self.assertNotIn("offset", info)
-
-            # 第二次应复用断点继续；首页会重拉一次用于去重（不可避免），
-            # 之后必须直接使用 max_bookmark_id=9，而不是 offset=None。
-            items, info = scan.collect_bookmarks_pending(p, task, set())
-            self.assertEqual([i["id"] for i in items], [10, 9])
-            self.assertEqual(info["next_qs"], {"max_bookmark_id": "9"})
-            self.assertNotIn("offset", info)
-            self.assertEqual(p.client.calls[2].get("max_bookmark_id"), "9")
+            # 续跑必须使用 max_bookmark_id，而不是 offset=None。
+            self.assertEqual(p.client.calls[1].get("max_bookmark_id"), "9")
+            self.assertEqual(p.client.calls[2].get("max_bookmark_id"), "8")
 
     def test_following_incremental_stops_at_known_tail(self):
         with tempfile.TemporaryDirectory() as td:
@@ -289,10 +289,10 @@ class PixivSyncCoreTests(unittest.TestCase):
             self.assertEqual([call[1].get("offset") for call in p.client.calls], [None, "1"])
 
     def test_following_partial_incremental_keeps_incremental_for_remaining(self):
-        """max_refresh 拆成多次刷新后，剩余画师不应退回全量扫描。"""
+        """max_artists 拆成多次刷新后，剩余画师不应退回全量扫描。"""
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
-            p = _FakeP(tmp, max_refresh=1, scan_workers=1)
+            p = _FakeP(tmp, max_artists=1, scan_workers=1)
             p.client = _FakeFollowingClient({
                 1: [
                     {"illusts": [_raw_illust(11, 1)], "next_url": "/v1/user/illusts?offset=1"},

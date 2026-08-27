@@ -124,16 +124,12 @@ def collect_following_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
     # 旧清单按画师分组，替换某个画师时不需要每次 O(N) 扫描全表。
     items_by_uid: Dict[int, List[Dict[str, Any]]] = {}
     orphans: List[Dict[str, Any]] = []
-    pending_by_uid: Dict[int, int] = {}
     for it in items:
         uid = _uid_of(it)
         if uid is None:
             orphans.append(it)
             continue
         items_by_uid.setdefault(uid, []).append(it)
-        if not it.get("done"):
-            pending_by_uid[uid] = pending_by_uid.get(uid, 0) + 1
-    start_pending = sum(pending_by_uid.values())
 
     following = fetch_following(p, task)
     selected = p._load_selected_artists()
@@ -143,7 +139,7 @@ def collect_following_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
     if not following:
         raise PixivError("关注列表为空或画师名单未匹配到任何画师")
 
-    refresh_limit = p._max_refresh()
+    max_artists = p._max_artists()
 
     def fetch_artist(uid: int, known_ids=None) -> List[Dict[str, Any]]:
         """扫描一个画师的作品。
@@ -193,7 +189,7 @@ def collect_following_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
     else:
         todo = [uid for uid, _ in following if uid not in done_uids]
     window = p._scan_workers()  # 滑动窗口大小
-    pending = start_pending
+    scanned_this_run = 0
     stop_submitting = False
 
     with ThreadPoolExecutor(max_workers=window) as pool:
@@ -206,7 +202,7 @@ def collect_following_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
             except StopIteration:
                 return
             # 只要 DB 里已有该画师的旧清单，就说明他之前被完整扫过一轮；
-            # 即使本次刷新被 max_refresh 拆成多次，也继续用增量模式，
+            # 即使本次刷新被 max_artists 拆成多次，也继续用增量模式，
             # 不要因为 scan.complete=False 就退回全量扫描。
             full_scan = uid not in items_by_uid
             known_ids = None
@@ -241,11 +237,7 @@ def collect_following_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
                         item = build_item(p, ill, ids)
                         if item is not None:
                             built.append(item)
-                    old_pending = pending_by_uid.get(uid, 0)
-                    new_pending = sum(1 for x in built if not x.get("done"))
                     items_by_uid[uid] = built
-                    pending_by_uid[uid] = new_pending
-                    pending += new_pending - old_pending
                     saved_items = built
                 else:
                     old_items = items_by_uid.get(uid, [])
@@ -256,13 +248,10 @@ def collect_following_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
                         if item is None or _work_id(item) in old_ids:
                             continue
                         new_items.append(item)
-                    old_pending = pending_by_uid.get(uid, 0)
-                    new_pending = sum(1 for x in new_items if not x.get("done"))
                     saved_items = old_items + new_items
                     items_by_uid[uid] = saved_items
-                    pending_by_uid[uid] = old_pending + new_pending
-                    pending += new_pending
                 done_uids.add(uid)
+                scanned_this_run += 1
 
                 flat = _flatten_items(items_by_uid, orphans)
                 task["current"] = (
@@ -274,7 +263,7 @@ def collect_following_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
                     "following", uid, saved_items, {"done_uids": sorted(done_uids)}
                 )
 
-                if refresh_limit and (pending - start_pending) >= refresh_limit:
+                if max_artists and scanned_this_run >= max_artists:
                     # 不再提交新画师；但把已提交且在途的结果收完，避免浪费
                     # 已经发出的 API 请求，同时保证断点准确。
                     stop_submitting = True
@@ -298,7 +287,7 @@ def collect_bookmarks_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
     已经见过的作品就停，只拉最新部分。
     """
     items, scan = p._db().load_pending("bookmarks")
-    # 完整扫描后的新起一轮，或完整扫描后因 max_refresh 拆出来的续跑，都属于
+    # 完整扫描后的新起一轮，或完整扫描后因单次上限拆出来的续跑，都属于
     # 增量模式（遇到上一轮完整尾巴就停）。首次全量扫描的续跑不能提前停。
     incremental = bool(scan and scan.get("complete"))
     next_qs: Dict[str, Any] | None = None
@@ -314,10 +303,8 @@ def collect_bookmarks_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
             # v0.3 之前误把翻页断点存成 offset，兼容迁移。
             next_qs = {"offset": scan.get("offset")}
 
-    refresh_limit = p._max_refresh()
     seen = {_work_id(i) for i in items}  # 复用 download._work_id 的安全取 id
     known_ids = set(seen)  # 上一轮已入库的作品 id；增量模式下遇到它们就停
-    new_pending = 0
     qs = dict(next_qs) if next_qs else None
 
     client = p._client()
@@ -340,28 +327,6 @@ def collect_bookmarks_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
                     continue
                 items.append(item)
                 seen.add(iid)
-                if not item.get("done"):
-                    new_pending += 1
-                # 本批新增待下载达上限 → 保存“当前页参数”作为断点。
-                # 下次会重拉当前页，但 seen 会跳过已入库的条目。
-                if refresh_limit and new_pending >= refresh_limit:
-                    resume_qs = dict(qs or {})
-                    p._db().save_pending(
-                        "bookmarks", items,
-                        {
-                            "next_qs": resume_qs,
-                            "complete": False,
-                            "incremental": incremental,
-                        },
-                    )
-                    task["current"] = f"清单 {len(items)} 条（部分扫描，可再点刷新继续）"
-                    task["total"] = len(items)
-                    tasks_mod.persist_task(p._tasks_file(), task)
-                    return items, {
-                        "next_qs": resume_qs,
-                        "complete": False,
-                        "incremental": incremental,
-                    }
 
             if incremental and known_ids:
                 hit = any(
