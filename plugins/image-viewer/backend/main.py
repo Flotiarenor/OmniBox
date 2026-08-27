@@ -104,7 +104,7 @@ class ImageViewerPlugin(PluginBase):
             'regenerate_thumbs': self.regenerate_thumbs,
             'refresh': self.refresh,
             'get_settings': self.get_settings,
-            'save_settings': self.save_settings,
+            'save_settings': self.save_folder_settings,
             'get_root_dir': self.get_root_dir,
             'clear_folder_settings': self.clear_folder_settings,
         }
@@ -797,14 +797,19 @@ class ImageViewerPlugin(PluginBase):
         result['pixiv_explicit'] = (own_entry.get('sort_by') == 'time_name')
         return result
 
-    def save_settings(self, rel_path: str = '', settings: Dict | None = None) -> Dict:
-        """保存设置。兼容两种调用：
-        - save_settings(settings_dict)         → 保存全局
-        - save_settings(rel_path, settings)    → 保存指定文件夹
+    def save_folder_settings(self, rel_path: str = '', settings: Dict | None = None) -> Dict:
+        """前端 save_settings 的 API 实现。
+
+        兼容两种调用：
+        - save_folder_settings(settings_dict)      → 保存全局
+        - save_folder_settings(rel_path, settings) → 保存指定文件夹
         """
         if settings is None:
-            settings = rel_path or {}
-            rel_path = ''
+            if isinstance(rel_path, dict):
+                settings = rel_path
+                rel_path = ''
+            else:
+                settings = {}
         if rel_path:
             folders = self.setting('folders') or {}
             if not isinstance(folders, dict):
