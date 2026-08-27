@@ -76,6 +76,7 @@ class ImageCleanerPlugin(PluginBase):
             'label': '相册清理',
             'icon': '🧹',
             'description': '扫描全部相册中的重复 / 相似图片',
+            'section': '相册清理',  # 侧边栏独立分组标题（不与其他扩展挤在一个标题下）
             'embedUrl': '/plugins/image-cleaner/frontend/index.html',
             'placement': 'sidebar',
             'scope': 'all',

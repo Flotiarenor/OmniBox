@@ -48,4 +48,4 @@ for f in files[:60]:
     except Exception:
         bad += 1
 print(f"文件完整性: 抽查 {min(60,len(files))} 个, 损坏 {bad}")
-print(f"画师目录数: {len([d for d in (dl/'pixiv'/'following').iterdir() if d.is_dir()]) if (dl/'pixiv'/'following').exists() else 0}")
+print(f"画师目录数: {len([d for d in (dl/'pixiv').iterdir() if d.is_dir() and not d.name.startswith('.')]) if (dl/'pixiv').exists() else 0}")

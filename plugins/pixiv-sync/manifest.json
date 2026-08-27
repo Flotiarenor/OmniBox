@@ -12,6 +12,10 @@
     "filesystem:write",
     "network"
   ],
+  "libs": [
+    "backend/libs",
+    "backend"
+  ],
   "backend": {
     "entry": "backend/main.py",
     "class": "PixivSyncPlugin"
