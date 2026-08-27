@@ -797,8 +797,14 @@ class ImageViewerPlugin(PluginBase):
         result['pixiv_explicit'] = (own_entry.get('sort_by') == 'time_name')
         return result
 
-    def save_settings(self, settings: Dict, rel_path: str = '') -> Dict:
-        """保存设置。rel_path 为空时保存全局设置，否则保存到指定文件夹。"""
+    def save_settings(self, rel_path: str = '', settings: Dict | None = None) -> Dict:
+        """保存设置。兼容两种调用：
+        - save_settings(settings_dict)         → 保存全局
+        - save_settings(rel_path, settings)    → 保存指定文件夹
+        """
+        if settings is None:
+            settings = rel_path or {}
+            rel_path = ''
         if rel_path:
             folders = self.setting('folders') or {}
             if not isinstance(folders, dict):

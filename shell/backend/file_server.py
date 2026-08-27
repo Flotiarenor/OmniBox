@@ -14,9 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 '''
 
-import re
 import sys
-from flask import Flask, request, send_from_directory, send_file, abort, Response
+from flask import Flask, request, send_from_directory, send_file, abort
 from pathlib import Path
 from collections.abc import Iterable
 
@@ -78,7 +77,7 @@ def create_app(config, plugin_manager):
     def serve_media_file(filepath, plugin_name):
         """媒体/文件访问：支持相对路径和绝对路径，并做越权目录校验。"""
         instance = plugin_manager.get_plugin_instance(plugin_name) if plugin_name else None
-        if instance is None:
+        if plugin_name and instance is None:
             print(f"[FileServer] 找不到插件 {plugin_name} 的实例")
             abort(404)
         # 确定允许访问的根目录（支持插件跨多个媒体目录）
@@ -86,11 +85,13 @@ def create_app(config, plugin_manager):
             getter = getattr(instance, 'get_file_roots', None)
             if callable(getter):
                 result = getter()
-                if isinstance(result, Iterable):
+                if isinstance(result, Iterable) and not isinstance(result, (str, bytes)):
                     roots = list(result)
                 else:
-                    roots = []  # 或回退到默认根目录
+                    roots = []
             else:
+                roots = []
+            if not roots:
                 roots = [instance.get_data_root()]
         else:
             # 回退到全局根目录
@@ -142,7 +143,7 @@ def create_app(config, plugin_manager):
     def serve_thumb(filepath):
         plugin_name = request.args.get('plugin', '')
         instance = plugin_manager.get_plugin_instance(plugin_name) if plugin_name else None
-        if instance is None:
+        if plugin_name and instance is None:
             print(f"[File_Server-Thumbs] 找不到插件 {plugin_name} 的实例")
             abort(404)
         if plugin_name and plugin_name in plugin_manager._instances:
