@@ -48,11 +48,22 @@
           <button id="btn-multi-select" class="btn hidden">开启多选</button>
           <button id="btn-delete-selected" class="btn btn-danger hidden">删除选中</button>
           <button id="btn-move-selected" class="btn hidden">移动选中</button>
+          <button id="btn-refresh-thumbs" class="btn hidden">🖼 更新缩略图</button>
+          <button id="btn-refresh" class="btn" title="重新扫描目录并刷新当前视图（无需重启）">🔄 刷新</button>
           <button id="btn-settings" class="btn">⚙ 设置</button>
         </div>
       </div>
 
       <div class="view-content iv-content obx-scroll" id="iv-content">
+        <div id="iv-album-sort" class="iv-album-sort hidden">
+          <span class="iv-sort-label">排序</span>
+          <select id="iv-album-sort-by" class="iv-sort-select">
+            <option value="name">文件名</option>
+            <option value="mtime">更新时间</option>
+            <option value="count">图片数量</option>
+          </select>
+          <button id="iv-album-sort-order" class="btn btn-sm">↓ 倒序</button>
+        </div>
         <div id="iv-albums"></div>
         <div id="image-grid" class="iv-image-grid"></div>
       </div>
@@ -117,7 +128,7 @@
             <select id="setting-sort-by">
               <option value="mtime">修改时间</option>
               <option value="name">文件名</option>
-              <option value="time_name">时间+文件名</option>
+              <option value="time_name">Pixiv 排序支持</option>
             </select>
           </div>
           <div class="iv-setting-item">

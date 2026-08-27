@@ -64,22 +64,22 @@ plugins/
 
 | 字段                | 要求 | 说明                                                                            |
 | ------------------- | ---- | ------------------------------------------------------------------------------- |
-| `version`         | 必填   | 语义化版本号                                                                    |
-| `displayName`     | 必填   | 在导航栏显示的名称                                                              |
-| `icon`            | 必填   | 导航栏图标（Emoji 或文字）                                                      |
-| `frontend.entry`  | 必填   | 前端入口 HTML 文件路径，相对于插件根目录                                        |
-| `name`            | 默认   | 插件唯一标识，缺省为文件夹名；与文件夹名不一致告警                               |
-| `backend.entry`   | 默认   | 后端入口文件路径，默认 `backend/main.py`，相对于插件根目录                       |
-| `backend.class`   | 默认   | 后端插件类名，默认 `Plugin`，须继承 `PluginBase`                                |
-| `frontend.route`  | 默认   | 前端路由，默认 `/<name>`，须以 `/` 开头                                         |
-| `dependencies`    | 可选   | 依赖的其他插件名称列表                                                          |
-| `libs`            | 可选   | 插件本地附加库目录列表，默认`["backend/libs"]`，加载后端前会加入 `sys.path` |
-| `permissions`     | 可选   | 权限声明（仅作知情明示，供设置页展示，不做运行时强制）                     |
-| `minShellVersion` | 可选   | 要求的最低 Shell 版本                                                           |
-| `destroyOnLeave`  | 可选   | `true` 时离开页面销毁 iframe 重新加载（默认保持存活）                         |
-| `hidden`          | 可选   | `true` 时不显示在 Shell 主导航，但仍可被宿主内嵌或通过插件 URL 访问           |
-| `kind`            | 可选   | `local-adapter`：声明本插件管理独立运行环境（重依赖插件使用）                 |
-| `runtime`         | 可选   | 独立运行环境声明（venv / 入口 / requirements），见 §2.2                        |
+| `version`         | 必填 | 语义化版本号                                                                    |
+| `displayName`     | 必填 | 在导航栏显示的名称                                                              |
+| `icon`            | 必填 | 导航栏图标（Emoji 或文字）                                                      |
+| `frontend.entry`  | 必填 | 前端入口 HTML 文件路径，相对于插件根目录                                        |
+| `name`            | 默认 | 插件唯一标识，缺省为文件夹名；与文件夹名不一致告警                              |
+| `backend.entry`   | 默认 | 后端入口文件路径，默认`backend/main.py`，相对于插件根目录                     |
+| `backend.class`   | 默认 | 后端插件类名，默认`Plugin`，须继承 `PluginBase`                             |
+| `frontend.route`  | 默认 | 前端路由，默认`/<name>`，须以 `/` 开头                                      |
+| `dependencies`    | 可选 | 依赖的其他插件名称列表                                                          |
+| `libs`            | 可选 | 插件本地附加库目录列表，默认`["backend/libs"]`，加载后端前会加入 `sys.path` |
+| `permissions`     | 可选 | 权限声明（仅作知情明示，供设置页展示，不做运行时强制）                          |
+| `minShellVersion` | 可选 | 要求的最低 Shell 版本                                                           |
+| `destroyOnLeave`  | 可选 | `true` 时离开页面销毁 iframe 重新加载（默认保持存活）                         |
+| `hidden`          | 可选 | `true` 时不显示在 Shell 主导航，但仍可被宿主内嵌或通过插件 URL 访问           |
+| `kind`            | 可选 | `local-adapter`：声明本插件管理独立运行环境（重依赖插件使用）                 |
+| `runtime`         | 可选 | 独立运行环境声明（venv / 入口 / requirements），见 §2.2                        |
 
 ---
 
@@ -276,7 +276,7 @@ class MyPlugin(PluginBase):
 
 ### 3.3 插件本地附加库（libs）
 
-如果插件只需要少量纯 Python 依赖，可以把依赖放在插件目录下，例如：
+如果插件只需要少量外部的纯 Python 依赖，可以把依赖放在插件目录下，例如：
 
 ```text
 plugins/my-plugin/
@@ -324,17 +324,19 @@ from pyradios import RadioBrowser
 
 （以 image-viewer 为例）
 
-| API 方法                  | 参数                                              | 返回值                                                  | 说明                            |
-| ------------------------- | ------------------------------------------------- | ------------------------------------------------------- | ------------------------------- |
-| `list_images`           | `rel_path, page, per_page, sort_by, sort_order` | `{images, page, total, has_next, has_prev, settings}` | 获取图片列表（含尺寸缓存）      |
-| `list_folder_items`     | `rel_path, page, per_page, sort_by, sort_order` | `{items, all_images, all_offset, page, total, image_total, has_next, has_prev, settings}` | 混合瀑布流列表：直接图片 + 直接子相册 p0 瓦片（只处理一层嵌套）；`all_images` 为按瀑布流顺序展开的完整连续浏览序列，每个子文件夹内部按**它自己生效的设置**排序（自己有设置用自己，否则逐级继承父级），不受当前视图排序影响；`all_offset` 为当前页首项在完整序列中的起始偏移（分页对齐，防止灯箱错位）；卡片 `use_time_name` 标记该瓦片是否启用「时间+文件名」（控制圆圈数量角标显示）；`sort_by=time_name` 时：**图片一律按文件名自然序 p0→p1**（不受 mtime 差异影响），时间倒序只作用于作品/相册卡片之间的顶层排序，正序/倒序参数被忽略 |
-| `list_dir`              | `rel_path`                                      | `[{name, path}]`                                      | 列出子目录                      |
-| `delete_files`          | `[rel_paths]`                                   | `{deleted, errors}`                                   | 批量删除文件                    |
-| `move_files`            | `[rel_paths], dest_rel`                         | `{moved, errors}`                                     | 批量移动文件                    |
-| `get_settings`          | `rel_path`                                      | `{row_height, per_page, sort_by, sort_order}`         | 获取文件夹设置（含全局回退）    |
-| `save_settings`         | `rel_path, settings`                            | `{success}`                                           | 保存文件夹设置（支持 root_dir） |
-| `get_root_dir`          | 无                                                | `str`                                                 | 获取当前使用的根目录            |
-| `clear_folder_settings` | `rel_path`                                      | `{success}`                                           | 清除文件夹独立设置，回退到全局  |
+| API 方法                  | 参数                                              | 返回值                                                                                      | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_images`           | `rel_path, page, per_page, sort_by, sort_order` | `{images, page, total, has_next, has_prev, settings}`                                     | 获取图片列表（含尺寸缓存）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `list_folder_items`     | `rel_path, page, per_page, sort_by, sort_order` | `{items, all_images, all_offset, page, total, image_total, has_next, has_prev, settings}` | 混合瀑布流列表：直接图片 + 直接子相册 p0 瓦片（只处理一层嵌套）；`all_images` 为按瀑布流顺序展开的完整连续浏览序列，每个子文件夹内部按**它自己生效的设置**排序（自己有设置用自己，否则逐级继承父级），不受当前视图排序影响；`all_offset` 为当前页首项在完整序列中的起始偏移（分页对齐，防止灯箱错位）；卡片 `use_time_name` 标记该瓦片是否启用「Pixiv 排序支持」（控制圆圈数量角标显示）；`sort_by=time_name`（Pixiv 排序支持）时：顶层作品/单图按**前导数字**（作品 ID）排序且方向生效（倒序 = 新作品在前），无数字名排最后，作品内部多图片仍按 p0→p1 |
+| `regenerate_thumbs`     | `[rel_paths]`                                   | `{regenerated, errors}`                                                                   | 重新生成选中图片的缩略图（删除缓存并重建，修复坏缩略图）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `refresh`               | 无                                                | `{success}`                                                                               | 清空内存缓存并作废旧相册索引，新增/替换图片立即生效                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `list_dir`              | `rel_path`                                      | `[{name, path}]`                                                                          | 列出子目录                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `delete_files`          | `[rel_paths]`                                   | `{deleted, errors}`                                                                       | 批量删除文件                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `move_files`            | `[rel_paths], dest_rel`                         | `{moved, errors}`                                                                         | 批量移动文件                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `get_settings`          | `rel_path`                                      | `{row_height, per_page, sort_by, sort_order}`                                             | 获取文件夹设置（含全局回退）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `save_settings`         | `rel_path, settings`                            | `{success}`                                                                               | 保存文件夹设置（支持 root_dir）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `get_root_dir`          | 无                                                | `str`                                                                                     | 获取当前使用的根目录                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `clear_folder_settings` | `rel_path`                                      | `{success}`                                                                               | 清除文件夹独立设置，回退到全局                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 ---
 
@@ -637,20 +639,20 @@ class MyPlugin(PluginBase):
 
 | 字段                         | 要求 | 说明                                                                                      |
 | ---------------------------- | ---- | ----------------------------------------------------------------------------------------- |
-| `key`                      | 必填   | 设置键名                                                                                  |
-| `label`                    | 必填   | 设置面板显示名                                                                            |
-| `type`                     | 必填   | `text` / `number` / `range` / `select` / `checkbox` / `textarea` / `folder`               |
-| `default`                  | 可选   | 默认值（未保存过时使用）                                                                  |
-| `help`                     | 可选   | 悬浮`?` 提示文本（鼠标悬停显示）                                                          |
-| `central`                  | 可选   | `True` 在集中设置面板显示；默认仅显示 `root_dir` 或有 `central` 标记的字段                 |
-| `min` / `max` / `step`     | 可选   | number/range 类型约束                                                                     |
-| `options`                  | 可选   | select 类型的选项列表                                                                     |
+| `key`                      | 必填 | 设置键名                                                                                  |
+| `label`                    | 必填 | 设置面板显示名                                                                            |
+| `type`                     | 必填 | `text` / `number` / `range` / `select` / `checkbox` / `textarea` / `folder` |
+| `default`                  | 可选 | 默认值（未保存过时使用）                                                                  |
+| `help`                     | 可选 | 悬浮`?` 提示文本（鼠标悬停显示）                                                        |
+| `central`                  | 可选 | `True` 在集中设置面板显示；默认仅显示 `root_dir` 或有 `central` 标记的字段          |
+| `min` / `max` / `step` | 可选 | number/range 类型约束                                                                     |
+| `options`                  | 可选 | select 类型的选项列表                                                                     |
 
 ### 8.3 读取与写入
 
 | 场景                   | 方法                                                        |
 | ---------------------- | ----------------------------------------------------------- |
-| `__init__` 中读取      | `self._resolved_config.get('root_dir')`（构造前已预加载）   |
+| `__init__` 中读取    | `self._resolved_config.get('root_dir')`（构造前已预加载） |
 | 运行时读取单个         | `self.setting('root_dir')`                                |
 | 读取全部（合并默认值） | `self.get_settings()`                                     |
 | 保存全部               | `self.save_settings({...})`                               |
@@ -675,7 +677,9 @@ def on_settings_changed(self, changed_keys):
 
 image-viewer 需要在不同文件夹应用不同设置（如行高、排序），这类设置不在 `settings_schema` 中，保留在插件自己的状态文件里。它覆写了 `save_settings()` 但**必须调用 `super().save_settings(settings)`** 以保持框架的持久化 + 变更检测链路。
 
-**逐级向上继承**：`get_settings(rel_path)` 按「当前文件夹 → 父文件夹 → … → 全局 → 硬默认」合并设置。在父文件夹（如 `pixiv/following`）上启用 `time_name` 排序后，其下**所有子文件夹自动继承**同一排序，除非某个子文件夹被单独修改（`folders[该路径]` 存在）——单独修改的子文件夹以自己为准，并继续向其子文件夹传播。混合瀑布流中子文件夹图片的 p0→p1 顺序由该视图继承到的排序上下文决定。
+**逐级向上继承**：`get_settings(rel_path)` 按「当前文件夹 → 父文件夹 → … → 全局 → 硬默认」合并设置。在父文件夹（如 `pixiv`）上启用 `time_name` 排序后，其下**所有子文件夹自动继承**同一排序，除非某个子文件夹被单独修改（`folders[该路径]` 存在）——单独修改的子文件夹以自己为准，并继续向其子文件夹传播。
+
+**Pixiv 排序只考虑两层嵌套**：`get_settings` 返回 `pixiv_explicit`（当前文件夹自身是否显式设置了 Pixiv 排序，即配置点）。配置点（如 pixiv 主文件夹）显示其子相册网格（作者卡片），继承 Pixiv 排序的子文件夹（作者层）才显示混合瀑布流（作品 p0 瓦片 + 连续浏览）。
 
 ### 8.6 运行时状态 vs 用户设置
 

@@ -18,6 +18,8 @@ class ImageViewer {
         this.currentRowHeight = 200;
         this.albums = [];
         this.albumConfig = { collapsed: [], promoted: [] };
+        this.albumSortBy = 'name';       // 作者页面排序：name | mtime | count
+        this.albumSortOrder = 'asc';     // 作者页面排序方向
         this.isMultiSelectMode = false;
         this.selectedImages = new Set();
         this.moveDestPath = '';
@@ -48,6 +50,11 @@ class ImageViewer {
         });
 
         this._bindUI();
+        // 恢复作者页排序偏好
+        try {
+            this.albumSortBy = localStorage.getItem('iv.albumSortBy') || 'name';
+            this.albumSortOrder = localStorage.getItem('iv.albumSortOrder') || 'asc';
+        } catch (e) { }
         await this.loadSettings();
         await this.loadAlbums();
         this.loadExtensions();
@@ -122,6 +129,8 @@ class ImageViewer {
         document.getElementById('btn-multi-select').addEventListener('click', () => this.toggleMultiSelectMode());
         document.getElementById('btn-delete-selected').addEventListener('click', () => this.deleteSelectedImages());
         document.getElementById('btn-move-selected').addEventListener('click', () => this.openMoveModal());
+        document.getElementById('btn-refresh-thumbs').addEventListener('click', () => this.refreshSelectedThumbs());
+        document.getElementById('btn-refresh').addEventListener('click', () => this.refreshView());
         document.getElementById('btn-slideshow').addEventListener('click', () => this.toggleSlideshow());
         document.getElementById('btn-settings').addEventListener('click', () => this.openSettingsModal());
         document.getElementById('settings-cancel').addEventListener('click', () => this.closeSettingsModal());
@@ -145,13 +154,21 @@ class ImageViewer {
             search.focus();
         });
 
-        document.getElementById('setting-row-height').addEventListener('input', (e) => {
-            document.getElementById('setting-row-height-val').textContent = e.target.value;
+        // 作者页面排序栏
+        document.getElementById('iv-album-sort-by').addEventListener('change', (e) => {
+            this.albumSortBy = e.target.value;
+            try { localStorage.setItem('iv.albumSortBy', this.albumSortBy); } catch (err) { }
+            this.showAlbums();
+        });
+        document.getElementById('iv-album-sort-order').addEventListener('click', () => {
+            this.albumSortOrder = this.albumSortOrder === 'asc' ? 'desc' : 'asc';
+            try { localStorage.setItem('iv.albumSortOrder', this.albumSortOrder); } catch (err) { }
+            this._syncAlbumSortBar();
+            this.showAlbums();
         });
 
-        // 「时间+文件名」模式：正序/倒序选择无效，自动禁用
-        document.getElementById('setting-sort-by').addEventListener('change', (e) => {
-            this._syncSortOrderDisabled(e.target.value);
+        document.getElementById('setting-row-height').addEventListener('input', (e) => {
+            document.getElementById('setting-row-height-val').textContent = e.target.value;
         });
 
         document.getElementById('image-grid').addEventListener('contextmenu', (e) => {
@@ -217,6 +234,12 @@ class ImageViewer {
         if (keyword) {
             albums = albums.filter(a =>
                 a.name.toLowerCase().includes(keyword) || a.path.toLowerCase().includes(keyword));
+        }
+
+        // 作者页面（Pixiv 排序下的相册网格）排序栏 + 排序
+        this._syncAlbumSortBar();
+        if (this.currentView === 'albums') {
+            albums = this._sortAlbums(albums);
         }
 
         const titleEl = document.getElementById('iv-view-title');
@@ -346,7 +369,41 @@ class ImageViewer {
         return grid;
     }
 
-    openAlbum(path) {
+    // ===== 作者页面排序（Pixiv 排序下的相册网格） =====
+
+    _albumPageIsPixiv() {
+        // 当前网格页面对应的文件夹（children → 父目录；albums → 根）是否生效 Pixiv 排序
+        const parentPath = this.mode === 'children' ? this.childParentPath : '';
+        const album = this.albums.find(a => a.path === parentPath);
+        return !!(album && album.use_time_name);
+    }
+
+    _syncAlbumSortBar() {
+        const bar = document.getElementById('iv-album-sort');
+        if (!bar) return;
+        const show = this.currentView === 'albums' && this._albumPageIsPixiv();
+        bar.classList.toggle('hidden', !show);
+        if (!show) return;
+        document.getElementById('iv-album-sort-by').value = this.albumSortBy || 'name';
+        document.getElementById('iv-album-sort-order').textContent =
+            this.albumSortOrder === 'desc' ? '↓ 倒序' : '↑ 正序';
+    }
+
+    _sortAlbums(albums) {
+        const by = this.albumSortBy || 'name';
+        const dir = (this.albumSortOrder || 'asc') === 'desc' ? -1 : 1;
+        const list = [...albums];
+        if (by === 'mtime') {
+            list.sort((a, b) => (a.mtime - b.mtime) * dir);
+        } else if (by === 'count') {
+            list.sort((a, b) => (a.image_count - b.image_count) * dir);
+        } else {
+            list.sort((a, b) => a.name.localeCompare(b.name, 'zh', { numeric: true }) * dir);
+        }
+        return list;
+    }
+
+    async openAlbum(path) {
         // 从瀑布流点入时记录当前视图状态，返回时原样恢复
         if (this.mode === 'images') {
             this.navStack.push({
@@ -356,14 +413,27 @@ class ImageViewer {
             });
         }
         const album = this.albums.find(a => a.path === path);
-        // 只有子文件夹、没有直接图片的相册 → 先展示其子相册
+        // 纯文件夹（只有子文件夹、没有直接图片）：
+        // - Pixiv 排序的「配置点」（自身显式设置了 Pixiv 排序，如 pixiv 主文件夹）
+        //   → 子相册网格（显示作者）；Pixiv 排序只考虑两层嵌套，配置点这层不做瀑布流。
+        // - 仅继承 Pixiv 排序的子文件夹（作者层）→ 混合瀑布流（作品 p0 瓦片 + 多图连续浏览）。
+        // - 其他排序 → 子相册网格。
         if (album && album.has_children && album.direct_count === 0) {
-            this.mode = 'children';
-            this.childParentPath = path;
-            this.fromChildren = true;
-            this.currentPath = path;   // 同步当前浏览目录，保证设置基于当前目录
-            this.showAlbums();
-            return;
+            let isPixiv = false;
+            let pixivExplicit = false;
+            try {
+                const s = await Bridge.call('get_settings', path);
+                isPixiv = !!s && s.sort_by === 'time_name';
+                pixivExplicit = !!s && !!s.pixiv_explicit;
+            } catch (e) { /* 忽略 */ }
+            if (!isPixiv || pixivExplicit) {
+                this.mode = 'children';
+                this.childParentPath = path;
+                this.fromChildren = true;
+                this.currentPath = path;   // 同步当前浏览目录，保证设置基于当前目录
+                this.showAlbums();
+                return;
+            }
         }
         this._stopSlideshow();
         this._showFolder(path);
@@ -583,11 +653,12 @@ class ImageViewer {
         // 每个瓦片在连续浏览序列中的起始位置（子文件夹 → 其 p0，单图 → 自身）。
         // 分页时以 this.currentAllOffset 为基准：第 2+ 页的瓦片对应完整序列的中后段，
         // 否则点击会错位打开到序列开头的图片。
+        // 注意：image_count 为直接图片数（容器为 0，不参与序列展开）。
         const seqIndex = new Map();
         let acc = this.currentAllOffset || 0;
         items.forEach((it, i) => {
             seqIndex.set(i, acc);
-            acc += (it.type === 'album' ? it.image_count : 1);
+            acc += (it.type === 'album' ? (it.image_count || 0) : 1);
         });
 
         // 圆圈数量角标：仅在该瓦片对应子文件夹自身生效的排序为「时间+文件名」时显示
@@ -600,10 +671,10 @@ class ImageViewer {
             card.style.cssText = `left:${cardData.x}px;top:${cardData.y}px;width:${cardData.w}px;height:${cardData.h}px;`;
 
             if (item.type === 'album') {
-                // 子文件夹直接用 p0 图片瓦片展示（不做文件夹卡片），
-                // 点击从 p0 打开灯箱，向右可连续翻看该作品 p1 p2 … 及画师的其他作品
+                // 子文件夹直接用 p0 图片瓦片展示（不做文件夹卡片）
                 card.dataset.path = item.path;
                 const name = item.name;
+                const isContainer = item.image_count === 0 && item.has_children;
                 if (item.cover) {
                     const img = document.createElement('img');
                     img.src = Bridge.thumbUrl(item.cover);
@@ -629,15 +700,21 @@ class ImageViewer {
                 if (item.use_time_name) {
                     const badge = document.createElement('span');
                     badge.className = 'iv-count-badge';
-                    badge.textContent = item.image_count;
+                    badge.textContent = item.total_count != null ? item.total_count : item.image_count;
                     card.appendChild(badge);
                 }
                 const p = document.createElement('p');
                 p.textContent = name;
                 card.appendChild(p);
-                card.addEventListener('click', () => {
-                    this.lightbox.show(this.currentAllImages, seqIndex.get(index));
-                });
+                if (isContainer) {
+                    // 纯容器（画师文件夹等）：点击进入其瀑布流（子作品 p0 瓦片）
+                    card.addEventListener('click', () => this.openAlbum(item.path));
+                } else {
+                    // 作品文件夹：点击从 p0 打开灯箱，向右连续翻看该作品 p1 p2 … 及后续作品
+                    card.addEventListener('click', () => {
+                        this.lightbox.show(this.currentAllImages, seqIndex.get(index));
+                    });
+                }
             } else {
                 // 单图卡片
                 card.dataset.url = item.url;
@@ -690,10 +767,12 @@ class ImageViewer {
         const btn = document.getElementById('btn-multi-select');
         const deleteBtn = document.getElementById('btn-delete-selected');
         const moveBtn = document.getElementById('btn-move-selected');
+        const thumbBtn = document.getElementById('btn-refresh-thumbs');
         btn.classList.toggle('active', this.isMultiSelectMode);
         btn.textContent = this.isMultiSelectMode ? '退出多选' : '开启多选';
         deleteBtn.classList.toggle('hidden', !this.isMultiSelectMode);
         moveBtn.classList.toggle('hidden', !this.isMultiSelectMode);
+        if (thumbBtn) thumbBtn.classList.toggle('hidden', !this.isMultiSelectMode);
         if (!this.isMultiSelectMode) this.clearSelection();
     }
 
@@ -773,16 +852,54 @@ class ImageViewer {
     }
 
     // ============================================================
-    // 设置
+    // 刷新 / 更新缩略图
     // ============================================================
-    _syncSortOrderDisabled(sortBy) {
-        const disabled = sortBy === 'time_name';
-        const el = document.getElementById('setting-sort-order');
-        if (!el) return;
-        el.disabled = disabled;
-        if (disabled) el.value = 'asc';
+    async refreshView() {
+        let cacheCleared = false;
+        try {
+            await Bridge.call('refresh');
+            cacheCleared = true;
+        } catch (e) {
+            // 后端 refresh API 不可用（旧版未重启）时降级：只重载视图，不清缓存
+        }
+        try {
+            const result = await Bridge.call('list_albums');
+            if (result && result.albums) this.albums = result.albums;
+            if (result && result.config) this.albumConfig = result.config;
+            if (this.mode === 'images') {
+                this.loadImages(this.currentPath, this.currentPage);
+            } else {
+                this.showAlbums();
+            }
+            if (cacheCleared) {
+                Toast.success('已刷新');
+            } else {
+                Toast.warning('已重新加载；完整刷新需重启应用（后端 refresh API 未生效）');
+            }
+        } catch (e) {
+            Toast.error('刷新失败');
+        }
     }
 
+    async refreshSelectedThumbs() {
+        const imgs = [...this.selectedImages];
+        if (!imgs.length) return;
+        const ok = await confirmDialog(`重新生成 ${imgs.length} 张图片的缩略图？\n（修复下载丢失/替换后残留的坏缩略图）`);
+        if (!ok) return;
+        try {
+            const result = await Bridge.call('regenerate_thumbs', imgs);
+            if (result.errors.length) Toast.error(`部分失败: ${result.errors.join('; ')}`);
+            else Toast.success(`已重新生成 ${imgs.length} 张缩略图`);
+            this.selectedImages.clear();
+            await this.loadImages(this.currentPath, this.currentPage);
+        } catch (e) {
+            Toast.error('更新缩略图失败');
+        }
+    }
+
+    // ============================================================
+    // 设置
+    // ============================================================
     async openSettingsModal() {
         document.getElementById('settings-modal').classList.add('active');
         document.getElementById('setting-current-folder-name').textContent = this.currentPath || '根目录';
@@ -793,7 +910,6 @@ class ImageViewer {
             document.getElementById('setting-per-page').value = s.per_page;
             document.getElementById('setting-sort-by').value = s.sort_by;
             document.getElementById('setting-sort-order').value = s.sort_order;
-            this._syncSortOrderDisabled(s.sort_by);
             const rootDir = await Bridge.call('get_root_dir');
             document.getElementById('setting-root-dir').value = rootDir || '';
         } catch (e) { }

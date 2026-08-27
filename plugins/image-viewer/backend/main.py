@@ -10,12 +10,28 @@ from shell.backend.plugin_utils import load_sibling
 
 _fs = load_sibling(__file__, 'filesystem', 'image_viewer')
 ALLOWED_EXTENSIONS = _fs.ALLOWED_EXTENSIONS
+drop_image_meta = _fs.drop_image_meta
 ensure_thumbnail = _fs.ensure_thumbnail
 get_image_size = _fs.get_image_size
 is_safe_path = _fs.is_safe_path
 list_directory = _fs.list_directory
 natural_sort_key = _fs.natural_sort_key
+pixiv_number = _fs.pixiv_number
 stat_mtime = _fs.stat_mtime
+
+
+def _pixiv_sort(entries, name_fn, reverse):
+    """Pixiv 排序：前导数字条目按数字大小排（方向生效），
+    无前导数字条目按自然名排并始终位于最后。"""
+    numeric, other = [], []
+    for it in entries:
+        name = name_fn(it)
+        num = pixiv_number(name)
+        key = (num, natural_sort_key(name))
+        (numeric if num is not None else other).append((key, it))
+    numeric.sort(key=lambda t: t[0], reverse=reverse)
+    other.sort(key=lambda t: t[0], reverse=reverse)
+    return [it for _, it in numeric] + [it for _, it in other]
 
 class ImageViewerPlugin(PluginBase):
     settings_schema = [
@@ -29,7 +45,7 @@ class ImageViewerPlugin(PluginBase):
          "default": "mtime",
          "options": [{"label": "修改时间", "value": "mtime"},
                      {"label": "文件名", "value": "name"},
-                     {"label": "时间+文件名", "value": "time_name"}]},
+                     {"label": "Pixiv 排序支持", "value": "time_name"}]},
         {"key": "sort_order", "label": "排序方向", "type": "select",
          "default": "desc",
          "options": [{"label": "倒序", "value": "desc"}, {"label": "正序", "value": "asc"}]},
@@ -85,6 +101,8 @@ class ImageViewerPlugin(PluginBase):
             'get_image_info': self.get_image_info,
             'delete_files': self.delete_files,
             'move_files': self.move_files,
+            'regenerate_thumbs': self.regenerate_thumbs,
+            'refresh': self.refresh,
             'get_settings': self.get_settings,
             'save_settings': self.save_settings,
             'get_root_dir': self.get_root_dir,
@@ -212,11 +230,36 @@ class ImageViewerPlugin(PluginBase):
 
     # ===== 混合瀑布流（只处理一层嵌套）：直接图片 + 直接子相册 p0 瓦片 =====
 
+    def _aggregate_children(self, dir_path: Path, rel_path: str) -> tuple:
+        """统计纯容器子目录下一层子目录的聚合信息。
+
+        返回 (总图片数, 代表封面)。代表封面 = 按 pixiv 号倒序
+        第一个含直接图片的子目录的 p0（即画师文件夹展示其最新作品的 p0）。
+        """
+        children = []
+        total = 0
+        try:
+            with os.scandir(dir_path) as entries:
+                for e in entries:
+                    if e.name.startswith('.') or e.name == '.cache' or not e.is_dir():
+                        continue
+                    sub_rel = f"{rel_path}/{e.name}" if rel_path else e.name
+                    entry = self._scan_dir_direct(Path(e.path), sub_rel)
+                    total += entry.get('direct_count', 0)
+                    children.append((e.name, entry.get('direct_cover', '')))
+        except OSError:
+            pass
+        children = _pixiv_sort(children, lambda t: t[0], reverse=True)
+        cover = next((c for _n, c in children if c), '')
+        return total, cover
+
     def _scan_album_items(self, rel_path: str, sub_dirs: List[str]) -> tuple:
         """扫描每个直接子目录。
 
         返回 (卡片列表, {sub_rel: [直接图片 dict 列表]})。
-        卡片封面 = p0（文件名自然序第一张）；图片列表用于构建连续浏览序列。
+        卡片封面 = p0（文件名自然序第一张）；纯容器子目录（无直接图片但有子文件夹）
+        用递归聚合：封面 = 最新作品 p0、total_count = 递归总图片数；
+        image_count 始终为直接图片数（连续浏览序列按它展开）。
         """
         cache_dirs = self._album_cache.get('dirs')
         if not isinstance(cache_dirs, dict):
@@ -257,12 +300,28 @@ class ImageViewerPlugin(PluginBase):
             except OSError:
                 pass
             album_images[sub_rel] = images
+            direct_count = len(images)
+            total_count = direct_count
+            if not images and entry.get('has_children'):
+                # 纯容器子目录：递归聚合（一层），代表封面 + 总图片数
+                agg_total, agg_cover = self._aggregate_children(dir_path, sub_rel)
+                total_count = agg_total
+                if agg_cover:
+                    cover = agg_cover
+            if cover:
+                abs_path = self.root_dir / cover
+                try:
+                    st = abs_path.stat()
+                    cw, ch = self._get_image_size(str(abs_path), st.st_mtime)
+                except OSError:
+                    pass
             cards.append({
                 'type': 'album',
                 'path': sub_rel,
                 'name': name,
                 'cover': cover,
-                'image_count': len(images),
+                'image_count': direct_count,
+                'total_count': total_count,
                 'has_children': entry.get('has_children', False),
                 'mtime': mtime,
                 'width': cw or 1,
@@ -346,11 +405,14 @@ class ImageViewerPlugin(PluginBase):
 
         reverse = (sort_order == 'desc')
         if sort_by == 'time_name':
-            # 新标准「时间+文件名」：时间维度只作用于作品/相册卡片（最新在前），
-            # 图片（含单图与子文件夹内图片）一律按文件名自然序 p0 → p1。
-            cards.sort(key=lambda x: (-float(x.get('mtime') or 0.0),
-                                      natural_sort_key(x['name'])))
-            images.sort(key=lambda x: natural_sort_key(Path(x['url']).name))
+            # Pixiv 排序支持：顶层作品/单图按 pixiv 数字号（前导数字）排序，方向生效
+            # （倒序 = 大号在前 = 新作品在前），无数字名排最后；
+            # 纯图片文件夹（作品内部）图片仍按文件名自然序 p0 → p1，不受方向影响。
+            cards = _pixiv_sort(cards, lambda x: x['name'], reverse)
+            if cards:
+                images = _pixiv_sort(images, lambda x: Path(x['url']).name, reverse)
+            else:
+                images.sort(key=lambda x: natural_sort_key(Path(x['url']).name))
             items = cards + images
         else:
             if sort_by == 'mtime':
@@ -557,6 +619,7 @@ class ImageViewerPlugin(PluginBase):
                 'cover': cover,
                 'mtime': newest,
                 'depth': entry['depth'],
+                'use_time_name': (self.get_settings(entry['path']).get('sort_by') == 'time_name'),
             })
 
         # 为有封面的相册预生成缩略图（之后 /thumbs 请求直接命中缓存）
@@ -660,13 +723,55 @@ class ImageViewerPlugin(PluginBase):
         self._list_cache.clear()
         return {"moved": moved, "errors": errors}
 
+    def regenerate_thumbs(self, rel_paths: List[str]) -> Dict:
+        """重新生成选中图片的缩略图：删除缓存缩略图并重新生成。
+
+        用于修复下载丢失/文件被替换后残留的坏缩略图（如黑图、空图）。
+        同时清理该图片的尺寸元数据缓存，避免旧尺寸残留。
+        """
+        regenerated, errors = [], []
+        for rel in rel_paths:
+            if not self._is_safe(rel):
+                errors.append(f'非法路径: {rel}')
+                continue
+            thumb = self.thumb_dir / rel
+            try:
+                if thumb.exists():
+                    thumb.unlink()
+                drop_image_meta(self._meta_cache, str(self.root_dir / rel))
+                new_thumb = self._get_thumb(rel)
+                if new_thumb and new_thumb.exists():
+                    regenerated.append(rel)
+                else:
+                    errors.append(f'缩略图生成失败: {rel}')
+            except Exception as e:
+                errors.append(f'缩略图更新失败 {rel}: {str(e)}')
+        if regenerated:
+            self._save_meta()
+        return {'regenerated': regenerated, 'errors': errors}
+
+    def refresh(self) -> Dict:
+        """清空内存缓存并作废旧相册索引，让新增/替换的图片立即生效（无需重启）。"""
+        self._list_cache.clear()
+        self._album_cache = {'version': 3, 'dirs': {}}
+        try:
+            if self.album_cache_file.exists():
+                self.album_cache_file.unlink()
+        except OSError:
+            pass
+        return {'success': True}
+
     def get_settings(self, rel_path: str = '') -> Dict:
         """获取文件夹生效设置（含全局回退与逐级继承）。
 
         文件夹设置按「当前文件夹 → 父文件夹 → … → 全局 → 硬默认」逐级
-        向上继承：在父文件夹（如 pixiv/following）上启用 time_name 后，
-        其下所有子文件夹自动继承同一排序；某个子文件夹被单独修改
-        （folders[该路径] 存在）时以它自己的设置优先，并继续向其子文件夹传播。
+        向上继承：在父文件夹（如 pixiv）上启用 time_name 后，其下所有子文件夹
+        自动继承同一排序；某个子文件夹被单独修改（folders[该路径] 存在）时
+        以它自己的设置优先，并继续向其子文件夹传播。
+
+        `pixiv_explicit`：当前文件夹自身是否显式设置了「Pixiv 排序支持」
+        （即它是 Pixiv 排序的配置点，如 pixiv 主文件夹——该层显示作者网格，
+        继承它的子层才显示瀑布流）。
         """
         folders = self.setting('folders') or {}
         if not isinstance(folders, dict):
@@ -687,6 +792,9 @@ class ImageViewerPlugin(PluginBase):
                 break
         result = {**hard_defaults, **global_settings, **folder_settings}
         result['root_dir'] = str(self.root_dir)
+        # 自身条目显式设置了 Pixiv 排序才视为配置点（继承的不算）
+        own_entry = folders.get(rel_path or '__global__', {})
+        result['pixiv_explicit'] = (own_entry.get('sort_by') == 'time_name')
         return result
 
     def save_settings(self, rel_path='', settings=None) -> Dict:
