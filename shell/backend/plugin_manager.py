@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 '''
 Copyright 2026 flotiarenor
 
@@ -13,12 +15,16 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 '''
+import importlib.util
 import json
 import sys
-import importlib.util
-from pathlib import Path
 from collections import deque
-from typing import Dict, List, Callable
+from collections.abc import Iterable
+from pathlib import Path
+from typing import TYPE_CHECKING, Callable, Dict, List
+
+if TYPE_CHECKING:
+    from shell.backend.plugin_base import PluginBase
 from shell.backend.settings_store import SettingsStore
 from shell.backend.paths import get_plugins_config_dir
 
@@ -32,8 +38,12 @@ def _resolve_config_dir() -> Path:
 
 
 class PluginManager:
-    def __init__(self, plugins_dirs, config: dict):
-        raw_dirs = list(plugins_dirs) if isinstance(plugins_dirs, (list, tuple)) else [plugins_dirs]
+    def __init__(self, plugins_dirs: str | Path | Iterable[str | Path], config: dict) -> None:
+        raw_dirs = (
+            list(plugins_dirs)
+            if isinstance(plugins_dirs, Iterable) and not isinstance(plugins_dirs, (str, bytes, Path))
+            else [plugins_dirs]
+        )
         self.plugins_dirs: List[Path] = []
         for raw_dir in raw_dirs:
             path = Path(raw_dir).resolve()
@@ -43,9 +53,9 @@ class PluginManager:
             raise ValueError('至少需要提供一个插件搜索目录')
         self.plugins_dir = self.plugins_dirs[0]
         self.config = config
-        self._instances = {}
-        self._api_methods = {}
-        self._manifests = {}
+        self._instances: Dict[str, PluginBase] = {}
+        self._api_methods: Dict[str, Callable] = {}
+        self._manifests: Dict[str, dict] = {}
         self._plugin_dirs: Dict[str, Path] = {}
         self._config_dir = _resolve_config_dir()
         self._settings_store = SettingsStore(str(self._config_dir))
@@ -53,7 +63,7 @@ class PluginManager:
         print(f"[PluginManager] 插件搜索目录: {', '.join(str(p) for p in self.plugins_dirs)}")
         print(f"[PluginManager] 插件设置目录: {self._config_dir}")
 
-    def load_all(self):
+    def load_all(self) -> None:
         manifests = self._discover()
         load_order = self._resolve_dependencies(manifests)
 
@@ -66,7 +76,7 @@ class PluginManager:
 
     # ---------- 设置迁移 ----------
 
-    def _migrate_settings(self, plugin_name: str):
+    def _migrate_settings(self, plugin_name: str) -> None:
         """把旧设置迁入 SettingsStore 并删除旧文件。
 
         - 新设置文件已存在时也继续处理旧文件：合并后删除，避免插件目录里
@@ -106,10 +116,10 @@ class PluginManager:
 
     def get_api_methods(self) -> Dict[str, Callable]:
         return self._api_methods
-    def get_plugin_instance(self, name: str):
+    def get_plugin_instance(self, name: str) -> PluginBase | None:
         return self._instances.get(name)
 
-    def get_plugin_dir(self, name: str):
+    def get_plugin_dir(self, name: str) -> Path | None:
         return self._plugin_dirs.get(name)
 
     def get_plugin_data_root(self, name: str) -> Path:
