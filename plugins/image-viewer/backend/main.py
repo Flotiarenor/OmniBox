@@ -619,6 +619,7 @@ class ImageViewerPlugin(PluginBase):
                 'cover': cover,
                 'mtime': newest,
                 'depth': entry['depth'],
+                'use_time_name': (self.get_settings(entry['path']).get('sort_by') == 'time_name'),
             })
 
         # 为有封面的相册预生成缩略图（之后 /thumbs 请求直接命中缓存）

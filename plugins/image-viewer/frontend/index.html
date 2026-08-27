@@ -55,6 +55,15 @@
       </div>
 
       <div class="view-content iv-content obx-scroll" id="iv-content">
+        <div id="iv-album-sort" class="iv-album-sort hidden">
+          <span class="iv-sort-label">排序</span>
+          <select id="iv-album-sort-by" class="iv-sort-select">
+            <option value="name">文件名</option>
+            <option value="mtime">更新时间</option>
+            <option value="count">图片数量</option>
+          </select>
+          <button id="iv-album-sort-order" class="btn btn-sm">↓ 倒序</button>
+        </div>
         <div id="iv-albums"></div>
         <div id="image-grid" class="iv-image-grid"></div>
       </div>
