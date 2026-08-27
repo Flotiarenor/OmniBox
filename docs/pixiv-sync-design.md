@@ -122,8 +122,8 @@ plugins/
 | `get_status` | - | `{task, root_dir, token_configured, downloaded_total, running, selected_artists, selected_file, ...统计}` | 状态轮询 |
 | `sync_following` | - | `{ok, data\|error}` | 启动「同步画师」任务（按清单下载，含 404 永久跳过） |
 | `sync_bookmarks` | - | `{ok, data\|error}` | 启动「同步喜欢」任务（按清单下载，与画师共用去重） |
-| `refresh_following_lists` | - | `{ok, data\|error}` | **刷新关注画师作品名单**：完整扫描 + 画师级断点（`scan.done_uids`），分批推进，清单存全部作品（含 done 标记），旧→新排序 |
-| `refresh_bookmarks_lists` | - | `{ok, data\|error}` | **刷新喜欢画作名单**：完整扫描 + 收藏断点（`scan.next_qs`，实际参数为 `max_bookmark_id`），分批推进，去重累积 |
+| `refresh_following_lists` | - | `{ok, data\|error}` | **刷新关注画师作品名单**：首次/未完成时全量扫描；完成后改为增量扫描（每个画师只拉到上一轮已入库的尾巴），旧→新排序 |
+| `refresh_bookmarks_lists` | - | `{ok, data\|error}` | **刷新喜欢画作名单**：首次/未完成时全量扫描；完成后改为增量扫描（只拉到上一轮已入库的收藏尾巴） |
 | `refresh_downloaded` | - | `{ok, total, zero_removed, stale_removed, failed_cleared}` | **刷新已下载记录**：扫描本地重建 ids（手动删的移除、手动加的导入、0 字节清理），重置消失作品的 done 快照，并清除本地已有文件对应的失败跳过记录 |
 | `verify_downloaded` | - | `{ok, stale_removed, zero_removed, failed_cleared, total}` | **校验已下载内容**：移除记录中本地无有效文件的失效 id 并重置清单 done 快照（下次同步重下），不导入新增 |
 | `retry_failed` | - | `{ok, cleared, kind}` | **一键重试失败作品**：清除 failed_ids.json（404 永久跳过记录）并立即按最近任务来源重新同步一次 |
@@ -156,10 +156,11 @@ plugins/
 1. `auth(refresh_token)` 换取 access_token（`oauth.secure.pixiv.net/auth/token`）。
 2. **刷新画师（生成清单）**：
    - `user_following` 翻页拉取全部关注画师；
-   - 并行（`scan_workers` 路滑动窗口）逐画师 `user_illusts` 翻页拉取**全部作品**（不用 `illust_follow` 新作流——那只会返回近期作品，历史作品会漏）；
-   - 画师级断点 `scan.done_uids`：本轮未扫完的画师下次继续；本轮全部扫完则下次从头重扫（捞新作）；
+   - 首次或上次未完成时，并行（`scan_workers` 路滑动窗口）逐画师 `user_illusts` 翻页拉取**全部作品**（不用 `illust_follow` 新作流——那只会返回近期作品，历史作品会漏）；
+   - 上一轮完整扫描完成后，下一轮进入**增量模式**：逐画师从最新作品往回翻，遇到上一轮已入库的尾巴就停，只拉最新部分；
+   - 画师级断点 `scan.done_uids`：本轮未扫完的画师下次继续；
    - 清单写入 SQLite `works.db`（含 done 标记与扫描断点），旧→新排序。
-3. **刷新喜欢（生成清单）**：翻页拉取当前用户公开收藏（全量），断点保存完整翻页参数 `scan.next_qs`（Pixiv 该接口使用 `max_bookmark_id`）分批累加。
+3. **刷新喜欢（生成清单）**：首次/未完成时全量翻页拉取当前用户公开收藏；上一轮完成后改为增量模式，从最新收藏往回翻，遇到上一轮已入库的收藏尾巴就停。断点保存完整翻页参数 `scan.next_qs`（Pixiv 该接口使用 `max_bookmark_id`）。
 4. **同步**：从清单取「作品 id 不在去重集合且不在失败跳过集合」的作品，`workers` 并发下载。
    全部页下载成功 → 作品 id 入去重集合，清单标记 done；**失败页全部是 404/作品已删除 → 作品 id 入 failed_ids.json 永久跳过**（避免每次重试同一已删除页）；存在非 404 单页失败时下次继续重试（不会把作品整体标记为已下载）。
 5. 任务状态每处理一个作品写入 `tasks.json`；去重集合在任务结束时落盘（也支持中途崩溃后按已下载文件跳过）。

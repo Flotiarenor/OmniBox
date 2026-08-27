@@ -112,13 +112,12 @@ def _flatten_items(
 def collect_following_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
     """扫描关注画师作品，返回 (items, scan)。画师级断点：scan.done_uids。
 
-    每次刷新处理一批画师（受 max_refresh 待下载条数限制），未处理的画师下次继续；
-    全部画师处理完 scan.complete=True。清单按旧→新排序（老图优先下载）。
+    第一次/未完成时全量扫描；上一轮完整扫描完成后，下一轮改用增量模式：
+    逐画师从最新往回翻，遇到上一轮已经见过的作品就停，因此只拉最新部分。
     """
     items, scan = p._db().load_pending("following")
+    incremental = bool(scan and scan.get("complete"))
     done_uids = set(scan.get("done_uids", [])) if isinstance(scan, dict) else set()
-    if scan and scan.get("complete"):
-        done_uids = set()  # 上一轮完整结束，新一轮从头
 
     # 旧清单按画师分组，替换某个画师时不需要每次 O(N) 扫描全表。
     items_by_uid: Dict[int, List[Dict[str, Any]]] = {}
@@ -144,8 +143,12 @@ def collect_following_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
 
     refresh_limit = p._max_refresh()
 
-    def fetch_artist(uid: int) -> List[Dict[str, Any]]:
-        """完整扫描一个画师的全部作品（从最新翻到最旧）。"""
+    def fetch_artist(uid: int, known_ids=None) -> List[Dict[str, Any]]:
+        """扫描一个画师的作品。
+
+        已知作品 id 集合传入后，从最新往回翻，遇到已知 id 就停；
+        否则全量翻到最后一页。
+        """
         client = p._client()
         illusts: List[Dict[str, Any]] = []
         q = None
@@ -159,7 +162,18 @@ def collect_following_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
                     page = client.user_illusts(uid, **params)
                 else:
                     page = client.user_illusts(uid)
-                illusts.extend(page.get("illusts", []) or [])
+                batch = page.get("illusts", []) or []
+                if not batch:
+                    break
+                illusts.extend(batch)
+                if known_ids is not None:
+                    hit = any(
+                        _work_id(ill) in known_ids
+                        for ill in batch
+                        if _work_id(ill) is not None
+                    )
+                    if hit:
+                        break  # 后面都是上一轮已入库的旧作品
                 nxt = page.get("next_url")
                 if not nxt:
                     break
@@ -170,21 +184,30 @@ def collect_following_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
                 raise
         return illusts
 
-    todo = [uid for uid, _ in following if uid not in done_uids]
+    # 上一轮完整扫完后，新一轮要重新过一遍全部关注画师（增量模式，只拉到已知尾巴）。
+    # 未完成的历史断点则只补扫 done_uids 之外的画师。
+    if incremental:
+        todo = [uid for uid, _ in following]
+    else:
+        todo = [uid for uid, _ in following if uid not in done_uids]
     window = p._scan_workers()  # 滑动窗口大小
     pending = start_pending
     stop_submitting = False
 
     with ThreadPoolExecutor(max_workers=window) as pool:
         it = iter(todo)
-        running: Dict[Any, int] = {}
+        running: Dict[Any, tuple] = {}
 
         def submit_next():
             try:
                 uid = next(it)
             except StopIteration:
                 return
-            running[pool.submit(fetch_artist, uid)] = uid
+            full_scan = not (incremental and uid in items_by_uid)
+            known_ids = None
+            if not full_scan:
+                known_ids = {_work_id(i) for i in items_by_uid.get(uid, [])}
+            running[pool.submit(fetch_artist, uid, known_ids)] = (uid, full_scan)
 
         # 填满窗口
         for _ in range(window):
@@ -197,7 +220,7 @@ def collect_following_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
             if p._cancel_flag:
                 break
             for fut in done:
-                uid = running.pop(fut)
+                uid, full_scan = running.pop(fut)
                 try:
                     illusts = fut.result()
                 except RateLimitError:
@@ -207,16 +230,33 @@ def collect_following_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
                     print(f"[pixiv-sync] 拉取画师 {uid} 列表失败: {e}")
                     continue
 
-                built = []
-                for ill in reversed(illusts):  # 反转：旧作品在前
-                    item = build_item(p, ill, ids)
-                    if item is not None:
-                        built.append(item)
-                old_pending = pending_by_uid.get(uid, 0)
-                new_pending = sum(1 for x in built if not x.get("done"))
-                items_by_uid[uid] = built
-                pending_by_uid[uid] = new_pending
-                pending += new_pending - old_pending
+                if full_scan:
+                    built = []
+                    for ill in reversed(illusts):  # 反转：旧作品在前
+                        item = build_item(p, ill, ids)
+                        if item is not None:
+                            built.append(item)
+                    old_pending = pending_by_uid.get(uid, 0)
+                    new_pending = sum(1 for x in built if not x.get("done"))
+                    items_by_uid[uid] = built
+                    pending_by_uid[uid] = new_pending
+                    pending += new_pending - old_pending
+                    saved_items = built
+                else:
+                    old_items = items_by_uid.get(uid, [])
+                    old_ids = {_work_id(i) for i in old_items}
+                    new_items = []
+                    for ill in reversed(illusts):  # 反转：旧作品在前
+                        item = build_item(p, ill, ids)
+                        if item is None or _work_id(item) in old_ids:
+                            continue
+                        new_items.append(item)
+                    old_pending = pending_by_uid.get(uid, 0)
+                    new_pending = sum(1 for x in new_items if not x.get("done"))
+                    saved_items = old_items + new_items
+                    items_by_uid[uid] = saved_items
+                    pending_by_uid[uid] = old_pending + new_pending
+                    pending += new_pending
                 done_uids.add(uid)
 
                 flat = _flatten_items(items_by_uid, orphans)
@@ -226,7 +266,7 @@ def collect_following_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
                 task["total"] = len(flat)
                 tasks_mod.persist_task(p._tasks_file(), task)
                 p._db().replace_artist(
-                    "following", uid, built, {"done_uids": sorted(done_uids)}
+                    "following", uid, saved_items, {"done_uids": sorted(done_uids)}
                 )
 
                 if refresh_limit and (pending - start_pending) >= refresh_limit:
@@ -248,14 +288,17 @@ def collect_following_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
 def collect_bookmarks_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
     """扫描收藏列表，返回 (items, scan)。
 
-    Pixiv 收藏接口的翻页参数是 max_bookmark_id，因此断点保存完整的 next_qs，
-    而不是硬编码 offset；兼容旧版本保存的 offset 断点。
+    Pixiv 收藏接口的翻页参数是 max_bookmark_id，因此断点保存完整的 next_qs。
+    上一轮完整扫描完成后，下一轮增量模式：从最新收藏往回翻，遇到上一轮
+    已经见过的作品就停，只拉最新部分。
     """
     items, scan = p._db().load_pending("bookmarks")
+    incremental = bool(scan and scan.get("complete"))
     next_qs: Dict[str, Any] | None = None
     if isinstance(scan, dict):
         if scan.get("complete"):
-            items = []  # 上一轮完整结束，新一轮从头
+            # 保持旧清单，增量模式从第一页开始，遇到 known_ids 就停。
+            next_qs = None
         elif "next_qs" in scan:
             next_qs = dict(scan.get("next_qs") or {})
         elif scan.get("offset") is not None:
@@ -264,6 +307,7 @@ def collect_bookmarks_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
 
     refresh_limit = p._max_refresh()
     seen = {_work_id(i) for i in items}  # 复用 download._work_id 的安全取 id
+    known_ids = set(seen)  # 上一轮已入库的作品 id；增量模式下遇到它们就停
     new_pending = 0
     qs = dict(next_qs) if next_qs else None
 
@@ -301,6 +345,18 @@ def collect_bookmarks_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
                     task["total"] = len(items)
                     tasks_mod.persist_task(p._tasks_file(), task)
                     return items, {"next_qs": resume_qs, "complete": False}
+
+            if incremental:
+                hit = any(
+                    _work_id(ill) in known_ids
+                    for ill in batch
+                    if _work_id(ill) is not None
+                )
+                if hit:
+                    # 已到上一轮完整扫描的尾巴，后面的旧收藏不会再变化。
+                    p._db().save_pending("bookmarks", items, {"complete": True})
+                    break
+
             nxt = page.get("next_url")
             if not nxt:
                 # 最后一页先落盘，避免 main 写库前进程退出丢掉整页。

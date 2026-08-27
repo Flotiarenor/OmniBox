@@ -100,6 +100,20 @@ def _work_item(iid: int, tags=None, uid: int = 1) -> dict:
     }
 
 
+def _raw_illust(iid: int, uid: int = 1) -> dict:
+    return {
+        "id": iid,
+        "type": "illust",
+        "title": f"w{iid}",
+        "page_count": 1,
+        "create_date": f"2026-01-{iid % 28 + 1:02d}T00:00:00+00:00",
+        "user": {"id": uid, "name": f"A{uid}"},
+        "meta_pages": [],
+        "meta_single_page": {"original_image_url": f"https://img/{iid}.jpg"},
+        "tags": [],
+    }
+
+
 
 def _bookmark_page(iid: int, next_max: int | None):
     return {
@@ -141,6 +155,34 @@ class _FakeBookmarkClient:
         # 调用方会用 max_bookmark_id 作为翻页游标；首页无该参数。
         cursor = int(params.get("max_bookmark_id", 10))
         return self.pages[cursor]
+
+
+class _FakeFollowingClient:
+    user_id = 1
+
+    def __init__(self, pages_by_uid):
+        self.pages_by_uid = pages_by_uid
+        self.calls = []
+
+    def user_following(self, user_id, **params):
+        return {
+            "user_previews": [
+                {"user": {"id": uid, "name": str(uid)}}
+                for uid in self.pages_by_uid
+            ],
+            "next_url": None,
+        }
+
+    def parse_qs(self, next_url: str | None):
+        if not next_url:
+            return None
+        return {k: v[-1] for k, v in parse_qs(urlparse(next_url).query).items()}
+
+    def user_illusts(self, uid, **params):
+        self.calls.append((uid, dict(params)))
+        pages = self.pages_by_uid.get(uid, [])
+        cursor = int(params.get("offset", 0))
+        return pages[cursor] if cursor < len(pages) else {"illusts": [], "next_url": None}
 
 
 class PixivSyncCoreTests(unittest.TestCase):
@@ -224,6 +266,47 @@ class PixivSyncCoreTests(unittest.TestCase):
             self.assertEqual(info["next_qs"], {"max_bookmark_id": "9"})
             self.assertNotIn("offset", info)
             self.assertEqual(p.client.calls[2].get("max_bookmark_id"), "9")
+
+    def test_following_incremental_stops_at_known_tail(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            p = _FakeP(tmp, scan_workers=1)
+            p.client = _FakeFollowingClient({
+                1: [
+                    {"illusts": [_raw_illust(11, 1)], "next_url": "/v1/user/illusts?offset=1"},
+                    {"illusts": [_raw_illust(10, 1)], "next_url": "/v1/user/illusts?offset=2"},
+                    {"illusts": [_raw_illust(9, 1)], "next_url": None},
+                ]
+            })
+            p._db_wrapper.save_pending("following", [
+                _work_item(10, uid=1),
+                _work_item(9, uid=1),
+            ], {"complete": True, "done_uids": [1]})
+            items, info = scan.collect_following_pending(p, _new_task(), set())
+            self.assertEqual({i["id"] for i in items}, {11, 10, 9})
+            self.assertTrue(info["complete"])
+            # 只拉两页：最新一页 + 命中已知尾巴的那一页，不再扫第 3 页。
+            self.assertEqual([call[1].get("offset") for call in p.client.calls], [None, "1"])
+
+    def test_bookmarks_incremental_stops_at_known_tail(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            p = _FakeP(tmp)
+            p.client = _FakeBookmarkClient({
+                10: _bookmark_page(11, 9),
+                9: _bookmark_page(10, 8),
+                8: _bookmark_page(8, None),
+            })
+            p._db_wrapper.save_pending("bookmarks", [
+                _work_item(10),
+                _work_item(9),
+            ], {"complete": True})
+            items, info = scan.collect_bookmarks_pending(p, _new_task(), set())
+            self.assertEqual({i["id"] for i in items}, {11, 10, 9})
+            self.assertTrue(info["complete"])
+            self.assertEqual(len(p.client.calls), 2)
+
+
 
     def test_zero_byte_file_is_not_considered_downloaded(self):
         with tempfile.TemporaryDirectory() as td:
