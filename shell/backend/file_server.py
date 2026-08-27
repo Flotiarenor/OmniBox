@@ -35,7 +35,7 @@ def _is_safe_path(full_path: Path, root: Path) -> bool:
     except ValueError:
         return False
 
-def create_app(config, plugin_manager):
+def create_app(config: dict, plugin_manager) -> Flask:
     app = Flask(__name__)
     frontend_dist = _SHELL_DIR / 'frontend' / 'dist'
 
@@ -237,3 +237,5 @@ def create_app(config, plugin_manager):
                 html = html.replace('</head>', inject + '</head>')
                 return html
         return send_from_directory(plugin_dir, filename)
+
+    return app
