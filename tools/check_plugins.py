@@ -153,24 +153,45 @@ def _check_schema(cls) -> List[str]:
     return errors
 
 
-def _load_backend_class(plugin_dir: Path, entry: str, class_name: str):
+def _load_backend_class(plugin_dir: Path, entry: str, class_name: str, lib_dirs=None):
     module_path = (plugin_dir / entry).resolve()
     module_name = f"omnibox_spec_{re.sub(r'[^0-9A-Za-z_]', '_', plugin_dir.name)}"
     spec = importlib.util.spec_from_file_location(module_name, str(module_path))
     if spec is None or spec.loader is None:
         raise RuntimeError('无法为后端模块创建 importlib spec')
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    cls = getattr(module, class_name, None)
-    if cls is None:
-        raise RuntimeError(f'后端模块中不存在类 {class_name}')
-    if not isinstance(cls, type):
-        raise RuntimeError(f'{class_name} 不是类')
-    from shell.backend.plugin_base import PluginBase
 
-    if not issubclass(cls, PluginBase):
-        raise RuntimeError(f'{class_name} 未继承 PluginBase')
-    return cls
+    # 与 PluginManager 一致：加载后端前把 manifest.libs 声明的目录加入 sys.path，
+    # 否则 vendored 依赖（如 pixiv-sync 的 backend/libs）无法 import。
+    added = []
+    for raw_lib in lib_dirs or ['backend/libs']:
+        try:
+            lib_path = (plugin_dir / raw_lib).resolve()
+            if not lib_path.is_relative_to(plugin_dir.resolve()) or not lib_path.is_dir():
+                continue
+        except Exception:
+            continue
+        sys.path.insert(0, str(lib_path))
+        added.append(str(lib_path))
+
+    try:
+        spec.loader.exec_module(module)
+        cls = getattr(module, class_name, None)
+        if cls is None:
+            raise RuntimeError(f'后端模块中不存在类 {class_name}')
+        if not isinstance(cls, type):
+            raise RuntimeError(f'{class_name} 不是类')
+        from shell.backend.plugin_base import PluginBase
+
+        if not issubclass(cls, PluginBase):
+            raise RuntimeError(f'{class_name} 未继承 PluginBase')
+        return cls
+    finally:
+        for lib_path in added:
+            try:
+                sys.path.remove(lib_path)
+            except ValueError:
+                pass
 
 
 def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -> Tuple[List[str], List[str]]:
@@ -306,7 +327,9 @@ def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -
             if not _entry_is_safe(plugin_dir, entry):
                 continue
             try:
-                cls = _load_backend_class(plugin_dir, entry, class_name)
+                cls = _load_backend_class(
+                    plugin_dir, entry, class_name, data.get('libs')
+                )
             except Exception as exc:
                 errors.append(f'{where} 后端加载失败: {exc}')
                 continue
