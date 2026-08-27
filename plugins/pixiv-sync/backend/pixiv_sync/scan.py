@@ -118,6 +118,8 @@ def collect_following_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
     items, scan = p._db().load_pending("following")
     incremental = bool(scan and scan.get("complete"))
     done_uids = set(scan.get("done_uids", [])) if isinstance(scan, dict) else set()
+    if incremental:
+        done_uids = set()  # 新一轮增量扫描要重新过一遍全部关注画师
 
     # 旧清单按画师分组，替换某个画师时不需要每次 O(N) 扫描全表。
     items_by_uid: Dict[int, List[Dict[str, Any]]] = {}
@@ -203,7 +205,10 @@ def collect_following_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
                 uid = next(it)
             except StopIteration:
                 return
-            full_scan = not (incremental and uid in items_by_uid)
+            # 只要 DB 里已有该画师的旧清单，就说明他之前被完整扫过一轮；
+            # 即使本次刷新被 max_refresh 拆成多次，也继续用增量模式，
+            # 不要因为 scan.complete=False 就退回全量扫描。
+            full_scan = uid not in items_by_uid
             known_ids = None
             if not full_scan:
                 known_ids = {_work_id(i) for i in items_by_uid.get(uid, [])}
@@ -293,6 +298,8 @@ def collect_bookmarks_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
     已经见过的作品就停，只拉最新部分。
     """
     items, scan = p._db().load_pending("bookmarks")
+    # 完整扫描后的新起一轮，或完整扫描后因 max_refresh 拆出来的续跑，都属于
+    # 增量模式（遇到上一轮完整尾巴就停）。首次全量扫描的续跑不能提前停。
     incremental = bool(scan and scan.get("complete"))
     next_qs: Dict[str, Any] | None = None
     if isinstance(scan, dict):
@@ -301,6 +308,8 @@ def collect_bookmarks_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
             next_qs = None
         elif "next_qs" in scan:
             next_qs = dict(scan.get("next_qs") or {})
+            if scan.get("incremental"):
+                incremental = True
         elif scan.get("offset") is not None:
             # v0.3 之前误把翻页断点存成 offset，兼容迁移。
             next_qs = {"offset": scan.get("offset")}
@@ -339,14 +348,22 @@ def collect_bookmarks_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
                     resume_qs = dict(qs or {})
                     p._db().save_pending(
                         "bookmarks", items,
-                        {"next_qs": resume_qs, "complete": False},
+                        {
+                            "next_qs": resume_qs,
+                            "complete": False,
+                            "incremental": incremental,
+                        },
                     )
                     task["current"] = f"清单 {len(items)} 条（部分扫描，可再点刷新继续）"
                     task["total"] = len(items)
                     tasks_mod.persist_task(p._tasks_file(), task)
-                    return items, {"next_qs": resume_qs, "complete": False}
+                    return items, {
+                        "next_qs": resume_qs,
+                        "complete": False,
+                        "incremental": incremental,
+                    }
 
-            if incremental:
+            if incremental and known_ids:
                 hit = any(
                     _work_id(ill) in known_ids
                     for ill in batch
@@ -364,7 +381,8 @@ def collect_bookmarks_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
                 break
             qs = client.parse_qs(nxt) or {}
             p._db().save_pending(
-                "bookmarks", items, {"next_qs": dict(qs), "complete": False}
+                "bookmarks", items,
+                {"next_qs": dict(qs), "complete": False, "incremental": incremental},
             )
         except PixivError as e:
             if "429" in str(e):

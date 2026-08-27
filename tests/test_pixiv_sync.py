@@ -288,6 +288,43 @@ class PixivSyncCoreTests(unittest.TestCase):
             # 只拉两页：最新一页 + 命中已知尾巴的那一页，不再扫第 3 页。
             self.assertEqual([call[1].get("offset") for call in p.client.calls], [None, "1"])
 
+    def test_following_partial_incremental_keeps_incremental_for_remaining(self):
+        """max_refresh 拆成多次刷新后，剩余画师不应退回全量扫描。"""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            p = _FakeP(tmp, max_refresh=1, scan_workers=1)
+            p.client = _FakeFollowingClient({
+                1: [
+                    {"illusts": [_raw_illust(11, 1)], "next_url": "/v1/user/illusts?offset=1"},
+                    {"illusts": [_raw_illust(10, 1)], "next_url": "/v1/user/illusts?offset=2"},
+                    {"illusts": [_raw_illust(9, 1)], "next_url": None},
+                ],
+                2: [
+                    {"illusts": [_raw_illust(21, 2)], "next_url": "/v1/user/illusts?offset=1"},
+                    {"illusts": [_raw_illust(20, 2)], "next_url": "/v1/user/illusts?offset=2"},
+                    {"illusts": [_raw_illust(19, 2)], "next_url": None},
+                ],
+            })
+            p._db_wrapper.save_pending("following", [
+                _work_item(10, uid=1),
+                _work_item(9, uid=1),
+                _work_item(20, uid=2),
+                _work_item(19, uid=2),
+            ], {"complete": True, "done_uids": [1, 2]})
+
+            items, info = scan.collect_following_pending(p, _new_task(), set())
+            self.assertFalse(info["complete"])
+            self.assertEqual(info["done_uids"], [1])
+
+            items, info = scan.collect_following_pending(p, _new_task(), set())
+            self.assertTrue(info["complete"])
+            self.assertEqual({i["id"] for i in items}, {11, 10, 9, 21, 20, 19})
+            # 画师 2 也必须只拉到已知尾巴（offset=1），而不是全量扫到 offset=2。
+            uid2_offsets = [call[1].get("offset") for call in p.client.calls if call[0] == 2]
+            self.assertEqual(uid2_offsets, [None, "1"])
+
+
+
     def test_bookmarks_incremental_stops_at_known_tail(self):
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
