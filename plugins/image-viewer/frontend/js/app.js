@@ -18,6 +18,8 @@ class ImageViewer {
         this.currentRowHeight = 200;
         this.albums = [];
         this.albumConfig = { collapsed: [], promoted: [] };
+        this.albumSortBy = 'name';       // 作者页面排序：name | mtime | count
+        this.albumSortOrder = 'asc';     // 作者页面排序方向
         this.isMultiSelectMode = false;
         this.selectedImages = new Set();
         this.moveDestPath = '';
@@ -48,6 +50,11 @@ class ImageViewer {
         });
 
         this._bindUI();
+        // 恢复作者页排序偏好
+        try {
+            this.albumSortBy = localStorage.getItem('iv.albumSortBy') || 'name';
+            this.albumSortOrder = localStorage.getItem('iv.albumSortOrder') || 'asc';
+        } catch (e) { }
         await this.loadSettings();
         await this.loadAlbums();
         this.loadExtensions();
@@ -147,6 +154,19 @@ class ImageViewer {
             search.focus();
         });
 
+        // 作者页面排序栏
+        document.getElementById('iv-album-sort-by').addEventListener('change', (e) => {
+            this.albumSortBy = e.target.value;
+            try { localStorage.setItem('iv.albumSortBy', this.albumSortBy); } catch (err) { }
+            this.showAlbums();
+        });
+        document.getElementById('iv-album-sort-order').addEventListener('click', () => {
+            this.albumSortOrder = this.albumSortOrder === 'asc' ? 'desc' : 'asc';
+            try { localStorage.setItem('iv.albumSortOrder', this.albumSortOrder); } catch (err) { }
+            this._syncAlbumSortBar();
+            this.showAlbums();
+        });
+
         document.getElementById('setting-row-height').addEventListener('input', (e) => {
             document.getElementById('setting-row-height-val').textContent = e.target.value;
         });
@@ -214,6 +234,12 @@ class ImageViewer {
         if (keyword) {
             albums = albums.filter(a =>
                 a.name.toLowerCase().includes(keyword) || a.path.toLowerCase().includes(keyword));
+        }
+
+        // 作者页面（Pixiv 排序下的相册网格）排序栏 + 排序
+        this._syncAlbumSortBar();
+        if (this.currentView === 'albums') {
+            albums = this._sortAlbums(albums);
         }
 
         const titleEl = document.getElementById('iv-view-title');
@@ -341,6 +367,40 @@ class ImageViewer {
             container.appendChild(grid);
         }
         return grid;
+    }
+
+    // ===== 作者页面排序（Pixiv 排序下的相册网格） =====
+
+    _albumPageIsPixiv() {
+        // 当前网格页面对应的文件夹（children → 父目录；albums → 根）是否生效 Pixiv 排序
+        const parentPath = this.mode === 'children' ? this.childParentPath : '';
+        const album = this.albums.find(a => a.path === parentPath);
+        return !!(album && album.use_time_name);
+    }
+
+    _syncAlbumSortBar() {
+        const bar = document.getElementById('iv-album-sort');
+        if (!bar) return;
+        const show = this.currentView === 'albums' && this._albumPageIsPixiv();
+        bar.classList.toggle('hidden', !show);
+        if (!show) return;
+        document.getElementById('iv-album-sort-by').value = this.albumSortBy || 'name';
+        document.getElementById('iv-album-sort-order').textContent =
+            this.albumSortOrder === 'desc' ? '↓ 倒序' : '↑ 正序';
+    }
+
+    _sortAlbums(albums) {
+        const by = this.albumSortBy || 'name';
+        const dir = (this.albumSortOrder || 'asc') === 'desc' ? -1 : 1;
+        const list = [...albums];
+        if (by === 'mtime') {
+            list.sort((a, b) => (a.mtime - b.mtime) * dir);
+        } else if (by === 'count') {
+            list.sort((a, b) => (a.image_count - b.image_count) * dir);
+        } else {
+            list.sort((a, b) => a.name.localeCompare(b.name, 'zh', { numeric: true }) * dir);
+        }
+        return list;
     }
 
     async openAlbum(path) {

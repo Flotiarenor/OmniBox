@@ -78,6 +78,7 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         workA = next(a for a in albums if a['path'] == 'workA')
         self.assertEqual(workA['direct_count'], 4)
         self.assertEqual(workA['cover'], 'workA/111_p0.png')
+        self.assertFalse(workA['use_time_name'])  # 默认插件无 Pixiv 设置
         workB = next(a for a in albums if a['path'] == 'workB')
         self.assertEqual(workB['cover'], 'workB/222_p0.png')
 
