@@ -41,7 +41,9 @@ def get_project_root() -> Path:
     打包模式：PyInstaller 解包/收集目录（sys._MEIPASS）。
     """
     if is_frozen():
-        return Path(sys._MEIPASS).resolve()
+        meipass = getattr(sys, '_MEIPASS', None)
+        if meipass:
+            return Path(meipass).resolve()
     return Path(__file__).resolve().parent.parent.parent
 
 
