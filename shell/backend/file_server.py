@@ -18,6 +18,7 @@ import sys
 from flask import Flask, request, send_from_directory, send_file, abort
 from pathlib import Path
 from collections.abc import Iterable
+from shell.backend.plugin_manager import PluginManager
 
 def _get_shell_dir() -> Path:
     if getattr(sys, 'frozen', False):
@@ -35,7 +36,7 @@ def _is_safe_path(full_path: Path, root: Path) -> bool:
     except ValueError:
         return False
 
-def create_app(config: dict, plugin_manager) -> Flask:
+def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
     app = Flask(__name__)
     frontend_dist = _SHELL_DIR / 'frontend' / 'dist'
 
