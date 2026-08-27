@@ -39,12 +39,12 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
+import io
 
-try:
+if isinstance(sys.stdout, io.TextIOWrapper):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if isinstance(sys.stderr, io.TextIOWrapper):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
 
 try:
     from PIL import Image
