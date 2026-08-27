@@ -24,6 +24,9 @@ def start(p) -> Dict[str, Any]:
 def finish(p, code: str) -> Dict[str, Any]:
     """用授权码换取 token 并自动保存 refresh_token（第二步）。"""
     try:
+        with p._lock:
+            if p._thread and p._thread.is_alive():
+                return {"ok": False, "error": "已有任务在运行，请等待任务结束后再获取 Token"}
         if not getattr(p, "_oauth_verifier", None):
             return {"ok": False, "error": "请先点击「获取 Token」打开登录页"}
         code = (code or "").strip()

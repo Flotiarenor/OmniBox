@@ -45,7 +45,7 @@ plugins/
     │       ├── store.py         # downloaded_ids.json / failed_ids.json 读写 + 已有图片扫描
     │       ├── db.py            # 待下载清单 SQLite（works.db：works/tags/work_tags/meta）
     │       ├── artist.py        # 画师目录解析：名字命名 / id→名字缓存 / 改名迁移
-    │       ├── scan.py          # 刷新清单：关注（画师级断点 done_uids）/ 收藏（页级断点 offset）
+    │       ├── scan.py          # 刷新清单：关注（画师级断点 done_uids）/ 收藏（断点 next_qs=max_bookmark_id）
     │       ├── download.py      # 按清单并行下载 + 404 永久跳过 + 固定下载行为
     │       ├── oauth.py         # 内置 OAuth PKCE 向导
     │       ├── pixiv_purge_non_original.py   # 伴侣工具：清理 1200px 非原图（交互/参数两模式）
@@ -81,7 +81,9 @@ plugins/
 ### 画师目录规则
 
 - 文件夹使用**画师当前名字**（sanitize 后），不加 id 前缀，保证可读性。
-- 画师 id → 名字 记入本地缓存 `artists.json`；同名画师以 id 区分（缓存 key）。
+- 画师 id → 名字 记入本地缓存 `artists.json`（缓存 key 按 id 区分）。两个不同 id 但
+  sanitize 后同名的**新画师**会消歧为 `名字 (uid)`；历史版本已经共用的同名目录保持不动，
+  避免迁移时误搬另一位画师的文件。
 - 画师改名后：新作品进入新名字目录，同时自动把**旧名字目录迁移合并**到新名字目录（不覆盖同名文件），避免历史作品“分家”。
 
 ## 3. 设置项（settings_schema）
@@ -121,9 +123,9 @@ plugins/
 | `sync_following` | - | `{ok, data\|error}` | 启动「同步画师」任务（按清单下载，含 404 永久跳过） |
 | `sync_bookmarks` | - | `{ok, data\|error}` | 启动「同步喜欢」任务（按清单下载，与画师共用去重） |
 | `refresh_following_lists` | - | `{ok, data\|error}` | **刷新关注画师作品名单**：完整扫描 + 画师级断点（`scan.done_uids`），分批推进，清单存全部作品（含 done 标记），旧→新排序 |
-| `refresh_bookmarks_lists` | - | `{ok, data\|error}` | **刷新喜欢画作名单**：完整扫描 + 页级断点（`scan.offset`），分批推进，去重累积 |
-| `refresh_downloaded` | - | `{ok, total, zero_removed}` | **刷新已下载记录**：扫描本地重建 ids（手动删的移除、手动加的导入、0 字节清理） |
-| `verify_downloaded` | - | `{ok, stale_removed, zero_removed, total}` | **校验已下载内容**：移除记录中本地无有效文件的失效 id（下次同步重下），不导入新增 |
+| `refresh_bookmarks_lists` | - | `{ok, data\|error}` | **刷新喜欢画作名单**：完整扫描 + 收藏断点（`scan.next_qs`，实际参数为 `max_bookmark_id`），分批推进，去重累积 |
+| `refresh_downloaded` | - | `{ok, total, zero_removed, stale_removed, failed_cleared}` | **刷新已下载记录**：扫描本地重建 ids（手动删的移除、手动加的导入、0 字节清理），重置消失作品的 done 快照，并清除本地已有文件对应的失败跳过记录 |
+| `verify_downloaded` | - | `{ok, stale_removed, zero_removed, failed_cleared, total}` | **校验已下载内容**：移除记录中本地无有效文件的失效 id 并重置清单 done 快照（下次同步重下），不导入新增 |
 | `retry_failed` | - | `{ok, cleared, kind}` | **一键重试失败作品**：清除 failed_ids.json（404 永久跳过记录）并立即按最近任务来源重新同步一次 |
 | `cancel_task` | - | `{ok}` | 请求取消当前任务（下个检查点生效） |
 | `open_config` | - | `{ok, file}` | 打开画师名单配置文件所在文件夹（不存在则创建带说明的空文件） |
@@ -157,9 +159,9 @@ plugins/
    - 并行（`scan_workers` 路滑动窗口）逐画师 `user_illusts` 翻页拉取**全部作品**（不用 `illust_follow` 新作流——那只会返回近期作品，历史作品会漏）；
    - 画师级断点 `scan.done_uids`：本轮未扫完的画师下次继续；本轮全部扫完则下次从头重扫（捞新作）；
    - 清单写入 SQLite `works.db`（含 done 标记与扫描断点），旧→新排序。
-3. **刷新喜欢（生成清单）**：翻页拉取当前用户公开收藏（全量），按页级断点 `scan.offset` 分批累加。
-4. **同步**：从清单取 `done=false` 且不在去重集合/失败跳过集合的作品，`workers` 并发下载。
-   下载成功 → 作品 id 入去重集合，清单标记 done；**404/已删除作品 id 入 failed_ids.json 永久跳过**（不再每次重试），其他失败下次继续重试。
+3. **刷新喜欢（生成清单）**：翻页拉取当前用户公开收藏（全量），断点保存完整翻页参数 `scan.next_qs`（Pixiv 该接口使用 `max_bookmark_id`）分批累加。
+4. **同步**：从清单取「作品 id 不在去重集合且不在失败跳过集合」的作品，`workers` 并发下载。
+   全部页下载成功 → 作品 id 入去重集合，清单标记 done；**失败页全部是 404/作品已删除 → 作品 id 入 failed_ids.json 永久跳过**（避免每次重试同一已删除页）；存在非 404 单页失败时下次继续重试（不会把作品整体标记为已下载）。
 5. 任务状态每处理一个作品写入 `tasks.json`；去重集合在任务结束时落盘（也支持中途崩溃后按已下载文件跳过）。
 
 ### 5.1.1 限流保护（pixiv 429 Rate Limit）
@@ -175,9 +177,10 @@ pixiv app-api 有滑动窗口限流（约 30 req/10s，超出后 429；大量请
 - **清晰度**：**固定默认下载画师原图 `original`**（完整分辨率，`meta_single_page.original_image_url` / `meta_pages[].image_urls.original`，实测可达 4000+px）；取不到时回退 1200px `large`（master1200）。无前端开关；如需全局改 1200px，改 `download.py` 中 `all_image_urls` 的 `want_original = True`。
 - 文件名：扩展名从 URL 真实提取（原图可能为 `.png`），单图 `{illust_id}{ext}`，多图 `{illust_id}_p{页码}{ext}`（pixiv 原生命名规则）。
 - **存放位置**：**固定**将多图作品放入 `{作品id}/` 子文件夹（与 pixiv 命名一致，浏览直观），单图直接平铺；无前端开关（如需全部平铺，改 `download.py` 中 `process_illust` 的 `subfolder` 判定）。
-- 单页失败计入 `failed` 且不入去重集合（下次重试）；**404/已删除作品 id 进 `failed_ids.json` 永久跳过**，可点「重试失败作品」一键清除后重下。
+- 存在非 404 单页失败时不会把作品写入去重集合（下次同步重试）；**失败页全部是 404 时把作品 id 进 `failed_ids.json` 永久跳过**，可点「重试失败作品」一键清除后重下。
+- 已存在的 0 字节文件会在下载前删除并重新下载，不会误判为“已下载”。
 - 文件已存在（`download()` 返回 False）也视为已下载并入去重集合（幂等）。
-- **旧图导入**：每次同步开始前自动扫描 `<root>/pixiv/` 下已有图片，按命名规则（`{id}.jpg` / `{id}_p0.jpg` / 子文件夹 `{id}/`）提取作品 id 并入去重集合——**用户手动放入的旧图会被识别，全量更新直接跳过，不会重复下载/检查**；文件名不符合规则的图片无法自动识别（可手动改名或删文件重下）。
+- **旧图导入**：每次同步开始前自动扫描 `<root>/pixiv/` 下已有图片，按命名规则（`{id}.jpg` / `{id}_p0.jpg` / `{id}p0.png` / 子文件夹 `{id}/`）提取作品 id 并入去重集合——**用户手动放入的旧图会被识别，全量更新直接跳过，不会重复下载/检查**；文件名不符合规则的图片无法自动识别（可手动改名或删文件重下）。
 - 注意：已下载的旧图（历史 1200px 版）不会自动升级，需删除对应文件、并从 `downloaded_ids.json` 移出 id（可用伴侣工具 `pixiv_purge_non_original.py` 或 `pixiv_unmark_recent.py` 处理），之后同步会按固定默认行为重下原图。
 
 ### 5.3 依赖
@@ -202,9 +205,10 @@ pixiv app-api 有滑动窗口限流（约 30 req/10s，超出后 429；大量请
 
 - 用于历史上「下载原图」被误关闭时期留下的大量 1200px 大图。
 - 判断规则（按 Pixiv 缩放规则）：
-  - 图片长边 `>=1200px` → 顶到 master1200 上限，必然是被缩放的大图，原图更大 → 判定需重下；
-  - 图片长边 `<1200px` → 原图本来就小于 1200，重下结果相同 → 不处理。
-- 操作：删除目标作品的 `>=1200px` 文件，并从 `downloaded_ids.json` / `failed_ids.json` 移除 id，且把 `works.db` 中这些作品的 `done` 重置为 0。
+  - 作品任一页长边 `>1200px` → 已是原图（master1200 最大只能到 1200），保留；
+  - 作品最大边 `==1200px` → 这些 1200 页判定为历史缩放图，删除重下；小于 1200 的页保留；
+  - 作品全部页 `<1200px` → 原图本来就小于 1200，重下结果相同 → 不处理。
+- 操作：删除目标作品的 `==1200px` 文件，并从 `downloaded_ids.json` / `failed_ids.json` 移除 id，且把 `works.db` 中这些作品的 `done` 重置为 0。
 - 支持 `--hours N` 时间窗口（只扫描最近 N 小时内的文件，窗口外只读一次 mtime 即跳过，扫描快）；`--dry-run` 预览；`--yes` 直接执行。
 - 交互模式：不带参数运行，按提示输入根目录、时间范围并确认。
 

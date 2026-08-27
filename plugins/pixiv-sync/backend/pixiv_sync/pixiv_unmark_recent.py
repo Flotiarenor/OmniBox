@@ -8,9 +8,9 @@
 为什么需要它：pixiv-sync 用两套独立数据——
   1. downloaded_ids.json（去重记录：作品 id 集合，两同步共用）；
   2. works.db（扫描/待下载清单：每件作品有 done 标记）。
-同步下载时过滤条件是「not done 且 id 不在去重集合」。
-如果只删了本地文件而不清这两套记录，再次点「同步」仍会把它们跳过、
-不会重下。本脚本负责把目标作品在这两套记录里改回「未下载」。
+同步下载时以 downloaded_ids.json / failed_ids.json 为准；works.db 的 done
+只作为统计快照。如果只删了本地文件而不清这两套记录，再次点「同步」仍会把
+它们跳过、不会重下。本脚本负责把目标作品在这些记录里改回「未下载」。
 
 两种目标判定方式：
   A. 时间窗口模式（--hours N / 交互填 N）：
@@ -38,6 +38,7 @@ import os
 import re
 import sqlite3
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Set
@@ -48,8 +49,8 @@ try:
 except Exception:
     pass
 
-# 图片文件名 → 作品 id：123456.jpg / 123456_p0.jpg / 123456_p0.png
-ID_NAME_RE = re.compile(r"^(\d+)(?:_p\d+)?\.(?:jpe?g|png|gif|webp)$", re.IGNORECASE)
+# 图片文件名 → 作品 id：123456.jpg / 123456_p0.jpg / 123456p0.png
+ID_NAME_RE = re.compile(r"^(\d+)(?:_?p\d+)?\.(?:jpe?g|png|gif|webp)$", re.IGNORECASE)
 
 CACHE_SUBDIR = Path(".cache") / "pixiv-sync"
 
@@ -94,6 +95,7 @@ def collect_missing_ids(db_path: Path, pixiv_root: Path) -> Set[int]:
         return set()
     try:
         conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA busy_timeout=5000")
         try:
             done_ids = {int(r[0]) for r in conn.execute("SELECT DISTINCT id FROM works WHERE done=1")}
         finally:
@@ -115,6 +117,26 @@ def collect_missing_ids(db_path: Path, pixiv_root: Path) -> Set[int]:
     return done_ids - present
 
 
+def _atomic_write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 # ---------- 记录修改（不动文件） ----------
 
 def strip_ids(path: Path, ids: Set[int]) -> int:
@@ -130,13 +152,18 @@ def strip_ids(path: Path, ids: Set[int]) -> int:
     if not isinstance(data, dict):
         return 0
     cur = data.get("ids") or []
-    keep = [x for x in cur if int(x) not in ids]
+    keep = []
+    for x in cur:
+        try:
+            if int(x) not in ids:
+                keep.append(x)
+        except (TypeError, ValueError):
+            keep.append(x)  # 保留无法解析的历史脏数据，避免误删用户记录
     removed = len(cur) - len(keep)
     if removed:
         data["ids"] = keep
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            _atomic_write_json(path, data)
         except OSError as e:
             print(f"  ! 写入 {path.name} 失败: {e}")
             return 0
@@ -149,6 +176,7 @@ def reset_done(db_path: Path, ids: Set[int]) -> int:
         return 0
     try:
         conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA busy_timeout=5000")
         try:
             placeholders = ",".join("?" * len(ids))
             cur = conn.execute(
@@ -235,8 +263,8 @@ def main() -> int:
 
     print("=" * 60)
     print("Pixiv 下载记录重置工具（只改记录，不删文件）")
-    print("同步下载的过滤条件是「not done 且 id 不在去重集合」；")
-    print("本工具把目标作品的 done 改回 0，并从 downloaded_ids.json / failed_ids.json 移出 id。")
+    print("同步下载以 downloaded_ids.json / failed_ids.json 为准；works.db done 是统计快照。")
+    print("本工具把目标作品从去重/失败记录移出，并把 done 改回 0。")
     print("=" * 60)
 
     root = resolve_root(args.root)

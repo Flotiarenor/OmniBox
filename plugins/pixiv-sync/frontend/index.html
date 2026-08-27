@@ -306,13 +306,21 @@
           $('set-token').value = s.refresh_token || '';
           $('set-proxy').value = s.proxy || '';
           $('set-dir').value = s.download_dir || '';
-          
-          $('set-workers').value = s.workers || 4;
+
+          $('set-workers').value = s.workers != null ? s.workers : 4;
           $('set-maxdl').value = s.max_download != null ? s.max_download : 100;
           $('set-maxrefresh').value = s.max_refresh != null ? s.max_refresh : 500;
-          $('set-ratelimit').value = s.rate_limit || 3;
-          $('set-scanworkers').value = s.scan_workers || 4;
+          $('set-ratelimit').value = s.rate_limit != null ? s.rate_limit : 3;
+          $('set-scanworkers').value = s.scan_workers != null ? s.scan_workers : 4;
         } catch (e) { /* 忽略 */ }
+      }
+
+      function intSetting(id, fallback, min, max) {
+        const raw = $(id).value.trim();
+        if (raw === '') return fallback;
+        const n = parseInt(raw, 10);
+        if (!Number.isFinite(n)) return fallback;
+        return Math.max(min, Math.min(max, n));
       }
 
       async function saveSettings() {
@@ -320,11 +328,11 @@
           refresh_token: $('set-token').value.trim(),
           proxy: $('set-proxy').value.trim(),
           download_dir: $('set-dir').value.trim(),
-          workers: Math.max(1, Math.min(8, parseInt($('set-workers').value, 10) || 4)),
-          max_download: Math.max(0, parseInt($('set-maxdl').value, 10) || 0),
-          max_refresh: Math.max(0, parseInt($('set-maxrefresh').value, 10) || 0),
-          rate_limit: Math.max(1, Math.min(10, parseInt($('set-ratelimit').value, 10) || 3)),
-          scan_workers: Math.max(1, Math.min(8, parseInt($('set-scanworkers').value, 10) || 4)),
+          workers: intSetting('set-workers', 4, 1, 8),
+          max_download: intSetting('set-maxdl', 100, 0, 10000),
+          max_refresh: intSetting('set-maxrefresh', 500, 0, 10000),
+          rate_limit: intSetting('set-ratelimit', 3, 1, 10),
+          scan_workers: intSetting('set-scanworkers', 4, 1, 8),
         };
         try {
           const r = await Bridge.call('save_settings', values);
@@ -391,7 +399,10 @@
           try {
             const r = await Bridge.call('refresh_downloaded');
             if (r && r.ok === false) { alert(r.error); return; }
-            alert('已刷新记录：本地 ' + r.total + ' 个作品' + (r.zero_removed ? '，清理 0 字节 ' + r.zero_removed + ' 个' : ''));
+            alert('已刷新记录：本地 ' + r.total + ' 个作品'
+              + (r.zero_removed ? '，清理 0 字节 ' + r.zero_removed + ' 个' : '')
+              + (r.stale_removed ? '，移除失效记录 ' + r.stale_removed + ' 条' : '')
+              + (r.failed_cleared ? '，清除失败跳过 ' + r.failed_cleared + ' 条' : ''));
             await refreshStatus();
           } catch (e) { alert('刷新失败: ' + e.message); }
         });
@@ -399,7 +410,10 @@
           try {
             const r = await Bridge.call('verify_downloaded');
             if (r && r.ok === false) { alert(r.error); return; }
-            alert('校验完成：移除失效记录 ' + r.stale_removed + ' 条' + (r.zero_removed ? '，清理 0 字节 ' + r.zero_removed + ' 个' : '') + '，当前记录 ' + r.total + ' 条');
+            alert('校验完成：移除失效记录 ' + r.stale_removed + ' 条'
+              + (r.zero_removed ? '，清理 0 字节 ' + r.zero_removed + ' 个' : '')
+              + (r.failed_cleared ? '，清除失败跳过 ' + r.failed_cleared + ' 条' : '')
+              + '，当前记录 ' + r.total + ' 条');
             await refreshStatus();
           } catch (e) { alert('校验失败: ' + e.message); }
         });
