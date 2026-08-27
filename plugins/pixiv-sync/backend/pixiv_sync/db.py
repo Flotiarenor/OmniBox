@@ -42,6 +42,39 @@ def _work_to_item(row: tuple, tags: List[str]) -> Dict[str, Any]:
     }
 
 
+def _insert_work_row(conn: sqlite3.Connection, kind: str, item: Dict[str, Any]) -> int | None:
+    """在已开启的事务里插入/更新一个 works 行及其标签；返回作品 id。"""
+    try:
+        wid = int(item["id"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    conn.execute(
+        "INSERT OR REPLACE INTO works"
+        " (id, kind, type, title, page_count, create_date, user_id, user_name, urls, tags_json, done)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (wid, kind) + _item_to_work_value(item),
+    )
+    for tname in item.get("tags") or []:
+        tname = str(tname)
+        conn.execute("INSERT OR IGNORE INTO tags(name) VALUES (?)", (tname,))
+        row = conn.execute("SELECT id FROM tags WHERE name=?", (tname,)).fetchone()
+        if row:
+            conn.execute(
+                "INSERT OR IGNORE INTO work_tags(work_id, tag_id) VALUES (?,?)",
+                (wid, row[0]),
+            )
+    return wid
+
+
+def _save_scan(conn: sqlite3.Connection, kind: str, scan: Optional[dict]) -> None:
+    if scan is not None:
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)",
+            (f"scan_{kind}", json.dumps(scan, ensure_ascii=False)),
+        )
+
+
+
 class WorksDB:
     def __init__(self, path: Path, lock: Lock):
         self._path = path
@@ -56,6 +89,7 @@ class WorksDB:
                     self._path.parent.mkdir(parents=True, exist_ok=True)
                     conn = sqlite3.connect(str(self._path), check_same_thread=False)
                     conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("PRAGMA busy_timeout=5000")
                     conn.execute(
                         "CREATE TABLE IF NOT EXISTS tags ("
                         " id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL)"
@@ -79,6 +113,16 @@ class WorksDB:
                     self._conn = conn
         return self._conn
 
+    def close(self):
+        """切换下载目录/插件卸载时释放 SQLite 连接。"""
+        with self._lock:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
+
     # ---------- 清单读写 ----------
 
     def save_pending(self, kind: str, items: List[Dict[str, Any]], scan: Optional[dict] = None):
@@ -87,42 +131,54 @@ class WorksDB:
         with self._lock:
             try:
                 conn.execute("BEGIN")
+                # works 没有 FK CASCADE，先清掉 work_tags，避免同 id 作品留下旧标签。
+                conn.execute(
+                    "DELETE FROM work_tags WHERE work_id IN"
+                    " (SELECT id FROM works WHERE kind=?)",
+                    (kind,),
+                )
                 conn.execute("DELETE FROM works WHERE kind=?", (kind,))
                 for item in items:
-                    try:
-                        wid = int(item["id"])
-                    except (KeyError, TypeError, ValueError):
-                        continue
-                    conn.execute(
-                        "INSERT OR REPLACE INTO works"
-                        " (id, kind, type, title, page_count, create_date, user_id, user_name, urls, tags_json, done)"
-                        " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                        (wid, kind) + _item_to_work_value(item),
-                    )
-                    for tname in item.get("tags") or []:
-                        tname = str(tname)
-                        conn.execute("INSERT OR IGNORE INTO tags(name) VALUES (?)", (tname,))
-                        row = conn.execute("SELECT id FROM tags WHERE name=?", (tname,)).fetchone()
-                        if row:
-                            conn.execute(
-                                "INSERT OR IGNORE INTO work_tags(work_id, tag_id) VALUES (?,?)",
-                                (wid, row[0]),
-                            )
-                if scan is not None:
-                    conn.execute(
-                        "INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)",
-                        (f"scan_{kind}", json.dumps(scan, ensure_ascii=False)),
-                    )
+                    _insert_work_row(conn, kind, item)
+                _save_scan(conn, kind, scan)
                 conn.commit()
             except Exception as e:
                 conn.rollback()
                 print(f"[pixiv-sync] 保存清单失败: {e}")
+                raise
 
     def save_pending_preserve(self, kind: str, items: List[Dict[str, Any]], scan: Optional[dict] = None):
         """保存清单；scan 为空时保留现有断点（与扫描结束保存语义一致）。"""
         if scan is None:
             _, scan = self.load_pending(kind)
         self.save_pending(kind, items, scan)
+
+    def replace_artist(self, kind: str, uid: int, items: List[Dict[str, Any]], scan: dict):
+        """只替换清单中某个画师的作品行（关注刷新断点续扫用）。
+
+        相比 save_pending 的全量 DELETE + 重插，这里是增量事务，避免扫描很多
+        画师时每次都重写整张 works 表。
+        """
+        conn = self.conn()
+        with self._lock:
+            try:
+                conn.execute("BEGIN")
+                conn.execute(
+                    "DELETE FROM work_tags WHERE work_id IN"
+                    " (SELECT id FROM works WHERE kind=? AND user_id=?)",
+                    (kind, int(uid)),
+                )
+                conn.execute(
+                    "DELETE FROM works WHERE kind=? AND user_id=?", (kind, int(uid))
+                )
+                for item in items:
+                    _insert_work_row(conn, kind, item)
+                _save_scan(conn, kind, scan)
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                print(f"[pixiv-sync] 增量保存画师 {uid} 清单失败: {e}")
+                raise
 
     def load_pending(self, kind: str) -> Tuple[List[Dict[str, Any]], Optional[dict]]:
         """读取清单，返回 (items, scan)。出错时为空清单。"""
@@ -136,7 +192,11 @@ class WorksDB:
                 ).fetchall()
                 tag_map: Dict[int, List[str]] = {}
                 for wid, tname in conn.execute(
-                    "SELECT wt.work_id, t.name FROM work_tags wt JOIN tags t ON t.id=wt.tag_id"
+                    "SELECT wt.work_id, t.name"
+                    " FROM work_tags wt"
+                    " JOIN tags t ON t.id = wt.tag_id"
+                    " JOIN works w ON w.id = wt.work_id AND w.kind = ?",
+                    (kind,),
                 ).fetchall():
                     tag_map.setdefault(wid, []).append(tname)
                 items = [_work_to_item(r, tag_map.get(r[0])) for r in rows]
@@ -148,7 +208,8 @@ class WorksDB:
                     except Exception:
                         scan = None
             return items, scan
-        except Exception:
+        except Exception as e:
+            print(f"[pixiv-sync] 读取 {kind} 清单失败: {e}")
             return [], None
 
     def counts(self, kind: str, done: Optional[int] = None) -> int:
@@ -177,3 +238,26 @@ class WorksDB:
             except Exception as e:
                 conn.rollback()
                 print(f"[pixiv-sync] 更新清单 done 失败: {e}")
+
+    def reset_done_ids(self, ids) -> int:
+        """把指定作品在清单中的 done 标记重置为 0（用于「刷新记录/校验内容」）。
+
+        返回实际修改的行数。只清理清单标记，不修改下载去重集合。
+        """
+        ids = {int(i) for i in ids}
+        if not ids:
+            return 0
+        conn = self.conn()
+        with self._lock:
+            try:
+                placeholders = ",".join("?" * len(ids))
+                cur = conn.execute(
+                    f"UPDATE works SET done=0 WHERE id IN ({placeholders})",
+                    tuple(sorted(ids)),
+                )
+                conn.commit()
+                return cur.rowcount
+            except Exception as e:
+                conn.rollback()
+                print(f"[pixiv-sync] 重置清单 done 失败: {e}")
+                return 0

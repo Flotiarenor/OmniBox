@@ -31,8 +31,9 @@ import json
 import os
 import secrets
 import shutil
+import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import parse_qs as _split_qs
 from urllib.parse import urlencode, urlparse
@@ -83,14 +84,26 @@ class PixivClient:
         proxies: dict[str, str] | None = None,
         timeout: int = 30,
     ) -> None:
-        self.session = requests.Session()
-        if proxies:
-            self.session.proxies.update(proxies)
+        # requests.Session 不是线程安全的；插件会在扫描/下载线程池里并发调用
+        # 同一个 client，因此这里改为“每个线程一个 Session”，token 等字段仍共享。
+        self._proxies = dict(proxies or {})
+        self._local = threading.local()
+        self.session = self._get_session()
         self.timeout = timeout
         self.access_token: str | None = None
         self.refresh_token: str | None = None
         self.user_id: int | None = None
         self.hosts = _API_HOST
+
+    def _get_session(self) -> requests.Session:
+        """返回当前线程独占的 requests.Session（懒创建，代理配置一致）。"""
+        session = getattr(self._local, "session", None)
+        if session is None:
+            session = requests.Session()
+            if self._proxies:
+                session.proxies.update(self._proxies)
+            self._local.session = session
+        return session
 
     # ------------------------------------------------------------------
     # 内部请求（带重试：代理抖动 / TLS 握手中断等连接层错误自动重试）
@@ -100,7 +113,7 @@ class PixivClient:
         last_exc: Exception | None = None
         for attempt in range(1, retries + 1):
             try:
-                return self.session.request(method, url, **kwargs)
+                return self._get_session().request(method, url, **kwargs)
             except (
                 requests.exceptions.ConnectionError,
                 requests.exceptions.SSLError,
@@ -158,7 +171,9 @@ class PixivClient:
     # 认证：用 refresh_token 换取 access_token（密码登录已被 Pixiv 废弃）
     # ------------------------------------------------------------------
     def auth(self, refresh_token: str) -> JsonDict:
-        local_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        # 必须使用真实 UTC 时间（原实现用 naive 本地时间但硬编码 +00:00，
+        # 非 UTC 时区主机会出现 x-client-time 偏差，可能导致认证失败）。
+        local_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
         headers = {
             "x-client-time": local_time,
             "x-client-hash": hashlib.md5(
@@ -286,8 +301,14 @@ class PixivClient:
         """下载图片（i.pximg.net 需要 Referer 防盗链头）"""
         name = name or os.path.basename(url)
         file = os.path.join(path, name)
-        if os.path.exists(file) and not replace:
-            return False
+        if os.path.isfile(file) and not replace:
+            try:
+                if os.path.getsize(file) > 0:
+                    return False
+                # 0 字节文件是上次中断/崩溃留下的残片，不能视为已下载。
+                os.remove(file)
+            except OSError:
+                return False
         os.makedirs(path, exist_ok=True)
         headers = {"Referer": "https://app-api.pixiv.net/", "user-agent": _USER_AGENT}
         with self._request("GET", url, headers=headers, stream=True) as resp:
@@ -303,11 +324,14 @@ class PixivClient:
                 except OSError:
                     pass
                 raise PixivError(f"download 中断: {url}") from None
-        # 0 字节检查：空文件视为下载失败，删除后报错（下次重试）
-        if os.path.getsize(file) == 0:
-            try:
-                os.remove(file)
-            except OSError:
-                pass
-            raise PixivError(f"download 得到空文件: {url}")
+            # 0 字节/截断检查：服务端给出 Content-Length 时校验完整性，
+            # 避免把“非 0 但截断”的残片当成已下载。
+            size = os.path.getsize(file)
+            expected = resp.headers.get("Content-Length")
+            if size == 0 or (expected and expected.isdigit() and size != int(expected)):
+                try:
+                    os.remove(file)
+                except OSError:
+                    pass
+                raise PixivError(f"download 得到不完整文件（{size} bytes）: {url}")
         return True

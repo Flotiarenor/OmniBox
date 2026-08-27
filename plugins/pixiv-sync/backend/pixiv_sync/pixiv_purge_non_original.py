@@ -6,10 +6,10 @@
 按作品 id 去重，因此这些旧图不会被自动升级成原图。
 
 本脚本扫描本地相册，按 Pixiv 缩放规则判断：
-  - 图片 max(宽,高) >= 1200  → 顶到 1200 上限，必然是被缩放的大图，
-    原图一定更大 → 判定「需重下原图」；
-  - 图片 max(宽,高) < 1200   → 原图本来就小于 1200，重下结果相同 → 不处理。
-对需重下作品：删除其 >=1200px 的文件，并从 downloaded_ids.json（去重记录）
+  - 作品任一页 max(宽,高) > 1200 → 已经是原图（master1200 最大只能 1200），保留；
+  - 作品最大边 == 1200 → 这些 1200 页判定为历史缩放图，需重下原图；
+  - 图片 max(宽,高) < 1200 → 原图本来就小于 1200，重下结果相同 → 保留。
+对需重下作品：删除其长边正好 1200px 的文件，并从 downloaded_ids.json（去重记录）
 与 failed_ids.json（失败跳过记录）中移除该作品 id，同时把 works.db 清单中这些作品的
 done 重置为 0。之后直接点「同步画师 / 同步喜欢」（下载原图现为固定默认行为，
 无需任何勾选），这些作品会自动重新下载原图。如需回退成 1200px 大图，
@@ -35,6 +35,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -53,8 +54,8 @@ except ImportError:
 # master1200 长边上限；>= 此值视为被缩放的大图（需重下原图）
 THRESHOLD = 1200
 
-# 图片文件名 → 作品 id：123456.jpg / 123456_p0.jpg / 123456_p0.png
-ID_NAME_RE = re.compile(r"^(\d+)(?:_p\d+)?\.(?:jpe?g|png|gif|webp)$", re.IGNORECASE)
+# 图片文件名 → 作品 id：123456.jpg / 123456_p0.jpg / 123456p0.png
+ID_NAME_RE = re.compile(r"^(\d+)(?:_?p\d+)?\.(?:jpe?g|png|gif|webp)$", re.IGNORECASE)
 
 CACHE_SUBDIR = Path(".cache") / "pixiv-sync"
 
@@ -112,11 +113,14 @@ def scan_works(pixiv_root: Path, since: Optional[float] = None) -> Dict[int, dic
 
 
 def classify(works: Dict[int, dict]) -> Tuple[Dict[int, dict], Dict[int, dict]]:
-    """按页判断每个作品是否需要重下原图。
+    """判断每个作品是否需要重下原图。
 
-    返回 (upgrade, keep)：
-    - upgrade: {id: {"dir", "delete": [Path], "keep": [Path], "total": n, "max": dim}}
-    - keep:    {id: ...} 仅用于输出统计
+    Pixiv 的 master1200 缩略图长边**最多等于 1200**；原图可以大于 1200。
+    因此：
+    - 作品任一页长边 > 1200 → 说明已经是原图，全部保留；
+    - 作品最大边正好等于 1200 → 这些 1200 页判定为历史缩放图，删除重下；
+      小于 1200 的页保留（原图本来就这么大）。
+    - 无法读取尺寸的文件不删除。
     """
     upgrade: Dict[int, dict] = {}
     keep: Dict[int, dict] = {}
@@ -124,16 +128,27 @@ def classify(works: Dict[int, dict]) -> Tuple[Dict[int, dict], Dict[int, dict]]:
         del_files: List[Path] = []
         keep_files: List[Path] = []
         max_dim = 0
+        sized: List[Tuple[Path, int]] = []
         for p in info["pages"]:
             sz = image_size(p)
             if sz is None:
+                keep_files.append(p)  # 无法读取尺寸的图片不要冒险删除
                 continue
             dim = max(sz)
             max_dim = max(max_dim, dim)
-            if dim >= THRESHOLD:
-                del_files.append(p)
-            else:
-                keep_files.append(p)
+            sized.append((p, dim))
+
+        has_larger_than_threshold = any(dim > THRESHOLD for _, dim in sized)
+        if has_larger_than_threshold:
+            # 已经是原图（master1200 不可能超过 1200）。
+            keep_files.extend(p for p, _ in sized)
+        else:
+            for p, dim in sized:
+                if dim == THRESHOLD:
+                    del_files.append(p)
+                else:
+                    keep_files.append(p)
+
         entry = {
             "dir": info["dir"],
             "delete": del_files,
@@ -146,6 +161,26 @@ def classify(works: Dict[int, dict]) -> Tuple[Dict[int, dict], Dict[int, dict]]:
         else:
             keep[iid] = entry
     return upgrade, keep
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
 
 
 def strip_ids(path: Path, ids: Set[int]) -> int:
@@ -161,13 +196,18 @@ def strip_ids(path: Path, ids: Set[int]) -> int:
     if not isinstance(data, dict):
         return 0
     cur = data.get("ids") or []
-    keep = [x for x in cur if int(x) not in ids]
+    keep = []
+    for x in cur:
+        try:
+            if int(x) not in ids:
+                keep.append(x)
+        except (TypeError, ValueError):
+            keep.append(x)  # 保留无法解析的历史脏数据，避免误删用户记录
     removed = len(cur) - len(keep)
     if removed:
         data["ids"] = keep
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            _atomic_write_json(path, data)
         except OSError as e:
             print(f"  ! 写入 {path.name} 失败: {e}")
             return 0
@@ -188,6 +228,7 @@ def reset_done_in_db(cache_dir: Path, ids: Set[int]) -> int:
         import sqlite3
 
         conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA busy_timeout=5000")
         try:
             placeholders = ",".join("?" * len(ids))
             cur = conn.execute(
@@ -221,7 +262,7 @@ def resolve_root(root_arg: Optional[str]) -> Path:
         p = Path(root_arg).resolve()
         if not (p / "pixiv").exists():
             print(f"! 目录 {p} 下没有 pixiv/ 相册子目录（确认是否填对了下载根目录）？")
-            print(f"  仍将继续（找不到图片时会输出 0 条）。")
+            print("  仍将继续（找不到图片时会输出 0 条）。")
         return p
 
     # 自动探测
@@ -287,8 +328,9 @@ def main() -> int:
 
     print("=" * 60)
     print("Pixiv 非原图清理工具")
-    print("判断规则: 图片长边 >= %dpx = 被缩放的大图(1200px)，原图更大 → 重下" % THRESHOLD)
-    print("          图片长边 <  %dpx = 原图本来就小，重下结果相同 → 不处理" % THRESHOLD)
+    print("判断规则: 作品任一页长边 > %dpx = 已是原图，保留" % THRESHOLD)
+    print("          作品最大边 == %dpx = 历史 1200px 缩放图，重下" % THRESHOLD)
+    print("          图片长边 <  %dpx = 原图本来就小，保留" % THRESHOLD)
     print("=" * 60)
 
     root = resolve_root(args.root)
@@ -313,6 +355,12 @@ def main() -> int:
     if since:
         print("  （时间窗口外的文件只读一次 mtime 即跳过，不打开图片，扫描很快）")
 
+    if Image is None:
+        print("! 未检测到 Pillow，无法读取图片尺寸。请先安装：pip install pillow")
+        print("  未做任何修改。")
+        return 1
+
+
     works = scan_works(pixiv_root, since=since)
     if not works:
         print(f"! {pixiv_root} 下没有按规则命名的图片（{ID_NAME_RE.pattern}）")
@@ -330,7 +378,7 @@ def main() -> int:
             e = upgrade[iid]
             print("%-10d %-40s %6d %6d %5d" % (iid, str(e["dir"]), e["total"], len(e["delete"]), e["max"]))
         if keep:
-            print(f"（另有 {len(keep)} 个作品无需处理：所有页面均小于 {THRESHOLD}px，重下结果相同）")
+            print(f"（另有 {len(keep)} 个作品无需处理：已是原图，或所有页面均小于 {THRESHOLD}px）")
 
     total_del = sum(len(e["delete"]) for e in upgrade.values())
     print("-" * 60)
@@ -349,7 +397,7 @@ def main() -> int:
         ids_sample = "、".join(str(i) for i in sorted(upgrade)[:5])
         more = f" 等 {len(upgrade)} 个" if len(upgrade) > 5 else ""
         print(f"将删除: {ids_sample}{more}")
-        print(f"同时从去重记录 downloaded_ids.json 与失败跳过 failed_ids.json 移除这些作品 id")
+        print("同时从去重记录 downloaded_ids.json 与失败跳过 failed_ids.json 移除这些作品 id")
         print("提示: 删除不可恢复，请确认。")
         ans = input("确认执行删除与记录清除？[y/N]: ").strip().lower()
         if ans not in ("y", "yes"):
@@ -375,7 +423,7 @@ def main() -> int:
     done_reset = reset_done_in_db(cache, removed_ids)
 
     print("")
-    print(f"执行完成:")
+    print("执行完成:")
     print(f"  删除大图文件: {deleted_files} 个")
     print(f"  去重记录移除: {ids_removed} 条")
     print(f"  失败跳过移除: {failed_removed} 条")

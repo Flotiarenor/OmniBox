@@ -30,7 +30,9 @@ class RateLimiter:
             now = time.time()
             base = 1.0 / self._rate
             interval = base * (1 + random.uniform(-0.2, 0.4))
-            wait = max(0.0, self._last + interval - now)
-            if wait:
-                time.sleep(wait)
-            self._last = time.time()
+            # 先预约下一个可用时隙，再在锁外 sleep；这样 set_rate() 不会被
+            # 正在 sleep 的请求阻塞，多个调用方也不会同时拿到同一个时隙。
+            self._last = max(self._last, now) + interval
+            wait = max(0.0, self._last - interval - now)
+        if wait:
+            time.sleep(wait)
