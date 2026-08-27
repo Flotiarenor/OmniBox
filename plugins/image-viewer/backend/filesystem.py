@@ -5,7 +5,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from shell.backend.media_catalog import (
     is_safe_path,  # noqa: F401
@@ -17,7 +17,7 @@ ALLOWED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'}
 _NUM_RE = re.compile(r'(\d+)')
 
 
-def natural_sort_key(text) -> list:
+def natural_sort_key(text: Any) -> Any:
     """自然排序键：p0 < p1 < p2 < ... < p10。优先使用 venv 的 natsort，缺失时回退内置实现。"""
     try:
         from natsort import natsort_keygen
@@ -27,7 +27,7 @@ def natural_sort_key(text) -> list:
                 for part in _NUM_RE.split(str(text))]
 
 
-def pixiv_number(name) -> int:
+def pixiv_number(name: Any) -> int | None:
     """提取名称前导数字（Pixiv 作品 ID / 图片编号）；无前导数字返回 None。"""
     m = _NUM_RE.match(str(name))
     return int(m.group(1)) if m else None
