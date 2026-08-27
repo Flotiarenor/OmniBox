@@ -82,6 +82,7 @@ def create_app(config, plugin_manager):
             abort(404)
         # 确定允许访问的根目录（支持插件跨多个媒体目录）
         if plugin_name and plugin_name in plugin_manager._instances:
+            assert instance is not None  # 上面已确认 plugin_name 有对应实例
             getter = getattr(instance, 'get_file_roots', None)
             if callable(getter):
                 result = getter()
@@ -147,7 +148,8 @@ def create_app(config, plugin_manager):
             print(f"[File_Server-Thumbs] 找不到插件 {plugin_name} 的实例")
             abort(404)
         if plugin_name and plugin_name in plugin_manager._instances:
-            thumb_dir = getattr(instance, 'thumb_dir', None) if instance is not None else None
+            assert instance is not None  # 上面已确认 plugin_name 有对应实例
+            thumb_dir = getattr(instance, 'thumb_dir', None)
             if thumb_dir is None:
                 thumb_dir = instance.get_data_root() / '.cache' / 'thumbs'
         else:
