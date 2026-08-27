@@ -797,22 +797,16 @@ class ImageViewerPlugin(PluginBase):
         result['pixiv_explicit'] = (own_entry.get('sort_by') == 'time_name')
         return result
 
-    def save_settings(self, rel_path='', settings=None) -> Dict:
-        """兼容两种调用。全局设置走 super()；per-folder 设置只写入 folders，避免污染全局。"""
-        if settings is None:
-            settings = rel_path or {}
-            rel_path = ''
-        result = {"success": True}
-        key = rel_path or '__global__'
-        if not rel_path:
-            # 标准字段走 SettingsStore，触发 on_settings_changed
-            result = super().save_settings(settings)
-        folders = self.setting('folders') or {}
-        if not isinstance(folders, dict):
-            folders = {}
-        folders[key] = settings
-        self.update_setting('folders', folders)
-        return result
+    def save_settings(self, settings: Dict, rel_path: str = '') -> Dict:
+        """保存设置。rel_path 为空时保存全局设置，否则保存到指定文件夹。"""
+        if rel_path:
+            folders = self.setting('folders') or {}
+            if not isinstance(folders, dict):
+                folders = {}
+            folders[rel_path] = settings
+            self.update_setting('folders', folders)
+            return {"success": True}
+        return super().save_settings(settings)
 
     def on_settings_changed(self, changed_keys):
         if 'root_dir' in changed_keys:
