@@ -129,7 +129,7 @@ class PluginBase(ABC):
         """
         pass
 
-    def setting(self, key, default=None):
+    def setting(self, key: str, default: Any = None) -> Any:
         """读取单个设置项。SettingsStore（运行时）→ _resolved_config（启动时预设）→ schema.default → 传入 default"""
         if self._settings_store:
             stored = self._settings_store.get(self.name)

@@ -133,7 +133,7 @@ class PluginManager:
             if not m.get('hidden')
         ]
 
-    def get_plugin_extensions(self, host: str = None, placement: str = None) -> List[dict]:
+    def get_plugin_extensions(self, host: str|None = None, placement: str|None = None) -> List[dict]:
         """聚合所有插件注册的扩展入口，可按宿主和位置过滤。
 
         扩展数据结构由各插件的 get_extensions() 返回，Shell 会自动补上 plugin 字段。
