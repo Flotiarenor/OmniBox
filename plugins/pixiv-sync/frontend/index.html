@@ -84,6 +84,7 @@
         <span title="刷新关注名单后的作品总数 / 其中待下载 / 已同步的关注画师作品数">关注: 共 <b id="st-ft">0</b> · 待下 <b id="st-pf">0</b> · 已下 <b id="st-fd">0</b></span>
         <span title="刷新喜欢名单后的作品总数 / 其中待下载 / 已同步的喜欢作品数">喜欢: 共 <b id="st-bt">0</b> · 待下 <b id="st-pb">0</b> · 已下 <b id="st-bd">0</b></span>
         <span title="既不在关注名单也不在喜欢名单的已下载作品（旧图导入/手动放置等）">其他: <b id="st-od">0</b></span>
+        <span title="同步时返回 404/已删除、被永久跳过的作品数；可用「重试失败作品」按钮一键清除并重新同步">失败跳过: <b id="st-failed">0</b></span>
       </div>
 
       <!-- 操作按钮 -->
@@ -98,6 +99,7 @@
       <div class="psync-btns" style="padding-top:0;">
         <button id="btn-refresh-dl" class="btn btn-sm" title="扫描本地文件重建已下载记录（手动删过的移除、手动加的导入、0字节清理）">📋 刷新记录</button>
         <button id="btn-verify" class="btn btn-sm" title="校验已下载内容：移除记录中本地无有效文件的失效 id，下次同步重下">🔍 校验内容</button>
+        <button id="btn-retry-failed" class="btn btn-sm btn-danger" title="清除失败的404（永久跳过）记录，并自动重新同步一次重试这些作品">🗑 重试失败作品</button>
       </div>
 
       <!-- 进度条 -->
@@ -122,23 +124,14 @@
         <label>下载目录
           <input id="set-dir" type="text" placeholder="留空=写入 image-viewer 相册根目录">
         </label>
-        <label>Pixeval 目录（导入用，留空=不导入）
-          <input id="set-pixeval" type="text" placeholder="如 G:\图库\PIXEVAL">
-          <span style="font-size:11px;color:var(--color-text,#999);">把该目录图片按画师导入本地（文件名规范化，重复的以本地为准并删除副本）</span>
-          <div style="display:flex;gap:8px;">
-            <button id="btn-import-pixeval" class="btn btn-sm">📥 导入 Pixeval</button>
-          </div>
-        </label>
+        
         <div class="psync-options">
-          <h4>下载选项</h4>
-          <label style="flex-direction:row;align-items:center;gap:8px;">
-            <input id="set-original" type="checkbox" style="width:auto;">
-            <span>下载原图（完整分辨率，文件较大；关闭=1200px 大图）</span>
-          </label>
-          <label style="flex-direction:row;align-items:center;gap:8px;">
-            <input id="set-subfolder" type="checkbox" style="width:auto;">
-            <span>多图作品放入 {作品id}/ 子文件夹（单图直接平铺）</span>
-          </label>
+          <h4>下载行为（固定，无需配置）</h4>
+          <div class="psync-tip" style="margin:0;">
+            • 下载原图（original）：默认开启，未取到时回退 1200px 大图 — 固定行为
+            • 多图作品放入 {作品id}/ 子文件夹，单图直接平铺 — 固定行为
+            （如需调整，请直接修改插件 Python 代码的默认设定）
+          </div>
           <label>并发下载数
             <input id="set-workers" type="number" min="1" max="8" value="4">
             <span style="font-size:11px;color:var(--color-text,#999);">机械盘建议 1-2，SSD 可 4-8</span>
@@ -222,6 +215,7 @@
           $('st-pb').textContent = s.pending_bookmarks || 0;
           $('st-bd').textContent = s.bookmarks_done || 0;
           $('st-od').textContent = s.other_done || 0;
+          $('st-failed').textContent = s.failed_skipped || 0;
           $('st-selected').textContent = '画师名单: ' + (s.selected_artists ? s.selected_artists + ' 位' : '全部');
           $('st-selected').title = s.selected_file || '';
           renderTask(s.task, s.running);
@@ -261,7 +255,7 @@
         $('btn-bookmarks').disabled = running || task.state === 'running' || task.state === 'queued';
         $('btn-refresh-following').disabled = running || task.state === 'running' || task.state === 'queued';
         $('btn-refresh-bookmarks').disabled = running || task.state === 'running' || task.state === 'queued';
-        $('btn-import-pixeval').disabled = running || task.state === 'running' || task.state === 'queued';
+        $('btn-retry-failed').disabled = running || task.state === 'running' || task.state === 'queued';
         $('btn-cancel').style.display = (task.state === 'running' || task.state === 'queued') ? '' : 'none';
         $('btn-cancel').disabled = !running;
       }
@@ -312,9 +306,7 @@
           $('set-token').value = s.refresh_token || '';
           $('set-proxy').value = s.proxy || '';
           $('set-dir').value = s.download_dir || '';
-          $('set-pixeval').value = s.pixeval_dir || '';
-          $('set-original').checked = s.download_original !== false;
-          $('set-subfolder').checked = s.multi_page_subfolder !== false;
+          
           $('set-workers').value = s.workers || 4;
           $('set-maxdl').value = s.max_download != null ? s.max_download : 100;
           $('set-maxrefresh').value = s.max_refresh != null ? s.max_refresh : 500;
@@ -328,9 +320,6 @@
           refresh_token: $('set-token').value.trim(),
           proxy: $('set-proxy').value.trim(),
           download_dir: $('set-dir').value.trim(),
-          pixeval_dir: $('set-pixeval').value.trim(),
-          download_original: $('set-original').checked,
-          multi_page_subfolder: $('set-subfolder').checked,
           workers: Math.max(1, Math.min(8, parseInt($('set-workers').value, 10) || 4)),
           max_download: Math.max(0, parseInt($('set-maxdl').value, 10) || 0),
           max_refresh: Math.max(0, parseInt($('set-maxrefresh').value, 10) || 0),
@@ -414,15 +403,14 @@
             await refreshStatus();
           } catch (e) { alert('校验失败: ' + e.message); }
         });
-        $('btn-import-pixeval').addEventListener('click', async () => {
+        $('btn-retry-failed').addEventListener('click', async () => {
           try {
-            const r = await Bridge.call('import_pixeval');
+            const r = await Bridge.call('retry_failed');
             if (r && r.ok === false) { alert(r.error || '启动失败'); return; }
+            alert('已清除 ' + r.cleared + ' 条失败跳过记录，自动重新同步：' + (r.kind === 'bookmarks' ? '喜欢' : '画师'));
             polling = true;
             tick();
-          } catch (e) {
-            alert('启动失败: ' + e.message);
-          }
+          } catch (e) { alert('启动失败: ' + e.message); }
         });
         await loadSettings();
         await refreshStatus();

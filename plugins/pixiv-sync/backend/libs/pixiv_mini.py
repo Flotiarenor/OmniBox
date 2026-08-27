@@ -9,7 +9,7 @@ Pixiv 精简同步客户端 (pixiv-mini)
   4. 用户作品列表     (user_illusts)
   5. 用户收藏画作     (user_bookmarks_illust) —— 用户喜欢的画作(非关注来源)
   6. 图片下载         (download) + 翻页 (parse_qs)
-
+原地址:https://github.com/upbit/pixivpy
 已删除: pydantic 模型(models.py)、BypassSniApi(bapi.py)、小说/搜索/写操作等全部接口。
 所有接口直接返回原始 JSON dict，天然绕过 pixivpy v3.13.0 的 pydantic 校验 bug。
 
