@@ -179,12 +179,14 @@ def delete_thumb_cache(db_path: Path, rel_path: str):
 
 
 def clear_thumb_cache(db_path: Path):
-    """清空 SQLite 缩略图表，用于全量重建。"""
+    """清空 SQLite 缩略图表，用于全量重建；同时收缩数据库文件，避免删除后体积不变。"""
     try:
         conn = _connect_thumb_db(db_path)
         try:
             conn.execute('DELETE FROM thumbs')
             conn.commit()
+            # 让 thumbs.db 文件真正变小，而不是只删除行。
+            conn.execute('VACUUM')
         finally:
             conn.close()
     except Exception:
