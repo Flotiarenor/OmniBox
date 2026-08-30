@@ -72,6 +72,7 @@ class ImageViewerPlugin(PluginBase):
         self._album_config = self._load_album_config()
         self._album_cache = self._load_album_cache()
         self._rebuild_task = None
+        self._rebuild_stop = None
 
     def _load_meta(self) -> dict:
         if self.meta_file.exists():
@@ -112,6 +113,7 @@ class ImageViewerPlugin(PluginBase):
             'refresh': self.refresh,
             'rebuild_all': self.rebuild_all,
             'rebuild_status': self.rebuild_status,
+            'rebuild_cancel': self.rebuild_cancel,
             'get_settings': self.get_settings,
             'save_settings': self.save_folder_settings,
             'get_root_dir': self.get_root_dir,
@@ -818,19 +820,21 @@ class ImageViewerPlugin(PluginBase):
             pass
 
         images = self._collect_all_images()
+        self._rebuild_stop = threading.Event()
         self._rebuild_task = {
             'running': True,
             'done': False,
             'success': False,
+            'cancelled': False,
             'total': len(images),
             'processed': 0,
             'current': '',
             'errors': [],
         }
-        threading.Thread(target=self._rebuild_worker, args=(images,), daemon=True).start()
+        threading.Thread(target=self._rebuild_worker, args=(images, self._rebuild_stop), daemon=True).start()
         return {'started': True, 'running': True, 'total': len(images)}
 
-    def _rebuild_worker(self, images: List[str]):
+    def _rebuild_worker(self, images: List[str], stop_event: threading.Event):
         task = self._rebuild_task
 
         def progress(processed, total, current, errors):
@@ -846,11 +850,12 @@ class ImageViewerPlugin(PluginBase):
                 images,
                 self.thumb_db_path,
                 progress_callback=progress,
+                stop_event=stop_event,
             )
             task['processed'] = result['processed']
             task['error_count'] = len(result['errors'])
             task['errors'] = result['errors'][-200:]
-            task['success'] = True
+            task['success'] = not stop_event.is_set()
         except Exception as e:
             task['error_count'] = task.get('error_count', 0) + 1
             task['errors'] = (task.get('errors', []) + [f'重建异常: {e}'])[-200:]
@@ -859,6 +864,7 @@ class ImageViewerPlugin(PluginBase):
             task['running'] = False
             task['done'] = True
             task['current'] = ''
+            task['cancelled'] = bool(stop_event.is_set())
 
     def rebuild_status(self) -> Dict:
         """返回全量重建后台任务的进度。"""
@@ -868,6 +874,7 @@ class ImageViewerPlugin(PluginBase):
                 'running': False,
                 'done': False,
                 'success': False,
+                'cancelled': False,
                 'total': 0,
                 'processed': 0,
                 'current': '',
@@ -877,12 +884,20 @@ class ImageViewerPlugin(PluginBase):
             'running': bool(task.get('running')),
             'done': bool(task.get('done')),
             'success': bool(task.get('success')),
+            'cancelled': bool(task.get('cancelled', False)),
             'total': int(task.get('total', 0)),
             'processed': int(task.get('processed', 0)),
             'current': task.get('current', ''),
             'error_count': int(task.get('error_count', 0)),
             'errors': list(task.get('errors', [])),
         }
+
+    def rebuild_cancel(self) -> Dict:
+        """请求取消当前全量重建任务；已生成的缩略图会保留。"""
+        if self._rebuild_stop is not None:
+            self._rebuild_stop.set()
+            return {'success': True}
+        return {'success': False, 'error': '没有正在运行的重建任务'}
 
     def get_settings(self, rel_path: str = '') -> Dict:
         """获取文件夹生效设置（含全局回退与逐级继承）。

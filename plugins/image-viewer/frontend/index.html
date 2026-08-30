@@ -151,16 +151,20 @@
       </div>
     </div>
 
-    <div id="rebuild-modal" class="modal">
-      <div class="modal-box obx-anim-scale rebuild-box">
-          <div class="rebuild-spinner"></div>
-          <h3>正在全量重建</h3>
-          <p class="rebuild-tip">正在清空并重建缓存，请稍候…</p>
-          <div class="rebuild-progress"><div class="rebuild-progress-bar"></div></div>
-          <div id="rebuild-progress-text" class="rebuild-progress-text">0 / 0</div>
-          <div id="rebuild-errors" class="rebuild-errors"></div>
-        </div>
+    <div id="rebuild-progress" class="rebuild-progress-card hidden">
+      <div class="rebuild-progress-header">
+        <span>🧹 正在重建缩略图</span>
+        <button id="rebuild-progress-hide" class="rebuild-progress-hide" title="隐藏进度">—</button>
       </div>
+      <div class="rebuild-progress-body">
+        <div id="rebuild-progress-text" class="rebuild-progress-text">0 / 0</div>
+        <div class="rebuild-progress"><div id="rebuild-progress-bar" class="rebuild-progress-bar"></div></div>
+        <div id="rebuild-progress-current" class="rebuild-progress-current"></div>
+        <div id="rebuild-progress-speed" class="rebuild-progress-speed"></div>
+        <div id="rebuild-errors" class="rebuild-errors"></div>
+        <button id="rebuild-progress-cancel" class="btn btn-sm">取消</button>
+      </div>
+    </div>
   </div>
 
   <script src="js/justified-layout.js"></script>

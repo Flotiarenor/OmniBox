@@ -26,6 +26,7 @@ class ImageViewer {
         this.moveDestPath = '';
         this.slideshowTimer = null;
         this.scrollStack = [];             // 从列表进入详情后返回时恢复滚动位置
+        this._rebuildStartTime = null;
 
         this.lightbox = null;
         this.pagination = null;
@@ -139,6 +140,10 @@ class ImageViewer {
         document.getElementById('btn-refresh-thumbs').addEventListener('click', () => this.refreshSelectedThumbs());
         document.getElementById('btn-refresh').addEventListener('click', () => this.refreshView());
         document.getElementById('btn-rebuild').addEventListener('click', () => this.rebuildAll());
+        const rebuildHide = document.getElementById('rebuild-progress-hide');
+        if (rebuildHide) rebuildHide.addEventListener('click', () => this.hideRebuildProgress());
+        const rebuildCancel = document.getElementById('rebuild-progress-cancel');
+        if (rebuildCancel) rebuildCancel.addEventListener('click', () => this.cancelRebuild());
         document.getElementById('btn-slideshow').addEventListener('click', () => this.toggleSlideshow());
         document.getElementById('btn-settings').addEventListener('click', () => this.openSettingsModal());
         document.getElementById('settings-cancel').addEventListener('click', () => this.closeSettingsModal());
@@ -214,8 +219,6 @@ class ImageViewer {
 
         document.querySelectorAll('.modal').forEach(modal => {
             modal.addEventListener('click', (e) => {
-                // 全量重建进行中不允许点击遮罩关闭，避免用户误以为已取消
-                if (modal.id === 'rebuild-modal') return;
                 if (e.target === modal) modal.classList.remove('active');
             });
         });
@@ -1010,14 +1013,20 @@ class ImageViewer {
     }
 
     async rebuildAll() {
-        const ok = await confirmDialog('将清空旧缓存，并一次性生成全部缩略图。\n图片较多时可能需要较长时间，请保持页面开启。确定继续吗？', { danger: true });
+        const ok = await confirmDialog('将清空旧缓存，并一次性生成全部缩略图。\n图片较多时可能需要较长时间，可以继续操作界面。确定继续吗？', { danger: true });
         if (!ok) return;
-        const modal = document.getElementById('rebuild-modal');
-        if (modal) modal.classList.add('active');
-        this._updateRebuildProgress({ processed: 0, total: 0, current: '', errors: [] });
+        const card = document.getElementById('rebuild-progress');
+        if (card) card.classList.remove('hidden');
+        this._rebuildStartTime = Date.now();
+        this._updateRebuildProgress({ processed: 0, total: 0, current: '', errors: [], running: true });
         try {
             await Bridge.call('rebuild_all');
-            await this._waitRebuildDone();
+            const status = await this._waitRebuildDone();
+
+            if (status.cancelled) {
+                Toast.warning('全量重建已取消');
+                return;
+            }
 
             const result = await Bridge.call('list_albums');
             if (result && result.albums) this.albums = result.albums;
@@ -1033,7 +1042,8 @@ class ImageViewer {
         } catch (e) {
             Toast.error(`全量重建失败：${e.message || e}`);
         } finally {
-            if (modal) modal.classList.remove('active');
+            if (card) card.classList.add('hidden');
+            this._rebuildStartTime = null;
         }
     }
 
@@ -1043,6 +1053,9 @@ class ImageViewer {
             const status = await Bridge.call('rebuild_status');
             this._updateRebuildProgress(status);
             if (status.done) {
+                if (status.cancelled) {
+                    return status;
+                }
                 if (!status.success) {
                     const errors = status.errors || [];
                     throw new Error(errors.length ? `失败 ${errors.length} 个，示例：${errors.slice(0, 3).join('；')}` : '后台重建任务异常');
@@ -1059,7 +1072,7 @@ class ImageViewer {
         const text = document.getElementById('rebuild-progress-text');
         if (text) text.textContent = `${processed} / ${total}`;
 
-        const bar = document.querySelector('#rebuild-modal .rebuild-progress-bar');
+        const bar = document.getElementById('rebuild-progress-bar');
         if (bar) {
             if (total > 0) {
                 bar.style.width = `${Math.min(100, Math.round((processed / total) * 100))}%`;
@@ -1070,15 +1083,41 @@ class ImageViewer {
             }
         }
 
-        const tip = document.querySelector('#rebuild-modal .rebuild-tip');
-        if (tip) {
-            tip.textContent = status.current ? `正在处理：${status.current}` : '正在扫描并生成缩略图，请稍候…';
+        const currentEl = document.getElementById('rebuild-progress-current');
+        if (currentEl) {
+            currentEl.textContent = status.current ? `正在处理：${status.current}` : '正在扫描并生成缩略图，请稍候…';
+        }
+
+        const speedEl = document.getElementById('rebuild-progress-speed');
+        if (speedEl && this._rebuildStartTime) {
+            const elapsed = (Date.now() - this._rebuildStartTime) / 1000;
+            if (elapsed > 0 && processed > 0) {
+                const speed = processed / elapsed;
+                const remaining = total > processed ? (total - processed) / speed : 0;
+                speedEl.textContent = `${speed.toFixed(1)} 张/秒 · 剩余约 ${this._formatDuration(remaining)}`;
+            } else {
+                speedEl.textContent = '';
+            }
         }
 
         const errorsEl = document.getElementById('rebuild-errors');
         if (errorsEl) {
             const errors = status.errors || [];
             errorsEl.textContent = errors.length ? `失败 ${errors.length} 个，示例：${errors.slice(0, 3).join('；')}` : '';
+        }
+    }
+
+    hideRebuildProgress() {
+        const card = document.getElementById('rebuild-progress');
+        if (card) card.classList.add('hidden');
+    }
+
+    async cancelRebuild() {
+        try {
+            await Bridge.call('rebuild_cancel');
+            Toast.info('正在取消全量重建…');
+        } catch (e) {
+            Toast.error('取消失败');
         }
     }
 
@@ -1157,6 +1196,17 @@ class ImageViewer {
     }
 
     // ===== 工具 =====
+    _formatDuration(seconds) {
+        if (!isFinite(seconds) || seconds <= 0) return '--';
+        seconds = Math.round(seconds);
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = seconds % 60;
+        if (h > 0) return `${h} 小时 ${m} 分`;
+        if (m > 0) return `${m} 分 ${s} 秒`;
+        return `${s} 秒`;
+    }
+
     _monthKey(mtime) {
         const d = new Date((mtime || 0) * 1000);
         return `${d.getFullYear()} 年 ${d.getMonth() + 1} 月`;
