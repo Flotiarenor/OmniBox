@@ -10,6 +10,7 @@ from shell.backend.plugin_utils import load_sibling
 
 _fs = load_sibling(__file__, 'filesystem', 'image_viewer')
 ALLOWED_EXTENSIONS = _fs.ALLOWED_EXTENSIONS
+clear_thumb_cache = _fs.clear_thumb_cache
 delete_thumb_cache = _fs.delete_thumb_cache
 drop_image_meta = _fs.drop_image_meta
 ensure_thumbnail = _fs.ensure_thumbnail
@@ -106,6 +107,7 @@ class ImageViewerPlugin(PluginBase):
             'move_files': self.move_files,
             'regenerate_thumbs': self.regenerate_thumbs,
             'refresh': self.refresh,
+            'rebuild_all': self.rebuild_all,
             'get_settings': self.get_settings,
             'save_settings': self.save_folder_settings,
             'get_root_dir': self.get_root_dir,
@@ -765,6 +767,36 @@ class ImageViewerPlugin(PluginBase):
         except OSError:
             pass
         return {'success': True}
+
+    def rebuild_all(self) -> Dict:
+        """全量重建：清空缩略图缓存、图片尺寸元数据和相册索引，并重新扫描。
+
+        缩略图不会在这里一次性全部生成，而是浏览时按需写入 SQLite，
+        避免 13 万张图片场景下长时间阻塞。
+        """
+        self._list_cache.clear()
+        self._meta_cache = {}
+        try:
+            if self.meta_file.exists():
+                self.meta_file.unlink()
+        except OSError:
+            pass
+        clear_thumb_cache(self.thumb_db_path)
+        # 旧版散文件缩略图目录已不再使用，全量重建时一并清理。
+        try:
+            if self.thumb_dir.exists():
+                shutil.rmtree(self.thumb_dir)
+        except OSError:
+            pass
+        self.thumb_dir.mkdir(parents=True, exist_ok=True)
+        self._album_cache = {'version': 3, 'dirs': {}}
+        try:
+            if self.album_cache_file.exists():
+                self.album_cache_file.unlink()
+        except OSError:
+            pass
+        result = self.list_albums()
+        return {'success': True, 'albums': result.get('albums', []), 'config': result.get('config', {})}
 
     def get_settings(self, rel_path: str = '') -> Dict:
         """获取文件夹生效设置（含全局回退与逐级继承）。

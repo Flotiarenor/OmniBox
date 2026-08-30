@@ -178,6 +178,19 @@ def delete_thumb_cache(db_path: Path, rel_path: str):
         pass
 
 
+def clear_thumb_cache(db_path: Path):
+    """清空 SQLite 缩略图表，用于全量重建。"""
+    try:
+        conn = _connect_thumb_db(db_path)
+        try:
+            conn.execute('DELETE FROM thumbs')
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
 def ensure_thumbnail_bytes(root: Path, rel_path: str, thumb_db_path: Path) -> Optional[Tuple[bytes, str]]:
     """从 SQLite 取缩略图；未命中时生成并写回。"""
     src_path = root / rel_path

@@ -136,6 +136,7 @@ class ImageViewer {
         document.getElementById('btn-move-selected').addEventListener('click', () => this.openMoveModal());
         document.getElementById('btn-refresh-thumbs').addEventListener('click', () => this.refreshSelectedThumbs());
         document.getElementById('btn-refresh').addEventListener('click', () => this.refreshView());
+        document.getElementById('btn-rebuild').addEventListener('click', () => this.rebuildAll());
         document.getElementById('btn-slideshow').addEventListener('click', () => this.toggleSlideshow());
         document.getElementById('btn-settings').addEventListener('click', () => this.openSettingsModal());
         document.getElementById('settings-cancel').addEventListener('click', () => this.closeSettingsModal());
@@ -975,6 +976,26 @@ class ImageViewer {
             }
         } catch (e) {
             Toast.error('刷新失败');
+        }
+    }
+
+    async rebuildAll() {
+        const ok = await confirmDialog('将清空缩略图缓存、图片尺寸元数据和相册索引，并重新扫描目录。\n缩略图会在浏览时按需重新生成。确定继续吗？', { danger: true });
+        if (!ok) return;
+        try {
+            const result = await Bridge.call('rebuild_all');
+            if (result && result.albums) this.albums = result.albums;
+            if (result && result.config) this.albumConfig = result.config;
+            this.clearSelection();
+            this.filteredSeqIndexes = null;
+            if (this.mode === 'images') {
+                this.loadImages(this.currentPath, 1);
+            } else {
+                this.showAlbums();
+            }
+            Toast.success('全量重建完成，缩略图将按需生成');
+        } catch (e) {
+            Toast.error('全量重建失败');
         }
     }
 
