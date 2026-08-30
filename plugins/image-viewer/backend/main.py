@@ -636,7 +636,7 @@ class ImageViewerPlugin(PluginBase):
         """相册列表：目录 mtime 未变时直接复用持久化索引，避免每次重启全量扫描。"""
         dirs = self._list_album_dirs()
         albums, entries, changed = self._build_albums(dirs, self._album_cache.get('dirs', {}))
-        self._album_cache = {'version': 2, 'dirs': entries}
+        self._album_cache = {'version': 3, 'dirs': entries}
         if changed:
             self._save_album_cache()
         return {'albums': albums, 'config': self._album_config, 'changed': changed}
@@ -811,10 +811,14 @@ class ImageViewerPlugin(PluginBase):
             else:
                 settings = {}
         if rel_path:
+            # 文件夹级设置只保存视图/排序偏好；root_dir 是全局设置，不能写入某个文件夹，
+            # 否则会造成“看起来保存了但根目录没变”的困惑。
+            folder_settings = dict(settings or {})
+            folder_settings.pop('root_dir', None)
             folders = self.setting('folders') or {}
             if not isinstance(folders, dict):
                 folders = {}
-            folders[rel_path] = settings
+            folders[rel_path] = folder_settings
             self.update_setting('folders', folders)
             return {"success": True}
         return super().save_settings(settings)
