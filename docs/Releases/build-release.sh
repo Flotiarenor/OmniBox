@@ -96,6 +96,11 @@ bash "$PROJECT_ROOT/setup-venv.sh"
 PY="$VENV_DIR/bin/python"
 success "Python 环境就绪"
 
+# ── 2.5 同步 requirements.txt ─────────────────────────────────────
+info "同步 requirements.txt..."
+"$PY" -m pip freeze > "$PROJECT_ROOT/requirements.txt"
+success "requirements.txt 已更新"
+
 # ── 3. 准备 PyInstaller 依赖 ─────────────────────────────────────
 if ! command -v objdump >/dev/null 2>&1; then
     warn "未找到 objdump（binutils），PyInstaller 在 Linux 上需要它"

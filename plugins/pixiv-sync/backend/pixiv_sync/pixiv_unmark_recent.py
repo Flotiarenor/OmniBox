@@ -42,12 +42,12 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Set
+import io
 
-try:
+if isinstance(sys.stdout, io.TextIOWrapper):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if isinstance(sys.stderr, io.TextIOWrapper):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
 
 # 图片文件名 → 作品 id：123456.jpg / 123456_p0.jpg / 123456p0.png
 ID_NAME_RE = re.compile(r"^(\d+)(?:_?p\d+)?\.(?:jpe?g|png|gif|webp)$", re.IGNORECASE)
@@ -64,7 +64,7 @@ def _is_tty() -> bool:
 
 # ---------- 收集目标作品 id ----------
 
-def collect_ids_in_window(pixiv_root: Path, hours: int) -> Set[int]:
+def collect_ids_in_window(pixiv_root: Path, hours: int|None) -> Set[int]:
     """扫描 pixiv/ 下仍有文件的图片，取最近 hours 小时内有变动的作品 id。"""
     ids: Set[int] = set()
     if not pixiv_root.exists():

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 '''
 Copyright 2026 flotiarenor
 
@@ -16,7 +18,11 @@ limitations under the License.
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, Any, Callable, List
+from typing import TYPE_CHECKING, Any, Callable, Dict, List
+
+if TYPE_CHECKING:
+    from shell.backend.plugin_manager import PluginManager
+    from shell.backend.settings_store import SettingsStore
 
 # 设置项 schema 的字段类型：text / number / range / select / checkbox / textarea / folder
 # 每个设置项示例：
@@ -34,17 +40,17 @@ from typing import Dict, Any, Callable, List
 
 class PluginBase(ABC):
     # 子类覆盖：声明该插件的统一设置项
-    settings_schema: List[Dict] = []
+    settings_schema: List[Dict[str, Any]] = []
 
-    def __init__(self, manifest: dict, config: dict):
+    def __init__(self, manifest: dict, config: dict) -> None:
         self.manifest = manifest
         self.config = config
         self.name = manifest.get('name', 'unknown')
         # 由 PluginManager 注入
-        self._settings_store = None
-        self._plugin_manager = getattr(self.__class__, '_plugin_manager', None)
+        self._settings_store: SettingsStore | None = None
+        self._plugin_manager: PluginManager | None = getattr(self.__class__, '_plugin_manager', None)
         # PluginManager 在构造前预加载的已解决设置
-        self._resolved_config = getattr(self.__class__, '_resolved_config', {})
+        self._resolved_config: Dict[str, Any] = getattr(self.__class__, '_resolved_config', {})
 
     @abstractmethod
     def register_api(self) -> Dict[str, Callable]:
@@ -62,7 +68,7 @@ class PluginBase(ABC):
         """
         return [self.get_data_root()]
 
-    def get_dependency(self, name: str):
+    def get_dependency(self, name: str) -> PluginBase | None:
         """返回已加载依赖插件实例；未声明依赖或未加载时返回 None。"""
         dependencies = self.manifest.get('dependencies', []) or []
         if name not in dependencies:
@@ -76,15 +82,15 @@ class PluginBase(ABC):
         """宿主前端可渲染的动作。默认空。"""
         return []
 
-    def _default_settings(self) -> Dict:
-        return {item.get('key'): item.get('default') for item in self.settings_schema if item.get('key')}
+    def _default_settings(self) -> Dict[str, Any]:
+        return {str(item["key"]): item.get("default") for item in self.settings_schema if item.get("key")}
 
-    def get_settings(self) -> Dict:
+    def get_settings(self) -> Dict[str, Any]:
         """从统一设置存储读取设置（合并默认值）。子类可覆盖，但必须调用 super() 以保证 on_settings_changed 检测正确"""
         stored = self._settings_store.get(self.name) if self._settings_store else {}
         return {**self._default_settings(), **stored}
 
-    def save_settings(self, settings: Dict) -> Dict:
+    def save_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
         """校验、写入 SettingsStore、检测变更、调用 on_settings_changed。
         子类一般不需要覆盖此方法——覆盖 on_settings_changed() 即可响应设置变更。"""
         if not isinstance(settings, dict):
@@ -119,7 +125,7 @@ class PluginBase(ABC):
 
         return {"success": True}
 
-    def on_settings_changed(self, changed_keys: set):
+    def on_settings_changed(self, changed_keys: set) -> None:
         """设置变更时由 save_settings 自动调用。子类覆盖此方法以响应特定设置变更。
 
         示例:
@@ -129,7 +135,7 @@ class PluginBase(ABC):
         """
         pass
 
-    def setting(self, key, default=None):
+    def setting(self, key: str, default: Any = None) -> Any:
         """读取单个设置项。SettingsStore（运行时）→ _resolved_config（启动时预设）→ schema.default → 传入 default"""
         if self._settings_store:
             stored = self._settings_store.get(self.name)
@@ -142,7 +148,7 @@ class PluginBase(ABC):
                 return item.get('default')
         return default
 
-    def update_setting(self, key, value):
+    def update_setting(self, key: str, value: Any) -> bool:
         """更新单个设置项（保留其他设置不变），不校验 schema 以支持运行时状态持久化"""
         if self._settings_store:
             current = self._settings_store.get(self.name) or {}
@@ -154,11 +160,14 @@ class PluginBase(ABC):
                 return False
         return False
 
-    def clear_settings(self) -> Dict:
+    def clear_settings(self) -> Dict[str, Any]:
         """清空统一设置存储中的该插件设置"""
         if self._settings_store:
             self._settings_store.clear(self.name)
         return {"success": True}
 
-    def on_load(self): pass
-    def on_unload(self): pass
+    def on_load(self) -> None:
+        pass
+
+    def on_unload(self) -> None:
+        pass

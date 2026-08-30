@@ -13,6 +13,7 @@ class ImageViewer {
         this.currentImages = [];
         this.currentAllImages = [];      // 连续浏览序列：整个混合视图按瀑布流顺序展开的全部图片
         this.currentAllOffset = 0;       // 当前页首项在连续序列中的起始偏移（分页对齐用）
+        this.filteredSeqIndexes = null;  // 当前页搜索过滤后，瓦片在完整连续序列中的起始位置
         this.navStack = [];              // 混合瀑布流逐层点入时的返回栈
         this.currentSettings = {};
         this.currentRowHeight = 200;
@@ -24,6 +25,8 @@ class ImageViewer {
         this.selectedImages = new Set();
         this.moveDestPath = '';
         this.slideshowTimer = null;
+        this.scrollStack = [];             // 从列表进入详情后返回时恢复滚动位置
+        this._rebuildStartTime = null;
 
         this.lightbox = null;
         this.pagination = null;
@@ -60,7 +63,11 @@ class ImageViewer {
         this.loadExtensions();
 
         window.addEventListener('resize', () => {
-            if (this.mode === 'images' && this.currentItems.length) {
+            if (this.mode !== 'images' || !this.currentItems.length) return;
+            const keyword = document.getElementById('iv-search').value.trim();
+            if (keyword) {
+                this.filterCurrentImages(keyword);
+            } else {
                 this.renderJustifiedLayout(this.currentItems);
             }
         });
@@ -119,6 +126,7 @@ class ImageViewer {
                 this.mode = 'albums';
                 this.childParentPath = '';
                 this.fromChildren = false;
+                this.scrollStack = [];
                 document.querySelectorAll('.iv-nav-item[data-view]').forEach(b => b.classList.toggle('active', b === btn));
                 document.querySelectorAll('#iv-extensions .obx-extension').forEach(b => b.classList.remove('active'));
                 this.showAlbums();
@@ -131,6 +139,11 @@ class ImageViewer {
         document.getElementById('btn-move-selected').addEventListener('click', () => this.openMoveModal());
         document.getElementById('btn-refresh-thumbs').addEventListener('click', () => this.refreshSelectedThumbs());
         document.getElementById('btn-refresh').addEventListener('click', () => this.refreshView());
+        document.getElementById('btn-rebuild').addEventListener('click', () => this.rebuildAll());
+        const rebuildHide = document.getElementById('rebuild-progress-hide');
+        if (rebuildHide) rebuildHide.addEventListener('click', () => this.hideRebuildProgress());
+        const rebuildCancel = document.getElementById('rebuild-progress-cancel');
+        if (rebuildCancel) rebuildCancel.addEventListener('click', () => this.cancelRebuild());
         document.getElementById('btn-slideshow').addEventListener('click', () => this.toggleSlideshow());
         document.getElementById('btn-settings').addEventListener('click', () => this.openSettingsModal());
         document.getElementById('settings-cancel').addEventListener('click', () => this.closeSettingsModal());
@@ -145,12 +158,20 @@ class ImageViewer {
         const search = document.getElementById('iv-search');
         search.addEventListener('input', Utils.debounce(() => {
             document.getElementById('iv-search-clear').classList.toggle('hidden', !search.value.trim());
-            this.showAlbums();
+            if (this.mode === 'images') {
+                this.filterCurrentImages(search.value.trim());
+            } else {
+                this.showAlbums();
+            }
         }, 250));
         document.getElementById('iv-search-clear').addEventListener('click', () => {
             search.value = '';
             document.getElementById('iv-search-clear').classList.add('hidden');
-            this.showAlbums();
+            if (this.mode === 'images') {
+                this.filterCurrentImages('');
+            } else {
+                this.showAlbums();
+            }
             search.focus();
         });
 
@@ -170,6 +191,13 @@ class ImageViewer {
         document.getElementById('setting-row-height').addEventListener('input', (e) => {
             document.getElementById('setting-row-height-val').textContent = e.target.value;
         });
+
+        const applyToFolder = document.getElementById('setting-apply-to-folder');
+        if (applyToFolder) {
+            applyToFolder.addEventListener('change', () => {
+                document.getElementById('setting-root-dir').disabled = applyToFolder.checked;
+            });
+        }
 
         document.getElementById('image-grid').addEventListener('contextmenu', (e) => {
             const card = e.target.closest('.iv-image-card');
@@ -214,11 +242,24 @@ class ImageViewer {
     showAlbums() {
         this._stopSlideshow();
         this.mode = this.mode === 'images' ? 'albums' : this.mode;
+        this.filteredSeqIndexes = null;
+        if (this.isMultiSelectMode) {
+            this.isMultiSelectMode = false;
+            const multiBtn = document.getElementById('btn-multi-select');
+            if (multiBtn) {
+                multiBtn.classList.remove('active');
+                multiBtn.textContent = '开启多选';
+            }
+            this.clearSelection();
+        }
+        document.getElementById('iv-search').placeholder = '搜索相册…';
         document.getElementById('iv-back').classList.toggle('hidden', this.mode !== 'children');
         document.getElementById('btn-slideshow').classList.add('hidden');
         document.getElementById('btn-multi-select').classList.add('hidden');
         document.getElementById('btn-delete-selected').classList.add('hidden');
         document.getElementById('btn-move-selected').classList.add('hidden');
+        const selectionCount = document.getElementById('iv-selection-count');
+        if (selectionCount) selectionCount.classList.add('hidden');
         document.getElementById('pagination').innerHTML = '';
         const imageGrid = document.getElementById('image-grid');
         imageGrid.innerHTML = '';
@@ -404,6 +445,10 @@ class ImageViewer {
     }
 
     async openAlbum(path) {
+        // 从列表/瀑布流点入时记录滚动位置，返回时恢复到刚刚浏览的位置
+        if (this.mode === 'albums' || this.mode === 'children') {
+            this._rememberScroll();
+        }
         // 从瀑布流点入时记录当前视图状态，返回时原样恢复
         if (this.mode === 'images') {
             this.navStack.push({
@@ -444,6 +489,10 @@ class ImageViewer {
         this.currentPath = path;
         this.currentPage = 1;
         this.mode = 'images';
+        this.filteredSeqIndexes = null;
+        document.getElementById('iv-search').value = '';
+        document.getElementById('iv-search-clear').classList.add('hidden');
+        document.getElementById('iv-search').placeholder = '搜索当前相册…';
         document.getElementById('iv-back').classList.remove('hidden');
         document.getElementById('btn-slideshow').classList.remove('hidden');
         document.getElementById('btn-multi-select').classList.remove('hidden');
@@ -451,6 +500,23 @@ class ImageViewer {
         document.getElementById('iv-view-sub').textContent = path || '根目录 · 未分类';
         document.getElementById('iv-albums').innerHTML = '';
         this.loadImages(path, 1);
+    }
+
+    _rememberScroll() {
+        const content = document.getElementById('iv-content');
+        if (content) this.scrollStack.push(content.scrollTop);
+    }
+
+    _restoreScroll() {
+        const scrollTop = this.scrollStack.length ? this.scrollStack.pop() : null;
+        if (scrollTop == null) return;
+        const content = document.getElementById('iv-content');
+        if (content) {
+            // 等待渲染完成后再恢复，避免被浏览器重置到顶部
+            requestAnimationFrame(() => {
+                content.scrollTop = scrollTop || 0;
+            });
+        }
     }
 
     _popNavStack() {
@@ -471,6 +537,7 @@ class ImageViewer {
                     this.childParentPath = '';
                     this.currentPath = '';
                     this.showAlbums();
+                    this._restoreScroll();
                 } else {
                     this._showFolder(prev);
                 }
@@ -480,11 +547,13 @@ class ImageViewer {
                 this.mode = 'children';
                 this.currentPath = this.childParentPath;
                 this.showAlbums();
+                this._restoreScroll();
             } else {
                 this.mode = 'albums';
                 this.childParentPath = '';
                 this.currentPath = '';
                 this.showAlbums();
+                this._restoreScroll();
             }
         } else if (this.mode === 'children') {
             if (this.navStack.length) {
@@ -494,6 +563,7 @@ class ImageViewer {
                     this.childParentPath = '';
                     this.currentPath = '';
                     this.showAlbums();
+                    this._restoreScroll();
                 } else {
                     this._showFolder(prev);
                 }
@@ -502,6 +572,7 @@ class ImageViewer {
                 this.childParentPath = '';
                 this.currentPath = '';
                 this.showAlbums();
+                this._restoreScroll();
             }
         }
     }
@@ -525,6 +596,10 @@ class ImageViewer {
                 action: promoted.includes(path) ? 'unpromote' : 'promote'
             });
         }
+        items.push({
+            label: '🖼 重建此相册缩略图',
+            action: 'rebuild'
+        });
         if (!items.length) return;
         const menuEl = document.createElement('div');
         menuEl.className = 'iv-context-menu';
@@ -536,6 +611,10 @@ class ImageViewer {
         menuEl.addEventListener('click', async (ev) => {
             const act = ev.target.dataset.act;
             this._closeAlbumMenu();
+            if (act === 'rebuild') {
+                this.rebuildFolder(path);
+                return;
+            }
             try {
                 const result = await Bridge.call('set_album_config', path, act);
                 if (result && result.success) {
@@ -628,12 +707,18 @@ class ImageViewer {
             document.getElementById('iv-stats').textContent =
                 (data.total === imgTotal) ? `共 ${data.total} 张图片` : `共 ${data.total} 项 · ${imgTotal} 张图片`;
             grid.innerHTML = '';
+            this.filteredSeqIndexes = null;
             if (!this.currentItems.length) {
                 grid.innerHTML = this._emptyHtml('🖼️', '此相册暂无图片');
                 grid.style.height = 'auto';
                 return;
             }
-            this.renderJustifiedLayout(this.currentItems);
+            const keyword = document.getElementById('iv-search').value.trim();
+            if (keyword) {
+                this.filterCurrentImages(keyword);
+            } else {
+                this.renderJustifiedLayout(this.currentItems);
+            }
             this.pagination.render(data.page, Math.ceil(data.total / perPage));
         } catch (error) {
             grid.innerHTML = this._emptyHtml('⚠️', '图片加载失败');
@@ -653,13 +738,18 @@ class ImageViewer {
         // 每个瓦片在连续浏览序列中的起始位置（子文件夹 → 其 p0，单图 → 自身）。
         // 分页时以 this.currentAllOffset 为基准：第 2+ 页的瓦片对应完整序列的中后段，
         // 否则点击会错位打开到序列开头的图片。
+        // 搜索过滤时使用 filterCurrentImages 预计算的映射，保证灯箱仍从完整序列正确位置打开。
         // 注意：image_count 为直接图片数（容器为 0，不参与序列展开）。
         const seqIndex = new Map();
-        let acc = this.currentAllOffset || 0;
-        items.forEach((it, i) => {
-            seqIndex.set(i, acc);
-            acc += (it.type === 'album' ? (it.image_count || 0) : 1);
-        });
+        if (this.filteredSeqIndexes && this.filteredSeqIndexes.size === items.length) {
+            this.filteredSeqIndexes.forEach((value, key) => seqIndex.set(key, value));
+        } else {
+            let acc = this.currentAllOffset || 0;
+            items.forEach((it, i) => {
+                seqIndex.set(i, acc);
+                acc += (it.type === 'album' ? (it.image_count || 0) : 1);
+            });
+        }
 
         // 圆圈数量角标：仅在该瓦片对应子文件夹自身生效的排序为「时间+文件名」时显示
         // （自己没设置则继承父级，后端 use_time_name 已算好）
@@ -733,8 +823,46 @@ class ImageViewer {
                     }
                 });
             }
+            if (item.type !== 'album' && this.selectedImages.has(item.url)) {
+                card.classList.add('selected');
+            }
             grid.appendChild(card);
         });
+    }
+
+    filterCurrentImages(keyword = '') {
+        const grid = document.getElementById('image-grid');
+        const normalized = keyword.trim().toLowerCase();
+        if (!normalized) {
+            this.filteredSeqIndexes = null;
+            if (this.currentItems.length) this.renderJustifiedLayout(this.currentItems);
+            return;
+        }
+
+        const filtered = [];
+        const seqIndexes = new Map();
+        let acc = this.currentAllOffset || 0;
+        this.currentItems.forEach((it, index) => {
+            const haystack = [
+                it.name || '',
+                it.path || '',
+                it.url ? it.url.split('/').pop() : ''
+            ].join(' ').toLowerCase();
+            if (haystack.includes(normalized)) {
+                seqIndexes.set(filtered.length, acc);
+                filtered.push(it);
+            }
+            acc += (it.type === 'album' ? (it.image_count || 0) : 1);
+        });
+
+        this.filteredSeqIndexes = seqIndexes;
+        grid.innerHTML = '';
+        grid.style.height = 'auto';
+        if (!filtered.length) {
+            grid.innerHTML = this._emptyHtml('🔍', '没有匹配的图片', '换个关键词试试');
+            return;
+        }
+        this.renderJustifiedLayout(filtered);
     }
 
     // ===== 幻灯片 =====
@@ -773,7 +901,16 @@ class ImageViewer {
         deleteBtn.classList.toggle('hidden', !this.isMultiSelectMode);
         moveBtn.classList.toggle('hidden', !this.isMultiSelectMode);
         if (thumbBtn) thumbBtn.classList.toggle('hidden', !this.isMultiSelectMode);
+        const selectionCount = document.getElementById('iv-selection-count');
+        if (selectionCount) selectionCount.classList.toggle('hidden', !this.isMultiSelectMode);
         if (!this.isMultiSelectMode) this.clearSelection();
+    }
+
+    _updateSelectionCount() {
+        const el = document.getElementById('iv-selection-count');
+        if (!el) return;
+        el.textContent = `已选 ${this.selectedImages.size} 项`;
+        el.classList.toggle('hidden', !this.isMultiSelectMode || this.selectedImages.size === 0);
     }
 
     toggleSelectImage(imgUrl, cardEl) {
@@ -784,11 +921,13 @@ class ImageViewer {
             this.selectedImages.add(imgUrl);
             cardEl.classList.add('selected');
         }
+        this._updateSelectionCount();
     }
 
     clearSelection() {
         this.selectedImages.clear();
         document.querySelectorAll('.iv-image-card.selected').forEach(el => el.classList.remove('selected'));
+        this._updateSelectionCount();
     }
 
     handleContextAction(action) {
@@ -815,7 +954,7 @@ class ImageViewer {
             const result = await Bridge.call('delete_files', imgs);
             if (result.errors.length) Toast.error(`部分删除失败: ${result.errors.join('; ')}`);
             else Toast.success(`已删除 ${imgs.length} 张图片`);
-            this.selectedImages.clear();
+            this.clearSelection();
             await this.loadImages(this.currentPath, this.currentPage);
         } catch (e) {
             Toast.error('删除请求失败');
@@ -843,7 +982,7 @@ class ImageViewer {
             const result = await Bridge.call('move_files', imgs, this.moveDestPath);
             if (result.errors.length) Toast.error(`部分移动失败: ${result.errors.join('; ')}`);
             else Toast.success(`已移动 ${imgs.length} 张图片`);
-            this.selectedImages.clear();
+            this.clearSelection();
             this.closeMoveModal();
             await this.loadImages(this.currentPath, this.currentPage);
         } catch (e) {
@@ -881,6 +1020,125 @@ class ImageViewer {
         }
     }
 
+    async rebuildAll() {
+        const ok = await confirmDialog('将清空旧缓存，并一次性生成全部缩略图。\n图片较多时可能需要较长时间，可以继续操作界面。确定继续吗？', { danger: true });
+        if (!ok) return;
+        await this._startRebuildTask(() => Bridge.call('rebuild_all', '', true), '全量重建');
+    }
+
+    async rebuildFolder(path) {
+        const ok = await confirmDialog(`将重建「${path || '根目录'}」下的缩略图（跳过已有有效缓存），确定继续吗？`, { danger: true });
+        if (!ok) return;
+        await this._startRebuildTask(() => Bridge.call('rebuild_folder', path), '相册重建');
+    }
+
+    async _startRebuildTask(startCall, label = '全量重建') {
+        const card = document.getElementById('rebuild-progress');
+        if (card) card.classList.remove('hidden');
+        this._rebuildStartTime = Date.now();
+        this._updateRebuildProgress({ processed: 0, total: 0, current: '', errors: [], running: true });
+        try {
+            await startCall();
+            const status = await this._waitRebuildDone();
+
+            if (status.cancelled) {
+                Toast.warning(`${label}已取消`);
+                return;
+            }
+
+            const result = await Bridge.call('list_albums');
+            if (result && result.albums) this.albums = result.albums;
+            if (result && result.config) this.albumConfig = result.config;
+            this.clearSelection();
+            this.filteredSeqIndexes = null;
+            if (this.mode === 'images') {
+                this.loadImages(this.currentPath, 1);
+            } else {
+                this.showAlbums();
+            }
+            Toast.success(`${label}完成`);
+        } catch (e) {
+            Toast.error(`${label}失败：${e.message || e}`);
+        } finally {
+            if (card) card.classList.add('hidden');
+            this._rebuildStartTime = null;
+        }
+    }
+
+    async _waitRebuildDone() {
+        // 轮询后端后台任务进度，直到完成
+        while (true) {
+            const status = await Bridge.call('rebuild_status');
+            this._updateRebuildProgress(status);
+            if (status.done) {
+                if (status.cancelled) {
+                    return status;
+                }
+                if (!status.success) {
+                    const errors = status.errors || [];
+                    throw new Error(errors.length ? `失败 ${errors.length} 个，示例：${errors.slice(0, 3).join('；')}` : '后台重建任务异常');
+                }
+                return status;
+            }
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+    }
+
+    _updateRebuildProgress(status = {}) {
+        const total = status.total || 0;
+        const processed = status.processed || 0;
+        const text = document.getElementById('rebuild-progress-text');
+        if (text) text.textContent = `${processed} / ${total}`;
+
+        const bar = document.getElementById('rebuild-progress-bar');
+        if (bar) {
+            if (total > 0) {
+                bar.style.width = `${Math.min(100, Math.round((processed / total) * 100))}%`;
+                bar.style.animation = 'none';
+            } else {
+                bar.style.width = '40%';
+                bar.style.animation = '';
+            }
+        }
+
+        const currentEl = document.getElementById('rebuild-progress-current');
+        if (currentEl) {
+            currentEl.textContent = status.current ? `正在处理：${status.current}` : '正在扫描并生成缩略图，请稍候…';
+        }
+
+        const speedEl = document.getElementById('rebuild-progress-speed');
+        if (speedEl && this._rebuildStartTime) {
+            const elapsed = (Date.now() - this._rebuildStartTime) / 1000;
+            if (elapsed > 0 && processed > 0) {
+                const speed = processed / elapsed;
+                const remaining = total > processed ? (total - processed) / speed : 0;
+                speedEl.textContent = `${speed.toFixed(1)} 张/秒 · 剩余约 ${this._formatDuration(remaining)}`;
+            } else {
+                speedEl.textContent = '';
+            }
+        }
+
+        const errorsEl = document.getElementById('rebuild-errors');
+        if (errorsEl) {
+            const errors = status.errors || [];
+            errorsEl.textContent = errors.length ? `失败 ${errors.length} 个，示例：${errors.slice(0, 3).join('；')}` : '';
+        }
+    }
+
+    hideRebuildProgress() {
+        const card = document.getElementById('rebuild-progress');
+        if (card) card.classList.add('hidden');
+    }
+
+    async cancelRebuild() {
+        try {
+            await Bridge.call('rebuild_cancel');
+            Toast.info('正在取消全量重建…');
+        } catch (e) {
+            Toast.error('取消失败');
+        }
+    }
+
     async refreshSelectedThumbs() {
         const imgs = [...this.selectedImages];
         if (!imgs.length) return;
@@ -890,7 +1148,7 @@ class ImageViewer {
             const result = await Bridge.call('regenerate_thumbs', imgs);
             if (result.errors.length) Toast.error(`部分失败: ${result.errors.join('; ')}`);
             else Toast.success(`已重新生成 ${imgs.length} 张缩略图`);
-            this.selectedImages.clear();
+            this.clearSelection();
             await this.loadImages(this.currentPath, this.currentPage);
         } catch (e) {
             Toast.error('更新缩略图失败');
@@ -903,6 +1161,14 @@ class ImageViewer {
     async openSettingsModal() {
         document.getElementById('settings-modal').classList.add('active');
         document.getElementById('setting-current-folder-name').textContent = this.currentPath || '根目录';
+        const applyToFolder = document.getElementById('setting-apply-to-folder');
+        if (applyToFolder) {
+            // 每次打开默认保存到全局；勾选“仅当前文件夹”时才禁用根目录输入。
+            // 根目录本身没有“文件夹级”概念，禁用该选项避免误导。
+            applyToFolder.checked = false;
+            applyToFolder.disabled = !this.currentPath;
+            document.getElementById('setting-root-dir').disabled = false;
+        }
         try {
             const s = await Bridge.call('get_settings', this.currentPath);
             document.getElementById('setting-row-height').value = s.row_height;
@@ -925,9 +1191,11 @@ class ImageViewer {
             row_height: parseInt(document.getElementById('setting-row-height').value, 10),
             per_page: parseInt(document.getElementById('setting-per-page').value, 10),
             sort_by: document.getElementById('setting-sort-by').value,
-            sort_order: document.getElementById('setting-sort-order').value,
-            root_dir: document.getElementById('setting-root-dir').value.trim() || undefined
+            sort_order: document.getElementById('setting-sort-order').value
         };
+        if (!isFolderOnly) {
+            settings.root_dir = document.getElementById('setting-root-dir').value.trim() || undefined;
+        }
         try {
             if (isFolderOnly) {
                 await Bridge.call('save_settings', this.currentPath, settings);
@@ -946,6 +1214,17 @@ class ImageViewer {
     }
 
     // ===== 工具 =====
+    _formatDuration(seconds) {
+        if (!isFinite(seconds) || seconds <= 0) return '--';
+        seconds = Math.round(seconds);
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = seconds % 60;
+        if (h > 0) return `${h} 小时 ${m} 分`;
+        if (m > 0) return `${m} 分 ${s} 秒`;
+        return `${s} 秒`;
+    }
+
     _monthKey(mtime) {
         const d = new Date((mtime || 0) * 1000);
         return `${d.getFullYear()} 年 ${d.getMonth() + 1} 月`;

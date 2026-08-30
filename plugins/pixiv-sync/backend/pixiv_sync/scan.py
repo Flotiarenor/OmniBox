@@ -6,7 +6,7 @@
 """
 
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Set, Optional
 
 from pixiv_mini import PixivError
 
@@ -14,8 +14,17 @@ from . import tasks as tasks_mod
 from .download import _work_id
 from .limiter import RateLimitError
 
-
-def fetch_following(p, task: Dict[str, Any] = None) -> List[tuple]:
+def _safe_int(value: Any) -> Optional[int]:
+    """安全转 int：None 或非法值返回 None，合法值返回 int。"""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        print(f"[pixiv_sync-scan]画师id/作品id/tag 缺失/非法: {value}")
+        return None
+    
+def fetch_following(p, task: Dict[str, Any] | None = None) -> List[tuple]:
     """翻页拉取全部关注画师列表 [(user_id, name)]。"""
     client = p._client()
     following: List[tuple] = []
@@ -71,10 +80,10 @@ def build_item(p, illust: Dict[str, Any], ids: Set[int]):
     作品 id 缺失/非法时返回 None，调用方跳过，避免把 0/垃圾 id 写进清单。
     """
     try:
-        iid = int(illust.get("id"))
+        iid = _safe_int(illust.get("id"))
     except (TypeError, ValueError):
         return None
-    if iid <= 0:
+    if iid is None or iid <= 0:
         return None
     user = illust.get("user") or {}
     return {
@@ -92,7 +101,7 @@ def build_item(p, illust: Dict[str, Any], ids: Set[int]):
 
 def _uid_of(item: Dict[str, Any]):
     try:
-        return int((item.get("user") or {}).get("id"))
+        return _safe_int((item.get("user") or {}).get("id"))
     except (TypeError, ValueError):
         return None
 

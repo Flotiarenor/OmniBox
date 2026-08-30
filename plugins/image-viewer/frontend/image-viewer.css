@@ -64,6 +64,17 @@
 .iv-view-title { font-size: 15px; font-weight: 700; color: var(--text-primary); }
 .iv-view-sub { font-size: 11px; color: var(--text-secondary); }
 
+.iv-selection-count {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--iv-accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  white-space: nowrap;
+}
+
 /* ===== 内容 ===== */
 .iv-content { padding: 16px; background: transparent; }
 
@@ -160,11 +171,13 @@
   padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--iv-radius-sm);
   background: var(--bg-surface); color: var(--text-primary);
 }
-.iv-setting-item select:disabled {
+.iv-setting-item select:disabled,
+.iv-setting-item input:disabled {
   opacity: 0.5; cursor: not-allowed;
 }
 .iv-check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
 .iv-check input { accent-color: var(--accent); width: 16px; height: 16px; }
+.iv-check input:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .iv-empty {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -272,6 +285,90 @@
   transition: background var(--transition-fast);
 }
 .iv-context-menu button:hover { background: var(--bg-hover); }
+
+/* ===== 全量重建右下角进度卡 ===== */
+.rebuild-progress-card {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  width: 320px;
+  z-index: 1200;
+  padding: 12px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--obx-shadow-2);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.rebuild-progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.rebuild-progress-hide {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 14px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.rebuild-progress-hide:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.rebuild-progress-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rebuild-progress-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.rebuild-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+.rebuild-progress-bar {
+  width: 40%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--iv-gradient);
+  animation: obxRebuildSlide 1.2s ease-in-out infinite;
+}
+@keyframes obxRebuildSlide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+.rebuild-progress-current,
+.rebuild-progress-speed {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rebuild-errors {
+  max-height: 60px;
+  overflow-y: auto;
+  font-size: 11px;
+  color: var(--text-danger, #e5484d);
+  text-align: left;
+  word-break: break-all;
+}
+.rebuild-progress-body .btn {
+  align-self: flex-end;
+}
 
 /* ===== 扩展插件内嵌视图（替换主内容区，不遮挡全屏查看器） ===== */
 .view-body {

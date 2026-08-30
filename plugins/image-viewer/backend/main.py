@@ -1,6 +1,7 @@
 import os
 import json
 import shutil
+import threading
 from pathlib import Path
 from typing import List, Dict
 from shell.backend.plugin_base import PluginBase
@@ -10,8 +11,12 @@ from shell.backend.plugin_utils import load_sibling
 
 _fs = load_sibling(__file__, 'filesystem', 'image_viewer')
 ALLOWED_EXTENSIONS = _fs.ALLOWED_EXTENSIONS
+clear_thumb_cache = _fs.clear_thumb_cache
+delete_thumb_cache = _fs.delete_thumb_cache
 drop_image_meta = _fs.drop_image_meta
 ensure_thumbnail = _fs.ensure_thumbnail
+ensure_thumbnail_bytes = _fs.ensure_thumbnail_bytes
+generate_thumbs_bulk = _fs.generate_thumbs_bulk
 get_image_size = _fs.get_image_size
 is_safe_path = _fs.is_safe_path
 list_directory = _fs.list_directory
@@ -57,6 +62,7 @@ class ImageViewerPlugin(PluginBase):
         self.root_dir = Path(root).resolve()
         self.cache_dir = self.root_dir / '.cache'
         self.thumb_dir = self.cache_dir / 'thumbs'
+        self.thumb_db_path = self.cache_dir / 'thumbs.db'
         self.meta_file = self.cache_dir / 'image_meta.json'
         self.thumb_dir.mkdir(parents=True, exist_ok=True)
         self.album_cache_file = self.cache_dir / 'albums_index.json'
@@ -65,6 +71,8 @@ class ImageViewerPlugin(PluginBase):
         self._list_cache = {}
         self._album_config = self._load_album_config()
         self._album_cache = self._load_album_cache()
+        self._rebuild_task = None
+        self._rebuild_stop = None
 
     def _load_meta(self) -> dict:
         if self.meta_file.exists():
@@ -103,8 +111,12 @@ class ImageViewerPlugin(PluginBase):
             'move_files': self.move_files,
             'regenerate_thumbs': self.regenerate_thumbs,
             'refresh': self.refresh,
+            'rebuild_all': self.rebuild_all,
+            'rebuild_folder': self.rebuild_folder,
+            'rebuild_status': self.rebuild_status,
+            'rebuild_cancel': self.rebuild_cancel,
             'get_settings': self.get_settings,
-            'save_settings': self.save_settings,
+            'save_settings': self.save_folder_settings,
             'get_root_dir': self.get_root_dir,
             'clear_folder_settings': self.clear_folder_settings,
         }
@@ -113,7 +125,7 @@ class ImageViewerPlugin(PluginBase):
         return str(self.root_dir)
 
     def ensure_thumb(self, rel_path: str) -> str:
-        # 供 Shell /thumbs 路由按需调用：缩略图不存在时现场生成。
+        # 旧版文件式入口，供其他兼容代码使用；新路由优先走 get_thumb_data。
         if not self._is_safe(rel_path):
             return ''
         try:
@@ -121,6 +133,15 @@ class ImageViewerPlugin(PluginBase):
             return str(thumb) if thumb and thumb.exists() else ''
         except Exception:
             return ''
+
+    def get_thumb_data(self, rel_path: str):
+        """供 Shell /thumbs 路由使用：从 SQLite 读取/生成缩略图字节。"""
+        if not self._is_safe(rel_path):
+            return None
+        try:
+            return ensure_thumbnail_bytes(self.root_dir, rel_path, self.thumb_db_path)
+        except Exception:
+            return None
 
     def get_image_info(self, rel_path: str) -> Dict:
         """返回单张图片的存储大小与分辨率，供全屏查看器右侧信息面板使用。"""
@@ -622,21 +643,14 @@ class ImageViewerPlugin(PluginBase):
                 'use_time_name': (self.get_settings(entry['path']).get('sort_by') == 'time_name'),
             })
 
-        # 为有封面的相册预生成缩略图（之后 /thumbs 请求直接命中缓存）
-        for album in albums:
-            if album['cover']:
-                try:
-                    ensure_thumbnail(self.root_dir, album['cover'], self.thumb_dir)
-                except Exception:
-                    pass
-
+        # 不再预生成所有封面缩略图：交给 /thumbs 按需生成，避免上万次随机小文件 I/O。
         return albums, entries, changed
 
     def list_albums(self) -> Dict:
         """相册列表：目录 mtime 未变时直接复用持久化索引，避免每次重启全量扫描。"""
         dirs = self._list_album_dirs()
         albums, entries, changed = self._build_albums(dirs, self._album_cache.get('dirs', {}))
-        self._album_cache = {'version': 2, 'dirs': entries}
+        self._album_cache = {'version': 3, 'dirs': entries}
         if changed:
             self._save_album_cache()
         return {'albums': albums, 'config': self._album_config, 'changed': changed}
@@ -689,6 +703,7 @@ class ImageViewerPlugin(PluginBase):
             try:
                 if abs_path.exists():
                     abs_path.unlink()
+                    delete_thumb_cache(self.thumb_db_path, rel)
                     deleted.append(rel)
             except Exception as e:
                 errors.append(f"删除失败 {rel}: {str(e)}")
@@ -717,6 +732,7 @@ class ImageViewerPlugin(PluginBase):
                             dest_file = dest_dir / f"{stem}_{counter}{suffix}"
                             counter += 1
                     shutil.move(str(src), str(dest_file))
+                    delete_thumb_cache(self.thumb_db_path, rel)
                     moved.append(rel)
             except Exception as e:
                 errors.append(f"移动失败 {rel}: {str(e)}")
@@ -734,13 +750,11 @@ class ImageViewerPlugin(PluginBase):
             if not self._is_safe(rel):
                 errors.append(f'非法路径: {rel}')
                 continue
-            thumb = self.thumb_dir / rel
             try:
-                if thumb.exists():
-                    thumb.unlink()
+                delete_thumb_cache(self.thumb_db_path, rel)
                 drop_image_meta(self._meta_cache, str(self.root_dir / rel))
-                new_thumb = self._get_thumb(rel)
-                if new_thumb and new_thumb.exists():
+                new_thumb = self.get_thumb_data(rel)
+                if new_thumb:
                     regenerated.append(rel)
                 else:
                     errors.append(f'缩略图生成失败: {rel}')
@@ -760,6 +774,150 @@ class ImageViewerPlugin(PluginBase):
         except OSError:
             pass
         return {'success': True}
+
+    def _collect_all_images(self, rel_path: str = '') -> List[str]:
+        """收集数据根目录下（或指定子文件夹下）所有需要生成缩略图的图片相对路径。"""
+        rel_path = (rel_path or '').strip().strip('/')
+        base_dir = self.root_dir / rel_path if rel_path else self.root_dir
+        prefix = rel_path
+        images = []
+        try:
+            for current, dir_names, filenames in os.walk(base_dir):
+                dir_names[:] = [d for d in dir_names if not d.startswith('.') and d != '.cache']
+                current_path = Path(current)
+                rel_dir = '' if current_path == base_dir else current_path.relative_to(base_dir).as_posix()
+                for name in filenames:
+                    if name.startswith('.'):
+                        continue
+                    if Path(name).suffix.lower() in ALLOWED_EXTENSIONS:
+                        parts = [p for p in (prefix, rel_dir, name) if p]
+                        images.append('/'.join(parts))
+        except OSError:
+            pass
+        return images
+
+    def rebuild_all(self, rel_path: str = '', force: bool = True) -> Dict:
+        """全量/指定文件夹重建。
+
+        - rel_path 非空时：只重建该文件夹，且不会清空已有缩略图（增量补齐）。
+        - rel_path 为空且 force=True 时：清空旧缓存后全量重新生成。
+        - rel_path 为空且 force=False 时：全库增量补齐，跳过已有有效缩略图。
+        """
+        rel_path = (rel_path or '').strip().strip('/')
+        if rel_path and not self._is_safe(rel_path):
+            return {'started': False, 'success': False, 'error': '非法路径'}
+        if self._rebuild_task and self._rebuild_task.get('running'):
+            return {'started': False, 'running': True, **self.rebuild_status()}
+
+        self._list_cache.clear()
+        if not rel_path and force:
+            self._meta_cache = {}
+            try:
+                if self.meta_file.exists():
+                    self.meta_file.unlink()
+            except OSError:
+                pass
+            clear_thumb_cache(self.thumb_db_path)
+            # 旧版散文件缩略图目录已不再使用，全量重建时一并清理。
+            try:
+                if self.thumb_dir.exists():
+                    shutil.rmtree(self.thumb_dir)
+            except OSError:
+                pass
+            self.thumb_dir.mkdir(parents=True, exist_ok=True)
+            self._album_cache = {'version': 3, 'dirs': {}}
+            try:
+                if self.album_cache_file.exists():
+                    self.album_cache_file.unlink()
+            except OSError:
+                pass
+
+        images = self._collect_all_images(rel_path)
+        self._rebuild_stop = threading.Event()
+        self._rebuild_task = {
+            'running': True,
+            'done': False,
+            'success': False,
+            'cancelled': False,
+            'rebuild_path': rel_path,
+            'total': len(images),
+            'processed': 0,
+            'current': '',
+            'errors': [],
+        }
+        threading.Thread(target=self._rebuild_worker, args=(images, self._rebuild_stop), daemon=True).start()
+        return {'started': True, 'running': True, 'total': len(images)}
+
+    def rebuild_folder(self, rel_path: str) -> Dict:
+        """只重建指定文件夹下的缩略图（增量补齐，不清空已有缓存）。"""
+        return self.rebuild_all(rel_path=rel_path, force=False)
+
+    def _rebuild_worker(self, images: List[str], stop_event: threading.Event):
+        task = self._rebuild_task
+
+        def progress(processed, total, current, errors):
+            task['processed'] = processed
+            task['total'] = total
+            task['current'] = current
+            task['error_count'] = len(errors)
+            task['errors'] = errors[-200:]
+
+        try:
+            result = generate_thumbs_bulk(
+                self.root_dir,
+                images,
+                self.thumb_db_path,
+                progress_callback=progress,
+                stop_event=stop_event,
+            )
+            task['processed'] = result['processed']
+            task['error_count'] = len(result['errors'])
+            task['errors'] = result['errors'][-200:]
+            task['success'] = not stop_event.is_set()
+        except Exception as e:
+            task['error_count'] = task.get('error_count', 0) + 1
+            task['errors'] = (task.get('errors', []) + [f'重建异常: {e}'])[-200:]
+            task['success'] = False
+        finally:
+            task['running'] = False
+            task['done'] = True
+            task['current'] = ''
+            task['cancelled'] = bool(stop_event.is_set())
+
+    def rebuild_status(self) -> Dict:
+        """返回全量重建后台任务的进度。"""
+        task = self._rebuild_task
+        if not task:
+            return {
+                'running': False,
+                'done': False,
+                'success': False,
+                'cancelled': False,
+                'rebuild_path': '',
+                'total': 0,
+                'processed': 0,
+                'current': '',
+                'errors': [],
+            }
+        return {
+            'running': bool(task.get('running')),
+            'done': bool(task.get('done')),
+            'success': bool(task.get('success')),
+            'cancelled': bool(task.get('cancelled', False)),
+            'rebuild_path': task.get('rebuild_path', ''),
+            'total': int(task.get('total', 0)),
+            'processed': int(task.get('processed', 0)),
+            'current': task.get('current', ''),
+            'error_count': int(task.get('error_count', 0)),
+            'errors': list(task.get('errors', [])),
+        }
+
+    def rebuild_cancel(self) -> Dict:
+        """请求取消当前全量重建任务；已生成的缩略图会保留。"""
+        if self._rebuild_stop is not None:
+            self._rebuild_stop.set()
+            return {'success': True}
+        return {'success': False, 'error': '没有正在运行的重建任务'}
 
     def get_settings(self, rel_path: str = '') -> Dict:
         """获取文件夹生效设置（含全局回退与逐级继承）。
@@ -797,22 +955,31 @@ class ImageViewerPlugin(PluginBase):
         result['pixiv_explicit'] = (own_entry.get('sort_by') == 'time_name')
         return result
 
-    def save_settings(self, rel_path='', settings=None) -> Dict:
-        """兼容两种调用。全局设置走 super()；per-folder 设置只写入 folders，避免污染全局。"""
+    def save_folder_settings(self, rel_path: str = '', settings: Dict | None = None) -> Dict:
+        """前端 save_settings 的 API 实现。
+
+        兼容两种调用：
+        - save_folder_settings(settings_dict)      → 保存全局
+        - save_folder_settings(rel_path, settings) → 保存指定文件夹
+        """
         if settings is None:
-            settings = rel_path or {}
-            rel_path = ''
-        result = {"success": True}
-        key = rel_path or '__global__'
-        if not rel_path:
-            # 标准字段走 SettingsStore，触发 on_settings_changed
-            result = super().save_settings(settings)
-        folders = self.setting('folders') or {}
-        if not isinstance(folders, dict):
-            folders = {}
-        folders[key] = settings
-        self.update_setting('folders', folders)
-        return result
+            if isinstance(rel_path, dict):
+                settings = rel_path
+                rel_path = ''
+            else:
+                settings = {}
+        if rel_path:
+            # 文件夹级设置只保存视图/排序偏好；root_dir 是全局设置，不能写入某个文件夹，
+            # 否则会造成“看起来保存了但根目录没变”的困惑。
+            folder_settings = dict(settings or {})
+            folder_settings.pop('root_dir', None)
+            folders = self.setting('folders') or {}
+            if not isinstance(folders, dict):
+                folders = {}
+            folders[rel_path] = folder_settings
+            self.update_setting('folders', folders)
+            return {"success": True}
+        return super().save_settings(settings)
 
     def on_settings_changed(self, changed_keys):
         if 'root_dir' in changed_keys:
@@ -821,6 +988,7 @@ class ImageViewerPlugin(PluginBase):
                 self.root_dir = Path(new_dir).resolve()
                 self.cache_dir = self.root_dir / '.cache'
                 self.thumb_dir = self.cache_dir / 'thumbs'
+                self.thumb_db_path = self.cache_dir / 'thumbs.db'
                 self.meta_file = self.cache_dir / 'image_meta.json'
                 self.thumb_dir.mkdir(parents=True, exist_ok=True)
                 self._meta_cache = self._load_meta()

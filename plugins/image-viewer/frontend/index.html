@@ -44,12 +44,14 @@
             <input type="text" id="iv-search" placeholder="搜索相册…" autocomplete="off">
             <button id="iv-search-clear" class="iv-search-clear hidden">✕</button>
           </div>
+          <span id="iv-selection-count" class="iv-selection-count hidden">已选 0 项</span>
           <button id="btn-slideshow" class="btn hidden">▶ 幻灯片</button>
           <button id="btn-multi-select" class="btn hidden">开启多选</button>
           <button id="btn-delete-selected" class="btn btn-danger hidden">删除选中</button>
           <button id="btn-move-selected" class="btn hidden">移动选中</button>
           <button id="btn-refresh-thumbs" class="btn hidden">🖼 更新缩略图</button>
           <button id="btn-refresh" class="btn" title="重新扫描目录并刷新当前视图（无需重启）">🔄 刷新</button>
+          <button id="btn-rebuild" class="btn" title="清空缩略图/尺寸元数据/相册索引并重新扫描，缩略图按需重建">🧹 全量重建</button>
           <button id="btn-settings" class="btn">⚙ 设置</button>
         </div>
       </div>
@@ -146,6 +148,21 @@
           <button class="btn" id="settings-cancel">取消</button>
           <button class="btn btn-primary" id="settings-save">保存并刷新</button>
         </div>
+      </div>
+    </div>
+
+    <div id="rebuild-progress" class="rebuild-progress-card hidden">
+      <div class="rebuild-progress-header">
+        <span>🧹 正在重建缩略图</span>
+        <button id="rebuild-progress-hide" class="rebuild-progress-hide" title="隐藏进度">—</button>
+      </div>
+      <div class="rebuild-progress-body">
+        <div id="rebuild-progress-text" class="rebuild-progress-text">0 / 0</div>
+        <div class="rebuild-progress"><div id="rebuild-progress-bar" class="rebuild-progress-bar"></div></div>
+        <div id="rebuild-progress-current" class="rebuild-progress-current"></div>
+        <div id="rebuild-progress-speed" class="rebuild-progress-speed"></div>
+        <div id="rebuild-errors" class="rebuild-errors"></div>
+        <button id="rebuild-progress-cancel" class="btn btn-sm">取消</button>
       </div>
     </div>
   </div>

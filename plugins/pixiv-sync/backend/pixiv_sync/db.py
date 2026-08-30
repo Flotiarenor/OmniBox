@@ -7,7 +7,7 @@
 import json
 import sqlite3
 from pathlib import Path
-from threading import Lock
+from threading import  RLock
 from typing import Any, Dict, List, Optional, Tuple
 
 def _item_to_work_value(item: Dict[str, Any]) -> tuple:
@@ -76,7 +76,7 @@ def _save_scan(conn: sqlite3.Connection, kind: str, scan: Optional[dict]) -> Non
 
 
 class WorksDB:
-    def __init__(self, path: Path, lock: Lock):
+    def __init__(self, path: Path, lock: RLock):
         self._path = path
         self._lock = lock
         self._conn: Optional[sqlite3.Connection] = None
@@ -199,7 +199,7 @@ class WorksDB:
                     (kind,),
                 ).fetchall():
                     tag_map.setdefault(wid, []).append(tname)
-                items = [_work_to_item(r, tag_map.get(r[0])) for r in rows]
+                items = [_work_to_item(r, tag_map.get(r[0], [])) for r in rows]
                 scan = None
                 row = conn.execute("SELECT value FROM meta WHERE key=?", (f"scan_{kind}",)).fetchone()
                 if row:
