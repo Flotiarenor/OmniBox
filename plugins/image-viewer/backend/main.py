@@ -10,8 +10,10 @@ from shell.backend.plugin_utils import load_sibling
 
 _fs = load_sibling(__file__, 'filesystem', 'image_viewer')
 ALLOWED_EXTENSIONS = _fs.ALLOWED_EXTENSIONS
+delete_thumb_cache = _fs.delete_thumb_cache
 drop_image_meta = _fs.drop_image_meta
 ensure_thumbnail = _fs.ensure_thumbnail
+ensure_thumbnail_bytes = _fs.ensure_thumbnail_bytes
 get_image_size = _fs.get_image_size
 is_safe_path = _fs.is_safe_path
 list_directory = _fs.list_directory
@@ -57,6 +59,7 @@ class ImageViewerPlugin(PluginBase):
         self.root_dir = Path(root).resolve()
         self.cache_dir = self.root_dir / '.cache'
         self.thumb_dir = self.cache_dir / 'thumbs'
+        self.thumb_db_path = self.cache_dir / 'thumbs.db'
         self.meta_file = self.cache_dir / 'image_meta.json'
         self.thumb_dir.mkdir(parents=True, exist_ok=True)
         self.album_cache_file = self.cache_dir / 'albums_index.json'
@@ -113,7 +116,7 @@ class ImageViewerPlugin(PluginBase):
         return str(self.root_dir)
 
     def ensure_thumb(self, rel_path: str) -> str:
-        # 供 Shell /thumbs 路由按需调用：缩略图不存在时现场生成。
+        # 旧版文件式入口，供其他兼容代码使用；新路由优先走 get_thumb_data。
         if not self._is_safe(rel_path):
             return ''
         try:
@@ -121,6 +124,15 @@ class ImageViewerPlugin(PluginBase):
             return str(thumb) if thumb and thumb.exists() else ''
         except Exception:
             return ''
+
+    def get_thumb_data(self, rel_path: str):
+        """供 Shell /thumbs 路由使用：从 SQLite 读取/生成缩略图字节。"""
+        if not self._is_safe(rel_path):
+            return None
+        try:
+            return ensure_thumbnail_bytes(self.root_dir, rel_path, self.thumb_db_path)
+        except Exception:
+            return None
 
     def get_image_info(self, rel_path: str) -> Dict:
         """返回单张图片的存储大小与分辨率，供全屏查看器右侧信息面板使用。"""
@@ -622,14 +634,7 @@ class ImageViewerPlugin(PluginBase):
                 'use_time_name': (self.get_settings(entry['path']).get('sort_by') == 'time_name'),
             })
 
-        # 为有封面的相册预生成缩略图（之后 /thumbs 请求直接命中缓存）
-        for album in albums:
-            if album['cover']:
-                try:
-                    ensure_thumbnail(self.root_dir, album['cover'], self.thumb_dir)
-                except Exception:
-                    pass
-
+        # 不再预生成所有封面缩略图：交给 /thumbs 按需生成，避免上万次随机小文件 I/O。
         return albums, entries, changed
 
     def list_albums(self) -> Dict:
@@ -689,6 +694,7 @@ class ImageViewerPlugin(PluginBase):
             try:
                 if abs_path.exists():
                     abs_path.unlink()
+                    delete_thumb_cache(self.thumb_db_path, rel)
                     deleted.append(rel)
             except Exception as e:
                 errors.append(f"删除失败 {rel}: {str(e)}")
@@ -717,6 +723,7 @@ class ImageViewerPlugin(PluginBase):
                             dest_file = dest_dir / f"{stem}_{counter}{suffix}"
                             counter += 1
                     shutil.move(str(src), str(dest_file))
+                    delete_thumb_cache(self.thumb_db_path, rel)
                     moved.append(rel)
             except Exception as e:
                 errors.append(f"移动失败 {rel}: {str(e)}")
@@ -734,13 +741,11 @@ class ImageViewerPlugin(PluginBase):
             if not self._is_safe(rel):
                 errors.append(f'非法路径: {rel}')
                 continue
-            thumb = self.thumb_dir / rel
             try:
-                if thumb.exists():
-                    thumb.unlink()
+                delete_thumb_cache(self.thumb_db_path, rel)
                 drop_image_meta(self._meta_cache, str(self.root_dir / rel))
-                new_thumb = self._get_thumb(rel)
-                if new_thumb and new_thumb.exists():
+                new_thumb = self.get_thumb_data(rel)
+                if new_thumb:
                     regenerated.append(rel)
                 else:
                     errors.append(f'缩略图生成失败: {rel}')
@@ -830,6 +835,7 @@ class ImageViewerPlugin(PluginBase):
                 self.root_dir = Path(new_dir).resolve()
                 self.cache_dir = self.root_dir / '.cache'
                 self.thumb_dir = self.cache_dir / 'thumbs'
+                self.thumb_db_path = self.cache_dir / 'thumbs.db'
                 self.meta_file = self.cache_dir / 'image_meta.json'
                 self.thumb_dir.mkdir(parents=True, exist_ok=True)
                 self._meta_cache = self._load_meta()

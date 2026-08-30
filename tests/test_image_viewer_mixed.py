@@ -342,12 +342,15 @@ class ImageViewerMixedTestCase(unittest.TestCase):
             self.assertEqual(seq[:2], ['9999/9999_p0.jpg', '9999/9999_p1.jpg'])
 
     def test_regenerate_thumbs(self):
-        """更新缩略图：删除缓存并重新生成；非法路径报错。"""
+        """更新缩略图：删除 SQLite 缓存并重新生成；非法路径报错。"""
         result = self.plugin.regenerate_thumbs(['workA/111_p0.png'])
         self.assertEqual(result['errors'], [])
         self.assertIn('workA/111_p0.png', result['regenerated'])
-        thumb = self.root / '.cache' / 'thumbs' / 'workA' / '111_p0.png'
-        self.assertTrue(thumb.exists())
+        thumb_data = self.plugin.get_thumb_data('workA/111_p0.png')
+        self.assertIsNotNone(thumb_data)
+        self.assertGreater(len(thumb_data[0]), 0)
+        db_path = self.root / '.cache' / 'thumbs.db'
+        self.assertTrue(db_path.exists())
         # 非法路径报错
         bad = self.plugin.regenerate_thumbs(['../evil.png'])
         self.assertTrue(bad['errors'])

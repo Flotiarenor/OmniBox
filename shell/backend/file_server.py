@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 '''
 
+import io
 import sys
 from flask import Flask, request, send_from_directory, send_file, abort
 from pathlib import Path
@@ -148,6 +149,21 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         if plugin_name and instance is None:
             print(f"[File_Server-Thumbs] 找不到插件 {plugin_name} 的实例")
             abort(404)
+
+        # 新路径：插件可直接返回 SQLite 缩略图字节，避免散文件随机 I/O。
+        get_thumb_data = getattr(instance, 'get_thumb_data', None) if instance is not None else None
+        if callable(get_thumb_data):
+            try:
+                result = get_thumb_data(filepath)
+                if result:
+                    data, mime = result
+                    resp = send_file(io.BytesIO(data), mimetype=mime, conditional=True)
+                    resp.headers['Cache-Control'] = 'private, max-age=86400'
+                    return resp
+            except Exception:
+                pass
+            abort(404)
+
         if plugin_name and plugin_name in plugin_manager._instances:
             assert instance is not None  # 上面已确认 plugin_name 有对应实例
             thumb_dir = getattr(instance, 'thumb_dir', None)
