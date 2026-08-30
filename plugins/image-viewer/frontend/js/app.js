@@ -596,6 +596,10 @@ class ImageViewer {
                 action: promoted.includes(path) ? 'unpromote' : 'promote'
             });
         }
+        items.push({
+            label: '🖼 重建此相册缩略图',
+            action: 'rebuild'
+        });
         if (!items.length) return;
         const menuEl = document.createElement('div');
         menuEl.className = 'iv-context-menu';
@@ -607,6 +611,10 @@ class ImageViewer {
         menuEl.addEventListener('click', async (ev) => {
             const act = ev.target.dataset.act;
             this._closeAlbumMenu();
+            if (act === 'rebuild') {
+                this.rebuildFolder(path);
+                return;
+            }
             try {
                 const result = await Bridge.call('set_album_config', path, act);
                 if (result && result.success) {
@@ -1015,16 +1023,26 @@ class ImageViewer {
     async rebuildAll() {
         const ok = await confirmDialog('将清空旧缓存，并一次性生成全部缩略图。\n图片较多时可能需要较长时间，可以继续操作界面。确定继续吗？', { danger: true });
         if (!ok) return;
+        await this._startRebuildTask(() => Bridge.call('rebuild_all', '', true), '全量重建');
+    }
+
+    async rebuildFolder(path) {
+        const ok = await confirmDialog(`将重建「${path || '根目录'}」下的缩略图（跳过已有有效缓存），确定继续吗？`, { danger: true });
+        if (!ok) return;
+        await this._startRebuildTask(() => Bridge.call('rebuild_folder', path), '相册重建');
+    }
+
+    async _startRebuildTask(startCall, label = '全量重建') {
         const card = document.getElementById('rebuild-progress');
         if (card) card.classList.remove('hidden');
         this._rebuildStartTime = Date.now();
         this._updateRebuildProgress({ processed: 0, total: 0, current: '', errors: [], running: true });
         try {
-            await Bridge.call('rebuild_all');
+            await startCall();
             const status = await this._waitRebuildDone();
 
             if (status.cancelled) {
-                Toast.warning('全量重建已取消');
+                Toast.warning(`${label}已取消`);
                 return;
             }
 
@@ -1038,9 +1056,9 @@ class ImageViewer {
             } else {
                 this.showAlbums();
             }
-            Toast.success('全量重建完成');
+            Toast.success(`${label}完成`);
         } catch (e) {
-            Toast.error(`全量重建失败：${e.message || e}`);
+            Toast.error(`${label}失败：${e.message || e}`);
         } finally {
             if (card) card.classList.add('hidden');
             this._rebuildStartTime = null;
