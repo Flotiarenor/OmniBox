@@ -7,6 +7,7 @@ import re
 import shutil
 import sqlite3
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -212,7 +213,7 @@ def ensure_thumbnail_bytes(root: Path, rel_path: str, thumb_db_path: Path) -> Op
 
 
 def _generate_one_thumb(payload):
-    """供 ProcessPoolExecutor 调用的模块级 worker。"""
+    """供并行线程池调用的模块级 worker。"""
     root_str, rel = payload
     src_path = Path(root_str) / rel
     try:
@@ -311,7 +312,6 @@ def generate_thumbs_bulk(root: Path, rel_paths, db_path: Path,
                 continue
             pending.append((str(root), rel, st.st_mtime, st.st_size))
 
-        from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
         executor = ThreadPoolExecutor(max_workers=workers)
         futures = {}
         pending_iter = iter(pending)
