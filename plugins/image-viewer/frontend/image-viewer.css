@@ -328,6 +328,21 @@
   0% { transform: translateX(-100%); }
   100% { transform: translateX(350%); }
 }
+.rebuild-progress-text {
+  margin-top: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.rebuild-errors {
+  margin-top: 8px;
+  max-height: 80px;
+  overflow-y: auto;
+  font-size: 11px;
+  color: var(--text-danger, #e5484d);
+  text-align: left;
+  word-break: break-all;
+}
 
 /* ===== 扩展插件内嵌视图（替换主内容区，不遮挡全屏查看器） ===== */
 .view-body {

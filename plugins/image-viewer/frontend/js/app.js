@@ -1010,12 +1010,16 @@ class ImageViewer {
     }
 
     async rebuildAll() {
-        const ok = await confirmDialog('将清空缩略图缓存、图片尺寸元数据和相册索引，并重新扫描目录。\n缩略图会在浏览时按需重新生成。确定继续吗？', { danger: true });
+        const ok = await confirmDialog('将清空旧缓存，并一次性生成全部缩略图。\n图片较多时可能需要较长时间，请保持页面开启。确定继续吗？', { danger: true });
         if (!ok) return;
         const modal = document.getElementById('rebuild-modal');
         if (modal) modal.classList.add('active');
+        this._updateRebuildProgress({ processed: 0, total: 0, current: '', errors: [] });
         try {
-            const result = await Bridge.call('rebuild_all');
+            await Bridge.call('rebuild_all');
+            await this._waitRebuildDone();
+
+            const result = await Bridge.call('list_albums');
             if (result && result.albums) this.albums = result.albums;
             if (result && result.config) this.albumConfig = result.config;
             this.clearSelection();
@@ -1025,11 +1029,56 @@ class ImageViewer {
             } else {
                 this.showAlbums();
             }
-            Toast.success('全量重建完成，缩略图将按需生成');
+            Toast.success('全量重建完成');
         } catch (e) {
-            Toast.error('全量重建失败');
+            Toast.error(`全量重建失败：${e.message || e}`);
         } finally {
             if (modal) modal.classList.remove('active');
+        }
+    }
+
+    async _waitRebuildDone() {
+        // 轮询后端后台任务进度，直到完成
+        while (true) {
+            const status = await Bridge.call('rebuild_status');
+            this._updateRebuildProgress(status);
+            if (status.done) {
+                if (!status.success) {
+                    const errors = status.errors || [];
+                    throw new Error(errors.length ? `失败 ${errors.length} 个，示例：${errors.slice(0, 3).join('；')}` : '后台重建任务异常');
+                }
+                return status;
+            }
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+    }
+
+    _updateRebuildProgress(status = {}) {
+        const total = status.total || 0;
+        const processed = status.processed || 0;
+        const text = document.getElementById('rebuild-progress-text');
+        if (text) text.textContent = `${processed} / ${total}`;
+
+        const bar = document.querySelector('#rebuild-modal .rebuild-progress-bar');
+        if (bar) {
+            if (total > 0) {
+                bar.style.width = `${Math.min(100, Math.round((processed / total) * 100))}%`;
+                bar.style.animation = 'none';
+            } else {
+                bar.style.width = '40%';
+                bar.style.animation = '';
+            }
+        }
+
+        const tip = document.querySelector('#rebuild-modal .rebuild-tip');
+        if (tip) {
+            tip.textContent = status.current ? `正在处理：${status.current}` : '正在扫描并生成缩略图，请稍候…';
+        }
+
+        const errorsEl = document.getElementById('rebuild-errors');
+        if (errorsEl) {
+            const errors = status.errors || [];
+            errorsEl.textContent = errors.length ? `失败 ${errors.length} 个，示例：${errors.slice(0, 3).join('；')}` : '';
         }
     }
 
