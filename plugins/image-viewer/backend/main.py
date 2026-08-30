@@ -1,6 +1,7 @@
 import os
 import json
 import shutil
+import threading
 from pathlib import Path
 from typing import List, Dict
 from shell.backend.plugin_base import PluginBase
@@ -15,6 +16,7 @@ delete_thumb_cache = _fs.delete_thumb_cache
 drop_image_meta = _fs.drop_image_meta
 ensure_thumbnail = _fs.ensure_thumbnail
 ensure_thumbnail_bytes = _fs.ensure_thumbnail_bytes
+generate_thumbs_bulk = _fs.generate_thumbs_bulk
 get_image_size = _fs.get_image_size
 is_safe_path = _fs.is_safe_path
 list_directory = _fs.list_directory
@@ -69,6 +71,7 @@ class ImageViewerPlugin(PluginBase):
         self._list_cache = {}
         self._album_config = self._load_album_config()
         self._album_cache = self._load_album_cache()
+        self._rebuild_task = None
 
     def _load_meta(self) -> dict:
         if self.meta_file.exists():
@@ -108,6 +111,7 @@ class ImageViewerPlugin(PluginBase):
             'regenerate_thumbs': self.regenerate_thumbs,
             'refresh': self.refresh,
             'rebuild_all': self.rebuild_all,
+            'rebuild_status': self.rebuild_status,
             'get_settings': self.get_settings,
             'save_settings': self.save_folder_settings,
             'get_root_dir': self.get_root_dir,
@@ -768,12 +772,29 @@ class ImageViewerPlugin(PluginBase):
             pass
         return {'success': True}
 
-    def rebuild_all(self) -> Dict:
-        """全量重建：清空缩略图缓存、图片尺寸元数据和相册索引，并重新扫描。
+    def _collect_all_images(self) -> List[str]:
+        """收集数据根目录下所有需要生成缩略图的图片相对路径。"""
+        images = []
+        try:
+            for current, dir_names, filenames in os.walk(self.root_dir):
+                dir_names[:] = [d for d in dir_names if not d.startswith('.') and d != '.cache']
+                current_path = Path(current)
+                rel_dir = '' if current_path == self.root_dir else current_path.relative_to(self.root_dir).as_posix()
+                for name in filenames:
+                    if name.startswith('.'):
+                        continue
+                    if Path(name).suffix.lower() in ALLOWED_EXTENSIONS:
+                        rel = f"{rel_dir}/{name}" if rel_dir else name
+                        images.append(rel)
+        except OSError:
+            pass
+        return images
 
-        缩略图不会在这里一次性全部生成，而是浏览时按需写入 SQLite，
-        避免 13 万张图片场景下长时间阻塞。
-        """
+    def rebuild_all(self) -> Dict:
+        """全量重建：清空旧缓存后，在后台一次性生成全部缩略图。"""
+        if self._rebuild_task and self._rebuild_task.get('running'):
+            return {'started': False, 'running': True, **self.rebuild_status()}
+
         self._list_cache.clear()
         self._meta_cache = {}
         try:
@@ -795,8 +816,73 @@ class ImageViewerPlugin(PluginBase):
                 self.album_cache_file.unlink()
         except OSError:
             pass
-        result = self.list_albums()
-        return {'success': True, 'albums': result.get('albums', []), 'config': result.get('config', {})}
+
+        images = self._collect_all_images()
+        self._rebuild_task = {
+            'running': True,
+            'done': False,
+            'success': False,
+            'total': len(images),
+            'processed': 0,
+            'current': '',
+            'errors': [],
+        }
+        threading.Thread(target=self._rebuild_worker, args=(images,), daemon=True).start()
+        return {'started': True, 'running': True, 'total': len(images)}
+
+    def _rebuild_worker(self, images: List[str]):
+        task = self._rebuild_task
+
+        def progress(processed, total, current, errors):
+            task['processed'] = processed
+            task['total'] = total
+            task['current'] = current
+            task['error_count'] = len(errors)
+            task['errors'] = errors[-200:]
+
+        try:
+            result = generate_thumbs_bulk(
+                self.root_dir,
+                images,
+                self.thumb_db_path,
+                progress_callback=progress,
+            )
+            task['processed'] = result['processed']
+            task['error_count'] = len(result['errors'])
+            task['errors'] = result['errors'][-200:]
+            task['success'] = True
+        except Exception as e:
+            task['error_count'] = task.get('error_count', 0) + 1
+            task['errors'] = (task.get('errors', []) + [f'重建异常: {e}'])[-200:]
+            task['success'] = False
+        finally:
+            task['running'] = False
+            task['done'] = True
+            task['current'] = ''
+
+    def rebuild_status(self) -> Dict:
+        """返回全量重建后台任务的进度。"""
+        task = self._rebuild_task
+        if not task:
+            return {
+                'running': False,
+                'done': False,
+                'success': False,
+                'total': 0,
+                'processed': 0,
+                'current': '',
+                'errors': [],
+            }
+        return {
+            'running': bool(task.get('running')),
+            'done': bool(task.get('done')),
+            'success': bool(task.get('success')),
+            'total': int(task.get('total', 0)),
+            'processed': int(task.get('processed', 0)),
+            'current': task.get('current', ''),
+            'error_count': int(task.get('error_count', 0)),
+            'errors': list(task.get('errors', [])),
+        }
 
     def get_settings(self, rel_path: str = '') -> Dict:
         """获取文件夹生效设置（含全局回退与逐级继承）。

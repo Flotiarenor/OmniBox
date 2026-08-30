@@ -365,25 +365,31 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         self.assertGreater(len(albums), 0)
 
     def test_rebuild_all_clears_cache_and_rebuilds(self):
-        """全量重建：清空 SQLite 缩略图和旧文件缩略图目录，重新扫描后仍可按需生成。"""
+        """全量重建：清空旧缓存并后台生成全部缩略图。"""
         import sqlite3
+        import time
         first = self.plugin.get_thumb_data('workA/111_p0.png')
         self.assertIsNotNone(first)
         result = self.plugin.rebuild_all()
-        self.assertTrue(result.get('success'))
-        self.assertGreater(len(result.get('albums', [])), 0)
+        self.assertTrue(result.get('started'))
+        # 等待后台任务完成
+        status = {}
+        for _ in range(300):
+            status = self.plugin.rebuild_status()
+            if status.get('done'):
+                break
+            time.sleep(0.02)
+        self.assertTrue(status.get('done'))
+        self.assertTrue(status.get('success'))
         # 旧文件缩略图目录已被清空/重建
         self.assertFalse((self.root / '.cache' / 'thumbs' / 'workA' / '111_p0.png').exists())
-        # SQLite 缩略图缓存被清空
+        # SQLite 中已生成全部缩略图
         conn = sqlite3.connect(self.root / '.cache' / 'thumbs.db')
         try:
             count = conn.execute('SELECT COUNT(*) FROM thumbs').fetchone()[0]
         finally:
             conn.close()
-        self.assertEqual(count, 0)
-        # 浏览时仍可按需重新生成
-        again = self.plugin.get_thumb_data('workA/111_p0.png')
-        self.assertIsNotNone(again)
+        self.assertGreater(count, 0)
 
     def test_container_folder_card(self):
         """纯容器子文件夹（只有子文件夹、无直接图片）：卡片带递归总数与代表封面

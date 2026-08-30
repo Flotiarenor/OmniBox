@@ -211,6 +211,66 @@ def ensure_thumbnail_bytes(root: Path, rel_path: str, thumb_db_path: Path) -> Op
     return data, mime
 
 
+def generate_thumbs_bulk(root: Path, rel_paths, db_path: Path,
+                         progress_callback=None, stop_event=None) -> Dict[str, Any]:
+    """批量生成缩略图到 SQLite。
+
+    使用同一个数据库连接顺序处理，避免每个文件都重开连接。
+    progress_callback(processed, total, current, errors) 用于上报进度。
+    """
+    rel_paths = list(rel_paths)
+    total = len(rel_paths)
+    processed = 0
+    errors: List[str] = []
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = _connect_thumb_db(db_path)
+    try:
+        for rel in rel_paths:
+            if stop_event is not None and stop_event.is_set():
+                break
+            src_path = root / rel
+            try:
+                st = src_path.stat()
+            except OSError:
+                errors.append(rel)
+                processed += 1
+                if progress_callback:
+                    progress_callback(processed, total, rel, errors)
+                continue
+
+            row = conn.execute(
+                'SELECT data, mime, source_mtime, source_size FROM thumbs WHERE path = ?',
+                (rel,),
+            ).fetchone()
+            if row and abs(float(row[2]) - float(st.st_mtime)) < 0.5 and int(row[3]) == int(st.st_size):
+                processed += 1
+                if progress_callback:
+                    progress_callback(processed, total, rel, errors)
+                continue
+
+            generated = generate_thumb_bytes(src_path)
+            if generated is None:
+                errors.append(rel)
+            else:
+                data, mime = generated
+                conn.execute(
+                    'INSERT OR REPLACE INTO thumbs(path, source_mtime, source_size, mime, data, created_at) '
+                    'VALUES (?, ?, ?, ?, ?, ?)',
+                    (rel, st.st_mtime, st.st_size, mime, data, time.time()),
+                )
+
+            processed += 1
+            if processed % 50 == 0:
+                conn.commit()
+            if progress_callback:
+                progress_callback(processed, total, rel, errors)
+
+        conn.commit()
+    finally:
+        conn.close()
+    return {'processed': processed, 'total': total, 'errors': errors}
+
+
 def ensure_thumbnail(root: Path, rel_path: str, thumb_dir: Path) -> Path:
     """旧版文件式缩略图入口，保留给其他兼容代码使用；新代码请用 ensure_thumbnail_bytes。"""
     thumb_path = thumb_dir / rel_path
