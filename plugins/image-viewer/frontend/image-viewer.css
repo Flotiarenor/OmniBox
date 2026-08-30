@@ -64,6 +64,17 @@
 .iv-view-title { font-size: 15px; font-weight: 700; color: var(--text-primary); }
 .iv-view-sub { font-size: 11px; color: var(--text-secondary); }
 
+.iv-selection-count {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--iv-accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  white-space: nowrap;
+}
+
 /* ===== 内容 ===== */
 .iv-content { padding: 16px; background: transparent; }
 
@@ -160,11 +171,13 @@
   padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--iv-radius-sm);
   background: var(--bg-surface); color: var(--text-primary);
 }
-.iv-setting-item select:disabled {
+.iv-setting-item select:disabled,
+.iv-setting-item input:disabled {
   opacity: 0.5; cursor: not-allowed;
 }
 .iv-check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
 .iv-check input { accent-color: var(--accent); width: 16px; height: 16px; }
+.iv-check input:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .iv-empty {
   display: flex; flex-direction: column; align-items: center; justify-content: center;

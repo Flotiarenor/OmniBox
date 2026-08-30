@@ -13,6 +13,7 @@ class ImageViewer {
         this.currentImages = [];
         this.currentAllImages = [];      // 连续浏览序列：整个混合视图按瀑布流顺序展开的全部图片
         this.currentAllOffset = 0;       // 当前页首项在连续序列中的起始偏移（分页对齐用）
+        this.filteredSeqIndexes = null;  // 当前页搜索过滤后，瓦片在完整连续序列中的起始位置
         this.navStack = [];              // 混合瀑布流逐层点入时的返回栈
         this.currentSettings = {};
         this.currentRowHeight = 200;
@@ -60,7 +61,11 @@ class ImageViewer {
         this.loadExtensions();
 
         window.addEventListener('resize', () => {
-            if (this.mode === 'images' && this.currentItems.length) {
+            if (this.mode !== 'images' || !this.currentItems.length) return;
+            const keyword = document.getElementById('iv-search').value.trim();
+            if (keyword) {
+                this.filterCurrentImages(keyword);
+            } else {
                 this.renderJustifiedLayout(this.currentItems);
             }
         });
@@ -145,12 +150,20 @@ class ImageViewer {
         const search = document.getElementById('iv-search');
         search.addEventListener('input', Utils.debounce(() => {
             document.getElementById('iv-search-clear').classList.toggle('hidden', !search.value.trim());
-            this.showAlbums();
+            if (this.mode === 'images') {
+                this.filterCurrentImages(search.value.trim());
+            } else {
+                this.showAlbums();
+            }
         }, 250));
         document.getElementById('iv-search-clear').addEventListener('click', () => {
             search.value = '';
             document.getElementById('iv-search-clear').classList.add('hidden');
-            this.showAlbums();
+            if (this.mode === 'images') {
+                this.filterCurrentImages('');
+            } else {
+                this.showAlbums();
+            }
             search.focus();
         });
 
@@ -170,6 +183,13 @@ class ImageViewer {
         document.getElementById('setting-row-height').addEventListener('input', (e) => {
             document.getElementById('setting-row-height-val').textContent = e.target.value;
         });
+
+        const applyToFolder = document.getElementById('setting-apply-to-folder');
+        if (applyToFolder) {
+            applyToFolder.addEventListener('change', () => {
+                document.getElementById('setting-root-dir').disabled = applyToFolder.checked;
+            });
+        }
 
         document.getElementById('image-grid').addEventListener('contextmenu', (e) => {
             const card = e.target.closest('.iv-image-card');
@@ -214,11 +234,24 @@ class ImageViewer {
     showAlbums() {
         this._stopSlideshow();
         this.mode = this.mode === 'images' ? 'albums' : this.mode;
+        this.filteredSeqIndexes = null;
+        if (this.isMultiSelectMode) {
+            this.isMultiSelectMode = false;
+            const multiBtn = document.getElementById('btn-multi-select');
+            if (multiBtn) {
+                multiBtn.classList.remove('active');
+                multiBtn.textContent = '开启多选';
+            }
+            this.clearSelection();
+        }
+        document.getElementById('iv-search').placeholder = '搜索相册…';
         document.getElementById('iv-back').classList.toggle('hidden', this.mode !== 'children');
         document.getElementById('btn-slideshow').classList.add('hidden');
         document.getElementById('btn-multi-select').classList.add('hidden');
         document.getElementById('btn-delete-selected').classList.add('hidden');
         document.getElementById('btn-move-selected').classList.add('hidden');
+        const selectionCount = document.getElementById('iv-selection-count');
+        if (selectionCount) selectionCount.classList.add('hidden');
         document.getElementById('pagination').innerHTML = '';
         const imageGrid = document.getElementById('image-grid');
         imageGrid.innerHTML = '';
@@ -444,6 +477,10 @@ class ImageViewer {
         this.currentPath = path;
         this.currentPage = 1;
         this.mode = 'images';
+        this.filteredSeqIndexes = null;
+        document.getElementById('iv-search').value = '';
+        document.getElementById('iv-search-clear').classList.add('hidden');
+        document.getElementById('iv-search').placeholder = '搜索当前相册…';
         document.getElementById('iv-back').classList.remove('hidden');
         document.getElementById('btn-slideshow').classList.remove('hidden');
         document.getElementById('btn-multi-select').classList.remove('hidden');
@@ -628,12 +665,18 @@ class ImageViewer {
             document.getElementById('iv-stats').textContent =
                 (data.total === imgTotal) ? `共 ${data.total} 张图片` : `共 ${data.total} 项 · ${imgTotal} 张图片`;
             grid.innerHTML = '';
+            this.filteredSeqIndexes = null;
             if (!this.currentItems.length) {
                 grid.innerHTML = this._emptyHtml('🖼️', '此相册暂无图片');
                 grid.style.height = 'auto';
                 return;
             }
-            this.renderJustifiedLayout(this.currentItems);
+            const keyword = document.getElementById('iv-search').value.trim();
+            if (keyword) {
+                this.filterCurrentImages(keyword);
+            } else {
+                this.renderJustifiedLayout(this.currentItems);
+            }
             this.pagination.render(data.page, Math.ceil(data.total / perPage));
         } catch (error) {
             grid.innerHTML = this._emptyHtml('⚠️', '图片加载失败');
@@ -653,13 +696,18 @@ class ImageViewer {
         // 每个瓦片在连续浏览序列中的起始位置（子文件夹 → 其 p0，单图 → 自身）。
         // 分页时以 this.currentAllOffset 为基准：第 2+ 页的瓦片对应完整序列的中后段，
         // 否则点击会错位打开到序列开头的图片。
+        // 搜索过滤时使用 filterCurrentImages 预计算的映射，保证灯箱仍从完整序列正确位置打开。
         // 注意：image_count 为直接图片数（容器为 0，不参与序列展开）。
         const seqIndex = new Map();
-        let acc = this.currentAllOffset || 0;
-        items.forEach((it, i) => {
-            seqIndex.set(i, acc);
-            acc += (it.type === 'album' ? (it.image_count || 0) : 1);
-        });
+        if (this.filteredSeqIndexes && this.filteredSeqIndexes.size === items.length) {
+            this.filteredSeqIndexes.forEach((value, key) => seqIndex.set(key, value));
+        } else {
+            let acc = this.currentAllOffset || 0;
+            items.forEach((it, i) => {
+                seqIndex.set(i, acc);
+                acc += (it.type === 'album' ? (it.image_count || 0) : 1);
+            });
+        }
 
         // 圆圈数量角标：仅在该瓦片对应子文件夹自身生效的排序为「时间+文件名」时显示
         // （自己没设置则继承父级，后端 use_time_name 已算好）
@@ -733,8 +781,46 @@ class ImageViewer {
                     }
                 });
             }
+            if (item.type !== 'album' && this.selectedImages.has(item.url)) {
+                card.classList.add('selected');
+            }
             grid.appendChild(card);
         });
+    }
+
+    filterCurrentImages(keyword = '') {
+        const grid = document.getElementById('image-grid');
+        const normalized = keyword.trim().toLowerCase();
+        if (!normalized) {
+            this.filteredSeqIndexes = null;
+            if (this.currentItems.length) this.renderJustifiedLayout(this.currentItems);
+            return;
+        }
+
+        const filtered = [];
+        const seqIndexes = new Map();
+        let acc = this.currentAllOffset || 0;
+        this.currentItems.forEach((it, index) => {
+            const haystack = [
+                it.name || '',
+                it.path || '',
+                it.url ? it.url.split('/').pop() : ''
+            ].join(' ').toLowerCase();
+            if (haystack.includes(normalized)) {
+                seqIndexes.set(filtered.length, acc);
+                filtered.push(it);
+            }
+            acc += (it.type === 'album' ? (it.image_count || 0) : 1);
+        });
+
+        this.filteredSeqIndexes = seqIndexes;
+        grid.innerHTML = '';
+        grid.style.height = 'auto';
+        if (!filtered.length) {
+            grid.innerHTML = this._emptyHtml('🔍', '没有匹配的图片', '换个关键词试试');
+            return;
+        }
+        this.renderJustifiedLayout(filtered);
     }
 
     // ===== 幻灯片 =====
@@ -773,7 +859,16 @@ class ImageViewer {
         deleteBtn.classList.toggle('hidden', !this.isMultiSelectMode);
         moveBtn.classList.toggle('hidden', !this.isMultiSelectMode);
         if (thumbBtn) thumbBtn.classList.toggle('hidden', !this.isMultiSelectMode);
+        const selectionCount = document.getElementById('iv-selection-count');
+        if (selectionCount) selectionCount.classList.toggle('hidden', !this.isMultiSelectMode);
         if (!this.isMultiSelectMode) this.clearSelection();
+    }
+
+    _updateSelectionCount() {
+        const el = document.getElementById('iv-selection-count');
+        if (!el) return;
+        el.textContent = `已选 ${this.selectedImages.size} 项`;
+        el.classList.toggle('hidden', !this.isMultiSelectMode || this.selectedImages.size === 0);
     }
 
     toggleSelectImage(imgUrl, cardEl) {
@@ -784,11 +879,13 @@ class ImageViewer {
             this.selectedImages.add(imgUrl);
             cardEl.classList.add('selected');
         }
+        this._updateSelectionCount();
     }
 
     clearSelection() {
         this.selectedImages.clear();
         document.querySelectorAll('.iv-image-card.selected').forEach(el => el.classList.remove('selected'));
+        this._updateSelectionCount();
     }
 
     handleContextAction(action) {
@@ -815,7 +912,7 @@ class ImageViewer {
             const result = await Bridge.call('delete_files', imgs);
             if (result.errors.length) Toast.error(`部分删除失败: ${result.errors.join('; ')}`);
             else Toast.success(`已删除 ${imgs.length} 张图片`);
-            this.selectedImages.clear();
+            this.clearSelection();
             await this.loadImages(this.currentPath, this.currentPage);
         } catch (e) {
             Toast.error('删除请求失败');
@@ -843,7 +940,7 @@ class ImageViewer {
             const result = await Bridge.call('move_files', imgs, this.moveDestPath);
             if (result.errors.length) Toast.error(`部分移动失败: ${result.errors.join('; ')}`);
             else Toast.success(`已移动 ${imgs.length} 张图片`);
-            this.selectedImages.clear();
+            this.clearSelection();
             this.closeMoveModal();
             await this.loadImages(this.currentPath, this.currentPage);
         } catch (e) {
@@ -890,7 +987,7 @@ class ImageViewer {
             const result = await Bridge.call('regenerate_thumbs', imgs);
             if (result.errors.length) Toast.error(`部分失败: ${result.errors.join('; ')}`);
             else Toast.success(`已重新生成 ${imgs.length} 张缩略图`);
-            this.selectedImages.clear();
+            this.clearSelection();
             await this.loadImages(this.currentPath, this.currentPage);
         } catch (e) {
             Toast.error('更新缩略图失败');
@@ -903,6 +1000,14 @@ class ImageViewer {
     async openSettingsModal() {
         document.getElementById('settings-modal').classList.add('active');
         document.getElementById('setting-current-folder-name').textContent = this.currentPath || '根目录';
+        const applyToFolder = document.getElementById('setting-apply-to-folder');
+        if (applyToFolder) {
+            // 每次打开默认保存到全局；勾选“仅当前文件夹”时才禁用根目录输入。
+            // 根目录本身没有“文件夹级”概念，禁用该选项避免误导。
+            applyToFolder.checked = false;
+            applyToFolder.disabled = !this.currentPath;
+            document.getElementById('setting-root-dir').disabled = false;
+        }
         try {
             const s = await Bridge.call('get_settings', this.currentPath);
             document.getElementById('setting-row-height').value = s.row_height;
@@ -925,9 +1030,11 @@ class ImageViewer {
             row_height: parseInt(document.getElementById('setting-row-height').value, 10),
             per_page: parseInt(document.getElementById('setting-per-page').value, 10),
             sort_by: document.getElementById('setting-sort-by').value,
-            sort_order: document.getElementById('setting-sort-order').value,
-            root_dir: document.getElementById('setting-root-dir').value.trim() || undefined
+            sort_order: document.getElementById('setting-sort-order').value
         };
+        if (!isFolderOnly) {
+            settings.root_dir = document.getElementById('setting-root-dir').value.trim() || undefined;
+        }
         try {
             if (isFolderOnly) {
                 await Bridge.call('save_settings', this.currentPath, settings);
