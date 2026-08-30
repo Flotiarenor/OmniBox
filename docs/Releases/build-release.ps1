@@ -88,6 +88,13 @@ if (-not $SkipPyInstaller) {
         Write-Host "ERROR: 未找到虚拟环境 Python: $venvPython" -ForegroundColor $ColorError; exit 1
     }
 
+    # 同步 requirements.txt
+    Write-Host "  -> 同步 requirements.txt..." -ForegroundColor $ColorWarning
+    & $venvPython -m pip freeze | Out-File -FilePath "$ProjectRoot/requirements.txt" -Encoding UTF8
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: 同步 requirements.txt 失败" -ForegroundColor $ColorError; exit 1
+    }
+
     # Check UPX
     $upxFound = Get-Command upx -ErrorAction SilentlyContinue
     if ($upxFound) {
