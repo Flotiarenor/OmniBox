@@ -51,6 +51,9 @@ class ImageCleanerPlugin(PluginBase):
     def ensure_thumb(self, rel_path: str) -> str:
         return self._get_host().ensure_thumb(rel_path)
 
+    def get_thumb_data(self, rel_path: str):
+        return self._get_host().get_thumb_data(rel_path)
+
     def register_api(self) -> dict:
         return {
             'duplicate_scan': self.duplicate_scan,
