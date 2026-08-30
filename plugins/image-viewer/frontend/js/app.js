@@ -25,6 +25,7 @@ class ImageViewer {
         this.selectedImages = new Set();
         this.moveDestPath = '';
         this.slideshowTimer = null;
+        this.scrollStack = [];             // 从列表进入详情后返回时恢复滚动位置
 
         this.lightbox = null;
         this.pagination = null;
@@ -124,6 +125,7 @@ class ImageViewer {
                 this.mode = 'albums';
                 this.childParentPath = '';
                 this.fromChildren = false;
+                this.scrollStack = [];
                 document.querySelectorAll('.iv-nav-item[data-view]').forEach(b => b.classList.toggle('active', b === btn));
                 document.querySelectorAll('#iv-extensions .obx-extension').forEach(b => b.classList.remove('active'));
                 this.showAlbums();
@@ -212,6 +214,8 @@ class ImageViewer {
 
         document.querySelectorAll('.modal').forEach(modal => {
             modal.addEventListener('click', (e) => {
+                // 全量重建进行中不允许点击遮罩关闭，避免用户误以为已取消
+                if (modal.id === 'rebuild-modal') return;
                 if (e.target === modal) modal.classList.remove('active');
             });
         });
@@ -438,6 +442,10 @@ class ImageViewer {
     }
 
     async openAlbum(path) {
+        // 从列表/瀑布流点入时记录滚动位置，返回时恢复到刚刚浏览的位置
+        if (this.mode === 'albums' || this.mode === 'children') {
+            this._rememberScroll();
+        }
         // 从瀑布流点入时记录当前视图状态，返回时原样恢复
         if (this.mode === 'images') {
             this.navStack.push({
@@ -491,6 +499,23 @@ class ImageViewer {
         this.loadImages(path, 1);
     }
 
+    _rememberScroll() {
+        const content = document.getElementById('iv-content');
+        if (content) this.scrollStack.push(content.scrollTop);
+    }
+
+    _restoreScroll() {
+        const scrollTop = this.scrollStack.length ? this.scrollStack.pop() : null;
+        if (scrollTop == null) return;
+        const content = document.getElementById('iv-content');
+        if (content) {
+            // 等待渲染完成后再恢复，避免被浏览器重置到顶部
+            requestAnimationFrame(() => {
+                content.scrollTop = scrollTop || 0;
+            });
+        }
+    }
+
     _popNavStack() {
         const prev = this.navStack.pop();
         if (!prev) return null;
@@ -509,6 +534,7 @@ class ImageViewer {
                     this.childParentPath = '';
                     this.currentPath = '';
                     this.showAlbums();
+                    this._restoreScroll();
                 } else {
                     this._showFolder(prev);
                 }
@@ -518,11 +544,13 @@ class ImageViewer {
                 this.mode = 'children';
                 this.currentPath = this.childParentPath;
                 this.showAlbums();
+                this._restoreScroll();
             } else {
                 this.mode = 'albums';
                 this.childParentPath = '';
                 this.currentPath = '';
                 this.showAlbums();
+                this._restoreScroll();
             }
         } else if (this.mode === 'children') {
             if (this.navStack.length) {
@@ -532,6 +560,7 @@ class ImageViewer {
                     this.childParentPath = '';
                     this.currentPath = '';
                     this.showAlbums();
+                    this._restoreScroll();
                 } else {
                     this._showFolder(prev);
                 }
@@ -540,6 +569,7 @@ class ImageViewer {
                 this.childParentPath = '';
                 this.currentPath = '';
                 this.showAlbums();
+                this._restoreScroll();
             }
         }
     }
@@ -982,6 +1012,8 @@ class ImageViewer {
     async rebuildAll() {
         const ok = await confirmDialog('将清空缩略图缓存、图片尺寸元数据和相册索引，并重新扫描目录。\n缩略图会在浏览时按需重新生成。确定继续吗？', { danger: true });
         if (!ok) return;
+        const modal = document.getElementById('rebuild-modal');
+        if (modal) modal.classList.add('active');
         try {
             const result = await Bridge.call('rebuild_all');
             if (result && result.albums) this.albums = result.albums;
@@ -996,6 +1028,8 @@ class ImageViewer {
             Toast.success('全量重建完成，缩略图将按需生成');
         } catch (e) {
             Toast.error('全量重建失败');
+        } finally {
+            if (modal) modal.classList.remove('active');
         }
     }
 
