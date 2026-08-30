@@ -1,9 +1,11 @@
 {
   "name": "image-viewer",
-  "version": "2.4.1",
+  "version": "2.4.2",
   "displayName": "图片相册",
+  "description": "浏览本地图片，支持按文件夹聚合的相册、混合瀑布流、时间线与幻灯片浏览。",
   "icon": "🖼️",
   "dependencies": [],
+  "permissions": ["filesystem:read", "filesystem:write"],
   "backend": {
     "entry": "backend/main.py",
     "class": "ImageViewerPlugin"

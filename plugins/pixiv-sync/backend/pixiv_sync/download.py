@@ -8,7 +8,7 @@
 
 import os
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Set, Optional
 from urllib.parse import urlparse
 
 from pixiv_mini import PixivError
@@ -16,6 +16,15 @@ from pixiv_mini import PixivError
 from . import artist as artist_mod
 from . import tasks as tasks_mod
 
+def _safe_int(value: Any) -> Optional[int]:
+    """安全转 int：None 或非法值返回 None，合法值返回 int。"""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        print(f"[pixiv_sync-download]作品id 缺失/非法: {value}")
+        return None
 
 def all_image_urls(p, illust: Dict[str, Any]) -> List[str]:
     """多图作品返回全部页 URL，单图返回封面 URL。
@@ -53,7 +62,7 @@ def all_image_urls(p, illust: Dict[str, Any]) -> List[str]:
 def _work_id(illust: Dict[str, Any]):
     """从 item 中安全取作品 id；缺失/非法时返回 None。"""
     try:
-        return int(illust.get("id"))
+        return _safe_int(illust.get("id"))
     except (TypeError, ValueError):
         return None
 

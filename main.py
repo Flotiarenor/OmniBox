@@ -113,7 +113,14 @@ def main():
     # 适用于通过 nginx/SSH 隧道在浏览器中访问 OmniBox UI。
     if '--web-only' in sys.argv:
         app = create_app(config, manager)
-        host, port = config['server']['host'], config['server']['port']
+        host = config['server']['host']
+        port = int(config['server']['port'])
+        # 允许用 --port 覆盖配置端口，便于 nginx 反代时后端监听内网端口。
+        if '--port' in sys.argv:
+            try:
+                port = int(sys.argv[sys.argv.index('--port') + 1])
+            except (IndexError, ValueError):
+                pass
         print(f"[OmniBox] Web-only 模式启动: http://{host}:{port}")
         app.run(host=host, port=port, debug=False, use_reloader=False)
         return

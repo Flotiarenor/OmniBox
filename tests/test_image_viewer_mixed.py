@@ -233,6 +233,41 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         workA = next(a for a in albums if a['path'] == 'workA')
         self.assertEqual(workA['cover'], 'workA/111_p0.png')
 
+    def test_album_cache_persist_version3(self):
+        """当前版本相册索引应写入 version 3，避免每次重启都被当作旧缓存作废。"""
+        self.plugin.list_albums()
+        self.assertEqual(self.plugin._album_cache.get('version'), 3)
+        cache_file = self.root / '.cache' / 'albums_index.json'
+        if cache_file.exists():
+            import json
+            saved = json.loads(cache_file.read_text(encoding='utf-8'))
+            self.assertEqual(saved.get('version'), 3)
+
+    def test_folder_settings_ignore_root_dir(self):
+        """文件夹级设置不应保存 root_dir，避免出现“保存了但根目录没变”的困惑。"""
+        class FakeStore:
+            def __init__(self):
+                self.data = {}
+            def get(self, name):
+                return self.data.get(name, {})
+            def set(self, name, value):
+                self.data[name] = value
+
+        plugin = self.module.ImageViewerPlugin(
+            {'name': 'image-viewer'},
+            {'directories': {'data_root': str(self.root)}},
+        )
+        plugin._settings_store = FakeStore()
+        plugin.save_folder_settings('photos/2026', {
+            'root_dir': '/tmp/should-not-be-stored',
+            'sort_by': 'name',
+            'sort_order': 'asc',
+        })
+        stored = plugin._settings_store.get('image-viewer')
+        folder_settings = stored.get('folders', {}).get('photos/2026', {})
+        self.assertNotIn('root_dir', folder_settings)
+        self.assertEqual(folder_settings['sort_by'], 'name')
+
     def test_settings_defaults(self):
         s = self.plugin.get_settings('')
         self.assertEqual(s['sort_by'], 'mtime')
@@ -307,12 +342,15 @@ class ImageViewerMixedTestCase(unittest.TestCase):
             self.assertEqual(seq[:2], ['9999/9999_p0.jpg', '9999/9999_p1.jpg'])
 
     def test_regenerate_thumbs(self):
-        """更新缩略图：删除缓存并重新生成；非法路径报错。"""
+        """更新缩略图：删除 SQLite 缓存并重新生成；非法路径报错。"""
         result = self.plugin.regenerate_thumbs(['workA/111_p0.png'])
         self.assertEqual(result['errors'], [])
         self.assertIn('workA/111_p0.png', result['regenerated'])
-        thumb = self.root / '.cache' / 'thumbs' / 'workA' / '111_p0.png'
-        self.assertTrue(thumb.exists())
+        thumb_data = self.plugin.get_thumb_data('workA/111_p0.png')
+        self.assertIsNotNone(thumb_data)
+        self.assertGreater(len(thumb_data[0]), 0)
+        db_path = self.root / '.cache' / 'thumbs.db'
+        self.assertTrue(db_path.exists())
         # 非法路径报错
         bad = self.plugin.regenerate_thumbs(['../evil.png'])
         self.assertTrue(bad['errors'])
@@ -325,6 +363,33 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         self.assertGreater(data['total'], 0)
         albums = self.plugin.list_albums()['albums']
         self.assertGreater(len(albums), 0)
+
+    def test_rebuild_all_clears_cache_and_rebuilds(self):
+        """全量重建：清空旧缓存并后台生成全部缩略图。"""
+        import sqlite3
+        import time
+        first = self.plugin.get_thumb_data('workA/111_p0.png')
+        self.assertIsNotNone(first)
+        result = self.plugin.rebuild_all()
+        self.assertTrue(result.get('started'))
+        # 等待后台任务完成
+        status = {}
+        for _ in range(300):
+            status = self.plugin.rebuild_status()
+            if status.get('done'):
+                break
+            time.sleep(0.02)
+        self.assertTrue(status.get('done'))
+        self.assertTrue(status.get('success'))
+        # 旧文件缩略图目录已被清空/重建
+        self.assertFalse((self.root / '.cache' / 'thumbs' / 'workA' / '111_p0.png').exists())
+        # SQLite 中已生成全部缩略图
+        conn = sqlite3.connect(self.root / '.cache' / 'thumbs.db')
+        try:
+            count = conn.execute('SELECT COUNT(*) FROM thumbs').fetchone()[0]
+        finally:
+            conn.close()
+        self.assertGreater(count, 0)
 
     def test_container_folder_card(self):
         """纯容器子文件夹（只有子文件夹、无直接图片）：卡片带递归总数与代表封面

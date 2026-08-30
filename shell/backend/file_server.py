@@ -14,14 +14,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 '''
 
-import re
+import io
 import sys
-from flask import Flask, request, send_from_directory, send_file, abort, Response
+from flask import Flask, request, send_from_directory, send_file, abort
 from pathlib import Path
+from collections.abc import Iterable
+from shell.backend.plugin_manager import PluginManager
 
 def _get_shell_dir() -> Path:
     if getattr(sys, 'frozen', False):
-        return Path(sys._MEIPASS) / 'shell'
+        meipass = getattr(sys, '_MEIPASS', None)
+        if meipass:
+            return Path(meipass) / 'shell'
     return Path(__file__).resolve().parent.parent
 
 _SHELL_DIR = _get_shell_dir()
@@ -33,7 +37,7 @@ def _is_safe_path(full_path: Path, root: Path) -> bool:
     except ValueError:
         return False
 
-def create_app(config, plugin_manager):
+def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
     app = Flask(__name__)
     frontend_dist = _SHELL_DIR / 'frontend' / 'dist'
 
@@ -75,11 +79,23 @@ def create_app(config, plugin_manager):
     def serve_media_file(filepath, plugin_name):
         """媒体/文件访问：支持相对路径和绝对路径，并做越权目录校验。"""
         instance = plugin_manager.get_plugin_instance(plugin_name) if plugin_name else None
-
+        if plugin_name and instance is None:
+            print(f"[FileServer] 找不到插件 {plugin_name} 的实例")
+            abort(404)
         # 确定允许访问的根目录（支持插件跨多个媒体目录）
         if plugin_name and plugin_name in plugin_manager._instances:
+            assert instance is not None  # 上面已确认 plugin_name 有对应实例
             getter = getattr(instance, 'get_file_roots', None)
-            roots = getter() if callable(getter) else [instance.get_data_root()]
+            if callable(getter):
+                result = getter()
+                if isinstance(result, Iterable) and not isinstance(result, (str, bytes)):
+                    roots = list(result)
+                else:
+                    roots = []
+            else:
+                roots = []
+            if not roots:
+                roots = [instance.get_data_root()]
         else:
             # 回退到全局根目录
             roots = [Path(config['directories']['data_root']).resolve()]
@@ -130,8 +146,27 @@ def create_app(config, plugin_manager):
     def serve_thumb(filepath):
         plugin_name = request.args.get('plugin', '')
         instance = plugin_manager.get_plugin_instance(plugin_name) if plugin_name else None
+        if plugin_name and instance is None:
+            print(f"[File_Server-Thumbs] 找不到插件 {plugin_name} 的实例")
+            abort(404)
+
+        # 新路径：插件可直接返回 SQLite 缩略图字节，避免散文件随机 I/O。
+        get_thumb_data = getattr(instance, 'get_thumb_data', None) if instance is not None else None
+        if callable(get_thumb_data):
+            try:
+                result = get_thumb_data(filepath)
+                if result:
+                    data, mime = result
+                    resp = send_file(io.BytesIO(data), mimetype=mime, conditional=True)
+                    resp.headers['Cache-Control'] = 'private, max-age=86400'
+                    return resp
+            except Exception:
+                pass
+            abort(404)
+
         if plugin_name and plugin_name in plugin_manager._instances:
-            thumb_dir = getattr(instance, 'thumb_dir', None) if instance is not None else None
+            assert instance is not None  # 上面已确认 plugin_name 有对应实例
+            thumb_dir = getattr(instance, 'thumb_dir', None)
             if thumb_dir is None:
                 thumb_dir = instance.get_data_root() / '.cache' / 'thumbs'
         else:
@@ -219,79 +254,5 @@ def create_app(config, plugin_manager):
                 html = html.replace('</head>', inject + '</head>')
                 return html
         return send_from_directory(plugin_dir, filename)
-
-    @app.route('/netease-proxy/')
-    @app.route('/netease-proxy/<path:path>', methods=['GET', 'POST', 'HEAD', 'OPTIONS'])
-    def netease_proxy(path=''):
-        """轻量反向代理网易云音乐网页版，方便在 OmniBox 内直接登录/播放。"""
-        try:
-            from curl_cffi import requests as curl_requests
-        except Exception:
-            return 'curl_cffi 未安装，无法代理网易云页面', 500
-
-        target = 'https://music.163.com/' + path
-        if request.query_string:
-            target += '?' + request.query_string.decode('utf-8')
-
-        headers = {}
-        for name in ('User-Agent', 'Referer', 'Origin', 'Accept', 'Accept-Language', 'Content-Type'):
-            value = request.headers.get(name)
-            if value:
-                headers[name] = value
-        # 透传浏览器里已经通过代理种下的 Cookie，维持登录态
-        cookie = request.headers.get('Cookie')
-        if cookie:
-            headers['Cookie'] = cookie
-
-        try:
-            resp = curl_requests.request(
-                request.method,
-                target,
-                headers=headers,
-                data=request.get_data() if request.method in ('POST', 'PUT', 'PATCH') else None,
-                impersonate='chrome',
-                allow_redirects=True,
-                timeout=30,
-            )
-        except Exception as e:
-            return f'代理请求失败: {e}', 502
-
-        excluded = {'content-encoding', 'content-length', 'transfer-encoding', 'connection'}
-        response_headers = []
-        for key, value in resp.headers.items():
-            low = key.lower()
-            if low in excluded:
-                continue
-            if low == 'set-cookie':
-                # 去掉 Domain/Secure/SameSite，让 Cookie 能保存在 OmniBox 源下
-                cleaned = []
-                for part in value.split(';'):
-                    part = part.strip()
-                    if not part:
-                        continue
-                    low_part = part.lower()
-                    if low_part.startswith('domain=') or low_part.startswith('secure') or low_part.startswith('samesite='):
-                        continue
-                    cleaned.append(part)
-                value = '; '.join(cleaned)
-            response_headers.append((key, value))
-
-        content = resp.content
-        content_type = resp.headers.get('content-type', '')
-        if 'text/html' in content_type.lower():
-            try:
-                html = content.decode('utf-8', errors='replace')
-                html = html.replace('https://music.163.com/', '/netease-proxy/')
-                html = html.replace('http://music.163.com/', '/netease-proxy/')
-                html = re.sub(
-                    r"(href|src|action)=([\"'])/(?!/|netease-proxy/)",
-                    r"\1=\2/netease-proxy/",
-                    html,
-                )
-                content = html.encode('utf-8')
-            except Exception:
-                pass
-
-        return Response(content, status=resp.status_code, headers=response_headers)
 
     return app
