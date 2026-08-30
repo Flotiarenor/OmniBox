@@ -42,6 +42,9 @@ HIDDEN_IMPORTS = [
     'curl_cffi',
     'requests',
     'Crypto',
+    'concurrent.futures',
+    'concurrent.futures.thread',
+    'sqlite3',
 ]
 
 # ── 数据文件 ──────────────────────────────────────────────────────────
