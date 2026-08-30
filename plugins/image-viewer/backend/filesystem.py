@@ -211,20 +211,85 @@ def ensure_thumbnail_bytes(root: Path, rel_path: str, thumb_db_path: Path) -> Op
     return data, mime
 
 
+def _generate_one_thumb(payload):
+    """供 ProcessPoolExecutor 调用的模块级 worker。"""
+    root_str, rel = payload
+    src_path = Path(root_str) / rel
+    try:
+        st = src_path.stat()
+    except OSError:
+        return {'rel': rel, 'data': None, 'mime': None, 'mtime': 0.0, 'size': 0, 'error': 'stat failed'}
+    generated = generate_thumb_bytes(src_path)
+    if generated is None:
+        return {'rel': rel, 'data': None, 'mime': None, 'mtime': st.st_mtime, 'size': st.st_size, 'error': 'generate failed'}
+    data, mime = generated
+    return {'rel': rel, 'data': data, 'mime': mime, 'mtime': st.st_mtime, 'size': st.st_size, 'error': None}
+
+
 def generate_thumbs_bulk(root: Path, rel_paths, db_path: Path,
-                         progress_callback=None, stop_event=None) -> Dict[str, Any]:
+                         progress_callback=None, stop_event=None,
+                         workers: int | None = None) -> Dict[str, Any]:
     """批量生成缩略图到 SQLite。
 
-    使用同一个数据库连接顺序处理，避免每个文件都重开连接。
+    默认使用多线程并行生成；workers<=1 时退化为顺序处理。
     progress_callback(processed, total, current, errors) 用于上报进度。
     """
     rel_paths = list(rel_paths)
     total = len(rel_paths)
     processed = 0
     errors: List[str] = []
+    if workers is None:
+        workers = min(8, max(1, os.cpu_count() or 4))
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = _connect_thumb_db(db_path)
+
+    def commit_progress(rel):
+        nonlocal processed
+        if processed % 50 == 0:
+            conn.commit()
+        if progress_callback:
+            progress_callback(processed, total, rel, errors)
+
     try:
+        if workers <= 1:
+            for rel in rel_paths:
+                if stop_event is not None and stop_event.is_set():
+                    break
+                src_path = root / rel
+                try:
+                    st = src_path.stat()
+                except OSError:
+                    errors.append(rel)
+                    processed += 1
+                    commit_progress(rel)
+                    continue
+
+                row = conn.execute(
+                    'SELECT data, mime, source_mtime, source_size FROM thumbs WHERE path = ?',
+                    (rel,),
+                ).fetchone()
+                if row and abs(float(row[2]) - float(st.st_mtime)) < 0.5 and int(row[3]) == int(st.st_size):
+                    processed += 1
+                    commit_progress(rel)
+                    continue
+
+                generated = generate_thumb_bytes(src_path)
+                if generated is None:
+                    errors.append(rel)
+                else:
+                    data, mime = generated
+                    conn.execute(
+                        'INSERT OR REPLACE INTO thumbs(path, source_mtime, source_size, mime, data, created_at) '
+                        'VALUES (?, ?, ?, ?, ?, ?)',
+                        (rel, st.st_mtime, st.st_size, mime, data, time.time()),
+                    )
+                processed += 1
+                commit_progress(rel)
+            conn.commit()
+            return {'processed': processed, 'total': total, 'errors': errors}
+
+        # 多线程并行：先统计并跳过已有有效缩略图，再提交给线程池。
+        pending = []
         for rel in rel_paths:
             if stop_event is not None and stop_event.is_set():
                 break
@@ -234,37 +299,68 @@ def generate_thumbs_bulk(root: Path, rel_paths, db_path: Path,
             except OSError:
                 errors.append(rel)
                 processed += 1
-                if progress_callback:
-                    progress_callback(processed, total, rel, errors)
+                commit_progress(rel)
                 continue
-
             row = conn.execute(
                 'SELECT data, mime, source_mtime, source_size FROM thumbs WHERE path = ?',
                 (rel,),
             ).fetchone()
             if row and abs(float(row[2]) - float(st.st_mtime)) < 0.5 and int(row[3]) == int(st.st_size):
                 processed += 1
-                if progress_callback:
-                    progress_callback(processed, total, rel, errors)
+                commit_progress(rel)
                 continue
+            pending.append((str(root), rel, st.st_mtime, st.st_size))
 
-            generated = generate_thumb_bytes(src_path)
-            if generated is None:
-                errors.append(rel)
-            else:
-                data, mime = generated
-                conn.execute(
-                    'INSERT OR REPLACE INTO thumbs(path, source_mtime, source_size, mime, data, created_at) '
-                    'VALUES (?, ?, ?, ?, ?, ?)',
-                    (rel, st.st_mtime, st.st_size, mime, data, time.time()),
-                )
+        from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
+        executor = ThreadPoolExecutor(max_workers=workers)
+        futures = {}
+        pending_iter = iter(pending)
 
-            processed += 1
-            if processed % 50 == 0:
-                conn.commit()
-            if progress_callback:
-                progress_callback(processed, total, rel, errors)
+        def submit_next():
+            try:
+                root_str, rel, mtime, size = next(pending_iter)
+            except StopIteration:
+                return None
+            fut = executor.submit(_generate_one_thumb, (root_str, rel))
+            futures[fut] = (rel, mtime, size)
+            return fut
 
+        try:
+            for _ in range(min(workers * 2, len(pending))):
+                if submit_next() is None:
+                    break
+
+            while futures:
+                if stop_event is not None and stop_event.is_set():
+                    for fut in list(futures):
+                        fut.cancel()
+                    break
+                done, _ = wait(list(futures), timeout=0.2, return_when=FIRST_COMPLETED)
+                if not done:
+                    continue
+                for fut in done:
+                    rel, mtime, size = futures.pop(fut)
+                    try:
+                        result = fut.result()
+                    except Exception as e:
+                        errors.append(f'{rel}: {e}')
+                        processed += 1
+                        commit_progress(rel)
+                        submit_next()
+                        continue
+                    if result.get('error'):
+                        errors.append(rel)
+                    else:
+                        conn.execute(
+                            'INSERT OR REPLACE INTO thumbs(path, source_mtime, source_size, mime, data, created_at) '
+                            'VALUES (?, ?, ?, ?, ?, ?)',
+                            (rel, mtime, size, result['mime'], result['data'], time.time()),
+                        )
+                    processed += 1
+                    commit_progress(rel)
+                    submit_next()
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
         conn.commit()
     finally:
         conn.close()

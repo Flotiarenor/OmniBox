@@ -112,6 +112,7 @@ class ImageViewerPlugin(PluginBase):
             'regenerate_thumbs': self.regenerate_thumbs,
             'refresh': self.refresh,
             'rebuild_all': self.rebuild_all,
+            'rebuild_folder': self.rebuild_folder,
             'rebuild_status': self.rebuild_status,
             'rebuild_cancel': self.rebuild_cancel,
             'get_settings': self.get_settings,
@@ -774,58 +775,71 @@ class ImageViewerPlugin(PluginBase):
             pass
         return {'success': True}
 
-    def _collect_all_images(self) -> List[str]:
-        """收集数据根目录下所有需要生成缩略图的图片相对路径。"""
+    def _collect_all_images(self, rel_path: str = '') -> List[str]:
+        """收集数据根目录下（或指定子文件夹下）所有需要生成缩略图的图片相对路径。"""
+        rel_path = (rel_path or '').strip().strip('/')
+        base_dir = self.root_dir / rel_path if rel_path else self.root_dir
+        prefix = rel_path
         images = []
         try:
-            for current, dir_names, filenames in os.walk(self.root_dir):
+            for current, dir_names, filenames in os.walk(base_dir):
                 dir_names[:] = [d for d in dir_names if not d.startswith('.') and d != '.cache']
                 current_path = Path(current)
-                rel_dir = '' if current_path == self.root_dir else current_path.relative_to(self.root_dir).as_posix()
+                rel_dir = '' if current_path == base_dir else current_path.relative_to(base_dir).as_posix()
                 for name in filenames:
                     if name.startswith('.'):
                         continue
                     if Path(name).suffix.lower() in ALLOWED_EXTENSIONS:
-                        rel = f"{rel_dir}/{name}" if rel_dir else name
-                        images.append(rel)
+                        parts = [p for p in (prefix, rel_dir, name) if p]
+                        images.append('/'.join(parts))
         except OSError:
             pass
         return images
 
-    def rebuild_all(self) -> Dict:
-        """全量重建：清空旧缓存后，在后台一次性生成全部缩略图。"""
+    def rebuild_all(self, rel_path: str = '', force: bool = True) -> Dict:
+        """全量/指定文件夹重建。
+
+        - rel_path 非空时：只重建该文件夹，且不会清空已有缩略图（增量补齐）。
+        - rel_path 为空且 force=True 时：清空旧缓存后全量重新生成。
+        - rel_path 为空且 force=False 时：全库增量补齐，跳过已有有效缩略图。
+        """
+        rel_path = (rel_path or '').strip().strip('/')
+        if rel_path and not self._is_safe(rel_path):
+            return {'started': False, 'success': False, 'error': '非法路径'}
         if self._rebuild_task and self._rebuild_task.get('running'):
             return {'started': False, 'running': True, **self.rebuild_status()}
 
         self._list_cache.clear()
-        self._meta_cache = {}
-        try:
-            if self.meta_file.exists():
-                self.meta_file.unlink()
-        except OSError:
-            pass
-        clear_thumb_cache(self.thumb_db_path)
-        # 旧版散文件缩略图目录已不再使用，全量重建时一并清理。
-        try:
-            if self.thumb_dir.exists():
-                shutil.rmtree(self.thumb_dir)
-        except OSError:
-            pass
-        self.thumb_dir.mkdir(parents=True, exist_ok=True)
-        self._album_cache = {'version': 3, 'dirs': {}}
-        try:
-            if self.album_cache_file.exists():
-                self.album_cache_file.unlink()
-        except OSError:
-            pass
+        if not rel_path and force:
+            self._meta_cache = {}
+            try:
+                if self.meta_file.exists():
+                    self.meta_file.unlink()
+            except OSError:
+                pass
+            clear_thumb_cache(self.thumb_db_path)
+            # 旧版散文件缩略图目录已不再使用，全量重建时一并清理。
+            try:
+                if self.thumb_dir.exists():
+                    shutil.rmtree(self.thumb_dir)
+            except OSError:
+                pass
+            self.thumb_dir.mkdir(parents=True, exist_ok=True)
+            self._album_cache = {'version': 3, 'dirs': {}}
+            try:
+                if self.album_cache_file.exists():
+                    self.album_cache_file.unlink()
+            except OSError:
+                pass
 
-        images = self._collect_all_images()
+        images = self._collect_all_images(rel_path)
         self._rebuild_stop = threading.Event()
         self._rebuild_task = {
             'running': True,
             'done': False,
             'success': False,
             'cancelled': False,
+            'rebuild_path': rel_path,
             'total': len(images),
             'processed': 0,
             'current': '',
@@ -833,6 +847,10 @@ class ImageViewerPlugin(PluginBase):
         }
         threading.Thread(target=self._rebuild_worker, args=(images, self._rebuild_stop), daemon=True).start()
         return {'started': True, 'running': True, 'total': len(images)}
+
+    def rebuild_folder(self, rel_path: str) -> Dict:
+        """只重建指定文件夹下的缩略图（增量补齐，不清空已有缓存）。"""
+        return self.rebuild_all(rel_path=rel_path, force=False)
 
     def _rebuild_worker(self, images: List[str], stop_event: threading.Event):
         task = self._rebuild_task
@@ -875,6 +893,7 @@ class ImageViewerPlugin(PluginBase):
                 'done': False,
                 'success': False,
                 'cancelled': False,
+                'rebuild_path': '',
                 'total': 0,
                 'processed': 0,
                 'current': '',
@@ -885,6 +904,7 @@ class ImageViewerPlugin(PluginBase):
             'done': bool(task.get('done')),
             'success': bool(task.get('success')),
             'cancelled': bool(task.get('cancelled', False)),
+            'rebuild_path': task.get('rebuild_path', ''),
             'total': int(task.get('total', 0)),
             'processed': int(task.get('processed', 0)),
             'current': task.get('current', ''),
