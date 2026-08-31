@@ -1,24 +1,21 @@
 import os
 import json
 import shutil
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Dict
 from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_utils import load_sibling
+from shell.backend.tasks import BackgroundTask
+from shell.backend.thumb_cache import ThumbCache
 
 
 
 _fs = load_sibling(__file__, 'filesystem', 'image_viewer')
 ALLOWED_EXTENSIONS = _fs.ALLOWED_EXTENSIONS
-clear_thumb_cache = _fs.clear_thumb_cache
-delete_thumb_cache = _fs.delete_thumb_cache
 drop_image_meta = _fs.drop_image_meta
 ensure_thumbnail = _fs.ensure_thumbnail
-ensure_thumbnail_bytes = _fs.ensure_thumbnail_bytes
-generate_thumbs_bulk = _fs.generate_thumbs_bulk
 get_image_size = _fs.get_image_size
 is_safe_path = _fs.is_safe_path
 list_directory = _fs.list_directory
@@ -76,8 +73,9 @@ class ImageViewerPlugin(PluginBase):
         self._album_cache = self._load_album_cache()
         self._albums_cached_at = 0.0      # list_albums 结果 TTL 缓存
         self._albums_cached = None
-        self._rebuild_task = None
-        self._rebuild_stop = None
+        # 缩略图缓存（共享基建）与全量重建后台任务（共享基建）
+        self.thumb_cache = ThumbCache(self.thumb_db_path)
+        self._rebuild = None              # BackgroundTask | None
 
     # ===== 常量 =====
     _ALBUMS_TTL = 30.0            # list_albums 全树扫描结果缓存秒数
@@ -152,11 +150,11 @@ class ImageViewerPlugin(PluginBase):
             return ''
 
     def get_thumb_data(self, rel_path: str):
-        """供 Shell /thumbs 路由使用：从 SQLite 读取/生成缩略图字节。"""
+        """供 Shell /thumbs 路由使用：从 SQLite（ThumbCache）读取/生成缩略图字节。"""
         if not self._is_safe(rel_path):
             return None
         try:
-            return ensure_thumbnail_bytes(self.root_dir, rel_path, self.thumb_db_path)
+            return self.thumb_cache.get(rel_path, self.root_dir / rel_path)
         except Exception:
             return None
 
@@ -810,7 +808,7 @@ class ImageViewerPlugin(PluginBase):
             try:
                 if abs_path.exists():
                     abs_path.unlink()
-                    delete_thumb_cache(self.thumb_db_path, rel)
+                    self.thumb_cache.delete(rel)
                     drop_image_meta(self._meta_cache, str(abs_path))
                     self._meta_dirty = True
                     deleted.append(rel)
@@ -843,7 +841,7 @@ class ImageViewerPlugin(PluginBase):
                             dest_file = dest_dir / f"{stem}_{counter}{suffix}"
                             counter += 1
                     shutil.move(str(src), str(dest_file))
-                    delete_thumb_cache(self.thumb_db_path, rel)
+                    self.thumb_cache.delete(rel)
                     drop_image_meta(self._meta_cache, str(src))
                     self._meta_dirty = True
                     moved.append(rel)
@@ -866,7 +864,7 @@ class ImageViewerPlugin(PluginBase):
                 errors.append(f'非法路径: {rel}')
                 continue
             try:
-                delete_thumb_cache(self.thumb_db_path, rel)
+                self.thumb_cache.delete(rel)
                 drop_image_meta(self._meta_cache, str(self.root_dir / rel))
                 new_thumb = self.get_thumb_data(rel)
                 if new_thumb:
@@ -922,7 +920,7 @@ class ImageViewerPlugin(PluginBase):
         rel_path = (rel_path or '').strip().strip('/')
         if rel_path and not self._is_safe(rel_path):
             return {'started': False, 'success': False, 'error': '非法路径'}
-        if self._rebuild_task and self._rebuild_task.get('running'):
+        if self._rebuild and self._rebuild.state == 'running':
             return {'started': False, 'running': True, **self.rebuild_status()}
 
         self._list_cache.clear()
@@ -934,7 +932,7 @@ class ImageViewerPlugin(PluginBase):
                     self.meta_file.unlink()
             except OSError:
                 pass
-            clear_thumb_cache(self.thumb_db_path)
+            self.thumb_cache.clear()
             # 旧版散文件缩略图目录已不再使用，全量重建时一并清理。
             try:
                 if self.thumb_dir.exists():
@@ -950,60 +948,37 @@ class ImageViewerPlugin(PluginBase):
                 pass
 
         images = self._collect_all_images(rel_path)
-        self._rebuild_stop = threading.Event()
-        self._rebuild_task = {
-            'running': True,
-            'done': False,
-            'success': False,
-            'cancelled': False,
-            'rebuild_path': rel_path,
-            'total': len(images),
-            'processed': 0,
-            'current': '',
-            'errors': [],
-        }
-        threading.Thread(target=self._rebuild_worker, args=(images, self._rebuild_stop), daemon=True).start()
+        task = BackgroundTask(kind='rebuild', extra={'rebuild_path': rel_path})
+        task.update(total=len(images))
+        task.start(self._rebuild_worker, args=(images,))
+        self._rebuild = task
         return {'started': True, 'running': True, 'total': len(images)}
 
     def rebuild_folder(self, rel_path: str) -> Dict:
         """只重建指定文件夹下的缩略图（增量补齐，不清空已有缓存）。"""
         return self.rebuild_all(rel_path=rel_path, force=False)
 
-    def _rebuild_worker(self, images: List[str], stop_event: threading.Event):
-        task = self._rebuild_task
-
+    def _rebuild_worker(self, task: BackgroundTask, images: List[str]):
+        """全量重建 worker：批量并行生成缩略图到 ThumbCache。"""
         def progress(processed, total, current, errors):
-            task['processed'] = processed
-            task['total'] = total
-            task['current'] = current
-            task['error_count'] = len(errors)
-            task['errors'] = errors[-200:]
+            task.update(processed=processed, total=total, current=current, errors=errors)
 
         try:
-            result = generate_thumbs_bulk(
-                self.root_dir,
-                images,
-                self.thumb_db_path,
-                progress_callback=progress,
-                stop_event=stop_event,
+            items = [(rel, self.root_dir / rel) for rel in images]
+            result = self.thumb_cache.generate_bulk(
+                items,
+                progress_cb=progress,
+                stop_event=task.stop_event,
             )
-            task['processed'] = result['processed']
-            task['error_count'] = len(result['errors'])
-            task['errors'] = result['errors'][-200:]
-            task['success'] = not stop_event.is_set()
+            task.update(processed=result['processed'], errors=result['errors'])
         except Exception as e:
-            task['error_count'] = task.get('error_count', 0) + 1
-            task['errors'] = (task.get('errors', []) + [f'重建异常: {e}'])[-200:]
-            task['success'] = False
+            task.add_error(f'重建异常: {e}')
         finally:
-            task['running'] = False
-            task['done'] = True
-            task['current'] = ''
-            task['cancelled'] = bool(stop_event.is_set())
+            task.update(current='')
 
     def rebuild_status(self) -> Dict:
         """返回全量重建后台任务的进度。"""
-        task = self._rebuild_task
+        task = self._rebuild
         if not task:
             return {
                 'running': False,
@@ -1014,25 +989,27 @@ class ImageViewerPlugin(PluginBase):
                 'total': 0,
                 'processed': 0,
                 'current': '',
+                'error_count': 0,
                 'errors': [],
             }
+        status = task.status()
         return {
-            'running': bool(task.get('running')),
-            'done': bool(task.get('done')),
-            'success': bool(task.get('success')),
-            'cancelled': bool(task.get('cancelled', False)),
-            'rebuild_path': task.get('rebuild_path', ''),
-            'total': int(task.get('total', 0)),
-            'processed': int(task.get('processed', 0)),
-            'current': task.get('current', ''),
-            'error_count': int(task.get('error_count', 0)),
-            'errors': list(task.get('errors', [])),
+            'running': status['running'],
+            'done': status['done'],
+            'success': status['success'],
+            'cancelled': status['cancelled'],
+            'rebuild_path': status['extra'].get('rebuild_path', ''),
+            'total': status['total'],
+            'processed': status['processed'],
+            'current': status['current'],
+            'error_count': status['error_count'],
+            'errors': status['errors'],
         }
 
     def rebuild_cancel(self) -> Dict:
         """请求取消当前全量重建任务；已生成的缩略图会保留。"""
-        if self._rebuild_stop is not None:
-            self._rebuild_stop.set()
+        if self._rebuild and self._rebuild.state == 'running':
+            self._rebuild.cancel()
             return {'success': True}
         return {'success': False, 'error': '没有正在运行的重建任务'}
 
@@ -1112,6 +1089,7 @@ class ImageViewerPlugin(PluginBase):
                 self.thumb_db_path = self.cache_dir / 'thumbs.db'
                 self.meta_file = self.cache_dir / 'image_meta.json'
                 self.thumb_dir.mkdir(parents=True, exist_ok=True)
+                self.thumb_cache = ThumbCache(self.thumb_db_path)
                 self._meta_cache = self._load_meta()
                 self._list_cache.clear()
 
