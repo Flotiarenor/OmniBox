@@ -123,6 +123,18 @@ python main.py --web-only    # 或 venv/bin/python main.py --web-only
 http://127.0.0.1:18080
 ```
 
+> **访问令牌**：`/api`、`/file`、`/thumbs` 等数据路由受令牌保护。令牌在首次启动时
+> 自动生成并持久化到 `.config/auth_token.txt`（重启不变）。浏览器页面会自动种下
+> HttpOnly Cookie，无需手动处理；外部脚本 / curl / nginx 注入请携带请求头：
+>
+> ```bash
+> curl -H "X-Omnibox-Token: $(cat .config/auth_token.txt)" \
+>      -X POST http://127.0.0.1:18080/api/system_get_config
+> ```
+>
+> 请勿将令牌文件与端口暴露到不受信任的网络；需要公网访问时务必经 nginx 等
+> 反代并自行加一层 HTTPS + 访问控制。
+
 ### 安装插件
 
 1. 将插件文件夹放入项目根目录下的 `plugins/` 目录。

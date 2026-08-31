@@ -21,6 +21,10 @@ function createHttpApi(): PyWebViewAPI {
 
           const data = await response.json().catch(() => ({}))
           if (!response.ok || data.error) {
+            // 通知 Shell 显示 API 状态（401/403/404/5xx），同时抛错给调用方
+            window.dispatchEvent(new CustomEvent('omnibox:api-error', {
+              detail: { status: response.status, method: String(prop) },
+            }))
             throw new Error(data.error || `API ${prop} 请求失败 (HTTP ${response.status})`)
           }
           return data.result

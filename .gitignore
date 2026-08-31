@@ -13,6 +13,7 @@ opencode.json
 # 运行时代码
 data/
 .config/plugins/
+.config/auth_token.txt
 .build/
 
 # 脚本
