@@ -16,6 +16,7 @@ limitations under the License.
 
 import os, sys, time, yaml, webview, threading, shutil
 from pathlib import Path
+from shell.backend.auth import get_or_create_token, get_token_file
 from shell.backend.file_server import create_app
 from shell.backend.plugin_manager import PluginManager
 from copy import deepcopy
@@ -97,6 +98,17 @@ def wait_for_server(host, port, timeout=5):
 def main():
     config = load_config()
     os.makedirs(config['directories']['data_root'], exist_ok=True)
+
+    # 状态调试模式（--status-debug）：壳内 /status 视图显示调试面板
+    # （健康检查 / API 鉴权 / 标记页演示），正常使用不受影响。
+    config.setdefault('debug', {})
+    config['debug']['status_debug'] = '--status-debug' in sys.argv
+
+    # 数据路由（/api /file /thumbs）的访问令牌：首次启动生成并持久化。
+    # 浏览器页面会自动种下 Cookie；外部脚本可用 X-Omnibox-Token 头携带。
+    get_or_create_token(get_config_dir())
+    print(f"[OmniBox] API 访问令牌: {get_token_file(get_config_dir())}"
+          f"（/api /file /thumbs 路由需携带，启动时若缺失将自动生成）")
 
     plugin_search_dirs = get_plugin_search_dirs()
     for plugin_dir in plugin_search_dirs:

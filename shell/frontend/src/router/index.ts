@@ -1,6 +1,7 @@
 // shell/frontend/src/router/index.ts
 import { createRouter as createVueRouter, createWebHistory } from 'vue-router'
 import SettingsView from '../views/SettingsView.vue'
+import StatusView from '../views/StatusView.vue'
 
 export function createRouter() {
   return createVueRouter({
@@ -14,6 +15,11 @@ export function createRouter() {
         path: '/settings',
         name: 'settings',
         component: SettingsView
+      },
+      {
+        path: '/status',
+        name: 'status',
+        component: StatusView
       }
     ]
   })

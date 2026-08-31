@@ -14,12 +14,20 @@ See the License for the specific language governing permissions and
 limitations under the License.
 '''
 
+import html
 import io
 import mimetypes
 import sys
 from flask import Flask, request, send_from_directory, send_file, abort
 from pathlib import Path
 from collections.abc import Iterable
+from shell.backend.auth import (
+    TOKEN_COOKIE,
+    TOKEN_HEADER,
+    get_or_create_token,
+    token_matches,
+)
+from shell.backend.paths import get_config_dir
 from shell.backend.plugin_manager import PluginManager
 
 # Windows 上 Python 的 mimetypes 可能从注册表把 .js 识别成 text/plain，
@@ -48,12 +56,138 @@ def _is_safe_path(full_path: Path, root: Path) -> bool:
     except ValueError:
         return False
 
+# 无需令牌即可访问的路由（页面与静态资源本身不含用户数据）。
+# 数据路由（/api、/file、/files、/thumbs）默认全部要求令牌，新增路由默认受保护。
+_OPEN_ENDPOINTS = {'health', 'serve_shell', 'serve_shell_assets', 'serve_plugin_frontend'}
+
+# ===== 状态标记页 =====
+# 401/403/404 等错误在浏览器中返回可读的标记页（/api 前缀返回 JSON，
+# 便于前端 fetch 解析）；避免 SPA fallback 把错误路径吞成空白 index.html。
+# 页面直接复用 OmniBox 本体样式（/shell/variables.css + base.css），
+# 并读取主应用 localStorage 的主题/自定义颜色，视觉与本体完全一致。
+_STATUS_PAGE_TPL = '''<!DOCTYPE html>
+<html lang="zh" data-theme="light" data-status-page="{code}">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{code} {title} - OmniBox</title>
+<script>
+try {{
+  var t = localStorage.getItem('omni-theme');
+  if (t === 'dark') {{ document.documentElement.setAttribute('data-theme', 'dark'); }}
+  var cc = localStorage.getItem('omni-custom-colors');
+  if (cc) {{
+    var m = JSON.parse(cc);
+    Object.keys(m).forEach(function (k) {{ document.documentElement.style.setProperty(k, m[k]); }});
+  }}
+}} catch (e) {{}}
+try {{
+  // 顶层打开（浏览器直接访问）时跳转到壳内 /status 视图统一展示错误；
+  // 嵌套在插件 iframe 内时不跳转（由 Vue 壳检测 data-status-page 后接管）。
+  // location.replace 整页导航会顺带种下令牌 Cookie，壳随后可正常加载。
+  if (window.top === window.self) {{
+    var code = document.documentElement.getAttribute('data-status-page') || '';
+    location.replace(location.origin + '/status?code=' + encodeURIComponent(code));
+  }}
+}} catch (e) {{}}
+</script>
+<link rel="stylesheet" href="/shell/variables.css">
+<link rel="stylesheet" href="/shell/base.css">
+<style>
+  html, body {{ height: 100%; }}
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }}
+  .status-view {{
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    padding: 24px; background: var(--bg-app);
+  }}
+  .status-card {{
+    background: var(--bg-surface); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); box-shadow: var(--shadow-md);
+    padding: 40px 52px; text-align: center; max-width: 480px;
+  }}
+  .status-code {{ font-size: 64px; font-weight: 700; color: var(--danger); line-height: 1.1; }}
+  .status-title {{ font-size: 18px; font-weight: 600; margin: 12px 0 8px; color: var(--text-primary); }}
+  .status-detail {{ font-size: 13px; color: var(--text-secondary); line-height: 1.7; margin-bottom: 24px; }}
+  a.home {{ text-decoration: none; }}
+</style>
+</head>
+<body class="view-body">
+  <div class="view-toolbar">
+    <span style="font-weight:600;font-size:14px;">OmniBox</span>
+    <span style="color:var(--text-secondary);font-size:13px;">&nbsp;·&nbsp;{code} {title}</span>
+  </div>
+  <div class="status-view">
+    <div class="status-card">
+      <div class="status-code">{code}</div>
+      <div class="status-title">{title}</div>
+      <div class="status-detail">{detail}</div>
+      <a class="btn btn-primary home" href="/">返回首页</a>
+    </div>
+  </div>
+</body>
+</html>'''
+
+
+def _status_page(code: int, title: str, detail: str) -> str:
+    """渲染状态标记页 HTML（所有文案先转义，杜绝注入）。"""
+    return _STATUS_PAGE_TPL.format(
+        code=code,
+        title=html.escape(title),
+        detail=html.escape(detail),
+    )
+
+
+def _status_response(code: int, title: str, detail: str):
+    """统一错误响应：/api 命名空间返回 JSON，浏览器路径返回 HTML 标记页。"""
+    if request.path == '/api' or request.path.startswith('/api/'):
+        return {'error': title, 'detail': detail}, code
+    return _status_page(code, title, detail), code
+
+
 def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
     app = Flask(__name__)
     frontend_dist = _SHELL_DIR / 'frontend' / 'dist'
+    _token = get_or_create_token(get_config_dir())
+
+    @app.before_request
+    def _require_token():
+        """数据路由鉴权：Cookie 或 X-Omnibox-Token 头二选一。"""
+        if request.endpoint in _OPEN_ENDPOINTS:
+            return None
+        supplied = request.cookies.get(TOKEN_COOKIE, '') or request.headers.get(TOKEN_HEADER, '')
+        if token_matches(supplied, _token):
+            return None
+        abort(401)
+
+    @app.after_request
+    def _attach_token_cookie(resp):
+        """页面响应时种下 HttpOnly 令牌 Cookie，同源请求（含 <img>）自动携带。"""
+        if request.endpoint == 'serve_shell':
+            resp.set_cookie(TOKEN_COOKIE, _token, httponly=True, samesite='Lax')
+        return resp
+
+    @app.errorhandler(401)
+    def _err_401(e):
+        return _status_response(401, '未授权',
+                                '访问该资源需要访问令牌（页面 Cookie 或 '
+                                'X-Omnibox-Token 请求头）。请通过首页进入应用。')
+
+    @app.errorhandler(403)
+    def _err_403(e):
+        return _status_response(403, '禁止访问',
+                                '请求的路径超出了允许访问的目录范围。')
+
+    @app.errorhandler(404)
+    def _err_404(e):
+        return _status_response(404, '页面不存在',
+                                '请求的资源不存在或已被移动。')
 
     @app.route('/health')
-    def health(): return 'OK'
+    def health():
+        """健康检查：200 + JSON（wait_for_server 与 nginx 探活均兼容）。"""
+        return {'status': 'ok'}
 
     @app.route('/api/<path:method>', methods=['POST'])
     def api_proxy(method):
@@ -84,6 +218,10 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
     @app.route('/')
     @app.route('/<path:filename>')
     def serve_shell(filename='index.html'):
+        # /api 命名空间不属于 SPA 前端路由：GET 到不存在的 API 路径应返回
+        # 明确的 404，而不是被 fallback 吞成空白 index.html。
+        if filename.startswith('api/'):
+            abort(404)
         if not (frontend_dist / filename).exists() and not filename.startswith('assets'):
             return send_from_directory(frontend_dist, 'index.html')
         return send_from_directory(frontend_dist, filename)
