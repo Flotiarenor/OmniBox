@@ -320,7 +320,88 @@ from pyradios import RadioBrowser
 - 跨平台二进制库
 - 大型重依赖（建议走独立 runtime）
 
-### 3.4 完整 API 列表
+### 3.4 共享基建：后台任务与缩略图缓存
+
+媒体类插件经常需要两类通用能力，Shell 已抽出共享模块（`shell/backend/`），**不要各自重复实现**：
+
+- **`tasks.py` → `BackgroundTask`**（控制面）：后台线程 + 状态机 + 取消 + 进度 + 可选断点持久化。适用于任何长任务：全量重建、同步、批量下载、导入扫描。
+- **`thumb_cache.py` → `ThumbCache`**（数据面）：SQLite 缩略图缓存（WAL + mtime/size 失效校验 + 并行批量生成）。适用于任何「本地媒体 → 缩略图」：图片、视频封面抽帧、音频内嵌封面。
+
+#### 后台任务 BackgroundTask
+
+```python
+from shell.backend.tasks import BackgroundTask
+
+def _sync_worker(task: BackgroundTask, source: str):
+    """worker 自行编排业务流程（网络验证 → 本地比对 → 执行）；
+    壳只提供线程/状态/取消/进度。"""
+    items = fetch_remote(source)                    # 业务逻辑
+    task.update(total=len(items))
+    for it in items:
+        if task.cancelled:                          # 取消点：Event 检查
+            break
+        ok = process(it)
+        task.update(processed=task.status()['processed'] + 1,
+                    current=it.name,
+                    extra={'downloaded': ...})      # 业务计数放 extra
+        task.persist()                              # 每步落盘 → 崩溃/重启可续跑
+
+# 纯内存任务（image-viewer 重建场景）：
+task = BackgroundTask(kind='rebuild')
+task.start(_sync_worker, args=('...',))
+task.status()   # {state, running, done, success, cancelled, total,
+                #  processed, current, error_count, errors, extra}
+task.cancel()   # 请求取消（Event 置位）
+
+# 可断点持久化（pixiv-sync 下载场景）：
+task = BackgroundTask(kind='sync', persist_path=root / '.cache' / 'tasks.json')
+task.start(_sync_worker, args=('...',))
+# 重启后：
+task = BackgroundTask.load(root / '.cache' / 'tasks.json')   # state = 'paused'
+task.resume(_sync_worker, args=('...',))                     # 续跑
+```
+
+要点：
+
+- 状态机 `queued → running → done / cancelled`；worker 抛异常 → `done` 且 `success=False`（错误进 `errors`，保留最近 200 条）；
+- `cancel()` 只置位 Event，worker 内通过 `task.cancelled` / `task.stop_event`（线程池场景）主动退出；
+- 业务专属计数（`downloaded`/`skipped` 等）放 `extra` 扩展字典，壳不预定义；
+- 前端轮询 `status()` 展示进度即可（image-viewer 的 `rebuild_status` 是封装示例）。
+
+#### 缩略图缓存 ThumbCache
+
+```python
+from shell.backend.thumb_cache import ThumbCache
+
+# 实例归属插件，DB 放各自数据根目录 .cache/ 下（数据跟数据走）
+cache = ThumbCache(self.root_dir / '.cache' / 'thumbs.db', size=(300, 300))
+
+# 1. 按需生成（/thumbs 路由用）：Shell 优先调用插件的 get_thumb_data()
+def get_thumb_data(self, rel_path: str):
+    if not self._is_safe(rel_path):
+        return None
+    return self.thumb_cache.get(rel_path, self.root_dir / rel_path)
+
+# 2. 批量并行生成（全量重建 / 同步任务，配 BackgroundTask 使用）
+result = self.thumb_cache.generate_bulk(
+    [(rel, self.root_dir / rel) for rel in images],
+    progress_cb=lambda p, t, c, e: task.update(processed=p, total=t, current=c, errors=e),
+    stop_event=task.stop_event,
+)   # → {'processed', 'total', 'errors'}
+
+# 3. 维护
+self.thumb_cache.delete(rel)    # 文件删除/移动时同步清缓存
+self.thumb_cache.clear()        # 全清 + wal_checkpoint + VACUUM 收缩
+```
+
+要点：
+
+- 失效校验：`source_mtime`（0.5s 容差）+ `source_size` 双条件，源文件替换后自动重生成；
+- 生成失败返回 None 且不写缓存（不缓存假缩略图）；
+- `size`、MIME 映射（`mime_map`）、并发数（`workers`）均可配置，默认 300×300 + 8 线程；
+- 已有实现参考：image-viewer（`ThumbCache` 接入 + `BackgroundTask` 重建任务，见 `docs/image-viewer-design.md` §3.2、§6.4）。
+
+### 3.5 完整 API 列表
 
 （以 image-viewer 为例，完整版见 `docs/image-viewer-design.md` §6）
 
@@ -605,14 +686,17 @@ const src = Bridge.originalUrl('subdir/photo.jpg');
 
 ### 7.2 插件如何生成缩略图
 
-**推荐模式（image-viewer v2.4.2+）**：后端提供 `get_thumb_data(rel_path)`，从 SQLite 缓存读取缩略图字节，未命中时生成并回写：
+**推荐模式（image-viewer v2.4.3+）**：基于共享基建 `ThumbCache`（见 §3.4），后端提供 `get_thumb_data(rel_path)`，从 SQLite 缓存读取缩略图字节，未命中时生成并回写：
 
 ```python
+# __init__ 中创建实例（DB 放各自数据根目录 .cache/ 下）
+self.thumb_cache = ThumbCache(self.root_dir / '.cache' / 'thumbs.db')
+
 def get_thumb_data(self, rel_path: str):
     """供 Shell /thumbs 路由使用：返回 (bytes, mime)；无效路径返回 None → 404"""
     if not self._is_safe(rel_path):
         return None
-    return ensure_thumbnail_bytes(self.root_dir, rel_path, self.thumb_db_path)
+    return self.thumb_cache.get(rel_path, self.root_dir / rel_path)
 ```
 
 Shell 的 `/thumbs` 路由会优先调用插件的 `get_thumb_data()`（不存在时回退到散文件模式），
@@ -754,7 +838,7 @@ image-viewer 需要在不同文件夹应用不同设置（如行高、排序）�
 | iframe 白屏      | 前端入口文件不存在或路径错误             | 确认`frontend/entry` 指向的文件存在，且 Flask 能访问                                              |
 | API 调用失败     | 方法名拼写错误或后端未注册               | 检查方法名是否与`register_api` 返回的键一致，调用时使用 `Bridge.call('method')`                 |
 | 图片无法显示     | URL 路径错误或文件不存在                 | 确保图片通过`Bridge.thumbUrl()` 或 `Bridge.originalUrl()` 获取 URL，且文件在 `data_root` 下   |
-| 缩略图不显示     | 缩略图未生成或路由错误                   | 检查后端是否在`list_images` 中调用了缩略图生成方法，Flask 路由是否正确传递 `plugin` 参数        |
+| 缩略图不显示     | 缩略图未生成或路由错误                   | 推荐实现 `get_thumb_data()`（基于共享基建 `ThumbCache`，见 §3.4），由 `/thumbs` 路由按需生成；检查 `Bridge.thumbUrl()` 是否正确携带 `plugin` 参数，以及源文件是否在 `data_root` 下 |
 | 设置不生效       | 前端未传递设置参数或后端未应用           | 确保`loadImages` 传递了 `per_page`、`sort_by` 等参数，后端 `list_images` 接收并应用这些参数 |
 
 ---
@@ -771,7 +855,8 @@ image-viewer 需要在不同文件夹应用不同设置（如行高、排序）�
 - **错误处理**：后端方法应捕获异常并返回有意义的错误信息，避免前端收到 Python 堆栈。
 - **设置持久化**：使用 `settings_schema` 声明式配置，设置自动存储在 `.config/plugins/<name>.json`。读取用 `setting()`，保存用 `save_settings()`，响应变更用 `on_settings_changed()`。**不要**覆写 `save_settings()`，**不要**在插件目录创建 `settings.json`。
 - **运行时状态**：播放进度、收藏、缓存等数据派生状态放在数据目录（如 `data/.cache/`），跟随数据走。
-- **性能优化**：使用内存缓存（如目录列表缓存、聚合元数据缓存）减少 I/O，提升响应速度。
+- **共享基建**：需要后台长任务或缩略图缓存时，优先复用 `shell/backend/tasks.py`（`BackgroundTask`）与 `shell/backend/thumb_cache.py`（`ThumbCache`，见 §3.4），**不要各自重复实现**；DB / 任务状态文件放各自数据根目录 `.cache/` 下。
+- **性能优化**：使用内存缓存（如目录列表缓存、聚合元数据缓存）减少 I/O，提升响应速度；大目录首次扫描可参考 image-viewer 的并行尺寸读取（`ThreadPoolExecutor`）。
 
 ---
 

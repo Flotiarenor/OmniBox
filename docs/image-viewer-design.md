@@ -1,6 +1,6 @@
 # 图片相册插件（image-viewer）设计文档
 
-> 版本：v2.4.2（当前实现）
+> 版本：v2.4.3（当前实现）
 > 形态：独立宿主插件；`image-cleaner`（相册清理）为其 Companion 插件
 > 适用范围：后端 `plugins/image-viewer/backend/`、前端 `plugins/image-viewer/frontend/`
 
@@ -24,8 +24,8 @@
 plugins/image-viewer/
 ├── manifest.json               # 声明依赖、权限（filesystem:read/write）、路由 /image-viewer
 ├── backend/
-│   ├── main.py                 # ImageViewerPlugin：API 入口、缓存调度、重建任务、设置
-│   └── filesystem.py           # 纯函数工具：路径安全、排序、SQLite 缩略图、批量生成
+│   ├── main.py                 # ImageViewerPlugin：API 入口、缓存调度、重建任务（BackgroundTask）、设置
+│   └── filesystem.py           # 纯函数工具：路径安全、排序、尺寸元数据（无实例状态）
 └── frontend/
     ├── index.html              # 侧边栏 + 工具栏 + 弹窗骨架
     ├── image-viewer.css
@@ -36,8 +36,9 @@ plugins/image-viewer/
 
 **职责边界**：
 
-- `main.py` 持有插件实例状态（`_meta_cache` / `_list_cache` / `_album_cache` / `_album_config` / `_rebuild_task`），负责线程调度与 API 语义；
-- `filesystem.py` 全部为**无实例状态**的模块级函数（通过 `load_sibling` 注入），便于单测与复用；只有 `_THUMB_DB_LOCK` 一个模块级锁；
+- `main.py` 持有插件实例状态（`_meta_cache` / `_list_cache` / `_album_cache` / `_album_config` / `_rebuild`）、`thumb_cache`（共享基建实例），负责 API 语义与任务调度；
+- `filesystem.py` 全部为**无实例状态**的模块级纯函数（通过 `load_sibling` 注入），便于单测与复用；
+- 缩略图缓存使用共享基建 `shell/backend/thumb_cache.py`（`ThumbCache`），重建任务使用 `shell/backend/tasks.py`（`BackgroundTask`）——见 `docs/plugin-guide.md` §3.4；
 - 前端通过 `Bridge.call(...)` 调用后端，图片/缩略图通过 `/file`、`/thumbs` 路由访问（Shell 提供）。
 
 ### 2.2 与 Shell / 其他插件的关系
@@ -70,14 +71,16 @@ plugins/image-viewer/
 - **原子写**：先写 `.json.tmp` 再 `os.replace`，防中途崩溃损坏
 - **清理**：`delete_files` / `move_files` / `regenerate_thumbs` 同步 `drop_image_meta`；读取失败**不写缓存**（临时不可读文件不会被永久缓存成 0×0）
 
-### 3.2 缩略图 SQLite `thumbs.db`
+### 3.2 缩略图 SQLite `thumbs.db`（共享基建 ThumbCache）
+
+缩略图缓存使用 Shell 共享基建 `shell/backend/thumb_cache.py`（`ThumbCache`，见 `docs/plugin-guide.md` §3.4），插件持有实例 `self.thumb_cache`（`root_dir` 变更时重建）：
 
 - 路径：`<数据根>/.cache/thumbs.db`；表 `thumbs(path PK, source_mtime, source_size, mime, data, created_at)`
 - 连接参数：`WAL` + `synchronous=NORMAL` + `timeout=15`
 - **失效校验**：`source_mtime`（0.5s 容差）+ `source_size` 双条件，文件替换后自动重生成
-- **生成**：Pillow `thumbnail((300,300))`；JPEG quality=85 optimize、WEBP quality=82 method=4；失败返回 None（**不再复制原图当假缩略图**）
-- **按需生成**：`/thumbs` 请求未命中才生成回写；全量重建走 `generate_thumbs_bulk`（单连接批量）
-- **收缩**：`clear_thumb_cache` 先 `wal_checkpoint(TRUNCATE)` 再 `VACUUM`，并有 `_THUMB_DB_LOCK` 保护（VACUUM 需独占）
+- **生成**：Pillow `thumbnail((300,300))`；JPEG quality=85 optimize、WEBP quality=82 method=4；失败返回 None（**不缓存假缩略图**）
+- **按需生成**：`/thumbs` 请求未命中才生成回写（`thumb_cache.get()`）；全量重建走 `generate_bulk()`（并行批量，单连接写入）
+- **收缩**：`clear()` 先 `wal_checkpoint(TRUNCATE)` 再 `VACUUM`，进程级锁保护（VACUUM 需独占）
 
 ### 3.3 相册索引 `albums_index.json`
 
@@ -167,10 +170,10 @@ plugins/image-viewer/
 | API | 参数 | 返回 | 说明 |
 |-----|------|------|------|
 | `refresh` | 无 | `{success}` | 清空内存/相册缓存并作废索引（新增/替换图片立即生效） |
-| `rebuild_all` | `rel_path='', force=True` | `{started, running, total \| error}` | 全量/指定文件夹重建：空路径 + force 清空全部缓存后重建；空路径 + force=False 全库增量；非空路径只重建该文件夹 |
+| `rebuild_all` | `rel_path='', force=True` | `{started, running, total \| error}` | 全量/指定文件夹重建（基于共享基建 `BackgroundTask`）：空路径 + force 清空全部缓存后重建；空路径 + force=False 全库增量；非空路径只重建该文件夹 |
 | `rebuild_folder` | `rel_path` | 同 `rebuild_all(force=False)` | 单相册增量补齐（相册菜单入口） |
-| `rebuild_status` | 无 | `{running, done, success, cancelled, rebuild_path, total, processed, current, error_count, errors}` | 后台任务进度（前端 500ms 轮询）；错误保留最近 200 条 |
-| `rebuild_cancel` | 无 | `{success \| error}` | 请求取消（`threading.Event`；已生成保留） |
+| `rebuild_status` | 无 | `{running, done, success, cancelled, rebuild_path, total, processed, current, error_count, errors}` | 后台任务进度（`task.status()` 封装，前端 500ms 轮询）；错误保留最近 200 条 |
+| `rebuild_cancel` | 无 | `{success \| error}` | 请求取消（`task.cancel()` 置 Event；已生成保留） |
 
 ### 6.5 设置
 
@@ -185,7 +188,7 @@ plugins/image-viewer/
 
 | 方法 | 调用方 | 说明 |
 |------|--------|------|
-| `get_thumb_data(rel_path)` | Shell `/thumbs` 路由 | 从 SQLite 读取/生成缩略图字节 `(data, mime)`；`_is_safe` 校验，失败返回 None → 404 |
+| `get_thumb_data(rel_path)` | Shell `/thumbs` 路由 | 经 `thumb_cache.get()`（ThumbCache 共享基建）读取/生成缩略图字节 `(data, mime)`；`_is_safe` 校验，失败返回 None → 404 |
 | `ensure_thumb(rel_path)` | 兼容旧调用方（image-cleaner） | 旧版文件式入口，新路由优先走 `get_thumb_data` |
 | `get_data_root()` / `get_file_roots()` | Shell 文件服务 | 安全根目录 = 数据根目录 |
 | `get_extensions()` | Shell 扩展注册 | 挂载 image-cleaner 入口（在 `loadExtensions()` 渲染到左侧栏） |
@@ -212,7 +215,7 @@ plugins/image-viewer/
 
 ```
 /thumbs/<rel_path>?plugin=image-viewer
-  └─► get_thumb_data(rel_path) ──► ensure_thumbnail_bytes ──► SQLite 命中 / 生成回写
+  └─► get_thumb_data(rel_path) ──► thumb_cache.get()（ThumbCache）──► SQLite 命中 / 生成回写
        （rel_path 经 is_safe_path 校验，失败 404）
 
 /file?path=<rel_path>&plugin=image-viewer
@@ -232,7 +235,7 @@ plugins/image-viewer/
 | 连续序列截断 | `_MAX_ALL_IMAGES = 5000` | 防超大相册全量下发 |
 | per_page 封顶 | 200 | 后端强制（前端 10–200） |
 | 元数据落盘 | 脏标记 + 原子写 | 仅新增条目时写盘 |
-| 缩略图批量 | `workers = min(8, cpu_count)` | 全量重建并行生成；取消时已排队任务取消、运行中任务跑完（Pillow 无取消点） |
+| 缩略图批量 | `workers = min(8, cpu_count)`（ThumbCache 默认） | 全量重建并行生成（`generate_bulk`）；取消时已排队任务取消、运行中任务跑完（Pillow 无取消点） |
 
 ## 10. 已知限制与注意事项
 
@@ -256,3 +259,4 @@ plugins/image-viewer/
 | v2.4.0 | Pixiv 排序两层嵌套 + 缩略图更新/全局刷新 |
 | v2.4.1 | 作者页排序栏（文件名/更新时间/图片数量 + 正倒序） |
 | v2.4.2 | SQLite 缩略图缓存（58bf8d2）→ 全量重建后台任务/进度/取消（a2044f4–5f0af50）→ 并行生成与指定文件夹重建 → PyInstaller sqlite3 显式打包（827d76b）→ 性能优化（TTL/并行/脏标记，58d6ea4） |
+| v2.4.3 | 缩略图缓存与重建任务迁移到 Shell 共享基建（ThumbCache / BackgroundTask，d7c8620），API 与行为不变 |
