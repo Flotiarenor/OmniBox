@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import sqlite3
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
@@ -51,24 +52,31 @@ def stat_mtime(root: Path, rel_path: str) -> float:
 
 
 def get_image_size(abs_path: str, mtime: float, meta_cache: dict) -> tuple:
-    """从元数据缓存读取图片尺寸，未命中时用 Pillow 读取并回写缓存。"""
+    """从元数据缓存读取图片尺寸，未命中时用 Pillow 读取并回写缓存。
+
+    读取失败时不写缓存：临时不可读（文件被占用/写入中）的文件不会被
+    永久缓存成 0×0，下次扫描会重试。
+    """
     key = hashlib.md5(abs_path.encode()).hexdigest()
     if key in meta_cache:
         data = meta_cache[key]
         if data.get('mtime') == mtime:
             return data.get('width', 0), data.get('height', 0)
-    width, height = 0, 0
     try:
         from PIL import Image
         with Image.open(abs_path) as img:
             width, height = img.size
     except Exception:
-        pass
+        return 0, 0
     meta_cache[key] = {'mtime': mtime, 'width': width, 'height': height}
     return width, height
 
 
 _THUMB_SIZE = (300, 300)
+
+# 保护「清空+收缩」段的进程级锁：VACUUM 需要独占数据库，
+# 避免与 /thumbs 按需生成的连接交错导致静默失败。
+_THUMB_DB_LOCK = threading.Lock()
 
 _MIME_BY_EXT = {
     '.png': 'image/png',
@@ -180,14 +188,23 @@ def delete_thumb_cache(db_path: Path, rel_path: str):
 
 
 def clear_thumb_cache(db_path: Path):
-    """清空 SQLite 缩略图表，用于全量重建；同时收缩数据库文件，避免删除后体积不变。"""
+    """清空 SQLite 缩略图表，用于全量重建；同时收缩数据库文件，避免删除后体积不变。
+
+    先 checkpoint 把 WAL 合并回主库再 VACUUM，提高收缩成功率；
+    整个「清空+收缩」段加锁，避免与按需生成的连接交错。
+    """
     try:
         conn = _connect_thumb_db(db_path)
         try:
-            conn.execute('DELETE FROM thumbs')
-            conn.commit()
-            # 让 thumbs.db 文件真正变小，而不是只删除行。
-            conn.execute('VACUUM')
+            with _THUMB_DB_LOCK:
+                conn.execute('DELETE FROM thumbs')
+                conn.commit()
+                # 让 thumbs.db 文件真正变小，而不是只删除行。
+                try:
+                    conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+                except Exception:
+                    pass
+                conn.execute('VACUUM')
         finally:
             conn.close()
     except Exception:
