@@ -699,6 +699,9 @@ class ImageViewer {
             this.currentImages = this.currentItems.filter(it => it.type !== 'album');
             this.currentAllImages = data.all_images || this.currentImages;
             this.currentAllOffset = data.all_offset || 0;
+            if (data.all_truncated) {
+                Toast.warning('相册较大，连续浏览序列已截断（前 5000 张）');
+            }
             if (data.settings) {
                 this.currentSettings = data.settings;
                 this.currentRowHeight = data.settings.row_height || 200;
