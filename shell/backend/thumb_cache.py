@@ -60,16 +60,28 @@ _CLEAR_LOCK = threading.Lock()
 
 
 class ThumbCache:
-    """SQLite 缩略图缓存（WAL + mtime/size 失效校验 + 并行批量生成）。"""
+    """SQLite 缩略图缓存（WAL + mtime/size 失效校验 + 并行批量生成）。
+
+    缩略图**生成**策略可扩展，三种方式任选：
+    - 默认：Pillow 图片缩放（`size` 可配）；
+    - 构造注入 `generator` 可调用对象（组合）：`generator(src_path) -> (bytes, mime) | None`，
+      适合视频抽帧、音频内嵌封面等非图片源（media-player 等插件用）；
+    - 子类覆写 `_generate()`（继承）：完全接管生成逻辑；
+      覆写中调用 `super()._generate(src_path)` 可复用父类的「注入优先」逻辑。
+    注意：generator 会被批量生成的线程池**并发调用**，需保证线程安全。
+    """
 
     def __init__(self, db_path: Path, size: Tuple[int, int] = (300, 300),
                  mime_map: Optional[Dict[str, str]] = None,
-                 workers: Optional[int] = None) -> None:
+                 workers: Optional[int] = None,
+                 generator: Optional[Callable[[Path], Optional[Tuple[bytes, str]]]] = None) -> None:
         self.db_path = Path(db_path)
         self.size = tuple(size)
         self.mime_map = dict(mime_map or DEFAULT_MIME_MAP)
         self.workers = workers or min(8, max(1, os.cpu_count() or 4))
         self._mtime_tolerance = 0.5
+        # 自定义生成器（可选）：优先于默认 Pillow 实现；子类也可直接覆写 _generate()
+        self._generator = generator
 
     # ===== 内部 =====
 
@@ -94,7 +106,16 @@ class ThumbCache:
         return self.mime_map.get(Path(rel_path).suffix.lower(), 'application/octet-stream')
 
     def _generate(self, src_path: Path) -> Optional[Tuple[bytes, str]]:
-        """生成 size 缩略图字节；失败返回 None（不复制原图当假缩略图）。"""
+        """缩略图生成入口（扩展点）。
+
+        优先级：构造注入的 generator > 子类覆写本方法 > 默认 Pillow 缩放。
+        """
+        if self._generator is not None:
+            return self._generator(src_path)
+        return self._default_generate(src_path)
+
+    def _default_generate(self, src_path: Path) -> Optional[Tuple[bytes, str]]:
+        """默认实现：Pillow 缩放到 size；失败返回 None（不复制原图当假缩略图）。"""
         try:
             from PIL import Image
             with Image.open(src_path) as img:

@@ -401,6 +401,43 @@ self.thumb_cache.clear()        # 全清 + wal_checkpoint + VACUUM 收缩
 - `size`、MIME 映射（`mime_map`）、并发数（`workers`）均可配置，默认 300×300 + 8 线程；
 - 已有实现参考：image-viewer（`ThumbCache` 接入 + `BackgroundTask` 重建任务，见 `docs/image-viewer-design.md` §3.2、§6.4）。
 
+##### 自定义生成器（视频抽帧 / 内嵌封面等非图片源）
+
+`ThumbCache` 的生成策略可扩展（三种方式任选）：
+
+1. **构造注入 `generator`（推荐，组合）**：`generator(src_path) -> (bytes, mime) | None`，线程池会**并发调用**，需保证线程安全：
+
+```python
+def video_frame_generator(src_path: Path):
+    """视频抽帧（PyAV/ffmpeg 等）：失败返回 None 即不缓存。"""
+    if src_path.suffix.lower() not in ('.mp4', '.mkv', ...):
+        return None
+    frame = extract_frame(src_path)          # → PIL Image / bytes
+    out = io.BytesIO()
+    frame.save(out, format='JPEG', quality=80)
+    return out.getvalue(), 'image/jpeg'
+
+video_cache = ThumbCache(root / '.cache' / 'thumbs.db',
+                         size=(320, 180), generator=video_frame_generator)
+```
+
+2. **子类覆写 `_generate()`（继承）**：完全接管生成逻辑；覆写中调用 `super()._generate(src)` 可复用「注入优先」逻辑（适合音频内嵌封面等需要读取非图片容器的场景）：
+
+```python
+class AudioCoverCache(ThumbCache):
+    def _generate(self, src_path):
+        try:
+            apic = read_embedded_cover(src_path)   # mutagen APIC 帧 → bytes
+            return apic, 'image/jpeg'
+        except Exception:
+            return None
+```
+
+3. **默认**：Pillow 图片缩放（`size` 可配），图片类插件无需任何额外配置。
+
+> 生成器返回的 MIME 由生成器自行决定（视频帧 `image/jpeg`、内嵌封面按实际格式）；
+> `mime_map` 仅用于默认 Pillow 路径的扩展名推断。
+
 ### 3.5 完整 API 列表
 
 （以 image-viewer 为例，完整版见 `docs/image-viewer-design.md` §6）
