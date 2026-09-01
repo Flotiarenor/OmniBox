@@ -19,6 +19,7 @@ from shell.backend.plugin_utils import load_sibling
 _models = load_sibling(__file__, 'models', 'media_player')
 _metadata = load_sibling(__file__, 'metadata', 'media_player')
 _video_meta = load_sibling(__file__, 'video_meta', 'media_player')
+_ffmpeg = load_sibling(__file__, 'video_ffmpeg', 'media_player')
 
 MediaItem = _models.MediaItem
 MetadataReader = _metadata.MetadataReader
@@ -37,11 +38,11 @@ COVER_NAMES = {
 
 
 def cover_generator(src_path: Path) -> Optional[tuple]:
-    """ThumbCache 自定义生成器：音频内嵌封面或视频目录封面图。
+    """ThumbCache 自定义生成器：音频内嵌封面 / 视频目录封面图 / ffmpeg 抽帧。
 
     返回 (bytes, mime) 或 None（失败不缓存）。线程池会并发调用，无共享状态。
-    视频优先用同目录封面图（cover/folder/poster 等，与扫描期 has_cover 检测
-    同一组文件名），没有则由前端 canvas 抽帧后经 media_put_thumb 回写。
+    视频优先级：同目录封面图（零成本）→ ffmpeg 后端抽帧（可选通道，路径来自
+    设置 ffmpeg_path 或 PATH）→ 都没有则返回 None，由前端 canvas 抽帧兜底。
     """
     try:
         suffix = Path(src_path).suffix.lower()
@@ -49,8 +50,14 @@ def cover_generator(src_path: Path) -> Optional[tuple]:
             data = MetadataReader.extract_cover_bytes(Path(src_path))
             return (data, detect_image_mime(data)) if data else None
         if suffix in VIDEO_EXTS:
+            # 1. 目录封面图（与扫描期 has_cover 检测同一组文件名）
             data = MetadataReader._find_folder_cover(Path(src_path).parent, COVER_NAMES)
-            return (data, detect_image_mime(data)) if data else None
+            if data:
+                return (data, detect_image_mime(data))
+            # 2. ffmpeg 后端抽帧（未配置/失败则交给前端兜底）
+            frame = _ffmpeg.extract_frame(str(src_path),
+                                          duration=probe_duration(str(src_path)))
+            return (frame, 'image/jpeg') if frame else None
     except Exception:
         pass
     return None

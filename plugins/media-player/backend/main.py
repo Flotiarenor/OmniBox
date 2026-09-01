@@ -14,6 +14,7 @@ from shell.backend.thumb_cache import ThumbCache
 
 _scanner = load_sibling(__file__, 'scanner', 'media_player')
 _models = load_sibling(__file__, 'models', 'media_player')
+_ffmpeg = load_sibling(__file__, 'video_ffmpeg', 'media_player')
 
 scan_media = _scanner.scan_media
 cover_generator = _scanner.cover_generator
@@ -65,6 +66,11 @@ class MediaPlayerPlugin(PluginBase):
         {"key": "default_video_mode", "label": "视频默认播放模式", "type": "select",
          "options": [{"label": "画面模式", "value": "video"}, {"label": "仅声音", "value": "audio"}],
          "default": "video", "central": False, "help": "视频默认以画面或仅声音播放"},
+        {"key": "ffmpeg_path", "label": "ffmpeg 路径（视频封面抽取）", "type": "text",
+         "placeholder": "留空自动检测 PATH", "central": True,
+         "help": "可选：填写 ffmpeg 可执行文件路径（如 C:\\ffmpeg\\bin\\ffmpeg.exe 或所在目录）；"
+                "留空时自动检测 PATH。检测到 ffmpeg 后视频封面由后端直接抽取（无需打开页面），"
+                "检测不到则回退为前端抽帧。"},
     ]
 
     def __init__(self, manifest, config):
@@ -89,6 +95,8 @@ class MediaPlayerPlugin(PluginBase):
         self._thumb_cache = ThumbCache(
             self._cache_dir / 'thumbs.db', size=(640, 640),
             generator=cover_generator, workers=3)
+        # ffmpeg 可选通道：注入用户设置路径（探测结果缓存，设置变更时刷新）
+        _ffmpeg.configure(self.setting('ffmpeg_path') or '')
 
     def get_thumb_data(self, filepath: str) -> Optional[tuple]:
         """/thumbs 路由：按 item id 返回封面 (data, mime)；未索引/生成失败返回 None。"""
@@ -615,6 +623,8 @@ class MediaPlayerPlugin(PluginBase):
     # ---------- 设置 ----------
 
     def on_settings_changed(self, changed_keys):
+        if 'ffmpeg_path' in changed_keys:
+            _ffmpeg.configure(self.setting('ffmpeg_path') or '')
         if 'root_dir' in changed_keys or 'media_dirs' in changed_keys:
             new_dir = self.setting('root_dir')
             if new_dir and Path(new_dir).is_dir():
@@ -673,6 +683,15 @@ class MediaPlayerPlugin(PluginBase):
         result['parsed'] = item.to_dict()
         return result
 
+    def ffmpeg_status(self) -> dict:
+        """ffmpeg 可用性探测（force 重新检测，供设置/调试确认）。"""
+        path = _ffmpeg.find_ffmpeg(force=True)
+        return {
+            'available': bool(path),
+            'path': path or '',
+            'configured': self.setting('ffmpeg_path') or '',
+        }
+
     def _eq_presets_dir(self) -> Path:
         return Path(__file__).parent.parent / 'eq-presets'
 
@@ -729,6 +748,7 @@ class MediaPlayerPlugin(PluginBase):
             'media_put_thumb': self.put_thumb,
             'media_thumb_missing': self.thumb_missing,
             'media_debug_meta': self.debug_meta,
+            'media_ffmpeg_status': self.ffmpeg_status,
             'media_list_eq_presets': self.list_eq_presets,
             'media_save_eq_preset': self.save_eq_preset,
             'media_get_config': lambda key, default=None: self.setting(key, default),
