@@ -20,6 +20,9 @@ class MediaPlayerCore {
         this._pendingResume = 0;
         this._lastBackendSave = 0;
         this._failedIds = new Set();
+        this._retryCounts = new Map();   // 每曲加载失败重试计数（成功后清除）
+        this._pendingSkipTimer = null;   // 失败后自动跳下一曲的挂起定时器
+        this._skipArmed = false;         // 定时器是否仍有效（用户操作即解除）
         this._loadSeq = 0;
 
         this._audioCtx = null;
@@ -57,13 +60,20 @@ class MediaPlayerCore {
     playIndex(index, autoplay = true) {
         if (!this.queue.length) return;
         if (index < 0 || index >= this.queue.length) index = 0;
-        this.currentIndex = index;
+        // 用户（或自动跳转）选择了曲目：解除任何挂起的自动跳转，并允许重试此前失败的曲目
+        this._clearPendingSkip();
         const item = this.queue[index];
+        if (item) {
+            this._failedIds.delete(item.id);
+            this._retryCounts.delete(item.id);
+        }
+        this.currentIndex = index;
         this._loadItem(item, autoplay);
     }
 
     playItem(item, autoplay = true) {
         if (!item) return;
+        this._clearPendingSkip();
         const idx = this.queue.findIndex(x => x && x.id === item.id);
         if (idx >= 0) {
             this.playIndex(idx, autoplay);
@@ -139,6 +149,7 @@ class MediaPlayerCore {
 
     next(auto = true) {
         if (!this.queue.length) return;
+        this._clearPendingSkip();
         let idx;
         if (this.playMode === 1) {
             idx = Math.floor(Math.random() * this.queue.length);
@@ -160,6 +171,7 @@ class MediaPlayerCore {
 
     prev() {
         if (!this.queue.length) return;
+        this._clearPendingSkip();
         const el = this.mediaElement;
         if (el && el.currentTime > 3) {
             el.currentTime = 0;
@@ -175,6 +187,7 @@ class MediaPlayerCore {
     }
 
     stop() {
+        this._clearPendingSkip();
         this._saveProgress();
         this._stopProgressSaver();
         this.audio.pause();
@@ -235,6 +248,7 @@ class MediaPlayerCore {
     // ===== 视频画面 / 仅声音 =====
     setVideoMode(mode) {
         if (!this.currentItem || this.currentItem.kind !== 'video') return;
+        this._clearPendingSkip();
         const wasPlaying = !this.mediaElement.paused;
         const position = this.mediaElement.currentTime || 0;
 
@@ -294,6 +308,7 @@ class MediaPlayerCore {
 
     restorePlayback(item, pb) {
         if (!item || !item.id) return false;
+        this._clearPendingSkip();
         const savedPos = MediaProgressStore.get(item);
         this.queue = [item];
         this.currentIndex = 0;
@@ -407,11 +422,44 @@ class MediaPlayerCore {
         try { localStorage.setItem('omniboxMediaEQ', JSON.stringify(this.getEqBands())); } catch (e) { }
     }
 
+    // 失败自动跳转：只在「重试后仍失败」时武装一次；任何用户操作都会解除，
+    // 避免 600ms 延迟定时器覆盖用户刚做的选择（历史乱跳 bug 根因之一）。
+    _clearPendingSkip() {
+        this._skipArmed = false;
+        if (this._pendingSkipTimer) {
+            clearTimeout(this._pendingSkipTimer);
+            this._pendingSkipTimer = null;
+        }
+    }
+
+    _armSkip(itemId, nextIndex) {
+        this._clearPendingSkip();
+        this._skipArmed = true;
+        this._pendingSkipTimer = setTimeout(() => {
+            this._pendingSkipTimer = null;
+            if (!this._skipArmed) return;
+            this._skipArmed = false;
+            // 执行前再校验：期间用户已切走则放弃
+            if (!this.currentItem || this.currentItem.id !== itemId) return;
+            this.playIndex(nextIndex, true);
+        }, 600);
+    }
+
     // ===== 媒体事件 =====
     _bindMediaEvents(el) {
         el.addEventListener('loadedmetadata', () => {
             if (el === this.mediaElement && this.currentItem) {
                 this._failedIds.delete(this.currentItem.id);
+                this._retryCounts.delete(this.currentItem.id);
+                // 视频「读取即取封面」：播放加载成功时立刻在后台抽帧，
+                // 供舞台/列表显示（MediaFrameExtractor 内部去重，未缓存才生成）
+                const cur = this.currentItem;
+                if (cur && cur.kind === 'video' && window.MediaFrameExtractor) {
+                    const stageImg = document.getElementById('mp-stage-cover-img');
+                    if (stageImg && stageImg.isConnected) {
+                        MediaFrameExtractor.request(cur.id, stageImg, () => { }, true);
+                    }
+                }
             }
             if (el === this.mediaElement && this._pendingResume > 0) {
                 try { el.currentTime = this._pendingResume; } catch (e) { }
@@ -440,21 +488,50 @@ class MediaPlayerCore {
 
         el.addEventListener('error', () => {
             if (!el.src || el !== this.mediaElement) return;
-            console.warn('媒体加载失败:', el.error);
-            const failedId = this.currentItem ? this.currentItem.id : '';
-            if (failedId) this._failedIds.add(failedId);
+            const code = el.error ? el.error.code : 0;
 
-            // 只尝试尚未失败的候选曲目，全部失败后停止，避免无限循环
+            // 1. MEDIA_ERR_ABORTED：换源中止（快速切歌/连点导致上一资源被中断）属正常流程
+            if (code === 1) return;
+
+            const item = this.currentItem;
+            const failedId = item ? item.id : '';
+            console.warn('媒体加载失败:', code, el.error, failedId);
+
+            // 2. 播放中解码错误（硬解/编码问题）：不自动跳歌，停下提示，避免整队列连环跳
+            if (code === 3 && el.currentTime > 0) {
+                Toast.error('解码错误，播放已停止（可点击下一曲继续）');
+                this.app.onPlayStateChange(false);
+                return;
+            }
+            if (!failedId) return;
+
+            // 3. 网络/格式不支持错误：同曲重试一次，防瞬时网络抖动
+            const attempts = this._retryCounts.get(failedId) || 0;
+            if (attempts < 1) {
+                this._retryCounts.set(failedId, attempts + 1);
+                Toast.info('媒体加载失败，正在重试…');
+                setTimeout(() => {
+                    if (this.currentItem && this.currentItem.id === failedId) {
+                        this._loadItem(this.currentItem, true);
+                    }
+                }, 800);
+                return;
+            }
+
+            // 4. 重试仍失败：标记后只向前跳下一首（绝不回跳）；队列尽头则停止
+            this._failedIds.add(failedId);
+            const curIdx = this.queue.findIndex(x => x && x.id === failedId);
+            const start = curIdx >= 0 ? curIdx + 1 : this.queue.length;
             const candidates = this.queue
-                .map((item, index) => ({ item, index }))
-                .filter(x => x.item && x.item.id !== failedId && !this._failedIds.has(x.item.id));
+                .map((x, index) => ({ item: x, index }))
+                .filter(x => x.index >= start && x.item && !this._failedIds.has(x.item.id));
             if (!candidates.length) {
                 Toast.error('媒体加载失败，请检查文件是否仍然存在');
                 this.app.onPlayStateChange(false);
                 return;
             }
             Toast.error('媒体加载失败，尝试下一曲');
-            setTimeout(() => this.playIndex(candidates[0].index, true), 600);
+            this._armSkip(failedId, candidates[0].index);
         });
     }
 }
