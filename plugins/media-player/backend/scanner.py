@@ -37,16 +37,19 @@ COVER_NAMES = {
 
 
 def cover_generator(src_path: Path) -> Optional[tuple]:
-    """ThumbCache 自定义生成器：音频内嵌或文件夹封面。
+    """ThumbCache 自定义生成器：音频内嵌封面或视频目录封面图。
 
     返回 (bytes, mime) 或 None（失败不缓存）。线程池会并发调用，无共享状态。
-    视频封面不在后端生成：解码能力与播放对齐，由前端 canvas 抽帧
-    （media_put_thumb 回写 ThumbCache）。
+    视频优先用同目录封面图（cover/folder/poster 等，与扫描期 has_cover 检测
+    同一组文件名），没有则由前端 canvas 抽帧后经 media_put_thumb 回写。
     """
     try:
         suffix = Path(src_path).suffix.lower()
         if suffix in AUDIO_EXTS:
             data = MetadataReader.extract_cover_bytes(Path(src_path))
+            return (data, detect_image_mime(data)) if data else None
+        if suffix in VIDEO_EXTS:
+            data = MetadataReader._find_folder_cover(Path(src_path).parent, COVER_NAMES)
             return (data, detect_image_mime(data)) if data else None
     except Exception:
         pass

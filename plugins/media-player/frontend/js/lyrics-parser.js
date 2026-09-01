@@ -42,6 +42,7 @@ class MediaLyrics {
         this._userScrolling = false;
         this._scrollTimer = null;
         this._raf = null;
+        this._loadSeq = 0;
 
         this._page = document.getElementById('lyrics-page');
         this._bg = document.getElementById('lyrics-page-bg');
@@ -102,6 +103,8 @@ class MediaLyrics {
 
     // ===== 数据 =====
     async loadForItem(item) {
+        // 序号守卫：快速连续切歌时，迟到的旧请求不得覆盖新曲目的歌词
+        const seq = ++this._loadSeq;
         this._lines = [];
         this._currentIndex = -1;
         if (!item) {
@@ -113,18 +116,22 @@ class MediaLyrics {
             if (item.ncm_encrypted_id) {
                 // 网易云网络流：从 ncm-cli / OpenAPI 获取 LRC
                 const data = await Bridge.callPlugin('netease-music', 'get_lyric', item.ncm_encrypted_id);
+                if (seq !== this._loadSeq) return;
                 if (data && data.success && data.data) {
                     lrcText = data.data.lyric || data.data.txtLyric || '';
                 }
             } else {
                 // 本地媒体：沿用原媒体播放器的本地 .lrc 读取
                 const result = await Bridge.call('media_get_lyrics', item.id);
+                if (seq !== this._loadSeq) return;
                 if (result && result.lyrics) {
                     lrcText = result.lyrics;
                 }
             }
+            if (seq !== this._loadSeq) return;
             this._lines = LyricsParser.parse(lrcText);
         } catch (e) {
+            if (seq !== this._loadSeq) return;
             this._lines = [];
         }
         if (this._visible) this._render();

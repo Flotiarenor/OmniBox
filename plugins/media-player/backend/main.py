@@ -123,15 +123,17 @@ class MediaPlayerPlugin(PluginBase):
             return {'success': False, 'error': f'写入失败: {e}'}
 
     def thumb_missing(self, item_ids: List[str] = None) -> dict:
-        """批量查询哪些条目的封面尚未缓存（供前端按浏览位置预取，避免重复抽帧）。"""
-        missing = []
+        """批量查询哪些条目的封面尚未缓存（供前端按浏览位置预取，避免重复抽帧）。
+
+        单连接批量判定（ThumbCache.has_many），避免每个 id 一次 SQLite 建连。
+        """
+        items = []
         for sid in (item_ids or [])[:200]:
             item = self._items.get(sid)
             if item is None or not item.path:
                 continue
-            if not self._thumb_cache.has(sid, Path(item.path)):
-                missing.append(sid)
-        return {'missing': missing}
+            items.append((sid, Path(item.path)))
+        return {'missing': self._thumb_cache.has_many(items)}
 
     def get_data_root(self) -> Path:
         return self.root_dir
@@ -457,7 +459,8 @@ class MediaPlayerPlugin(PluginBase):
             data = album.to_dict()
             # 封面懒生成：前端用首个有封面条目的 item id 请求 /thumbs/<id>
             data['cover_item_id'] = next((i.id for i in album.items if i.has_cover), '')
-            data['items'] = [i.to_dict() for i in album.items]
+            # 注意：不把 items 全量塞进专辑响应（前端只看 count/时长/封面），
+            # 大媒体库下每次专辑视图都传全库 JSON 会显著拖慢页面与桥接。
             result.append(data)
         result.sort(key=lambda x: x['name'].lower())
         return result
@@ -476,8 +479,9 @@ class MediaPlayerPlugin(PluginBase):
             'audio': len(audio),
             'video': len(video),
             'total': len(self._items),
-            'audio_albums': len(self._albums('audio')),
-            'video_albums': len(self._albums('video')),
+            # 仅按 album_key 去重计数，避免为统计构建完整专辑结构（大库下明显更省）
+            'audio_albums': len({i.album_key for i in audio}),
+            'video_albums': len({i.album_key for i in video}),
             'favorites': fav_count,
             'playlists': len(self._state.get('playlists', [])),
         }
@@ -509,19 +513,21 @@ class MediaPlayerPlugin(PluginBase):
         return {}
 
     def playlist_save(self, name: str = '', playlist_id: str = '', item_ids: List[str] = None) -> dict:
-        if item_ids is None:
-            item_ids = []
         playlists = self._state.get('playlists', [])
         now = time.strftime('%Y-%m-%d %H:%M:%S')
         if playlist_id:
             for pl in playlists:
                 if pl['id'] == playlist_id:
                     pl['name'] = name or pl['name']
-                    pl['item_ids'] = item_ids
+                    # 未传 item_ids（如仅重命名）时保留原有曲目，避免误清空歌单
+                    if item_ids is not None:
+                        pl['item_ids'] = item_ids
                     pl['updated_at'] = now
                     self._save_state()
                     return {'success': True, 'playlist': pl}
             return {'success': False, 'error': '歌单不存在'}
+        if item_ids is None:
+            item_ids = []
         new_pl = {
             'id': uuid.uuid4().hex[:12],
             'name': name or '新建歌单',
@@ -563,12 +569,14 @@ class MediaPlayerPlugin(PluginBase):
         self._save_state()
         return {'success': True}
 
-    def save_playback(self, item_id: str = '', loop_mode: str = 'none', shuffle: bool = False, volume: float = 1.0) -> dict:
+    def save_playback(self, item_id: str = '', loop_mode: str = 'none', shuffle: bool = False,
+                      volume: float = 1.0, video_mode: str = 'video') -> dict:
         self._state['playback'] = {
             'item_id': item_id,
             'loop_mode': loop_mode,
             'shuffle': shuffle,
             'volume': volume,
+            'video_mode': video_mode,
         }
         self._save_state()
         return {'success': True}

@@ -138,6 +138,9 @@ class MediaPlayerCore {
     }
 
     togglePlay() {
+        // 用户手动播放/暂停：解除任何挂起的自动跳歌定时器（失败重试 600ms 窗口内
+        // 用户点播放应继续当前曲目，而不是被定时器覆盖跳走）
+        this._clearPendingSkip();
         const el = this.mediaElement;
         if (this.currentItem && el && el.src) {
             if (el.paused) el.play().catch(() => { });
@@ -203,6 +206,7 @@ class MediaPlayerCore {
     }
 
     seekTo(value) {
+        this._clearPendingSkip();
         const el = this.mediaElement;
         if (el && isFinite(value)) {
             el.currentTime = Math.max(0, Math.min(el.duration || 0, value));
@@ -297,7 +301,8 @@ class MediaPlayerCore {
             this.currentItem ? this.currentItem.id : '',
             loopMap[this.playMode] || 'none',
             this.playMode === 1,
-            this._volume
+            this._volume,
+            this.videoMode ? 'video' : 'audio'
         ).catch(() => { });
     }
 
@@ -313,7 +318,6 @@ class MediaPlayerCore {
         this.queue = [item];
         this.currentIndex = 0;
         this.currentItem = item;
-        this.videoMode = item.kind !== 'video' || (pb.video_mode || 'video') !== 'audio';
 
         if (pb.loop_mode === 'one') this.playMode = 2;
         else if (pb.shuffle) this.playMode = 1;
@@ -327,6 +331,11 @@ class MediaPlayerCore {
 
         this._previousItem = item;
         this._pendingResume = savedPos;
+        // 视频画面/仅声音：优先用上次持久化的模式，其次回落到设置项
+        const savedVideoMode = pb.video_mode
+            || (this.app.settings && this.app.settings.default_video_mode)
+            || 'video';
+        this.videoMode = item.kind !== 'video' || savedVideoMode !== 'audio';
         const el = this.mediaElement;
         el.src = item.stream_url || item.url || MPUtils.mediaUrl(item.path);
         el.volume = this._volume;
@@ -359,11 +368,14 @@ class MediaPlayerCore {
             this._analyser.fftSize = 512;
             this._analyser.smoothingTimeConstant = 0.82;
 
-            // 两个媒体元素共同汇入同一条滤波链
+            // 两个媒体元素共同汇入同一条滤波链；单个元素接管失败（如已连接过）
+            // 不应毒化整条 EQ 链：各自容错，至少保留能用的那一路
             [this.audio, this.video].forEach(el => {
                 try {
                     this._sources[el === this.audio ? 'audio' : 'video'] = this._audioCtx.createMediaElementSource(el);
-                } catch (e) { }
+                } catch (e) {
+                    console.warn('EQ 接管媒体元素失败（该元素将直通扬声器）:', e);
+                }
             });
 
             let filters = this.EQ_FREQS.map(freq => {

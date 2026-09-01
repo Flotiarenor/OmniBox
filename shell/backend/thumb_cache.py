@@ -224,6 +224,37 @@ class ThumbCache:
         except Exception:
             return False
 
+    def has_many(self, items: List[Tuple[str, Path]]) -> List[str]:
+        """批量判断哪些条目缺少有效缓存（单连接查询）。
+
+        items: [(rel_path, src_path), ...]；返回缺失的 rel_path 列表。
+        语义与 has() 一致：源文件 stat 失败同样视为缺失。供预取封面等
+        场景批量判定，避免 N 次建连（每次建连含建表/PRAGMA 开销）。
+        """
+        if not items:
+            return []
+        try:
+            missing = []
+            checked = []
+            for rel, src in items:
+                try:
+                    st = Path(src).stat()
+                except OSError:
+                    missing.append(rel)
+                    continue
+                checked.append((rel, st.st_mtime, st.st_size))
+            if checked:
+                conn = self._connect()
+                try:
+                    for rel, mtime, size in checked:
+                        if self._read_valid(conn, rel, mtime, size) is None:
+                            missing.append(rel)
+                finally:
+                    conn.close()
+            return missing
+        except Exception:
+            return [rel for rel, _ in items]
+
     def prune(self, existing_keys: set) -> int:
         """删除不在 existing_keys 中的缓存条目（源文件已删除/移动的孤儿）。
 

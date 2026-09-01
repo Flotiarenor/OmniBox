@@ -46,7 +46,10 @@ const MPUtils = {
             return item.cover_path;
         }
         if (item.has_cover && item.id) {
-            return Bridge.thumbUrl(item.id);
+            const base = Bridge.thumbUrl(item.id);
+            // 带源文件 mtime 版本号：视频/音频文件被替换后 mtime 变化 → URL 变化，
+            // 强制浏览器绕过 /thumbs 的 1 天缓存（旧封面最长展示 24h 的问题）
+            return item.mtime ? `${base}&v=${Math.round(item.mtime)}` : base;
         }
         return '';
     },

@@ -33,11 +33,13 @@ class MediaPlaylistManager {
     }
 
     async rename(playlistId, name) {
+        const pl = this.playlists.find(p => p.id === playlistId);
+        if (!pl) return false;
         try {
-            const result = await Bridge.call('media_playlist_save', name, playlistId, []);
+            // 必须带上现有 item_ids：后端按传入列表整体覆盖，只传名称会清空歌单
+            const result = await Bridge.call('media_playlist_save', name, playlistId, pl.item_ids || []);
             if (result.success) {
-                const pl = this.playlists.find(p => p.id === playlistId);
-                if (pl) pl.name = name;
+                pl.name = name;
                 this.renderSidebar();
                 return true;
             }
