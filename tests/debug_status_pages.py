@@ -94,7 +94,7 @@ def start_server(port: int):
     app = create_app(config, manager)
 
     threading.Thread(
-        target=lambda: app.run(host='127.0.0.1', port=port, debug=False, use_reloader=False),
+        target=lambda: app.run(host='127.0.0.1', port=port, debug=False, use_reloader=False, threaded=True),
         daemon=True,
     ).start()
     return app, manager

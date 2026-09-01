@@ -134,7 +134,9 @@ def main():
             except (IndexError, ValueError):
                 pass
         print(f"[OmniBox] Web-only 模式启动: http://{host}:{port}")
-        app.run(host=host, port=port, debug=False, use_reloader=False)
+        # threaded=True：单线程下大文件媒体流会阻塞所有请求（无法跳转/元数据读取/API），
+        # 流媒体（Range 请求）与后台扫描任务都需要并发处理。
+        app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
         return
 
     class ShellAPI: pass
@@ -150,7 +152,8 @@ def main():
 
     app = create_app(config, manager)
     host, port = config['server']['host'], config['server']['port']
-    threading.Thread(target=lambda: app.run(host=host, port=port, debug=False, use_reloader=False), daemon=True).start()
+    # threaded=True：媒体流/Range 请求与后台扫描任务需要并发，见 --web-only 分支注释
+    threading.Thread(target=lambda: app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True), daemon=True).start()
     if not wait_for_server(host, port):
         print("[OmniBox] Flask 启动超时"); return
 
