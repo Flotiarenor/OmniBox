@@ -214,20 +214,26 @@ const MediaFrameExtractor = (function () {
         return (r2 && r2 !== 'locked') ? r2 : (r2 === 'locked' ? 'locked' : null);
     }
 
-    function settle(itemId, ok, hard) {
+    function settle(itemId, result, hard) {
         const entry = pending.get(itemId);
         pending.delete(itemId);
-        if (ok) failedAt.delete(itemId);
+        if (result && result !== 'locked') failedAt.delete(itemId);
         else if (hard) failedAt.set(itemId, Date.now());
         if (!entry) return;
         entry.imgs.forEach((img) => {
             if (!img.isConnected) return;   // 页面已移除该元素
             img.classList.remove('mp-thumb-pending');
-            if (ok) {
-                // 命中缓存后重设 src（带版本参数防 404 缓存）；
-                // 万一仍失败则走 fallback 兜底，不留静默破图
-                img.onerror = () => { if (typeof entry.fallback === 'function') entry.fallback(img); };
-                img.src = Bridge.thumbUrl(itemId) + '&v=' + (++seq);
+            if (result && result !== 'locked') {
+                if (result === 'cached') {
+                    // 缓存已存在（另一标签页/后端 ffmpeg 刚写入）：回读一次 /thumbs
+                    // 万一仍失败则走 fallback 兜底，不留静默破图
+                    img.onerror = () => { if (typeof entry.fallback === 'function') entry.fallback(img); };
+                    img.src = Bridge.thumbUrl(itemId) + '&v=' + (++seq);
+                } else {
+                    // 抽帧成功：dataUrl 直接回填，省掉「回读 /thumbs」一次往返；
+                    // put_thumb 已异步写库，下次浏览直接命中 SQLite 缓存
+                    img.src = result;
+                }
             } else if (typeof entry.fallback === 'function') {
                 entry.fallback(img);
             }
@@ -244,11 +250,11 @@ const MediaFrameExtractor = (function () {
             extractOne(itemId).then(
                 (res) => {
                     active--;
-                    if (res === 'locked') settle(itemId, false, false);  // 跨标签页占用：软失败
-                    else settle(itemId, !!res, !res);                     // 成功 / 硬失败
+                    if (res === 'locked') settle(itemId, 'locked', false);  // 跨标签页占用：软失败
+                    else settle(itemId, res, !res);                          // dataUrl/'cached' 成功 / null 硬失败
                     pump();
                 },
-                () => { active--; settle(itemId, false, true); pump(); }
+                () => { active--; settle(itemId, null, true); pump(); }
             );
         }
     }
