@@ -30,31 +30,55 @@ const MPUtils = {
         return item && item.kind === 'video' ? '🎬' : '🎵';
     },
 
-    // 媒体文件 / 封面都以绝对路径存储（支持跨多个媒体根目录），
+    // 媒体文件以绝对路径存储（支持跨多个媒体根目录），
     // 交给 Bridge.originalUrl 统一编码后走 /file?path= 路由，由后端做逐根目录安全检查。
     mediaUrl(path) {
         if (!path) return '';
         return Bridge.originalUrl(path);
     },
 
+    // 本地封面统一按 item id 走 /thumbs/<id>（ThumbCache 懒生成 + SQLite 缓存，
+    // 见 backend cover_generator）；生成失败时后端返回 404，由 coverImg 降级为 emoji。
     coverUrl(item) {
-        if (!item || !item.cover_path) return '';
-        // 网络流封面（网易云等）直接使用绝对地址，不走本地 /file 代理
-        if (/^(https?:)?\/\//i.test(item.cover_path) || /^data:/i.test(item.cover_path)) {
+        if (!item) return '';
+        // 网络流封面（网易云等）直接使用绝对地址，不走本地代理
+        if (item.cover_path && (/^(https?:)?\/\//i.test(item.cover_path) || /^data:/i.test(item.cover_path))) {
             return item.cover_path;
         }
-        return MPUtils.mediaUrl(item.cover_path);
+        if (item.has_cover && item.id) {
+            return Bridge.thumbUrl(item.id);
+        }
+        return '';
     },
 
-    // 生成封面 HTML；图片缺失 / 加载失败时自动降级为 emoji 占位
-    coverImg(url, fallbackIcon = '🎵', extra = '') {
+    // 封面来源兼容两种形态：远程 URL 字符串（网易云歌单封面）/ 本地 item 对象
+    coverSrc(cover) {
+        if (!cover) return '';
+        if (typeof cover === 'string') return cover;
+        return MPUtils.coverUrl(cover);
+    },
+
+    // 生成封面 HTML；图片缺失 / 加载失败时自动降级为 emoji 占位。
+    // 传 itemId（视频条目）时，加载失败会先尝试前端 canvas 抽帧（MediaFrameExtractor），
+    // 抽帧失败才降级。
+    coverImg(url, fallbackIcon = '🎵', extra = '', itemId = '') {
         if (!url) {
             return `<div class="cover-fallback">${fallbackIcon}</div>`;
         }
-        return `<img src="${url}" loading="lazy" alt="" ${extra}
-            onerror="this.parentElement.dataset.fallback='${fallbackIcon}';
-                     this.parentElement.classList.add('img-broken');
-                     this.remove();">`;
+        const onError = itemId
+            ? `onerror="MPCoverFail(this,'${itemId}','${fallbackIcon}')"`
+            : `onerror="MPUtils.fallbackCover(this,'${fallbackIcon}')"`;
+        return `<img src="${url}" loading="lazy" alt="" ${extra} ${onError}>`;
+    },
+
+    // 封面降级：标记 broken 并移除 img，由父容器 CSS 显示 emoji 占位
+    fallbackCover(img, fallbackIcon = '🎵') {
+        const parent = img.parentElement;
+        img.remove();
+        if (parent) {
+            parent.dataset.fallback = fallbackIcon;
+            parent.classList.add('img-broken');
+        }
     },
 
     timeAgo(text) {
@@ -104,3 +128,12 @@ const MPUtils = {
         if (modal) modal.classList.remove('active');
     },
 };
+
+// 封面加载失败入口：视频条目先尝试前端 canvas 抽帧，失败再降级 emoji
+function MPCoverFail(img, itemId, fallbackIcon) {
+    if (window.MediaFrameExtractor) {
+        MediaFrameExtractor.request(itemId, img, () => MPUtils.fallbackCover(img, fallbackIcon));
+    } else {
+        MPUtils.fallbackCover(img, fallbackIcon);
+    }
+}

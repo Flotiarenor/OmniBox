@@ -35,6 +35,8 @@ class MediaPlayerApp {
         this._scanning = false;
         this._loadSeq = 0;
         this._ncmCache = {};
+        this._thumbObserver = null;      // 视频封面预取观察器
+        this._thumbPrefetchSeen = new Set();
     }
 
     async init() {
@@ -54,6 +56,7 @@ class MediaPlayerApp {
         this._bindUI();
         this._bindContentDelegation();
         this._bindKeyboard();
+        this._bindThumbPrefetch();
         this.loadExtensions();
 
         try {
@@ -71,14 +74,40 @@ class MediaPlayerApp {
     // ============================================================
     // 初始化数据
     // ============================================================
+    // 轮询扫描任务直至 done/cancelled/none；onProgress 每轮回调刷新进度文案
+    async _waitScanDone(onProgress) {
+        for (let i = 0; i < 1200; i++) {   // 上限约 10 分钟
+            let st = null;
+            try { st = await Bridge.call('media_scan_status'); } catch (e) { st = null; }
+            if (!st || st.state === 'none' || st.state === 'done' || st.state === 'cancelled') return st;
+            if (onProgress) onProgress(st);
+            await new Promise(r => setTimeout(r, 500));
+        }
+        return null;
+    }
+
     async _ensureIndex() {
         this._setLoading('正在准备媒体库…');
         try {
             const stats = await Bridge.call('media_stats');
-            if (!stats || stats.total === 0) {
+            const st0 = await Bridge.call('media_scan_status');
+            let needWait = false;
+            if (st0 && st0.state === 'paused') {
+                // 上次扫描被中断：断点续扫（已完成根目录自动跳过）
+                this._setLoading('继续上次未完成的扫描…<br>已完成部分自动跳过');
+                const started = await Bridge.call('media_scan', false);
+                needWait = !(started && started.error);
+            } else if (!stats || stats.total === 0) {
                 this._setLoading('首次使用，正在扫描媒体库…<br>大媒体库可能需要一点时间');
-                const result = await Bridge.call('media_scan', false);
-                Toast.success(`扫描完成：音乐 ${result.audio} · 视频 ${result.video}`);
+                const started = await Bridge.call('media_scan', false);
+                needWait = true; // 已在运行（如另一标签页触发）同样等待其完成
+            }
+            if (needWait) {
+                const st = await this._waitScanDone();
+                if (st && st.state === 'done') {
+                    const ex = st.extra || {};
+                    Toast.success(`扫描完成：音乐 ${ex.audio ?? '?'} · 视频 ${ex.video ?? '?'}`);
+                }
             }
         } catch (e) {
             console.error('媒体索引初始化失败:', e);
@@ -148,7 +177,10 @@ class MediaPlayerApp {
         });
 
         // 工具栏
-        document.getElementById('btn-scan').addEventListener('click', () => this._doScan());
+        const scanBtn = document.getElementById('btn-scan');
+        const deepScanBtn = document.getElementById('btn-deep-scan');
+        scanBtn.addEventListener('click', () => this._doScan(false));    // 增量扫描
+        deepScanBtn.addEventListener('click', () => this._doScan(true)); // 深度全量扫描
         document.getElementById('btn-settings').addEventListener('click', () => this._openSettings());
         const search = document.getElementById('media-search');
         this._searchDebounced = MPUtils.debounce(() => this._loadCurrentView(), 300);
@@ -293,13 +325,72 @@ class MediaPlayerApp {
     }
 
     // ============================================================
+    // 视频封面预取：按浏览位置自动在后台生成封面并写入 DB
+    // ============================================================
+    _bindThumbPrefetch() {
+        if (!('IntersectionObserver' in window)) return;
+        this._thumbPrefetchTimer = null;
+        this._thumbPrefetchQueue = new Set();
+        this._thumbObserver = new IntersectionObserver((entries) => {
+            for (const entry of entries) {
+                if (!entry.isIntersecting) continue;
+                const img = entry.target;
+                const id = img && img.dataset.mpThumbId;
+                if (id && !this._thumbPrefetchSeen.has(id)) {
+                    this._thumbPrefetchSeen.add(id);
+                    this._thumbPrefetchQueue.add(id);
+                }
+            }
+            // debounce 合并批量查询（避免滚动时高频单条请求）
+            if (this._thumbPrefetchQueue.size) {
+                clearTimeout(this._thumbPrefetchTimer);
+                this._thumbPrefetchTimer = setTimeout(() => {
+                    const ids = Array.from(this._thumbPrefetchQueue);
+                    this._thumbPrefetchQueue.clear();
+                    this._prefetchThumbs(ids);
+                }, 250);
+            }
+        }, { root: null, rootMargin: '500px' });   // 视口 + 500px 预读（IO 自动计算裁剪链）
+    }
+
+    // 只对「未缓存」的封面抽帧（后端批量判断），避免重复生成
+    async _prefetchThumbs(ids) {
+        let missing = ids;
+        try {
+            const res = await Bridge.call('media_thumb_missing', ids);
+            missing = (res && res.missing) || [];
+        } catch (e) {
+            missing = ids;   // 查询失败：直接全部尝试（request 有 pending 去重，不会重复抽）
+        }
+        missing.forEach((id) => {
+            document.querySelectorAll(`img[data-mp-thumb-id="${id}"]`).forEach((img) => {
+                if (img.isConnected) {
+                    MediaFrameExtractor.request(id, img, () => {
+                        // 抽帧失败：允许下次滚动/重进视口时重试（不永久放弃）
+                        this._thumbPrefetchSeen.delete(id);
+                        MPUtils.fallbackCover(img, '🎬');
+                    });
+                }
+            });
+        });
+    }
+
+    // 渲染后注册封面观察：IO 的初始回调会立即处理视口内元素（含 500px 预读边距）
+    _observeThumbImgs(root) {
+        if (!this._thumbObserver || !root) return;
+        root.querySelectorAll('img[data-mp-thumb-id]').forEach(img => this._thumbObserver.observe(img));
+    }
+
+    // ============================================================
     // 扫描 / 设置
     // ============================================================
-    async _doScan() {
+    async _doScan(deep = false) {
         if (this._scanning) return;
         this._scanning = true;
         const btn = document.getElementById('btn-scan');
+        const deepBtn = document.getElementById('btn-deep-scan');
         btn.disabled = true;
+        if (deepBtn) deepBtn.disabled = true;
         btn.textContent = this.currentView.startsWith('ncm-') ? '⏳ 刷新中…' : '⏳ 扫描中…';
         if (this.currentView.startsWith('ncm-')) {
             this._clearNeteaseCache();
@@ -317,10 +408,29 @@ class MediaPlayerApp {
             }
             return;
         }
-        this._setLoading('正在重新扫描媒体库…<br>目录较大时请稍候');
+        this._setLoading(deep
+            ? '正在深度扫描媒体库…<br>将重新读取所有媒体元数据，耗时较长'
+            : '正在扫描媒体库…');
         try {
-            const result = await Bridge.call('media_scan', true);
-            Toast.success(`扫描完成：音乐 ${result.audio} · 视频 ${result.video}`);
+            const started = await Bridge.call('media_scan', !!deep);
+            if (started && started.error) {
+                // 扫描已在运行（如另一标签页）：改为等待其完成
+                const st = await this._waitScanDone();
+                if (st && st.state === 'done') {
+                    const ex = st.extra || {};
+                    Toast.success(`扫描完成：音乐 ${ex.audio ?? '?'} · 视频 ${ex.video ?? '?'}`);
+                }
+            } else if (started) {
+                const st = await this._waitScanDone((s) => {
+                    if (s.state === 'running') {
+                        this._setLoading(`正在扫描媒体库… ${s.processed}/${s.total}${s.current ? ' · ' + s.current : ''}`);
+                    }
+                });
+                const ex = (st && st.extra) || {};
+                if (st && st.state === 'cancelled') Toast.info('扫描已取消，已完成部分已保留');
+                else if (st && st.state === 'done') Toast.success(`扫描完成：音乐 ${ex.audio ?? '?'} · 视频 ${ex.video ?? '?'}`);
+                else if (!st) Toast.error('扫描超时，请稍后重试');
+            }
             await this._updateStats();
         } catch (e) {
             Toast.error('扫描失败');
@@ -328,6 +438,8 @@ class MediaPlayerApp {
             this._scanning = false;
             btn.disabled = false;
             btn.textContent = '🔄 扫描';
+            const deepBtn = document.getElementById('btn-deep-scan');
+            if (deepBtn) deepBtn.disabled = false;
             await this._loadCurrentView();
         }
     }
@@ -446,6 +558,8 @@ class MediaPlayerApp {
         const subEl = document.getElementById('mp-view-sub');
         const scanBtn = document.getElementById('btn-scan');
         if (scanBtn) scanBtn.textContent = this.currentView.startsWith('ncm-') ? '🔄 刷新' : '🔄 扫描';
+        const deepScanBtn = document.getElementById('btn-deep-scan');
+        if (deepScanBtn) deepScanBtn.classList.toggle('hidden', this.currentView.startsWith('ncm-'));
         const viewsTitle = {
             'recent': ['最近播放', '最近听过的媒体'],
             'audio-albums': ['音乐专辑', '按专辑标签聚合'],
@@ -624,7 +738,7 @@ class MediaPlayerApp {
                         label: album.kind === 'video' ? '视频专辑' : '音乐专辑',
                         title: this._findAlbumName(album.key) || '专辑详情',
                         sub: '',
-                        cover: this._findAlbumCover(album.key) || (items[0] && items[0].cover_path),
+                        cover: this._findAlbumCover(album.key) || items.find(i => i.has_cover) || items[0] || '',
                         kind: album.kind,
                     });
                     return;
@@ -638,7 +752,7 @@ class MediaPlayerApp {
                         label: '歌单',
                         title: pl.name,
                         sub: `创建于 ${pl.created_at || ''}`,
-                        cover: (pl.items || []).length ? (pl.items[0].cover_path || '') : '',
+                        cover: (pl.items || []).find(i => i.has_cover) || (pl.items || [])[0] || '',
                         kind: 'playlist',
                         playlistId: pl.id,
                     });
@@ -660,7 +774,9 @@ class MediaPlayerApp {
 
     _findAlbumCover(key) {
         const album = this._lastAlbums.find(a => a.key === key);
-        return album ? album.cover_path : '';
+        // 返回 item 形态的封面引用（后端 albums 提供 cover_item_id，前端走 /thumbs）
+        if (!album || !album.cover_item_id) return '';
+        return { id: album.cover_item_id, has_cover: true };
     }
 
     // ============================================================
@@ -705,8 +821,10 @@ class MediaPlayerApp {
             card.style.setProperty('--i', Math.min(index, 26));
             card.dataset.key = album.key;
             card.dataset.kind = album.kind;
-            const cover = album.cover_path
-                ? MPUtils.coverImg(MPUtils.mediaUrl(album.cover_path), kind === 'video' ? '🎬' : '💿')
+            const cover = album.cover_item_id
+                ? MPUtils.coverImg(Bridge.thumbUrl(album.cover_item_id), kind === 'video' ? '🎬' : '💿',
+                    kind === 'video' ? `data-mp-thumb-id="${album.cover_item_id}"` : '',
+                    kind === 'video' ? album.cover_item_id : '')
                 : `<div class="cover-fallback">${kind === 'video' ? '🎬' : '💿'}</div>`;
             card.innerHTML = `
                 <div class="mp-card-cover">
@@ -721,6 +839,7 @@ class MediaPlayerApp {
                 </div>`;
             grid.appendChild(card);
         });
+        this._observeThumbImgs(grid);
     }
 
     // ============================================================
@@ -740,6 +859,7 @@ class MediaPlayerApp {
 
         const rows = items.map((item, index) => this._rowHtml(item, index, opts)).join('');
         target.innerHTML = `<div class="mp-list">${rows}</div>`;
+        this._observeThumbImgs(target);
     }
 
     _buildEmpty(icon, text, hint) {
@@ -755,8 +875,11 @@ class MediaPlayerApp {
     _rowHtml(item, index, opts) {
         const active = this.core.currentItem && this.core.currentItem.id === item.id;
         const isFav = this.favIds.has(item.id);
-        const cover = item.cover_path
-            ? MPUtils.coverImg(MPUtils.coverUrl(item), MPUtils.itemIcon(item))
+        const coverSrc = MPUtils.coverUrl(item);
+        const videoId = item.kind === 'video' ? item.id : '';
+        const cover = coverSrc
+            ? MPUtils.coverImg(coverSrc, MPUtils.itemIcon(item),
+                videoId ? `data-mp-thumb-id="${videoId}"` : '', videoId)
             : MPUtils.itemIcon(item);
         const subParts = [];
         if (item.artist) subParts.push(item.artist);
@@ -1026,13 +1149,16 @@ class MediaPlayerApp {
     // ============================================================
     _renderDetail(items, header) {
         const content = document.getElementById('media-content');
-        const coverUrl = header.cover ? MPUtils.coverUrl({ cover_path: header.cover }) : '';
+        // header.cover 兼容两种形态：远程 URL 字符串（网易云）/ 本地 item 对象（/thumbs）
+        const coverSrc = MPUtils.coverSrc(header.cover);
         const totalDuration = items.reduce((sum, i) => sum + (i.duration || 0), 0);
 
         content.innerHTML = `
-            <div class="mp-detail-hero" style="--hero-bg:${coverUrl ? `url("${coverUrl}")` : 'none'}">
+            <div class="mp-detail-hero" style="--hero-bg:${coverSrc ? `url("${coverSrc}")` : 'none'}">
                 <button class="mp-ghost-btn mp-hero-back" data-hero-action="back" title="返回">← 返回</button>
-                <div class="mp-detail-cover">${coverUrl ? MPUtils.coverImg(coverUrl, header.kind === 'video' ? '🎬' : '💿') : (header.kind === 'video' ? '🎬' : '💿')}</div>
+                <div class="mp-detail-cover">${coverSrc ? MPUtils.coverImg(coverSrc, header.kind === 'video' ? '🎬' : '💿',
+                    (header.kind === 'video' && header.cover && header.cover.id) ? `data-mp-thumb-id="${header.cover.id}"` : '',
+                    (header.kind === 'video' && header.cover && header.cover.id) ? header.cover.id : '') : (header.kind === 'video' ? '🎬' : '💿')}</div>
                 <div class="mp-detail-info">
                     <div class="mp-detail-label">${MPUtils.escapeHtml(header.label)}</div>
                     <div class="mp-detail-title">${MPUtils.escapeHtml(header.title)}</div>
@@ -1085,6 +1211,7 @@ class MediaPlayerApp {
                 }
             });
         });
+        this._observeThumbImgs(content);
     }
 
     // ============================================================
@@ -1151,13 +1278,27 @@ class MediaPlayerApp {
         const coverEl = document.getElementById('mp-stage-cover');
         const img = document.getElementById('mp-stage-cover-img');
         const url = item ? MPUtils.coverUrl(item) : '';
+        const fallback = () => {
+            // 清除失败状态：否则同一元素再次设置相同 src 时浏览器不会重新加载，
+            // 后续抽帧成功也无法通过重设 src 刷新（历史空白封面 bug 根因之一）
+            img.removeAttribute('src');
+            img.style.display = 'none';
+            coverEl.classList.add('no-cover');
+            coverEl.dataset.icon = item ? MPUtils.itemIcon(item) : '🎵';
+        };
         if (url) {
-            img.src = url;
+            // 相同 src 时浏览器不会重新加载（可能覆盖抽帧成功的 &v= 状态）→ 强制重载
+            img.src = (img.getAttribute('src') === url)
+                ? url + (url.includes('?') ? '&' : '?') + 'r=' + Date.now()
+                : url;
             img.style.display = '';
             img.onerror = () => {
-                img.style.display = 'none';
-                coverEl.classList.add('no-cover');
-                coverEl.dataset.icon = item ? MPUtils.itemIcon(item) : '🎵';
+                // 视频封面 404：先尝试前端抽帧（播放中的视频插队优先），失败再降级
+                if (item && item.kind === 'video' && item.id) {
+                    MediaFrameExtractor.request(item.id, img, fallback, true);
+                } else {
+                    fallback();
+                }
             };
             coverEl.classList.remove('no-cover');
         } else {
@@ -1187,7 +1328,7 @@ class MediaPlayerApp {
         if (!cover) return;
         const url = item ? MPUtils.coverUrl(item) : '';
         cover.innerHTML = url
-            ? MPUtils.coverImg(url, MPUtils.itemIcon(item))
+            ? MPUtils.coverImg(url, MPUtils.itemIcon(item), '', item && item.kind === 'video' ? item.id : '')
             : MPUtils.itemIcon(item);
     }
 

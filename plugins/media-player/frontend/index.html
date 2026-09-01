@@ -69,7 +69,8 @@
             <input type="text" id="media-search" placeholder="搜索媒体、专辑、艺术家…" autocomplete="off">
             <button id="btn-search-clear" class="mp-search-clear hidden" title="清除">✕</button>
           </div>
-          <button id="btn-scan" class="btn mp-tool-btn">🔄 扫描</button>
+          <button id="btn-scan" class="btn mp-tool-btn" title="增量扫描：只处理新增或变更的文件，秒级完成">🔄 扫描</button>
+          <button id="btn-deep-scan" class="btn mp-tool-btn" title="深度扫描：重新读取全部文件的标签与时长，耗时较长">⚡ 深度扫描</button>
           <button id="btn-settings" class="btn mp-tool-btn">⚙ 设置</button>
         </div>
       </div>
@@ -254,6 +255,7 @@
   </div>
 
   <script src="js/utils.js"></script>
+  <script src="js/frame-extractor.js"></script>
   <script src="js/lyrics-parser.js"></script>
   <script src="js/progress-store.js"></script>
   <script src="js/player-core.js"></script>

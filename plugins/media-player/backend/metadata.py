@@ -18,6 +18,19 @@ COVER_NAMES = ['cover.jpg', 'cover.png', 'folder.jpg', 'folder.png',
                'album.jpg', 'album.png', 'front.jpg', 'front.png']
 
 
+def detect_image_mime(data: bytes) -> str:
+    """按魔数推断图片 MIME（内嵌封面无扩展名时使用）。"""
+    if data[:8] == b'\x89PNG\r\n\x1a\n':
+        return 'image/png'
+    if data[:3] == b'\xff\xd8\xff':
+        return 'image/jpeg'
+    if data[:4] == b'GIF8':
+        return 'image/gif'
+    if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+        return 'image/webp'
+    return 'image/jpeg'
+
+
 def _sanitize_key(text: str) -> str:
     return text.strip().lower() if text else 'unknown'
 
@@ -34,25 +47,20 @@ class MetadataReader:
         return MetadataReader._read_by_filename(file_path)
 
     @staticmethod
-    def extract_cover(file_path: Path, rel_path: str, cover_dir: Path) -> Optional[str]:
-        hashed = hashlib.md5(rel_path.encode()).hexdigest()[:12]
-        cover_path = cover_dir / f'{hashed}.jpg'
+    def extract_cover_bytes(file_path: Path) -> Optional[bytes]:
+        """返回封面图片字节（内嵌封面优先，其次同目录 cover/folder 图）；无则 None。
 
-        if cover_path.exists():
-            return cover_path.name
+        供 ThumbCache 自定义生成器调用（线程池并发，需无共享可变状态）。
+        """
+        data = MetadataReader._extract_embedded_cover(file_path)
+        if data:
+            return data
+        return MetadataReader._find_folder_cover(Path(file_path).parent)
 
-        cover_data = None
-        if HAS_MUTAGEN:
-            cover_data = MetadataReader._extract_embedded_cover(file_path)
-
-        if not cover_data:
-            cover_data = MetadataReader._find_folder_cover(file_path.parent)
-
-        if cover_data:
-            cover_dir.mkdir(parents=True, exist_ok=True)
-            cover_path.write_bytes(cover_data)
-            return cover_path.name
-        return None
+    @staticmethod
+    def has_embedded_cover(file_path: Path) -> bool:
+        """是否存在内嵌封面（扫描期 has_cover 检测用，不落盘）。"""
+        return MetadataReader._extract_embedded_cover(file_path) is not None
 
     @staticmethod
     def debug_meta(file_path: Path) -> dict:
