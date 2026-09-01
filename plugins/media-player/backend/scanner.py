@@ -1,9 +1,10 @@
 """媒体库增量扫描器：音频 + 视频统一索引。
 
 - 音频专辑按 ID3/Flac/MP4 标签中的「专辑 + 专辑艺术家」聚合（与旧
-  music-player 行为一致），支持内嵌封面抽取到 .cache/covers。
-- 视频专辑按目录聚合，支持嵌套目录，封面优先使用目录内的
-  cover/folder/poster 等图片。
+  music-player 行为一致）；has_cover 只做检测，封面字节由 ThumbCache
+  懒生成（见 cover_generator），不再在扫描期抽取落盘。
+- 视频专辑按目录聚合，支持嵌套目录；has_cover 恒为 True（目录封面图
+  优先，否则由前端 canvas 抽帧后经 media_put_thumb 回写缓存）。
 - 文件 mtime/size 未变化时直接复用缓存，实现增量扫描。
 """
 
@@ -21,8 +22,8 @@ _video_meta = load_sibling(__file__, 'video_meta', 'media_player')
 
 MediaItem = _models.MediaItem
 MetadataReader = _metadata.MetadataReader
+detect_image_mime = _metadata.detect_image_mime
 probe_duration = _video_meta.probe_duration
-extract_thumbnail = _video_meta.extract_thumbnail
 
 INDEX_VERSION = 4
 
@@ -33,6 +34,23 @@ COVER_NAMES = {
     'poster.jpg', 'poster.png', 'fanart.jpg', 'fanart.png',
     'thumb.jpg', 'thumb.png', 'backdrop.jpg', 'backdrop.png',
 }
+
+
+def cover_generator(src_path: Path) -> Optional[tuple]:
+    """ThumbCache 自定义生成器：音频内嵌或文件夹封面。
+
+    返回 (bytes, mime) 或 None（失败不缓存）。线程池会并发调用，无共享状态。
+    视频封面不在后端生成：解码能力与播放对齐，由前端 canvas 抽帧
+    （media_put_thumb 回写 ThumbCache）。
+    """
+    try:
+        suffix = Path(src_path).suffix.lower()
+        if suffix in AUDIO_EXTS:
+            data = MetadataReader.extract_cover_bytes(Path(src_path))
+            return (data, detect_image_mime(data)) if data else None
+    except Exception:
+        pass
+    return None
 
 
 def _item_id(path: str) -> str:
@@ -68,33 +86,16 @@ def _video_album_key(namespace: str, rel_dir: str) -> str:
     return namespace or '__root__'
 
 
-def _video_thumb(file_path: Path, cover_dir: Path, item_id: str, duration: float) -> str:
-    """为单个视频生成属于自己的封面帧（按 item_id 命名缓存）。"""
-    dest = cover_dir / f'{item_id}.jpg'
-    try:
-        if dest.is_file() and dest.stat().st_size > 0:
-            return str(dest.resolve())
-        cover_dir.mkdir(parents=True, exist_ok=True)
-        if duration and duration > 0:
-            seek = min(max(duration * 0.1, 0.5), 120.0)
-        else:
-            seek = 10.0
-        if extract_thumbnail(str(file_path), str(dest), at_seconds=seek):
-            return str(dest.resolve())
-    except Exception:
-        pass
-    return ''
-
-
 def scan_media(root: Path, cache: Optional[Dict[str, MediaItem]] = None,
-               namespace: str = '', cover_dir: Optional[Path] = None) -> Dict:
-    """递归扫描单个媒体根目录，mtime/size 未变时复用缓存。"""
+               namespace: str = '') -> Dict:
+    """递归扫描单个媒体根目录，mtime/size 未变时复用缓存。
+
+    封面不再在扫描期生成/落盘：仅记录 has_cover，实际字节由
+    ThumbCache + cover_generator 按需生成（/thumbs 路由触发）。
+    """
     root = Path(root).resolve()
     cache = cache or {}
-    cover_dir = Path(cover_dir) if cover_dir else (root / '.cache' / 'covers')
     items: Dict[str, MediaItem] = {}
-    dir_thumbs: Dict[str, str] = {}
-    dir_thumb_done: set = set()
 
     for current_dir, dir_names, file_names in os.walk(root):
         current = Path(current_dir)
@@ -105,7 +106,6 @@ def scan_media(root: Path, cache: Optional[Dict[str, MediaItem]] = None,
 
         rel_dir = current.relative_to(root).as_posix() if current != root else ''
         folder_cover = _find_cover(current)
-        folder_cover_abs = str(folder_cover.resolve()) if folder_cover else ''
 
         for file_name in sorted(file_names):
             suffix = Path(file_name).suffix.lower()
@@ -122,17 +122,20 @@ def scan_media(root: Path, cache: Optional[Dict[str, MediaItem]] = None,
             except OSError:
                 continue
 
-            rel_path = full_path.relative_to(root).as_posix()
             item_id = _item_id(str(full_path))
             cached = cache.get(item_id)
 
+            # 目录封面图比媒体文件新（后添加/更新）时强制重建条目，刷新 has_cover
+            try:
+                cover_fresh = folder_cover is None or (
+                    cached is not None and cached.mtime >= folder_cover.stat().st_mtime)
+            except OSError:
+                cover_fresh = True
             if cached and cached.path == str(full_path) \
-                    and cached.size == stat.st_size and cached.mtime == stat.st_mtime:
+                    and cached.size == stat.st_size and cached.mtime == stat.st_mtime \
+                    and cover_fresh:
                 item = cached
             else:
-                cover_path = folder_cover_abs
-                has_cover = bool(folder_cover_abs)
-
                 if kind == 'audio':
                     meta = MetadataReader.read(full_path)
                     album = _text(meta.get('album'), current.name if current != root else (namespace or '未分类'))
@@ -142,15 +145,13 @@ def scan_media(root: Path, cache: Optional[Dict[str, MediaItem]] = None,
                     duration = float(meta.get('duration') or 0)
                     track = int(meta.get('track') or 0)
 
-                    # 目录没有封面时，尝试抽取内嵌封面
+                    # 封面检测：目录封面图或内嵌封面（不落盘，字节懒生成）
+                    has_cover = bool(folder_cover)
                     if not has_cover:
                         try:
-                            cover_name = MetadataReader.extract_cover(full_path, rel_path, cover_dir)
-                            if cover_name:
-                                cover_path = str((cover_dir / cover_name).resolve())
-                                has_cover = True
+                            has_cover = MetadataReader.has_embedded_cover(full_path)
                         except Exception:
-                            pass
+                            has_cover = False
 
                     item = MediaItem(
                         id=item_id,
@@ -163,7 +164,7 @@ def scan_media(root: Path, cache: Optional[Dict[str, MediaItem]] = None,
                         duration=duration,
                         size=stat.st_size,
                         mtime=stat.st_mtime,
-                        cover_path=cover_path,
+                        cover_path='',
                         has_cover=has_cover,
                         album_artist=album_artist,
                         track=track,
@@ -173,13 +174,7 @@ def scan_media(root: Path, cache: Optional[Dict[str, MediaItem]] = None,
                     album_name = current.name if current != root else (namespace or '未分类')
                     duration = probe_duration(str(full_path)) or 0.0
 
-                    # 每个视频生成自己的封面帧（目录封面图优先）
-                    if not has_cover:
-                        generated = _video_thumb(full_path, cover_dir, item_id, duration)
-                        if generated:
-                            cover_path = generated
-                            has_cover = True
-
+                    # 视频始终可生成封面帧（目录封面图优先，否则按需抽帧）
                     item = MediaItem(
                         id=item_id,
                         path=str(full_path),
@@ -191,8 +186,8 @@ def scan_media(root: Path, cache: Optional[Dict[str, MediaItem]] = None,
                         duration=duration,
                         size=stat.st_size,
                         mtime=stat.st_mtime,
-                        cover_path=cover_path,
-                        has_cover=has_cover,
+                        cover_path='',
+                        has_cover=True,
                         album_artist=album_name,
                         track=0,
                     )

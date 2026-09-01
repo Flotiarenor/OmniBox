@@ -9,14 +9,14 @@ from typing import Dict, List, Optional
 
 from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_utils import load_sibling
+from shell.backend.tasks import BackgroundTask
+from shell.backend.thumb_cache import ThumbCache
 
 _scanner = load_sibling(__file__, 'scanner', 'media_player')
 _models = load_sibling(__file__, 'models', 'media_player')
 
 scan_media = _scanner.scan_media
-scan_directories = _scanner.scan_directories
-scan_media = _scanner.scan_media
-scan_directories = _scanner.scan_directories
+cover_generator = _scanner.cover_generator
 INDEX_VERSION = _scanner.INDEX_VERSION
 MediaItem = _models.MediaItem
 MediaAlbum = _models.MediaAlbum
@@ -74,12 +74,64 @@ class MediaPlayerPlugin(PluginBase):
         self._cache_dir = self.root_dir / '.cache'
         self._cache_file = self._cache_dir / 'media_index.json'
         self._state_file = self._cache_dir / 'media_state.json'
+        self._task_file = self._cache_dir / 'scan_task.json'
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._items: Dict[str, MediaItem] = {}
         self._state = self._load_state()
         self._load_index()
         self._legacy_migrated = False
         self._migrate_legacy_state()
+        self._scan_task: Optional[BackgroundTask] = None
+        self._restore_scan_task()
+        # 封面统一走 ThumbCache（SQLite）：音频内嵌/文件夹封面由 cover_generator
+        # 按需生成；视频封面由前端 canvas 抽帧后经 media_put_thumb 回写。
+        # mtime/size 失效自动重生成，不再散落 .cache/covers
+        self._thumb_cache = ThumbCache(
+            self._cache_dir / 'thumbs.db', size=(640, 640),
+            generator=cover_generator, workers=3)
+
+    def get_thumb_data(self, filepath: str) -> Optional[tuple]:
+        """/thumbs 路由：按 item id 返回封面 (data, mime)；未索引/生成失败返回 None。"""
+        item = self._items.get(filepath)
+        if item is None or not item.path:
+            return None
+        return self._thumb_cache.get(filepath, Path(item.path))
+
+    def put_thumb(self, item_id: str = '', data_url: str = '') -> dict:
+        """前端 canvas 抽帧回写封面（data URL → ThumbCache，不经过生成器）。
+
+        仅接受 data:image/ 前缀，限制体积防滥用；源文件 mtime/size 一并记录，
+        文件替换后条目自动失效（前端会重新抽帧）。
+        """
+        if not item_id or not data_url or not data_url.startswith('data:image/'):
+            return {'success': False, 'error': '参数无效'}
+        item = self._items.get(item_id)
+        if item is None or not item.path:
+            return {'success': False, 'error': '媒体不存在'}
+        try:
+            header, _, b64 = data_url.partition(',')
+            if len(b64) > 3 * 1024 * 1024:   # 上限约 2MB 图片数据
+                return {'success': False, 'error': '数据过大'}
+            import base64
+            data = base64.b64decode(b64, validate=True)
+            if not data:
+                return {'success': False, 'error': '数据为空'}
+            mime = 'image/png' if 'png' in header else 'image/jpeg'
+            self._thumb_cache.put(item_id, data, mime, Path(item.path))
+            return {'success': True}
+        except Exception as e:
+            return {'success': False, 'error': f'写入失败: {e}'}
+
+    def thumb_missing(self, item_ids: List[str] = None) -> dict:
+        """批量查询哪些条目的封面尚未缓存（供前端按浏览位置预取，避免重复抽帧）。"""
+        missing = []
+        for sid in (item_ids or [])[:200]:
+            item = self._items.get(sid)
+            if item is None or not item.path:
+                continue
+            if not self._thumb_cache.has(sid, Path(item.path)):
+                missing.append(sid)
+        return {'missing': missing}
 
     def get_data_root(self) -> Path:
         return self.root_dir
@@ -106,6 +158,23 @@ class MediaPlayerPlugin(PluginBase):
                 except Exception:
                     pass
         return dirs
+
+    def _restore_scan_task(self):
+        """恢复上次中断的扫描任务：paused 状态保留（增量扫描时续跑）；
+        done/cancelled 的任务文件已无意义，清理掉。"""
+        try:
+            task = BackgroundTask.load(self._task_file)
+        except Exception:
+            task = None
+        if task is None:
+            return
+        if task.state in ('done', 'cancelled'):
+            try:
+                self._task_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return
+        self._scan_task = task
 
     def _reload_index(self):
         self._load_index()
@@ -252,14 +321,97 @@ class MediaPlayerPlugin(PluginBase):
     # ---------- 扫描与浏览 ----------
 
     def scan(self, force: bool = False) -> Dict:
-        cache = {} if force else self._items
-        result = scan_directories(self._media_dirs(), cache)
-        self._items = {item.id: item for item in (MediaItem.from_cache(x) for x in result['items'])}
-        self._save_index(result)
+        """启动后台扫描任务（增量默认；force=True 深度全量重扫）。
+
+        断点续传：worker 每完成一个根目录就把「部分索引 + completed_roots」原子
+        落盘；进程中断后重启自动恢复为 paused，再次增量扫描时跳过已完成根目录。
+        """
+        if self._scan_task and self._scan_task.state in ('running', 'queued'):
+            return {'success': False, 'error': '扫描正在进行中', **self._scan_task.status()}
+        if force:
+            # 深度扫描：丢弃旧任务（含 paused 断点信息），全量重扫
+            self._scan_task = None
+        task = self._scan_task
+        if task is None or task.state != 'paused':
+            task = BackgroundTask(kind='scan', persist_path=self._task_file,
+                                  extra={'force': bool(force), 'completed_roots': []})
+        self._scan_task = task
+        task.start(self._scan_worker, args=(bool(force),))
+        return {'success': True, 'started': True, **task.status()}
+
+    def scan_status(self) -> Dict:
+        """扫描任务状态（前端轮询）；无任务时返回 {'state': 'none'}。"""
+        if self._scan_task is None:
+            return {'state': 'none'}
+        return self._scan_task.status()
+
+    def scan_cancel(self) -> Dict:
+        """请求取消扫描（已完成的根目录与索引检查点保留，可续扫）。"""
+        if self._scan_task and self._scan_task.state == 'running':
+            self._scan_task.cancel()
+            return {'success': True}
+        return {'success': False, 'error': '没有正在运行的扫描'}
+
+    def _scan_worker(self, task: BackgroundTask, force: bool):
+        """扫描 worker：逐根目录推进，每个根目录完成后落盘检查点。
+
+        - 增量：缓存为当前内存索引（含上次扫描结果），mtime/size 未变直接复用；
+        - 断点：completed_roots 记录已完成根目录，中断后续扫直接跳过；
+        - 进度：processed/total 按根目录计数，错误进 task.errors（保留 200 条）。
+        """
+        dirs = self._media_dirs()
+        completed = set((task.status().get('extra') or {}).get('completed_roots') or [])
+        merged = {} if force else dict(self._items)
+        if completed and not merged and not force:
+            # 索引文件丢失但任务文件残留：断点信息失效，全部重扫
+            completed = set()
+        task.update(total=len(dirs), processed=0, current='准备扫描…',
+                    extra={'force': force, 'completed_roots': sorted(completed)})
+
+        for idx, raw_dir in enumerate(dirs):
+            if task.cancelled:
+                break
+            key = str(Path(raw_dir).resolve())
+            if not force and key in completed:
+                task.update(processed=idx + 1, current=f'跳过已完成: {key}')
+                continue
+            try:
+                result = scan_media(Path(key), merged, namespace=Path(key).name)
+            except Exception as e:
+                task.add_error(f'扫描失败 {key}: {e}')
+                task.update(processed=idx + 1, current=key)
+                continue
+            for raw in result['items']:
+                item = MediaItem.from_cache(raw)
+                merged[item.id] = item
+            completed.add(key)
+            # 检查点 1：部分索引落盘（断点续传的数据基础）
+            self._items = merged
+            self._save_index({'items': [i.to_dict() for i in merged.values()],
+                              'updated': time.time(), 'version': INDEX_VERSION})
+            # 检查点 2：任务状态落盘（completed_roots → paused，可续跑）
+            task.update(processed=idx + 1, current=key,
+                        extra={'completed_roots': sorted(completed)})
+            task.persist()
+
+        if task.cancelled:
+            return
+        self._items = merged
+        self._save_index({'items': [i.to_dict() for i in merged.values()],
+                          'updated': time.time(), 'version': INDEX_VERSION})
         self._migrate_legacy_state()
-        audio = sum(1 for item in self._items.values() if item.kind == 'audio')
-        video = sum(1 for item in self._items.values() if item.kind == 'video')
-        return {'success': True, 'audio': audio, 'video': video, 'total': len(self._items)}
+        # 深度扫描：索引完整，清理已删除媒体文件的孤儿封面条目（DB 防膨胀）；
+        # 现有封面缓存一律保留（扫描只重读标签/时长，不重建、不删除封面）。
+        if force:
+            try:
+                pruned = self._thumb_cache.prune(set(merged.keys()))
+                if pruned:
+                    print(f'[MediaPlayer] 深度扫描清理孤儿封面 {pruned} 条')
+            except Exception:
+                pass
+        audio = sum(1 for i in merged.values() if i.kind == 'audio')
+        video = sum(1 for i in merged.values() if i.kind == 'video')
+        task.update(extra={'audio': audio, 'video': video, 'total': len(merged)})
 
     def search(self, keyword: str = '') -> List[Dict]:
         kw = (keyword or '').strip().lower()
@@ -302,9 +454,9 @@ class MediaPlayerPlugin(PluginBase):
                 album.items.sort(key=lambda x: (x.track or 0, x.title.lower()))
             else:
                 album.items.sort(key=lambda x: x.title.lower())
-            if not album.cover_path and album.items:
-                album.cover_path = next((i.cover_path for i in album.items if i.cover_path), '')
             data = album.to_dict()
+            # 封面懒生成：前端用首个有封面条目的 item id 请求 /thumbs/<id>
+            data['cover_item_id'] = next((i.id for i in album.items if i.has_cover), '')
             data['items'] = [i.to_dict() for i in album.items]
             result.append(data)
         result.sort(key=lambda x: x['name'].lower())
@@ -458,13 +610,22 @@ class MediaPlayerPlugin(PluginBase):
         if 'root_dir' in changed_keys or 'media_dirs' in changed_keys:
             new_dir = self.setting('root_dir')
             if new_dir and Path(new_dir).is_dir():
+                # 数据根变更：终止进行中的扫描，丢弃旧任务（含断点信息）
+                if self._scan_task and self._scan_task.state == 'running':
+                    self._scan_task.cancel()
+                self._scan_task = None
                 self.root_dir = Path(new_dir).resolve()
                 self._cache_dir = self.root_dir / '.cache'
                 self._cache_file = self._cache_dir / 'media_index.json'
                 self._state_file = self._cache_dir / 'media_state.json'
+                self._task_file = self._cache_dir / 'scan_task.json'
                 self._cache_dir.mkdir(parents=True, exist_ok=True)
                 self._items = {}
                 self._reload_index()
+                # 封面库跟随数据根重建
+                self._thumb_cache = ThumbCache(
+                    self._cache_dir / 'thumbs.db', size=(640, 640),
+                    generator=cover_generator, workers=3)
 
     # ---------- 歌词 / 调试 / EQ ----------
 
@@ -536,6 +697,8 @@ class MediaPlayerPlugin(PluginBase):
     def register_api(self) -> dict:
         return {
             'media_scan': self.scan,
+            'media_scan_status': self.scan_status,
+            'media_scan_cancel': self.scan_cancel,
             'media_search': self.search,
             'media_recent': self.recent,
             'media_stats': self.stats,
@@ -555,6 +718,8 @@ class MediaPlayerPlugin(PluginBase):
             'media_save_playback': self.save_playback,
             'media_get_playback': self.get_playback,
             'media_get_lyrics': self.get_lyrics,
+            'media_put_thumb': self.put_thumb,
+            'media_thumb_missing': self.thumb_missing,
             'media_debug_meta': self.debug_meta,
             'media_list_eq_presets': self.list_eq_presets,
             'media_save_eq_preset': self.save_eq_preset,

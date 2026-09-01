@@ -1085,6 +1085,9 @@
 
 .mp-card-play:hover { transform: translateY(0) scale(1.08); }
 
+/* 视频封面前端抽帧进行中：轻微降透明度提示加载态 */
+img.mp-thumb-pending { opacity: 0.45; transition: opacity .3s; }
+
 /* 封面图片加载失败时的统一占位 */
 .mp-card-cover.img-broken::after,
 .mp-row-cover.img-broken::after,

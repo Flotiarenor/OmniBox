@@ -185,6 +185,66 @@ class ThumbCache:
         except Exception:
             return None
 
+    def put(self, rel_path: str, data: bytes, mime: str, src_path: Path) -> bool:
+        """外部回写的缩略图直接入库（不经过生成器）。
+
+        供前端 canvas 抽帧等场景使用：源文件 mtime/size 一并记录，
+        后续 get() 的失效校验语义保持一致（源文件替换后条目自动失效）。
+        """
+        try:
+            st = Path(src_path).stat()
+        except OSError:
+            return False
+        try:
+            conn = self._connect()
+            try:
+                self._write(conn, rel_path, data, mime, st.st_mtime, st.st_size)
+                conn.commit()
+                return True
+            finally:
+                conn.close()
+        except Exception:
+            return False
+
+    def has(self, rel_path: str, src_path: Path) -> bool:
+        """缓存中是否存在对应当前源文件的有效条目（只读检查，不生成）。
+
+        供前端「按浏览位置预取封面」等场景批量判断缺失项。
+        """
+        try:
+            st = Path(src_path).stat()
+        except OSError:
+            return False
+        try:
+            conn = self._connect()
+            try:
+                return self._read_valid(conn, rel_path, st.st_mtime, st.st_size) is not None
+            finally:
+                conn.close()
+        except Exception:
+            return False
+
+    def prune(self, existing_keys: set) -> int:
+        """删除不在 existing_keys 中的缓存条目（源文件已删除/移动的孤儿）。
+
+        供深度扫描等「索引完整」时机调用，防止 DB 无限膨胀。
+        返回删除条数。
+        """
+        try:
+            conn = self._connect()
+            try:
+                cur = conn.execute('SELECT path FROM thumbs')
+                keys = [row[0] for row in cur.fetchall()]
+                stale = [k for k in keys if k not in existing_keys]
+                for k in stale:
+                    conn.execute('DELETE FROM thumbs WHERE path = ?', (k,))
+                conn.commit()
+                return len(stale)
+            finally:
+                conn.close()
+        except Exception:
+            return 0
+
     # ===== 批量：并行生成（全量重建 / 同步任务用） =====
 
     def generate_bulk(self, items: List[Tuple[str, Path]],

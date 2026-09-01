@@ -394,6 +394,13 @@ self.thumb_cache.delete(rel)    # 文件删除/移动时同步清缓存
 self.thumb_cache.clear()        # 全清 + wal_checkpoint + VACUUM 收缩
 ```
 
+前端回写（如浏览器 canvas 抽帧生成视频封面）用 `put()` 直接入库，不经过生成器；
+源文件 mtime/size 一并记录，失效校验语义与 `get()` 一致（源文件替换后条目自动失效）：
+
+```python
+ok = self.thumb_cache.put(rel, jpeg_bytes, 'image/jpeg', self.root_dir / rel)
+```
+
 要点：
 
 - 失效校验：`source_mtime`（0.5s 容差）+ `source_size` 双条件，源文件替换后自动重生成；
