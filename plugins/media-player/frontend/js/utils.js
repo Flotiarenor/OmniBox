@@ -132,6 +132,29 @@ const MPUtils = {
     },
 };
 
+// ===== 非线性音量映射：滑块位置(线性 0~1) ↔ 实际音量系数(指数映射) =====
+// 存储/传输一律使用线性位置（localStorage、media_save_playback 均不变）；
+// 仅在「赋值元素 volume」的使用点做指数映射——人耳对低音量区更敏感，
+// 指数 >1 让低音量区在滑块上更精细。映射在前端完成：音量是纯播放层
+// 概念，后端只是状态存档，无需也不应参与映射。
+class VolumeMapper {
+    constructor(exponent = 2.5) {
+        if (!(exponent > 0)) throw new Error('指数必须大于0');
+        this.exponent = exponent;
+    }
+
+    linearToActual(linear) {
+        linear = Math.max(0, Math.min(1, linear));
+        return Math.pow(linear, this.exponent);
+    }
+
+    actualToLinear(actual) {
+        actual = Math.max(0, Math.min(1, actual));
+        if (actual === 0) return 0;
+        return Math.pow(actual, 1 / this.exponent);
+    }
+}
+
 // 封面加载失败入口：视频条目先尝试前端 canvas 抽帧，失败再降级 emoji
 function MPCoverFail(img, itemId, fallbackIcon) {
     if (window.MediaFrameExtractor) {

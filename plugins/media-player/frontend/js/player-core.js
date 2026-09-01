@@ -14,7 +14,8 @@ class MediaPlayerCore {
         this.playMode = 0; // 0=顺序 1=随机 2=单曲循环
         this.videoMode = true; // true=画面 false=仅声音
 
-        this._volume = 1;
+        this._volume = 1;            // 线性位置（0~1，存储/传输语义）
+        this._volumeMapper = new VolumeMapper(2.5);   // 指数映射：低音量区更精细
         this._muted = false;
         this._progressSaver = null;
         this._pendingResume = 0;
@@ -126,7 +127,7 @@ class MediaPlayerCore {
 
         const el = this.mediaElement;
         el.src = src;
-        el.volume = this._volume;
+        this._applyVolume();
         el.muted = this._muted;
         el.load();
 
@@ -233,10 +234,16 @@ class MediaPlayerCore {
     // ===== 音量 =====
     get volume() { return this._volume; }
 
+    // 统一应用点：仅此处把线性位置映射为实际音量系数（指数映射）
+    _applyVolume() {
+        const actual = this._volumeMapper.linearToActual(this._volume);
+        this.audio.volume = actual;
+        this.video.volume = actual;
+    }
+
     set volume(v) {
         this._volume = Math.max(0, Math.min(1, v));
-        this.audio.volume = this._volume;
-        this.video.volume = this._volume;
+        this._applyVolume();
         try { localStorage.setItem('omniboxMediaVolume', String(this._volume)); } catch (e) { }
         this.app.updateVolumeUI();
         this._debouncedSavePlayback();
@@ -262,7 +269,7 @@ class MediaPlayerCore {
         this.video.pause();
         const el = this.mediaElement;
         el.src = MPUtils.mediaUrl(this.currentItem.path);
-        el.volume = this._volume;
+        this._applyVolume();
         el.muted = this._muted;
         el.load();
         const resume = () => {
@@ -324,9 +331,9 @@ class MediaPlayerCore {
         else this.playMode = 0;
 
         if (pb.volume !== undefined && pb.volume !== null) {
+            // pb.volume 是线性位置（保存时即线性语义），直接赋值，映射在 _applyVolume
             this._volume = Math.max(0, Math.min(1, Number(pb.volume) || 1));
-            this.audio.volume = this._volume;
-            this.video.volume = this._volume;
+            this._applyVolume();
         }
 
         this._previousItem = item;
@@ -338,7 +345,6 @@ class MediaPlayerCore {
         this.videoMode = item.kind !== 'video' || savedVideoMode !== 'audio';
         const el = this.mediaElement;
         el.src = item.stream_url || item.url || MPUtils.mediaUrl(item.path);
-        el.volume = this._volume;
         el.load();
         this._startProgressSaver();
         this.app.onTrackChange(item);
