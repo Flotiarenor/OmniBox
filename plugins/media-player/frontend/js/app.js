@@ -117,7 +117,16 @@ class MediaPlayerApp {
     async _restorePlayback() {
         try {
             const pb = await Bridge.call('media_get_playback');
-            if (!pb || !pb.item_id) return;
+            if (!pb) return;
+            // 无条件恢复音量与播放模式：即使上次没有播放条目（如只调过音量）
+            if (pb.volume !== undefined && pb.volume !== null) {
+                this.core.volume = Math.max(0, Math.min(1, Number(pb.volume) || 1));
+            }
+            if (pb.loop_mode === 'one') this.core.playMode = 2;
+            else if (pb.shuffle) this.core.playMode = 1;
+            else this.core.playMode = 0;
+            this.updatePlayModeUI();
+            if (!pb.item_id) return;
             const item = await Bridge.call('media_get_item', pb.item_id);
             if (item && item.id) {
                 this.core.restorePlayback(item, pb);
@@ -337,6 +346,8 @@ class MediaPlayerApp {
                 const img = entry.target;
                 const id = img && img.dataset.mpThumbId;
                 if (id && !this._thumbPrefetchSeen.has(id)) {
+                    // 防止大媒体库长期浏览导致 Set 无限膨胀（仅影响去重，清空无害）
+                    if (this._thumbPrefetchSeen.size > 3000) this._thumbPrefetchSeen.clear();
                     this._thumbPrefetchSeen.add(id);
                     this._thumbPrefetchQueue.add(id);
                 }
@@ -1486,7 +1497,10 @@ class MediaPlayerApp {
                     e.stopPropagation();
                     const idx = parseInt(remove.dataset.removeIdx, 10);
                     this.core.queue.splice(idx, 1);
-                    if (this.core.currentIndex >= this.core.queue.length) {
+                    // 移除的是当前曲目之前的条目：currentIndex 前移保持指向原曲目；
+                    // 移除的恰是当前曲目：index 不变（自动指向队列中的下一首）
+                    if (this.core.currentIndex > idx) this.core.currentIndex--;
+                    else if (this.core.currentIndex >= this.core.queue.length) {
                         this.core.currentIndex = this.core.queue.length - 1;
                     }
                     this._renderQueue();

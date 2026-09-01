@@ -252,8 +252,8 @@ class MetadataReader:
         return None
 
     @staticmethod
-    def _find_folder_cover(dir_path: Path) -> Optional[bytes]:
-        for name in COVER_NAMES:
+    def _find_folder_cover(dir_path: Path, names: list = None) -> Optional[bytes]:
+        for name in (names or COVER_NAMES):
             cover_file = dir_path / name
             if cover_file.exists():
                 try:
