@@ -39,6 +39,7 @@ mimetypes.add_type('image/svg+xml', '.svg')
 mimetypes.add_type('application/wasm', '.wasm')
 mimetypes.add_type('font/woff2', '.woff2')
 mimetypes.add_type('font/woff', '.woff')
+mimetypes.add_type('image/webp', '.webp')
 
 def _get_shell_dir() -> Path:
     if getattr(sys, 'frozen', False):
