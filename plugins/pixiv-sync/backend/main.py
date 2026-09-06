@@ -79,12 +79,12 @@ class PixivSyncPlugin(PluginBase):
         },
         {
             "key": "max_artists",
-            "label": "单次刷新画师数上限",
+            "label": "单次全量扫描画师数上限",
             "type": "number",
             "default": 30,
             "min": 0,
             "max": 500,
-            "help": "每次「刷新关注名单」最多扫描的画师数；实测约 30 个画师可能触发 429，建议保持默认。0 = 不限（有 429 风险）",
+            "help": "每次同步最多「全量扫描」（首次入库/新关注画师拉全部历史）的画师数；仅需增量更新的画师不受此限制、会一次扫完。实测约 30 个全量画师可能触发 429，建议保持默认。0 = 不限（有 429 风险）",
         },
         {
             "key": "rate_limit",
@@ -292,9 +292,11 @@ class PixivSyncPlugin(PluginBase):
         return {"ok": True, "data": {"kind": kind}}
 
     def sync_following(self) -> Dict:
+        """同步画师：内部先自动刷新关注清单（增量），再按清单下载新作。"""
         return self._start("following")
 
     def sync_bookmarks(self) -> Dict:
+        """同步喜欢：内部先自动刷新收藏清单（增量），再按清单下载新作。"""
         return self._start("bookmarks")
 
     def _run_sync(self, kind: str):
@@ -317,6 +319,23 @@ class PixivSyncPlugin(PluginBase):
             task["state"] = "running"
             tasks.persist_task(self._tasks_file(), task)
 
+            # 阶段 1：自动刷新清单（增量、带断点，用户无需先手动点「刷新」）。
+            #   同步画师 = 刷新关注清单（新画师全量 + illust_follow 聚合增量 + 兜底）；
+            #   同步喜欢 = 刷新收藏清单（首次全量/增量翻页）。
+            #   此阶段触发 429 会抛 RateLimitError 停车（见下），冷却后重点同步即续跑。
+            task["current"] = f"正在更新{'关注' if kind == 'following' else '收藏'}作品清单…"
+            tasks.persist_task(self._tasks_file(), task)
+            if kind == "following":
+                items, scan_data = scan.collect_following_pending(self, task, ids)
+            else:
+                items, scan_data = scan.collect_bookmarks_pending(self, task, ids)
+            self._db().save_pending(kind, items, scan_data)
+            if self._cancel_flag:
+                task["state"] = "cancelled"
+                task["current"] = "已取消"
+                return
+
+            # 阶段 2：按清单下载
             download.download_pending(self, task, ids, failed, kind)
 
             task["state"] = "cancelled" if self._cancel_flag else "done"
@@ -350,11 +369,15 @@ class PixivSyncPlugin(PluginBase):
         return {"ok": True}
 
     def refresh_following_lists(self) -> Dict:
-        """刷新关注画师作品名单：拉取列表生成待下载清单（不下载）。"""
+        """仅刷新关注画师作品清单（不下载）。
+
+        「同步画师」已内置自动刷新；本入口用于只想更新清单看统计、
+        或手动控制大批量首次铺底的刷新时机。
+        """
         return self._start_refresh("following")
 
     def refresh_bookmarks_lists(self) -> Dict:
-        """刷新喜欢画作名单：拉取收藏列表生成待下载清单（不下载）。"""
+        """仅刷新喜欢画作清单（不下载）；「同步喜欢」已内置自动刷新。"""
         return self._start_refresh("bookmarks")
 
     def _run_refresh(self, kind: str):

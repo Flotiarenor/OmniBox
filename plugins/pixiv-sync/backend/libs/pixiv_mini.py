@@ -68,6 +68,24 @@ class PixivError(Exception):
         return self.reason
 
 
+# 图片文件头魔数识别（下载内容真实性校验用）：jpg / png / gif / webp
+def _header_is_image(file: str) -> bool:
+    try:
+        with open(file, "rb") as f:
+            head = f.read(16)
+    except OSError:
+        return False
+    if head[:3] == b"\xff\xd8\xff":  # JPEG
+        return True
+    if head[:8] == b"\x89PNG\r\n\x1a\n":  # PNG
+        return True
+    if head[:6] in (b"GIF87a", b"GIF89a"):  # GIF
+        return True
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":  # WebP（含动画）
+        return True
+    return False
+
+
 class JsonDict(dict):
     """支持属性访问的 dict，方便 data.illusts[0].title 这种写法"""
 
@@ -288,6 +306,14 @@ class PixivClient:
         """作品详情（返回 illust 对象，含画师 user 信息；用于迁移/查询归属）"""
         return self._call("/v1/illust/detail", {"illust_id": illust_id})
 
+    def ugoira_metadata(self, illust_id: int | str) -> JsonDict:
+        """ugoira 动图元数据：帧文件清单与每帧时长（frames[].file / frames[].delay ms）。
+
+        ugoira 作品的 original_image_url 是 zip（帧 PNG 序列），但**每帧的播放时长
+        不在 zip 里**，必须用本接口获取，否则无法还原动画时序。
+        """
+        return self._call("/v1/ugoira/metadata", {"illust_id": illust_id})
+
     # ------------------------------------------------------------------
     # 下载
     # ------------------------------------------------------------------
@@ -297,8 +323,15 @@ class PixivClient:
         path: str = os.path.curdir,
         name: str | None = None,
         replace: bool = False,
+        verify_image: bool = True,
     ) -> bool:
-        """下载图片（i.pximg.net 需要 Referer 防盗链头）"""
+        """下载图片（i.pximg.net 需要 Referer 防盗链头）。
+
+        verify_image=True（默认）时校验响应 Content-Type 为 image/* 且文件头
+        魔数为已知图片格式；不通过则删除残片并抛 PixivError（调用方不会把
+        坏文件当作“已下载”写进去重集合）。ugoira 帧 zip 等非图片下载请传
+        verify_image=False。
+        """
         name = name or os.path.basename(url)
         file = os.path.join(path, name)
         if os.path.isfile(file) and not replace:
@@ -334,4 +367,22 @@ class PixivClient:
                 except OSError:
                     pass
                 raise PixivError(f"download 得到不完整文件（{size} bytes）: {url}")
+            if verify_image:
+                # 内容真实性校验：代理拦截页/异常 200 响应（HTML/文本等）
+                # 不能被当成图片保存，否则坏文件会进入去重集合永久漏下。
+                ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                if ctype and not ctype.startswith("image/"):
+                    try:
+                        os.remove(file)
+                    except OSError:
+                        pass
+                    raise PixivError(
+                        f"download 响应非图片（Content-Type: {ctype or '?'}）: {url}"
+                    )
+                if not _header_is_image(file):
+                    try:
+                        os.remove(file)
+                    except OSError:
+                        pass
+                    raise PixivError(f"download 内容非图片（魔数校验失败）: {url}")
         return True

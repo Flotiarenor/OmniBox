@@ -4,10 +4,16 @@
 - 任何一页非 404 失败都不会把作品写入去重集合（下次同步重试）；
   只要失败页全部是 404，就把作品写入 failed_ids 永久跳过（避免重复重试已删除页）；
 - 文件已存在（download 返回 False）视为已下载，幂等跳过。
+- ugoira 动图（type == "ugoira"）走 process_ugoira：另取帧时序元数据、
+  下载 zip 帧序列并转成动画 WebP 保存（见 ugoira.py）；不再把 zip 当 jpg 下载。
 """
 
 import os
+import shutil
+import tempfile
+import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from pathlib import Path
 from typing import Any, Dict, List, Set, Optional
 from urllib.parse import urlparse
 
@@ -15,6 +21,8 @@ from pixiv_mini import PixivError
 
 from . import artist as artist_mod
 from . import tasks as tasks_mod
+from . import ugoira as ugoira_mod
+from .limiter import RateLimitError
 
 def _safe_int(value: Any) -> Optional[int]:
     """安全转 int：None 或非法值返回 None，合法值返回 int。"""
@@ -72,6 +80,92 @@ def _safe_ext(url: str) -> str:
     return ext if ext in {".jpg", ".jpeg", ".png", ".gif", ".webp"} else ".jpg"
 
 
+def process_ugoira(p, illust: Dict[str, Any], task: Dict[str, Any], ids: Set[int], failed: Set[int], sub) -> None:
+    """下载一个 ugoira 动图作品并转成动画 WebP（全部成功才入去重集合）。
+
+    与 process_illust 的语义保持一致：
+    - 已有目标 WebP（非 0 字节）视为已下载（幂等，不发起任何网络请求）；
+    - 帧时序接口/zip/转换失败（非 404）→ 只计数失败、不入 ids，下次同步重试；
+    - 404（作品/zip 已删除）→ 写入 failed_ids 永久跳过；
+    - 触发 Pixiv 429 → 抛 RateLimitError 停止整个任务（尊重全局限流）。
+    """
+    iid = _work_id(illust)
+    if iid is None:
+        return
+    title = illust.get("title", "") or ""
+    with p._task_lock:
+        task["current"] = f"{title} ({iid}) [动图]"
+
+    if iid in ids or iid in failed:
+        with p._task_lock:
+            task["skipped"] += 1
+            task["done"] += 1
+            tasks_mod.persist_task(p._tasks_file(), task)
+        return
+
+    def _done(failed_count: int, add_ids: bool, add_failed: bool) -> None:
+        with p._task_lock:
+            task["failed"] += failed_count
+            task["done"] += 1
+            if add_ids:
+                ids.add(iid)
+                task["downloaded"] += 1
+            if add_failed:
+                failed.add(iid)
+            tasks_mod.persist_task(p._tasks_file(), task)
+
+    target = sub / f"{iid}.webp"
+    tmpdir: Optional[Path] = None
+    try:
+        # 已有完整目标文件 → 幂等跳过（等价于 download 返回 False 的语义）
+        if target.exists() and target.stat().st_size > 0:
+            _done(0, add_ids=True, add_failed=False)
+            return
+
+        client = p._client()
+        # 1) 帧时序（app-api，走全局限速；失败=非 404 临时错误，下次重试）
+        p._rate_limiter.wait()
+        try:
+            meta = client.ugoira_metadata(iid)
+        except PixivError as e:
+            if "429" in str(e):
+                raise RateLimitError(
+                    "触发 Pixiv 限流（429），任务已停止，请等待冷却后重试"
+                ) from None
+            raise
+        zip_url, frames = ugoira_mod.parse_metadata(meta)
+        if not zip_url or not frames:
+            raise PixivError(f"ugoira {iid} 元数据为空（帧时序缺失）")
+
+        # 2) zip 下载到系统临时目录（CDN 走流式，不受 app-api 限速；
+        #    zip 非图片，verify_image=False，由 ugoira.convert 做 zip 完整性兜底）
+        tmpdir = Path(tempfile.mkdtemp(prefix=f"pixiv-sync-u{int(time.time())}-"))
+        zip_path = tmpdir / f"{iid}.zip"
+        client.download(zip_url, path=str(tmpdir), name=f"{iid}.zip", replace=True,
+                        verify_image=False)
+
+        # 3) 帧序列 → 动画 WebP（转换失败同样下次重试）
+        ugoira_mod.convert(zip_path, frames, target)
+        _done(0, add_ids=True, add_failed=False)
+    except RateLimitError:
+        raise
+    except PixivError as e:
+        msg = str(e)
+        if "HTTP 404" in msg:
+            # 作品/zip 已删除：永久跳过，避免每次同步重试同一已删除动图
+            print(f"[pixiv-sync] ugoira {iid} 已删除/404，永久跳过")
+            _done(1, add_ids=False, add_failed=True)
+        else:
+            print(f"[pixiv-sync] ugoira {iid} 失败（下次同步重试）: {msg}")
+            _done(1, add_ids=False, add_failed=False)
+    except Exception as e:  # noqa: BLE001
+        print(f"[pixiv-sync] ugoira {iid} 异常: {type(e).__name__}: {e}")
+        _done(1, add_ids=False, add_failed=False)
+    finally:
+        if tmpdir is not None:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def process_illust(p, illust: Dict[str, Any], task: Dict[str, Any], ids: Set[int], failed: Set[int], sub) -> None:
     """下载一个作品（全部页），并更新去重集合 / 失败跳过集合 / 任务计数。
 
@@ -80,6 +174,10 @@ def process_illust(p, illust: Dict[str, Any], task: Dict[str, Any], ids: Set[int
     """
     iid = _work_id(illust)
     if iid is None:
+        return
+    if str(illust.get("type") or "").lower() == "ugoira":
+        # ugoira 是 zip 帧序列，不是普通图片：转动画 WebP，独立流程。
+        process_ugoira(p, illust, task, ids, failed, sub)
         return
     with p._task_lock:
         task["current"] = f"{illust.get('title', '')} ({iid})"
@@ -150,7 +248,7 @@ def download_pending(p, task: Dict[str, Any], ids: Set[int], failed: Set[int], k
     items, _ = p._db().load_pending(kind)
     if not items:
         raise PixivError(
-            f"待下载清单为空，请先点「刷新{'关注名单' if kind == 'following' else '喜欢名单'}」"
+            f"没有待下载的作品（清单为空：{'关注' if kind == 'following' else '收藏'}没有可同步的内容）"
         )
     # 待下载 = 不在已下载集合、不在失败跳过集合；done 快照不参与过滤。
     todo = []

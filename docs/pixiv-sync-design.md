@@ -1,6 +1,7 @@
 # Pixiv 同步插件（pixiv-sync）设计文档
 
-> 版本：v0.3（已实装，移除了旧兼容/迁移与多余开关）
+> 版本：v0.5（在 v0.4 基础上：刷新关注改为「新画师全量优先 + illust_follow 聚合增量 + 兜底」状态机；
+> 下载增加 Content-Type/魔数内容真实性校验）
 > 目标形态：**Companion 插件**
 
 ## 1. 定位
@@ -18,10 +19,10 @@
 
 ### 1.2 同步范围与相册语义
 
-| 任务 | API | 范围 |
-|------|-----|------|
-| 同步画师 | `user_following` + `user_illusts` | 全部关注画师的**完整作品库**（逐画师翻页拉全量，含历史作品） |
-| 同步喜欢 | `v1/user/bookmarks/illust` | 当前用户公开收藏，翻页拉取全部，**按作品画师归入对应画师目录**（只存收藏列表里的作品，不拉收藏画师全量） |
+| 任务     | API                                   | 范围                                                                                                           |
+| -------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| 同步画师 | `user_following` + `user_illusts` | 全部关注画师的**完整作品库**（逐画师翻页拉全量，含历史作品）                                             |
+| 同步喜欢 | `v1/user/bookmarks/illust`          | 当前用户公开收藏，翻页拉取全部，**按作品画师归入对应画师目录**（只存收藏列表里的作品，不拉收藏画师全量） |
 
 - **两个相册合并**：本地库是统一的 `pixiv/{画师名}/` 结构，作品**归属画师**、不再区分来源（关注/收藏）。画师同步与喜欢同步共用同一去重集合：关注画师的作品若已被画师同步下载，喜欢同步自动跳过（不重复下载）。
 - **互不干扰**：同步画师只更新关注画师、同步喜欢只更新收藏，各自独立。
@@ -46,7 +47,8 @@ plugins/
     │       ├── db.py            # 待下载清单 SQLite（works.db：works/tags/work_tags/meta）
     │       ├── artist.py        # 画师目录解析：名字命名 / id→名字缓存 / 改名迁移
     │       ├── scan.py          # 刷新清单：关注（画师级断点 done_uids）/ 收藏（断点 next_qs=max_bookmark_id）
-    │       ├── download.py      # 按清单并行下载 + 404 永久跳过 + 固定下载行为
+    │       ├── download.py      # 按清单并行下载 + 404 永久跳过 + 固定下载行为 + ugoira 分流
+    │       ├── ugoira.py        # ugoira 动图：zip 帧序列 → 动画 WebP（帧时序解析 + 防御上限）
     │       ├── oauth.py         # 内置 OAuth PKCE 向导
     │       ├── pixiv_purge_non_original.py   # 伴侣工具：清理 1200px 非原图（交互/参数两模式）
     │       └── pixiv_unmark_recent.py        # 伴侣工具：把已下载记录改回未下载（只改记录）
@@ -61,6 +63,7 @@ plugins/
 ├── pixiv/
 │   └── {画师名}/                              # 所有画师（关注+收藏）统一目录，纯名字命名
 │       ├── 123456.jpg                         # 单图：直接平铺
+│       ├── 123456.webp                        # ugoira 动图转出的动画 WebP（平铺，v0.4）
 │       └── 123456/                            # 多图：放入 {作品id}/ 子文件夹（固定行为）
 │           ├── 123456_p0.jpg
 │           └── 123456_p1.jpg
@@ -88,23 +91,24 @@ plugins/
 
 ## 3. 设置项（settings_schema）
 
-| key | 类型 | 说明 |
-|-----|------|------|
-| `refresh_token` | text | Pixiv OAuth refresh token（密码登录已废弃）；`central: false` 不出现在集中设置面板 |
-| `proxy` | text | HTTP 代理，如 `http://127.0.0.1:7890`；留空 = 直连 |
-| `download_dir` | text | 下载根目录；留空 = 宿主相册根目录 |
-| `workers` | number | 并发下载数（1-8，默认 4）：画师间/作品间并行下载；机械盘建议 1-2，SSD 可 4-8 |
-| `max_download` | number | 单次同步上限（默认 100，0=不限）：每次「同步画师/同步喜欢」最多下载条数，下完再点同步继续（分批推进） |
-| `max_artists` | number | 单次刷新画师数上限（默认 30，0=不限）：每次「刷新关注名单」最多扫描的画师数；实测约 30 个画师可能触发 429，建议保持默认 |
-| `rate_limit` | number | API 请求速率次/秒（默认 3，1-10 可调）：间隔带随机抖动（-20%~+40%）；pixiv 阈值约 3/s，调高有 429 风险 |
-| `scan_workers` | number | 刷新名单的并行拉取画师数（滑动窗口，默认 4，1-8）：同时最多 N 个画师在拉，完成一个补充一个；总速率仍受 `rate_limit` 限制 |
+| key               | 类型   | 说明                                                                                                                                                                                        |
+| ----------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `refresh_token` | text   | Pixiv OAuth refresh token（密码登录已废弃）；`central: false` 不出现在集中设置面板                                                                                                        |
+| `proxy`         | text   | HTTP 代理，如`http://127.0.0.1:7890`；留空 = 直连                                                                                                                                         |
+| `download_dir`  | text   | 下载根目录；留空 = 宿主相册根目录                                                                                                                                                           |
+| `workers`       | number | 并发下载数（1-8，默认 4）：画师间/作品间并行下载；机械盘建议 1-2，SSD 可 4-8                                                                                                                |
+| `max_download`  | number | 单次同步上限（默认 100，0=不限）：每次「同步画师/同步喜欢」最多下载条数，下完再点同步继续（分批推进）                                                                                       |
+| `max_artists`   | number | 单次全量扫描画师数上限（默认 30，0=不限）：只约束「全量扫描」（首次入库/新关注画师拉全部历史）的画师数——这类每画师翻页多、是 429 主因；仅需增量尾巴更新的画师不受此限制、单次任务一次扫完 |
+| `rate_limit`    | number | API 请求速率次/秒（默认 3，1-10 可调）：间隔带随机抖动（-20%~+40%）；pixiv 阈值约 3/s，调高有 429 风险                                                                                      |
+| `scan_workers`  | number | 刷新名单的并行拉取画师数（滑动窗口，默认 4，1-8）：同时最多 N 个画师在拉，完成一个补充一个；总速率仍受`rate_limit` 限制                                                                   |
 
 > **固定行为（v0.3，无开关，前端不再提供选项）**：
+>
 > - **下载原图（original，完整分辨率）默认开启**，取不到时回退 1200px 大图（master1200）。
 > - **多图作品始终放入 `{作品id}/` 子文件夹**（与 pixiv 命名一致，浏览直观），单图直接平铺。
-> 这两项是代码层固定默认，不暴露设置项，避免误触把历史作品降为 1200px 大图或打散目录。
-> 如需调整，直接修改 `backend/pixiv_sync/download.py`：`all_image_urls` 的 `want_original`
-> 与 `process_illust` 的 `subfolder` 判定。
+>   这两项是代码层固定默认，不暴露设置项，避免误触把历史作品降为 1200px 大图或打散目录。
+>   如需调整，直接修改 `backend/pixiv_sync/download.py`：`all_image_urls` 的 `want_original`
+>   与 `process_illust` 的 `subfolder` 判定。
 
 设置持久化于 `.config/plugins/pixiv-sync.json`（SettingsStore，git 忽略）。
 
@@ -117,21 +121,21 @@ plugins/
 
 ## 4. 后端 API 契约（pixiv-sync__*）
 
-| API | 参数 | 返回 | 说明 |
-|-----|------|------|------|
-| `get_status` | - | `{task, root_dir, token_configured, downloaded_total, running, selected_artists, selected_file, ...统计}` | 状态轮询 |
-| `sync_following` | - | `{ok, data\|error}` | 启动「同步画师」任务（按清单下载，含 404 永久跳过） |
-| `sync_bookmarks` | - | `{ok, data\|error}` | 启动「同步喜欢」任务（按清单下载，与画师共用去重） |
-| `refresh_following_lists` | - | `{ok, data\|error}` | **刷新关注画师作品名单**：首次/未完成时全量扫描；完成后改为增量扫描（每个画师只拉到上一轮已入库的尾巴），旧→新排序 |
-| `refresh_bookmarks_lists` | - | `{ok, data\|error}` | **刷新喜欢画作名单**：首次/未完成时全量扫描；完成后改为增量扫描（只拉到上一轮已入库的收藏尾巴） |
-| `refresh_downloaded` | - | `{ok, total, zero_removed, stale_removed, failed_cleared}` | **刷新已下载记录**：扫描本地重建 ids（手动删的移除、手动加的导入、0 字节清理），重置消失作品的 done 快照，并清除本地已有文件对应的失败跳过记录 |
-| `verify_downloaded` | - | `{ok, stale_removed, zero_removed, failed_cleared, total}` | **校验已下载内容**：移除记录中本地无有效文件的失效 id 并重置清单 done 快照（下次同步重下），不导入新增 |
-| `retry_failed` | - | `{ok, cleared, kind}` | **一键重试失败作品**：清除 failed_ids.json（404 永久跳过记录）并立即按最近任务来源重新同步一次 |
-| `cancel_task` | - | `{ok}` | 请求取消当前任务（下个检查点生效） |
-| `open_config` | - | `{ok, file}` | 打开画师名单配置文件所在文件夹（不存在则创建带说明的空文件） |
-| `start_oauth` | - | `{ok, url}` | OAuth PKCE 第一步：生成 code_verifier 并打开 Pixiv 登录页 |
-| `finish_oauth` | `code` | `{ok, user_id}` | OAuth PKCE 第二步：用授权码换 token 并自动保存 refresh_token |
-| `get_settings` / `save_settings` | - | 设置读写（继承 PluginBase） | 前端设置表单使用 |
+| API                                  | 参数     | 返回                                                                                                        | 说明                                                                                                                                                 |
+| ------------------------------------ | -------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `get_status`                       | -        | `{task, root_dir, token_configured, downloaded_total, running, selected_artists, selected_file, ...统计}` | 状态轮询                                                                                                                                             |
+| `sync_following`                   | -        | `{ok, data\|error}`                                                                                        | 启动「同步画师」任务（**一步完成**：内部先自动刷新关注清单——新画师全量 + follow 流聚合增量 + 兜底——再按清单下载，404 永久跳过）            |
+| `sync_bookmarks`                   | -        | `{ok, data\|error}`                                                                                        | 启动「同步喜欢」任务（**一步完成**：内部先自动刷新收藏清单，再按清单下载，与画师共用去重）                                                     |
+| `refresh_following_lists`          | -        | `{ok, data\|error}`                                                                                        | **仅刷新关注清单（不下载）**：铺底/断点补扫 + 增量；「同步画师」已内置自动刷新，此入口用于只想更新清单看统计或手动控制首次大批量铺底时机       |
+| `refresh_bookmarks_lists`          | -        | `{ok, data\|error}`                                                                                        | **仅刷新喜欢清单（不下载）**：首次/未完成全量、完成后增量翻页；「同步喜欢」已内置自动刷新                                                      |
+| `refresh_downloaded`               | -        | `{ok, total, zero_removed, stale_removed, failed_cleared}`                                                | **刷新已下载记录**：扫描本地重建 ids（手动删的移除、手动加的导入、0 字节清理），重置消失作品的 done 快照，并清除本地已有文件对应的失败跳过记录 |
+| `verify_downloaded`                | -        | `{ok, stale_removed, zero_removed, failed_cleared, total}`                                                | **校验已下载内容**：移除记录中本地无有效文件的失效 id 并重置清单 done 快照（下次同步重下），不导入新增                                         |
+| `retry_failed`                     | -        | `{ok, cleared, kind}`                                                                                     | **一键重试失败作品**：清除 failed_ids.json（404 永久跳过记录）并立即按最近任务来源重新同步一次                                                 |
+| `cancel_task`                      | -        | `{ok}`                                                                                                    | 请求取消当前任务（下个检查点生效）                                                                                                                   |
+| `open_config`                      | -        | `{ok, file}`                                                                                              | 打开画师名单配置文件所在文件夹（不存在则创建带说明的空文件）                                                                                         |
+| `start_oauth`                      | -        | `{ok, url}`                                                                                               | OAuth PKCE 第一步：生成 code_verifier 并打开 Pixiv 登录页                                                                                            |
+| `finish_oauth`                     | `code` | `{ok, user_id}`                                                                                           | OAuth PKCE 第二步：用授权码换 token 并自动保存 refresh_token                                                                                         |
+| `get_settings` / `save_settings` | -        | 设置读写（继承 PluginBase）                                                                                 | 前端设置表单使用                                                                                                                                     |
 
 ### 内置 OAuth 向导（refresh_token 失效时重新获取）
 
@@ -145,6 +149,7 @@ plugins/
 关键约束：code 有效期几分钟，且**必须与当前按钮轮次的 verifier 匹配**——操作中不要重新点「获取 Token」，否则旧 code 失效。
 
 调用约定：
+
 - 启动接口返回 `{ok: false, error: "已有同步任务在运行"}` 拒绝并发任务（串行约束）。
 - 长任务遵循 `docs/image-tagger-design.md` §6 的状态约定：
   `queued → running → done | failed | cancelled`；重启后 `running/queued` 恢复为 `paused`（可重新同步续跑，靠去重集合天然断点续传）。
@@ -153,25 +158,51 @@ plugins/
 
 ### 5.1 流程
 
-1. `auth(refresh_token)` 换取 access_token（`oauth.secure.pixiv.net/auth/token`）。
-2. **刷新画师（生成清单）**：
-   - `user_following` 翻页拉取全部关注画师；
-   - 首次或上次未完成时，并行（`scan_workers` 路滑动窗口）逐画师 `user_illusts` 翻页拉取**全部作品**（不用 `illust_follow` 新作流——那只会返回近期作品，历史作品会漏）；
-   - 上一轮完整扫描完成后，下一轮进入**增量模式**：逐画师从最新作品往回翻，遇到上一轮已入库的尾巴就停，只拉最新部分；
-   - 画师级断点 `scan.done_uids`：本轮未扫完的画师下次继续；
+**同步 = 一步任务**：`sync_following` / `sync_bookmarks` 内部依次执行
+「刷新清单（生成/更新 `works.db`，断点续跑）→ 按清单下载」，用户点一次即可拿到新图；
+独立 `refresh_*`（仅刷新不下载）复用同一刷新逻辑，供只想更新清单看统计、
+或手动控制首次大批量铺底的时机。所有任务共用一个串行线程（同一时间只有一个任务）。
+
+**同步画师（sync_following）内部**：
+
+1. `auth(refresh_token)` 换取 access_token（`oauth.secure.pixiv.net/auth/token`），
+   自动回写 Pixiv 轮换的 refresh_token；并扫描本地已有图片并入去重集合（旧图导入）。
+2. **刷新关注清单（v0.5 状态机）**：
+   - `user_following` 翻页拉取全部关注画师（每轮必做，用于识别新关注的画师）；
+   - **铺底/断点态**（`scan.complete=False` 或存在未入库画师）：只补扫 `scan.done_uids` 之外
+     的画师，并分为两类——DB 已有一轮记录的画师 → `user_illusts` 从最新往回翻、遇到已入库
+     作品就停（**增量尾巴：每画师平均 1 次请求，不受上限、单次任务一次扫完**）；全新画师 →
+     翻到底全量（每画师翻页多，受 `max_artists` 分批防 429）。未完成的画师会移出
+     done_uids，下轮继续（不会重复扫已完成画师，断点实时落盘）；
+   - **增量态**（`complete=True` 且所有画师已有记录）：老画师新作改用 **`illust_follow`
+     聚合新作流**一次覆盖——从最新往回翻，遇到「整页（约 30 条）作品全部已入库」即停。
+     依据：对任意画师，「未入库新作」必然比它已入库的作品更新，因此一旦翻到连续整页
+     已入库的时间带，其后（更旧）不可能再有未入库新作。常规刷新 1~3 次请求即完成，
+     **不再逐画师请求**；只有长时间未同步导致积压超出 follow 时间流窗口
+     （`MAX_FOLLOW_PAGES=40` 页仍未见到整页已入库）时才转入逐画师兜底补齐，保证不漏；
+   - 画师级断点 `scan.done_uids` / `scan.complete`：中断/429 后下次续跑；
    - 清单写入 SQLite `works.db`（含 done 标记与扫描断点），旧→新排序。
-3. **刷新喜欢（生成清单）**：首次/未完成时全量翻页拉取当前用户公开收藏；上一轮完成后改为增量模式，从最新收藏往回翻，遇到上一轮已入库的收藏尾巴就停。断点保存完整翻页参数 `scan.next_qs`（Pixiv 该接口使用 `max_bookmark_id`）。
-4. **同步**：从清单取「作品 id 不在去重集合且不在失败跳过集合」的作品，`workers` 并发下载。
-   全部页下载成功 → 作品 id 入去重集合，清单标记 done；**失败页全部是 404/作品已删除 → 作品 id 入 failed_ids.json 永久跳过**（避免每次重试同一已删除页）；存在非 404 单页失败时下次继续重试（不会把作品整体标记为已下载）。
-5. 任务状态每处理一个作品写入 `tasks.json`；去重集合在任务结束时落盘（也支持中途崩溃后按已下载文件跳过）。
+3. **按清单下载**：从清单取「作品 id 不在去重集合且不在失败跳过集合」的作品，
+   `workers` 并发下载。全部页下载成功 → 作品 id 入去重集合，清单标记 done；
+   **失败页全部是 404/作品已删除 → 作品 id 入 failed_ids.json 永久跳过**（避免每次
+   重试同一已删除页）；存在非 404 单页失败时下次继续重试（不会把作品整体标记为已下载）。
+4. 任务状态每处理一个作品写入 `tasks.json`；去重集合在任务结束时落盘（也支持中途崩溃后按已下载文件跳过）。
+
+**同步喜欢（sync_bookmarks）内部**：与上面相同，只是第 2 步换成刷新收藏清单——
+首次/未完成时全量翻页拉取当前用户公开收藏；上一轮完成后改为增量模式，从最新收藏往回翻，
+遇到上一轮已入库的收藏尾巴就停。断点保存完整翻页参数 `scan.next_qs`
+（Pixiv 该接口使用 `max_bookmark_id`）。
 
 ### 5.1.1 限流保护（pixiv 429 Rate Limit）
 
-pixiv app-api 有滑动窗口限流（约 30 req/10s，超出后 429；大量请求后冷却可能长达数小时）：
-- 全局令牌桶限速器 `_RateLimiter(3.0)`：所有 app-api 请求（关注列表 / 画师列表 / 收藏翻页）统一限速 3 req/s，间隔带随机抖动（-20%~+40%）。
+pixiv app-api 有滑动窗口限流（约 30 req/10s，超出后 429）：
+
+- 全局令牌桶限速器 `_RateLimiter(3.0)`：所有 app-api 请求（关注列表 / 画师列表 / 聚合新作流 / 收藏翻页 / ugoira 元数据）统一限速 3 req/s，间隔带随机抖动（-20%~+40%）。
 - 429 时自动抛 `RateLimitError` 停止当前任务（不再继续请求加剧限流），等待冷却后重试。
 - 触发 429 后前端备注区会显示一个 **10 分钟冷却倒计时** 作为参考；建议倒计时归零后再刷新。
 - 图片下载走 `i.pximg.net`（CDN），不受 app-api 限流影响，可保持 `workers` 并发。
+- **v0.5 后增量刷新请求量大幅下降**：常规「刷新关注」≈ 关注列表几页 + follow 新作流 1~3 页
+  （原本是每个画师至少 1 次，关注 300 人 ≈ 300+ 次），429 触发概率与刷新耗时同时显著降低。
 
 ### 5.2 下载
 
@@ -182,22 +213,36 @@ pixiv app-api 有滑动窗口限流（约 30 req/10s，超出后 429；大量请
 - 存在非 404 单页失败时不会把作品写入去重集合（下次同步重试）；**失败页全部是 404 时把作品 id 进 `failed_ids.json` 永久跳过**，可点「重试失败作品」一键清除后重下。
 - 已存在的 0 字节文件会在下载前删除并重新下载，不会误判为“已下载”。
 - 文件已存在（`download()` 返回 False）也视为已下载并入去重集合（幂等）。
-- **旧图导入**：每次同步开始前自动扫描 `<root>/pixiv/` 下已有图片，按命名规则（`{id}.jpg` / `{id}_p0.jpg` / `{id}p0.png` / 子文件夹 `{id}/`）提取作品 id 并入去重集合——**用户手动放入的旧图会被识别，全量更新直接跳过，不会重复下载/检查**；文件名不符合规则的图片无法自动识别（可手动改名或删文件重下）。
+- **内容真实性校验（v0.5）**：`pixiv_mini.download()` 默认 `verify_image=True`——流下载完成后校验
+  响应 `Content-Type` 以 `image/` 开头，且文件头魔数为已知图片格式（JPEG/PNG/GIF/WebP），
+  任一不通过则删除残片并抛 `PixivError`。代理拦截页/异常 200（HTML/文本）不会再被当成
+  图片保存进入去重集合导致永久漏下；ugoira 帧 zip 等非图片下载显式传 `verify_image=False`。
+- **ugoira 动图（v0.4）**：`type == "ugoira"` 的作品不再下载 zip 存成坏 jpg，改由 `process_ugoira` 独立处理（见 `ugoira.py`）：
+  - 先调 `ugoira_metadata`（`v1/ugoira/metadata`，app-api，走全局限速）取**每帧时长** `frames[].delay`（帧时序不在 zip 里）；
+  - 再流式下载帧 zip（i.pximg.net CDN，`verify_image=False`），按帧清单解码并 `Pillow` 拼帧存为**动画 WebP** `{作品id}.webp`（`save_all`，逐帧 duration，无限循环；缩略图由 image-viewer 取首帧静态）；
+  - 目标 `.webp` 已存在（非 0 字节）即幂等跳过（不发任何网络请求）；`.webp` 也会被旧图导入规则（命名含 webp）识别进去重集合；
+  - 失败语义与普通作品一致：**404 → `failed_ids.json` 永久跳过**；帧时序/zip/转换失败（非 404）→ 只计数失败、不入去重集合，**下次同步重试**；元数据请求触发 429 → 抛 `RateLimitError` 停止整个任务；
+  - 转换有防御上限（帧数 ≤1000、单帧 ≤64MB、累计像素 ≤4 亿），超限按失败重试处理，不会因异常 zip 打爆内存。
+  - 注意：v0.3 及更早版本曾把 ugoira 的 `.zip` 下载成坏 `.jpg` 并记入去重，存量坏文件不会自动修复；
+    可删除对应文件后点「校验内容」/用 `pixiv_unmark_recent.py --missing` 重置记录，之后同步会重下为动图 WebP。
+- **旧图导入**：每次同步开始前自动扫描 `<root>/pixiv/` 下已有图片，按命名规则（`{id}.jpg` / `{id}_p0.jpg` / `{id}p0.png` / `{id}.webp` / 子文件夹 `{id}/`）提取作品 id 并入去重集合——**用户手动放入的旧图会被识别，全量更新直接跳过，不会重复下载/检查**；文件名不符合规则的图片无法自动识别（可手动改名或删文件重下）。
 - 注意：已下载的旧图（历史 1200px 版）不会自动升级，需删除对应文件、并从 `downloaded_ids.json` 移出 id（可用伴侣工具 `pixiv_purge_non_original.py` 或 `pixiv_unmark_recent.py` 处理），之后同步会按固定默认行为重下原图。
 
 ### 5.3 依赖
 
 仅 `requests`（宿主 venv 已内置 2.34.2），放在 `backend/libs/` 随插件分发（PluginManager 加载时自动加入 `sys.path`）。自身实现包 `backend/pixiv_sync/` 由 `manifest.libs: ["backend/libs", "backend"]` 声明，一并加入 `sys.path`。无重依赖，不需要 `runtime` / 独立 venv / stdio-worker。
 
+> v0.4 的 ugoira 动图转换需要 **Pillow**（运行时懒加载于 `ugoira.py`，仅动图作品用到）。宿主 image-viewer 依赖 Pillow（requirements 内置 12.x），Companion 场景必然可用；静态图/1200px 下载不依赖 Pillow，缺失时只有动图转换报错。
+
 ## 6. 前端
 
 `/plugins/pixiv-sync/frontend/index.html` 作为内嵌页面，通过 `get_extensions()` 在 image-viewer 左侧栏挂载「Pixiv 同步」入口；点击后由 image-viewer 用 iframe 加载。页面包含：
 
 - 状态栏：Token 是否配置 / 下载根目录 / 已下载总数 / 关注·喜欢·其他清单统计 / 失败跳过数 / 上次任务结果
-- 操作：🔄 同步画师、❤️ 同步喜欢、🔄 刷新关注名单、🔄 刷新喜欢名单、📋 刷新记录、🔍 校验内容、🗑 重试失败作品
+- 操作：⬇️ 同步画师、❤️ 同步喜欢（**一步完成：自动先刷新清单再下载**）；🔄 刷新关注名单 / 🔄 刷新喜欢名单（仅更新清单不下载，备用）；📋 刷新记录、🔍 校验内容、🗑 重试失败作品
 - **进度条**：`done/total` 百分比（流式累加）+ 计数明细（下载/跳过/失败）+ 当前处理作品；每 1.5s 轮询 `get_status`
 - 设置表单：refresh_token（密码框）/ 代理 / 下载目录 / 并发数 / 单次上限 / 刷新上限 / 限速 / 并行画师数
-- **固定行为说明**：页面明确标注「下载原图」「多图子文件夹」为固定默认行为、无开关，避免误触。
+- **固定行为说明**：页面明确标注「下载原图」「多图子文件夹」「动图转动画 WebP」为固定默认行为、无开关，避免误触。
 
 布局复用 Shell 的 `.view-body` / `.view-toolbar` / `.view-content` 类与主题变量。
 
@@ -222,10 +267,3 @@ pixiv app-api 有滑动窗口限流（约 30 req/10s，超出后 429；大量请
   - `--missing`：对照 works.db 清单与本地文件，凡是 `done=1` 但本地文件已不存在的作品 → 改回未下载（图片已删时最准）。
 - 操作（不动任何本地文件）：`downloaded_ids.json` / `failed_ids.json` 移出 id，`works.db` 的 `done` 改回 0。
 - 执行后直接点「同步画师/同步喜欢」即可重下（无需先刷新名单）。
-
-## 8. 非目标（第一版不做）
-
-- 不做定时自动同步（仅手动按钮触发）。
-- 不做小说 / 搜索 / 收藏写操作等 Pixiv 其他能力。
-- 不做断点续传的「精确到页」恢复（去重为作品级，重复文件下载幂等跳过）。
-- 不做 pixeval / 第三方客户端导入与旧目录迁移（v0.3 已移除，纯自写代码，libs 仅留第三方 pixiv_mini）。
