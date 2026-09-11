@@ -189,7 +189,7 @@ powershell -ExecutionPolicy Bypass -File docs/Releases/build-release.ps1
 ```
 
 - 会自动构建前端
-- 自动通过 `setup-venv.ps1 -Install` 准备虚拟环境与依赖，再用项目 venv 的 Python 执行 PyInstaller
+- 自动通过 `setup-venv.ps1 -Install -Dev` 准备虚拟环境与依赖（含 PyInstaller），再用项目 venv 的 Python 执行 PyInstaller
 - 输出到 `docs/Releases/`
 
 ### Linux
@@ -199,7 +199,7 @@ bash docs/Releases/build-release.sh
 ```
 
 - 会自动构建前端
-- 自动通过 `setup-venv.sh` 准备虚拟环境与依赖，再用项目 venv 的 Python 执行 PyInstaller
+- 自动通过 `setup-venv.sh --dev` 准备虚拟环境与依赖（含 PyInstaller），再用项目 venv 的 Python 执行 PyInstaller
 - 输出到 `docs/Releases/OmniBox/`
 - 并生成 `OmniBox_日期.tar.gz`
 
