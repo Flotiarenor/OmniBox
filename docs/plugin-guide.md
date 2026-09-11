@@ -43,7 +43,6 @@ plugins/
 "displayName": "图片浏览",
 "description": "浏览本地图片，支持缩略图和灯箱",
 "icon": "🖼️",
-"author": "Your Name",
 "dependencies": [],
 "permissions": ["filesystem:read", "filesystem:write"],
 "backend": {
@@ -58,28 +57,37 @@ plugins/
 }
 ```
 
+> 示例里没有 `author`：代码不读这个字段（且 `tools/check_plugins.py` 会把它标为"不参与运行时逻辑"）。
+> 需要署名请写在 `description` 或 README 里。
+
 **字段说明**：
 
 > 标记说明：`必填` 必需；`默认` 表示理论上应填写、但省略时运行时取缺省值（`name`→文件夹名、`backend.entry`→`backend/main.py`、`backend.class`→`Plugin`、`frontend.route`→`/<name>`，`name` 与文件夹名不一致仅告警）；`可选` 可完全省略。`tools/check_plugins.py` 仍做严格校验（用于发布前自检）。
 
 | 字段                | 要求 | 说明                                                                            |
 | ------------------- | ---- | ------------------------------------------------------------------------------- |
-| `version`         | 必填 | 语义化版本号                                                                    |
+| `version`         | 必填 | 语义化版本号（`x.y.z`，`tools/check_plugins.py` 会强制校验）                    |
 | `displayName`     | 必填 | 在导航栏显示的名称                                                              |
 | `icon`            | 必填 | 导航栏图标（Emoji 或文字）                                                      |
-| `frontend.entry`  | 必填 | 前端入口 HTML 文件路径，相对于插件根目录                                        |
+| `frontend.entry`  | 必填 | 前端入口 HTML 路径。**壳目前固定加载 `frontend/index.html`**，此字段只被 `tools/check_plugins.py` 用于校验入口及其引用资源存在；写别的值不会改变壳实际加载的文件 |
 | `name`            | 默认 | 插件唯一标识，缺省为文件夹名；与文件夹名不一致告警                              |
 | `backend.entry`   | 默认 | 后端入口文件路径，默认`backend/main.py`，相对于插件根目录                     |
 | `backend.class`   | 默认 | 后端插件类名，默认`Plugin`，须继承 `PluginBase`                             |
 | `frontend.route`  | 默认 | 前端路由，默认`/<name>`，须以 `/` 开头                                      |
 | `dependencies`    | 可选 | 依赖的其他插件名称列表                                                          |
 | `libs`            | 可选 | 插件本地附加库目录列表，默认`["backend/libs"]`，加载后端前会加入 `sys.path` |
-| `permissions`     | 可选 | 权限声明（仅作知情明示，供设置页展示，不做运行时强制）                          |
+| `permissions`     | 可选 | 权限声明，**仅作知情明示**：运行时不做强制、也不在设置页展示（代码里没有任何读取方） |
 | `minShellVersion` | 可选 | 要求的最低 Shell 版本                                                           |
 | `destroyOnLeave`  | 可选 | `true` 时离开页面销毁 iframe 重新加载（默认保持存活）                         |
 | `hidden`          | 可选 | `true` 时不显示在 Shell 主导航，但仍可被宿主内嵌或通过插件 URL 访问           |
-| `kind`            | 可选 | `local-adapter`：声明本插件管理独立运行环境（重依赖插件使用）                 |
-| `runtime`         | 可选 | 独立运行环境声明（venv / 入口 / requirements），见 §2.2                        |
+| `kind`            | 可选 | `local-adapter`：声明本插件管理独立运行环境（重依赖插件使用；当前只告警不阻断） |
+| `runtime`         | 可选 | **规划中，尚未实装**：独立运行环境声明（venv / 入口 / requirements），见 §2.2 |
+| `description`     | 可选 | 仅作文档/说明：运行时与壳都不读（界面用 `displayName` + `icon`）              |
+
+> **字段必须"有读取方"**：`tools/check_plugins.py` 会核对每个 manifest 字段是否真的被代码读取，
+> 没有读取方且未登记为"不参与运行时逻辑"的字段直接报错。新增字段时请同步更新
+> `RUNTIME_FIELD_READERS` / `DOC_ONLY_FIELDS` 两张表 —— 这条规则来自一个真实教训：
+> 指南曾经教了 4 个代码根本不读的字段，照文档写的作者只会得到"填了没效果"。
 
 ---
 
@@ -117,32 +125,58 @@ await Bridge.callPlugin('image-tagger', 'tag_album', 'PIXEVAL/画师A');
 // 等价于 parent.pywebview.api['image-tagger__tag_album']('PIXEVAL/画师A')
 ```
 
-**扩展注册表**（宿主只写泛化渲染点）：
+**扩展注册表**（宿主只写泛化渲染点）：扩展条目由插件的 `get_extensions()` 返回，
+Shell 会自动补上 `plugin` 字段。真实键见 `plugins/image-cleaner/backend/main.py`：
 
 ```python
-class ImageTaggerPlugin(PluginBase):
+class ImageCleanerPlugin(PluginBase):
     def get_extensions(self):
         return [{
-            'host': 'image-viewer',
-            'id': 'tag-selected',
-            'label': '🏷️ 打标',
-            'method': 'tag_album',
-            'scope': 'album',
-            # 如果希望宿主内嵌 iframe 打开，则使用 embedUrl 而不是 route：
-            # 'embedUrl': '/plugins/image-cleaner/frontend/index.html',
+            'host': 'image-viewer',                            # 挂到哪个宿主
+            'id': 'image-cleaner',
+            'label': '相册清理',
+            'icon': '🧹',
+            'description': '扫描全部相册中的重复 / 相似图片',
+            'section': '相册清理',                              # 侧边栏分组标题
+            'embedUrl': '/plugins/image-cleaner/frontend/index.html',
+            'placement': 'sidebar',                            # 宿主渲染点位置
+            'scope': 'all',
         }]
 ```
+
+宿主的点击行为由条目里出现的键决定（`shell/frontend/public/shell/base.js` 的
+`renderExtensions` 按以下优先级分支）：
+
+| 键 | 行为 |
+| --- | --- |
+| `view` | 原生视图型：宿主自己渲染（需宿主传入 `options.onOpen`） |
+| `embedUrl` | 内嵌型：在宿主面板里打开 iframe（当前内置插件用的就是这条） |
+| `route` | 独立路由型：跳转到插件自己的页面 |
+| `method` | 纯后端方法型：`Bridge.callPlugin(ext.plugin, ext.method)` 跨插件调用 |
 
 宿主前端：
 
 ```javascript
-// 方式一：使用通用渲染器（推荐，Shell base.js 已提供）
+// 推荐：使用通用渲染器（Shell base.js 已提供，签名 renderExtensions(container, host, placement, options)）
 renderExtensions(document.getElementById('extensions'), 'image-viewer', 'sidebar');
 
-// 方式二：手动拉取扩展后自行渲染
+// 或者手动拉取扩展后自行渲染（系统 API 必须走 callSystem）
 const exts = await Bridge.callSystem('system_get_plugin_extensions', 'image-viewer', 'sidebar');
-exts.forEach(ext => addToolbarButton(ext.label, () => Bridge.callPlugin(ext.plugin, ext.method)));
+exts.forEach(ext => {
+  const btn = document.createElement('button');
+  btn.textContent = ext.label || ext.id;
+  btn.title = ext.description || '';
+  btn.addEventListener('click', () => {
+    if (ext.embedUrl) { /* 自行决定如何打开 iframe */ }
+    else if (ext.route) { parent.__omniboxNavigate?.(ext.route); }
+    else if (ext.method) { Bridge.callPlugin(ext.plugin, ext.method); }
+  });
+  document.getElementById('extensions').appendChild(btn);
+});
 ```
+
+> Shell **没有** `addToolbarButton(...)` 这个函数（历史文档里出现过，属于笔误），
+> 通用渲染请用 `renderExtensions`，自定义渲染请照上面的分支自己实现。
 
 > 目前已落地的 Companion 插件示例：`image-cleaner`（全相册重复/相似清理），设计见 `docs/image-cleaner-design.md`。
 

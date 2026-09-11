@@ -133,19 +133,25 @@ settings_schema = [
 首版采用 Shell 级扩展注册表，`image-viewer` 只加一个泛化渲染点：
 
 ```js
-// image-viewer 前端
-const extensions = await Bridge.call('system_get_plugin_extensions', 'image-viewer');
-extensions.forEach(ext => addToolbarButton(ext.label, () => Bridge.callPlugin(ext.plugin, ext.method)));
+// image-viewer 前端（系统 API 必须走 callSystem；Bridge.call 会拼插件前缀）
+const extensions = await Bridge.callSystem('system_get_plugin_extensions', 'image-viewer', 'sidebar');
+// 通用渲染器（Shell base.js 已提供）：按条目里的 embedUrl / route / method / view 分支处理
+renderExtensions(document.getElementById('extensions'), 'image-viewer', 'sidebar');
 ```
 
-```json
-// image-tagger 后端注册
+```python
+# image-tagger 后端注册（键的含义见 docs/plugin-guide.md §2.1 的对照表）
 {
   "host": "image-viewer",
   "id": "tag-selected",
   "label": "🏷️ 打标",
-  "method": "tag_album",
-  "scope": "album"
+  "icon": "🏷️",
+  "section": "打标",              # 侧边栏分组标题
+  "placement": "sidebar",
+  "scope": "album",
+  # 二选一：内嵌宿主内打开，或注册成纯后端方法型扩展（method + plugin 由 Shell 补齐）
+  # "embedUrl": "/plugins/image-tagger/frontend/index.html",
+  # "method": "tag_album",
 }
 ```
 

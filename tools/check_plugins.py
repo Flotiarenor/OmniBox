@@ -3,6 +3,8 @@
 
 检查项：
 - manifest.json 可解析、name 与目录名一致、frontend/backend 声明完整
+- 每个 manifest 字段都必须有读取方（RUNTIME_FIELD_READERS），
+  或明确登记为不参与运行时逻辑（DOC_ONLY_FIELDS）；登记表本身也会自检
 - frontend/backend 入口文件存在且不越界
 - route 合法、保留路由、跨插件不重复
 - dependencies 是字符串数组、引用存在且不依赖自身
@@ -35,6 +37,38 @@ ALLOWED_SCHEMA_TYPES = {'text', 'number', 'range', 'select', 'checkbox', 'textar
 PLUGIN_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9-_]*$')
 LEGACY_SETTINGS_MARKERS = ('settings_file', '_save_settings_to_file')
 LOCAL_SIBLING_LOADER_MARKER = 'def _load_sibling'
+
+# ===== manifest 字段读取方登记表（docs/code-review.md §5 的机制化）=====
+# 开发指南一度教了 4 个"代码根本不读"的字段：照文档写的第三方作者会遇到
+# "我按文档填了却没效果"，而作者只会默默放弃 —— 这类问题必须由机器发现。
+#
+# 每条形如 字段路径 -> [(读取方文件, 源码里定位它的片段)]。
+# 检查器会核对片段确实存在：一旦有人删改读取方，登记表过期会立刻报错，
+# 而不是悄悄退化成一张没人维护的表格。
+RUNTIME_FIELD_READERS: Dict[str, List[Tuple[str, str]]] = {
+    'name': [('shell/backend/plugin_manager.py', "data.get('name')")],
+    'displayName': [('shell/backend/plugin_manager.py', "'displayName', m['name']")],
+    'icon': [('shell/backend/plugin_manager.py', "'icon', '📦'")],
+    'hidden': [('shell/backend/plugin_manager.py', "m.get('hidden')")],
+    'destroyOnLeave': [('shell/backend/plugin_manager.py', "'destroyOnLeave'")],
+    'dependencies': [('shell/backend/plugin_manager.py', "'dependencies'")],
+    'libs': [('shell/backend/plugin_manager.py', "manifest.get('libs'")],
+    'backend.entry': [('shell/backend/plugin_manager.py', "backend_cfg.get('entry'")],
+    'backend.class': [('shell/backend/plugin_manager.py', "backend_cfg.get('class'")],
+    'frontend.route': [('shell/backend/plugin_manager.py', "m['frontend']['route']")],
+    'frontend.entry': [('tools/check_plugins.py', 'frontend_entry')],
+    'version': [('tools/check_plugins.py', "data.get('version')")],
+    'minShellVersion': [('tools/check_plugins.py', 'minShellVersion')],
+    'kind': [('tools/check_plugins.py', 'local-adapter')],
+}
+
+# 有意不参与运行时逻辑的字段：允许存在，但指南必须写明"不读"。
+DOC_ONLY_FIELDS: Dict[str, str] = {
+    'description': '仅供文档/说明，运行时与壳都不读（界面用 displayName + icon）',
+    'author': '仅作文档标注，代码不读',
+    'permissions': '仅作知情明示，不做运行时强制，也不在设置页展示',
+    'runtime': '规划中的字段，尚未实装（不要照它写插件）',
+}
 
 
 def get_shell_version() -> str:
@@ -194,6 +228,57 @@ def _load_backend_class(plugin_dir: Path, entry: str, class_name: str, lib_dirs=
                 pass
 
 
+def _flatten_manifest_fields(data: dict) -> Dict[str, object]:
+    """把 manifest 摊平成 {'frontend.route': ...} 形式的字段表（一层嵌套足够）。"""
+    flat: Dict[str, object] = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            for sub_key, sub_value in value.items():
+                flat[f'{key}.{sub_key}'] = sub_value
+        else:
+            flat[key] = value
+    return flat
+
+
+def _check_reader_registry() -> List[str]:
+    """自检登记表：登记的读取方片段必须真的还在源码里，否则表格就成了一纸空文。"""
+    errors: List[str] = []
+    for field, readers in sorted(RUNTIME_FIELD_READERS.items()):
+        for rel, needle in readers:
+            try:
+                text = (PROJECT_ROOT / rel).read_text(encoding='utf-8')
+            except OSError as exc:
+                errors.append(f'字段登记表：读取方文件不可读 {rel}: {exc}')
+                continue
+            if needle not in text:
+                errors.append(
+                    f'字段登记表过期：manifest.{field} 登记的读取方'
+                    f'{rel} 里已找不到 {needle!r}（改动了读取代码就要同步登记表）'
+                )
+    return errors
+
+
+def _check_manifest_fields(data: dict, where: str) -> Tuple[List[str], List[str]]:
+    """每个 manifest 字段都必须有读取方，或明确登记为"不参与运行时逻辑"。"""
+    errors: List[str] = []
+    warnings: List[str] = []
+    for field in sorted(_flatten_manifest_fields(data)):
+        if field in RUNTIME_FIELD_READERS:
+            continue
+        if field in DOC_ONLY_FIELDS:
+            warnings.append(
+                f'{where} manifest.{field} 不参与运行时逻辑（{DOC_ONLY_FIELDS[field]}），'
+                f'开发指南必须同样写明'
+            )
+            continue
+        errors.append(
+            f'{where} manifest.{field} 没有任何代码读取它：'
+            f'要么在 tools/check_plugins.py 的 RUNTIME_FIELD_READERS 登记读取方，'
+            f'要么登记进 DOC_ONLY_FIELDS 并在开发指南里写明它不生效'
+        )
+    return errors, warnings
+
+
 def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -> Tuple[List[str], List[str]]:
     plugins_dir = Path(plugins_dir or DEFAULT_PLUGINS_DIR)
     errors: List[str] = []
@@ -202,6 +287,8 @@ def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -
 
     if not plugins_dir.exists():
         return [f'插件目录不存在: {plugins_dir}'], []
+
+    errors.extend(_check_reader_registry())
 
     shell_version = parse_version(get_shell_version())
     routes: Dict[str, str] = {}
@@ -217,6 +304,10 @@ def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -
             continue
         assert data is not None
 
+        field_errors, field_warnings = _check_manifest_fields(data, where)
+        errors.extend(field_errors)
+        warnings.extend(field_warnings)
+
         name = data.get('name')
         if not isinstance(name, str) or not PLUGIN_NAME_RE.fullmatch(name):
             errors.append(f'{where} manifest.name 缺失或不是合法的 slug: {name!r}')
@@ -226,8 +317,9 @@ def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -
         if isinstance(data.get('version'), str):
             if not re.fullmatch(r'\d+\.\d+\.\d+', data['version']):
                 errors.append(f'{where} manifest.version 建议使用 x.y.z 格式')
-        elif 'version' in data:
-            errors.append(f'{where} manifest.version 缺失或不是字符串')
+        else:
+            # 开发指南把它标为必填，这里就按必填校验（字段存在但不是字符串也算错）
+            errors.append(f'{where} manifest.version 必填且必须是 x.y.z 字符串')
 
         frontend = data.get('frontend')
         if not isinstance(frontend, dict):

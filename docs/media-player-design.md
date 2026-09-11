@@ -110,8 +110,8 @@ plugins/media-player/
 ### 通道 A：后端 ffmpeg（video_ffmpeg.py）
 
 - 路径定位语义：配置了 `ffmpeg_path` 就用配置（支持文件 / 目录 / 漏写 `.exe`，无效路径
-  视为不可用，不静默回落）；留空才检测 PATH；探测结果缓存，`media_ffmpeg_status`（force）
-  可重新探测供用户验证；
+  视为不可用，不静默回落）；留空才检测 PATH；探测结果缓存，`media_ffmpeg_status`
+  （**无参数**；调用即内部 `force=True` 重新探测，供用户验证）;
 - 抽帧：`ffmpeg -ss <t> -i <video> -frames:v 1 -q:v 3 -f image2pipe -` 输出 JPEG；
   `-ss` 前置为关键帧快速 seek（缩略图足够，成本远低于整段解码），30s 超时；
 - 取帧位置：时长已知取 10%（钳 [0.5, 120]）；时长未知（如 mkv）依次降级尝试 10s / 3s / 1s，

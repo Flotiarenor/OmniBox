@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -117,6 +118,49 @@ class PluginSpecCheckerTests(unittest.TestCase):
     def test_bundled_plugins_pass_full_spec(self):
         errors, _ = check_plugins(DEFAULT_PLUGINS_DIR, load_backends=True)
         self.assertEqual(errors, [])
+
+    # ===== manifest 字段必须有读取方（docs/code-review.md §5） =====
+
+    def test_unregistered_manifest_field_is_an_error(self):
+        """指南教了"代码不读"的字段 → 作者填了没效果，必须由检查器拦住。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _make_plugin(root, 'unknown-field', _manifest('unknown-field', '/unknown', extra={'mystery': 1}))
+            errors, _ = check_plugins(root, load_backends=False)
+            self.assertTrue(any('没有任何代码读取它' in error for error in errors))
+
+    def test_doc_only_field_warns_but_does_not_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = _manifest('doc-only', '/doc-only', extra={'description': '说明文字'})
+            _make_plugin(root, 'doc-only', manifest)
+            errors, warnings = check_plugins(root, load_backends=False)
+            self.assertEqual(errors, [])
+            self.assertTrue(any('不参与运行时逻辑' in warning for warning in warnings))
+
+    def test_version_is_required(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = _manifest('no-version', '/no-version')
+            del manifest['version']
+            _make_plugin(root, 'no-version', manifest)
+            errors, _ = check_plugins(root, load_backends=False)
+            self.assertTrue(any('version' in error for error in errors))
+
+    def test_reader_registry_matches_current_code(self):
+        """登记表必须与真实代码一致（否则它就只是一张没人维护的表格）。"""
+        from tools.check_plugins import _check_reader_registry
+        self.assertEqual(_check_reader_registry(), [])
+
+    def test_stale_reader_registry_is_detected(self):
+        from tools import check_plugins as checker
+        with mock.patch.dict(
+            checker.RUNTIME_FIELD_READERS,
+            {'ghost': [('shell/backend/plugin_manager.py', '这段代码不存在')]},
+            clear=False,
+        ):
+            errors = checker._check_reader_registry()
+        self.assertTrue(any('登记表过期' in error for error in errors))
 
 
 if __name__ == '__main__':

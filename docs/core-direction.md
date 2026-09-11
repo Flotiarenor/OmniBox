@@ -36,6 +36,13 @@
 
 ## 3. 主程序需要做的最小改造
 
+> ⚠️ **本节记录的是当初的改造草案，这些改造后来全部已实装**（见 §2 的状态表）。
+> 下面的代码片段保持历史原样，**不是待办**；真实实现以代码为准：
+> `PluginBase.get_dependency`（`shell/backend/plugin_base.py`）、
+> `Bridge.callPlugin`（`shell/frontend/public/shell/base.js`）、
+> `PluginManager.get_plugin_extensions(host, placement)`（`shell/backend/plugin_manager.py`）。
+> 编码时请以 `docs/plugin-guide.md` 为准 —— 那份是给插件作者看的契约。
+
 ### 3.1 PluginManager / PluginBase
 
 ```python
@@ -87,7 +94,8 @@ class PluginBase:
 Shell 聚合 API：
 
 ```python
-'system_get_plugin_extensions': lambda host=None: manager.get_plugin_extensions(host)
+'system_get_plugin_extensions': lambda host=None, placement=None:
+    manager.get_plugin_extensions(host, placement)
 ```
 
 宿主前端只写一个泛化循环，**不知道任何扩展的名字**。

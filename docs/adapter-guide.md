@@ -163,6 +163,10 @@ CREATE TABLE player_teams (
 
 ## 7. 插件设计（可选，按需拆）
 
+> ⚠️ **下表全部是规划中的插件名，一个都还不存在**：`plugins/` 当前只有 7 个真实插件
+> （`image-viewer`、`media-player`、`manga-library`、`novel-reader`、`image-cleaner`、
+> `pixiv-sync`、`netease-music`）。本表用于描述未来形态，不要当作可用的插件清单。
+
 | 插件 | 形态 | 后端 API | 前端 |
 |------|------|---------|------|
 | `battle-report-manager`（第一批） | B | `list(page,per,alliance,player)` / `detail(id)` / `search(player)` / `get_image(id)` | 表格 + 分页 + 筛选 + 详情弹窗 |
@@ -192,6 +196,10 @@ CREATE TABLE player_teams (
 | 应用退出 | 静默清理全部子进程 | `cleanup_all()` |
 
 ## 9. 验收与联调顺序
+
+> ⚠️ 本节第 2~3 步涉及 `alas-manager` / `battle-report-manager`，它们**尚未实装**
+> （见 §7 的说明）。当前可执行的只有第 1 步的通用规范部分与第 4 步的回归检查
+> （`tools/check_plugins.py` + `python -m unittest discover -s tests`）。
 
 1. **OmniBox 单测**：`adapter_process.py` 对假项目（含 venv + 假脚本）测启动/停止/存活/`run_once`
 2. **实例一联调**：`alas-manager` 拉起 ALAS Web UI，iframe 显示，启停可控
