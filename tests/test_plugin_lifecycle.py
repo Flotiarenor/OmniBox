@@ -61,6 +61,20 @@ class Plugin(PluginBase):
         raise RuntimeError("on_unload 故意抛错")
 '''
 
+_GHOST_PLUGIN = '''
+from shell.backend.plugin_base import PluginBase
+
+
+class Plugin(PluginBase):
+    """on_load 抛错的插件：register_api 登记的方法绝不能留下来。"""
+
+    def register_api(self):
+        return {"ghost": lambda: "should-not-be-reachable"}
+
+    def on_load(self):
+        raise RuntimeError("on_load 故意抛错")
+'''
+
 
 def _write_plugin(root: Path, name: str, source: str, deps=None) -> Path:
     plugin_dir = root / name
@@ -156,6 +170,45 @@ class PluginUnloadTests(unittest.TestCase):
             self.assertIsNone(manager.get_plugin_instance('alpha'))
             self.assertEqual(manager.get_api_methods(), {})
             self.assertEqual(manager.get_frontend_manifests(), [])
+
+    def test_on_load_failure_leaves_no_ghost_api(self):
+        """on_load 抛错后，register_api 里的方法必须不可达。
+
+        历史缺陷：方法先写进 _api_methods、再调 on_load、最后才写 _instances，
+        于是 on_load 抛错会留下"幽灵 API" —— /api/ghost__ghost 能打到从未进入
+        _instances 的半初始化实例。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root, manager = self._make_manager(td, ('ghost', _GHOST_PLUGIN, None))
+            manager.load_all()
+            self.assertIsNone(manager.get_plugin_instance('ghost'))
+            self.assertEqual(manager.get_api_methods(), {}, '半初始化实例的方法不应可调用')
+            self.assertEqual(manager.get_frontend_manifests(), [])
+
+    def test_failed_load_rolls_back_plugin_lib_paths(self):
+        """加载失败要收回插件的 backend/libs，否则别的插件会误用它的私有库。"""
+        with tempfile.TemporaryDirectory() as td:
+            root, manager = self._make_manager(td, ('ghost', _GHOST_PLUGIN, None))
+            libs = root / 'ghost' / 'backend' / 'libs'
+            libs.mkdir(parents=True)
+            lib_path = str(libs.resolve())
+
+            manager.load_all()
+
+            self.assertNotIn(lib_path, sys.path, '加载失败后必须收回插件的私有库路径')
+
+    def test_successful_load_keeps_plugin_lib_paths(self):
+        """加载成功必须保留 backend/libs（pixiv-sync 的 pixiv_mini 依赖这条）。"""
+        with tempfile.TemporaryDirectory() as td:
+            root, manager = self._make_manager(td, ('alpha', _OK_PLUGIN, None))
+            libs = root / 'alpha' / 'backend' / 'libs'
+            libs.mkdir(parents=True)
+            lib_path = str(libs.resolve())
+            self.addCleanup(lambda: sys.path.remove(lib_path) if lib_path in sys.path else None)
+
+            manager.load_all()
+
+            self.assertIn(lib_path, sys.path, '成功的插件必须保留私有库路径')
 
 
 if __name__ == '__main__':

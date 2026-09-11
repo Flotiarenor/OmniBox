@@ -369,21 +369,39 @@ class PluginManager:
 
         plugin_dir = self._plugin_dirs.get(name) or (self.plugins_dir / name)
 
-        # 插件本地附加库：在加载后端前加入 sys.path，支持纯 Python 依赖随插件分发
+        # 插件本地附加库：在加载后端前加入 sys.path，支持纯 Python 依赖随插件分发。
+        # 加载失败的插件必须把这些路径收回去，否则往后的插件会误用别人的私有库。
+        inserted_paths: List[str] = []
+
+        def rollback_lib_paths():
+            for lib_path in inserted_paths:
+                try:
+                    sys.path.remove(lib_path)
+                except ValueError:
+                    pass
+            inserted_paths.clear()
+
+        def fail(reason: str):
+            """加载失败的统一出口：收回 sys.path 且不留下任何状态。"""
+            rollback_lib_paths()
+            print(f"[PluginManager]  加载失败 {name}: {reason}")
+
         for lib_dir in self._plugin_lib_dirs(plugin_dir, manifest):
-            sys.path.insert(0, str(lib_dir))
+            lib_path = str(lib_dir)
+            sys.path.insert(0, lib_path)
+            inserted_paths.append(lib_path)
 
         try:
             module_path = (plugin_dir / entry_file).resolve()
             if not module_path.is_relative_to(plugin_dir):
-                print(f"[PluginManager]  加载失败 {name}: 入口文件越界 {entry_file}")
+                fail(f"入口文件越界 {entry_file}")
                 return
         except OSError as e:
-            print(f"[PluginManager]  加载失败 {name}: 入口路径解析失败: {e}")
+            fail(f"入口路径解析失败: {e}")
             return
 
         if not module_path.exists():
-            print(f"[PluginManager]  加载失败 {name}: 入口文件不存在 {module_path}")
+            fail(f"入口文件不存在 {module_path}")
             return
 
         unique_module_name = f"{name}.backend.main"
@@ -392,11 +410,11 @@ class PluginManager:
         try:
             spec = importlib.util.spec_from_file_location(unique_module_name, str(module_path))
             if spec is None:
-                print(f"[PluginManager]  加载失败 {name}: 模块规格创建失败")
+                fail("模块规格创建失败")
                 return
             mod = importlib.util.module_from_spec(spec)
             if spec.loader is None:
-                print(f"[PluginManager]  加载失败 {name}: 模块加载器创建失败")
+                fail("模块加载器创建失败")
                 return
             spec.loader.exec_module(mod)
 
@@ -412,18 +430,30 @@ class PluginManager:
             instance._settings_store = self._settings_store
             instance._plugin_manager = self
 
-            for method_name, method_fn in instance.register_api().items():
-                self._api_methods[f"{name}__{method_name}"] = method_fn
-            self._api_methods[f"{name}__get_settings_schema"] = (
+            # 方法表先在本地组装，on_load 成功后才一次性登记：on_load 抛错时
+            # 若已经把方法写进 _api_methods，就会出现"幽灵 API"——/api/<插件>__<方法>
+            # 能打到从未进入 _instances 的半初始化实例（docs/code-review.md §4.1-3）。
+            pending_methods = {
+                f"{name}__{method_name}": method_fn
+                for method_name, method_fn in instance.register_api().items()
+            }
+            pending_methods[f"{name}__get_settings_schema"] = (
                 lambda inst=instance: getattr(inst, 'settings_schema', [])
             )
 
             instance.on_load()
+            self._api_methods.update(pending_methods)
             self._instances[name] = instance
             self._manifests[name] = manifest
             print(f"[PluginManager]  加载成功: {name}")
         except Exception as e:
-            print(f"[PluginManager]  加载失败 {name}: {e}")
+            # 回滚：任何一步失败都不留下半初始化的实例 / 方法 / 清单
+            self._instances.pop(name, None)
+            self._manifests.pop(name, None)
+            prefix = f"{name}__"
+            for method_key in [k for k in self._api_methods if k.startswith(prefix)]:
+                self._api_methods.pop(method_key, None)
+            fail(str(e))
 
     # ---------- 集中设置面板 ----------
 
