@@ -20,10 +20,19 @@ const MPUtils = {
         };
     },
 
+    // 统一走内核 window.Utils.escapeHtml（会转义引号，属性场景同样安全）；
+    // 内核脚本尚未就绪时退化为等价实现。
     escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str == null ? '' : String(str);
-        return div.innerHTML;
+        if (window.Utils && typeof window.Utils.escapeHtml === 'function') {
+            return window.Utils.escapeHtml(str);
+        }
+        if (str == null) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     },
 
     itemIcon(item) {
@@ -64,14 +73,28 @@ const MPUtils = {
     // 生成封面 HTML；图片缺失 / 加载失败时自动降级为 emoji 占位。
     // 传 itemId（视频条目）时，加载失败会先尝试前端 canvas 抽帧（MediaFrameExtractor），
     // 抽帧失败才降级。
+    // url 与内联处理器参数都必须转义：封面 URL 可能来自远程数据（网易云歌单），
+    // 未转义时一个引号就能逃出属性注入标记。
     coverImg(url, fallbackIcon = '🎵', extra = '', itemId = '') {
         if (!url) {
-            return `<div class="cover-fallback">${fallbackIcon}</div>`;
+            return `<div class="cover-fallback">${MPUtils.escapeHtml(fallbackIcon)}</div>`;
         }
         const onError = itemId
-            ? `onerror="MPCoverFail(this,'${itemId}','${fallbackIcon}')"`
-            : `onerror="MPUtils.fallbackCover(this,'${fallbackIcon}')"`;
-        return `<img src="${url}" loading="lazy" alt="" ${extra} ${onError}>`;
+            ? `onerror="MPCoverFail(this,${MPUtils.jsString(itemId)},${MPUtils.jsString(fallbackIcon)})"`
+            : `onerror="MPUtils.fallbackCover(this,${MPUtils.jsString(fallbackIcon)})"`;
+        return `<img src="${MPUtils.escapeHtml(url)}" loading="lazy" alt="" ${extra} ${onError}>`;
+    },
+
+    // 内联事件处理器里的字符串参数：先 JS 字符串转义，再 HTML 属性转义。
+    jsString(value) {
+        if (window.Utils && typeof window.Utils.jsString === 'function') {
+            return window.Utils.jsString(value);
+        }
+        const safe = String(value == null ? '' : value)
+            .replace(/\\/g, '\\\\')
+            .replace(/'/g, "\\'")
+            .replace(/\r?\n/g, '\\n');
+        return MPUtils.escapeHtml(safe);
     },
 
     // 封面降级：标记 broken 并移除 img，由父容器 CSS 显示 emoji 占位

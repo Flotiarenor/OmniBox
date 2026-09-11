@@ -1,16 +1,29 @@
 // ===== 漫画中心工具函数 =====
 const MangaUtils = {
+    // 统一走内核 window.Utils.escapeHtml（会转义引号，data-folder="${...}" 这类
+    // 属性场景同样安全）；内核脚本尚未就绪时退化为等价实现。
     escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str == null ? '' : String(str);
-        return div.innerHTML;
+        if (window.Utils && typeof window.Utils.escapeHtml === 'function') {
+            return window.Utils.escapeHtml(str);
+        }
+        if (str == null) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     },
 
     coverImg(url, fallback = '📚') {
-        if (!url) return `<div class="ml-cover-fallback">${fallback}</div>`;
-        return `<img src="${url}" loading="lazy" alt=""
+        const icon = MangaUtils.escapeHtml(fallback);
+        if (!url) return `<div class="ml-cover-fallback">${icon}</div>`;
+        const iconJs = (window.Utils && window.Utils.jsString)
+            ? window.Utils.jsString(fallback)
+            : icon;
+        return `<img src="${MangaUtils.escapeHtml(url)}" loading="lazy" alt=""
             onerror="this.parentElement.classList.add('ml-cover-fallback-parent');
-                     this.outerHTML='<div class=\\'ml-cover-fallback\\'>${fallback}</div>';">`;
+                     this.outerHTML='<div class=\\'ml-cover-fallback\\'>${iconJs}</div>';">`;
     },
 };
 

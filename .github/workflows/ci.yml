@@ -39,6 +39,9 @@ jobs:
       - name: 单元测试（全量，含 pixiv-sync / Host 白名单 / ncm-cli 注入回归）
         run: python -m unittest discover -s tests
 
+      - name: 前端转义一致性（属性注入门禁）
+        run: node tools/check_frontend_escape.cjs
+
       - name: 前端类型检查与构建
         run: |
           npm --prefix shell/frontend ci

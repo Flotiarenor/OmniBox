@@ -247,7 +247,13 @@ class ImageCleaner {
     }
   }
 
+  // 统一走内核 window.Utils.escapeHtml（转义 &<>"' ，属性场景同样安全），
+  // 并让 null/undefined 与其它插件一样返回空串（以前 String(null) 会得到 "null"）。
   _escapeHtml(str) {
+    if (window.Utils && typeof window.Utils.escapeHtml === 'function') {
+      return window.Utils.escapeHtml(str);
+    }
+    if (str == null) return '';
     return String(str).replace(/[&<>"']/g, c => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     }[c]));

@@ -1251,13 +1251,22 @@ class ImageViewer {
         </div>`;
     }
 
+    // 统一走内核 window.Utils.escapeHtml（转义 &<>"' ，属性场景同样安全）；
+    // 以前用 textContent → innerHTML，不转义引号，属性场景要靠 _escapeAttr 补救。
     _escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str == null ? '' : String(str);
-        return div.innerHTML;
+        if (window.Utils && typeof window.Utils.escapeHtml === 'function') {
+            return window.Utils.escapeHtml(str);
+        }
+        if (str == null) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
     _escapeAttr(str) {
-        return this._escapeHtml(str).replace(/"/g, '&quot;');
+        return this._escapeHtml(str);
     }
 }

@@ -175,10 +175,28 @@ window.Utils = {
     return (bytes / 1048576).toFixed(1) + ' MB';
   },
 
+  // HTML 转义：**同时转义引号**，因此可以直接用在属性值里（"..." / '...'）。
+  // 只转 &<> 的写法（textContent → innerHTML）看着"够用"，一旦插进
+  // data-x="${...}"，值里的一个引号就能逃出属性并注入 —— 而调用方无从知道
+  // 哪个 helper 适合属性、哪个只适合文本（docs/code-review.md §4.3）。
   escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
+    if (str == null) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  },
+
+  // 内联事件处理器里的字符串参数（onerror="f('${...}')"）：
+  // 先做 JS 字符串转义，再做 HTML 属性转义，两步缺一不可。
+  jsString(value) {
+    const safe = String(value == null ? '' : value)
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "\\'")
+      .replace(/\r?\n/g, '\\n');
+    return Utils.escapeHtml(safe);
   }
 };
 
@@ -705,13 +723,13 @@ function createCardGrid(container, options = {}) {
     card.dataset.folderName = item.folder_name || '';
     card.innerHTML = `
       <div class="manga-cover">
-        <img src="${data.image}" loading="lazy" alt="${data.title}">
-        ${data.badge ? `<span class="manga-badge">${data.badge}</span>` : ''}
+        <img src="${Utils.escapeHtml(data.image)}" loading="lazy" alt="${Utils.escapeHtml(data.title)}">
+        ${data.badge ? `<span class="manga-badge">${Utils.escapeHtml(data.badge)}</span>` : ''}
         ${data.extraHtml || ''}
       </div>
       <div class="manga-info">
-        <p class="manga-title">${data.title}</p>
-        ${data.subtitle ? `<p class="manga-author">${data.subtitle}</p>` : ''}
+        <p class="manga-title">${Utils.escapeHtml(data.title)}</p>
+        ${data.subtitle ? `<p class="manga-author">${Utils.escapeHtml(data.subtitle)}</p>` : ''}
       </div>
     `;
     card.addEventListener('click', (e) => {
