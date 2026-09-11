@@ -1013,6 +1013,11 @@ class ImageViewerPlugin(PluginBase):
             return {'success': True}
         return {'success': False, 'error': '没有正在运行的重建任务'}
 
+    def on_unload(self) -> None:
+        """进程退出收尾：取消正在跑的缩略图重建任务（已生成的缩略图保留）。"""
+        if self._rebuild and self._rebuild.state == 'running':
+            self._rebuild.cancel()
+
     def get_settings(self, rel_path: str = '') -> Dict:
         """获取文件夹生效设置（含全局回退与逐级继承）。
 

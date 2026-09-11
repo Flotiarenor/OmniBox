@@ -74,6 +74,27 @@ class PluginManager:
 
         print(f"[PluginManager] 加载完成，顺序: {' → '.join(load_order)}")
 
+    def unload_all(self) -> None:
+        """卸载全部插件（进程退出前调用），按加载的逆序回调 on_unload。
+
+        on_unload 是插件唯一的收尾钩子（关 SQLite/WAL、停后台线程、落盘最后一次
+        状态）。它写在开发指南里却长期没有任何调用点，于是这些资源一直没人收尾。
+        单个插件抛错不影响其余插件，也不阻断退出；重复调用是安全的（幂等）。
+        """
+        for name in reversed(list(self._instances.keys())):
+            instance = self._instances.pop(name, None)
+            if instance is None:
+                continue
+            self._manifests.pop(name, None)
+            prefix = f"{name}__"
+            for method_key in [k for k in self._api_methods if k.startswith(prefix)]:
+                self._api_methods.pop(method_key, None)
+            try:
+                instance.on_unload()
+                print(f"[PluginManager] 已卸载: {name}")
+            except Exception as e:
+                print(f"[PluginManager] 卸载失败 {name}: {e}")
+
     # ---------- 设置迁移 ----------
 
     def _migrate_settings(self, plugin_name: str) -> None:

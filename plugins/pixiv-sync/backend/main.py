@@ -239,6 +239,24 @@ class PixivSyncPlugin(PluginBase):
             self._deferred_client_reset = False
             self._pixiv_client = None
 
+    def on_unload(self) -> None:
+        """进程退出收尾：停同步线程、落盘最后一次任务状态、关 SQLite。
+
+        不关连接会留下 -wal/-shm 边车文件并一直占着 works.db —— Windows 下
+        文件被占用时连复制/移动数据目录都会失败。落盘的任务若仍是 running，
+        下次 load_task 会归一成 paused 续跑。
+        """
+        self._cancel_flag = True
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2)  # 协作式取消：给 worker 一个收尾窗口，不强等
+        with self._task_lock:
+            if self._task:
+                tasks.persist_task(self._tasks_file(), self._task)
+            if self._db_wrapper is not None:
+                self._db_wrapper.close()
+                self._db_wrapper = None
+
 
     def _authenticate(self) -> None:
         """用 refresh_token 换取 access_token，并自动回写 Pixiv 可能轮换的 refresh_token。"""

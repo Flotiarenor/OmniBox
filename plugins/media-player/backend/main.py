@@ -362,6 +362,18 @@ class MediaPlayerPlugin(PluginBase):
             return {'success': True}
         return {'success': False, 'error': '没有正在运行的扫描'}
 
+    def on_unload(self) -> None:
+        """进程退出收尾：停掉正在跑的扫描并落盘检查点。
+
+        running/queued 的任务会被落盘成 paused，下次启动由 _restore_scan_task
+        续扫；不这么做的话扫描线程会在进程退出时被打断，最后一个根目录的
+        进度虽然已有检查点，但任务状态会停在 running。
+        """
+        task = self._scan_task
+        if task is not None and task.state in ('running', 'queued'):
+            task.cancel()
+            task.persist()
+
     def _scan_worker(self, task: BackgroundTask, force: bool):
         """扫描 worker：逐根目录推进，每个根目录完成后落盘检查点。
 

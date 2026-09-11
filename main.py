@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 '''
 
-import os, sys, time, yaml, webview, threading, shutil
+import atexit, os, sys, time, yaml, webview, threading, shutil
 from pathlib import Path
 from shell.backend.auth import get_or_create_token, get_token_file
 from shell.backend.file_server import create_app
@@ -103,32 +103,20 @@ def wait_for_server(host, port, timeout=5):
         time.sleep(0.1)
     return False
 
-def main():
-    config = load_config()
-    os.makedirs(config['directories']['data_root'], exist_ok=True)
+def _unload_plugins(manager):
+    """进程退出前卸载插件：回调每个插件的 on_unload。
 
-    # 状态调试模式（--status-debug）：壳内 /status 视图显示调试面板
-    # （健康检查 / API 鉴权 / 标记页演示），正常使用不受影响。
-    config.setdefault('debug', {})
-    config['debug']['status_debug'] = '--status-debug' in sys.argv
+    这是插件唯一的收尾钩子（关 SQLite/WAL、停后台线程、落盘最后一次状态），
+    以前全仓没有任何调用点。幂等，可安全重复调用。
+    """
+    try:
+        manager.unload_all()
+    except Exception as e:
+        print(f"[OmniBox] 卸载插件时出错: {e}")
 
-    # 数据路由（/api /file /thumbs）的访问令牌：首次启动生成并持久化。
-    # 浏览器页面会自动种下 Cookie；外部脚本可用 X-Omnibox-Token 头携带。
-    get_or_create_token(get_config_dir())
-    print(f"[OmniBox] API 访问令牌: {get_token_file(get_config_dir())}"
-          f"（/api /file /thumbs 路由需携带，启动时若缺失将自动生成）")
 
-    plugin_search_dirs = get_plugin_search_dirs()
-    for plugin_dir in plugin_search_dirs:
-        try:
-            plugin_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
-    print(f"[OmniBox] 用户数据目录: {get_user_data_dir()}")
-    print(f"[OmniBox] 插件搜索目录: {', '.join(str(p) for p in plugin_search_dirs)}")
-    manager = PluginManager([str(p) for p in plugin_search_dirs], config=config)
-    manager.load_all()
-
+def _run_app(config, manager):
+    """启动应用（Web-only 或桌面窗口），阻塞到用户退出。"""
     # Web-only 模式：不启动 PyWebView 桌面窗口，只运行 Flask 服务。
     # 适用于通过 nginx/SSH 隧道在浏览器中访问 OmniBox UI。
     if '--web-only' in sys.argv:
@@ -166,7 +154,42 @@ def main():
         print("[OmniBox] Flask 启动超时"); return
 
     webview.create_window('OmniBox', f'http://{host}:{port}', js_api=api, width=1400, height=900, text_select=True)
-    webview.start(debug=not getattr(sys, 'frozen', False), http_server=True) 
+    webview.start(debug=not getattr(sys, 'frozen', False), http_server=True)
+
+
+def main():
+    config = load_config()
+    os.makedirs(config['directories']['data_root'], exist_ok=True)
+
+    # 状态调试模式（--status-debug）：壳内 /status 视图显示调试面板
+    # （健康检查 / API 鉴权 / 标记页演示），正常使用不受影响。
+    config.setdefault('debug', {})
+    config['debug']['status_debug'] = '--status-debug' in sys.argv
+
+    # 数据路由（/api /file /thumbs）的访问令牌：首次启动生成并持久化。
+    # 浏览器页面会自动种下 Cookie；外部脚本可用 X-Omnibox-Token 头携带。
+    get_or_create_token(get_config_dir())
+    print(f"[OmniBox] API 访问令牌: {get_token_file(get_config_dir())}"
+          f"（/api /file /thumbs 路由需携带，启动时若缺失将自动生成）")
+
+    plugin_search_dirs = get_plugin_search_dirs()
+    for plugin_dir in plugin_search_dirs:
+        try:
+            plugin_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+    print(f"[OmniBox] 用户数据目录: {get_user_data_dir()}")
+    print(f"[OmniBox] 插件搜索目录: {', '.join(str(p) for p in plugin_search_dirs)}")
+    manager = PluginManager([str(p) for p in plugin_search_dirs], config=config)
+    manager.load_all()
+    # 退出时必须回调 on_unload（关 SQLite/WAL、停插件线程、落盘最后一次状态）：
+    # atexit 兜底 + finally 覆盖所有退出路径（正常关窗、Ctrl+C、异常）。
+    atexit.register(_unload_plugins, manager)
+    try:
+        _run_app(config, manager)
+    finally:
+        _unload_plugins(manager)
+
 
 if __name__ == '__main__':
     main()
