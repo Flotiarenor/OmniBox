@@ -2,13 +2,15 @@ venv/
 shell/backend/__pycache__/
 shell/frontend/dist
 shell/frontend/node_modules/
-shell/frontend/package-lock.json
+# package-lock.json 必须提交：npm ci 依赖它才能复现安装结果
 
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 opencode.json
+# DSH 编辑备份（工具产物）
+.dsh/
 
 # 构建机 pip freeze 快照（审计用，不是依赖声明）
 requirements.lock.txt

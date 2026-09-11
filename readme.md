@@ -97,9 +97,14 @@ cd OmniBox
 如需单独准备 Python 环境（或使用交互式 pip 管理台）：
 
 ```powershell
-.\setup-venv.ps1 -Install     # 非交互：确保 venv 并安装 requirements.txt
+.\setup-venv.ps1 -Install     # 非交互：确保 venv 并安装 requirements.txt（运行时依赖）
+.\setup-venv.ps1 -Install -Dev # 再加装 requirements-dev.txt（ruff / pyright / pyinstaller）
 .\setup-venv.ps1              # 交互式 pip 管理台
 ```
+
+> 依赖分为两层：`requirements.txt` 是手写的**运行时**依赖声明，`requirements-dev.txt`
+> 是开发/构建工具。发布脚本会把当前打包机的 `pip freeze` 快照写到
+> `requirements.lock.txt`（仅供审计，不会覆盖依赖声明）。
 
 ### Linux / Web-only 运行
 
@@ -110,7 +115,7 @@ cd OmniBox
 bash setup-venv.sh           # 统一环境入口：创建 venv + 安装依赖
 
 cd shell/frontend
-npm install
+npm ci                       # 按 package-lock.json 安装（可复现）
 npm run build
 cd ../..
 

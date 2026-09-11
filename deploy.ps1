@@ -35,10 +35,10 @@ function Build-VueFrontend {
 
     Push-Location $frontendDir
     try {
-        Write-Host "安装前端依赖 (npm install)..." -ForegroundColor $ColorInfo
-        npm install
+        Write-Host "安装前端依赖 (npm ci)..." -ForegroundColor $ColorInfo
+        npm ci
         if ($LASTEXITCODE -ne 0) {
-            throw "npm install 失败"
+            throw "npm ci 失败"
         }
 
         Write-Host "构建前端项目 (npm run build)..." -ForegroundColor $ColorInfo

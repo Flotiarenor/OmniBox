@@ -80,7 +80,7 @@ else
     fi
     (
         cd "$PROJECT_ROOT/shell/frontend"
-        npm install --silent
+        npm ci --silent
         npm run build
     )
     if [ ! -f "$PROJECT_ROOT/shell/frontend/dist/index.html" ]; then

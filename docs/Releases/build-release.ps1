@@ -55,9 +55,9 @@ if (-not $SkipFrontend) {
 
     Push-Location $frontendDir
     try {
-        Write-Host "  -> npm install" -ForegroundColor $ColorWarning
-        npm install --silent
-        if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+        Write-Host "  -> npm ci" -ForegroundColor $ColorWarning
+        npm ci --silent
+        if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
 
         Write-Host "  -> npm run build" -ForegroundColor $ColorWarning
         npm run build
