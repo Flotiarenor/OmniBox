@@ -9,6 +9,9 @@ import sqlite3
 from pathlib import Path
 from threading import  RLock
 from typing import Any, Dict, List, Optional, Tuple
+import logging
+
+log = logging.getLogger(__name__)
 
 def _item_to_work_value(item: Dict[str, Any]) -> tuple:
     """item dict → works 行（除 id/kind 外的剩余列）。"""
@@ -144,7 +147,7 @@ class WorksDB:
                 conn.commit()
             except Exception as e:
                 conn.rollback()
-                print(f"[pixiv-sync] 保存清单失败: {e}")
+                log.error(f"[pixiv-sync] 保存清单失败: {e}")
                 raise
 
     def save_pending_preserve(self, kind: str, items: List[Dict[str, Any]], scan: Optional[dict] = None):
@@ -177,7 +180,7 @@ class WorksDB:
                 conn.commit()
             except Exception as e:
                 conn.rollback()
-                print(f"[pixiv-sync] 增量保存画师 {uid} 清单失败: {e}")
+                log.error(f"[pixiv-sync] 增量保存画师 {uid} 清单失败: {e}")
                 raise
 
     def load_pending(self, kind: str) -> Tuple[List[Dict[str, Any]], Optional[dict]]:
@@ -209,7 +212,7 @@ class WorksDB:
                         scan = None
             return items, scan
         except Exception as e:
-            print(f"[pixiv-sync] 读取 {kind} 清单失败: {e}")
+            log.error(f"[pixiv-sync] 读取 {kind} 清单失败: {e}")
             return [], None
 
     def counts(self, kind: str, done: Optional[int] = None) -> int:
@@ -237,7 +240,7 @@ class WorksDB:
                 conn.commit()
             except Exception as e:
                 conn.rollback()
-                print(f"[pixiv-sync] 更新清单 done 失败: {e}")
+                log.error(f"[pixiv-sync] 更新清单 done 失败: {e}")
 
     def reset_done_ids(self, ids) -> int:
         """把指定作品在清单中的 done 标记重置为 0（用于「刷新记录/校验内容」）。
@@ -259,5 +262,5 @@ class WorksDB:
                 return cur.rowcount
             except Exception as e:
                 conn.rollback()
-                print(f"[pixiv-sync] 重置清单 done 失败: {e}")
+                log.error(f"[pixiv-sync] 重置清单 done 失败: {e}")
                 return 0

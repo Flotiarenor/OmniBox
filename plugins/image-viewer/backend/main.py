@@ -9,6 +9,9 @@ from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_utils import load_sibling
 from shell.backend.tasks import BackgroundTask
 from shell.backend.thumb_cache import ThumbCache
+import logging
+
+log = logging.getLogger(__name__)
 
 
 
@@ -100,7 +103,7 @@ class ImageViewerPlugin(PluginBase):
                 json.dump(self._meta_cache, f, indent=2, ensure_ascii=False)
             os.replace(tmp, self.meta_file)
         except Exception as e:
-            print(f"[ImageViewer] 保存元数据失败: {e}")
+            log.error(f"[ImageViewer] 保存元数据失败: {e}")
 
     def _mark_meta_dirty(self):
         self._meta_dirty = True
@@ -600,7 +603,7 @@ class ImageViewerPlugin(PluginBase):
             with open(self.album_cache_file, 'w', encoding='utf-8') as f:
                 json.dump(self._album_cache, f, ensure_ascii=False)
         except Exception as e:
-            print(f'[ImageViewer] 保存相册索引失败: {e}')
+            log.error(f'[ImageViewer] 保存相册索引失败: {e}')
     def _load_album_config(self) -> dict:
         defaults = {'collapsed': [], 'promoted': []}
         if self.album_config_file.exists():
@@ -619,7 +622,7 @@ class ImageViewerPlugin(PluginBase):
             with open(self.album_config_file, 'w', encoding='utf-8') as f:
                 json.dump(self._album_config, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f'[ImageViewer] 保存相册配置失败: {e}')
+            log.error(f'[ImageViewer] 保存相册配置失败: {e}')
 
     def _list_album_dirs(self) -> dict:
         """只遍历目录树本身（不读文件），返回 {rel_path: dir_mtime}。"""

@@ -13,6 +13,9 @@ from pixiv_mini import PixivError
 from . import tasks as tasks_mod
 from .download import _work_id
 from .limiter import RateLimitError
+import logging
+
+log = logging.getLogger(__name__)
 
 def _safe_int(value: Any) -> Optional[int]:
     """安全转 int：None 或非法值返回 None，合法值返回 int。"""
@@ -21,7 +24,7 @@ def _safe_int(value: Any) -> Optional[int]:
     try:
         return int(value)
     except (TypeError, ValueError):
-        print(f"[pixiv_sync-scan]画师id/作品id/tag 缺失/非法: {value}")
+        log.info(f"[pixiv_sync-scan]画师id/作品id/tag 缺失/非法: {value}")
         return None
     
 def fetch_following(p, task: Dict[str, Any] | None = None) -> List[tuple]:
@@ -235,7 +238,7 @@ def _scan_artist_window(p, task, ids, uids, items_by_uid, done_uids,
                     p._cancel_flag = True
                     raise
                 except Exception as e:
-                    print(f"[pixiv-sync] 拉取画师 {uid} 列表失败: {e}")
+                    log.error(f"[pixiv-sync] 拉取画师 {uid} 列表失败: {e}")
                     continue
 
                 if full_scan:

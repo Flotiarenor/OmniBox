@@ -36,6 +36,9 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+import logging
+
+log = logging.getLogger(__name__)
 
 _ERROR_CAP = 200  # 错误信息最多保留条数
 
@@ -201,7 +204,7 @@ class BackgroundTask:
                 raise
             return True
         except Exception as e:
-            print(f'[BackgroundTask] 持久化失败 {self.persist_path}: {e}')
+            log.error(f'[BackgroundTask] 持久化失败 {self.persist_path}: {e}')
             return False
 
     @classmethod

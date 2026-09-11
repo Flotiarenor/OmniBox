@@ -11,6 +11,9 @@ import re
 import tempfile
 from pathlib import Path
 from typing import Any, List, Set, Tuple
+import logging
+
+log = logging.getLogger(__name__)
 
 # 图片文件名 → 作品 id：123456.jpg / 123456_p0.jpg / 123456p0.png ...
 ID_NAME_RE = re.compile(r"^(\d+)(?:_?p\d+)?\.(?:jpe?g|png|gif|webp)$", re.IGNORECASE)
@@ -68,7 +71,7 @@ def save_ids(path: Path, ids: Set[int]) -> bool:
         _atomic_write_json(path, {"ids": sorted(ids)})
         return True
     except Exception as e:
-        print(f"[pixiv-sync] 保存 downloaded_ids.json 失败: {e}")
+        log.error(f"[pixiv-sync] 保存 downloaded_ids.json 失败: {e}")
         return False
 
 
@@ -84,7 +87,7 @@ def save_failed_ids(path: Path, failed: Set[int]) -> bool:
         _atomic_write_json(path, {"ids": sorted(failed)})
         return True
     except Exception as e:
-        print(f"[pixiv-sync] 保存 failed_ids.json 失败: {e}")
+        log.error(f"[pixiv-sync] 保存 failed_ids.json 失败: {e}")
         return False
 
 

@@ -30,6 +30,9 @@ from shell.backend.auth import (
 )
 from shell.backend.paths import get_config_dir
 from shell.backend.plugin_manager import PluginManager
+import logging
+
+log = logging.getLogger(__name__)
 
 # Windows 上 Python 的 mimetypes 可能从注册表把 .js 识别成 text/plain，
 # 导致 ES module 被浏览器拒绝加载。这里强制修正常见前端资源类型。
@@ -265,6 +268,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         api_methods.update({
             'system_get_plugins': plugin_manager.get_frontend_manifests,
             'system_get_plugin_extensions': plugin_manager.get_plugin_extensions,
+            'system_get_plugin_status': plugin_manager.get_plugin_status,
             'system_settings_list': plugin_manager.get_settings_panels,
             'system_settings_save': plugin_manager.save_settings_panel,
             'system_get_config': lambda: config,
@@ -298,7 +302,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         """媒体/文件访问：支持相对路径和绝对路径，并做越权目录校验。"""
         instance = plugin_manager.get_plugin_instance(plugin_name) if plugin_name else None
         if plugin_name and instance is None:
-            print(f"[FileServer] 找不到插件 {plugin_name} 的实例")
+            log.info(f"[FileServer] 找不到插件 {plugin_name} 的实例")
             abort(404)
         # 确定允许访问的根目录（支持插件跨多个媒体目录）
         if plugin_name and plugin_name in plugin_manager._instances:
@@ -365,7 +369,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         plugin_name = request.args.get('plugin', '')
         instance = plugin_manager.get_plugin_instance(plugin_name) if plugin_name else None
         if plugin_name and instance is None:
-            print(f"[File_Server-Thumbs] 找不到插件 {plugin_name} 的实例")
+            log.info(f"[File_Server-Thumbs] 找不到插件 {plugin_name} 的实例")
             abort(404)
 
         # 新路径：插件可直接返回 SQLite 缩略图字节，避免散文件随机 I/O。

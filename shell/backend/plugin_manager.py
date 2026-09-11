@@ -22,6 +22,9 @@ from collections import deque
 from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Dict, List
+import logging
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from shell.backend.plugin_base import PluginBase
@@ -57,11 +60,15 @@ class PluginManager:
         self._api_methods: Dict[str, Callable] = {}
         self._manifests: Dict[str, dict] = {}
         self._plugin_dirs: Dict[str, Path] = {}
+        # 加载失败的插件：{名字: 原因}。以前只 print 一行，界面拿到的
+        # get_frontend_manifests 只含成功的插件 —— 用户只会觉得"插件没了"，
+        # 现在由 /status 展示（docs/code-review.md §4.2）。
+        self._load_failures: Dict[str, str] = {}
         self._config_dir = _resolve_config_dir()
         self._settings_store = SettingsStore(str(self._config_dir))
         self._old_settings_dir = Path(config['directories']['data_root']).resolve() / '.settings'
-        print(f"[PluginManager] 插件搜索目录: {', '.join(str(p) for p in self.plugins_dirs)}")
-        print(f"[PluginManager] 插件设置目录: {self._config_dir}")
+        log.info(f"[PluginManager] 插件搜索目录: {', '.join(str(p) for p in self.plugins_dirs)}")
+        log.info(f"[PluginManager] 插件设置目录: {self._config_dir}")
 
     def load_all(self) -> None:
         manifests = self._discover()
@@ -72,7 +79,7 @@ class PluginManager:
             self._migrate_settings(name)
             self._load_plugin(name, manifest)
 
-        print(f"[PluginManager] 加载完成，顺序: {' → '.join(load_order)}")
+        log.info(f"[PluginManager] 加载完成，顺序: {' → '.join(load_order)}")
 
     def unload_all(self) -> None:
         """卸载全部插件（进程退出前调用），按加载的逆序回调 on_unload。
@@ -91,9 +98,9 @@ class PluginManager:
                 self._api_methods.pop(method_key, None)
             try:
                 instance.on_unload()
-                print(f"[PluginManager] 已卸载: {name}")
+                log.info(f"[PluginManager] 已卸载: {name}")
             except Exception as e:
-                print(f"[PluginManager] 卸载失败 {name}: {e}")
+                log.error(f"[PluginManager] 卸载失败 {name}: {e}")
 
     # ---------- 设置迁移 ----------
 
@@ -121,7 +128,7 @@ class PluginManager:
                 with open(old_file, 'r', encoding='utf-8') as f:
                     old_data = json.load(f)
                 if not isinstance(old_data, dict):
-                    print(f"[PluginManager] 忽略格式错误的旧设置: {old_file}")
+                    log.error(f"[PluginManager] 忽略格式错误的旧设置: {old_file}")
                     continue
                 # 旧值补缺，SettingsStore 中已有值优先。
                 merged = {**old_data, **current}
@@ -129,9 +136,9 @@ class PluginManager:
                     self._settings_store.set(plugin_name, merged)
                     current = merged
                 old_file.unlink()
-                print(f"[PluginManager] 迁移设置: {old_file} → {new_file}")
+                log.info(f"[PluginManager] 迁移设置: {old_file} → {new_file}")
             except Exception as e:
-                print(f"[PluginManager] 迁移设置失败 {plugin_name}: {e}")
+                log.error(f"[PluginManager] 迁移设置失败 {plugin_name}: {e}")
 
     # ---------- API ----------
 
@@ -164,6 +171,21 @@ class PluginManager:
             if not m.get('hidden')
         ]
 
+    def get_plugin_status(self) -> dict:
+        """插件加载状态：供 /status 回答"某个插件为什么不见了"。
+
+        以前加载失败只有一行日志，而界面拿到的 get_frontend_manifests 只含
+        加载成功的插件 —— 用户看到的现象就是"插件消失了"，没有任何线索
+        （docs/code-review.md §4.2）。
+        """
+        return {
+            'loaded': sorted(self._instances.keys()),
+            'failures': [
+                {'name': name, 'reason': reason}
+                for name, reason in sorted(self._load_failures.items())
+            ],
+        }
+
     def get_plugin_extensions(self, host: str|None = None, placement: str|None = None) -> List[dict]:
         """聚合所有插件注册的扩展入口，可按宿主和位置过滤。
 
@@ -177,7 +199,7 @@ class PluginManager:
             try:
                 items = getter() or []
             except Exception as e:
-                print(f"[PluginManager] 读取插件 {name} 扩展失败: {e}")
+                log.error(f"[PluginManager] 读取插件 {name} 扩展失败: {e}")
                 continue
             if not isinstance(items, list):
                 continue
@@ -200,13 +222,13 @@ class PluginManager:
 
         for root in self.plugins_dirs:
             if not root.exists():
-                print(f"[PluginManager] 跳过不存在的插件目录: {root}")
+                log.warning(f"[PluginManager] 跳过不存在的插件目录: {root}")
                 continue
 
             try:
                 plugin_dirs = sorted([p for p in root.iterdir() if p.is_dir()], key=lambda p: p.name)
             except OSError as e:
-                print(f"[PluginManager] 读取插件目录失败 {root}: {e}")
+                log.error(f"[PluginManager] 读取插件目录失败 {root}: {e}")
                 continue
 
             for plugin_dir in plugin_dirs:
@@ -216,7 +238,7 @@ class PluginManager:
 
                 mf_path = plugin_dir / 'manifest.json'
                 if not mf_path.exists():
-                    print(f"[PluginManager] 跳过 {folder_name}: 缺少 manifest.json")
+                    log.warning(f"[PluginManager] 跳过 {folder_name}: 缺少 manifest.json")
                     continue
 
                 try:
@@ -225,19 +247,19 @@ class PluginManager:
                 except Exception as e:
                     # 任何损坏的 manifest（非法 JSON、非 UTF-8 编码、读取失败等）
                     # 只影响当前插件，不能中断整批插件加载。
-                    print(f"[PluginManager] 跳过 {folder_name}: manifest 读取失败: {e}")
+                    log.error(f"[PluginManager] 跳过 {folder_name}: manifest 读取失败: {e}")
                     continue
 
                 if not isinstance(data, dict):
-                    print(f"[PluginManager] 跳过 {folder_name}: manifest 必须是 JSON 对象")
+                    log.warning(f"[PluginManager] 跳过 {folder_name}: manifest 必须是 JSON 对象")
                     continue
 
                 manifest_name = data.get('name')
                 if isinstance(manifest_name, str) and manifest_name.strip():
                     if manifest_name != folder_name:
-                        print(f"[PluginManager] 警告 {folder_name}: manifest.name={manifest_name!r} 与文件夹名不一致，已使用文件夹名")
+                        log.warning(f"[PluginManager] 警告 {folder_name}: manifest.name={manifest_name!r} 与文件夹名不一致，已使用文件夹名")
                 else:
-                    print(f"[PluginManager] 提示 {folder_name}: 未声明 manifest.name，已使用文件夹名")
+                    log.info(f"[PluginManager] 提示 {folder_name}: 未声明 manifest.name，已使用文件夹名")
                 name = folder_name
                 data['name'] = name
 
@@ -249,11 +271,11 @@ class PluginManager:
                 if not isinstance(route, str) or not route.strip() or not route.startswith('/'):
                     route = f'/{name}'
                     frontend['route'] = route
-                    print(f"[PluginManager] 提示 {name}: 未声明 frontend.route，已默认 {route}")
+                    log.info(f"[PluginManager] 提示 {name}: 未声明 frontend.route，已默认 {route}")
                 else:
                     route = route.strip()
                 if route in ('/', '/settings'):
-                    print(f"[PluginManager] 跳过 {folder_name}: frontend.route 不能使用保留路由 {route}")
+                    log.warning(f"[PluginManager] 跳过 {folder_name}: frontend.route 不能使用保留路由 {route}")
                     continue
 
                 backend = data.get('backend')
@@ -262,22 +284,22 @@ class PluginManager:
                     data['backend'] = backend
                 if not isinstance(backend.get('entry'), str) or not backend['entry'].strip():
                     backend['entry'] = 'backend/main.py'
-                    print(f"[PluginManager] 提示 {name}: 未声明 backend.entry，已默认 backend/main.py")
+                    log.info(f"[PluginManager] 提示 {name}: 未声明 backend.entry，已默认 backend/main.py")
                 if not isinstance(backend.get('class'), str) or not backend['class'].strip():
                     backend['class'] = 'Plugin'
-                    print(f"[PluginManager] 提示 {name}: 未声明 backend.class，已默认 Plugin")
+                    log.info(f"[PluginManager] 提示 {name}: 未声明 backend.class，已默认 Plugin")
 
                 dependencies = data.get('dependencies', [])
                 if (not isinstance(dependencies, list)
                         or not all(isinstance(dep, str) and dep.strip() for dep in dependencies)):
-                    print(f"[PluginManager] 跳过 {folder_name}: dependencies 必须是字符串数组")
+                    log.warning(f"[PluginManager] 跳过 {folder_name}: dependencies 必须是字符串数组")
                     continue
 
                 if name in manifests:
-                    print(f"[PluginManager] 跳过重复插件 {name} (来源: {root})")
+                    log.warning(f"[PluginManager] 跳过重复插件 {name} (来源: {root})")
                     continue
                 if route in routes:
-                    print(
+                    log.info(
                         f"[PluginManager] 跳过 {folder_name}: "
                         f"frontend.route {route} 已被插件 {routes[route]} 占用"
                     )
@@ -300,7 +322,7 @@ class PluginManager:
             resolved = []
             for dep in deps:
                 if dep == name:
-                    print(f"[PluginManager] 插件 {name} 依赖自身，已忽略该依赖")
+                    log.warning(f"[PluginManager] 插件 {name} 依赖自身，已忽略该依赖")
                     continue
                 if dep in manifests:
                     resolved.append(dep)
@@ -325,7 +347,7 @@ class PluginManager:
 
         if len(order) != len(manifests):
             cyclic = sorted(set(manifests) - set(order))
-            print(f"[PluginManager] 检测到循环依赖，无法完全排序: {', '.join(cyclic)}")
+            log.error(f"[PluginManager] 检测到循环依赖，无法完全排序: {', '.join(cyclic)}")
             order.extend(cyclic)
 
         missing = {
@@ -334,7 +356,7 @@ class PluginManager:
         }
         missing = {name: deps for name, deps in missing.items() if deps}
         for name, unknown in sorted(missing.items()):
-            print(f"[PluginManager] 插件 {name} 声明了不存在的依赖: {', '.join(unknown)}")
+            log.info(f"[PluginManager] 插件 {name} 声明了不存在的依赖: {', '.join(unknown)}")
 
         return order
 
@@ -382,9 +404,10 @@ class PluginManager:
             inserted_paths.clear()
 
         def fail(reason: str):
-            """加载失败的统一出口：收回 sys.path 且不留下任何状态。"""
+            """加载失败的统一出口：收回 sys.path、登记失败原因且不留下任何状态。"""
             rollback_lib_paths()
-            print(f"[PluginManager]  加载失败 {name}: {reason}")
+            self._load_failures[name] = reason
+            log.error(f"[PluginManager]  加载失败 {name}: {reason}")
 
         for lib_dir in self._plugin_lib_dirs(plugin_dir, manifest):
             lib_path = str(lib_dir)
@@ -405,7 +428,7 @@ class PluginManager:
             return
 
         unique_module_name = f"{name}.backend.main"
-        print(f"[PluginManager] 尝试加载插件: {name}.backend.main")
+        log.info(f"[PluginManager] 尝试加载插件: {name}.backend.main")
 
         try:
             spec = importlib.util.spec_from_file_location(unique_module_name, str(module_path))
@@ -445,7 +468,8 @@ class PluginManager:
             self._api_methods.update(pending_methods)
             self._instances[name] = instance
             self._manifests[name] = manifest
-            print(f"[PluginManager]  加载成功: {name}")
+            self._load_failures.pop(name, None)
+            log.info(f"[PluginManager]  加载成功: {name}")
         except Exception as e:
             # 回滚：任何一步失败都不留下半初始化的实例 / 方法 / 清单
             self._instances.pop(name, None)
@@ -478,7 +502,7 @@ class PluginManager:
                 values = inst.get_settings()
             except Exception as e:
                 values = {}
-                print(f"[PluginManager] 读取设置失败 {name}: {e}")
+                log.error(f"[PluginManager] 读取设置失败 {name}: {e}")
             manifest = self._manifests.get(name, {})
             panels.append({
                 'name': name,

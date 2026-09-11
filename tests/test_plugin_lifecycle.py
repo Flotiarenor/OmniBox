@@ -78,7 +78,7 @@ class Plugin(PluginBase):
 
 def _write_plugin(root: Path, name: str, source: str, deps=None) -> Path:
     plugin_dir = root / name
-    (plugin_dir / 'backend').mkdir(parents=True)
+    (plugin_dir / 'backend').mkdir(parents=True, exist_ok=True)
     manifest = {
         'name': name,
         'version': '1.0.0',
@@ -196,6 +196,36 @@ class PluginUnloadTests(unittest.TestCase):
             manager.load_all()
 
             self.assertNotIn(lib_path, sys.path, '加载失败后必须收回插件的私有库路径')
+
+    def test_load_failures_are_reported_for_status_page(self):
+        """加载失败必须能被 /status 看到（以前只有一行日志，界面只知道插件没了）。"""
+        with tempfile.TemporaryDirectory() as td:
+            root, manager = self._make_manager(
+                td,
+                ('alpha', _OK_PLUGIN, None),
+                ('ghost', _GHOST_PLUGIN, None),
+            )
+            manager.load_all()
+
+            status = manager.get_plugin_status()
+            self.assertEqual(status['loaded'], ['alpha'])
+            self.assertEqual([f['name'] for f in status['failures']], ['ghost'])
+            self.assertIn('on_load 故意抛错', status['failures'][0]['reason'])
+
+    def test_successful_load_clears_previous_failure(self):
+        """先失败后成功的插件不应继续挂在失败清单里（热修复后界面要恢复正常）。"""
+        with tempfile.TemporaryDirectory() as td:
+            root, manager = self._make_manager(td, ('alpha', _OK_PLUGIN, None))
+            (root / 'alpha' / 'backend' / 'main.py').unlink()
+            manager.load_all()
+            self.assertEqual([f['name'] for f in manager.get_plugin_status()['failures']], ['alpha'])
+
+            _write_plugin(root, 'alpha', _OK_PLUGIN)
+            manager.load_all()
+
+            status = manager.get_plugin_status()
+            self.assertEqual(status['failures'], [])
+            self.assertEqual(status['loaded'], ['alpha'])
 
     def test_successful_load_keeps_plugin_lib_paths(self):
         """加载成功必须保留 backend/libs（pixiv-sync 的 pixiv_mini 依赖这条）。"""

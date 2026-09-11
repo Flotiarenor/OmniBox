@@ -23,6 +23,7 @@ docs/code-review.md
 data/
 .config/plugins/
 .config/auth_token.txt
+.config/logs/
 .build/
 
 # 脚本

@@ -6,6 +6,9 @@ from typing import Dict, List, Optional, Tuple, Any
 
 from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_utils import load_sibling
+import logging
+
+log = logging.getLogger(__name__)
 
 
 
@@ -216,7 +219,7 @@ class NovelReaderPlugin(PluginBase):
                 'encoding': novel_progress.get('encoding', 'auto')
             }
         except Exception as e:
-            print(f"扫描小说失败 {entry.name}: {e}")
+            log.error(f"扫描小说失败 {entry.name}: {e}")
             return None
 
     def get_chapters(self, novel_id: str, encoding: str = 'auto') -> Dict[str, Any]:

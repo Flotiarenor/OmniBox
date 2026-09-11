@@ -10,7 +10,7 @@ from datetime import datetime
 from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_utils import load_sibling
 
-
+log = logging.getLogger(__name__)
 
 _scanner = load_sibling(__file__, 'scanner', 'manga_library')
 find_cover = _scanner.find_cover
@@ -79,7 +79,7 @@ class MangaLibraryPlugin(PluginBase):
             count = self.setting('recent_count', 10)  
             try:
                 if count == None:
-                    print("[MangaLibrary] recent_count is None")
+                    log.info("[MangaLibrary] recent_count is None")
                     raise ValueError
                 self.recent_count = max(1, min(50, int(count)))
             except (ValueError, TypeError):

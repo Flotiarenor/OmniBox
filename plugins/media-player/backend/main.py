@@ -11,6 +11,9 @@ from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_utils import load_sibling
 from shell.backend.tasks import BackgroundTask
 from shell.backend.thumb_cache import ThumbCache
+import logging
+
+log = logging.getLogger(__name__)
 
 _scanner = load_sibling(__file__, 'scanner', 'media_player')
 _models = load_sibling(__file__, 'models', 'media_player')
@@ -243,7 +246,7 @@ class MediaPlayerPlugin(PluginBase):
             with open(self._state_file, 'w', encoding='utf-8') as f:
                 json.dump(self._state, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"[MediaPlayer] 保存状态失败: {e}")
+            log.error(f"[MediaPlayer] 保存状态失败: {e}")
 
     def _migrate_legacy_state(self):
         """把旧 music-player 的收藏 / 最近播放 / 歌单 / 播放状态迁入统一状态文件。
@@ -335,7 +338,7 @@ class MediaPlayerPlugin(PluginBase):
 
         try:
             legacy_file.replace(legacy_file.with_name('music_state.json.migrated'))
-            print(f"[MediaPlayer] 已迁移旧 music-player 状态 → {self._state_file.name}")
+            log.info(f"[MediaPlayer] 已迁移旧 music-player 状态 → {self._state_file.name}")
         except Exception:
             pass
 
@@ -445,7 +448,7 @@ class MediaPlayerPlugin(PluginBase):
             try:
                 pruned = self._thumb_cache.prune(set(merged.keys()))
                 if pruned:
-                    print(f'[MediaPlayer] 深度扫描清理孤儿封面 {pruned} 条')
+                    log.info(f'[MediaPlayer] 深度扫描清理孤儿封面 {pruned} 条')
             except Exception:
                 pass
         audio = sum(1 for i in merged.values() if i.kind == 'audio')

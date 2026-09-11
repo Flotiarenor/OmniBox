@@ -37,6 +37,9 @@ class _StubPluginManager:
     def get_plugin_extensions(self):
         return {}
 
+    def get_plugin_status(self):
+        return {'loaded': [], 'failures': []}
+
     def get_settings_panels(self):
         return []
 

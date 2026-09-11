@@ -7,6 +7,9 @@ import shutil
 import tempfile
 from pathlib import Path
 from typing import Dict
+import logging
+
+log = logging.getLogger(__name__)
 
 
 # Windows 保留设备名；目录名会跨平台使用，避免在 Windows 上变成非法目录。
@@ -57,7 +60,7 @@ def save_cache(path: Path, cache: Dict[str, str]):
                 pass
             raise
     except Exception as e:
-        print(f"[pixiv-sync] 保存画师缓存失败: {e}")
+        log.error(f"[pixiv-sync] 保存画师缓存失败: {e}")
 
 
 def _other_dir_names(cache: Dict[str, str], uid: int) -> set:
@@ -121,7 +124,7 @@ def artist_dir(
         if old_name_shared:
             # 旧目录被多个 uid 共用，无法安全判断哪些文件属于当前画师；
             # 只让新作品进入消歧后的目录，旧目录保持原样。
-            print(
+            log.info(
                 f"[pixiv-sync] 画师 {uid} 目录名 {old_name!r} 被多个 id 共用，"
                 f"已跳过迁移；新作品将写入 {new_name!r}"
             )
@@ -143,9 +146,9 @@ def artist_dir(
                         elif not dest.exists():
                             shutil.move(str(item), str(dest))
                     old_dir.rmdir()
-                print(f"[pixiv-sync] 画师 {uid} 改名: {old_name} → {new_name}，目录已迁移")
+                log.info(f"[pixiv-sync] 画师 {uid} 改名: {old_name} → {new_name}，目录已迁移")
             except OSError as e:
-                print(f"[pixiv-sync] 画师改名目录迁移失败 {uid}: {e}")
+                log.error(f"[pixiv-sync] 画师改名目录迁移失败 {uid}: {e}")
 
     cache[key] = new_name
     if persist:

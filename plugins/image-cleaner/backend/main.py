@@ -12,6 +12,9 @@ from typing import Dict, List
 
 from shell.backend.media_catalog import IMAGE_EXTENSIONS
 from shell.backend.plugin_base import PluginBase
+import logging
+
+log = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = IMAGE_EXTENSIONS
 
@@ -109,7 +112,7 @@ class ImageCleanerPlugin(PluginBase):
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(cache, f, ensure_ascii=False)
         except Exception as e:
-            print(f"[{self.name}] 保存扫描结果缓存失败: {e}")
+            log.error(f"[{self.name}] 保存扫描结果缓存失败: {e}")
 
     def _save_scan_result(self, mode: str, groups: list, scanned: int):
         cache = self._load_scan_cache()
@@ -265,7 +268,7 @@ class ImageCleanerPlugin(PluginBase):
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(self._dhash_cache, f, ensure_ascii=False)
         except Exception as e:
-            print(f"[{self.name}] 保存 dHash 缓存失败: {e}")
+            log.error(f"[{self.name}] 保存 dHash 缓存失败: {e}")
 
     def _image_dhash(self, abs_path: str, mtime: float) -> int:
         """64-bit 差异哈希（dHash），结果写入 image-cleaner 自己的缓存。"""

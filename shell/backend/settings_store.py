@@ -21,6 +21,9 @@ import threading
 import time
 from pathlib import Path
 from typing import Dict
+import logging
+
+log = logging.getLogger(__name__)
 
 
 class SettingsStore:
@@ -62,9 +65,9 @@ class SettingsStore:
         backup = file.with_name(f"{file.name}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}")
         try:
             os.replace(file, backup)
-            print(f"[SettingsStore] 设置文件损坏，已备份为 {backup.name} 并回退默认值: {error}")
+            log.info(f"[SettingsStore] 设置文件损坏，已备份为 {backup.name} 并回退默认值: {error}")
         except OSError as e:
-            print(f"[SettingsStore] 设置文件损坏且无法备份 {file}: {e}")
+            log.error(f"[SettingsStore] 设置文件损坏且无法备份 {file}: {e}")
 
     def get(self, plugin_name: str) -> Dict:
         file = self._file(plugin_name)

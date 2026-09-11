@@ -19,6 +19,9 @@ limitations under the License.
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List
+import logging
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from shell.backend.plugin_manager import PluginManager
@@ -72,7 +75,7 @@ class PluginBase(ABC):
         """返回已加载依赖插件实例；未声明依赖或未加载时返回 None。"""
         dependencies = self.manifest.get('dependencies', []) or []
         if name not in dependencies:
-            print(f"[{self.name}] 尝试访问未声明依赖的插件: {name}")
+            log.info(f"[{self.name}] 尝试访问未声明依赖的插件: {name}")
             return None
         if self._plugin_manager is None:
             return None
@@ -121,7 +124,7 @@ class PluginBase(ABC):
             try:
                 self.on_settings_changed(changed)
             except Exception as e:
-                print(f"[{self.name}] on_settings_changed 异常: {e}")
+                log.error(f"[{self.name}] on_settings_changed 异常: {e}")
 
         return {"success": True}
 

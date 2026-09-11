@@ -6,6 +6,9 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
+import logging
+
+log = logging.getLogger(__name__)
 
 
 def new_task(kind: str) -> Dict[str, Any]:
@@ -47,7 +50,7 @@ def persist_task(path: Path, task: Dict[str, Any]) -> bool:
             raise
         return True
     except Exception as e:
-        print(f"[pixiv-sync] 保存 tasks.json 失败: {e}")
+        log.error(f"[pixiv-sync] 保存 tasks.json 失败: {e}")
         return False
 
 

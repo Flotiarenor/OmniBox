@@ -23,6 +23,9 @@ from . import artist as artist_mod
 from . import tasks as tasks_mod
 from . import ugoira as ugoira_mod
 from .limiter import RateLimitError
+import logging
+
+log = logging.getLogger(__name__)
 
 def _safe_int(value: Any) -> Optional[int]:
     """安全转 int：None 或非法值返回 None，合法值返回 int。"""
@@ -31,7 +34,7 @@ def _safe_int(value: Any) -> Optional[int]:
     try:
         return int(value)
     except (TypeError, ValueError):
-        print(f"[pixiv_sync-download]作品id 缺失/非法: {value}")
+        log.info(f"[pixiv_sync-download]作品id 缺失/非法: {value}")
         return None
 
 def all_image_urls(p, illust: Dict[str, Any]) -> List[str]:
@@ -153,13 +156,13 @@ def process_ugoira(p, illust: Dict[str, Any], task: Dict[str, Any], ids: Set[int
         msg = str(e)
         if "HTTP 404" in msg:
             # 作品/zip 已删除：永久跳过，避免每次同步重试同一已删除动图
-            print(f"[pixiv-sync] ugoira {iid} 已删除/404，永久跳过")
+            log.warning(f"[pixiv-sync] ugoira {iid} 已删除/404，永久跳过")
             _done(1, add_ids=False, add_failed=True)
         else:
-            print(f"[pixiv-sync] ugoira {iid} 失败（下次同步重试）: {msg}")
+            log.error(f"[pixiv-sync] ugoira {iid} 失败（下次同步重试）: {msg}")
             _done(1, add_ids=False, add_failed=False)
     except Exception as e:  # noqa: BLE001
-        print(f"[pixiv-sync] ugoira {iid} 异常: {type(e).__name__}: {e}")
+        log.error(f"[pixiv-sync] ugoira {iid} 异常: {type(e).__name__}: {e}")
         _done(1, add_ids=False, add_failed=False)
     finally:
         if tmpdir is not None:
@@ -231,7 +234,7 @@ def process_illust(p, illust: Dict[str, Any], task: Dict[str, Any], ids: Set[int
             tasks_mod.persist_task(p._tasks_file(), task)
     except Exception as e:  # noqa: BLE001
         # 单作品出现未预期异常时也要推进任务计数，避免进度永久卡住。
-        print(f"[pixiv-sync] 作品 {iid} 下载异常: {e}")
+        log.error(f"[pixiv-sync] 作品 {iid} 下载异常: {e}")
         with p._task_lock:
             task["failed"] += 1
             task["done"] += 1
@@ -325,7 +328,7 @@ def download_pending(p, task: Dict[str, Any], ids: Set[int], failed: Set[int], k
                 try:
                     future.result()
                 except Exception as e:
-                    print(f"[pixiv-sync] 下载任务异常: {e}")
+                    log.error(f"[pixiv-sync] 下载任务异常: {e}")
                     with p._task_lock:
                         task["failed"] += 1
                         task["done"] += 1

@@ -15,6 +15,8 @@ const bridge = useBridge()
 
 const debugMode = ref(false)
 const configLoaded = ref(false)
+// 插件加载失败清单：来自 system_get_plugin_status（内核在加载期收集）
+const pluginFailures = ref<{ name: string; reason: string }[]>([])
 
 const code = computed(() => {
   const raw = route.query.code
@@ -46,6 +48,13 @@ onMounted(async () => {
     debugMode.value = !!(cfg && cfg.debug && cfg.debug.status_debug)
   } catch (e) {
     debugMode.value = false
+  }
+  try {
+    const status = await bridge.call('system_get_plugin_status')
+    pluginFailures.value = (status && status.failures) || []
+  } catch (e) {
+    // 老版本内核没有这个接口时静默降级（不影响其余状态信息）
+    pluginFailures.value = []
   }
   configLoaded.value = true
 })
@@ -97,6 +106,19 @@ async function apiDemo(mode: 'none' | 'cookie' | 'bad') {
 
 <template>
   <div class="status-view">
+    <!-- ===== 插件加载失败：任何模式下都显示（用户最容易遇到、也最需要线索） ===== -->
+    <div v-if="pluginFailures.length" class="status-plugin-failures">
+      <div class="status-error-title">⚠️ 有 {{ pluginFailures.length }} 个插件加载失败</div>
+      <div class="status-error-detail">
+        这些插件不会出现在侧边栏里。原因如下（完整日志见 &lt;配置目录&gt;/logs/omnibox.log）：
+      </div>
+      <ul class="status-plugin-failure-list">
+        <li v-for="item in pluginFailures" :key="item.name">
+          <code>{{ item.name }}</code><span>{{ item.reason }}</span>
+        </li>
+      </ul>
+    </div>
+
     <!-- ===== 错误模式：插件/页面加载失败时由壳跳转至此 ===== -->
     <div v-if="isErrorMode" class="status-error-card">
       <div class="status-error-code">{{ code }}</div>
@@ -196,8 +218,32 @@ async function apiDemo(mode: 'none' | 'cookie' | 'bad') {
   overflow-y: auto;
   background: var(--bg-app);
   display: flex;
-  align-items: flex-start;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+}
+/* 插件加载失败提示：任何模式下都显示在最上方 */
+.status-plugin-failures {
+  width: 100%;
+  max-width: 720px;
+  margin: 32px 24px 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  padding: 20px 24px;
+  text-align: left;
+}
+.status-plugin-failure-list {
+  margin: 12px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.8;
+}
+.status-plugin-failure-list code {
+  margin-right: 8px;
+  color: var(--text-primary);
 }
 .status-error-card {
   margin-top: 15vh;

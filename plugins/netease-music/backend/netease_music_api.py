@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 from datetime import datetime
+import logging
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -118,7 +121,7 @@ class NeteaseMusicAPI:
                 data["player"] = "mpv"
                 cfg.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception as e:
-            print(f"[netease-music] 写入 ncm-cli player=mpv 配置失败: {e}")
+            log.error(f"[netease-music] 写入 ncm-cli player=mpv 配置失败: {e}")
 
     def _run_command(self, cmd, timeout: int = 30, env: dict = None) -> Dict[str, Any]:
         """执行 ncm-cli 命令。

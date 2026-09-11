@@ -28,6 +28,9 @@ from pixiv_sync import download, oauth, scan, store, tasks
 from pixiv_sync.db import WorksDB
 from pixiv_sync.limiter import RateLimitError, RateLimiter
 from pixiv_sync.store import collect_existing_ids, rebuild_existing
+import logging
+
+log = logging.getLogger(__name__)
 
 CACHE_SUBDIR = Path(".cache") / "pixiv-sync"
 
@@ -267,7 +270,7 @@ class PixivSyncPlugin(PluginBase):
         rotated = self._client().refresh_token
         if rotated and rotated != token:
             self.update_setting("refresh_token", rotated)
-            print("[pixiv-sync] refresh_token 已轮换，自动回写设置")
+            log.info("[pixiv-sync] refresh_token 已轮换，自动回写设置")
 
     def _note_rate_limited(self, cooldown: float = 600.0) -> None:
         self._rate_limited_until = time.time() + cooldown
@@ -329,7 +332,7 @@ class PixivSyncPlugin(PluginBase):
             # 识别用户手动放入的旧图（按命名规则提取 id 并入去重集合）
             scanned = self._scan_existing_ids()
             if scanned:
-                print(f"[pixiv-sync] 扫描到 {scanned} 个已存在作品，并入去重集合")
+                log.info(f"[pixiv-sync] 扫描到 {scanned} 个已存在作品，并入去重集合")
             if self._cancel_flag:
                 task["state"] = "cancelled"
                 task["current"] = "已取消"
@@ -521,7 +524,7 @@ class PixivSyncPlugin(PluginBase):
         try:
             text = self._read_text_robust(file)
         except Exception as e:
-            print(f"[pixiv-sync] 读取画师名单失败: {e}")
+            log.error(f"[pixiv-sync] 读取画师名单失败: {e}")
             self._selected_cache = (signature, selected)
             return selected
         for line in text.splitlines():
@@ -685,7 +688,7 @@ class PixivSyncPlugin(PluginBase):
             bookmarks_total = cnt(db, "bookmarks")
             bookmarks_done = cnt(db, "bookmarks", 1)
         except Exception as e:
-            print(f"[pixiv-sync] 读取清单统计失败: {e}")
+            log.error(f"[pixiv-sync] 读取清单统计失败: {e}")
         return {
             "task": task,
             "root_dir": root,

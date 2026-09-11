@@ -16,6 +16,7 @@ limitations under the License.
 
 import atexit, os, sys, time, yaml, webview, threading, shutil
 from pathlib import Path
+from shell.backend.app_logging import setup_logging
 from shell.backend.auth import get_or_create_token, get_token_file
 from shell.backend.file_server import create_app
 from shell.backend.plugin_manager import PluginManager
@@ -26,6 +27,9 @@ from shell.backend.paths import (
     get_user_data_dir,
     resolve_data_root,
 )
+import logging
+
+log = logging.getLogger(__name__)
 
 DEFAULT_CONFIG = {
     'server': {
@@ -55,17 +59,17 @@ def load_config():
         old_path = user_data_dir / 'config.yaml'
         if old_path.exists():
             shutil.copy(old_path, cfg_path)
-            print(f"[OmniBox] 迁移配置: config.yaml → {cfg_path}")
+            log.info(f"[OmniBox] 迁移配置: config.yaml → {cfg_path}")
         else:
             with open(cfg_path, 'w', encoding='utf-8') as f:
                 yaml.safe_dump(DEFAULT_CONFIG, f, allow_unicode=True, sort_keys=False)
-            print(f"[OmniBox] 创建默认配置: {cfg_path}")
+            log.info(f"[OmniBox] 创建默认配置: {cfg_path}")
 
     with open(cfg_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
 
     if not isinstance(config, dict):
-        print("[OmniBox] 配置文件内容无效，已使用默认配置")
+        log.info("[OmniBox] 配置文件内容无效，已使用默认配置")
         config = {}
 
     defaults = deepcopy(DEFAULT_CONFIG)
@@ -73,7 +77,7 @@ def load_config():
     # 补齐 server 配置
     server = config.setdefault('server', {})
     if not isinstance(server, dict):
-        print("[OmniBox] 配置项 server 格式错误，已重置为默认值")
+        log.error("[OmniBox] 配置项 server 格式错误，已重置为默认值")
         server = defaults['server']
         config['server'] = server
     for key, value in defaults['server'].items():
@@ -82,7 +86,7 @@ def load_config():
     # 补齐 directories 配置
     directories = config.setdefault('directories', {})
     if not isinstance(directories, dict):
-        print("[OmniBox] 配置项 directories 格式错误，已重置为默认值")
+        log.error("[OmniBox] 配置项 directories 格式错误，已重置为默认值")
         directories = defaults['directories']
         config['directories'] = directories
     if not isinstance(directories.get('data_root'), str) or not directories['data_root'].strip():
@@ -112,7 +116,7 @@ def _unload_plugins(manager):
     try:
         manager.unload_all()
     except Exception as e:
-        print(f"[OmniBox] 卸载插件时出错: {e}")
+        log.error(f"[OmniBox] 卸载插件时出错: {e}")
 
 
 def _run_app(config, manager):
@@ -129,7 +133,7 @@ def _run_app(config, manager):
                 port = int(sys.argv[sys.argv.index('--port') + 1])
             except (IndexError, ValueError):
                 pass
-        print(f"[OmniBox] Web-only 模式启动: http://{host}:{port}")
+        log.info(f"[OmniBox] Web-only 模式启动: http://{host}:{port}")
         # threaded=True：单线程下大文件媒体流会阻塞所有请求（无法跳转/元数据读取/API），
         # 流媒体（Range 请求）与后台扫描任务都需要并发处理。
         app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
@@ -139,6 +143,7 @@ def _run_app(config, manager):
     api = ShellAPI()
     setattr(api, 'system_get_plugins', manager.get_frontend_manifests)
     setattr(api, 'system_get_plugin_extensions', manager.get_plugin_extensions)
+    setattr(api, 'system_get_plugin_status', manager.get_plugin_status)
     setattr(api, 'system_get_config', lambda: config)
     setattr(api, 'system_settings_list', manager.get_settings_panels)
     setattr(api, 'system_settings_save', manager.save_settings_panel)
@@ -151,13 +156,19 @@ def _run_app(config, manager):
     # threaded=True：媒体流/Range 请求与后台扫描任务需要并发，见 --web-only 分支注释
     threading.Thread(target=lambda: app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True), daemon=True).start()
     if not wait_for_server(host, port):
-        print("[OmniBox] Flask 启动超时"); return
+        log.warning("[OmniBox] Flask 启动超时"); return
 
     webview.create_window('OmniBox', f'http://{host}:{port}', js_api=api, width=1400, height=900, text_select=True)
     webview.start(debug=not getattr(sys, 'frozen', False), http_server=True)
 
 
 def main():
+    # 日志必须最先初始化：发行版打包 console=False 时没有控制台，
+    # 所有诊断信息只能靠文件通道（shell/backend/app_logging.py）。
+    log_file = setup_logging(get_config_dir())
+    if log_file:
+        log.info(f"[OmniBox] 日志文件: {log_file}")
+
     config = load_config()
     os.makedirs(config['directories']['data_root'], exist_ok=True)
 
@@ -169,7 +180,7 @@ def main():
     # 数据路由（/api /file /thumbs）的访问令牌：首次启动生成并持久化。
     # 浏览器页面会自动种下 Cookie；外部脚本可用 X-Omnibox-Token 头携带。
     get_or_create_token(get_config_dir())
-    print(f"[OmniBox] API 访问令牌: {get_token_file(get_config_dir())}"
+    log.info(f"[OmniBox] API 访问令牌: {get_token_file(get_config_dir())}"
           f"（/api /file /thumbs 路由需携带，启动时若缺失将自动生成）")
 
     plugin_search_dirs = get_plugin_search_dirs()
@@ -178,8 +189,8 @@ def main():
             plugin_dir.mkdir(parents=True, exist_ok=True)
         except OSError:
             pass
-    print(f"[OmniBox] 用户数据目录: {get_user_data_dir()}")
-    print(f"[OmniBox] 插件搜索目录: {', '.join(str(p) for p in plugin_search_dirs)}")
+    log.info(f"[OmniBox] 用户数据目录: {get_user_data_dir()}")
+    log.info(f"[OmniBox] 插件搜索目录: {', '.join(str(p) for p in plugin_search_dirs)}")
     manager = PluginManager([str(p) for p in plugin_search_dirs], config=config)
     manager.load_all()
     # 退出时必须回调 on_unload（关 SQLite/WAL、停插件线程、落盘最后一次状态）：
