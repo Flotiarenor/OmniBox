@@ -192,6 +192,17 @@ class MediaPlayerPlugin(PluginBase):
 
     # ---------- 索引缓存 ----------
 
+    def _publish_items(self, items: Dict[str, MediaItem]) -> None:
+        """把索引换成一份**新的**快照字典（唯一的写入 self._items 的入口）。
+
+        桥接/HTTP 线程会直接遍历 self._items（search / recent / all_audio …），
+        而扫描 worker 在检查点之间会持续往工作字典里塞新条目。绝不能把工作
+        字典本身赋给 self._items —— 那样读取方就会撞上 "dictionary changed
+        size during iteration"（前端扫描期间每 500ms 轮询会放大暴露，
+        docs/code-review.md §4.1-1）。
+        """
+        self._items = items
+
     def _load_index(self):
         if self._cache_file.exists():
             try:
@@ -199,13 +210,16 @@ class MediaPlayerPlugin(PluginBase):
                     data = json.load(f)
                 if data.get('version') != INDEX_VERSION:
                     # 索引结构升级（如新增曲目号/专辑艺术家字段）时自动重建
-                    self._items = {}
+                    self._publish_items({})
                     return
+                # 先在本地字典里建好再一次性发布：边建边写会让读取方看到半成品
+                loaded: Dict[str, MediaItem] = {}
                 for raw in data.get('items', []):
                     item = MediaItem.from_cache(raw)
-                    self._items[item.id] = item
+                    loaded[item.id] = item
+                self._publish_items(loaded)
             except Exception:
-                self._items = {}
+                self._publish_items({})
 
     def _save_index(self, result: Dict):
         self._cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -408,7 +422,10 @@ class MediaPlayerPlugin(PluginBase):
                 merged[item.id] = item
             completed.add(key)
             # 检查点 1：部分索引落盘（断点续传的数据基础）
-            self._items = merged
+            # 注意发布的是 dict(merged) 快照：merged 是本 worker 的私有工作字典，
+            # 之后还会继续增删；直接把 merged 交给 self._items 会让并发的读取方
+            # 遍历到正在变化的字典。
+            self._publish_items(dict(merged))
             self._save_index({'items': [i.to_dict() for i in merged.values()],
                               'updated': time.time(), 'version': INDEX_VERSION})
             # 检查点 2：任务状态落盘（completed_roots → paused，可续跑）
@@ -418,7 +435,7 @@ class MediaPlayerPlugin(PluginBase):
 
         if task.cancelled:
             return
-        self._items = merged
+        self._publish_items(dict(merged))
         self._save_index({'items': [i.to_dict() for i in merged.values()],
                           'updated': time.time(), 'version': INDEX_VERSION})
         self._migrate_legacy_state()
@@ -650,7 +667,7 @@ class MediaPlayerPlugin(PluginBase):
                 self._state_file = self._cache_dir / 'media_state.json'
                 self._task_file = self._cache_dir / 'scan_task.json'
                 self._cache_dir.mkdir(parents=True, exist_ok=True)
-                self._items = {}
+                self._publish_items({})
                 self._reload_index()
                 # 封面库跟随数据根重建
                 self._thumb_cache = ThumbCache(
