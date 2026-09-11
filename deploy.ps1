@@ -67,8 +67,9 @@ $ProjectRoot = $PSScriptRoot
 Write-Host "项目目录: $ProjectRoot" -ForegroundColor $ColorInfo
 
 # 环境与依赖统一交给 setup-venv.ps1 -Install 处理
+# -Dev：部署机同时是开发/构建机（需要 ruff / pyright / pyinstaller）
 Write-Host "`n------ 准备 Python 环境与依赖 ------" -ForegroundColor $ColorInfo
-& (Join-Path $ProjectRoot "setup-venv.ps1") -Install -ProjectRoot $ProjectRoot
+& (Join-Path $ProjectRoot "setup-venv.ps1") -Install -Dev -ProjectRoot $ProjectRoot
 if ($LASTEXITCODE -ne 0) {
     Write-Host "环境准备失败，部署中止。" -ForegroundColor $ColorError
     exit 1

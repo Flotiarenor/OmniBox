@@ -78,8 +78,8 @@ if (-not $SkipPyInstaller) {
 
     # 虚拟环境与依赖统一交给 setup-venv.ps1 处理（必须在 UseCleanPath 复制之前执行，
     # 因为 venv 不随项目一起复制到临时路径）
-    Write-Host "  -> 确保虚拟环境与依赖 (setup-venv.ps1 -Install)..." -ForegroundColor $ColorWarning
-    & "$ProjectRoot/setup-venv.ps1" -Install -ProjectRoot $ProjectRoot
+    Write-Host "  -> 确保虚拟环境与依赖 (setup-venv.ps1 -Install -Dev)..." -ForegroundColor $ColorWarning
+    & "$ProjectRoot/setup-venv.ps1" -Install -Dev -ProjectRoot $ProjectRoot
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: 环境准备失败" -ForegroundColor $ColorError; exit 1
     }
@@ -88,11 +88,11 @@ if (-not $SkipPyInstaller) {
         Write-Host "ERROR: 未找到虚拟环境 Python: $venvPython" -ForegroundColor $ColorError; exit 1
     }
 
-    # 同步 requirements.txt
-    Write-Host "  -> 同步 requirements.txt..." -ForegroundColor $ColorWarning
-    & $venvPython -m pip freeze | Out-File -FilePath "$ProjectRoot/requirements.txt" -Encoding UTF8
+    # 记录打包环境的依赖快照（仅用于审计；requirements.txt 是手写声明，绝不被覆盖）
+    Write-Host "  -> 生成依赖快照 requirements.lock.txt..." -ForegroundColor $ColorWarning
+    & $venvPython -m pip freeze | Out-File -FilePath "$ProjectRoot/requirements.lock.txt" -Encoding UTF8
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "ERROR: 同步 requirements.txt 失败" -ForegroundColor $ColorError; exit 1
+        Write-Host "ERROR: 生成 requirements.lock.txt 失败" -ForegroundColor $ColorError; exit 1
     }
 
     # Check UPX

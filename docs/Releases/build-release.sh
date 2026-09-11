@@ -90,16 +90,16 @@ else
     success "前端构建完成"
 fi
 
-# ── 2. 准备 Python 虚拟环境（统一入口 setup-venv.sh） ─────────────
+# ── 2. 准备 Python 虚拟环境（统一入口 setup-venv.sh，--dev 含 pyinstaller） ──
 info "准备 Python 虚拟环境..."
-bash "$PROJECT_ROOT/setup-venv.sh"
+bash "$PROJECT_ROOT/setup-venv.sh" --dev
 PY="$VENV_DIR/bin/python"
 success "Python 环境就绪"
 
-# ── 2.5 同步 requirements.txt ─────────────────────────────────────
-info "同步 requirements.txt..."
-"$PY" -m pip freeze > "$PROJECT_ROOT/requirements.txt"
-success "requirements.txt 已更新"
+# ── 2.5 记录依赖快照（仅用于审计；requirements.txt 是手写声明，绝不被覆盖） ──
+info "生成依赖快照 requirements.lock.txt..."
+"$PY" -m pip freeze > "$PROJECT_ROOT/requirements.lock.txt"
+success "requirements.lock.txt 已更新"
 
 # ── 3. 准备 PyInstaller 依赖 ─────────────────────────────────────
 if ! command -v objdump >/dev/null 2>&1; then

@@ -10,6 +10,9 @@ __pycache__/
 *.pyd
 opencode.json
 
+# 构建机 pip freeze 快照（审计用，不是依赖声明）
+requirements.lock.txt
+
 # 运行时代码
 data/
 .config/plugins/

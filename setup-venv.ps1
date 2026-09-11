@@ -5,19 +5,23 @@
     OmniBox 虚拟环境统一入口 / pip 管理台
 .DESCRIPTION
     -Install 模式（非交互）:
-        ensure venv 存在 -> 升级 pip -> 从 requirements.txt 安装依赖。
-        供 deploy.ps1 / build-release.ps1 及 CI 调用。
+        ensure venv 存在 -> 升级 pip -> 从 requirements.txt 安装运行时依赖。
+        加 -Dev 时再装 requirements-dev.txt（ruff / pyright / pyinstaller）。
+        供 deploy.ps1 / build-release.ps1 及 CI 调用。幂等，可重复执行。
 
     默认模式（交互）:
         直接以本仓库 venv 打开 pip 管理控制台（增库/删库/导出等）。
 .PARAMETER Install
     非交互安装依赖。
+.PARAMETER Dev
+    连同 requirements-dev.txt 一起安装（开发 / 打包需要）。
 .PARAMETER ProjectRoot
     项目根目录（固定本仓库，可由调用方显式传入）。
 #>
 
 param(
     [switch]$Install,
+    [switch]$Dev,
     [string]$ProjectRoot = $PSScriptRoot
 )
 
@@ -84,6 +88,11 @@ if ($Install) {
         Write-Host "[错误] 未找到依赖文件: $reqFile" -ForegroundColor $ColorError
         exit 1
     }
+    $reqDevFile = Join-Path $ProjectRoot "requirements-dev.txt"
+    if ($Dev -and -not (Test-Path $reqDevFile)) {
+        Write-Host "[错误] 未找到开发依赖文件: $reqDevFile" -ForegroundColor $ColorError
+        exit 1
+    }
 
     try {
         Ensure-Venv
@@ -93,9 +102,15 @@ if ($Install) {
         & $venvPy -m pip install --upgrade pip -q
         if ($LASTEXITCODE -ne 0) { throw "pip 升级失败" }
 
-        Write-Host "正在安装依赖: $reqFile" -ForegroundColor $ColorInfo
+        Write-Host "正在安装运行时依赖: $reqFile" -ForegroundColor $ColorInfo
         & $venvPy -m pip install -r $reqFile -q
         if ($LASTEXITCODE -ne 0) { throw "依赖安装失败，请检查 '$reqFile'" }
+
+        if ($Dev) {
+            Write-Host "正在安装开发依赖: $reqDevFile" -ForegroundColor $ColorInfo
+            & $venvPy -m pip install -r $reqDevFile -q
+            if ($LASTEXITCODE -ne 0) { throw "依赖安装失败，请检查 '$reqDevFile'" }
+        }
     }
     catch {
         Write-Host "[错误] $_" -ForegroundColor $ColorError
@@ -253,11 +268,13 @@ while ($true) {
             Show-InstalledPackages
         }
         "6" {
-            $exportPath = Join-Path $parentDir "requirements.txt"
-            Write-Host "正在导出依赖列表到 $exportPath ..." -ForegroundColor $ColorInfo
+            # 只导出到 lock 文件：requirements.txt 是手写的运行时声明，
+            # 被 pip freeze 覆盖会导致"打包装过什么、项目就依赖什么"。
+            $exportPath = Join-Path $parentDir "requirements.lock.txt"
+            Write-Host "正在导出依赖快照到 $exportPath ..." -ForegroundColor $ColorInfo
             pip freeze | Out-File -FilePath $exportPath -Encoding UTF8
             if ($LASTEXITCODE -eq 0) {
-                Write-Host "依赖已导出至 $exportPath" -ForegroundColor $ColorSuccess
+                Write-Host "依赖快照已导出至 $exportPath" -ForegroundColor $ColorSuccess
             }
             else {
                 Write-Host "导出失败" -ForegroundColor $ColorError
