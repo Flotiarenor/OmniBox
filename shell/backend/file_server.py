@@ -406,7 +406,13 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             full_path = (thumb_dir / filepath).resolve()
             if not _is_safe_path(full_path, thumb_dir):
                 abort(403)
-        except Exception:
+        except Exception as e:
+            # abort() 抛的 HTTPException 也是 Exception：不还原 e.code 的话，
+            # 越界访问会从 403 变成 400（语义错、也不利于排查）。
+            # 与下面 serve_media_file 的写法保持一致。
+            code = getattr(e, 'code', None)
+            if code in (400, 403, 404):
+                abort(code)
             abort(400)
         
         if not full_path.exists():
