@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import sys
 import tempfile
@@ -34,8 +35,30 @@ class _StaticLimiter:
         pass
 
 
+# 一个合法的 PNG 文件头（魔数校验会读前 16 字节）
+_PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"fake-png-body"
+
+
+@contextlib.contextmanager
+def _fake_env(**kwargs):
+    """临时根目录 + _FakeP，退出时**先关 SQLite 连接、再删目录**。
+
+    这个顺序是 Windows 的硬要求：WorksDB 是懒连接且开了 WAL，会额外产生
+    -wal/-shm 边车文件；文件被占用时 TemporaryDirectory 清尾会报 WinError 32
+    （用例断言其实是绿的，红的是清理）。Linux 上删已打开文件是允许的，
+    所以不修也只在 Windows 暴露 —— 这也是 CI 必须用 windows-latest 的原因。
+    """
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        p = _FakeP(tmp, **kwargs)
+        try:
+            yield tmp, p
+        finally:
+            p.close()
+
+
 class _FakeP:
-    """只提供 pixiv_sync 模块需要的方法/属性。"""
+    """只提供 pixiv_sync 模块需要的方法/属性（配合 _fake_env 使用）。"""
 
     def __init__(self, tmp: Path, *, max_artists: int = 0, scan_workers: int = 1):
         self.tmp = tmp
@@ -53,6 +76,10 @@ class _FakeP:
         self._db_wrapper = WorksDB(
             tmp / ".cache" / "pixiv-sync" / "works.db", self._task_lock
         )
+
+    def close(self):
+        """释放 SQLite 连接（可重复调用）。"""
+        self._db_wrapper.close()
 
     def _client(self):
         return self.client
@@ -158,11 +185,22 @@ class _FakeBookmarkClient:
 
 
 class _FakeFollowingClient:
+    """关注链路的假客户端，覆盖真实的三个接口（接口漂移会直接报错）：
+
+    - user_following：关注列表（只返回 uid）
+    - user_illusts  ：单画师作品，pages_by_uid[uid] 按调用顺序逐页返回
+    - illust_follow ：关注新作聚合流（v0.5 增量主路径），follow_pages 逐页返回
+
+    calls 记录 (uid, params)；聚合流没有 uid，记为 (None, params)。
+    """
+
     user_id = 1
 
-    def __init__(self, pages_by_uid):
-        self.pages_by_uid = pages_by_uid
+    def __init__(self, pages_by_uid=None, follow_pages=None):
+        self.pages_by_uid = pages_by_uid or {}
+        self.follow_pages = list(follow_pages or [])
         self.calls = []
+        self._follow_index = 0
 
     def user_following(self, user_id, **params):
         return {
@@ -172,6 +210,25 @@ class _FakeFollowingClient:
             ],
             "next_url": None,
         }
+
+    def user_illusts(self, user_id, type="illust", **params):
+        self.calls.append((user_id, dict(params)))
+        pages = self.pages_by_uid.get(user_id) or []
+        if not pages:
+            return {"illusts": [], "next_url": None}
+        seen = sum(1 for call in self.calls if call[0] == user_id) - 1
+        return pages[min(seen, len(pages) - 1)]
+
+    def illust_follow(self, restrict="public", offset=None):
+        params = {"restrict": restrict}
+        if offset:
+            params["offset"] = offset
+        self.calls.append((None, params))
+        if self._follow_index >= len(self.follow_pages):
+            return {"illusts": [], "next_url": None}
+        page = self.follow_pages[self._follow_index]
+        self._follow_index += 1
+        return page
 
     def parse_qs(self, next_url: str | None):
         if not next_url:
@@ -187,9 +244,7 @@ class _FakeFollowingClient:
 
 class PixivSyncCoreTests(unittest.TestCase):
     def test_partial_page_failure_is_not_marked_downloaded(self):
-        with tempfile.TemporaryDirectory() as td:
-            tmp = Path(td)
-            p = _FakeP(tmp)
+        with _fake_env() as (tmp, p):
             p.client = _FakeDownloadClient({"u1": True, "u2": False})
             ids, failed = set(), set()
             task = _new_task()
@@ -207,9 +262,7 @@ class PixivSyncCoreTests(unittest.TestCase):
             self.assertEqual(task["done"], 1)
 
     def test_all_pages_404_adds_permanent_failed_only(self):
-        with tempfile.TemporaryDirectory() as td:
-            tmp = Path(td)
-            p = _FakeP(tmp)
+        with _fake_env() as (tmp, p):
             p.client = _FakeDownloadClient({"u1": False})
             ids, failed = set(), set()
             process_illust(
@@ -225,9 +278,7 @@ class PixivSyncCoreTests(unittest.TestCase):
 
     def test_download_pending_uses_ids_not_stale_db_done(self):
         """删除本地文件 + 刷新记录后，done=1 的清单快照不能阻止重下。"""
-        with tempfile.TemporaryDirectory() as td:
-            tmp = Path(td)
-            p = _FakeP(tmp)
+        with _fake_env() as (tmp, p):
             p.client = _FakeDownloadClient({"u3": True})
             item = {
                 "id": 124,
@@ -247,9 +298,7 @@ class PixivSyncCoreTests(unittest.TestCase):
             self.assertTrue((tmp / "pixiv" / "A" / "124.jpg").exists())
 
     def test_bookmark_cursor_uses_max_bookmark_id(self):
-        with tempfile.TemporaryDirectory() as td:
-            tmp = Path(td)
-            p = _FakeP(tmp)
+        with _fake_env() as (tmp, p):
             p.client = _FakeBookmarkClient(
                 {10: _bookmark_page(10, 9), 9: _bookmark_page(9, 8), 8: _bookmark_page(8, None)}
             )
@@ -268,16 +317,17 @@ class PixivSyncCoreTests(unittest.TestCase):
             self.assertEqual(p.client.calls[2].get("max_bookmark_id"), "8")
 
     def test_following_incremental_stops_at_known_tail(self):
-        with tempfile.TemporaryDirectory() as td:
-            tmp = Path(td)
-            p = _FakeP(tmp, scan_workers=1)
-            p.client = _FakeFollowingClient({
-                1: [
-                    {"illusts": [_raw_illust(11, 1)], "next_url": "/v1/user/illusts?offset=1"},
-                    {"illusts": [_raw_illust(10, 1)], "next_url": "/v1/user/illusts?offset=2"},
-                    {"illusts": [_raw_illust(9, 1)], "next_url": None},
-                ]
-            })
+        """增量轮走 illust_follow 聚合流：翻到「整页已入库」即停，不逐画师请求。"""
+        with _fake_env(scan_workers=1) as (tmp, p):
+            p.client = _FakeFollowingClient(
+                {1: [{"illusts": [_raw_illust(10, 1)], "next_url": None}]},
+                follow_pages=[
+                    {"illusts": [_raw_illust(11, 1)],
+                     "next_url": "/v2/illust/follow?offset=1"},
+                    {"illusts": [_raw_illust(10, 1)],
+                     "next_url": "/v2/illust/follow?offset=2"},
+                ],
+            )
             p._db_wrapper.save_pending("following", [
                 _work_item(10, uid=1),
                 _work_item(9, uid=1),
@@ -285,14 +335,54 @@ class PixivSyncCoreTests(unittest.TestCase):
             items, info = scan.collect_following_pending(p, _new_task(), set())
             self.assertEqual({i["id"] for i in items}, {11, 10, 9})
             self.assertTrue(info["complete"])
-            # 只拉两页：最新一页 + 命中已知尾巴的那一页，不再扫第 3 页。
+            # 只拉两页：最新一页 + 命中已知尾巴的那一页，不再翻第 3 页。
             self.assertEqual([call[1].get("offset") for call in p.client.calls], [None, "1"])
+            # 全部请求都来自聚合流（uid 记为 None），没有退化成逐画师请求。
+            self.assertEqual({call[0] for call in p.client.calls}, {None})
 
-    def test_following_partial_incremental_keeps_incremental_for_remaining(self):
-        """max_artists 拆成多次刷新后，剩余画师不应退回全量扫描。"""
-        with tempfile.TemporaryDirectory() as td:
-            tmp = Path(td)
-            p = _FakeP(tmp, max_artists=1, scan_workers=1)
+    def test_following_fallback_scan_stops_each_artist_at_known_tail(self):
+        """聚合流没遇到「整页已入库」→ 逐画师兜底，且每个画师也只拉到已知尾巴。"""
+        with _fake_env(scan_workers=1) as (tmp, p):
+            p.client = _FakeFollowingClient(
+                {
+                    1: [
+                        {"illusts": [_raw_illust(11, 1)], "next_url": "/v1/user/illusts?offset=1"},
+                        {"illusts": [_raw_illust(10, 1)], "next_url": "/v1/user/illusts?offset=2"},
+                        {"illusts": [_raw_illust(9, 1)], "next_url": None},
+                    ],
+                    2: [
+                        {"illusts": [_raw_illust(21, 2)], "next_url": "/v1/user/illusts?offset=1"},
+                        {"illusts": [_raw_illust(20, 2)], "next_url": "/v1/user/illusts?offset=2"},
+                        {"illusts": [_raw_illust(19, 2)], "next_url": None},
+                    ],
+                },
+                # 聚合流只带回画师 1 的一条新作，且没翻到整页已入库 → 触发兜底
+                follow_pages=[{"illusts": [_raw_illust(11, 1)], "next_url": None}],
+            )
+            p._db_wrapper.save_pending("following", [
+                _work_item(10, uid=1),
+                _work_item(9, uid=1),
+                _work_item(20, uid=2),
+                _work_item(19, uid=2),
+            ], {"complete": True, "done_uids": [1, 2]})
+
+            items, info = scan.collect_following_pending(p, _new_task(), set())
+            self.assertTrue(info["complete"])
+            self.assertEqual(info["done_uids"], [1, 2])
+            self.assertEqual({i["id"] for i in items}, {11, 10, 9, 21, 20, 19})
+            # 画师 2 必须只拉到已知尾巴（offset=1），而不是全量扫到 offset=2。
+            uid2_offsets = [c[1].get("offset") for c in p.client.calls if c[0] == 2]
+            self.assertEqual(uid2_offsets, [None, "1"])
+            # 画师 1 的新作已由聚合流入库 → 兜底第一页就命中已知尾巴。
+            uid1_offsets = [c[1].get("offset") for c in p.client.calls if c[0] == 1]
+            self.assertEqual(uid1_offsets, [None])
+
+    def test_following_tail_batch_not_split_by_max_artists(self):
+        """max_artists 只约束「全量拉历史」；增量尾巴批次一次扫完，不被拆批。
+
+        对应历史回归 18a125e：增量扫描被单轮画师数上限拆分后退回全量扫描。
+        """
+        with _fake_env(max_artists=1, scan_workers=1) as (tmp, p):
             p.client = _FakeFollowingClient({
                 1: [
                     {"illusts": [_raw_illust(11, 1)], "next_url": "/v1/user/illusts?offset=1"},
@@ -310,25 +400,21 @@ class PixivSyncCoreTests(unittest.TestCase):
                 _work_item(9, uid=1),
                 _work_item(20, uid=2),
                 _work_item(19, uid=2),
-            ], {"complete": True, "done_uids": [1, 2]})
-
-            items, info = scan.collect_following_pending(p, _new_task(), set())
-            self.assertFalse(info["complete"])
-            self.assertEqual(info["done_uids"], [1])
+            ], {"complete": False, "done_uids": []})
 
             items, info = scan.collect_following_pending(p, _new_task(), set())
             self.assertTrue(info["complete"])
+            self.assertEqual(info["done_uids"], [1, 2])
             self.assertEqual({i["id"] for i in items}, {11, 10, 9, 21, 20, 19})
-            # 画师 2 也必须只拉到已知尾巴（offset=1），而不是全量扫到 offset=2。
-            uid2_offsets = [call[1].get("offset") for call in p.client.calls if call[0] == 2]
-            self.assertEqual(uid2_offsets, [None, "1"])
+            # 每个画师都只翻两页就命中已知尾巴
+            for uid in (1, 2):
+                offsets = [c[1].get("offset") for c in p.client.calls if c[0] == uid]
+                self.assertEqual(offsets, [None, "1"])
 
 
 
     def test_bookmarks_incremental_stops_at_known_tail(self):
-        with tempfile.TemporaryDirectory() as td:
-            tmp = Path(td)
-            p = _FakeP(tmp)
+        with _fake_env() as (tmp, p):
             p.client = _FakeBookmarkClient({
                 10: _bookmark_page(11, 9),
                 9: _bookmark_page(10, 8),
@@ -346,6 +432,7 @@ class PixivSyncCoreTests(unittest.TestCase):
 
 
     def test_zero_byte_file_is_not_considered_downloaded(self):
+        """零字节残片不算已下载；下载内容则必须通过魔数校验。"""
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
             root = tmp / "pixiv"
@@ -354,6 +441,35 @@ class PixivSyncCoreTests(unittest.TestCase):
             empty.write_bytes(b"")
 
             self.assertEqual(store.collect_existing_ids(root), set())
+
+            class _FakeResp:
+                status_code = 200
+                headers = {}
+                raw = io.BytesIO(_PNG_BYTES)
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    return False
+
+            client = PixivClient()
+            client._request = lambda *a, **kw: _FakeResp()
+            result = client.download(
+                "https://img/999_p0.jpg", path=str(root), name="999_p0.jpg"
+            )
+            self.assertTrue(result)
+            self.assertEqual((root / "999_p0.jpg").read_bytes(), _PNG_BYTES)
+
+    def test_download_rejects_non_image_content(self):
+        """魔数校验失败必须抛 PixivError。
+
+        v0.5 起「下载内容真实性校验」是有意设计（docs/pixiv-sync-design.md），
+        不是静默跳过：调用方拿不到文件，异常里带 URL 便于排查。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "pixiv"
+            root.mkdir()
 
             class _FakeResp:
                 status_code = 200
@@ -368,11 +484,8 @@ class PixivSyncCoreTests(unittest.TestCase):
 
             client = PixivClient()
             client._request = lambda *a, **kw: _FakeResp()
-            result = client.download(
-                "https://img/999_p0.jpg", path=str(root), name="999_p0.jpg"
-            )
-            self.assertTrue(result)
-            self.assertEqual((root / "999_p0.jpg").read_bytes(), b"real-bytes")
+            with self.assertRaises(PixivError):
+                client.download("https://img/999_p0.jpg", path=str(root), name="999_p0.jpg")
 
     def test_store_accepts_legacy_array_format(self):
         with tempfile.TemporaryDirectory() as td:
@@ -433,23 +546,29 @@ class PixivSyncCoreTests(unittest.TestCase):
     def test_db_replacing_list_cleans_stale_tags(self):
         with tempfile.TemporaryDirectory() as td:
             db = WorksDB(Path(td) / "works.db", threading.Lock())
-            db.save_pending("following", [_work_item(1, ["a", "b"])], {"complete": False})
-            db.save_pending("following", [_work_item(1, ["b"])], {"complete": False})
-            items, _ = db.load_pending("following")
-            self.assertEqual(items[0]["tags"], ["b"])
+            try:
+                db.save_pending("following", [_work_item(1, ["a", "b"])], {"complete": False})
+                db.save_pending("following", [_work_item(1, ["b"])], {"complete": False})
+                items, _ = db.load_pending("following")
+                self.assertEqual(items[0]["tags"], ["b"])
+            finally:
+                db.close()  # Windows 下不关连接会让临时目录清不掉（WinError 32）
 
     def test_db_replace_artist_is_incremental(self):
         with tempfile.TemporaryDirectory() as td:
             db = WorksDB(Path(td) / "works.db", threading.Lock())
-            db.save_pending("following", [
-                _work_item(11, ["a"], uid=1),
-                _work_item(21, ["b"], uid=2),
-            ], {"done_uids": [1, 2]})
-            db.replace_artist("following", 1, [_work_item(12, ["c"], uid=1)], {"done_uids": [1]})
-            items, scan = db.load_pending("following")
-            ids = {i["id"] for i in items}
-            self.assertEqual(ids, {12, 21})  # 只替换 uid=1，uid=2 保留
-            self.assertEqual(scan["done_uids"], [1])
+            try:
+                db.save_pending("following", [
+                    _work_item(11, ["a"], uid=1),
+                    _work_item(21, ["b"], uid=2),
+                ], {"done_uids": [1, 2]})
+                db.replace_artist("following", 1, [_work_item(12, ["c"], uid=1)], {"done_uids": [1]})
+                items, scan = db.load_pending("following")
+                ids = {i["id"] for i in items}
+                self.assertEqual(ids, {12, 21})  # 只替换 uid=1，uid=2 保留
+                self.assertEqual(scan["done_uids"], [1])
+            finally:
+                db.close()
 
     def test_purge_tool_does_not_delete_original_larger_than_1200(self):
         with tempfile.TemporaryDirectory() as td:
