@@ -36,13 +36,7 @@ jobs:
       - name: 插件规范检查
         run: python tools/check_plugins.py
 
-      - name: 单元测试（已全绿的两个模块）
-        run: python -m unittest tests.test_plugin_spec tests.test_image_viewer_mixed
-
-      - name: 单元测试（全量）
-        # 已知 tests/test_pixiv_sync.py 有 8 个 ERROR（待修）。修完后删除
-        # continue-on-error 这一行，让它成为真正的门禁。
-        continue-on-error: true
+      - name: 单元测试（全量，含 pixiv-sync / Host 白名单 / ncm-cli 注入回归）
         run: python -m unittest discover -s tests
 
       - name: 前端类型检查与构建
