@@ -17,6 +17,7 @@ limitations under the License.
 import html
 import io
 import mimetypes
+import socket
 import sys
 from flask import Flask, request, send_from_directory, send_file, abort
 from pathlib import Path
@@ -56,6 +57,44 @@ def _is_safe_path(full_path: Path, root: Path) -> bool:
         return full_path.is_relative_to(root)
     except ValueError:
         return False
+
+
+def _local_ipv4_addresses() -> set:
+    """枚举本机各网卡的 IPv4 地址（失败时返回空集合）。"""
+    try:
+        _, _, ips = socket.gethostbyname_ex(socket.gethostname())
+        return {ip for ip in ips if ip and not ip.startswith('127.')}
+    except OSError:
+        return set()
+
+
+def _build_trusted_hosts(config: dict) -> list:
+    """计算允许的 Host 白名单（端口不参与匹配）。
+
+    存在的意义是阻断 DNS rebinding：攻击者把 evil.tld 的 DNS 先指向自己、
+    再翻成 127.0.0.1，浏览器便会认为 evil.tld:18080 与 OmniBox 同源，
+    自动带上 HttpOnly 令牌 Cookie。此时 Host 头是攻击者域名 → 直接拒绝。
+
+    白名单来源：
+      - 环回地址永远放行（本机桌面窗口与浏览器访问都走这里）；
+      - config.server.host 是具体地址时放行该地址；
+      - host 为通配地址（0.0.0.0 / ::，即用户就是要从局域网访问）时，
+        放行本机各网卡 IP —— 仍然只放行 IP，不放行任意域名；
+      - config.server.trusted_hosts 可显式补充（如固定内网 IP、反代域名）。
+    """
+    server = config.get('server') or {}
+    if not isinstance(server, dict):
+        server = {}
+    trusted = {'127.0.0.1', 'localhost'}
+    host = str(server.get('host') or '').strip()
+    if host and host not in ('0.0.0.0', '::'):
+        trusted.add(host)
+    else:
+        trusted |= _local_ipv4_addresses()
+    extra = server.get('trusted_hosts') or []
+    if isinstance(extra, (list, tuple)):
+        trusted |= {str(item).strip() for item in extra if str(item).strip()}
+    return sorted(trusted)
 
 # 无需令牌即可访问的路由（页面与静态资源本身不含用户数据）。
 # 数据路由（/api、/file、/files、/thumbs）默认全部要求令牌，新增路由默认受保护。
@@ -152,6 +191,26 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
     frontend_dist = _SHELL_DIR / 'frontend' / 'dist'
     _token = get_or_create_token(get_config_dir())
 
+    # Host 头白名单：不加这行，攻击者域名（DNS rebinding 指向 127.0.0.1）
+    # 就能与 OmniBox 同源、自动带上令牌 Cookie 读走全部数据。
+    app.config['TRUSTED_HOSTS'] = _build_trusted_hosts(config)
+
+    @app.before_request
+    def _enforce_trusted_host():
+        """Host 白名单（防 DNS rebinding），判定必须早于鉴权。
+
+        Flask 的 TRUSTED_HOSTS 在路由解析阶段生效，而 before_request 早于路由
+        解析执行，于是会出现"无令牌 401、有令牌才 400"的语义混淆；这里显式
+        再判一次，让未列入白名单的 Host 一律 400，开放路由（/health）同样受约束。
+        """
+        try:
+            host = request.host
+        except Exception:
+            # Werkzeug 的 Request.host 会按 trusted_hosts 校验并抛 SecurityError
+            abort(400)
+        if host.partition(':')[0] not in app.config['TRUSTED_HOSTS']:
+            abort(400)
+
     @app.before_request
     def _require_token():
         """数据路由鉴权：Cookie 或 X-Omnibox-Token 头二选一。"""
@@ -168,6 +227,15 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         if request.endpoint == 'serve_shell':
             resp.set_cookie(TOKEN_COOKIE, _token, httponly=True, samesite='Lax')
         return resp
+
+    @app.errorhandler(400)
+    def _err_400(e):
+        # Host 校验失败（werkzeug SecurityError）走这里；不注册的话会掉到
+        # Werkzeug 的英文默认页，用户看不懂也拿不到统一外观。
+        return _status_response(400, '请求无效',
+                                '请求的 Host 不在允许列表中，或请求格式不正确。'
+                                '若通过局域网 / 反向代理访问，请在 app.yaml 的 '
+                                'server.trusted_hosts 中补充你的访问地址。')
 
     @app.errorhandler(401)
     def _err_401(e):

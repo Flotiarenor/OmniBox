@@ -28,7 +28,15 @@ from shell.backend.paths import (
 )
 
 DEFAULT_CONFIG = {
-    'server': {'host': '127.0.0.1', 'port': 18080},
+    'server': {
+        'host': '127.0.0.1',
+        'port': 18080,
+        # 允许访问的 Host 白名单（端口不参与匹配）。默认已放行
+        # 127.0.0.1/localhost；把 host 改成 0.0.0.0 供局域网访问时，
+        # 本机网卡 IP 会自动放行，NAT/反代等场景可在此显式补充。
+        # 留空不是"不校验"——未列入的 Host 一律 400（防 DNS rebinding）。
+        'trusted_hosts': [],
+    },
     'directories': {'data_root': './data'},
 }
 
