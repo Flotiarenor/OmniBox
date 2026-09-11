@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -58,6 +59,33 @@ class Album:
         return f"https://music.163.com/#/album?id={self.original_id}"
 
 
+# ncm-cli 是 npm 全局包，Windows 上只有 .cmd/.ps1 shim。shim 会把参数交给
+# cmd.exe 二次解析，因此优先定位包内的 node 入口直连执行（不经 cmd.exe）。
+_NCM_PACKAGE_ENTRY = ('node_modules', '@music163', 'ncm-cli', 'dist', 'index.js')
+_SHELL_META_CHARS = '"&|<>^%!\r\n'
+
+
+def _ncm_argv_prefix() -> List[str]:
+    """返回 ncm-cli 的命令前缀（形如 [node, index.js, '--output', 'json']）。"""
+    exe = shutil.which('ncm-cli')
+    node = shutil.which('node')
+    if exe and node:
+        entry = Path(exe).resolve().parent
+        for part in _NCM_PACKAGE_ENTRY:
+            entry = entry / part
+        if entry.is_file():
+            return [node, str(entry), '--output', 'json']
+    # 退化：直接用 shim（调用方会对参数做元字符拒绝）
+    return [exe or 'ncm-cli', '--output', 'json']
+
+
+def _reject_shell_meta(arg: str) -> str:
+    """拒绝会被 cmd.exe 当作语法解释的字符（仅在必须经 shim 时使用）。"""
+    if any(ch in _SHELL_META_CHARS for ch in arg):
+        raise ValueError(f"参数包含 cmd 元字符，已拒绝执行: {arg!r}")
+    return arg
+
+
 class NeteaseMusicAPI:
     _resident_initialized = False
 
@@ -92,32 +120,33 @@ class NeteaseMusicAPI:
         except Exception as e:
             print(f"[netease-music] 写入 ncm-cli player=mpv 配置失败: {e}")
 
-    def _run_command(self, cmd: str, timeout: int = 30, env: dict = None) -> Dict[str, Any]:
+    def _run_command(self, cmd, timeout: int = 30, env: dict = None) -> Dict[str, Any]:
+        """执行 ncm-cli 命令。
+
+        cmd 支持两种形式：
+          - 常量命令字符串（内部用 shlex.split 拆分，如 "--version"）；
+          - list[str] 参数数组 —— **含用户输入时必须用这种形式**。
+
+        绝不使用 shell=True：keyword 直接来自前端搜索框，而 Windows 上
+        ncm-cli 只是 npm 生成的 .cmd shim，cmd.exe 会二次解析参数，一个引号
+        就能逃出引号让 `&` 变成命令分隔符。见 docs/code-review.md §3.2。
+        """
+        args = shlex.split(cmd) if isinstance(cmd, str) else [str(item) for item in cmd]
+        argv = _ncm_argv_prefix()
+        if argv[0].lower().endswith(('.cmd', '.bat', '.ps1')):
+            # 退化路径：没能定位到 node 入口，参数要经过 cmd.exe 二次解析，
+            # 因此拒绝一切 cmd 元字符（宁可不执行，也不给注入留缝）。
+            args = [_reject_shell_meta(item) for item in args]
         try:
-            if os.name == 'nt':
-                # Windows 下 npm 安装的 ncm-cli 通常是 .cmd/.ps1 shim，
-                # 使用 shell=True 才能正确解析到命令。
-                result = subprocess.run(
-                    f"ncm-cli --output json {cmd}",
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    encoding='utf-8',
-                    errors='replace',
-                    timeout=timeout,
-                    env=env,
-                )
-            else:
-                full_cmd = ["ncm-cli", "--output", "json"] + shlex.split(cmd)
-                result = subprocess.run(
-                    full_cmd,
-                    capture_output=True,
-                    text=True,
-                    encoding='utf-8',
-                    errors='replace',
-                    timeout=timeout,
-                    env=env,
-                )
+            result = subprocess.run(
+                argv + args,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=timeout,
+                env=env,
+            )
             return {
                 "success": result.returncode == 0,
                 "stdout": result.stdout.strip(),
@@ -168,11 +197,11 @@ class NeteaseMusicAPI:
         return result["stdout"]
 
     def set_config(self, key: str, value: str) -> bool:
-        result = self._run_command(f'config set {key} "{value}"')
+        result = self._run_command(['config', 'set', str(key), str(value)])
         return result["success"]
 
     def get_config(self, key: str) -> Optional[str]:
-        result = self._run_command(f"config get {key}")
+        result = self._run_command(['config', 'get', str(key)])
         if result["success"]:
             return result["stdout"]
         return None
@@ -190,29 +219,25 @@ class NeteaseMusicAPI:
         return self._run_command(cmd)
 
     def search_song(self, keyword: str, user_input: str = None) -> List[Song]:
-        cmd = f'search song --keyword "{keyword}"'
-        result = self._run_command(cmd)
+        result = self._run_command(['search', 'song', '--keyword', str(keyword)])
         if not result["success"]:
             raise RuntimeError(result["stderr"] or result["stdout"] or "ncm-cli 搜索歌曲失败")
         return self._parse_songs(result["stdout"])
 
     def search_playlist(self, keyword: str, user_input: str = None) -> List[Playlist]:
-        cmd = f'search playlist --keyword "{keyword}"'
-        result = self._run_command(cmd)
+        result = self._run_command(['search', 'playlist', '--keyword', str(keyword)])
         if not result["success"]:
             raise RuntimeError(result["stderr"] or result["stdout"] or "ncm-cli 搜索歌单失败")
         return self._parse_playlists(result["stdout"])
 
     def search_album(self, keyword: str, user_input: str = None) -> List[Album]:
-        cmd = f'search album --keyword "{keyword}"'
-        result = self._run_command(cmd)
+        result = self._run_command(['search', 'album', '--keyword', str(keyword)])
         if not result["success"]:
             raise RuntimeError(result["stderr"] or result["stdout"] or "ncm-cli 搜索专辑失败")
         return self._parse_albums(result["stdout"])
 
     def create_playlist(self, name: str) -> Optional[Playlist]:
-        cmd = f'playlist create --playlistName "{name}"'
-        result = self._run_command(cmd)
+        result = self._run_command(['playlist', 'create', '--playlistName', str(name)])
         if not result["success"]:
             return None
         return self._parse_single_playlist(result["stdout"])
@@ -220,13 +245,15 @@ class NeteaseMusicAPI:
     def add_to_playlist(self, playlist_id: str, song_ids: List[str]) -> bool:
         import json as _json
         ids_json = _json.dumps(list(song_ids), ensure_ascii=False)
-        cmd = f"playlist add --playlistId {playlist_id} --songIdList '{ids_json}'"
-        result = self._run_command(cmd)
+        result = self._run_command([
+            'playlist', 'add',
+            '--playlistId', str(playlist_id),
+            '--songIdList', ids_json,
+        ])
         return self._command_success(result)
 
     def get_playlist_detail(self, playlist_id: str) -> Optional[Dict]:
-        cmd = f'playlist get --playlistId {playlist_id}'
-        result = self._run_command(cmd)
+        result = self._run_command(['playlist', 'get', '--playlistId', str(playlist_id)])
         if not result["success"]:
             return None
         data = self._parse_json_output(result["stdout"])
@@ -235,20 +262,24 @@ class NeteaseMusicAPI:
         return data
 
     def get_playlist_tracks(self, playlist_id: str, limit: int = 30, offset: int = 0) -> List[Song]:
-        cmd = f'playlist tracks --playlistId {playlist_id} --limit {limit} --offset {offset}'
-        result = self._run_command(cmd)
+        result = self._run_command([
+            'playlist', 'tracks',
+            '--playlistId', str(playlist_id),
+            '--limit', str(limit),
+            '--offset', str(offset),
+        ])
         if not result["success"]:
             raise RuntimeError(result["stderr"] or result["stdout"] or "ncm-cli 获取歌单歌曲失败")
         return self._parse_songs(result["stdout"])
 
     def get_created_playlists(self, limit: int = 100) -> List[Playlist]:
-        result = self._run_command(f"playlist created --limit {limit}")
+        result = self._run_command(['playlist', 'created', '--limit', str(limit)])
         if not result["success"]:
             raise RuntimeError(result["stderr"] or result["stdout"] or "ncm-cli 获取创建的歌单失败")
         return self._parse_playlists(result["stdout"])
 
     def get_collected_playlists(self, limit: int = 100) -> List[Playlist]:
-        result = self._run_command(f"playlist collected --limit {limit}")
+        result = self._run_command(['playlist', 'collected', '--limit', str(limit)])
         if not result["success"]:
             raise RuntimeError(result["stderr"] or result["stdout"] or "ncm-cli 获取收藏的歌单失败")
         return self._parse_playlists(result["stdout"])
@@ -276,7 +307,7 @@ class NeteaseMusicAPI:
         playlist_id = self._get_favorite_playlist_id()
         if not playlist_id:
             raise RuntimeError("无法获取“我的喜欢”歌单，请先登录后重试")
-        cmd = f'playlist tracks --playlistId {playlist_id} --limit {limit}'
+        cmd = ['playlist', 'tracks', '--playlistId', str(playlist_id), '--limit', str(limit)]
         result = self._run_command(cmd)
         if not result["success"]:
             raise RuntimeError(result["stderr"] or result["stdout"] or "ncm-cli 获取红心歌曲失败")
@@ -334,7 +365,8 @@ class NeteaseMusicAPI:
 
         try:
             self._run_command(
-                f'play --song --encrypted-id {song_id} --original-id {original_id}',
+                ['play', '--song', '--encrypted-id', str(song_id),
+                 '--original-id', str(original_id)],
                 timeout=timeout,
                 env=env,
             )
@@ -453,9 +485,9 @@ if __name__ == "__main__":
         if song_id and playlist_id:
             return False
         if song_id:
-            cmd = f'play --song --encrypted-id {song_id}'
+            cmd = ['play', '--song', '--encrypted-id', str(song_id)]
         elif playlist_id:
-            cmd = f'play --playlist --encrypted-id {playlist_id}'
+            cmd = ['play', '--playlist', '--encrypted-id', str(playlist_id)]
         else:
             return False
         result = self._run_command(cmd)
@@ -474,8 +506,8 @@ if __name__ == "__main__":
         return self._command_success(self._run_command("prev"))
 
     def set_volume(self, volume: int) -> bool:
-        volume = max(0, min(100, volume))
-        return self._command_success(self._run_command(f"volume {volume}"))
+        volume = max(0, min(100, int(volume)))
+        return self._command_success(self._run_command(['volume', str(volume)]))
 
     def get_playback_status(self) -> Optional[Dict]:
         result = self._run_command("state")
@@ -484,7 +516,7 @@ if __name__ == "__main__":
         return self._parse_json_output(result["stdout"])
 
     def get_lyric(self, song_id: str) -> Optional[Dict]:
-        result = self._run_command(f"song lyric --songId {song_id}")
+        result = self._run_command(['song', 'lyric', '--songId', str(song_id)])
         if not result["success"]:
             raise RuntimeError(result["stderr"] or result["stdout"] or "ncm-cli 获取歌词失败")
         data = self._parse_json_output(result["stdout"])
