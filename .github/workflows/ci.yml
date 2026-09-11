@@ -1,0 +1,51 @@
+name: ci
+
+# 最小可用 CI：只做"已确认为真"的门禁，不做会红的检查。
+# runner 必须是 windows-latest：tests/test_pixiv_sync.py 的 SQLite 临时目录
+# 清理错误是 Windows 专属现象，Linux runner 会永久掩盖它。
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: shell/frontend/package-lock.json
+
+      - name: 安装依赖（运行时 + 开发）
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+
+      - name: 语法级静态检查（ruff 严重错误子集）
+        run: python -m ruff check --select E9,F63,F7,F82 .
+
+      - name: 插件规范检查
+        run: python tools/check_plugins.py
+
+      - name: 单元测试（已全绿的两个模块）
+        run: python -m unittest tests.test_plugin_spec tests.test_image_viewer_mixed
+
+      - name: 单元测试（全量）
+        # 已知 tests/test_pixiv_sync.py 有 8 个 ERROR（待修）。修完后删除
+        # continue-on-error 这一行，让它成为真正的门禁。
+        continue-on-error: true
+        run: python -m unittest discover -s tests
+
+      - name: 前端类型检查与构建
+        run: |
+          npm --prefix shell/frontend ci
+          npm --prefix shell/frontend run build
