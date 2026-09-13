@@ -127,7 +127,21 @@ node tools/check_frontend_escape.cjs
 - **不打缓存与用户数据**：跳过 `__pycache__` / `*.pyc` / `.git` / `node_modules`，
   以及 `data/`、`.config/`（后者含 `auth_token.txt`）。
 - **产物校验**：`tools/check_build_tree.py` 断言必需文件存在、禁止内容不出现
-  （含字节码与用户数据目录）。
+  （含字节码与用户数据目录），并且会**解析产物 exe 里的 PYZ**，确认
+  `HIDDEN_IMPORTS` 声明的纯 Python 模块真的打进去了 —— 插件是动态加载的，
+  PyInstaller 找不到时只打一条 warning 就跳过，必须靠这道检查兜住。
+- **CI 里 Linux 构建必须用发行版 Python**（不能用 `actions/setup-python`）：
+  后者那份 libpython 与我们的 spec 不兼容，产物启动即报
+  `Failed to load Python shared library .../libpython3.12.so.1.0`（它会让
+  PyInstaller 把 `_struct`/`_zlib` 嵌进 exe，bootloader 于是按 onefile 去
+  `/tmp/_MEIxxx` 找 libpython；即便找到，初始化 `struct` 也会报
+  `Module object for struct is NULL!`）。因此 `release.yml` / `ci.yml` /
+  `package-smoke.yml` 里**产出二进制**的 job，Linux 分支统一走
+  `apt install python3 python3-venv binutils` +
+  `python3 -m venv "$RUNNER_TEMP/omnibox-build-venv"`，再把 venv 的 `bin`
+  追加到 `GITHUB_PATH`（后续步骤里的 `python` 就是它）。venv 刻意放在工作区
+  **外面**：放仓库里会被 ruff 当源码扫（`extend-exclude` 里没有它）。
+  Windows 分支照旧用 setup-python；只跑测试/门禁的 job 也不受影响。
 
 本地发布构建（沿用原脚本，已加严格模式）：
 
