@@ -144,7 +144,10 @@ jobs:
           - os: ubuntu-latest
             spec: docs/Releases/omnibox-linux.spec
             artifact: OmniBox-linux-x64.tar.gz
-            expect_exe: OmniBox.bin
+            # 注意：发布产物统一叫 OmniBox —— 下面的 Linux 步骤会把 PyInstaller 产出的
+            # OmniBox.bin 重命名掉，所以这里校验的是重命名后的名字（此前写成
+            # OmniBox.bin，导致校验必然失败）。
+            expect_exe: OmniBox
     steps:
       # 与 verify 一致：产物必须来自 tag 指向的提交。
       - uses: actions/checkout@v4
@@ -192,6 +195,8 @@ jobs:
       - name: Linux：重命名可执行文件
         if: runner.os == 'Linux'
         run: |
+          set -euo pipefail
+          test -f .build-dist/OmniBox/OmniBox.bin
           mv .build-dist/OmniBox/OmniBox.bin .build-dist/OmniBox/OmniBox
           chmod +x .build-dist/OmniBox/OmniBox
 
