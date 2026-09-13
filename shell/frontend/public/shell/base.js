@@ -55,7 +55,14 @@ window.Bridge = (function() {
 
   function thumbUrl(path) {
     const plugin = API_PREFIX;
-    return `/thumbs/${path}?plugin=${plugin}`;
+    // 逐段编码后拼回（保留 / 作为分隔符）：路径里的 % # ? 等字符原样拼进 URL 会被
+    // 反代（nginx 对非法百分号转义直接 400）或浏览器（# 之后当 fragment 截断）吃掉，
+    // 缩略图就再也加载不出来 —— 原图走 originalUrl() 有 encodeURIComponent 所以正常。
+    const encoded = String(path == null ? '' : path)
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+    return `/thumbs/${encoded}?plugin=${plugin}`;
   }
 
   function setPrefix(prefix) {

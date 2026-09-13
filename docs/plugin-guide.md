@@ -583,7 +583,7 @@ class AudioCoverCache(ThumbCache):
 | `Bridge.call(method, ...args)`               | 调用后端 API（自动添加插件名前缀）                                      |
 | `Bridge.callSystem(method, ...args)`         | 调用 Shell 系统 API（不加插件前缀，如`system_get_plugin_extensions`） |
 | `Bridge.callPlugin(plugin, method, ...args)` | 跨插件调用其他插件后端 API                                              |
-| `Bridge.thumbUrl(relPath)`                   | 获取缩略图 URL（自动附加`?plugin=插件名`）                            |
+| `Bridge.thumbUrl(relPath)`                   | 获取缩略图 URL（自动附加`?plugin=插件名`，路径逐段百分号编码，`%`/`#`/空格等字符安全） |
 | `Bridge.originalUrl(relPath)`                | 获取原图 URL（自动附加`?plugin=插件名`）                              |
 | `Bridge.setPrefix(prefix)`                   | 设置 API 前缀（Shell 在加载插件时自动调用）                             |
 
