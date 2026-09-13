@@ -1037,7 +1037,32 @@ class ImageViewerPlugin(PluginBase):
         folders = self.setting('folders') or {}
         if not isinstance(folders, dict):
             folders = {}
-        global_settings = folders.get('__global__', {})
+        # 全局设置有两个来源：
+        #   1. 插件级键（row_height / per_page / sort_by / …）——壳设置面板与
+        #      save_folder_settings('') 走 PluginBase.save_settings() 写入，是当前写入路径；
+        #   2. folders['__global__']——更早的兼容位置，当前代码不再写入。
+        # 历史缺陷：这里只读 2，于是"保存到全局"当场生效、重启后静默回落到硬默认值。
+        # 两者都读，但**以当前写入路径为准**：只把真正存过的插件级键（设置存储或
+        # 启动时预设里有这个键）算进来，不能用 self.setting() 的 schema 默认值去
+        # 覆盖 __global__，否则老配置里的全局值会被默认值悄悄顶掉。
+        stored = {}
+        if self._settings_store:
+            raw = self._settings_store.get(self.name)
+            if isinstance(raw, dict):
+                stored.update(raw)
+        if isinstance(self._resolved_config, dict):
+            for key, value in self._resolved_config.items():
+                stored.setdefault(key, value)
+        global_settings = {}
+        legacy = folders.get('__global__')
+        if isinstance(legacy, dict):
+            global_settings.update(legacy)
+        for item in self.settings_schema:
+            key = item.get('key')
+            if not key or key == 'root_dir':
+                continue
+            if key in stored and stored[key] is not None:
+                global_settings[key] = stored[key]
         hard_defaults = {
             "row_height": 200,
             "per_page": 40,
@@ -1101,6 +1126,11 @@ class ImageViewerPlugin(PluginBase):
                 self.thumb_cache = ThumbCache(self.thumb_db_path)
                 self._meta_cache = self._load_meta()
                 self._list_cache.clear()
+        # 排序/封面规则变更（壳设置面板走的是 PluginBase.save_settings，不经过
+        # save_folder_settings）也要立即生效，而不是等 30s TTL 过期
+        if {'sort_by', 'sort_order', 'album_sort_by', 'album_sort_order'} & set(changed_keys):
+            self._list_cache.clear()
+            self._invalidate_albums_cache()
 
     def clear_folder_settings(self, rel_path: str) -> Dict:
         """删除指定文件夹的独立设置，使其回退到全局设置"""

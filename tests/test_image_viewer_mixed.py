@@ -205,7 +205,7 @@ class ImageViewerMixedTestCase(unittest.TestCase):
                                'workA/111_p2.png', 'workA/111_p10.png'])
 
     def test_album_cache_version_invalidation(self):
-        """旧版(version 2)相册索引缓存作废：封面重新按 p0 计算，不复用旧的 mtime 封面。"""
+        """旧版(version 2)相册索引缓存作废：封面重新按当前规则计算，不复用旧的 mtime 封面。"""
         import json
         cache_file = self.root / '.cache' / 'albums_index.json'
         cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -272,6 +272,92 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         s = self.plugin.get_settings('')
         self.assertEqual(s['sort_by'], 'mtime')
         self.assertEqual(s['sort_order'], 'desc')
+
+    def test_global_settings_persist_across_instances(self):
+        """全局设置必须能读回：壳设置面板与 save_folder_settings('') 写的是插件级键
+        （sort_by / row_height / …），而 get_settings 原先只读 folders['__global__']
+        （全仓没有写入方），于是"保存到全局"当场生效、重启后静默回落到硬默认值。"""
+
+        class FakeStore:
+            def __init__(self):
+                self.data = {}
+
+            def get(self, name):
+                return self.data.get(name, {})
+
+            def set(self, name, value):
+                self.data[name] = value
+
+            def update(self, name, values):
+                merged = dict(self.data.get(name, {}))
+                merged.update(values)
+                self.data[name] = merged
+                return merged
+
+        store = FakeStore()
+        plugin = self.module.ImageViewerPlugin(
+            {'name': 'image-viewer'},
+            {'directories': {'data_root': str(self.root)}},
+        )
+        plugin._settings_store = store
+        result = plugin.save_folder_settings('', {
+            'row_height': 300, 'per_page': 60, 'sort_by': 'name', 'sort_order': 'asc',
+        })
+        self.assertTrue(result.get('success'))
+        applied = plugin.get_settings('')
+        self.assertEqual(applied['row_height'], 300)
+        self.assertEqual(applied['sort_by'], 'name')
+        # 新实例 = 重启后重新加载，仍能读到同一份设置
+        reopened = self.module.ImageViewerPlugin(
+            {'name': 'image-viewer'},
+            {'directories': {'data_root': str(self.root)}},
+        )
+        reopened._settings_store = store
+        persisted = reopened.get_settings('')
+        self.assertEqual(persisted['row_height'], 300)
+        self.assertEqual(persisted['sort_by'], 'name')
+        self.assertEqual(persisted['sort_order'], 'asc')
+
+    def test_legacy_global_key_does_not_shadow_new_save(self):
+        """folders['__global__'] 是旧写入路径：它要能补齐插件级键没存过的项，
+        但不能压住新保存的值（否则设置页保存后重启仍看到旧值）。"""
+
+        class FakeStore:
+            def __init__(self, data=None):
+                self.data = data or {}
+
+            def get(self, name):
+                return self.data.get(name, {})
+
+            def set(self, name, value):
+                self.data[name] = value
+
+            def update(self, name, values):
+                merged = dict(self.data.get(name, {}))
+                merged.update(values)
+                self.data[name] = merged
+                return merged
+
+        # 插件级键 = 新写入路径保存过的值；__global__ = 旧版本留下的全局值
+        store = FakeStore({'image-viewer': {'row_height': 300, 'sort_by': 'name'}})
+        module = self.module
+        original = getattr(module.ImageViewerPlugin, '_resolved_config', None)
+        try:
+            module.ImageViewerPlugin._resolved_config = {
+                'root_dir': str(self.root),
+                'folders': {'__global__': {'sort_by': 'time_name', 'per_page': 60}},
+            }
+            plugin = module.ImageViewerPlugin(
+                {'name': 'image-viewer'},
+                {'directories': {'data_root': str(self.root)}},
+            )
+        finally:
+            module.ImageViewerPlugin._resolved_config = original
+        plugin._settings_store = store
+        settings = plugin.get_settings('')
+        self.assertEqual(settings['sort_by'], 'name')     # 新保存优先于 __global__
+        self.assertEqual(settings['row_height'], 300)     # 新保存的插件级键生效
+        self.assertEqual(settings['per_page'], 60)        # __global__ 补齐没存过的项
 
     def test_settings_cascade(self):
         """父文件夹启用 time_name 后，其下所有子文件夹继承；单独修改的子文件夹以自己为准。"""
