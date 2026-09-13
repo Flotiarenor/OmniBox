@@ -84,9 +84,14 @@ plugins/image-viewer/
 
 ### 3.3 相册索引 `albums_index.json`
 
-- 版本号 `version: 3`（封面 = 文件名自然序第一张 p0；旧版按最新 mtime 取封面，作废重扫）
-- 内容：`{version, dirs: {rel_path: {mtime, direct_count, direct_cover, has_children, ...}}}`
-- **增量**：`list_albums` 全树枚举目录 mtime，仅扫描变化目录（0.5s 容差），自底向上聚合 `image_count / cover / newest`
+- 版本号 `_ALBUM_CACHE_VERSION = 4`（封面挑选规则变更必须 +1，否则目录 mtime 未变时
+  增量扫描会继续复用旧封面）：
+  - v4：Pixiv 树封面 = **作品号最大**的那张（画师最近的作品），同作品内取 p0
+  - v3：封面 = 文件名自然序第一张（p0）
+  - v2：封面 = 最新 mtime 的那张
+- 内容：`{version, dirs: {rel_path: {mtime, direct_count, direct_cover, direct_mtime, pixiv, has_children, ...}}}`
+- **增量**：`list_albums` 全树枚举目录 mtime，仅扫描变化目录（0.5s 容差），自底向上聚合 `image_count / cover / newest`；
+  缓存命中还需 `pixiv` 标记一致：封面规则由 Pixiv 排序决定，切换排序后必须重扫该目录
 - **TTL**：`list_albums` 结果 30 秒内存缓存（`_ALBUMS_TTL`），`refresh()` / `rebuild_all` / 相册配置 / 文件夹设置变更时失效（`_invalidate_albums_cache()`）
 
 ### 3.4 内存列表缓存 `_list_cache`
@@ -111,10 +116,38 @@ plugins/image-viewer/
   - 作品内部（纯图片文件夹）图片仍按文件名自然序 p0 → p1，不受方向影响
 - 卡片 `use_time_name` 标记瓦片是否启用角标（后端按逐级继承算好）
 
-### 4.3 per-folder 设置继承
+### 4.3 相册封面挑选
 
-`get_settings(rel_path)` 按「当前文件夹 → 父文件夹 → … → 全局（`folders.__global__`）→ 硬默认」合并；
-`folders` 键存在即覆盖。`save_folder_settings` 支持两种调用形态（见 API 表）。
+`_scan_dir_direct` 里按目录生效的排序决定封面（`_pick_cover`）：
+
+- **Pixiv 树**（`sort_by == 'time_name'`）：取**作品号最大**的那张 —— 画师目录下平铺着
+  `<pid>.jpg` / `<pid>_p0.jpg`（pixiv-sync 的落盘规则），旧规则"自然序第一张"等于永远
+  展示该画师最老的作品；同作品（同 pid）内再取文件名自然序第一张，即 p0 而非 p1/p10；
+- **其他目录**：文件名自然序第一张（行为不变）。
+
+纯容器目录的封面由 `_build_albums` 自底向上聚合，比较键是 `_cover_rank`：
+Pixiv 树按作品号大者优先（老作品被重新下载、目录 mtime 更新也抢不走封面），
+非 Pixiv 目录仍是 mtime 最新者优先；两种情况下 `image_count / mtime` 聚合都不受影响。
+
+### 4.4 per-folder 设置继承
+
+`get_settings(rel_path)` 按「当前文件夹 → 父文件夹 → … → 全局 → 硬默认」合并；
+全局来源有两处：`folders.__global__`（更早的兼容位置，当前代码不再写入）与
+`settings_schema` 声明的插件级键（壳设置面板与 `save_folder_settings('')` 走
+`PluginBase.save_settings()` 写入，是当前写入路径）。**只有真正存过值的插件级键**
+才覆盖 `__global__`——用 `self.setting()` 的 schema 默认值去覆盖会让老配置里的
+全局值被默认值悄悄顶掉。`folders` 的文件夹级键存在即覆盖全局。
+`save_folder_settings` 支持两种调用形态（见 API 表）。
+
+### 4.5 作者网格二次排序
+
+Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件名 / 图片数量 + 方向），
+配置项 `album_sort_by` / `album_sort_order`，默认「更新时间 / 倒序」：
+
+- 只在**生效** Pixiv 排序的页面应用（`_albumPageIsPixiv()`：children 页看父目录、
+  albums 页看根目录的 `use_time_name`）；其他页面保持文件名正序，不受这组设置影响；
+- 设置页只在当前文件夹 `get_settings().sort_by == 'time_name'` 时显示这组选项，
+  值本身是全局偏好（不写入文件夹级设置）；选项隐藏时保存不会写这两个键。
 
 ## 5. 视图模式与前端设计
 
@@ -122,7 +155,7 @@ plugins/image-viewer/
 
 | 模式 | 内容 |
 | ---- | ---- |
-| `albums` | 相册卡片网格（含 timeline / latest 变体），作者页排序栏（name/mtime/count + 正倒序，localStorage 记忆） |
+| `albums` | 相册卡片网格（含 timeline / latest 变体）；作者网格的二次排序只在设置页配置（见 §4.5） |
 | `children` | 子相册网格（进入纯容器文件夹，非 Pixiv 或配置点） |
 | `images` | 混合瀑布流（`list_folder_items` 渲染） |
 
@@ -179,7 +212,7 @@ plugins/image-viewer/
 
 | API | 参数 | 返回 | 说明 |
 |-----|------|------|------|
-| `get_settings` | `rel_path=''` | `{row_height, per_page, sort_by, sort_order, root_dir, pixiv_explicit}` | 生效设置（逐级继承 + 全局回退）；`pixiv_explicit` 为配置点标记 |
+| `get_settings` | `rel_path=''` | `{row_height, per_page, sort_by, sort_order, album_sort_by, album_sort_order, root_dir, pixiv_explicit}` | 生效设置（逐级继承 + 全局回退）；`pixiv_explicit` 为配置点标记 |
 | `save_settings` | 两种形态：`save_settings(settings_dict)` 或 `save_settings(rel_path, settings)` | `{success}` | 全局保存走 `super().save_settings()`（schema 过滤）；文件夹级保存进 `folders[rel_path]`（剥离 `root_dir`）并失效相册缓存 |
 | `get_root_dir` | 无 | `str` | 当前数据根目录（绝对路径） |
 | `clear_folder_settings` | `rel_path` | `{success}` | 删除文件夹独立设置，回退全局 |
@@ -204,11 +237,16 @@ plugins/image-viewer/
 | `per_page` | number 10–200 | 40 | 每页图片数 |
 | `sort_by` | select | `mtime` | `mtime` / `name` / `time_name`（Pixiv 排序支持） |
 | `sort_order` | select | `desc` | `desc` / `asc` |
+| `album_sort_by` | select | `mtime` | 作者网格二次排序：`mtime`（更新时间）/ `name` / `count`；当前文件夹未生效 Pixiv 排序时设置页不显示该组选项 |
+| `album_sort_order` | select | `desc` | 作者网格二次排序方向：`desc` / `asc` |
 
 **per-folder 设置**（`folders` 键，不在 schema 中，经 `update_setting` 持久化）：
 
 - 结构：`{__global__: {...}, "pixiv": {...}, "pixiv/作者": {...}}`
-- `get_settings` 逐级合并：当前文件夹 → 父级 → `__global__` → 硬默认
+- `get_settings` 逐级合并：当前文件夹 → 父级 → 全局（`__global__` 打底，**存过值**的插件级 schema 键覆盖）→ 硬默认
+- 二次排序（`album_sort_by` / `album_sort_order`）是全局偏好，不写入文件夹级设置；
+  设置页仅在当前文件夹 **生效** Pixiv 排序（`sort_by == 'time_name'`）时显示这组选项——
+  改成 Pixiv 排序保存后页面刷新，下次打开设置即出现；隐藏时保存不会写这两个键
 - 保存全局时前端会 `clear_folder_settings(当前文件夹)`（注意：会清掉该文件夹独立设置）
 
 ## 8. 文件服务集成
@@ -247,7 +285,8 @@ plugins/image-viewer/
 
 ## 11. 测试与调试
 
-- 仓库测试：`python -m unittest tests.test_image_viewer_mixed`（混合瀑布流 19 项）
+- 仓库测试：`python -m unittest tests.test_image_viewer_mixed`（混合瀑布流 19 项）、
+  `python -m unittest tests.test_image_viewer_pixiv_cover`（画师封面 + 作者视图二次排序 11 项）
 - 状态调试：`python tests/debug_status_pages.py`（一键起 `--status-debug` 服务器 + 11 个 HTTP 场景触发表 + 壳内 `/status` 调试面板；含坏插件演示 iframe 404 → 壳内错误卡片链路）
 - 常用验证：`refresh` API 强制重扫、`rebuild_status` 轮询查看重建进度、`G:\图库` 等大目录做性能基准
 
@@ -260,3 +299,4 @@ plugins/image-viewer/
 | v2.4.1 | 作者页排序栏（文件名/更新时间/图片数量 + 正倒序） |
 | v2.4.2 | SQLite 缩略图缓存（58bf8d2）→ 全量重建后台任务/进度/取消（a2044f4–5f0af50）→ 并行生成与指定文件夹重建 → PyInstaller sqlite3 显式打包（827d76b）→ 性能优化（TTL/并行/脏标记，58d6ea4） |
 | v2.4.3 | 缩略图缓存与重建任务迁移到 Shell 共享基建（ThumbCache / BackgroundTask，d7c8620），API 与行为不变 |
+| 未发布 | Pixiv 树封面改为作品号最大的一张（画师最近的作品）→ 相册索引缓存 v4；作者网格二次排序从显示页排序栏移入设置页并落库（`album_sort_by` / `album_sort_order`，默认更新时间/倒序，仅生效 Pixiv 排序时显示）；修复全局设置保存后读不回的缺陷，并让历史位置 `__global__` 只作补齐、不压住新保存的值 |

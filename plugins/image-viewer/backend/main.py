@@ -41,6 +41,38 @@ def _pixiv_sort(entries, name_fn, reverse):
     other.sort(key=lambda t: t[0], reverse=reverse)
     return [it for _, it in numeric] + [it for _, it in other]
 
+
+def _pick_cover(images: List[Dict], pixiv: bool, name_fn=lambda img: img['rel']) -> str:
+    """目录封面挑选，返回选中图片的 name_fn 值（`_scan_dir_direct` 里即 rel 相对路径）。
+
+    Pixiv 树（`sort_by == 'time_name'`）取**作品号最大**的那张 —— 画师目录里
+    平铺着 `<pid>.jpg` / `<pid>_p0.jpg`（pixiv-sync 的落盘规则），按自然序第一张
+    取封面等于永远展示该画师最老的作品；同一作品（同 pid）内再取文件名自然序
+    第一张，即 p0 而不是 p1/p10。非 Pixiv 目录保持原有行为：文件名自然序第一张。
+    """
+    if not images:
+        return ''
+    if pixiv:
+        numbered = [(pixiv_number(Path(name_fn(img)).name), img) for img in images]
+        known = [num for num, _ in numbered if num is not None]
+        if known:
+            newest = max(known)
+            same_work = [img for num, img in numbered if num == newest]
+            return name_fn(min(same_work, key=lambda img: natural_sort_key(Path(name_fn(img)).name)))
+    return name_fn(min(images, key=lambda img: natural_sort_key(Path(name_fn(img)).name)))
+
+
+def _cover_rank(cover_rel: str, mtime: float, pixiv: bool) -> tuple:
+    """封面优先级键（可直接 max() 比较）。
+
+    Pixiv 树按作品号大者优先（= 画师最近的作品），非 Pixiv 目录沿用
+    「mtime 更新者优先」；Pixiv 条目整体优先于无号的普通条目。
+    """
+    num = pixiv_number(Path(cover_rel).name) if cover_rel else None
+    if pixiv and num is not None:
+        return (1, num, 0.0)
+    return (0, 0.0, mtime)
+
 class ImageViewerPlugin(PluginBase):
     settings_schema: ClassVar[List[Dict[str, Any]]] = [
         {"key": "root_dir", "label": "数据根目录", "type": "text",
@@ -55,6 +87,14 @@ class ImageViewerPlugin(PluginBase):
                      {"label": "文件名", "value": "name"},
                      {"label": "Pixiv 排序支持", "value": "time_name"}]},
         {"key": "sort_order", "label": "排序方向", "type": "select",
+         "default": "desc",
+         "options": [{"label": "倒序", "value": "desc"}, {"label": "正序", "value": "asc"}]},
+        {"key": "album_sort_by", "label": "作者视图排序方式", "type": "select",
+         "default": "mtime",
+         "options": [{"label": "更新时间", "value": "mtime"},
+                     {"label": "文件名", "value": "name"},
+                     {"label": "图片数量", "value": "count"}]},
+        {"key": "album_sort_order", "label": "作者视图排序方向", "type": "select",
          "default": "desc",
          "options": [{"label": "倒序", "value": "desc"}, {"label": "正序", "value": "asc"}]},
     ]
@@ -83,6 +123,12 @@ class ImageViewerPlugin(PluginBase):
 
     # ===== 常量 =====
     _ALBUMS_TTL = 30.0            # list_albums 全树扫描结果缓存秒数
+    # 相册索引缓存版本：封面挑选规则变更时必须 +1，否则旧缓存会让新规则不生效
+    # （目录 mtime 没变 → 增量扫描直接复用旧的 direct_cover）。
+    # 4：Pixiv 树封面 = 作品号最大的那张（画师最近的作品）
+    # 3：封面 = 文件名自然序第一张（p0）
+    # 2：封面 = 最新 mtime 的那张
+    _ALBUM_CACHE_VERSION = 4
     _MAX_LIST_CACHE = 200         # 列表缓存最大条目数，超出后淘汰最旧一半
     _MAX_ALL_IMAGES = 5000        # 连续浏览序列最大返回条数，超出截断
     _SCAN_WORKERS = 8             # 扫描/尺寸读取并行线程数
@@ -345,9 +391,13 @@ class ImageViewerPlugin(PluginBase):
             mtime = dir_path.stat().st_mtime
         except OSError:
             return None
+        # 缓存命中条件除目录 mtime 外还要看 Pixiv 排序标志：封面挑选规则由它决定，
+        # 切换排序后旧封面必须重算（缓存里没存图片列表，无法就地重挑）
         cached = cache_dirs.get(sub_rel)
+        pixiv = self.get_settings(sub_rel).get('sort_by') == 'time_name'
         if cached and cached.get('mtime') is not None \
-                and abs(float(cached.get('mtime', 0)) - float(mtime)) < 0.5:
+                and abs(float(cached.get('mtime', 0)) - float(mtime)) < 0.5 \
+                and cached.get('pixiv') == pixiv:
             entry = cached
         else:
             entry = self._scan_dir_direct(dir_path, sub_rel)
@@ -397,7 +447,7 @@ class ImageViewerPlugin(PluginBase):
             'mtime': mtime,
             'width': cw or 1,
             'height': ch or 1,
-            'use_time_name': (self.get_settings(sub_rel).get('sort_by') == 'time_name'),
+            'use_time_name': pixiv,
         }
         return sub_rel, card, images
 
@@ -590,13 +640,15 @@ class ImageViewerPlugin(PluginBase):
             try:
                 with open(self.album_cache_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                # 版本 3：封面改为文件名自然序第一张（p0）。
-                # 旧版（version 2）缓存里封面是按最新 mtime 取的，必须作废重扫。
-                if isinstance(data, dict) and data.get('version') == 3:
+                # 版本 4：Pixiv 树封面改为作品号最大的那张（画师最近的作品，
+                # 同作品内仍取 p0）；版本 3 缓存里 Pixiv 封面是自然序第一张
+                # （= 最老的作品），必须作废重扫。
+                # 版本 3：封面改为文件名自然序第一张（p0），比 mtime 封面更稳定。
+                if isinstance(data, dict) and data.get('version') == self._ALBUM_CACHE_VERSION:
                     return data
             except Exception:
                 pass
-        return {'version': 3, 'dirs': {}}
+        return {'version': self._ALBUM_CACHE_VERSION, 'dirs': {}}
 
     def _save_album_cache(self):
         try:
@@ -668,9 +720,11 @@ class ImageViewerPlugin(PluginBase):
                         })
         except OSError:
             pass
-        # 封面 = 文件名自然序第一张（p0），相册新旧仍按最新 mtime 计算
+        # 封面：Pixiv 树取作品号最大的一张（p0），其余取文件名自然序第一张；
+        # 相册新旧仍按最新 mtime 计算
         newest = max((img['mtime'] for img in images), default=0.0)
-        cover = min(images, key=lambda img: natural_sort_key(Path(img['rel']).name))['rel'] if images else ''
+        pixiv = self.get_settings(rel_path).get('sort_by') == 'time_name'
+        cover = _pick_cover(images, pixiv)
         return {
             'path': rel_path,
             'name': dir_path.name if rel_path else '未分类',
@@ -679,6 +733,7 @@ class ImageViewerPlugin(PluginBase):
             'direct_count': len(images),
             'direct_cover': cover,
             'direct_mtime': newest,
+            'pixiv': pixiv,      # 封面挑选依据，缓存复用时要核对（见 _build_albums）
             'has_children': len(children) > 0,
             'children': sorted(children),
         }
@@ -688,10 +743,15 @@ class ImageViewerPlugin(PluginBase):
         cache_dirs = cache_dirs or {}
         entries = {}
         changed = 0
+        pixiv_flags = {rel: self.get_settings(rel).get('sort_by') == 'time_name'
+                       for rel in dirs}
         for rel, mtime in dirs.items():
+            # 缓存命中条件除目录 mtime 外还要看 Pixiv 排序标志：封面挑选规则由它
+            # 决定（作品号最大 vs 自然序第一张），切换排序后旧封面必须重扫
             cached = cache_dirs.get(rel)
             if cached and cached.get('mtime') is not None \
-                    and abs(float(cached.get('mtime', 0)) - float(mtime)) < 0.5:
+                    and abs(float(cached.get('mtime', 0)) - float(mtime)) < 0.5 \
+                    and cached.get('pixiv') == pixiv_flags[rel]:
                 entries[rel] = cached
                 continue
             dir_path = self.root_dir / rel if rel else self.root_dir
@@ -705,9 +765,11 @@ class ImageViewerPlugin(PluginBase):
         totals = {}
         for entry in ordered:
             rel = entry['path']
+            pixiv = pixiv_flags[rel]
             total = entry['direct_count']
             cover = entry['direct_cover']
             newest = entry['direct_mtime']
+            rank = _cover_rank(cover, newest, pixiv)
             for child_name in entry['children']:
                 child_rel = f"{rel}/{child_name}" if rel else child_name
                 child_totals = totals.get(child_rel)
@@ -716,12 +778,16 @@ class ImageViewerPlugin(PluginBase):
                 total += child_totals[0]
                 if child_totals[2] > newest:
                     newest = child_totals[2]
+                # 封面：Pixiv 树取作品号最大的子目录（画师最近的作品），
+                # 非 Pixiv 目录仍是 mtime 最新的那个；mtime 聚合不受影响
+                if child_totals[3] > rank:
+                    rank = child_totals[3]
                     cover = child_totals[1]
-            totals[rel] = (total, cover, newest)
+            totals[rel] = (total, cover, newest, rank)
 
         albums = []
         for entry in entries.values():
-            total, cover, newest = totals[entry['path']]
+            total, cover, newest, _rank = totals[entry['path']]
             albums.append({
                 'name': entry['name'],
                 'path': entry['path'],
@@ -732,7 +798,7 @@ class ImageViewerPlugin(PluginBase):
                 'cover': cover,
                 'mtime': newest,
                 'depth': entry['depth'],
-                'use_time_name': (self.get_settings(entry['path']).get('sort_by') == 'time_name'),
+                'use_time_name': pixiv_flags[entry['path']],
             })
 
         # 不再预生成所有封面缩略图：交给 /thumbs 按需生成，避免上万次随机小文件 I/O。
@@ -750,7 +816,7 @@ class ImageViewerPlugin(PluginBase):
             return {**self._albums_cached, 'cached': True}
         dirs = self._list_album_dirs()
         albums, entries, changed = self._build_albums(dirs, self._album_cache.get('dirs', {}))
-        self._album_cache = {'version': 3, 'dirs': entries}
+        self._album_cache = {'version': self._ALBUM_CACHE_VERSION, 'dirs': entries}
         if changed:
             self._save_album_cache()
         result = {'albums': albums, 'config': self._album_config, 'changed': changed}
@@ -884,7 +950,7 @@ class ImageViewerPlugin(PluginBase):
     def refresh(self) -> Dict:
         """清空内存缓存并作废旧相册索引，让新增/替换的图片立即生效（无需重启）。"""
         self._list_cache.clear()
-        self._album_cache = {'version': 3, 'dirs': {}}
+        self._album_cache = {'version': self._ALBUM_CACHE_VERSION, 'dirs': {}}
         self._invalidate_albums_cache()
         try:
             if self.album_cache_file.exists():
@@ -944,7 +1010,7 @@ class ImageViewerPlugin(PluginBase):
             except OSError:
                 pass
             self.thumb_dir.mkdir(parents=True, exist_ok=True)
-            self._album_cache = {'version': 3, 'dirs': {}}
+            self._album_cache = {'version': self._ALBUM_CACHE_VERSION, 'dirs': {}}
             try:
                 if self.album_cache_file.exists():
                     self.album_cache_file.unlink()
@@ -1067,7 +1133,9 @@ class ImageViewerPlugin(PluginBase):
             "row_height": 200,
             "per_page": 40,
             "sort_by": "mtime",
-            "sort_order": "desc"
+            "sort_order": "desc",
+            "album_sort_by": "mtime",
+            "album_sort_order": "desc"
         }
         folder_settings = {}
         parts = [p for p in (rel_path or '').split('/') if p]

@@ -19,8 +19,9 @@ class ImageViewer {
         this.currentRowHeight = 200;
         this.albums = [];
         this.albumConfig = { collapsed: [], promoted: [] };
-        this.albumSortBy = 'name';       // 作者页面排序：name | mtime | count
-        this.albumSortOrder = 'asc';     // 作者页面排序方向
+        this.albumSortBy = 'mtime';      // 作者页面二次排序：mtime | name | count（设置项 album_sort_by）
+        this.albumSortOrder = 'desc';    // 作者页面二次排序方向（设置项 album_sort_order）
+        this._albumSortVisible = false;  // 设置弹窗里是否显示二次排序选项（生效 Pixiv 排序才显示）
         this.isMultiSelectMode = false;
         this.selectedImages = new Set();
         this.moveDestPath = '';
@@ -53,11 +54,6 @@ class ImageViewer {
         });
 
         this._bindUI();
-        // 恢复作者页排序偏好
-        try {
-            this.albumSortBy = localStorage.getItem('iv.albumSortBy') || 'name';
-            this.albumSortOrder = localStorage.getItem('iv.albumSortOrder') || 'asc';
-        } catch (e) { }
         await this.loadSettings();
         await this.loadAlbums();
         this.loadExtensions();
@@ -77,7 +73,16 @@ class ImageViewer {
         try {
             this.currentSettings = await Bridge.call('get_settings', '');
             this.currentRowHeight = this.currentSettings.row_height || 200;
+            this._applyAlbumSortSettings();
         } catch (e) { }
+    }
+
+    // 作者视图（Pixiv 排序下的相册网格）二次排序：持久化在插件设置里，
+    // 只在生效 Pixiv 排序的页面/文件夹上起作用。默认「更新时间 / 倒序」。
+    _applyAlbumSortSettings() {
+        const s = this.currentSettings || {};
+        this.albumSortBy = s.album_sort_by || 'mtime';
+        this.albumSortOrder = s.album_sort_order || 'desc';
     }
 
     async loadExtensions() {
@@ -175,19 +180,6 @@ class ImageViewer {
             search.focus();
         });
 
-        // 作者页面排序栏
-        document.getElementById('iv-album-sort-by').addEventListener('change', (e) => {
-            this.albumSortBy = e.target.value;
-            try { localStorage.setItem('iv.albumSortBy', this.albumSortBy); } catch (err) { }
-            this.showAlbums();
-        });
-        document.getElementById('iv-album-sort-order').addEventListener('click', () => {
-            this.albumSortOrder = this.albumSortOrder === 'asc' ? 'desc' : 'asc';
-            try { localStorage.setItem('iv.albumSortOrder', this.albumSortOrder); } catch (err) { }
-            this._syncAlbumSortBar();
-            this.showAlbums();
-        });
-
         document.getElementById('setting-row-height').addEventListener('input', (e) => {
             document.getElementById('setting-row-height-val').textContent = e.target.value;
         });
@@ -277,10 +269,12 @@ class ImageViewer {
                 a.name.toLowerCase().includes(keyword) || a.path.toLowerCase().includes(keyword));
         }
 
-        // 作者页面（Pixiv 排序下的相册网格）排序栏 + 排序
-        this._syncAlbumSortBar();
+        // 作者网格二次排序：只在生效 Pixiv 排序的页面应用（与设置页显示该组选项的
+        // 条件一致）；其他页面保持原有行为（文件名正序）
         if (this.currentView === 'albums') {
-            albums = this._sortAlbums(albums);
+            albums = this._albumPageIsPixiv()
+                ? this._sortAlbums(albums)
+                : this._sortAlbums(albums, 'name', 'asc');
         }
 
         const titleEl = document.getElementById('iv-view-title');
@@ -410,7 +404,7 @@ class ImageViewer {
         return grid;
     }
 
-    // ===== 作者页面排序（Pixiv 排序下的相册网格） =====
+    // ===== 作者网格二次排序（Pixiv 排序下的相册网格） =====
 
     _albumPageIsPixiv() {
         // 当前网格页面对应的文件夹（children → 父目录；albums → 根）是否生效 Pixiv 排序
@@ -419,24 +413,14 @@ class ImageViewer {
         return !!(album && album.use_time_name);
     }
 
-    _syncAlbumSortBar() {
-        const bar = document.getElementById('iv-album-sort');
-        if (!bar) return;
-        const show = this.currentView === 'albums' && this._albumPageIsPixiv();
-        bar.classList.toggle('hidden', !show);
-        if (!show) return;
-        document.getElementById('iv-album-sort-by').value = this.albumSortBy || 'name';
-        document.getElementById('iv-album-sort-order').textContent =
-            this.albumSortOrder === 'desc' ? '↓ 倒序' : '↑ 正序';
-    }
-
-    _sortAlbums(albums) {
-        const by = this.albumSortBy || 'name';
-        const dir = (this.albumSortOrder || 'asc') === 'desc' ? -1 : 1;
+    // by / order 缺省取设置项（album_sort_by / album_sort_order）
+    _sortAlbums(albums, by = this.albumSortBy, order = this.albumSortOrder) {
+        const key = by || 'mtime';
+        const dir = (order || 'desc') === 'desc' ? -1 : 1;
         const list = [...albums];
-        if (by === 'mtime') {
+        if (key === 'mtime') {
             list.sort((a, b) => (a.mtime - b.mtime) * dir);
-        } else if (by === 'count') {
+        } else if (key === 'count') {
             list.sort((a, b) => (a.image_count - b.image_count) * dir);
         } else {
             list.sort((a, b) => a.name.localeCompare(b.name, 'zh', { numeric: true }) * dir);
@@ -1172,6 +1156,9 @@ class ImageViewer {
             applyToFolder.disabled = !this.currentPath;
             document.getElementById('setting-root-dir').disabled = false;
         }
+        // 读取失败时保持隐藏，避免表单里出现一组"不知道作用于哪"的选项
+        this._albumSortVisible = false;
+        document.getElementById('setting-album-sort-section').classList.add('hidden');
         try {
             const s = await Bridge.call('get_settings', this.currentPath);
             document.getElementById('setting-row-height').value = s.row_height;
@@ -1179,6 +1166,15 @@ class ImageViewer {
             document.getElementById('setting-per-page').value = s.per_page;
             document.getElementById('setting-sort-by').value = s.sort_by;
             document.getElementById('setting-sort-order').value = s.sort_order;
+            // 作者视图二次排序：当前文件夹生效 Pixiv 排序时才出现；值是全局偏好，
+            // 所以从全局设置（而非当前文件夹）读。改成 Pixiv 排序并保存后页面会刷新，
+            // 下次打开设置就能看到这组选项。
+            this._albumSortVisible = s.sort_by === 'time_name';
+            document.getElementById('setting-album-sort-section')
+                .classList.toggle('hidden', !this._albumSortVisible);
+            const global = await Bridge.call('get_settings', '');
+            document.getElementById('setting-album-sort-by').value = global.album_sort_by || 'mtime';
+            document.getElementById('setting-album-sort-order').value = global.album_sort_order || 'desc';
             const rootDir = await Bridge.call('get_root_dir');
             document.getElementById('setting-root-dir').value = rootDir || '';
         } catch (e) { }
@@ -1196,21 +1192,30 @@ class ImageViewer {
             sort_by: document.getElementById('setting-sort-by').value,
             sort_order: document.getElementById('setting-sort-order').value
         };
+        // 作者视图二次排序是全局偏好，且只在当前文件夹生效 Pixiv 排序时才在表单里
+        // 出现：选项被隐藏时不动已有设置（勾选「仅当前文件夹」时同样不写进文件夹级设置）
+        const albumSort = this._albumSortVisible ? {
+            album_sort_by: document.getElementById('setting-album-sort-by').value,
+            album_sort_order: document.getElementById('setting-album-sort-order').value
+        } : null;
         if (!isFolderOnly) {
             settings.root_dir = document.getElementById('setting-root-dir').value.trim() || undefined;
         }
         try {
             if (isFolderOnly) {
                 await Bridge.call('save_settings', this.currentPath, settings);
+                if (albumSort) await Bridge.call('save_settings', '', albumSort);
             } else {
-                await Bridge.call('save_settings', '', settings);
+                await Bridge.call('save_settings', '', { ...settings, ...(albumSort || {}) });
                 if (this.currentPath) await Bridge.call('clear_folder_settings', this.currentPath);
             }
-            this.currentSettings = settings;
+            this.currentSettings = { ...(this.currentSettings || {}), ...settings, ...(albumSort || {}) };
             this.currentRowHeight = settings.row_height;
+            this._applyAlbumSortSettings();
             this.closeSettingsModal();
             Toast.success('设置已保存');
             if (this.mode === 'images') this.loadImages(this.currentPath, 1);
+            else this.showAlbums();
         } catch (e) {
             Toast.error('保存设置失败');
         }

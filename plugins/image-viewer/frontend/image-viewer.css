@@ -179,6 +179,12 @@
 .iv-check input { accent-color: var(--accent); width: 16px; height: 16px; }
 .iv-check input:disabled { opacity: 0.45; cursor: not-allowed; }
 
+.iv-setting-section {
+  font-size: 12px; font-weight: 600; color: var(--text-secondary);
+  margin: 4px 0 10px; padding-top: 12px; border-top: 1px solid var(--border);
+}
+.iv-setting-note { font-size: 11px; color: var(--text-muted); margin: -6px 0 12px; line-height: 1.5; }
+
 .iv-empty {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 8px; min-height: 260px; color: var(--text-secondary); animation: obxFadeUp 0.4s ease both;
@@ -186,20 +192,6 @@
 .iv-empty .iv-empty-icon { font-size: 44px; opacity: 0.55; animation: obxFloat 4s ease-in-out infinite; }
 .iv-empty .iv-empty-text { font-size: 15px; font-weight: 600; }
 .iv-empty .iv-empty-hint { font-size: 12px; color: var(--text-muted); }
-
-/* ===== 作者页面排序栏（Pixiv 排序下的相册网格） ===== */
-.iv-album-sort {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 10px; margin-bottom: 12px;
-  border: 1px solid var(--border); border-radius: var(--iv-radius-sm);
-  background: var(--bg-surface);
-}
-.iv-album-sort.hidden { display: none; }
-.iv-sort-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
-.iv-sort-select {
-  padding: 5px 8px; border: 1px solid var(--border); border-radius: 8px;
-  background: var(--bg-surface); color: var(--text-primary); font-size: 12px;
-}
 
 @media (max-width: 860px) {
   .iv-sidebar { width: 200px; }

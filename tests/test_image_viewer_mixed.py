@@ -233,15 +233,16 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         workA = next(a for a in albums if a['path'] == 'workA')
         self.assertEqual(workA['cover'], 'workA/111_p0.png')
 
-    def test_album_cache_persist_version3(self):
-        """当前版本相册索引应写入 version 3，避免每次重启都被当作旧缓存作废。"""
+    def test_album_cache_persist_current_version(self):
+        """当前版本相册索引应写入 _ALBUM_CACHE_VERSION，避免每次重启都被当作旧缓存作废。"""
+        version = self.module.ImageViewerPlugin._ALBUM_CACHE_VERSION
         self.plugin.list_albums()
-        self.assertEqual(self.plugin._album_cache.get('version'), 3)
+        self.assertEqual(self.plugin._album_cache.get('version'), version)
         cache_file = self.root / '.cache' / 'albums_index.json'
         if cache_file.exists():
             import json
             saved = json.loads(cache_file.read_text(encoding='utf-8'))
-            self.assertEqual(saved.get('version'), 3)
+            self.assertEqual(saved.get('version'), version)
 
     def test_folder_settings_ignore_root_dir(self):
         """文件夹级设置不应保存 root_dir，避免出现“保存了但根目录没变”的困惑。"""
