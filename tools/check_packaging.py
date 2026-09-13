@@ -13,8 +13,10 @@
 from __future__ import annotations
 
 import ast
+import re
 import sys
 import tempfile
+from importlib.metadata import packages_distributions
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -202,18 +204,108 @@ def check_collect_data_files(errors: list) -> None:
             _fail(errors, '插件目录缺失时 collect_data_files 没有失败')
 
 
+# ── HIDDEN_IMPORTS 覆盖检查 ─────────────────────────────────────────
+# 背景（真实事故，v1.2.0 前）：image-viewer 与 media-player 在运行时 import
+# shell.backend.tasks / shell.backend.thumb_cache，但这两个模块没写进
+# HIDDEN_IMPORTS。插件后端是 importlib 动态加载的，PyInstaller 的静态分析看不到
+# 它们的 import —— 冻结后的包里没有这两个模块，用户装完只剩"漫画/小说"两个插件，
+# 图片浏览与媒体播放器整个不出现，而构建日志全绿。同一类坑还有：HIDDEN_IMPORTS
+# 里写了某个包，但 requirements.txt 没声明 → 干净环境里装不出来，PyInstaller 只会
+# 打一条 warning 然后跳过（chardet 就是这样）。
+_STDLIB = set(sys.stdlib_module_names)
+_NON_THIRD_PARTY_TOP = {'plugins', 'tools', 'tests', 'main'}
+
+
+def _declared_distributions() -> set:
+    """requirements.txt 里声明的发行包名（小写、下划线归一为连字符）。"""
+    declared = set()
+    for line in (PROJECT_ROOT / 'requirements.txt').read_text(encoding='utf-8').splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        m = re.match(r'^([A-Za-z0-9_.\-]+)', line)
+        if m:
+            declared.add(m.group(1).lower().replace('_', '-'))
+    return declared
+
+
+def _plugin_imports() -> dict:
+    """返回 {被 import 的模块全名: 出现位置}，已滤掉标准库与插件自己的本地模块。"""
+    found: dict = {}
+    plugins_dir = PROJECT_ROOT / 'plugins'
+    if not plugins_dir.is_dir():
+        return found
+    for plugin_dir in sorted(p for p in plugins_dir.iterdir() if p.is_dir()):
+        local = {p.stem for p in plugin_dir.rglob('*.py')}
+        local |= {p.name for p in plugin_dir.rglob('*') if p.is_dir()}
+        for py in sorted(plugin_dir.rglob('*.py')):
+            try:
+                tree = ast.parse(py.read_text(encoding='utf-8'))
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            rel = py.relative_to(PROJECT_ROOT)
+            for node in ast.walk(tree):
+                names: list = []
+                if isinstance(node, ast.Import):
+                    names = [a.name for a in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                    names = [node.module]
+                for full in names:
+                    top = full.split('.')[0]
+                    if top in _STDLIB or top in local or top in _NON_THIRD_PARTY_TOP:
+                        continue
+                    found.setdefault(full, rel)
+    return found
+
+
+def check_hidden_imports(errors: list) -> None:
+    """插件用到的模块必须在 HIDDEN_IMPORTS 里，且提供它的包必须在 requirements.txt 里。"""
+    from spec_common import HIDDEN_IMPORTS
+
+    hidden = set(HIDDEN_IMPORTS)
+    hidden_top = {h.split('.')[0] for h in hidden}
+    imports = _plugin_imports()
+
+    for mod, where in sorted(imports.items()):
+        if not mod.startswith('shell.backend.'):
+            continue
+        if mod not in hidden:
+            _fail(errors, f'{where} 导入了 {mod}，但 spec_common.HIDDEN_IMPORTS 里没有它'
+                          f'（冻结后该插件会 ModuleNotFoundError，整个插件不加载）')
+
+    for mod, where in sorted(imports.items()):
+        if mod.startswith('shell.'):
+            continue
+        if mod.split('.')[0] not in hidden_top:
+            _fail(errors, f'{where} 导入了第三方模块 {mod}，但 HIDDEN_IMPORTS 里没有它'
+                          f'（插件是动态加载的，静态分析看不到，冻结后 import 会失败）')
+
+    declared = _declared_distributions()
+    provided = packages_distributions()
+    for mod in sorted({m.split('.')[0] for m in imports} | {h.split('.')[0] for h in hidden}):
+        if mod in _STDLIB:
+            continue
+        dists = [d.lower().replace('_', '-') for d in provided.get(mod, [])]
+        if not dists:
+            continue  # 本地模块 / 命名空间包：无从判断归属，交给上面的两条规则
+        if not (set(dists) & declared):
+            _fail(errors, f'{mod}（由 {dists[0]} 提供）没有被 requirements.txt 声明：'
+                          f'干净环境里装不出来，PyInstaller 只会打 warning 然后跳过这个 hidden import')
+
+
 def main() -> int:
     errors: list = []
     check_specs_exist(errors)
     check_specs_parse_and_share_rules(errors)
     check_collect_data_files(errors)
+    check_hidden_imports(errors)
 
     if errors:
         print('check_packaging: FAILED')
         for e in errors:
             print(f'  - {e}')
         return 1
-    print(f'check_packaging: OK（{len(SPECS)} 份 spec + 收集规则）')
+    print(f'check_packaging: OK（{len(SPECS)} 份 spec + 收集规则 + HIDDEN_IMPORTS 覆盖）')
     return 0
 
 

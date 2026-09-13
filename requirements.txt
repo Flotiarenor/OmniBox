@@ -40,6 +40,8 @@ pillow==12.2.0
 mutagen==1.48.1
 natsort==8.4.0
 pycryptodome==3.23.0
+# novel-reader 用它嗅探 .txt 的编码（HIDDEN_IMPORTS 里也有，缺了会被静默跳过）
+chardet==7.4.3
 
 # --- 插件依赖（pixiv-sync 等在同进程内 import） ---
 jmcomic==2.6.19

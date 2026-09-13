@@ -23,6 +23,12 @@ from pathlib import Path
 
 # ── 需要手动包含的隐藏模块 ──────────────────────────────────────────
 # 插件后端由运行时 importlib 动态加载，静态分析看不到这些依赖，必须显式声明。
+#
+# 规则：插件源码里出现的每一个 shell.backend.* 与第三方模块都要在这里有一份 ——
+# 漏掉的表现是"装好后那个插件整个不出现"（运行时 ModuleNotFoundError），构建日志
+# 却是全绿的。真实事故：shell.backend.tasks / shell.backend.thumb_cache 漏在这里，
+# 只有 image-viewer 与 media-player 用它们，于是用户装完只剩漫画和小说两个插件。
+# tools/check_packaging.py 现在会把这条规则当作门禁检查。
 HIDDEN_IMPORTS = [
     'shell.backend.paths',
     'shell.backend.plugin_base',
@@ -30,6 +36,9 @@ HIDDEN_IMPORTS = [
     'shell.backend.media_catalog',
     'shell.backend.plugin_manager',
     'shell.backend.settings_store',
+    # 插件共享基建：只有 image-viewer / media-player 会 import
+    'shell.backend.tasks',
+    'shell.backend.thumb_cache',
     'shell.backend.file_server',
     'flask.json.provider',
     'werkzeug.serving',

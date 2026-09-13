@@ -12,7 +12,9 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import sys
+import tempfile
 from pathlib import Path
 
 for _stream in (sys.stdout, sys.stderr):
@@ -21,6 +23,12 @@ for _stream in (sys.stdout, sys.stderr):
     _reconfigure = getattr(_stream, 'reconfigure', None)
     if callable(_reconfigure):
         _reconfigure(encoding='utf-8', errors='replace')
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SPEC_DIR = PROJECT_ROOT / 'docs' / 'Releases'
+for _p in (str(PROJECT_ROOT), str(SPEC_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 # 产物中必须存在的内容（相对产物根目录，用 / 分隔）
 #
@@ -40,6 +48,70 @@ FORBIDDEN_DIR_NAMES = {'__pycache__', 'node_modules', '.git', '.pytest_cache'}
 FORBIDDEN_SUFFIXES = {'.pyc', '.pyo'}
 # 用户数据/密钥不得进包
 FORBIDDEN_RELATIVE = {'data', '.config'}
+
+
+def _pyz_module_names(exe: Path) -> set:
+    """读出 PyInstaller 可执行文件里 PYZ 归档的模块名集合。
+
+    PYZ 只装纯 Python 模块；C 扩展（.so/.pyd）作为二进制收集，不在这里。
+    """
+    from PyInstaller.archive.readers import CArchiveReader, ZlibArchiveReader
+
+    reader = CArchiveReader(str(exe))
+    toc = getattr(reader, 'toc', None)
+    if toc is None:
+        raise RuntimeError('无法读取 CArchive TOC')
+    names = list(toc.keys()) if hasattr(toc, 'keys') else [entry[0] for entry in toc]
+    pyz = [str(n) for n in names if str(n).lower().endswith('.pyz')]
+    if not pyz:
+        raise RuntimeError('可执行文件里没有 PYZ 归档')
+
+    with tempfile.NamedTemporaryFile(suffix='.pyz', delete=False) as tf:
+        tf.write(bytes(reader.extract(pyz[0])))
+        tmp_path = Path(tf.name)
+    try:
+        return set(ZlibArchiveReader(str(tmp_path)).toc.keys())
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def check_pyz_covers_hidden_imports(exe: Path, errors: list) -> None:
+    """冻结后的 PYZ 必须真的含有 HIDDEN_IMPORTS 里那些纯 Python 模块。
+
+    为什么需要：`HIDDEN_IMPORTS` 只是"请求"，PyInstaller 找不到模块时只打一条
+    warning 就跳过（chardet 就漏过：requirements.txt 没声明 → 干净环境里没装 →
+    包是打出来了，但运行时 import 失败）。静态检查靠 check_packaging.py，
+    这个检查看的是**真正打出来的产物**。
+    """
+    try:
+        from spec_common import HIDDEN_IMPORTS
+    except Exception as e:  # spec 读不到时不当致命错误，静态检查那边会报
+        print(f'  [warn] 读不到 HIDDEN_IMPORTS，跳过 PYZ 覆盖检查: {e}')
+        return
+
+    try:
+        modules = _pyz_module_names(exe)
+    except ImportError:
+        print('  [warn] 未安装 PyInstaller，跳过 PYZ 覆盖检查')
+        return
+    except Exception as e:
+        errors.append(f'无法解析产物内的 PYZ 归档（{exe.name}）: {e}')
+        return
+
+    missing = []
+    for name in HIDDEN_IMPORTS:
+        spec = importlib.util.find_spec(name)
+        if spec is None:
+            continue  # 当前环境根本没装：由 check_packaging.py 的依赖声明检查负责
+        origin = spec.origin or ''
+        if not origin.endswith('.py'):
+            continue  # C 扩展（yaml.cyaml / markupsafe._native 等）不以 PYZ 形式收集
+        if name not in modules and not any(m.startswith(name + '.') for m in modules):
+            missing.append(name)
+
+    for name in sorted(missing):
+        errors.append(f'冻结产物里缺少 HIDDEN_IMPORTS 声明的模块: {name}'
+                      f'（插件动态 import 会在运行时失败，表现为该插件消失）')
 
 
 def main(argv: list) -> int:
@@ -63,6 +135,8 @@ def main(argv: list) -> int:
         exe = dist / args.expect_exe
         if not exe.is_file():
             errors.append(f'产物缺少可执行文件: {args.expect_exe}')
+        else:
+            check_pyz_covers_hidden_imports(exe, errors)
 
     for path in dist.rglob('*'):
         rel_parts = path.relative_to(dist).parts
