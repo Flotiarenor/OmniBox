@@ -63,13 +63,31 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
 
+      # Windows 走 setup-python；Linux 用发行版 python3 + venv，与下面 build job 同一套
+      # （原因见 build job 里那段注释：setup-python 的 libpython 与打包产物不兼容）。
       - uses: actions/setup-python@v5
+        if: runner.os == 'Windows'
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+
+      # Linux 构建必须用发行版 Python：setup-python 那份 libpython 与本 spec 不兼容，
+      # 产物启动即失败（Failed to load Python shared library .../libpython3.12.so.1.0）。
+      # 成因：那份 Python 会让 PyInstaller 把 _struct/_zlib 嵌进 exe，bootloader 于是按
+      # onefile 去 /tmp/_MEIxxx 找 libpython；即使找到，libpython 初始化 struct 也会
+      # 报 "Module object for struct is NULL!"。发行版 python3.12 + venv 实测产物正常。
+      # 把 venv 的 bin 追加到 GITHUB_PATH，后续步骤里的 `python` 自动就是它。
+      - name: Linux 构建前置（发行版 Python + venv + binutils）
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3 python3-venv python3-pip binutils
+          python3 -m venv .venv-build
+          echo "$PWD/.venv-build/bin" >> "$GITHUB_PATH"
 
       - name: 安装依赖
         run: |
@@ -154,13 +172,30 @@ jobs:
         with:
           ref: ${{ needs.verify.outputs.tag }}
 
+      # Windows 走 setup-python；Linux 刻意改用发行版 python3 + venv（原因见下一段）。
       - uses: actions/setup-python@v5
+        if: runner.os == 'Windows'
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+
+      # Linux 构建必须用发行版 Python：setup-python 那份 libpython 与本 spec 不兼容，
+      # 产物启动即失败（Failed to load Python shared library .../libpython3.12.so.1.0）。
+      # 成因：那份 Python 会让 PyInstaller 把 _struct/_zlib 嵌进 exe，bootloader 于是按
+      # onefile 去 /tmp/_MEIxxx 找 libpython；即使找到，libpython 初始化 struct 也会
+      # 报 "Module object for struct is NULL!"。发行版 python3.12 + venv 实测产物正常。
+      # 把 venv 的 bin 追加到 GITHUB_PATH，后续步骤里的 `python` 自动就是它。
+      - name: Linux 构建前置（发行版 Python + venv + binutils）
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3 python3-venv python3-pip binutils
+          python3 -m venv .venv-build
+          echo "$PWD/.venv-build/bin" >> "$GITHUB_PATH"
 
       - uses: actions/setup-node@v4
         with:
@@ -173,10 +208,6 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
           python -m pip install -r requirements-dev.txt
-
-      - name: Linux 构建前置（binutils：PyInstaller 需要 objdump）
-        if: runner.os == 'Linux'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils
 
       - name: 构建前端
         run: |

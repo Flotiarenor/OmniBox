@@ -52,13 +52,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Windows 走 setup-python；Linux 用发行版 python3 + venv —— setup-python 那份
+      # libpython 与打包产物不兼容：产物启动时报
+      # "Failed to load Python shared library .../libpython3.12.so.1.0"（详见
+      # release.yml build job 的注释）。venv 的 bin 追加到 GITHUB_PATH，后续 `python`
+      # 就是它。
       - uses: actions/setup-python@v5
+        if: runner.os == 'Windows'
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+
+      - name: Linux 构建前置（发行版 Python + venv + binutils）
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3 python3-venv python3-pip binutils
+          python3 -m venv .venv-build
+          echo "$PWD/.venv-build/bin" >> "$GITHUB_PATH"
 
       - uses: actions/setup-node@v4
         with:
@@ -71,10 +86,6 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
           python -m pip install -r requirements-dev.txt
-
-      - name: Linux 构建前置（binutils）
-        if: runner.os == 'Linux'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils
 
       - name: 打包规则检查
         run: python tools/check_packaging.py
