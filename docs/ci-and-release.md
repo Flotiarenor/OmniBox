@@ -15,7 +15,7 @@
 | 版本一致性 | `python tools/check_version.py` | **exit 0**（硬门禁） |
 | 类型检查（内核） | `python -m pyright main.py shell tools` | **0 错误**（硬门禁） |
 | 类型检查（插件+测试） | `python -m pyright plugins tests` | 基线（暂不拦截，见 §6） |
-| 单元测试 | `python -m unittest discover -s tests` | **129 passed**（硬门禁） |
+| 单元测试 | `python -m unittest discover -s tests` | **129 passed**（硬门禁；Linux 上 4 项 skip，见 §2） |
 | 运行时禁止 print | `python -m unittest tests.test_no_print_in_runtime` | 通过（硬门禁） |
 | 前端转义一致性 | `node tools/check_frontend_escape.cjs` | **OK**（硬门禁） |
 | 前端类型+构建 | `npm --prefix shell/frontend run build` | 通过（硬门禁） |
@@ -44,13 +44,20 @@ node tools/check_frontend_escape.cjs
 | --- | --- | --- |
 | `lint` | ubuntu | ruff + 插件规范 + 打包规则 + 版本一致性 |
 | `typecheck` | windows | pyright 内核（硬门禁）+ 插件/测试（基线，不拦截） |
-| `test` | windows + ubuntu，py3.10 + 3.12 | unittest 全量 |
+| `test` | windows + ubuntu，py3.10 + 3.12 | unittest 全量（netease-music 的 4 项仅 Windows 运行） |
 | `frontend` | ubuntu | 转义门禁 + `npm ci` + `vue-tsc --noEmit` + `vite build` |
 | `package` | windows + ubuntu | 真实跑 PyInstaller + 校验产物内容（产物仅作 artifact） |
 
 **为什么必须有 `windows-latest`**：历史缺陷里有一批是 Windows 专属的——SQLite
 临时目录被占用导致清理失败（`WinError 32`）、`PATH` 分隔符写死 `:`、文件锁定。
 只跑 Linux runner 会把这些永久掩盖。
+
+**反而要防"只在 Windows 成立"的测试**：`tests/test_netease_music_command.py`
+里伪造 npm 布局的那 4 项依赖 `.cmd` shim（插件只支持 Windows），在 Linux 上
+`@unittest.skipUnless(os.name == 'nt')` 整体 skip；同一文件里
+`_reject_shell_meta` 的纯函数测试各平台都跑。文件路由测试里的越界载荷也用
+`os.name` 选分隔符——POSIX 上反斜杠是合法文件名字符，写死 `..\..\x` 会得到
+404 而非穿越，从而在 Linux 上假失败。
 
 ### `package-smoke.yml` —— 打包链路冒烟
 

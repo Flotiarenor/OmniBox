@@ -10,6 +10,7 @@
     python -m unittest tests.test_file_server_paths -v
 """
 
+import os
 import sys
 import tempfile
 import unittest
@@ -23,6 +24,10 @@ if str(PROJECT_ROOT) not in sys.path:
 from shell.backend.auth import TOKEN_HEADER, get_or_create_token
 from shell.backend.file_server import create_app
 from shell.backend.paths import get_config_dir
+
+# 越界载荷必须用当前平台的分隔符：POSIX 上反斜杠是合法文件名字符，
+# `..\..\secret.txt` 只是个普通文件名（结果是 404 而非穿越），断言 403 会假失败。
+_TRAVERSAL = '..\\..\\secret.txt' if os.name == 'nt' else '../../secret.txt'
 
 
 class _StubPluginManager:
@@ -79,7 +84,7 @@ class FilePathRouteTests(unittest.TestCase):
 
     def test_thumbs_traversal_is_403_not_400(self):
         """越界访问必须 403：403 被吞成 400 会掩盖真实的拒绝原因。"""
-        resp = self._get('/thumbs/..\\..\\secret.txt')
+        resp = self._get(f'/thumbs/{_TRAVERSAL}')
         self.assertEqual(resp.status_code, 403)
         self.assertNotIn('TOP-SECRET', resp.get_data(as_text=True))
 
@@ -95,7 +100,7 @@ class FilePathRouteTests(unittest.TestCase):
         self.assertEqual(resp.get_data(), b'JPEGDATA')
 
     def test_media_traversal_is_403(self):
-        resp = self._get('/file?path=..\\..\\secret.txt')
+        resp = self._get(f'/file?path={_TRAVERSAL}')
         self.assertEqual(resp.status_code, 403)
         self.assertNotIn('TOP-SECRET', resp.get_data(as_text=True))
 

@@ -1,6 +1,11 @@
 """ncm-cli 调用链的命令注入回归测试（docs/code-review.md §3.2）。
 
-不依赖真实 ncm-cli 与网络：在临时目录里伪造一个 npm 全局安装布局
+netease-music 插件**只支持 Windows**（ncm-cli 通过 npm 的 .cmd shim 落地，
+假 mpv 方案也依赖 .cmd 与 mpv.exe），因此伪造 npm 全局布局的这一组断言只在
+Windows 上运行，其它平台整体 skip —— 不为了让测试在 Linux 变绿而给插件加上
+POSIX 分支。与平台无关的纯函数（_reject_shell_meta）单独成类，各平台都跑。
+
+Windows 上不依赖真实 ncm-cli 与网络：在临时目录里伪造一个 npm 全局安装布局
 （ncm-cli.cmd shim + node_modules/@music163/ncm-cli/dist/index.js），
 把该目录放到 PATH 最前，然后断言两件事：
 
@@ -38,6 +43,21 @@ console.log(JSON.stringify(args));
 _FAKE_SHIM = "@ECHO off\r\nrem 伪造的 npm shim：真实调用应当绕过它\r\n"
 
 
+class ShellMetaRejectionTests(unittest.TestCase):
+    """退化到 .cmd shim 时的元字符拦截：纯函数，与运行平台无关。"""
+
+    def test_shell_meta_rejected_only_on_fallback_path(self):
+        """退化到 .cmd shim 时，元字符必须被拒绝而不是被 cmd.exe 解释。"""
+        self.assertEqual(ncm._reject_shell_meta('plain'), 'plain')
+        for bad in ['a"b', 'a & b', 'a|b', 'a>b', 'a%PATH%', 'a!b', 'a\nb']:
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                ncm._reject_shell_meta(bad)
+
+
+@unittest.skipUnless(
+    os.name == 'nt',
+    'netease-music 插件当前只支持 Windows（npm .cmd shim + 假 mpv .cmd）',
+)
 class NcmCommandTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -93,13 +113,6 @@ class NcmCommandTests(unittest.TestCase):
         api = ncm.NeteaseMusicAPI(check_install=False)
         result = api._run_command('playlist list')
         self.assertEqual(json.loads(result['stdout'])[2:], ['playlist', 'list'])
-
-    def test_shell_meta_rejected_only_on_fallback_path(self):
-        """退化到 .cmd shim 时，元字符必须被拒绝而不是被 cmd.exe 解释。"""
-        self.assertEqual(ncm._reject_shell_meta('plain'), 'plain')
-        for bad in ['a"b', 'a & b', 'a|b', 'a>b', 'a%PATH%', 'a!b', 'a\nb']:
-            with self.subTest(bad=bad), self.assertRaises(ValueError):
-                ncm._reject_shell_meta(bad)
 
 
 if __name__ == '__main__':
