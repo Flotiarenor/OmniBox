@@ -64,19 +64,29 @@ node tools/check_frontend_escape.cjs
 只在 `docs/Releases/**`、`requirements*.txt`、`pyproject.toml` 等打包相关文件
 变动时触发，目的是让"打包坏了"在 PR 阶段暴露，而不是等到打 tag。
 
-### `release.yml` —— 只人工触发发布
+### `release.yml` —— 半自动发布（自动构建，人工公开）
 
-**不再监听 tag push**：打 tag 不会再自动产出 Release，何时发布由人决定。
-流程改为 Actions → `release` → Run workflow，填两个输入：
+```
+推 v* tag → 校验版本 + 全量门禁 → 双平台构建 → 建【草稿】Release
+                                                      │
+                                你在 Releases 页面核对 → 点 Publish → 才对外可见
+```
 
-| 输入 | 说明 |
-| --- | --- |
-| `tag` | 要发布的 tag（如 `v3.0.0`），必须已存在；工作区会切到该 tag 再构建，避免"用分支的代码发了 tag 的名" |
-| `dry_run` | 勾上则只构建并上传 artifact（7 天过期），**不创建/更新 Release**，用于先取产物自己核对 |
-
-触发后：校验版本（tag ↔ pyproject ↔ package.json，不一致第一步就失败）→ 双平台
-PyInstaller 构建 → 打 zip / tar.gz 并生成 `.sha256` → 创建或更新 Release。
-`dry_run` 走同一套构建与校验，只是跳过最后一步。
+- **触发**：`push: tags: ['v*']`。打 tag 就是"我决定发这个版本"的声明；
+  `workflow_dispatch` 保留作手动兜底（重跑某次发布、或只跑 `dry_run` 取产物）。
+- **自动做完**：版本一致性校验（tag ↔ pyproject ↔ package.json）、ruff / 插件规范 /
+  打包规则 / 全量单测 / 前端转义门禁、双平台 PyInstaller 构建、`check_build_tree.py`
+  产物校验、打 zip / tar.gz、生成 `.sha256`、建**草稿** Release 并挂上产物。
+- **留给人**：只有"公开"这一下。草稿不进 Releases 列表、不产生 `latest`、不发通知，
+  只有对仓库有写权限的人能看到。核对后点 **Publish release**
+  即可（或 `gh release edit <tag> --draft=false`）。
+- **已发布的不会被静默覆盖**：重跑时若该 tag 的 Release 已发布，publish 直接报错退出；
+  草稿状态则覆盖刷新产物与说明。
+- **guard**：tag 指向的提交必须已经在 `main` 上，否则 `verify` 第一步就失败 ——
+  避免给"还没进主干、没经过 CI"的提交发版。
+- **构建源**：工作区会切到该 tag，不会拿分支的代码发 tag 的名。
+- **`dry_run`**（仅手动触发时可用）：只构建 + 上传 artifact（7 天过期），
+  连草稿都不建，适合先把 Linux 产物取下来自己验证。
 
 > 首次使用需确认仓库 `Settings → Actions → General → Workflow permissions`
 > 为 **Read and write permissions**（创建 Release 需要）。
@@ -91,7 +101,8 @@ PyInstaller 构建 → 打 zip / tar.gz 并生成 `.sha256` → 创建或更新 
 - `shell/frontend/package.json` 的 `version` 必须与之相同（`check_version.py` 校验）。
 - tag 必须写成 `v<version>`；`release.yml` 会把 tag 与**它指向提交**里的
   pyproject 版本对齐检查，不一致时第一步就失败，**不会**产出名字与版本不符的安装包。
-- 打 tag 本身**不触发发布**：tag 只是版本锚点，发布走人工触发的 `release.yml`。
+- 打 tag 会**触发构建**（全量门禁 + 双平台产物 + 建草稿 Release），但**不会公开**：
+  公开是另一下人工动作（点 Publish）。所以 tag 是"决定发版"，Publish 是"决定对外可见"。
 - 取值给脚本用：`python tools/check_version.py --print`（只输出裸版本号）。
 
 ---
@@ -284,20 +295,22 @@ RUF100（未使用的 noqa）会把这些标注判为冗余并删除——它们
 
 ---
 
-## 9. 手工发布清单（人工发布流程）
+## 9. 发布清单（半自动流程）
 
-1. 确认 `main` 上是准备发布的代码，`pyproject.toml` 与
-   `shell/frontend/package.json` 的版本号已改成同一个值并提交。
-2. 打 tag 并推送：`git tag v3.0.1 && git push origin v3.0.1`
-   —— **这一步不会发布任何东西**（`release.yml` 已不监听 tag）。
-3. 先在 Actions 上跑一次 `release`，勾上 `dry_run`（或跑 `package-smoke`），
-   确认双平台构建与 `check_build_tree.py` 产物校验都过。
-4. 要人工验证产物就从第 3 步的运行里下载 artifact（Windows `zip` / Linux `tar.gz`，
-   7 天内有效）。Windows 本机造不出 Linux 产物，见 §4。
-5. 确认无误后，再跑一次 `release`（**不勾** `dry_run`，`tag` 填同一个）：
-   校验版本 → 双平台构建 → 创建 / 更新 Release 并上传产物与 `.sha256`。
-6. Release 页面的说明与 `.sha256` 都齐全后再对外通知。
+1. 把 `pyproject.toml` 与 `shell/frontend/package.json` 的版本号改成同一个值，
+   提交并推到 `main`（这一步只是普通 push，走 `ci.yml` 日常门禁）。
+2. **打 tag 并推送**：
+   ```bash
+   git tag v3.0.1 && git push origin v3.0.1
+   ```
+   触发 `release.yml`：版本一致性 + 全量门禁 + 双平台构建 + 产物校验 + 建**草稿** Release。
+   校验版本没对上、或 tag 不在 `main` 上，这一步就会失败，什么都不会产出。
+3. 等运行结束，去 **Releases** 页面找到那份 **Draft**：
+   - 想先在自己机器上验证，就从该次运行页面下载 artifact（Windows `zip` / Linux `tar.gz`，
+     7 天内有效）。Windows 本机造不出 Linux 产物，见 §4。
+   - 只想构建不想建草稿的场景，用手动触发 + 勾 `dry_run`。
+4. 核对产物与说明无误后点 **Publish release** —— 这一刻才对外可见。
+5. 发布后如需修正：重新构建用 `release.yml` 重跑（草稿状态会覆盖刷新；
+   已发布状态会拒绝覆盖），要换产物就先 `gh release delete <tag>`。
 
-回滚：`gh release delete <tag>` 删除 Release（tag 可留着，也可一并删）；
-需要重新上传产物时再跑一次 `release`，工作流对已存在的 Release 走
-`gh release upload --clobber` 覆盖。
+回滚：`gh release delete <tag>`（可加 `--cleanup-tag` 一并删 tag）。

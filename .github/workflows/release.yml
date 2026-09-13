@@ -1,30 +1,42 @@
 name: release
 
-# 发布流程（**只人工触发**）：Actions → release → Run workflow → 填要发布的 tag。
+# 发布流程（**半自动：自动构建，人工公开**）
 #
-# 刻意不再监听 tag push：打 tag 只是给提交打版本锚点，不会再自动产出 Release。
-# 只想构建、先不发（例如把 Linux 产物取下来自己核对），把 dry_run 勾上：
-# 产物以 artifact 形式留在本次运行里（7 天过期），Release 不会被创建/更新。
+#   推一个 v* tag  →  校验版本 + 全量门禁  →  双平台构建  →  建【草稿】Release
+#                                                              │
+#                                        你在 Releases 页面核对 → 点 Publish → 才对外可见
+#
+# 也就是说：打 tag = "我决定发这个版本"，会触发全量构建并建好草稿（产物已挂上），
+# 但**公开仍然是独立的一下**（草稿只有有写权限的人能看见，不进 Releases 列表、
+# 不产生 latest、不发通知）。已发布过的 Release 不会被静默覆盖。
+#
+# 想只构建、连草稿都不建（例如先把 Linux 产物取下来自己核对），用手动触发的
+# dry_run：产物以 artifact 形式留在本次运行里（7 天过期）。
 #
 # 前置约定：
 #   1. 版本号唯一来源是 pyproject.toml 的 [project].version，
 #      shell/frontend/package.json 必须与它一致（tools/check_version.py 会把关）；
-#   2. 传入的 tag 必须已存在、写成 v<version>，且与它指向提交里的 pyproject.toml
-#      一致；不一致时工作流在第一步就失败，不会产出"名字与版本不符"的安装包
-#      （构建前会把工作区切到该 tag，而不是默认分支）；
-#   3. 发布前可先跑 package-smoke 工作流确认打包在本环境可用。
+#   2. tag 必须写成 v<version>，且与**它指向提交**里的 pyproject.toml 一致，
+#      否则第一步就失败，不会产出"名字与版本不符"的安装包；
+#   3. tag 指向的提交必须已经在 main 上（见 verify 的 guard 步骤）：避免给
+#      还没进主干、没经过 CI 的提交发版；
+#   4. 构建前工作区会切到该 tag，不会拿分支的代码发 tag 的名。
 #
 # 首次使用需要在仓库设置里确认：Settings → Actions → General →
 # Workflow permissions 选择 "Read and write permissions"（创建 Release 需要）。
 on:
+  push:
+    tags:
+      - 'v*'
+  # 手动兜底：重跑某次发布、或只跑 dry_run 取产物。
   workflow_dispatch:
     inputs:
       tag:
-        description: '要发布的已有 tag（如 v3.0.0，必须已存在且与 pyproject 版本一致）'
+        description: '要发布的已有 tag（如 v3.0.0，必须已存在、在 main 上、且与 pyproject 版本一致）'
         required: true
         type: string
       dry_run:
-        description: '只构建并上传 artifact，不创建/更新 Release'
+        description: '只构建并上传 artifact，连草稿 Release 也不建'
         required: false
         default: false
         type: boolean
@@ -42,11 +54,13 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.ref.outputs.tag }}
     steps:
-      # 构建源必须是 tag 指向的提交，而不是触发时选的分支。
+      # 构建源必须是 tag 指向的提交：tag push 用 github.ref（就是该 tag），
+      # 手动触发用输入的 tag。不存在会在这里直接失败。
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
 
       - uses: actions/setup-python@v5
@@ -63,13 +77,32 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install -r requirements-dev.txt
 
-      # tag 是否存在由上一步 checkout（ref 指到 tag）兜底：不存在就直接失败。
       - name: 本次发布 tag
         id: ref
         run: |
-          tag="${{ inputs.tag }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "本次发布 tag: $tag"
+
+      # 只给"已进主干"的提交发版：分支上随手打的 tag 在这里就拦住，
+      # 避免出现"用户装到的版本比 main 更超前/没跑过 CI"。
+      - name: guard：tag 必须落在 main 上
+        run: |
+          set -euo pipefail
+          tag="${{ steps.ref.outputs.tag }}"
+          # 显式 refspec：不依赖 remote.origin.fetch 的配置，确保 origin/main 一定存在。
+          git fetch --quiet origin "+refs/heads/main:refs/remotes/origin/main"
+          target="$(git rev-list -n1 "refs/tags/${tag}")"
+          if git merge-base --is-ancestor "$target" refs/remotes/origin/main; then
+            echo "OK：${tag}（${target}）在 main 上"
+          else
+            echo "::error::tag ${tag}（${target}）不在 main 上：先合并进 main 再发版"
+            exit 1
+          fi
 
       - name: 版本一致性（tag ↔ pyproject ↔ package.json）
         run: python tools/check_version.py "${{ steps.ref.outputs.tag }}"
@@ -116,7 +149,7 @@ jobs:
       # 与 verify 一致：产物必须来自 tag 指向的提交。
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ needs.verify.outputs.tag }}
 
       - uses: actions/setup-python@v5
         with:
@@ -199,9 +232,9 @@ jobs:
           retention-days: 7
 
   publish:
-    name: 创建 Release
+    name: 建草稿 Release（等人点 Publish）
     needs: [verify, build]
-    # dry_run 只构建不发：产物留在本次运行的 artifact 里，Release 一动不动。
+    # dry_run 只构建不发：产物留在本次运行的 artifact 里，连草稿都不建。
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     steps:
@@ -219,27 +252,41 @@ jobs:
         run: ls -lh dist
 
       # 用 gh CLI（ubuntu runner 预装），不再额外引入第三方 action 以缩小供应链面。
-      - name: 创建 / 更新 Release
+      # 三种情况分开处理：草稿→覆盖刷新；已发布→明确拒绝（不静默替换别人已下载的产物）；不存在→建草稿。
+      - name: 创建 / 刷新草稿 Release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ needs.verify.outputs.tag }}
           VERSION: ${{ needs.verify.outputs.version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           notes="OmniBox ${VERSION}
 
           - 版本号：\`${VERSION}\`
           - 产物：Windows x64（zip）、Linux x64（tar.gz），各自附带 \`.sha256\`
-          - 构建来源：本仓库 GitHub Actions（见本次运行的 workflow 日志）
+          - 构建来源：${RUN_URL}
 
           校验下载完整性：
           \`\`\`bash
+          # Linux
           sha256sum -c OmniBox-linux-x64.tar.gz.sha256
           \`\`\`
           "
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG 已存在，追加/覆盖产物"
-            gh release upload "$TAG" dist/* --clobber
-          else
-            gh release create "$TAG" dist/* --title "$TAG" --notes "$notes"
-          fi
+          state="$(gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null || echo missing)"
+          case "$state" in
+            true)
+              echo "Release $TAG 已是草稿：覆盖上传产物并刷新说明"
+              gh release upload "$TAG" dist/* --clobber
+              gh release edit "$TAG" --title "$TAG" --notes "$notes"
+              ;;
+            false)
+              echo "::error::Release $TAG 已经发布过，拒绝覆盖已公开的产物；要重发请先删除该 Release 或换版本号"
+              exit 1
+              ;;
+            *)
+              echo "创建草稿 Release $TAG（产物已挂好，等你在 Releases 页面核对后点 Publish）"
+              gh release create "$TAG" dist/* --draft --title "$TAG" --notes "$notes"
+              ;;
+          esac
+          echo "本次运行的产物同时留在 workflow artifact 里（7 天），需要先人工验证可从该运行页面下载。"
