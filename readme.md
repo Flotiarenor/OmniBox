@@ -263,6 +263,10 @@ limitations under the License.
 
 欢迎提交 Issue 和 Pull Request！请确保遵循项目的代码规范，并通过现有测试。
 
+提交信息请遵循 [提交信息规范](./docs/commit-convention.md)（type/scope/subject 格式、
+正文结构与措辞要求）；仓库根的 [AGENTS.md](./AGENTS.md) 是同一规范的精简版，
+供 DSH 等自动化工具加载。
+
 ---
 
 ## 📧 联系方式
