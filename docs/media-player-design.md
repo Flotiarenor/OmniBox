@@ -169,9 +169,17 @@ plugins/media-player/
 
 - 前端 `MediaProgressStore`（localStorage `omniboxMediaProgress`）每 2s 记录当前曲进度
   （>2s 才记），播放结束时清除；兼容旧插件 `musicProgress / videoProgress` 键的一次性迁移；
+- **播放起点**由设置项 `resume_mode` 决定：`restart`（默认「从头播放」，每次点击曲目都从 0
+  开始）/ `resume`（「保留播放进度，低于5s从头开始」）。两种模式下**剩余不足 5s 一律从头**：
+  写入侧剩余不足 5s 不再落盘并清除旧记录（`el.ended` 时同样拒绝写回），读取侧在
+  `loadedmetadata` 拿到时长后再次判定越界/剩余不足。历史缺陷：`ended` 时元素 currentTime
+  停在 duration，紧随其后的 `_loadItem` 会先 `_saveProgress()` 把"已播完"位置写回存储、覆盖
+  `ended` 里的 clear()，下次点击该曲目续播到末尾，元素停在末尾时 `play()` 无声（音乐、视频
+  都表现为"无法播放"）；`togglePlay` 另在元素 `ended` / 距末尾 0.25s 内时先归零再播；
 - 后端 `playback` 状态：`item_id / loop_mode / shuffle / volume / video_mode`，切歌 / 停止 /
   音量 / 模式变更时保存；启动时 `_restorePlayback` 无条件恢复音量与播放模式，条目仍存在时
-  恢复播放队列（视频画面模式优先取持久化的 `video_mode`，回落 `default_video_mode` 设置）。
+  恢复播放队列（视频画面模式优先取持久化的 `video_mode`，回落 `default_video_mode` 设置），
+  恢复的续播位置同样受 `resume_mode` 与"剩余不足 5s 从头"约束。
 
 ## 均衡器
 

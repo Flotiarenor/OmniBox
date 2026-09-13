@@ -50,6 +50,7 @@ class MediaPlayerApp {
         }
 
         this.core = new MediaPlayerCore(this);
+        this.core.setResumeMode(this.settings.resume_mode);
         this.playlists = new MediaPlaylistManager(this);
         this.lyrics = new MediaLyrics(this);
 

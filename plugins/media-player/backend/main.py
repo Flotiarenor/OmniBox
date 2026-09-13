@@ -69,6 +69,12 @@ class MediaPlayerPlugin(PluginBase):
         {"key": "default_video_mode", "label": "视频默认播放模式", "type": "select",
          "options": [{"label": "画面模式", "value": "video"}, {"label": "仅声音", "value": "audio"}],
          "default": "video", "central": False, "help": "视频默认以画面或仅声音播放"},
+        {"key": "resume_mode", "label": "播放起点", "type": "select",
+         "options": [{"label": "从头播放", "value": "restart"},
+                     {"label": "保留播放进度，低于5s从头开始", "value": "resume"}],
+         "default": "restart", "central": False,
+         "help": "从头播放：每次点击曲目都从 0 开始；保留播放进度：续播上次位置，"
+                 "但剩余不足 5 秒时一律从头开始（音频、视频同样生效）"},
         {"key": "ffmpeg_path", "label": "ffmpeg 路径（视频封面抽取）", "type": "text",
          "placeholder": "留空自动检测 PATH", "central": True,
          "help": "可选：填写 ffmpeg 可执行文件路径（如 C:\\ffmpeg\\bin\\ffmpeg.exe 或所在目录）；"

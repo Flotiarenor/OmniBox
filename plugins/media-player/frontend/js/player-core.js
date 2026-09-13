@@ -13,6 +13,8 @@ class MediaPlayerCore {
         this.currentItem = null;
         this.playMode = 0; // 0=顺序 1=随机 2=单曲循环
         this.videoMode = true; // true=画面 false=仅声音
+        // 播放起点：'restart'=从头播放（默认） 'resume'=保留播放进度（剩余不足 5s 从头）
+        this.resumeMode = 'restart';
 
         this._volume = 1;            // 线性位置（0~1，存储/传输语义）
         this._volumeMapper = new VolumeMapper(2.5);   // 指数映射：低音量区更精细
@@ -90,12 +92,14 @@ class MediaPlayerCore {
         this._saveProgress();
         this.currentItem = item;
 
-        // 切换前记住当前进度，避免视频/音频元素切换丢进度
+        // 切换前记住当前进度，避免视频/音频元素切换丢进度。
+        // 同一曲目重载（重试/重新点击）不续播；续播位置统一交给 _resumeTarget 判定
         const keepTime = item.id !== (this._previousItem && this._previousItem.id)
             ? MediaProgressStore.get(item)
             : 0;
         this._previousItem = item;
-        this._pendingResume = keepTime;
+        // 此刻还不知道时长，先记录候选位置，真正的"剩余不足 5s 从头"在 loadedmetadata 里判定
+        this._pendingResume = this._resumeTarget(keepTime, 0);
 
         this.audio.pause();
         this.video.pause();
@@ -138,14 +142,48 @@ class MediaPlayerCore {
         Bridge.call('media_update_recent', item.id).catch(() => { });
     }
 
+    // ===== 播放起点（设置项 resume_mode）=====
+    // 'restart'：每次点击曲目都从 0 开始；'resume'：续播上次位置，
+    // 但剩余不足 RESUME_TAIL_SECONDS 时一律从头开始。
+    setResumeMode(mode) {
+        this.resumeMode = mode === 'resume' ? 'resume' : 'restart';
+    }
+
+    // 把候选续播位置换算为真正的起点：返回 0 即从头播放。
+    // duration 未知（0/NaN/Infinity，如网络流）时不做剩余时长判定。
+    _resumeTarget(pos, duration) {
+        if (this.resumeMode !== 'resume') return 0;
+        const target = Number(pos) || 0;
+        if (!(target > 0)) return 0;
+        if (isFinite(duration) && duration > 0) {
+            if (target >= duration) return 0;
+            if (duration - target < this.RESUME_TAIL_SECONDS) return 0;
+        }
+        return target;
+    }
+
+    // 元素停在末尾时 play() 不会重新出声（本 bug 的"无法播放"表现）：先回到 0
+    _rewindIfAtEnd(el) {
+        if (!el) return;
+        const nearEnd = isFinite(el.duration) && el.duration > 0
+            && el.duration - (el.currentTime || 0) <= 0.25;
+        if (el.ended || nearEnd) {
+            try { el.currentTime = 0; } catch (e) { }
+        }
+    }
+
     togglePlay() {
         // 用户手动播放/暂停：解除任何挂起的自动跳歌定时器（失败重试 600ms 窗口内
         // 用户点播放应继续当前曲目，而不是被定时器覆盖跳走）
         this._clearPendingSkip();
         const el = this.mediaElement;
         if (this.currentItem && el && el.src) {
-            if (el.paused) el.play().catch(() => { });
-            else el.pause();
+            if (el.paused) {
+                this._rewindIfAtEnd(el);
+                el.play().catch(() => { });
+            } else {
+                el.pause();
+            }
         } else if (this.queue.length) {
             this.playIndex(Math.max(0, this.currentIndex), true);
         }
@@ -268,12 +306,16 @@ class MediaPlayerCore {
         this.audio.pause();
         this.video.pause();
         const el = this.mediaElement;
+        // 画面/仅声音切换是同一曲目的连续播放，不走续播逻辑；清掉挂起的续播位置，
+        // 避免 loadedmetadata 时被旧值覆盖。停在末尾则从 0 开始，否则停在末尾 play() 无声
+        this._pendingResume = 0;
         el.src = MPUtils.mediaUrl(this.currentItem.path);
         this._applyVolume();
         el.muted = this._muted;
         el.load();
         const resume = () => {
-            if (position > 0) el.currentTime = position;
+            const atEnd = isFinite(el.duration) && el.duration > 0 && position >= el.duration - 0.25;
+            if (position > 0 && !atEnd) el.currentTime = position;
             if (wasPlaying) el.play().catch(() => { });
         };
         el.addEventListener('loadedmetadata', resume, { once: true });
@@ -294,12 +336,23 @@ class MediaPlayerCore {
         }
     }
 
+    // 进度记忆写入口：只在"离结尾还有足够距离"时落盘。
+    // 历史 bug：曲目播完后 currentTime 停在 duration，切歌瞬间 _loadItem 会先
+    // _saveProgress()，把这个"已播完"位置写回存储，覆盖掉 ended 里的 clear()；
+    // 下次点击该曲目就续播到末尾，元素停在末尾 play() 无声——表现为"无法播放"。
     _saveProgress() {
         const el = this.mediaElement;
         if (!this.currentItem || !el || !el.src) return;
-        if (el.currentTime > 2) {
-            MediaProgressStore.save(this.currentItem.id, el.currentTime);
+        const position = el.currentTime || 0;
+        if (!(position > 2)) return;
+        if (el.ended) return;   // 已播完：进度由 ended 清除，不能再写回
+        if (isFinite(el.duration) && el.duration > 0
+            && el.duration - position < this.RESUME_TAIL_SECONDS) {
+            // 剩余不足 5s：按设置语义等同"从头开始"，直接清掉记录
+            MediaProgressStore.clear(this.currentItem.id);
+            return;
         }
+        MediaProgressStore.save(this.currentItem.id, position);
     }
 
     _savePlaybackState() {
@@ -337,7 +390,8 @@ class MediaPlayerCore {
         }
 
         this._previousItem = item;
-        this._pendingResume = savedPos;
+        // 恢复上次曲目同样受播放起点设置约束（时长未知，loadedmetadata 里补判剩余时长）
+        this._pendingResume = this._resumeTarget(savedPos, 0);
         // 视频画面/仅声音：优先用上次持久化的模式，其次回落到设置项
         const savedVideoMode = pb.video_mode
             || (this.app.settings && this.app.settings.default_video_mode)
@@ -356,6 +410,7 @@ class MediaPlayerCore {
 
     // ===== EQ =====
     EQ_FREQS = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+    RESUME_TAIL_SECONDS = 5;   // 剩余不足该秒数时续播一律改为从头播放
 
     ensureAudioGraph() {
         if (this._eqNodes) {
@@ -480,8 +535,14 @@ class MediaPlayerCore {
                 }
             }
             if (el === this.mediaElement && this._pendingResume > 0) {
-                try { el.currentTime = this._pendingResume; } catch (e) { }
+                // 时长此时才可知：剩余不足 5s（或位置已越界）则不续播，直接从头
+                const target = this._resumeTarget(this._pendingResume, el.duration);
                 this._pendingResume = 0;
+                if (target > 0) {
+                    try { el.currentTime = target; } catch (e) { }
+                } else if (this.currentItem) {
+                    MediaProgressStore.clear(this.currentItem.id);
+                }
             }
             this.app.onTimeUpdate();
         });
