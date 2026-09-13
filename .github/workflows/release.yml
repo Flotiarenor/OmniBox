@@ -1,25 +1,33 @@
 name: release
 
-# 发布流程：推一个 v* tag → 校验版本 → 双平台构建 → 创建 GitHub Release 并上传产物。
+# 发布流程（**只人工触发**）：Actions → release → Run workflow → 填要发布的 tag。
+#
+# 刻意不再监听 tag push：打 tag 只是给提交打版本锚点，不会再自动产出 Release。
+# 只想构建、先不发（例如把 Linux 产物取下来自己核对），把 dry_run 勾上：
+# 产物以 artifact 形式留在本次运行里（7 天过期），Release 不会被创建/更新。
 #
 # 前置约定：
 #   1. 版本号唯一来源是 pyproject.toml 的 [project].version，
 #      shell/frontend/package.json 必须与它一致（tools/check_version.py 会把关）；
-#   2. tag 必须写成 v<version>，且与 pyproject.toml 一致，否则工作流在第一步就失败，
-#      不会产出"名字与版本不符"的安装包；
+#   2. 传入的 tag 必须已存在、写成 v<version>，且与它指向提交里的 pyproject.toml
+#      一致；不一致时工作流在第一步就失败，不会产出"名字与版本不符"的安装包
+#      （构建前会把工作区切到该 tag，而不是默认分支）；
 #   3. 发布前可先跑 package-smoke 工作流确认打包在本环境可用。
 #
 # 首次使用需要在仓库设置里确认：Settings → Actions → General →
 # Workflow permissions 选择 "Read and write permissions"（创建 Release 需要）。
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: '要发布的已有 tag（如 v3.0.0）'
+        description: '要发布的已有 tag（如 v3.0.0，必须已存在且与 pyproject 版本一致）'
         required: true
+        type: string
+      dry_run:
+        description: '只构建并上传 artifact，不创建/更新 Release'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -35,8 +43,10 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
+      # 构建源必须是 tag 指向的提交，而不是触发时选的分支。
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
 
       - uses: actions/setup-python@v5
@@ -53,14 +63,11 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install -r requirements-dev.txt
 
-      - name: 解析本次发布 tag
+      # tag 是否存在由上一步 checkout（ref 指到 tag）兜底：不存在就直接失败。
+      - name: 本次发布 tag
         id: ref
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="${{ github.event.inputs.tag }}"
-          else
-            tag="${GITHUB_REF_NAME}"
-          fi
+          tag="${{ inputs.tag }}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "本次发布 tag: $tag"
 
@@ -106,7 +113,10 @@ jobs:
             artifact: OmniBox-linux-x64.tar.gz
             expect_exe: OmniBox.bin
     steps:
+      # 与 verify 一致：产物必须来自 tag 指向的提交。
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
 
       - uses: actions/setup-python@v5
         with:
@@ -191,6 +201,8 @@ jobs:
   publish:
     name: 创建 Release
     needs: [verify, build]
+    # dry_run 只构建不发：产物留在本次运行的 artifact 里，Release 一动不动。
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -210,7 +222,7 @@ jobs:
       - name: 创建 / 更新 Release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+          TAG: ${{ inputs.tag }}
           VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail

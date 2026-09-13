@@ -64,13 +64,24 @@ node tools/check_frontend_escape.cjs
 只在 `docs/Releases/**`、`requirements*.txt`、`pyproject.toml` 等打包相关文件
 变动时触发，目的是让"打包坏了"在 PR 阶段暴露，而不是等到打 tag。
 
-### `release.yml` —— 打 tag 即发布
+### `release.yml` —— 只人工触发发布
 
-推 `v*` tag → 校验版本 → 双平台构建 → 创建 GitHub Release 并上传产物与 `.sha256`。
-也可在 Actions 页面手动 `workflow_dispatch` 指定一个已有 tag。
+**不再监听 tag push**：打 tag 不会再自动产出 Release，何时发布由人决定。
+流程改为 Actions → `release` → Run workflow，填两个输入：
+
+| 输入 | 说明 |
+| --- | --- |
+| `tag` | 要发布的 tag（如 `v3.0.0`），必须已存在；工作区会切到该 tag 再构建，避免"用分支的代码发了 tag 的名" |
+| `dry_run` | 勾上则只构建并上传 artifact（7 天过期），**不创建/更新 Release**，用于先取产物自己核对 |
+
+触发后：校验版本（tag ↔ pyproject ↔ package.json，不一致第一步就失败）→ 双平台
+PyInstaller 构建 → 打 zip / tar.gz 并生成 `.sha256` → 创建或更新 Release。
+`dry_run` 走同一套构建与校验，只是跳过最后一步。
 
 > 首次使用需确认仓库 `Settings → Actions → General → Workflow permissions`
 > 为 **Read and write permissions**（创建 Release 需要）。
+> `workflow_dispatch` 的入口只在**默认分支**（`main`）上渲染，所以这个文件改完
+> 要让 `main` 也带上，Actions 页面才看得到 Run workflow 按钮。
 
 ---
 
@@ -78,8 +89,9 @@ node tools/check_frontend_escape.cjs
 
 - 唯一来源：`pyproject.toml` 的 `[project].version`。
 - `shell/frontend/package.json` 的 `version` 必须与之相同（`check_version.py` 校验）。
-- tag 必须写成 `v<version>`；不一致时 `release.yml` 第一步就失败，**不会**产出
-  名字与版本不符的安装包。
+- tag 必须写成 `v<version>`；`release.yml` 会把 tag 与**它指向提交**里的
+  pyproject 版本对齐检查，不一致时第一步就失败，**不会**产出名字与版本不符的安装包。
+- 打 tag 本身**不触发发布**：tag 只是版本锚点，发布走人工触发的 `release.yml`。
 - 取值给脚本用：`python tools/check_version.py --print`（只输出裸版本号）。
 
 ---
@@ -109,6 +121,31 @@ powershell -ExecutionPolicy Bypass -File docs/Releases/build-release.ps1
 # Linux
 bash docs/Releases/build-release.sh
 ```
+
+### 在 Windows 上能构建出 Linux 产物吗？
+
+**不能直接构建。** PyInstaller 官方写明它不是交叉编译器——它必须在构建时运行
+*目标平台*的 Python 环境（Linux 产物就得在 Linux 上跑 PyInstaller）。
+在 Windows 上执行 `build-release.sh` 只会得到一个 Windows 可执行文件。
+参见 [PyInstaller: Building Cross Platform](https://pyinstaller.org/en/stable/building-for-other-platforms.html)（该页也直接把
+"虚拟化 / CI"列为官方推荐做法）。
+
+拿到 Linux 产物的三条路，按省事程度排序：
+
+1. **人工触发本仓库 workflow（推荐）**：`release.yml` 勾 `dry_run`，或在
+   `package-smoke` 上手动触发 → ubuntu runner 构建 → 下载 artifact。
+   不占本地环境，且产物出自干净的 Linux 环境。
+2. **WSL2**（Windows 自带）：`wsl --install -d Ubuntu`，在发行版里
+   `bash docs/Releases/build-release.sh`（需要 `python3-venv`、`node`/`npm`、`binutils`）。
+3. **Docker Desktop**：
+   ```bash
+   docker run --rm -v "$PWD":/src -w /src ubuntu:22.04 bash -lc \
+     "apt-get update && apt-get install -y python3 python3-venv python3-pip nodejs npm binutils && bash docs/Releases/build-release.sh"
+   ```
+
+⚠️ **glibc 基线**：PyInstaller **不**打包 glibc，产物只对新版 glibc 前向兼容。
+因此要在"你想支持的最旧发行版"上构建（WSL/Docker 里优先选 `ubuntu:22.04`，
+而不是最新版），否则老系统用户会遇到动态链接错误。CI 的 `ubuntu-latest` 同理。
 
 ---
 
@@ -244,3 +281,23 @@ RUF100（未使用的 noqa）会把这些标注判为冗余并删除——它们
    `0600`；密钥类设置应统一收紧。
 8. `docs/plugin-guide.md:751` 建议 `Bridge.originalUrl(encodeURIComponent(path))`，
    与 `base.js` 内部已编码的实现冲突（双重编码）。
+
+---
+
+## 9. 手工发布清单（人工发布流程）
+
+1. 确认 `main` 上是准备发布的代码，`pyproject.toml` 与
+   `shell/frontend/package.json` 的版本号已改成同一个值并提交。
+2. 打 tag 并推送：`git tag v3.0.1 && git push origin v3.0.1`
+   —— **这一步不会发布任何东西**（`release.yml` 已不监听 tag）。
+3. 先在 Actions 上跑一次 `release`，勾上 `dry_run`（或跑 `package-smoke`），
+   确认双平台构建与 `check_build_tree.py` 产物校验都过。
+4. 要人工验证产物就从第 3 步的运行里下载 artifact（Windows `zip` / Linux `tar.gz`，
+   7 天内有效）。Windows 本机造不出 Linux 产物，见 §4。
+5. 确认无误后，再跑一次 `release`（**不勾** `dry_run`，`tag` 填同一个）：
+   校验版本 → 双平台构建 → 创建 / 更新 Release 并上传产物与 `.sha256`。
+6. Release 页面的说明与 `.sha256` 都齐全后再对外通知。
+
+回滚：`gh release delete <tag>` 删除 Release（tag 可留着，也可一并删）；
+需要重新上传产物时再跑一次 `release`，工作流对已存在的 Release 走
+`gh release upload --clobber` 覆盖。
