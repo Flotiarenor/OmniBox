@@ -5,15 +5,15 @@
 - 收藏断点 scan.next_qs（完整翻页参数，Pixiv 实际使用 max_bookmark_id）。
 """
 
+import logging
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from typing import Any, Dict, List, Set, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from pixiv_mini import PixivError
 
 from . import tasks as tasks_mod
 from .download import _work_id
 from .limiter import RateLimitError
-import logging
 
 log = logging.getLogger(__name__)
 

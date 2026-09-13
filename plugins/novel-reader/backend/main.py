@@ -1,12 +1,12 @@
-import os
 import json
+import logging
+import os
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, ClassVar, Dict, List, Optional
 
 from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_utils import load_sibling
-import logging
 
 log = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ _parser_mod = load_sibling(__file__, 'parser', 'novel_reader')
 NovelParser = _parser_mod.NovelParser
 
 class NovelReaderPlugin(PluginBase):
-    settings_schema = [
+    settings_schema: ClassVar[List[Dict[str, Any]]] = [
         {"key": "root_dir", "label": "小说根目录", "type": "text",
          "placeholder": "默认: ./data", "help": "存放 .txt 小说文件的根目录"},
     ]
@@ -170,7 +170,7 @@ class NovelReaderPlugin(PluginBase):
 
         # 检查是否有文件被删除
         cached_ids = set(self._novel_cache.keys())
-        current_ids = {os.path.splitext(name)[0] for name in current_files.keys()}
+        current_ids = {os.path.splitext(name)[0] for name in current_files}
         if cached_ids != current_ids:
             needs_update = True
 

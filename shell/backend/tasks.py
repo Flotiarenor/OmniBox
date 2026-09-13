@@ -12,9 +12,8 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-'''
 
-"""通用后台任务（媒体插件共享基建·控制面）。
+通用后台任务（媒体插件共享基建·控制面）。
 
 把「后台线程 + 进度上报 + 取消 + 状态查询 + 可选断点持久化」从各插件
 （image-viewer 重建、pixiv-sync 下载等）抽成统一骨架。
@@ -26,17 +25,16 @@ limitations under the License.
   重启后 `BackgroundTask.load()` 恢复为 paused 可续跑（吸收 pixiv-sync
   tasks.py 的断点恢复经验）；不传则纯内存（image-viewer 重建场景）。
 
-状态机：queued → running → done / cancelled；加载持久化时 running/queued → paused。
-"""
+状态机：queued → running → done / cancelled；加载持久化时 running/queued → paused。'''
 
 import json
+import logging
 import os
 import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
-import logging
 
 log = logging.getLogger(__name__)
 
@@ -131,7 +129,11 @@ class BackgroundTask:
             try:
                 worker_fn(self, *args)
             except Exception as e:
-                self._failed = True
+                # _failed 必须与状态写入在同一把锁内：status() 在锁内同时读
+                # state 与 _failed，锁外写会出现"读到 state=done 但 _failed 还是
+                # False"的窗口，把一个失败的任务报成 success=True。
+                with self._lock:
+                    self._failed = True
                 self.add_error(f'任务异常: {e}')
             finally:
                 with self._lock:

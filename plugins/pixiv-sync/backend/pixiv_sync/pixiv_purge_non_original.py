@@ -31,6 +31,7 @@ done 重置为 0。之后直接点「同步画师 / 同步喜欢」（下载原�
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import re
@@ -39,7 +40,6 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
-import io
 
 if isinstance(sys.stdout, io.TextIOWrapper):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -245,9 +245,15 @@ def reset_done_in_db(cache_dir: Path, ids: Set[int]) -> int:
 
 
 def prune_empty_dirs(pixiv_root: Path):
-    """自底向上清理 pixiv 根目录下的空目录（多图子文件夹/整画师目录）。"""
-    for dirpath, dirnames, filenames in os.walk(pixiv_root, topdown=False):
+    """自底向上清理 pixiv 根目录下的空目录（多图子文件夹/整画师目录）。
+
+    只处理"我们确实会创建"的目录：跳过隐藏目录（.cache 等由其它模块管理，
+    删掉会破坏缓存/状态），避免把用户自己放在 pixiv/ 下的非本工具目录一并清空。
+    """
+    for dirpath, _dir_names, _filenames in os.walk(pixiv_root, topdown=False):
         d = Path(dirpath)
+        if d.name.startswith('.'):
+            continue
         if d.resolve() == pixiv_root.resolve():
             continue
         try:
@@ -291,8 +297,7 @@ def resolve_root(root_arg: Optional[str]) -> Path:
         f"未找到相册根目录，请输入下载根目录\n"
         f"（目录下应包含 pixiv/ 与 .cache/pixiv-sync/；留空使用 {default}）: "
     ).strip()
-    p = Path(ans or default).resolve()
-    return p
+    return Path(ans or default).resolve()
 
 
 def _data_root_from_yaml(yaml_path: Path, base: Path) -> Optional[Path]:
@@ -368,7 +373,7 @@ def main() -> int:
         return 1
     upgrade, keep = classify(works)
 
-    print("")
+    print()
     print(f"扫描完成: 共 {len(works)} 个作品 / 需重下原图 {len(upgrade)} 个 / 无需处理 {len(keep)} 个")
     if upgrade:
         print("-" * 60)
@@ -385,7 +390,7 @@ def main() -> int:
     print(f"待删除大图文件: {total_del} 个 / 涉及作品: {len(upgrade)} 个")
 
     if args.dry_run:
-        print("")
+        print()
         print("[dry-run] 仅展示，未删除任何文件。可去掉 --dry-run 实际执行。")
         return 0
 
@@ -422,7 +427,7 @@ def main() -> int:
     failed_removed = strip_ids(cache / "failed_ids.json", removed_ids)
     done_reset = reset_done_in_db(cache, removed_ids)
 
-    print("")
+    print()
     print("执行完成:")
     print(f"  删除大图文件: {deleted_files} 个")
     print(f"  去重记录移除: {ids_removed} 条")
@@ -431,7 +436,7 @@ def main() -> int:
     if ids_removed < len(removed_ids):
         print(f"  (!!) downloaded_ids.json 中仅移除 {ids_removed}/{len(removed_ids)} 条，"
               "其余可能没有对应记录或文件写入失败")
-    print("")
+    print()
     print("下一步: 「下载原图」现为固定默认行为（默认开启、无开关）。直接点「同步画师」或「同步喜欢」即可；")
     print("        这些作品会自动重新下载原图（已保留的 <1200px 页面会自动跳过）。")
     return 0

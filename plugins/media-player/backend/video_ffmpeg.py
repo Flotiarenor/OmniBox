@@ -77,10 +77,7 @@ def extract_frame(video_path: str, duration: Optional[float] = None) -> Optional
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
         return None
-    if duration and duration > 0:
-        seeks = [max(SEEK_MIN, min(duration * 0.1, SEEK_MAX))]
-    else:
-        seeks = [SEEK_DEFAULT, 3.0, 1.0]
+    seeks = [max(SEEK_MIN, min(duration * 0.1, SEEK_MAX))] if duration and duration > 0 else [SEEK_DEFAULT, 3.0, 1.0]
     for seek in seeks:
         data = _run(ffmpeg, video_path, seek)
         if data:
@@ -93,7 +90,8 @@ def _run(ffmpeg: str, video_path: str, seek: float) -> Optional[bytes]:
            '-ss', f'{seek:.3f}', '-i', str(video_path),
            '-frames:v', '1', '-q:v', '3', '-f', 'image2pipe', '-']
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=FRAME_TIMEOUT)
+        # check=False：返回码由下面显式判断（非零即视为抽帧失败）
+        proc = subprocess.run(cmd, capture_output=True, timeout=FRAME_TIMEOUT, check=False)
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return None
     if proc.returncode != 0 or not proc.stdout:

@@ -1,0 +1,233 @@
+name: release
+
+# 发布流程：推一个 v* tag → 校验版本 → 双平台构建 → 创建 GitHub Release 并上传产物。
+#
+# 前置约定：
+#   1. 版本号唯一来源是 pyproject.toml 的 [project].version，
+#      shell/frontend/package.json 必须与它一致（tools/check_version.py 会把关）；
+#   2. tag 必须写成 v<version>，且与 pyproject.toml 一致，否则工作流在第一步就失败，
+#      不会产出"名字与版本不符"的安装包；
+#   3. 发布前可先跑 package-smoke 工作流确认打包在本环境可用。
+#
+# 首次使用需要在仓库设置里确认：Settings → Actions → General →
+# Workflow permissions 选择 "Read and write permissions"（创建 Release 需要）。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的已有 tag（如 v3.0.0）'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '20'
+
+jobs:
+  verify:
+    name: 校验版本与测试
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+
+      - name: 解析本次发布 tag
+        id: ref
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ github.event.inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "本次发布 tag: $tag"
+
+      - name: 版本一致性（tag ↔ pyproject ↔ package.json）
+        run: python tools/check_version.py "${{ steps.ref.outputs.tag }}"
+
+      - name: 输出版本号
+        id: version
+        run: |
+          ver=$(python tools/check_version.py --print)
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "version=$ver"
+
+      - name: ruff
+        run: python -m ruff check .
+
+      - name: 插件规范检查
+        run: python tools/check_plugins.py
+
+      - name: 打包规则检查
+        run: python tools/check_packaging.py
+
+      - name: 单元测试
+        run: python -m unittest discover -s tests
+
+      - name: 前端转义门禁
+        run: node tools/check_frontend_escape.cjs
+
+  build:
+    name: 构建 ${{ matrix.artifact }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            spec: docs/Releases/omnibox.spec
+            artifact: OmniBox-windows-x64.zip
+            expect_exe: OmniBox.exe
+          - os: ubuntu-latest
+            spec: docs/Releases/omnibox-linux.spec
+            artifact: OmniBox-linux-x64.tar.gz
+            expect_exe: OmniBox.bin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: shell/frontend/package-lock.json
+
+      - name: 安装 Python 依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+
+      - name: Linux 构建前置（binutils：PyInstaller 需要 objdump）
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils
+
+      - name: 构建前端
+        run: |
+          npm --prefix shell/frontend ci
+          npm --prefix shell/frontend run build
+
+      - name: PyInstaller 打包
+        run: >-
+          python -m PyInstaller
+          --workpath .build-work
+          --distpath .build-dist
+          --noconfirm
+          --log-level WARN
+          ${{ matrix.spec }}
+
+      - name: Linux：重命名可执行文件
+        if: runner.os == 'Linux'
+        run: |
+          mv .build-dist/OmniBox/OmniBox.bin .build-dist/OmniBox/OmniBox
+          chmod +x .build-dist/OmniBox/OmniBox
+
+      - name: 校验产物内容
+        run: >-
+          python tools/check_build_tree.py
+          .build-dist/OmniBox
+          --expect-exe ${{ matrix.expect_exe }}
+
+      - name: 生成依赖快照（审计用）
+        continue-on-error: true
+        run: python -m pip freeze > .build-dist/OmniBox/requirements.lock.txt
+
+      - name: 打包（Windows → zip）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path .build-dist/OmniBox/* -DestinationPath "${{ matrix.artifact }}" -CompressionLevel Optimal
+          Get-Item "${{ matrix.artifact }}" | Select-Object Name, Length
+
+      - name: 打包（Linux → tar.gz）
+        if: runner.os == 'Linux'
+        run: |
+          tar -C .build-dist -czf "${{ matrix.artifact }}" OmniBox
+          ls -lh "${{ matrix.artifact }}"
+
+      - name: 生成校验和
+        run: python -c "import hashlib,pathlib,sys; p=pathlib.Path(sys.argv[1]); print(hashlib.sha256(p.read_bytes()).hexdigest(), p.name)" "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}
+            ${{ matrix.artifact }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: 创建 Release
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 下载全部构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 列出待发布文件
+        run: ls -lh dist
+
+      # 用 gh CLI（ubuntu runner 预装），不再额外引入第三方 action 以缩小供应链面。
+      - name: 创建 / 更新 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          notes="OmniBox ${VERSION}
+
+          - 版本号：\`${VERSION}\`
+          - 产物：Windows x64（zip）、Linux x64（tar.gz），各自附带 \`.sha256\`
+          - 构建来源：本仓库 GitHub Actions（见本次运行的 workflow 日志）
+
+          校验下载完整性：
+          \`\`\`bash
+          sha256sum -c OmniBox-linux-x64.tar.gz.sha256
+          \`\`\`
+          "
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，追加/覆盖产物"
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "$TAG" --notes "$notes"
+          fi

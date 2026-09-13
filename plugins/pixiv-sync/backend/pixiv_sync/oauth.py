@@ -17,7 +17,7 @@ def start(p) -> Dict[str, Any]:
         url = p._client().login_url(challenge)
         webbrowser.open(url)
         return {"ok": True, "url": url, "challenge": challenge}
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return {"ok": False, "error": f"打开登录页失败: {e}"}
 
 
@@ -41,5 +41,5 @@ def finish(p, code: str) -> Dict[str, Any]:
         return {"ok": True, "user_id": client.user_id}
     except PixivError as e:
         return {"ok": False, "error": str(e)}
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}

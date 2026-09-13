@@ -1,5 +1,29 @@
 {
-  "extraPaths": [
+  "venvPath": ".",
+  "venv": "venv",
+  "pythonVersion": "3.10",
+  "include": [
+    "main.py",
+    "shell",
+    "plugins",
+    "tools",
+    "tests"
+  ],
+  "exclude": [
+    "venv",
+    "docs",
+    ".build",
+    ".build-linux",
+    ".config",
+    "data",
+    "shell/frontend/node_modules",
+    "shell/frontend/dist",
+    "**/__pycache__",
     "plugins/pixiv-sync/backend/libs"
-  ]
+  ],
+  "extraPaths": [
+    "plugins/pixiv-sync/backend/libs",
+    "docs/Releases"
+  ],
+  "reportMissingTypeStubs": false
 }

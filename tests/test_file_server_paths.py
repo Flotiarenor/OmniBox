@@ -14,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -25,7 +26,7 @@ from shell.backend.paths import get_config_dir
 
 
 class _StubPluginManager:
-    _instances = {}
+    _instances: ClassVar[dict] = {}
 
     def get_api_methods(self):
         return {}

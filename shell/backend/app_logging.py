@@ -12,9 +12,8 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-'''
 
-"""统一日志配置：文件（滚动）+ 控制台双通道。
+统一日志配置：文件（滚动）+ 控制台双通道。
 
 为什么必须有文件通道（docs/code-review.md §4.2）：发行版打包为 console=False，
 此时 CPython 的 sys.stdout / sys.stderr 是 None，`print` 会**静默丢弃**所有
@@ -25,8 +24,7 @@ limitations under the License.
     - 内核与插件统一用 `log = logging.getLogger(__name__)`，不要用 print；
     - 只有面向终端的工具/脚本（tools/、tests/ 下的命令行脚本）才继续 print，
       因为它们的 stdout 就是产品本身；
-    - 没有控制台时不注册 StreamHandler，更不会因为写 None 而报错。
-"""
+    - 没有控制台时不注册 StreamHandler，更不会因为写 None 而报错。'''
 
 import logging
 import sys

@@ -6,12 +6,12 @@
 """
 
 import json
+import logging
 import os
 import re
 import tempfile
 from pathlib import Path
 from typing import Any, List, Set, Tuple
-import logging
 
 log = logging.getLogger(__name__)
 

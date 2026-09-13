@@ -12,9 +12,7 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-'''
 
-"""
 backend 包 - 插件化后端核心
 
 提供：
@@ -29,12 +27,11 @@ backend 包 - 插件化后端核心
     manager = PluginManager([str(p) for p in get_plugin_search_dirs()], config=config)
     manager.load_all()
     app = create_app(config, manager)
-    app.run()
-"""
+    app.run()'''
 
+from .file_server import create_app
 from .plugin_base import PluginBase
 from .plugin_manager import PluginManager
-from .file_server import create_app
 
 __all__ = [
     "PluginBase",

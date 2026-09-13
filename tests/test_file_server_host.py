@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -26,7 +27,7 @@ from shell.backend.paths import get_config_dir
 class _StubPluginManager:
     """只提供 create_app 在请求期会用到的接口，避免真实加载插件。"""
 
-    _instances = {}
+    _instances: ClassVar[dict] = {}
 
     def get_api_methods(self):
         return {}

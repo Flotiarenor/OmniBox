@@ -6,13 +6,13 @@
 
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, ClassVar, Dict, List, Optional
 
 from shell.backend.media_catalog import IMAGE_EXTENSIONS
 from shell.backend.plugin_base import PluginBase
-import logging
 
 log = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ ALLOWED_EXTENSIONS = IMAGE_EXTENSIONS
 
 
 class ImageCleanerPlugin(PluginBase):
-    settings_schema = [
+    settings_schema: ClassVar[List[Dict[str, Any]]] = [
         {"key": "threshold", "label": "相似判定阈值", "type": "range",
          "min": 0, "max": 16, "default": 8,
          "help": "汉明距离越小越严格，0 表示只有完全一致的 dHash 才判为相似"},
@@ -179,29 +179,56 @@ class ImageCleanerPlugin(PluginBase):
     # ---------- 完全重复 ----------
 
     @staticmethod
-    def _file_quick_hash(abs_path: str, size: int) -> str:
-        """先读首尾各 64KB + 文件大小做快速指纹，避免整文件 MD5。"""
+    def _file_quick_hash(abs_path: str, size: int) -> Optional[str]:
+        """先读首尾各 64KB + 文件大小做快速指纹，避免整文件 MD5。
+
+        读取失败返回 None（而不是"空内容的 md5"，见 _file_full_hash 的说明）。
+        """
         h = hashlib.md5()
         h.update(str(size).encode())
         try:
             with open(abs_path, 'rb') as f:
-                h.update(f.read(65536))
+                head = f.read(65536)
+                if len(head) == 0 and size > 0:
+                    # 声明有内容却读不出任何字节：文件正在被写入/被占用/权限不足
+                    return None
+                h.update(head)
                 if size > 131072:
                     f.seek(max(0, size - 65536))
                     h.update(f.read(65536))
         except OSError:
-            pass
+            return None
         return h.hexdigest()
 
     @staticmethod
-    def _file_full_hash(abs_path: str) -> str:
+    def _file_full_hash(abs_path: str) -> Optional[str]:
+        """整文件 MD5；**任何读取失败都返回 None，绝不返回"空内容的摘要"**。
+
+        历史缺陷：失败时 `pass` 后照样返回 hashlib.md5() 的空摘要
+        （d41d8cd98f00b204e9800998ecf8427e），于是所有读不到的文件共享同一个
+        digest，被 duplicate_scan 当成"完全重复"分组。而这个插件的下一步是
+        delete_files → unlink：一组"假重复"被一键删除 = 真实照片永久丢失。
+        文件在扫描期间被写入（同步/复制进行中）是最容易触发的场景。
+
+        额外做一致性校验：读取过程中文件大小变化、或**实际读到的字节数与
+        声明大小不符**（正在被写入、被截断），摘要都不可信，同样返回 None。
+        """
         h = hashlib.md5()
+        read_bytes = 0
         try:
             with open(abs_path, 'rb') as f:
-                for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                before = os.fstat(f.fileno()).st_size
+                while True:
+                    chunk = f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    read_bytes += len(chunk)
                     h.update(chunk)
+                after = os.fstat(f.fileno()).st_size
         except OSError:
-            pass
+            return None
+        if before != after or read_bytes != before:
+            return None
         return h.hexdigest()
 
     def duplicate_scan(self) -> Dict:
@@ -222,13 +249,17 @@ class ImageCleanerPlugin(PluginBase):
             by_quick = {}
             for f in batch:
                 key = self._file_quick_hash(f['abs'], f['size'])
+                if key is None:
+                    continue  # 读不到的文件不参与比较，更不能参与删除
                 by_quick.setdefault(key, []).append(f)
-            for key, candidates in by_quick.items():
+            for candidates in by_quick.values():
                 if len(candidates) < 2:
                     continue
                 by_full = {}
                 for f in candidates:
                     digest = self._file_full_hash(f['abs'])
+                    if digest is None:
+                        continue  # 同上：摘要不可信就退出候选集
                     by_full.setdefault(digest, []).append(f)
                 for digest, dups in by_full.items():
                     if len(dups) >= 2:
@@ -294,7 +325,7 @@ class ImageCleanerPlugin(PluginBase):
         self._dhash_cache[key] = {'mtime': mtime, 'hash': value}
         return value
 
-    def similar_scan(self, threshold: int = None) -> Dict:
+    def similar_scan(self, threshold: int | None = None) -> Dict:
         """扫描全部相册，返回跨相册的视觉相似图片分组。"""
         files = self._all_album_files()
         if len(files) < 2:

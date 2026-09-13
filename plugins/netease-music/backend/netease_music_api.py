@@ -1,19 +1,19 @@
 """网易云音乐 Python API 封装
 基于 ncm-cli 命令行工具，支持 Companion / media-player 复用。
 """
-import subprocess
 import json
+import logging
 import os
 import re
 import shlex
 import shutil
+import subprocess
 import tempfile
 import time
-from pathlib import Path
-from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 from datetime import datetime
-import logging
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 log = logging.getLogger(__name__)
 
@@ -123,7 +123,7 @@ class NeteaseMusicAPI:
         except Exception as e:
             log.error(f"[netease-music] 写入 ncm-cli player=mpv 配置失败: {e}")
 
-    def _run_command(self, cmd, timeout: int = 30, env: dict = None) -> Dict[str, Any]:
+    def _run_command(self, cmd, timeout: int = 30, env: dict | None = None) -> Dict[str, Any]:
         """执行 ncm-cli 命令。
 
         cmd 支持两种形式：
@@ -149,6 +149,7 @@ class NeteaseMusicAPI:
                 errors='replace',
                 timeout=timeout,
                 env=env,
+                check=False,
             )
             return {
                 "success": result.returncode == 0,
@@ -183,10 +184,7 @@ class NeteaseMusicAPI:
         return result["success"] and "未登录" not in result["stdout"]
 
     def login(self, background: bool = True) -> str:
-        if background:
-            result = self._run_command("login --background")
-        else:
-            result = self._run_command("login")
+        result = self._run_command("login --background") if background else self._run_command("login")
         if not result["success"]:
             raise RuntimeError(result["stderr"] or result["stdout"] or "ncm-cli 登录失败")
         data = self._parse_json_output(result["stdout"])
@@ -221,19 +219,19 @@ class NeteaseMusicAPI:
             return {"success": False, "stdout": "", "stderr": "请输入要执行的 ncm-cli 命令", "returncode": -1}
         return self._run_command(cmd)
 
-    def search_song(self, keyword: str, user_input: str = None) -> List[Song]:
+    def search_song(self, keyword: str, user_input: str | None = None) -> List[Song]:
         result = self._run_command(['search', 'song', '--keyword', str(keyword)])
         if not result["success"]:
             raise RuntimeError(result["stderr"] or result["stdout"] or "ncm-cli 搜索歌曲失败")
         return self._parse_songs(result["stdout"])
 
-    def search_playlist(self, keyword: str, user_input: str = None) -> List[Playlist]:
+    def search_playlist(self, keyword: str, user_input: str | None = None) -> List[Playlist]:
         result = self._run_command(['search', 'playlist', '--keyword', str(keyword)])
         if not result["success"]:
             raise RuntimeError(result["stderr"] or result["stdout"] or "ncm-cli 搜索歌单失败")
         return self._parse_playlists(result["stdout"])
 
-    def search_album(self, keyword: str, user_input: str = None) -> List[Album]:
+    def search_album(self, keyword: str, user_input: str | None = None) -> List[Album]:
         result = self._run_command(['search', 'album', '--keyword', str(keyword)])
         if not result["success"]:
             raise RuntimeError(result["stderr"] or result["stdout"] or "ncm-cli 搜索专辑失败")
@@ -342,18 +340,19 @@ class NeteaseMusicAPI:
         if song_id in self._url_cache:
             return self._url_cache[song_id]
 
-        tmp_dir = Path(tempfile.gettempdir())
-        fake_bin = tmp_dir / "omnibox-ncm-fake-mpv"
+        bin_root = Path(tempfile.gettempdir()) / "omnibox-ncm-fake-mpv"
+        fake_bin = self._private_bin_dir(bin_root)
         fake_mpv = self._ensure_fake_mpv(fake_bin)
-        captured = tmp_dir / "ncm-captured-url.txt"
-        log = tmp_dir / "ncm-fake-mpv.log"
+        # 日志与截获 URL 必须和假 mpv 脚本同目录（脚本以 __file__ 为基准写这两个文件）
+        captured = fake_bin / "ncm-captured-url.txt"
+        log = fake_bin / "ncm-fake-mpv.log"
         sock = Path.home() / ".config" / "ncm-cli" / "mpv.sock"
 
         # 首次初始化时清理一次旧 daemon / 真实 mpv，之后保持常驻
         if not NeteaseMusicAPI._resident_initialized:
             for pat in ("ncm-cli play --song", "ncm-cli play --playlist", str(fake_mpv), "mpv --no-video"):
                 try:
-                    subprocess.run(["pkill", "-f", pat], capture_output=True)
+                    subprocess.run(["pkill", "-f", pat], capture_output=True, check=False)
                 except Exception:
                     pass
             for p in (captured, log, sock):
@@ -364,7 +363,11 @@ class NeteaseMusicAPI:
             NeteaseMusicAPI._resident_initialized = True
 
         env = os.environ.copy()
-        env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+        # 必须用 os.pathsep：Windows 的 PATH 分隔符是 ';'，写死 ':' 会让整个
+        # PATH 被当成一个路径，mpv.cmd 永远找不到 → 假 mpv 策略静默失效，
+        # 每次取 URL 都退化成公共外链（多数曲目返回 403），且没有任何报错。
+        env["PATH"] = os.pathsep.join([str(fake_bin), env.get("PATH", "")])
+
 
         try:
             self._run_command(
@@ -397,15 +400,40 @@ class NeteaseMusicAPI:
         self._url_cache[song_id] = url
         return url
 
+    @staticmethod
+    def _private_bin_dir(bin_dir: Path) -> Path:
+        """返回只有当前用户可写的假 mpv 目录（不存在则创建并收紧权限）。
+
+        假 mpv 是一个**会被本进程执行的脚本**，绝不能放在全局可写目录里用固定名字：
+        Linux 的 /tmp 允许任何本地用户预先创建同名文件或符号链接，从而把脚本内容
+        换成自己的代码（或以本进程权限覆盖任意文件）。这里在 tempdir 下开一个
+        用户专属子目录，POSIX 上显式 0700。
+        """
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        if os.name != 'nt':
+            try:
+                bin_dir.chmod(0o700)
+            except OSError:
+                pass
+        return bin_dir
+
     def _ensure_fake_mpv(self, bin_dir: Path) -> Path:
+        """把假 mpv 脚本写进（已私有化的）bin_dir，返回可执行入口。
+
+        目录必须**跨调用稳定**：常驻 daemon 与 ncm-cli 会用路径去查这个 shim，
+        换目录就等于换了一个不存在的 mpv。私有化由 _private_bin_dir() 负责。
+        """
         bin_dir.mkdir(parents=True, exist_ok=True)
         script = bin_dir / "mpv.py"
         script.write_text(
             r"""#!/usr/bin/env python3
-import json, os, socket, sys, tempfile, time
+import json, os, socket, sys, time
 from pathlib import Path
-LOG = Path(tempfile.gettempdir()) / "ncm-fake-mpv.log"
-CAP = Path(tempfile.gettempdir()) / "ncm-captured-url.txt"
+# 与父进程共用同一个私有目录：以脚本自身位置为基准，避免两边各自
+# 调用 gettempdir() 后指向不同位置（TMPDIR 被改写时会不一致）。
+_BASE = Path(__file__).resolve().parent
+LOG = _BASE / "ncm-fake-mpv.log"
+CAP = _BASE / "ncm-captured-url.txt"
 def log(msg):
     with LOG.open("a", encoding="utf-8") as f:
         f.write(msg + "\n")
@@ -484,7 +512,7 @@ if __name__ == "__main__":
             fake.chmod(0o755)
         return fake
 
-    def play(self, song_id: str = None, playlist_id: str = None) -> bool:
+    def play(self, song_id: str | None = None, playlist_id: str | None = None) -> bool:
         if song_id and playlist_id:
             return False
         if song_id:
@@ -579,10 +607,7 @@ if __name__ == "__main__":
             else:
                 artists = []
             album_raw = item.get("album") or item.get("albumName") or ""
-            if isinstance(album_raw, dict):
-                album = album_raw.get("name") or ""
-            else:
-                album = str(album_raw or "")
+            album = album_raw.get("name") or "" if isinstance(album_raw, dict) else str(album_raw or "")
             songs.append(Song(
                 id=str(item.get("id") or original_id),
                 original_id=original_id,
@@ -692,11 +717,11 @@ if __name__ == "__main__":
             return data
         if not isinstance(data, dict) or _depth > 5:
             return None
-        for key in list(keys) + ["records", "tracks", "songs", "playlists", "albums"]:
+        for key in [*list(keys), "records", "tracks", "songs", "playlists", "albums"]:
             value = data.get(key)
             if isinstance(value, list):
                 return value
-        for key in list(keys) + ["data", "result"]:
+        for key in [*list(keys), "data", "result"]:
             value = data.get(key)
             if isinstance(value, dict):
                 found = self._extract_list(value, keys, _depth + 1)

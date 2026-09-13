@@ -98,9 +98,8 @@ class NcmCommandTests(unittest.TestCase):
         """退化到 .cmd shim 时，元字符必须被拒绝而不是被 cmd.exe 解释。"""
         self.assertEqual(ncm._reject_shell_meta('plain'), 'plain')
         for bad in ['a"b', 'a & b', 'a|b', 'a>b', 'a%PATH%', 'a!b', 'a\nb']:
-            with self.subTest(bad=bad):
-                with self.assertRaises(ValueError):
-                    ncm._reject_shell_meta(bad)
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                ncm._reject_shell_meta(bad)
 
 
 if __name__ == '__main__':

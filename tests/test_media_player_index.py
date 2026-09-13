@@ -24,8 +24,8 @@ PLUGIN_BACKEND = PROJECT_ROOT / 'plugins' / 'media-player' / 'backend'
 if str(PLUGIN_BACKEND) not in sys.path:
     sys.path.insert(0, str(PLUGIN_BACKEND))
 
-from shell.backend.tasks import BackgroundTask  # noqa: E402
-from shell.backend.plugin_utils import load_sibling  # noqa: E402
+from shell.backend.plugin_utils import load_sibling
+from shell.backend.tasks import BackgroundTask
 
 mp = load_sibling(str(PLUGIN_BACKEND / 'main.py'), 'main', 'media_player_test')
 MediaItem = mp.MediaItem

@@ -13,6 +13,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from urllib.parse import parse_qs, urlparse
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -22,12 +23,12 @@ for p in (str(PLUGIN_BACKEND), str(PLUGIN_LIBS)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from pixiv_mini import PixivClient, PixivError  # noqa: E402
-from pixiv_sync import artist as artist_mod  # noqa: E402
-from pixiv_sync import download, scan, store  # noqa: E402
-from pixiv_sync import pixiv_purge_non_original as purge  # noqa: E402
-from pixiv_sync.db import WorksDB  # noqa: E402
-from pixiv_sync.download import process_illust  # noqa: E402
+from pixiv_mini import PixivClient, PixivError
+from pixiv_sync import artist as artist_mod
+from pixiv_sync import download, scan, store
+from pixiv_sync import pixiv_purge_non_original as purge
+from pixiv_sync.db import WorksDB
+from pixiv_sync.download import process_illust
 
 
 class _StaticLimiter:
@@ -211,14 +212,6 @@ class _FakeFollowingClient:
             "next_url": None,
         }
 
-    def user_illusts(self, user_id, type="illust", **params):
-        self.calls.append((user_id, dict(params)))
-        pages = self.pages_by_uid.get(user_id) or []
-        if not pages:
-            return {"illusts": [], "next_url": None}
-        seen = sum(1 for call in self.calls if call[0] == user_id) - 1
-        return pages[min(seen, len(pages) - 1)]
-
     def illust_follow(self, restrict="public", offset=None):
         params = {"restrict": restrict}
         if offset:
@@ -298,7 +291,7 @@ class PixivSyncCoreTests(unittest.TestCase):
             self.assertTrue((tmp / "pixiv" / "A" / "124.jpg").exists())
 
     def test_bookmark_cursor_uses_max_bookmark_id(self):
-        with _fake_env() as (tmp, p):
+        with _fake_env() as (_, p):
             p.client = _FakeBookmarkClient(
                 {10: _bookmark_page(10, 9), 9: _bookmark_page(9, 8), 8: _bookmark_page(8, None)}
             )
@@ -318,7 +311,7 @@ class PixivSyncCoreTests(unittest.TestCase):
 
     def test_following_incremental_stops_at_known_tail(self):
         """增量轮走 illust_follow 聚合流：翻到「整页已入库」即停，不逐画师请求。"""
-        with _fake_env(scan_workers=1) as (tmp, p):
+        with _fake_env(scan_workers=1) as (_, p):
             p.client = _FakeFollowingClient(
                 {1: [{"illusts": [_raw_illust(10, 1)], "next_url": None}]},
                 follow_pages=[
@@ -342,7 +335,7 @@ class PixivSyncCoreTests(unittest.TestCase):
 
     def test_following_fallback_scan_stops_each_artist_at_known_tail(self):
         """聚合流没遇到「整页已入库」→ 逐画师兜底，且每个画师也只拉到已知尾巴。"""
-        with _fake_env(scan_workers=1) as (tmp, p):
+        with _fake_env(scan_workers=1) as (_, p):
             p.client = _FakeFollowingClient(
                 {
                     1: [
@@ -382,7 +375,7 @@ class PixivSyncCoreTests(unittest.TestCase):
 
         对应历史回归 18a125e：增量扫描被单轮画师数上限拆分后退回全量扫描。
         """
-        with _fake_env(max_artists=1, scan_workers=1) as (tmp, p):
+        with _fake_env(max_artists=1, scan_workers=1) as (_, p):
             p.client = _FakeFollowingClient({
                 1: [
                     {"illusts": [_raw_illust(11, 1)], "next_url": "/v1/user/illusts?offset=1"},
@@ -414,7 +407,7 @@ class PixivSyncCoreTests(unittest.TestCase):
 
 
     def test_bookmarks_incremental_stops_at_known_tail(self):
-        with _fake_env() as (tmp, p):
+        with _fake_env() as (_, p):
             p.client = _FakeBookmarkClient({
                 10: _bookmark_page(11, 9),
                 9: _bookmark_page(10, 8),
@@ -444,7 +437,7 @@ class PixivSyncCoreTests(unittest.TestCase):
 
             class _FakeResp:
                 status_code = 200
-                headers = {}
+                headers: ClassVar[dict] = {}
                 raw = io.BytesIO(_PNG_BYTES)
 
                 def __enter__(self):
@@ -473,7 +466,7 @@ class PixivSyncCoreTests(unittest.TestCase):
 
             class _FakeResp:
                 status_code = 200
-                headers = {}
+                headers: ClassVar[dict] = {}
                 raw = io.BytesIO(b"real-bytes")
 
                 def __enter__(self):
@@ -584,7 +577,7 @@ class PixivSyncCoreTests(unittest.TestCase):
             old = purge.image_size
             purge.image_size = lambda path: sizes.get(path)
             try:
-                upgrade, keep = purge.classify(works)
+                upgrade, _keep = purge.classify(works)
             finally:
                 purge.image_size = old
             self.assertNotIn(1, upgrade)  # 1300 页证明已是原图，1200 页也不删

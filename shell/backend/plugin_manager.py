@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 '''
 Copyright 2026 flotiarenor
 
@@ -15,21 +13,25 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 '''
+
+from __future__ import annotations
+
 import importlib.util
 import json
+import logging
 import sys
 from collections import deque
 from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Dict, List
-import logging
+
+from shell.backend.paths import get_plugins_config_dir
+from shell.backend.settings_store import SettingsStore
 
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from shell.backend.plugin_base import PluginBase
-from shell.backend.settings_store import SettingsStore
-from shell.backend.paths import get_plugins_config_dir
 
 # kind: "local-adapter" 与 docs/adapter-spec.md 描述的外部程序接入能力尚未实装，
 # 该字段目前只在规范检查器中作为“规划中”提示，不会影响加载行为。
@@ -143,7 +145,15 @@ class PluginManager:
     # ---------- API ----------
 
     def get_api_methods(self) -> Dict[str, Callable]:
-        return self._api_methods
+        """返回方法表的**副本**。
+
+        以前直接返回 self._api_methods，而 file_server 每个请求都会 `dict(...)`
+        或用它建表；Flask 是 threaded=True，卸载/加载插件（unload_all 会 pop）
+        与请求线程同时操作同一个 dict 会抛
+        "dictionary changed size during iteration"（关闭/重载瞬间的 500）。
+        返回副本让调用方拿到一致快照，写入仍全部发生在管理器内部。
+        """
+        return dict(self._api_methods)
     def get_plugin_instance(self, name: str) -> PluginBase | None:
         return self._instances.get(name)
 
@@ -192,7 +202,8 @@ class PluginManager:
         扩展数据结构由各插件的 get_extensions() 返回，Shell 会自动补上 plugin 字段。
         """
         extensions = []
-        for name, instance in self._instances.items():
+        # 快照后再遍历：unload_all()/加载都可能与请求线程并发改动 _instances
+        for name, instance in list(self._instances.items()):
             getter = getattr(instance, 'get_extensions', None)
             if not callable(getter):
                 continue
@@ -442,14 +453,28 @@ class PluginManager:
             spec.loader.exec_module(mod)
 
             cls = getattr(mod, class_name)
-            # 预加载已解析的设置与 PluginManager，注入到类上供 __init__ 读取
+            # 预加载已解析的设置与 PluginManager，注入到类上供 __init__ 读取。
+            # 这里必须"保存-还原"而不是无条件 del：旧写法 `finally: del cls._resolved_config`
+            # 会在类上原本没有该属性时抛 AttributeError，把插件真正的加载失败原因
+            # 顶掉（/status 显示的是 "type object 'X' has no attribute ..."）；
+            # 也会静默删除子类自己定义的同名类属性。
+            _MISSING = object()
+            prev_resolved = getattr(cls, '_resolved_config', _MISSING)
+            prev_manager = getattr(cls, '_plugin_manager', _MISSING)
             cls._resolved_config = self._settings_store.get(name)
             cls._plugin_manager = self
             try:
                 instance = cls(manifest=manifest, config=self.config)
             finally:
-                del cls._resolved_config
-                del cls._plugin_manager
+                for attr, prev in (('_resolved_config', prev_resolved), ('_plugin_manager', prev_manager)):
+                    if prev is _MISSING:
+                        # cls.__dict__ 是只读的 mappingproxy，只能用 delattr
+                        try:
+                            delattr(cls, attr)
+                        except AttributeError:
+                            pass
+                    else:
+                        setattr(cls, attr, prev)
             instance._settings_store = self._settings_store
             instance._plugin_manager = self
 

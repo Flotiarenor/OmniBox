@@ -1,11 +1,11 @@
-import os
 import json
-import uuid
-import threading
 import logging
-from pathlib import Path
-from typing import Dict, List, Optional
+import os
+import threading
+import uuid
 from datetime import datetime
+from pathlib import Path
+from typing import Any, ClassVar, Dict, List
 
 from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_utils import load_sibling
@@ -31,7 +31,7 @@ execute_download = _downloader.execute_download
 logger = logging.getLogger(__name__)
 
 class MangaLibraryPlugin(PluginBase):
-    settings_schema = [
+    settings_schema: ClassVar[List[Dict[str, Any]]] = [
         {"key": "root_dir", "label": "漫画根目录", "type": "text",
          "placeholder": "默认: ./data", "help": "存放漫画文件夹的根目录"},
         {"key": "recent_count", "label": "最近阅读显示数量", "type": "number",
@@ -78,7 +78,7 @@ class MangaLibraryPlugin(PluginBase):
         if 'recent_count' in changed_keys:     
             count = self.setting('recent_count', 10)  
             try:
-                if count == None:
+                if count is None:
                     log.info("[MangaLibrary] recent_count is None")
                     raise ValueError
                 self.recent_count = max(1, min(50, int(count)))
@@ -261,6 +261,13 @@ class MangaLibraryPlugin(PluginBase):
 
     def download_submit(self, album_id: str, concurrency: int = 3,
                         priority: str = 'normal', auto_start: bool = True) -> Dict:
+        # album_id 直接用 os.path.join 拼下载目录，必须是纯数字专辑号：
+        # 传 "../../../Users/Public/x" 会让 os.path.join 折叠越界，
+        # 随后 os.makedirs(exist_ok=True) 就会在漫画根目录之外建目录并写入图片。
+        album_id = str(album_id).strip()
+        if not album_id.isdigit():
+            return {'success': False, 'error': f'非法的专辑号: {album_id!r}（必须是纯数字）'}
+
         task_id = str(uuid.uuid4())
         task = DownloadTask(
             id=task_id,

@@ -164,9 +164,10 @@ def _check_schema(cls) -> List[str]:
                 value = field.get(bound_name)
                 if value is not None and not isinstance(value, (int, float)):
                     errors.append(f'{where}.{bound_name} 应为 number')
-            if all(isinstance(value, (int, float)) for value in bounds if value is not None):
-                if field.get('min') is not None and field.get('max') is not None and field['min'] > field['max']:
-                    errors.append(f'{where}.min 不能大于 max')
+            if (all(isinstance(value, (int, float)) for value in bounds if value is not None)
+                    and field.get('min') is not None and field.get('max') is not None
+                    and field['min'] > field['max']):
+                errors.append(f'{where}.min 不能大于 max')
 
         if field_type == 'select':
             options = field.get('options')
@@ -400,7 +401,7 @@ def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -
             discovered.append((plugin_dir, name, data))
 
     plugin_names = {name for _, name, _ in discovered}
-    for plugin_dir, name, data in discovered:
+    for _plugin_dir, name, data in discovered:
         where = f'[{name}]'
         for dep in data.get('dependencies', []):
             if dep == name:

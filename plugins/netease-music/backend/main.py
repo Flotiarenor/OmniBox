@@ -109,7 +109,7 @@ class NeteaseMusicPlugin(PluginBase):
         except Exception as e:
             return {'success': False, 'error': str(e), 'results': []}
 
-    def get_song_url(self, song_id: str, original_id: str = None) -> dict:
+    def get_song_url(self, song_id: str, original_id: str | None = None) -> dict:
         try:
             url = self._get_api().get_song_url(song_id, original_id)
             return {'success': bool(url), 'url': url or ''}

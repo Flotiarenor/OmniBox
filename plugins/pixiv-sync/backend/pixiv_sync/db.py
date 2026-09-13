@@ -5,11 +5,11 @@
 """
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
-from threading import  RLock
+from threading import RLock
 from typing import Any, Dict, List, Optional, Tuple
-import logging
 
 log = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ def _insert_work_row(conn: sqlite3.Connection, kind: str, item: Dict[str, Any]) 
         "INSERT OR REPLACE INTO works"
         " (id, kind, type, title, page_count, create_date, user_id, user_name, urls, tags_json, done)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (wid, kind) + _item_to_work_value(item),
+        (wid, kind, *_item_to_work_value(item)),
     )
     for tname in item.get("tags") or []:
         tname = str(tname)

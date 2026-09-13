@@ -16,12 +16,15 @@ limitations under the License.
 
 import html
 import io
+import logging
 import mimetypes
 import socket
 import sys
-from flask import Flask, request, send_from_directory, send_file, abort
-from pathlib import Path
 from collections.abc import Iterable
+from pathlib import Path
+
+from flask import Flask, abort, request, send_file, send_from_directory
+
 from shell.backend.auth import (
     TOKEN_COOKIE,
     TOKEN_HEADER,
@@ -30,7 +33,6 @@ from shell.backend.auth import (
 )
 from shell.backend.paths import get_config_dir
 from shell.backend.plugin_manager import PluginManager
-import logging
 
 log = logging.getLogger(__name__)
 
@@ -218,10 +220,10 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
     def _require_token():
         """数据路由鉴权：Cookie 或 X-Omnibox-Token 头二选一。"""
         if request.endpoint in _OPEN_ENDPOINTS:
-            return None
+            return
         supplied = request.cookies.get(TOKEN_COOKIE, '') or request.headers.get(TOKEN_HEADER, '')
         if token_matches(supplied, _token):
-            return None
+            return
         abort(401)
 
     @app.after_request
@@ -310,10 +312,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             getter = getattr(instance, 'get_file_roots', None)
             if callable(getter):
                 result = getter()
-                if isinstance(result, Iterable) and not isinstance(result, (str, bytes)):
-                    roots = list(result)
-                else:
-                    roots = []
+                roots = list(result) if isinstance(result, Iterable) and not isinstance(result, (str, bytes)) else []
             else:
                 roots = []
             if not roots:
@@ -337,15 +336,14 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
                 if not full_path.is_file():
                     abort(404)
                 return send_file(full_path, conditional=True)
-            else:
-                # 相对路径：沿用「插件数据根目录」语义
-                data_root = roots[0]
-                full_path = (data_root / filepath).resolve()
-                if not _is_safe_path(full_path, data_root):
-                    abort(403)
-                if not full_path.exists():
-                    abort(404)
-                return send_from_directory(data_root, filepath)
+            # 相对路径：沿用「插件数据根目录」语义
+            data_root = roots[0]
+            full_path = (data_root / filepath).resolve()
+            if not _is_safe_path(full_path, data_root):
+                abort(403)
+            if not full_path.exists():
+                abort(404)
+            return send_from_directory(data_root, filepath)
         except Exception as e:
             code = getattr(e, 'code', None)
             if code in (400, 403, 404):
@@ -377,7 +375,9 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         if callable(get_thumb_data):
             try:
                 result = get_thumb_data(filepath)
-                if result:
+                # 插件返回值不可信（鸭子类型接口）：必须校验形状再解包，
+                # 否则返回单值/三元组时会抛 ValueError → 500。
+                if isinstance(result, tuple) and len(result) == 2:
                     data, mime = result
                     resp = send_file(io.BytesIO(data), mimetype=mime, conditional=True)
                     resp.headers['Cache-Control'] = 'private, max-age=86400'
@@ -479,8 +479,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
                     '</script>'
                 )
                 inject = SCRIPT_TPL.replace('PLACEHOLDER_NAME', plugin_name)
-                html = html.replace('</head>', inject + '</head>')
-                return html
+                return html.replace('</head>', inject + '</head>')
         return send_from_directory(plugin_dir, filename)
 
     return app

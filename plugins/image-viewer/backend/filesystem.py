@@ -9,10 +9,12 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 from shell.backend.media_catalog import (
     is_safe_path,  # noqa: F401
+)
+from shell.backend.media_catalog import (
     list_directory as _catalog_list_directory,
 )
 

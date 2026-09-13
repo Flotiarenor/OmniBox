@@ -12,9 +12,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import importlib.util  # noqa: E402
+import importlib.util
 
-from shell.backend.tasks import BackgroundTask  # noqa: E402
+from shell.backend.tasks import BackgroundTask
 
 # 测试数据放工作区内（沙箱/CI 下系统临时目录可能不可写）
 _TMP_BASE = PROJECT_ROOT / '.build' / 'mp-scan-test'

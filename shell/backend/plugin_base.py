@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 '''
 Copyright 2026 flotiarenor
 
@@ -16,10 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 '''
 
+from __future__ import annotations
+
+import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List
-import logging
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List
 
 log = logging.getLogger(__name__)
 
@@ -42,8 +42,10 @@ if TYPE_CHECKING:
 
 
 class PluginBase(ABC):
-    # 子类覆盖：声明该插件的统一设置项
-    settings_schema: List[Dict[str, Any]] = []
+    # 子类覆盖：声明该插件的统一设置项。
+    # ClassVar 是必要的：它是类级共享的常量声明，不是每个实例各自持有的可变状态
+    # （不加 ClassVar 会被 RUF012 判为"把可变对象当类属性默认值"的隐患）。
+    settings_schema: ClassVar[List[Dict[str, Any]]] = []
 
     def __init__(self, manifest: dict, config: dict) -> None:
         self.manifest = manifest
@@ -105,19 +107,30 @@ class PluginBase(ABC):
 
         if self._settings_store:
             try:
-                self._settings_store.set(self.name, clean)
+                # 必须"合并写入"而不是"整文件覆盖"：插件会用 update_setting() 把
+                # 运行期状态（pixiv-sync 的 refresh_token、image-viewer 的 folders、
+                # media-player 的 media_set_config 等）写进**同一个** JSON，这些键
+                # 不在 settings_schema 里。整文件覆盖会让用户在设置面板点一次保存，
+                # 就静默抹掉这些状态（不报错、无日志）——必须保留。
+                merged = self._settings_store.update(self.name, clean)
             except Exception as e:
                 return {"success": False, "error": f"保存失败: {e}"}
+        else:
+            merged = clean
 
-        # 检测变更并通知插件
+        # 检测变更并通知插件：只上报本次提交涉及的键，但取值来自合并后的最终状态
+        # （jsonify 之类的钩子可能补写额外键，旧实现同样会把它们算进 changed）。
         changed = set()
-        for k, v in clean.items():
+        for k in clean:
+            new_val = merged.get(k)
             old_val = old.get(k)
-            new_val = v
             if isinstance(old_val, float) and isinstance(new_val, (int, float)):
                 if abs(old_val - new_val) > 0.001:
                     changed.add(k)
             elif old_val != new_val:
+                changed.add(k)
+        for k in set(merged) - set(clean):
+            if old.get(k) != merged[k]:
                 changed.add(k)
 
         if changed:
@@ -128,7 +141,7 @@ class PluginBase(ABC):
 
         return {"success": True}
 
-    def on_settings_changed(self, changed_keys: set) -> None:
+    def on_settings_changed(self, changed_keys: set) -> None:  # noqa: B027 - 可选钩子
         """设置变更时由 save_settings 自动调用。子类覆盖此方法以响应特定设置变更。
 
         示例:
@@ -136,7 +149,6 @@ class PluginBase(ABC):
                 if 'root_dir' in changed_keys:
                     self._reinit(self.setting('root_dir'))
         """
-        pass
 
     def setting(self, key: str, default: Any = None) -> Any:
         """读取单个设置项。SettingsStore（运行时）→ _resolved_config（启动时预设）→ schema.default → 传入 default"""
@@ -169,8 +181,11 @@ class PluginBase(ABC):
             self._settings_store.clear(self.name)
         return {"success": True}
 
-    def on_load(self) -> None:
+    # on_load / on_unload 是**可选**钩子，因此刻意不加 @abstractmethod：
+    # 插件只实现自己需要的那一个（只读插件没有收尾需求），强制实现反而会
+    # 让最小插件多写两个空方法。
+    def on_load(self) -> None:  # noqa: B027 - 有意的非抽象空钩子
         pass
 
-    def on_unload(self) -> None:
+    def on_unload(self) -> None:  # noqa: B027 - 有意的非抽象空钩子
         pass

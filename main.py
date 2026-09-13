@@ -14,20 +14,29 @@ See the License for the specific language governing permissions and
 limitations under the License.
 '''
 
-import atexit, os, sys, time, yaml, webview, threading, shutil
-from pathlib import Path
+import atexit
+import logging
+import os
+import shutil
+import sys
+import threading
+import time
+from copy import deepcopy
+
+import requests
+import webview
+import yaml
+
 from shell.backend.app_logging import setup_logging
 from shell.backend.auth import get_or_create_token, get_token_file
 from shell.backend.file_server import create_app
-from shell.backend.plugin_manager import PluginManager
-from copy import deepcopy
 from shell.backend.paths import (
     get_config_dir,
     get_plugin_search_dirs,
     get_user_data_dir,
     resolve_data_root,
 )
-import logging
+from shell.backend.plugin_manager import PluginManager
 
 log = logging.getLogger(__name__)
 
@@ -97,13 +106,17 @@ def load_config():
     return config
 
 def wait_for_server(host, port, timeout=5):
-    import requests
     start = time.time()
     while time.time() - start < timeout:
         try:
             r = requests.get(f"http://{host}:{port}/health", timeout=0.5)
-            if r.status_code == 200: return True
-        except: pass
+            if r.status_code == 200:
+                return True
+        except requests.RequestException:
+            # 服务还没起来：连接被拒/超时都属正常，继续轮询等它起来。
+            # 不能用裸 except —— 那会把 Ctrl+C(KeyboardInterrupt) 一起吞掉，
+            # 用户在启动阶段按 Ctrl+C 将无法中断。
+            pass
         time.sleep(0.1)
     return False
 
@@ -117,6 +130,17 @@ def _unload_plugins(manager):
         manager.unload_all()
     except Exception as e:
         log.error(f"[OmniBox] 卸载插件时出错: {e}")
+
+
+def _toggle_fullscreen():
+    """切换桌面窗口全屏。窗口可能在调用时已关闭，取不到就静默忽略。"""
+    windows = getattr(webview, 'windows', None) or []
+    if windows:
+        windows[0].toggle_fullscreen()
+
+
+class ShellAPI:
+    """PyWebView 的 js_api 载体占位类：方法在 _run_app 里动态挂载。"""
 
 
 def _run_app(config, manager):
@@ -139,16 +163,27 @@ def _run_app(config, manager):
         app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
         return
 
-    class ShellAPI: pass
-    api = ShellAPI()
-    setattr(api, 'system_get_plugins', manager.get_frontend_manifests)
-    setattr(api, 'system_get_plugin_extensions', manager.get_plugin_extensions)
-    setattr(api, 'system_get_plugin_status', manager.get_plugin_status)
-    setattr(api, 'system_get_config', lambda: config)
-    setattr(api, 'system_settings_list', manager.get_settings_panels)
-    setattr(api, 'system_settings_save', manager.save_settings_panel)
-    setattr(api, 'system_toggle_fullscreen', lambda: webview.windows[0].toggle_fullscreen())
-    for method_name, method_fn in manager.get_api_methods().items():
+    class ShellAPI:
+        """PyWebView 的 js_api 载体：属性即暴露给前端的 system_* 方法。"""
+
+    # PyWebView 的 js_api 载体：属性名即暴露给前端的方法名。
+    # 这里刻意用 setattr 动态挂载（而不是逐个 `api.xxx = ...`）：方法集合包含
+    # 由插件注册的动态名（<插件>__<方法>），静态属性声明无法覆盖；集中成一张
+    # 表也让"暴露了什么"一眼可读、可日志化。
+    # 标注为 object：方法集合含插件注册的动态名，静态类型无法枚举；
+    # pywebview 只按属性名反射取值，object 注解不影响运行期行为。
+    api: object = ShellAPI()
+    shell_methods: dict = {
+        'system_get_plugins': manager.get_frontend_manifests,
+        'system_get_plugin_extensions': manager.get_plugin_extensions,
+        'system_get_plugin_status': manager.get_plugin_status,
+        'system_get_config': lambda: config,
+        'system_settings_list': manager.get_settings_panels,
+        'system_settings_save': manager.save_settings_panel,
+        'system_toggle_fullscreen': _toggle_fullscreen,
+    }
+    shell_methods.update(manager.get_api_methods())
+    for method_name, method_fn in shell_methods.items():
         setattr(api, method_name, method_fn)
 
     app = create_app(config, manager)
@@ -156,7 +191,8 @@ def _run_app(config, manager):
     # threaded=True：媒体流/Range 请求与后台扫描任务需要并发，见 --web-only 分支注释
     threading.Thread(target=lambda: app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True), daemon=True).start()
     if not wait_for_server(host, port):
-        log.warning("[OmniBox] Flask 启动超时"); return
+        log.warning("[OmniBox] Flask 启动超时")
+        return
 
     webview.create_window('OmniBox', f'http://{host}:{port}', js_api=api, width=1400, height=900, text_select=True)
     webview.start(debug=not getattr(sys, 'frozen', False), http_server=True)
@@ -192,10 +228,13 @@ def main():
     log.info(f"[OmniBox] 用户数据目录: {get_user_data_dir()}")
     log.info(f"[OmniBox] 插件搜索目录: {', '.join(str(p) for p in plugin_search_dirs)}")
     manager = PluginManager([str(p) for p in plugin_search_dirs], config=config)
+    # atexit 必须在 load_all() 之前注册：插件 on_load() 里抛 SystemExit /
+    # KeyboardInterrupt（Ctrl+C 打断启动）会穿透 load_all，此时若还没注册钩子，
+    # 已加载插件就永远不会收到 on_unload —— SQLite/WAL 句柄与后台线程全部泄漏。
+    atexit.register(_unload_plugins, manager)
     manager.load_all()
     # 退出时必须回调 on_unload（关 SQLite/WAL、停插件线程、落盘最后一次状态）：
     # atexit 兜底 + finally 覆盖所有退出路径（正常关窗、Ctrl+C、异常）。
-    atexit.register(_unload_plugins, manager)
     try:
         _run_app(config, manager)
     finally:

@@ -1,13 +1,11 @@
-import json
-import hashlib
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 try:
     from mutagen import File as MutagenFile
-    from mutagen.id3 import ID3, APIC
-    from mutagen.flac import FLAC, Picture
-    from mutagen.mp4 import MP4, MP4Cover
+    from mutagen.flac import FLAC
+    from mutagen.id3 import APIC, ID3
+    from mutagen.mp4 import MP4
     HAS_MUTAGEN = True
 except ImportError:
     HAS_MUTAGEN = False
@@ -211,9 +209,9 @@ class MetadataReader:
         try:
             if suffix == '.mp3':
                 return MetadataReader._cover_from_id3(file_path)
-            elif suffix == '.flac':
+            if suffix == '.flac':
                 return MetadataReader._cover_from_flac(file_path)
-            elif suffix in ('.m4a', '.mp4', '.aac'):
+            if suffix in ('.m4a', '.mp4', '.aac'):
                 return MetadataReader._cover_from_mp4(file_path)
         except Exception:
             pass
@@ -252,7 +250,7 @@ class MetadataReader:
         return None
 
     @staticmethod
-    def _find_folder_cover(dir_path: Path, names: list = None) -> Optional[bytes]:
+    def _find_folder_cover(dir_path: Path, names: list | None = None) -> Optional[bytes]:
         for name in (names or COVER_NAMES):
             cover_file = dir_path / name
             if cover_file.exists():
@@ -289,7 +287,6 @@ class MetadataReader:
         if not tags or not HAS_MUTAGEN:
             return None
         try:
-            from mutagen.id3 import TextFrame
             frame = tags.get(frame_id)
             if frame is None:
                 return None

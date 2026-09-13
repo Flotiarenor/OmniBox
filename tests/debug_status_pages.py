@@ -154,7 +154,10 @@ def probe_all(port: int) -> None:
 def main():
     # 行缓冲：后台/管道运行时结果表也能实时看到
     if hasattr(sys.stdout, 'reconfigure'):
-        sys.stdout.reconfigure(line_buffering=True)
+        # 同上：TextIO 静态类型未声明 reconfigure
+        _reconfigure = getattr(sys.stdout, 'reconfigure', None)
+        if callable(_reconfigure):
+            _reconfigure(line_buffering=True)
 
     parser = argparse.ArgumentParser(description='触发并展示 OmniBox 状态页/错误区域（调试用）')
     parser.add_argument('--port', type=int, default=18089, help='调试服务器端口（默认 18089）')
@@ -164,11 +167,11 @@ def main():
     port = args.port
     make_bad_plugin()
     try:
-        app, manager = start_server(port)
+        start_server(port)
         if not wait_health(port):
             print(f'[debug] 服务器启动失败（端口 {port} 可能被占用），尝试下一个端口…')
             port += 1
-            app, manager = start_server(port)
+            start_server(port)
             if not wait_health(port):
                 print('[debug] 启动失败，请检查端口与日志')
                 return

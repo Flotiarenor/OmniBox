@@ -12,9 +12,8 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-'''
 
-"""OmniBox HTTP 数据路由的访问令牌。
+OmniBox HTTP 数据路由的访问令牌。
 
 `--web-only` / 局域网部署时，`/api`、`/file`、`/thumbs` 等数据路由会携带
 用户数据，必须持有令牌才能访问。令牌持久化在 `<config>/auth_token.txt`，
@@ -22,8 +21,7 @@ limitations under the License.
 
 携带方式二选一（浏览器页面会由服务端自动种下 HttpOnly Cookie，无需手动处理）：
 - Cookie: `omnibox_token=<token>`（页面加载时自动下发，同源请求自动携带）
-- 请求头: `X-Omnibox-Token: <token>`（curl / nginx 注入等场景）
-"""
+- 请求头: `X-Omnibox-Token: <token>`（curl / nginx 注入等场景）'''
 
 import hmac
 import os

@@ -2,7 +2,7 @@
 
 import os
 import re
-from typing import List, Tuple
+from typing import ClassVar, List, Pattern, Tuple
 
 try:
     import chardet
@@ -17,7 +17,7 @@ class NovelParser:
     确保章节内容既不包含本章标题，也不包含下一章标题。
     """
 
-    CHAPTER_PATTERNS = [
+    CHAPTER_PATTERNS: ClassVar[List[Pattern[str]]] = [
         re.compile(r'^第\s*[零一二三四五六七八九十百千万\d]+\s*章'),
         re.compile(r'^第\s*[零一二三四五六七八九十百千万\d]+\s*节'),
         re.compile(r'^第\s*\d+\s*章'),

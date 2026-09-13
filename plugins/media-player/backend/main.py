@@ -2,16 +2,16 @@
 
 import hashlib
 import json
+import logging
 import time
 import uuid
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
 
 from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_utils import load_sibling
 from shell.backend.tasks import BackgroundTask
 from shell.backend.thumb_cache import ThumbCache
-import logging
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ MediaAlbum = _models.MediaAlbum
 
 
 class MediaPlayerPlugin(PluginBase):
-    settings_schema = [
+    settings_schema: ClassVar[List[Dict[str, Any]]] = [
         {"key": "root_dir", "label": "媒体库根目录", "type": "text",
          "placeholder": "默认: ./data", "central": True,
          "help": "主媒体库根目录"},
@@ -133,7 +133,7 @@ class MediaPlayerPlugin(PluginBase):
         except Exception as e:
             return {'success': False, 'error': f'写入失败: {e}'}
 
-    def thumb_missing(self, item_ids: List[str] = None) -> dict:
+    def thumb_missing(self, item_ids: List[str] | None = None) -> dict:
         """批量查询哪些条目的封面尚未缓存（供前端按浏览位置预取，避免重复抽帧）。
 
         单连接批量判定（ThumbCache.has_many），避免每个 id 一次 SQLite 建连。
@@ -552,7 +552,7 @@ class MediaPlayerPlugin(PluginBase):
                 return {**pl, 'items': items}
         return {}
 
-    def playlist_save(self, name: str = '', playlist_id: str = '', item_ids: List[str] = None) -> dict:
+    def playlist_save(self, name: str = '', playlist_id: str = '', item_ids: List[str] | None = None) -> dict:
         playlists = self._state.get('playlists', [])
         now = time.strftime('%Y-%m-%d %H:%M:%S')
         if playlist_id:
@@ -741,7 +741,7 @@ class MediaPlayerPlugin(PluginBase):
                 pass
         return presets
 
-    def save_eq_preset(self, name: str = '', bands: list = None) -> dict:
+    def save_eq_preset(self, name: str = '', bands: list | None = None) -> dict:
         if not name or not bands:
             return {'success': False, 'error': '缺少参数'}
         presets_dir = self._eq_presets_dir()

@@ -16,6 +16,12 @@ def execute_download(task, manga_dir: str, state_dir: str, lock, logger=None) ->
     from jmcomic import JmcomicText
 
     download_dir = task.download_dir or os.path.join(manga_dir, task.album_id)
+    # 纵深防御：即使调用方没校验 album_id，也绝不允许下载目录落在漫画根目录之外
+    # （os.path.join 遇到绝对路径/`..` 会折叠出根目录，makedirs 就会在外部建目录）。
+    root = os.path.realpath(manga_dir)
+    target = os.path.realpath(download_dir)
+    if target != root and not target.startswith(root + os.sep):
+        raise ValueError(f'下载目录越界: {download_dir!r} 不在漫画根目录 {manga_dir!r} 内')
     os.makedirs(download_dir, exist_ok=True)
 
     class ProgressCallback(jmcomic.DownloadCallback):
@@ -149,5 +155,7 @@ def execute_download(task, manga_dir: str, state_dir: str, lock, logger=None) ->
         if task._stop_event.is_set():
             return None
 
-        album = downloader.download_album(task.album_id)
+        # 返回值由 progress.before_album 回填到 progress.album_info；
+        # download_album 的返回对象本身用不到（以前赋给 album 后从未使用）。
+        downloader.download_album(task.album_id)
         return progress.album_info

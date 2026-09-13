@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import re
@@ -42,7 +43,6 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Set
-import io
 
 if isinstance(sys.stdout, io.TextIOWrapper):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -108,7 +108,7 @@ def collect_missing_ids(db_path: Path, pixiv_root: Path) -> Set[int]:
 
     present: Set[int] = set()
     if pixiv_root.exists():
-        for current, dir_names, filenames in os.walk(pixiv_root):
+        for _current, dir_names, filenames in os.walk(pixiv_root):
             dir_names[:] = [d for d in dir_names if not d.startswith(".")]
             for name in filenames:
                 m = ID_NAME_RE.match(name)
@@ -303,7 +303,7 @@ def main() -> int:
         print("  （提示: 若图片已删除，时间窗口扫不到目标，请改用 --missing）")
         target = collect_ids_in_window(pixiv_root, hours)
 
-    print("")
+    print()
     if not target:
         print("没有命中需要重置的作品，无需操作。")
         if not use_missing:
@@ -320,7 +320,7 @@ def main() -> int:
     print("  - works.db 这些作品的 done 改回 0（清单改回待下载）")
 
     if args.dry_run:
-        print("")
+        print()
         print("[dry-run] 仅展示，未修改任何记录。可去掉 --dry-run 实际执行。")
         return 0
 
@@ -334,12 +334,12 @@ def main() -> int:
     failed_removed = strip_ids(cache / "failed_ids.json", target)
     done_reset = reset_done(db_path, target)
 
-    print("")
+    print()
     print("执行完成:")
     print(f"  去重记录移除: {ids_removed} 条")
     print(f"  失败跳过移除: {failed_removed} 条")
     print(f"  清单 done 重置: {done_reset} 条（其余未在清单中则不适用）")
-    print("")
+    print()
     print("下一步: 「下载原图」现为固定默认行为（默认开启、无开关）。直接点「同步画师」或「同步喜欢」即可；")
     print("        这些作品会自动重新下载（无需先刷新名单）。")
     return 0

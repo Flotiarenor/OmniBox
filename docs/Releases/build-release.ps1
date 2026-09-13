@@ -4,12 +4,19 @@
 .DESCRIPTION
     1. 构建 Vue 前端
     2. PyInstaller 打包（onedir + UPX）
-    3. 7z 压缩为便携包
+    3. 7z/zip 压缩为便携包
     4. 输出到 docs/Releases/
 .PARAMETER UseCleanPath
     自动复制项目到纯 ASCII 临时路径（解决中文路径导致 DLL 加载失败问题）
+.PARAMETER SkipFrontend
+    跳过前端构建（要求 dist 已存在；dist 缺失时直接失败，不产白屏包）
+.PARAMETER SkipPyInstaller
+.PARAMETER SkipArchive
+.PARAMETER OutputDir
 #>
 
+# 注意：param() 必须是脚本里第一个可执行语句（旧版 PowerShell 连 Set-StrictMode
+# 都不能放在它前面），所以下面这段严格模式声明只能在 param 之后。
 param(
     [switch]$SkipFrontend,
     [switch]$SkipPyInstaller,
@@ -17,6 +24,11 @@ param(
     [switch]$UseCleanPath,
     [string]$OutputDir = "$PSScriptRoot"
 )
+
+# 严格模式：未定义变量即报错、命令失败即中断。
+# 之前依赖手写 $LASTEXITCODE 检查，漏检一处就会"构建失败但仍然宣称成功"。
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
 
 $ColorInfo    = "Cyan"
 $ColorSuccess = "Green"
@@ -113,7 +125,9 @@ if (-not $SkipPyInstaller) {
         $excludeList = @('venv', '.git', 'node_modules', '.cache', '__pycache__', '.build')
         New-Item -ItemType Directory -Path $cleanTempDir -Force | Out-Null
         Get-ChildItem -Path $ProjectRoot -Exclude $excludeList | ForEach-Object {
-            Copy-Item -Recurse $_.FullName -Destination $cleanTempDir -ErrorAction SilentlyContinue
+            # 不用 -ErrorAction SilentlyContinue：复制失败必须让构建失败，
+            # 否则会在"缺文件的临时目录"里打包并宣称成功。
+            Copy-Item -Recurse $_.FullName -Destination $cleanTempDir -ErrorAction Stop
         }
         $ProjectRoot = Resolve-Path $cleanTempDir
         $BuildDir = "$cleanTempDir/.build"
@@ -183,11 +197,11 @@ if (-not $SkipArchive) {
     if (-not $useZip) {
         $archiveFile = "$OutputDir/${archiveName}.7z"
         Write-Host "  -> 7z a -mx=9 -ms=on $archiveFile" -ForegroundColor $ColorWarning
-        if ($sevenZip -is [System.Management.Automation.CommandInfo]) {
-            & 7z a -mx=9 -ms=on "$archiveFile" "$sourceDir/*"
-        } else {
-            & $sevenZip a -mx=9 -ms=on "$archiveFile" "$sourceDir/*"
-        }
+        # Get-Command 命中时返回值是 CommandInfo（用命令名调用），否则是探测到的
+        # 绝对路径字符串（必须用该路径调用，不能再写裸 '7z'）。
+        # 旧代码在 CommandInfo 分支硬编码了 `& 7z`：若用户的 7z 是通过绝对路径
+        # 探测到的别名/不同名字，这里就会调用失败。
+        & $sevenZip a -mx=9 -ms=on "$archiveFile" "$sourceDir/*"
         if ($LASTEXITCODE -ne 0) {
             Write-Host "ERROR: 7z failed" -ForegroundColor $ColorError; exit 1
         }

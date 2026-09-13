@@ -399,7 +399,7 @@ class MangaLibraryApp {
 
         content.innerHTML = filtered.map((task, i) => {
             const percent = task.totalImages > 0 ? Math.round((task.completedImages / task.totalImages) * 100) : 0;
-            const thumb = task.thumbUrl || '';
+            const thumb = MangaUtils.escapeHtml(task.thumbUrl || '');
             return `
             <div class="ml-task" data-task-id="${task.id}" style="--obx-i:${Math.min(i, 24)}">
                 ${thumb ? `<img class="ml-task-thumb" src="${thumb}" alt="" onerror="this.style.display='none'">` : `<div class="ml-task-thumb" style="display:flex;align-items:center;justify-content:center;font-size:22px;">📚</div>`}

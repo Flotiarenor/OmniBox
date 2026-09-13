@@ -8,13 +8,14 @@
   下载 zip 帧序列并转成动画 WebP 保存（见 ugoira.py）；不再把 zip 当 jpg 下载。
 """
 
+import logging
 import os
 import shutil
 import tempfile
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
-from typing import Any, Dict, List, Set, Optional
+from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urlparse
 
 from pixiv_mini import PixivError
@@ -23,7 +24,6 @@ from . import artist as artist_mod
 from . import tasks as tasks_mod
 from . import ugoira as ugoira_mod
 from .limiter import RateLimitError
-import logging
 
 log = logging.getLogger(__name__)
 
@@ -161,7 +161,7 @@ def process_ugoira(p, illust: Dict[str, Any], task: Dict[str, Any], ids: Set[int
         else:
             log.error(f"[pixiv-sync] ugoira {iid} 失败（下次同步重试）: {msg}")
             _done(1, add_ids=False, add_failed=False)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         log.error(f"[pixiv-sync] ugoira {iid} 异常: {type(e).__name__}: {e}")
         _done(1, add_ids=False, add_failed=False)
     finally:
@@ -232,7 +232,7 @@ def process_illust(p, illust: Dict[str, Any], task: Dict[str, Any], ids: Set[int
                 # 只写 failed、不写 ids，这样「重试失败作品」清空后仍可重试。
                 failed.add(iid)
             tasks_mod.persist_task(p._tasks_file(), task)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         # 单作品出现未预期异常时也要推进任务计数，避免进度永久卡住。
         log.error(f"[pixiv-sync] 作品 {iid} 下载异常: {e}")
         with p._task_lock:

@@ -48,9 +48,8 @@ class SettingsStoreTests(unittest.TestCase):
     def test_failed_write_keeps_previous_content(self):
         """写入过程中断：旧内容必须完好，且不留临时文件（原子落盘的要点）。"""
         self.store.set('demo', {'a': 1})
-        with mock.patch('json.dump', side_effect=RuntimeError('boom')):
-            with self.assertRaises(RuntimeError):
-                self.store.set('demo', {'a': 2})
+        with mock.patch('json.dump', side_effect=RuntimeError('boom')), self.assertRaises(RuntimeError):
+            self.store.set('demo', {'a': 2})
         self.assertEqual(self.store.get('demo'), {'a': 1})
         self.assertEqual(self._tmp_files(), [])
 
@@ -118,12 +117,66 @@ class SettingsStoreTests(unittest.TestCase):
 
     def test_set_rejects_non_dict(self):
         with self.assertRaises(ValueError):
-            self.store.set('demo', ['not', 'a', 'dict'])
+            self.store.set('demo', ['not', 'a', 'dict'])  # type: ignore[arg-type]
 
     def test_file_is_utf8_readable_json_object(self):
         self.store.set('demo', {'名字': '值'})
         raw = (self.dir / 'demo.json').read_text(encoding='utf-8')
         self.assertEqual(json.loads(raw), {'名字': '值'})
+
+    # ---------- 文件名安全（settings_store._file）----------
+
+    def test_rejects_plugin_name_that_escapes_settings_dir(self):
+        """plugin_name 直接拼文件名，必须拒绝一切能越出配置目录的取值。
+
+        越界的后果是任意 JSON 写入（例如 Linux 的 ~/.config/autostart/、
+        Windows 的启动目录）——这是一条真实的写入原语，不只是"参数没校验"。
+        """
+        outside = self.dir.parent / 'omnibox-escape-probe'
+        for bad in (
+            '../omnibox-escape-probe',
+            '..\\omnibox-escape-probe',
+            'a/b',
+            'a\\b',
+            '..',
+            '.',
+            '',
+            '   ',
+            str(outside),
+        ):
+            with self.subTest(name=bad), self.assertRaises((ValueError, TypeError)):
+                self.store.set(bad, {'x': 1})
+        self.assertFalse(outside.exists(), '越界目录不应被创建')
+        self.assertEqual([p.name for p in self.dir.iterdir()], [])
+
+    def test_get_and_update_also_reject_bad_names(self):
+        for bad in ('../evil', 'a/b', ''):
+            with self.subTest(name=bad):
+                with self.assertRaises((ValueError, TypeError)):
+                    self.store.get(bad)
+                with self.assertRaises((ValueError, TypeError)):
+                    self.store.update(bad, {'x': 1})
+                with self.assertRaises((ValueError, TypeError)):
+                    self.store.clear(bad)
+
+    def test_rejects_non_string_plugin_name(self):
+        with self.assertRaises(TypeError):
+            self.store.set(123, {'x': 1})  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            self.store.set(None, {'x': 1})  # type: ignore[arg-type]
+
+    def test_accepts_normal_names(self):
+        for good in ('demo', 'image-viewer', 'pixiv_sync', 'a.b', '插件名'):
+            with self.subTest(name=good):
+                self.store.set(good, {'x': 1})
+                self.assertEqual(self.store.get(good), {'x': 1})
+
+    def test_update_returns_merged_state(self):
+        """update() 要返回合并后的完整设置（调用方据此判断变更）。"""
+        self.store.set('demo', {'a': 1})
+        merged = self.store.update('demo', {'b': 2})
+        self.assertEqual(merged, {'a': 1, 'b': 2})
+        self.assertEqual(self.store.get('demo'), {'a': 1, 'b': 2})
 
 
 if __name__ == '__main__':

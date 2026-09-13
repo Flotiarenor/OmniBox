@@ -1,48 +1,223 @@
 name: ci
 
-# 最小可用 CI：只做"已确认为真"的门禁，不做会红的检查。
-# runner 必须是 windows-latest：tests/test_pixiv_sync.py 的 SQLite 临时目录
-# 清理错误是 Windows 专属现象，Linux runner 会永久掩盖它。
+# 门禁总览（每一条都在本地实测过，见 docs/ci-and-release.md）：
+#   lint        —— ruff 全量 + 插件规范 + 打包规则 + 版本一致性
+#   typecheck   —— pyright（内核零错误硬门禁；插件/测试先输出基线不拦截）
+#   test        —— unittest 全量，Windows + Linux 双平台
+#   frontend    —— 转义一致性门禁 + vue-tsc 类型检查 + vite 构建
+#   package     —— 真实跑一次 PyInstaller 并校验产物内容
+#
+# 为什么 test/package 必须包含 windows-latest：
+# 历史缺陷里有一批是 Windows 专属的（SQLite 临时目录被占用导致清理失败、
+# PATH 分隔符写死 ':'、文件锁定）。只用 Linux runner 会永久掩盖它们。
 on:
   push:
+    branches: ['**']
   pull_request:
+  workflow_dispatch:
+
+# 同一分支的新推送取消旧的运行，省配额
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '20'
 
 jobs:
-  check:
+  lint:
+    name: lint（ruff + 规范 + 版本）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+
+      - name: ruff（全量，含 E9/F 语法与未定义名字）
+        run: python -m ruff check .
+
+      - name: ruff format 差异（仅报告，不作为门禁）
+        continue-on-error: true
+        run: python -m ruff format --check .
+
+      - name: 插件规范检查
+        run: python tools/check_plugins.py
+
+      - name: 打包规则检查（spec 与数据收集）
+        run: python tools/check_packaging.py
+
+      - name: 版本一致性（pyproject / package.json）
+        run: python tools/check_version.py
+
+  typecheck:
+    name: typecheck（pyright，内核硬门禁）
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
-          cache-dependency-path: shell/frontend/package-lock.json
-
-      - name: 安装依赖（运行时 + 开发）
+      - name: 安装依赖（pyright 需要能解析 flask/PIL/webview）
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
           python -m pip install -r requirements-dev.txt
 
-      - name: 语法级静态检查（ruff 严重错误子集）
-        run: python -m ruff check --select E9,F63,F7,F82 .
+      # 内核（main.py / shell / tools）当前为 0 错误，作为硬门禁：
+      # 任何新增的类型错误都必须当场修掉。
+      - name: pyright（内核，零错误门禁）
+        run: python -m pyright main.py shell tools
 
-      - name: 插件规范检查
-        run: python tools/check_plugins.py
+      # 插件与测试的类型错误尚未清零，先全量输出供逐步收敛，不拦截合并。
+      # 收紧步骤：把插件修到 0 后，把这一步改成不 continue-on-error。
+      - name: pyright（插件 + 测试，基线，不拦截）
+        continue-on-error: true
+        run: python -m pyright plugins tests
 
-      - name: 单元测试（全量，含 pixiv-sync / Host 白名单 / ncm-cli 注入回归）
-        run: python -m unittest discover -s tests
+  test:
+    name: test（${{ matrix.os }} / py${{ matrix.python }}）
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+
+      - name: 单元测试（全量）
+        run: python -m unittest discover -s tests -v
+
+      - name: 运行时禁止 print 门禁（发行版 console=False）
+        run: python -m unittest tests.test_no_print_in_runtime -v
+
+  frontend:
+    name: frontend（转义门禁 + 类型 + 构建）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: shell/frontend/package-lock.json
 
       - name: 前端转义一致性（属性注入门禁）
         run: node tools/check_frontend_escape.cjs
 
-      - name: 前端类型检查与构建
+      - name: 安装依赖（npm ci：按锁文件可复现）
+        run: npm --prefix shell/frontend ci
+
+      - name: 类型检查与构建（vue-tsc --noEmit && vite build）
+        run: npm --prefix shell/frontend run build
+
+      - name: 上传前端产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: shell/frontend/dist
+          retention-days: 7
+
+  package:
+    name: package（PyInstaller 冒烟 + 产物校验，${{ matrix.os }}）
+    needs: [lint, frontend]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            spec: docs/Releases/omnibox.spec
+            dist: .build-dist
+            expect_exe: OmniBox.exe
+          - os: ubuntu-latest
+            spec: docs/Releases/omnibox-linux.spec
+            dist: .build-dist
+            expect_exe: OmniBox.bin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: shell/frontend/package-lock.json
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+
+      # spec 现在会在缺少前端产物时硬失败；这里按发布路径真实构建一次前端。
+      - name: 构建前端（发布路径）
         run: |
           npm --prefix shell/frontend ci
           npm --prefix shell/frontend run build
+
+      - name: PyInstaller 打包
+        run: >-
+          python -m PyInstaller
+          --workpath .build-work
+          --distpath ${{ matrix.dist }}
+          --noconfirm
+          --log-level WARN
+          ${{ matrix.spec }}
+
+      - name: 校验产物内容
+        run: >-
+          python tools/check_build_tree.py
+          ${{ matrix.dist }}/OmniBox
+          --expect-exe ${{ matrix.expect_exe }}
+
+      - name: 上传产物（供人工验证，非发布）
+        uses: actions/upload-artifact@v4
+        with:
+          name: omnibox-preview-${{ matrix.os }}
+          path: ${{ matrix.dist }}/OmniBox
+          retention-days: 7

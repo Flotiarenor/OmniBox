@@ -1,13 +1,13 @@
 """画师目录解析：名字命名 + id→名字缓存 + 改名迁移。"""
 
 import json
+import logging
 import os
 import re
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Dict
-import logging
 
 log = logging.getLogger(__name__)
 

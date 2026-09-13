@@ -241,5 +241,65 @@ class PluginUnloadTests(unittest.TestCase):
             self.assertIn(lib_path, sys.path, '成功的插件必须保留私有库路径')
 
 
+class PluginSettingsPersistenceTests(unittest.TestCase):
+    """保存设置面板不得抹掉插件写在同一个文件里的运行期状态。
+
+    历史缺陷：PluginBase.save_settings() 用 SettingsStore.set()（整文件覆盖）写入
+    过滤后的 schema 键，而插件同时用 update_setting() 把运行期状态
+    （pixiv-sync 的 refresh_token、image-viewer 的 folders、media-player 的
+    media_set_config）写进**同一个 JSON**。用户在设置面板点一次保存，这些键就被
+    静默删除（不报错、不提示），下次启动需要重新登录/重新配置。
+    """
+
+    _PLUGIN = '''
+from pathlib import Path
+from shell.backend.plugin_base import PluginBase
+
+_DIR = Path(__file__).resolve().parent.parent
+
+
+class Plugin(PluginBase):
+    settings_schema = [
+        {"key": "root_dir", "label": "根目录", "type": "folder", "default": ""},
+        {"key": "per_page", "label": "每页数量", "type": "number", "default": 40},
+    ]
+
+    def register_api(self):
+        return {"ping": lambda: "pong"}
+
+    def on_load(self):
+        (_DIR / "loaded.marker").write_text("ok", encoding="utf-8")
+'''
+
+    def test_save_settings_keeps_runtime_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'plugins'
+            data_root = Path(td) / 'data'
+            data_root.mkdir(exist_ok=True)
+            _write_plugin(root, 'alpha', self._PLUGIN)
+            manager = PluginManager([str(root)], config={'directories': {'data_root': str(data_root)}})
+            manager.load_all()
+
+            instance = manager.get_plugin_instance('alpha')
+            self.assertIsNotNone(instance)
+
+            # 模拟插件运行期落状态（不在 settings_schema 里的键）
+            self.assertTrue(instance.update_setting('refresh_token', 'SECRET-TOKEN'))
+            self.assertTrue(instance.update_setting('folders', ['a', 'b']))
+            # 以及一个 schema 内的旧值
+            instance.update_setting('per_page', 20)
+
+            result = instance.save_settings({'root_dir': '/media', 'per_page': 60})
+            self.assertEqual(result, {'success': True})
+
+            stored = instance._settings_store.get('alpha')
+            self.assertEqual(stored['root_dir'], '/media', 'schema 键必须写入')
+            self.assertEqual(stored['per_page'], 60, 'schema 键必须更新')
+            self.assertEqual(stored.get('refresh_token'), 'SECRET-TOKEN',
+                             '运行期状态被保存设置抹掉了（需要重新登录）')
+            self.assertEqual(stored.get('folders'), ['a', 'b'],
+                             '运行期状态被保存设置抹掉了')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -205,6 +205,38 @@ bash docs/Releases/build-release.sh
 
 > 构建脚本与部署脚本共享统一环境入口（`setup-venv.ps1` / `setup-venv.sh`），依赖管理不再各自内联。
 
+---
+
+## ✅ 持续集成与发布
+
+仓库已配置 GitHub Actions，推 tag 即可自动产出双平台安装包：
+
+| 工作流 | 触发 | 作用 |
+| --- | --- | --- |
+| `ci.yml` | 每次 push / PR | ruff、pyright（内核零错误）、插件规范、打包规则、版本一致性、单元测试（Windows + Linux）、前端转义门禁与构建、PyInstaller 打包冒烟 |
+| `package-smoke.yml` | 打包相关文件变动 | 真实跑一遍 PyInstaller 并校验产物内容 |
+| `release.yml` | 推送 `v*` tag | 校验版本 → 双平台构建 → 创建 GitHub Release 并上传产物与 `.sha256` |
+
+本地一键跑全部门禁：
+
+```powershell
+.\venv\Scripts\python.exe -m ruff check .
+.\venv\Scripts\python.exe tools/check_plugins.py
+.\venv\Scripts\python.exe tools/check_packaging.py
+.\venv\Scripts\python.exe tools/check_version.py
+.\venv\Scripts\python.exe -m pyright main.py shell tools
+.\venv\Scripts\python.exe -m unittest discover -s tests
+node tools/check_frontend_escape.cjs
+```
+
+版本号唯一来源是 `pyproject.toml` 的 `[project].version`，`package.json` 必须与之一致，
+tag 必须写成 `v<version>`（不一致时发布流程会在第一步失败）。
+
+完整说明（门禁细节、打包链路、收紧路线、已知待办）见
+[CI、打包与发布文档](./docs/ci-and-release.md)。
+
+---
+
 ## 📄 许可证
 
 本项目基于 **Apache License 2.0** 开源。详见 [LICENSE](./LICENSE) 文件。

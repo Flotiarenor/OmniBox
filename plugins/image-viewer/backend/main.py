@@ -1,15 +1,16 @@
-import os
 import json
+import logging
+import os
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import List, Dict
+from typing import Any, ClassVar, Dict, List
+
 from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_utils import load_sibling
 from shell.backend.tasks import BackgroundTask
 from shell.backend.thumb_cache import ThumbCache
-import logging
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ def _pixiv_sort(entries, name_fn, reverse):
     return [it for _, it in numeric] + [it for _, it in other]
 
 class ImageViewerPlugin(PluginBase):
-    settings_schema = [
+    settings_schema: ClassVar[List[Dict[str, Any]]] = [
         {"key": "root_dir", "label": "数据根目录", "type": "text",
          "placeholder": "默认: ./data", "help": "图片浏览的数据根目录"},
         {"key": "row_height", "label": "图片行高", "type": "range",
@@ -204,7 +205,7 @@ class ImageViewerPlugin(PluginBase):
         with ThreadPoolExecutor(max_workers=self._SCAN_WORKERS) as ex:
             futures = [ex.submit(self._get_image_size, it['path'], it['mtime'])
                        for it in images]
-            for it, fut in zip(images, futures):
+            for it, fut in zip(images, futures, strict=True):
                 it['width'], it['height'] = fut.result()
 
     def _cache_list(self, key, value):
@@ -816,7 +817,7 @@ class ImageViewerPlugin(PluginBase):
                     self._meta_dirty = True
                     deleted.append(rel)
             except Exception as e:
-                errors.append(f"删除失败 {rel}: {str(e)}")
+                errors.append(f"删除失败 {rel}: {e!s}")
         self._list_cache.clear()
         if deleted:
             self._flush_meta_if_dirty()
@@ -849,7 +850,7 @@ class ImageViewerPlugin(PluginBase):
                     self._meta_dirty = True
                     moved.append(rel)
             except Exception as e:
-                errors.append(f"移动失败 {rel}: {str(e)}")
+                errors.append(f"移动失败 {rel}: {e!s}")
         self._list_cache.clear()
         if moved:
             self._flush_meta_if_dirty()
@@ -875,7 +876,7 @@ class ImageViewerPlugin(PluginBase):
                 else:
                     errors.append(f'缩略图生成失败: {rel}')
             except Exception as e:
-                errors.append(f'缩略图更新失败 {rel}: {str(e)}')
+                errors.append(f'缩略图更新失败 {rel}: {e!s}')
         if regenerated:
             self._save_meta()
         return {'regenerated': regenerated, 'errors': errors}

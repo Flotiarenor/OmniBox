@@ -12,15 +12,13 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-'''
 
-"""OmniBox 统一路径基准。
+OmniBox 统一路径基准。
 
 - 开发模式：所有相对路径都锚定到项目根目录，不再依赖 os.getcwd()。
 - 打包模式：可写数据（.config、plugins、data）放在可执行文件旁边；
   只读资源（shell、内置插件）仍从 PyInstaller 的 _MEIPASS 读取。
-  如果可执行文件所在目录不可写，则回退到 %APPDATA%/OmniBox。
-"""
+  如果可执行文件所在目录不可写，则回退到 %APPDATA%/OmniBox。'''
 
 import os
 import sys

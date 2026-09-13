@@ -12,23 +12,22 @@
 本文件只保留插件类：设置、线程编排、API 挂载与宿主交互。
 """
 
+import logging
 import os
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
-
-from shell.backend.plugin_base import PluginBase
+from typing import Any, ClassVar, Dict, List, Optional, Set
 
 from pixiv_mini import PixivClient, PixivError
-
 from pixiv_sync import download, oauth, scan, store, tasks
 from pixiv_sync.db import WorksDB
-from pixiv_sync.limiter import RateLimitError, RateLimiter
+from pixiv_sync.limiter import RateLimiter, RateLimitError
 from pixiv_sync.store import collect_existing_ids, rebuild_existing
-import logging
+
+from shell.backend.plugin_base import PluginBase
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +35,7 @@ CACHE_SUBDIR = Path(".cache") / "pixiv-sync"
 
 
 class PixivSyncPlugin(PluginBase):
-    settings_schema = [
+    settings_schema: ClassVar[List[Dict[str, Any]]] = [
         {
             "key": "refresh_token",
             "label": "Pixiv Refresh Token",
@@ -367,7 +366,7 @@ class PixivSyncPlugin(PluginBase):
         except PixivError as e:
             task["state"] = "failed"
             task["error"] = str(e)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             task["state"] = "failed"
             task["error"] = f"{type(e).__name__}: {e}"
         finally:
@@ -429,7 +428,7 @@ class PixivSyncPlugin(PluginBase):
         except PixivError as e:
             task["state"] = "failed"
             task["error"] = str(e)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             task["state"] = "failed"
             task["error"] = f"{type(e).__name__}: {e}"
         finally:
@@ -555,7 +554,7 @@ class PixivSyncPlugin(PluginBase):
                 body += "\n" + "\n".join(artists) + "\n"
             file.write_text(body, encoding="utf-8")
             if sys.platform == "win32":
-                os.startfile(str(file.parent))  # noqa: WPS421
+                os.startfile(str(file.parent))
             elif sys.platform == "darwin":
                 subprocess.Popen(
                     ["open", str(file.parent)],
@@ -628,7 +627,7 @@ class PixivSyncPlugin(PluginBase):
                 "stale_removed": len(stale),
                 "failed_cleared": len(failed_cleared),
             }
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
     def verify_downloaded(self) -> Dict:
@@ -659,7 +658,7 @@ class PixivSyncPlugin(PluginBase):
                 "failed_cleared": len(failed_cleared),
                 "total": len(ids),
             }
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
     # ---------- 状态 / API ----------

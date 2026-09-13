@@ -1,18 +1,18 @@
 """任务状态机：创建 / 落盘 / 恢复（断点）。"""
 
 import json
+import logging
 import os
 import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
-import logging
 
 log = logging.getLogger(__name__)
 
 
 def new_task(kind: str) -> Dict[str, Any]:
-    task = {
+    return {
         "kind": kind,
         "state": "queued",
         "done": 0,
@@ -25,7 +25,6 @@ def new_task(kind: str) -> Dict[str, Any]:
         "finished_at": None,
         "error": None,
     }
-    return task
 
 
 def persist_task(path: Path, task: Dict[str, Any]) -> bool:

@@ -12,9 +12,8 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-'''
 
-"""通用 SQLite 缩略图缓存（媒体插件共享基建·数据面）。
+通用 SQLite 缩略图缓存（媒体插件共享基建·数据面）。
 
 从 image-viewer 的散文件缩略图实现泛化而来：任何「本地媒体 → 缩略图」的
 插件（图片相册、视频封面抽帧、音频内嵌封面等）都可复用：
@@ -34,8 +33,7 @@ limitations under the License.
     cache.generate_bulk([('a/b.png', root/'a/b.png'), ...],  # 批量重建
                         progress_cb=..., stop_event=...)
     cache.delete('a/b.png')                                  # 文件删除/移动时
-    cache.clear()                                            # 全量清空 + 收缩
-"""
+    cache.clear()                                            # 全量清空 + 收缩'''
 
 import io
 import os
@@ -76,7 +74,9 @@ class ThumbCache:
                  workers: Optional[int] = None,
                  generator: Optional[Callable[[Path], Optional[Tuple[bytes, str]]]] = None) -> None:
         self.db_path = Path(db_path)
-        self.size = tuple(size)
+        # 保持为具体的二元元组：tuple(size) 的静态类型是 tuple[int, ...]（变长），
+        # 而 Pillow 的 thumbnail() 只接受二元组，显式解包能让类型与 IntEnum 都对上。
+        self.size = (size[0], size[1])
         self.mime_map = dict(mime_map or DEFAULT_MIME_MAP)
         self.workers = workers or min(8, max(1, os.cpu_count() or 4))
         self._mtime_tolerance = 0.5
@@ -350,6 +350,10 @@ class ThumbCache:
                         continue
                     for fut in done:
                         rel, mtime, size = futures.pop(fut)
+                        if fut.cancelled():
+                            # 取消请求期间被撤下的任务不算错误，也不写进度：
+                            # 当成错误会让调用方在 cancelled 结果里看到一批虚假 errors。
+                            continue
                         try:
                             result = fut.result()
                         except Exception as e:
@@ -367,7 +371,12 @@ class ThumbCache:
                         commit_progress(rel)
                         submit_next()
             finally:
-                executor.shutdown(wait=False, cancel_futures=True)
+                # 必须 wait=True：cancel_futures 只能取消"还没开始"的任务，
+                # 已在解码的会在池线程里继续跑。历史写法 shutdown(wait=False) 会让
+                # 本函数在网络连接关闭后立刻返回，而池线程仍在解码——既拖住进程退出，
+                # 也与紧随其后的 clear()（wal_checkpoint + VACUUM）抢同一份 DB。
+                executor.shutdown(wait=True, cancel_futures=True)
+
             conn.commit()
         finally:
             conn.close()
@@ -411,4 +420,3 @@ class ThumbCache:
 
     def close(self) -> None:
         """无长连接（每次操作短连接），保留接口便于对称管理。"""
-        pass
