@@ -158,6 +158,15 @@ jobs:
   package:
     name: package（PyInstaller 冒烟 + 产物校验，${{ matrix.os }}）
     needs: [lint, frontend]
+    # 打包不在每次 push / PR 上跑：省掉 Linux + Windows 两个 runner 与约 100s 墙钟
+    # （日常 push 由 9 个 job 降到 7 个）。覆盖率没有丢：
+    #   - 改到打包相关文件（docs/Releases/**、requirements*.txt、pyproject.toml、
+    #     tools/check_packaging.py、tools/check_build_tree.py）时，package-smoke.yml
+    #     会在 PR 与 main/develop push 上按路径触发，跑的是同一套双平台 PyInstaller
+    #     + check_build_tree.py 产物校验；
+    #   - 进主干（push main）或手动触发时，这里再各跑一次，作为"改应用代码把打包
+    #     悄悄改坏"（例如新增 PyInstaller 看不见的导入）的最后一道闸。
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

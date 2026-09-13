@@ -19,7 +19,7 @@
 | 运行时禁止 print | `python -m unittest tests.test_no_print_in_runtime` | 通过（硬门禁） |
 | 前端转义一致性 | `node tools/check_frontend_escape.cjs` | **OK**（硬门禁） |
 | 前端类型+构建 | `npm --prefix shell/frontend run build` | 通过（硬门禁） |
-| 打包冒烟 + 产物校验 | `python tools/check_build_tree.py <dist>/OmniBox --expect-exe OmniBox.exe` | 通过（硬门禁） |
+| 打包冒烟 + 产物校验 | `python tools/check_build_tree.py <dist>/OmniBox --expect-exe OmniBox.exe` | 通过（硬门禁；CI 里只在 push main / 手动触发 / 打包路径变更时跑） |
 
 本地一次性跑全部（PowerShell）：
 
@@ -46,7 +46,12 @@ node tools/check_frontend_escape.cjs
 | `typecheck` | windows | pyright 内核（硬门禁）+ 插件/测试（基线，不拦截） |
 | `test` | windows + ubuntu，py3.10 + 3.12 | unittest 全量（netease-music 的 4 项仅 Windows 运行） |
 | `frontend` | ubuntu | 转义门禁 + `npm ci` + `vue-tsc --noEmit` + `vite build` |
-| `package` | windows + ubuntu | 真实跑 PyInstaller + 校验产物内容（产物仅作 artifact） |
+| `package` | windows + ubuntu | 真实跑 PyInstaller + 校验产物内容；**只在 push `main` / 手动触发时跑**（日常 push 由 `package-smoke` 按路径兜底，产物仅作 artifact） |
+
+**日常 push 实际只跑 7 个 job**：`lint` + `typecheck` + `test`×4 + `frontend`。
+`package`×2 被 `if:` 关在 push `main` / 手动触发上（被跳过的 job 仍会列在运行页面
+上显示 `skipped`，但不消耗 runner）；打包路径相关的回归由 `package-smoke.yml`
+按路径触发兜底，两者跑的是同一套 spec + `check_build_tree.py` 产物校验。
 
 **为什么必须有 `windows-latest`**：历史缺陷里有一批是 Windows 专属的——SQLite
 临时目录被占用导致清理失败（`WinError 32`）、`PATH` 分隔符写死 `:`、文件锁定。
