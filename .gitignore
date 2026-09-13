@@ -1,0 +1,48 @@
+venv/
+shell/backend/__pycache__/
+shell/frontend/dist
+shell/frontend/node_modules/
+# package-lock.json 必须提交：npm ci 依赖它才能复现安装结果
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+opencode.json
+# 仅本地使用的 agent 约定文档（由 DSH 在工作区加载，不入库）
+AGENTS.md
+docs/commit-convention.md
+# DSH 编辑备份（工具产物）
+.dsh/
+
+# 构建机 pip freeze 快照（审计用，不是依赖声明）
+requirements.lock.txt
+
+# 本地代码审查报告：含未修复问题的可利用细节（DNS rebinding / 命令注入），
+# 不随仓库分发；P0 修完后若要共享，请先脱敏再放到别处。
+docs/code-review.md
+
+# 运行时代码
+data/
+.config/plugins/
+.config/auth_token.txt
+.config/logs/
+.build/
+
+# 脚本
+scripts/
+
+docs/Releases/*.exe
+docs/Releases/*.7z
+docs/Releases/*.zip
+docs/Releases/omnibox/
+docs/Releases/__pycache__/
+
+#linux 启动脚本
+OmniBox-OneClick.ps1
+
+# Linux 构建产物
+.build-linux/
+docs/Releases/OmniBox/
+docs/Releases/OmniBox.bin
+docs/Releases/*.tar.gz

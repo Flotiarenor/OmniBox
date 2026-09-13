@@ -1,0 +1,276 @@
+<#
+.SYNOPSIS
+    OmniBox 一键发布构建脚本
+.DESCRIPTION
+    1. 构建 Vue 前端
+    2. PyInstaller 打包（onedir + UPX）
+    3. 7z/zip 压缩为便携包
+    4. 输出到 docs/Releases/
+.PARAMETER UseCleanPath
+    自动复制项目到纯 ASCII 临时路径（解决中文路径导致 DLL 加载失败问题）
+.PARAMETER SkipFrontend
+    跳过前端构建（要求 dist 已存在；dist 缺失时直接失败，不产白屏包）
+.PARAMETER SkipPyInstaller
+.PARAMETER SkipArchive
+.PARAMETER CleanUserData
+    打包前删掉产物目录里的 data/ .config/ logs/。
+    程序把可写数据写在 exe 旁边（见 shell/backend/paths.py），所以在产物目录里跑过
+    一次程序做测试，那些目录里就是**你本机的设置**（媒体目录路径、refresh_token、
+    缩略图缓存）。默认不删也不放行：发现残留直接中止打包。
+.PARAMETER OutputDir
+#>
+
+# 注意：param() 必须是脚本里第一个可执行语句（旧版 PowerShell 连 Set-StrictMode
+# 都不能放在它前面），所以下面这段严格模式声明只能在 param 之后。
+param(
+    [switch]$SkipFrontend,
+    [switch]$SkipPyInstaller,
+    [switch]$SkipArchive,
+    [switch]$UseCleanPath,
+    [switch]$CleanUserData,
+    [string]$OutputDir = "$PSScriptRoot"
+)
+
+# 严格模式：未定义变量即报错、命令失败即中断。
+# 之前依赖手写 $LASTEXITCODE 检查，漏检一处就会"构建失败但仍然宣称成功"。
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$ColorInfo    = "Cyan"
+$ColorSuccess = "Green"
+$ColorWarning = "Yellow"
+$ColorError   = "Red"
+
+$ProjectRoot  = Resolve-Path "$PSScriptRoot/../.."
+$SpecFile     = "$PSScriptRoot/omnibox.spec"
+$BuildDir     = "$ProjectRoot/.build"
+$DistDir      = "$OutputDir"
+
+Write-Host ("=" * 46) -ForegroundColor $ColorInfo
+Write-Host "  OmniBox Build Script v1.0" -ForegroundColor $ColorInfo
+Write-Host ("=" * 46) -ForegroundColor $ColorInfo
+Write-Host "Project : $ProjectRoot"  -ForegroundColor $ColorInfo
+Write-Host "Output  : $DistDir"      -ForegroundColor $ColorInfo
+
+# -- 检查路径中是否含非 ASCII 字符（会导致 PyInstaller 加载 python DLL 失败）--
+$hasNonAscii = [regex]::Match($ProjectRoot, '[^\x00-\x7F]').Success
+if ($hasNonAscii -and -not $UseCleanPath) {
+    Write-Host "`n[WARN] 项目路径包含非 ASCII 字符（中文），运行 exe 时会报错:" -ForegroundColor $ColorWarning
+    Write-Host "  'Failed to load Python DLL ... 内存位置访问无效'" -ForegroundColor $ColorWarning
+    Write-Host "  方案 A: 解压后将 OmniBox/ 移到纯英文路径（如 D:\OmniBox）" -ForegroundColor $ColorWarning
+    Write-Host "  方案 B: 用 -UseCleanPath 参数自动复制到 Temp 目录构建" -ForegroundColor $ColorWarning
+    Write-Host ""
+}
+
+# -- 1. 构建 Vue 前端 --
+if (-not $SkipFrontend) {
+    Write-Host "[1/3] Building Vue frontend..." -ForegroundColor $ColorInfo
+    $frontendDir = "$ProjectRoot/shell/frontend"
+
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+        Write-Host "ERROR: Node.js not found" -ForegroundColor $ColorError; exit 1
+    }
+
+    Push-Location $frontendDir
+    try {
+        Write-Host "  -> npm ci" -ForegroundColor $ColorWarning
+        npm ci --silent
+        if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
+
+        Write-Host "  -> npm run build" -ForegroundColor $ColorWarning
+        npm run build
+        if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
+    } finally { Pop-Location }
+
+    if (-not (Test-Path "$frontendDir/dist/index.html")) {
+        Write-Host "ERROR: dist/index.html not found" -ForegroundColor $ColorError; exit 1
+    }
+    Write-Host "  [OK] Frontend built" -ForegroundColor $ColorSuccess
+} else {
+    Write-Host "[1/3] Skipping frontend" -ForegroundColor $ColorWarning
+}
+
+# -- 2. PyInstaller 打包 --
+if (-not $SkipPyInstaller) {
+    Write-Host "[2/3] PyInstaller packaging..." -ForegroundColor $ColorInfo
+
+    # 虚拟环境与依赖统一交给 setup-venv.ps1 处理（必须在 UseCleanPath 复制之前执行，
+    # 因为 venv 不随项目一起复制到临时路径）
+    Write-Host "  -> 确保虚拟环境与依赖 (setup-venv.ps1 -Install -Dev)..." -ForegroundColor $ColorWarning
+    & "$ProjectRoot/setup-venv.ps1" -Install -Dev -ProjectRoot $ProjectRoot
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: 环境准备失败" -ForegroundColor $ColorError; exit 1
+    }
+    $venvPython = Join-Path $ProjectRoot "venv\Scripts\python.exe"
+    if (-not (Test-Path $venvPython)) {
+        Write-Host "ERROR: 未找到虚拟环境 Python: $venvPython" -ForegroundColor $ColorError; exit 1
+    }
+
+    # 记录打包环境的依赖快照（仅用于审计；requirements.txt 是手写声明，绝不被覆盖）
+    Write-Host "  -> 生成依赖快照 requirements.lock.txt..." -ForegroundColor $ColorWarning
+    & $venvPython -m pip freeze | Out-File -FilePath "$ProjectRoot/requirements.lock.txt" -Encoding UTF8
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: 生成 requirements.lock.txt 失败" -ForegroundColor $ColorError; exit 1
+    }
+
+    # Check UPX
+    $upxFound = Get-Command upx -ErrorAction SilentlyContinue
+    if ($upxFound) {
+        Write-Host "  [OK] UPX found: $(upx --version 2>&1 | Select-Object -First 1)" -ForegroundColor $ColorSuccess
+    } else {
+        Write-Host "  [!] UPX not found (size will be larger)" -ForegroundColor $ColorWarning
+    }
+
+    # Clean old builds
+    if (Test-Path $BuildDir)  { Remove-Item -Recurse -Force $BuildDir }
+
+    # UseCleanPath: copy to ASCII temp dir for PyInstaller
+    if ($UseCleanPath -and $hasNonAscii) {
+        $cleanTempDir = Join-Path $env:TEMP "OmniBox_Build_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+        Write-Host "  -> Copying to ASCII path: $cleanTempDir" -ForegroundColor $ColorWarning
+        $excludeList = @('venv', '.git', 'node_modules', '.cache', '__pycache__', '.build')
+        New-Item -ItemType Directory -Path $cleanTempDir -Force | Out-Null
+        Get-ChildItem -Path $ProjectRoot -Exclude $excludeList | ForEach-Object {
+            # 不用 -ErrorAction SilentlyContinue：复制失败必须让构建失败，
+            # 否则会在"缺文件的临时目录"里打包并宣称成功。
+            Copy-Item -Recurse $_.FullName -Destination $cleanTempDir -ErrorAction Stop
+        }
+        $ProjectRoot = Resolve-Path $cleanTempDir
+        $BuildDir = "$cleanTempDir/.build"
+        $SpecFile = "$cleanTempDir/docs/Releases/omnibox.spec"
+        $DistDir = "$cleanTempDir/dist"
+        Write-Host "     -> Build will run in: $cleanTempDir" -ForegroundColor $ColorInfo
+    }
+
+    $oldDistDir = "$DistDir/OmniBox"
+    if (Test-Path $oldDistDir) { Remove-Item -Recurse -Force $oldDistDir }
+
+    Write-Host "  -> Running PyInstaller..." -ForegroundColor $ColorWarning
+    & $venvPython -m PyInstaller `
+        --workpath "$BuildDir" `
+        --distpath "$DistDir" `
+        --noconfirm `
+        --log-level WARN `
+        "$SpecFile"
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: PyInstaller failed" -ForegroundColor $ColorError; exit 1
+    }
+
+    $exePath = "$DistDir/OmniBox/OmniBox.exe"
+    if (-not (Test-Path $exePath)) {
+        Write-Host "ERROR: Output not found at $exePath" -ForegroundColor $ColorError; exit 1
+    }
+
+    # PyInstaller leaves a stray executable outside the COLLECT folder; remove it
+    $strayExe = "$DistDir/OmniBox.exe"
+    if (Test-Path $strayExe) {
+        Remove-Item -Force $strayExe
+        Write-Host "  [OK] Removed stray exe: $strayExe" -ForegroundColor $ColorSuccess
+    }
+
+    $size = (Get-ChildItem -Recurse "$DistDir/OmniBox" | Measure-Object -Property Length -Sum).Sum
+    $sizeMB = [math]::Round($size / 1MB, 2)
+    Write-Host "  [OK] PyInstaller done" -ForegroundColor $ColorSuccess
+    Write-Host "       Output: $DistDir/OmniBox/" -ForegroundColor $ColorSuccess
+    Write-Host "       Size: ${sizeMB}MB" -ForegroundColor $ColorSuccess
+} else {
+    Write-Host "[2/3] Skipping PyInstaller" -ForegroundColor $ColorWarning
+}
+
+# -- 3. 7z/zip 压缩 --
+if (-not $SkipArchive) {
+    Write-Host "[3/3] Creating archive..." -ForegroundColor $ColorInfo
+
+    $sevenZip = Get-Command 7z -ErrorAction SilentlyContinue
+    if (-not $sevenZip) {
+        $paths = @(
+            "$env:ProgramFiles/7-Zip/7z.exe",
+            "${env:ProgramFiles(x86)}/7-Zip/7z.exe",
+            "$env:LOCALAPPDATA/Programs/7-Zip/7z.exe"
+        )
+        foreach ($p in $paths) {
+            if (Test-Path $p) { $sevenZip = $p; break }
+        }
+    }
+
+    $useZip = $null -eq $sevenZip
+
+    $sourceDir  = "$DistDir/OmniBox"
+
+    # ── 打包前把关：产物目录里绝不能带用户数据 ──
+    # 踩过的坑：在产物目录里跑过程序做测试（可写数据写在 exe 旁边，见
+    # shell/backend/paths.py），随后用 -SkipPyInstaller 重新压缩发布，就把开发机
+    # 的设置（媒体目录路径、refresh_token、缓存）一起发给了用户。
+    $userDataDirs = @("$sourceDir/.config", "$sourceDir/data", "$sourceDir/logs")
+    if ($CleanUserData) {
+        foreach ($d in $userDataDirs) {
+            if (Test-Path $d) {
+                Write-Host "  -> 清理产物里的用户数据: $d" -ForegroundColor $ColorWarning
+                Remove-Item -Recurse -Force $d
+            }
+        }
+    }
+    $leftover = @($userDataDirs | Where-Object { Test-Path $_ })
+    if ($leftover.Count -gt 0) {
+        Write-Host "ERROR: 产物目录里残留了用户数据（通常是构建后在产物目录里跑过程序）：" -ForegroundColor $ColorError
+        $leftover | ForEach-Object { Write-Host "  - $_" -ForegroundColor $ColorError }
+        Write-Host "  这些目录含你的设置/目录路径/令牌/缓存，绝不能进发行包。" -ForegroundColor $ColorError
+        Write-Host "  处理：删掉它们，或加 -CleanUserData 让脚本在打包前自动清理。" -ForegroundColor $ColorError
+        exit 1
+    }
+    $gatePy = "$ProjectRoot/venv/Scripts/python.exe"
+    if (-not (Test-Path $gatePy)) { $gatePy = "python" }
+    Write-Host "  -> 产物校验 (tools/check_build_tree.py)..." -ForegroundColor $ColorWarning
+    & $gatePy "$ProjectRoot/tools/check_build_tree.py" $sourceDir --expect-exe "OmniBox.exe"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: 产物校验未通过，已中止打包（详见上面的报告）" -ForegroundColor $ColorError
+        exit 1
+    }
+
+    $version    = (Get-Date -Format "yyyyMMdd")
+    $archiveName = "OmniBox_${version}"
+
+    if (-not $useZip) {
+        $archiveFile = "$OutputDir/${archiveName}.7z"
+        Write-Host "  -> 7z a -mx=9 -ms=on $archiveFile" -ForegroundColor $ColorWarning
+        # Get-Command 命中时返回值是 CommandInfo（用命令名调用），否则是探测到的
+        # 绝对路径字符串（必须用该路径调用，不能再写裸 '7z'）。
+        # 旧代码在 CommandInfo 分支硬编码了 `& 7z`：若用户的 7z 是通过绝对路径
+        # 探测到的别名/不同名字，这里就会调用失败。
+        & $sevenZip a -mx=9 -ms=on "$archiveFile" "$sourceDir/*"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: 7z failed" -ForegroundColor $ColorError; exit 1
+        }
+    } else {
+        $archiveFile = "$OutputDir/${archiveName}.zip"
+        Write-Host "  -> zip (7z not found, fallback)" -ForegroundColor $ColorWarning
+        Compress-Archive -Path "$sourceDir/*" -DestinationPath $archiveFile -CompressionLevel Optimal
+        if (-not (Test-Path $archiveFile)) {
+            Write-Host "ERROR: zip failed" -ForegroundColor $ColorError; exit 1
+        }
+    }
+
+    $archiveSize = [math]::Round((Get-Item $archiveFile).Length / 1MB, 2)
+    $dirSize = [math]::Round(
+        (Get-ChildItem -Recurse $sourceDir | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
+    Write-Host "  [OK] Archive created" -ForegroundColor $ColorSuccess
+    Write-Host "       File: $archiveFile" -ForegroundColor $ColorSuccess
+    Write-Host "       Size: ${dirSize}MB -> ${archiveSize}MB (${[math]::Round((1-$archiveSize/$dirSize)*100, 0)}% saved)" -ForegroundColor $ColorSuccess
+} else {
+    Write-Host "[3/3] Skipping archive" -ForegroundColor $ColorWarning
+}
+
+Write-Host ("=" * 46) -ForegroundColor $ColorSuccess
+Write-Host "  BUILD COMPLETE" -ForegroundColor $ColorSuccess
+Write-Host ("=" * 46) -ForegroundColor $ColorSuccess
+
+if ($hasNonAscii -and -not $UseCleanPath) {
+    Write-Host "`n[IMPORTANT] Path has non-ASCII chars. To run the exe:" -ForegroundColor $ColorWarning
+    Write-Host "  1. Extract the 7z archive" -ForegroundColor $ColorWarning
+    Write-Host "  2. Move OmniBox/ folder to an ASCII path, e.g.:" -ForegroundColor $ColorWarning
+    Write-Host "     D:\OmniBox\OmniBox.exe" -ForegroundColor $ColorInfo
+}
+if (-not $upxFound) {
+    Write-Host "`n[TIP] Install UPX for smaller binary: https://github.com/upx/upx/releases" -ForegroundColor $ColorWarning
+}

@@ -1,0 +1,15 @@
+{
+  "name": "__NAME__",
+  "version": "1.0.0",
+  "displayName": "__DISPLAY__",
+  "icon": "📦",
+  "dependencies": [],
+  "backend": {
+    "entry": "backend/main.py",
+    "class": "__CLASS__"
+  },
+  "frontend": {
+    "route": "__ROUTE__",
+    "entry": "frontend/index.html"
+  }
+}

@@ -1,0 +1,39 @@
+# 统一换行符策略：仓库内一律存 LF，工作区按平台自动转换。
+#
+# 为什么需要这个文件：在此之前仓库没有任何 eol 声明，而开发机 git 配置是
+# core.autocrlf=true，于是同一批改动里会同时出现 CRLF 与 LF 文件；ruff /
+# 构建脚本写出的 LF 又会被 git 在下次 checkout 时换回 CRLF，反复产生
+# "LF will be replaced by CRLF" 警告和纯换行的假 diff。
+#
+# 约定：
+#   - 所有文本文件以 LF 入库（跨平台一致，diff 不噪声）；
+#   - Windows 专用脚本（.ps1/.cmd/.bat）检出为 CRLF，便于直接双击/执行。
+* text=auto eol=lf
+
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 二进制资源不参与换行转换
+*.pyd binary
+*.dll binary
+*.exe binary
+*.pdb binary
+*.zip binary
+*.7z binary
+*.gz binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.mp3 binary
+*.webm binary
+*.db binary
+*.sqlite binary
+*.sqlite3 binary

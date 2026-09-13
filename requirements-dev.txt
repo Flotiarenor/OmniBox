@@ -1,0 +1,18 @@
+# OmniBox 开发 / 构建依赖
+#
+# 用途：
+#   - setup-venv.ps1 -Install -Dev / setup-venv.sh --dev 会安装本文件；
+#   - deploy.ps1 与 build-release.* 都走 -Dev（构建需要 pyinstaller）；
+#   - 只想运行 OmniBox（终端用户 / 运行时 CI）只需 requirements.txt。
+#
+# 说明：pyinstaller 会带上 altgraph / pefile / pywin32-ctypes / packaging，
+#       pyright 会带上 nodeenv，因此这里不重复声明传递依赖。
+
+-r requirements.txt
+
+# --- 静态检查 ---
+ruff==0.16.4
+pyright==1.1.411
+
+# --- 打包 ---
+pyinstaller==6.21.0

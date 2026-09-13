@@ -1,0 +1,102 @@
+[project]
+name = "omnibox"
+version = "1.2.0"
+description = "OmniBox — 轻量级、可插拔的桌面应用框架"
+readme = "readme.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+
+# 运行时依赖的唯一声明源仍是 requirements.txt（手写，不用 pip freeze 覆盖）。
+# 这里只做元数据，避免出现"两处依赖声明互相漂移"。
+dynamic = []
+
+# ══════════════════════════════════════════════════════════════════════
+# Ruff —— 静态检查门禁
+# ══════════════════════════════════════════════════════════════════════
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+# 显式列出扫描范围：默认会连 docs/Releases/OmniBox/（PyInstaller 产物）、
+# venv/、node_modules/ 一起分析，产生大量与源码无关的噪声。
+extend-exclude = [
+    "venv",
+    "docs/Releases/OmniBox",
+    "docs/Releases/OmniBox.*",
+    ".build",
+    ".build-linux",
+    "shell/frontend/node_modules",
+    "shell/frontend/dist",
+    ".config",
+    "data",
+    # vendored 第三方库：保持上游原样，便于将来 diff 升级
+    "plugins/pixiv-sync/backend/libs",
+]
+
+[tool.ruff.lint]
+# 规则集选取原则：只开"能抓到真问题"的规则。
+#   E9/F  —— 语法错误、未定义名字、未使用导入/变量（真正的 bug，不是风格）
+#   I     —— 导入顺序（避免隐式循环依赖与遮蔽）
+#   B     —— bugbear：可变默认参数、函数内误用循环变量等
+#   SIM/RET/PIE/FURB —— 明显的冗余/简化（可自动修）
+#   RUF   —— ruff 自有规则（含 RUF100 未使用的 noqa）
+#   PL    —— Pylint 子集：PLW1510 subprocess 未显式 check 等
+#
+# 刻意未开启（会淹没信号，需先做一次专项清理）：
+#   BLE001 blind-except（179 处）、S110 try-except-pass（48 处）、
+#   UP 注解现代化（562 处）。见 docs/ci-and-release.md「后续收紧清单」。
+select = [
+    "E4",
+    "E7",
+    "E9",
+    "F",
+    "I",
+    "B",
+    "SIM",
+    "RET",
+    "PIE",
+    "FURB",
+    "RUF",
+    "PLW1510",
+]
+
+ignore = [
+    # B008：ruff 把 Flask 惯用法 app.route(...) 的"函数调用作为默认值"报出来，
+    # 这是框架设计而非缺陷。
+    "B008",
+    # RUF001/RUF002/RUF003：全角标点等"含混 Unicode"。本项目注释与用户文案
+    # 大量使用中文全角标点，属有意为之。
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    # SIM105：把 try/except/pass 换成 contextlib.suppress（29 处）。语义等价，
+    # 属纯风格改写，留待专项提交，不阻塞本次 CI 落地。
+    "SIM105",
+    # SIM108：把 if/else 赋值压成三元表达式。剩余 2 处都带"为什么这样写"的
+    # 注释，压成一行会先丢掉注释或让表达式难读，保留 if/else 更清楚。
+    "SIM108",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试里 `except Exception` 后断言失败是常规手法；打印型手工脚本允许空 print
+"tests/**" = [
+    "S101",
+    "PLW1510",
+    "FURB105",
+    # 测试文件必须在 import 被测模块**之前**把项目根塞进 sys.path
+    # （`sys.path.insert(0, PROJECT_ROOT)`），这是 unittest 直接 `python -m
+    # unittest tests.x` 运行的前提。E402 在此是误报。
+    "E402",
+    # 测试里 `with env() as (tmp, plugin):` 这类解包常只用到其中一个值：
+    # 用命名变量（而不是 `_`）能让"这里另有返回值、只是本用例不需要"一眼可见。
+    "RUF059",
+]
+"tools/**" = ["S101", "PLW1510"]
+# 工具脚本与插件入口需要 print（CLI 输出），不是日志
+"tools/check_plugins.py" = ["T201"]
+# 项目模板：占位符是有意为之，RUF012 等对模板无意义
+"tools/examples/**" = ["RUF012"]
+
+# pixiv-sync 后端单独开启了 BLE001（见同目录 ruff.toml）：
+# 它面向不可控的外部 API 与磁盘状态，"单个作品失败不能中断整批任务"是核心设计，
+# 因此每处宽泛捕获都要显式写出 `# noqa: BLE001` 作为"这是有意的"的证据。

@@ -1,0 +1,54 @@
+# OmniBox 运行时依赖
+#
+# 本文件是【手写】的运行时依赖声明，不是 pip freeze 快照：
+#   - 只列运行 OmniBox 本体与插件真正需要的东西；
+#   - 开发/构建工具（ruff / pyright / pyinstaller 等）在 requirements-dev.txt；
+#   - 构建脚本的 pip freeze 快照写到 requirements.lock.txt（仅用于审计打包环境）。
+# 请勿用 pip freeze 覆盖本文件。
+
+# --- Web 框架 ---
+Flask==3.1.3
+Werkzeug==3.1.8
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+itsdangerous==2.2.0
+blinker==1.9.0
+click==8.3.3
+colorama==0.4.6
+PyYAML==6.0.3
+
+# --- 桌面窗口与 Python/JS 桥接 ---
+pywebview==6.2.1
+bottle==0.13.4
+proxy_tools==0.1.0
+pythonnet==3.0.5
+clr_loader==0.2.10
+cffi==2.0.0
+pycparser==3.0
+typing_extensions==4.15.0
+
+# --- 网络请求 ---
+requests==2.34.2
+urllib3==2.7.0
+certifi==2026.4.22
+idna==3.18
+charset-normalizer==3.4.7
+curl_cffi==0.15.0
+
+# --- 媒体与内容处理 ---
+pillow==12.2.0
+mutagen==1.48.1
+natsort==8.4.0
+pycryptodome==3.23.0
+# novel-reader 用它嗅探 .txt 的编码（HIDDEN_IMPORTS 里也有，缺了会被静默跳过）
+chardet==7.4.3
+
+# --- 插件依赖（pixiv-sync 等在同进程内 import） ---
+jmcomic==2.6.19
+commonX==0.6.40
+
+# --- 终端输出（jmcomic / rich 链路） ---
+rich==15.0.0
+markdown-it-py==4.2.0
+mdurl==0.1.2
+Pygments==2.21.0

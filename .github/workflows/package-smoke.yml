@@ -1,0 +1,120 @@
+name: package-smoke
+
+# 只做"打包链路还能不能跑通"的验证，产出物仅作为 Actions artifact 供人工检查，
+# 不创建 Release。目的：让"打包坏了"在 PR 阶段就暴露，而不是等到打 tag 才发现。
+#
+# 触发条件刻意收窄（只在与打包相关的文件变动时跑），避免每次改文档都烧 20 分钟
+# 的 Windows runner；release.yml 里还有一份完整的双平台构建。
+on:
+  pull_request:
+    paths:
+      - 'docs/Releases/**'
+      - 'requirements*.txt'
+      - 'pyproject.toml'
+      - 'tools/check_packaging.py'
+      - 'tools/check_build_tree.py'
+      - '.github/workflows/package-smoke.yml'
+  push:
+    branches: [main, develop]
+    paths:
+      - 'docs/Releases/**'
+      - 'requirements*.txt'
+      - 'pyproject.toml'
+      - 'tools/check_packaging.py'
+      - 'tools/check_build_tree.py'
+  workflow_dispatch:
+
+concurrency:
+  group: package-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '20'
+
+jobs:
+  smoke:
+    name: 打包冒烟（${{ matrix.os }}）
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            spec: docs/Releases/omnibox.spec
+            expect_exe: OmniBox.exe
+          - os: ubuntu-latest
+            spec: docs/Releases/omnibox-linux.spec
+            expect_exe: OmniBox.bin
+    steps:
+      - uses: actions/checkout@v4
+
+      # Windows 走 setup-python；Linux 用发行版 python3 + venv —— setup-python 那份
+      # libpython 与打包产物不兼容：产物启动时报
+      # "Failed to load Python shared library .../libpython3.12.so.1.0"（详见
+      # release.yml build job 的注释）。venv 的 bin 追加到 GITHUB_PATH，后续 `python`
+      # 就是它。
+      - uses: actions/setup-python@v5
+        if: runner.os == 'Windows'
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Linux 构建前置（发行版 Python + venv + binutils）
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3 python3-venv python3-pip binutils
+          # venv 放在工作区**外面**：放进仓库会被 ruff 之类的工具当成源码扫到
+          # （extend-exclude 里没有 .venv-build，实测 verify 的 ruff 直接炸掉）。
+          python3 -m venv "$RUNNER_TEMP/omnibox-build-venv"
+          echo "$RUNNER_TEMP/omnibox-build-venv/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: shell/frontend/package-lock.json
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+
+      - name: 打包规则检查
+        run: python tools/check_packaging.py
+
+      - name: 构建前端
+        run: |
+          npm --prefix shell/frontend ci
+          npm --prefix shell/frontend run build
+
+      - name: PyInstaller 打包
+        run: >-
+          python -m PyInstaller
+          --workpath .build-work
+          --distpath .build-dist
+          --noconfirm
+          --log-level WARN
+          ${{ matrix.spec }}
+
+      - name: 校验产物内容
+        run: >-
+          python tools/check_build_tree.py
+          .build-dist/OmniBox
+          --expect-exe ${{ matrix.expect_exe }}
+
+      - name: 上传产物供人工验证
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-smoke-${{ matrix.os }}
+          path: .build-dist/OmniBox
+          retention-days: 7

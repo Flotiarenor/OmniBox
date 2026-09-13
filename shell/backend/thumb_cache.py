@@ -1,0 +1,422 @@
+'''
+Copyright 2026 flotiarenor
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+通用 SQLite 缩略图缓存（媒体插件共享基建·数据面）。
+
+从 image-viewer 的散文件缩略图实现泛化而来：任何「本地媒体 → 缩略图」的
+插件（图片相册、视频封面抽帧、音频内嵌封面等）都可复用：
+
+- 每个插件持有自己的 `ThumbCache` 实例，DB 文件放在各自数据根目录
+  `.cache/thumbs.db`（数据跟数据走，换数据目录自动重建）；
+- 键为相对路径，`source_mtime`（0.5s 容差）+ `source_size` 双条件失效校验，
+  源文件替换后自动重生成；
+- 单图按需生成（/thumbs 路由），批量并行生成（全量重建/同步任务）；
+- `clear()` 先 `wal_checkpoint(TRUNCATE)` 再 `VACUUM`，并加进程级锁，
+  避免与按需生成的连接交错导致收缩静默失败；
+- 生成失败返回 None 且不写缓存（不缓存假缩略图）。
+
+典型用法：
+    cache = ThumbCache(root / '.cache' / 'thumbs.db', size=(300, 300))
+    data, mime = cache.get('a/b.png', root / 'a/b.png')     # 按需生成
+    cache.generate_bulk([('a/b.png', root/'a/b.png'), ...],  # 批量重建
+                        progress_cb=..., stop_event=...)
+    cache.delete('a/b.png')                                  # 文件删除/移动时
+    cache.clear()                                            # 全量清空 + 收缩'''
+
+import io
+import os
+import sqlite3
+import threading
+import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+DEFAULT_MIME_MAP = {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.bmp': 'image/bmp',
+    '.webp': 'image/webp',
+}
+
+# 保护「清空+收缩」段的进程级锁：VACUUM 需要独占数据库。
+_CLEAR_LOCK = threading.Lock()
+
+
+class ThumbCache:
+    """SQLite 缩略图缓存（WAL + mtime/size 失效校验 + 并行批量生成）。
+
+    缩略图**生成**策略可扩展，三种方式任选：
+    - 默认：Pillow 图片缩放（`size` 可配）；
+    - 构造注入 `generator` 可调用对象（组合）：`generator(src_path) -> (bytes, mime) | None`，
+      适合视频抽帧、音频内嵌封面等非图片源（media-player 等插件用）；
+    - 子类覆写 `_generate()`（继承）：完全接管生成逻辑；
+      覆写中调用 `super()._generate(src_path)` 可复用父类的「注入优先」逻辑。
+    注意：generator 会被批量生成的线程池**并发调用**，需保证线程安全。
+    """
+
+    def __init__(self, db_path: Path, size: Tuple[int, int] = (300, 300),
+                 mime_map: Optional[Dict[str, str]] = None,
+                 workers: Optional[int] = None,
+                 generator: Optional[Callable[[Path], Optional[Tuple[bytes, str]]]] = None) -> None:
+        self.db_path = Path(db_path)
+        # 保持为具体的二元元组：tuple(size) 的静态类型是 tuple[int, ...]（变长），
+        # 而 Pillow 的 thumbnail() 只接受二元组，显式解包能让类型与 IntEnum 都对上。
+        self.size = (size[0], size[1])
+        self.mime_map = dict(mime_map or DEFAULT_MIME_MAP)
+        self.workers = workers or min(8, max(1, os.cpu_count() or 4))
+        self._mtime_tolerance = 0.5
+        # 自定义生成器（可选）：优先于默认 Pillow 实现；子类也可直接覆写 _generate()
+        self._generator = generator
+
+    # ===== 内部 =====
+
+    def _connect(self) -> sqlite3.Connection:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(self.db_path), timeout=15)
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA synchronous=NORMAL')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS thumbs (
+                path         TEXT PRIMARY KEY,
+                source_mtime REAL NOT NULL DEFAULT 0,
+                source_size  INTEGER NOT NULL DEFAULT 0,
+                mime         TEXT NOT NULL DEFAULT 'image/jpeg',
+                data         BLOB NOT NULL,
+                created_at   REAL NOT NULL DEFAULT 0
+            )
+        ''')
+        return conn
+
+    def _mime_for(self, rel_path: str) -> str:
+        return self.mime_map.get(Path(rel_path).suffix.lower(), 'application/octet-stream')
+
+    def _generate(self, src_path: Path) -> Optional[Tuple[bytes, str]]:
+        """缩略图生成入口（扩展点）。
+
+        优先级：构造注入的 generator > 子类覆写本方法 > 默认 Pillow 缩放。
+        """
+        if self._generator is not None:
+            return self._generator(src_path)
+        return self._default_generate(src_path)
+
+    def _default_generate(self, src_path: Path) -> Optional[Tuple[bytes, str]]:
+        """默认实现：Pillow 缩放到 size；失败返回 None（不复制原图当假缩略图）。"""
+        try:
+            from PIL import Image
+            with Image.open(src_path) as img:
+                img.thumbnail(self.size)
+                fmt = (img.format or 'JPEG').upper()
+                if fmt == 'JPG':
+                    fmt = 'JPEG'
+                if fmt not in ('JPEG', 'PNG', 'WEBP', 'GIF', 'BMP'):
+                    fmt = 'JPEG'
+                if fmt == 'JPEG' and img.mode in ('RGBA', 'LA', 'P'):
+                    img = img.convert('RGB')
+                out = io.BytesIO()
+                if fmt == 'JPEG':
+                    img.save(out, format='JPEG', quality=85, optimize=True)
+                elif fmt == 'WEBP':
+                    img.save(out, format='WEBP', quality=82, method=4)
+                else:
+                    img.save(out, format=fmt, optimize=True)
+                data = out.getvalue()
+                mime = self.mime_map.get('.' + fmt.lower(), 'image/jpeg')
+                return data, mime
+        except Exception:
+            return None
+
+    def _read_valid(self, conn: sqlite3.Connection, rel_path: str,
+                    source_mtime: float, source_size: int) -> Optional[Tuple[bytes, str]]:
+        row = conn.execute(
+            'SELECT data, mime, source_mtime, source_size FROM thumbs WHERE path = ?',
+            (rel_path,),
+        ).fetchone()
+        if row and abs(float(row[2]) - float(source_mtime)) < self._mtime_tolerance \
+                and int(row[3]) == int(source_size):
+            return row[0], row[1]
+        return None
+
+    def _write(self, conn: sqlite3.Connection, rel_path: str,
+               data: bytes, mime: str, source_mtime: float, source_size: int) -> None:
+        conn.execute(
+            'INSERT OR REPLACE INTO thumbs(path, source_mtime, source_size, mime, data, created_at) '
+            'VALUES (?, ?, ?, ?, ?, ?)',
+            (rel_path, source_mtime, source_size, mime, data, time.time()),
+        )
+
+    # ===== 单图：按需生成（/thumbs 路由用） =====
+
+    def get(self, rel_path: str, src_path: Path) -> Optional[Tuple[bytes, str]]:
+        """从缓存读取有效缩略图；未命中时生成并写回。返回 (data, mime) 或 None。"""
+        try:
+            st = Path(src_path).stat()
+        except OSError:
+            return None
+        try:
+            conn = self._connect()
+            try:
+                cached = self._read_valid(conn, rel_path, st.st_mtime, st.st_size)
+                if cached:
+                    return cached
+                generated = self._generate(Path(src_path))
+                if generated is None:
+                    return None
+                data, mime = generated
+                self._write(conn, rel_path, data, mime, st.st_mtime, st.st_size)
+                conn.commit()
+                return data, mime
+            finally:
+                conn.close()
+        except Exception:
+            return None
+
+    def put(self, rel_path: str, data: bytes, mime: str, src_path: Path) -> bool:
+        """外部回写的缩略图直接入库（不经过生成器）。
+
+        供前端 canvas 抽帧等场景使用：源文件 mtime/size 一并记录，
+        后续 get() 的失效校验语义保持一致（源文件替换后条目自动失效）。
+        """
+        try:
+            st = Path(src_path).stat()
+        except OSError:
+            return False
+        try:
+            conn = self._connect()
+            try:
+                self._write(conn, rel_path, data, mime, st.st_mtime, st.st_size)
+                conn.commit()
+                return True
+            finally:
+                conn.close()
+        except Exception:
+            return False
+
+    def has(self, rel_path: str, src_path: Path) -> bool:
+        """缓存中是否存在对应当前源文件的有效条目（只读检查，不生成）。
+
+        供前端「按浏览位置预取封面」等场景批量判断缺失项。
+        """
+        try:
+            st = Path(src_path).stat()
+        except OSError:
+            return False
+        try:
+            conn = self._connect()
+            try:
+                return self._read_valid(conn, rel_path, st.st_mtime, st.st_size) is not None
+            finally:
+                conn.close()
+        except Exception:
+            return False
+
+    def has_many(self, items: List[Tuple[str, Path]]) -> List[str]:
+        """批量判断哪些条目缺少有效缓存（单连接查询）。
+
+        items: [(rel_path, src_path), ...]；返回缺失的 rel_path 列表。
+        语义与 has() 一致：源文件 stat 失败同样视为缺失。供预取封面等
+        场景批量判定，避免 N 次建连（每次建连含建表/PRAGMA 开销）。
+        """
+        if not items:
+            return []
+        try:
+            missing = []
+            checked = []
+            for rel, src in items:
+                try:
+                    st = Path(src).stat()
+                except OSError:
+                    missing.append(rel)
+                    continue
+                checked.append((rel, st.st_mtime, st.st_size))
+            if checked:
+                conn = self._connect()
+                try:
+                    for rel, mtime, size in checked:
+                        if self._read_valid(conn, rel, mtime, size) is None:
+                            missing.append(rel)
+                finally:
+                    conn.close()
+            return missing
+        except Exception:
+            return [rel for rel, _ in items]
+
+    def prune(self, existing_keys: set) -> int:
+        """删除不在 existing_keys 中的缓存条目（源文件已删除/移动的孤儿）。
+
+        供深度扫描等「索引完整」时机调用，防止 DB 无限膨胀。
+        返回删除条数。
+        """
+        try:
+            conn = self._connect()
+            try:
+                cur = conn.execute('SELECT path FROM thumbs')
+                keys = [row[0] for row in cur.fetchall()]
+                stale = [k for k in keys if k not in existing_keys]
+                for k in stale:
+                    conn.execute('DELETE FROM thumbs WHERE path = ?', (k,))
+                conn.commit()
+                return len(stale)
+            finally:
+                conn.close()
+        except Exception:
+            return 0
+
+    # ===== 批量：并行生成（全量重建 / 同步任务用） =====
+
+    def generate_bulk(self, items: List[Tuple[str, Path]],
+                      progress_cb: Optional[Callable] = None,
+                      stop_event: Optional[threading.Event] = None) -> Dict[str, Any]:
+        """批量生成缩略图到 SQLite。
+
+        items: [(rel_path, src_path), ...]；多线程生成（默认按 CPU 核数），
+        主线程单连接写入；progress_cb(processed, total, current, errors)。
+        返回 {'processed': n, 'total': n, 'errors': [...]}。
+        """
+        items = list(items)
+        total = len(items)
+        processed = 0
+        errors: List[str] = []
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = self._connect()
+
+        def commit_progress(rel):
+            nonlocal processed
+            if processed % 50 == 0:
+                conn.commit()
+            if progress_cb:
+                progress_cb(processed, total, rel, errors)
+
+        try:
+            # 预检：跳过已有有效缩略图
+            pending = []
+            for rel, src in items:
+                if stop_event is not None and stop_event.is_set():
+                    break
+                try:
+                    st = Path(src).stat()
+                except OSError:
+                    errors.append(rel)
+                    processed += 1
+                    commit_progress(rel)
+                    continue
+                row = self._read_valid(conn, rel, st.st_mtime, st.st_size)
+                if row:
+                    processed += 1
+                    commit_progress(rel)
+                    continue
+                pending.append((rel, str(src), st.st_mtime, st.st_size))
+
+            # 并行生成（worker 只做 Pillow 解码，无 DB 访问）
+            executor = ThreadPoolExecutor(max_workers=self.workers)
+            futures: Dict[Any, Tuple[str, float, int]] = {}
+            pending_iter = iter(pending)
+
+            def submit_next():
+                try:
+                    rel, src_str, mtime, size = next(pending_iter)
+                except StopIteration:
+                    return None
+                fut = executor.submit(self._generate_one, src_str)
+                futures[fut] = (rel, mtime, size)
+                return fut
+
+            try:
+                for _ in range(min(self.workers * 2, len(pending))):
+                    if submit_next() is None:
+                        break
+
+                while futures:
+                    if stop_event is not None and stop_event.is_set():
+                        for fut in list(futures):
+                            fut.cancel()
+                        break
+                    done, _ = wait(list(futures), timeout=0.2, return_when=FIRST_COMPLETED)
+                    if not done:
+                        continue
+                    for fut in done:
+                        rel, mtime, size = futures.pop(fut)
+                        if fut.cancelled():
+                            # 取消请求期间被撤下的任务不算错误，也不写进度：
+                            # 当成错误会让调用方在 cancelled 结果里看到一批虚假 errors。
+                            continue
+                        try:
+                            result = fut.result()
+                        except Exception as e:
+                            errors.append(f'{rel}: {e}')
+                            processed += 1
+                            commit_progress(rel)
+                            submit_next()
+                            continue
+                        if result is None:
+                            errors.append(rel)
+                        else:
+                            data, mime = result
+                            self._write(conn, rel, data, mime, mtime, size)
+                        processed += 1
+                        commit_progress(rel)
+                        submit_next()
+            finally:
+                # 必须 wait=True：cancel_futures 只能取消"还没开始"的任务，
+                # 已在解码的会在池线程里继续跑。历史写法 shutdown(wait=False) 会让
+                # 本函数在网络连接关闭后立刻返回，而池线程仍在解码——既拖住进程退出，
+                # 也与紧随其后的 clear()（wal_checkpoint + VACUUM）抢同一份 DB。
+                executor.shutdown(wait=True, cancel_futures=True)
+
+            conn.commit()
+        finally:
+            conn.close()
+        return {'processed': processed, 'total': total, 'errors': errors}
+
+    def _generate_one(self, src_str: str):
+        """供线程池调用的模块内 worker：返回 (data, mime) 或 None。"""
+        return self._generate(Path(src_str))
+
+    # ===== 维护 =====
+
+    def delete(self, rel_path: str) -> None:
+        """删除某条缓存（源文件删除/移动/重新生成时调用）。"""
+        try:
+            conn = self._connect()
+            try:
+                conn.execute('DELETE FROM thumbs WHERE path = ?', (rel_path,))
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            pass
+
+    def clear(self) -> None:
+        """清空全部缓存并收缩 DB 文件（先 checkpoint 合并 WAL 再 VACUUM）。"""
+        try:
+            conn = self._connect()
+            try:
+                with _CLEAR_LOCK:
+                    conn.execute('DELETE FROM thumbs')
+                    conn.commit()
+                    try:
+                        conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+                    except Exception:
+                        pass
+                    conn.execute('VACUUM')
+            finally:
+                conn.close()
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        """无长连接（每次操作短连接），保留接口便于对称管理。"""

@@ -1,0 +1,20 @@
+{
+  "name": "manga-library",
+  "version": "2.1.0",
+  "displayName": "漫画中心",
+  "icon": "📚",
+  "dependencies": [],
+  "backend": {
+    "entry": "backend/main.py",
+    "class": "MangaLibraryPlugin"
+  },
+  "frontend": {
+    "entry": "frontend/index.html",
+    "route": "/manga-library"
+  },
+  "description": "漫画库与下载中心合并插件：书架浏览、章节阅读、收藏、最近阅读与 jmcomic 下载任务管理。",
+  "permissions": [
+    "filesystem:read",
+    "network:download"
+  ]
+}
