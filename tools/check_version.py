@@ -1,12 +1,13 @@
 """版本一致性检查：pyproject.toml / package.json / git tag 必须同源。
 
 为什么需要：自动打包与发布（GitHub Actions）要凭一个版本号决定产物名与 Release
-标签。此前版本号散落在多处且各自漂移（如 shell/frontend/package.json 是 3.0.0，
-而 README 与 tag 是 v1.1.2），一旦不一致就会出现"tag 是 v3.0.0、包名是别的"。
+标签。此前版本号散落在多处且各自漂移（`shell/frontend/package.json` 曾被误写成
+3.0.0 —— 那是"Vue 3"的意思，不是版本号 —— 而 README 与 tag 是 v1.1.2），一旦
+不一致就会出现"tag 是 v1.2.0、包名却是别的"。
 
 用法：
     python tools/check_version.py            # 仅检查 pyproject 与 package.json 一致
-    python tools/check_version.py v3.0.0     # 额外校验给定 tag 与之一致（CI 用）
+    python tools/check_version.py v1.2.0     # 额外校验给定 tag 与之一致（CI 用）
     python tools/check_version.py --print    # 只打印版本号（CI 拼产物名用）
 
 退出码 0 = 一致，1 = 不一致。

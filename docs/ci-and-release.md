@@ -306,7 +306,7 @@ RUF100（未使用的 noqa）会把这些标注判为冗余并删除——它们
    提交并推到 `main`（这一步只是普通 push，走 `ci.yml` 日常门禁）。
 2. **打 tag 并推送**：
    ```bash
-   git tag v3.0.1 && git push origin v3.0.1
+   git tag v1.2.1 && git push origin v1.2.1
    ```
    触发 `release.yml`：版本一致性 + 全量门禁 + 双平台构建 + 产物校验 + 建**草稿** Release。
    校验版本没对上、或 tag 不在 `main` 上，这一步就会失败，什么都不会产出。

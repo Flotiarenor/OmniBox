@@ -53,7 +53,7 @@ plugins/
  "entry": "frontend/index.html",
  "route": "/image-viewer"
 },
-"minShellVersion": "3.0.0"
+"minShellVersion": "1.2.0"
 }
 ```
 

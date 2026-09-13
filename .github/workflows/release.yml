@@ -32,7 +32,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '要发布的已有 tag（如 v3.0.0，必须已存在、在 main 上、且与 pyproject 版本一致）'
+        description: '要发布的已有 tag（如 v1.2.0，必须已存在、在 main 上、且与 pyproject 版本一致）'
         required: true
         type: string
       dry_run:

@@ -1,6 +1,6 @@
 [project]
 name = "omnibox"
-version = "3.0.0"
+version = "1.2.0"
 description = "OmniBox — 轻量级、可插拔的桌面应用框架"
 readme = "readme.md"
 requires-python = ">=3.10"
