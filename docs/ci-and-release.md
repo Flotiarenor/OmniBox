@@ -138,6 +138,34 @@ powershell -ExecutionPolicy Bypass -File docs/Releases/build-release.ps1
 bash docs/Releases/build-release.sh
 ```
 
+### ⚠️ 产物目录里绝不能有你自己的用户数据
+
+程序的可写数据（`.config`、`data`、`logs`）就放在**可执行文件旁边**（见
+`shell/backend/paths.py`：打包模式下 exe 目录可写就用它）。所以在产物目录里跑过
+一次程序做测试之后，那个目录里就是**你本机的状态**：
+
+- `.config/plugins/*.json`：各插件设置，含媒体目录路径（`G:\图库`、`G:\音频\音乐`…）
+  和 `pixiv-sync` 的 `refresh_token`、代理地址
+- `.config/auth_token.txt`：本机访问令牌
+- `data/`：缩略图缓存、下载状态等（体积还不小）
+- `plugins/**/__pycache__`：跑测试留下的字节码
+
+以前 `build-release.*` 会把这些原样压进 7z/zip/tar.gz（用 `-SkipPyInstaller`
+在测过之后重新压缩时最容易中招），用户装完打开设置页看到的就是开发机的路径。
+现在两个脚本在压缩前都会把关：
+
+1. 发现 `.config` / `data` / `logs` 残留就**直接中止**，并提示删掉或改用
+   `-CleanUserData` / `--clean-user-data` 让脚本自动清理；
+2. 跑一遍 `tools/check_build_tree.py`（同时拦 `__pycache__` / `.pyc` 与缺文件）。
+
+CI 侧本来就有这道闸：`ci.yml` 的 `package`、`package-smoke.yml`、`release.yml`
+都会跑 `check_build_tree.py`，这也是 CI 产物一直干净的原因。想验证一个现成压缩包：
+
+```bash
+unzip -l OmniBox-windows-x64.zip | grep -E '\.config|/data/|auth_token'   # 应为空
+tar -tzf OmniBox-linux-x64.tar.gz | grep -E '^OmniBox/(\.config|data)'    # 应为空
+```
+
 ### 在 Windows 上能构建出 Linux 产物吗？
 
 **不能直接构建。** PyInstaller 官方写明它不是交叉编译器——它必须在构建时运行

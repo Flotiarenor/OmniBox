@@ -12,6 +12,11 @@
     跳过前端构建（要求 dist 已存在；dist 缺失时直接失败，不产白屏包）
 .PARAMETER SkipPyInstaller
 .PARAMETER SkipArchive
+.PARAMETER CleanUserData
+    打包前删掉产物目录里的 data/ .config/ logs/。
+    程序把可写数据写在 exe 旁边（见 shell/backend/paths.py），所以在产物目录里跑过
+    一次程序做测试，那些目录里就是**你本机的设置**（媒体目录路径、refresh_token、
+    缩略图缓存）。默认不删也不放行：发现残留直接中止打包。
 .PARAMETER OutputDir
 #>
 
@@ -22,6 +27,7 @@ param(
     [switch]$SkipPyInstaller,
     [switch]$SkipArchive,
     [switch]$UseCleanPath,
+    [switch]$CleanUserData,
     [string]$OutputDir = "$PSScriptRoot"
 )
 
@@ -191,6 +197,37 @@ if (-not $SkipArchive) {
     $useZip = $null -eq $sevenZip
 
     $sourceDir  = "$DistDir/OmniBox"
+
+    # ── 打包前把关：产物目录里绝不能带用户数据 ──
+    # 踩过的坑：在产物目录里跑过程序做测试（可写数据写在 exe 旁边，见
+    # shell/backend/paths.py），随后用 -SkipPyInstaller 重新压缩发布，就把开发机
+    # 的设置（媒体目录路径、refresh_token、缓存）一起发给了用户。
+    $userDataDirs = @("$sourceDir/.config", "$sourceDir/data", "$sourceDir/logs")
+    if ($CleanUserData) {
+        foreach ($d in $userDataDirs) {
+            if (Test-Path $d) {
+                Write-Host "  -> 清理产物里的用户数据: $d" -ForegroundColor $ColorWarning
+                Remove-Item -Recurse -Force $d
+            }
+        }
+    }
+    $leftover = @($userDataDirs | Where-Object { Test-Path $_ })
+    if ($leftover.Count -gt 0) {
+        Write-Host "ERROR: 产物目录里残留了用户数据（通常是构建后在产物目录里跑过程序）：" -ForegroundColor $ColorError
+        $leftover | ForEach-Object { Write-Host "  - $_" -ForegroundColor $ColorError }
+        Write-Host "  这些目录含你的设置/目录路径/令牌/缓存，绝不能进发行包。" -ForegroundColor $ColorError
+        Write-Host "  处理：删掉它们，或加 -CleanUserData 让脚本在打包前自动清理。" -ForegroundColor $ColorError
+        exit 1
+    }
+    $gatePy = "$ProjectRoot/venv/Scripts/python.exe"
+    if (-not (Test-Path $gatePy)) { $gatePy = "python" }
+    Write-Host "  -> 产物校验 (tools/check_build_tree.py)..." -ForegroundColor $ColorWarning
+    & $gatePy "$ProjectRoot/tools/check_build_tree.py" $sourceDir --expect-exe "OmniBox.exe"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: 产物校验未通过，已中止打包（详见上面的报告）" -ForegroundColor $ColorError
+        exit 1
+    }
+
     $version    = (Get-Date -Format "yyyyMMdd")
     $archiveName = "OmniBox_${version}"
 

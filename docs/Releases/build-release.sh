@@ -10,13 +10,20 @@
 # 用法：
 #   bash docs/Releases/build-release.sh                # 完整构建（需要 node/npm）
 #   bash docs/Releases/build-release.sh --skip-frontend # 跳过前端构建，使用已有 dist
+#   bash docs/Releases/build-release.sh --clean-user-data
+#       打包前删掉产物目录里的 data/ .config/ logs/。程序把可写数据写在 exe 旁边
+#       （见 shell/backend/paths.py），所以在产物目录里跑过一次程序做测试，那些
+#       目录里就是**你本机的设置**（媒体目录路径、refresh_token、缩略图缓存）。
+#       默认不删也不放行：发现残留直接中止打包。
 #
 set -euo pipefail
 
 SKIP_FRONTEND=0
+CLEAN_USER_DATA=0
 for arg in "$@"; do
     case "$arg" in
         --skip-frontend) SKIP_FRONTEND=1 ;;
+        --clean-user-data) CLEAN_USER_DATA=1 ;;
         *) ;;
     esac
 done
@@ -142,7 +149,35 @@ rm -f "$DIST_DIR/OmniBox.bin"
 SIZE_MB=$(du -sm "$DIST_DIR/OmniBox" | cut -f1)
 success "PyInstaller 打包完成：$DIST_DIR/OmniBox/ (${SIZE_MB}MB)"
 
-# ── 4. 压缩为 tar.gz ──────────────────────────────────────────────
+# ── 4.5 打包前把关：产物目录里绝不能带用户数据 ─────────────────────
+# 程序把可写数据写在 exe 旁边（shell/backend/paths.py），所以在产物目录里跑过
+# 一次程序做测试，data/ 与 .config/ 里就是你本机的设置（目录路径、refresh_token、
+# 缓存）。以前这些会被原样压进发行包，用户装完看到的是开发机的路径。
+DIST_TREE="$DIST_DIR/OmniBox"
+if [ "$CLEAN_USER_DATA" -eq 1 ]; then
+    for d in .config data logs; do
+        if [ -e "$DIST_TREE/$d" ]; then
+            warn "清理产物里的用户数据: $DIST_TREE/$d"
+            rm -rf "${DIST_TREE:?}/$d"
+        fi
+    done
+fi
+leftover=0
+for d in .config data logs; do
+    if [ -e "$DIST_TREE/$d" ]; then
+        error "产物目录里残留了用户数据: $DIST_TREE/$d"
+        leftover=1
+    fi
+done
+if [ "$leftover" -eq 1 ]; then
+    error "这些目录含你的设置/目录路径/令牌/缓存，绝不能进发行包。"
+    error "处理：删掉它们，或加 --clean-user-data 让脚本在打包前自动清理。"
+    exit 1
+fi
+info "产物校验（tools/check_build_tree.py）..."
+"$PY" "$PROJECT_ROOT/tools/check_build_tree.py" "$DIST_TREE" --expect-exe OmniBox
+
+# ── 5. 压缩为 tar.gz ──────────────────────────────────────────────
 info "创建 tar.gz 压缩包..."
 DATE=$(date +%Y%m%d)
 ARCHIVE="$DIST_DIR/OmniBox_${DATE}.tar.gz"
