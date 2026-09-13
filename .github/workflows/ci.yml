@@ -202,8 +202,10 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq python3 python3-venv python3-pip binutils
-          python3 -m venv .venv-build
-          echo "$PWD/.venv-build/bin" >> "$GITHUB_PATH"
+          # venv 放在工作区**外面**：放进仓库会被 ruff 之类的工具当成源码扫到
+          # （extend-exclude 里没有 .venv-build，实测 verify 的 ruff 直接炸掉）。
+          python3 -m venv "$RUNNER_TEMP/omnibox-build-venv"
+          echo "$RUNNER_TEMP/omnibox-build-venv/bin" >> "$GITHUB_PATH"
 
       - uses: actions/setup-node@v4
         with:
