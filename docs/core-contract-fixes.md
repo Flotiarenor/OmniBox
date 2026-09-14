@@ -5,7 +5,7 @@
 | 版本 | v1.0 |
 | 日期 | 2026-09-14 |
 | 基线 | `pyproject.toml` version = 1.2.0 |
-| 状态 | 第 1、2 项已实施（2026-09-14）；第 3 项待实施 |
+| 状态 | 三项均已实施（2026-09-14） |
 | 范围 | `tools/check_plugins.py`、`shell/backend/plugin_base.py`、`shell/backend/file_server.py`、`shell/frontend/public/shell/base.js`、`shell/frontend/src/App.vue`、`docs/plugin-guide.md` |
 | 关联 | `docs/code-review.md`、`docs/plugin-guide.md`、`docs/core-direction.md`、`docs/image-tagger-design.md` |
 
@@ -19,7 +19,7 @@
 | --- | --- | --- | --- | --- |
 | 1 | `runtime` 字段与字段读取方门禁矛盾 | 门禁缺陷 | 独立运行环境插件轴（`image-tagger`） | < 1 天 | 已实施 |
 | 2 | 宿主↔附属插件契约未声明、未测试 | 契约缺陷 | Companion 体系的双向兼容 | 1–2 天 | 已实施 |
-| 3 | 插件生命周期契约缺失 | 契约缺陷 | 全部插件的前端资源回收 | 1–2 天 |
+| 3 | 插件生命周期契约缺失 | 契约缺陷 | 全部插件的前端资源回收 | 1–2 天 | 已实施 |
 
 ---
 
@@ -72,6 +72,39 @@ python -m ruff check .                                                  # All ch
 实测真实插件（非桩）：`image-viewer` 的 `thumb_dir` 仍等于 `数据根/.cache/thumbs` 且
 `on_settings_changed({'root_dir'})` 换根后自动跟随（第二处 `self.thumb_dir = ...` 赋值
 经 property setter 生效）；`media-player` 只覆写 `get_thumb_data()`，其 `thumb_dir` 取基类默认值。
+
+---
+
+## 0.3 第 3 项实施记录（2026-09-14）
+
+| 改动 | 文件 |
+| --- | --- |
+| `window.PluginLifecycle`：`onShow` / `onHide` / `onDispose` 三个注册入口（同时挂到 `window.onShow` 等），只发状态真变化的通知、钩子异常隔离、注册时按当前可见性补一次 | `shell/frontend/public/shell/base.js` |
+| `message` handler 统一走 `isMessageFromShell()`：校验 `event.source === window.parent`（origin 仅作二次确认）；`omnibox:settings-changed` 与新的 shown / hidden / dispose 三类消息都受校验 | `shell/frontend/public/shell/base.js` |
+| 新增 `plugin-visibility.js`（+`.d.ts`）：宿主侧可见性状态机，按"挂载 × 活动 × 窗口可见"判定该发什么，并集中定义 `omnibox:plugin-*` 协议串 | `shell/frontend/src/core/plugin-visibility.js`、`plugin-visibility.d.ts` |
+| `App.vue`：iframe 容器挂 `setFrameRef`；路由 watcher（切换插件）、`visibilitychange`、`beforeunload` / `pagehide` 三处调用状态机并 `postMessage`；显式登记 frame 挂载状态（覆盖 `destroyOnLeave` 在加载完成前被切走的情形） | `shell/frontend/src/App.vue` |
+| `image-viewer` 迁移：`_bindPluginLifecycle()`（onHide 停幻灯片并记住位置、onShow 原位继续、onDispose 摘 `resize` 监听器），`resize` 处理器改具名引用，`_cancelSlideshow()` 区分"暂停"与"用户主动停止" | `plugins/image-viewer/frontend/js/app.js` |
+| `createLightbox` 增加 `getIndex()`（供幻灯片记住当前张数） | `shell/frontend/public/shell/base.js` |
+| 新增 `tests/js/plugin_lifecycle.mjs`（消息→钩子、来源校验、注册时机、状态机、端到端映射）与 `tests/js/image_viewer_lifecycle.mjs`（幻灯片停/续、监听器回收、旧壳兼容）及两个 Python 入口 | `tests/js/*.mjs`、`tests/test_plugin_lifecycle_js.py`、`tests/test_image_viewer_lifecycle_js.py` |
+| 新增构建级接线核对：vite 产物中必须出现三个 `omnibox:plugin-*` 字面量（产物不存在时跳过），另有 App.vue 源码级兜底断言 | `tests/test_shell_lifecycle_wiring.py` |
+| §4.4 新增"前端生命周期"章节（三入口语义、`onHide` 不等于停止播放、与 `destroyOnLeave` 的关系、迁移范例） | `docs/plugin-guide.md` |
+
+验证：
+
+```bash
+node tests/js/plugin_lifecycle.mjs            # 28 项断言全部通过
+node tests/js/image_viewer_lifecycle.mjs      # 14 项断言全部通过
+python -m unittest tests.test_plugin_lifecycle_js tests.test_image_viewer_lifecycle_js \
+                   tests.test_shell_lifecycle_wiring -v          # 4 例通过
+node tools/check_frontend_escape.cjs          # OK
+npm --prefix shell/frontend run build         # vue-tsc 0 error + vite 构建成功
+python -m unittest discover -s tests          # 全绿
+python -m ruff check .                        # All checks passed
+```
+
+对 §3.2(a) 证据的回归：`image-viewer` 的幻灯片此前在切走后仍每 3 秒换图，
+现在 `onHide` 停表并在 `onShow` 时从原位置继续；`app.js` 的
+`addEventListener` : `removeEventListener` 不再是 35 : 0（`resize` 可回收）。
 
 ---
 
@@ -353,6 +386,15 @@ window.location.href = window.location.href.split('?')[0] + '?_t=' + Date.now();
 #### 3.4.d 决策点：媒体播放的例外语义
 
 常驻是 `media-player` 的既定需求（`readme.md:44`）。因此 `onHide` 的语义应定义为"停止视觉与轮询类工作，不强制停止播放"，由插件自行决定。`media-player` 应在 `onHide` 中停止 `lyrics-parser` 的 rAF 自循环，保留 `player-core` 的进度保存。
+
+**结论（2026-09-14，已实施）：** 按上述语义实装，并写入 `docs/plugin-guide.md` §4.4。
+`base.js` 只负责分发通知，不做任何"替插件暂停播放"的动作；回归用例断言的是
+"`onHide` 停掉定时器 / rAF"，而不是"媒体被暂停"。
+`media-player` 的 `lyrics-parser` rAF 自循环**本次未改**（§3.4.e 只要求迁移一个范式，
+选定了 `image-viewer`）；它的监听器与自循环收尾属于后续按同一契约推进的工作。
+
+**实施范围说明：** 本次只迁移 `image-viewer`（§3.4.e 的范式要求）。其余插件继续常驻，
+在收到 `onHide` 前行为不变；新增插件应按下表实现清理，否则会继承"171 : 4"的监听器问题。
 
 #### 3.4.e 至少迁移一个插件作为范式
 

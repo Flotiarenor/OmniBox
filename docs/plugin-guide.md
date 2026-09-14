@@ -697,7 +697,54 @@ const lightbox = createLightbox({
 lightbox.show(images, 0);
 ```
 
-### 4.4 插件专属文件
+### 4.4 前端生命周期（onShow / onHide / onDispose）
+
+插件 iframe **默认常驻**：切到别的插件时壳只是用 `v-show` 把它隐藏，DOM 与 JS 状态都保留
+（`readme.md` 记载这是有意设计 —— 切换时媒体播放不中断）。代价是切走以后插件的定时器、
+`requestAnimationFrame` 自循环与轮询仍在运行，而且插件前端无从知道自己的 iframe 是否可见。
+
+壳因此在可见性变化时通知插件，`base.js` 提供三个注册入口：
+
+| 入口 | 触发时机 | 典型用途 |
+| --- | --- | --- |
+| `onShow(fn)` | iframe 由隐藏转为显示（含注册时已可见的情况，会立即补一次） | 恢复轮询 / 继续动画 / 暂停过的进度刷新 |
+| `onHide(fn)` | iframe 由显示转为隐藏（常驻组切走、窗口最小化、切换标签页） | 停 `setInterval`、停 rAF 自循环、停轮询 |
+| `onDispose(fn)` | iframe 即将销毁（`destroyOnLeave: true` 的插件离开时、页面卸载时） | 摘掉 `window`/`document` 上的监听器、释放资源 |
+
+```javascript
+// 三个入口同时挂在 window 上，也等价于 window.PluginLifecycle.onShow 等
+onHide(() => {
+  clearInterval(this._pollTimer);   // 后台没有必要继续轮询
+  this._pollTimer = null;
+});
+onShow(() => {
+  if (!this._pollTimer) this._pollTimer = setInterval(() => this.poll(), 2000);
+});
+onDispose(() => {
+  window.removeEventListener('resize', this._onResize);
+});
+```
+
+**约定与注意事项**：
+
+- **`onHide` 的语义是"停止视觉与轮询类工作"，不是"停止播放"。** 常驻正是为了让媒体播放
+  在切换时不中断，因此 `media-player` 在 `onHide` 里只停 `lyrics-parser` 的 rAF 自循环，
+  保留 `player-core` 的播放进度保存；是否暂停由插件自行决定。
+- **只发状态真变化的通知**，重复的 `shown` / `hidden` 不会重复触发；钩子抛异常只记日志，
+  不会影响其它钩子与宿主。
+- **注册顺序无关紧要**：`base.js` 先于插件脚本注入，插件在脚本顶层注册即可；
+  若注册时 iframe 已经可见，`onShow` 会立即执行一次（常见写法"进入即恢复"无需额外处理）。
+- **消息来源经过校验**：只接受父窗口直接发来的消息（仅校验 `origin` 不足以拦截同源嵌套
+  frame）。插件不需要自己监听 `message`。
+- **`destroyOnLeave` 与生命周期是互补的**：`"destroyOnLeave": true` 让 iframe 离开即销毁
+  重载（适合状态重且切换代价低的插件），此时壳会在卸载前发 `onDispose`；
+  常驻插件则只会收到 `onHide` / `onShow`，`onDispose` 只在页面卸载时到达。
+- **迁移范例**：`plugins/image-viewer/frontend/js/app.js` 的 `_bindPluginLifecycle()`
+  在 `onHide` 里停掉幻灯片定时器并记住位置、`onShow` 原位继续、`onDispose` 摘掉 `resize`
+  监听器（该文件此前是 `addEventListener` 35 : `removeEventListener` 0）。
+  回归用例见 `tests/js/image_viewer_lifecycle.mjs` 与 `tests/js/plugin_lifecycle.mjs`。
+
+### 4.5 插件专属文件
 
 插件只需提供自己的 HTML、CSS 和 JS 文件，并在 HTML 中引用它们：
 

@@ -26,6 +26,9 @@ class ImageViewer {
         this.selectedImages = new Set();
         this.moveDestPath = '';
         this.slideshowTimer = null;
+        this._slideshowWanted = false;     // 隐藏期间是否要继续播放（用户主动停止则置 false）
+        this._slideshowResumeIndex = 0;    // 隐藏时记住第几张，回来从这个位置继续
+        this._onResize = null;             // 具名 resize 处理器，dispose 时摘掉
         this.scrollStack = [];             // 从列表进入详情后返回时恢复滚动位置
         this._rebuildStartTime = null;
 
@@ -58,13 +61,50 @@ class ImageViewer {
         await this.loadAlbums();
         this.loadExtensions();
 
-        window.addEventListener('resize', () => {
+        // resize 处理器留具名引用：dispose 时要能摘掉，否则监听器随常驻 iframe 只增不减
+        this._onResize = () => {
             if (this.mode !== 'images' || !this.currentItems.length) return;
             const keyword = document.getElementById('iv-search').value.trim();
             if (keyword) {
                 this.filterCurrentImages(keyword);
             } else {
                 this.renderJustifiedLayout(this.currentItems);
+            }
+        };
+        window.addEventListener('resize', this._onResize);
+
+        this._bindPluginLifecycle();
+    }
+
+    // 宿主可见性通知（docs/core-contract-fixes.md §3）：
+    // 常驻插件切到后台后，页面不可见期间没有任何理由继续换图；定时器必须停。
+    // 语义是"停视觉与轮询类工作"，不是"停止播放"——相册没有播放，但同样的
+    // 原则适用于 media-player：它在 onHide 里只停 rAF 自循环，进度保存继续。
+    _bindPluginLifecycle() {
+        if (typeof window === 'undefined' || !window.PluginLifecycle) return;
+        const lifecycle = window.PluginLifecycle;
+        lifecycle.onHide(() => {
+            // 记住当前是第几张，回来时从这个位置继续（不跳回第一张）
+            if (this.slideshowTimer && this.lightbox && typeof this.lightbox.getIndex === 'function') {
+                this._slideshowResumeIndex = this.lightbox.getIndex();
+            }
+            this._stopSlideshow();
+            // 后台不必继续加载/渲染大图
+            if (this.mode === 'images' && this.lightbox) {
+                this.lightbox.hide();
+            }
+        });
+        // 隐藏期间用户没有主动停止 → 重新显示后从原来的位置继续播放
+        lifecycle.onShow(() => {
+            if (this._slideshowWanted && !this.slideshowTimer && this.currentAllImages.length) {
+                this.toggleSlideshow(this._slideshowResumeIndex || 0);
+            }
+        });
+        lifecycle.onDispose(() => {
+            this._cancelSlideshow();
+            if (this._onResize) {
+                window.removeEventListener('resize', this._onResize);
+                this._onResize = null;
             }
         });
     }
@@ -232,7 +272,7 @@ class ImageViewer {
     }
 
     showAlbums() {
-        this._stopSlideshow();
+        this._cancelSlideshow();
         this.mode = this.mode === 'images' ? 'albums' : this.mode;
         this.filteredSeqIndexes = null;
         if (this.isMultiSelectMode) {
@@ -464,7 +504,7 @@ class ImageViewer {
                 return;
             }
         }
-        this._stopSlideshow();
+        this._cancelSlideshow();
         this._showFolder(path);
     }
 
@@ -513,7 +553,7 @@ class ImageViewer {
 
     _handleBack() {
         if (this.mode === 'images') {
-            this._stopSlideshow();
+            this._cancelSlideshow();
             if (this.navStack.length) {
                 const prev = this._popNavStack();
                 if (prev === '') {
@@ -853,13 +893,18 @@ class ImageViewer {
     }
 
     // ===== 幻灯片 =====
-    toggleSlideshow() {
+    // startIndex：隐藏后重新显示时从原来的位置继续（默认从第一张开始）
+    toggleSlideshow(startIndex) {
         if (this.slideshowTimer) {
+            this._slideshowWanted = false;   // 用户主动停止：切回来不再自动继续
+            this._slideshowResumeIndex = 0;
             this._stopSlideshow();
             return;
         }
         if (!this.currentAllImages.length) return;
-        this.lightbox.show(this.currentAllImages, 0);
+        const index = Math.min(Math.max(Number(startIndex) || 0, 0), this.currentAllImages.length - 1);
+        this._slideshowWanted = true;
+        this.lightbox.show(this.currentAllImages, index);
         this.slideshowTimer = setInterval(() => this.lightbox.navigate(1), 3000);
         document.getElementById('btn-slideshow').textContent = '⏸ 停止';
         Toast.info('幻灯片播放中，每 3 秒切换一张');
@@ -872,6 +917,13 @@ class ImageViewer {
         }
         const btn = document.getElementById('btn-slideshow');
         if (btn) btn.textContent = '▶ 幻灯片';
+    }
+
+    // 离开当前列表（换相册 / 换文件夹）：用户已经不在这个上下文里，
+    // 隐藏再显示不应该自动续播旧列表的幻灯片
+    _cancelSlideshow() {
+        this._slideshowWanted = false;
+        this._stopSlideshow();
     }
 
     // ============================================================

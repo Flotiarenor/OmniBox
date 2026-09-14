@@ -4,10 +4,161 @@
  * 提供：Bridge（通信）、Utils（工具）、通用 UI 组件函数
  */
 
-// ===== 集中设置变更通知：接收 shell 的 postMessage 后自动刷新 =====
+// ==================== 插件生命周期（宿主 → 插件） ====================
+// 常驻插件（默认 keep-alive，App.vue 用 v-show 隐藏）切换后其定时器、rAF 自循环与轮询
+// 仍在跑；插件前端也没有统一的销毁钩子，事件监听器只增不减（实测 171 : 4）。
+// 宿主因此在"可见性变化"时 postMessage 通知，这里把它转成三个注册钩子。
+//
+// 语义（与常驻策略配套）：onHide 表示"停止视觉与轮询类工作"，**不要求停止播放** ——
+// 常驻正是为了切换时媒体不中断（readme.md），所以是否暂停由插件自行决定。
+window.PluginLifecycle = (function() {
+  var hooks = { show: [], hide: [], dispose: [] };
+  var state = { visible: true, disposed: false, showSeen: false, hideSeen: false };
+
+  function add(list, fn) {
+    if (typeof fn !== 'function') return;
+    list.push(fn);
+  }
+
+  function emit(list, label) {
+    // 单个钩子抛异常不得影响其他钩子与宿主
+    for (var i = 0; i < list.length; i++) {
+      try {
+        list[i]();
+      } catch (e) {
+        console.error('[OmniBox] on' + label + ' 钩子抛异常:', e);
+      }
+    }
+  }
+
+  /**
+   * 注册"iframe 由隐藏转为显示"的回调（可注册多个，按注册顺序调用）。
+   *
+   * 触发时机：常驻插件被切回前台、窗口从最小化 / 其他标签页恢复。
+   * 若注册时 iframe 已经可见，回调会立即执行一次，因此"进入即恢复"的写法无需额外判断。
+   * @param {() => void} fn
+   */
+  function onShow(fn) {
+    // 注册时若已可见（插件在 onShow 里做"进入即恢复"是常见写法），立刻补一次
+    add(hooks.show, fn);
+    if (state.visible && !state.disposed && typeof fn === 'function') {
+      try { fn(); } catch (e) { console.error('[OmniBox] onShow 钩子抛异常:', e); }
+    }
+  }
+
+  /**
+   * 注册"iframe 由显示转为隐藏"的回调（可注册多个，按注册顺序调用）。
+   *
+   * 触发时机：常驻插件被切到后台、窗口最小化、切换到其他浏览器标签页。
+   * 语义是"停止视觉与轮询类工作"，**不要求停止播放** —— 常驻正是为了媒体不中断。
+   * @param {() => void} fn
+   */
+  function onHide(fn) {
+    add(hooks.hide, fn);
+    if (!state.visible && !state.disposed && typeof fn === 'function') {
+      try { fn(); } catch (e) { console.error('[OmniBox] onHide 钩子抛异常:', e); }
+    }
+  }
+
+  /**
+   * 注册"iframe 即将销毁"的回调（可注册多个，按注册顺序调用）。
+   *
+   * 触发时机：`destroyOnLeave: true` 的插件离开页面时、整个页面卸载时。
+   * 用于摘掉 window/document 上的监听器、清掉定时器与 rAF 自循环。
+   * @param {() => void} fn
+   */
+  function onDispose(fn) {
+    add(hooks.dispose, fn);
+    if (state.disposed && typeof fn === 'function') {
+      try { fn(); } catch (e) { console.error('[OmniBox] onDispose 钩子抛异常:', e); }
+    }
+  }
+
+  function setVisible(visible) {
+    visible = !!visible;
+    if (state.disposed || visible === state.visible) return;
+    state.visible = visible;
+    if (visible) {
+      state.showSeen = true;
+      emit(hooks.show, 'Show');
+    } else {
+      state.hideSeen = true;
+      emit(hooks.hide, 'Hide');
+    }
+  }
+
+  function dispose() {
+    if (state.disposed) return;
+    state.disposed = true;
+    emit(hooks.dispose, 'Dispose');
+  }
+
+  function initial(visible) {
+    // 初次注册时的一次性同步：只发"当前状态对应的那一个"钩子，避免插件刚注册
+    // onShow / onHide 就同时收到两条矛盾通知。
+    visible = !!visible;
+    state.visible = visible;
+    if (visible) {
+      state.showSeen = true;
+      emit(hooks.show, 'Show');
+    } else {
+      state.hideSeen = true;
+      emit(hooks.hide, 'Hide');
+    }
+  }
+
+  return {
+    onShow: onShow, onHide: onHide, onDispose: onDispose,
+    setVisible: setVisible, dispose: dispose, initial: initial, state: state,
+  };
+})();
+
+// 插件最常用的三个入口同时挂到 window 上（base.js 先于插件脚本注入，注册不丢）
+window.onShow = window.PluginLifecycle.onShow;
+window.onHide = window.PluginLifecycle.onHide;
+window.onDispose = window.PluginLifecycle.onDispose;
+
+// ===== 内核 → 插件的消息接收 =====
+// 消息必须校验来源：只接受"父窗口直接发来"的消息。仅校验 event.origin 不足以防
+// 伪造 —— 宿主再内嵌一层 frame 时 origin 完全相同（docs/core-contract-fixes.md §3.4.c）。
+function isMessageFromShell(event) {
+  if (!event) return false;
+  var parentWindow;
+  try {
+    parentWindow = window.parent;
+  } catch (e) {
+    return false;
+  }
+  if (event.source && parentWindow && event.source !== parentWindow) return false;
+  var origin;
+  try {
+    origin = window.location && window.location.origin;
+  } catch (e) {
+    origin = undefined;
+  }
+  if (origin && event.origin && event.origin !== origin) return false;
+  return true;
+}
+
 window.addEventListener('message', function(event) {
-  if (event.data && event.data.type === 'omnibox:settings-changed') {
+  if (!isMessageFromShell(event)) return;
+  var data = event.data;
+  if (!data || typeof data.type !== 'string') return;
+  if (data.type === 'omnibox:settings-changed') {
+    // 集中设置变更：整页重载（插件自身状态由设置重新拉取）
     window.location.href = window.location.href.split('?')[0] + '?_t=' + Date.now();
+    return;
+  }
+  if (data.type === 'omnibox:plugin-shown') {
+    window.PluginLifecycle.setVisible(true);
+    return;
+  }
+  if (data.type === 'omnibox:plugin-hidden') {
+    window.PluginLifecycle.setVisible(false);
+    return;
+  }
+  if (data.type === 'omnibox:plugin-dispose') {
+    window.PluginLifecycle.dispose();
   }
 });
 
@@ -648,7 +799,7 @@ function createLightbox(options = {}) {
   leftArrow.addEventListener('click', (e) => { e.stopPropagation(); navigate(-1); });
   rightArrow.addEventListener('click', (e) => { e.stopPropagation(); navigate(1); });
 
-  return { show, hide, navigate };
+  return { show, hide, navigate, getIndex: () => currentIndex };
 }
 
 // ==================== 分页组件 ====================
