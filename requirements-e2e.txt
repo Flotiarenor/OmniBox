@@ -1,0 +1,12 @@
+# OmniBox 端到端（浏览器）测试依赖 —— 仅本地手动运行，不进 CI
+#
+# 为什么单独一个文件而不是塞进 requirements-dev.txt：
+#   - CI（.github/workflows/ci.yml）会安装 requirements-dev.txt，若把 selenium 放进去，
+#     每次 CI 都要下载 ChromeDriver，且这类"真实浏览器"用例在 CI 上更脆弱；
+#   - 这类缺陷（界面静默不更新、导航消失）在本地打开应用就能一眼看到，属于本地自测范围。
+#
+# 安装：venv/Scripts/pip install -r requirements-e2e.txt   （Linux/macOS: venv/bin/pip）
+# 运行：venv/Scripts/python -m unittest tests.test_shell_browser_e2e -v
+# 未安装 selenium 时用例自动跳过，不会让 `unittest discover` 变红。
+
+selenium==4.49.0

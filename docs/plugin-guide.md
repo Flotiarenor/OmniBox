@@ -1003,6 +1003,22 @@ image-viewer 需要在不同文件夹应用不同设置（如行高、排序）�
 6. **状态调试（--status-debug）**：以 `python main.py --web-only --status-debug` 启动后，访问 `/status` 显示壳内调试面板（健康检查 200 / API 鉴权 401 / 错误跳转演示），用于验证鉴权与错误页行为。
 7. **一键调试环境**：`python tests/debug_status_pages.py` 自动起独立端口调试服务器（注入「坏插件」演示 iframe 404 → 壳内错误卡片链路），并用 requests 打印 11 个 HTTP 场景触发表，浏览器打开 `/status` 即调试面板；Ctrl+C 自动清理。
 8. **HTTP 直连注意**：`/api`、`/file`、`/thumbs` 受令牌保护（见 §7.1），curl 测试需带 `X-Omnibox-Token` 头或先访问首页拿 Cookie；无 Cookie 客户端访问 `/thumbs/x.png` 会得到 401 而非 404。
+9. **真实浏览器端到端（改壳前端后建议跑）**：
+
+   ```bash
+   venv/Scripts/pip install -r requirements-e2e.txt     # 只需一次（Linux/macOS 用 venv/bin/pip）
+   venv/Scripts/python -m unittest tests.test_shell_browser_e2e -v
+   ```
+
+   它自己起 `main.py --web-only` 服务 + 无头 Chrome，断言「接口返回的插件数 == 导航渲染出的插件数」、
+   iframe 已挂载、以及生命周期通知真的送达插件 iframe（切到设置页收 `onHide`、切回收 `onShow`）。
+
+   **为什么需要它**：有一类缺陷是"界面静默不更新"——接口数据、status、cookie 全正常，
+   但界面不渲染，而且**不抛异常、控制台没有报错**。实测过一次（插件列表不是响应式数据，
+   computed 在数据到达前求值并永久缓存空数组），unittest 与 vm 桩都抓不到，只有真实浏览器能抓。
+   **这类用例不进 CI**：本地打开应用一眼可见的问题属于本地自测范围，CI 上跑真实浏览器又慢又脆；
+   `selenium` 因此只声明在 `requirements-e2e.txt`（CI 装的是 `requirements-dev.txt`），
+   未安装时用例自动 skip，不影响 `unittest discover` 结果。
 
 ---
 

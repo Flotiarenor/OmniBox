@@ -5,7 +5,7 @@
 | 版本 | v1.0 |
 | 日期 | 2026-09-14 |
 | 基线 | `pyproject.toml` version = 1.2.0 |
-| 状态 | 三项均已实施（2026-09-14） |
+| 状态 | 三项均已实施（2026-09-14）；另修复一项由第 3 项暴露的静默回归（§0.4） |
 | 范围 | `tools/check_plugins.py`、`shell/backend/plugin_base.py`、`shell/backend/file_server.py`、`shell/frontend/public/shell/base.js`、`shell/frontend/src/App.vue`、`docs/plugin-guide.md` |
 | 关联 | `docs/code-review.md`、`docs/plugin-guide.md`、`docs/core-direction.md`、`docs/image-tagger-design.md` |
 
@@ -105,6 +105,52 @@ python -m ruff check .                        # All checks passed
 对 §3.2(a) 证据的回归：`image-viewer` 的幻灯片此前在切走后仍每 3 秒换图，
 现在 `onHide` 停表并在 `onShow` 时从原位置继续；`app.js` 的
 `addEventListener` : `removeEventListener` 不再是 35 : 0（`resize` 可回收）。
+
+---
+
+## 0.4 回归修复记录（2026-09-14）：插件导航全部消失
+
+第 3 项实施后出现"导航只剩设置、全部插件不可见"。**根因不在第 3 项的逻辑，而是它暴露了
+一个既有的静默缺陷**：
+
+| 事实 | 证据 |
+| --- | --- |
+| 后端与接口完全正常 | 浏览器实收正文 784 字节、status 200、cookie 正常，返回 4 个可见插件 |
+| 界面不渲染 | 导航 `["⚙️设置"]`、提示"暂无插件"、无 iframe，且**全程只有一次 DOM 更新** |
+| 无任何报错 | `console.error` / `window.onerror` / `unhandledrejection` 全部为空（Vue 生产构建的 `logError` 是空实现） |
+| 定位方式 | Selenium + 无头 Chrome 驱动 `main.py --web-only`；再按文件二分（只换 App.vue 即复现） |
+
+**机制**：`plugin-loader` 的 `_plugins` 是普通数组，`computed(() => getPlugins())` 因此没有
+任何响应式依赖。改动前 `immediate` watcher 在 computed 声明之前运行，回调里求值不到它；
+第 3 项把 computed 声明前移后，watcher 回调改为经 `keepAlivePlugins` 触发 `getPlugins()` 的
+**首次求值** —— 此时接口尚未返回，computed 把空数组永久缓存，之后写入的数据不再反映到界面。
+
+**修复**：`_plugins` 改用 `shallowRef`（`loadPlugins` 写 `.value`、`getPlugins` 读 `.value`），
+computed 获得真实依赖。修的是"数据源不是响应式"这一隐患本身，而不是调整声明顺序避险 ——
+后者对求值时机敏感，换个改动就会再次踩中。
+
+**新增护栏**：
+
+| 内容 | 文件 |
+| --- | --- |
+| 真实浏览器端到端用例（7 例）：接口→导航渲染→iframe 挂载→生命周期通知送达 | `tests/test_shell_browser_e2e.py` |
+| 本地专属依赖（不进 CI；未安装时用例自动 skip） | `requirements-e2e.txt` |
+| §9 新增"真实浏览器端到端"条目，说明用途与"为何不进 CI" | `docs/plugin-guide.md` |
+
+验证：
+
+```bash
+venv/Scripts/pip install -r requirements-e2e.txt
+venv/Scripts/python -m unittest tests.test_shell_browser_e2e -v   # 7 例通过（约 7 秒）
+```
+
+修复前后对比（同一端到端）：
+
+| | 修复前 | 修复后 |
+| --- | --- | --- |
+| 导航 | `["⚙️设置"]` | `["🖼️图片相册","📚漫画中心","🎧媒体播放器","📖小说阅读","⚙️设置"]` |
+| 提示 | `["暂无插件"]` | 无 |
+| iframe | 0 | 1 |
 
 ---
 
