@@ -30,6 +30,7 @@ import yaml
 from shell.backend.app_logging import setup_logging
 from shell.backend.auth import get_or_create_token, get_token_file
 from shell.backend.file_server import create_app
+from shell.backend.media_catalog import list_subdirectories
 from shell.backend.paths import (
     get_config_dir,
     get_plugin_search_dirs,
@@ -181,6 +182,9 @@ def _run_app(config, manager):
         'system_settings_list': manager.get_settings_panels,
         'system_settings_save': manager.save_settings_panel,
         'system_toggle_fullscreen': _toggle_fullscreen,
+        # 插件设置弹窗的目录选择器（shell/base.js 的 type:"directory"）用它列盘符/子目录；
+        # 桌面模式下 js_api 只拿到这张表，所以必须在这里也注册一次（web 模式在 file_server）
+        'system_browse_dir': lambda path='': list_subdirectories(path),
     }
     shell_methods.update(manager.get_api_methods())
     for method_name, method_fn in shell_methods.items():

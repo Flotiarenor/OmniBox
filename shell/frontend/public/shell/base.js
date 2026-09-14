@@ -432,6 +432,29 @@ function createSettingsForm(container, schema, values = {}) {
     const current = values[field.key] !== undefined ? values[field.key] : field.default;
     let input;
 
+    // 目录列表：实现是 Shell 共享组件 window.FolderPicker
+    // （shell/frontend/public/shell/folder-picker.js，与 image-viewer 用的是同一份）。
+    // 值仍是普通字符串：单值字段存一行路径，multi 字段存换行分隔的多行 ——
+    // 与改造前的 text / textarea 格式一致，后端读取代码不用动。
+    if (field.type === 'directory') {
+      const raw = Array.isArray(current) ? current.join('\n') : String(current == null ? '' : current);
+      const list = window.FolderPicker.createList({
+        paths: raw.split('\n').map(line => line.trim()).filter(Boolean),
+        placeholder: field.placeholder,
+        emptyText: field.emptyText,
+      });
+      wrap.append(label, list.element);
+      fieldEls[field.key] = list;
+      if (field.help) {
+        const help = document.createElement('p');
+        help.className = 'field-help';
+        help.textContent = field.help;
+        wrap.appendChild(help);
+      }
+      container.appendChild(wrap);
+      return;
+    }
+
     if (field.type === 'checkbox') {
       input = document.createElement('input');
       input.type = 'checkbox';
@@ -501,7 +524,13 @@ function createSettingsForm(container, schema, values = {}) {
     (schema || []).forEach((field) => {
       const el = fieldEls[field.key];
       if (!el) return;
-      if (field.type === 'checkbox') out[field.key] = el.checked;
+      if (field.type === 'directory') {
+        const paths = el.getPaths();
+        // 单值字段存一行路径，多值字段（multi）存换行分隔；两者都是字符串，
+        // 与改造前的 text / textarea 值格式一致，后端读取代码不用动
+        out[field.key] = field.multi ? paths.join('\n') : (paths[0] || '');
+      }
+      else if (field.type === 'checkbox') out[field.key] = el.checked;
       else if (field.type === 'number' || field.type === 'range') out[field.key] = Number(el.value);
       else out[field.key] = el.value;
     });
@@ -512,7 +541,11 @@ function createSettingsForm(container, schema, values = {}) {
     (schema || []).forEach((field) => {
       const el = fieldEls[field.key];
       if (!el || newValues[field.key] === undefined) return;
-      if (field.type === 'checkbox') el.checked = !!newValues[field.key];
+      if (field.type === 'directory') {
+        const raw = String(newValues[field.key] == null ? '' : newValues[field.key]);
+        el.setPaths(raw.split('\n').map(line => line.trim()).filter(Boolean));
+      }
+      else if (field.type === 'checkbox') el.checked = !!newValues[field.key];
       else if (field.type === 'range') {
         el.value = newValues[field.key];
         const span = el.parentElement.querySelector('.field-range-value');

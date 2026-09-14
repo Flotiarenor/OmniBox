@@ -31,6 +31,7 @@ from shell.backend.auth import (
     get_or_create_token,
     token_matches,
 )
+from shell.backend.media_catalog import list_subdirectories
 from shell.backend.paths import get_config_dir
 from shell.backend.plugin_manager import PluginManager
 
@@ -309,6 +310,9 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             'system_settings_save': plugin_manager.save_settings_panel,
             'system_get_config': lambda: config,
             'system_toggle_fullscreen': lambda: None,
+            # 集中设置面板的 folder 类型字段：浏览本机绝对路径，走共享基建
+            # （与 image-viewer 的 browse_dir 同一套实现；空路径/哨兵 = 盘符层）。
+            'system_browse_dir': lambda path='': list_subdirectories(path),
         })
 
         fn = api_methods.get(method)
@@ -480,8 +484,10 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
                 SCRIPT_TPL = (
                     '<link rel="stylesheet" href="/shell/variables.css">'
                     '<link rel="stylesheet" href="/shell/base.css">'
+                    '<link rel="stylesheet" href="/shell/folder-picker.css">'
                     '<link rel="stylesheet" href="/shell/effects.css">'
                     '<script src="/shell/base.js"></script>'
+                    '<script src="/shell/folder-picker.js"></script>'
                     '<script src="/shell/motion.js"></script>'
                     '<script>'
                     "Bridge.setPrefix('PLACEHOLDER_NAME');"

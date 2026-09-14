@@ -105,12 +105,8 @@
         <h3>显示与排序设置</h3>
         <div class="iv-settings-body">
           <div class="iv-setting-section iv-setting-section-first">图片文件夹</div>
-          <div id="setting-roots" class="iv-roots"></div>
-          <div class="iv-roots-add">
-            <input type="text" id="setting-new-root" class="search-input" placeholder="输入目录绝对路径，如 D:\图库">
-            <button class="btn btn-sm" id="setting-browse-root">浏览…</button>
-            <button class="btn btn-sm" id="setting-add-root">添加</button>
-          </div>
+          <!-- 列表由共享组件 shell/folder-picker.js 填充（插件不再自带实现） -->
+          <div id="setting-roots"></div>
           <p class="iv-setting-note iv-setting-note-after-input">第一行为主目录（沿用相对路径），其余目录会作为顶层「文件夹」出现。保存后生效。</p>
 
           <div class="iv-setting-section">显示与排序</div>
@@ -170,24 +166,6 @@
         <div class="modal-footer">
           <button class="btn" id="settings-cancel">取消</button>
           <button class="btn btn-primary" id="settings-save">保存并刷新</button>
-        </div>
-      </div>
-    </div>
-
-    <div id="dir-browser-modal" class="modal">
-      <div class="modal-box obx-anim-scale" style="width:520px;">
-        <h3>选择图片目录</h3>
-        <div class="iv-dirbrowser">
-          <div class="iv-dirbrowser-bar">
-            <button class="btn btn-sm" id="dir-browser-drives">💻 我的电脑</button>
-            <button class="btn btn-sm" id="dir-browser-up">↑ 上级</button>
-            <span id="dir-browser-path" class="iv-dirbrowser-path"></span>
-          </div>
-          <div id="dir-browser-list" class="iv-dirbrowser-list"></div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn" id="dir-browser-cancel">取消</button>
-          <button class="btn btn-primary" id="dir-browser-select">选择当前目录</button>
         </div>
       </div>
     </div>

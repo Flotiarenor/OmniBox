@@ -27,7 +27,10 @@ if TYPE_CHECKING:
     from shell.backend.plugin_manager import PluginManager
     from shell.backend.settings_store import SettingsStore
 
-# 设置项 schema 的字段类型：text / number / range / select / checkbox / textarea / folder
+# 设置项 schema 的字段类型：text / number / range / select / checkbox / textarea / directory
+#   directory：目录列表（主要/额外 + 浏览…），由 Shell 共享组件 window.FolderPicker
+#   渲染（shell/frontend/public/shell/folder-picker.js，与 image-viewer 同一份实现）；
+#   值仍是字符串（multi 字段换行分隔），插件侧不用写代码，见 docs/plugin-guide.md §8.2
 # 每个设置项示例：
 #   {"key": "per_page", "label": "每页数量", "type": "number",
 #    "default": 40, "min": 1, "max": 500, "help": "说明文字"}

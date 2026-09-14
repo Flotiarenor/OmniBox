@@ -32,8 +32,10 @@ logger = logging.getLogger(__name__)
 
 class MangaLibraryPlugin(PluginBase):
     settings_schema: ClassVar[List[Dict[str, Any]]] = [
-        {"key": "root_dir", "label": "漫画根目录", "type": "text",
-         "placeholder": "默认: ./data", "help": "存放漫画文件夹的根目录"},
+        {"key": "root_dir", "label": "漫画根目录", "type": "directory",
+         "placeholder": "输入目录绝对路径，如 D:\\漫画",
+         "emptyText": "未添加任何目录，将使用默认数据目录（./data）",
+         "help": "存放漫画文件夹的根目录；第一行即生效根目录，保存后生效"},
         {"key": "recent_count", "label": "最近阅读显示数量", "type": "number",
          "default": 10, "min": 1, "max": 50, "help": "首页「最近阅读」展示的漫画数量"},
     ]

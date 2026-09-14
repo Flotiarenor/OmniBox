@@ -32,12 +32,13 @@ MediaAlbum = _models.MediaAlbum
 
 class MediaPlayerPlugin(PluginBase):
     settings_schema: ClassVar[List[Dict[str, Any]]] = [
-        {"key": "root_dir", "label": "媒体库根目录", "type": "text",
-         "placeholder": "默认: ./data", "central": True,
-         "help": "主媒体库根目录"},
-        {"key": "media_dirs", "label": "额外媒体目录", "type": "textarea",
-         "placeholder": "每行一个目录", "central": True,
-         "help": "每行填写一个媒体目录，与主目录一起扫描"},
+        # 目录列表（type:"directory"）由 Shell 共享组件渲染，与图片相册的
+        # 「图片文件夹」是同一套实现（shell/frontend/public/shell/folder-picker.js）
+        {"key": "media_roots", "label": "媒体文件夹", "type": "directory", "multi": True,
+         "central": True, "placeholder": "输入目录绝对路径，如 D:\\音乐",
+         "emptyText": "未添加任何目录，将使用默认数据目录（./data）",
+         "help": "第一行为主目录（数据根 + 扫描根），其余目录作为额外扫描根，"
+                 "各根以目录名做前缀聚合；保存后生效"},
         {"key": "lyrics_enabled", "label": "启用歌词显示", "type": "checkbox",
          "default": True, "central": False, "help": "关闭后不显示歌词入口"},
         {"key": "lyrics_font_size", "label": "歌词字号", "type": "range",
@@ -88,8 +89,9 @@ class MediaPlayerPlugin(PluginBase):
 
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
-        root = self.setting('root_dir') or str(super().get_data_root())
-        self.root_dir = Path(root).resolve()
+        roots = self._configured_roots()
+        self._scan_roots: List[Path] = roots or [super().get_data_root()]
+        self.root_dir = self._scan_roots[0]
         self._cache_dir = self.root_dir / '.cache'
         self._cache_file = self._cache_dir / 'media_index.json'
         self._state_file = self._cache_dir / 'media_state.json'
@@ -161,26 +163,36 @@ class MediaPlayerPlugin(PluginBase):
 
     def get_file_roots(self) -> List[Path]:
         """跨主目录与额外媒体目录提供文件访问。"""
-        roots = []
-        for raw in self._media_dirs():
+        return list(self._scan_roots) or [self.root_dir]
+
+    def _configured_roots(self) -> List[Path]:
+        """把「媒体文件夹」列表解析成有序根目录。
+
+        第一行是主目录（数据根 + 扫描根），其余是额外扫描根。
+        兼容旧配置：早期是 `root_dir` + `media_dirs`（每行一个）两个字段，
+        用户没重新保存过设置时按旧字段原样读出来，界面上合并成同一个列表。
+        """
+        entries = self.setting('media_roots')
+        if not str(entries or '').strip():
+            legacy = [self.setting('root_dir') or '']
+            legacy += str(self.setting('media_dirs') or '').splitlines()
+            entries = '\n'.join(legacy)
+        roots: List[Path] = []
+        for line in str(entries or '').splitlines():
+            line = line.strip()
+            if not line:
+                continue
             try:
-                roots.append(Path(raw).resolve())
+                path = Path(line).expanduser().resolve()
             except Exception:
-                pass
-        return roots or [self.root_dir]
+                continue
+            if path not in roots:
+                roots.append(path)
+        return roots
 
     def _media_dirs(self) -> List[str]:
-        dirs = [str(self.root_dir)]
-        extra = self.setting('media_dirs') or ''
-        for line in str(extra).splitlines():
-            line = line.strip()
-            if line:
-                try:
-                    path = Path(line).expanduser().resolve()
-                    dirs.append(str(path))
-                except Exception:
-                    pass
-        return dirs
+        """全部扫描根（字符串形式），扫描 worker 与设置变更后重建都用它。"""
+        return [str(root) for root in self._scan_roots]
 
     def _restore_scan_task(self):
         """恢复上次中断的扫描任务：paused 状态保留（增量扫描时续跑）；
@@ -694,25 +706,30 @@ class MediaPlayerPlugin(PluginBase):
     def on_settings_changed(self, changed_keys):
         if 'ffmpeg_path' in changed_keys:
             _ffmpeg.configure(self.setting('ffmpeg_path') or '')
-        if 'root_dir' in changed_keys or 'media_dirs' in changed_keys:
-            new_dir = self.setting('root_dir')
-            if new_dir and Path(new_dir).is_dir():
-                # 数据根变更：终止进行中的扫描，丢弃旧任务（含断点信息）
-                if self._scan_task and self._scan_task.state == 'running':
-                    self._scan_task.cancel()
-                self._scan_task = None
-                self.root_dir = Path(new_dir).resolve()
-                self._cache_dir = self.root_dir / '.cache'
-                self._cache_file = self._cache_dir / 'media_index.json'
-                self._state_file = self._cache_dir / 'media_state.json'
-                self._task_file = self._cache_dir / 'scan_task.json'
-                self._cache_dir.mkdir(parents=True, exist_ok=True)
-                self._publish_items({})
-                self._reload_index()
-                # 封面库跟随数据根重建
-                self._thumb_cache = ThumbCache(
-                    self._cache_dir / 'thumbs.db', size=(640, 640),
-                    generator=cover_generator, workers=3)
+        if 'media_roots' in changed_keys:
+            new_roots = self._configured_roots() or [super().get_data_root()]
+            new_dir = new_roots[0]
+            self._scan_roots = new_roots
+            # 只有**数据根**（第一行）变了才需要搬缓存：额外的扫描根增删不影响
+            # 索引/进度/缩略图库的落点，重建一遍反而会把已有索引丢掉。
+            if new_dir == self.root_dir:
+                return
+            # 数据根变更：终止进行中的扫描，丢弃旧任务（含断点信息）
+            if self._scan_task and self._scan_task.state == 'running':
+                self._scan_task.cancel()
+            self._scan_task = None
+            self.root_dir = new_dir
+            self._cache_dir = self.root_dir / '.cache'
+            self._cache_file = self._cache_dir / 'media_index.json'
+            self._state_file = self._cache_dir / 'media_state.json'
+            self._task_file = self._cache_dir / 'scan_task.json'
+            self._cache_dir.mkdir(parents=True, exist_ok=True)
+            self._publish_items({})
+            self._reload_index()
+            # 封面库跟随数据根重建
+            self._thumb_cache = ThumbCache(
+                self._cache_dir / 'thumbs.db', size=(640, 640),
+                generator=cover_generator, workers=3)
 
     # ---------- 歌词 / 调试 / EQ ----------
 

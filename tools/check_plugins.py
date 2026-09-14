@@ -33,7 +33,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 DEFAULT_PLUGINS_DIR = PROJECT_ROOT / 'plugins'
 RESERVED_ROUTES = {'/', '/settings'}
-ALLOWED_SCHEMA_TYPES = {'text', 'number', 'range', 'select', 'checkbox', 'textarea', 'folder'}
+# 目录列表类型是 directory（shell/base.js createDirectoryList）；folder 是文档里
+# 曾出现过但从未实装的旧名，保留在允许列表里避免老插件被误判为错误
+ALLOWED_SCHEMA_TYPES = {'text', 'number', 'range', 'select', 'checkbox', 'textarea',
+                        'directory', 'folder'}
 PLUGIN_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9-_]*$')
 LEGACY_SETTINGS_MARKERS = ('settings_file', '_save_settings_to_file')
 LOCAL_SIBLING_LOADER_MARKER = 'def _load_sibling'

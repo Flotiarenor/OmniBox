@@ -845,7 +845,9 @@ const src = Bridge.originalUrl('subdir/photo.jpg');
 ### 7.2 共享基建：浏览本机媒体目录
 
 需要「让用户挑一个/多个媒体目录」的插件（image-viewer 的图片文件夹、media-player 的
-额外媒体目录等）不要各写一套文件浏览器。`shell/backend/media_catalog.py` 提供通用实现：
+媒体文件夹等）不要各写一套文件浏览器。这张表分两层，**先看第 2 层**：
+
+**① 后端枚举** —— `shell/backend/media_catalog.py` 提供通用实现：
 
 ```python
 from shell.backend.media_catalog import (
@@ -869,6 +871,26 @@ def browse_dir(self, path: str = ''):
 - `kinds` 用于在目录选择器里标出「含图片 / 视频 / 音乐」，让用户一眼看出哪些目录
   值得添加；传 `kinds={'image'}` 可只看某一类；
 - 目录超过 2000 个时截断（浏览整个盘符根时不至于卡住）。
+
+**② 前端界面（大多数插件只需要这一层）** —— `system_browse_dir` 已把上面的
+`list_subdirectories` 注册成宿主接口，而「主要 / 额外 + 浏览…」这套目录列表是
+**Shell 共享组件**，实现只有一份：
+
+| 资源 | 位置 | 谁在用 |
+| --- | --- | --- |
+| `window.FolderPicker` | `shell/frontend/public/shell/folder-picker.js` | `settings_schema` 里 `type:"directory"` 的字段（由 `base.js` 调用），以及 image-viewer 的设置页 |
+| `.iv-root-*` / `.iv-dirbrowser-*` 样式 | `shell/frontend/public/shell/folder-picker.css` | 同上 |
+
+这套组件原本长在 image-viewer 里（`app.js` 的 `_renderRoots` / `openDirBrowser`），
+因为媒体播放器 / 漫画 / 小说也要同一套「多位置文件夹」界面，才**整体搬**到 Shell：
+类名与数值都没改，image-viewer 改成引用回来。所以：
+
+- **插件侧声明 `type:"directory"` 即可**，不需要写任何前端代码（见 §8.2）；
+- 需要自己控制布局时才直接用 `window.FolderPicker.createList({paths, placeholder, emptyText, labels, onBeforeOpen})`，
+  返回 `{element, getPaths, setPaths, addPath, render}`；
+- 需要单独弹一次目录选择器用 `await window.FolderPicker.openDirBrowser(startPath)`（取消返回 `null`）。
+- 两个文件都由 `file_server` 的插件页注入模板（`SCRIPT_TPL`）带进每个插件 iframe，
+  插件自己的 HTML 不用声明 `<script>` / `<link>`。
 
 ### 7.3 插件如何生成缩略图
 
@@ -955,7 +977,13 @@ def _get_thumb(self, rel_path: str) -> Path:
 ```python
 class MyPlugin(PluginBase):
     settings_schema = [
-        {"key": "root_dir", "label": "数据根目录", "type": "text", "central": True},
+        {"key": "root_dir", "label": "数据根目录", "type": "directory",
+         "placeholder": "输入目录绝对路径，如 D:\\音乐",
+         "help": "第一行即生效根目录，保存后生效"},
+        # 多值列表：每行一个目录，第一行是主要目录，其余是额外目录
+        {"key": "media_roots", "label": "媒体文件夹", "type": "directory", "multi": True,
+         "emptyText": "未添加任何目录，将使用默认数据目录（./data）",
+         "help": "第一行为主目录，其余目录一起扫描"},
         {"key": "per_page", "label": "每页数量", "type": "number", "default": 40},
         {"key": "sort_by", "label": "排序方式", "type": "select",
          "options": [{"label": "修改时间", "value": "mtime"}, {"label": "文件名", "value": "name"}]},
@@ -968,12 +996,35 @@ class MyPlugin(PluginBase):
 | ---------------------------- | ---- | ----------------------------------------------------------------------------------------- |
 | `key`                      | 必填 | 设置键名                                                                                  |
 | `label`                    | 必填 | 设置面板显示名                                                                            |
-| `type`                     | 必填 | `text` / `number` / `range` / `select` / `checkbox` / `textarea` / `folder` |
+| `type`                     | 必填 | `text` / `number` / `range` / `select` / `checkbox` / `textarea` / `directory` |
 | `default`                  | 可选 | 默认值（未保存过时使用）                                                                  |
 | `help`                     | 可选 | 悬浮`?` 提示文本（鼠标悬停显示）                                                        |
 | `central`                  | 可选 | `True` 在集中设置面板显示；默认仅显示 `root_dir` 或有 `central` 标记的字段          |
 | `min` / `max` / `step` | 可选 | number/range 类型约束                                                                     |
 | `options`                  | 可选 | select 类型的选项列表                                                                     |
+| `multi`                    | 可选 | 仅 `directory`：多值字段，列表可增删多行，第 2 行起标「额外」                          |
+| `placeholder` / `emptyText` | 可选 | 仅 `directory`：输入框占位符 / 列表为空时的提示文字                                      |
+
+`type: "directory"` 的字段在插件设置弹窗里渲染成**与图片相册完全相同的目录列表** ——
+不是"样子像"，而是同一个实现（`window.FolderPicker`，见 §7.2；`base.js` 直接调它）：
+
+- 每行是「主要 / 额外」标签 + 路径 + 方形 ✕；第一行是**位置**属性而不是固定标记，
+  所以每行都能删 —— 删掉第一行后下一行自动顶上成为主要目录；
+- 下面是「输入框 + 浏览… + 添加」：可以手输绝对路径、回车添加，或点「浏览…」
+  弹出宿主目录选择器（`system_browse_dir` → 共享基建
+  `media_catalog.list_subdirectories`，见 §7.2），可看盘符、逐级下钻、
+  看到每个目录「含图片 / 视频 / 音乐」；
+- 重复目录（含只差尾斜杠的写法）与空路径会被拒绝并提示。
+
+**插件侧不需要写任何代码**，值仍是普通字符串：单值字段存一行路径（`str`），
+`multi: true` 的字段存换行分隔的多行（与改造前的 `text` / `textarea` 格式完全一致），
+保存走原来的 `save_settings()` 链路。
+
+> `directory` 只是**渲染方式**，不影响值本身：字段从 `text` / `textarea` 改成
+> `directory` 前后，`self.setting('root_dir')` 拿到的都是同一份字符串。反过来说，
+> 把多行文本字段合并成一个多值 `directory` 字段时，**记得让后端兼容旧键**，
+> 否则老用户配置里的值会看起来"丢了"（media-player 的
+> `_configured_roots()` 就是这种兼容：新键优先，没有才回退旧键）。
 
 ### 8.3 读取与写入
 

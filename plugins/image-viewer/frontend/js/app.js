@@ -2,10 +2,6 @@
 // 图片相册 v2：嵌套文件夹相册 + 时间线 / 最近添加 / 搜索 / 幻灯片
 // ============================================================
 class ImageViewer {
-    // 「我的电脑」层：与后端共享基建的 DRIVES_SENTINEL 保持一致
-    static DRIVES_SENTINEL = '__drives__';
-    static KIND_LABELS = { image: '图片', video: '视频', audio: '音乐' };
-
     constructor() {
         this.mode = 'albums';            // albums | children | images
         this.currentView = 'albums';     // albums | timeline | latest
@@ -23,7 +19,7 @@ class ImageViewer {
         this.currentRowHeight = 200;
         this.albums = [];
         this.albumConfig = { collapsed: [], promoted: [], expanded: [], visible_empty_dirs: [] };
-        this.roots = [];                 // 图片根目录列表（主目录 + 额外目录）
+        this.rootsPicker = null;         // 图片根目录列表（共享组件，主目录 + 额外目录）
         this.albumSortBy = 'mtime';      // 作者页面二次排序：mtime | name | count（设置项 album_sort_by）
         this.albumSortOrder = 'desc';    // 作者页面二次排序方向（设置项 album_sort_order）
         this._albumSortVisible = false;  // 设置弹窗里是否显示二次排序选项（生效 Pixiv 排序才显示）
@@ -237,36 +233,12 @@ class ImageViewer {
             if (pixiv) this._pixivFuzzyVisible = true;
         });
 
-        // 图片文件夹：手动输入 / 目录选择器 / 移除
-        document.getElementById('setting-add-root').addEventListener('click', () => {
-            if (this._addRootFromInput(document.getElementById('setting-new-root').value)) {
-                document.getElementById('setting-new-root').value = '';
-            }
-        });
-        document.getElementById('setting-new-root').addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                document.getElementById('setting-add-root').click();
-            }
-        });
-        document.getElementById('setting-browse-root').addEventListener('click', () => {
-            this.openDirBrowser(document.getElementById('setting-new-root').value.trim());
-        });
-        document.getElementById('dir-browser-up').addEventListener('click', () => {
-            if (this._dirBrowserParent) this._loadDirBrowser(this._dirBrowserParent);
-        });
-        document.getElementById('dir-browser-drives').addEventListener('click', () => {
-            this._loadDirBrowser(ImageViewer.DRIVES_SENTINEL);
-        });
-        document.getElementById('dir-browser-cancel').addEventListener('click', () => this.closeDirBrowser());
-        document.getElementById('dir-browser-select').addEventListener('click', () => {
-            const picked = this._dirBrowserPath;
-            if (!picked || picked === ImageViewer.DRIVES_SENTINEL) {
-                Toast.warning('请先进入一个目录');
-                return;
-            }
-            if (this._addRootFromInput(picked)) this.closeDirBrowser();
-        });
+        // 图片文件夹：多位置列表（主要 / 额外 + 浏览…）由 Shell 共享组件提供，
+        // 本插件只负责把列表里的路径在保存时写回 root_dir / extra_roots。
+        // 这套实现原本长在这里（_renderRoots / openDirBrowser / _loadDirBrowser），
+        // 因为媒体播放器 / 漫画 / 小说也要同一套界面，已整体搬到
+        // shell/frontend/public/shell/folder-picker.js + folder-picker.css。
+        // 列表实例在 init() 里由 _resetRootsList() 建立。
 
         // 「仅应用于当前文件夹」只影响显示/排序类设置：图片文件夹列表始终是全局的
         // （换根目录不可能只对一个子文件夹生效），所以这里不再联动任何输入框
@@ -806,103 +778,27 @@ class ImageViewer {
     }
 
     // ===== 图片文件夹（多根目录）=====
+    // 列表本身（渲染 / 增删 / 去重 / 目录选择器）是 Shell 共享组件
+    // window.FolderPicker（shell/frontend/public/shell/folder-picker.js），
+    // 插件只保留「保存时把列表写回 root_dir / extra_roots」这一件事。
 
-    _renderRoots() {
+    _resetRootsList() {
         const box = document.getElementById('setting-roots');
         if (!box) return;
-        // 「主要」是**位置**属性而不是每行自带的标记：第一行就是主目录，
-        // 于是每行都能删（和「额外」行完全一样），删掉主目录后下一行自动顶上，
-        // 不会出现「列表里没有主目录」的中间状态。
-        const roots = this.roots || [];
-        box.innerHTML = roots.map((root, index) => {
-            const isPrimary = index === 0;
-            return `
-            <div class="iv-root-row${isPrimary ? ' is-primary' : ''}">
-                <span class="iv-root-tag${isPrimary ? '' : ' iv-root-tag-extra'}">${isPrimary ? '主要' : '额外'}</span>
-                <span class="iv-root-path" title="${this._escapeAttr(root.path)}">${this._escapeHtml(root.path)}</span>
-                <button class="iv-root-remove" data-index="${index}" title="移除">✕</button>
-            </div>`;
-        }).join('') || '<div class="iv-roots-empty">未添加任何目录，将使用默认数据目录（./data）</div>';
-        box.querySelectorAll('.iv-root-remove').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const index = Number(btn.dataset.index);
-                this.roots = this.roots.filter((_r, i) => i !== index);
-                this._renderRoots();
-            });
+        const picker = window.FolderPicker.createList({
+            paths: [],
+            placeholder: String.raw`输入目录绝对路径，如 D:\图库`,
+            emptyText: '未添加任何目录，将使用默认数据目录（./data）',
         });
+        box.replaceChildren(picker.element);
+        this.rootsPicker = picker;
     }
 
-    _addRootFromInput(path) {
-        const value = (path || '').trim().replace(/[\\/]+$/, '');
-        if (!value) {
-            Toast.warning('请输入或浏览选择一个目录');
-            return false;
-        }
-        const exists = (this.roots || []).some(r => r.path.replace(/[\\/]+$/, '') === value);
-        if (exists) {
-            Toast.warning('该目录已在列表中');
-            return false;
-        }
-        this.roots = [...(this.roots || []), { path: value, label: value }];
-        this._renderRoots();
-        return true;
+    /** 列表里的全部路径（唯一真源是共享组件的 paths 数组）。 */
+    _rootPaths() {
+        return this.rootsPicker ? this.rootsPicker.getPaths() : [];
     }
 
-    openDirBrowser(startPath) {
-        this._dirBrowserPath = startPath || '';
-        document.getElementById('dir-browser-modal').classList.add('active');
-        this._loadDirBrowser(this._dirBrowserPath);
-    }
-
-    closeDirBrowser() {
-        document.getElementById('dir-browser-modal').classList.remove('active');
-        this._dirBrowserPath = '';
-    }
-
-    async _loadDirBrowser(path) {
-        const listEl = document.getElementById('dir-browser-list');
-        const pathEl = document.getElementById('dir-browser-path');
-        const upBtn = document.getElementById('dir-browser-up');
-        // 「我的电脑」层用共享基建的哨兵路径表示：从任意目录都能一步退回盘符列表
-        const isDrives = path === ImageViewer.DRIVES_SENTINEL;
-        listEl.innerHTML = '<div class="loading">加载中…</div>';
-        try {
-            const data = await Bridge.call('browse_dir', isDrives ? '' : (path || ''));
-            this._dirBrowserPath = isDrives ? ImageViewer.DRIVES_SENTINEL : (data.path || '');
-            this._dirBrowserParent = isDrives ? null : data.parent;
-            pathEl.textContent = isDrives ? '我的电脑' : (data.path || '我的电脑');
-            upBtn.disabled = !this._dirBrowserParent;
-            upBtn.style.opacity = this._dirBrowserParent ? '1' : '0.45';
-            // 「我的电脑」按钮：进入盘符列表后它就是当前层，同理禁用
-            const drivesBtn = document.getElementById('dir-browser-drives');
-            const atDrives = !this._dirBrowserPath || this._dirBrowserPath === ImageViewer.DRIVES_SENTINEL;
-            drivesBtn.disabled = atDrives;
-            drivesBtn.style.opacity = atDrives ? '0.45' : '1';
-            const entries = data.entries || [];
-            if (data.error) {
-                listEl.innerHTML = `<div class="iv-dirbrowser-item empty">${this._escapeHtml(data.error)}</div>`;
-                return;
-            }
-            if (!entries.length) {
-                listEl.innerHTML = '<div class="iv-dirbrowser-item empty">该目录下没有子文件夹</div>';
-                return;
-            }
-            listEl.innerHTML = entries.map(e => {
-                const kinds = e.kinds || [];
-                const label = kinds.map(k => ImageViewer.KIND_LABELS[k] || '').filter(Boolean).join('·');
-                return `
-                <div class="iv-dirbrowser-item" data-path="${this._escapeAttr(e.path)}">
-                    <span>📁</span><span>${this._escapeHtml(e.name)}</span>
-                    ${label ? `<span class="iv-dirbrowser-hint">含 ${label}</span>` : ''}
-                </div>`;
-            }).join('');
-            listEl.querySelectorAll('.iv-dirbrowser-item[data-path]').forEach(item => {
-                item.addEventListener('click', () => this._loadDirBrowser(item.dataset.path));
-            });
-        } catch (e) {
-            listEl.innerHTML = '<div class="iv-dirbrowser-item empty">目录读取失败</div>';
-        }
-    }
 
     // ============================================================
     // 新建相册
@@ -1439,6 +1335,8 @@ class ImageViewer {
     // ============================================================
     async openSettingsModal() {
         document.getElementById('settings-modal').classList.add('active');
+        // 图片文件夹列表由共享组件建立（这里补建是因为设置弹窗可能晚于 init 才打开）
+        if (!this.rootsPicker) this._resetRootsList();
         document.getElementById('setting-current-folder-name').textContent = this.currentPath || '根目录';
         const applyToFolder = document.getElementById('setting-apply-to-folder');
         if (applyToFolder) {
@@ -1476,9 +1374,11 @@ class ImageViewer {
             document.getElementById('setting-album-sort-by').value = global.album_sort_by || 'mtime';
             document.getElementById('setting-album-sort-order').value = global.album_sort_order || 'desc';
             // 图片文件夹列表（列表即唯一入口：主目录 + 额外目录，保存时写回
-            // root_dir / extra_roots），不再单列「数据根目录」输入框
-            this.roots = await Bridge.call('list_roots');
-            this._renderRoots();
+            // root_dir / extra_roots），不再单列「数据根目录」输入框。
+            // 列表控件由共享组件持有，这里只把后端读到的路径灌进去。
+            const roots = await Bridge.call('list_roots');
+            if (!this.rootsPicker) this._resetRootsList();
+            if (this.rootsPicker) this.rootsPicker.setPaths((roots || []).map(r => r.path));
         } catch (e) { }
     }
 
@@ -1509,10 +1409,10 @@ class ImageViewer {
         // 第一行写回 root_dir，其余写回 extra_roots，列表就是唯一入口。
         // 列表被清空时**显式清掉 root_dir**：后端会回退到默认数据目录，
         // 否则旧路径会悄悄继续生效，和界面显示的「未添加任何目录」不一致。
-        const roots = this.roots || [];
+        const roots = this._rootPaths();
         if (!isFolderOnly) {
-            settings.root_dir = roots.length ? roots[0].path : '';
-            settings.extra_roots = roots.slice(1).map(r => r.path).join('\n');
+            settings.root_dir = roots.length ? roots[0] : '';
+            settings.extra_roots = roots.slice(1).join('\n');
         }
         try {
             if (isFolderOnly) {

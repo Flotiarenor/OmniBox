@@ -56,7 +56,10 @@ plugins/media-player/
   「⚡ 深度扫描」为全量（`force=True` 重读全部标签与时长）；已运行时返回 error；
 - **断点续传**：worker 每完成一个根目录，将「部分索引 + `completed_roots`」落盘检查点；
   进程中断后重启任务恢复为 `paused`，再次增量扫描自动跳过已完成根目录；
-- 多根目录：`root_dir` + `media_dirs` 逐根扫描，各根以目录名作 `namespace` 前缀聚合；
+- 多根目录：设置项 `media_roots`（**媒体文件夹**列表，多行路径）逐根扫描，第一行
+  既是数据根（缓存 / 索引 / 缩略图库落点）又是扫描根，其余只作额外扫描根，各根以
+  目录名作 `namespace` 前缀聚合；旧配置的 `root_dir` + `media_dirs` 仍读得出来
+  （`_configured_roots()`：新键优先，为空才回退旧键）；
 - 增量语义：mtime/size 未变直接复用；目录封面图比媒体文件新时强制重建条目（刷新 `has_cover`）；
   索引文件丢失而任务文件残留时，断点信息失效、降级全扫；
 - 深度扫描完成后清理孤儿封面条目（`ThumbCache.prune`，仅删除已从索引消失的文件对应缓存）。
@@ -78,8 +81,12 @@ plugins/media-player/
 ## 文件访问
 
 媒体文件以「绝对路径 + URL 编码」经 `/file?path=<path>&plugin=media-player` 访问；
-`get_file_roots()` 声明 `root_dir` 与 `media_dirs` 全部根目录，Shell 逐根做路径安全检查，
+`get_file_roots()` 声明 `media_roots` 列表里的全部根目录，Shell 逐根做路径安全检查，
 支持跨磁盘 / 多目录媒体库。封面不落散文件，统一走 `/thumbs/<item_id>?plugin=media-player`。
+
+设置页的「媒体文件夹」列表是 Shell 共享组件（`settings_schema` 的
+`type:"directory"`，实现见 `docs/plugin-guide.md` §7.2），与图片相册的
+「图片文件夹」是同一份代码，插件本身不含目录选择器实现。
 
 ## 封面生成
 

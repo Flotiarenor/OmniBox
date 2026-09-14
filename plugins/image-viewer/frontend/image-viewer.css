@@ -191,66 +191,10 @@
 /* 紧跟在输入行后面的说明：上面要留出间隔，负 margin 会贴到输入框上 */
 .iv-setting-note-after-input { margin-top: 14px; }
 
-/* ===== 图片文件夹（多根目录） ===== */
-/* 列表本身不留 margin-bottom（说明文字自带段间距），
-   与「添加目录」输入行的间隙加在这里，改一个数就能调 */
-.iv-roots { display: flex; flex-direction: column; gap: 6px; }
-.iv-root-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 15px;
-  padding: 2px 4px;
-  border: 1px solid var(--border);
-  border-radius: var(--iv-radius-sm);
-  background: var(--bg-surface);
-}
-.iv-root-row.is-primary { border-color: var(--accent); }
-.iv-root-tag {
-  flex: none; padding: 1px 6px; border-radius: 999px; font-size: 10px; font-weight: 700;
-  color: #fff; background: var(--iv-gradient);
-}
-.iv-root-tag-extra { background: var(--bg-hover); color: var(--text-secondary); }
-.iv-root-path {
-  flex: 1; min-width: 0; font-size: 12px; color: var(--text-primary);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left;
-}
-.iv-root-remove {
-  flex: none; width: 22px; height: 22px; display: inline-flex; align-items: center;
-  justify-content: center; border: none; background: transparent; color: var(--text-muted);
-  cursor: pointer; font-size: 13px; line-height: 1; padding: 0; border-radius: 6px;
-}
-.iv-root-remove:hover { color: var(--danger, #e5484d); background: var(--bg-hover); }
-.iv-roots-add { display: flex; gap: 6px; align-items: center; margin-top: 2px; }
-/* 框架的 .search-input 是 14px 字号 + 6px 上下内边距（实测 28px 高），
-   旁边的 .btn-sm 是 12px + 3px（实测 23px），并排时输入框高出 5px。
-   这里只在本插件内把输入框压到按钮高度：不改 base.css，字号也不动
-   （行高与内边距留出垂直居中余量，文字不会被挤到边） */
-.iv-roots-add input {
-  flex: 1; min-width: 0; box-sizing: border-box;
-  height: 23px; padding-top: 0; padding-bottom: 0; line-height: 23px;
-}
-.iv-roots-empty { font-size: 12px; color: var(--text-muted); }
-
-.iv-dirbrowser { flex: 0 0 auto; padding: 14px 20px 0; }
-.iv-dirbrowser-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
-.iv-dirbrowser-path {
-  flex: 1; min-width: 0; font-size: 12px; color: var(--text-secondary);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left;
-}
-.iv-dirbrowser-list {
-  height: 260px; overflow-y: auto; border: 1px solid var(--border);
-  border-radius: var(--iv-radius-sm); background: var(--bg-surface); padding: 4px;
-}
-.iv-dirbrowser-item {
-  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
-  border-radius: 6px; cursor: pointer; font-size: 13px; color: var(--text-primary);
-}
-.iv-dirbrowser-item:hover { background: var(--bg-hover); }
-.iv-dirbrowser-item .iv-dirbrowser-hint {
-  margin-left: auto; font-size: 10px; color: var(--accent); flex: none;
-}
-.iv-dirbrowser-item.empty { cursor: default; color: var(--text-muted); }
+/* ===== 图片文件夹 / 目录选择器 ===== */
+/* 这两块的样式与实现已搬到 Shell 共享组件，由 /shell/folder-picker.css 注入
+   （见 shell/frontend/public/shell/folder-picker.js）：媒体播放器 / 漫画 /
+   小说用的是同一套 DOM 与样式，所以这里不再保留一份副本。*/
 
 .iv-empty {
   display: flex; flex-direction: column; align-items: center; justify-content: center;

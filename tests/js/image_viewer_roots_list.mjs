@@ -1,9 +1,12 @@
-// image-viewer「图片文件夹」列表的纯逻辑用例（不经浏览器）。
+// image-viewer「图片文件夹」列表的回归用例（不经浏览器）。
 //
-// 用户反馈的两点在这里固化：
-//   - 主目录行也要有 ✕，且宽度/高度与「额外」行一致（以前主行没有删除按钮，
-//     行更矮、标签只有一个字）；
-//   - 删除主行后，下一行自动成为主目录，列表清空时提示会回退到默认数据目录。
+// 列表实现已经搬到 Shell 共享组件（shell/frontend/public/shell/folder-picker.js），
+// image-viewer 只负责把列表里的路径在保存时写回 root_dir / extra_roots —— 组件
+// 本身的行为在 tests/js/shell_folder_picker.mjs 里守。
+//
+// 这里守的是**没有第二份实现**：插件不再自带 .iv-root-* 的渲染、目录选择器与
+// 去重逻辑。以前这套东西长在 app.js 里，媒体播放器 / 漫画 / 小说又各需要一份，
+// 结果就是"同一件事三处不一样"；谁把这个实现抄回插件，这个用例就会红。
 //
 // 用法：node tests/js/image_viewer_roots_list.mjs
 import assert from 'node:assert/strict';
@@ -12,74 +15,40 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const source = readFileSync(join(here, '..', '..', 'plugins', 'image-viewer',
-                                'frontend', 'js', 'app.js'), 'utf8');
-const ImageViewer = new Function(`${source}\nreturn ImageViewer;`)();
+const appJsPath = join(here, '..', '..', 'plugins', 'image-viewer', 'frontend', 'js', 'app.js');
+const htmlPath = join(here, '..', '..', 'plugins', 'image-viewer', 'frontend', 'index.html');
+const cssPath = join(here, '..', '..', 'plugins', 'image-viewer', 'frontend', 'image-viewer.css');
 
-// 极简 DOM 替身：只实现 _renderRoots 用到的 innerHTML / querySelectorAll
-function fakeBox() {
-  return {
-    _html: '',
-    _buttons: [],
-    set innerHTML(html) {
-      this._html = html;
-      const count = (html.match(/iv-root-remove/g) || []).length;
-      this._buttons = Array.from({ length: count }, (_, i) => ({
-        dataset: { index: String(i) },
-        addEventListener: (event, handler) => { this._handlers = this._handlers || []; this._handlers.push([event, handler]); },
-        click: () => (this._handlers || []).forEach(([e, h]) => e === 'click' && h()),
-      }));
-    },
-    get innerHTML() { return this._html; },
-    querySelectorAll() { return this._buttons; },
-  };
+const appJs = readFileSync(appJsPath, 'utf8');
+const html = readFileSync(htmlPath, 'utf8');
+const css = readFileSync(cssPath, 'utf8');
+
+// 1) 渲染与目录选择器不再由插件实现
+for (const gone of ['_renderRoots', '_addRootFromInput', '_loadDirBrowser', 'openDirBrowser']) {
+  assert.ok(!new RegExp(`\\b${gone}\\s*\\(`).test(appJs),
+            `app.js 不应再自带 ${gone}（已搬到 shell/frontend/public/shell/folder-picker.js）`);
+}
+assert.ok(!appJs.includes('iv-root-remove'),
+          'app.js 不应再自己拼 .iv-root-row 的 HTML');
+assert.ok(!appJs.includes('browse_dir'),
+          '目录浏览改走宿主接口 system_browse_dir（共享组件内部调用）');
+
+// 2) 插件改成引用共享组件
+assert.ok(appJs.includes('window.FolderPicker.createList('),
+          'app.js 应通过 window.FolderPicker.createList 建立列表');
+assert.ok(appJs.includes('_rootPaths()') && appJs.includes('rootsPicker.getPaths()'),
+          '保存时应从共享组件的 paths 取全部路径');
+
+// 3) 列表容器留空给组件填充，旧的静态输入行与选择器弹窗都已移除
+assert.ok(/id="setting-roots"><\/div>/.test(html),
+          'HTML 里 #setting-roots 应是空容器（由组件填充）');
+for (const gone of ['setting-new-root', 'setting-browse-root', 'setting-add-root', 'dir-browser-modal']) {
+  assert.ok(!html.includes(gone), `HTML 里不应再有 ${gone}`);
 }
 
-function viewerWith(roots, box) {
-  // app.js 的转义走内核 window.Utils.escapeHtml，这里给个等价实现
-  global.window = {
-    Utils: {
-      escapeHtml: (str) => String(str)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;').replace(/'/g, '&#39;'),
-    },
-  };
-  global.document = { getElementById: () => box };
-  const viewer = new ImageViewer();
-  viewer.roots = roots;
-  return viewer;
+// 4) 样式只有一份：.iv-root-* / .iv-dirbrowser-* 已移出插件 CSS
+for (const cls of ['.iv-root-row', '.iv-root-remove', '.iv-roots-add', '.iv-dirbrowser-list']) {
+  assert.ok(!css.includes(cls), `image-viewer.css 不应再保留 ${cls}（见 folder-picker.css）`);
 }
-
-const box = fakeBox();
-const viewer = viewerWith([{ path: 'D:\\主图库' }, { path: 'E:\\额外图库' }], box);
-viewer._renderRoots();
-
-assert.equal((box.innerHTML.match(/iv-root-remove/g) || []).length, 2,
-             '主目录行和额外目录行都要有 ✕（行高才能一致）');
-assert.equal((box.innerHTML.match(/is-primary/g) || []).length, 1,
-             '只有第一行是主目录');
-assert.ok(box.innerHTML.includes('>主要<'), '主目录标签是「主要」而不是单个「主」');
-assert.ok(box.innerHTML.includes('>额外<'), '其余行标签是「额外」');
-assert.ok(box.innerHTML.indexOf('主要') < box.innerHTML.indexOf('额外'),
-          '主目录在最前');
-
-// 删掉主行：下一行顶上成为主目录，而不是留下一个没有主目录的列表
-box._buttons[0].click();
-assert.equal(viewer.roots.length, 1);
-assert.equal(viewer.roots[0].path, 'E:\\额外图库');
-assert.ok(box.innerHTML.includes('>主要<') && !box.innerHTML.includes('>额外<'),
-          '删掉主行后，剩下的第一行成为主目录');
-
-// 再删掉最后一行：列表为空并提示回退默认目录
-box._buttons[0].click();
-assert.equal(viewer.roots.length, 0);
-assert.ok(box.innerHTML.includes('默认数据目录'), '清空列表时提示回退到默认数据目录');
-
-const oneBox = fakeBox();
-global.document = { getElementById: () => oneBox };
-const one = viewerWith([{ path: 'D:\\唯一' }], oneBox);
-one._renderRoots();
-assert.equal((oneBox.innerHTML.match(/iv-root-remove/g) || []).length, 1,
-             '只剩一行时它既是主目录也带 ✕');
 
 console.log('image_viewer_roots_list: OK');

@@ -91,8 +91,13 @@ plugins/image-viewer/
 
 **设置页入口**：`root_dir` 不再有独立输入框——「图片文件夹」列表是唯一入口
 （第一行 = 主目录，其余 = 额外目录），保存时第一行写回 `root_dir`、其余写回
-`extra_roots`。列表支持手填绝对路径或目录选择器（`browse_dir`，见 §6.2 与
-`docs/plugin-guide.md` §7.2），选择器可一键回到「我的电脑」层重选盘符。
+`extra_roots`。列表与目录选择器是 **Shell 共享组件** `window.FolderPicker`
+（`shell/frontend/public/shell/folder-picker.js` + `folder-picker.css`，见
+`docs/plugin-guide.md` §7.2）：这套 UI 原本长在本插件的 `app.js` 里，因为
+media-player / manga-library / novel-reader 也要同一套「多位置文件夹」界面，
+已整体搬到 Shell，本插件改为 `FolderPicker.createList()` 引用回来（类名与样式
+`.iv-root-*` / `.iv-dirbrowser-*` 原样跟着搬走，视觉无变化）。选择器可一键回到
+「我的电脑」层重选盘符。
 「主要」是**位置**属性而非每行自带标记，所以每行都有 ✕、行高一致；删掉第一行
 后下一行自动顶上成为主目录；列表被清空时显式写空 `root_dir`，后端回退到默认
 数据目录（`./data`），与界面提示一致。
@@ -391,3 +396,4 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
 | 未发布 | 新增「模糊匹配」（`pixiv_fuzzy`）：在 Pixiv 排序下让「作者/作品名/序号.jpg」这类非数字命名的图库套用同一套排序与两层浏览效果；`pixiv_explicit`（配置点）语义扩展为自己存过 `sort_by=time_name` 或 `pixiv_fuzzy` |
 | 未发布 | 三个功能增强：① **多根目录**（`extra_roots`，第二根起以 `__<目录名>` 命名空间节点作为顶层，`depth` 按根内相对路径计算，`get_file_roots()` 返回全部根，设置页新增「图片文件夹」列表与目录选择器）；② **空目录隐藏**（递归无可读图片的目录不下发显示，「新建相册」记入 `visible_empty_dirs` 保留可见，新增 `delete_folder` 删除空目录）；③ **子相册默认折叠**（只有显式 `expanded` 的目录显示下级，`collapsed` 优先） |
 | 未发布 | 图片文件夹交互收敛：设置弹窗正文改为可滚动（与媒体播放器一致），「图片文件夹」移到最前、删除多余的「数据根目录」输入框（列表即唯一入口）；目录选择器改用共享基建 `media_catalog.list_subdirectories()`，标注含图片/视频/音乐并支持一键回到「我的电脑」层 |
+| 未发布 | 「图片文件夹」列表与目录选择器**整体搬到 Shell 共享组件** `window.FolderPicker`（`shell/frontend/public/shell/folder-picker.{js,css}`）：media-player / manga-library / novel-reader 的文件夹位置改用同一套实现（`settings_schema` 的 `type:"directory"`），本插件改为引用回来，不再各自实现一份；类名与数值原样搬迁 |
