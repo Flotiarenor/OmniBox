@@ -7,12 +7,18 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List
 
+from shell.backend.media_catalog import list_subdirectories
 from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_utils import load_sibling
 from shell.backend.tasks import BackgroundTask
 from shell.backend.thumb_cache import ThumbCache
 
 log = logging.getLogger(__name__)
+
+# 虚拟命名空间路径的保留前缀：第二个及以后的根目录在相册树里以
+# `__<目录名>` 作为顶层节点。真实目录名几乎不可能以它开头，解析时也不会
+# 与第一根的物理目录混淆（`__` 开头的路径段一律按命名空间解释）。
+NAMESPACE_MARKER = '__'
 
 
 
@@ -28,14 +34,19 @@ pixiv_number = _fs.pixiv_number
 stat_mtime = _fs.stat_mtime
 
 
-def _pixiv_sort(entries, name_fn, reverse):
+def _pixiv_sort(entries, name_fn, reverse, fuzzy=False):
     """Pixiv 排序：前导数字条目按数字大小排（方向生效），
-    无前导数字条目按自然名排并始终位于最后。"""
+    无前导数字条目按自然名排并始终位于最后。
+
+    `fuzzy`（模糊匹配）只改**同号/无号条目之间**的比较键：关掉时同号内按
+    文件名字符串自然序，打开时按整名的自然序（数字段比数字、其余段比文字），
+    于是 `2024-05-10` < `2024-05-24 日富美` 这类「先数字再文字」的条目也能排对。
+    """
     numeric, other = [], []
     for it in entries:
         name = name_fn(it)
         num = pixiv_number(name)
-        key = (num, natural_sort_key(name))
+        key = (num, natural_sort_key(name if fuzzy else Path(name).name))
         (numeric if num is not None else other).append((key, it))
     numeric.sort(key=lambda t: t[0], reverse=reverse)
     other.sort(key=lambda t: t[0], reverse=reverse)
@@ -67,16 +78,38 @@ def _cover_rank(cover_rel: str, mtime: float, pixiv: bool) -> tuple:
 
     Pixiv 树按作品号大者优先（= 画师最近的作品），非 Pixiv 目录沿用
     「mtime 更新者优先」；Pixiv 条目整体优先于无号的普通条目。
+
+    作品号一律取**封面文件名的前导数字**：pixiv-sync 落盘的是
+    `<pid>.jpg` / `<pid>_pN.jpg`，嵌在目录里的 `.../800_title/800_p0.png`
+    同样以作品号开头，所以看文件名既覆盖平铺也覆盖嵌套结构。
     """
     num = pixiv_number(Path(cover_rel).name) if cover_rel else None
     if pixiv and num is not None:
         return (1, num, 0.0)
     return (0, 0.0, mtime)
 
+def _same_path(a, b) -> bool:
+    """两个路径是否指向同一位置（大小写/短名/软链接无关）。
+
+    不能只比 `Path` 相等：Windows 上 `Path('C:\\Users\\ADMINI~1\\…').resolve()`
+    不一定展开 8.3 短名，而同一位置的另一份写法可能已展开成长名，直接比较会把
+    主根目录误判成「另一个根」。
+    """
+    if a is None or b is None:
+        return False
+    try:
+        return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+    except Exception:
+        return Path(a) == Path(b)
+
+
 class ImageViewerPlugin(PluginBase):
     settings_schema: ClassVar[List[Dict[str, Any]]] = [
         {"key": "root_dir", "label": "数据根目录", "type": "text",
          "placeholder": "默认: ./data", "help": "图片浏览的数据根目录"},
+        {"key": "extra_roots", "label": "额外图片目录", "type": "textarea",
+         "placeholder": "每行一个目录（也可在插件设置面板里增删）",
+         "help": "与主根目录一起浏览：每个目录在相册树里显示为顶层节点"},
         {"key": "row_height", "label": "图片行高", "type": "range",
          "min": 100, "max": 400, "default": 200, "help": "Justified 布局的每行目标高度"},
         {"key": "per_page", "label": "每页图片数", "type": "number",
@@ -89,6 +122,10 @@ class ImageViewerPlugin(PluginBase):
         {"key": "sort_order", "label": "排序方向", "type": "select",
          "default": "desc",
          "options": [{"label": "倒序", "value": "desc"}, {"label": "正序", "value": "asc"}]},
+        {"key": "pixiv_fuzzy", "label": "模糊匹配", "type": "checkbox",
+         "default": False,
+         "help": "仅「Pixiv 排序支持」生效：作品名不以前导数字开头时按"
+                 "「先数字再文字」排序，并让该文件夹套用 Pixiv 的浏览效果"},
         {"key": "album_sort_by", "label": "作者视图排序方式", "type": "select",
          "default": "mtime",
          "options": [{"label": "更新时间", "value": "mtime"},
@@ -103,13 +140,7 @@ class ImageViewerPlugin(PluginBase):
         super().__init__(manifest, config)
         root = self.setting('root_dir') or str(super().get_data_root())
         self.root_dir = Path(root).resolve()
-        self.cache_dir = self.root_dir / '.cache'
-        self.thumb_dir = self.cache_dir / 'thumbs'
-        self.thumb_db_path = self.cache_dir / 'thumbs.db'
-        self.meta_file = self.cache_dir / 'image_meta.json'
-        self.thumb_dir.mkdir(parents=True, exist_ok=True)
-        self.album_cache_file = self.cache_dir / 'albums_index.json'
-        self.album_config_file = self.cache_dir / 'albums_config.json'
+        self._rebuild_paths()
         self._meta_cache = self._load_meta()
         self._meta_dirty = False          # 尺寸元数据是否有新增条目需要落盘
         self._list_cache = {}
@@ -120,6 +151,188 @@ class ImageViewerPlugin(PluginBase):
         # 缩略图缓存（共享基建）与全量重建后台任务（共享基建）
         self.thumb_cache = ThumbCache(self.thumb_db_path)
         self._rebuild = None              # BackgroundTask | None
+
+    # ===== 多根目录：虚拟路径 ↔ 物理路径 =====
+    #
+    # 第一根（root_dir）沿用相对路径，行为与历史版本一致；第二根起在相册树里
+    # 以 `__<目录名>` 作为顶层节点（命名空间），其下路径为该根内的相对路径。
+    # 这样第一根的既有链接、缓存键、缩略图库都不受影响。
+    def _rebuild_paths(self):
+        """重建缓存类路径字段（root_dir / extra_roots 变更时调用）。"""
+        self.cache_dir = self.root_dir / '.cache'
+        self.thumb_dir = self.cache_dir / 'thumbs'
+        self.thumb_db_path = self.cache_dir / 'thumbs.db'
+        self.meta_file = self.cache_dir / 'image_meta.json'
+        self.thumb_dir.mkdir(parents=True, exist_ok=True)
+        self.album_cache_file = self.cache_dir / 'albums_index.json'
+        self.album_config_file = self.cache_dir / 'albums_config.json'
+
+    def _extra_roots(self) -> List[Path]:
+        """额外图片目录（设置项 extra_roots，每行一个）。"""
+        raw = self.setting('extra_roots') or ''
+        roots: List[Path] = []
+        for line in str(raw).splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                path = Path(line).expanduser().resolve()
+            except Exception:
+                continue
+            if path.is_dir() and not _same_path(path, self.root_dir) and path not in roots:
+                roots.append(path)
+        return roots
+
+    def _roots(self) -> List[Path]:
+        """全部根目录：root_dir 恒为第一个（虚拟路径的默认根）。"""
+        return [self.root_dir, *self._extra_roots()]
+
+    def get_file_roots(self) -> List[Path]:
+        """文件服务允许访问的根目录（Shell 的 /file 逐根做路径安全检查）。"""
+        try:
+            return self._roots()
+        except Exception:
+            return [self.root_dir]
+
+    def _first_root_dir_names(self) -> set:
+        """第一根一级子目录名（命名空间不能与它们同名）。"""
+        names = set()
+        try:
+            with os.scandir(self.root_dir) as entries:
+                names.update(e.name for e in entries if e.is_dir())
+        except OSError:
+            pass
+        return names
+
+    def _load_namespace_map(self) -> dict:
+        """兼容旧缓存文件：命名空间已改为按当前状态实时计算，不再读写它。
+
+        早期版本把 token 持久化在 `.cache/roots_namespace.json`，会在目录增删
+        之后留下过时序号，所以现在一律以 `_namespace_map()` 为准。
+        """
+        return {}
+
+    def _namespace_map(self) -> Dict[str, str]:
+        """按当前状态算出全部额外根目录的命名空间 token（纯函数，可重算）。
+
+        规则：token = 根目录名；重名（或与第一根的一级子目录同名）时按**配置
+        顺序**加 ` (2)`、` (3)` 序号。同一份配置每次得到同一组 token，即使用户
+        后来把冲突的目录删掉，序号也会立刻收回（token 是派生值，不能持久化——
+        旧实现把 `额外图库` 永久卡在了 `额外图库 (3)`）。
+        """
+        roots = self._extra_roots()
+        remaining = [root.name or 'root' for root in roots]
+        taken = self._first_root_dir_names()
+        for index in range(len(roots)):
+            base = remaining[index]
+            token = base
+            counter = 2
+            while token in taken:
+                token = f'{base} ({counter})'
+                counter += 1
+            taken.add(token)
+            remaining[index] = token
+        return {str(root): remaining[i] for i, root in enumerate(roots)}
+
+    def _namespace_map_for(self, roots: List[Path]) -> Dict[str, str]:
+        """给一组（有序）额外根目录分配 token：重名/与第一根目录冲突时加序号。"""
+        remaining = [root.name or 'root' for root in roots]
+        taken = self._first_root_dir_names()
+        for index in range(len(roots)):
+            base = remaining[index]
+            token = base
+            counter = 2
+            while token in taken:
+                token = f'{base} ({counter})'
+                counter += 1
+            taken.add(token)
+            remaining[index] = token
+        return {str(root): remaining[i] for i, root in enumerate(roots)}
+
+    def _namespace(self, root: Path) -> str:
+        """给单个额外根目录取命名空间 token（与 `_namespace_map` 同一套规则）。"""
+        roots = self._extra_roots()
+        # 该根还没进配置（目录刚被选中、设置尚未保存）时接到队尾，保证
+        # 「预览出来的 token」和「保存后真正生效的 token」一致
+        if not any(_same_path(root, r) for r in roots):
+            roots.append(root)
+        mapping = self._namespace_map_for(roots)
+        for candidate, token in mapping.items():
+            if _same_path(candidate, root):
+                return token
+        return root.name or 'root'
+
+    def _roots_index(self) -> Dict[str, Path]:
+        """命名空间 token → 物理根目录（每次调用按当前设置重算，保持新鲜）。"""
+        index = {}
+        for root in self._extra_roots():
+            index[self._namespace(root)] = root
+        return index
+
+    def _split_virtual(self, rel_path: str) -> tuple:
+        """虚拟路径 → (物理根目录, 根内相对路径)。
+
+        命名空间前缀不参与图片/缩略图/相册路径的物理部分，因此调用方一律用
+        返回的「根内相对路径」拼物理路径；未知命名空间返回 (None, '')。
+        """
+        rel = (rel_path or '').replace('\\', '/').strip('/')
+        if not rel:
+            return self.root_dir, ''
+        head, _, rest = rel.partition('/')
+        if head.startswith(NAMESPACE_MARKER):
+            token = head[len(NAMESPACE_MARKER):]
+            root = self._roots_index().get(token)
+            if root is None:
+                return None, ''
+            return root, rest
+        return self.root_dir, rel
+
+    def _virtual_path(self, root: Path, rel_in_root: str) -> str:
+        """(物理根目录, 根内相对路径) → 虚拟路径。第一根不加前缀。"""
+        rel = (rel_in_root or '').strip('/')
+        if _same_path(root, self.root_dir):
+            return rel
+        token = self._namespace(root)
+        prefix = f'{NAMESPACE_MARKER}{token}'
+        return f'{prefix}/{rel}' if rel else prefix
+
+    def _resolve_dir(self, rel_path: str):
+        """虚拟目录路径 → (物理目录, 根内相对路径)；命名空间未知时物理目录为 None。"""
+        root, inner = self._split_virtual(rel_path)
+        if root is None:
+            return None, ''
+        return (root / inner if inner else root), inner
+
+    def _resolve_path(self, rel_path: str):
+        """虚拟图片路径 → (物理路径, 根内相对路径)；命名空间未知时物理路径为 None。"""
+        root, inner = self._split_virtual(rel_path)
+        if root is None or not inner:
+            return None, ''
+        return root / inner, inner
+
+    def _is_namespace_node(self, rel_path: str) -> bool:
+        """该虚拟路径是否**就是**额外根目录的顶层节点（`__<命名空间>`）。
+
+        只有恰好一层才算：`__额外图库` 是虚拟节点，`__额外图库/作者B` 是它下面的
+        真实目录，必须走普通目录扫描。
+        """
+        head = (rel_path or '').strip('/').partition('/')[0]
+        if head != (rel_path or '').strip('/'):
+            return False
+        token = head[len(NAMESPACE_MARKER):] if head.startswith(NAMESPACE_MARKER) else ''
+        return bool(token) and token in self._roots_index()
+
+    def _in_namespace(self, rel_path: str) -> bool:
+        """该虚拟路径是否以命名空间开头（含命名空间节点本身，不论是否有效）。"""
+        head = (rel_path or '').strip('/').partition('/')[0]
+        return head.startswith(NAMESPACE_MARKER) and len(head) > len(NAMESPACE_MARKER)
+
+    def _virtual_dir_exists(self, rel_path: str) -> bool:
+        """虚拟目录是否存在（供「保留可见的空目录」标记清理时判断）。"""
+        if self._is_namespace_node(rel_path):
+            return True
+        target, _ = self._resolve_dir(rel_path)
+        return bool(target and target.is_dir())
 
     # ===== 常量 =====
     _ALBUMS_TTL = 30.0            # list_albums 全树扫描结果缓存秒数
@@ -159,8 +372,26 @@ class ImageViewerPlugin(PluginBase):
         return self.root_dir
 
     def _is_safe(self, rel_path: str) -> bool:
-        return is_safe_path(self.root_dir, rel_path)
+        root, inner = self._split_virtual(rel_path)
+        if root is None:
+            return False          # 未知命名空间：拒绝，避免落到第一根的物理目录
+        return is_safe_path(root, inner)
 
+
+    def _pixiv_mode(self, rel_path: str = '') -> bool:
+        """该目录生效的排序是否为「Pixiv 排序支持」（含逐级继承）。
+
+        封面与排序的 Pixiv 规则只由排序方式决定，模糊匹配不参与：它只把
+        显式勾选它的目录认定为 Pixiv 树的配置点（见 `get_settings` 的
+        `pixiv_explicit`），让「作者/作品名/序号.jpg」这类非数字命名的目录
+        也拿到两层浏览效果。
+        """
+        return self.get_settings(rel_path).get('sort_by') == 'time_name'
+
+    def _pixiv_fuzzy_mode(self, rel_path: str = '') -> bool:
+        """该目录是否在「Pixiv 排序支持」下还勾了「模糊匹配」。"""
+        s = self.get_settings(rel_path)
+        return s.get('sort_by') == 'time_name' and bool(s.get('pixiv_fuzzy'))
 
     def register_api(self) -> dict:
         return {
@@ -184,10 +415,40 @@ class ImageViewerPlugin(PluginBase):
             'save_settings': self.save_folder_settings,
             'get_root_dir': self.get_root_dir,
             'clear_folder_settings': self.clear_folder_settings,
+            'list_roots': self.list_roots,
+            'browse_dir': self.browse_dir,
+            'delete_folder': self.delete_folder,
         }
 
     def get_root_dir(self) -> str:
         return str(self.root_dir)
+
+    def list_roots(self) -> List[Dict]:
+        """全部根目录（第一根在前），供设置页管理多文件夹。"""
+        roots = []
+        for index, root in enumerate(self._roots()):
+            roots.append({
+                'path': str(root),
+                'label': root.name or str(root),
+                'is_primary': index == 0,
+                'exists': root.is_dir(),
+                'namespace': '' if index == 0 else self._namespace(root),
+            })
+        return roots
+
+    def browse_dir(self, path: str = '') -> Dict:
+        """浏览本机目录（绝对路径），供设置页添加额外图片目录。
+
+        目录枚举与「有哪些媒体类型」的判断走共享基建
+        `shell.backend.media_catalog`（`list_subdirectories` / `find_kinds`），
+        所以这里能同时标出含图片 / 视频 / 音乐的目录；空路径是「我的电脑」层。
+        """
+        result = list_subdirectories(path)
+        if result.get('error'):
+            return result
+        for entry in result.get('entries', []):
+            entry['is_image_dir'] = 'image' in (entry.get('kinds') or [])
+        return result
 
     def ensure_thumb(self, rel_path: str) -> str:
         # 旧版文件式入口，供其他兼容代码使用；新路由优先走 get_thumb_data。
@@ -204,7 +465,10 @@ class ImageViewerPlugin(PluginBase):
         if not self._is_safe(rel_path):
             return None
         try:
-            return self.thumb_cache.get(rel_path, self.root_dir / rel_path)
+            abs_path, _ = self._resolve_path(rel_path)
+            if abs_path is None:
+                return None
+            return self.thumb_cache.get(rel_path, abs_path)
         except Exception:
             return None
 
@@ -212,7 +476,9 @@ class ImageViewerPlugin(PluginBase):
         """返回单张图片的存储大小与分辨率，供全屏查看器右侧信息面板使用。"""
         if not self._is_safe(rel_path):
             return {'success': False, 'error': '非法路径'}
-        abs_path = self.root_dir / rel_path
+        abs_path, _ = self._resolve_path(rel_path)
+        if abs_path is None:
+            return {'success': False, 'error': '非法路径'}
         try:
             if not abs_path.is_file():
                 return {'success': False, 'error': '不是图片文件'}
@@ -229,7 +495,10 @@ class ImageViewerPlugin(PluginBase):
             return {'success': False, 'error': str(e)}
 
     def _get_dir_mtime(self, rel_path: str) -> float:
-        return stat_mtime(self.root_dir, rel_path)
+        root, inner = self._split_virtual(rel_path)
+        if root is None:
+            return 0.0
+        return stat_mtime(root, inner)
 
 
     def _get_image_size(self, abs_path: str, mtime: float) -> tuple:
@@ -275,7 +544,9 @@ class ImageViewerPlugin(PluginBase):
 
 
     def _get_thumb(self, rel_path: str) -> Path:
-        return ensure_thumbnail(self.root_dir, rel_path, self.thumb_dir)
+        root, inner = self._split_virtual(rel_path)
+        base = root if root is not None else self.root_dir
+        return ensure_thumbnail(base, inner, self.thumb_dir)
 
 
     def list_images(self, rel_path: str = '', page: int = 1,
@@ -307,7 +578,7 @@ class ImageViewerPlugin(PluginBase):
                     "settings": self.get_settings(rel_path)
                 }
 
-        target_dir = self.root_dir / rel_path
+        target_dir, _ = self._resolve_dir(rel_path)
         images = []
         try:
             with os.scandir(target_dir) as entries:
@@ -320,7 +591,7 @@ class ImageViewerPlugin(PluginBase):
                             'mtime': stat.st_mtime,
                             'size': stat.st_size,
                         })
-        except FileNotFoundError:
+        except (FileNotFoundError, TypeError, AttributeError):
             pass
 
         # 并行读取尺寸：首次扫描大文件夹时 Pillow 打开文件是主要开销
@@ -358,10 +629,12 @@ class ImageViewerPlugin(PluginBase):
     # ===== 混合瀑布流（只处理一层嵌套）：直接图片 + 直接子相册 p0 瓦片 =====
 
     def _aggregate_children(self, dir_path: Path, rel_path: str) -> tuple:
-        """统计纯容器子目录下一层子目录的聚合信息。
+        """递归统计目录下的图片总数与代表封面（含更深层的子目录）。
 
-        返回 (总图片数, 代表封面)。代表封面 = 按 pixiv 号倒序
-        第一个含直接图片的子目录的 p0（即画师文件夹展示其最新作品的 p0）。
+        返回 (总图片数, 代表封面)。直接子目录有图片时取该目录的 p0；只有更深层
+        才有图片时**继续往下递归**——否则「作者/作品/1.jpg」这类作品文件夹会被
+        算成 0 张，命名空间卡片与空目录判定就都不准了。
+        代表封面按 pixiv 号倒序取第一个非空封面（= 最近的作品）。
         """
         children = []
         total = 0
@@ -372,8 +645,13 @@ class ImageViewerPlugin(PluginBase):
                         continue
                     sub_rel = f"{rel_path}/{e.name}" if rel_path else e.name
                     entry = self._scan_dir_direct(Path(e.path), sub_rel)
-                    total += entry.get('direct_count', 0)
-                    children.append((e.name, entry.get('direct_cover', '')))
+                    count = entry.get('direct_count', 0)
+                    cover = entry.get('direct_cover', '')
+                    if not count:
+                        deep_total, deep_cover = self._aggregate_children(Path(e.path), sub_rel)
+                        count, cover = deep_total, deep_cover
+                    total += count
+                    children.append((e.name, cover))
         except OSError:
             pass
         children = _pixiv_sort(children, lambda t: t[0], reverse=True)
@@ -386,7 +664,32 @@ class ImageViewerPlugin(PluginBase):
         cache_dirs / _meta_cache 为进程内共享字典，GIL 下并发读写安全。
         """
         sub_rel = f"{rel_path}/{name}" if rel_path else name
-        dir_path = self.root_dir / sub_rel
+        # 命名空间节点（额外根目录的顶层）：没有直接图片，封面与总数递归聚合
+        if self._is_namespace_node(sub_rel):
+            root, _ = self._split_virtual(sub_rel)
+            try:
+                mtime = root.stat().st_mtime
+            except OSError:
+                return None
+            total, cover = self._aggregate_children(root, sub_rel)
+            cw = ch = 1
+            if cover:
+                cover_path, _ = self._resolve_path(cover)
+                try:
+                    st = cover_path.stat()
+                    cw, ch = self._get_image_size(str(cover_path), st.st_mtime)
+                except (OSError, AttributeError):
+                    pass
+            card = {
+                'type': 'album', 'path': sub_rel, 'name': name[len(NAMESPACE_MARKER):],
+                'cover': cover, 'image_count': 0, 'total_count': total,
+                'has_children': True, 'mtime': mtime,
+                'width': cw or 1, 'height': ch or 1,
+                'use_time_name': self._pixiv_mode(sub_rel),
+                'root_scope': True,
+            }
+            return sub_rel, card, []
+        dir_path, _ = self._resolve_dir(sub_rel)
         try:
             mtime = dir_path.stat().st_mtime
         except OSError:
@@ -394,7 +697,7 @@ class ImageViewerPlugin(PluginBase):
         # 缓存命中条件除目录 mtime 外还要看 Pixiv 排序标志：封面挑选规则由它决定，
         # 切换排序后旧封面必须重算（缓存里没存图片列表，无法就地重挑）
         cached = cache_dirs.get(sub_rel)
-        pixiv = self.get_settings(sub_rel).get('sort_by') == 'time_name'
+        pixiv = self._pixiv_mode(sub_rel)
         if cached and cached.get('mtime') is not None \
                 and abs(float(cached.get('mtime', 0)) - float(mtime)) < 0.5 \
                 and cached.get('pixiv') == pixiv:
@@ -430,11 +733,11 @@ class ImageViewerPlugin(PluginBase):
             if agg_cover:
                 cover = agg_cover
         if cover:
-            abs_path = self.root_dir / cover
+            abs_path, _ = self._resolve_path(cover)
             try:
                 st = abs_path.stat()
                 cw, ch = self._get_image_size(str(abs_path), st.st_mtime)
-            except OSError:
+            except (OSError, AttributeError):
                 pass
         card = {
             'type': 'album',
@@ -448,6 +751,9 @@ class ImageViewerPlugin(PluginBase):
             'width': cw or 1,
             'height': ch or 1,
             'use_time_name': pixiv,
+            # 合成根（第一根的顶层）与额外根的命名空间节点同地位：前端把它当
+            # Pixiv 树的配置点。普通作者目录不算，否则会被误判成配置点而少一层
+            'root_scope': rel_path == '' and not name.startswith(NAMESPACE_MARKER),
         }
         return sub_rel, card, images
 
@@ -536,24 +842,30 @@ class ImageViewerPlugin(PluginBase):
                     "settings": self.get_settings(rel_path)
                 }
 
-        target_dir = self.root_dir / rel_path
+        target_dir, _ = self._resolve_dir(rel_path)
         sub_dirs = []
         images = []
-        try:
-            with os.scandir(target_dir) as entries:
-                for entry in entries:
-                    if entry.name.startswith('.') or entry.name == '.cache':
-                        continue
-                    if entry.is_dir():
-                        sub_dirs.append(entry.name)
-                    elif entry.is_file() and Path(entry.name).suffix.lower() in ALLOWED_EXTENSIONS:
-                        stat = entry.stat()
-                        images.append({
-                            'type': 'image', 'path': entry.path, 'name': entry.name,
-                            'mtime': stat.st_mtime, 'size': stat.st_size,
-                        })
-        except FileNotFoundError:
-            pass
+        if target_dir is not None:
+            try:
+                with os.scandir(target_dir) as entries:
+                    for entry in entries:
+                        if entry.name.startswith('.') or entry.name == '.cache':
+                            continue
+                        if entry.is_dir():
+                            sub_dirs.append(entry.name)
+                        elif entry.is_file() and Path(entry.name).suffix.lower() in ALLOWED_EXTENSIONS:
+                            stat = entry.stat()
+                            images.append({
+                                'type': 'image', 'path': entry.path, 'name': entry.name,
+                                'mtime': stat.st_mtime, 'size': stat.st_size,
+                            })
+            except OSError:
+                pass
+        # 相册树的合成根节点：额外根目录在这里以命名空间卡片的形式出现
+        # （要用完整虚拟路径 `__<token>`，不能用裸 token —— 那会被当成第一根
+        #  下的同名物理目录去扫描，结果直接消失）
+        if not rel_path:
+            sub_dirs.extend(f'{NAMESPACE_MARKER}{token}' for token in self._roots_index())
 
         # 并行读取直接图片尺寸（首次扫描大文件夹时的主要开销）
         self._fill_image_sizes(images)
@@ -567,11 +879,13 @@ class ImageViewerPlugin(PluginBase):
         reverse = (sort_order == 'desc')
         if sort_by == 'time_name':
             # Pixiv 排序支持：顶层作品/单图按 pixiv 数字号（前导数字）排序，方向生效
-            # （倒序 = 大号在前 = 新作品在前），无数字名排最后；
+            # （倒序 = 大号在前 = 新作品在前），无数字名排最后；模糊匹配时同号/
+            # 无号条目改为整名自然序（先数字再文字），让「日期+标题」也能排对。
             # 纯图片文件夹（作品内部）图片仍按文件名自然序 p0 → p1，不受方向影响。
-            cards = _pixiv_sort(cards, lambda x: x['name'], reverse)
+            fuzzy = self._pixiv_fuzzy_mode(rel_path)
+            cards = _pixiv_sort(cards, lambda x: x['name'], reverse, fuzzy)
             if cards:
-                images = _pixiv_sort(images, lambda x: Path(x['url']).name, reverse)
+                images = _pixiv_sort(images, lambda x: Path(x['url']).name, reverse, fuzzy)
             else:
                 images.sort(key=lambda x: natural_sort_key(Path(x['url']).name))
             items = cards + images
@@ -632,7 +946,16 @@ class ImageViewerPlugin(PluginBase):
         return offset
 
     def list_dir(self, rel_path: str = '') -> List[Dict]:
-        return list_directory(self.root_dir, rel_path)
+        """目录树浏览（移动目标选择等）：命名空间根展开为该根的子目录。"""
+        if self._is_namespace_node(rel_path):
+            root, _ = self._split_virtual(rel_path)
+            return [{'name': e.name, 'path': self._virtual_path(root, e.name)}
+                    for e in sorted(root.iterdir(), key=lambda p: natural_sort_key(p.name))
+                    if e.is_dir() and not e.name.startswith('.')]
+        root, inner = self._split_virtual(rel_path)
+        if root is None:
+            return []
+        return list_directory(root, inner)
     # ===== 相册索引（持久化 + 按目录 mtime 增量更新） =====
 
     def _load_album_cache(self) -> dict:
@@ -658,7 +981,8 @@ class ImageViewerPlugin(PluginBase):
         except Exception as e:
             log.error(f'[ImageViewer] 保存相册索引失败: {e}')
     def _load_album_config(self) -> dict:
-        defaults = {'collapsed': [], 'promoted': []}
+        defaults = {'collapsed': [], 'promoted': [], 'expanded': [],
+                    'visible_empty_dirs': []}
         if self.album_config_file.exists():
             try:
                 with open(self.album_config_file, 'r', encoding='utf-8') as f:
@@ -678,28 +1002,43 @@ class ImageViewerPlugin(PluginBase):
             log.error(f'[ImageViewer] 保存相册配置失败: {e}')
 
     def _list_album_dirs(self) -> dict:
-        """只遍历目录树本身（不读文件），返回 {rel_path: dir_mtime}。"""
+        """遍历全部根目录树，返回 {虚拟路径: dir_mtime}。
+
+        第一根的键保持相对路径（与既有相册索引缓存、收藏路径一致），第二根起
+        加 `__<命名空间>` 前缀；空字符串键是整棵相册树的合成根节点。
+        """
         dirs = {}
-        try:
-            stat = self.root_dir.stat()
-            dirs[''] = stat.st_mtime
-        except OSError:
-            return dirs
-        for current, dir_names, _files in os.walk(self.root_dir):
-            dir_names[:] = [d for d in dir_names
-                            if not d.startswith('.') and d != '.cache']
-            current = Path(current)
-            if current == self.root_dir:
-                continue
+        newest = 0.0
+        for root in self._roots():
             try:
-                rel = current.relative_to(self.root_dir).as_posix()
-                dirs[rel] = current.stat().st_mtime
-            except (OSError, ValueError):
+                newest = max(newest, root.stat().st_mtime)
+            except OSError:
                 continue
+            # 额外根目录的顶层是虚拟命名空间节点，本身不在磁盘上，单独补一条：
+            # `_build_albums` 靠它合成「子目录网格」用的容器条目
+            if not _same_path(root, self.root_dir):
+                dirs[self._virtual_path(root, '')] = root.stat().st_mtime
+            for current, dir_names, _files in os.walk(root):
+                dir_names[:] = [d for d in dir_names
+                                if not d.startswith('.') and d != '.cache']
+                current = Path(current)
+                if current == root:
+                    continue
+                try:
+                    rel = self._virtual_path(root, current.relative_to(root).as_posix())
+                    dirs[rel] = current.stat().st_mtime
+                except (OSError, ValueError):
+                    continue
+        dirs[''] = newest
         return dirs
 
     def _scan_dir_direct(self, dir_path: Path, rel_path: str) -> dict:
-        """只扫描一个目录的直接图片（一次 os.scandir，开销可控）。"""
+        """只扫描一个目录的直接图片（一次 os.scandir，开销可控）。
+
+        目录名语义（name/depth/parent）按**根内**相对路径计算，所以额外根目录
+        下的作者/作品与第一根处在同一层级，两层 Pixiv 布局不会被命名空间顶掉；
+        文件 `rel` 仍是虚拟路径（`__命名空间/...`），可直接当作缩略图/图片 URL。
+        """
         images = []
         children = []
         try:
@@ -723,13 +1062,15 @@ class ImageViewerPlugin(PluginBase):
         # 封面：Pixiv 树取作品号最大的一张（p0），其余取文件名自然序第一张；
         # 相册新旧仍按最新 mtime 计算
         newest = max((img['mtime'] for img in images), default=0.0)
-        pixiv = self.get_settings(rel_path).get('sort_by') == 'time_name'
+        pixiv = self._pixiv_mode(rel_path)
         cover = _pick_cover(images, pixiv)
+        root, inner = self._split_virtual(rel_path)
+        parent = self._virtual_path(root, '/'.join(inner.split('/')[:-1])) if inner else None
         return {
             'path': rel_path,
-            'name': dir_path.name if rel_path else '未分类',
-            'depth': rel_path.count('/') + (1 if rel_path else 0),
-            'parent': '/'.join(rel_path.split('/')[:-1]) if rel_path else None,
+            'name': dir_path.name,
+            'depth': inner.count('/') + (1 if inner else 0),
+            'parent': parent,
             'direct_count': len(images),
             'direct_cover': cover,
             'direct_mtime': newest,
@@ -739,29 +1080,85 @@ class ImageViewerPlugin(PluginBase):
         }
 
     def _build_albums(self, dirs: dict, cache_dirs: dict) -> tuple:
-        """直接扫描变化目录，再自底向上聚合出递归统计。"""
+        """直接扫描变化目录，再自底向上聚合出递归统计。
+
+        `dirs` 是全部根目录的 {虚拟路径: mtime}（见 `_list_album_dirs`）。额外根
+        目录的顶层节点是**虚拟**的（`__<命名空间>`），磁盘上不存在，这里为它
+        合成一个只含 children 的条目，使聚合循环与第一根走同一条路径。
+        """
         cache_dirs = cache_dirs or {}
         entries = {}
         changed = 0
-        pixiv_flags = {rel: self.get_settings(rel).get('sort_by') == 'time_name'
+        pixiv_flags = {rel: self._pixiv_mode(rel)
                        for rel in dirs}
+        # 先建合成根条目：它的 children 要包含命名空间节点，聚合循环才把
+        # 额外根目录的图片算进相册树总数（albums[''].image_count）
+        synthetic_children: List[str] = []
         for rel, mtime in dirs.items():
+            if self._is_namespace_node(rel) or rel != '':
+                continue
+            root_entry = cache_dirs.get('') if isinstance(cache_dirs.get(''), dict) else None
+            if root_entry and root_entry.get('mtime') is not None \
+                    and abs(float(root_entry.get('mtime', 0)) - float(mtime)) < 0.5 \
+                    and not root_entry.get('virtual'):
+                entries[''] = root_entry
+            else:
+                entry = self._scan_dir_direct(self.root_dir, '')
+                entry['mtime'] = mtime
+                entries[''] = entry
+                changed += 1
+            break
+        for rel, mtime in dirs.items():
+            if self._is_namespace_node(rel):
+                # 虚拟命名空间节点：没有直接图片，children = 该根的一级子目录
+                root, _ = self._split_virtual(rel)
+                children = []
+                if root is not None:
+                    try:
+                        with os.scandir(root) as it:
+                            children = sorted(
+                                e.name for e in it
+                                if e.is_dir() and not e.name.startswith('.')
+                                and e.name != '.cache')
+                    except OSError:
+                        pass
+                entries[rel] = {
+                    'path': rel, 'name': rel[len(NAMESPACE_MARKER):],
+                    'depth': 0, 'parent': None,
+                    'direct_count': 0, 'direct_cover': '', 'direct_mtime': 0.0,
+                    'pixiv': False, 'has_children': bool(children),
+                    'children': children, 'mtime': mtime, 'virtual': True,
+                }
+                synthetic_children.append(rel)   # 完整虚拟路径（含 `__` 前缀）
+                continue
+            if rel == '':
+                continue      # 合成根已在上面建好
             # 缓存命中条件除目录 mtime 外还要看 Pixiv 排序标志：封面挑选规则由它
             # 决定（作品号最大 vs 自然序第一张），切换排序后旧封面必须重扫
             cached = cache_dirs.get(rel)
             if cached and cached.get('mtime') is not None \
                     and abs(float(cached.get('mtime', 0)) - float(mtime)) < 0.5 \
-                    and cached.get('pixiv') == pixiv_flags[rel]:
+                    and cached.get('pixiv') == pixiv_flags[rel] \
+                    and not cached.get('virtual'):
                 entries[rel] = cached
                 continue
-            dir_path = self.root_dir / rel if rel else self.root_dir
+            dir_path, _ = self._resolve_dir(rel)
+            if dir_path is None:
+                continue
             entry = self._scan_dir_direct(dir_path, rel)
             entry['mtime'] = mtime
             entries[rel] = entry
             changed += 1
+        if synthetic_children and entries.get(''):
+            entries['']['children'] = sorted({*entries['']['children'],
+                                             *synthetic_children})
 
-        # 自底向上聚合 image_count / cover / mtime
-        ordered = sorted(entries.values(), key=lambda e: e['depth'], reverse=True)
+        # 自底向上聚合 image_count / cover / mtime。
+        # 同深度时命名空间节点（virtual）先算：它与合成根同为 depth 0，而合成根
+        # 要把额外根目录的图片并进相册树总数，必须等它们的结果先出来。
+        ordered = sorted(entries.values(),
+                         key=lambda e: (e['depth'], 1 if e.get('virtual') else 0),
+                         reverse=True)
         totals = {}
         for entry in ordered:
             rel = entry['path']
@@ -799,6 +1196,12 @@ class ImageViewerPlugin(PluginBase):
                 'mtime': newest,
                 'depth': entry['depth'],
                 'use_time_name': pixiv_flags[entry['path']],
+                # 额外根目录的顶层节点：前端把它当作 Pixiv 树的配置点，
+                # 与第一根（path == ''）地位一致
+                'root_scope': bool(entry.get('virtual')),
+                # 递归可读图片数（= image_count）：0 表示整棵下级都没有可读图片，
+                # 前端据此隐藏空目录
+                'readable': total,
             })
 
         # 不再预生成所有封面缩略图：交给 /thumbs 按需生成，避免上万次随机小文件 I/O。
@@ -814,6 +1217,8 @@ class ImageViewerPlugin(PluginBase):
         if self._albums_cached is not None \
                 and (now - self._albums_cached_at) < self._ALBUMS_TTL:
             return {**self._albums_cached, 'cached': True}
+        if self._prune_visible_marks():
+            self._album_cache = {'version': self._ALBUM_CACHE_VERSION, 'dirs': {}}
         dirs = self._list_album_dirs()
         albums, entries, changed = self._build_albums(dirs, self._album_cache.get('dirs', {}))
         self._album_cache = {'version': self._ALBUM_CACHE_VERSION, 'dirs': entries}
@@ -833,14 +1238,21 @@ class ImageViewerPlugin(PluginBase):
         return self._album_config
 
     def set_album_config(self, rel_path: str, action: str) -> Dict:
-        """album 层级控制：collapse/expand（收纳子相册）、promote/unpromote（提升到全部相册）。"""
+        """album 层级控制：collapse/expand（收纳/展开子相册）、promote/unpromote（提升到全部相册）。
+
+        子相册**默认折叠**（见前端 `_isCollapsed`），所以「展开」要落进 `expanded`
+        白名单；「收纳」则撤销展开并记进 `collapsed`，覆盖历史配置。
+        """
         rel_path = (rel_path or '').strip().strip('/')
         collapsed = set(self._album_config.get('collapsed', []))
         promoted = set(self._album_config.get('promoted', []))
+        expanded = set(self._album_config.get('expanded', []))
         if action == 'collapse':
             collapsed.add(rel_path)
+            expanded.discard(rel_path)
         elif action == 'expand':
             collapsed.discard(rel_path)
+            expanded.add(rel_path)
         elif action == 'promote':
             promoted.add(rel_path)
         elif action == 'unpromote':
@@ -848,24 +1260,99 @@ class ImageViewerPlugin(PluginBase):
         else:
             return {'success': False, 'error': f'未知操作: {action}'}
         self._album_config = {
+            **self._album_config,
             'collapsed': sorted(collapsed),
             'promoted': sorted(promoted),
+            'expanded': sorted(expanded),
         }
         self._save_album_config()
         self._invalidate_albums_cache()
         return {'success': True, 'config': self._album_config}
 
     def create_folder(self, rel_path: str) -> Dict:
-        """在根目录（或指定相对目录）下新建相册文件夹。"""
+        """在根目录（或指定相对目录）下新建相册文件夹。
+
+        没有直接图片也没有下级图片的空目录默认不显示（见 `visible_empty_dirs`），
+        这里把新建的目录记进「保留可见」标记，避免刚建完就消失；等里面进了图片
+        （`image_count > 0`）或目录被删除时标记自动清理。
+        """
         rel_path = (rel_path or '').replace('\\', '/').strip('/')
         if not rel_path or not self._is_safe(rel_path):
             return {'success': False, 'error': '文件夹名称非法'}
-        target = self.root_dir / rel_path
+        if self._in_namespace(rel_path):
+            return {'success': False, 'error': '不能在根目录节点下创建文件夹'}
+        target, _ = self._resolve_dir(rel_path)
+        if target is None:
+            return {'success': False, 'error': '文件夹名称非法'}
         try:
             target.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             return {'success': False, 'error': str(e)}
+        self._mark_visible(rel_path)
+        self._invalidate_albums_cache()
         return {'success': True, 'path': rel_path}
+
+    def delete_folder(self, rel_path: str) -> Dict:
+        """删除一个**空**目录（含只剩空子目录的情况），并清掉它的可见标记。
+
+        只允许删除「递归都没有图片」的目录：有图片的目录必须先清空图片，
+        避免一个误点连带删掉整棵作品树。
+        """
+        rel_path = (rel_path or '').replace('\\', '/').strip('/')
+        if not rel_path or self._is_namespace_node(rel_path):
+            return {'success': False, 'error': '路径非法'}
+        target, _ = self._resolve_dir(rel_path)
+        if target is None:
+            return {'success': False, 'error': '路径非法'}
+        if not target.is_dir():
+            return {'success': False, 'error': '目录不存在'}
+        try:
+            for _current, _dirs, files in os.walk(target):
+                if any(not f.startswith('.') and Path(f).suffix.lower() in ALLOWED_EXTENSIONS
+                       for f in files):
+                    return {'success': False, 'error': '目录内还有图片，请先删除图片'}
+            shutil.rmtree(target)
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+        marks = [p for p in (self._album_config.get('visible_empty_dirs') or [])
+                 if p != rel_path and not p.startswith(f'{rel_path}/')]
+        self._album_config = {**self._album_config, 'visible_empty_dirs': marks}
+        self._save_album_config()
+        self._invalidate_albums_cache()
+        return {'success': True}
+
+    def _mark_visible(self, rel_path: str):
+        """把新建的空目录加入「保留可见」标记（同时保留其上级，便于逐层进入）。"""
+        current = set(self._album_config.get('visible_empty_dirs') or [])
+        parts = [p for p in (rel_path or '').split('/') if p]
+        for i in range(1, len(parts) + 1):
+            current.add('/'.join(parts[:i]))
+        self._album_config = {**self._album_config, 'visible_empty_dirs': sorted(current)}
+        self._save_album_config()
+
+    def _set_visible_marks(self, marks: List[str]) -> Dict:
+        """覆盖式写入「保留可见」标记（设置页/清理时用）。"""
+        cleaned = sorted({p.strip('/') for p in (marks or []) if str(p).strip('/')})
+        self._album_config = {**self._album_config, 'visible_empty_dirs': cleaned}
+        self._save_album_config()
+        self._invalidate_albums_cache()
+        return {'success': True, 'config': self._album_config}
+
+    def _prune_visible_marks(self) -> bool:
+        """清理已消失的「保留可见」标记，避免配置文件无限增长。
+
+        返回是否真的做了清理：调用方据此决定是否丢弃相册索引缓存
+        （标记影响的是前端的空目录过滤，与封面聚合无关，但仍让索引重来更简单）。
+        """
+        marks = self._album_config.get('visible_empty_dirs') or []
+        if not marks:
+            return False
+        kept = [p for p in marks if self._virtual_dir_exists(p)]
+        if kept == list(marks):
+            return False
+        self._album_config = {**self._album_config, 'visible_empty_dirs': kept}
+        self._save_album_config()
+        return True
 
 
     def delete_files(self, rel_paths: List[str]) -> Dict:
@@ -874,7 +1361,10 @@ class ImageViewerPlugin(PluginBase):
             if not self._is_safe(rel):
                 errors.append(f"非法路径: {rel}")
                 continue
-            abs_path = self.root_dir / rel
+            abs_path, _ = self._resolve_path(rel)
+            if abs_path is None:
+                errors.append(f"非法路径: {rel}")
+                continue
             try:
                 if abs_path.exists():
                     abs_path.unlink()
@@ -890,17 +1380,20 @@ class ImageViewerPlugin(PluginBase):
         return {"deleted": deleted, "errors": errors}
 
     def move_files(self, rel_paths: List[str], dest_rel: str) -> Dict:
-        if not self._is_safe(dest_rel):
+        if not self._is_safe(dest_rel) or self._is_namespace_node(dest_rel):
             return {"moved": [], "errors": ["目标目录非法"]}
-        dest_dir = self.root_dir / dest_rel
-        if not dest_dir.is_dir():
+        dest_dir, _ = self._resolve_dir(dest_rel)
+        if dest_dir is None or not dest_dir.is_dir():
             return {"moved": [], "errors": ["目标目录不存在"]}
         moved, errors = [], []
         for rel in rel_paths:
             if not self._is_safe(rel):
                 errors.append(f"非法源路径: {rel}")
                 continue
-            src = self.root_dir / rel
+            src, _ = self._resolve_path(rel)
+            if src is None:
+                errors.append(f"非法源路径: {rel}")
+                continue
             try:
                 if src.exists():
                     dest_file = dest_dir / src.name
@@ -935,7 +1428,8 @@ class ImageViewerPlugin(PluginBase):
                 continue
             try:
                 self.thumb_cache.delete(rel)
-                drop_image_meta(self._meta_cache, str(self.root_dir / rel))
+                abs_path, _ = self._resolve_path(rel)
+                drop_image_meta(self._meta_cache, str(abs_path or (self.root_dir / rel)))
                 new_thumb = self.get_thumb_data(rel)
                 if new_thumb:
                     regenerated.append(rel)
@@ -960,24 +1454,37 @@ class ImageViewerPlugin(PluginBase):
         return {'success': True}
 
     def _collect_all_images(self, rel_path: str = '') -> List[str]:
-        """收集数据根目录下（或指定子文件夹下）所有需要生成缩略图的图片相对路径。"""
+        """收集整个相册树（或指定子文件夹）下所有需要生成缩略图的图片虚拟路径。
+
+        空路径 = 全部根目录；命名空间节点 = 只收集该额外根目录。
+        """
         rel_path = (rel_path or '').strip().strip('/')
-        base_dir = self.root_dir / rel_path if rel_path else self.root_dir
-        prefix = rel_path
+        pairs = []
+        if not rel_path:
+            pairs = [(root, '') for root in self._roots()]
+        else:
+            root, inner = self._split_virtual(rel_path)
+            if root is not None:
+                pairs = [(root, inner)]
         images = []
-        try:
-            for current, dir_names, filenames in os.walk(base_dir):
-                dir_names[:] = [d for d in dir_names if not d.startswith('.') and d != '.cache']
-                current_path = Path(current)
-                rel_dir = '' if current_path == base_dir else current_path.relative_to(base_dir).as_posix()
-                for name in filenames:
-                    if name.startswith('.'):
-                        continue
-                    if Path(name).suffix.lower() in ALLOWED_EXTENSIONS:
-                        parts = [p for p in (prefix, rel_dir, name) if p]
-                        images.append('/'.join(parts))
-        except OSError:
-            pass
+        for root, inner in pairs:
+            base_dir = root / inner if inner else root
+            prefix = self._virtual_path(root, inner)
+            try:
+                for current, dir_names, filenames in os.walk(base_dir):
+                    dir_names[:] = [d for d in dir_names
+                                    if not d.startswith('.') and d != '.cache']
+                    current_path = Path(current)
+                    rel_dir = ('' if current_path == base_dir
+                               else current_path.relative_to(base_dir).as_posix())
+                    for name in filenames:
+                        if name.startswith('.'):
+                            continue
+                        if Path(name).suffix.lower() in ALLOWED_EXTENSIONS:
+                            parts = [p for p in (prefix, rel_dir, name) if p]
+                            images.append('/'.join(parts))
+            except OSError:
+                pass
         return images
 
     def rebuild_all(self, rel_path: str = '', force: bool = True) -> Dict:
@@ -1096,9 +1603,10 @@ class ImageViewerPlugin(PluginBase):
         自动继承同一排序；某个子文件夹被单独修改（folders[该路径] 存在）时
         以它自己的设置优先，并继续向其子文件夹传播。
 
-        `pixiv_explicit`：当前文件夹自身是否显式设置了「Pixiv 排序支持」
-        （即它是 Pixiv 排序的配置点，如 pixiv 主文件夹——该层显示作者网格，
-        继承它的子层才显示瀑布流）。
+        `pixiv_explicit`：当前文件夹自身是否显式启用了 Pixiv 树（自己存了
+        「Pixiv 排序支持」或「模糊匹配」）。它是 Pixiv 树的配置点——该层显示
+        作者网格，继承它的子层才显示瀑布流；所以对「作者/作品名/序号.jpg」
+        这类非数字命名的目录，勾一次模糊匹配就够，不必每个子目录再配一遍。
         """
         folders = self.setting('folders') or {}
         if not isinstance(folders, dict):
@@ -1134,11 +1642,15 @@ class ImageViewerPlugin(PluginBase):
             "per_page": 40,
             "sort_by": "mtime",
             "sort_order": "desc",
+            "pixiv_fuzzy": False,
             "album_sort_by": "mtime",
             "album_sort_order": "desc"
         }
         folder_settings = {}
-        parts = [p for p in (rel_path or '').split('/') if p]
+        # 命名空间节点（额外根目录的顶层）与第一根的合成根同地位：它没有自己的
+        # 文件夹级设置，直接吃全局值，成为该根下作者层的继承源头。
+        parts = [] if self._is_namespace_node(rel_path) \
+            else [p for p in (rel_path or '').split('/') if p]
         for i in range(len(parts), 0, -1):
             key = '/'.join(parts[:i])
             if key in folders:
@@ -1146,9 +1658,12 @@ class ImageViewerPlugin(PluginBase):
                 break
         result = {**hard_defaults, **global_settings, **folder_settings}
         result['root_dir'] = str(self.root_dir)
-        # 自身条目显式设置了 Pixiv 排序才视为配置点（继承的不算）
+        # 配置点 = 当前文件夹自身显式启用了 Pixiv 树（自己存了排序方式或
+        # 模糊匹配）。继承来的不算：所以「在作者目录上勾模糊匹配」就足以把
+        # 该层变成作者网格，而它下面的作品层继承后仍走瀑布流。
         own_entry = folders.get(rel_path or '__global__', {})
-        result['pixiv_explicit'] = (own_entry.get('sort_by') == 'time_name')
+        result['pixiv_explicit'] = bool(own_entry.get('pixiv_fuzzy')) \
+            or own_entry.get('sort_by') == 'time_name'
         return result
 
     def save_folder_settings(self, rel_path: str = '', settings: Dict | None = None) -> Dict:
@@ -1182,21 +1697,24 @@ class ImageViewerPlugin(PluginBase):
         return result
 
     def on_settings_changed(self, changed_keys):
-        if 'root_dir' in changed_keys:
+        tracked = {'root_dir', 'extra_roots'}
+        if tracked & set(changed_keys):
+            rooted = 'root_dir' in changed_keys
             new_dir = self.setting('root_dir')
-            if new_dir and Path(new_dir).is_dir():
+            if rooted and new_dir and Path(new_dir).is_dir():
                 self.root_dir = Path(new_dir).resolve()
-                self.cache_dir = self.root_dir / '.cache'
-                self.thumb_dir = self.cache_dir / 'thumbs'
-                self.thumb_db_path = self.cache_dir / 'thumbs.db'
-                self.meta_file = self.cache_dir / 'image_meta.json'
-                self.thumb_dir.mkdir(parents=True, exist_ok=True)
+            self._rebuild_paths()
+            if rooted:
+                # 缓存/缩略图库/命名空间都挂在第一根下，换根后全部重来
                 self.thumb_cache = ThumbCache(self.thumb_db_path)
                 self._meta_cache = self._load_meta()
-                self._list_cache.clear()
+            self._album_cache = {'version': self._ALBUM_CACHE_VERSION, 'dirs': {}}
+            self._list_cache.clear()
+            self._invalidate_albums_cache()
         # 排序/封面规则变更（壳设置面板走的是 PluginBase.save_settings，不经过
         # save_folder_settings）也要立即生效，而不是等 30s TTL 过期
-        if {'sort_by', 'sort_order', 'album_sort_by', 'album_sort_order'} & set(changed_keys):
+        if {'sort_by', 'sort_order', 'pixiv_fuzzy',
+                'album_sort_by', 'album_sort_order'} & set(changed_keys):
             self._list_cache.clear()
             self._invalidate_albums_cache()
 

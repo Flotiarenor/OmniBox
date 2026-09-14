@@ -50,7 +50,7 @@ plugins/image-viewer/
 ### 2.3 浏览数据流
 
 ```
-打开相册页 ──► list_albums ──► _list_album_dirs(全树目录枚举)
+打开相册页 ──► list_albums ──► _list_album_dirs(全部根目录的目录枚举)
                                   └─► _build_albums(增量扫描变化目录 + 自底向上聚合)
                                        └─► albums_index.json(version 3) 持久化 + 30s TTL 内存缓存
 
@@ -61,6 +61,41 @@ plugins/image-viewer/
 
 渲染瓦片 ──► <img src="/thumbs/..."> ──► get_thumb_data ──► SQLite 命中 / Pillow 生成回写
 ```
+
+### 2.4 多根目录与虚拟路径
+
+`root_dir` 是第一根（沿用**相对路径**，既有链接/缓存键/缩略图库都不受影响），
+`extra_roots` 是额外根目录（每行一个，设置页可增删）。额外根在相册树里以
+**命名空间节点**出现：
+
+```
+相册树（虚拟路径）                          物理路径
+  ''（合成根）                              ─
+  ├─ 卡伦/…                                <root_dir>/卡伦/…
+  └─ __pixiv类/…                           D:\图库\pixiv类\…
+        └─ __pixiv类/卡伦/作品A/1.jpg       D:\图库\pixiv类\卡伦\作品A\1.jpg
+```
+
+- 命名空间 token = 根目录名，重名或与第一根一级子目录冲突时按**配置顺序**加
+  ` (2)`、` (3)`；token 是**派生值**（`_namespace_map()` 实时计算，不持久化），
+  目录增删后序号会自动收回。路径段以 `__` 开头即视为命名空间，真实目录名不会
+  这样命名（`_is_namespace_node` 只认「恰好一层且 token 有效」）。
+- `_split_virtual()` / `_virtual_path()` 负责虚拟 ↔ 物理互转；所有 API 只收发
+  虚拟路径，`/thumbs` 缓存键与 `/file?path=` 同样是虚拟路径。
+- **`depth` 按根内相对路径计算**：额外根下的作者层与第一根的作者层同为
+  depth 1，两层 Pixiv 布局（配置点 → 作者 → 作品）不会被命名空间顶掉。
+- 额外根的命名空间节点 `root_scope: true`，与第一根的合成根（`path == ''`）
+  同地位：都是「顶层容器」，前端把它当 Pixiv 树的配置点。
+- **文件服务**：`get_file_roots()` 返回全部根，Shell 的 `/file` 相对路径仍以
+  第一根为数据根（`roots[0]`），跨根访问走逐根绝对路径校验。
+
+**设置页入口**：`root_dir` 不再有独立输入框——「图片文件夹」列表是唯一入口
+（第一行 = 主目录，其余 = 额外目录），保存时第一行写回 `root_dir`、其余写回
+`extra_roots`。列表支持手填绝对路径或目录选择器（`browse_dir`，见 §6.2 与
+`docs/plugin-guide.md` §7.2），选择器可一键回到「我的电脑」层重选盘符。
+「主要」是**位置**属性而非每行自带标记，所以每行都有 ✕、行高一致；删掉第一行
+后下一行自动顶上成为主目录；列表被清空时显式写空 `root_dir`，后端回退到默认
+数据目录（`./data`），与界面提示一致。
 
 ## 3. 缓存体系（核心设计）
 
@@ -109,12 +144,25 @@ plugins/image-viewer/
 ### 4.2 Pixiv 排序 `time_name`
 
 - `pixiv_number(name)`：提取名称**前导数字**（作品 ID / 图片编号），无前导数字返回 None
-- `_pixiv_sort`：前导数字条目按数字大小排（方向生效），无数字条目按自然名排并**始终位于最后**
+- `_pixiv_sort`：前导数字条目按数字大小排（方向生效），无数字条目按自然名排并**始终位于最后**；
+  勾选**模糊匹配**（`pixiv_fuzzy`）后，同号/无号条目之间改按整名自然序比较（数字段比数字、
+  其余段比文字），于是 `2024-05-10` < `2024-05-24 日富美` 这类「先数字再文字」的条目也能排对
 - **两层嵌套语义**（`get_settings` 返回 `pixiv_explicit`）：
-  - 配置点（自身显式设置 `time_name`，如 `pixiv/` 主文件夹）→ 显示**子相册网格**（作者卡片）
+  - 配置点（**自身**存了 `time_name` 或 `pixiv_fuzzy`，如 `pixiv/` 主文件夹、`卡伦/`）→ 显示**子相册网格**（作者卡片）
   - 继承 `time_name` 的子文件夹（作者层）→ 显示**混合瀑布流**（作品 p0 瓦片 + 圆圈数量角标）
   - 作品内部（纯图片文件夹）图片仍按文件名自然序 p0 → p1，不受方向影响
 - 卡片 `use_time_name` 标记瓦片是否启用角标（后端按逐级继承算好）
+
+#### 模糊匹配（`pixiv_fuzzy`）
+
+Pixiv 排序原先只服务 pixiv-sync 的落盘形态（`<pid>.jpg`）。对于结构相同但
+命名非数字的图库（`卡伦/2019-09-19 两边皆可~/1.jpg`，即「作者/作品名/序号.jpg」），
+在作者目录上勾一次**模糊匹配**即可拿到同一套浏览效果，不必逐个子目录配置：
+
+- 只在 `sort_by == 'time_name'` 时生效（未选 Pixiv 排序时勾选它是死设置，`_pixiv_fuzzy_mode` 返回 False）；
+- 该目录因 `pixiv_explicit` 成为配置点 → 作者网格；子作品目录继承后走瀑布流；
+- 排序键、封面规则、数量角标、`use_time_name` 与 Pixiv 排序完全一致（封面本就看
+  叶子文件前导数字，所以序号命名的作品内部同样取号最大那张）。
 
 ### 4.3 相册封面挑选
 
@@ -149,6 +197,30 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
 - 设置页只在当前文件夹 `get_settings().sort_by == 'time_name'` 时显示这组选项，
   值本身是全局偏好（不写入文件夹级设置）；选项隐藏时保存不会写这两个键。
 
+### 4.6 设置页「模糊匹配」开关
+
+`pixiv_fuzzy` 与 `sort_by` **同作用域**：勾了「仅应用于当前文件夹」写文件夹级
+（`folders[路径]`），否则写全局插件级键（并清掉当前文件夹的独立设置，与排序方式一致）。
+它在设置页的显示条件同样是当前文件夹生效 `sort_by == 'time_name'`，且在下拉框切到
+「Pixiv 排序支持」的当下就显示（不必保存刷新后再打开设置）；未选 Pixiv 排序保存时
+不写该键，避免留下「看起来生效」的残留值。
+
+### 4.7 可见性规则（默认折叠 + 空目录隐藏）
+
+两条规则都在前端 `_filterVisibleAlbums()` 里实现，输入是 `list_albums` 的完整列表
+（含 `readable` = 递归可读图片数）：
+
+- **子相册默认折叠**：只有被显式「展开」过的目录才显示下级——`_isCollapsed()` 判定
+  「含子目录 且 不在 `expanded` 白名单」即为折叠；「收纳子相册」写入 `collapsed`
+  并撤销 `expanded`（`collapsed` 优先，兼容旧配置）。效果是「全部相册」只平铺顶层，
+  点进去才看下一层；`depth <= 1` 的顶层始终显示，`promoted` 的相册可越过折叠显示。
+- **空目录隐藏**：`readable == 0` 的目录（后端已含全部下级）整棵不显示；
+  `visible_empty_dirs` 里的路径保留可见——「新建相册」会把新建的那层记进该标记
+  （`_mark_visible`），目录被删除或换根时由 `_prune_visible_marks()` 清理。
+  标记同时**向上生效**：只标记深层目录时，它的上级也一并显示，否则那层永远点不进去。
+  空相册卡片带「📁 空相册」标签，右键菜单提供「不再显示此空相册」。
+
+
 ## 5. 视图模式与前端设计
 
 前端是**视图状态机**：`mode ∈ {albums, children, images}` + `currentView ∈ {albums, timeline, latest}`：
@@ -179,15 +251,18 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
 | `list_images` | `rel_path='', page=1, per_page=40, sort_by='mtime', sort_order='desc'` | `{images, page, total, has_next, has_prev, settings}` | 单目录纯图片列表（尺寸缓存 + 列表缓存；`per_page` 后端封顶 200） |
 | `list_folder_items` | `rel_path='', page=1, per_page=40, sort_by='name', sort_order='asc'` | `{items, all_images, all_truncated, all_offset, page, total, image_total, has_next, has_prev, settings}` | 混合瀑布流列表（见 §2.3）；`items` 为「子相册卡片 + 单图」混合；`all_images` 连续浏览序列（截断上限 5000）；`all_offset` 分页对齐偏移 |
 | `list_dir` | `rel_path=''` | `[{name, path, mtime}]` | 子目录列表（移动弹窗目录树用，仅目录） |
-| `list_albums` | 无 | `{albums, config, changed, cached?}` | 相册全量索引（增量扫描 + 30s TTL；`cached` 标记命中缓存）；`config` 为 `{collapsed, promoted}` |
+| `list_albums` | 无 | `{albums, config, changed, cached?}` | 相册全量索引（增量扫描 + 30s TTL；`cached` 标记命中缓存）；`config` 为 `{collapsed, promoted, expanded, visible_empty_dirs}`；每条相册含 `readable`（递归可读图片数）与 `root_scope`（额外根命名空间节点 / 第一根合成根） |
 
 ### 6.2 相册管理
 
 | API | 参数 | 返回 | 说明 |
 |-----|------|------|------|
-| `create_folder` | `rel_path` | `{success, path \| error}` | 根目录（或指定相对目录）下新建相册文件夹（`_is_safe` 校验） |
-| `get_album_config` | 无 | `{collapsed, promoted}` | 相册收纳/提升配置 |
-| `set_album_config` | `rel_path, action` | `{success, config}` | `action ∈ collapse/expand/promote/unpromote`；变更后失效相册 TTL 缓存 |
+| `create_folder` | `rel_path` | `{success, path \| error}` | 根目录（或指定相对目录）下新建相册文件夹（`_is_safe` 校验；命名空间节点下不允许建）；新建的空目录记入 `visible_empty_dirs` 保留可见 |
+| `get_album_config` | 无 | `{collapsed, promoted, expanded, visible_empty_dirs}` | 相册收纳/提升配置与空目录标记 |
+| `set_album_config` | `rel_path, action` | `{success, config}` | `action ∈ collapse/expand/promote/unpromote`；expand/collapse 落进 `expanded` / `collapsed`（默认折叠）；变更后失效相册 TTL 缓存 |
+| `delete_folder` | `rel_path` | `{success \| error}` | 删除**空**目录（递归无图片）并清掉其可见标记；有图片则拒绝，命名空间节点不可删 |
+| `list_roots` | 无 | `[{path, label, is_primary, exists, namespace}]` | 全部根目录（第一根在前），设置页「图片文件夹」列表用 |
+| `browse_dir` | `path=''` | `{path, parent, entries:[{name, path, kinds, is_image_dir}], error?}` | 目录选择器；委托共享基建 `media_catalog.list_subdirectories()`：空路径/`DRIVES_SENTINEL` 是「我的电脑」层（列盘符），`kinds` 标出含图片/视频/音乐（见 `docs/plugin-guide.md` §7.2） |
 
 ### 6.3 文件操作
 
@@ -212,7 +287,7 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
 
 | API | 参数 | 返回 | 说明 |
 |-----|------|------|------|
-| `get_settings` | `rel_path=''` | `{row_height, per_page, sort_by, sort_order, album_sort_by, album_sort_order, root_dir, pixiv_explicit}` | 生效设置（逐级继承 + 全局回退）；`pixiv_explicit` 为配置点标记 |
+| `get_settings` | `rel_path=''` | `{row_height, per_page, sort_by, sort_order, pixiv_fuzzy, album_sort_by, album_sort_order, root_dir, pixiv_explicit}` | 生效设置（逐级继承 + 全局回退）；`pixiv_explicit` 为配置点标记（自身存过 `sort_by=time_name` 或 `pixiv_fuzzy`） |
 | `save_settings` | 两种形态：`save_settings(settings_dict)` 或 `save_settings(rel_path, settings)` | `{success}` | 全局保存走 `super().save_settings()`（schema 过滤）；文件夹级保存进 `folders[rel_path]`（剥离 `root_dir`）并失效相册缓存 |
 | `get_root_dir` | 无 | `str` | 当前数据根目录（绝对路径） |
 | `clear_folder_settings` | `rel_path` | `{success}` | 删除文件夹独立设置，回退全局 |
@@ -223,7 +298,7 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
 |------|--------|------|
 | `get_thumb_data(rel_path)` | Shell `/thumbs` 路由 | 经 `thumb_cache.get()`（ThumbCache 共享基建）读取/生成缩略图字节 `(data, mime)`；`_is_safe` 校验，失败返回 None → 404 |
 | `ensure_thumb(rel_path)` | 兼容旧调用方（image-cleaner） | 旧版文件式入口，新路由优先走 `get_thumb_data` |
-| `get_data_root()` / `get_file_roots()` | Shell 文件服务 | 安全根目录 = 数据根目录 |
+| `get_data_root()` / `get_file_roots()` | Shell 文件服务 | 数据根目录 / **全部**根目录（`root_dir` + `extra_roots`，逐根做路径校验） |
 | `get_extensions()` | Shell 扩展注册 | 挂载 image-cleaner 入口（在 `loadExtensions()` 渲染到左侧栏） |
 
 ## 7. 设置项
@@ -233,10 +308,12 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
 | key | 类型 | 默认 | 说明 |
 |-----|------|------|------|
 | `root_dir` | text | `./data` | 数据根目录（相对路径锚定用户数据目录） |
+| `extra_roots` | textarea | 空 | 额外图片根目录，每行一个；设置页「图片文件夹」列表的第一行写回 `root_dir`、其余写回本项（列表是唯一入口） |
 | `row_height` | range 100–400 | 200 | Justified 布局每行目标高度 |
 | `per_page` | number 10–200 | 40 | 每页图片数 |
 | `sort_by` | select | `mtime` | `mtime` / `name` / `time_name`（Pixiv 排序支持） |
 | `sort_order` | select | `desc` | `desc` / `asc` |
+| `pixiv_fuzzy` | checkbox | `false` | 模糊匹配（仅 `sort_by == 'time_name'` 生效）：同号/无号条目按「先数字再文字」排序，并把该文件夹视为 Pixiv 树配置点（见 §4.2） |
 | `album_sort_by` | select | `mtime` | 作者网格二次排序：`mtime`（更新时间）/ `name` / `count`；当前文件夹未生效 Pixiv 排序时设置页不显示该组选项 |
 | `album_sort_order` | select | `desc` | 作者网格二次排序方向：`desc` / `asc` |
 
@@ -247,6 +324,8 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
 - 二次排序（`album_sort_by` / `album_sort_order`）是全局偏好，不写入文件夹级设置；
   设置页仅在当前文件夹 **生效** Pixiv 排序（`sort_by == 'time_name'`）时显示这组选项——
   改成 Pixiv 排序保存后页面刷新，下次打开设置即出现；隐藏时保存不会写这两个键
+- 模糊匹配（`pixiv_fuzzy`）相反：与 `sort_by` 同作用域（表单里勾「仅应用于当前文件夹」
+  即写文件夹级），保存页在选项可见时才写，未选 Pixiv 排序时不写
 - 保存全局时前端会 `clear_folder_settings(当前文件夹)`（注意：会清掉该文件夹独立设置）
 
 ## 8. 文件服务集成
@@ -277,7 +356,11 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
 
 ## 10. 已知限制与注意事项
 
-- **嵌套只处理一层**：混合瀑布流的 `_aggregate_children` 递归仅一层；三层以上嵌套的卡片计数与进入后内容可能不一致（`list_albums` 是全深度聚合，口径不同）
+- **列表瀑布流仍只处理一层**：`_aggregate_children` 会递归统计出正确的图片总数
+  （空目录判定与命名空间卡片依赖它），但 `list_folder_items` 的瓦片仍只展开一层；
+  三层以上嵌套的卡片进入后内容与计数口径不同（`list_albums` 是全深度聚合）
+- **命名空间前缀 `__` 是保留语义**：第一根里以 `__` 开头的目录名会被当成命名空间
+  解析（token 不在列表里则视为未知路径，拒绝访问），不建议这样命名真实目录
 - **列表缓存陈旧**：子文件夹排序设置变更后 `all_images` 序列可能沿用旧顺序（见 §3.4）
 - **重建与按需缩略图并发**：全量重建期间 `/thumbs` 按需生成同写一个 DB（WAL 容忍并发；VACUUM 收缩可能因活跃连接静默失败）
 - **`save_folder_settings` 不校验 `rel_path`**：任意字符串可写入 `folders` 键（含 `__global__`）；当前仅前端调用，接口层未防御
@@ -288,7 +371,10 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
 ## 11. 测试与调试
 
 - 仓库测试：`python -m unittest tests.test_image_viewer_mixed`（混合瀑布流 19 项）、
-  `python -m unittest tests.test_image_viewer_pixiv_cover`（画师封面 + 作者视图二次排序 11 项）
+  `python -m unittest tests.test_image_viewer_pixiv_cover`（画师封面 + 作者视图二次排序 11 项）、
+  `python -m unittest tests.test_image_viewer_pixiv_fuzzy`（模糊匹配 + 配置点 11 项）、
+  `python -m unittest tests.test_image_viewer_multi_root`（多根目录 / 空目录 / 折叠 17 项）、
+  `python -m unittest tests.test_image_viewer_album_visibility_js`（前端可见性与图片文件夹列表无头用例）
 - 状态调试：`python tests/debug_status_pages.py`（一键起 `--status-debug` 服务器 + 11 个 HTTP 场景触发表 + 壳内 `/status` 调试面板；含坏插件演示 iframe 404 → 壳内错误卡片链路）
 - 常用验证：`refresh` API 强制重扫、`rebuild_status` 轮询查看重建进度、`G:\图库` 等大目录做性能基准
 
@@ -302,3 +388,6 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
 | v2.4.2 | SQLite 缩略图缓存（58bf8d2）→ 全量重建后台任务/进度/取消（a2044f4–5f0af50）→ 并行生成与指定文件夹重建 → PyInstaller sqlite3 显式打包（827d76b）→ 性能优化（TTL/并行/脏标记，58d6ea4） |
 | v2.4.3 | 缩略图缓存与重建任务迁移到 Shell 共享基建（ThumbCache / BackgroundTask，d7c8620），API 与行为不变 |
 | 未发布 | Pixiv 树封面改为作品号最大的一张（画师最近的作品）→ 相册索引缓存 v4；作者网格二次排序从显示页排序栏移入设置页并落库（`album_sort_by` / `album_sort_order`，默认更新时间/倒序，仅生效 Pixiv 排序时显示）；修复全局设置保存后读不回的缺陷，并让历史位置 `__global__` 只作补齐、不压住新保存的值 |
+| 未发布 | 新增「模糊匹配」（`pixiv_fuzzy`）：在 Pixiv 排序下让「作者/作品名/序号.jpg」这类非数字命名的图库套用同一套排序与两层浏览效果；`pixiv_explicit`（配置点）语义扩展为自己存过 `sort_by=time_name` 或 `pixiv_fuzzy` |
+| 未发布 | 三个功能增强：① **多根目录**（`extra_roots`，第二根起以 `__<目录名>` 命名空间节点作为顶层，`depth` 按根内相对路径计算，`get_file_roots()` 返回全部根，设置页新增「图片文件夹」列表与目录选择器）；② **空目录隐藏**（递归无可读图片的目录不下发显示，「新建相册」记入 `visible_empty_dirs` 保留可见，新增 `delete_folder` 删除空目录）；③ **子相册默认折叠**（只有显式 `expanded` 的目录显示下级，`collapsed` 优先） |
+| 未发布 | 图片文件夹交互收敛：设置弹窗正文改为可滚动（与媒体播放器一致），「图片文件夹」移到最前、删除多余的「数据根目录」输入框（列表即唯一入口）；目录选择器改用共享基建 `media_catalog.list_subdirectories()`，标注含图片/视频/音乐并支持一键回到「我的电脑」层 |

@@ -2,6 +2,10 @@
 // 图片相册 v2：嵌套文件夹相册 + 时间线 / 最近添加 / 搜索 / 幻灯片
 // ============================================================
 class ImageViewer {
+    // 「我的电脑」层：与后端共享基建的 DRIVES_SENTINEL 保持一致
+    static DRIVES_SENTINEL = '__drives__';
+    static KIND_LABELS = { image: '图片', video: '视频', audio: '音乐' };
+
     constructor() {
         this.mode = 'albums';            // albums | children | images
         this.currentView = 'albums';     // albums | timeline | latest
@@ -18,7 +22,8 @@ class ImageViewer {
         this.currentSettings = {};
         this.currentRowHeight = 200;
         this.albums = [];
-        this.albumConfig = { collapsed: [], promoted: [] };
+        this.albumConfig = { collapsed: [], promoted: [], expanded: [], visible_empty_dirs: [] };
+        this.roots = [];                 // 图片根目录列表（主目录 + 额外目录）
         this.albumSortBy = 'mtime';      // 作者页面二次排序：mtime | name | count（设置项 album_sort_by）
         this.albumSortOrder = 'desc';    // 作者页面二次排序方向（设置项 album_sort_order）
         this._albumSortVisible = false;  // 设置弹窗里是否显示二次排序选项（生效 Pixiv 排序才显示）
@@ -224,12 +229,47 @@ class ImageViewer {
             document.getElementById('setting-row-height-val').textContent = e.target.value;
         });
 
-        const applyToFolder = document.getElementById('setting-apply-to-folder');
-        if (applyToFolder) {
-            applyToFolder.addEventListener('change', () => {
-                document.getElementById('setting-root-dir').disabled = applyToFolder.checked;
-            });
-        }
+        // 模糊匹配只作用于「Pixiv 排序支持」：当场切到该排序时就显示出来，
+        // 而不是等保存刷新后再打开设置才看见（勾选值仍以当前生效设置为初值）
+        document.getElementById('setting-sort-by').addEventListener('change', (e) => {
+            const pixiv = e.target.value === 'time_name';
+            document.getElementById('setting-pixiv-fuzzy-section').classList.toggle('hidden', !pixiv);
+            if (pixiv) this._pixivFuzzyVisible = true;
+        });
+
+        // 图片文件夹：手动输入 / 目录选择器 / 移除
+        document.getElementById('setting-add-root').addEventListener('click', () => {
+            if (this._addRootFromInput(document.getElementById('setting-new-root').value)) {
+                document.getElementById('setting-new-root').value = '';
+            }
+        });
+        document.getElementById('setting-new-root').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                document.getElementById('setting-add-root').click();
+            }
+        });
+        document.getElementById('setting-browse-root').addEventListener('click', () => {
+            this.openDirBrowser(document.getElementById('setting-new-root').value.trim());
+        });
+        document.getElementById('dir-browser-up').addEventListener('click', () => {
+            if (this._dirBrowserParent) this._loadDirBrowser(this._dirBrowserParent);
+        });
+        document.getElementById('dir-browser-drives').addEventListener('click', () => {
+            this._loadDirBrowser(ImageViewer.DRIVES_SENTINEL);
+        });
+        document.getElementById('dir-browser-cancel').addEventListener('click', () => this.closeDirBrowser());
+        document.getElementById('dir-browser-select').addEventListener('click', () => {
+            const picked = this._dirBrowserPath;
+            if (!picked || picked === ImageViewer.DRIVES_SENTINEL) {
+                Toast.warning('请先进入一个目录');
+                return;
+            }
+            if (this._addRootFromInput(picked)) this.closeDirBrowser();
+        });
+
+        // 「仅应用于当前文件夹」只影响显示/排序类设置：图片文件夹列表始终是全局的
+        // （换根目录不可能只对一个子文件夹生效），所以这里不再联动任何输入框
 
         document.getElementById('image-grid').addEventListener('contextmenu', (e) => {
             const card = e.target.closest('.iv-image-card');
@@ -310,9 +350,10 @@ class ImageViewer {
         }
 
         // 作者网格二次排序：只在生效 Pixiv 排序的页面应用（与设置页显示该组选项的
-        // 条件一致）；其他页面保持原有行为（文件名正序）
-        if (this.currentView === 'albums') {
-            albums = this._albumPageIsPixiv()
+        // 条件一致）；子相册网格与普通相册页保持原有行为（文件名正序）
+        const isPixivGrid = this._gridIsPixiv();
+        if (this.mode === 'children' || this.currentView === 'albums') {
+            albums = isPixivGrid
                 ? this._sortAlbums(albums)
                 : this._sortAlbums(albums, 'name', 'asc');
         }
@@ -378,27 +419,37 @@ class ImageViewer {
             : this._ensureGrid(container);
         const collapsed = new Set(this.albumConfig.collapsed || []);
         const promoted = new Set(this.albumConfig.promoted || []);
+        const visibleEmpty = new Set(this.albumConfig.visible_empty_dirs || []);
         target.innerHTML = albums.map((album) => {
             const sub = album.path ? album.path : '根目录 · 未分类';
             const time = opts.showTime ? `<span class="iv-time-badge">${this._timeAgo(album.mtime)}</span>` : '';
             const badges = [];
             if (collapsed.has(album.path)) badges.push('<span class="iv-album-tag">📦 已收纳</span>');
             if (promoted.has(album.path)) badges.push('<span class="iv-album-tag iv-album-tag-hot">📌 已提升</span>');
+            // 空目录默认不显示，显示出来的都是「新建相册」保留可见的
+            if (visibleEmpty.has(album.path) && !album.readable) {
+                badges.push('<span class="iv-album-tag">📁 空相册</span>');
+            }
             const menu = (album.depth >= 1 && album.path !== '')
                 ? `<button class="iv-album-menu" data-path="${this._escapeAttr(album.path)}" title="相册设置">⋯</button>`
                 : '';
+            // 含子相册的目录显示递归总数（后端 readable），纯图片目录显示直接图片数
+            const total = album.readable != null ? album.readable : album.image_count;
+            const countText = album.has_children && total !== album.direct_count
+                ? `${total} 张 · 含子相册`
+                : `${total} 张`;
             return `
             <div class="iv-album" data-path="${this._escapeAttr(album.path)}">
                 <div class="iv-album-cover">
                     ${album.cover ? `<img src="${Bridge.thumbUrl(album.cover)}" loading="lazy" alt=""
                         onerror="if(!this.dataset.r){this.dataset.r='1';const u=new URL(this.src,location.origin);u.searchParams.set('r',Date.now());this.src=u.toString();}else{this.outerHTML='<div class=\'iv-cover-fallback\'>🖼️</div>';}">` : '<div class="iv-cover-fallback">🖼️</div>'}
-                    <span class="iv-album-badge">${album.image_count} 张</span>
+                    <span class="iv-album-badge">${countText}</span>
                     ${time}
                     ${badges.join('')}
                 </div>
                 <div class="iv-album-info">
                     <div class="iv-album-name">${this._escapeHtml(album.name)}</div>
-                    <div class="iv-album-count">${this._escapeHtml(sub)}${album.has_children ? ' · 含子相册' : ''}</div>
+                    <div class="iv-album-count">${this._escapeHtml(sub)}</div>
                 </div>
                 ${menu}
             </div>`;
@@ -418,16 +469,64 @@ class ImageViewer {
         });
     }
 
+    _isCollapsed(album, config = this.albumConfig) {
+        // 子相册默认折叠：只有被显式「展开」过的目录才展示下级，
+        // 「收纳子相册」是显式撤销展开（兼容旧配置里的 collapsed 记录）
+        const path = album.path;
+        if (new Set((config && config.collapsed) || []).has(path)) return true;
+        const expanded = (config && config.expanded) || [];
+        return (album.has_children || false) && !expanded.includes(path);
+    }
+
     _filterVisibleAlbums(albums) {
-        const collapsed = new Set(this.albumConfig.collapsed || []);
         const promoted = new Set(this.albumConfig.promoted || []);
+        const visibleEmpty = new Set(this.albumConfig.visible_empty_dirs || []);
+        const byPath = new Map(albums.map(a => [a.path, a]));
+        // 「空目录」保留可见：自身标记，或它的**下级**有标记。「新建相册」只标记
+        // 新建的那一层，但用户也可能只给深层目录打标记，上级必须跟着显示，
+        // 否则那层永远点不进去。
+        const emptyVisible = new Map();
+        const isEmptyVisible = (path) => {
+            if (visibleEmpty.has(path)) return true;
+            if (emptyVisible.has(path)) return emptyVisible.get(path);
+            emptyVisible.set(path, false);            // 防御环形数据
+            let found = false;
+            for (const other of visibleEmpty) {
+                if (other.startsWith(`${path}/`)) {
+                    found = true;
+                    break;
+                }
+            }
+            emptyVisible.set(path, found);
+            return found;
+        };
+        // 空目录 = 递归（含下级）都没有可读图片，后端聚合出的 readable 已经算好，
+        // 这里只做单层判断：某层为空，它下面必然全空，整棵一起隐藏
+        const knownEmpty = (path) => {
+            if (isEmptyVisible(path)) return false;
+            const album = byPath.get(path);
+            if (!album) return false;
+            return (album.readable != null ? album.readable : album.image_count) === 0;
+        };
+        const hiddenEmptyCache = new Map();
+        const hiddenEmpty = (path) => {
+            if (hiddenEmptyCache.has(path)) return hiddenEmptyCache.get(path);
+            const parts = (path || '').split('/').filter(Boolean);
+            const branch = [];
+            for (let i = 1; i <= parts.length; i++) branch.push(parts.slice(0, i).join('/'));
+            const hidden = branch.some(knownEmpty);
+            hiddenEmptyCache.set(path, hidden);
+            return hidden;
+        };
         return albums.filter(a => {
             if (a.path === '' && a.direct_count === 0) return false; // 纯容器根目录不显示
+            if (hiddenEmpty(a.path)) return false;
             if (a.depth <= 1) return true;        // 顶层相册始终显示
             if (promoted.has(a.path)) return true; // 手动提升的相册浮到最外层
             const parts = a.path.split('/');
             for (let i = 1; i < parts.length; i++) {
-                if (collapsed.has(parts.slice(0, i).join('/'))) return false;
+                const ancestor = byPath.get(parts.slice(0, i).join('/'));
+                if (ancestor && this._isCollapsed(ancestor)) return false;
             }
             return true;
         });
@@ -446,11 +545,26 @@ class ImageViewer {
 
     // ===== 作者网格二次排序（Pixiv 排序下的相册网格） =====
 
+    _gridConfigPath() {
+        // 当前网格页面作为「配置点」的目录：children 视图是进入的那个文件夹，
+        // 其他视图是相册树的合成根目录（第一根 + 各命名空间根）
+        return this.mode === 'children' ? this.childParentPath : '';
+    }
+
+    _gridIsPixiv() {
+        // 该页面是否按 Pixiv 树展示：配置点自己生效 Pixiv 排序（如额外根目录
+        // 的命名空间节点，它本身不存设置、恒从全局继承），或者它下面有目录
+        // 生效 Pixiv 排序（如根目录下的作者目录被单独配置过）。
+        const configPath = this._gridConfigPath();
+        const own = this.albums.find(a => a.path === configPath);
+        if (own && own.use_time_name) return true;
+        const prefix = configPath ? `${configPath}/` : '';
+        return this.albums.some(a =>
+            a.path !== configPath && a.path.startsWith(prefix) && a.use_time_name);
+    }
+
     _albumPageIsPixiv() {
-        // 当前网格页面对应的文件夹（children → 父目录；albums → 根）是否生效 Pixiv 排序
-        const parentPath = this.mode === 'children' ? this.childParentPath : '';
-        const album = this.albums.find(a => a.path === parentPath);
-        return !!(album && album.use_time_name);
+        return this._gridIsPixiv();
     }
 
     // by / order 缺省取设置项（album_sort_by / album_sort_order）
@@ -483,8 +597,9 @@ class ImageViewer {
         }
         const album = this.albums.find(a => a.path === path);
         // 纯文件夹（只有子文件夹、没有直接图片）：
-        // - Pixiv 排序的「配置点」（自身显式设置了 Pixiv 排序，如 pixiv 主文件夹）
-        //   → 子相册网格（显示作者）；Pixiv 排序只考虑两层嵌套，配置点这层不做瀑布流。
+        // - Pixiv 排序的「配置点」（自身显式设置了 Pixiv 排序 / 模糊匹配，或
+        //   第一根、额外根目录的命名空间节点）→ 子相册网格（显示作者）；
+        //   Pixiv 排序只考虑两层嵌套，配置点这层不做瀑布流。
         // - 仅继承 Pixiv 排序的子文件夹（作者层）→ 混合瀑布流（作品 p0 瓦片 + 多图连续浏览）。
         // - 其他排序 → 子相册网格。
         if (album && album.has_children && album.direct_count === 0) {
@@ -495,7 +610,7 @@ class ImageViewer {
                 isPixiv = !!s && s.sort_by === 'time_name';
                 pixivExplicit = !!s && !!s.pixiv_explicit;
             } catch (e) { /* 忽略 */ }
-            if (!isPixiv || pixivExplicit) {
+            if (!isPixiv || pixivExplicit || album.root_scope) {
                 this.mode = 'children';
                 this.childParentPath = path;
                 this.fromChildren = true;
@@ -605,19 +720,30 @@ class ImageViewer {
         this._closeAlbumMenu();
         const album = this.albums.find(a => a.path === path);
         if (!album) return;
-        const collapsed = this.albumConfig.collapsed || [];
         const promoted = this.albumConfig.promoted || [];
+        const visibleEmpty = this.albumConfig.visible_empty_dirs || [];
         const items = [];
+        // 子相册默认折叠：depth===1 的容器目录给出「展开/收纳」切换；
+        // 更深层的目录由祖先决定是否可见，不在这里单独展开
         if (album.depth === 1 && album.has_children) {
+            const isCollapsed = this._isCollapsed(album);
             items.push({
-                label: collapsed.includes(path) ? '📂 展开子相册' : '📦 收纳子相册',
-                action: collapsed.includes(path) ? 'expand' : 'collapse'
+                label: isCollapsed ? '📂 展开子相册' : '📦 收纳子相册',
+                action: isCollapsed ? 'expand' : 'collapse'
             });
         }
         if (album.depth > 1) {
             items.push({
                 label: promoted.includes(path) ? '↩ 收回父相册' : '📌 提升到全部相册',
                 action: promoted.includes(path) ? 'unpromote' : 'promote'
+            });
+        }
+        // 「新建相册」建出来的空目录：可从视图中移除（目录本身保留）
+        if (!album.readable && visibleEmpty.includes(path)) {
+            items.push({
+                label: '🙈 不再显示此空相册',
+                action: 'forget-empty',
+                danger: true
             });
         }
         items.push({
@@ -637,6 +763,20 @@ class ImageViewer {
             this._closeAlbumMenu();
             if (act === 'rebuild') {
                 this.rebuildFolder(path);
+                return;
+            }
+            if (act === 'forget-empty') {
+                try {
+                    const result = await Bridge.call('delete_folder', path);
+                    if (result && result.success) {
+                        Toast.success('空相册已从视图移除');
+                        await this.loadAlbums();
+                    } else {
+                        Toast.error((result && result.error) || '操作失败');
+                    }
+                } catch (err) {
+                    Toast.error('操作失败');
+                }
                 return;
             }
             try {
@@ -665,9 +805,109 @@ class ImageViewer {
         document.getElementById('iv-stats').textContent = `${visible.length} 个相册 · ${total} 张图片`;
     }
 
+    // ===== 图片文件夹（多根目录）=====
+
+    _renderRoots() {
+        const box = document.getElementById('setting-roots');
+        if (!box) return;
+        // 「主要」是**位置**属性而不是每行自带的标记：第一行就是主目录，
+        // 于是每行都能删（和「额外」行完全一样），删掉主目录后下一行自动顶上，
+        // 不会出现「列表里没有主目录」的中间状态。
+        const roots = this.roots || [];
+        box.innerHTML = roots.map((root, index) => {
+            const isPrimary = index === 0;
+            return `
+            <div class="iv-root-row${isPrimary ? ' is-primary' : ''}">
+                <span class="iv-root-tag${isPrimary ? '' : ' iv-root-tag-extra'}">${isPrimary ? '主要' : '额外'}</span>
+                <span class="iv-root-path" title="${this._escapeAttr(root.path)}">${this._escapeHtml(root.path)}</span>
+                <button class="iv-root-remove" data-index="${index}" title="移除">✕</button>
+            </div>`;
+        }).join('') || '<div class="iv-roots-empty">未添加任何目录，将使用默认数据目录（./data）</div>';
+        box.querySelectorAll('.iv-root-remove').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const index = Number(btn.dataset.index);
+                this.roots = this.roots.filter((_r, i) => i !== index);
+                this._renderRoots();
+            });
+        });
+    }
+
+    _addRootFromInput(path) {
+        const value = (path || '').trim().replace(/[\\/]+$/, '');
+        if (!value) {
+            Toast.warning('请输入或浏览选择一个目录');
+            return false;
+        }
+        const exists = (this.roots || []).some(r => r.path.replace(/[\\/]+$/, '') === value);
+        if (exists) {
+            Toast.warning('该目录已在列表中');
+            return false;
+        }
+        this.roots = [...(this.roots || []), { path: value, label: value }];
+        this._renderRoots();
+        return true;
+    }
+
+    openDirBrowser(startPath) {
+        this._dirBrowserPath = startPath || '';
+        document.getElementById('dir-browser-modal').classList.add('active');
+        this._loadDirBrowser(this._dirBrowserPath);
+    }
+
+    closeDirBrowser() {
+        document.getElementById('dir-browser-modal').classList.remove('active');
+        this._dirBrowserPath = '';
+    }
+
+    async _loadDirBrowser(path) {
+        const listEl = document.getElementById('dir-browser-list');
+        const pathEl = document.getElementById('dir-browser-path');
+        const upBtn = document.getElementById('dir-browser-up');
+        // 「我的电脑」层用共享基建的哨兵路径表示：从任意目录都能一步退回盘符列表
+        const isDrives = path === ImageViewer.DRIVES_SENTINEL;
+        listEl.innerHTML = '<div class="loading">加载中…</div>';
+        try {
+            const data = await Bridge.call('browse_dir', isDrives ? '' : (path || ''));
+            this._dirBrowserPath = isDrives ? ImageViewer.DRIVES_SENTINEL : (data.path || '');
+            this._dirBrowserParent = isDrives ? null : data.parent;
+            pathEl.textContent = isDrives ? '我的电脑' : (data.path || '我的电脑');
+            upBtn.disabled = !this._dirBrowserParent;
+            upBtn.style.opacity = this._dirBrowserParent ? '1' : '0.45';
+            // 「我的电脑」按钮：进入盘符列表后它就是当前层，同理禁用
+            const drivesBtn = document.getElementById('dir-browser-drives');
+            const atDrives = !this._dirBrowserPath || this._dirBrowserPath === ImageViewer.DRIVES_SENTINEL;
+            drivesBtn.disabled = atDrives;
+            drivesBtn.style.opacity = atDrives ? '0.45' : '1';
+            const entries = data.entries || [];
+            if (data.error) {
+                listEl.innerHTML = `<div class="iv-dirbrowser-item empty">${this._escapeHtml(data.error)}</div>`;
+                return;
+            }
+            if (!entries.length) {
+                listEl.innerHTML = '<div class="iv-dirbrowser-item empty">该目录下没有子文件夹</div>';
+                return;
+            }
+            listEl.innerHTML = entries.map(e => {
+                const kinds = e.kinds || [];
+                const label = kinds.map(k => ImageViewer.KIND_LABELS[k] || '').filter(Boolean).join('·');
+                return `
+                <div class="iv-dirbrowser-item" data-path="${this._escapeAttr(e.path)}">
+                    <span>📁</span><span>${this._escapeHtml(e.name)}</span>
+                    ${label ? `<span class="iv-dirbrowser-hint">含 ${label}</span>` : ''}
+                </div>`;
+            }).join('');
+            listEl.querySelectorAll('.iv-dirbrowser-item[data-path]').forEach(item => {
+                item.addEventListener('click', () => this._loadDirBrowser(item.dataset.path));
+            });
+        } catch (e) {
+            listEl.innerHTML = '<div class="iv-dirbrowser-item empty">目录读取失败</div>';
+        }
+    }
+
     // ============================================================
     // 新建相册
     // ============================================================
+
     openNewAlbumModal() {
         document.getElementById('iv-new-album-name').value = '';
         document.getElementById('new-album-modal').classList.add('active');
@@ -1202,15 +1442,16 @@ class ImageViewer {
         document.getElementById('setting-current-folder-name').textContent = this.currentPath || '根目录';
         const applyToFolder = document.getElementById('setting-apply-to-folder');
         if (applyToFolder) {
-            // 每次打开默认保存到全局；勾选“仅当前文件夹”时才禁用根目录输入。
-            // 根目录本身没有“文件夹级”概念，禁用该选项避免误导。
+            // 每次打开默认保存到全局；根目录本身没有「文件夹级」概念，
+            // 所以禁用该选项避免误导。图片文件夹列表始终是全局设置，与它无关。
             applyToFolder.checked = false;
             applyToFolder.disabled = !this.currentPath;
-            document.getElementById('setting-root-dir').disabled = false;
         }
         // 读取失败时保持隐藏，避免表单里出现一组"不知道作用于哪"的选项
         this._albumSortVisible = false;
+        this._pixivFuzzyVisible = false;
         document.getElementById('setting-album-sort-section').classList.add('hidden');
+        document.getElementById('setting-pixiv-fuzzy-section').classList.add('hidden');
         try {
             const s = await Bridge.call('get_settings', this.currentPath);
             document.getElementById('setting-row-height').value = s.row_height;
@@ -1218,6 +1459,13 @@ class ImageViewer {
             document.getElementById('setting-per-page').value = s.per_page;
             document.getElementById('setting-sort-by').value = s.sort_by;
             document.getElementById('setting-sort-order').value = s.sort_order;
+            // 模糊匹配：只影响「Pixiv 排序支持」，所以只有当前文件夹生效 Pixiv
+            // 排序时才出现；值取自当前文件夹的生效设置（含继承），保存时与
+            // 排序方式同作用域（仅当前文件夹 / 全局）。
+            this._pixivFuzzyVisible = s.sort_by === 'time_name';
+            document.getElementById('setting-pixiv-fuzzy-section')
+                .classList.toggle('hidden', !this._pixivFuzzyVisible);
+            document.getElementById('setting-pixiv-fuzzy').checked = !!s.pixiv_fuzzy;
             // 作者视图二次排序：当前文件夹生效 Pixiv 排序时才出现；值是全局偏好，
             // 所以从全局设置（而非当前文件夹）读。改成 Pixiv 排序并保存后页面会刷新，
             // 下次打开设置就能看到这组选项。
@@ -1227,8 +1475,10 @@ class ImageViewer {
             const global = await Bridge.call('get_settings', '');
             document.getElementById('setting-album-sort-by').value = global.album_sort_by || 'mtime';
             document.getElementById('setting-album-sort-order').value = global.album_sort_order || 'desc';
-            const rootDir = await Bridge.call('get_root_dir');
-            document.getElementById('setting-root-dir').value = rootDir || '';
+            // 图片文件夹列表（列表即唯一入口：主目录 + 额外目录，保存时写回
+            // root_dir / extra_roots），不再单列「数据根目录」输入框
+            this.roots = await Bridge.call('list_roots');
+            this._renderRoots();
         } catch (e) { }
     }
 
@@ -1250,22 +1500,43 @@ class ImageViewer {
             album_sort_by: document.getElementById('setting-album-sort-by').value,
             album_sort_order: document.getElementById('setting-album-sort-order').value
         } : null;
+        // 模糊匹配与排序方式同作用域；未选 Pixiv 排序时它是死设置，不写入，
+        // 也让文件夹级设置回退到全局值（否则在别的文件夹取消勾选后会留下残留值）
+        const fuzzy = (this._pixivFuzzyVisible && settings.sort_by === 'time_name')
+            ? { pixiv_fuzzy: document.getElementById('setting-pixiv-fuzzy').checked }
+            : null;
+        // 图片文件夹列表是全局设置（勾「仅应用于当前文件夹」时不写）：
+        // 第一行写回 root_dir，其余写回 extra_roots，列表就是唯一入口。
+        // 列表被清空时**显式清掉 root_dir**：后端会回退到默认数据目录，
+        // 否则旧路径会悄悄继续生效，和界面显示的「未添加任何目录」不一致。
+        const roots = this.roots || [];
         if (!isFolderOnly) {
-            settings.root_dir = document.getElementById('setting-root-dir').value.trim() || undefined;
+            settings.root_dir = roots.length ? roots[0].path : '';
+            settings.extra_roots = roots.slice(1).map(r => r.path).join('\n');
         }
         try {
             if (isFolderOnly) {
-                await Bridge.call('save_settings', this.currentPath, settings);
+                await Bridge.call('save_settings', this.currentPath,
+                    { ...settings, ...(fuzzy || {}) });
                 if (albumSort) await Bridge.call('save_settings', '', albumSort);
             } else {
-                await Bridge.call('save_settings', '', { ...settings, ...(albumSort || {}) });
+                await Bridge.call('save_settings', '',
+                    { ...settings, ...(albumSort || {}), ...(fuzzy || {}) });
                 if (this.currentPath) await Bridge.call('clear_folder_settings', this.currentPath);
             }
-            this.currentSettings = { ...(this.currentSettings || {}), ...settings, ...(albumSort || {}) };
+            this.currentSettings = {
+                ...(this.currentSettings || {}), ...settings,
+                ...(albumSort || {}), ...(fuzzy || {})
+            };
             this.currentRowHeight = settings.row_height;
             this._applyAlbumSortSettings();
             this.closeSettingsModal();
             Toast.success('设置已保存');
+            if (!isFolderOnly) {
+                // 根目录/额外目录可能变了：作废后端相册索引缓存后再重新拉取
+                await Bridge.call('refresh');
+                await this.loadAlbums();
+            }
             if (this.mode === 'images') this.loadImages(this.currentPath, 1);
             else this.showAlbums();
         } catch (e) {

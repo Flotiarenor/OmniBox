@@ -386,6 +386,8 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         s_child = plugin.get_settings('pixiv/following/artistB')
         self.assertEqual(s_child['sort_by'], 'time_name')
         self.assertFalse(s_child['pixiv_explicit'])
+        # 未存任何 Pixiv 相关键的目录也不是配置点（只继承全局/父级）
+        self.assertFalse(plugin.get_settings('pixiv/following/artistB/deep')['pixiv_explicit'])
         # 单独修改的子文件夹以自己为准（不继承父级）
         self.assertEqual(plugin.get_settings('pixiv/following/artistA')['sort_by'], 'name')
         # 单独修改的子文件夹继续向其子文件夹传播
