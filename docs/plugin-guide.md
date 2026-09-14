@@ -271,7 +271,7 @@ class PluginBase(ABC):
         插件可重写此方法以支持自定义根目录。"""
         return Path(self.config['directories']['data_root']).resolve()
 
-    # ===== 文件与缩略图契约（Shell 的 /file、/thumbs 路由直接调用，见 §7.2） =====
+    # ===== 文件与缩略图契约（Shell 的 /file、/thumbs 路由直接调用，见 §7.3） =====
 
     def get_file_roots(self) -> List[Path]:
         """允许 /file 访问的根目录列表。跨多根插件覆写（如 media-player）"""
@@ -289,7 +289,7 @@ class PluginBase(ABC):
 ```
 
 > 四个文件/缩略图成员是**基类契约**，宿主侧不再用 `getattr` 探针读取。宿主与附属插件
-> 之间的这部分约定由 `tests/test_plugin_host_contract.py` 固定形状（见 §7.2）。
+> 之间的这部分约定由 `tests/test_plugin_host_contract.py` 固定形状（见 §7.3）。
 
 ### 3.2 编写插件类
 
@@ -840,9 +840,37 @@ const src = Bridge.originalUrl('subdir/photo.jpg');
 - 外部脚本 / curl / nginx 注入用请求头：`X-Omnibox-Token: <token>`；
 - 未携带令牌返回 `401`（`/api` 前缀为 JSON，浏览器路径为标记页）；越权路径返回 `403`；不存在的资源返回 `404`；
 - `/health`（200 JSON）与页面/静态资源不要求令牌；
-- 错误页在浏览器顶层打开时自动跳转到壳内 `/status?code=…` 视图统一展示（见 §7.3）。
+- 错误页在浏览器顶层打开时自动跳转到壳内 `/status?code=…` 视图统一展示（见 §7.4）。
 
-### 7.2 插件如何生成缩略图
+### 7.2 共享基建：浏览本机媒体目录
+
+需要「让用户挑一个/多个媒体目录」的插件（image-viewer 的图片文件夹、media-player 的
+额外媒体目录等）不要各写一套文件浏览器。`shell/backend/media_catalog.py` 提供通用实现：
+
+```python
+from shell.backend.media_catalog import (
+    DRIVES_SENTINEL,       # 「我的电脑」层的哨兵路径（前后端共用同一个常量）
+    classify_file,         # 扩展名 → 'image' / 'video' / 'audio' / 'other'
+    find_kinds,            # 目录**直接下级**命中的媒体类型，如 ['image', 'video']
+    list_subdirectories,   # 浏览绝对路径：{path, parent, entries:[{name, path, kinds}]}
+    list_system_roots,     # 盘符（Windows）/ ['/']（其他平台）
+    IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS,
+)
+
+# 插件 API 里直接转出去即可（image-viewer 的 browse_dir 就是这么做的）
+def browse_dir(self, path: str = ''):
+    return list_subdirectories(path)
+```
+
+要点：
+
+- 空路径或 `DRIVES_SENTINEL` → 「我的电脑」层（列盘符），`parent` 为 `None`，
+  前端据此禁用「上级」；从任意目录都能一步跳回该层，不必逐级退回盘符；
+- `kinds` 用于在目录选择器里标出「含图片 / 视频 / 音乐」，让用户一眼看出哪些目录
+  值得添加；传 `kinds={'image'}` 可只看某一类；
+- 目录超过 2000 个时截断（浏览整个盘符根时不至于卡住）。
+
+### 7.3 插件如何生成缩略图
 
 `/thumbs` 消费的四个成员都是 `shell/backend/plugin_base.py` 里 **`PluginBase` 的正式契约**，
 不是"宿主碰巧 getattr 得到"的隐式约定（历史上它们是探针式的，宿主把 `thumb_dir` 改成方法
@@ -897,7 +925,7 @@ def _get_thumb(self, rel_path: str) -> Path:
 > 因此它复用宿主的缩略图而不复制一份缓存。这四个成员既然是基类契约，宿主侧改动
 > 就受 `tests/test_plugin_host_contract.py` 的回归保护。
 
-### 7.3 状态页与壳内错误视图
+### 7.4 状态页与壳内错误视图
 
 - **状态码语义**：`401`（未授权）/ `403`（越权）/ `404`（不存在）由后端返回，`/api` 前缀为 JSON（`{error, detail}`），浏览器路径为本体风格标记页；
 - **壳内统一展示**：插件 iframe 加载到错误标记页时（标记页 `<html>` 带 `data-status-page="<code>"` 属性），Vue 壳检测后自动跳转壳内建视图 `/status?code=…&from=…` 显示错误卡片（含重试）；浏览器顶层直接访问错误 URL 时标记页 JS 自动跳转同一视图；
