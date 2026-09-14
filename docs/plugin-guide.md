@@ -57,7 +57,7 @@ plugins/
 }
 ```
 
-> 示例里没有 `author`：代码不读这个字段（且 `tools/check_plugins.py` 会把它标为"不参与运行时逻辑"）。
+> 示例里没有 `author`：代码不读这个字段（且 `tools/check_plugins.py` 会把它标为"运行时无效果"）。
 > 需要署名请写在 `description` 或 README 里。
 
 **字段说明**：
@@ -66,7 +66,7 @@ plugins/
 
 | 字段                | 要求 | 说明                                                                            |
 | ------------------- | ---- | ------------------------------------------------------------------------------- |
-| `version`         | 必填 | 语义化版本号（`x.y.z`，`tools/check_plugins.py` 会强制校验）                    |
+| `version`         | 必填 | 语义化版本号（`x.y.z`，`tools/check_plugins.py` 会强制校验；运行时只记录不判断兼容性） |
 | `displayName`     | 必填 | 在导航栏显示的名称                                                              |
 | `icon`            | 必填 | 导航栏图标（Emoji 或文字）                                                      |
 | `frontend.entry`  | 必填 | 前端入口 HTML 路径。**壳目前固定加载 `frontend/index.html`**，此字段只被 `tools/check_plugins.py` 用于校验入口及其引用资源存在；写别的值不会改变壳实际加载的文件 |
@@ -77,17 +77,26 @@ plugins/
 | `dependencies`    | 可选 | 依赖的其他插件名称列表                                                          |
 | `libs`            | 可选 | 插件本地附加库目录列表，默认`["backend/libs"]`，加载后端前会加入 `sys.path` |
 | `permissions`     | 可选 | 权限声明，**仅作知情明示**：运行时不做强制、也不在设置页展示（代码里没有任何读取方） |
-| `minShellVersion` | 可选 | 要求的最低 Shell 版本                                                           |
+| `minShellVersion` | 可选 | 要求的最低 Shell 版本。**仅 `tools/check_plugins.py` 读取**：发布前自检时会拒绝高于当前 shell 的声明，但运行时既不告警也不拒绝加载（旧版 shell 会照常载入该插件） |
 | `destroyOnLeave`  | 可选 | `true` 时离开页面销毁 iframe 重新加载（默认保持存活）                         |
 | `hidden`          | 可选 | `true` 时不显示在 Shell 主导航，但仍可被宿主内嵌或通过插件 URL 访问           |
-| `kind`            | 可选 | `local-adapter`：声明本插件管理独立运行环境（重依赖插件使用；当前只告警不阻断） |
-| `runtime`         | 可选 | **规划中，尚未实装**：独立运行环境声明（venv / 入口 / requirements），见 §2.2 |
+| `kind`            | 可选 | `local-adapter`：声明本插件管理独立运行环境（重依赖插件使用；**尚未实装，只告警不阻断**，当前声明不生效） |
+| `runtime`         | 可选 | **规划中，尚未实装：填入不生效**，运行时没有任何读取方；独立运行环境声明（venv / 入口 / requirements），见 §2.2 |
 | `description`     | 可选 | 仅作文档/说明：运行时与壳都不读（界面用 `displayName` + `icon`）              |
 
 > **字段必须"有读取方"**：`tools/check_plugins.py` 会核对每个 manifest 字段是否真的被代码读取，
-> 没有读取方且未登记为"不参与运行时逻辑"的字段直接报错。新增字段时请同步更新
-> `RUNTIME_FIELD_READERS` / `DOC_ONLY_FIELDS` 两张表 —— 这条规则来自一个真实教训：
-> 指南曾经教了 4 个代码根本不读的字段，照文档写的作者只会得到"填了没效果"。
+> 没有读取方且未登记的字段直接报错。新增字段时请同步更新 `tools/check_plugins.py` 里的三张表 ——
+> 这条规则来自一个真实教训：指南曾经教了 4 个代码根本不读的字段，照文档写的作者只会得到"填了没效果"。
+>
+> | 表 | 含义 | 检查器行为 |
+> | --- | --- | --- |
+> | `RUNTIME_FIELD_READERS` | 运行时代码真的会读（登记读取方文件与源码片段，会自检过期） | 通过 |
+> | `CHECKER_ONLY_FIELDS` | 只有检查器读：能拦住写错，但运行时无任何效果（如 `version` / `frontend.entry` / `minShellVersion` / `kind`） | warning |
+> | `DOC_ONLY_FIELDS` | 纯文档字段，连检查器都不读（如 `description` / `author` / `permissions` / 未实装的 `runtime`） | warning |
+>
+> 登记必须"表里如一"：把检查器自己填进 `RUNTIME_FIELD_READERS` 会让这条规则空转满足
+> （`minShellVersion` 曾长期如此，见 `docs/core-contract-fixes.md` §1）。整块字段（如 `runtime`）
+> 登记一次即可，其子字段由父键回退匹配；未登记的字段（含层级更深的 `a.b.c`）仍按 error 处理。
 
 ---
 
@@ -181,6 +190,11 @@ exts.forEach(ext => {
 > 目前已落地的 Companion 插件示例：`image-cleaner`（全相册重复/相似清理），设计见 `docs/image-cleaner-design.md`。
 
 ## 2.2 重型依赖与独立运行环境（runtime）
+
+> **本节的 `runtime` 块尚未实装，填入不生效。** 运行时（`shell/backend/`）没有任何代码读取它，
+> 壳也不会按 `venv` 拉起独立环境；`tools/check_plugins.py` 会对应地报一条"运行时无效果"的 warning。
+> 下面描述的是 `docs/core-direction.md` §3.4 / §3.5 的规划方案，实装前请按第 5 条用懒 import 兜底，
+> 不要依赖 `runtime` 生效。
 
 torch / onnxruntime 等重依赖**不得**写在插件 `backend/main.py` 顶层 import（会拖慢整个应用启动且与主进程环境冲突）。正确做法：
 

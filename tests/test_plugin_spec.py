@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from tools.check_plugins import DEFAULT_PLUGINS_DIR, check_plugins
+from tools.check_plugins import DEFAULT_PLUGINS_DIR, _check_manifest_fields, check_plugins
 
 
 def _manifest(name: str, route: str, deps=None, version: str = '1.0.0', extra: dict | None = None) -> dict:
@@ -50,12 +50,16 @@ def _make_plugin(root: Path, name: str, manifest: dict | str, *, backend_code: s
 
 class PluginSpecCheckerTests(unittest.TestCase):
     def test_valid_plugin_passes_static_check(self):
+        """按指南书写的 manifest 不得有 error。
+
+        不断言 warnings 为空：version / frontend.entry 归 CHECKER_ONLY_FIELDS，
+        它们确实只被检查器消费，必须如实告警而不是静默通过（见 1.4.c）。
+        """
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _make_plugin(root, 'good-plugin', _manifest('good-plugin', '/good'))
-            errors, warnings = check_plugins(root, load_backends=False)
+            errors, _ = check_plugins(root, load_backends=False)
             self.assertEqual(errors, [])
-            self.assertEqual(warnings, [])
 
     def test_invalid_json_is_an_error(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -136,7 +140,7 @@ class PluginSpecCheckerTests(unittest.TestCase):
             _make_plugin(root, 'doc-only', manifest)
             errors, warnings = check_plugins(root, load_backends=False)
             self.assertEqual(errors, [])
-            self.assertTrue(any('不参与运行时逻辑' in warning for warning in warnings))
+            self.assertTrue(any('运行时无效果' in warning for warning in warnings))
 
     def test_version_is_required(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -151,6 +155,67 @@ class PluginSpecCheckerTests(unittest.TestCase):
         """登记表必须与真实代码一致（否则它就只是一张没人维护的表格）。"""
         from tools.check_plugins import _check_reader_registry
         self.assertEqual(_check_reader_registry(), [])
+
+    # ===== runtime 块与父键回退（docs/core-contract-fixes.md §1） =====
+
+    def test_runtime_block_produces_no_errors(self):
+        """按 docs/plugin-guide.md §2.2 书写的 runtime 块曾拿到 6 条 error。
+
+        runtime 是整块登记进 DOC_ONLY_FIELDS 的，摊平出来的 runtime.kind 等子字段必须
+        逐级回退命中父键；否则照文档写的 manifest 过不了门禁（image-tagger 被阻断）。
+        """
+        manifest = _manifest('runtime-probe', '/runtime-probe', extra={
+            'runtime': {
+                'kind': 'python-venv',
+                'entry': 'backend/runtime/worker.py',
+                'venv': 'backend/runtime/venv',
+                'requirements': 'backend/runtime/requirements.txt',
+                'startup': 'manual',
+                'timeoutSeconds': 30,
+            },
+        })
+        data = dict(manifest)
+        data.pop('name', None)  # 直接测字段判定，与插件目录结构无关
+        errors, warnings = _check_manifest_fields(data, '[runtime-probe]')
+        self.assertEqual(
+            [error for error in errors if 'runtime' in error], [],
+            f'unregistered runtime.* fields must not be errors, got {errors}',
+        )
+        self.assertTrue(any('manifest.runtime.kind' in warning for warning in warnings))
+
+    def test_fallback_does_not_excuse_unknown_fields(self):
+        """父键回退不得过宽：未登记的字段仍然必须是 error。"""
+        data = {'runtimeFoo': 1, 'mystery': 2, 'nested': {'sub': 3}}
+        errors, _ = _check_manifest_fields(data, '[unknown]')
+        for field in ('runtimeFoo', 'mystery', 'nested.sub'):
+            self.assertTrue(
+                any(f'manifest.{field}' in error for error in errors),
+                f'manifest.{field} 必须报 error，实际: {errors}',
+            )
+
+    def test_checker_only_fields_warn_about_no_runtime_effect(self):
+        """只被检查器消费的字段必须告警，不能静默通过。"""
+        data = {
+            'version': '1.0.0',
+            'minShellVersion': '1.2.0',
+            'kind': 'local-adapter',
+            'frontend': {'route': '/x', 'entry': 'frontend/index.html'},
+        }
+        errors, warnings = _check_manifest_fields(data, '[checker-only]')
+        self.assertEqual(errors, [])
+        for field in ('version', 'minShellVersion', 'kind', 'frontend.entry'):
+            matched = [w for w in warnings if f'manifest.{field} ' in w]
+            self.assertTrue(matched, f'manifest.{field} 必须产出 warning，实际: {warnings}')
+            self.assertTrue(
+                '运行时无效果' in matched[0],
+                f'warning 文本必须说明运行时无效果: {matched[0]}',
+            )
+
+    def test_runtime_is_not_registered_as_runtime_reader(self):
+        """runtime 若被塞进 RUNTIME_FIELD_READERS 就等于规则空转满足。"""
+        from tools import check_plugins as checker
+        self.assertNotIn('runtime', checker.RUNTIME_FIELD_READERS)
+        self.assertIn('runtime', checker.DOC_ONLY_FIELDS)
 
     def test_stale_reader_registry_is_detected(self):
         from tools import check_plugins as checker
