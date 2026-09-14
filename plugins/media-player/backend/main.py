@@ -22,6 +22,10 @@ _ffmpeg = load_sibling(__file__, 'video_ffmpeg', 'media_player')
 scan_media = _scanner.scan_media
 cover_generator = _scanner.cover_generator
 INDEX_VERSION = _scanner.INDEX_VERSION
+
+# 播放队列持久化上限：状态文件按 id 列表存储，只保留前若干条以约束文件体积；
+# 超出时置 queue_truncated，前端恢复的是可恢复的那部分。
+QUEUE_PERSIST_LIMIT = 1000
 MediaItem = _models.MediaItem
 MediaAlbum = _models.MediaAlbum
 
@@ -616,16 +620,43 @@ class MediaPlayerPlugin(PluginBase):
         return {'success': True}
 
     def save_playback(self, item_id: str = '', loop_mode: str = 'none', shuffle: bool = False,
-                      volume: float = 1.0, video_mode: str = 'video') -> dict:
-        self._state['playback'] = {
+                      volume: float = 1.0, video_mode: str = 'video',
+                      queue_index: Optional[int] = None) -> dict:
+        # 就地更新而不是整体替换：队列 id 列表（save_queue）与播放参数分开更新，
+        # 换曲时整条队列不应被覆盖掉。
+        pb = self._state.setdefault('playback', {})
+        pb.update({
             'item_id': item_id,
             'loop_mode': loop_mode,
             'shuffle': shuffle,
             'volume': volume,
             'video_mode': video_mode,
-        }
+        })
+        if queue_index is not None:
+            pb['queue_index'] = max(0, int(queue_index))
+        self._state['playback'] = pb
         self._save_state()
         return {'success': True}
+
+    def save_queue(self, item_ids: Optional[List[str]] = None) -> dict:
+        """保存当前播放队列的条目 id 列表（按播放顺序），供重启后恢复整条队列。
+
+        只存 id 不存条目正文：状态文件因此与媒体库大小无关。超过 QUEUE_PERSIST_LIMIT
+        的队列只保留前若干条，并置 truncated 标记（恢复时退化为可恢复的部分）。
+        """
+        ids = [str(i) for i in (item_ids or []) if i]
+        pb = self._state.setdefault('playback', {})
+        pb['queue_ids'] = ids[:QUEUE_PERSIST_LIMIT]
+        pb['queue_truncated'] = len(ids) > QUEUE_PERSIST_LIMIT
+        pb['queue_index'] = min(max(0, int(pb.get('queue_index', 0))), max(0, len(pb['queue_ids']) - 1))
+        self._state['playback'] = pb
+        self._save_state()
+        return {'success': True, 'count': len(pb['queue_ids']), 'truncated': pb['queue_truncated']}
+
+    def get_items(self, item_ids: Optional[List[str]] = None) -> List[Dict]:
+        """按传入顺序批量取条目（队列恢复用），已不存在的 id 直接跳过。"""
+        ids = [str(i) for i in (item_ids or []) if i][:QUEUE_PERSIST_LIMIT]
+        return [self._get_item(i).to_dict() for i in ids if self._get_item(i)]
 
     def get_playback(self) -> dict:
         pb = self._state.get('playback', {})
@@ -773,6 +804,7 @@ class MediaPlayerPlugin(PluginBase):
             'media_all_video': self.all_video,
             'media_album_items': self.album_items,
             'media_get_item': self.get_item,
+            'media_get_items': self.get_items,
             'media_playlist_list': self.playlist_list,
             'media_playlist_get': self.playlist_get,
             'media_playlist_save': self.playlist_save,
@@ -781,6 +813,7 @@ class MediaPlayerPlugin(PluginBase):
             'media_update_recent': self.update_recent,
             'media_get_state': self.get_state,
             'media_save_playback': self.save_playback,
+            'media_save_queue': self.save_queue,
             'media_get_playback': self.get_playback,
             'media_get_lyrics': self.get_lyrics,
             'media_put_thumb': self.put_thumb,

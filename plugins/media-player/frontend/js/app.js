@@ -130,7 +130,7 @@ class MediaPlayerApp {
             if (!pb.item_id) return;
             const item = await Bridge.call('media_get_item', pb.item_id);
             if (item && item.id) {
-                this.core.restorePlayback(item, pb);
+                await this.core.restorePlayback(item, pb);
             }
         } catch (e) {
             console.log('恢复播放状态失败:', e);
@@ -1122,6 +1122,7 @@ class MediaPlayerApp {
             }
             case 'queue':
                 this.core.queue.push(item);
+                this.core.saveQueueState();
                 this._renderQueue();
                 Toast.info(`已加入队列：${item.title}`);
                 break;
@@ -1465,6 +1466,7 @@ class MediaPlayerApp {
     _clearQueue() {
         this.core.queue = [];
         this.core.currentIndex = -1;
+        this.core.saveQueueState();
         this._renderQueue();
         Toast.info('播放队列已清空');
     }
@@ -1498,6 +1500,7 @@ class MediaPlayerApp {
                     e.stopPropagation();
                     const idx = parseInt(remove.dataset.removeIdx, 10);
                     this.core.queue.splice(idx, 1);
+                    this.core.saveQueueState();
                     // 移除的是当前曲目之前的条目：currentIndex 前移保持指向原曲目；
                     // 移除的恰是当前曲目：index 不变（自动指向队列中的下一首）
                     if (this.core.currentIndex > idx) this.core.currentIndex--;

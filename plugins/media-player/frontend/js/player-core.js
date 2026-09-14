@@ -27,6 +27,9 @@ class MediaPlayerCore {
         this._pendingSkipTimer = null;   // 失败后自动跳下一曲的挂起定时器
         this._skipArmed = false;         // 定时器是否仍有效（用户操作即解除）
         this._loadSeq = 0;
+        // 当前加载对应的导航方向：+1 = 向后（下一首 / 直接选曲），-1 = 向前（上一首）。
+        // 加载失败后按此方向继续找相邻可播放条目，避免「上一首」落到失败条目后反向跳到后面。
+        this._loadNavDir = 1;
 
         this._audioCtx = null;
         this._sources = {};
@@ -52,6 +55,8 @@ class MediaPlayerCore {
     // ===== 队列与播放 =====
     setQueue(items, startIndex = 0, autoplay = true) {
         this.queue = items || [];
+        this._invalidateShuffleOrder();
+        this.saveQueueState();
         if (this.queue.length === 0) {
             this.stop();
             return;
@@ -60,11 +65,15 @@ class MediaPlayerCore {
         this.playIndex(idx, autoplay);
     }
 
-    playIndex(index, autoplay = true) {
+    playIndex(index, autoplay = true, navDir = 1) {
         if (!this.queue.length) return;
         if (index < 0 || index >= this.queue.length) index = 0;
         // 用户（或自动跳转）选择了曲目：解除任何挂起的自动跳转，并允许重试此前失败的曲目
         this._clearPendingSkip();
+        this._loadNavDir = navDir < 0 ? -1 : 1;
+        // 直接选曲（含随机模式下点行）：只把随机排列的游标移到该条目，排列本身不变，
+        // 因此之后前进/后退仍沿同一份顺序，就是"怎么走顺序都一样"。
+        this._syncShuffleCursor(index);
         const item = this.queue[index];
         if (item) {
             this._failedIds.delete(item.id);
@@ -82,8 +91,84 @@ class MediaPlayerCore {
             this.playIndex(idx, autoplay);
         } else {
             this.queue.push(item);
+            this._invalidateShuffleOrder();
+            this.saveQueueState();
             this.playIndex(this.queue.length - 1, autoplay);
         }
+    }
+
+    // ===== 随机播放顺序 =====
+    // 随机模式下一份排列覆盖整条队列，游标指向当前条目：next/prev 沿同一份排列进退，
+    // 因此「上一首」按原路返回，而不是重新随机取下标（历史行为：进退互不相关，
+    // 上一首可能跳到队列任意位置，表现为与列表顺序无关、无规律）。
+    // 排列在下列时机重建并锚定到当前条目：队列内容变化、切换播放模式、恢复播放、走完一轮。
+    _invalidateShuffleOrder() {
+        this._shuffleOrder = null;
+        this._shuffleCursor = 0;
+    }
+
+    // anchorIndex：把该条目放到排列首位（首次进入随机 / 恢复播放时先播当前条目）；
+    // avoidFirst：排列首位避开该条目（走完一轮重排时避免立刻重播刚播完的条目）。
+    _buildShuffleOrder(anchorIndex = this.currentIndex, avoidFirst = null) {
+        const order = this.queue.map((_, i) => i);
+        for (let i = order.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [order[i], order[j]] = [order[j], order[i]];
+        }
+        const anchor = order.indexOf(anchorIndex);
+        if (anchor > 0) {
+            [order[0], order[anchor]] = [order[anchor], order[0]];
+        }
+        if (order.length > 1 && order[0] === avoidFirst) {
+            [order[0], order[1]] = [order[1], order[0]];
+        }
+        this._shuffleOrder = order;
+        this._shuffleCursor = 0;
+    }
+
+    _ensureShuffleOrder() {
+        if (!Array.isArray(this._shuffleOrder) || this._shuffleOrder.length !== this.queue.length) {
+            this._buildShuffleOrder();
+        }
+    }
+
+    _syncShuffleCursor(index) {
+        if (this.playMode !== 1) return;
+        if (!Array.isArray(this._shuffleOrder) || this._shuffleOrder.length !== this.queue.length) {
+            this._buildShuffleOrder(index);
+            return;
+        }
+        const at = this._shuffleOrder.indexOf(index);
+        if (at >= 0) this._shuffleCursor = at;
+    }
+
+    // 沿排列走一步：dir=+1 前进，dir=-1 后退。走到排列末尾重新生成一份并从头开始；
+    // 已在排列开头再后退则停在第 0 位（不反向重排，也不跳到任意位置）。
+    _stepShuffle(dir) {
+        this._ensureShuffleOrder();
+        const size = this._shuffleOrder.length;
+        if (!size) return -1;
+        if (dir < 0 && this._shuffleCursor <= 0) {
+            this._shuffleCursor = 0;
+            return this._shuffleOrder[0];
+        }
+        let cursor = this._shuffleCursor + dir;
+        if (cursor >= size) {
+            this._buildShuffleOrder(-1, this._shuffleOrder[size - 1]);
+            cursor = 0;
+        }
+        cursor = Math.max(0, Math.min(size - 1, cursor));
+        this._shuffleCursor = cursor;
+        return this._shuffleOrder[cursor];
+    }
+
+    // 当前导航顺序（队列下标序列）：顺序模式即队列自身，随机模式即随机排列
+    _navOrder() {
+        if (this.playMode === 1) {
+            this._ensureShuffleOrder();
+            return this._shuffleOrder;
+        }
+        return this.queue.map((_, i) => i);
     }
 
     async _loadItem(item, autoplay = true) {
@@ -194,7 +279,7 @@ class MediaPlayerCore {
         this._clearPendingSkip();
         let idx;
         if (this.playMode === 1) {
-            idx = Math.floor(Math.random() * this.queue.length);
+            idx = this._stepShuffle(1);
         } else if (this.playMode === 2 && auto) {
             // 单曲循环：ended 时直接重播当前曲目
             const el = this.mediaElement;
@@ -208,7 +293,7 @@ class MediaPlayerCore {
         } else {
             idx = (this.currentIndex + 1) % this.queue.length;
         }
-        this.playIndex(idx, true);
+        this.playIndex(idx, true, 1);
     }
 
     prev() {
@@ -221,11 +306,11 @@ class MediaPlayerCore {
         }
         let idx;
         if (this.playMode === 1) {
-            idx = Math.floor(Math.random() * this.queue.length);
+            idx = this._stepShuffle(-1);
         } else {
             idx = (this.currentIndex - 1 + this.queue.length) % this.queue.length;
         }
-        this.playIndex(idx, true);
+        this.playIndex(idx, true, -1);
     }
 
     stop() {
@@ -240,6 +325,7 @@ class MediaPlayerCore {
         this.video.load();
         this.currentItem = null;
         this.currentIndex = -1;
+        this._invalidateShuffleOrder();
         this.app.onTrackChange(null);
         this._savePlaybackState();
     }
@@ -262,6 +348,8 @@ class MediaPlayerCore {
     // ===== 播放模式 =====
     cyclePlayMode() {
         this.playMode = (this.playMode + 1) % 3;
+        // 进入/离开随机模式都重建排列：再次开启随机应按当前条目重新排一份
+        this._invalidateShuffleOrder();
         this.app.updatePlayModeUI();
         this._savePlaybackState();
         const names = ['顺序播放', '随机播放', '单曲循环'];
@@ -362,8 +450,15 @@ class MediaPlayerCore {
             loopMap[this.playMode] || 'none',
             this.playMode === 1,
             this._volume,
-            this.videoMode ? 'video' : 'audio'
+            this.videoMode ? 'video' : 'audio',
+            Math.max(0, this.currentIndex)
         ).catch(() => { });
+    }
+
+    // 队列变化时单独落盘一次 id 列表（换曲只更新下标，不必每次重传整条队列）
+    saveQueueState() {
+        Bridge.call('media_save_queue', this.queue.map(i => (i ? i.id : '')))
+            .catch(() => { });
     }
 
     _debouncedSavePlayback() {
@@ -371,17 +466,37 @@ class MediaPlayerCore {
         this._saveTimer = setTimeout(() => this._savePlaybackState(), 600);
     }
 
-    restorePlayback(item, pb) {
+    async restorePlayback(item, pb) {
         if (!item || !item.id) return false;
         this._clearPendingSkip();
         const savedPos = MediaProgressStore.get(item);
-        this.queue = [item];
-        this.currentIndex = 0;
+        // 恢复上次的整条队列：后端保存的是 id 列表，按 id 批量取回条目。
+        // 只恢复当前条目时（历史行为）next/prev 会退化成单条队列，与可见列表不符。
+        let queue = [];
+        const ids = Array.isArray(pb.queue_ids) ? pb.queue_ids.filter(Boolean) : [];
+        if (ids.length) {
+            try {
+                const items = await Bridge.call('media_get_items', ids);
+                queue = (items || []).filter(x => x && x.id);
+            } catch (e) {
+                queue = [];
+            }
+        }
+        let index = queue.findIndex(x => x.id === item.id);
+        if (index < 0) {
+            queue = [item];
+            index = 0;
+        } else {
+            queue[index] = item;
+        }
+        this.queue = queue;
+        this.currentIndex = index;
         this.currentItem = item;
 
         if (pb.loop_mode === 'one') this.playMode = 2;
         else if (pb.shuffle) this.playMode = 1;
         else this.playMode = 0;
+        this._invalidateShuffleOrder();
 
         if (pb.volume !== undefined && pb.volume !== null) {
             // pb.volume 是线性位置（保存时即线性语义），直接赋值，映射在 _applyVolume
@@ -508,13 +623,16 @@ class MediaPlayerCore {
     _armSkip(itemId, nextIndex) {
         this._clearPendingSkip();
         this._skipArmed = true;
+        // 定时器内跳转必须沿用本次加载的导航方向：失败条目可能连续多个，
+        // 若让 playIndex 取默认方向，链条中的下一跳就会反向（上一首最终跳到后面）。
+        const dir = this._loadNavDir;
         this._pendingSkipTimer = setTimeout(() => {
             this._pendingSkipTimer = null;
             if (!this._skipArmed) return;
             this._skipArmed = false;
             // 执行前再校验：期间用户已切走则放弃
             if (!this.currentItem || this.currentItem.id !== itemId) return;
-            this.playIndex(nextIndex, true);
+            this.playIndex(nextIndex, true, dir);
         }, 600);
     }
 
@@ -597,20 +715,37 @@ class MediaPlayerCore {
                 return;
             }
 
-            // 4. 重试仍失败：标记后只向前跳下一首（绝不回跳）；队列尽头则停止
+            // 4. 重试仍失败：按本次加载的导航方向继续找相邻可播放条目并跳转。
+            //    向后（下一首 / 直接选曲）与历史行为一致；向前（上一首）只在当前条目
+            //    之前查找，绝不向队列后面跳 —— 历史缺陷：上一首落到失败条目后固定向后
+            //    跳，表现为「上一首」停在原曲目（表观无效）或反向前进，跳转距离取决于
+            //    连续失败条目数，现象无规律。队列尽头（本方向已无可播条目）则停止。
             this._failedIds.add(failedId);
             const curIdx = this.queue.findIndex(x => x && x.id === failedId);
-            const start = curIdx >= 0 ? curIdx + 1 : this.queue.length;
-            const candidates = this.queue
-                .map((x, index) => ({ item: x, index }))
-                .filter(x => x.index >= start && x.item && !this._failedIds.has(x.item.id));
-            if (!candidates.length) {
+            const dir = this._loadNavDir;
+            // 候选按当前导航顺序取（顺序模式=队列顺序，随机模式=随机排列），只取本方向第一个
+            // 未失败条目；该方向已无可播放条目则停止，绝不向反方向跳。
+            const order = this._navOrder();
+            const at = order.indexOf(curIdx);
+            let nextIndex = -1;
+            if (at >= 0) {
+                for (let step = 1; step < order.length; step++) {
+                    const pos = at + dir * step;
+                    if (pos < 0 || pos >= order.length) break;
+                    const candidate = this.queue[order[pos]];
+                    if (candidate && !this._failedIds.has(candidate.id)) {
+                        nextIndex = order[pos];
+                        break;
+                    }
+                }
+            }
+            if (nextIndex < 0) {
                 Toast.error('媒体加载失败，请检查文件是否仍然存在');
                 this.app.onPlayStateChange(false);
                 return;
             }
-            Toast.error('媒体加载失败，尝试下一曲');
-            this._armSkip(failedId, candidates[0].index);
+            Toast.error(dir < 0 ? '媒体加载失败，尝试上一曲' : '媒体加载失败，尝试下一曲');
+            this._armSkip(failedId, nextIndex);
         });
     }
 }

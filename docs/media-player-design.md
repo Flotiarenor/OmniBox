@@ -159,9 +159,16 @@ plugins/media-player/
 
 - 音频 `Audio()` 与视频 `<video>` 双元素，`mediaElement` 按「当前条目 kind + 画面模式」切换；
 - 播放模式 0 顺序 / 1 随机 / 2 单曲循环；`next/prev` 按模式推进，单曲循环 ended 时原地重播；
+- **随机播放**不是每次取随机下标，而是整条队列一份随机排列（`_shuffleOrder`）加游标
+  （`_shuffleCursor`）：`next/prev` 沿同一份排列进退，因此「上一首」按已播路径原路返回、
+  不跳到任意位置；走到排列末尾重新生成一份并避开刚播完的条目，已在排列开头再后退则停在
+  首位；直接选曲只把游标移到该条目在排列中的位置，排列不变（同一份顺序下进退一致）；
+  队列内容变化、切换播放模式、停止、恢复播放时排列失效并按下一条目重建；
 - 视频支持画面 / 仅声音切换（`videoMode`），切换时在新元素上续播原位置；
-- 换曲有 `loadSeq` 序号守卫，快速连点只生效最后一次；加载失败同曲重试一次，仍失败
-  **只向前**跳下一首（绝不回跳），队列尽头停止；自动跳转定时器（600ms）在用户任何操作
+- 换曲有 `loadSeq` 序号守卫，快速连点只生效最后一次；加载失败同曲重试一次，仍失败按本次
+  导航方向继续找相邻可播放条目：**下一首 / 直接选曲向后**、**上一首向前**（`_loadNavDir`，
+  由 `playIndex(index, autoplay, navDir)` 传入），该方向已无可播放条目则停止；
+  自动跳转定时器（600ms）在用户任何操作
   （播放 / 暂停 / seek / 切歌 / 停止 / 队列点击）时解除，防止延迟定时器覆盖用户选择；
 - 网易云网络流：播放前按需解析 URL（`get_song_url`），解析失败不跳歌不报错，等待下次触发。
 
@@ -176,10 +183,15 @@ plugins/media-player/
   停在 duration，紧随其后的 `_loadItem` 会先 `_saveProgress()` 把"已播完"位置写回存储、覆盖
   `ended` 里的 clear()，下次点击该曲目续播到末尾，元素停在末尾时 `play()` 无声（音乐、视频
   都表现为"无法播放"）；`togglePlay` 另在元素 `ended` / 距末尾 0.25s 内时先归零再播；
-- 后端 `playback` 状态：`item_id / loop_mode / shuffle / volume / video_mode`，切歌 / 停止 /
-  音量 / 模式变更时保存；启动时 `_restorePlayback` 无条件恢复音量与播放模式，条目仍存在时
-  恢复播放队列（视频画面模式优先取持久化的 `video_mode`，回落 `default_video_mode` 设置），
-  恢复的续播位置同样受 `resume_mode` 与"剩余不足 5s 从头"约束。
+- 后端 `playback` 状态：`item_id / loop_mode / shuffle / volume / video_mode / queue_index /
+  queue_ids / queue_truncated`，切歌 / 停止 / 音量 / 模式变更时保存播放参数，队列内容变化时
+  经 `media_save_queue` 保存 id 列表（`QUEUE_PERSIST_LIMIT = 1000` 截断并置 `queue_truncated`）；
+  启动时 `_restorePlayback` 无条件恢复音量与播放模式，条目仍存在时用 `media_get_items` 按
+  `queue_ids` 批量取回**整条队列**并定位到当前条目（取不到时回落为单条队列），恢复的续播
+  位置同样受 `resume_mode` 与"剩余不足 5s 从头"约束（视频画面模式优先取持久化的
+  `video_mode`，回落 `default_video_mode` 设置）。
+  历史缺陷：恢复只写 `queue = [item]`，重载后未点选条目时「下一首/上一首」在单条队列内打转，
+  与可见列表不符。
 
 ## 均衡器
 
