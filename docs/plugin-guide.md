@@ -57,7 +57,7 @@ plugins/
 }
 ```
 
-> 示例里没有 `author`：代码不读这个字段（且 `tools/check_plugins.py` 会把它标为"不参与运行时逻辑"）。
+> 示例里没有 `author`：代码不读这个字段（且 `tools/check_plugins.py` 会把它标为"运行时无效果"）。
 > 需要署名请写在 `description` 或 README 里。
 
 **字段说明**：
@@ -66,7 +66,7 @@ plugins/
 
 | 字段                | 要求 | 说明                                                                            |
 | ------------------- | ---- | ------------------------------------------------------------------------------- |
-| `version`         | 必填 | 语义化版本号（`x.y.z`，`tools/check_plugins.py` 会强制校验）                    |
+| `version`         | 必填 | 语义化版本号（`x.y.z`，`tools/check_plugins.py` 会强制校验；运行时只记录不判断兼容性） |
 | `displayName`     | 必填 | 在导航栏显示的名称                                                              |
 | `icon`            | 必填 | 导航栏图标（Emoji 或文字）                                                      |
 | `frontend.entry`  | 必填 | 前端入口 HTML 路径。**壳目前固定加载 `frontend/index.html`**，此字段只被 `tools/check_plugins.py` 用于校验入口及其引用资源存在；写别的值不会改变壳实际加载的文件 |
@@ -77,17 +77,26 @@ plugins/
 | `dependencies`    | 可选 | 依赖的其他插件名称列表                                                          |
 | `libs`            | 可选 | 插件本地附加库目录列表，默认`["backend/libs"]`，加载后端前会加入 `sys.path` |
 | `permissions`     | 可选 | 权限声明，**仅作知情明示**：运行时不做强制、也不在设置页展示（代码里没有任何读取方） |
-| `minShellVersion` | 可选 | 要求的最低 Shell 版本                                                           |
+| `minShellVersion` | 可选 | 要求的最低 Shell 版本。**仅 `tools/check_plugins.py` 读取**：发布前自检时会拒绝高于当前 shell 的声明，但运行时既不告警也不拒绝加载（旧版 shell 会照常载入该插件） |
 | `destroyOnLeave`  | 可选 | `true` 时离开页面销毁 iframe 重新加载（默认保持存活）                         |
 | `hidden`          | 可选 | `true` 时不显示在 Shell 主导航，但仍可被宿主内嵌或通过插件 URL 访问           |
-| `kind`            | 可选 | `local-adapter`：声明本插件管理独立运行环境（重依赖插件使用；当前只告警不阻断） |
-| `runtime`         | 可选 | **规划中，尚未实装**：独立运行环境声明（venv / 入口 / requirements），见 §2.2 |
+| `kind`            | 可选 | `local-adapter`：声明本插件管理独立运行环境（重依赖插件使用；**尚未实装，只告警不阻断**，当前声明不生效） |
+| `runtime`         | 可选 | **规划中，尚未实装：填入不生效**，运行时没有任何读取方；独立运行环境声明（venv / 入口 / requirements），见 §2.2 |
 | `description`     | 可选 | 仅作文档/说明：运行时与壳都不读（界面用 `displayName` + `icon`）              |
 
 > **字段必须"有读取方"**：`tools/check_plugins.py` 会核对每个 manifest 字段是否真的被代码读取，
-> 没有读取方且未登记为"不参与运行时逻辑"的字段直接报错。新增字段时请同步更新
-> `RUNTIME_FIELD_READERS` / `DOC_ONLY_FIELDS` 两张表 —— 这条规则来自一个真实教训：
-> 指南曾经教了 4 个代码根本不读的字段，照文档写的作者只会得到"填了没效果"。
+> 没有读取方且未登记的字段直接报错。新增字段时请同步更新 `tools/check_plugins.py` 里的三张表 ——
+> 这条规则来自一个真实教训：指南曾经教了 4 个代码根本不读的字段，照文档写的作者只会得到"填了没效果"。
+>
+> | 表 | 含义 | 检查器行为 |
+> | --- | --- | --- |
+> | `RUNTIME_FIELD_READERS` | 运行时代码真的会读（登记读取方文件与源码片段，会自检过期） | 通过 |
+> | `CHECKER_ONLY_FIELDS` | 只有检查器读：能拦住写错，但运行时无任何效果（如 `version` / `frontend.entry` / `minShellVersion` / `kind`） | warning |
+> | `DOC_ONLY_FIELDS` | 纯文档字段，连检查器都不读（如 `description` / `author` / `permissions` / 未实装的 `runtime`） | warning |
+>
+> 登记必须"表里如一"：把检查器自己填进 `RUNTIME_FIELD_READERS` 会让这条规则空转满足
+> （`minShellVersion` 曾长期如此，见 `docs/core-contract-fixes.md` §1）。整块字段（如 `runtime`）
+> 登记一次即可，其子字段由父键回退匹配；未登记的字段（含层级更深的 `a.b.c`）仍按 error 处理。
 
 ---
 
@@ -182,6 +191,11 @@ exts.forEach(ext => {
 
 ## 2.2 重型依赖与独立运行环境（runtime）
 
+> **本节的 `runtime` 块尚未实装，填入不生效。** 运行时（`shell/backend/`）没有任何代码读取它，
+> 壳也不会按 `venv` 拉起独立环境；`tools/check_plugins.py` 会对应地报一条"运行时无效果"的 warning。
+> 下面描述的是 `docs/core-direction.md` §3.4 / §3.5 的规划方案，实装前请按第 5 条用懒 import 兜底，
+> 不要依赖 `runtime` 生效。
+
 torch / onnxruntime 等重依赖**不得**写在插件 `backend/main.py` 顶层 import（会拖慢整个应用启动且与主进程环境冲突）。正确做法：
 
 1. **manifest 声明独立环境**：
@@ -256,7 +270,26 @@ class PluginBase(ABC):
         """返回该插件使用的数据根目录，默认使用全局配置。
         插件可重写此方法以支持自定义根目录。"""
         return Path(self.config['directories']['data_root']).resolve()
+
+    # ===== 文件与缩略图契约（Shell 的 /file、/thumbs 路由直接调用，见 §7.2） =====
+
+    def get_file_roots(self) -> List[Path]:
+        """允许 /file 访问的根目录列表。跨多根插件覆写（如 media-player）"""
+
+    def get_thumb_data(self, rel_path: str) -> Optional[Tuple[bytes, str]]:
+        """返回 (bytes, mime) 供 /thumbs 直接响应；默认 None = 不提供字节"""
+
+    @property
+    def thumb_dir(self) -> Path:
+        """缩略图散文件目录，默认 数据根目录/.cache/thumbs"""
+        # 兼容旧写法：self.thumb_dir = <path>（property 带 setter，读取始终走 property）
+
+    def ensure_thumb(self, rel_path: str) -> None:
+        """按需生成缩略图（/thumbs 找不到文件时调用）。默认空实现"""
 ```
+
+> 四个文件/缩略图成员是**基类契约**，宿主侧不再用 `getattr` 探针读取。宿主与附属插件
+> 之间的这部分约定由 `tests/test_plugin_host_contract.py` 固定形状（见 §7.2）。
 
 ### 3.2 编写插件类
 
@@ -664,7 +697,54 @@ const lightbox = createLightbox({
 lightbox.show(images, 0);
 ```
 
-### 4.4 插件专属文件
+### 4.4 前端生命周期（onShow / onHide / onDispose）
+
+插件 iframe **默认常驻**：切到别的插件时壳只是用 `v-show` 把它隐藏，DOM 与 JS 状态都保留
+（`readme.md` 记载这是有意设计 —— 切换时媒体播放不中断）。代价是切走以后插件的定时器、
+`requestAnimationFrame` 自循环与轮询仍在运行，而且插件前端无从知道自己的 iframe 是否可见。
+
+壳因此在可见性变化时通知插件，`base.js` 提供三个注册入口：
+
+| 入口 | 触发时机 | 典型用途 |
+| --- | --- | --- |
+| `onShow(fn)` | iframe 由隐藏转为显示（含注册时已可见的情况，会立即补一次） | 恢复轮询 / 继续动画 / 暂停过的进度刷新 |
+| `onHide(fn)` | iframe 由显示转为隐藏（常驻组切走、窗口最小化、切换标签页） | 停 `setInterval`、停 rAF 自循环、停轮询 |
+| `onDispose(fn)` | iframe 即将销毁（`destroyOnLeave: true` 的插件离开时、页面卸载时） | 摘掉 `window`/`document` 上的监听器、释放资源 |
+
+```javascript
+// 三个入口同时挂在 window 上，也等价于 window.PluginLifecycle.onShow 等
+onHide(() => {
+  clearInterval(this._pollTimer);   // 后台没有必要继续轮询
+  this._pollTimer = null;
+});
+onShow(() => {
+  if (!this._pollTimer) this._pollTimer = setInterval(() => this.poll(), 2000);
+});
+onDispose(() => {
+  window.removeEventListener('resize', this._onResize);
+});
+```
+
+**约定与注意事项**：
+
+- **`onHide` 的语义是"停止视觉与轮询类工作"，不是"停止播放"。** 常驻正是为了让媒体播放
+  在切换时不中断，因此 `media-player` 在 `onHide` 里只停 `lyrics-parser` 的 rAF 自循环，
+  保留 `player-core` 的播放进度保存；是否暂停由插件自行决定。
+- **只发状态真变化的通知**，重复的 `shown` / `hidden` 不会重复触发；钩子抛异常只记日志，
+  不会影响其它钩子与宿主。
+- **注册顺序无关紧要**：`base.js` 先于插件脚本注入，插件在脚本顶层注册即可；
+  若注册时 iframe 已经可见，`onShow` 会立即执行一次（常见写法"进入即恢复"无需额外处理）。
+- **消息来源经过校验**：只接受父窗口直接发来的消息（仅校验 `origin` 不足以拦截同源嵌套
+  frame）。插件不需要自己监听 `message`。
+- **`destroyOnLeave` 与生命周期是互补的**：`"destroyOnLeave": true` 让 iframe 离开即销毁
+  重载（适合状态重且切换代价低的插件），此时壳会在卸载前发 `onDispose`；
+  常驻插件则只会收到 `onHide` / `onShow`，`onDispose` 只在页面卸载时到达。
+- **迁移范例**：`plugins/image-viewer/frontend/js/app.js` 的 `_bindPluginLifecycle()`
+  在 `onHide` 里停掉幻灯片定时器并记住位置、`onShow` 原位继续、`onDispose` 摘掉 `resize`
+  监听器（该文件此前是 `addEventListener` 35 : `removeEventListener` 0）。
+  回归用例见 `tests/js/image_viewer_lifecycle.mjs` 与 `tests/js/plugin_lifecycle.mjs`。
+
+### 4.5 插件专属文件
 
 插件只需提供自己的 HTML、CSS 和 JS 文件，并在 HTML 中引用它们：
 
@@ -764,6 +844,21 @@ const src = Bridge.originalUrl('subdir/photo.jpg');
 
 ### 7.2 插件如何生成缩略图
 
+`/thumbs` 消费的四个成员都是 `shell/backend/plugin_base.py` 里 **`PluginBase` 的正式契约**，
+不是"宿主碰巧 getattr 得到"的隐式约定（历史上它们是探针式的，宿主把 `thumb_dir` 改成方法
+就能让 `/thumbs` 整体 500）：
+
+| 成员 | 默认实现 | 说明 |
+| --- | --- | --- |
+| `get_thumb_data(rel_path)` | 返回 `None` | 返回 `(bytes, mime)`，或 `None` 表示本插件不提供字节 |
+| `thumb_dir` | `数据根目录/.cache/thumbs` | 只读 property（`Path`）。可赋值覆盖（旧写法兼容），也可以什么都不做 |
+| `ensure_thumb(rel_path)` | 空实现 | `/thumbs` 找不到文件时调用，插件可现场生成并落盘；返回值被忽略 |
+| `get_file_roots()` | `[get_data_root()]` | 跨多根插件覆写（如 `media-player`） |
+
+**优先级**：`get_thumb_data()` 命中（返回二元组）时直接响应；返回 `None` 或形状不对时，
+才回退到 `thumb_dir` 散文件布局。因此"只覆写 `get_thumb_data()`、不定义 `thumb_dir`"
+（`media-player` 形态）与"只用散文件布局"（默认形态）都成立。
+
 **推荐模式（image-viewer v2.4.3+）**：基于共享基建 `ThumbCache`（见 §3.4），后端提供 `get_thumb_data(rel_path)`，从 SQLite 缓存读取缩略图字节，未命中时生成并回写：
 
 ```python
@@ -777,10 +872,9 @@ def get_thumb_data(self, rel_path: str):
     return self.thumb_cache.get(rel_path, self.root_dir / rel_path)
 ```
 
-Shell 的 `/thumbs` 路由会优先调用插件的 `get_thumb_data()`（不存在时回退到散文件模式），
-前端仍通过 `Bridge.thumbUrl()` 获取 URL，无需感知差异。
+前端仍通过 `Bridge.thumbUrl()` 获取 URL，无需感知后端用哪种模式。
 
-**旧版散文件模式（兼容）**：保存到 `self.thumb_dir`（通常为 `数据根目录/.cache/thumbs/`），示例：
+**旧版散文件模式（兼容）**：保存到 `self.thumb_dir`（默认为 `数据根目录/.cache/thumbs/`），示例：
 
 ```python
 def _get_thumb(self, rel_path: str) -> Path:
@@ -797,6 +891,11 @@ def _get_thumb(self, rel_path: str) -> Path:
  shutil.copy(self.root_dir / rel_path, thumb_path)
  return thumb_path
 ```
+
+> **Companion 插件可直接代理宿主成员**：`image-cleaner` 就是把自己的
+> `thumb_dir` / `ensure_thumb` / `get_thumb_data` 转发给 `self.get_dependency('image-viewer')`，
+> 因此它复用宿主的缩略图而不复制一份缓存。这四个成员既然是基类契约，宿主侧改动
+> 就受 `tests/test_plugin_host_contract.py` 的回归保护。
 
 ### 7.3 状态页与壳内错误视图
 
@@ -904,6 +1003,22 @@ image-viewer 需要在不同文件夹应用不同设置（如行高、排序）�
 6. **状态调试（--status-debug）**：以 `python main.py --web-only --status-debug` 启动后，访问 `/status` 显示壳内调试面板（健康检查 200 / API 鉴权 401 / 错误跳转演示），用于验证鉴权与错误页行为。
 7. **一键调试环境**：`python tests/debug_status_pages.py` 自动起独立端口调试服务器（注入「坏插件」演示 iframe 404 → 壳内错误卡片链路），并用 requests 打印 11 个 HTTP 场景触发表，浏览器打开 `/status` 即调试面板；Ctrl+C 自动清理。
 8. **HTTP 直连注意**：`/api`、`/file`、`/thumbs` 受令牌保护（见 §7.1），curl 测试需带 `X-Omnibox-Token` 头或先访问首页拿 Cookie；无 Cookie 客户端访问 `/thumbs/x.png` 会得到 401 而非 404。
+9. **真实浏览器端到端（改壳前端后建议跑）**：
+
+   ```bash
+   venv/Scripts/pip install -r requirements-e2e.txt     # 只需一次（Linux/macOS 用 venv/bin/pip）
+   venv/Scripts/python -m unittest tests.test_shell_browser_e2e -v
+   ```
+
+   它自己起 `main.py --web-only` 服务 + 无头 Chrome，断言「接口返回的插件数 == 导航渲染出的插件数」、
+   iframe 已挂载、以及生命周期通知真的送达插件 iframe（切到设置页收 `onHide`、切回收 `onShow`）。
+
+   **为什么需要它**：有一类缺陷是"界面静默不更新"——接口数据、status、cookie 全正常，
+   但界面不渲染，而且**不抛异常、控制台没有报错**。实测过一次（插件列表不是响应式数据，
+   computed 在数据到达前求值并永久缓存空数组），unittest 与 vm 桩都抓不到，只有真实浏览器能抓。
+   **这类用例不进 CI**：本地打开应用一眼可见的问题属于本地自测范围，CI 上跑真实浏览器又慢又脆；
+   `selenium` 因此只声明在 `requirements-e2e.txt`（CI 装的是 `requirements-dev.txt`），
+   未安装时用例自动 skip，不影响 `unittest discover` 结果。
 
 ---
 

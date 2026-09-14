@@ -4,14 +4,14 @@
 检查项：
 - manifest.json 可解析、name 与目录名一致、frontend/backend 声明完整
 - 每个 manifest 字段都必须有读取方（RUNTIME_FIELD_READERS），
-  或明确登记为不参与运行时逻辑（DOC_ONLY_FIELDS）；登记表本身也会自检
+  或明确登记为运行时无效果（CHECKER_ONLY_FIELDS / DOC_ONLY_FIELDS）；登记表本身也会自检
 - frontend/backend 入口文件存在且不越界
 - route 合法、保留路由、跨插件不重复
 - dependencies 是字符串数组、引用存在且不依赖自身
 - minShellVersion 不超过当前 shell 版本
 - 插件目录内不得残留 settings.json 或旧版 _save_settings_to_file 代码
 - 后端类可导入、继承 PluginBase、settings_schema 结构合法
-- 已规划但未实装的 kind: "local-adapter" 只告警不阻断
+- 已规划但未实装的 kind / runtime 只告警不阻断
 
 用法：
     python tools/check_plugins.py
@@ -56,10 +56,17 @@ RUNTIME_FIELD_READERS: Dict[str, List[Tuple[str, str]]] = {
     'backend.entry': [('shell/backend/plugin_manager.py', "backend_cfg.get('entry'")],
     'backend.class': [('shell/backend/plugin_manager.py', "backend_cfg.get('class'")],
     'frontend.route': [('shell/backend/plugin_manager.py', "m['frontend']['route']")],
-    'frontend.entry': [('tools/check_plugins.py', 'frontend_entry')],
-    'version': [('tools/check_plugins.py', "data.get('version')")],
-    'minShellVersion': [('tools/check_plugins.py', 'minShellVersion')],
-    'kind': [('tools/check_plugins.py', 'local-adapter')],
+}
+
+# 只被检查器消费的字段：运行时没有任何读取方。
+# 必须与 RUNTIME_FIELD_READERS 分开登记 —— 否则把"检查器读自己"填进读取方表，
+# 就等于让"每个字段都必须有读取方"这条规则空转满足（minShellVersion 曾长期如此：
+# 全仓库只有检查器提到它，旧版 shell 加载声明了高版本要求的插件时既不告警也不进 /status）。
+CHECKER_ONLY_FIELDS: Dict[str, str] = {
+    'frontend.entry': '壳固定加载 frontend/index.html，此字段只用于校验入口与引用资源存在',
+    'version': '只校验 x.y.z 格式，不参与任何运行时逻辑',
+    'minShellVersion': '检查器会拒绝高于当前 shell 的声明，但运行时既不告警也不拒绝加载',
+    'kind': '仅登记规划中的 kind="local-adapter"，实装前不产生任何运行时效果',
 }
 
 # 有意不参与运行时逻辑的字段：允许存在，但指南必须写明"不读"。
@@ -67,7 +74,7 @@ DOC_ONLY_FIELDS: Dict[str, str] = {
     'description': '仅供文档/说明，运行时与壳都不读（界面用 displayName + icon）',
     'author': '仅作文档标注，代码不读',
     'permissions': '仅作知情明示，不做运行时强制，也不在设置页展示',
-    'runtime': '规划中的字段，尚未实装（不要照它写插件）',
+    'runtime': '规划中的字段，尚未实装，运行时没有任何读取方（照它写插件不会生效）',
 }
 
 
@@ -230,7 +237,13 @@ def _load_backend_class(plugin_dir: Path, entry: str, class_name: str, lib_dirs=
 
 
 def _flatten_manifest_fields(data: dict) -> Dict[str, object]:
-    """把 manifest 摊平成 {'frontend.route': ...} 形式的字段表（一层嵌套足够）。"""
+    """把 manifest 摊平成 {'frontend.route': ...} 形式的字段表（一层嵌套足够）。
+
+    摊平键必须带上父键（`_parent_field()` 逐级回退），否则整块登记的表永远匹配不到：
+    `runtime` 只在 DOC_ONLY_FIELDS 里登记为裸键，而摊平出来的是 runtime.kind /
+    runtime.entry / runtime.venv ...，两表永不交集 —— 照 docs/plugin-guide.md §2.2
+    写的 manifest 会拿到 6 条 error，而逐字段登记又会随字段增减反复过期。
+    """
     flat: Dict[str, object] = {}
     for key, value in data.items():
         if isinstance(value, dict):
@@ -239,6 +252,13 @@ def _flatten_manifest_fields(data: dict) -> Dict[str, object]:
         else:
             flat[key] = value
     return flat
+
+
+def _parent_field(field: str) -> str | None:
+    """逐级回退父键：'runtime.kind' → 'runtime'，'a.b.c' → 'a.b' → 'a'。"""
+    if '.' not in field:
+        return None
+    return field.rsplit('.', 1)[0]
 
 
 def _check_reader_registry() -> List[str]:
@@ -260,24 +280,64 @@ def _check_reader_registry() -> List[str]:
 
 
 def _check_manifest_fields(data: dict, where: str) -> Tuple[List[str], List[str]]:
-    """每个 manifest 字段都必须有读取方，或明确登记为"不参与运行时逻辑"。"""
+    """每个 manifest 字段都必须有读取方，或明确登记为"运行时无效果"。
+
+    查表顺序：字段本身 → 逐级父键。
+    - 登记为 RUNTIME_FIELD_READERS 的整块（如 `runtime`，实装后）一次命中，其子字段
+      不再逐条判定；
+    - 只被检查器消费的字段（CHECKER_ONLY_FIELDS）产出 warning：它能拦住作者写错，
+      但运行时不会有任何效果，作者有权知道这一点；
+    - 都没有则仍是 error —— 回退只在父键确有登记时生效，所以 `runtimeFoo`、`mystery`
+      这类字段不会因为父键回退而被放过。
+    """
     errors: List[str] = []
     warnings: List[str] = []
     for field in sorted(_flatten_manifest_fields(data)):
         if field in RUNTIME_FIELD_READERS:
             continue
+        if field in CHECKER_ONLY_FIELDS:
+            warnings.append(
+                f'{where} manifest.{field} 该字段运行时无效果：'
+                f'{CHECKER_ONLY_FIELDS[field]}，只有 tools/check_plugins.py 会读它'
+            )
+            continue
         if field in DOC_ONLY_FIELDS:
             warnings.append(
-                f'{where} manifest.{field} 不参与运行时逻辑（{DOC_ONLY_FIELDS[field]}），'
-                f'开发指南必须同样写明'
+                f'{where} manifest.{field} 该字段运行时无效果：'
+                f'{DOC_ONLY_FIELDS[field]}，开发指南必须同样写明'
+            )
+            continue
+        matched = _match_registered_ancestor(field)
+        if matched is not None:
+            reason = CHECKER_ONLY_FIELDS.get(matched) or DOC_ONLY_FIELDS.get(matched)
+            warnings.append(
+                f'{where} manifest.{field} 该字段运行时无效果：'
+                f'随 manifest.{matched} 整块登记，{reason}'
             )
             continue
         errors.append(
             f'{where} manifest.{field} 没有任何代码读取它：'
             f'要么在 tools/check_plugins.py 的 RUNTIME_FIELD_READERS 登记读取方，'
-            f'要么登记进 DOC_ONLY_FIELDS 并在开发指南里写明它不生效'
+            f'要么登记进 CHECKER_ONLY_FIELDS / DOC_ONLY_FIELDS 并在开发指南里写明它不生效'
         )
     return errors, warnings
+
+
+def _match_registered_ancestor(field: str) -> str | None:
+    """返回 `field` 最近的一个"确已登记"的父键，没有则 None。
+
+    只认确有登记（RUNTIME_FIELD_READERS / CHECKER_ONLY_FIELDS / DOC_ONLY_FIELDS）的
+    祖先，不做无条件回退：否则 `frontend.typo` 这类拼错的子字段会被 `frontend.route`
+    一类兄弟字段的父键兜住，门禁就形同虚设。
+    """
+    parent = _parent_field(field)
+    while parent is not None:
+        if (parent in RUNTIME_FIELD_READERS
+                or parent in CHECKER_ONLY_FIELDS
+                or parent in DOC_ONLY_FIELDS):
+            return parent
+        parent = _parent_field(parent)
+    return None
 
 
 def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -> Tuple[List[str], List[str]]:
@@ -388,10 +448,8 @@ def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -
                 errors.append(f'{where} {py_file.name} 不应自定义 _load_sibling，请使用 shell.backend.plugin_utils.load_sibling')
 
 
-        if data.get('kind') == 'local-adapter':
-            warnings.append(
-                f'{where} kind="local-adapter" 尚未实装（docs/adapter-spec.md 为规划中），当前声明不会生效'
-            )
+        # kind 的"尚未实装"告警由 CHECKER_ONLY_FIELDS 统一产出（见 _check_manifest_fields），
+        # 这里不再重复一条同义警告。
         if data.get('permissions'):
             warnings.append(
                 f'{where} permissions 声明当前仅记录、尚未强制执行'

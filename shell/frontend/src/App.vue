@@ -1,8 +1,16 @@
 <!--This product includes software developed by flotiarenor.Copyright 2026 flotiarenor -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { loadPlugins, getPlugins } from './core/plugin-loader'
+import {
+  disposeFrames,
+  ensureFrame,
+  LIFECYCLE_MESSAGES,
+  noteFrameEpoch,
+  refreshFrame,
+  type LifecycleMessage,
+} from './core/plugin-visibility'
 import SettingsView from './views/SettingsView.vue'
 import StatusView from './views/StatusView.vue'
 import { toastError } from './core/toast'
@@ -19,6 +27,14 @@ const activePlugin = ref<string | null>(null)
 const frameErrors = reactive<Record<string, number>>({})
 // 重试计数：改变 iframe src 的查询参数强制重新加载
 const reloadCounters = reactive<Record<string, number>>({})
+
+// 必须定义在下面的 route watcher 之前：watcher 是 immediate，会在 setup 期同步执行
+const plugins = computed(() => getPlugins())
+const keepAlivePlugins = computed(() => plugins.value.filter(p => !p.destroyOnLeave))
+const destroyOnLeavePlugins = computed(() => plugins.value.filter(p => p.destroyOnLeave))
+const currentPlugin = computed(() => route.meta.pluginName as string || '')
+const isSettings = computed(() => route.path === '/settings')
+const isStatus = computed(() => route.path === '/status')
 
 function onFrameLoad(e: Event, name: string) {
   try {
@@ -38,12 +54,100 @@ function onFrameLoad(e: Event, name: string) {
     // 跨域无法读取内容时不处理，保持原行为
     delete frameErrors[name]
   }
+  // 新挂载/重载的 frame 必须显式登记初始状态：destroyOnLeave 插件在 iframe 加载完成前
+  // 就可能被切走，此时它还没有过任何状态；不登记的话它会在后台被误判为"可见"，
+  // 第一次真正显示时反而收不到通知。重载（重试 / 设置变更改 src）会递增文档代次，
+  // 让状态机丢掉旧文档的结论并重新通知一次 —— 否则后台重载的新文档会以为自己可见。
+  const mounted = activePlugin.value === name
+  const epoch = (frameEpochs.get(name) || 0) + 1
+  frameEpochs.set(name, epoch)
+  frameMounted.set(name, mounted)
+  const reloaded = noteFrameEpoch(name, epoch)
+  const messages = reloaded
+    ? (mounted && windowVisible.value ? [LIFECYCLE_MESSAGES.shown] : HIDDEN_BY_DEFAULT)
+    : ensureFrame(name, mounted)
+  notifyFrame(name, messages)
+  refreshFrameVisibility(name)
 }
 
 function pluginSrc(p: { name: string; entryUrl: string }): string {
   const n = reloadCounters[p.name] || 0
   if (!n) return p.entryUrl
   return p.entryUrl + (p.entryUrl.includes('?') ? '&' : '?') + '_r=' + n
+}
+
+// ===== 插件生命周期通知（docs/core-contract-fixes.md §3） =====
+// 常驻插件默认 keep-alive（v-show 隐藏），切走以后其定时器 / rAF 自循环 / 轮询仍在跑，
+// 插件前端也无从知道自己的 iframe 是否可见。宿主因此在三种情形下通知插件：
+//   1. 切换插件（activePlugin 变化）：刚变为非活动 → hidden，刚变为活动 → shown；
+//   2. 窗口 visibilitychange（最小化 / 切标签页）：与"可见"取交集；
+//   3. beforeunload / pagehide：已挂载的 frame 一律 dispose。
+// "该不该发"由 plugin-visibility 状态机判定（只发真正的状态变化）。
+const frameRefs = new Map<string, HTMLIFrameElement>()
+// 每个 frame 是否已作为活动插件挂载（destroyOnLeave 插件切走即卸载）
+const frameMounted = new Map<string, boolean>()
+// 每个 frame 的文档代次（每次 iframe load 递增）：重载后旧文档的可见性结论作废
+const frameEpochs = new Map<string, number>()
+// 窗口级可见性：最小化 / 切标签页时为 false
+const windowVisible = ref(true)
+const HIDDEN_BY_DEFAULT: LifecycleMessage[] = []
+
+function setFrameRef(name: string, el: Element | null) {
+  const frame = el?.querySelector('iframe')
+  if (frame) frameRefs.set(name, frame as HTMLIFrameElement)
+}
+
+function sendToFrame(name: string, message: string) {
+  const frame = frameRefs.get(name)
+  const target = frame?.contentWindow
+  if (!target) return
+  try {
+    target.postMessage({ type: message }, window.location.origin)
+  } catch (e) {
+    console.warn(`[Shell] 向插件 ${name} 发送 ${message} 失败:`, e)
+  }
+}
+
+// 以状态机给出的通知为准发消息（状态机内部已去重）
+function notifyFrame(name: string, messages: LifecycleMessage[]) {
+  if (!frameRefs.has(name)) return
+  messages.forEach(message => sendToFrame(name, message))
+}
+
+function refreshFrameVisibility(name: string) {
+  const state = {
+    mounted: !!frameMounted.get(name),
+    active: activePlugin.value === name,
+    windowVisible: windowVisible.value,
+  }
+  notifyFrame(name, refreshFrame(name, state))
+}
+
+// 路由或窗口可见性变化后，让所有已挂载 frame 的可见性状态重新对齐
+function refreshAllFrameVisibility() {
+  frameRefs.forEach((_frame, name) => refreshFrameVisibility(name))
+}
+
+// 销毁组：离开即卸载 iframe，卸载前发一次 dispose
+function disposeLeavingFrames(keepAliveNames: Set<string>) {
+  const leaving = Array.from(frameRefs.keys()).filter(name => {
+    if (keepAliveNames.has(name)) return false
+    if (!frameMounted.get(name)) return false
+    frameMounted.set(name, false)
+    return true
+  })
+  disposeFrames(leaving).forEach((message, index) => sendToFrame(leaving[index], message))
+}
+
+function onVisibilityChange() {
+  windowVisible.value = document.visibilityState !== 'hidden'
+  refreshAllFrameVisibility()
+}
+
+function onPageHide() {
+  // 页面即将卸载：一次性通知所有 frame 释放资源（监听器 / 定时器 / rAF）
+  const names = Array.from(frameRefs.keys())
+  disposeFrames(names).forEach((message, index) => sendToFrame(names[index], message))
 }
 
 function handleRetry(from: string) {
@@ -98,10 +202,16 @@ onMounted(async () => {
   fsObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-video-fullscreen'] })
 
   window.addEventListener('omnibox:api-error', onApiError)
+  window.addEventListener('visibilitychange', onVisibilityChange)
+  window.addEventListener('beforeunload', onPageHide)
+  window.addEventListener('pagehide', onPageHide)
 })
 
 onUnmounted(() => {
   window.removeEventListener('omnibox:api-error', onApiError)
+  window.removeEventListener('visibilitychange', onVisibilityChange)
+  window.removeEventListener('beforeunload', onPageHide)
+  window.removeEventListener('pagehide', onPageHide)
 })
 
 watch(
@@ -121,16 +231,23 @@ watch(
     } else if (route.path === '/status') {
       activePlugin.value = null
     }
+    // 路由切换后的可见性收敛：keep-alive 的 iframe 已存在（这里同步发通知），
+    // destroyOnLeave 的 iframe 由本次渲染挂载/卸载，交给 setFrameRef 与下面的
+    // nextTick 兜底，保证两种形态都恰好收到一次 shown / hidden / dispose。
+    refreshAllFrameVisibility()
+    nextTick(() => {
+      frameRefs.forEach((_frame, frameName) => {
+        if (destroyOnLeavePlugins.value.some(p => p.name === frameName)) {
+          frameMounted.set(frameName, activePlugin.value === frameName)
+          notifyFrame(frameName, ensureFrame(frameName, activePlugin.value === frameName))
+        }
+      })
+      disposeLeavingFrames(new Set(keepAlivePlugins.value.map(p => p.name)))
+      refreshAllFrameVisibility()
+    })
   },
   { immediate: true }
 )
-
-const plugins = computed(() => getPlugins())
-const keepAlivePlugins = computed(() => plugins.value.filter(p => !p.destroyOnLeave))
-const destroyOnLeavePlugins = computed(() => plugins.value.filter(p => p.destroyOnLeave))
-const currentPlugin = computed(() => route.meta.pluginName as string || '')
-const isSettings = computed(() => route.path === '/settings')
-const isStatus = computed(() => route.path === '/status')
 </script>
 
 <template>
@@ -163,7 +280,10 @@ const isStatus = computed(() => route.path === '/status')
     <main class="main-view">
       <template v-if="isReady">
         <template v-for="p in keepAlivePlugins" :key="p.name">
-          <div v-if="visitedPlugins[p.name]" v-show="activePlugin === p.name" class="plugin-frame-container">
+          <div
+            v-if="visitedPlugins[p.name]" v-show="activePlugin === p.name" class="plugin-frame-container"
+            :ref="el => setFrameRef(p.name, el as Element | null)"
+          >
             <iframe
               :src="pluginSrc(p)"
               :data-plugin-name="p.name"
@@ -175,7 +295,10 @@ const isStatus = computed(() => route.path === '/status')
           </div>
         </template>
         <template v-for="p in destroyOnLeavePlugins" :key="p.name">
-          <div v-if="activePlugin === p.name" class="plugin-frame-container">
+          <div
+            v-if="activePlugin === p.name" class="plugin-frame-container"
+            :ref="el => setFrameRef(p.name, el as Element | null)"
+          >
             <iframe
               :src="pluginSrc(p)"
               :data-plugin-name="p.name"
