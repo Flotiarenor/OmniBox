@@ -10,10 +10,33 @@ name: ci
 # 为什么 test/package 必须包含 windows-latest：
 # 历史缺陷里有一批是 Windows 专属的（SQLite 临时目录被占用导致清理失败、
 # PATH 分隔符写死 ':'、文件锁定）。只用 Linux runner 会永久掩盖它们。
+#
+# 为什么纯文档改动不跑（paths-ignore）：
+# 这 5 个门禁全部只读代码 —— ruff 不扫 Markdown，check_version/check_plugins/
+# check_packaging 读的是 pyproject/package.json/manifest/spec，前端 job 只构建
+# src/ 里的 TS/Vue。因此改 .md、README、LICENSE 一类文件不可能让门禁失败，
+# 跑一遍是纯烧 runner 时间。与 package-smoke.yml 的取舍一致（那边注释写的是
+# "避免每次改文档都烧 20 分钟的 Windows runner"）。
+#
+# 刻意**不**列入 ignored 的路径（宁可多跑一次）：
+#   docs/Releases/**  —— 是打包 spec 与资源，构建输入，不是文档；
+#   .github/workflows/** —— 工作流自身改动必须验证，否则改坏一次会静默失去所有门禁；
+#   tools/** 与 tests/** —— 门禁与被测代码本身。
+# 另外「只改注释/格式」的代码改动无法按路径识别，只能照常跑（跑一遍最省心）。
 on:
   push:
     branches: ['**']
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.gitattributes'
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.gitattributes'
   workflow_dispatch:
 
 # 同一分支的新推送取消旧的运行，省配额

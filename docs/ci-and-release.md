@@ -38,7 +38,7 @@ node tools/check_frontend_escape.cjs
 
 ## 2. 工作流
 
-### `ci.yml` —— 每次 push / PR
+### `ci.yml` —— 每次 push / PR（纯文档改动除外）
 
 | job | runner | 内容 |
 | --- | --- | --- |
@@ -47,6 +47,27 @@ node tools/check_frontend_escape.cjs
 | `test` | windows + ubuntu，py3.10 + 3.12 | unittest 全量（netease-music 的 4 项仅 Windows 运行） |
 | `frontend` | ubuntu | 转义门禁 + `npm ci` + `vue-tsc --noEmit` + `vite build` |
 | `package` | windows + ubuntu | 真实跑 PyInstaller + 校验产物内容；**只在 push `main` / 手动触发时跑**（日常 push 由 `package-smoke` 按路径兜底，产物仅作 artifact） |
+
+**纯文档改动整个工作流都不触发**（`paths-ignore: '**/*.md'`、`LICENSE`、
+`.gitignore`、`.gitattributes`）：这 5 个门禁全部只读代码——ruff 不扫 Markdown，
+`check_version` / `check_plugins` / `check_packaging` 读的是
+`pyproject.toml` / `package.json` / `manifest.json` / spec，前端 job 只构建
+`src/` 里的 TS/Vue——所以改这些文件不可能让门禁失败，跑一遍纯属烧 runner 时间。
+
+刻意**不**忽略的路径（宁可多跑一次）：
+
+| 路径 | 理由 |
+| --- | --- |
+| `docs/Releases/**` | 是 PyInstaller spec 与打包资源，属构建输入而非文档 |
+| `.github/workflows/**` | 工作流自身改动必须验证，改坏一次会静默失去所有门禁 |
+| `tools/**`、`tests/**` | 门禁脚本与被测代码本身 |
+
+「只改注释/格式」的代码改动**无法按路径识别**，只能照常跑全量——这是刻意接受的
+代价：路径过滤宁漏不误，确认没价值时再手动取消运行即可。
+
+> 若将来给 `main` / `develop` 配上"必须先过 CI 才能合并"的保护规则，注意
+> `paths-ignore` 命中的 PR 不会产生任何检查项，容易被误判为"卡在 pending"。
+> 需要时改用 `dorny/paths-filter` 在 job 内做跳过（保留一个必然成功的检查项）。
 
 **日常 push 实际只跑 7 个 job**：`lint` + `typecheck` + `test`×4 + `frontend`。
 `package`×2 被 `if:` 关在 push `main` / 手动触发上（被跳过的 job 仍会列在运行页面
