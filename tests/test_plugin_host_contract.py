@@ -365,7 +365,8 @@ class ThumbRouteContractTests(unittest.TestCase):
 
     def test_thumb_traversal_still_403(self):
         client = self._client(_DefaultPlugin({'name': 'p'}, self.config))
-        resp = self._get(client, '/thumbs/..%5C..%5Csecret.txt?plugin=probe')
+        payload = '..\\..\\secret.txt' if os.name == 'nt' else '../../secret.txt'
+        resp = self._get(client, f'/thumbs/{payload}?plugin=probe')
         self.assertEqual(resp.status_code, 403)
 
 
