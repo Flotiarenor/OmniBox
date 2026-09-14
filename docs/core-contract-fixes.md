@@ -5,7 +5,7 @@
 | 版本 | v1.0 |
 | 日期 | 2026-09-14 |
 | 基线 | `pyproject.toml` version = 1.2.0 |
-| 状态 | 第 1 项已实施（2026-09-14）；第 2、3 项待实施 |
+| 状态 | 第 1、2 项已实施（2026-09-14）；第 3 项待实施 |
 | 范围 | `tools/check_plugins.py`、`shell/backend/plugin_base.py`、`shell/backend/file_server.py`、`shell/frontend/public/shell/base.js`、`shell/frontend/src/App.vue`、`docs/plugin-guide.md` |
 | 关联 | `docs/code-review.md`、`docs/plugin-guide.md`、`docs/core-direction.md`、`docs/image-tagger-design.md` |
 
@@ -18,7 +18,7 @@
 | 序 | 事项 | 性质 | 阻断对象 | 预估 |
 | --- | --- | --- | --- | --- |
 | 1 | `runtime` 字段与字段读取方门禁矛盾 | 门禁缺陷 | 独立运行环境插件轴（`image-tagger`） | < 1 天 | 已实施 |
-| 2 | 宿主↔附属插件契约未声明、未测试 | 契约缺陷 | Companion 体系的双向兼容 | 1–2 天 |
+| 2 | 宿主↔附属插件契约未声明、未测试 | 契约缺陷 | Companion 体系的双向兼容 | 1–2 天 | 已实施 |
 | 3 | 插件生命周期契约缺失 | 契约缺陷 | 全部插件的前端资源回收 | 1–2 天 |
 
 ---
@@ -44,6 +44,34 @@ python -m ruff check .                           # All checks passed
 
 对 §1.2(a) 探针的回归结果：修复前 `_check_manifest_fields()` 对完整 `runtime` 块产出 6 条 error，
 修复后为 0 条 error；`runtimeFoo` / `mystery` / `frontend.typo` / 两层以上嵌套的 `a.b.c` 仍产出 error。
+
+---
+
+## 0.2 第 2 项实施记录（2026-09-14）
+
+| 改动 | 文件 |
+| --- | --- |
+| `PluginBase` 新增四个正式成员：`get_file_roots()`（默认 `[get_data_root()]`）、`get_thumb_data()`（默认 `None`）、`thumb_dir` 只读 property（默认 `数据根/.cache/thumbs`，带 setter 兼容 `self.thumb_dir = ...` 旧写法）、`ensure_thumb()`（空实现） | `shell/backend/plugin_base.py` |
+| 新增 `_resolve_thumb_dir()`：属性 / 方法 / 不可解析三种形状显式归一化，不可解析时记 warning 并回退全局目录 | `shell/backend/file_server.py` |
+| `serve_media_file()` / `serve_thumb()` 移除全部 `getattr` 探针与 `plugin_manager._instances` 私有访问、移除 `assert`，直接调用基类成员 | `shell/backend/file_server.py` |
+| `get_thumb_data()` 返回 `None` 时改为落到 `thumb_dir` 散文件布局（§2.4.c 优先级），抽出 `_send_thumb_file()` 复用 | `shell/backend/file_server.py` |
+| 新增 `tests/test_plugin_host_contract.py` 19 例：基类默认值、赋值不分叉、换根跟随、property/方法两种形态、`image-cleaner` 代理形态端到端、越界仍 403 | `tests/test_plugin_host_contract.py` |
+| §3.1 基类签名补四个成员；§7.2 重写为"四成员契约表 + 优先级 + Companion 代理说明" | `docs/plugin-guide.md` |
+
+验证：
+
+```bash
+grep -n '_instances' shell/backend/file_server.py                      # 0 命中
+grep -n "getattr(instance, '" shell/backend/file_server.py             # 0 命中
+python -m unittest tests.test_plugin_host_contract -v                   # 19 例通过
+python -m unittest discover -s tests                                    # 167 例通过
+python tools/check_plugins.py                                           # 退出码 0
+python -m ruff check .                                                  # All checks passed
+```
+
+实测真实插件（非桩）：`image-viewer` 的 `thumb_dir` 仍等于 `数据根/.cache/thumbs` 且
+`on_settings_changed({'root_dir'})` 换根后自动跟随（第二处 `self.thumb_dir = ...` 赋值
+经 property setter 生效）；`media-player` 只覆写 `get_thumb_data()`，其 `thumb_dir` 取基类默认值。
 
 ---
 
@@ -209,6 +237,13 @@ Companion 插件通过宿主实例复用宿主能力（`plugins/image-cleaner/ba
 #### 2.4.c 决策点：成员优先级
 
 `media-player` 未定义 `thumb_dir`，其 `get_thumb_data()` 直接返回字节。基类默认实现须保证该插件行为不变：**`get_thumb_data()` 命中时优先，未命中或返回 `None` 时才使用 `thumb_dir`**。该优先级须写入 `docs/plugin-guide.md` §7.2。
+
+**结论（2026-09-14，已实施）：** 优先级按上表实装。`thumb_dir` 采用**只读 property**
+（§2.4.a 的"二者择一"），默认值 `数据根/.cache/thumbs`；property 带 setter，
+因此 `image-viewer` 既有的两处 `self.thumb_dir = self.cache_dir / 'thumbs'` 赋值
+（`__init__` 与 `on_settings_changed` 换根目录）语义不变、读取仍走同一 property。
+`media-player` 只覆写 `get_thumb_data()`，其 `thumb_dir` 取基类默认值，行为不变。
+优先级与四成员契约已写入 `docs/plugin-guide.md` §7.2。
 
 #### 2.4.d 契约回归测试
 

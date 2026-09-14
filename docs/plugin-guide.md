@@ -270,7 +270,26 @@ class PluginBase(ABC):
         """返回该插件使用的数据根目录，默认使用全局配置。
         插件可重写此方法以支持自定义根目录。"""
         return Path(self.config['directories']['data_root']).resolve()
+
+    # ===== 文件与缩略图契约（Shell 的 /file、/thumbs 路由直接调用，见 §7.2） =====
+
+    def get_file_roots(self) -> List[Path]:
+        """允许 /file 访问的根目录列表。跨多根插件覆写（如 media-player）"""
+
+    def get_thumb_data(self, rel_path: str) -> Optional[Tuple[bytes, str]]:
+        """返回 (bytes, mime) 供 /thumbs 直接响应；默认 None = 不提供字节"""
+
+    @property
+    def thumb_dir(self) -> Path:
+        """缩略图散文件目录，默认 数据根目录/.cache/thumbs"""
+        # 兼容旧写法：self.thumb_dir = <path>（property 带 setter，读取始终走 property）
+
+    def ensure_thumb(self, rel_path: str) -> None:
+        """按需生成缩略图（/thumbs 找不到文件时调用）。默认空实现"""
 ```
+
+> 四个文件/缩略图成员是**基类契约**，宿主侧不再用 `getattr` 探针读取。宿主与附属插件
+> 之间的这部分约定由 `tests/test_plugin_host_contract.py` 固定形状（见 §7.2）。
 
 ### 3.2 编写插件类
 
@@ -778,6 +797,21 @@ const src = Bridge.originalUrl('subdir/photo.jpg');
 
 ### 7.2 插件如何生成缩略图
 
+`/thumbs` 消费的四个成员都是 `shell/backend/plugin_base.py` 里 **`PluginBase` 的正式契约**，
+不是"宿主碰巧 getattr 得到"的隐式约定（历史上它们是探针式的，宿主把 `thumb_dir` 改成方法
+就能让 `/thumbs` 整体 500）：
+
+| 成员 | 默认实现 | 说明 |
+| --- | --- | --- |
+| `get_thumb_data(rel_path)` | 返回 `None` | 返回 `(bytes, mime)`，或 `None` 表示本插件不提供字节 |
+| `thumb_dir` | `数据根目录/.cache/thumbs` | 只读 property（`Path`）。可赋值覆盖（旧写法兼容），也可以什么都不做 |
+| `ensure_thumb(rel_path)` | 空实现 | `/thumbs` 找不到文件时调用，插件可现场生成并落盘；返回值被忽略 |
+| `get_file_roots()` | `[get_data_root()]` | 跨多根插件覆写（如 `media-player`） |
+
+**优先级**：`get_thumb_data()` 命中（返回二元组）时直接响应；返回 `None` 或形状不对时，
+才回退到 `thumb_dir` 散文件布局。因此"只覆写 `get_thumb_data()`、不定义 `thumb_dir`"
+（`media-player` 形态）与"只用散文件布局"（默认形态）都成立。
+
 **推荐模式（image-viewer v2.4.3+）**：基于共享基建 `ThumbCache`（见 §3.4），后端提供 `get_thumb_data(rel_path)`，从 SQLite 缓存读取缩略图字节，未命中时生成并回写：
 
 ```python
@@ -791,10 +825,9 @@ def get_thumb_data(self, rel_path: str):
     return self.thumb_cache.get(rel_path, self.root_dir / rel_path)
 ```
 
-Shell 的 `/thumbs` 路由会优先调用插件的 `get_thumb_data()`（不存在时回退到散文件模式），
-前端仍通过 `Bridge.thumbUrl()` 获取 URL，无需感知差异。
+前端仍通过 `Bridge.thumbUrl()` 获取 URL，无需感知后端用哪种模式。
 
-**旧版散文件模式（兼容）**：保存到 `self.thumb_dir`（通常为 `数据根目录/.cache/thumbs/`），示例：
+**旧版散文件模式（兼容）**：保存到 `self.thumb_dir`（默认为 `数据根目录/.cache/thumbs/`），示例：
 
 ```python
 def _get_thumb(self, rel_path: str) -> Path:
@@ -811,6 +844,11 @@ def _get_thumb(self, rel_path: str) -> Path:
  shutil.copy(self.root_dir / rel_path, thumb_path)
  return thumb_path
 ```
+
+> **Companion 插件可直接代理宿主成员**：`image-cleaner` 就是把自己的
+> `thumb_dir` / `ensure_thumb` / `get_thumb_data` 转发给 `self.get_dependency('image-viewer')`，
+> 因此它复用宿主的缩略图而不复制一份缓存。这四个成员既然是基类契约，宿主侧改动
+> 就受 `tests/test_plugin_host_contract.py` 的回归保护。
 
 ### 7.3 状态页与壳内错误视图
 

@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +56,11 @@ class PluginBase(ABC):
         self._plugin_manager: PluginManager | None = getattr(self.__class__, '_plugin_manager', None)
         # PluginManager 在构造前预加载的已解决设置
         self._resolved_config: Dict[str, Any] = getattr(self.__class__, '_resolved_config', {})
+        # thumb_dir 的显式覆盖值：None 表示"跟随 get_data_root()"（见 thumb_dir property）。
+        # 必须在 __init__ 里显式初始化：image-viewer 的 get_data_root() 读 self.root_dir，
+        # 而 self.thumb_dir 的 getter 会回落到 get_data_root() —— 不在构造期先建好这个
+        # 字段，插件 __init__ 里首次访问 thumb_dir 就可能读到尚不存在的属性。
+        self._thumb_dir_override: Path | None = None
 
     @abstractmethod
     def register_api(self) -> Dict[str, Callable]:
@@ -72,6 +77,50 @@ class PluginBase(ABC):
         返回所有已配置的根目录。`/files/` 路由会依次进行路径安全检查。
         """
         return [self.get_data_root()]
+
+    # ===== 缩略图契约（Shell 的 /thumbs 路由消费）=====
+    #
+    # 这三个成员曾经只由 file_server.py 以 getattr 探针隐式定义，既不在本基类、
+    # 也没有测试固定形状：宿主侧把 thumb_dir 改成方法就能让 /thumbs 整体 500
+    # （探针拿到 bound method 是真值 → 跳过回退 → Path(bound_method) 抛 TypeError），
+    # 而 Companion 插件（image-cleaner）代理的正是这些未声明成员。
+    # 现在它们是显式契约：形状、默认值与优先级都在这里定义，file_server 直接调用，
+    # 不再做鸭子类型探测。
+
+    def get_thumb_data(self, rel_path: str) -> Optional[Tuple[bytes, str]]:
+        """返回缩略图字节，供 `/thumbs` 路由直接响应。默认返回 None（本插件不提供）。
+
+        返回 `(data, mime)` 二元组；返回 None 时 `/thumbs` 回退到 `thumb_dir` 散文件布局。
+        **优先级：本方法命中优先，未命中或返回 None 时才使用 thumb_dir。** 因此
+        media-player 这类"只覆写 get_thumb_data、不定义 thumb_dir"的插件行为不变。
+        """
+        return None
+
+    @property
+    def thumb_dir(self) -> Path:
+        """缩略图散文件目录，默认 `数据根目录/.cache/thumbs`。
+
+        只读 property（契约要求二者择一，这里选 property）：默认值与 get_data_root()
+        的派生关系固定，不允许各插件各拼一份路径。需要换目录的插件改 get_data_root()；
+        也兼容旧写法 `self.thumb_dir = <path>` —— 赋值意味着"就用这个目录"，读取始终
+        走本 property，宿主与插件不会看到两个不同的路径（见 setter）。
+        """
+        if self._thumb_dir_override is not None:
+            return self._thumb_dir_override
+        return self.get_data_root() / '.cache' / 'thumbs'
+
+    @thumb_dir.setter
+    def thumb_dir(self, value: Path | str | None) -> None:
+        # 兼容旧插件的 `self.thumb_dir = <path>` 写法：image-viewer 在 __init__ 与
+        # 切换 root_dir 时都会赋值。值按"完整目录路径"理解（赋什么就读到什么），
+        # 传 None 表示恢复默认派生（跟随 get_data_root()）。
+        self._thumb_dir_override = Path(value).resolve() if value is not None else None
+
+    def ensure_thumb(self, rel_path: str) -> None:  # noqa: B027 - 有意的非抽象空钩子
+        """按需生成缩略图（`/thumbs` 找不到文件时调用）。默认什么都不做。
+
+        插件可覆写为"现场生成并落盘"；返回值被忽略，生成失败不应抛异常。
+        """
 
     def get_dependency(self, name: str) -> PluginBase | None:
         """返回已加载依赖插件实例；未声明依赖或未加载时返回 None。"""

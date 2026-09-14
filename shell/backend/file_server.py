@@ -64,6 +64,40 @@ def _is_safe_path(full_path: Path, root: Path) -> bool:
         return False
 
 
+def _resolve_thumb_dir(instance) -> Path | None:
+    """解析插件的缩略图目录，形状不对时返回 None（调用方回退到全局根）。
+
+    曾经这里用 getattr 探针取 thumb_dir 并做真值判断：插件把 thumb_dir 写成**方法**时，
+    探针拿到的是 bound method（真值），于是跳过回退分支，最后在 Path(bound_method) 上
+    抛 TypeError → /thumbs 对所有插件返回 500。契约现在定义在 PluginBase.thumb_dir
+    （只读 property），这里把方法形态显式归一化，真正无法解析的形状只记一条 warning
+    并回退，不再把整条路由带下水。
+    """
+    if instance is None:
+        return None
+    try:
+        thumb_dir = instance.thumb_dir
+    except Exception as exc:
+        log.warning(f'[File_Server-Thumbs] 读取 thumb_dir 失败，回退到全局缩略图目录: {exc}')
+        return None
+    if isinstance(thumb_dir, (str, Path)):
+        return Path(thumb_dir)
+    if callable(thumb_dir):
+        # 旧插件把 thumb_dir 定义成方法的形态：归一化，而不是让 Path() 抛异常
+        try:
+            normalized = thumb_dir()
+        except Exception as exc:
+            log.warning(f'[File_Server-Thumbs] 调用 thumb_dir() 失败，回退到全局缩略图目录: {exc}')
+            return None
+        if isinstance(normalized, (str, Path)):
+            return Path(normalized)
+    log.warning(
+        f'[File_Server-Thumbs] thumb_dir 必须是路径（PluginBase 只读 property），'
+        f'实际为 {type(thumb_dir).__name__}，回退到全局缩略图目录'
+    )
+    return None
+
+
 def _local_ipv4_addresses() -> set:
     """枚举本机各网卡的 IPv4 地址（失败时返回空集合）。"""
     try:
@@ -306,15 +340,11 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         if plugin_name and instance is None:
             log.info(f"[FileServer] 找不到插件 {plugin_name} 的实例")
             abort(404)
-        # 确定允许访问的根目录（支持插件跨多个媒体目录）
-        if plugin_name and plugin_name in plugin_manager._instances:
-            assert instance is not None  # 上面已确认 plugin_name 有对应实例
-            getter = getattr(instance, 'get_file_roots', None)
-            if callable(getter):
-                result = getter()
-                roots = list(result) if isinstance(result, Iterable) and not isinstance(result, (str, bytes)) else []
-            else:
-                roots = []
+        # 确定允许访问的根目录（支持插件跨多个媒体目录）：get_file_roots() 是
+        # PluginBase 的正式成员，默认 [get_data_root()]，不再做 getattr 探针。
+        if instance is not None:
+            result = instance.get_file_roots()
+            roots = list(result) if isinstance(result, Iterable) and not isinstance(result, (str, bytes)) else []
             if not roots:
                 roots = [instance.get_data_root()]
         else:
@@ -371,11 +401,14 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             abort(404)
 
         # 新路径：插件可直接返回 SQLite 缩略图字节，避免散文件随机 I/O。
-        get_thumb_data = getattr(instance, 'get_thumb_data', None) if instance is not None else None
-        if callable(get_thumb_data):
+        # get_thumb_data() 是 PluginBase 的正式成员，默认返回 None（= 本插件不提供字节）。
+        # 优先级（docs/core-contract-fixes.md §2.4.c）：本方法命中优先，返回 None
+        # 或形状不对时才使用 thumb_dir 散文件布局 —— 否则默认实现会把所有插件的
+        # /thumbs 变成 404。
+        if instance is not None:
             try:
-                result = get_thumb_data(filepath)
-                # 插件返回值不可信（鸭子类型接口）：必须校验形状再解包，
+                result = instance.get_thumb_data(filepath)
+                # 插件返回值不可信（插件实现是自由代码）：必须校验形状再解包，
                 # 否则返回单值/三元组时会抛 ValueError → 500。
                 if isinstance(result, tuple) and len(result) == 2:
                     data, mime = result
@@ -384,24 +417,23 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
                     return resp
             except Exception:
                 pass
-            abort(404)
 
-        if plugin_name and plugin_name in plugin_manager._instances:
-            assert instance is not None  # 上面已确认 plugin_name 有对应实例
-            thumb_dir = getattr(instance, 'thumb_dir', None)
-            if thumb_dir is None:
-                thumb_dir = instance.get_data_root() / '.cache' / 'thumbs'
+        return _send_thumb_file(plugin_name, instance, filepath)
+
+    def _send_thumb_file(plugin_name: str, instance, filepath: str):
+        """thumb_dir 散文件布局：默认 数据根/.cache/thumbs，找不到时按需生成再读。"""
+        global_thumb_dir = Path(config['directories']['data_root']).resolve() / '.cache' / 'thumbs'
+        if plugin_name and instance is not None:
+            thumb_dir = _resolve_thumb_dir(instance) or global_thumb_dir
         else:
-            # 回退到全局缩略图目录（通常不存在）
-            data_root = Path(config['directories']['data_root']).resolve()
-            thumb_dir = data_root / '.cache' / 'thumbs'
-        thumb_dir = Path(thumb_dir).resolve()
+            # 无插件上下文：回退到全局缩略图目录（通常不存在）
+            thumb_dir = global_thumb_dir
+        thumb_dir = thumb_dir.resolve()
 
         # 按需生成缩略图（如 image-viewer）：文件不存在时交给插件现场生成
-        ensure = getattr(instance, 'ensure_thumb', None) if instance is not None else None
-        if callable(ensure):
+        if instance is not None:
             try:
-                ensure(filepath)
+                instance.ensure_thumb(filepath)
             except Exception:
                 pass
 
@@ -418,10 +450,10 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             if code in (400, 403, 404):
                 abort(code)
             abort(400)
-        
+
         if not full_path.exists():
             abort(404)
-        
+
         return send_from_directory(thumb_dir, filepath)
     @app.route('/shell/<path:filename>')
     def serve_shell_assets(filename):
