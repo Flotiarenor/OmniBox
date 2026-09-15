@@ -213,7 +213,10 @@ try {{
   // 顶层打开（浏览器直接访问）时跳转到壳内 /status 视图统一展示错误；
   // 嵌套在插件 iframe 内时不跳转（由 Vue 壳检测 data-status-page 后接管）。
   // location.replace 整页导航会顺带种下令牌 Cookie，壳随后可正常加载。
-  if (window.top === window.self) {{
+  // 已经站在 /status 上时必须就地渲染这张标记页：壳自己的请求也会命中同一套
+  // errorhandler（例如 Host 白名单 400），再跳一次就是 /status → 400 → /status
+  // 的无限重定向刷新，页面永远打不开。
+  if (window.top === window.self && location.pathname !== '/status') {{
     var code = document.documentElement.getAttribute('data-status-page') || '';
     location.replace(location.origin + '/status?code=' + encodeURIComponent(code));
   }}
