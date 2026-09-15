@@ -261,6 +261,14 @@
   <script src="js/player-core.js"></script>
   <script src="js/playlist-manager.js"></script>
   <script src="js/app.js"></script>
+<!-- MediaPlayerApp.prototype 的分片：顺序是硬约束，必须排在 app.js 之后、实例化之前。
+     漏挂或错序会在装载期抛 `MediaPlayerApp is not defined`；契约由
+     tests/js/media_player_app_split.mjs 把关。 -->
+<script src="js/app-ui-events.js"></script>
+<script src="js/app-views.js"></script>
+<script src="js/app-render.js"></script>
+<script src="js/app-playback.js"></script>
+<script src="js/app-stage.js"></script>
   <script>
     window.mediaPlayerApp = new MediaPlayerApp();
     mediaPlayerApp.init();

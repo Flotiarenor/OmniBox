@@ -35,8 +35,20 @@ plugins/media-player/
         ├── progress-store.js   # 播放进度记忆（localStorage，兼容旧键迁移）
         ├── player-core.js      # 音频/视频播放核心 + EQ + 状态保存
         ├── playlist-manager.js # 歌单管理
-        └── app.js              # 主应用（视图、舞台、全屏、预取、快捷键）
+        ├── app.js              # 类骨架：构造函数、初始化、扫描轮询
+        ├── app-ui-events.js    # MediaPlayerApp 分片：UI 事件绑定、视频封面预取
+        ├── app-views.js        # MediaPlayerApp 分片：扫描 / 设置 / 视图切换与加载
+        ├── app-render.js       # MediaPlayerApp 分片：空状态、专辑、媒体列表与详情
+        ├── app-playback.js     # MediaPlayerApp 分片：播放状态反馈、队列、歌单交互
+        └── app-stage.js        # MediaPlayerApp 分片：均衡器、歌词 / 视频、全屏、快捷键
 ```
+
+`MediaPlayerApp` 的 83 个成员原本集中在一个 1993 行的 `app.js` 里，按类体里已有的分节
+注释拆成上面 6 个文件。分片用 `Object.assign(MediaPlayerApp.prototype, {...})` 扩回**同一个**
+原型，因此成员与调用点没变、行为不变；**代价是 `index.html` 的 `<script>` 顺序变成硬约束**
+（分片必须排在 `app.js` 之后、实例化之前），漏挂或错序会在装载期抛
+`MediaPlayerApp is not defined`。这条契约由 `tests/js/media_player_app_split.mjs` 把关：
+它按 `index.html` 的声明顺序装载全部脚本，断言无孤立脚本、无重复定义、82 个成员仍在。
 
 ## 媒体索引与扫描
 
