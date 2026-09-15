@@ -22,6 +22,7 @@ import socket
 import sys
 from collections.abc import Iterable
 from pathlib import Path
+from typing import List
 
 from flask import Flask, abort, request, send_file, send_from_directory
 
@@ -29,6 +30,7 @@ from shell.backend.auth import (
     TOKEN_COOKIE,
     TOKEN_HEADER,
     get_or_create_token,
+    get_token_file,
     token_matches,
 )
 from shell.backend.media_catalog import list_subdirectories
@@ -277,6 +279,49 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
     frontend_dist = _SHELL_DIR / 'frontend' / 'dist'
     _token = get_or_create_token(get_config_dir())
 
+    def _protected_paths() -> List[Path]:
+        """当前必须拒绝返回的路径：壳自己的凭据 + 插件申报的受保护路径。
+
+        每次请求现算而不是建 app 时快照：插件支持运行期卸载与重新加载，快照会让
+        新加载插件申报的路径静默失效 —— 静默失效的防护比没有防护更危险。
+
+        比较用解析后的 `Path` 而不是字符串：Windows 上 `PureWindowsPath` 的
+        `__eq__`/`__hash__` 都走 normcase，因此 `AUTH_TOKEN.TXT` 与
+        `auth_token.txt` 是同一个路径。直接比字符串会被绕过
+        （tests/test_file_server_paths.py 的用例锁住这条）。
+        """
+        paths: List[Path] = []
+        try:
+            paths.append(get_token_file(get_config_dir()).resolve())
+        except OSError:
+            pass
+        for declared in plugin_manager.get_protected_paths():
+            try:
+                paths.append(Path(declared).resolve())
+            except OSError:
+                continue
+        return paths
+
+    def _reject_protected_file(target: Path) -> None:
+        """受保护路径一律 403 —— 优先于「是否在允许根之内」的判定。
+
+        为什么必须由壳兜住：文件路由的放行依据是插件自己给出的根（`get_file_roots()`
+        / `thumb_dir`），而根可以由插件设置改写（审计 §1.1 的改根链路）。开发模式下
+        `<data_root>`（默认 ./data）与 `<config_dir>`（./.config）是兄弟目录，于是
+        `<data_root>/../.config/auth_token.txt` 完全落在 /file 的允许范围内。
+        auth_token.txt 是长期进程外凭据 —— 读走它，等于把一次前端 XSS 或一次局域网
+        泄露自举成持久令牌。插件的设置文件同理（pixiv-sync 的 refresh_token 就存在
+        `<config>/plugins/pixiv-sync.json`）。
+
+        受保护清单 = 壳自己的凭据（硬编码，不可协商）+ 插件申报的路径
+        （`PluginBase.get_protected_paths`，边界由 PluginManager 校验）。Shell
+        **不**维护系统路径黑名单：把整个盘符当媒体根（一整块媒体盘）是正当用法。
+        """
+        for protected in _protected_paths():
+            if target == protected or target.is_relative_to(protected):
+                log.warning(f'[File_Server] 拒绝返回受保护的凭据文件: {target}')
+                abort(403)
+
     # Host 头白名单：不加这行，攻击者域名（DNS rebinding 指向 127.0.0.1）
     # 就能与 OmniBox 同源、自动带上令牌 Cookie 读走全部数据。
     app.config['TRUSTED_HOSTS'] = _build_trusted_hosts(config)
@@ -422,6 +467,8 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             if decoded_path.is_absolute():
                 # 绝对路径：逐根目录校验（media-player 等跨根插件使用）
                 full_path = decoded_path.resolve()
+                # 凭据文件优先于「是否在根内」判定：插件可以把根设成包含 .config 的目录
+                _reject_protected_file(full_path)
                 if not any(_is_safe_path(full_path, root) for root in roots):
                     abort(403)
                 if not full_path.is_file():
@@ -430,6 +477,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             # 相对路径：沿用「插件数据根目录」语义
             data_root = roots[0]
             full_path = (data_root / filepath).resolve()
+            _reject_protected_file(full_path)
             if not _is_safe_path(full_path, data_root):
                 abort(403)
             if not full_path.exists():
@@ -501,6 +549,9 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         # 安全检查
         try:
             full_path = (thumb_dir / filepath).resolve()
+            # thumb_dir 本身可以由插件指定（PluginBase.thumb_dir 可写）：
+            # 它若落在 .config 上，"auth_token.txt" 就是一条合法相对路径
+            _reject_protected_file(full_path)
             if not _is_safe_path(full_path, thumb_dir):
                 abort(403)
         except Exception as e:

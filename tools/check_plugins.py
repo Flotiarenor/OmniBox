@@ -38,6 +38,15 @@ RESERVED_ROUTES = {'/', '/settings'}
 # folder 是文档里曾出现过但从未实装的旧名，保留在允许列表里避免老插件被误判为错误
 ALLOWED_SCHEMA_TYPES = {'text', 'number', 'range', 'select', 'checkbox', 'textarea',
                         'directory', 'folder'}
+# 设置项上的可选标记（除 type/default/min/max/options/central/help 之外）：
+#   "secret": True —— 申请 Shell 文件防护：该插件设置文件不得被文件路由返回，
+#   见 PluginBase.get_protected_paths() 与 docs/plugin-guide.md §8.2
+#
+# 键名里"看起来是凭据"的词：命中却没声明 secret 就是一条真实泄露路径。
+# 只按完整词匹配（不含裸 "key" —— 那会把 keyboard_shortcut 之类误判）。
+SECRET_KEY_RE = re.compile(
+    r'(?:^|_)(?:token|secret|password|passwd|pwd|credential|credentials|apikey|api_key)(?:$|_)'
+)
 PLUGIN_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9-_]*$')
 LEGACY_SETTINGS_MARKERS = ('settings_file', '_save_settings_to_file')
 LOCAL_SIBLING_LOADER_MARKER = 'def _load_sibling'
@@ -168,6 +177,23 @@ def _check_schema(cls) -> List[str]:
                 errors.append(f'{where}.default 应为 number')
             if field_type == 'checkbox' and not isinstance(default, bool):
                 errors.append(f'{where}.default 应为 bool')
+
+        # "secret": True 让插件申请 Shell 文件防护（PluginBase.get_protected_paths）。
+        # 必须是真正的 bool：写成 "false"/"no" 这类非空字符串是真值，会得到与作者
+        # 意图相反的结论 —— 而"以为没开、其实开了"会把插件自己的媒体文件一起挡掉。
+        if 'secret' in field and not isinstance(field['secret'], bool):
+            errors.append(f'{where}.secret 应为 bool（true/false），实际是 {type(field["secret"]).__name__}')
+
+        # 凭据类键名却没申报 → 拦住。这条规则的价值在于"下一个插件不会再犯"：
+        # 凭据值会落到 <config>/plugins/<name>.json，而该文件（或它所在的目录）可能
+        # 正好落在某个插件的媒体根之内 —— 这是结构性的，靠 review 记得不住。
+        if SECRET_KEY_RE.search(key) and field.get('secret') is not True:
+            errors.append(
+                f'{where}.key={key!r} 看起来是凭据类设置项，但没有声明 "secret": True —— '
+                f'凭据会落到设置文件里，必须申请 Shell 文件防护'
+                f'（见 docs/plugin-guide.md §8.2）。若它其实不是凭据，请改用不含 '
+                f'token/secret/password 等词的键名'
+            )
 
         if field_type in {'number', 'range'}:
             bounds = [field.get('min'), field.get('max')]

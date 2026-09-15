@@ -842,6 +842,20 @@ const src = Bridge.originalUrl('subdir/photo.jpg');
 - `/health`（200 JSON）与页面/静态资源不要求令牌；
 - 错误页在浏览器顶层打开时自动跳转到壳内 `/status?code=…` 视图统一展示（见 §7.4）。
 
+**凭据文件不在文件服务范围内**：`.config/auth_token.txt` 是长期有效的进程外凭据，
+**任何**数据路由都不会把它作为媒体资源返回 —— 即使某个插件的根目录（`get_file_roots()`
+或 `thumb_dir`）恰好覆盖了 `.config`，请求该文件也只得到 `403`。这条判定由 Shell
+独立执行，**不参与**「是否在允许根之内」的判断。
+
+插件自己的凭据同样可以受这道防护：在设置项上声明 `"secret": True`（见 §8.2），
+Shell 就会拒绝把该插件的设置文件当媒体资源返回；敏感内容存在别处时，覆写
+`PluginBase.get_protected_paths()` 申报具体路径即可。**申报是插件主动发起、Shell 执行**：
+插件只说明"什么是敏感的"，执行点始终在 Shell，插件侧没有关闭或绕过它的接口。
+
+Shell **不维护系统路径黑名单**：把整个盘符当媒体根（一整块媒体盘）是正当用法，
+因此壳不会因为「根看起来太宽」而拒绝；插件读写哪些路径由插件作者与安装者自负其责
+（见 §11 权限声明一节）。
+
 **安全响应头**：所有响应（含 `/api`、`/file`、`/thumbs`、错误页）统一带
 `X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、
 `Referrer-Policy: no-referrer`，以及一条只限制 `object-src` / `base-uri` /
@@ -1014,6 +1028,46 @@ class MyPlugin(PluginBase):
 | `options`                  | 可选 | select 类型的选项列表                                                                     |
 | `multi`                    | 可选 | 仅 `directory`：多值字段，列表可增删多行，第 2 行起标「额外」                          |
 | `placeholder` / `emptyText` | 可选 | 仅 `directory`：输入框占位符 / 列表为空时的提示文字                                      |
+| `secret`                   | 可选 | `True` 表示**凭据类**设置项：Shell 拒绝把该插件的设置文件当媒体资源返回（见下）        |
+
+#### 凭据类设置项：`"secret": True`
+
+存放令牌、密码、API Key 这类值的设置项**必须**声明 `"secret": True`。原因不是风格：
+设置值统一落在 `<config>/plugins/<插件名>.json`，而该文件（或它所在的目录）完全可能
+落在某个插件的媒体根之内 —— 于是它会被 `/file`、`/files`、`/thumbs` 当成普通媒体
+文件正常返回。这是结构性的，Shell 无法靠猜避免，只能由插件申报：
+
+```python
+{"key": "refresh_token", "label": "API 令牌", "type": "text", "secret": True},
+```
+
+声明之后：
+
+- Shell 把该插件的设置文件加入受保护清单，`/file`、`/files`、`/thumbs` 一律返回
+  `403`（优先级高于"是否在允许根之内"的判定）；
+- 插件侧**不需要写任何代码**，`save_settings()` / `setting()` 的行为完全不变；
+- 请求被拒时返回的是 `403`，与越界访问同一语义，前端按既有路径处理即可。
+
+检查器会拦住遗漏：设置项键名里含 `token` / `secret` / `password` / `credential` /
+`api_key` 等词却没有声明 `secret`（或声明成 `"false"` 这类非布尔值）时，
+`tools/check_plugins.py` 直接报错。
+
+**敏感内容不在设置文件里**时（自己的令牌文件、cookie jar、加密密钥等），覆写
+`PluginBase.get_protected_paths()` 申报那些路径：
+
+```python
+def get_protected_paths(self):
+    return [*super().get_protected_paths(), self.get_data_root() / '.cache' / 'token.json']
+```
+
+注意两点：
+
+- 只应申报**本插件自己的数据根目录或 `<config>/plugins` 之下**的路径。越界申报会被
+  忽略并记一条 warning（这是防误用：一个写错的申报不该把整个文件服务钉死），
+  所以申报看起来"没生效"时先看日志。
+- 申报**目录**表示"该目录及其下全部内容"都受保护。**不要**申报 `get_data_root()`
+  这类宽目录 —— 媒体的数据根往往就是媒体根，一起挡掉会让本插件自己的封面、缩略图
+  也变成 403。只申报凭据文件。
 
 `type: "directory"` 的字段在插件设置弹窗里渲染成**与图片相册完全相同的目录列表** ——
 不是"样子像"，而是同一个实现（`window.FolderPicker`，见 §7.2；`base.js` 直接调它）：

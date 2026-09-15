@@ -67,6 +67,15 @@ class SettingsStore:
             raise ValueError(f"非法插件名: {plugin_name!r}")
         return self.settings_dir / f"{name}.json"
 
+    def path_for(self, plugin_name: str) -> Path:
+        """该插件设置文件的绝对路径（公开访问器）。
+
+        给需要"保护 / 备份 / 审计这个文件"的调用方用：路径规则只在 `_file()` 里
+        定义一次。调用方不要自己拼 `<config>/plugins/<name>.json` —— 拼错不会报错，
+        只会静默指向一个不存在的文件，于是"保护"看起来生效了其实什么都没护住。
+        """
+        return self._file(plugin_name)
+
     def _lock_for(self, plugin_name: str) -> threading.RLock:
         """取该插件专属的可重入锁（update 内部会再次进入 get/set）。"""
         with self._locks_guard:

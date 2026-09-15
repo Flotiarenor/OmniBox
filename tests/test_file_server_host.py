@@ -50,6 +50,10 @@ class _StubPluginManager:
     def get_plugin_instance(self, name):
         return None
 
+    def get_protected_paths(self):
+        """本桩不注册任何插件实例，因此没有任何插件申报的受保护路径。"""
+        return []
+
 
 def _make_client(host: str = '127.0.0.1', trusted_hosts=None):
     server = {'host': host, 'port': 18080}

@@ -123,6 +123,64 @@ class PluginSpecCheckerTests(unittest.TestCase):
         errors, _ = check_plugins(DEFAULT_PLUGINS_DIR, load_backends=True)
         self.assertEqual(errors, [])
 
+    # ===== 凭据类设置项必须申请 Shell 文件防护（PluginBase.get_protected_paths）=====
+    #
+    # 这条规则的意义在于"下一个插件不会再犯"：凭据值会落到
+    # <config>/plugins/<name>.json，而该文件（或它所在的目录）可能正好落在某个
+    # 插件的媒体根之内 —— 那是结构性的，靠 review 记得不住。
+    # pixiv-sync 当前靠 test_bundled_plugins_pass_full_spec 覆盖：它的
+    # refresh_token 一旦去掉 "secret": True，上面那条用例立刻报错。
+
+    def _plugin_with_schema(self, root: Path, name: str, schema: str):
+        """写一个真的继承 PluginBase 的最小后端（检查器会校验这一继承关系）。"""
+        class_name = f"{name.title().replace('-', '')}Plugin"
+        code = (
+            "from shell.backend.plugin_base import PluginBase\n"
+            "\n"
+            "\n"
+            f"class {class_name}(PluginBase):\n"
+            f"    settings_schema = {schema}\n"
+            "\n"
+            "    def register_api(self):\n"
+            "        return {}\n"
+        )
+        _make_plugin(root, name, _manifest(name, f'/{name}'), backend_code=code)
+
+    def test_credential_key_without_secret_flag_is_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._plugin_with_schema(root, 'leaky', '[{"key": "refresh_token", "type": "text"}]')
+            errors, _ = check_plugins(root, load_backends=True)
+            self.assertTrue(any('secret' in error and 'refresh_token' in error for error in errors),
+                            f'应拦住未申报的凭据类设置项，实际 errors={errors}')
+
+    def test_credential_key_with_secret_flag_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._plugin_with_schema(
+                root, 'safe',
+                '[{"key": "refresh_token", "type": "text", "secret": True}]')
+            errors, _ = check_plugins(root, load_backends=True)
+            self.assertEqual(errors, [])
+
+    def test_non_credential_key_needs_no_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._plugin_with_schema(root, 'ordinary', '[{"key": "download_dir", "type": "text"}]')
+            errors, _ = check_plugins(root, load_backends=True)
+            self.assertEqual(errors, [])
+
+    def test_non_bool_secret_is_an_error(self):
+        """写成字符串 "false" 是真值 → 会得到与作者意图相反的结论。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._plugin_with_schema(
+                root, 'stringy',
+                '[{"key": "api_token", "type": "text", "secret": "false"}]')
+            errors, _ = check_plugins(root, load_backends=True)
+            self.assertTrue(any('secret 应为 bool' in error for error in errors),
+                            f'应拦住非 bool 的 secret，实际 errors={errors}')
+
     # ===== manifest 字段必须有读取方（docs/code-review.md §5） =====
 
     def test_unregistered_manifest_field_is_an_error(self):

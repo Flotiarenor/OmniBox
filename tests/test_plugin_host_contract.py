@@ -28,8 +28,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from shell.backend.auth import TOKEN_HEADER, get_or_create_token
 from shell.backend.file_server import _resolve_thumb_dir, create_app
-from shell.backend.paths import get_config_dir
+from shell.backend.paths import get_config_dir, get_plugins_config_dir
 from shell.backend.plugin_base import PluginBase
+from shell.backend.plugin_manager import collect_protected_paths
 
 
 class _StubPluginManager:
@@ -60,6 +61,10 @@ class _StubPluginManager:
 
     def get_plugin_instance(self, name):
         return self._provided.get(name)
+
+    def get_protected_paths(self):
+        """与真实 PluginManager 共用同一份聚合 + 边界校验实现（这里都是 PluginBase 子类）。"""
+        return collect_protected_paths(self._provided, get_plugins_config_dir())
 
 
 def _same_path(actual, expected) -> bool:

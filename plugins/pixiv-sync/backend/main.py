@@ -41,6 +41,12 @@ class PixivSyncPlugin(PluginBase):
             "label": "Pixiv Refresh Token",
             "type": "text",
             "central": False,  # 敏感项，不出现在集中设置面板
+            # 申请 Shell 文件防护：本插件的设置文件（<config>/plugins/pixiv-sync.json）
+            # 会被 /file、/files、/thumbs 无条件拒绝。refresh_token 是账号级长期凭据
+            # （可无限换取 access_token 且自动轮换），而插件文件根由设置改写，
+            # 默认数据根与配置目录是兄弟目录 —— 没有这条申报，一次同源脚本执行
+            # 就能把凭据读走。见 PluginBase.get_protected_paths。
+            "secret": True,
             "placeholder": "粘贴 refresh_token（非 access_token）",
             "help": "获取: gppt (github.com/eggplants/get-pixivpy-token) 或插件内 OAuth 向导",
         },

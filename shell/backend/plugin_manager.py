@@ -42,6 +42,62 @@ def _resolve_config_dir() -> Path:
     return get_plugins_config_dir()
 
 
+def _is_protectable(instance: PluginBase, path: Path, config_dir: Path) -> bool:
+    """该路径是否落在插件有权申报的范围内（自身数据根或 <config>/plugins）。
+
+    这是**防误用**而不是安全边界：插件后端与 Shell 同进程，它不需要"申报"就能
+    直接读任何文件。边界的作用是让一个写错的申报（例如声明了盘符根）被忽略并
+    留痕，而不是把整个文件服务钉死。
+
+    两侧都要 `resolve()`：`path` 已经解析过，而 `config_dir` / `get_data_root()`
+    可能是未解析形式（例如 Windows 上 `%TEMP%` 的 8.3 短名），拿它去比会得出
+    "越界"的错误结论 —— 保护静默失效，且只在短名路径下出现。
+    """
+    roots: List[Path] = []
+    try:
+        roots.append(Path(config_dir).resolve())
+    except OSError:
+        pass
+    try:
+        roots.append(Path(instance.get_data_root()).resolve())
+    except Exception:
+        # get_data_root() 由插件实现（image-viewer 读 self.root_dir）：它抛异常时
+        # 不能连累整条聚合，只是少一个允许范围。
+        pass
+    return any(path.is_relative_to(root) for root in roots)
+
+
+def collect_protected_paths(instances: Dict[str, PluginBase], config_dir: Path) -> List[Path]:
+    """汇总插件申报的受保护路径（`PluginBase.get_protected_paths`）。
+
+    每次调用现算、不做缓存：插件支持运行期卸载与重新加载，快照会让新加载插件
+    申报的路径静默失效 —— 而"静默失效的防护"比没有防护更危险。插件数量是个位
+    数量级，相对文件本身的 I/O 可以忽略。
+    """
+    protected: List[Path] = []
+    # 快照后再遍历：unload_all()/加载都可能与请求线程并发改动实例表
+    for name, instance in list(instances.items()):
+        try:
+            declared = instance.get_protected_paths()
+        except Exception as e:
+            log.warning(f"[PluginManager] {name} 申报受保护路径失败: {e}")
+            continue
+        if not isinstance(declared, (list, tuple)):
+            log.warning(f"[PluginManager] {name}.get_protected_paths() 必须返回列表，已忽略")
+            continue
+        for raw in declared:
+            try:
+                path = Path(raw).resolve()
+            except (OSError, TypeError, ValueError):
+                log.warning(f"[PluginManager] {name} 申报的受保护路径无效，已忽略: {raw!r}")
+                continue
+            if not _is_protectable(instance, path, config_dir):
+                log.warning(f"[PluginManager] {name} 申报的受保护路径越界，已忽略: {path}")
+                continue
+            protected.append(path)
+    return protected
+
+
 class PluginManager:
     def __init__(self, plugins_dirs: str | Path | Iterable[str | Path], config: dict) -> None:
         raw_dirs = (
@@ -156,6 +212,15 @@ class PluginManager:
         return dict(self._api_methods)
     def get_plugin_instance(self, name: str) -> PluginBase | None:
         return self._instances.get(name)
+
+    def get_protected_paths(self) -> List[Path]:
+        """汇总所有插件申请的受保护路径（PluginBase.get_protected_paths）。
+
+        实现放在模块级 `collect_protected_paths()`：它只依赖"实例表 + 配置目录"，
+        因此测试里的桩管理器能用**同一份**实现，不会出现"桩放松了边界校验、
+        用例却仍然全绿"。
+        """
+        return collect_protected_paths(self._instances, self._config_dir)
 
     def get_plugin_dir(self, name: str) -> Path | None:
         return self._plugin_dirs.get(name)

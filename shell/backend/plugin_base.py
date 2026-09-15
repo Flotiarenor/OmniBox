@@ -81,6 +81,55 @@ class PluginBase(ABC):
         """
         return [self.get_data_root()]
 
+    # ===== 受保护路径契约（插件"申请"、Shell 执行）=====
+    #
+    # 定位：插件**自己申报**哪些路径是敏感内容，Shell 在文件路由上无条件拒绝把
+    # 它们端出去。申报是可选能力 —— 不申报的插件行为完全不变。
+    #
+    # 为什么需要"申报"这一步：文件路由的放行依据是插件自己给出的根
+    # （get_file_roots / thumb_dir），而根可以由插件设置改写。于是"根一旦覆盖了
+    # 某个凭据文件，凭据就落在合法范围内"是结构性的，Shell 无法靠猜来避免。
+    # 唯一可靠的信息来源就是插件自己说清楚 —— 但它只说"是什么"，不说"怎么防"，
+    # 执行点始终在 Shell，插件侧没有任何绕过或关闭防护的接口。
+    #
+    # 与"限制插件怎么写"的区别：这**不**约束插件读写哪些文件（插件后端与 Shell
+    # 同进程，任何声明都拦不住它直接读文件）。它只保证"插件自己不想要的泄露，
+    # Shell 保证不会发生"。
+
+    def get_protected_paths(self) -> List[Path]:
+        """申请 Shell 文件防护：返回不得被 `/file`、`/files`、`/thumbs` 返回的路径。
+
+        默认实现：`settings_schema` 里任何一项声明了 `"secret": True` 时，返回本
+        插件的统一设置文件（凭据就存在那里）。因此**常见情况下一行都不用写** ——
+        只需给对应的设置项加 `"secret": True`。
+
+        插件若把敏感内容放在别处（自己的令牌文件、cookie jar、加密密钥等），覆写
+        本方法返回那些路径即可，Shell 侧无需改动：
+
+            def get_protected_paths(self):
+                return [*super().get_protected_paths(), self.get_cache_dir() / 'token.json']
+
+        约束与注意事项：
+
+        - 只应返回**本插件自己的数据根目录或 `<config>/plugins` 之下**的路径。
+          Shell 会校验这一边界，越界的申报被忽略并记 warning（防误用：一个笔误
+          不该把整个文件服务钉死）。
+        - 声明**目录**表示"该目录及其下全部内容"都受保护。
+        - **不要**声明 `get_data_root()` 这样的宽目录：媒体的数据根往往就是媒体根，
+          一起挡掉会让本插件自己的封面/缩略图也 404。只声明凭据文件。
+        - 被拒绝的请求返回 `403`（与越界访问同一语义），所以插件前端不需要为它写
+          特殊处理 —— 与已有的"403 就显示占位图"路径自然衔接。
+        """
+        if not any(isinstance(item, dict) and item.get('secret') for item in self.settings_schema):
+            return []
+        if self._settings_store is None:
+            return []
+        try:
+            return [self._settings_store.path_for(self.name)]
+        except (TypeError, ValueError) as e:
+            log.warning(f"[{self.name}] 无法解析设置文件路径，凭据防护未生效: {e}")
+            return []
+
     # ===== 缩略图契约（Shell 的 /thumbs 路由消费）=====
     #
     # 这三个成员曾经只由 file_server.py 以 getattr 探针隐式定义，既不在本基类、

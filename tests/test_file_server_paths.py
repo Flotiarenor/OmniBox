@@ -15,23 +15,59 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import ClassVar
+from urllib.parse import quote
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from shell.backend.auth import TOKEN_HEADER, get_or_create_token
+from shell.backend.auth import TOKEN_FILE_NAME, TOKEN_HEADER, get_or_create_token, get_token_file
 from shell.backend.file_server import create_app
-from shell.backend.paths import get_config_dir
+from shell.backend.paths import get_config_dir, get_plugins_config_dir
+from shell.backend.plugin_manager import collect_protected_paths
 
 # 越界载荷必须用当前平台的分隔符：POSIX 上反斜杠是合法文件名字符，
 # `..\..\secret.txt` 只是个普通文件名（结果是 404 而非穿越），断言 403 会假失败。
 _TRAVERSAL = '..\\..\\secret.txt' if os.name == 'nt' else '../../secret.txt'
 
 
+class _StubInstance:
+    """最小插件实例：只实现文件/缩略图路由会调用的成员。
+
+    存在的意义是能自由设定 `get_file_roots()` / `thumb_dir` / `get_protected_paths()`
+    —— 也就是审计 §1.1 那条链路的可控输入：插件把根设成"包含 .config 的目录"而不是
+    默认数据根，或者反过来申报受保护路径。
+    """
+
+    def __init__(self, file_roots, thumb_dir=None, protected=(), data_root=None):
+        self._file_roots = [Path(root) for root in file_roots]
+        self._data_root = Path(data_root) if data_root is not None else self._file_roots[0]
+        self._thumb_dir = Path(thumb_dir) if thumb_dir is not None else None
+        self._protected = [Path(path) for path in protected]
+
+    def get_file_roots(self):
+        return list(self._file_roots)
+
+    def get_data_root(self):
+        return self._data_root
+
+    def get_protected_paths(self):
+        return list(self._protected)
+
+    @property
+    def thumb_dir(self):
+        return self._thumb_dir or (self._file_roots[0] / '.cache' / 'thumbs')
+
+    def get_thumb_data(self, rel_path):
+        return None
+
+    def ensure_thumb(self, rel_path):
+        return None
+
+
 class _StubPluginManager:
-    _instances: ClassVar[dict] = {}
+    def __init__(self):
+        self._instances: dict = {}
 
     def get_api_methods(self):
         return {}
@@ -52,10 +88,23 @@ class _StubPluginManager:
         return None
 
     def get_plugin_instance(self, name):
-        return None
+        return self._instances.get(name)
+
+    def get_protected_paths(self):
+        """与真实 PluginManager 共用同一份聚合 + 边界校验实现。
+
+        刻意不在这里写 `return []`：否则"申报越界必须被忽略"这条用例会因为桩
+        放松了校验而静默变绿，测的就不是真实行为了。
+        """
+        return collect_protected_paths(self._instances, get_plugins_config_dir())
 
 
-class FilePathRouteTests(unittest.TestCase):
+class _FileRouteFixture:
+    """文件路由用例的公共夹具。
+
+    刻意**不**继承 unittest.TestCase：否则它会被当成一个用例类收集，而子类
+    再继承它时父类的用例会被重复执行一遍（结果看起来全绿，实际跑了两遍）。
+    """
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -71,7 +120,8 @@ class FilePathRouteTests(unittest.TestCase):
             'server': {'host': '127.0.0.1', 'port': 18080},
             'directories': {'data_root': str(self.data_root)},
         }
-        app = create_app(config, _StubPluginManager())
+        self.manager = _StubPluginManager()
+        app = create_app(config, self.manager)
         self.client = app.test_client()
         self.token = get_or_create_token(get_config_dir())
         self.headers = {TOKEN_HEADER: self.token}
@@ -82,6 +132,20 @@ class FilePathRouteTests(unittest.TestCase):
         self.addCleanup(resp.close)
         return resp
 
+    def _rogue_root_containing_credentials(self, thumb_dir=None):
+        """注册一个根目录 = <config_dir> 的插件，返回它的名字。
+
+        开发模式下 <config_dir> 与默认 <data_root>（./data）是兄弟目录，
+        所以 `../.config` 这种根一旦被接受，凭据文件就落在合法范围内。
+        """
+        self.manager._instances['rogue'] = _StubInstance([get_config_dir()], thumb_dir=thumb_dir)
+        return 'rogue'
+
+    def _token_path(self) -> Path:
+        return get_token_file(get_config_dir())
+
+
+class FilePathRouteTests(_FileRouteFixture, unittest.TestCase):
     def test_thumbs_traversal_is_403_not_400(self):
         """越界访问必须 403：403 被吞成 400 会掩盖真实的拒绝原因。"""
         resp = self._get(f'/thumbs/{_TRAVERSAL}')
@@ -120,6 +184,109 @@ class FilePathRouteTests(unittest.TestCase):
         """越界之外的底线：缩略图属于数据路由，无令牌必须 401。"""
         resp = self._get('/thumbs/ok.jpg', headers={})
         self.assertEqual(resp.status_code, 401)
+
+
+class ProtectedCredentialFileTests(_FileRouteFixture, unittest.TestCase):
+    """壳自己的凭据文件不得从任何数据路由流出去。
+
+    攻击链（审计 §1.1 的改根链路 + 兄弟目录布局）：插件把文件根设成包含
+    <config_dir> 的目录 → `/file` 的「是否在允许根之内」检查通过 → 读走
+    `auth_token.txt`。它是长期进程外凭据，读走等于把一次前端 XSS 或一次
+    局域网泄露自举成持久令牌，所以这条判定必须独立于插件提供的根。
+    """
+
+    def test_token_file_is_403_even_inside_a_plugin_root(self):
+        """绝对路径形态：根合法也不再放行。"""
+        plugin = self._rogue_root_containing_credentials()
+        token_path = self._token_path()
+        self.assertTrue(token_path.exists(), '前置条件：令牌文件已生成')
+        resp = self._get(f'/file?path={quote(str(token_path))}&plugin={plugin}')
+        self.assertEqual(resp.status_code, 403)
+        self.assertNotIn(self.token, resp.get_data(as_text=True))
+
+    def test_token_file_is_403_as_relative_path(self):
+        """相对路径形态：roots[0] 就是 config 目录时，"裸文件名"也必须被拒。"""
+        plugin = self._rogue_root_containing_credentials()
+        resp = self._get(f'/file?path={TOKEN_FILE_NAME}&plugin={plugin}')
+        self.assertEqual(resp.status_code, 403)
+        self.assertNotIn(self.token, resp.get_data(as_text=True))
+
+    def test_thumbs_never_serves_token_file(self):
+        """缩略图路由走的是插件自己的 thumb_dir：它指到 config 目录时同样要拒。"""
+        plugin = self._rogue_root_containing_credentials(thumb_dir=get_config_dir())
+        resp = self._get(f'/thumbs/{TOKEN_FILE_NAME}?plugin={plugin}')
+        self.assertEqual(resp.status_code, 403)
+        self.assertNotIn(self.token, resp.get_data(as_text=True))
+
+    @unittest.skipUnless(os.name == 'nt', 'NTFS 大小写不敏感，此用例只在 Windows 上有意义')
+    def test_token_file_case_variants_are_403(self):
+        """NTFS 上 AUTH_TOKEN.TXT 与 auth_token.txt 是同一个文件，比对必须归一化。"""
+        plugin = self._rogue_root_containing_credentials()
+        upper = str(self._token_path()).upper()
+        resp = self._get(f'/file?path={quote(upper)}&plugin={plugin}')
+        self.assertEqual(resp.status_code, 403)
+        self.assertNotIn(self.token, resp.get_data(as_text=True))
+
+    def test_normal_files_in_a_rogue_root_still_serve(self):
+        """只保护凭据：同一个根里的普通文件不受影响（不搞系统路径黑名单）。"""
+        plugin = self._rogue_root_containing_credentials()
+        config_dir = get_config_dir()
+        ordinary = config_dir / 'ordinary.txt'
+        ordinary.write_text('ORDINARY', encoding='utf-8')
+        self.addCleanup(lambda: ordinary.unlink(missing_ok=True))
+        resp = self._get(f'/file?path={quote(str(ordinary))}&plugin={plugin}')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_data(), b'ORDINARY')
+
+
+class PluginDeclaredProtectionTests(_FileRouteFixture, unittest.TestCase):
+    """插件"申报"受保护路径、Shell 执行：即设置项声明 `"secret": True` 的落地链路。
+
+    与上面一组的区别：上一组验证壳**自己**的凭据文件不可端出（硬编码，不可协商），
+    这一组验证**插件申报**的路径同样生效，且申报越界会被忽略而不是被信任。
+    """
+
+    def _plugin_declaring(self, protected, file_roots=None, data_root=None):
+        """注册一个申报了 protected 的插件，返回它的名字。"""
+        self.manager._instances['declaring'] = _StubInstance(
+            file_roots if file_roots is not None else [self.data_root],
+            protected=protected, data_root=data_root)
+        return 'declaring'
+
+    def test_declared_file_is_403(self):
+        """插件的设置文件（refresh_token 就存在那里）落在自己的根内时也必须 403。"""
+        secret = self.data_root / 'plugin-settings.json'
+        secret.write_text('{"refresh_token": "SUPER-SECRET"}', encoding='utf-8')
+        plugin = self._plugin_declaring([secret])
+        resp = self._get(f'/file?path={quote(str(secret))}&plugin={plugin}')
+        self.assertEqual(resp.status_code, 403)
+        self.assertNotIn('SUPER-SECRET', resp.get_data(as_text=True))
+
+    def test_declared_directory_protects_everything_under_it(self):
+        """申报目录 = 该目录及其下全部内容都受保护。"""
+        vault = self.data_root / 'vault'
+        vault.mkdir()
+        nested = vault / 'nested' / 'token.json'
+        nested.parent.mkdir()
+        nested.write_text('SUPER-SECRET', encoding='utf-8')
+        plugin = self._plugin_declaring([vault])
+        resp = self._get(f'/file?path={quote(str(nested))}&plugin={plugin}')
+        self.assertEqual(resp.status_code, 403)
+        self.assertNotIn('SUPER-SECRET', resp.get_data(as_text=True))
+
+    def test_out_of_bounds_declaration_is_ignored(self):
+        """申报自己数据根与配置目录之外的路径 → 被忽略（防误用），文件照常提供。
+
+        否则一个写错的申报（例如声明了盘符根）就能把整个文件服务钉死。
+        这里刻意让"文件根"比"数据根"宽：该文件本来就在允许范围内，所以它仍然是
+        200 只可能是因为申报被忽略了。
+        """
+        outside = self.outside  # <tmp>/secret.txt：在文件根内，但不在插件数据根内
+        plugin = self._plugin_declaring(
+            [outside], file_roots=[Path(self._tmp.name)], data_root=self.data_root)
+        resp = self._get(f'/file?path={quote(str(outside))}&plugin={plugin}')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_data(), b'TOP-SECRET')
 
 
 class SecurityHeaderTests(unittest.TestCase):
