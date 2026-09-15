@@ -242,6 +242,10 @@ class ProtectedCredentialFileTests(_FileRouteFixture, unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.get_data(), b'ORDINARY')
 
+    @unittest.skipUnless(
+        os.name == 'nt',
+        'Windows 扩展长度前缀语义，POSIX 无对应形态',
+    )
     def test_extended_prefix_root_does_not_bypass_protection(self):
         r"""`\\?\` 扩展前缀形态必须同样被拒（曾是一个完整绕过）。
 
