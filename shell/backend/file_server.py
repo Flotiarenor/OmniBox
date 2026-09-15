@@ -65,6 +65,52 @@ def _is_safe_path(full_path: Path, root: Path) -> bool:
         return False
 
 
+# ===== 安全响应头 =====
+#
+# 统一在 after_request 施加，而不是逐路由设置：/api、/file、/thumbs、壳静态资源、
+# 插件前端都走同一个响应出口，漏掉任何一条路由就是一处缺口。
+#
+# 这里刻意分两档。强执行档只放"一旦页面被注入就会扩大战果、而正常页面从不使用"
+# 的指令，因此**不可能打坏现有页面**：不设 default-src / script-src / style-src，
+# 脚本与样式的加载行为与加头之前完全一致（7 个插件大量使用内联 <script> 与
+# style="..." 属性，桌面模式还有 pywebview 注入的桥接脚本，收紧脚本来源必须
+# 先在真实浏览器里验证过）。
+_SECURITY_HEADERS = {
+    # 阻止浏览器把响应体"猜"成另一种类型执行（例如把用户文件当 HTML/脚本执行）
+    'X-Content-Type-Options': 'nosniff',
+    # 外部站点不得把本应用嵌进 iframe（点击劫持/UI 伪装）；插件 iframe 与壳同源，不受影响
+    'X-Frame-Options': 'SAMEORIGIN',
+    # 不把本应用的 URL（含 /file?path= 里的本机路径）当 Referer 发给远程站点。
+    # 插件前端要加载远程封面/图片，这是唯一会外发的请求头。
+    'Referrer-Policy': 'no-referrer',
+    'Content-Security-Policy': (
+        # 关掉 <object>/<embed> 这条历史脚本执行面
+        "object-src 'none'; "
+        # 阻断 XSS 之后插入 <base href="//evil/"> 把相对资源全部改指向攻击者：
+        # 这是"已经失守之后"最省事的提权手法，而全仓没有一处使用 <base>
+        "base-uri 'self'; "
+        # 与 X-Frame-Options 同义（现代浏览器以本指令为准）
+        "frame-ancestors 'self'"
+    ),
+    # 目标档先只上报、不拦截。等下面这份策略在 Report-Only 下确认无违规上报，
+    # 再把需要的来源合并进上面的强执行档。frame-ancestors 在 report-only 里
+    # 被规范定义为忽略，所以这里不重复列它。
+    'Content-Security-Policy-Report-Only': (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        # img-src/media-src 必须放行远程：插件播放的网易云流与漫画页图都是外链；
+        # data: 供抽帧结果的 canvas.toDataURL 使用
+        "img-src 'self' data: blob: https: http:; "
+        "media-src 'self' blob: https: http:; "
+        "font-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-src 'self' about: https: http:; "
+        "object-src 'none'; base-uri 'self'"
+    ),
+}
+
+
 def _resolve_thumb_dir(instance) -> Path | None:
     """解析插件的缩略图目录，形状不对时返回 None（调用方回退到全局根）。
 
@@ -266,6 +312,17 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         """页面响应时种下 HttpOnly 令牌 Cookie，同源请求（含 <img>）自动携带。"""
         if request.endpoint == 'serve_shell':
             resp.set_cookie(TOKEN_COOKIE, _token, httponly=True, samesite='Lax')
+        return resp
+
+    @app.after_request
+    def _attach_security_headers(resp):
+        """给**所有**响应统一加安全头（常量定义与取舍理由见 _SECURITY_HEADERS）。
+
+        用 setdefault 而不是直接赋值：将来某个路由需要更严或更松的策略时可以
+        自己先设好，这里的兜底值不会把它覆盖掉。
+        """
+        for name, value in _SECURITY_HEADERS.items():
+            resp.headers.setdefault(name, value)
         return resp
 
     @app.errorhandler(400)

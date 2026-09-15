@@ -842,6 +842,16 @@ const src = Bridge.originalUrl('subdir/photo.jpg');
 - `/health`（200 JSON）与页面/静态资源不要求令牌；
 - 错误页在浏览器顶层打开时自动跳转到壳内 `/status?code=…` 视图统一展示（见 §7.4）。
 
+**安全响应头**：所有响应（含 `/api`、`/file`、`/thumbs`、错误页）统一带
+`X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、
+`Referrer-Policy: no-referrer`，以及一条只限制 `object-src` / `base-uri` /
+`frame-ancestors` 的 `Content-Security-Policy`。完整的收紧目标（`default-src` /
+`script-src` / `style-src` 等）以 `Content-Security-Policy-Report-Only` 先行上报，
+插件无需为它做任何适配；**但请注意插件前端的对外资源必须能在这份目标策略下落位**
+（远程图片要落在 `img-src`，远程音频/视频要落在 `media-src`，远程 iframe 要落在
+`frame-src`），否则将来它转为强制执行时会被拦掉。新增此类来源时，同步更新
+`shell/backend/file_server.py` 的 `_SECURITY_HEADERS` 与对应测试。
+
 ### 7.2 共享基建：浏览本机媒体目录
 
 需要「让用户挑一个/多个媒体目录」的插件（image-viewer 的图片文件夹、media-player 的

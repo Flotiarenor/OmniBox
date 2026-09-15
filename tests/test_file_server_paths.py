@@ -122,5 +122,65 @@ class FilePathRouteTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 401)
 
 
+class SecurityHeaderTests(unittest.TestCase):
+    """安全响应头必须在所有响应出口统一施加（含 send_file 的文件响应）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.data_root = Path(self._tmp.name) / 'data'
+        self.data_root.mkdir()
+        config = {
+            'server': {'host': '127.0.0.1', 'port': 18080},
+            'directories': {'data_root': str(self.data_root)},
+        }
+        app = create_app(config, _StubPluginManager())
+        self.client = app.test_client()
+        self.token = get_or_create_token(get_config_dir())
+        self.headers = {TOKEN_HEADER: self.token}
+
+    def _get(self, url, headers=None):
+        resp = self.client.get(url, headers=self.headers if headers is None else headers)
+        self.addCleanup(resp.close)
+        return resp
+
+    def _assert_common_headers(self, resp):
+        self.assertEqual(resp.headers.get('X-Content-Type-Options'), 'nosniff')
+        self.assertEqual(resp.headers.get('X-Frame-Options'), 'SAMEORIGIN')
+        self.assertEqual(resp.headers.get('Referrer-Policy'), 'no-referrer')
+        csp = resp.headers.get('Content-Security-Policy') or ''
+        for directive in ("object-src 'none'", "base-uri 'self'", "frame-ancestors 'self'"):
+            with self.subTest(directive=directive):
+                self.assertIn(directive, csp)
+        # 强执行档刻意不含 default-src / script-src：收紧脚本来源会打坏 7 个插件的
+        # 内联脚本与 pywebview 桥接，必须先在 Report-Only 下验证过再合并。这条断言
+        # 防止有人顺手把目标档的策略挪进强执行档而不做验证。
+        self.assertNotIn('default-src', csp)
+        self.assertNotIn('script-src', csp)
+        self.assertIn('Content-Security-Policy-Report-Only', resp.headers)
+
+    def test_headers_on_open_route(self):
+        self._assert_common_headers(self._get('/health', headers={}))
+
+    def test_headers_on_error_response(self):
+        """401 也要带头：错误页同样可能被嵌进 iframe 或被嗅探。
+
+        用 POST：`/api` 只在 POST 上注册（`serve_shell` 会把 GET 的 api/ 路径
+        显式判成 404，见 file_server 里那段注释），所以令牌墙只在 POST 上可达。
+        """
+        resp = self.client.post('/api/nope', headers={})
+        self.addCleanup(resp.close)
+        self.assertEqual(resp.status_code, 401)
+        self._assert_common_headers(resp)
+
+    def test_headers_on_file_response(self):
+        """send_file 的响应也必须带头（/file 是用户文件与外部输入的主要出口）。"""
+        target = self.data_root / 'movie.mp4'
+        target.write_bytes(b'MP4DATA')
+        resp = self._get('/file?path=movie.mp4')
+        self.assertEqual(resp.status_code, 200)
+        self._assert_common_headers(resp)
+
+
 if __name__ == '__main__':
     unittest.main()
