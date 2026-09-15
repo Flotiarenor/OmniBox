@@ -24,8 +24,16 @@
 plugins/image-viewer/
 ├── manifest.json               # 声明依赖、权限（filesystem:read/write）、路由 /image-viewer
 ├── backend/
-│   ├── main.py                 # ImageViewerPlugin：API 入口、缓存调度、重建任务（BackgroundTask）、设置
-│   └── filesystem.py           # 纯函数工具：路径安全、排序、尺寸元数据（无实例状态）
+│   ├── main.py                 # 入口：ImageViewerPlugin（类骨架 + API 注册 + 初始化）
+│   ├── common.py               # 各分片共用的常量与纯函数（无实例状态）
+│   ├── namespace.py            # NamespaceMixin：多根目录 / 虚拟命名空间路径
+│   ├── thumbs.py               # ThumbMixin：元数据缓存与缩略图
+│   ├── listing.py              # ListingMixin：目录 / 图片列表与子目录聚合扫描
+│   ├── albums.py               # AlbumMixin：相册树、封面挑选与相册缓存
+│   ├── file_ops.py             # FileOpsMixin：目录 / 文件增删改与刷新
+│   ├── rebuild.py              # RebuildMixin：缩略图全量重建（BackgroundTask）
+│   ├── settings.py             # SettingsMixin：按目录的设置读写
+│   └── filesystem.py           # 底层纯函数工具：路径安全、排序、尺寸元数据（无实例状态）
 └── frontend/
     ├── index.html              # 侧边栏 + 工具栏 + 弹窗骨架
     ├── image-viewer.css
@@ -36,7 +44,21 @@ plugins/image-viewer/
 
 **职责边界**：
 
-- `main.py` 持有插件实例状态（`_meta_cache` / `_list_cache` / `_album_cache` / `_album_config` / `_rebuild`）、`thumb_cache`（共享基建实例），负责 API 语义与任务调度；
+- `main.py` 只保留**类骨架**：`settings_schema`、类常量、`__init__`（持有全部实例状态：
+  `_meta_cache` / `_list_cache` / `_album_cache` / `_album_config` / `_rebuild`）、
+  `thumb_cache`（共享基建实例）、`register_api`与根目录/浏览接口；
+- 78 个方法按职责拆到 7 个 mixin 分片。**拆分是纯搬移**：方法体逐字未改，状态仍由
+  `main.py` 的 `__init__` 持有，分片只把方法挂到同一个类上 —— 因此调用点、缓存键、
+  API 语义都没有变化；
+- **mixin 必须排在 `PluginBase` 之前**（`class ImageViewerPlugin(NamespaceMixin, …,
+  PluginBase)`）：`get_data_root` / `get_file_roots` / `ensure_thumb` / `get_thumb_data` /
+  `get_settings` / `on_settings_changed` / `on_unload` 都是对基类的覆写，排在基类后面会被
+  基类实现盖掉；
+- `common.py` 承载跨分片共用的常量与纯函数（`NAMESPACE_MARKER`、`pixiv_sort` / `pick_cover` /
+  `cover_rank` / `same_path`，以及从 `filesystem.py` 转出的工具）。为什么需要它：后端入口由
+  PluginManager 用 importlib 直接加载，**分片之间不能互相 import `main.py`（会成环）**，
+  所以共用的东西需要一个中立的落点；`main.py` 把它们重新绑定成原来的名字，既有引用与测试
+  （`module._pick_cover`）都不用改；
 - `filesystem.py` 全部为**无实例状态**的模块级纯函数（通过 `load_sibling` 注入），便于单测与复用；
 - 缩略图缓存使用共享基建 `shell/backend/thumb_cache.py`（`ThumbCache`），重建任务使用 `shell/backend/tasks.py`（`BackgroundTask`）——见 `docs/plugin-guide.md` §3.4；
 - 前端通过 `Bridge.call(...)` 调用后端，图片/缩略图通过 `/file`、`/thumbs` 路由访问（Shell 提供）。
