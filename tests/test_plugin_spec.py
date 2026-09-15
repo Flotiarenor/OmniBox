@@ -181,6 +181,34 @@ class PluginSpecCheckerTests(unittest.TestCase):
             self.assertTrue(any('secret 应为 bool' in error for error in errors),
                             f'应拦住非 bool 的 secret，实际 errors={errors}')
 
+    def test_credential_key_variants_are_caught(self):
+        """键名的大小写与分隔符不得成为盲区。
+
+        早期用的是 `(?:^|_)(?:token|…)(?:$|_)` 且区分大小写，实测
+        `API_TOKEN` / `Api_Token` / `refreshToken` / `privateKey` / `PASSWORD`
+        全部漏过 —— 而"凭据类键名却没申报"正是这条规则唯一要防的事。
+        """
+        variants = ['API_TOKEN', 'Api_Token', 'refreshToken', 'privateKey',
+                    'PASSWORD', 'sessionId', 'authCookie']
+        for index, key in enumerate(variants):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self._plugin_with_schema(
+                    root, f'variant{index}',
+                    f'[{{"key": "{key}", "type": "text"}}]')
+                errors, _ = check_plugins(root, load_backends=True)
+                self.assertTrue(
+                    any('secret' in error and key in error for error in errors),
+                    f'{key} 未被门禁拦住，errors={errors}')
+
+    def test_ordinary_keys_are_not_flagged_as_credentials(self):
+        """不搞过宽的匹配：把普通设置项误判成凭据会让作者去改无意义的键名。"""
+        from tools.check_plugins import looks_like_secret_key
+        for key in ['per_page', 'root_dir', 'sort_by', 'download_dir', 'proxy',
+                    'keyboard_shortcut', 'media_roots', 'row_height']:
+            with self.subTest(key=key):
+                self.assertFalse(looks_like_secret_key(key))
+
     # ===== manifest 字段必须有读取方（docs/code-review.md §5） =====
 
     def test_unregistered_manifest_field_is_an_error(self):

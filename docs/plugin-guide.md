@@ -1089,8 +1089,10 @@ def delete_files(self, rel_paths):
 `token_configured`），不要把凭据本身放出去。
 
 检查器会拦住遗漏：设置项键名里含 `token` / `secret` / `password` / `credential` /
-`api_key` 等词却没有声明 `secret`（或声明成 `"false"` 这类非布尔值）时，
-`tools/check_plugins.py` 直接报错。
+`api_key` / `cookie` / `session` 等词却没有声明 `secret`（或声明成 `"false"` 这类
+非布尔值）时，`tools/check_plugins.py` 直接报错。匹配**与大小写和分隔符无关**：
+`API_TOKEN`、`Api_Token`、`refreshToken`、`privateKey` 同样命中（早期只认小写
+下划线形态，这几种写法全都漏过）。键名确实不是凭据时，改成一个不含这些词的键名。
 
 **敏感内容不在设置文件里**时（自己的令牌文件、cookie jar、加密密钥等），覆写
 `PluginBase.get_protected_paths()` 申报那些路径：
