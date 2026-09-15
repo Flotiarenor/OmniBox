@@ -30,12 +30,14 @@ from shell.backend.auth import (
     TOKEN_COOKIE,
     TOKEN_HEADER,
     get_or_create_token,
-    get_token_file,
     token_matches,
 )
 from shell.backend.media_catalog import list_subdirectories
 from shell.backend.paths import get_config_dir
 from shell.backend.plugin_manager import PluginManager
+from shell.backend.protected_paths import collect as collect_protected_files
+from shell.backend.protected_paths import matches as is_protected_path
+from shell.backend.protected_paths import normalize as normalize_path
 
 log = logging.getLogger(__name__)
 
@@ -283,30 +285,20 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
     _token = get_or_create_token(get_config_dir())
 
     def _protected_paths() -> List[Path]:
-        """当前必须拒绝返回的路径：壳自己的凭据 + 插件申报的受保护路径。
+        r"""当前必须拒绝返回的路径：壳自己的凭据 + 插件申报的受保护路径。
+
+        判定实现与插件侧的**写/删自查**共用 `shell/backend/protected_paths.py`：
+        两处各拼一份规则，就会出现"读挡得住、删挡不住"。那里同时负责路径归一
+        （剥 `\\?\` 扩展前缀 + `samefile`），因为 `resolve()` 在 Windows 上会
+        保留扩展前缀，纯词法比较会被一次前缀变换绕过。
 
         每次请求现算而不是建 app 时快照：插件支持运行期卸载与重新加载，快照会让
         新加载插件申报的路径静默失效 —— 静默失效的防护比没有防护更危险。
-
-        比较用解析后的 `Path` 而不是字符串：Windows 上 `PureWindowsPath` 的
-        `__eq__`/`__hash__` 都走 normcase，因此 `AUTH_TOKEN.TXT` 与
-        `auth_token.txt` 是同一个路径。直接比字符串会被绕过
-        （tests/test_file_server_paths.py 的用例锁住这条）。
         """
-        paths: List[Path] = []
-        try:
-            paths.append(get_token_file(get_config_dir()).resolve())
-        except OSError:
-            pass
-        for declared in plugin_manager.get_protected_paths():
-            try:
-                paths.append(Path(declared).resolve())
-            except OSError:
-                continue
-        return paths
+        return collect_protected_files(plugin_manager, get_config_dir())
 
     def _reject_protected_file(target: Path) -> None:
-        """受保护路径一律 403 —— 优先于「是否在允许根之内」的判定。
+        r"""受保护路径一律 403 —— 优先于「是否在允许根之内」的判定。
 
         为什么必须由壳兜住：文件路由的放行依据是插件自己给出的根（`get_file_roots()`
         / `thumb_dir`），而根可以由插件设置改写（审计 §1.1 的改根链路）。开发模式下
@@ -319,11 +311,15 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         受保护清单 = 壳自己的凭据（硬编码，不可协商）+ 插件申报的路径
         （`PluginBase.get_protected_paths`，边界由 PluginManager 校验）。Shell
         **不**维护系统路径黑名单：把整个盘符当媒体根（一整块媒体盘）是正当用法。
+
+        路径归一与 `samefile` 兜底都在 protected_paths 里：`resolve()` 在 Windows 上
+        会保留 `\\?\` 扩展前缀，只做 `==` / `is_relative_to` 会被
+        `\\?\D:\…\.config\auth_token.txt` 这种形态整个绕过
+        （tests/test_protected_paths.py 锁住这条）。
         """
-        for protected in _protected_paths():
-            if target == protected or target.is_relative_to(protected):
-                log.warning(f'[File_Server] 拒绝返回受保护的凭据文件: {target}')
-                abort(403)
+        if is_protected_path(target, _protected_paths()):
+            log.warning(f'[File_Server] 拒绝返回受保护的凭据文件: {target}')
+            abort(403)
 
     # Host 头白名单：不加这行，攻击者域名（DNS rebinding 指向 127.0.0.1）
     # 就能与 OmniBox 同源、自动带上令牌 Cookie 读走全部数据。
@@ -458,9 +454,12 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
                 roots = [instance.get_data_root()]
         else:
             # 回退到全局根目录
-            roots = [Path(config['directories']['data_root']).resolve()]
+            roots = [normalize_path(config['directories']['data_root'])]
         try:
-            roots = [Path(root).resolve() for root in roots if root]
+            # 归一化两侧（剥 `\\?\` 前缀 + resolve）：根写扩展形式时，请求里的普通
+            # 形式与它做包含判定会得出"越界"的错误结论；而受保护判定需要请求路径
+            # 与受保护路径处在同一坐标系里才拦得住。
+            roots = [normalize_path(root) for root in roots if root]
         except Exception:
             abort(400)
 
@@ -469,7 +468,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             decoded_path = Path(filepath)
             if decoded_path.is_absolute():
                 # 绝对路径：逐根目录校验（media-player 等跨根插件使用）
-                full_path = decoded_path.resolve()
+                full_path = normalize_path(decoded_path)
                 # 凭据文件优先于「是否在根内」判定：插件可以把根设成包含 .config 的目录
                 _reject_protected_file(full_path)
                 if not any(_is_safe_path(full_path, root) for root in roots):
@@ -479,7 +478,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
                 return send_file(full_path, conditional=True)
             # 相对路径：沿用「插件数据根目录」语义
             data_root = roots[0]
-            full_path = (data_root / filepath).resolve()
+            full_path = normalize_path(data_root / filepath)
             _reject_protected_file(full_path)
             if not _is_safe_path(full_path, data_root):
                 abort(403)
@@ -504,6 +503,14 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         filepath = request.args.get('path', '')
         plugin_name = request.args.get('plugin', '')
         return serve_media_file(filepath, plugin_name)
+    def _thumb_dir_for(plugin_name: str, instance) -> Path:
+        """本次请求使用的缩略图目录（归一化后的路径）。"""
+        fallback = normalize_path(Path(config['directories']['data_root']) / '.cache' / 'thumbs')
+        if plugin_name and instance is not None:
+            return normalize_path(_resolve_thumb_dir(instance) or fallback)
+        # 无插件上下文：回退到全局缩略图目录（通常不存在）
+        return fallback
+
     @app.route('/thumbs/<path:filepath>')
     def serve_thumb(filepath):
         plugin_name = request.args.get('plugin', '')
@@ -511,6 +518,12 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         if plugin_name and instance is None:
             log.info(f"[File_Server-Thumbs] 找不到插件 {plugin_name} 的实例")
             abort(404)
+
+        thumb_dir = _thumb_dir_for(plugin_name, instance)
+        # 受保护判定必须早于任何插件代码：get_thumb_data() / ensure_thumb() 都是插件
+        # 实现，Shell 管不了它们拿到 filepath 后去读哪个文件（原实现把这个判定放在
+        # 散文件分支里，于是"插件直接返回字节"那条路整条绕过了防护）。
+        _reject_protected_file(normalize_path(thumb_dir / filepath))
 
         # 新路径：插件可直接返回 SQLite 缩略图字节，避免散文件随机 I/O。
         # get_thumb_data() 是 PluginBase 的正式成员，默认返回 None（= 本插件不提供字节）。
@@ -530,28 +543,16 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             except Exception:
                 pass
 
-        return _send_thumb_file(plugin_name, instance, filepath)
+        return _send_thumb_file(plugin_name, instance, filepath, thumb_dir)
 
-    def _send_thumb_file(plugin_name: str, instance, filepath: str):
+    def _send_thumb_file(plugin_name: str, instance, filepath: str, thumb_dir: Path | None = None):
         """thumb_dir 散文件布局：默认 数据根/.cache/thumbs，找不到时按需生成再读。"""
-        global_thumb_dir = Path(config['directories']['data_root']).resolve() / '.cache' / 'thumbs'
-        if plugin_name and instance is not None:
-            thumb_dir = _resolve_thumb_dir(instance) or global_thumb_dir
-        else:
-            # 无插件上下文：回退到全局缩略图目录（通常不存在）
-            thumb_dir = global_thumb_dir
-        thumb_dir = thumb_dir.resolve()
+        if thumb_dir is None:
+            thumb_dir = _thumb_dir_for(plugin_name, instance)
 
-        # 按需生成缩略图（如 image-viewer）：文件不存在时交给插件现场生成
-        if instance is not None:
-            try:
-                instance.ensure_thumb(filepath)
-            except Exception:
-                pass
-
-        # 安全检查
+        # 安全检查：先判定，再让插件按需生成 —— ensure_thumb() 会按这个路径写盘
         try:
-            full_path = (thumb_dir / filepath).resolve()
+            full_path = normalize_path(thumb_dir / filepath)
             # thumb_dir 本身可以由插件指定（PluginBase.thumb_dir 可写）：
             # 它若落在 .config 上，"auth_token.txt" 就是一条合法相对路径
             _reject_protected_file(full_path)
@@ -565,6 +566,13 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             if code in (400, 403, 404):
                 abort(code)
             abort(400)
+
+        # 按需生成缩略图（如 image-viewer）：文件不存在时交给插件现场生成
+        if instance is not None:
+            try:
+                instance.ensure_thumb(filepath)
+            except Exception:
+                pass
 
         if not full_path.exists():
             abort(404)
@@ -587,6 +595,10 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         plugin_dir = plugin_root / 'frontend'
         if not plugin_dir.exists():
             abort(404)
+        # 插件前端是**免令牌**路由（页面本身不含用户数据），所以它同样不能成为
+        # 受保护文件的出口：插件把凭据放进 frontend/、或申报了覆盖它的目录时，
+        # 这里不判定就等于绕过了 /file 的同一份清单。
+        _reject_protected_file(normalize_path(plugin_dir / filename))
         if filename == 'index.html':
             html_path = plugin_dir / 'index.html'
             if html_path.exists():
