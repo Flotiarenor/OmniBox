@@ -298,6 +298,104 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
         self.assertTrue(plugin.delete_folder('待删空相册')['success'])
         self.assertFalse((self.root / '待删空相册').exists())
 
+    # ---------- 删除/移动：根自身与 Shell 受保护清单 ----------
+    #
+    # 读路由有 Shell 的受保护清单，但 `/api/image-viewer__delete_folder` 是插件
+    # 自己实现的方法，Shell 拦不到：根可以被设置改写成包含 <config> 的目录
+    # （extra_roots / root_dir），此时凭据文件只是"根内一个没有图片的普通目录"。
+    # 这组用例锁住"插件的不可逆操作也要过同一份清单"。
+
+    def _with_protected(self, plugin, paths):
+        class _Manager:
+            def get_protected_paths(self_inner):
+                return list(paths)
+
+        plugin._plugin_manager = _Manager()
+        return plugin
+
+    def test_delete_folder_refuses_root_itself(self):
+        """`.` / `a/..` 解析后就是根目录本身，删掉等于删掉整个图库。"""
+        empty_root = self.root.parent / '空根'
+        (empty_root / '子目录').mkdir(parents=True)
+        self.addCleanup(lambda: shutil.rmtree(empty_root, ignore_errors=True))
+
+        plugin = self._plugin({'root_dir': str(empty_root)})
+        # 前置条件：两种写法都通过 `_is_safe` —— 拦住它们的只能是新增的根自身判定
+        self.assertTrue(plugin._is_safe('.'))
+        self.assertTrue(plugin._is_safe('a/..'))
+
+        for rel in ('.', 'a/..', '子目录/..'):
+            with self.subTest(rel=rel):
+                self.assertFalse(plugin.delete_folder(rel)['success'], f'{rel} 竟被接受')
+                self.assertTrue(empty_root.exists(), f'{rel} 删掉了根目录本身')
+
+    def test_delete_folder_refuses_protected_directory(self):
+        """受保护目录（凭据所在）必须拒绝删除，哪怕它在根内且没有图片。"""
+        vault = self.root / '受保护凭据'
+        (vault / 'nested').mkdir(parents=True)
+        (vault / 'nested' / 'token.json').write_text('{"refresh_token": "SECRET"}', encoding='utf-8')
+        self.addCleanup(lambda: shutil.rmtree(vault, ignore_errors=True))
+
+        plugin = self._with_protected(
+            self._plugin({'root_dir': str(self.root)}), [vault])
+        result = plugin.delete_folder('受保护凭据')
+        self.assertFalse(result['success'])
+        self.assertTrue(vault.exists(), '受保护目录被删掉了')
+
+    def test_delete_folder_refuses_protected_directory_via_extra_root(self):
+        """改根链路：extra_roots 指向父目录后，凭据目录变成 `__<命名空间>/名字`。"""
+        extra_parent = self.root.parent / '外部根'
+        vault = extra_parent / '凭据目录'
+        vault.mkdir(parents=True)
+        self.addCleanup(lambda: shutil.rmtree(extra_parent, ignore_errors=True))
+
+        plugin = self._plugin({
+            'root_dir': str(self.root),
+            'extra_roots': str(extra_parent),
+        })
+        plugin = self._with_protected(plugin, [vault])
+        rel = plugin._virtual_path(extra_parent, '凭据目录')
+        self.assertFalse(plugin.delete_folder(rel)['success'])
+        self.assertTrue(vault.exists(), '额外根下的受保护目录被删掉了')
+
+    def test_delete_files_refuses_protected_file(self):
+        """删除单文件同样要过清单：auth_token.txt 这种路径改根后就在"根内"。"""
+        vault = self.root / '受保护凭据'
+        vault.mkdir(parents=True, exist_ok=True)
+        secret = vault / 'auth_token.txt'
+        secret.write_text('TOKEN', encoding='utf-8')
+
+        plugin = self._with_protected(
+            self._plugin({'root_dir': str(self.root)}), [secret])
+        result = plugin.delete_files(['受保护凭据/auth_token.txt'])
+        self.assertEqual(result['deleted'], [])
+        self.assertTrue(secret.exists(), '受保护文件被删掉了')
+        self.assertTrue(any('受保护' in error for error in result['errors']))
+
+    def test_move_files_refuses_protected_source_and_destination(self):
+        """移动等价于"从原位置拿走"，源与目标都要判。"""
+        vault = self.root / '受保护凭据'
+        vault.mkdir(parents=True, exist_ok=True)
+        secret = vault / 'auth_token.txt'
+        secret.write_text('TOKEN', encoding='utf-8')
+        dest = self.root / '目标相册'
+        dest.mkdir(exist_ok=True)
+
+        plugin = self._with_protected(
+            self._plugin({'root_dir': str(self.root)}), [secret])
+        result = plugin.move_files(['受保护凭据/auth_token.txt'], '目标相册')
+        self.assertEqual(result['moved'], [])
+        self.assertTrue(secret.exists(), '受保护文件被移走了')
+
+        # 目标目录受保护时同样拒绝（把受保护目录当垃圾桶）
+        plugin = self._with_protected(
+            self._plugin({'root_dir': str(self.root)}), [dest])
+        (self.root / '普通图片').mkdir(exist_ok=True)
+        (self.root / '普通图片' / 'a.jpg').write_bytes(b'JPEG')
+        result = plugin.move_files(['普通图片/a.jpg'], '目标相册')
+        self.assertEqual(result['moved'], [])
+        self.assertTrue((self.root / '普通图片' / 'a.jpg').exists())
+
     # ---------- 子相册默认折叠 ----------
 
     def test_expand_collapse_tracked_separately(self):

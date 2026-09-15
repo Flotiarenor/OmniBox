@@ -21,6 +21,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional, Tuple
 
+from shell.backend.protected_paths import is_protected
+
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -108,7 +110,7 @@ class PluginBase(ABC):
     # Shell 保证不会发生"。
 
     def get_protected_paths(self) -> List[Path]:
-        """申请 Shell 文件防护：返回不得被 `/file`、`/files`、`/thumbs` 返回的路径。
+        r"""申请 Shell 文件防护：返回不得被 `/file`、`/files`、`/thumbs` 返回的路径。
 
         默认实现：`settings_schema` 里任何一项声明了 `"secret": True` 时，返回本
         插件的统一设置文件（凭据就存在那里）。因此**常见情况下一行都不用写** ——
@@ -130,10 +132,15 @@ class PluginBase(ABC):
           一起挡掉会让本插件自己的封面/缩略图也 404。只声明凭据文件。
         - 被拒绝的请求返回 `403`（与越界访问同一语义），所以插件前端不需要为它写
           特殊处理 —— 与已有的"403 就显示占位图"路径自然衔接。
+        - 这条防护同时作用于**写/删**：插件在 `delete_files` / `move_files` 这类
+          不可逆操作前应调用 `self.is_protected_path(...)` 自查（Shell 拦不到
+          `/api` 下的插件方法）。
         """
         if not any(isinstance(item, dict) and item.get('secret') for item in self.settings_schema):
             return []
         if self._settings_store is None:
+            # 静默失效比没有防护更危险：凭据已声明 secret，却没有可申报的设置文件
+            log.warning(f"[{self.name}] 声明了 secret 但没有设置存储，凭据防护未生效")
             return []
         try:
             return [self._settings_store.path_for(self.name)]
@@ -208,6 +215,24 @@ class PluginBase(ABC):
             str(item['key']) for item in self.settings_schema
             if isinstance(item, dict) and item.get('secret') and item.get('key')
         }
+
+    def is_protected_path(self, path) -> bool:
+        r"""该路径是否属于 Shell 的受保护清单（壳凭据 + 全插件申报）。
+
+        供插件在**不可逆**操作（删除 / 移动 / 覆盖）之前自查：读路由由 Shell 拦，
+        但 `/api/<插件>__<方法>` 里的删除移动是插件自己实现的，Shell 拦不到 ——
+        不查就会绕过同一份清单（image-viewer 的 `delete_folder` 曾能删掉
+        `<config>/plugins` 与 `auth_token.txt`，而"读"是挡住的）。
+
+        判定实现与 Shell 的读路由共用 `shell/backend/protected_paths.py`
+        （归一化 + samefile，见那里的说明）。**判定失败时返回 True**：这类操作
+        不可逆，宁可拒绝也不能在异常路径上放行。
+        """
+        try:
+            return is_protected(path, self._plugin_manager)
+        except Exception as exc:
+            log.warning(f"[{self.name}] 受保护路径判定失败，按受保护处理: {exc}")
+            return True
 
     def _raw_settings(self) -> Dict[str, Any]:
         """未脱敏的设置（合并默认值）。
