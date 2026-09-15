@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>团体组网</title>
+  <link rel="stylesheet" href="group-mesh.css">
+</head>
+<body>
+  <header class="gm-header">
+    <div class="gm-title">
+      <span class="gm-icon">🕸️</span>
+      <div>
+        <h1>团体组网</h1>
+        <p class="gm-sub">无中心团体：身份、名单、共享节点与加密传输</p>
+      </div>
+    </div>
+    <div class="gm-header-actions">
+      <button type="button" id="btn-refresh" class="gm-btn gm-btn-ghost">刷新状态</button>
+      <button type="button" id="btn-settings" class="gm-btn gm-btn-ghost">设置</button>
+    </div>
+  </header>
+
+  <div id="kernel-missing" class="gm-banner gm-banner-error" hidden>
+    <strong>协议内核未找到</strong>
+    <p>缺少 <code>tools/group-mesh-mvp/groupmesh</code>。请确认仓库完整，然后先跑：</p>
+    <pre>python -m groupmesh.cli selftest</pre>
+  </div>
+
+  <main class="gm-grid">
+    <!-- 身份 -->
+    <section class="gm-card">
+      <h2>本机身份</h2>
+      <div id="identity-body" class="gm-body"></div>
+      <div id="identity-actions" class="gm-actions"></div>
+    </section>
+
+    <!-- 团体 -->
+    <section class="gm-card">
+      <h2>团体与名单</h2>
+      <div id="roster-body" class="gm-body"></div>
+      <div id="roster-actions" class="gm-actions"></div>
+    </section>
+
+    <!-- 共享项 -->
+    <section class="gm-card gm-card-wide">
+      <h2>共享项</h2>
+      <div id="shares-body" class="gm-body"></div>
+      <div class="gm-form">
+        <input type="text" id="share-id" placeholder="共享标识（字母数字与 . _ -）">
+        <input type="text" id="share-path" placeholder="本机目录绝对路径">
+        <select id="share-write">
+          <option value="owner">写：仅属主</option>
+          <option value="group">写：全体成员</option>
+        </select>
+        <button type="button" id="btn-add-share" class="gm-btn">挂载共享项</button>
+      </div>
+    </section>
+
+    <!-- 节点 -->
+    <section class="gm-card">
+      <h2>共享节点</h2>
+      <div id="node-body" class="gm-body"></div>
+      <div id="node-actions" class="gm-actions"></div>
+    </section>
+
+    <!-- 未实现 -->
+    <section class="gm-card">
+      <h2>尚未实现</h2>
+      <ul id="unsupported-list" class="gm-list"></ul>
+    </section>
+  </main>
+
+  <div id="create-box" class="gm-modal">
+    <div class="gm-modal-inner">
+      <h3>创建团体</h3>
+      <p class="gm-hint">创建后你成为群主。把生成的邀请串通过可信渠道交给成员，他们才能加入。</p>
+      <input type="text" id="create-group-name" placeholder="团体名称（如 home-lab）">
+      <div class="gm-actions">
+        <button type="button" id="btn-do-create" class="gm-btn">创建</button>
+        <button type="button" id="btn-close-create" class="gm-btn gm-btn-ghost">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="invite-box" class="gm-modal">
+    <div class="gm-modal-inner">
+      <h3>邀请串</h3>
+      <p class="gm-hint">通过可信渠道（面对面 / 二维码 / 局域网）交给成员，让他们在本机"加入团体"。</p>
+      <textarea id="invite-text" readonly rows="6"></textarea>
+      <div class="gm-actions">
+        <button type="button" id="btn-copy-invite" class="gm-btn">复制</button>
+        <button type="button" id="btn-close-invite" class="gm-btn gm-btn-ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="join-box" class="gm-modal">
+    <div class="gm-modal-inner">
+      <h3>加入 / 更新团体</h3>
+      <p class="gm-hint">
+        粘贴群主给你的最新 <code>gm1:</code> 邀请串。<br>
+        · 本机还没有团体时会加入该团体；<br>
+        · 本机已有旧名单时会更新到这一版（<strong>群主每次加人后都要把新邀请串发给你</strong>，
+        否则你会停在旧名单上，看不到新成员、也连不上他们）。
+      </p>
+      <textarea id="join-text" rows="6" placeholder="gm1:..."></textarea>
+      <div class="gm-actions">
+        <button type="button" id="btn-do-join" class="gm-btn">加入 / 更新</button>
+        <button type="button" id="btn-close-join" class="gm-btn gm-btn-ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="member-box" class="gm-modal">
+    <div class="gm-modal-inner">
+      <h3>添加成员</h3>
+      <p class="gm-hint">让对方在它的"本机身份"里点"显示公钥"，把主体与设备公钥贴到这里。</p>
+      <input type="text" id="member-principal" placeholder="主体公钥（base64）">
+      <input type="text" id="member-device" placeholder="设备公钥（base64）">
+      <input type="text" id="member-name" placeholder="显示名（可选）">
+      <div class="gm-actions">
+        <button type="button" id="btn-do-add-member" class="gm-btn">添加</button>
+        <button type="button" id="btn-close-member" class="gm-btn gm-btn-ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

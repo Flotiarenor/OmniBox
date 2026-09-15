@@ -1,0 +1,283 @@
+/* group-mesh 插件前端样式。
+   只依赖壳注入的 CSS 变量（主题色/背景），不写死颜色，以便跟随壳的主题切换。 */
+
+.gm-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-color, #e5e7eb);
+}
+
+.gm-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.gm-icon {
+  font-size: 28px;
+}
+
+.gm-title h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.gm-sub {
+  margin: 2px 0 0;
+  font-size: 12px;
+  opacity: 0.65;
+}
+
+.gm-header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.gm-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+  padding: 20px;
+}
+
+.gm-card {
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 10px;
+  padding: 16px;
+  background: var(--card-background, transparent);
+}
+
+.gm-card-wide {
+  grid-column: 1 / -1;
+}
+
+.gm-card h2 {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+.gm-body {
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.gm-kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 14px;
+}
+
+.gm-kv dt {
+  opacity: 0.6;
+}
+
+.gm-kv dd {
+  margin: 0;
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.gm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.gm-btn {
+  padding: 7px 14px;
+  border-radius: 7px;
+  border: 1px solid var(--accent-color, #3b82f6);
+  background: var(--accent-color, #3b82f6);
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.gm-btn:hover {
+  filter: brightness(1.08);
+}
+
+.gm-btn-ghost {
+  background: transparent;
+  color: inherit;
+  border-color: var(--border-color, #d1d5db);
+}
+
+.gm-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.gm-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.gm-form input,
+.gm-form select,
+.gm-modal input {
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border-color, #d1d5db);
+  background: var(--input-background, transparent);
+  color: inherit;
+  font-size: 13px;
+  min-width: 160px;
+}
+
+.gm-form input[type="text"]:first-child {
+  max-width: 220px;
+}
+
+.gm-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+.gm-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.gm-table th,
+.gm-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-color, #eee);
+}
+
+.gm-table code {
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.gm-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid currentColor;
+  opacity: 0.85;
+}
+
+.gm-badge-owner { color: #f59e0b; }
+.gm-badge-admin { color: #8b5cf6; }
+.gm-badge-member { color: #10b981; }
+.gm-badge-warn { color: #ef4444; }
+
+.gm-banner {
+  margin: 16px 20px 0;
+  padding: 12px 16px;
+  border-radius: 9px;
+  font-size: 13px;
+}
+
+.gm-banner-error {
+  border: 1px solid #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.gm-banner pre {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.06);
+  font-size: 12px;
+  overflow-x: auto;
+}
+
+.gm-hint {
+  font-size: 12px;
+  opacity: 0.7;
+  margin: 6px 0 10px;
+}
+
+.gm-empty {
+  opacity: 0.6;
+  font-size: 13px;
+}
+
+/* 弹窗默认关闭，靠 `data-open="true"` 打开。
+   为什么不用 `hidden` 属性：浏览器给 `[hidden]` 的 `display: none` 来自
+   **UA 样式表**，而 `.gm-modal` 的 `display: flex` 是作者样式 —— 同优先级下
+   作者样式胜出，于是"加了 hidden"的弹窗照样显示。实测后果：三个弹窗在打开
+   插件时**同时**铺满整屏，DOM 里写在最后的"添加成员"盖在最上层，用户只能看到
+   一个添加成员的对话框，连"创建身份"都被挡住。
+   改用属性选择器（`.gm-modal[data-open="true"]`）后，默认态是**没有规则命中**，
+   不依赖与 UA 样式的优先级博弈，也不依赖 <script> 的加载位置。 */
+.gm-modal {
+  display: none;
+}
+
+.gm-modal[data-open="true"] {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 50;
+}
+
+.gm-modal-inner {
+  width: min(560px, 92vw);
+  padding: 20px;
+  border-radius: 12px;
+  background: var(--background-color, #fff);
+  color: var(--text-color, #111);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+}
+
+.gm-modal-inner h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.gm-modal textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color, #d1d5db);
+  background: var(--input-background, transparent);
+  color: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.gm-modal input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 8px;
+}
+
+.gm-toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  background: rgba(17, 24, 39, 0.92);
+  color: #fff;
+  z-index: 60;
+  max-width: 420px;
+}
+
+.gm-toast-error {
+  background: rgba(185, 28, 28, 0.95);
+}
