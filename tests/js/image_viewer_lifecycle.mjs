@@ -13,9 +13,11 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
+import { readDeclaredScripts } from './script_load_contract.mjs';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const BASE_JS = path.join(ROOT, 'shell/frontend/public/shell/base.js');
-const APP_JS = path.join(ROOT, 'plugins/image-viewer/frontend/js/app.js');
+const FRONTEND = path.join(ROOT, 'plugins/image-viewer/frontend');
 
 let failures = 0;
 function check(name, cond, extra = '') {
@@ -120,9 +122,13 @@ function loadImageViewer() {
         Map, Set, Date, RegExp, parseInt, parseFloat, isNaN, Infinity, console,
     };
     vm.createContext(sandbox);
-    // 先注入 Shell 基础运行时（提供 window.PluginLifecycle），再加载插件脚本
+    // 先注入 Shell 基础运行时（提供 window.PluginLifecycle），再按 index.html 的声明
+    // 顺序装载插件自己的全部脚本 —— 不写死单个文件名，这样 app.js 拆成分片后本用例
+    // 自动跟着走（顺序或漏挂出错会在装载期直接抛，见 tests/js/script_load_contract.mjs）。
     vm.runInContext(fs.readFileSync(BASE_JS, 'utf8'), sandbox, { filename: 'shell/base.js' });
-    vm.runInContext(fs.readFileSync(APP_JS, 'utf8'), sandbox, { filename: 'plugins/image-viewer/frontend/js/app.js' });
+    for (const { rel, source } of readDeclaredScripts(FRONTEND)) {
+        vm.runInContext(source, sandbox, { filename: `plugins/image-viewer/frontend/${rel}` });
+    }
     vm.runInContext('globalThis.__IV = ImageViewer; globalThis.__life = window.PluginLifecycle;', sandbox);
     return {
         win, doc, getEl, winListeners, messageListeners,

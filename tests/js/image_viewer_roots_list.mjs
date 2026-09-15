@@ -8,35 +8,40 @@
 // 去重逻辑。以前这套东西长在 app.js 里，媒体播放器 / 漫画 / 小说又各需要一份，
 // 结果就是"同一件事三处不一样"；谁把这个实现抄回插件，这个用例就会红。
 //
+// 源码断言扫的是**插件前端的全部脚本**（按 index.html 的顺序拼接），不是单个 app.js：
+// 这样 app.js 拆成分片后本用例自动跟着走，而且"换个文件把实现抄回来"同样会被抓住。
+//
 // 用法：node tests/js/image_viewer_roots_list.mjs
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const here = dirname(fileURLToPath(import.meta.url));
-const appJsPath = join(here, '..', '..', 'plugins', 'image-viewer', 'frontend', 'js', 'app.js');
-const htmlPath = join(here, '..', '..', 'plugins', 'image-viewer', 'frontend', 'index.html');
-const cssPath = join(here, '..', '..', 'plugins', 'image-viewer', 'frontend', 'image-viewer.css');
+import { readDeclaredScripts } from './script_load_contract.mjs';
 
-const appJs = readFileSync(appJsPath, 'utf8');
+const here = dirname(fileURLToPath(import.meta.url));
+const FRONTEND = join(here, '..', '..', 'plugins', 'image-viewer', 'frontend');
+const htmlPath = join(FRONTEND, 'index.html');
+const cssPath = join(FRONTEND, 'image-viewer.css');
+
+const pluginJs = readDeclaredScripts(FRONTEND).map(s => s.source).join('\n;\n');
 const html = readFileSync(htmlPath, 'utf8');
 const css = readFileSync(cssPath, 'utf8');
 
 // 1) 渲染与目录选择器不再由插件实现
 for (const gone of ['_renderRoots', '_addRootFromInput', '_loadDirBrowser', 'openDirBrowser']) {
-  assert.ok(!new RegExp(`\\b${gone}\\s*\\(`).test(appJs),
-            `app.js 不应再自带 ${gone}（已搬到 shell/frontend/public/shell/folder-picker.js）`);
+  assert.ok(!new RegExp(`\\b${gone}\\s*\\(`).test(pluginJs),
+            `插件前端不应再自带 ${gone}（已搬到 shell/frontend/public/shell/folder-picker.js）`);
 }
-assert.ok(!appJs.includes('iv-root-remove'),
-          'app.js 不应再自己拼 .iv-root-row 的 HTML');
-assert.ok(!appJs.includes('browse_dir'),
+assert.ok(!pluginJs.includes('iv-root-remove'),
+          '插件前端不应再自己拼 .iv-root-row 的 HTML');
+assert.ok(!pluginJs.includes('browse_dir'),
           '目录浏览改走宿主接口 system_browse_dir（共享组件内部调用）');
 
 // 2) 插件改成引用共享组件
-assert.ok(appJs.includes('window.FolderPicker.createList('),
-          'app.js 应通过 window.FolderPicker.createList 建立列表');
-assert.ok(appJs.includes('_rootPaths()') && appJs.includes('rootsPicker.getPaths()'),
+assert.ok(pluginJs.includes('window.FolderPicker.createList('),
+          '插件前端应通过 window.FolderPicker.createList 建立列表');
+assert.ok(pluginJs.includes('_rootPaths()') && pluginJs.includes('rootsPicker.getPaths()'),
           '保存时应从共享组件的 paths 取全部路径');
 
 // 3) 列表容器留空给组件填充，旧的静态输入行与选择器弹窗都已移除

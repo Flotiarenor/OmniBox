@@ -1,19 +1,24 @@
 // image-viewer 相册可见性的纯逻辑用例（不经浏览器）：
 //   - 子相册默认折叠：只有显式「展开」过的目录才显示下级
 //   - 递归都没有可读图片的目录不显示，但「新建相册」保留可见的（含其上级）要显示
-// 直接复用 app.js 里的真实实现，避免用例与实现各写一套判断。
+// 直接复用插件前端的真实实现，避免用例与实现各写一套判断。
+//
+// 装载顺序取自 index.html（见 script_load_contract.mjs）：app.js 拆成分片后本用例
+// 自动跟着走，不需要在这里维护文件名清单。
 //
 // 用法：node tests/js/image_viewer_album_visibility.mjs
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const here = dirname(fileURLToPath(import.meta.url));
-const source = readFileSync(join(here, '..', '..', 'plugins', 'image-viewer',
-                                'frontend', 'js', 'app.js'), 'utf8');
+import { readDeclaredScripts } from './script_load_contract.mjs';
 
-// app.js 末尾有 `class ImageViewer {}`，包一层导出以便在 node 里实例化
+const here = dirname(fileURLToPath(import.meta.url));
+const FRONTEND = join(here, '..', '..', 'plugins', 'image-viewer', 'frontend');
+
+// 按声明顺序拼接插件自己的全部脚本；末尾有 `class ImageViewer {}`，
+// 包一层导出以便在 node 里实例化。
+const source = readDeclaredScripts(FRONTEND).map(s => s.source).join('\n;\n');
 const ImageViewer = new Function(`${source}\nreturn ImageViewer;`)();
 
 function makeViewer(albumConfig = {}) {
