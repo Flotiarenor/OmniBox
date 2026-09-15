@@ -1049,6 +1049,9 @@ class MyPlugin(PluginBase):
   `get_settings` 通常经 `register_api()` 暴露成 `POST /api/<插件>__get_settings`，
   而插件 iframe 与壳同源 —— 返回明文等于让任何一段同源脚本直接问 API 拿到凭据，
   根本不用碰文件；
+- 脱敏**不依赖你覆写 get_settings 时记得调 super()**：Shell 在
+  `<插件>__get_settings` 与集中设置面板这两个出口还会按 schema 再掩一次
+  （`PluginBase.mask_secrets`）。覆写只影响你自己看到的形状，不影响对外安全；
 - 插件侧**不需要写任何代码**：`setting()` 读到的仍是明文（插件自己要用），
   只有对外的 `get_settings()` 脱敏；
 - 请求被拒时返回的是 `403`，与越界访问同一语义，前端按既有路径处理即可。

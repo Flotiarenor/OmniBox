@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Dict, List
 
 from shell.backend.paths import get_plugins_config_dir
+from shell.backend.plugin_base import PluginBase, mask_secrets
 from shell.backend.protected_paths import normalize as normalize_path
 from shell.backend.settings_store import SettingsStore
 
@@ -549,7 +550,7 @@ class PluginManager:
             # 若已经把方法写进 _api_methods，就会出现"幽灵 API"——/api/<插件>__<方法>
             # 能打到从未进入 _instances 的半初始化实例（docs/code-review.md §4.1-3）。
             pending_methods = {
-                f"{name}__{method_name}": method_fn
+                f"{name}__{method_name}": self._exposed_method(instance, method_name, method_fn)
                 for method_name, method_fn in instance.register_api().items()
             }
             pending_methods[f"{name}__get_settings_schema"] = (
@@ -573,6 +574,25 @@ class PluginManager:
 
     # ---------- 集中设置面板 ----------
 
+    @staticmethod
+    def _exposed_method(instance: PluginBase, method_name: str, method_fn: Callable) -> Callable:
+        """包一层出口处理：插件注册的方法在返回前要过的 Shell 侧约束。
+
+        目前只有一条 —— `get_settings` 的凭据脱敏。**必须由 Shell 做**：插件可以
+        覆写 `get_settings()`（image-viewer / manga-library 都覆写了），基类里的
+        掩码于是整个不执行；而该方法经 register_api() 直接变成
+        `POST /api/<插件>__get_settings`，与壳同源 —— 覆写一下就能把长期凭据交给
+        任何一段同源脚本。返回非字典（插件自定义形状）时原样放行。
+        """
+        if method_name != 'get_settings':
+            return method_fn
+
+        def masked(*args, **kwargs):
+            return mask_secrets(getattr(instance, 'settings_schema', None) or [],
+                                method_fn(*args, **kwargs))
+
+        return masked
+
     def get_settings_panels(self) -> List[dict]:
         """返回声明了 settings_schema 的插件的设置面板数据。
         只显示 root_dir 或声明 central:true 的字段，其余在插件内部设置。"""
@@ -595,6 +615,9 @@ class PluginManager:
             except Exception as e:
                 values = {}
                 log.error(f"[PluginManager] 读取设置失败 {name}: {e}")
+            # 集中设置面板同样走 Shell 侧脱敏：面板的 values 也会发给前端，
+            # 与 /api/<插件>__get_settings 是同一条泄露路径。
+            values = mask_secrets(schema, values)
             manifest = self._manifests.get(name, {})
             panels.append({
                 'name': name,

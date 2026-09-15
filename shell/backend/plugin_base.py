@@ -57,6 +57,34 @@ if TYPE_CHECKING:
 SECRET_MASK = '********'
 
 
+def secret_keys(schema) -> set:
+    """schema 里声明了 `"secret": True` 的设置键（凭据类）。"""
+    return {
+        str(item['key']) for item in (schema or [])
+        if isinstance(item, dict) and item.get('secret') and item.get('key')
+    }
+
+
+def mask_secrets(schema, values):
+    """把 schema 声明的凭据类键替换成 `SECRET_MASK`（非字典原样返回）。
+
+    **Shell 侧也调用这个函数**（`PluginManager` 在把 `<插件>__get_settings` 与设置
+    面板的返回值交给前端之前再掩一次）：插件可以覆写 `get_settings()`，
+    基类的掩码就整个失效了（image-viewer / manga-library 都覆写了）。掩码只写在
+    基类等于把"不泄露凭据"寄托在每个插件的实现细节上。
+    """
+    if not isinstance(values, dict):
+        return values
+    keys = secret_keys(schema)
+    if not keys:
+        return values
+    masked = dict(values)
+    for key in keys:
+        if masked.get(key):
+            masked[key] = SECRET_MASK
+    return masked
+
+
 class PluginBase(ABC):
     # 子类覆盖：声明该插件的统一设置项。
     # ClassVar 是必要的：它是类级共享的常量声明，不是每个实例各自持有的可变状态
@@ -211,10 +239,7 @@ class PluginBase(ABC):
 
     def _secret_keys(self) -> set:
         """schema 里声明了 `"secret": True` 的设置键（凭据类）。"""
-        return {
-            str(item['key']) for item in self.settings_schema
-            if isinstance(item, dict) and item.get('secret') and item.get('key')
-        }
+        return secret_keys(self.settings_schema)
 
     def is_protected_path(self, path) -> bool:
         r"""该路径是否属于 Shell 的受保护清单（壳凭据 + 全插件申报）。
@@ -257,13 +282,11 @@ class PluginBase(ABC):
         None），前端据此显示"未配置"，不需要为脱敏另加一条协议（"是否已配置"另有
         token_configured 之类只读信号）。
 
-        子类可覆盖，但必须调用 super() 以保证 on_settings_changed 检测正确。
+        子类可覆盖，但必须调用 super() 以保证 on_settings_changed 检测正确；
+        即便忘了调用，Shell 侧在 `<插件>__get_settings` 的出口还会再掩一次
+        （`PluginManager`，见 `mask_secrets`），覆写不会造成明文泄露。
         """
-        values = self._raw_settings()
-        for key in self._secret_keys():
-            if values.get(key):
-                values[key] = SECRET_MASK
-        return values
+        return mask_secrets(self.settings_schema, self._raw_settings())
 
     def save_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
         """校验、写入 SettingsStore、检测变更、调用 on_settings_changed。
