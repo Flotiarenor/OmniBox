@@ -188,6 +188,15 @@
 
   <script src="js/justified-layout.js"></script>
   <script src="js/app.js"></script>
+  <!-- ImageViewer.prototype 的分片：顺序是硬约束，必须排在 app.js 之后、实例化之前。
+       漏挂或错序会在装载期抛 `ImageViewer is not defined`；契约由
+       tests/js/image_viewer_app_split.mjs 把关。 -->
+  <script src="js/app-albums.js"></script>
+  <script src="js/app-nav.js"></script>
+  <script src="js/app-grid.js"></script>
+  <script src="js/app-refresh.js"></script>
+  <script src="js/app-settings.js"></script>
+  <script src="js/app-utils.js"></script>
   <script>
     window.imageViewer = new ImageViewer();
     imageViewer.init();

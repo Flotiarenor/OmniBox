@@ -38,9 +38,27 @@ plugins/image-viewer/
     ├── index.html              # 侧边栏 + 工具栏 + 弹窗骨架
     ├── image-viewer.css
     └── js/
-        ├── app.js              # 主应用（视图状态机、瀑布流、灯箱、多选、设置）
+        ├── app.js              # 类骨架：构造函数、初始化、生命周期、扩展入口、UI 绑定
+        ├── app-albums.js       # ImageViewer 分片：相册树浏览、渲染与排序
+        ├── app-nav.js          # ImageViewer 分片：返回导航栈、相册右键菜单、统计与新建相册
+        ├── app-grid.js         # ImageViewer 分片：图片网格、Justified 布局、幻灯与多选操作
+        ├── app-refresh.js      # ImageViewer 分片：刷新与缩略图重建
+        ├── app-settings.js     # ImageViewer 分片：设置读写
+        ├── app-utils.js        # ImageViewer 分片：格式化与转义工具（_escapeHtml / _escapeAttr）
         └── justified-layout.js # Justified 布局计算（纯函数）
 ```
+
+`ImageViewer` 的 67 个成员原本集中在一个 1500 行的 `app.js` 里，按类体里已有的分节注释
+拆成上面 7 个文件。分片用 `Object.assign(ImageViewer.prototype, {...})` 扩回**同一个**
+原型，因此成员与调用点没变、行为不变；**代价是 `index.html` 的 `<script>` 顺序变成硬约束**
+（分片必须排在 `app.js` 之后、实例化之前），漏挂或错序会在装载期抛
+`ImageViewer is not defined`。这条契约由 `tests/js/image_viewer_app_split.mjs` 把关
+（共享检查器见 `tests/js/script_load_contract.mjs`）：它按 `index.html` 的声明顺序装载全部
+脚本，断言无孤立脚本、无重复定义、67 个成员仍在。
+
+另外三个 image-viewer 前端用例（`image_viewer_lifecycle` / `image_viewer_album_visibility` /
+`image_viewer_roots_list`）都改成**按 `index.html` 顺序装载或扫描全部脚本**，不在文件里写死
+`app.js` —— 所以再往下拆分片时它们不需要跟着改。
 
 **职责边界**：
 

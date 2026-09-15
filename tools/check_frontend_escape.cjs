@@ -166,7 +166,7 @@ checkEscaper('manga-library MangaUtils.escapeHtml',
   runScript(read('plugins/manga-library/frontend/js/utils.js'), 'MangaUtils').escapeHtml);
 checkEscaper('netease-music esc', loadMethod('plugins/netease-music/frontend/js/app.js', 'esc(str)', 'esc'));
 checkEscaper('image-viewer _escapeHtml',
-  loadMethod('plugins/image-viewer/frontend/js/app.js', '_escapeHtml(str)', '_escapeHtml'));
+  loadMethod('plugins/image-viewer/frontend/js/app-utils.js', '_escapeHtml(str)', '_escapeHtml'));
 checkEscaper('image-cleaner _escapeHtml',
   loadMethod('plugins/image-cleaner/frontend/js/app.js', '_escapeHtml(str)', '_escapeHtml'));
 
@@ -193,7 +193,8 @@ function loadObjectWith(rel, needles) {
 }
 
 // ---- 3. image-viewer 的 _escapeAttr 必须与 _escapeHtml 同样严格 ----
-const iv = loadObjectWith('plugins/image-viewer/frontend/js/app.js', ['_escapeHtml(str)', '_escapeAttr(str)']);
+// 两个方法在 app-utils.js 分片里（app.js 拆成多个原型分片后位置变更，见 docs/image-viewer-design.md）
+const iv = loadObjectWith('plugins/image-viewer/frontend/js/app-utils.js', ['_escapeHtml(str)', '_escapeAttr(str)']);
 if (iv) {
   const out = iv._escapeAttr(PAYLOAD);
   if (out.includes('"') || out.includes("'") || out.includes('<')) {
