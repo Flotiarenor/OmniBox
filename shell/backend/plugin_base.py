@@ -39,9 +39,20 @@ if TYPE_CHECKING:
 # 可选字段：
 #   "central": False   — 不在集中设置面板显示（默认显示）
 #   "help": "..."      — 设置面板悬浮提示
-
+#   "secret": True     — 凭据类设置项。两件事一起生效：
+#                        ① get_settings() 对外返回掩码（本方法会经 register_api
+#                           直接暴露给 HTTP，返回明文等于把凭据交给任何同源脚本）；
+#                        ② 该插件的设置文件不参与文件服务
+#                           （PluginBase.get_protected_paths）。
+#                        见 docs/plugin-guide.md §8.2
+#
 # 注意：docs/adapter-spec.md 中描述的 adapter_* 方法目前处于规划阶段，
 # 尚未在本基类实现；adapter_process.py 也不应提前引入。
+
+# 凭据类设置项对外返回时的掩码。选一个用户不会真的输入、且一眼能看出是占位符的
+# 值：前端把 get_settings() 的结果回填进输入框后，用户看到它就知道"已配置，
+# 但不明文显示"。把它原样提交回来表示"不改动"，见 save_settings()。
+SECRET_MASK = '********'
 
 
 class PluginBase(ABC):
@@ -191,10 +202,43 @@ class PluginBase(ABC):
     def _default_settings(self) -> Dict[str, Any]:
         return {str(item["key"]): item.get("default") for item in self.settings_schema if item.get("key")}
 
-    def get_settings(self) -> Dict[str, Any]:
-        """从统一设置存储读取设置（合并默认值）。子类可覆盖，但必须调用 super() 以保证 on_settings_changed 检测正确"""
+    def _secret_keys(self) -> set:
+        """schema 里声明了 `"secret": True` 的设置键（凭据类）。"""
+        return {
+            str(item['key']) for item in self.settings_schema
+            if isinstance(item, dict) and item.get('secret') and item.get('key')
+        }
+
+    def _raw_settings(self) -> Dict[str, Any]:
+        """未脱敏的设置（合并默认值）。
+
+        **仅供内部使用**：变更检测与插件自身的凭据读取都走这里。对外的
+        `get_settings()` 会把凭据类键替换成掩码 —— 两者不能混用，否则要么凭据
+        泄露，要么每次保存都把凭据判成"已变更"。
+        """
         stored = self._settings_store.get(self.name) if self._settings_store else {}
         return {**self._default_settings(), **stored}
+
+    def get_settings(self) -> Dict[str, Any]:
+        """从统一设置存储读取设置（合并默认值，凭据类键已脱敏）。
+
+        **schema 里声明 `"secret": True` 的键在这里被替换成 `SECRET_MASK`。**
+        这一步必须做在基类、而不是让各插件自己小心：本方法的返回值会经
+        `register_api()` 直接暴露成 `POST /api/<插件>__get_settings`，而插件 iframe
+        与壳同源 —— 返回明文就等于把长期凭据交给任何一段同源脚本，它也就绕开了
+        "壳拒绝把设置文件当媒体资源返回"那层防护（直接问 API 即可）。
+
+        掩码只在**值非空**时替换：未配置的凭据保持 schema 的 default（未声明时是
+        None），前端据此显示"未配置"，不需要为脱敏另加一条协议（"是否已配置"另有
+        token_configured 之类只读信号）。
+
+        子类可覆盖，但必须调用 super() 以保证 on_settings_changed 检测正确。
+        """
+        values = self._raw_settings()
+        for key in self._secret_keys():
+            if values.get(key):
+                values[key] = SECRET_MASK
+        return values
 
     def save_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
         """校验、写入 SettingsStore、检测变更、调用 on_settings_changed。
@@ -202,9 +246,19 @@ class PluginBase(ABC):
         if not isinstance(settings, dict):
             return {"success": False, "error": "设置必须是字典"}
 
-        old = self.get_settings()
+        # 变更检测必须用未脱敏的值：拿掩码与真值比较会把凭据每次都判成"已变更"，
+        # 于是每次保存都触发 on_settings_changed（pixiv-sync 会据此重建客户端）。
+        old = self._raw_settings()
         allowed = {item['key'] for item in self.settings_schema if item.get('key')}
-        clean = {k: v for k, v in settings.items() if k in allowed} if allowed else settings
+        # 一律复制：不要与调用方传入的对象共享引用（下面会 pop）
+        clean = {k: v for k, v in settings.items() if k in allowed} if allowed else dict(settings)
+
+        # 掩码原样回传 = "不改动"。前端会把 get_settings() 的值回填进输入框再整体
+        # 提交，若把掩码当新值写入，凭据就被静默覆盖成一串星号（用户下次同步时
+        # 才发现要重新登录）。传空字符串仍然是"清除"——撤销凭据把输入框清空即可。
+        for key in self._secret_keys():
+            if clean.get(key) == SECRET_MASK:
+                clean.pop(key)
 
         if self._settings_store:
             try:
