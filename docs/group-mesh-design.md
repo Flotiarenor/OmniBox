@@ -3,6 +3,9 @@
 > 版本：v0.1（首版设计：需求与协议骨架定稿）
 > 目标形态：**核心插件**（供消费型插件依赖）+ 壳侧配套改造
 > 状态：**设计阶段**，尚未实现
+> 实现进度：协议内核已可运行并完成 Windows↔Linux 跨机验证，
+> 见 [`docs/group-mesh-implementation-path.md`](./group-mesh-implementation-path.md)
+> （该文档同时列出与本文的**已知偏离**，编码前请先读它）
 > 关联文档：`docs/plugin-guide.md`、`docs/core-direction.md`、`docs/ci-and-release.md`
 
 ---
