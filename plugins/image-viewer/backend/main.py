@@ -1297,20 +1297,35 @@ class ImageViewerPlugin(PluginBase):
 
         只允许删除「递归都没有图片」的目录：有图片的目录必须先清空图片，
         避免一个误点连带删掉整棵作品树。
+
+        路径必须落在它所属的根目录内：`../`、绝对路径、未知命名空间一律拒绝。
+        这是**删除**操作，越权代价是根目录外的整棵目录树，所以不能只依赖调用方
+        传对相对路径（`_is_safe` 是唯一把"虚拟相对路径"折算成根内物理路径的校验）。
         """
         rel_path = (rel_path or '').replace('\\', '/').strip('/')
-        if not rel_path or self._is_namespace_node(rel_path):
+        # 两个校验缺一不可：
+        #   - `_is_safe` 拒绝未知命名空间，以及任何跑出所属根的路径（`../victim`、
+        #     绝对路径 —— `root / '/abs'` 在 pathlib 里会丢弃 root，必须拦）；
+        #   - 命名空间节点本身是**虚拟**节点（没有自己的物理目录），而 `_is_safe`
+        #     对它是**通过**的（根内相对路径为空），所以必须单独拒绝。
+        # 与 create_folder / move_files 的写法保持一致。
+        if not rel_path or not self._is_safe(rel_path) or self._is_namespace_node(rel_path):
             return {'success': False, 'error': '路径非法'}
         target, _ = self._resolve_dir(rel_path)
         if target is None:
             return {'success': False, 'error': '路径非法'}
         if not target.is_dir():
             return {'success': False, 'error': '目录不存在'}
+        root, _inner = self._split_virtual(rel_path)
         try:
             for _current, _dirs, files in os.walk(target):
                 if any(not f.startswith('.') and Path(f).suffix.lower() in ALLOWED_EXTENSIONS
                        for f in files):
                     return {'success': False, 'error': '目录内还有图片，请先删除图片'}
+            # 二次校验：`os.walk` 到 `rmtree` 之间路径可能被换成指向根外的符号链接 /
+            # junction（TOCTOU），删除前用 resolve() 后的物理路径再确认一次。
+            if root is None or not target.resolve().is_relative_to(root):
+                return {'success': False, 'error': '路径非法'}
             shutil.rmtree(target)
         except Exception as e:
             return {'success': False, 'error': str(e)}

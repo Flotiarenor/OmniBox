@@ -16,6 +16,7 @@
 
 import importlib.util
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -255,6 +256,47 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
         ns1 = f'__{self.extra.name}'
         self.assertFalse(plugin.delete_folder(ns1)['success'])
         self.assertFalse(plugin.create_folder(f'{ns1}/新目录')['success'])
+
+    def test_delete_folder_refuses_path_escaping_root(self):
+        """`../` 不能把删除带出根目录（审计 §1.2：这里曾漏掉 `_is_safe`）。
+
+        `_is_safe` 本会拒绝它（同文件 11 处调用都靠它），唯独 delete_folder 漏了，
+        而该方法的破坏力最大：`shutil.rmtree` 直接删掉根目录外的整棵树。
+        """
+        victim = self.root.parent / 'victim'
+        (victim / '子目录').mkdir(parents=True)
+        (victim / 'note.txt').write_text('keep', encoding='utf-8')
+        self.addCleanup(lambda: shutil.rmtree(victim, ignore_errors=True))
+
+        plugin = self._plugin({'root_dir': str(self.root)})
+        self.assertFalse(plugin._is_safe('../victim'), '前置条件：校验本会拒绝它')
+
+        result = plugin.delete_folder('../victim')
+        self.assertFalse(result['success'])
+        self.assertTrue(victim.exists(), '根目录外的目录被整棵删掉了')
+        self.assertTrue((victim / 'note.txt').exists())
+
+    def test_delete_folder_refuses_absolute_path(self):
+        """绝对路径同样必须拒绝（`root / '/abs'` 在 pathlib 里会丢弃 root）。"""
+        victim = self.root.parent / 'victim-abs'
+        victim.mkdir()
+        self.addCleanup(lambda: shutil.rmtree(victim, ignore_errors=True))
+
+        plugin = self._plugin({'root_dir': str(self.root)})
+        self.assertFalse(plugin.delete_folder(str(victim))['success'])
+        self.assertTrue(victim.exists())
+
+    def test_delete_folder_refuses_unknown_namespace(self):
+        plugin = self._multi()
+        self.assertFalse(plugin.delete_folder('__不存在/作者A')['success'])
+        self.assertTrue(self.extra.exists(), '额外根被误删')
+
+    def test_delete_folder_still_deletes_empty_folder_inside_root(self):
+        """只加校验，不能把正常删除一起改坏。"""
+        plugin = self._plugin({'root_dir': str(self.root)})
+        (self.root / '待删空相册').mkdir()
+        self.assertTrue(plugin.delete_folder('待删空相册')['success'])
+        self.assertFalse((self.root / '待删空相册').exists())
 
     # ---------- 子相册默认折叠 ----------
 
