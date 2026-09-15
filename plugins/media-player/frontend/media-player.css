@@ -980,6 +980,13 @@
   font-size: 13px;
 }
 
+/* 加载文案由 _setLoading 统一转义，换行用 \n + pre-line 渲染（历史上是让调用方
+   直接拼 <br>，那等于把这段 HTML 的拼接权交给了调用方）。 */
+.mp-loading > div:last-child {
+  white-space: pre-line;
+  text-align: center;
+}
+
 .mp-spinner {
   width: 34px;
   height: 34px;

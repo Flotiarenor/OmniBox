@@ -13,10 +13,14 @@ Object.assign(MediaPlayerApp.prototype, {
     // ============================================================
     _setLoading(text) {
         const content = document.getElementById('media-content');
+        // 一律转义：text 会带上后端扫描进度里的磁盘目录名（`s.current`），
+        // 而这里是 innerHTML。换行交给 CSS 的 white-space: pre-line 渲染，
+        // 因此调用方不需要（也不应该）传 HTML —— 历史实现让三个调用点直接拼
+        // `<br>`，等于把这段标记的拼接权交给了每个调用方。
         content.innerHTML = `
             <div class="mp-loading">
                 <div class="mp-spinner"></div>
-                <div>${text}</div>
+                <div>${MPUtils.escapeHtml(text)}</div>
             </div>`;
     },
 
@@ -384,7 +388,7 @@ Object.assign(MediaPlayerApp.prototype, {
         const totalDuration = items.reduce((sum, i) => sum + (i.duration || 0), 0);
 
         content.innerHTML = `
-            <div class="mp-detail-hero" style="--hero-bg:${coverSrc ? `url("${coverSrc}")` : 'none'}">
+            <div class="mp-detail-hero" style="--hero-bg:${MPUtils.heroBg(coverSrc)}">
                 <button class="mp-ghost-btn mp-hero-back" data-hero-action="back" title="返回">← 返回</button>
                 <div class="mp-detail-cover">${coverSrc ? MPUtils.coverImg(coverSrc, header.kind === 'video' ? '🎬' : '💿',
                     (header.kind === 'video' && header.cover && header.cover.id) ? `data-mp-thumb-id="${header.cover.id}"` : '',
