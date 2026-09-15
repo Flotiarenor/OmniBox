@@ -158,6 +158,85 @@ function checkAttributeContext(label, html) {
   }
 }
 
+/** 渲染结果里不得出现载荷的原始标记（文本上下文与属性上下文都适用）。 */
+function checkNoInjection(label, html) {
+  if (typeof html !== 'string') {
+    failures.push(`${label}: 没有产出 HTML 字符串`);
+    return;
+  }
+  // 匹配载荷**自身**的片段：不能只找 `"><img` —— 正常模板里
+  // `class="x"><img …` 这种相邻写法到处都是（实测误报过一次）。
+  for (const raw of ['\'"><img src=x', '"><img src=x', '<img src=x onerror']) {
+    if (html.includes(raw)) {
+      failures.push(`${label}: 恶意值原样出现在渲染结果里：${html.slice(0, 200)}`);
+      return;
+    }
+  }
+}
+
+/**
+ * 在极简 DOM 替身里跑一个"写 innerHTML 的原型方法"，返回它写出的 HTML。
+ *
+ * 为什么要执行而不是只看源码：`_setLoading` / `_renderDetail` 的注入点读起来
+ * 完全正常（"就是拼一段加载文案"），只有把真实载荷喂进去才看得出有没有转义。
+ * 抛错时由调用方决定是失败还是跳过（方法可能依赖更多宿主环境）。
+ */
+function runRenderMethod(rel, needle, name) {
+  const block = extractBlock(read(rel), needle);
+  if (!block) {
+    failures.push(`${rel}: 找不到 ${needle}`);
+    return null;
+  }
+  const captured = { html: '' };
+  const element = {
+    set innerHTML(value) { captured.html = String(value); },
+    get innerHTML() { return captured.html; },
+    querySelector: () => ({ addEventListener() { }, dataset: {}, classList: { add() { }, remove() { } } }),
+    querySelectorAll: () => [],
+  };
+  const sandbox = makeSandbox({
+    MPUtils: runScript(read('plugins/media-player/frontend/js/utils.js'), 'MPUtils'),
+  });
+  sandbox.document = { ...domStub(), getElementById: () => element };
+  vm.createContext(sandbox);
+  vm.runInContext(`globalThis.__obj = ({ ${block} });`, sandbox);
+  const fn = sandbox.__obj[name];
+  if (typeof fn !== 'function') {
+    failures.push(`${rel}: ${name} 没取到函数`);
+    return null;
+  }
+  return { fn, element, sandbox };
+}
+
+/**
+ * 静态扫描：模板字面量里的每个插值都必须在登记表里。
+ *
+ * 与 tools/check_plugins.py 的"读取方登记表"同一思路 —— 登记项在源码里消失会失败
+ * （登记表不会烂掉），新增一处未登记的插值也会失败（逼作者确认是否已转义）。
+ * 用的是精确文本匹配，所以登记项必须与源码逐字一致（含空格）。
+ */
+function checkInterpolationsRegistered(rel, registry) {
+  let source = read(rel);
+  for (const entry of registry) {
+    if (!source.includes('${' + entry + '}')) {
+      failures.push(`${rel}: 登记表过期，源码里已找不到插值 $\{${entry}\}`);
+    }
+  }
+  // 先移除登记在案的插值（登记顺序：外层在前，避免嵌套表达式先被掏空），
+  // 剩下的任何 `${` 都是"没被审过转义"的拼接点。
+  let stripped = source;
+  for (const entry of registry) {
+    stripped = stripped.split('${' + entry + '}').join('');
+  }
+  const leftover = stripped.match(/\$\{/g) || [];
+  if (leftover.length) {
+    const line = stripped.split('\n').findIndex((text) => text.includes('${')) + 1;
+    failures.push(
+      `${rel}: 有 ${leftover.length} 处未登记的插值（首个在第 ${line} 行）—— `
+      + '新增插值必须在 tools/check_frontend_escape.cjs 的登记表里登记，并确认已转义');
+  }
+}
+
 // ---- 1. 各处 HTML 转义实现 ----
 checkEscaper('kernel Utils.escapeHtml', loadKernelUtils().escapeHtml);
 checkEscaper('media-player MPUtils.escapeHtml',
@@ -172,11 +251,75 @@ checkEscaper('image-cleaner _escapeHtml',
 
 // ---- 2. 属性拼接场景：生成的 HTML 不能被打断 ----
 const mpUtils = runScript(read('plugins/media-player/frontend/js/utils.js'), 'MPUtils');
+// 四个参数全部喂载荷：extra 曾经原样拼接（`<img … ${extra} …>`），而调用方传的是
+// 后端数据拼出来的 `data-mp-thumb-id="<id>"` —— 只测 url/itemId 时这条完全漏过。
 checkAttributeContext('MPUtils.coverImg(src)',
-  mpUtils.coverImg(PAYLOAD, PAYLOAD, '', PAYLOAD));
+  mpUtils.coverImg(PAYLOAD, PAYLOAD, PAYLOAD, PAYLOAD));
 const mangaUtils = runScript(read('plugins/manga-library/frontend/js/utils.js'), 'MangaUtils');
 checkAttributeContext('MangaUtils.coverImg(src)',
   mangaUtils.coverImg(PAYLOAD, PAYLOAD));
+
+// 详情页 hero 背景：值落进 style 属性里的 CSS url()，远程封面地址是外部输入。
+// 断言的是"包装之外的载荷部分"不得含可逃逸字符 —— 包装自身的 url("…") 括号不算。
+for (const [label, value] of [
+  ['heroBg(载荷)', PAYLOAD],
+  ['heroBg(合法 URL + 逃逸后缀)', 'https://cdn.example.com/a.jpg") ; background:url("https://evil/'],
+]) {
+  const out = mpUtils.heroBg(value);
+  const wrapped = /^url\(&quot;(.*)&quot;\)$/.exec(out);
+  if (out !== 'none' && !wrapped) {
+    failures.push(`MPUtils.${label}: 产物不是 none 也不是属性安全的 url(&quot;…&quot;)：${out}`);
+    continue;
+  }
+  for (const ch of (wrapped ? wrapped[1] : '')) {
+    if ('"\'<>()'.includes(ch)) {
+      failures.push(`MPUtils.${label}: url() 里仍含可逃逸字符 ${ch}：${out}`);
+      break;
+    }
+  }
+}
+
+// ---- 3. 真实渲染方法：把载荷喂进写 innerHTML 的方法，直接看产物 ----
+const setLoading = runRenderMethod(
+  'plugins/media-player/frontend/js/app-render.js', '_setLoading(text)', '_setLoading');
+if (setLoading) {
+  try {
+    setLoading.fn.call({}, PAYLOAD);
+    checkNoInjection('media-player _setLoading(载荷)', setLoading.element.innerHTML);
+  } catch (e) {
+    failures.push(`media-player _setLoading: 调用即抛错: ${e.message}`);
+  }
+}
+
+const renderDetail = runRenderMethod(
+  'plugins/media-player/frontend/js/app-render.js', '_renderDetail(items, header)', '_renderDetail');
+if (renderDetail) {
+  try {
+    renderDetail.fn.call({ _renderList() { }, _observeThumbImgs() { } }, [], {
+      cover: PAYLOAD, kind: 'video', label: PAYLOAD, title: PAYLOAD, sub: PAYLOAD,
+    });
+    checkNoInjection('media-player _renderDetail(远程封面)', renderDetail.element.innerHTML);
+  } catch (e) {
+    failures.push(`media-player _renderDetail: 调用即抛错: ${e.message}`);
+  }
+}
+
+// ---- 4. 共享目录组件：插值登记表（每个插件都用它渲染目录名/路径）----
+// 外层表达式登记在前：精确移除时嵌套的内层表达式会一起被移走。
+checkInterpolationsRegistered('shell/frontend/public/shell/folder-picker.js', [
+  "label ? `<span class=\"iv-dirbrowser-hint\">含 ${Utils.escapeHtml(label)}</span>` : ''",
+  "extra ? `<span class=\"iv-root-note\">${Utils.escapeHtml(extra)}</span>` : ''",
+  'Utils.escapeHtml(data.error)',
+  'Utils.escapeHtml(entry.path)',
+  'Utils.escapeHtml(entry.name)',
+  "Utils.escapeHtml(options.placeholder || '输入目录绝对路径')",
+  "isPrimary ? ' is-primary' : ''",
+  "isPrimary ? '' : ' iv-root-tag-extra'",
+  "isPrimary ? '主要' : '额外'",
+  'Utils.escapeHtml(path)',
+  'index',
+  "Utils.escapeHtml(options.emptyText || '未添加任何目录')",
+]);
 
 /** 取多个方法块拼成对象（方法之间可能互相调用，如 _escapeAttr → _escapeHtml）。 */
 function loadObjectWith(rel, needles) {
@@ -192,7 +335,7 @@ function loadObjectWith(rel, needles) {
   return sandbox.__obj;
 }
 
-// ---- 3. image-viewer 的 _escapeAttr 必须与 _escapeHtml 同样严格 ----
+// ---- 5. image-viewer 的 _escapeAttr 必须与 _escapeHtml 同样严格 ----
 // 两个方法在 app-utils.js 分片里（app.js 拆成多个原型分片后位置变更，见 docs/image-viewer-design.md）
 const iv = loadObjectWith('plugins/image-viewer/frontend/js/app-utils.js', ['_escapeHtml(str)', '_escapeAttr(str)']);
 if (iv) {
@@ -208,4 +351,4 @@ if (failures.length) {
   for (const f of failures) console.error(`  - ${f}`);
   process.exit(1);
 }
-console.log('check_frontend_escape: OK（内核 + 5 个插件的转义实现均属性安全）');
+console.log('check_frontend_escape: OK（内核 + 5 个插件的转义实现、渲染调用点与共享目录组件的插值登记均通过）');

@@ -15,11 +15,16 @@
 | 版本一致性 | `python tools/check_version.py` | **exit 0**（硬门禁） |
 | 类型检查（内核） | `python -m pyright main.py shell tools` | **0 错误**（硬门禁） |
 | 类型检查（插件+测试） | `python -m pyright plugins tests` | 基线（暂不拦截，见 §6） |
-| 单元测试 | `python -m unittest discover -s tests` | **129 passed**（硬门禁；Linux 上 4 项 skip，见 §2） |
+| 单元测试 | `python -m unittest discover -s tests` | **290 passed**（硬门禁；Windows 专属用例在 Linux 上自动 skip，见 §2） |
 | 运行时禁止 print | `python -m unittest tests.test_no_print_in_runtime` | 通过（硬门禁） |
 | 前端转义一致性 | `node tools/check_frontend_escape.cjs` | **OK**（硬门禁） |
 | 前端类型+构建 | `npm --prefix shell/frontend run build` | 通过（硬门禁） |
 | 打包冒烟 + 产物校验 | `python tools/check_build_tree.py <dist>/OmniBox --expect-exe OmniBox.exe` | 通过（硬门禁；CI 里只在 push main / 手动触发 / 打包路径变更时跑） |
+
+> `unittest` 这一行里包含插件前端的脚本契约用例：`tests/test_*_js.py` 包装器调用
+> `tests/js/*.mjs`（无 node 时自动 skip），覆盖 `image_viewer_app_split` /
+> `media_player_app_split` / `plugin_asset_contract`（7 个插件前端的资源契约）/
+> `shell_folder_picker` / `image_viewer_roots_list`。
 
 本地一次性跑全部（PowerShell）：
 
