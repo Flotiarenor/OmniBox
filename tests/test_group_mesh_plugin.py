@@ -1,0 +1,374 @@
+"""group-mesh 插件后端（plugins/group-mesh）的骨架测试。
+
+覆盖的是**插件层**的行为，不是协议内核（内核测试在 tests/test_group_mesh_mvp.py）：
+
+  * manifest 字段与目录结构符合规范；
+  * 插件能脱离 GUI 被实例化，register_api 暴露的方法都是可调用的；
+  * 契约要求：get_protected_paths 必须覆盖身份目录（里面是长期私钥）；
+  * 共享根的安全约束：不得落在数据根或身份目录之内；
+  * 身份/团体/共享项/节点状态这条链路能跑通，且参数兼容「结构化对象」与
+    「逐个位置参数」两种调用形态（`/api` 会把 args/kwargs 直接展开）。
+
+运行：
+    python -m unittest tests.test_group_mesh_plugin -v
+"""
+
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from shell.backend.plugin_base import PluginBase
+from shell.backend.plugin_utils import load_sibling
+from shell.backend.settings_store import SettingsStore
+
+PLUGIN_DIR = PROJECT_ROOT / 'plugins' / 'group-mesh'
+
+
+def load_plugin_module():
+    """按 PluginManager 的方式加载插件后端（importlib 直接加载入口文件）。"""
+    return load_sibling(str(PLUGIN_DIR / 'backend' / 'main.py'), 'main', 'group-mesh')
+
+
+class ManifestTest(unittest.TestCase):
+    def setUp(self):
+        self.manifest = json.loads((PLUGIN_DIR / 'manifest.json').read_text(encoding='utf-8'))
+
+    def test_required_fields(self):
+        for field in ('name', 'version', 'displayName', 'icon'):
+            self.assertIn(field, self.manifest)
+        self.assertEqual(self.manifest['name'], 'group-mesh')
+        self.assertRegex(self.manifest['version'], r'^\d+\.\d+\.\d+$')
+
+    def test_backend_and_frontend_entries_exist(self):
+        self.assertTrue((PLUGIN_DIR / self.manifest['backend']['entry']).is_file())
+        self.assertTrue((PLUGIN_DIR / self.manifest['frontend']['entry']).is_file())
+
+    def test_core_plugin_declares_no_dependency_on_itself(self):
+        # group-mesh 是核心插件：Companion 插件依赖它，它不依赖别人
+        self.assertEqual(self.manifest.get('dependencies', []), [])
+
+
+class PluginContractTest(unittest.TestCase):
+    """插件在只有配置字典的情况下就能加载 —— 这是脱离 GUI 可测的前提。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        module = load_plugin_module()
+        self.manifest = json.loads((PLUGIN_DIR / 'manifest.json').read_text(encoding='utf-8'))
+        config = {'directories': {'data_root': str(self.tmp / 'data')}}
+        self.plugin = module.GroupMeshPlugin(self.manifest, config)
+
+    def tearDown(self):
+        self.plugin.on_unload()
+        self._tmp.cleanup()
+
+    def test_is_plugin_base_and_declares_api(self):
+        self.assertIsInstance(self.plugin, PluginBase)
+        api = self.plugin.register_api()
+        self.assertTrue(api)
+        for name, fn in api.items():
+            self.assertTrue(callable(fn), f'{name} 不是可调用对象')
+
+    def test_expected_api_surface(self):
+        expected = {'get_status', 'init_identity', 'get_device_keys', 'create_group',
+                    'join_group', 'get_invite', 'add_member', 'add_share', 'remove_share',
+                    'start_node', 'stop_node', 'get_node_status'}
+        self.assertTrue(expected <= set(self.plugin.register_api()))
+
+    def test_identity_dir_is_protected(self):
+        """§4.1：设备私钥不导出。插件至少必须申报身份目录，禁止文件服务端出去。"""
+        protected = [Path(p) for p in self.plugin.get_protected_paths()]
+        self.assertIn(self.plugin.identity_dir.resolve(),
+                      [p.resolve() for p in protected])
+
+    def test_settings_schema_shape(self):
+        keys = {item['key'] for item in self.plugin.settings_schema}
+        self.assertEqual(keys, {'port', 'bind', 'group_name', 'principal_name', 'ttl_days'})
+        for item in self.plugin.settings_schema:
+            self.assertIn('label', item)
+            self.assertIn('type', item)
+
+    def test_status_before_identity(self):
+        status = self.plugin.get_status()
+        self.assertIn('kernel', status)
+        self.assertIsNone(status['identity'])
+        self.assertIsNone(status['roster'])
+        self.assertEqual(status['shares'], [])
+
+
+class PluginWorkflowTest(unittest.TestCase):
+    """身份 -> 团体 -> 共享项 这条链路。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        module = load_plugin_module()
+        manifest = json.loads((PLUGIN_DIR / 'manifest.json').read_text(encoding='utf-8'))
+        config = {'directories': {'data_root': str(self.tmp / 'data')}}
+        self.plugin = module.GroupMeshPlugin(manifest, config)
+        # 真正的 SettingsStore：没有它时 update_setting() 会静默失败（返回 False 但没人看），
+        # 于是"改设置再启动节点"这类用例会假通过。
+        self.plugin._settings_store = SettingsStore(str(self.tmp / 'settings'))
+
+    def tearDown(self):
+        self.plugin.on_unload()
+        self._tmp.cleanup()
+
+    def test_init_identity_then_create_group(self):
+        if not self.plugin.get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+
+        result = self.plugin.init_identity({'name': 'unit-test'})
+        self.assertTrue(result['success'], result)
+        self.assertEqual(result['identity']['name'], 'unit-test')
+
+        # 重复 init 必须被拒（不能静默覆盖私钥）
+        again = self.plugin.init_identity({'name': 'other'})
+        self.assertFalse(again['success'])
+
+        created = self.plugin.create_group({'group': 'unit-group'})
+        self.assertTrue(created['success'], created)
+        self.assertEqual(created['group'], 'unit-group')
+        self.assertTrue(created['invite'].startswith('gm1:'))
+
+        status = self.plugin.get_status()
+        self.assertEqual(status['roster']['role'], 'owner')
+        self.assertTrue(status['roster']['in_roster'])
+
+    def test_positional_and_structured_arguments_agree(self):
+        """两种调用形态都必须被接受（`/api` 会展开 args/kwargs）。"""
+        if not self.plugin.get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+        positional = self.plugin.init_identity(None, 'positional-name')
+        self.assertTrue(positional['success'], positional)
+
+    def test_get_device_keys(self):
+        if not self.plugin.get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+        self.plugin.init_identity({'name': 'keys'})
+        keys = self.plugin.get_device_keys()
+        self.assertTrue(keys['success'])
+        self.assertTrue(keys['principal'])
+        self.assertTrue(keys['device'])
+        # 主体公钥与设备公钥必须是不同的两把（用途分离）
+        self.assertNotEqual(keys['principal'], keys['device'])
+
+    def test_share_root_must_exist(self):
+        if not self.plugin.get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+        self.plugin.init_identity({'name': 'shares'})
+        result = self.plugin.add_share({'share_id': 'x', 'path': str(self.tmp / 'nope')})
+        self.assertFalse(result['success'])
+
+    def test_share_root_cannot_be_inside_data_root(self):
+        """§6.5：共享目录必须与程序数据、身份目录分离。"""
+        if not self.plugin.get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+        self.plugin.init_identity({'name': 'guard'})
+        inside = self.plugin.get_data_root()
+        inside.mkdir(parents=True, exist_ok=True)
+        result = self.plugin.add_share({'share_id': 'bad', 'path': str(inside)})
+        self.assertFalse(result['success'])
+        self.assertIn('不得位于', result['error'])
+
+    def test_add_and_remove_share(self):
+        if not self.plugin.get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+        self.plugin.init_identity({'name': 'share-ok'})
+        shared = self.tmp / 'shared'
+        shared.mkdir()
+        (shared / 'file.txt').write_text('hi', encoding='utf-8')
+
+        added = self.plugin.add_share({'share_id': 'docs', 'path': str(shared),
+                                       'read': 'group', 'write': 'owner', 'delete': 'owner'})
+        self.assertTrue(added['success'], added)
+        self.assertEqual(len(self.plugin.get_status()['shares']), 1)
+
+        # 共享项声明必须能验签（内核在读取时会复核）
+        reloaded = self.plugin._load_shares()
+        self.assertTrue(reloaded['docs'].declaration.verify_signature())
+
+        removed = self.plugin.remove_share({'share_id': 'docs'})
+        self.assertTrue(removed['success'])
+        self.assertEqual(self.plugin.get_status()['shares'], [])
+
+    def test_bad_share_id_rejected(self):
+        if not self.plugin.get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+        self.plugin.init_identity({'name': 'bad-id'})
+        shared = self.tmp / 'shared2'
+        shared.mkdir()
+        result = self.plugin.add_share({'share_id': '../evil', 'path': str(shared)})
+        self.assertFalse(result['success'])
+
+    def test_node_cannot_start_without_group(self):
+        if not self.plugin.get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+        self.plugin.init_identity({'name': 'no-group'})
+        result = self.plugin.start_node()
+        self.assertFalse(result['success'])
+        self.assertIn('团体', result['error'])
+
+    def test_node_start_and_stop(self):
+        """真实监听一个随机端口，确认启停与状态回报。"""
+        if not self.plugin.get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+        self.plugin.init_identity({'name': 'node'})
+        self.plugin.create_group({'group': 'node-group'})
+        self.assertTrue(self.plugin.update_setting('bind', '127.0.0.1'))
+        # port=0 让内核分配空闲端口，避免测试撞上真实占用的 19443
+        self.assertTrue(self.plugin.update_setting('port', 0))
+
+        started = self.plugin.start_node()
+        self.assertTrue(started['success'], started)
+        self.assertTrue(started['node']['running'])
+        self.assertIsNotNone(started['node']['listening'])
+        self.assertNotIn(':0', started['node']['listening'] or ':0',
+                         '监听地址应回报内核实际绑定的端口，而不是设置里的 0')
+
+        stopped = self.plugin.stop_node()
+        self.assertTrue(stopped['success'])
+        self.assertFalse(stopped['node']['running'])
+
+    def test_join_group_rejects_bad_invite(self):
+        if not self.plugin.get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+        self.plugin.init_identity({'name': 'joiner'})
+        for bad in ('', 'not-an-invite', 'gm1:!!!!'):
+            with self.subTest(bad=bad):
+                result = self.plugin.join_group({'invite': bad})
+                self.assertFalse(result['success'])
+
+
+class RosterDistributionTest(unittest.TestCase):
+    """群主加人后，成员必须能把本机名单更新到新版本。
+
+    这是一条真实的失效路径：群主在 A 机执行 roster add 签发 v2，B 机仍停在 v1，
+    于是 B 看不到新成员、也连不上任何人（对端用 v2 判 B 在名单里，B 用 v1 判对端
+    不在名单里，双向都拒）。名单靠**带外分发**，因此"更新名单"必须是可操作的入口，
+    而不是只有第一次加入时才用得到。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        module = load_plugin_module()
+        manifest = json.loads((PLUGIN_DIR / 'manifest.json').read_text(encoding='utf-8'))
+        self.module = module
+        self.manifest = manifest
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _plugin(self, name: str):
+        """在独立数据目录里造一个插件实例（模拟一台机器）。"""
+        config = {'directories': {'data_root': str(self.tmp / name / 'data')}}
+        plugin = self.module.GroupMeshPlugin(self.manifest, config)
+        plugin._settings_store = SettingsStore(str(self.tmp / name / 'settings'))
+        return plugin
+
+    def test_member_can_update_from_v1_to_v2(self):
+        if not self._plugin('probe').get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+
+        owner = self._plugin('owner')
+        member = self._plugin('member')
+        owner.init_identity({'name': 'owner'})
+        member.init_identity({'name': 'member'})
+
+        # 群主创建团体（v1），成员用邀请串加入
+        created = owner.create_group({'group': 'dist-group'})
+        self.assertTrue(created['success'], created)
+        joined = member.join_group({'invite': created['invite']})
+        self.assertTrue(joined['success'], joined)
+        self.assertFalse(joined['updated'], '首次加入不应标记为更新')
+        self.assertEqual(joined['version'], 1)
+        # v1 里还没有 member 本人，属于预期（群主还没登记它）
+        self.assertFalse(joined['in_roster'])
+
+        # 群主登记成员设备 -> 签发 v2
+        member_keys = member.get_device_keys()
+        added = owner.add_member({'principal': member_keys['principal'],
+                                  'device': member_keys['device'],
+                                  'name': 'member'})
+        self.assertTrue(added['success'], added)
+        self.assertEqual(added['version'], 2)
+
+        # 成员侧此前看不到自己；拿到 v2 邀请串后才能对上
+        before = member.get_status()
+        self.assertFalse(before['roster']['in_roster'])
+        self.assertEqual(before['roster']['version'], 1)
+
+        updated = member.join_group({'invite': added['invite']})
+        self.assertTrue(updated['success'], updated)
+        self.assertTrue(updated['updated'], '应标记为"更新"而不是"加入"')
+        self.assertEqual(updated['previous_version'], 1)
+        self.assertEqual(updated['version'], 2)
+        self.assertTrue(updated['in_roster'], 'v2 之后成员应能在名单里看到自己')
+        self.assertEqual(updated['role'], 'member')
+
+        after = member.get_status()
+        self.assertEqual(after['roster']['version'], 2)
+        self.assertTrue(after['roster']['in_roster'])
+        self.assertEqual(after['roster']['member_count'], 2)
+
+    def test_stale_invite_is_rejected_with_a_useful_message(self):
+        """给出比本机更旧的邀请串时，要明确说明"本机已是 vN"。"""
+        if not self._plugin('probe2').get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+
+        owner = self._plugin('owner2')
+        member = self._plugin('member2')
+        owner.init_identity({'name': 'owner'})
+        member.init_identity({'name': 'member'})
+
+        v1_invite = owner.create_group({'group': 'stale-group'})['invite']
+        self.assertTrue(member.join_group({'invite': v1_invite})['success'])
+
+        keys = member.get_device_keys()
+        v2_invite = owner.add_member({'principal': keys['principal'],
+                                      'device': keys['device'], 'name': 'member'})['invite']
+        self.assertTrue(member.join_group({'invite': v2_invite})['success'])
+
+        # 再贴一次 v1：版本未前进，必须被拒且提示里带上版本号
+        again = member.join_group({'invite': v1_invite})
+        self.assertFalse(again['success'])
+        self.assertIn('本机已是 v2', again['error'])
+
+    def test_roster_update_requires_direct_successor(self):
+        """跳版（v1 -> v3）必须被拒：规则 2 要求 prev 指向当前名单哈希。"""
+        if not self._plugin('probe3').get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+
+        owner = self._plugin('owner3')
+        member = self._plugin('member3')
+        owner.init_identity({'name': 'owner'})
+        member.init_identity({'name': 'member'})
+        self.assertTrue(member.join_group(
+            {'invite': owner.create_group({'group': 'chain-group'})['invite']})['success'])
+
+        keys = member.get_device_keys()
+        owner.add_member({'principal': keys['principal'], 'device': keys['device'],
+                          'name': 'member'})
+        # 群主再加一个成员 -> v3，跳过 v2
+        other = self._plugin('other3')
+        other.init_identity({'name': 'other'})
+        other_keys = other.get_device_keys()
+        v3 = owner.add_member({'principal': other_keys['principal'],
+                               'device': other_keys['device'], 'name': 'other'})
+        self.assertEqual(v3['version'], 3)
+
+        skipped = member.join_group({'invite': v3['invite']})
+        self.assertFalse(skipped['success'], '跳版名单不应被接受')
+        self.assertIn('prev', skipped['error'])
+
+
+if __name__ == '__main__':
+    unittest.main()
