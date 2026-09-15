@@ -14,11 +14,11 @@ opencode.json
 AGENTS.md
 docs/commit-convention.md
 
-# 运行时代码
+# 运行时代码与用户配置
+# .config/ 整体忽略：app.yaml 由 main.py 首次启动时生成（load_config 在文件缺失时写入
+# 默认配置），内含本机的 server / trusted_hosts / data_root，属于用户数据，不入库。
 data/
-.config/plugins/
-.config/auth_token.txt
-.config/logs/
+.config/
 .build/
 
 # 脚本
