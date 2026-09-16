@@ -466,6 +466,17 @@ window.Bridge = {
           { name: 'note.txt', dir: false, size: 23 }
         ] });
     }
+    if (method === 'my_endpoint') {
+      window.__remoteCalls.push('my_endpoint');
+      return Promise.resolve({ success: true, running: true, published: true,
+        device_id: 'cc'.repeat(32), name: 'Nanakodesu',
+        endpoints: [['2409:8a60::1', 19443], ['192.168.31.4', 19443]],
+        text: '设备名: Nanakodesu\\n设备公钥: ' + 'cc'.repeat(22) + '\\n地址:\\n  [2409:8a60::1]:19443\\n  192.168.31.4:19443' });
+    }
+    if (method === 'peers') {
+      window.__remoteCalls.push('peers:' + (arg.action || 'list'));
+      return Promise.resolve({ success: true, peers: [] });
+    }
     if (method === 'materialize_remote') {
       window.__remoteCalls.push('materialize_remote:' + arg.share_id);
       window.__materialized = true;
@@ -626,15 +637,55 @@ class RemotePageRenderTest(unittest.TestCase):
         self.assertIn('已有', driver.find_element('id', 'remote-progress').text)
 
     def test_add_peer_dialog_opens_and_submits(self):
+        """「高级：按地址登记」弹窗：打开、填地址、提交后关闭。"""
         driver = self._load()
         driver.find_element('id', 'btn-peer-add').click()
         self.assertTrue(wait_until(lambda: driver.find_element('id', 'peer-box').is_displayed()))
-        driver.find_element('id', 'peer-endpoint').send_keys('192.168.31.16:19450')
+        driver.find_element('id', 'peer-manual-endpoint').send_keys('192.168.31.16:19450')
         driver.find_element('id', 'btn-do-add-peer').click()
         # 提交后弹窗关闭发生在桩 Promise 落定之后，必须等而不是立即断言
         self.assertTrue(wait_until(
             lambda: not driver.find_element('id', 'peer-box').is_displayed()),
             '提交成功后弹窗应关闭')
+        calls = driver.execute_script('return window.__remoteCalls')
+        self.assertTrue(any(c.startswith('peers:add') for c in calls), calls)
+
+    def test_update_peer_endpoint_from_main_view(self):
+        """主视图的「更新地址」：不需要开弹窗，粘贴即更新。
+
+        这是"对方换网络/换端口"之后唯一的修正手段 —— 地址无法自动跨机传播，
+        所以界面必须能一键完成"粘贴 + 更新"。
+        """
+        driver = self._load()
+        driver.find_element('id', 'peer-endpoint').send_keys('[2409:8a60::1]:19443')
+        driver.find_element('id', 'peer-device').send_keys('bb' * 32)
+        driver.find_element('id', 'btn-update-peer').click()
+        for _ in range(60):
+            calls = driver.execute_script('return window.__remoteCalls')
+            if any(c.startswith('peers:update') for c in calls):
+                break
+        calls = driver.execute_script('return window.__remoteCalls')
+        self.assertTrue(any(c.startswith('peers:update') for c in calls), calls)
+        # 提交后输入框被清空，方便下一次粘贴
+        self.assertEqual(driver.find_element('id', 'peer-endpoint').get_attribute('value'), '')
+
+    def test_my_endpoint_is_shown_and_copyable(self):
+        """「我的地址」要显示出来，并且复制按钮真的把整段说明写进剪贴板。"""
+        driver = self._load()
+        self.assertTrue(wait_until(
+            lambda: '19443' in driver.find_element('id', 'my-endpoint').text),
+            '我的地址应当在界面上显示出来（对方要复制它）')
+        driver.execute_script(
+            "window.__copied = null;"
+            "navigator.clipboard.writeText = function (t) { window.__copied = t;"
+            "  return Promise.resolve(); };")
+        driver.find_element('id', 'btn-copy-my-endpoint').click()
+        for _ in range(40):
+            if driver.execute_script('return window.__copied'):
+                break
+        copied = driver.execute_script('return window.__copied') or ''
+        self.assertIn('设备公钥', copied)
+        self.assertIn('19443', copied)
 
 
     def test_materialize_button_caches_directory_and_shows_badge(self):

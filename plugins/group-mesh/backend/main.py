@@ -30,6 +30,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -791,6 +792,32 @@ class GroupMeshPlugin(PluginBase):
                                  'ts': record.ts}
         return result
 
+    def _bootstrap_endpoints(self, identity: Any) -> List[Tuple[Tuple[str, int], str]]:
+        """自举候选：**用本机自己发布的端点去问一次注册快照**。
+
+        为什么这一招成立（设计文档 §7.3）：注册数据是"任一在线共享节点都能提供完整
+        快照"。而两台机器可能都还没跟对方说过话 —— 此时谁也不知道对方地址，但**本机
+        注册记录里写着本机自己的地址**，拿它去问"任何在线节点"（包括自己），就能把
+        对方的记录（含对方的端点）一起拿回来。
+
+        这正是"同一局域网里两台设备互相看不见"的成因：双方都只认识自己。实测
+        复现过 —— 本机注册表里只有本机那一条（seq=43），名单里有对方但没有地址，
+        于是界面只能如实显示"没有可用端点"。
+
+        只在本机端点未知时才有用；已经学到对方端点之后这条自然命中不了新东西。
+        安全性上没有新增暴露面：这些地址本来就是本机自己发布出去、供团体成员连的。
+        """
+        self._ensure_registry()
+        candidates: List[Tuple[Tuple[str, int], str]] = []
+        if self._registry is None:
+            return candidates
+        record = self._registry.get(identity.device.public_key)
+        if record is None:
+            return candidates
+        for endpoint in self._peer_endpoints({'endpoints': record.endpoints}):
+            candidates.append((endpoint, '本机'))
+        return candidates
+
     def _peers_file(self) -> Path:
         """手动登记的对端端点。放在 `.cache/` 里：它是**发现用的提示**，不是权威数据
         （权威数据是设备自签的注册记录），删掉只会让发现退回初始状态。"""
@@ -815,18 +842,26 @@ class GroupMeshPlugin(PluginBase):
             encoding='utf-8')
 
     def peers(self, opts: Any = None, action: str = 'list', endpoint: str = '',
-              name: str = '') -> Dict[str, Any]:
-        """手动登记/移除对端端点（发现的**起点**）。
+              name: str = '', device_id: str = '') -> Dict[str, Any]:
+        """手工登记 / 移除 / 更新对端端点（发现的**起点**）。
 
         为什么必须有这个东西：注册记录里的端点是设备自己发布的，而"第一次发现
         一台设备"没有任何自动途径 —— 注册表此刻是空的。设计文档 §7.4 把这个缺口
         交给"稳定地址 + 带外交换"，插件层就得提供一个填地址的地方，否则用户会卡在
         "我知道对方 IP，但界面里没有地方输入"。
+
+        `action` 取值：
+          * `list` —— 列出已登记的条目；
+          * `add` —— 按地址登记（同一地址重复添加会返回 `existed`）；
+          * `update` —— **按设备更新地址**（对方换了网络/端口后，把它改到新地址；
+            条目按 `device_id` 认，因此不会留下一堆指向同一台设备的旧地址）；
+          * `remove` —— 按地址移除。
         """
         options = _opts(opts)
         action = str(options.get('action') or action or 'list')
         endpoint = str(options.get('endpoint') or endpoint or '').strip()
         name = str(options.get('name') or name or '').strip()
+        device_id = str(options.get('device_id') or device_id or '').strip().lower()
         entries = self._load_manual_peers()
 
         if action == 'list':
@@ -842,9 +877,25 @@ class GroupMeshPlugin(PluginBase):
                 if entry.get('host') == host and int(entry.get('port') or 0) == port:
                     return {'success': True, 'peers': entries, 'existed': True,
                             'message': f'{host}:{port} 已经在列表里'}
-            entries.append({'host': host, 'port': port, 'name': name or '', 'added_at': int(time.time())})
+            entries.append({'host': host, 'port': port, 'name': name or '',
+                            'device_id': device_id, 'added_at': int(time.time())})
             self._save_manual_peers(entries)
             return {'success': True, 'peers': entries}
+
+        if action == 'update':
+            # 按设备更新：先把同一设备（或同一地址）的旧条目清掉，再写入新地址。
+            # 只按地址更新的话，对方换端口后会留下一条永远连不上的死地址。
+            kept = [e for e in entries
+                    if not ((device_id and str(e.get('device_id') or '').lower() == device_id)
+                            or (e.get('host') == host and int(e.get('port') or 0) == port))]
+            updated = name or next((str(e.get('name') or '') for e in entries
+                                    if device_id and
+                                    str(e.get('device_id') or '').lower() == device_id), '')
+            kept.append({'host': host, 'port': port, 'name': updated,
+                         'device_id': device_id, 'updated_at': int(time.time())})
+            self._save_manual_peers(kept)
+            return {'success': True, 'peers': kept,
+                    'replaced': len(entries) - len(kept) + 1}
 
         if action == 'remove':
             remaining = [e for e in entries
@@ -854,6 +905,47 @@ class GroupMeshPlugin(PluginBase):
                     'removed': len(entries) - len(remaining)}
 
         return {'success': False, 'error': f'未知的 peers action: {action!r}'}
+
+    def my_endpoint(self, opts: Any = None) -> Dict[str, Any]:
+        """本机的可分享地址串（给对方粘贴用）。
+
+        为什么需要"复制"这个动作：地址无法自动跨机传播 —— 对方不问我、我也不知道
+        它换了地址；而带外交换（当面/聊天工具粘一次）是设计里就承认的引导手段
+        （§7.4）。因此界面要能一键拿到这串东西，让对方粘进"更新对方地址"。
+        """
+        identity = self._load_identity()
+        roster = self._load_roster()
+        if identity is None:
+            return {'success': False, 'error': '尚未创建身份'}
+        self._ensure_registry()
+        record = self._registry.get(identity.device.public_key) if self._registry else None
+        endpoints: List[Any] = []
+        node = self.get_node_status()
+        if record is not None:
+            endpoints = [list(e) for e in record.endpoints]
+        if self._listening:
+            live = [self._listening[0], int(self._listening[1])]
+            if live not in endpoints:
+                endpoints.insert(0, live)
+        lines: List[str] = []
+        device_name = identity.principal.name
+        if roster is not None:
+            entry = roster.entry_of(identity.principal.public_key)
+            if entry is not None:
+                device_name = entry.name
+        lines.append(f'设备名: {device_name}')
+        lines.append(f'设备公钥: {base64.b64encode(identity.device.public_key).decode("ascii")}')
+        if endpoints:
+            lines.append('地址:')
+            for host, port in endpoints:
+                text = f'[{host}]:{port}' if ':' in str(host) else f'{host}:{port}'
+                lines.append(f'  {text}')
+        else:
+            lines.append('地址: （节点未运行，或还没发布注册记录）')
+        return {'success': True, 'text': '\n'.join(lines),
+                'endpoints': endpoints, 'device_id': identity.device.public_key.hex(),
+                'name': device_name, 'running': node['running'],
+                'published': node['published']}
 
     @staticmethod
     def _parse_endpoint(text: str) -> Tuple[str, int]:
@@ -928,6 +1020,19 @@ class GroupMeshPlugin(PluginBase):
                 except (RemoteError, TransportError, OSError) as e:
                     errors.append({'device': str(entry.get('name') or endpoint[0]),
                                    'error': str(e)})
+            # 自举：注册表里只有本机那条、又没有任何手工地址时，用**本机自己发布的
+            # 端点**去问一次快照（§7.3：任一在线共享节点都能提供完整快照）。
+            # 两台机器都还没跟对方说过话时，谁也不知道对方地址，但双方都把自己的
+            # 地址写进了自己的注册记录 —— 于是同一局域网里的第一次相遇不需要用户
+            # 手填任何东西。已经学到对方端点后这一步自然命中不了新记录，开销可忽略。
+            for endpoint, _label in self._bootstrap_endpoints(identity):
+                if endpoint in seen:
+                    continue
+                seen.append(endpoint)
+                try:
+                    self._fetch_registry_from(endpoint, identity, roster)
+                except (RemoteError, TransportError, OSError):
+                    pass   # 自举失败是常态（防火墙、对端未启动），不该报成设备错误
             # 逐台刷新注册快照（§7.3：任一在线共享节点都能提供完整快照）。
             # **每个端点都要试**，而不是只挑一个：§4.6.1 说明 IPv4 是可达性兜底，
             # 所以设备常同时发布 IPv6 与 IPv4 端点 —— 只试一个的话，IPv6 不通就
@@ -1864,6 +1969,7 @@ class GroupMeshPlugin(PluginBase):
             'remove_share': self.remove_share,
             'refresh_share_roots': self.refresh_share_roots,
             'peers': self.peers,
+            'my_endpoint': self.my_endpoint,
             'list_peers': self.list_peers,
             'list_remote': self.list_remote,
             'download_remote': self.download_remote,

@@ -262,6 +262,65 @@ body {
   font-size: 13px;
 }
 
+/* ===== 地址交换（"我的地址"复制 + "更新对方地址"） ===== */
+
+.gm-address {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 6px);
+  background: var(--bg-hover);
+}
+
+.gm-address-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.gm-address-label {
+  flex: 0 0 72px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.gm-address-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.gm-address input {
+  padding: 6px 10px;
+  border-radius: var(--radius-sm, 4px);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+}
+
+.gm-address input:focus {
+  border-color: var(--accent);
+}
+
+#peer-endpoint {
+  flex: 1 1 260px;
+  min-width: 180px;
+}
+
+#peer-device {
+  flex: 0 1 220px;
+  min-width: 140px;
+}
+
 /* ===== 远端共享页（网络邻居：设备 -> 共享项 -> 目录） ===== */
 
 .gm-remote-tools {

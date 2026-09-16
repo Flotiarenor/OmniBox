@@ -77,12 +77,25 @@
           <h2>远端共享</h2>
           <p class="gm-hint">
             列团体里其它设备对<strong>你</strong>开放的共享项，并把它上面的文件取回本机。
-            设备端点由对方自己发布（注册记录）；第一次发现某台设备时，可以先用
-            <strong>添加对端</strong>填它的地址。
+            地址不会自动跨机传播：把<strong>你的地址复制</strong>给对方、把对方的地址
+            粘到下面，双方就互相认识了；之后对方换地址只需再更新一次。
           </p>
+          <div class="gm-address">
+            <div class="gm-address-row">
+              <span class="gm-address-label">我的地址</span>
+              <span id="my-endpoint" class="gm-address-value">读取中…</span>
+              <button type="button" id="btn-copy-my-endpoint" class="btn btn-sm">复制</button>
+            </div>
+            <div class="gm-address-row">
+              <span class="gm-address-label">更新地址</span>
+              <input type="text" id="peer-endpoint" placeholder="粘贴对方地址，如 [2409:…]:19443 或 192.168.31.16:19450">
+              <input type="text" id="peer-device" placeholder="对方设备公钥（可选，填了就能按设备更新）">
+              <button type="button" id="btn-update-peer" class="btn btn-sm btn-primary">更新</button>
+            </div>
+          </div>
           <div class="gm-remote-tools">
             <button type="button" id="btn-peer-refresh" class="btn btn-sm">刷新设备</button>
-            <button type="button" id="btn-peer-add" class="btn btn-sm">添加对端</button>
+            <button type="button" id="btn-peer-add" class="btn btn-sm">高级：按地址登记</button>
           </div>
           <div id="remote-cache" class="gm-remote-cache" hidden></div>
           <div class="gm-remote">
@@ -176,19 +189,19 @@
 
   <div id="peer-box" class="modal">
     <div class="modal-box obx-anim-scale" style="width:520px;">
-      <h3>添加对端</h3>
+      <h3>高级：按地址登记对端</h3>
       <div class="modal-body">
         <p class="gm-hint">
-          填对方的<strong>监听地址</strong>（形如 <code>192.168.31.16:19450</code>；
-          IPv6 写成 <code>[2409:…]:19450</code>）。这是"第一次发现某台设备"的起点 ——
-          之后本机会从对方的注册记录里自动学到端点，不需要再填。
+          平时用不到这里 —— 主界面的「更新地址」就够（粘贴对方复制给你的地址）。
+          这里用于"只知道地址、还不知道对方设备公钥"的场合；登记后本机会连过去，
+          把对方的设备公钥与共享清单一起学回来。
         </p>
-        <input type="text" id="peer-endpoint" placeholder="192.168.31.16:19450">
+        <input type="text" id="peer-manual-endpoint" placeholder="192.168.31.16:19450">
         <input type="text" id="peer-name" placeholder="备注名（可选）">
       </div>
       <div class="modal-footer">
         <button type="button" id="btn-close-peer" class="btn">关闭</button>
-        <button type="button" id="btn-do-add-peer" class="btn btn-primary">添加</button>
+        <button type="button" id="btn-do-add-peer" class="btn btn-primary">登记</button>
       </div>
     </div>
   </div>

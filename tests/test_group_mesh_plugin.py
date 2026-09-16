@@ -705,18 +705,25 @@ class AutoDiscoveryTest(unittest.TestCase):
                                 'device': base64.b64encode(peer_pub).decode(), 'name': 'peer'})
 
         attempted: list = []
+        # 只观察"对端设备"的端点：自举那一步也会调 _fetch_registry_from（用本机自己
+        # 发布的地址），把它算进来会让顺序断言失去意义。
+        peer_attempts: list = []
 
         def fake_fetch(endpoint, identity, roster):
             attempted.append(endpoint)
-            if len(attempted) == 1:
-                raise TransportError('第一个端点刻意失败')
+            if endpoint[1] == 19443:          # 本用例里对端的端口
+                peer_attempts.append(endpoint)
+                if len(peer_attempts) == 1:
+                    raise TransportError('第一个端点刻意失败')
             return 1
 
         self.plugin._fetch_registry_from = fake_fetch
         result = self.plugin.list_peers({'refresh': True})
         self.assertTrue(result['success'])
-        self.assertEqual(len(attempted), 2, f'两个端点都该被尝试，实际: {attempted}')
-        self.assertEqual(attempted[0][0], '2001:db8::bad', 'IPv6 应当优先尝试（主路径）')
+        self.assertEqual(len(peer_attempts), 2,
+                         f'对端的两个端点都该被尝试，实际: {peer_attempts}')
+        self.assertEqual(peer_attempts[0][0], '2001:db8::bad',
+                         'IPv6 应当优先尝试（主路径）')
         self.assertFalse(result['errors'], f'第二个端点成功后不该留下错误: {result["errors"]}')
 
     def test_endpoint_change_republishes_registration(self):

@@ -216,6 +216,71 @@ window.GroupMeshRemote = (function () {
     toast((err && err.message) || String(err), true);
   }
 
+  function refreshMyEndpoint() {
+    var box = el('my-endpoint');
+    if (!box) { return Promise.resolve(); }
+    return state.call('my_endpoint').then(function (result) {
+      if (!result || !result.success) {
+        box.textContent = (result && result.error) || '读取失败';
+        return result;
+      }
+      state.myEndpointText = result.text || '';
+      state.myEndpoints = result.endpoints || [];
+      if (!result.running) {
+        box.textContent = '节点未运行 —— 先启动节点，对方才连得上你';
+        return result;
+      }
+      if (!state.myEndpoints.length) {
+        box.textContent = '尚未发布地址（启动节点后会自动发布）';
+        return result;
+      }
+      box.textContent = state.myEndpoints.map(function (pair) {
+        return pair[0].indexOf(':') >= 0 ? '[' + pair[0] + ']:' + pair[1]
+          : pair[0] + ':' + pair[1];
+      }).join('   ');
+      return result;
+    }).catch(function () { box.textContent = '读取失败'; });
+  }
+
+  function copyMyEndpoint() {
+    var text = state.myEndpointText || '';
+    if (!text) {
+      toast('还没有可复制的地址：请先启动节点', true);
+      return;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        toast('已复制，发给对方即可');
+      }, function () { toast('复制失败，请手动选择文本', true); });
+    } else {
+      toast('当前环境不支持自动复制，请对照界面手动抄写', true);
+    }
+  }
+
+  function updatePeerEndpoint() {
+    var endpointInput = el('peer-endpoint');
+    var deviceInput = el('peer-device');
+    var endpoint = (endpointInput && endpointInput.value || '').trim();
+    var deviceId = (deviceInput && deviceInput.value || '').trim();
+    if (!endpoint) {
+      toast('请粘贴对方的地址', true);
+      return;
+    }
+    // 后端的 update 会按 device_id（填了的话）或地址替换旧条目，因此对方换端口后
+    // 不会留下一条永远连不上的死地址。
+    state.call('peers', { action: 'update', endpoint: endpoint, device_id: deviceId })
+      .then(function (result) {
+        if (!result || !result.success) {
+          toast((result && result.error) || '更新失败', true);
+          return;
+        }
+        if (endpointInput) { endpointInput.value = ''; }
+        if (deviceInput) { deviceInput.value = ''; }
+        toast('已更新该设备的地址，正在刷新…');
+        return refreshPeers();
+      }).catch(showError);
+  }
+
   function refreshPeers() {
     var body = el('peers-body');
     if (body) { body.innerHTML = '<p class="gm-empty">正在读取设备…</p>'; }
@@ -356,11 +421,15 @@ window.GroupMeshRemote = (function () {
   function bind() {
     var refresh = el('btn-peer-refresh');
     if (refresh) { refresh.addEventListener('click', refreshPeers); }
+    var copy = el('btn-copy-my-endpoint');
+    if (copy) { copy.addEventListener('click', copyMyEndpoint); }
+    var update = el('btn-update-peer');
+    if (update) { update.addEventListener('click', updatePeerEndpoint); }
     var add = el('btn-peer-add');
     if (add) {
       add.addEventListener('click', function () {
         state.openModal('peer-box');
-        var input = el('peer-endpoint');
+        var input = el('peer-manual-endpoint');
         if (input) { input.focus(); }
       });
     }
@@ -371,7 +440,7 @@ window.GroupMeshRemote = (function () {
     var doAdd = el('btn-do-add-peer');
     if (doAdd) {
       doAdd.addEventListener('click', function () {
-        var endpoint = (el('peer-endpoint').value || '').trim();
+        var endpoint = (el('peer-manual-endpoint').value || '').trim();
         var name = (el('peer-name').value || '').trim();
         if (!endpoint) { toast('请填写对端地址', true); return; }
         state.call('peers', { action: 'add', endpoint: endpoint, name: name })
@@ -381,9 +450,9 @@ window.GroupMeshRemote = (function () {
               return;
             }
             state.closeModal('peer-box');
-            el('peer-endpoint').value = '';
+            el('peer-manual-endpoint').value = '';
             el('peer-name').value = '';
-            toast(result.existed ? '该地址已在列表里' : '已添加对端');
+            toast(result.existed ? '该地址已在列表里' : '已登记对端');
             refreshPeers();
           }).catch(showError);
       });
@@ -403,9 +472,10 @@ window.GroupMeshRemote = (function () {
     state.openModal = deps.openModal;
     state.closeModal = deps.closeModal;
     bind();
+    refreshMyEndpoint();
     renderPath();
     renderEntries();
   }
 
-  return { init: init, refreshPeers: refreshPeers };
+  return { init: init, refreshPeers: refreshPeers, refreshMyEndpoint: refreshMyEndpoint };
 })();
