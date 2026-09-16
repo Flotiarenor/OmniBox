@@ -18,6 +18,7 @@
     python -m unittest tests.test_group_mesh_mvp -v
 """
 
+import gc
 import os
 import socket
 import subprocess
@@ -997,6 +998,14 @@ class ServeBindFailureTest(unittest.TestCase):
         if not Path('/proc/self/fd').is_dir():
             self.skipTest('该平台没有 /proc/self/fd，无法做 fd 级判定')
 
+        # **必须关掉循环 GC**，否则这条用例没有判别力：实测（Linux）删掉 close 修复
+        # 后它照样通过 —— 异常抛出时 CPython 的循环 GC 顺手把那个 socket 回收了，
+        # 只在 stderr 留一条 `ResourceWarning: unclosed socket`，进程里看不到它。
+        # 关掉 GC 之后"没被显式关闭"才会留在 fd 表里，断言才判得到。这也正是生产
+        # 情形：节点线程报错后还要继续跑（`ready.set()` 唤醒等待方），
+        # gc 那一轮扫描不会恰好落在那里。
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
         blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         blocker.bind(('127.0.0.1', 0))
         port = blocker.getsockname()[1]
@@ -1012,6 +1021,8 @@ class ServeBindFailureTest(unittest.TestCase):
             self.assertIsInstance(caught.exception, OSError)
         finally:
             blocker.close()
+            if gc_was_enabled:
+                gc.enable()
 
 
 if __name__ == '__main__':
