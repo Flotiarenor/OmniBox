@@ -6,10 +6,14 @@
 Shell 无法靠猜避免。唯一可靠的信息来源是插件自己**申报**：它只说"什么是敏感的"，
 执行点始终在 Shell（见 shell/backend/file_server.py 的 `_reject_protected_file`）。
 
-本文件锁住三件事：
+本文件锁住四件事：
   1. 常见情况一行都不用写：设置项声明 `"secret": True` 即自动申报设置文件；
   2. 申报的路径规则与 `SettingsStore` **同一处定义**（不要各拼一份 `<name>.json`）；
-  3. 越界申报被忽略并留痕，而不是被信任 —— 一个笔误不该把整个文件服务钉死。
+  3. 越界申报被忽略并留痕，而不是被信任 —— 一个笔误不该把整个文件服务钉死；
+  4. 路径**归一化**：Windows 上 `resolve()` 保留 `\\?\` 扩展前缀，只做词法比较时
+     `\\?\D:\…\auth_token.txt` 与 `D:\…\auth_token.txt` 既不相等也不互相包含 ——
+     实测过一次完整绕过（同一文件扩展形式 200 + 明文、普通形式 403）。硬链接同理：
+     两条路径不同、文件却是同一个，只有 `os.path.samefile` 认得出来。
 
 文件路由的端到端行为（403）由 tests/test_file_server_paths.py 覆盖。
 
@@ -17,6 +21,7 @@ Shell 无法靠猜避免。唯一可靠的信息来源是插件自己**申报**�
     python -m unittest tests.test_protected_paths -v
 """
 
+import os
 import sys
 import tempfile
 import unittest
@@ -26,8 +31,16 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from shell.backend.auth import get_token_file
+from shell.backend.paths import get_config_dir
 from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_manager import collect_protected_paths
+from shell.backend.protected_paths import (
+    is_protected,
+    matches,
+    normalize,
+    strip_extended_prefix,
+)
 from shell.backend.settings_store import SettingsStore
 
 
@@ -159,6 +172,69 @@ class ProtectedPathsAggregationTests(unittest.TestCase):
         instance.get_protected_paths = lambda: [None, 42, self.config_dir / 'alpha.json']
         names = [path.name for path in self._collect()]
         self.assertEqual(names, ['alpha.json'])
+
+
+class ProtectedPathNormalizationTests(unittest.TestCase):
+    r"""归一化与"同一个文件"判定：`\\?\` 扩展前缀与硬链接。
+
+    这条曾经是一个完整绕过：`_reject_protected_file` 只做 `==` / `is_relative_to`，
+    而 Windows 上 `resolve()` 保留 `\\?\` 前缀 —— 插件把根申报成扩展形式即可让
+    受保护文件重新可读（实测 200 + 令牌明文）。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+
+    def test_extended_prefix_is_stripped(self):
+        """两种扩展形态都还原成普通形式，普通路径原样返回。"""
+        self.assertEqual(strip_extended_prefix('\\\\?\\D:\\x'), 'D:\\x')
+        self.assertEqual(strip_extended_prefix('\\\\?\\UNC\\srv\\share\\x'), '\\\\srv\\share\\x')
+        self.assertEqual(strip_extended_prefix('D:\\x'), 'D:\\x')
+        self.assertEqual(strip_extended_prefix('/tmp/x'), '/tmp/x')
+
+    def test_extended_form_matches_plain_form(self):
+        """扩展形式与普通形式必须被判成同一个文件（跨平台：POSIX 上前缀同样要剥）。"""
+        secret = self.tmp / 'auth_token.txt'
+        secret.write_text('TOKEN', encoding='utf-8')
+        # 壳的凭据不在这个临时目录里，所以用手工清单验证 matches 的归一化
+        self.assertTrue(matches(secret, [normalize(secret)]))
+        self.assertTrue(matches('\\\\?\\' + str(secret), [normalize(secret)]),
+                        '扩展前缀形态绕过了受保护判定')
+        self.assertEqual(normalize('\\\\?\\' + str(secret)), normalize(secret))
+
+    def test_directory_declaration_covers_children(self):
+        """声明目录 = 该目录及其下全部内容受保护。"""
+        target_dir = self.tmp / 'vault'
+        nested = target_dir / 'nested' / 'token.json'
+        nested.parent.mkdir(parents=True)
+        nested.write_text('{}', encoding='utf-8')
+        protected = [normalize(target_dir)]
+        self.assertTrue(matches(target_dir, protected))
+        self.assertTrue(matches(nested, protected))
+        self.assertTrue(matches('\\\\?\\' + str(nested), protected))
+        self.assertFalse(matches(self.tmp / 'other.txt', protected))
+
+    def test_hardlink_is_recognized(self):
+        """硬链接：路径不同、文件同一个 —— 词法比较看不到，samefile 能看到。"""
+        real = self.tmp / 'auth_token.txt'
+        real.write_text('TOKEN', encoding='utf-8')
+        alias = self.tmp / 'public' / 'cover.jpg'
+        alias.parent.mkdir()
+        try:
+            os.link(real, alias)
+        except (OSError, NotImplementedError, AttributeError) as exc:
+            self.skipTest(f'当前文件系统不支持硬链接: {exc}')
+        self.assertNotEqual(normalize(real), normalize(alias))
+        self.assertTrue(matches(alias, [normalize(real)]), '硬链接绕过了受保护判定')
+
+    def test_is_protected_defaults_to_shell_token_file(self):
+        """不传插件管理器时，清单至少含壳自己的凭据。"""
+        token = get_token_file(get_config_dir())
+        self.assertTrue(is_protected(token))
+        self.assertTrue(is_protected('\\\\?\\' + str(token)))
+        self.assertFalse(is_protected(self.tmp / 'nothing-here.txt'))
 
 
 if __name__ == '__main__':   # pragma: no cover

@@ -1043,15 +1043,38 @@ class MyPlugin(PluginBase):
 
 声明之后：
 
-- Shell 把该插件的设置文件加入受保护清单，`/file`、`/files`、`/thumbs` 一律返回
-  `403`（优先级高于"是否在允许根之内"的判定）；
+- Shell 把该插件的设置文件加入受保护清单，`/file`、`/files`、`/thumbs` 与插件前端
+  路由一律返回 `403`（优先级高于"是否在允许根之内"的判定）；
 - **`get_settings()` 的返回值里该键被替换成掩码 `********`**。这一步同样必须做：
   `get_settings` 通常经 `register_api()` 暴露成 `POST /api/<插件>__get_settings`，
   而插件 iframe 与壳同源 —— 返回明文等于让任何一段同源脚本直接问 API 拿到凭据，
   根本不用碰文件；
+- 脱敏**不依赖你覆写 get_settings 时记得调 super()**：Shell 在
+  `<插件>__get_settings` 与集中设置面板这两个出口还会按 schema 再掩一次
+  （`PluginBase.mask_secrets`）。覆写只影响你自己看到的形状，不影响对外安全；
 - 插件侧**不需要写任何代码**：`setting()` 读到的仍是明文（插件自己要用），
   只有对外的 `get_settings()` 脱敏；
 - 请求被拒时返回的是 `403`，与越界访问同一语义，前端按既有路径处理即可。
+
+**受保护清单也管写和删。** `/api/<插件>__<方法>` 是插件自己实现的方法，Shell 拦不到
+里面的 `unlink` / `rmtree` / `move`：根一旦被设置改写成包含 `<config>` 的目录
+（例如把 `extra_roots` 指向仓库根），`<config>/plugins` 就只是"根内一个没有图片的
+普通目录"，只做根内校验就会把凭据文件删掉。凡是会**不可逆地改文件系统**的方法，
+动手前都要自查一次：
+
+```python
+def delete_files(self, rel_paths):
+    for rel in rel_paths:
+        abs_path, _ = self._resolve_path(rel)
+        if abs_path is None or self.is_protected_path(abs_path):
+            continue          # 受保护路径（壳凭据 + 全插件申报）
+        ...
+```
+
+`is_protected_path()` 与 Shell 的读路由共用同一份判定（含路径归一化：Windows 上
+`resolve()` 会保留 `\\?\` 扩展前缀，只做字符串比较会被
+`\\?\D:\…\.config\auth_token.txt` 这种形态绕过），判定失败时按"受保护"处理 ——
+这类操作不可逆，宁可不做。
 
 掩码的读写语义（前端把 `get_settings()` 的值回填进输入框、再整体提交时依赖它）：
 
@@ -1066,8 +1089,10 @@ class MyPlugin(PluginBase):
 `token_configured`），不要把凭据本身放出去。
 
 检查器会拦住遗漏：设置项键名里含 `token` / `secret` / `password` / `credential` /
-`api_key` 等词却没有声明 `secret`（或声明成 `"false"` 这类非布尔值）时，
-`tools/check_plugins.py` 直接报错。
+`api_key` / `cookie` / `session` 等词却没有声明 `secret`（或声明成 `"false"` 这类
+非布尔值）时，`tools/check_plugins.py` 直接报错。匹配**与大小写和分隔符无关**：
+`API_TOKEN`、`Api_Token`、`refreshToken`、`privateKey` 同样命中（早期只认小写
+下划线形态，这几种写法全都漏过）。键名确实不是凭据时，改成一个不含这些词的键名。
 
 **敏感内容不在设置文件里**时（自己的令牌文件、cookie jar、加密密钥等），覆写
 `PluginBase.get_protected_paths()` 申报那些路径：

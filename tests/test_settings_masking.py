@@ -29,6 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from shell.backend.plugin_base import SECRET_MASK, PluginBase
+from shell.backend.plugin_manager import PluginManager
 from shell.backend.settings_store import SettingsStore
 
 REAL_TOKEN = 'pixiv-refresh-token-REAL-VALUE'
@@ -215,6 +216,79 @@ class PixivSyncMaskingTests(unittest.TestCase):
 
         stored = instance._settings_store.get('pixiv-sync')
         self.assertEqual(stored['refresh_token'], REAL_TOKEN, '真凭据被掩码覆盖了')
+
+
+class _OverridingPlugin(_Plugin):
+    """模拟 image-viewer / manga-library：自己实现 get_settings，且不调 super()。
+
+    它们的 get_settings 会直读 `_settings_store`（image-viewer 还要处理 per-folder
+    继承），基类的掩码于是整个不执行 —— 而该方法经 register_api() 直接变成
+    `POST /api/<插件>__get_settings`。所以 Shell 侧必须在出口再掩一次。
+    """
+
+    def get_settings(self):
+        return self._raw_settings()
+
+
+class ShellSideMaskingTests(unittest.TestCase):
+    """掩码不能只写在基类：插件覆写就有明文出口，Shell 侧出口必须再掩一次。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.plugin = _OverridingPlugin(
+            {'name': 'demo'},
+            {'directories': {'data_root': str(self.tmp / 'data')}},
+            _schema(),
+        )
+        self.plugin._settings_store = SettingsStore(str(self.tmp / 'config' / 'plugins'))
+        self.plugin.update_setting('refresh_token', REAL_TOKEN)
+
+    def _manager(self):
+        # 不走 __init__：它要扫描真实插件目录，而这里只需要实例表与清单表。
+        manager = PluginManager.__new__(PluginManager)
+        manager._instances = {self.plugin.name: self.plugin}
+        manager._manifests = {'demo': {'displayName': 'Demo', 'icon': '📦'}}
+        return manager
+
+    def test_override_indeed_bypasses_the_base_class_mask(self):
+        """前置条件：覆写后的返回值是明文 —— 这正是需要 Shell 兜住的场景。"""
+        self.assertEqual(self.plugin.get_settings()['refresh_token'], REAL_TOKEN)
+
+    def test_exposed_get_settings_is_masked(self):
+        """`register_api()` 暴露的那份返回值必须已脱敏（Shell 侧包装）。"""
+        exposed = PluginManager._exposed_method(
+            self.plugin, 'get_settings', self.plugin.get_settings)
+        self.assertEqual(exposed()['refresh_token'], SECRET_MASK)
+        self.assertNotIn(REAL_TOKEN, str(exposed()))
+
+    def test_exposed_wrapper_keeps_other_methods_untouched(self):
+        """只有 get_settings 被包装，其它方法原样透传。"""
+        calls = []
+
+        def probe(value='x'):
+            calls.append(value)
+            return {'ok': value}
+
+        exposed = PluginManager._exposed_method(self.plugin, 'list_images', probe)
+        self.assertIs(exposed, probe)
+        self.assertEqual(exposed('a'), {'ok': 'a'})
+        self.assertEqual(calls, ['a'])
+
+    def test_non_dict_return_passes_through(self):
+        """插件返回自定义形状（非字典）时不得被改写。"""
+        wrapped = PluginManager._exposed_method(
+            self.plugin, 'get_settings', lambda: ['not-a-dict'])
+        self.assertEqual(wrapped(), ['not-a-dict'])
+
+    def test_settings_panel_values_are_masked(self):
+        """集中设置面板（system_settings_list）是同一条泄露路径，同样要脱敏。"""
+        panels = self._manager().get_settings_panels()
+        self.assertEqual(len(panels), 1)
+        values = panels[0]['values']
+        self.assertEqual(values['refresh_token'], SECRET_MASK)
+        self.assertNotIn(REAL_TOKEN, str(panels))
 
 
 if __name__ == '__main__':   # pragma: no cover

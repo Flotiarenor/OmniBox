@@ -45,7 +45,7 @@ class FileOpsMixin:
         return {'success': True, 'path': rel_path}
 
     def delete_folder(self, rel_path: str) -> Dict:
-        """删除一个**空**目录（含只剩空子目录的情况），并清掉它的可见标记。
+        r"""删除一个**空**目录（含只剩空子目录的情况），并清掉它的可见标记。
 
         只允许删除「递归都没有图片」的目录：有图片的目录必须先清空图片，
         避免一个误点连带删掉整棵作品树。
@@ -53,6 +53,14 @@ class FileOpsMixin:
         路径必须落在它所属的根目录内：`../`、绝对路径、未知命名空间一律拒绝。
         这是**删除**操作，越权代价是根目录外的整棵目录树，所以不能只依赖调用方
         传对相对路径（`_is_safe` 是唯一把"虚拟相对路径"折算成根内物理路径的校验）。
+
+        根目录自身与 Shell 的受保护清单另外两道判定：
+          - `'.'` / `'a/..'` 都通过 `_is_safe`（解析结果就是根目录本身），
+            于是"删空目录"能删掉整个图库根（连带 `.cache`）；
+          - 根可以由设置改写成包含 `<config>` 的目录（例如把 `extra_roots` 指向
+            `<repo>/.config`），此时 `<config>/plugins` 是一个"根内、没有图片"的
+            普通目录 —— 只做根内校验就会删掉插件凭据文件。Shell 的读路由有受保护
+            清单，但 `/api` 下的插件方法 Shell 拦不到，必须在这里自查。
         """
         rel_path = (rel_path or '').replace('\\', '/').strip('/')
         # 两个校验缺一不可：
@@ -66,9 +74,15 @@ class FileOpsMixin:
         target, _ = self._resolve_dir(rel_path)
         if target is None:
             return {'success': False, 'error': '路径非法'}
+        root, _inner = self._split_virtual(rel_path)
+        if root is None:
+            return {'success': False, 'error': '路径非法'}
+        if target.resolve() == root.resolve():
+            return {'success': False, 'error': '不能删除根目录本身'}
+        if self.is_protected_path(target):
+            return {'success': False, 'error': '该目录受保护，拒绝删除'}
         if not target.is_dir():
             return {'success': False, 'error': '目录不存在'}
-        root, _inner = self._split_virtual(rel_path)
         try:
             for _current, _dirs, files in os.walk(target):
                 if any(not f.startswith('.') and Path(f).suffix.lower() in ALLOWED_EXTENSIONS
@@ -131,6 +145,11 @@ class FileOpsMixin:
             if abs_path is None:
                 errors.append(f"非法路径: {rel}")
                 continue
+            # 删除同样要过 Shell 的受保护清单：根可以被设置改写成包含 <config> 的
+            # 目录，只做根内校验就能删掉 auth_token.txt / 插件设置文件（读是挡住的）。
+            if self.is_protected_path(abs_path):
+                errors.append(f"受保护路径，拒绝删除: {rel}")
+                continue
             try:
                 if abs_path.exists():
                     abs_path.unlink()
@@ -151,6 +170,8 @@ class FileOpsMixin:
         dest_dir, _ = self._resolve_dir(dest_rel)
         if dest_dir is None or not dest_dir.is_dir():
             return {"moved": [], "errors": ["目标目录不存在"]}
+        if self.is_protected_path(dest_dir):
+            return {"moved": [], "errors": ["目标目录受保护，拒绝移动"]}
         moved, errors = [], []
         for rel in rel_paths:
             if not self._is_safe(rel):
@@ -159,6 +180,11 @@ class FileOpsMixin:
             src, _ = self._resolve_path(rel)
             if src is None:
                 errors.append(f"非法源路径: {rel}")
+                continue
+            # 移动等价于"从原位置拿走"：受保护文件被移进媒体根后，读路由的清单
+            # 就再也认不出它（路径变了），所以源与目标都要判。
+            if self.is_protected_path(src):
+                errors.append(f"受保护路径，拒绝移动: {rel}")
                 continue
             try:
                 if src.exists():

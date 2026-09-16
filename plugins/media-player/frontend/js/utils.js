@@ -82,7 +82,39 @@ const MPUtils = {
         const onError = itemId
             ? `onerror="MPCoverFail(this,${MPUtils.jsString(itemId)},${MPUtils.jsString(fallbackIcon)})"`
             : `onerror="MPUtils.fallbackCover(this,${MPUtils.jsString(fallbackIcon)})"`;
-        return `<img src="${MPUtils.escapeHtml(url)}" loading="lazy" alt="" ${extra} ${onError}>`;
+        return `<img src="${MPUtils.escapeHtml(url)}" loading="lazy" alt="" ${MPUtils.safeExtraAttrs(extra)} ${onError}>`;
+    },
+
+    // 追加属性的白名单：只接受 `name="value"` 且字符集受限的形态（当前唯一用途是
+    // `data-mp-thumb-id="<id>"`）。以前这里原样拼接 extra，而 extra 由调用方用后端
+    // 数据（item.id / cover.id）拼出来 —— 一个引号就能插入新属性或新标记。
+    // 认不出的片段直接丢弃：这段 HTML 的拼接权不该交给调用方。
+    safeExtraAttrs(extra) {
+        const text = String(extra == null ? '' : extra);
+        const pattern = /([a-zA-Z][a-zA-Z0-9-]*)="([A-Za-z0-9_.:-]*)"/g;
+        const attrs = [];
+        let match;
+        while ((match = pattern.exec(text)) !== null) {
+            attrs.push(`${match[1]}="${match[2]}"`);
+        }
+        return attrs.join(' ');
+    },
+
+    // 详情页 hero 背景：值会落进 `style="--hero-bg:url("…")"` —— 属性上下文里的
+    // **CSS** 上下文。cover_url 来自远程 API（网易云歌单封面），原实现直接拼
+    // `url("${coverSrc}")`：一个 `"` 就能闭合属性插入标记，一个 `)` 就能改写
+    // 后续声明。这里只放行预期的来源（http(s) / 站内相对路径 / data:image），
+    // 并把能闭合 url() 或属性的字符百分号编码，最后再做 HTML 属性转义。
+    heroBg(url) {
+        const raw = String(url == null ? '' : url).trim();
+        if (!raw || !/^(?:https?:\/\/|\/|data:image\/)/i.test(raw)) return 'none';
+        // 注意：不能只靠 encodeURIComponent —— 它不编码 ( ) ' ! *，而 `)` 足以
+        // 提前闭合 url()。这里对每个危险字符直接给出百分号编码（CSS 分词先于
+        // URL 解码，所以转义后的引号只是数据，不会成为语法）。
+        const encoded = raw.replace(/["'\\()<>\s]/g, (ch) => (
+            `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`
+        ));
+        return MPUtils.escapeHtml(`url("${encoded}")`);
     },
 
     // 内联事件处理器里的字符串参数：先 JS 字符串转义，再 HTML 属性转义。

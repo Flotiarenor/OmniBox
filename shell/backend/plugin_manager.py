@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Dict, List
 
 from shell.backend.paths import get_plugins_config_dir
+from shell.backend.plugin_base import PluginBase, mask_secrets
+from shell.backend.protected_paths import normalize as normalize_path
 from shell.backend.settings_store import SettingsStore
 
 log = logging.getLogger(__name__)
@@ -43,23 +45,24 @@ def _resolve_config_dir() -> Path:
 
 
 def _is_protectable(instance: PluginBase, path: Path, config_dir: Path) -> bool:
-    """该路径是否落在插件有权申报的范围内（自身数据根或 <config>/plugins）。
+    r"""该路径是否落在插件有权申报的范围内（自身数据根或 <config>/plugins）。
 
     这是**防误用**而不是安全边界：插件后端与 Shell 同进程，它不需要"申报"就能
     直接读任何文件。边界的作用是让一个写错的申报（例如声明了盘符根）被忽略并
     留痕，而不是把整个文件服务钉死。
 
-    两侧都要 `resolve()`：`path` 已经解析过，而 `config_dir` / `get_data_root()`
-    可能是未解析形式（例如 Windows 上 `%TEMP%` 的 8.3 短名），拿它去比会得出
-    "越界"的错误结论 —— 保护静默失效，且只在短名路径下出现。
+    两侧都用 protected_paths.normalize()：它会剥掉 `\\?\` 扩展前缀再 resolve()。
+    只 resolve() 是不够的 —— 扩展前缀形态与普通形态既不等也不互相包含，
+    于是"插件用扩展形式申报、Shell 用普通形式比较"会得出"越界"的错误结论，
+    保护静默失效（反之亦然，见该模块的说明）。
     """
     roots: List[Path] = []
     try:
-        roots.append(Path(config_dir).resolve())
-    except OSError:
+        roots.append(normalize_path(config_dir))
+    except (OSError, TypeError, ValueError):
         pass
     try:
-        roots.append(Path(instance.get_data_root()).resolve())
+        roots.append(normalize_path(instance.get_data_root()))
     except Exception:
         # get_data_root() 由插件实现（image-viewer 读 self.root_dir）：它抛异常时
         # 不能连累整条聚合，只是少一个允许范围。
@@ -87,7 +90,7 @@ def collect_protected_paths(instances: Dict[str, PluginBase], config_dir: Path) 
             continue
         for raw in declared:
             try:
-                path = Path(raw).resolve()
+                path = normalize_path(raw)
             except (OSError, TypeError, ValueError):
                 log.warning(f"[PluginManager] {name} 申报的受保护路径无效，已忽略: {raw!r}")
                 continue
@@ -547,7 +550,7 @@ class PluginManager:
             # 若已经把方法写进 _api_methods，就会出现"幽灵 API"——/api/<插件>__<方法>
             # 能打到从未进入 _instances 的半初始化实例（docs/code-review.md §4.1-3）。
             pending_methods = {
-                f"{name}__{method_name}": method_fn
+                f"{name}__{method_name}": self._exposed_method(instance, method_name, method_fn)
                 for method_name, method_fn in instance.register_api().items()
             }
             pending_methods[f"{name}__get_settings_schema"] = (
@@ -571,6 +574,25 @@ class PluginManager:
 
     # ---------- 集中设置面板 ----------
 
+    @staticmethod
+    def _exposed_method(instance: PluginBase, method_name: str, method_fn: Callable) -> Callable:
+        """包一层出口处理：插件注册的方法在返回前要过的 Shell 侧约束。
+
+        目前只有一条 —— `get_settings` 的凭据脱敏。**必须由 Shell 做**：插件可以
+        覆写 `get_settings()`（image-viewer / manga-library 都覆写了），基类里的
+        掩码于是整个不执行；而该方法经 register_api() 直接变成
+        `POST /api/<插件>__get_settings`，与壳同源 —— 覆写一下就能把长期凭据交给
+        任何一段同源脚本。返回非字典（插件自定义形状）时原样放行。
+        """
+        if method_name != 'get_settings':
+            return method_fn
+
+        def masked(*args, **kwargs):
+            return mask_secrets(getattr(instance, 'settings_schema', None) or [],
+                                method_fn(*args, **kwargs))
+
+        return masked
+
     def get_settings_panels(self) -> List[dict]:
         """返回声明了 settings_schema 的插件的设置面板数据。
         只显示 root_dir 或声明 central:true 的字段，其余在插件内部设置。"""
@@ -593,6 +615,9 @@ class PluginManager:
             except Exception as e:
                 values = {}
                 log.error(f"[PluginManager] 读取设置失败 {name}: {e}")
+            # 集中设置面板同样走 Shell 侧脱敏：面板的 values 也会发给前端，
+            # 与 /api/<插件>__get_settings 是同一条泄露路径。
+            values = mask_secrets(schema, values)
             manifest = self._manifests.get(name, {})
             panels.append({
                 'name': name,

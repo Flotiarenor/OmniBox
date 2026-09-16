@@ -68,6 +68,7 @@ class _StubInstance:
 class _StubPluginManager:
     def __init__(self):
         self._instances: dict = {}
+        self._plugin_dirs: dict = {}
 
     def get_api_methods(self):
         return {}
@@ -89,6 +90,9 @@ class _StubPluginManager:
 
     def get_plugin_instance(self, name):
         return self._instances.get(name)
+
+    def get_plugin_dir(self, name):
+        return self._plugin_dirs.get(name)
 
     def get_protected_paths(self):
         """与真实 PluginManager 共用同一份聚合 + 边界校验实现。
@@ -237,6 +241,67 @@ class ProtectedCredentialFileTests(_FileRouteFixture, unittest.TestCase):
         resp = self._get(f'/file?path={quote(str(ordinary))}&plugin={plugin}')
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.get_data(), b'ORDINARY')
+
+    def test_extended_prefix_root_does_not_bypass_protection(self):
+        r"""`\\?\` 扩展前缀形态必须同样被拒（曾是一个完整绕过）。
+
+        `resolve()` 在 Windows 上保留 `\\?\` 前缀，所以"根用扩展形式申报 +
+        请求也用扩展形式"能让纯词法比较既不相等也不互相包含 —— 实测过同一文件
+        扩展形式返回 200 + 令牌明文。归一化在 protected_paths 里统一做，
+        这里端到端锁住。
+        """
+        ext_root = '\\\\?\\' + str(get_config_dir())
+        self.manager._instances['ext'] = _StubInstance([ext_root])
+        token_path = self._token_path()
+        self.assertTrue(token_path.exists(), '前置条件：令牌文件已生成')
+        ext_target = '\\\\?\\' + str(token_path)
+        resp = self._get(f'/file?path={quote(ext_target)}&plugin=ext')
+        self.assertEqual(resp.status_code, 403)
+        self.assertNotIn(self.token, resp.get_data(as_text=True))
+        # 对照组：同一个扩展根下的普通文件仍然可读，归一化不能把正常访问一起挡掉
+        ordinary = get_config_dir() / 'ordinary-ext.txt'
+        ordinary.write_text('ORDINARY', encoding='utf-8')
+        self.addCleanup(lambda: ordinary.unlink(missing_ok=True))
+        ext_ordinary = '\\\\?\\' + str(ordinary)
+        resp = self._get(f'/file?path={quote(ext_ordinary)}&plugin=ext')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_data(), b'ORDINARY')
+
+    def test_thumbs_plugin_bytes_cannot_return_protected_file(self):
+        """`get_thumb_data()` 直接返回字节的分支也必须先过受保护判定。
+
+        原实现把这个判定放在散文件回退分支里，于是"插件自己读文件并返回字节"
+        那条路整条绕过了防护 —— 判定必须早于任何插件代码执行。
+        """
+
+        class _ByteThumbInstance(_StubInstance):
+            def get_thumb_data(self, rel_path):
+                return b'LEAKED-TOKEN', 'image/jpeg'
+
+        self.manager._instances['bytes'] = _ByteThumbInstance(
+            [get_config_dir()], thumb_dir=get_config_dir())
+        resp = self._get(f'/thumbs/{TOKEN_FILE_NAME}?plugin=bytes')
+        self.assertEqual(resp.status_code, 403)
+        self.assertNotIn('LEAKED-TOKEN', resp.get_data(as_text=True))
+
+    def test_plugin_frontend_route_refuses_protected_file(self):
+        """插件前端路由免令牌，但同样不能成为受保护文件的出口。"""
+        plugin_dir = Path(self._tmp.name) / 'plugins' / 'frontend-plugin'
+        frontend = plugin_dir / 'frontend'
+        frontend.mkdir(parents=True)
+        secret = frontend / 'credentials.json'
+        secret.write_text('{"refresh_token": "SUPER-SECRET"}', encoding='utf-8')
+        self.manager._plugin_dirs['frontend-plugin'] = plugin_dir
+        self.manager._instances['frontend-plugin'] = _StubInstance(
+            [plugin_dir], protected=[secret], data_root=plugin_dir)
+
+        resp = self._get('/plugins/frontend-plugin/frontend/credentials.json', headers={})
+        self.assertEqual(resp.status_code, 403)
+        self.assertNotIn('SUPER-SECRET', resp.get_data(as_text=True))
+        # 对照组：同一个前端目录里的普通资源仍然免令牌可取
+        (frontend / 'app.js').write_text('// app', encoding='utf-8')
+        resp = self._get('/plugins/frontend-plugin/frontend/app.js', headers={})
+        self.assertEqual(resp.status_code, 200)
 
 
 class PluginDeclaredProtectionTests(_FileRouteFixture, unittest.TestCase):

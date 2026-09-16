@@ -43,13 +43,25 @@ ALLOWED_SCHEMA_TYPES = {'text', 'number', 'range', 'select', 'checkbox', 'textar
 #   见 PluginBase.get_protected_paths() 与 docs/plugin-guide.md §8.2
 #
 # 键名里"看起来是凭据"的词：命中却没声明 secret 就是一条真实泄露路径。
-# 只按完整词匹配（不含裸 "key" —— 那会把 keyboard_shortcut 之类误判）。
-SECRET_KEY_RE = re.compile(
-    r'(?:^|_)(?:token|secret|password|passwd|pwd|credential|credentials|apikey|api_key)(?:$|_)'
+# 匹配方式：先把键名规范化成「小写 + 去掉非字母数字」（refreshToken / API_TOKEN /
+# api-token → refreshtoken / apitoken / apitoken），再看是否含下列词。
+# 早期用 `(?:^|_)(?:token|…)(?:$|_)` 的正则（区分大小写、只认下划线边界）：
+# 实测 `API_TOKEN` / `Api_Token` / `refreshToken` / `privateKey` / `PASSWORD`
+# 全部漏过 —— 而"凭据类键名但门禁没拦住"正是这条规则唯一要防的事。
+# 不含裸 "key"：那会把 keyboard_shortcut 之类误判。
+SECRET_KEY_WORDS = (
+    'token', 'secret', 'password', 'passwd', 'pwd', 'credential', 'credentials',
+    'apikey', 'cookie', 'session', 'privatekey', 'accesskey',
 )
 PLUGIN_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9-_]*$')
 LEGACY_SETTINGS_MARKERS = ('settings_file', '_save_settings_to_file')
 LOCAL_SIBLING_LOADER_MARKER = 'def _load_sibling'
+
+
+def looks_like_secret_key(key) -> bool:
+    """键名是否像凭据（大小写与分隔符无关）。"""
+    normalized = re.sub(r'[^a-z0-9]', '', str(key).lower())
+    return any(word in normalized for word in SECRET_KEY_WORDS)
 
 # ===== manifest 字段读取方登记表（docs/code-review.md §5 的机制化）=====
 # 开发指南一度教了 4 个"代码根本不读"的字段：照文档写的第三方作者会遇到
@@ -187,7 +199,7 @@ def _check_schema(cls) -> List[str]:
         # 凭据类键名却没申报 → 拦住。这条规则的价值在于"下一个插件不会再犯"：
         # 凭据值会落到 <config>/plugins/<name>.json，而该文件（或它所在的目录）可能
         # 正好落在某个插件的媒体根之内 —— 这是结构性的，靠 review 记得不住。
-        if SECRET_KEY_RE.search(key) and field.get('secret') is not True:
+        if looks_like_secret_key(key) and field.get('secret') is not True:
             errors.append(
                 f'{where}.key={key!r} 看起来是凭据类设置项，但没有声明 "secret": True —— '
                 f'凭据会落到设置文件里，必须申请 Shell 文件防护'

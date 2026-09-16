@@ -103,11 +103,11 @@ class MediaPlayerApp {
             let needWait = false;
             if (st0 && st0.state === 'paused') {
                 // 上次扫描被中断：断点续扫（已完成根目录自动跳过）
-                this._setLoading('继续上次未完成的扫描…<br>已完成部分自动跳过');
+                this._setLoading('继续上次未完成的扫描…\n已完成部分自动跳过');
                 const started = await Bridge.call('media_scan', false);
                 needWait = !(started && started.error);
             } else if (!stats || stats.total === 0) {
-                this._setLoading('首次使用，正在扫描媒体库…<br>大媒体库可能需要一点时间');
+                this._setLoading('首次使用，正在扫描媒体库…\n大媒体库可能需要一点时间');
                 const started = await Bridge.call('media_scan', false);
                 needWait = true; // 已在运行（如另一标签页触发）同样等待其完成
             }

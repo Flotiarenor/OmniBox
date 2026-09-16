@@ -101,6 +101,61 @@ function makeSandbox() {
 }
 
 /**
+ * 「资源装载契约」：不假定入口是类，只检查 index.html 与 js/ 的一致性 + 装载期错误。
+ *
+ * 为什么需要它：插件的分片数量不一样（有的只有 1 个脚本、有的是 8~12 个），
+ * 而"磁盘上有脚本没被 index.html 引用"或"引用了不存在的脚本"在任何插件上
+ * 都是静默故障（方法凭空消失 / 装载期 ReferenceError）。类成员契约由各插件自己的
+ * `runScriptLoadContract` 入口覆盖（需要入口类名），这里覆盖**全部**插件前端。
+ *
+ * @returns {number} 失败项数（0 = 全部通过）
+ */
+export function runAssetContract({ label, frontendDir }) {
+    let failures = 0;
+    const check = (name, ok, extra = '') => {
+        if (ok) {
+            console.log(`  PASS  ${name}`);
+            return;
+        }
+        failures += 1;
+        console.log(`  FAIL  ${name}${extra ? `  — ${extra}` : ''}`);
+    };
+
+    console.log(`[${label}] 前端资源装载契约`);
+    const declared = declaredScripts(frontendDir);
+    const jsDir = path.join(frontendDir, 'js');
+    const onDisk = fs.existsSync(jsDir)
+        ? fs.readdirSync(jsDir).filter(f => f.endsWith('.js')).map(f => `js/${f}`)
+        : [];
+    // 像 pixiv-sync 这样"没有自己的脚本、由服务端注入 /shell/*.js"的前端是合法的；
+    // 只要磁盘上有 js/*.js，就必须至少被引用了（否则下面的孤立脚本检查会失败）。
+    check('index.html 的本地脚本声明与 js/ 一致',
+        declared.length > 0 || onDisk.length === 0,
+        `declared=${JSON.stringify(declared)} onDisk=${JSON.stringify(onDisk)}`);
+
+    const missing = declared.filter(rel => !fs.existsSync(path.join(frontendDir, rel)));
+    check('声明的脚本文件都存在', missing.length === 0, `缺失: ${JSON.stringify(missing)}`);
+
+    const orphans = onDisk.filter(rel => !declared.includes(rel));
+    check('js/ 下没有未被 index.html 引用的孤立脚本', orphans.length === 0,
+        `孤立: ${JSON.stringify(orphans)}（新分片必须加进 index.html）`);
+
+    const ctx = vm.createContext(makeSandbox());
+    const errors = [];
+    for (const rel of declared) {
+        try {
+            vm.runInContext(fs.readFileSync(path.join(frontendDir, rel), 'utf8'), ctx, { filename: rel });
+        } catch (err) {
+            errors.push(`${rel}: ${err && err.message ? err.message : err}`);
+            break;
+        }
+    }
+    check('全部本地脚本按声明顺序装载成功', errors.length === 0, errors.join('; '));
+    console.log(`  共 ${declared.length} 个脚本`);
+    return failures;
+}
+
+/**
  * 按 index.html 的声明顺序装载插件前端的全部本地脚本，并检查装载契约。
  *
  * @param {object} options
