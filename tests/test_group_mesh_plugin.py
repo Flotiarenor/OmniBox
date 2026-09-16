@@ -599,5 +599,115 @@ class RemoteApiTest(unittest.TestCase):
         self.assertIn('share_id', result['error'])
 
 
+class AutoDiscoveryTest(unittest.TestCase):
+    """有身份与团体时节点应当**自己跑起来并发布注册记录**。
+
+    为什么这条必须有用例：节点不跑 → 不发布注册记录 → 其他成员永远发现不了本机。
+    而"要先去点一次启动节点"这件事没有任何提示，表现出来就是"明明都在同一个团体
+    里却看不到对方"—— 也就是把自动发现退化成了手动配置。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        module = load_plugin_module()
+        manifest = json.loads((PLUGIN_DIR / 'manifest.json').read_text(encoding='utf-8'))
+        config = {'directories': {'data_root': str(self.tmp / 'data')}}
+        self.plugin = module.GroupMeshPlugin(manifest, config)
+        self.plugin._settings_store = SettingsStore(str(self.tmp / 'settings'))
+        # 端口 0 = 让内核分配空闲端口，避免用例撞上真实占用的 19443
+        self.plugin.update_setting('port', 0)
+        self.plugin.update_setting('bind', '127.0.0.1')
+
+    def tearDown(self):
+        self.plugin.on_unload()
+        self._tmp.cleanup()
+
+    def _ready(self):
+        return self.plugin.get_status()['kernel']['available']
+
+    def test_node_does_not_start_before_identity_and_group(self):
+        """没有身份/团体时不启动：那种状态下节点无法认证对端，起来只会报错。"""
+        if not self._ready():
+            self.skipTest('协议内核不可用')
+        status = self.plugin.get_status()
+        self.assertFalse(status['node']['running'])
+        self.assertIsNone(status['node']['auto_start_error'])
+
+    def test_node_auto_starts_and_publishes_registration(self):
+        if not self._ready():
+            self.skipTest('协议内核不可用')
+        self.plugin.init_identity({'name': 'auto'})
+        self.plugin.create_group({'group': 'auto-group'})
+
+        status = self.plugin.get_status()
+        node = status['node']
+        self.assertTrue(node['running'], f'有身份与团体后节点应自动启动: {node}')
+        self.assertIsNone(node['auto_start_error'], node)
+        # 关键：节点起来还不够，必须真的把注册记录发布出去（别人靠它发现本机）
+        self.assertTrue(node['published'], f'节点应发布注册记录: {node}')
+        self.assertIsInstance(node['published_seq'], int)
+
+        state_file = self.plugin.identity_dir / 'state.json'
+        self.assertTrue(state_file.is_file(), '发布记录后应留下 state.json（seq 单调性依据）')
+        state = json.loads(state_file.read_text(encoding='utf-8'))
+        self.assertEqual(state['registration_seq'], node['published_seq'])
+        self.assertTrue(state.get('endpoints'), 'state 里应记住本次发布的端点集合')
+
+        registry = json.loads((self.plugin.identity_dir / 'registry.json')
+                              .read_text(encoding='utf-8'))
+        self.assertEqual(len(registry['records']), 1, '注册表里应有本机那条记录')
+        record = registry['records'][0]
+        self.assertEqual(record['seq'], node['published_seq'])
+        # 端点必须是内核真正绑上的端口（设置里写 0 时不能发布 0）
+        self.assertNotEqual(record['endpoints'][0][1], 0)
+
+    def test_auto_start_is_attempted_only_once(self):
+        """重复取状态不得反复起线程（失败时尤其不能变成死循环重试）。"""
+        if not self._ready():
+            self.skipTest('协议内核不可用')
+        self.plugin.init_identity({'name': 'once'})
+        self.plugin.create_group({'group': 'once-group'})
+        first = self.plugin.get_status()['node']
+        self.assertTrue(first['running'])
+        thread = self.plugin._node_thread
+        for _ in range(3):
+            again = self.plugin.get_status()['node']
+            self.assertTrue(again['running'])
+        self.assertIs(self.plugin._node_thread, thread, '不应重建节点线程')
+
+    def test_endpoint_change_republishes_registration(self):
+        """本机地址集合变化时必须递增 seq 重新发布（设计文档 §7.4）。
+
+        不重发的后果：对端留着旧端点，表现为"两边都开着却连不上"，且没有提示。
+        """
+        if not self._ready():
+            self.skipTest('协议内核不可用')
+        self.plugin.init_identity({'name': 'republish'})
+        self.plugin.create_group({'group': 'republish-group'})
+        first_seq = self.plugin.get_status()['node']['published_seq']
+        self.assertIsNotNone(first_seq)
+
+        # 模拟"地址变了"：把 state 里记的端点改成别的
+        state_file = self.plugin.identity_dir / 'state.json'
+        state = json.loads(state_file.read_text(encoding='utf-8'))
+        state['endpoints'] = [['10.0.0.99', 1]]
+        state_file.write_text(json.dumps(state, ensure_ascii=False), encoding='utf-8')
+
+        self.plugin.list_peers(refresh=True)
+        new_seq = self.plugin.get_status()['node']['published_seq']
+        self.assertGreater(new_seq, first_seq, '端点变化后应重新发布并递增 seq')
+
+    def test_unchanged_endpoints_do_not_republish(self):
+        """端点没变时不做无谓重发（否则每次刷新都递增 seq，对端反复合并）。"""
+        if not self._ready():
+            self.skipTest('协议内核不可用')
+        self.plugin.init_identity({'name': 'stable'})
+        self.plugin.create_group({'group': 'stable-group'})
+        first_seq = self.plugin.get_status()['node']['published_seq']
+        self.plugin.list_peers(refresh=True)
+        self.assertEqual(self.plugin.get_status()['node']['published_seq'], first_seq)
+
+
 if __name__ == '__main__':
     unittest.main()
