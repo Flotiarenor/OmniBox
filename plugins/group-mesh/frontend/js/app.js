@@ -381,9 +381,8 @@
     refresh();
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-  } else {
-    init();
-  }
+  // 装载期绝不触碰 DOM：tests/js/plugin_asset_contract.mjs 用空 DOM 替身按声明顺序
+  // 装载全部脚本，装载期取元素（getElementById(...).addEventListener）会直接抛错。
+  // 本脚本由 index.html 末尾的 <script src> 同步装载，DOMContentLoaded 必在其后触发。
+  document.addEventListener('DOMContentLoaded', init);
 })();
