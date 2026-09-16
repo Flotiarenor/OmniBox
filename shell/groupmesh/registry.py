@@ -23,8 +23,11 @@
 from __future__ import annotations
 
 import ipaddress
+import json
+import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from . import crypto_prims as cp
@@ -199,6 +202,39 @@ class Registry:
 
     def describe(self) -> str:
         return pretty({'count': len(self.records), 'records': self.snapshot_dicts()})
+
+
+# ── 落盘 ──────────────────────────────────────────────────────────────────
+#
+# 这两个函数原先只存在于 CLI 里（`cli.load_registry` / `save_registry`）。插件层要
+# 用注册表时必须自己再写一份 —— 两份实现迟早会漂移（一份加了校验、另一份没加），
+# 而注册记录的单调性正靠落盘后的再读取来维持。因此下沉到内核，CLI 改为转发。
+
+REGISTRY_FILE = 'registry.json'
+
+
+def load_registry(root: Path) -> Registry:
+    """读取某个身份目录下的注册表；文件不存在时返回空表。"""
+    path = Path(root) / REGISTRY_FILE
+    if not path.exists():
+        return Registry()
+    return Registry.from_snapshot_dicts(json.loads(path.read_text(encoding='utf-8')).get('records'))
+
+
+def save_registry(root: Path, registry: Registry) -> None:
+    """原子性地写出注册表快照。
+
+    先写临时文件再 `os.replace`：这个文件会被运行中的节点反复重写（每学到一条新
+    记录就写一次），直接覆盖时若进程被中断，留下的半截 JSON 会让下次启动
+    `from_snapshot_dicts` 抛异常 —— 注册表损坏会连带"看不到任何设备"。
+    """
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / REGISTRY_FILE
+    payload = {'records': registry.snapshot_dicts()}
+    tmp = path.with_suffix('.json.tmp')
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    os.replace(tmp, path)
 
 
 # ── 本机端点探测（§7.4 稳定地址）───────────────────────────────────────────

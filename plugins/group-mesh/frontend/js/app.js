@@ -40,17 +40,18 @@
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
-  // 弹窗用 data-open 而不是 hidden 控制可见性，原因见 group-mesh.css 里 .gm-modal
-  // 的注释：`.gm-modal { display: flex }` 会盖掉浏览器给 [hidden] 的 display:none
-  // （UA 样式同优先级输给作者样式），曾经导致三个弹窗在打开页面时同时显示。
+  // 弹窗用壳的 `.modal` + `.modal.active`（base.css）。
+  // 不再自绘 `.gm-modal[data-open]`：壳的默认态没有任何 display 声明，因此不存在
+  // "作者样式的 display:flex 盖掉浏览器给 [hidden] 的 display:none"那个级联陷阱
+  // （事故记录见 docs/group-mesh-implementation-path.md §5.7，以及本插件 CSS 顶部注释）。
   function openModal(id) {
     var node = el(id);
-    if (node) { node.setAttribute('data-open', 'true'); }
+    if (node) { node.classList.add('active'); }
   }
 
   function closeModal(id) {
     var node = el(id);
-    if (node) { node.removeAttribute('data-open'); }
+    if (node) { node.classList.remove('active'); }
   }
 
   function roleBadge(role) {
@@ -64,10 +65,11 @@
     return hex.slice(0, 16) + '…';
   }
 
-  function button(label, handler, ghost) {
+  function button(label, handler, secondary) {
     var node = document.createElement('button');
     node.type = 'button';
-    node.className = 'gm-btn' + (ghost ? ' gm-btn-ghost' : '');
+    // 壳的 .btn 系列（base.css）：主操作用默认态，次要操作用 .btn-sm。
+    node.className = secondary ? 'btn btn-sm' : 'btn';
     node.textContent = label;
     node.addEventListener('click', handler);
     return node;
@@ -196,24 +198,42 @@
     var rows = status.shares.map(function (share) {
       var acl = share.acl || {};
       var limit = share.max_bytes === null ? '不限制' : Math.round(share.max_bytes / 1048576) + ' MiB';
+      // 共享根是**有状态的位置**：目录所在磁盘未接入时必须显示出来，
+      // 否则对端看到的是空目录，而本机界面显示一切正常。
+      var state = share.available === false
+        ? '<span class="gm-badge gm-badge-warn">' + escapeHtml(share.reason || '不可用') + '</span>'
+        : '<span class="gm-badge gm-badge-ok">可用</span>';
       return '<tr>' +
         '<td><code>' + escapeHtml(share.share_id) + '</code></td>' +
         '<td><code>' + escapeHtml(share.path) + '</code></td>' +
+        '<td>' + state + '</td>' +
         '<td>读 ' + escapeHtml(acl.read) + ' / 写 ' + escapeHtml(acl.write) +
         ' / 删 ' + escapeHtml(acl.delete) + '</td>' +
         '<td>' + escapeHtml(limit) + '</td>' +
-        '<td><button type="button" class="gm-btn gm-btn-ghost" data-remove="' +
+        '<td><button type="button" class="btn btn-sm gm-btn-danger" data-remove="' +
         escapeHtml(share.share_id) + '">移除</button></td>' +
         '</tr>';
     }).join('');
     body.innerHTML = '<table class="gm-table"><thead><tr><th>标识</th><th>本机目录</th>' +
-      '<th>ACL</th><th>容量上限</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>';
+      '<th>状态</th><th>ACL</th><th>容量上限</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>';
 
     Array.prototype.forEach.call(body.querySelectorAll('[data-remove]'), function (node) {
       node.addEventListener('click', function () {
         var shareId = node.getAttribute('data-remove');
-        if (!window.confirm('移除共享项「' + shareId + '」？只会取消共享，不会删除目录里的文件。')) { return; }
-        call('remove_share', { share_id: shareId }).then(afterAction('已移除 ' + shareId)).catch(showError);
+        // 用壳的 confirmDialog（base.js）。原生 window.confirm 在内嵌 WebView 里
+        // 可能被宿主禁用，点了毫无反馈 —— 本插件就踩过这个坑（见 app.js 里"创建团体"
+        // 的注释）。脱离壳打开时回退到原生 confirm。
+        if (typeof window.confirmDialog !== 'function') {
+          if (window.confirm('移除共享项「' + shareId + '」？只会取消共享，不会删除目录里的文件。')) {
+            call('remove_share', { share_id: shareId }).then(afterAction('已移除 ' + shareId)).catch(showError);
+          }
+          return;
+        }
+        window.confirmDialog('移除共享项「' + shareId + '」？只会取消共享，不会删除目录里的文件。',
+          { danger: true, okText: '移除' }).then(function (ok) {
+          if (!ok) { return; }
+          call('remove_share', { share_id: shareId }).then(afterAction('已移除 ' + shareId)).catch(showError);
+        });
       });
     });
   }
@@ -272,6 +292,10 @@
     return call('get_status').then(function (status) {
       state.status = status;
       render();
+      // 设备列表是独立的一次后端往返（要连对端），不阻塞首屏渲染
+      if (window.GroupMeshRemote && typeof window.GroupMeshRemote.refreshPeers === 'function') {
+        window.GroupMeshRemote.refreshPeers();
+      }
       return status;
     }).catch(function (err) {
       showError(err);
@@ -378,6 +402,18 @@
 
   function init() {
     bind();
+    // 远端分片（js/remote.js）：把本文件的能力注入进去，它自己不碰后端与提示。
+    // 注入而非全局互引：装载期两者都不触碰 DOM（资源契约要求），运行时也只依赖
+    // 这几个回调，因此分片可以独立测试。
+    if (window.GroupMeshRemote && typeof window.GroupMeshRemote.init === 'function') {
+      window.GroupMeshRemote.init({
+        call: call,
+        toast: toast,
+        escapeHtml: escapeHtml,
+        openModal: openModal,
+        closeModal: closeModal
+      });
+    }
     refresh();
   }
 

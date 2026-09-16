@@ -41,7 +41,17 @@ try:  # 作为包运行：python -m shell.groupmesh.cli（推荐）
     from . import crypto_prims as cp
     from .identity import Identity
     from .records import RecordError, pretty
-    from .registry import Registry, local_addresses, new_registration
+    from .registry import (
+        Registry,
+        local_addresses,
+        new_registration,
+    )
+    from .registry import (
+        load_registry as _kernel_load_registry,
+    )
+    from .registry import (
+        save_registry as _kernel_save_registry,
+    )
     from .roster import Roster, RosterEntry, founding_roster, next_roster, staleness_report
     from .shares import Acl, new_share
     from .transport import RemoteError, TransportError
@@ -54,7 +64,17 @@ except ImportError:  # pragma: no cover - 直接执行脚本文件时回落到�
     from groupmesh import crypto_prims as cp
     from groupmesh.identity import Identity
     from groupmesh.records import RecordError, pretty
-    from groupmesh.registry import Registry, local_addresses, new_registration
+    from groupmesh.registry import (
+        Registry,
+        local_addresses,
+        new_registration,
+    )
+    from groupmesh.registry import (
+        load_registry as _kernel_load_registry,
+    )
+    from groupmesh.registry import (
+        save_registry as _kernel_save_registry,
+    )
     from groupmesh.roster import Roster, RosterEntry, founding_roster, next_roster, staleness_report
     from groupmesh.shares import Acl, new_share
     from groupmesh.transport import RemoteError, TransportError
@@ -120,16 +140,16 @@ def save_shares(root: Path, shares: Dict[str, Any]) -> None:
 
 
 def load_registry(root: Path) -> Registry:
-    path = Path(root) / REGISTRY_FILE
-    if not path.exists():
-        return Registry()
-    return Registry.from_snapshot_dicts(json.loads(path.read_text(encoding='utf-8')).get('records'))
+    """转发到内核实现（`shell/groupmesh/registry.py`）。
+
+    实现下沉的原因：插件层也要读写注册表，两份实现会在校验与原子性上漂移。
+    """
+    return _kernel_load_registry(root)
 
 
 def save_registry(root: Path, registry: Registry) -> None:
-    path = Path(root) / REGISTRY_FILE
-    payload = {'records': registry.snapshot_dicts()}
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    """转发到内核实现（写出时用临时文件 + os.replace，防半截 JSON）。"""
+    _kernel_save_registry(root, registry)
 
 
 def require_identity(args: argparse.Namespace) -> Identity:

@@ -1,54 +1,78 @@
 /* group-mesh 插件前端样式。
-   只依赖壳注入的 CSS 变量（主题色/背景），不写死颜色，以便跟随壳的主题切换。 */
+   只依赖壳注入的 CSS token（variables.css）与通用类（base.css / effects.css），
+   不写死颜色，以便跟随壳的主题与自定义外观。
 
-.gm-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border-color, #e5e7eb);
+   历史坑（见 docs/group-mesh-implementation-path.md §5.7）：本文件曾经用
+   `.gm-modal { display: flex }` 自绘弹窗，结果作者样式盖掉了浏览器给 `[hidden]`
+   的 `display:none`（同优先级下作者样式胜出），三个弹窗在打开页面时同时铺满整屏。
+   现在弹窗一律用壳的 `.modal` + `.modal.active`，默认态没有任何 display 声明，
+   不再依赖与 UA 样式抢优先级。 */
+
+/* 高度链：iframe 内 html/body/#app 都要有高度，.view-content 的
+   overflow-y: auto 才会生效（base.css 给 body 设了 overflow: hidden）。 */
+html,
+body {
+  height: 100%;
+  margin: 0;
 }
 
-.gm-title {
+#app {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+/* ===== 工具栏 ===== */
+
+.gm-toolbar {
   gap: 12px;
 }
 
-.gm-icon {
-  font-size: 28px;
+.gm-heading {
+  gap: 10px;
+  min-width: 0;
 }
 
-.gm-title h1 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
+.gm-icon {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.gm-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
 }
 
 .gm-sub {
-  margin: 2px 0 0;
-  font-size: 12px;
-  opacity: 0.65;
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.gm-header-actions {
-  display: flex;
-  gap: 8px;
+/* ===== 内容区 ===== */
+
+.gm-content {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .gm-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 16px;
-  padding: 20px;
 }
 
 .gm-card {
-  border: 1px solid var(--border-color, #e5e7eb);
-  border-radius: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg, 10px);
   padding: 16px;
-  background: var(--card-background, transparent);
+  background: var(--bg-surface);
+  min-width: 0;
 }
 
 .gm-card-wide {
@@ -59,12 +83,13 @@
   margin: 0 0 12px;
   font-size: 14px;
   font-weight: 600;
-  opacity: 0.9;
+  color: var(--text-primary);
 }
 
 .gm-body {
   font-size: 13px;
   line-height: 1.7;
+  color: var(--text-primary);
 }
 
 .gm-kv {
@@ -74,7 +99,7 @@
 }
 
 .gm-kv dt {
-  opacity: 0.6;
+  color: var(--text-secondary);
 }
 
 .gm-kv dd {
@@ -91,31 +116,6 @@
   margin-top: 14px;
 }
 
-.gm-btn {
-  padding: 7px 14px;
-  border-radius: 7px;
-  border: 1px solid var(--accent-color, #3b82f6);
-  background: var(--accent-color, #3b82f6);
-  color: #fff;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.gm-btn:hover {
-  filter: brightness(1.08);
-}
-
-.gm-btn-ghost {
-  background: transparent;
-  color: inherit;
-  border-color: var(--border-color, #d1d5db);
-}
-
-.gm-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 .gm-form {
   display: flex;
   flex-wrap: wrap;
@@ -123,15 +123,30 @@
   margin-top: 14px;
 }
 
+/* 表单控件：壳没有为 input/select/textarea 提供通用类（.search-input 只适合搜索框），
+   因此这里按 token 自绘，视觉与 .btn 对齐。 */
 .gm-form input,
 .gm-form select,
-.gm-modal input {
-  padding: 7px 10px;
-  border-radius: 7px;
-  border: 1px solid var(--border-color, #d1d5db);
-  background: var(--input-background, transparent);
-  color: inherit;
+.modal-body input,
+.modal-body textarea {
+  padding: 6px 10px;
+  border-radius: var(--radius-sm, 4px);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
   font-size: 13px;
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.gm-form input:focus,
+.gm-form select:focus,
+.modal-body input:focus,
+.modal-body textarea:focus {
+  border-color: var(--accent);
+}
+
+.gm-form input {
   min-width: 160px;
 }
 
@@ -139,11 +154,26 @@
   max-width: 220px;
 }
 
+.modal-body input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 8px;
+}
+
+.modal-body textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  resize: vertical;
+}
+
 .gm-list {
   margin: 0;
   padding-left: 18px;
   font-size: 13px;
   line-height: 1.8;
+  color: var(--text-secondary);
 }
 
 .gm-table {
@@ -156,7 +186,12 @@
 .gm-table td {
   text-align: left;
   padding: 6px 8px;
-  border-bottom: 1px solid var(--border-color, #eee);
+  border-bottom: 1px solid var(--border);
+}
+
+.gm-table th {
+  font-weight: 600;
+  color: var(--text-secondary);
 }
 
 .gm-table code {
@@ -170,114 +205,202 @@
   border-radius: 999px;
   font-size: 11px;
   border: 1px solid currentColor;
-  opacity: 0.85;
+  opacity: 0.9;
 }
 
+/* 角色与状态色：functional color 用固定色（壳的 token 里没有角色色），
+   但每一档都走同一组语义，深浅主题下都可读。 */
 .gm-badge-owner { color: #f59e0b; }
 .gm-badge-admin { color: #8b5cf6; }
-.gm-badge-member { color: #10b981; }
-.gm-badge-warn { color: #ef4444; }
+.gm-badge-member { color: var(--success, #28a745); }
+.gm-badge-warn { color: var(--danger, #dc3545); }
+.gm-badge-ok { color: var(--success, #28a745); }
 
 .gm-banner {
-  margin: 16px 20px 0;
+  margin: 12px 16px 0;
   padding: 12px 16px;
-  border-radius: 9px;
+  border-radius: var(--radius, 6px);
   font-size: 13px;
+  flex-shrink: 0;
+}
+
+/* 表格行内的"移除"：用 .btn 的形态 + 危险色描边。壳的 .btn-danger 是实心红底，
+   放在密集表格里过重，而 .btn 本身没有"仅危险色"这一档。 */
+.gm-btn-danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.gm-btn-danger:hover {
+  background: var(--danger-soft);
 }
 
 .gm-banner-error {
-  border: 1px solid #ef4444;
-  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid var(--danger);
+  background: var(--danger-soft);
+  color: var(--text-primary);
 }
 
 .gm-banner pre {
   margin: 8px 0 0;
   padding: 8px 10px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.06);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--bg-hover);
   font-size: 12px;
   overflow-x: auto;
 }
 
 .gm-hint {
   font-size: 12px;
-  opacity: 0.7;
+  color: var(--text-secondary);
   margin: 6px 0 10px;
+  line-height: 1.6;
 }
 
 .gm-empty {
-  opacity: 0.6;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
-/* 弹窗默认关闭，靠 `data-open="true"` 打开。
-   为什么不用 `hidden` 属性：浏览器给 `[hidden]` 的 `display: none` 来自
-   **UA 样式表**，而 `.gm-modal` 的 `display: flex` 是作者样式 —— 同优先级下
-   作者样式胜出，于是"加了 hidden"的弹窗照样显示。实测后果：三个弹窗在打开
-   插件时**同时**铺满整屏，DOM 里写在最后的"添加成员"盖在最上层，用户只能看到
-   一个添加成员的对话框，连"创建身份"都被挡住。
-   改用属性选择器（`.gm-modal[data-open="true"]`）后，默认态是**没有规则命中**，
-   不依赖与 UA 样式的优先级博弈，也不依赖 <script> 的加载位置。 */
-.gm-modal {
-  display: none;
+/* ===== 远端共享页（网络邻居：设备 -> 共享项 -> 目录） ===== */
+
+.gm-remote-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
 }
 
-.gm-modal[data-open="true"] {
-  position: fixed;
-  inset: 0;
+.gm-remote {
+  display: flex;
+  gap: 14px;
+  align-items: stretch;
+  min-height: 260px;
+}
+
+.gm-remote-peers {
+  flex: 0 0 260px;
+  border-right: 1px solid var(--border);
+  padding-right: 12px;
+  overflow-y: auto;
+  max-height: 60vh;
+}
+
+.gm-remote-files {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+  max-height: 60vh;
+}
+
+.gm-remote-head {
   display: flex;
   align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.45);
-  z-index: 50;
-}
-
-.gm-modal-inner {
-  width: min(560px, 92vw);
-  padding: 20px;
-  border-radius: 12px;
-  background: var(--background-color, #fff);
-  color: var(--text-color, #111);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
-}
-
-.gm-modal-inner h3 {
-  margin: 0 0 8px;
-  font-size: 15px;
-}
-
-.gm-modal textarea {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 10px;
-  border-radius: 8px;
-  border: 1px solid var(--border-color, #d1d5db);
-  background: var(--input-background, transparent);
-  color: inherit;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  resize: vertical;
-}
-
-.gm-modal input {
-  width: 100%;
-  box-sizing: border-box;
+  justify-content: space-between;
+  gap: 8px;
   margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
 }
 
+.gm-remote-peer {
+  margin-bottom: 10px;
+}
+
+.gm-remote-peer-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 4px;
+}
+
+.gm-remote-peer-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.gm-remote-peer-ep {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gm-remote-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  margin-bottom: 3px;
+  border: none;
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.gm-remote-item:hover {
+  background: var(--bg-hover);
+}
+
+.gm-remote-item-active {
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+
+.gm-remote-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 2px 10px 6px;
+  line-height: 1.5;
+}
+
+.gm-remote-crumb {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gm-remote-progress {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius, 6px);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-primary);
+}
+
+.gm-remote-progress-error {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* ===== 兜底提示 =====
+   壳提供 window.Toast（base.js）时用壳的；脱离壳直接打开本页时回退到这个自绘提示。 */
 .gm-toast {
   position: fixed;
   right: 20px;
   bottom: 20px;
   padding: 10px 16px;
-  border-radius: 8px;
+  border-radius: var(--radius, 6px);
   font-size: 13px;
-  background: rgba(17, 24, 39, 0.92);
-  color: #fff;
-  z-index: 60;
+  background: var(--text-primary);
+  color: var(--bg-surface);
+  z-index: 3000;
   max-width: 420px;
 }
 
 .gm-toast-error {
-  background: rgba(185, 28, 28, 0.95);
+  background: var(--danger);
+  color: var(--text-on-accent);
 }
