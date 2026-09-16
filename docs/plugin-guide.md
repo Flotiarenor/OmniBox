@@ -913,8 +913,34 @@ def browse_dir(self, path: str = ''):
 - 需要自己控制布局时才直接用 `window.FolderPicker.createList({paths, placeholder, emptyText, labels, onBeforeOpen})`，
   返回 `{element, getPaths, setPaths, addPath, render}`；
 - 需要单独弹一次目录选择器用 `await window.FolderPicker.openDirBrowser(startPath)`（取消返回 `null`）。
-- 两个文件都由 `file_server` 的插件页注入模板（`SCRIPT_TPL`）带进每个插件 iframe，
-  插件自己的 HTML 不用声明 `<script>` / `<link>`。
+- 两个文件都由 `file_server` 的插件页注入模板（`_PLUGIN_BOOTSTRAP_SCRIPT`）带进插件的
+  **每个 HTML 页面**（不只是 `index.html`：插件可以有子页面），插件自己的 HTML
+  不用声明 `<script>` / `<link>`。
+
+#### 7.2.1 「网络位置」：把远端共享项变成一个本地目录（供方契约）
+
+目录列表里的「🌐 网络位置」按钮按 **placement = `network-location`** 发现提供方，因此
+**壳不认识任何具体插件、提供方与宿主互不声明依赖**（没有 `dependencies`）：
+
+| 环节 | 约定 |
+| --- | --- |
+| 提供方声明 | `get_extensions()` 返回 `{'placement': 'network-location', 'label', 'icon', 'embedUrl'}`；**不写 `host`**（组件出现在任意插件的设置里，提供方应对所有宿主可用） |
+| 宿主发现 | `system_get_plugin_extensions(null, 'network-location')`；无提供方时按钮提示"需要安装提供该能力的插件" |
+| 提供方界面 | 组件把 `embedUrl` 嵌进弹窗 iframe；子页面同样被注入 BootStrap（`Bridge` / `Utils` / `Toast` / `FolderPicker`） |
+| 回填 | 提供方向父窗口 `postMessage({type:'omnibox:network-location', action:'picked', path, label})`；组件**校验 `event.source` 必须是它嵌的那个 iframe**（否则任何同源页面都能往用户的文件夹列表里塞路径），并校验 `path` 非空。取消用 `action:'cancelled'` |
+| 产物 | 回填的 `path` 必须是**本地绝对目录**：所有消费方的后端只认本地路径，`getPaths()` 语义因此完全不变 |
+
+两条实现约束（踩过才知道）：
+
+1. **提供方只负责"把远端内容取到那里"**，不写宿主的设置 —— 它把目录回填给组件，
+   由宿主插件自己的保存流程写进 `root_dir` / `extra_roots`。于是提供方不需要知道
+   宿主是谁，也不需要跨插件后端调用。
+2. **取回必须是"完整取回"而不是占位**。镜像目标是普通本地目录，消费方按本地文件工作、
+   **没有** `ensure_file` 钩子可依赖：留 0 字节占位就是宽高 0×0 与整片 404 缩略图
+   （见 `plugins/group-mesh` 的 `mirror_share` 与 `.dsh/group-mesh-materialize.md` §2.2）。
+
+参考实现：`plugins/group-mesh`（`get_extensions()` + `frontend/network-location.html` +
+后端 `mirror_share`）。
 
 ### 7.3 插件如何生成缩略图
 

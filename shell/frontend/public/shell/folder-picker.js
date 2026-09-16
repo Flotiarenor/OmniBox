@@ -112,6 +112,115 @@ window.FolderPicker = (function () {
     });
   }
 
+  // ===== 网络位置（把远端共享项取到本地一个目录，再加进列表） =====
+  //
+  // 「网络位置」**不是一种新类型的路径**：本组件与所有消费方（后端都是 `os.path`
+  // 那一套）只认本地绝对路径，所以"添加网络位置"的产物仍然是一个本地目录 ——
+  // 由**提供方插件**负责把远端内容取到那里，再把该目录回填进来。这样：
+  //   - 消费方一行不用改（`getPaths()` 的语义没变）；
+  //   - 壳不需要知道任何具体插件名（下面用扩展声明发现提供方）；
+  //   - 插件之间不需要声明依赖。
+  //
+  // 提供方的声明方式（与 image-cleaner 注册侧栏入口同一套宿主/扩展机制）：
+  //   get_extensions() -> {'placement': 'network-location', 'label': …, 'embedUrl': …}
+  // **刻意不写 `host`**：本组件出现在任意插件的设置里，提供方应当对所有宿主可用。
+  const NETWORK_MESSAGE_TYPE = 'omnibox:network-location';
+
+  /** 发现"网络位置"提供方：声明了该 placement 且有 embedUrl 的插件扩展。 */
+  async function loadNetworkProviders() {
+    try {
+      const list = await Bridge.callSystem('system_get_plugin_extensions', null, 'network-location');
+      return (Array.isArray(list) ? list : []).filter(
+        (ext) => ext && typeof ext.embedUrl === 'string' && ext.embedUrl);
+    } catch (e) {
+      // 宿主接口不可用（桩环境、老壳）时按"没有提供方"处理，不把设置页弄崩
+      return [];
+    }
+  }
+
+  /**
+   * 提供方 → 宿主 的回填协议：只接受**来自那个 iframe**、形状正确的消息。
+   *
+   * 校验来源是必须的：任何同源页面都能 `postMessage` 到本窗口，不校验就等于让
+   * 任意页面往用户的文件夹列表里塞路径。形状不对一律返回 null（静默忽略）。
+   */
+  function readProviderMessage(event, sourceWindow) {
+    if (!event || !sourceWindow || event.source !== sourceWindow) return null;
+    const data = event.data;
+    if (!data || data.type !== NETWORK_MESSAGE_TYPE) return null;
+    if (data.action === 'cancelled') return { action: 'cancelled' };
+    if (data.action !== 'picked') return null;
+    const path = normalize(data.path);
+    if (!path) return null;
+    return { action: 'picked', path, label: typeof data.label === 'string' ? data.label : '' };
+  }
+
+  /** 提供方选择菜单（只有一个提供方时不会走到这里）。 */
+  function openProviderMenu(providers) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal active';
+      overlay.innerHTML = `
+        <div class="modal-box obx-anim-scale" style="width:420px;">
+          <h3>选择网络位置来源</h3>
+          <div class="iv-dirbrowser">
+            <div class="iv-dirbrowser-list" data-act="list">
+              ${providers.map((ext, index) => `
+                <div class="iv-dirbrowser-item" data-index="${index}">
+                  <span>${Utils.escapeHtml(ext.icon || '🌐')}</span>
+                  <span>${Utils.escapeHtml(ext.label || ext.plugin || '网络位置')}</span>
+                </div>`).join('')}
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn" data-act="cancel">取消</button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      function finish(result) {
+        overlay.remove();
+        resolve(result || null);
+      }
+      overlay.querySelectorAll('[data-index]').forEach((item) => {
+        item.addEventListener('click', () => finish(providers[Number(item.dataset.index)]));
+      });
+      overlay.querySelector('[data-act="cancel"]').addEventListener('click', () => finish(null));
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(null); });
+    });
+  }
+
+  /** 打开提供方页面，等它回填一个本地目录（取消 / 关窗返回 null）。 */
+  function openNetworkPicker(provider) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal active';
+      overlay.innerHTML = `
+        <div class="modal-box obx-anim-scale" style="width:640px;">
+          <h3>${Utils.escapeHtml(provider.label || '网络位置')}</h3>
+          <iframe class="iv-network-frame" src="${Utils.escapeHtml(provider.embedUrl)}"
+                  title="${Utils.escapeHtml(provider.label || '网络位置')}"></iframe>
+          <div class="modal-footer">
+            <button class="btn" data-act="cancel">取消</button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      const frame = overlay.querySelector('iframe');
+      const source = frame ? frame.contentWindow : null;
+      function finish(result) {
+        window.removeEventListener('message', onMessage);
+        overlay.remove();
+        resolve(result || null);
+      }
+      function onMessage(event) {
+        const picked = readProviderMessage(event, source);
+        if (picked) finish(picked);
+      }
+      window.addEventListener('message', onMessage);
+      overlay.querySelector('[data-act="cancel"]').addEventListener('click', () => finish(null));
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(null); });
+    });
+  }
+
   /**
    * 目录列表控件（多位置文件夹）。
    *
@@ -134,12 +243,17 @@ window.FolderPicker = (function () {
     addRow.innerHTML = `
       <input type="text" class="search-input" placeholder="${Utils.escapeHtml(options.placeholder || '输入目录绝对路径')}">
       <button class="btn btn-sm" data-act="browse">浏览…</button>
-      <button class="btn btn-sm" data-act="add">添加</button>`;
+      <button class="btn btn-sm" data-act="add">添加</button>
+      <button class="btn btn-sm" data-act="network" title="从其它设备取一个共享项到本地目录">🌐 网络位置</button>`;
     root.append(listBox, addRow);
 
     const input = addRow.querySelector('input');
     const browseBtn = addRow.querySelector('[data-act="browse"]');
     const addBtn = addRow.querySelector('[data-act="add"]');
+    const networkBtn = addRow.querySelector('[data-act="network"]');
+    // 通过网络位置加进来的目录 → 一行说明（"团体组网 · 设备A/相册"）。
+    // 与 `options.labels` 分开存：后者是宿主自己算的（如「只含图片」），两者都要显示。
+    const networkLabels = new Map();
 
     function render() {
       // 「主要」是**位置**属性而不是每行自带的标记：第一行就是主目录，
@@ -148,11 +262,13 @@ window.FolderPicker = (function () {
       const rows = paths.map((path, index) => {
         const isPrimary = index === 0;
         const extra = options.labels ? options.labels(path) : '';
+        const network = networkLabels.get(normalize(path)) || '';
+        const note = [network, extra].filter(Boolean).join(' · ');
         return `
         <div class="iv-root-row${isPrimary ? ' is-primary' : ''}">
             <span class="iv-root-tag${isPrimary ? '' : ' iv-root-tag-extra'}">${isPrimary ? '主要' : '额外'}</span>
             <span class="iv-root-path" title="${Utils.escapeHtml(path)}">${Utils.escapeHtml(path)}</span>
-            ${extra ? `<span class="iv-root-note">${Utils.escapeHtml(extra)}</span>` : ''}
+            ${note ? `<span class="iv-root-note">${Utils.escapeHtml(note)}</span>` : ''}
             <button class="iv-root-remove" data-index="${index}" title="移除">✕</button>
         </div>`;
       }).join('');
@@ -192,6 +308,22 @@ window.FolderPicker = (function () {
       const picked = await openDirBrowser(input.value.trim());
       if (picked) addPath(picked);
     });
+    networkBtn.addEventListener('click', async () => {
+      if (options.onBeforeOpen) options.onBeforeOpen();
+      const providers = await loadNetworkProviders();
+      if (!providers.length) {
+        Toast.warning('没有可用的网络位置来源：需要安装提供该能力的插件（如「团体组网」）');
+        return;
+      }
+      const provider = providers.length === 1 ? providers[0] : await openProviderMenu(providers);
+      if (!provider) return;
+      const picked = await openNetworkPicker(provider);
+      if (!picked || picked.action !== 'picked') return;
+      if (addPath(picked.path) && picked.label) {
+        networkLabels.set(normalize(picked.path), picked.label);
+        render();
+      }
+    });
 
     render();
 
@@ -209,5 +341,14 @@ window.FolderPicker = (function () {
     };
   }
 
-  return { DRIVES_SENTINEL, KIND_LABELS, normalize, openDirBrowser, createList };
+  return {
+    DRIVES_SENTINEL,
+    KIND_LABELS,
+    NETWORK_MESSAGE_TYPE,
+    normalize,
+    openDirBrowser,
+    createList,
+    loadNetworkProviders,
+    readProviderMessage,
+  };
 })();

@@ -24,9 +24,15 @@ const BASE = join(SHELL_PUBLIC, 'base.js');
 const PAYLOAD = '\'"><img src=x onerror=alert(1)>&';
 
 let passed = 0;
-const check = (name, fn) => {
+// 用例可以是 async 的：`check` 会 await 它。
+//
+// 这里必须往后兼容地 await，而不是"异步用例自己 catch"：`vm` 沙箱里造出来的对象
+// 与宿主的 `Object.prototype` **不是同一个 realm**，`assert/strict` 的 deepEqual
+// 会因此判不相等（实测踩到）。所以下面跨 realm 的返回值一律**逐字段**断言；
+// 而没被 await 的异步断言会变成 unhandled rejection 把整个脚本带崩。
+const check = async (name, fn) => {
     try {
-        fn();
+        await fn();
         passed += 1;
         console.log(`  PASS  ${name}`);
     } catch (err) {
@@ -95,6 +101,9 @@ function makeSandbox() {
         },
         Bridge: { callSystem: async () => ({ path: '', parent: null, entries: [] }) },
         Toast: { warning() { }, info() { }, error() { }, success() { } },
+        // 组件会给 window 挂 message 监听（网络位置回填），沙箱必须能记录/移除
+        addEventListener() { },
+        removeEventListener() { },
     };
     sandbox.window = sandbox;
     sandbox.globalThis = sandbox;
@@ -111,7 +120,7 @@ const FolderPicker = sandbox.window.FolderPicker;
 
 console.log('[shell] 共享目录组件');
 
-check('组件挂在 window.FolderPicker 上并导出约定成员', () => {
+await check('组件挂在 window.FolderPicker 上并导出约定成员', () => {
     assert.ok(FolderPicker, 'window.FolderPicker 不存在');
     for (const name of ['DRIVES_SENTINEL', 'KIND_LABELS', 'normalize', 'openDirBrowser', 'createList']) {
         assert.ok(name in FolderPicker, `缺少导出 ${name}`);
@@ -119,13 +128,13 @@ check('组件挂在 window.FolderPicker 上并导出约定成员', () => {
     assert.equal(typeof FolderPicker.createList, 'function');
 });
 
-check('normalize 去掉首尾空白与末尾分隔符', () => {
+await check('normalize 去掉首尾空白与末尾分隔符', () => {
     assert.equal(FolderPicker.normalize('  D:\\图库\\  '), 'D:\\图库');
     assert.equal(FolderPicker.normalize('/home/me/pics///'), '/home/me/pics');
     assert.equal(FolderPicker.normalize(null), '');
 });
 
-check('渲染目录名/路径/占位符时转义载荷（文本与属性都不逃逸）', () => {
+await check('渲染目录名/路径/占位符时转义载荷（文本与属性都不逃逸）', () => {
     const list = FolderPicker.createList({
         paths: [],
         placeholder: PAYLOAD,
@@ -153,7 +162,7 @@ check('渲染目录名/路径/占位符时转义载荷（文本与属性都不�
     assert.ok(addRow.innerHTML.includes('&lt;img'), '占位符应产出实体化后的载荷');
 });
 
-check('addPath 去重并拒绝空值', () => {
+await check('addPath 去重并拒绝空值', () => {
     const list = FolderPicker.createList({ paths: [] });
     assert.equal(list.addPath('   '), false, '空路径应被拒绝');
     assert.equal(list.addPath('/data/a/'), true);
@@ -161,13 +170,77 @@ check('addPath 去重并拒绝空值', () => {
     assert.deepEqual(list.getPaths(), ['/data/a']);
 });
 
-check('setPaths 覆盖式替换并重新渲染', () => {
+await check('setPaths 覆盖式替换并重新渲染', () => {
     const list = FolderPicker.createList({ paths: ['/old'] });
     list.setPaths(['/a', '/b']);
     assert.deepEqual(list.getPaths(), ['/a', '/b']);
     const listBox = list.element.children[0];
     assert.ok(listBox.innerHTML.includes('/a') && listBox.innerHTML.includes('/b'));
     assert.ok(!listBox.innerHTML.includes('/old'), '旧路径应被移除');
+});
+
+await check('导出含网络位置相关的成员（提供方发现 + 回填协议）', () => {
+    for (const name of ['NETWORK_MESSAGE_TYPE', 'loadNetworkProviders', 'readProviderMessage']) {
+        assert.ok(name in FolderPicker, `缺少导出 ${name}`);
+    }
+    assert.equal(FolderPicker.NETWORK_MESSAGE_TYPE, 'omnibox:network-location');
+});
+
+await check('loadNetworkProviders 只认带 embedUrl 的提供方，宿主接口不可用时返回空表', async () => {
+    const original = sandbox.Bridge.callSystem;
+    const rows = [
+        { placement: 'network-location', label: '团体组网', embedUrl: '/plugins/group-mesh/frontend/nl.html' },
+        { placement: 'network-location', label: '缺 embedUrl' },
+        null,
+    ];
+    const calls = [];
+    sandbox.Bridge.callSystem = async (...args) => { calls.push(args); return rows; };
+    const providers = await FolderPicker.loadNetworkProviders();
+    // 跨 realm 的数组不能 deepEqual：逐项断言
+    assert.equal(providers.length, 1, `应当只保留有 embedUrl 的提供方：${JSON.stringify(providers)}`);
+    assert.equal(providers[0].label, '团体组网');
+    // 必须按 placement 过滤、且 host 传 null（"任意宿主"）—— 组件出现在各插件的设置里
+    assert.deepEqual(calls, [['system_get_plugin_extensions', null, 'network-location']]);
+
+    sandbox.Bridge.callSystem = async () => { throw new Error('宿主接口不可用'); };
+    const failed = await FolderPicker.loadNetworkProviders();
+    assert.equal(failed.length, 0, '接口异常时应当返回空表而不是抛出');
+    sandbox.Bridge.callSystem = original;
+});
+
+await check('回填协议校验来源与形状（防任意同源页面往列表里塞路径）', () => {
+    const TYPE = FolderPicker.NETWORK_MESSAGE_TYPE;
+    const frameWindow = { name: 'provider-frame' };
+    const other = { name: 'evil' };
+    const good = (data, source) => FolderPicker.readProviderMessage({ data, source }, frameWindow);
+
+    const picked = good({ type: TYPE, action: 'picked', path: '  D:\\镜像\\设备A\\  ' }, frameWindow);
+    assert.equal(picked.action, 'picked');
+    assert.equal(picked.path, 'D:\\镜像\\设备A', '首尾空白与末尾分隔符应当被规范化');
+    assert.equal(picked.label, '', '没给 label 时应当是空串而不是 undefined');
+
+    const labelled = good({ type: TYPE, action: 'picked', path: '/mnt/a', label: '团体组网 · 设备A' }, frameWindow);
+    assert.equal(labelled.label, '团体组网 · 设备A');
+    assert.equal(good({ type: TYPE, action: 'cancelled' }, frameWindow).action, 'cancelled');
+
+    assert.equal(good({ type: TYPE, action: 'picked', path: '/mnt/a' }, other), null,
+        '来自别的窗口的消息必须忽略');
+    assert.equal(good({ type: 'other:event', action: 'picked', path: '/mnt/a' }, frameWindow), null,
+        '别的消息类型必须忽略');
+    assert.equal(good({ type: TYPE, action: 'picked', path: '   ' }, frameWindow), null,
+        '空路径必须忽略');
+    assert.equal(good({ type: TYPE, action: '删除所有目录' }, frameWindow), null,
+        '未知 action 必须忽略');
+    assert.equal(FolderPicker.readProviderMessage({ data: { type: TYPE, action: 'picked', path: '/a' } }, null),
+        null, '拿不到来源窗口时一律拒绝');
+});
+
+await check('添加行含「网络位置」入口，且不改变原有三件套', () => {
+    const list = FolderPicker.createList({ paths: [] });
+    const addRow = list.element.children[1];
+    assert.ok(addRow.innerHTML.includes('data-act="network"'), '缺少网络位置按钮');
+    assert.ok(addRow.innerHTML.includes('data-act="browse"'), '浏览按钮不应消失');
+    assert.ok(addRow.innerHTML.includes('data-act="add"'), '添加按钮不应消失');
 });
 
 console.log(`\nshell_folder_picker: ${passed} 项检查${process.exitCode ? '（有失败）' : '全部通过'}`);
