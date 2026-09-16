@@ -357,11 +357,21 @@ def serve(host: str, port: int, identity: Identity, roster: Optional[Roster],
                 registry=registry, roster_loader=roster_loader)
     family = socket.AF_INET6 if ':' in host else socket.AF_INET
     listener = socket.socket(family, socket.SOCK_STREAM)
-    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    if family == socket.AF_INET6:
-        listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
-    listener.bind((host, port))
-    listener.listen(16)
+    try:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if family == socket.AF_INET6:
+            listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        # bind/listen 必须在 try 之内：**实测踩到过描述符泄漏** —— 服务重启窗口期
+        # 旧进程还占着端口时 bind 抛 EADDRINUSE，而这个 socket 建在 try 之外，
+        # 于是它既没被 close() 也没人再引用，却仍以 LISTEN 状态占着端口（`ss` 显示
+        # 该 socket 归 omnibox-web.service 的 cgroup，但当前进程里已经找不到它）。
+        # 后果是端口**永远显示被占用**：之后每次重试都 EADDRINUSE，节点再也起不来，
+        # 只能靠重启整个服务释放。
+        listener.bind((host, port))
+        listener.listen(16)
+    except BaseException:
+        listener.close()
+        raise
     if ready is not None:
         ready(listener)
     try:

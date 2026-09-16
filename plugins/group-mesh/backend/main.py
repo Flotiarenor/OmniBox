@@ -1582,9 +1582,7 @@ class GroupMeshPlugin(PluginBase):
                 serve(bind, port, identity, roster, shares=shares, registry=registry,
                       roster_loader=self._load_roster, ready=on_ready)
             except OSError as e:
-                self._last_error = (f'无法监听 {bind}:{port} —— {e}。'
-                                    'Windows 上入站连接默认被防火墙拦截，'
-                                    '需要为监听端口添加一次允许规则（需管理员权限）。')
+                self._last_error = self._listen_error(bind, port, e)
                 log.warning(f'[group-mesh] {self._last_error}')
             except Exception as e:
                 self._last_error = f'节点异常退出: {type(e).__name__}: {e}'
@@ -1733,6 +1731,51 @@ class GroupMeshPlugin(PluginBase):
             self._auto_start_retry_at = time.time() + AUTO_START_RETRY_SECONDS
             log.warning(f'[group-mesh] 自动启动节点失败（{AUTO_START_RETRY_SECONDS}s 后重试）：'
                         f'{self._auto_start_error}')
+
+    @staticmethod
+    def _listen_error(bind: str, port: int, error: OSError) -> str:
+        """把绑定失败翻译成"下一步该做什么"，并按平台给不同的排查方向。
+
+        原先无论什么平台都提示"Windows 上入站连接默认被防火墙拦截" —— 在 Linux 上
+        这条提示会把用户引到完全错误的方向（实测就发生在远端 Linux：真实原因是
+        `EADDRINUSE`，端口被占，与防火墙无关）。
+        """
+        import errno
+        import sys
+
+        head = f'无法监听 {bind}:{port} —— {error}。'
+        # 端口不可用有两种成因，提示要分开（**实测确认**）：
+        #   * 真被占用：Linux 上是 `errno.EADDRINUSE`；Windows 上 Python 把
+        #     `WSAEADDRINUSE`(10048) 映射到 `errno.EADDRINUSE`（该常量本身就是 10048）。
+        #   * Windows 上还有 `WSAEACCES`(10013)：Python 把它的 `errno` 映射成 **13
+        #     (EACCES)**、只有 `winerror` 才是 10013（实测 args=(13, …, None, 10013)）。
+        #     因此**必须同时看 winerror** —— 只查 errno 会把它误判成"权限不足、
+        #     请改用 1024 以上"（实测占用端口 4701 时走的就是这条错路）。
+        #     10013 的成因不止一种（端口被别的进程占着、或落在 Hyper-V/WinNAT 的
+        #     排除段里），所以提示同时列出两种可能，不武断。
+        codes = {getattr(error, 'errno', None), getattr(error, 'winerror', None)}
+        in_use_codes = {errno.EADDRINUSE, 10048, 10013}
+        wsa_eacces = getattr(errno, 'WSAEACCES', None)
+        if isinstance(wsa_eacces, int):
+            in_use_codes.add(wsa_eacces)
+        if codes & in_use_codes:
+            return (head + f'该端口当前不可用：可能被别的进程占着（例如上一个节点还没退出、'
+                           '同一台机器上另一个 OmniBox 实例），'
+                           '也可能落在 Windows 的保留/排除端口段里（Hyper-V / WinNAT）。'
+                           '在插件设置里把「监听端口」改成别的值通常即可；'
+                           '想确认是谁占的：'
+                           f'Linux `ss -ltnp | grep :{port}`，'
+                           f'Windows `netstat -ano | findstr :{port}`（再查排除段 '
+                           '`netsh int ipv4 show excludedportrange protocol=tcp`）。')
+        if errno.EACCES in codes:
+            return head + '权限不足：1024 以下的端口需要管理员/root 权限，请改用 1024 以上的端口。'
+        if error.errno == errno.EADDRNOTAVAIL:
+            return (head + f'本机没有 {bind} 这个地址：监听地址填的是本机不存在的网卡地址。'
+                           '把它改成 :: （同时接受 IPv6/IPv4）或本机的实际地址。')
+        if sys.platform.startswith('win'):
+            return (head + 'Windows 上入站连接默认被防火墙拦截，需要为监听端口添加一次'
+                           '允许规则（需管理员权限）。')
+        return head + '（Linux 上请检查端口占用与监听地址是否正确。）'
 
     def get_node_status(self) -> Dict[str, Any]:
         thread = self._node_thread

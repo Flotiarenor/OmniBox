@@ -42,7 +42,7 @@ from shell.groupmesh.identity import (
     parse_binding,
     remote_dh_public,
 )
-from shell.groupmesh.node import Node, PathRejected, _serve_one, resolve_in_share
+from shell.groupmesh.node import Node, PathRejected, _serve_one, resolve_in_share, serve
 from shell.groupmesh.records import RecordError
 from shell.groupmesh.registry import Registry, new_registration
 from shell.groupmesh.roster import Roster, RosterEntry, founding_roster, next_roster, staleness_report
@@ -907,6 +907,96 @@ class LocalAddressesTest(unittest.TestCase):
             first_v6 = next(i for i, a in enumerate(addresses) if ':' in a)
             first_v4 = next(i for i, a in enumerate(addresses) if ':' not in a)
             self.assertLess(first_v6, first_v4, 'IPv6 应排在前面（设计文档以 IPv6 为目标）')
+
+
+class ServeBindFailureTest(unittest.TestCase):
+    """`serve()` 在 `bind` 失败时**不得泄漏监听套接字**。
+
+    为什么这条必须有：实测踩到过一个"端口永远被占"的故障 —— 服务重启窗口期旧进程
+    还占着端口，`bind` 抛错，而 socket 建在 `try` 之外，于是它既没被 close 也没人
+    再引用，却仍以 LISTEN 状态占着端口（`ss` 显示该 socket 归 omnibox-web.service
+    的 cgroup，当前进程里已经找不到它）。之后每次重试都失败，节点再也起不来，
+    只能靠重启整个服务释放 —— 而"重试"正是自动启动在做的动作。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.identity = Identity.init(Path(self._tmp.name) / 'node', 'bind-probe', 'host')
+
+    def test_bind_failure_raises_from_a_thread_and_the_port_becomes_followup_testable(self):
+        """绑定失败必须抛出可捕获的 OSError（线程里也一样），且不得把进程搞崩。
+
+        这条只保证"错误形态正确"。真正区分"显式 close"与"靠 GC 回收"的那条断言
+        依赖 `/proc/self/fd`，只在 Linux 上跑得起来（见下一个用例）；在 Windows 上
+        "端口能否立刻重绑"受系统保留段与 TIME_WAIT 影响，**不能**拿来做判定 ——
+        我第一版就是这么写的，它在删掉修复后依然通过（假绿）。
+        """
+        blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        blocker.bind(('127.0.0.1', 0))
+        port = blocker.getsockname()[1]
+        blocker.listen(1)
+
+        errors: list = []
+        marker: list = []
+
+        def run():
+            try:
+                serve('127.0.0.1', port, self.identity, None)
+            except BaseException as exc:
+                errors.append(exc)
+            marker.append(object())                   # 复刻"线程还要继续跑一段"的形态
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        thread.join(timeout=10)
+        blocker.close()
+
+        self.assertFalse(thread.is_alive(), 'serve() 应当已因绑定失败返回')
+        self.assertEqual(len(errors), 1, f'应当抛出一次绑定错误，实际 {errors}')
+        self.assertIsInstance(errors[0], OSError)
+
+    def test_bind_failure_does_not_leave_a_listening_socket(self):
+        """绑定失败后不得留下 LISTEN 状态的套接字（fd 级判定，不依赖端口能否重绑）。"""
+
+        def open_listening() -> set:
+            found = set()
+            for entry in Path('/proc/self/fd').iterdir() if Path('/proc/self/fd').is_dir() else []:
+                try:
+                    if 'socket:' not in os.readlink(entry):
+                        continue
+                except OSError:
+                    continue
+                try:
+                    dup = socket.socket(fileno=os.dup(int(entry.name)))
+                except OSError:
+                    continue
+                try:
+                    if dup.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN):
+                        found.add(int(entry.name))
+                except OSError:
+                    pass
+                finally:
+                    dup.detach()
+            return found
+
+        if not Path('/proc/self/fd').is_dir():
+            self.skipTest('该平台没有 /proc/self/fd，无法做 fd 级判定')
+
+        blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        blocker.bind(('127.0.0.1', 0))
+        port = blocker.getsockname()[1]
+        blocker.listen(1)
+        try:
+            with self.assertRaises(OSError):
+                serve('127.0.0.1', port, self.identity, None)
+            # serve() 自己的 socket 已经随帧回收，但 blocker 仍在 LISTEN：
+            # 集合里只应有 blocker 那一个，且它必须还在（否则说明我们搞错了对象）
+            listening = open_listening()
+            self.assertEqual(len(listening), 1,
+                             f'只应剩 blocker 一个 LISTEN 套接字，实际 {len(listening)} 个')
+        finally:
+            blocker.close()
 
 
 if __name__ == '__main__':
