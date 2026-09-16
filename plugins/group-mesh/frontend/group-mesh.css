@@ -333,9 +333,9 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   padding: 6px 10px;
-  margin-bottom: 3px;
   border: none;
   border-radius: var(--radius-sm, 4px);
   background: transparent;
@@ -353,6 +353,37 @@ body {
 .gm-remote-item-active {
   background: var(--accent);
   color: var(--text-on-accent);
+}
+
+/* 一行 = 共享项按钮 + 物化状态徽章 + 缓存按钮 */
+.gm-remote-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+
+.gm-remote-badge {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  border: 1px solid var(--success, #28a745);
+  color: var(--success, #28a745);
+  white-space: nowrap;
+}
+
+.gm-remote-cache {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius, 6px);
+  border: 1px solid var(--border);
+  background: var(--bg-hover);
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 .gm-remote-note {

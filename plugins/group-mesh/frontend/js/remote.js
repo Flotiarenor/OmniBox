@@ -16,6 +16,8 @@ window.GroupMeshRemote = (function () {
     peers: [],          // list_peers 的结果
     peersLoaded: false,
     peerErrors: [],
+    cache: {},          // "设备ID/共享标识" -> remote_cache 里那一项
+    cacheBytes: 0,
     current: null,       // { device_id, name, shareId, path }
     entries: [],
     // init() 注入的依赖
@@ -64,10 +66,19 @@ window.GroupMeshRemote = (function () {
         ? shares.map(function (shareId) {
           var active = current && current.device_id === peer.device_id &&
             current.shareId === shareId;
-          return '<button type="button" class="gm-remote-item' +
-            (active ? ' gm-remote-item-active' : '') +
-            '" data-device="' + esc(peer.device_id) + '" data-share="' + esc(shareId) + '">' +
-            '<span>📁</span><span>' + esc(shareId) + '</span></button>';
+          var cached = state.cache[peer.device_id + '/' + shareId];
+          var badge = cached
+            ? '<span class="gm-remote-badge" title="' + esc(cached.root || '') + '">已物化 ' +
+              esc(String(cached.entries)) + ' 项</span>'
+            : '';
+          return '<div class="gm-remote-row' + (active ? ' gm-remote-item-active' : '') + '">' +
+            '<button type="button" class="gm-remote-item" data-device="' + esc(peer.device_id) +
+            '" data-share="' + esc(shareId) + '">' +
+            '<span>📁</span><span>' + esc(shareId) + '</span></button>' + badge +
+            '<button type="button" class="btn btn-sm" data-materialize="' + esc(shareId) +
+            '" data-device="' + esc(peer.device_id) + '" title="把目录结构缓存到本地，' +
+            '之后读文件时按需取回">缓存</button>' +
+            '</div>';
         }).join('')
         : '<div class="gm-remote-note">' +
           (peer.note ? esc(peer.note) : '对方没有你可读的共享项') + '</div>';
@@ -86,6 +97,11 @@ window.GroupMeshRemote = (function () {
     Array.prototype.forEach.call(body.querySelectorAll('.gm-remote-item'), function (node) {
       node.addEventListener('click', function () {
         listDirectory(node.getAttribute('data-device'), node.getAttribute('data-share'), '.');
+      });
+    });
+    Array.prototype.forEach.call(body.querySelectorAll('[data-materialize]'), function (node) {
+      node.addEventListener('click', function () {
+        materialize(node.getAttribute('data-device'), node.getAttribute('data-materialize'));
       });
     });
 
@@ -214,8 +230,9 @@ window.GroupMeshRemote = (function () {
       }
       state.peers = result.peers || [];
       state.peerErrors = result.errors || [];
+      return refreshCache();
+    }).then(function () {
       renderPeers();
-      // 当前选中的共享项可能已随设备消失：清掉，避免界面上停在一条无效选择上
       if (state.current && !state.peers.some(function (peer) {
         return peer.device_id === state.current.device_id &&
           (peer.shares || []).indexOf(state.current.shareId) >= 0;
@@ -225,8 +242,71 @@ window.GroupMeshRemote = (function () {
         renderPath();
         renderEntries();
       }
-      return result;
+      return state.peers;
     }).catch(showError);
+  }
+
+  function refreshCache() {
+    return state.call('remote_cache').then(function (result) {
+      if (!result || !result.success) { return result; }
+      var map = {};
+      (result.items || []).forEach(function (item) {
+        map[item.device_id + '/' + item.share_id] = item;
+      });
+      state.cache = map;
+      state.cacheBytes = result.total_bytes || 0;
+      renderCacheSummary();
+      return result;
+    }).catch(function () { /* 缓存信息是附加信息，读不到不影响主流程 */ });
+  }
+
+  function renderCacheSummary() {
+    var box = el('remote-cache');
+    if (!box) { return; }
+    var count = Object.keys(state.cache).length;
+    if (!count) {
+      box.hidden = true;
+      box.textContent = '';
+      return;
+    }
+    box.hidden = false;
+    box.innerHTML = '本地已物化 ' + esc(String(count)) + ' 个共享项，占用 ' +
+      esc(formatSize(state.cacheBytes)) +
+      ' <button type="button" id="btn-clear-cache" class="btn btn-sm">清理缓存</button>';
+    var clear = el('btn-clear-cache');
+    if (clear) {
+      clear.addEventListener('click', function () {
+        state.call('clear_remote_cache', {}).then(function (result) {
+          if (!result || !result.success) {
+            toast((result && result.error) || '清理失败', true);
+            return;
+          }
+          toast('已清理本地缓存（释放 ' + formatSize(result.freed_bytes) + '）');
+          refreshCache().then(renderPeers);
+        }).catch(showError);
+      });
+    }
+  }
+
+  function materialize(deviceId, shareId) {
+    renderProgress('正在物化 ' + shareId + ' 的目录结构…');
+    return state.call('materialize_remote', { device_id: deviceId, share_id: shareId })
+      .then(function (result) {
+        if (!result || !result.success) {
+          renderProgress((result && result.error) || '物化失败', true);
+          toast((result && result.error) || '物化失败', true);
+          return result;
+        }
+        var hint = result.truncated ? '（达到条目上限，只物化了一部分）' : '';
+        renderProgress('已物化到 ' + result.root + '：' + result.dirs + ' 个目录、' +
+          result.files + ' 个文件占位' + hint +
+          '。把它作为目录加进 image-viewer / media-player 等插件即可浏览，' +
+          '字节会在第一次读取时按需取回。');
+        toast('已物化 ' + shareId + hint);
+        return refreshCache();
+      }).then(function () {
+        renderPeers();
+      }).catch(function (err) { renderProgress('物化失败', true); showError(err); });
   }
 
   function listDirectory(deviceId, shareId, path) {

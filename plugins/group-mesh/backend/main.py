@@ -56,6 +56,14 @@ log = logging.getLogger(__name__)
 # 默认监听端口。与设计文档 §13 的默认参数一致，可被设置项覆盖。
 DEFAULT_PORT = 19443
 
+# 自动启动节点失败后的冷却秒数。取 30 秒是因为最常见的失败原因是"旧进程还占着
+# 端口"（服务重启后的窗口期），而启动流程自身还有 8 秒的 ready 等待。
+AUTO_START_RETRY_SECONDS = 30
+
+# 按需取回单个文件的默认上限（1 GiB）。浏览远端目录时不该因为点开一个目录就把
+# 磁盘写满；超过上限的文件不自动取，界面会提示。
+DEFAULT_MAX_FETCH_BYTES = 1024 * 1024 * 1024
+
 
 def _opts(value: Any) -> Dict[str, Any]:
     """把"结构化参数"归一成字典。
@@ -118,6 +126,11 @@ class GroupMeshPlugin(PluginBase):
          'default': '', 'placeholder': '默认：数据根/group-mesh/downloads',
          'help': '从团体成员那里取回的文件保存在这里。该目录经 /file 对界面可读，'
                  '但不对团体共享 —— 要共享它请单独挂一个共享项。'},
+        {'key': 'max_fetch_mb', 'label': '按需取回单文件上限（MiB）', 'type': 'number',
+         'default': 1024, 'min': 0, 'max': 102400,
+         'help': '浏览远端目录时，超过这个大小的文件不会自动取回（0 表示不限制）。'
+                 '远端目录先物化成目录结构与占位文件，字节在第一次读取时才取 —— '
+                 '这个上限用来避免"点开一个目录就把磁盘写满"。'},
     ]
 
     def __init__(self, manifest: dict, config: dict) -> None:
@@ -135,9 +148,13 @@ class GroupMeshPlugin(PluginBase):
         # 本次运行发布的注册记录序号（None = 还没发布成功）。界面据此显示
         # "本机是否已对其他设备可见" —— 发布失败时节点照常能收发，但别人发现不了。
         self._published_seq: Optional[int] = None
-        # 自动启动节点的状态：只尝试一次，失败原因留给界面显示（见 _auto_start_node）。
+        # 自动启动节点的状态：失败只进入冷却，不永久放弃（见 _auto_start_node）。
         self._auto_start_attempted = False
         self._auto_start_error: Optional[str] = None
+        self._auto_start_retry_at = 0.0
+        # 远端物化索引的进程内缓存：`is_content_placeholder()` 每个 /file 请求都要查
+        # 一次，逐次解析 JSON 太贵（见 _cached_remote_index）。
+        self._remote_index_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
         # 已建立的出站连接：(设备公钥 bytes, host, port) -> Connection。
         # 复用的理由：一次请求就是一次 Noise 握手（多个往返 + 公钥运算），
         # 逐次建连会让"浏览一个目录"变成几个握手的开销。
@@ -1186,6 +1203,328 @@ class GroupMeshPlugin(PluginBase):
         return {'success': False, 'error': last_error or '所有候选地址都连不上',
                 'device_id': device_id, 'offline': True}
 
+    # ── 远端：物化与按需取字节 ────────────────────────────────────────────
+    #
+    # 「物化」= 在本地 `.cache/remote/<设备ID>/<共享标识>/…` 造出与远端同形的目录树：
+    # 目录真的建出来、文件先放 0 字节占位，真实大小记在 <共享标识>.index.json 里；
+    # 字节在**第一次真去读这个文件**时才取回（由 `ensure_file` 钩子驱动）。
+    #
+    # 为什么必须这样分两步：消费方插件（image-viewer / media-player 等）是按
+    # "本地路径"工作的 —— 它们 `os.scandir` 建索引、按路径取字节。远端目录如果
+    # 不落地，它们连"有这个文件"都看不到；而如果订阅时就把字节全拉下来，看一个
+    # 共享相册要先下几百张图。
+
+    def _remote_index_file(self, device_id: str, share_id: str) -> Path:
+        return self.remote_cache_dir / device_id / f'{share_id}.index.json'
+
+    def _load_remote_index(self, device_id: str, share_id: str) -> Dict[str, Any]:
+        path = self._remote_index_file(device_id, share_id)
+        if not path.is_file():
+            return {'share': share_id, 'device': device_id, 'entries': {}}
+        try:
+            data = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return {'share': share_id, 'device': device_id, 'entries': {}}
+        if not isinstance(data.get('entries'), dict):
+            data['entries'] = {}
+        return data
+
+    def _cached_remote_index(self, device_id: str, share_id: str) -> Dict[str, Any]:
+        """带缓存的索引读取。
+
+        `is_content_placeholder()` 会在**每个** `/file` 请求上被调用，而索引文件
+        可能不小（几千条就是几百 KB），逐次解析会让每个文件请求都多一次磁盘 I/O +
+        JSON 解析。缓存的失效点有三处：物化（重写索引）、取字节成功、清理缓存 ——
+        所以只在这三处清空，不做 TTL。
+        """
+        key = (device_id, share_id)
+        cached = self._remote_index_cache.get(key)
+        if cached is not None:
+            return cached
+        index = self._load_remote_index(device_id, share_id)
+        self._remote_index_cache[key] = index
+        # 简单的上界，免得浏览很多共享项后缓存无限增长
+        if len(self._remote_index_cache) > 32:
+            self._remote_index_cache.pop(next(iter(self._remote_index_cache)))
+        return index
+
+    def _invalidate_remote_index(self, device_id: str = '', share_id: str = '') -> None:
+        if not device_id:
+            self._remote_index_cache.clear()
+            return
+        if not share_id:
+            for key in [k for k in self._remote_index_cache if k[0] == device_id]:
+                del self._remote_index_cache[key]
+            return
+        self._remote_index_cache.pop((device_id, share_id), None)
+
+    def _save_remote_index(self, device_id: str, share_id: str, index: Dict[str, Any]) -> None:
+        path = self._remote_index_file(device_id, share_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(index, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+    def materialize_remote(self, opts: Any = None, device_id: str = '', share_id: str = '',
+                           path: str = '.', max_depth: int = 4,
+                           max_entries: int = 5000) -> Dict[str, Any]:
+        """把对端共享项在本地物化成目录树（目录 + 0 字节占位文件 + 索引）。
+
+        限制深度与条目数是刻意的：远端可能是一个几十万文件的目录，全量遍历既慢又会
+        把内存和索引文件撑爆。默认 4 层 / 5000 条，调用方可传更大的值。
+        """
+        options = _opts(opts)
+        device_id = str(options.get('device_id') or device_id or '').strip().lower()
+        share_id = str(options.get('share_id') or share_id or '')
+        try:
+            max_depth = int(options.get('max_depth', max_depth))
+            max_entries = int(options.get('max_entries', max_entries))
+        except (TypeError, ValueError):
+            return {'success': False, 'error': 'max_depth / max_entries 必须是整数'}
+        if not share_id:
+            return {'success': False, 'error': '必须给出 share_id'}
+
+        identity = self._load_identity()
+        roster = self._load_roster()
+        if identity is None or roster is None:
+            return {'success': False, 'error': '需要先创建身份与团体'}
+        candidates = self._manual_endpoints(device_id, roster)
+        if not candidates:
+            return {'success': False, 'error': '还没有可用的对端地址（见"添加对端"）'}
+
+        last_error = ''
+        for endpoint, label in candidates:
+            try:
+                connection = self._connect(endpoint, identity, roster)
+            except (RemoteError, TransportError, OSError) as e:
+                last_error = f'{label or endpoint[0]}:{endpoint[1]} 连不上: {e}'
+                continue
+            peer_id = connection.peer.device_key.hex()
+            # 物化目录必须按**真实设备 ID**建：`ensure_file()` 之后要从路径反解出
+            # 设备 ID 去取字节，若这里写成调用方传入的（可能为空）就会落到别的目录，
+            # 取字节时找不到对应共享项。
+            root = self.remote_cache_dir / peer_id / share_id
+            index = self._load_remote_index(peer_id, share_id)
+            entries: Dict[str, Any] = index.get('entries') or {}
+            try:
+                walked = self._walk_remote(connection, share_id, path, max_depth, max_entries)
+            except RemoteError as e:
+                return {'success': False, 'error': str(e), 'device_id': peer_id,
+                        'share_id': share_id, 'path': path}
+            except (TransportError, OSError) as e:
+                last_error = f'遍历中断: {e}'
+                continue
+            finally:
+                self._release(connection)
+
+            # 落盘：目录建出来，文件写 0 字节占位。
+            # 占位而不是"什么都不建"：`os.scandir` 能看到条目、消费方插件的索引因此
+            # 完整；`ensure_file` 用"实际大小 != 索引里的真实大小"判定哪些还没取回。
+            created_dirs = 0
+            created_files = 0
+            for rel, info in walked.items():
+                target = root / rel
+                if info['dir']:
+                    target.mkdir(parents=True, exist_ok=True)
+                    created_dirs += 1
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if not target.exists():
+                        target.touch()
+                        created_files += 1
+                entries[rel] = {'dir': info['dir'], 'size': info['size']}
+
+            index.update({'share': share_id, 'device': peer_id, 'entries': entries,
+                          'root': str(root),
+                          'materialized_at': int(time.time()),
+                          'truncated': len(walked) >= max_entries})
+            self._save_remote_index(peer_id, share_id, index)
+            self._invalidate_remote_index(peer_id, share_id)
+            return {'success': True, 'device_id': peer_id, 'name': label,
+                    'share_id': share_id, 'root': str(root),
+                    'dirs': created_dirs, 'files': created_files,
+                    'entries': len(entries), 'truncated': index['truncated']}
+
+        return {'success': False, 'error': last_error or '所有候选地址都连不上',
+                'device_id': device_id, 'offline': True}
+
+    def _walk_remote(self, connection: Any, share_id: str, path: str,
+                     max_depth: int, max_entries: int) -> Dict[str, Dict[str, Any]]:
+        """广度优先遍历远端目录，返回 `{相对路径: {dir, size}}`（不含根自身）。"""
+        import collections
+
+        found: Dict[str, Dict[str, Any]] = {}
+        pending = collections.deque([(path or '.', 0)])
+        while pending:
+            current, depth = pending.popleft()
+            result = mesh_client.list_directory(connection, share_id, current)
+            if not result.get('dir'):
+                # 调用方给的是个文件路径：直接当作单个条目
+                name = str(result.get('path') or current).lstrip('./')
+                found[name] = {'dir': False, 'size': int(result.get('size') or 0)}
+                continue
+            for entry in result.get('entries') or []:
+                name = str(entry.get('name') or '')
+                if not name or name in ('.', '..'):
+                    continue
+                rel = name if current in ('.', '') else f"{current.strip('/')}/{name}"
+                if rel in found:
+                    continue
+                if len(found) >= max_entries:
+                    return found
+                found[rel] = {'dir': bool(entry.get('dir')),
+                              'size': int(entry.get('size') or 0)}
+                if entry.get('dir') and depth + 1 < max_depth:
+                    pending.append((rel, depth + 1))
+        return found
+
+    def is_content_placeholder(self, path: Any) -> bool:
+        """该路径是否"已物化但字节还没取回"（`/file` 每次请求都会问）。
+
+        判定依据是"实际大小 != 索引里的远端大小"：物化时写下的是 0 字节占位，
+        而索引里记的是远端真实大小。必须廉价 —— 一次 `stat` 加路径归属判断，
+        索引走进程内缓存。
+        """
+        try:
+            target = Path(path)
+            rel = target.resolve().relative_to(self.remote_cache_dir.resolve())
+        except (OSError, ValueError):
+            return False
+        parts = rel.parts
+        if len(parts) < 3:
+            return False
+        index = self._cached_remote_index(parts[0], parts[1])
+        meta = (index.get('entries') or {}).get('/'.join(parts[2:]))
+        if not isinstance(meta, dict) or meta.get('dir'):
+            return False
+        remote_size = int(meta.get('size') or 0)
+        if remote_size <= 0:
+            return False   # 远端本来就是空文件：不必取
+        try:
+            return target.stat().st_size != remote_size
+        except OSError:
+            return True
+
+    def ensure_file(self, path: Any) -> None:
+        """`/file` 找不到文件时由 Shell 回调：把远端对应的那个文件取回本地。
+
+        判定"这是不是一个还没取回的占位文件"：拿实际大小与索引里的真实大小比。
+        占位文件是 0 字节，而索引里的真实大小来自远端 —— 两者不一致（或文件不存在）
+        就取一次。
+        """
+        try:
+            target = Path(path)
+            rel = target.resolve().relative_to(self.remote_cache_dir.resolve())
+        except (OSError, ValueError):
+            return   # 不是远端缓存里的东西：本钩子不管
+        parts = rel.parts
+        if len(parts) < 3:
+            return   # 期望 <设备ID>/<共享标识>/<相对路径…>
+        device_id, share_id = parts[0], parts[1]
+        relative = '/'.join(parts[2:])
+        index = self._cached_remote_index(device_id, share_id)
+        meta = (index.get('entries') or {}).get(relative)
+        if not isinstance(meta, dict) or meta.get('dir'):
+            return
+        remote_size = int(meta.get('size') or 0)
+        try:
+            if target.is_file() and target.stat().st_size == remote_size:
+                return   # 已经取回过了（大小一致）
+        except OSError:
+            pass
+        if remote_size > self.max_fetch_bytes:
+            log.info(f'[group-mesh] 跳过按需取回：{relative} 大小 {remote_size} 超过上限 '
+                     f'{self.max_fetch_bytes}')
+            return
+        result = self.download_remote({'device_id': device_id, 'share_id': share_id,
+                                       'path': relative, 'overwrite': True})
+        if not result.get('success'):
+            log.info(f'[group-mesh] 按需取回失败 {relative}: {result.get("error")}')
+            return
+        # 下载目录与物化目录是两个位置：把字节搬到物化目录，索引里那条才算"已取回"。
+        # 不搬的话消费方读的还是那个 0 字节占位。
+        try:
+            fetched = Path(result['local_path'])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(fetched, target)
+            self._invalidate_remote_index(device_id, share_id)
+        except (OSError, KeyError) as e:
+            log.warning(f'[group-mesh] 物化落位失败 {relative}: {e}')
+
+    @property
+    def max_fetch_bytes(self) -> int:
+        """按需取回的单文件上限，避免一次浏览把磁盘塞满。"""
+        try:
+            configured = int(self.setting('max_fetch_mb', 0) or 0)
+        except (TypeError, ValueError):
+            configured = 0
+        return configured * 1024 * 1024 if configured > 0 else DEFAULT_MAX_FETCH_BYTES
+
+    def remote_cache(self) -> Dict[str, Any]:
+        """已物化的远端内容一览（界面显示用了多少磁盘、可以清哪些）。"""
+        root = self.remote_cache_dir
+        items: List[Dict[str, Any]] = []
+        if root.is_dir():
+            for device_dir in sorted(root.iterdir()):
+                if not device_dir.is_dir():
+                    continue
+                for share_dir in sorted(device_dir.iterdir()):
+                    if not share_dir.is_dir():
+                        continue
+                    index = self._load_remote_index(device_dir.name, share_dir.name)
+                    entries = index.get('entries') or {}
+                    files = [rel for rel, meta in entries.items() if not meta.get('dir')]
+                    fetched = 0
+                    for rel in files:
+                        candidate = share_dir / rel
+                        try:
+                            meta_size = int((entries.get(rel) or {}).get('size') or 0)
+                            if candidate.is_file() and meta_size and \
+                                    candidate.stat().st_size == meta_size:
+                                fetched += 1
+                        except OSError:
+                            continue
+                    items.append({
+                        'device_id': device_dir.name,
+                        'share_id': share_dir.name,
+                        'entries': len(entries),
+                        'files': len(files),
+                        'fetched': fetched,
+                        'pending': len(files) - fetched,
+                        'bytes': self._tree_usage(share_dir)[0],
+                        'materialized_at': index.get('materialized_at'),
+                        'truncated': bool(index.get('truncated')),
+                        'root': str(share_dir),
+                    })
+        return {'success': True, 'root': str(root), 'items': items,
+                'total_bytes': self._tree_usage(root)[0] if root.is_dir() else 0}
+
+    def clear_remote_cache(self, opts: Any = None, device_id: str = '',
+                           share_id: str = '') -> Dict[str, Any]:
+        """删除已物化的远端内容（磁盘回收）。不传参数时清空全部。"""
+        import shutil
+
+        options = _opts(opts)
+        device_id = str(options.get('device_id') or device_id or '').strip().lower()
+        share_id = str(options.get('share_id') or share_id or '')
+        root = self.remote_cache_dir
+        if not root.exists():
+            return {'success': True, 'removed': [], 'freed_bytes': 0}
+        if device_id and share_id:
+            targets = [root / device_id / share_id]
+        elif device_id:
+            targets = [root / device_id]
+        else:
+            targets = [child for child in root.iterdir()]
+        removed: List[str] = []
+        freed = 0
+        for target in targets:
+            if not target.exists():
+                continue
+            freed += self._tree_usage(target)[0]
+            shutil.rmtree(target, ignore_errors=True)
+            removed.append(str(target))
+        self._invalidate_remote_index()
+        return {'success': True, 'removed': removed, 'freed_bytes': freed}
+
     # ── 节点 ──────────────────────────────────────────────────────────────
 
     def start_node(self) -> Dict[str, Any]:
@@ -1366,28 +1705,34 @@ class GroupMeshPlugin(PluginBase):
         return published
 
     def _auto_start_node(self, identity_exists: bool, roster_exists: bool) -> None:
-        """有身份与团体且节点没在跑时自动启动（只尝试一次，失败不重试）。
+        """有身份与团体且节点没在跑时自动启动（失败后冷却一小段时间再试）。
 
         为什么必须自动：节点不跑 → 本机不发布注册记录 → **别人永远发现不了我**；
         而"另一个成员要先手动点一次启动节点，我才能看到他"这件事没有任何提示，
         表现出来就是"明明都在同一个团体里却看不到对方"。
 
-        为什么失败后不重试：失败原因通常是端口被占或防火墙拦截，重试不会有不同
-        结果，反而会在每次刷新状态时反复起线程。失败详情留在 `_last_error` 里，
-        由界面的节点卡片显示 —— 用户看到原因后可以改端口再点"启动节点"。
+        为什么失败后还要再试：**服务重启瞬间端口经常还被旧进程占着**（实测：远端
+        omnibox-web 重启后自动启动失败一次，之后端口空出来了，但"只试一次"的策略
+        让它永远不再启动，节点就一直挂着）。因此失败只进入冷却，不永久放弃 ——
+        冷却避免每次取状态都去抢一次端口和写日志。
         """
-        if self._auto_start_attempted or not (identity_exists and roster_exists):
+        if not (identity_exists and roster_exists):
             return
         if self._node_thread is not None and self._node_thread.is_alive():
             return
-        self._auto_start_attempted = True
+        if time.time() < self._auto_start_retry_at:
+            return
         result = self.start_node()
         if result.get('success'):
-            log.info('[group-mesh] 已自动启动共享节点（设计文档 §7：注册是设备自助行为）')
+            self._auto_start_attempted = True
             self._auto_start_error = None
+            self._auto_start_retry_at = 0.0
+            log.info('[group-mesh] 已自动启动共享节点（设计文档 §7：注册是设备自助行为）')
         else:
             self._auto_start_error = result.get('error') or '自动启动失败'
-            log.warning(f'[group-mesh] 自动启动节点失败：{self._auto_start_error}')
+            self._auto_start_retry_at = time.time() + AUTO_START_RETRY_SECONDS
+            log.warning(f'[group-mesh] 自动启动节点失败（{AUTO_START_RETRY_SECONDS}s 后重试）：'
+                        f'{self._auto_start_error}')
 
     def get_node_status(self) -> Dict[str, Any]:
         thread = self._node_thread
@@ -1459,6 +1804,9 @@ class GroupMeshPlugin(PluginBase):
             'list_peers': self.list_peers,
             'list_remote': self.list_remote,
             'download_remote': self.download_remote,
+            'materialize_remote': self.materialize_remote,
+            'remote_cache': self.remote_cache,
+            'clear_remote_cache': self.clear_remote_cache,
             'start_node': self.start_node,
             'stop_node': self.stop_node,
             'get_node_status': self.get_node_status,

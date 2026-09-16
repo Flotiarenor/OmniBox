@@ -104,7 +104,7 @@ class PluginContractTest(unittest.TestCase):
     def test_settings_schema_shape(self):
         keys = {item['key'] for item in self.plugin.settings_schema}
         self.assertEqual(keys, {'port', 'bind', 'group_name', 'principal_name',
-                                'ttl_days', 'download_dir'})
+                                'ttl_days', 'download_dir', 'max_fetch_mb'})
         for item in self.plugin.settings_schema:
             self.assertIn('label', item)
             self.assertIn('type', item)

@@ -466,6 +466,26 @@ window.Bridge = {
           { name: 'note.txt', dir: false, size: 23 }
         ] });
     }
+    if (method === 'materialize_remote') {
+      window.__remoteCalls.push('materialize_remote:' + arg.share_id);
+      window.__materialized = true;
+      return Promise.resolve({ success: true, device_id: arg.device_id,
+        share_id: arg.share_id, root: 'D:/cache/remote/dev/land64b6e',
+        dirs: 1, files: 3, entries: 4, truncated: false });
+    }
+    if (method === 'remote_cache') {
+      window.__remoteCalls.push('remote_cache');
+      var items = window.__materialized ? [{ device_id: 'aa'.repeat(32), share_id: 'land64b6e',
+        entries: 4, files: 3, fetched: 0, pending: 3, bytes: 4096,
+        root: 'D:/cache/remote/dev/land64b6e', materialized_at: 1789527237, truncated: false }] : [];
+      return Promise.resolve({ success: true, root: 'D:/cache/remote', items: items,
+        total_bytes: 4096 });
+    }
+    if (method === 'clear_remote_cache') {
+      window.__remoteCalls.push('clear_remote_cache');
+      window.__materialized = false;
+      return Promise.resolve({ success: true, removed: ['D:/cache/remote/dev'], freed_bytes: 4096 });
+    }
     if (method === 'download_remote') {
       window.__remoteCalls.push('download_remote:' + arg.path);
       if (window.__downloadSkips) {
@@ -615,6 +635,52 @@ class RemotePageRenderTest(unittest.TestCase):
         self.assertTrue(wait_until(
             lambda: not driver.find_element('id', 'peer-box').is_displayed()),
             '提交成功后弹窗应关闭')
+
+
+    def test_materialize_button_caches_directory_and_shows_badge(self):
+        """「缓存」按钮：物化目录结构后该共享项出现已物化徽章，并给出缓存根路径。
+
+        这一步是"远端库能被消费方插件用"的前提 —— 物化出的是真实本地目录，
+        image-viewer / media-player 这类按路径工作的插件才能把它加成根目录。
+        """
+        driver = self._load()
+        button = next(b for b in driver.find_elements('css selector', '[data-materialize]')
+                      if b.get_attribute('data-materialize') == 'land64b6e')
+        button.click()
+        for _ in range(60):
+            if '已物化' in driver.find_element('id', 'peers-body').text:
+                break
+        peers = driver.find_element('id', 'peers-body').text
+        self.assertIn('已物化', peers)
+        calls = driver.execute_script('return window.__remoteCalls')
+        self.assertTrue(any(c.startswith('materialize_remote:') for c in calls), calls)
+        # 结果里必须给出缓存根，用户要把它加进别的插件
+        progress = driver.find_element('id', 'remote-progress')
+        self.assertTrue(progress.is_displayed())
+        self.assertIn('D:/cache/remote/dev/land64b6e', progress.text)
+        # 缓存汇总出现，并提供清理入口
+        self.assertTrue(driver.find_element('id', 'remote-cache').is_displayed())
+        self.assertTrue(driver.find_element('id', 'btn-clear-cache').is_displayed())
+
+    def test_clear_cache_button_resets_state(self):
+        driver = self._load()
+        next(b for b in driver.find_elements('css selector', '[data-materialize]')
+             if b.get_attribute('data-materialize') == 'land64b6e').click()
+        for _ in range(60):
+            if driver.find_elements('id', 'btn-clear-cache'):
+                break
+        driver.find_element('id', 'btn-clear-cache').click()
+        for _ in range(60):
+            calls = driver.execute_script('return window.__remoteCalls')
+            if 'clear_remote_cache' in calls:
+                break
+        calls = driver.execute_script('return window.__remoteCalls')
+        self.assertIn('clear_remote_cache', calls)
+        # 清理后徽章消失
+        for _ in range(60):
+            if '已物化' not in driver.find_element('id', 'peers-body').text:
+                break
+        self.assertNotIn('已物化', driver.find_element('id', 'peers-body').text)
 
 
 if __name__ == '__main__':
