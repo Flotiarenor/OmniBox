@@ -87,6 +87,27 @@ def _opts(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+# 镜像（"网络位置"）判定"这个文件已经一致"时 mtime 的容差（纳秒）。
+# 取 2 秒是因为 FAT/exFAT 的 mtime 粒度就是 2 秒，而本地文件系统会量化 os.utime
+# 写下的值：要求逐 ns 相等会把同一份文件判成"需要重下"，每次执行都全量重传。
+MIRROR_MTIME_WINDOW_NS = 2_000_000_000
+
+
+def _mtime_ns(payload: Any) -> Optional[int]:
+    """从对端应答的一条记录里取 mtime（纳秒整数）；缺失或非法时返回 None。
+
+    None 的语义是"对端没给"（老版本内核不带这个字段），此时物化的变更判定退化为
+    **只看大小** —— 与加入这个字段之前的能力一致，不假装自己能发现同大小的替换。
+    显式排除 bool：`True` 是 int 的子类，放过去会变成一个 mtime=1 的荒谬值。
+    """
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get('mtime_ns')
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
 class GroupMeshPlugin(PluginBase):
     """团体组网插件。
 
@@ -166,6 +187,10 @@ class GroupMeshPlugin(PluginBase):
         # 远端物化索引的进程内缓存：`is_content_placeholder()` 每个 /file 请求都要查
         # 一次，逐次解析 JSON 太贵（见 _cached_remote_index）。
         self._remote_index_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        # 按需取字节的按路径锁：并发请求同一个远端文件时只让一个线程去取
+        # （见 _fetch_lock）。键是 (设备ID, 共享标识, 相对路径)。
+        self._fetch_locks: Dict[Tuple[str, str, str], threading.Lock] = {}
+        self._fetch_locks_guard = threading.Lock()
         # 上一次刷新里连不上的端点 -> 失败原因（手动登记的地址失败时要回报给用户）
         self._unreachable: Dict[Tuple[str, int], str] = {}
         # 已建立的出站连接：(设备公钥 bytes, host, port) -> Connection。
@@ -212,6 +237,22 @@ class GroupMeshPlugin(PluginBase):
         文件字节按需取回（`download_remote`），因此不会为了"看一眼"而整份同步。
         """
         return self.cache_dir / 'remote'
+
+    @property
+    def staging_dir(self) -> Path:
+        """按需取字节的暂存根：`<cache>/staging/<设备ID>/<共享标识>/<相对路径>`。
+
+        刻意与 `remote_cache_dir` **平级**而不是放它里面：物化根下的路径会被
+        `is_content_placeholder()` / `ensure_file()` 按 `<设备ID>/<共享标识>/…`
+        反解，暂存文件混进去就会被当成一条物化条目来查索引（`.tmp` 会被当成设备 ID）。
+
+        为什么不用用户下载目录（改动前的做法）：那是"用户明确要回来的文件"，
+        浏览一张图就顺手往里扔一份，既污染用户目录，又让 `os.replace` 依赖
+        "下载目录与数据根同卷"这个默认配置（跨卷会抛 OSError，见木已成舟的
+        `.dsh/group-mesh-materialize.md` §2.2）。暂存根与被替换目标同在 `.cache` 下，
+        同卷由构造保证。
+        """
+        return self.cache_dir / 'staging'
 
     def _share_roots_file(self) -> Path:
         return self.identity_dir / 'share_roots.json'
@@ -1321,6 +1362,17 @@ class GroupMeshPlugin(PluginBase):
             return {'success': True, 'skipped': True, 'local_path': str(destination),
                     'reason': '本机已有同名文件（overwrite=true 可覆盖）'}
 
+        return self._fetch_to(destination, device_id, share_id, str(path))
+
+    def _fetch_to(self, destination: Path, device_id: str, share_id: str,
+                  path: str) -> Dict[str, Any]:
+        """把对端共享项里的一个文件取到**指定路径**（不做越界校验，调用方负责）。
+
+        为什么从 `download_remote` 里抽出来：按需取字节（`ensure_file`）要落到物化
+        暂存目录，而用户显式下载要落到下载目录 —— 除了目标路径，连接、候选端点重试、
+        "确定性错误不换设备重试"这些分支完全一样。各写一份的话两边迟早漂移
+        （一边记得不重试、另一边忘了，真正的拒绝原因被"另一台也连不上"盖掉）。
+        """
         identity = self._load_identity()
         roster = self._load_roster()
         if identity is None or roster is None:
@@ -1352,10 +1404,16 @@ class GroupMeshPlugin(PluginBase):
             finally:
                 self._release(connection)
 
+            try:
+                size = destination.stat().st_size
+            except OSError:
+                # 落位成功但读不到（被杀毒/索引服务短暂占用等）：字节数还准，别把一次
+                # 成功的取回报成失败。
+                size = written
             return {'success': True, 'device_id': peer_id, 'peer_device_id': peer_id,
                     'name': label or connection.peer.name,
                     'share_id': share_id, 'path': path, 'local_path': str(destination),
-                    'bytes': written, 'size': destination.stat().st_size}
+                    'bytes': written, 'size': size}
 
         return {'success': False, 'error': last_error or '所有候选地址都连不上',
                 'device_id': device_id, 'offline': True}
@@ -1460,7 +1518,7 @@ class GroupMeshPlugin(PluginBase):
             # 取字节时找不到对应共享项。
             root = self.remote_cache_dir / peer_id / share_id
             index = self._load_remote_index(peer_id, share_id)
-            entries: Dict[str, Any] = index.get('entries') or {}
+            previous: Dict[str, Any] = dict(index.get('entries') or {})
             try:
                 walked = self._walk_remote(connection, share_id, path, max_depth, max_entries)
             except RemoteError as e:
@@ -1477,6 +1535,8 @@ class GroupMeshPlugin(PluginBase):
             # 完整；`ensure_file` 用"实际大小 != 索引里的真实大小"判定哪些还没取回。
             created_dirs = 0
             created_files = 0
+            invalidated = 0
+            entries: Dict[str, Any] = {}
             for rel, info in walked.items():
                 target = root / rel
                 if info['dir']:
@@ -1484,28 +1544,117 @@ class GroupMeshPlugin(PluginBase):
                     created_dirs += 1
                 else:
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    if not target.exists():
+                    old = previous.get(rel)
+                    # 对端的内容换过了（大小或 mtime 变了）：本机若已经把**真字节**
+                    # 取回来了，必须丢掉它 —— 否则"同大小的替换"会永远读到旧内容，
+                    # 而缩略图/列表缓存又都以本地 (size, mtime) 为键，看不出任何异常。
+                    # 丢掉之后它重新变回占位文件，下次读取按需取回。
+                    if old is not None and self._content_changed(old, info) \
+                            and self._is_fetched(target):
+                        target.unlink()
+                        invalidated += 1
+                    if not target.is_file():
                         target.touch()
                         created_files += 1
-                entries[rel] = {'dir': info['dir'], 'size': info['size']}
+                    # 占位与已取回的文件都写成对端的 mtime：消费方的缓存失效读的是
+                    # **本地**元数据，留着"物化时刻"的时间会让"对端换了图"看起来没变。
+                    self._apply_remote_mtime(target, info.get('mtime_ns'))
+                entries[rel] = {'dir': info['dir'], 'size': info['size'],
+                                'mtime_ns': info.get('mtime_ns')}
+
+            truncated = len(walked) >= max_entries
+            # 对账（对端已删/改名 → 本地也删）**只在遍历完整时做**：达到条目上限时
+            # `walked` 只是一个子集，照着它删会把没遍历到的内容整片抹掉。
+            removed = 0 if truncated else self._prune_absent(root, previous, entries)
 
             index.update({'share': share_id, 'device': peer_id, 'entries': entries,
                           'root': str(root),
                           'materialized_at': int(time.time()),
-                          'truncated': len(walked) >= max_entries})
+                          'truncated': truncated})
             self._save_remote_index(peer_id, share_id, index)
             self._invalidate_remote_index(peer_id, share_id)
             return {'success': True, 'device_id': peer_id, 'name': label,
                     'share_id': share_id, 'root': str(root),
                     'dirs': created_dirs, 'files': created_files,
-                    'entries': len(entries), 'truncated': index['truncated']}
+                    'invalidated': invalidated, 'removed': removed,
+                    'entries': len(entries), 'truncated': truncated}
 
         return {'success': False, 'error': last_error or '所有候选地址都连不上',
                 'device_id': device_id, 'offline': True}
 
+    @staticmethod
+    def _content_changed(old: Dict[str, Any], new: Dict[str, Any]) -> bool:
+        """对端这一条的内容是否变了（大小或 mtime 任一不同）。
+
+        对端没给 mtime（老内核）时只看大小：这正是加入 mtime 之前的能力，
+        不假装能发现同大小的替换。
+        """
+        if int(old.get('size') or 0) != int(new.get('size') or 0):
+            return True
+        old_mtime, new_mtime = old.get('mtime_ns'), new.get('mtime_ns')
+        if old_mtime is None or new_mtime is None:
+            return False
+        return int(old_mtime) != int(new_mtime)
+
+    @staticmethod
+    def _is_fetched(target: Path) -> bool:
+        """本机这个物化条目是否已经持有**真字节**（而不是 0 字节占位）。
+
+        判据只有"大小非 0"：0 字节的远端文件本来就永远停在占位状态（`ensure_file`
+        对 remote_size==0 直接返回，见 `.dsh/group-mesh-materialize.md` §2.2），
+        对它做"丢弃重取"没有任何意义。
+        """
+        try:
+            return target.is_file() and target.stat().st_size > 0
+        except OSError:
+            return False
+
+    @staticmethod
+    def _apply_remote_mtime(target: Path, mtime_ns: Optional[int]) -> None:
+        """把对端的 mtime 写到本地这份文件上（占位或已取回的真字节都要写）。
+
+        写不进去不是错误：老对端没有该字段、文件系统可能不支持、值可能越界。
+        这里**不**回读比对 —— 全仓的远端判定只比较"对端报过的值"与"对端现在报的值"，
+        从不拿本地 stat 去比远端值（本地文件系统会量化，比了只会永远不相等）。
+        """
+        if mtime_ns is None:
+            return
+        try:
+            os.utime(target, ns=(mtime_ns, mtime_ns))
+        except (OSError, OverflowError, ValueError) as e:
+            log.info(f'[group-mesh] 无法把对端 mtime 写到 {target}: {e}')
+
+    def _prune_absent(self, root: Path, previous: Dict[str, Any],
+                      keep: Dict[str, Any]) -> int:
+        """删掉"索引里有、本次遍历里没有"的条目，返回删掉的文件数。
+
+        改动前这里只增不减：对端删掉或改名之后，本地那份会永远留着（界面上表现为
+        "对方已经删了的文件我还看得到"）。目录按深度倒序处理，先删文件再删因此变空的
+        目录；非空目录不删（里面还可能有本次没遍历到的内容）。
+        """
+        removed = 0
+        gone = sorted(set(previous) - set(keep), key=lambda rel: rel.count('/'), reverse=True)
+        for rel in gone:
+            target = root / rel
+            try:
+                if target.is_dir():
+                    target.rmdir()
+                elif target.exists():
+                    target.unlink()
+                    removed += 1
+            except OSError:
+                # 目录非空、或已被并发的取字节线程删掉：都不是错误
+                continue
+        return removed
+
     def _walk_remote(self, connection: Any, share_id: str, path: str,
                      max_depth: int, max_entries: int) -> Dict[str, Dict[str, Any]]:
-        """广度优先遍历远端目录，返回 `{相对路径: {dir, size}}`（不含根自身）。"""
+        """广度优先遍历远端目录，返回 `{相对路径: {dir, size, mtime_ns}}`（不含根自身）。
+
+        `mtime_ns` 是对端 `stat` 的真实值（纳秒整数），也是本机判定"对端换过没有"
+        的**唯一依据**：本机自己那份 mtime 会被文件系统量化，拿它去比远端值只会
+        得出"永远不相等"。老对端不带该字段时为 None。
+        """
         import collections
 
         found: Dict[str, Dict[str, Any]] = {}
@@ -1516,7 +1665,8 @@ class GroupMeshPlugin(PluginBase):
             if not result.get('dir'):
                 # 调用方给的是个文件路径：直接当作单个条目
                 name = str(result.get('path') or current).lstrip('./')
-                found[name] = {'dir': False, 'size': int(result.get('size') or 0)}
+                found[name] = {'dir': False, 'size': int(result.get('size') or 0),
+                               'mtime_ns': _mtime_ns(result)}
                 continue
             for entry in result.get('entries') or []:
                 name = str(entry.get('name') or '')
@@ -1528,10 +1678,177 @@ class GroupMeshPlugin(PluginBase):
                 if len(found) >= max_entries:
                     return found
                 found[rel] = {'dir': bool(entry.get('dir')),
-                              'size': int(entry.get('size') or 0)}
+                              'size': int(entry.get('size') or 0),
+                              'mtime_ns': _mtime_ns(entry)}
                 if entry.get('dir') and depth + 1 < max_depth:
                     pending.append((rel, depth + 1))
         return found
+
+    def mirror_share(self, opts: Any = None, device_id: str = '', share_id: str = '',
+                     destination: str = '', max_entries: int = 20000,
+                     max_bytes: int = 0) -> Dict[str, Any]:
+        """把一个共享项**完整取到用户指定的本地目录**（"网络位置"用）。
+
+        与 `materialize_remote()` 的三点区别，每一点都是"网络位置"能不能用的前提：
+
+        1. **目标目录由用户指定**（在他自己的图库/媒体盘里），不是插件的 `.cache`；
+        2. **字节全部取回，不留占位**：指定目录是普通目录，消费方（image-viewer 等）按
+           本地文件工作、**没有** `ensure_file` 钩子可依赖 —— 留 0 字节占位就是宽高 0×0
+           与整片 404 缩略图（实测见 `.dsh/group-mesh-materialize.md` §2.2）；
+        3. **mtime 写成对端的值**：消费方的缓存失效读的是本地元数据，否则"对端换过"
+           永远看不出来。
+
+        幂等：大小与 mtime 都一致的文件直接跳过，所以重复执行只补差异。
+        """
+        options = _opts(opts)
+        device_id = str(options.get('device_id') or device_id or '').strip().lower()
+        share_id = str(options.get('share_id') or share_id or '')
+        destination = str(options.get('destination') or destination or '')
+        try:
+            max_entries = int(options.get('max_entries', max_entries))
+            max_bytes = int(options.get('max_bytes', max_bytes))
+        except (TypeError, ValueError):
+            return {'success': False, 'error': 'max_entries / max_bytes 必须是整数'}
+        if not share_id or not destination:
+            return {'success': False, 'error': '必须给出 share_id 与 destination'}
+
+        raw_path = Path(destination).expanduser()
+        # 必须是**绝对**路径：`C:Users...`（Windows 驱动器相对路径）与相对路径都会在
+        # resolve() 之后变成某个"看起来正常"的位置，然后就在那里建目录 —— 实测踩到过
+        # 一次分隔符被吃光的路径（`C:UsersADMINI~1AppDataLocalTemp...`），resolve 后
+        # 落在盘符根上。校验必须在 resolve **之前**做，否则拿到的是已经被解析过的路径。
+        if not raw_path.is_absolute():
+            return {'success': False,
+                    'error': f'目标目录必须是绝对路径（形如 D:\\图库\\相册 或 /home/me/pics）: '
+                             f'{destination!r}'}
+        try:
+            root = raw_path.resolve()
+        except OSError as e:
+            return {'success': False, 'error': f'目标目录无法解析: {e}'}
+        # 边界只挡**本插件自己的**数据目录与身份目录，不挡全局数据根：默认配置下
+        # 全局数据根（`./data`）正是 image-viewer 的图片库，用户把"网络位置"放进
+        # 自己的图库是完全正当的用法（那样它就是一个普通文件夹，原图也能直接打开）。
+        # `add_share` 那条"不得位于数据根之内"是另一个问题（对外**暴露**文件），
+        # 不要照抄到这里 —— 照抄会让默认配置下最自然的目标目录被拒。
+        forbidden = [self.get_data_root(), self.identity_dir]
+        for guarded in forbidden:
+            try:
+                root.relative_to(guarded)
+            except ValueError:
+                continue
+            return {'success': False,
+                    'error': f'目标目录不得位于 {guarded} 之内（程序数据与身份私钥）'}
+        if self.is_protected_path(root):
+            return {'success': False, 'error': f'目标目录是受保护路径: {root}'}
+
+        # 目录可以不存在：用户很自然会说"放到图库下这个新文件夹里"。**但只有上级目录
+        # 存在时才建** —— 否则一个手滑/粘贴丢了分隔符的路径会在盘符根上造出一个莫名其妙的
+        # 目录（实测踩到：粘贴丢反斜杠后报"目标目录不存在"，用户完全看不出哪里错了）。
+        if not root.is_dir():
+            if not root.parent.is_dir():
+                return {'success': False,
+                        'error': f'目标目录不存在，且它的上级目录也不存在: {root}\n'
+                                 f'（请用「浏览…」选一个已存在的目录，或先创建上级目录 '
+                                 f'{root.parent}）'}
+            try:
+                root.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                return {'success': False, 'error': f'无法创建目标目录 {root}: {e}'}
+
+        identity = self._load_identity()
+        roster = self._load_roster()
+        if identity is None or roster is None:
+            return {'success': False, 'error': '需要先创建身份与团体'}
+        candidates = self._manual_endpoints(device_id, roster)
+        if not candidates:
+            return {'success': False, 'error': '还没有可用的对端地址（见"添加对端"）'}
+
+        last_error = ''
+        for endpoint, label in candidates:
+            try:
+                connection = self._connect(endpoint, identity, roster)
+            except (RemoteError, TransportError, OSError) as e:
+                last_error = f'{label or endpoint[0]}:{endpoint[1]} 连不上: {e}'
+                continue
+            try:
+                walked = self._walk_remote(connection, share_id, '.', 64, max_entries)
+                result = self._mirror_files(connection, share_id, root, walked, max_bytes)
+            except RemoteError as e:
+                return {'success': False, 'error': str(e), 'share_id': share_id}
+            except (TransportError, OSError) as e:
+                last_error = f'传输中断: {e}'
+                continue
+            finally:
+                self._release(connection)
+            device = connection.peer.device_key.hex()
+            return {'success': True, 'device_id': device, 'name': label or connection.peer.name,
+                    'share_id': share_id, 'root': str(root), 'entries': len(walked),
+                    'truncated': len(walked) >= max_entries, **result}
+
+        return {'success': False, 'error': last_error or '所有候选地址都连不上',
+                'device_id': device_id, 'offline': True}
+
+    def _mirror_files(self, connection: Any, share_id: str, root: Path,
+                      walked: Dict[str, Dict[str, Any]], max_bytes: int) -> Dict[str, Any]:
+        """把 `walked` 里的文件逐个取到 `root`（增量：一致就跳过），返回统计。
+
+        连接由调用方持有并复用：一次取几十上百个文件时，逐文件建连会把"一次拷贝"
+        变成几十次 Noise 握手。单个文件失败不中断整批 —— 汇报出来比整个失败有用。
+        """
+        created_dirs = 0
+        fetched = 0
+        unchanged = 0
+        written_bytes = 0
+        truncated = False
+        errors: List[str] = []
+        for rel, info in sorted(walked.items()):
+            target = root / rel
+            if info['dir']:
+                try:
+                    target.mkdir(parents=True, exist_ok=True)
+                    created_dirs += 1
+                except OSError as e:
+                    errors.append(f'{rel}: {e}')
+                continue
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                errors.append(f'{rel}: {e}')
+                continue
+            if self._mirror_file_current(target, info):
+                unchanged += 1
+                continue
+            if max_bytes and written_bytes + int(info['size']) > max_bytes:
+                truncated = True
+                continue
+            try:
+                written_bytes += mesh_client.fetch_to_file(connection, share_id, rel, target)
+            except (RemoteError, TransportError, OSError) as e:
+                errors.append(f'{rel}: {e}')
+                continue
+            # 真字节到位后再写 mtime：写入本身会把 mtime 刷成"现在"
+            self._apply_remote_mtime(target, info.get('mtime_ns'))
+            fetched += 1
+        return {'dirs': created_dirs, 'fetched': fetched, 'unchanged': unchanged,
+                'bytes': written_bytes, 'truncated_bytes': truncated,
+                'errors': errors[:20], 'error_count': len(errors)}
+
+    def _mirror_file_current(self, target: Path, info: Dict[str, Any]) -> bool:
+        """镜像目标是否已经与对端一致（大小相同，且 mtime 相同或对端没给 mtime）。
+
+        mtime 用窗口比较：本地文件系统会量化 `os.utime` 写下的纳秒值（FAT 只有 2 秒），
+        要求逐 ns 相等会把"本来就是同一份"的文件判成需要重下，每次执行都全量重传。
+        """
+        try:
+            local = target.stat()
+        except OSError:
+            return False
+        if local.st_size != int(info.get('size') or 0):
+            return False
+        remote_mtime = info.get('mtime_ns')
+        if remote_mtime is None:
+            return True   # 对端没给 mtime（老内核）：只能靠大小
+        return abs(local.st_mtime_ns - int(remote_mtime)) < MIRROR_MTIME_WINDOW_NS
 
     def is_content_placeholder(self, path: Any) -> bool:
         """该路径是否"已物化但字节还没取回"（`/file` 每次请求都会问）。
@@ -1539,6 +1856,11 @@ class GroupMeshPlugin(PluginBase):
         判定依据是"实际大小 != 索引里的远端大小"：物化时写下的是 0 字节占位，
         而索引里记的是远端真实大小。必须廉价 —— 一次 `stat` 加路径归属判断，
         索引走进程内缓存。
+
+        **刻意不在这里比对 mtime**：拿本地文件的 mtime 去比索引里对端的 mtime，
+        会因为文件系统的量化（`os.utime` 写进去的 ns 未必原样存下）而永远不相等，
+        于是每个请求都触发一次取回。"对端换过内容"的发现点只有一个 ——
+        `materialize_remote()` 的对账，那里比较的两个值**都来自对端**。
         """
         try:
             target = Path(path)
@@ -1561,11 +1883,15 @@ class GroupMeshPlugin(PluginBase):
             return True
 
     def ensure_file(self, path: Any) -> None:
-        """`/file` 找不到文件时由 Shell 回调：把远端对应的那个文件取回本地。
+        """`/file` 找不到内容时由 Shell 回调：把远端对应的那个文件取回本地。
 
         判定"这是不是一个还没取回的占位文件"：拿实际大小与索引里的真实大小比。
         占位文件是 0 字节，而索引里的真实大小来自远端 —— 两者不一致（或文件不存在）
         就取一次。
+
+        **同大小的替换不在本方法里发现**：那需要"对端现在报的值"与"索引里的值"对比，
+        而本方法只看本机磁盘。它由 `materialize_remote()` 的对账负责（mtime 变了就丢掉
+        本地真字节，于是下次读到这里时本方法自然会重新取回）。
         """
         try:
             target = Path(path)
@@ -1591,20 +1917,56 @@ class GroupMeshPlugin(PluginBase):
             log.info(f'[group-mesh] 跳过按需取回：{relative} 大小 {remote_size} 超过上限 '
                      f'{self.max_fetch_bytes}')
             return
-        result = self.download_remote({'device_id': device_id, 'share_id': share_id,
-                                       'path': relative, 'overwrite': True})
-        if not result.get('success'):
-            log.info(f'[group-mesh] 按需取回失败 {relative}: {result.get("error")}')
-            return
-        # 下载目录与物化目录是两个位置：把字节搬到物化目录，索引里那条才算"已取回"。
-        # 不搬的话消费方读的还是那个 0 字节占位。
-        try:
-            fetched = Path(result['local_path'])
-            target.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(fetched, target)
-            self._invalidate_remote_index(device_id, share_id)
-        except (OSError, KeyError) as e:
-            log.warning(f'[group-mesh] 物化落位失败 {relative}: {e}')
+
+        # 并发去重。Flask 是 threaded=True，浏览器一次会并发多个请求；内核的
+        # `fetch_to_file` 用的是**按目标路径推导**的 `.part` 临时名，两个线程为同一个
+        # 路径同时取字节就会撞在同一个临时文件上（交错写入 → 内容损坏）。
+        # 锁内复核一次"是不是已经被别人取回了"，重复传输也一并省掉。
+        with self._fetch_lock(device_id, share_id, relative):
+            try:
+                if target.is_file() and target.stat().st_size == remote_size:
+                    return
+            except OSError:
+                pass
+            staging = self.staging_dir / device_id / share_id / relative
+            result = self._fetch_to(staging, device_id, share_id, relative)
+            if not result.get('success'):
+                self._discard_staging(staging)
+                log.info(f'[group-mesh] 按需取回失败 {relative}: {result.get("error")}')
+                return
+            # 暂存文件与物化目标同在 `.cache` 下（同卷由构造保证），因此 os.replace 是
+            # 原子的；不再经过用户下载目录（改动前那里会被浏览行为污染）。
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(staging, target)
+                self._apply_remote_mtime(target, meta.get('mtime_ns'))
+                self._invalidate_remote_index(device_id, share_id)
+            except OSError as e:
+                self._discard_staging(staging)
+                log.warning(f'[group-mesh] 物化落位失败 {relative}: {e}')
+
+    def _fetch_lock(self, device_id: str, share_id: str, relative: str) -> threading.Lock:
+        """取 (设备ID, 共享标识, 相对路径) 对应的一把锁（进程内）。
+
+        锁对象不做回收：条目数就是"被并发读过的远端文件数"，与物化缓存同量级；
+        回收需要引用计数，漏一处就退化成"锁静默失效"，不值得。
+        """
+        key = (device_id, share_id, relative)
+        with self._fetch_locks_guard:
+            lock = self._fetch_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._fetch_locks[key] = lock
+            return lock
+
+    @staticmethod
+    def _discard_staging(staging: Path) -> None:
+        """清掉失败的暂存文件（`fetch_to_file` 失败时会留下 `<目标>.part`）。"""
+        for candidate in (staging, staging.with_suffix(staging.suffix + '.part')):
+            try:
+                candidate.unlink()
+            except OSError:
+                continue
 
     @property
     def max_fetch_bytes(self) -> int:
@@ -1656,29 +2018,38 @@ class GroupMeshPlugin(PluginBase):
 
     def clear_remote_cache(self, opts: Any = None, device_id: str = '',
                            share_id: str = '') -> Dict[str, Any]:
-        """删除已物化的远端内容（磁盘回收）。不传参数时清空全部。"""
+        """删除已物化的远端内容（磁盘回收）。不传参数时清空全部。
+
+        暂存目录（`staging`）一起清：它是取字节的中转区，失败的取回会留下
+        `<目标>.part`，不属于任何一份物化内容，留着就是无人回收的垃圾。
+        """
         import shutil
 
         options = _opts(opts)
         device_id = str(options.get('device_id') or device_id or '').strip().lower()
         share_id = str(options.get('share_id') or share_id or '')
         root = self.remote_cache_dir
-        if not root.exists():
-            return {'success': True, 'removed': [], 'freed_bytes': 0}
-        if device_id and share_id:
-            targets = [root / device_id / share_id]
-        elif device_id:
-            targets = [root / device_id]
-        else:
-            targets = [child for child in root.iterdir()]
-        removed: List[str] = []
         freed = 0
-        for target in targets:
-            if not target.exists():
-                continue
-            freed += self._tree_usage(target)[0]
-            shutil.rmtree(target, ignore_errors=True)
-            removed.append(str(target))
+        if root.exists():
+            if device_id and share_id:
+                targets = [root / device_id / share_id]
+            elif device_id:
+                targets = [root / device_id]
+            else:
+                targets = [child for child in root.iterdir()]
+            removed: List[str] = []
+            for target in targets:
+                if not target.exists():
+                    continue
+                freed += self._tree_usage(target)[0]
+                shutil.rmtree(target, ignore_errors=True)
+                removed.append(str(target))
+        else:
+            removed = []
+        staging = self.staging_dir
+        if staging.exists():
+            freed += self._tree_usage(staging)[0]
+            shutil.rmtree(staging, ignore_errors=True)
         self._invalidate_remote_index()
         return {'success': True, 'removed': removed, 'freed_bytes': freed}
 
@@ -2008,6 +2379,31 @@ class GroupMeshPlugin(PluginBase):
         self._close_connections()
         self.stop_node()
 
+    def get_extensions(self) -> List[dict]:
+        """把自己注册成"网络位置"提供方（壳共享目录组件的「🌐 网络位置」按钮用它）。
+
+        为什么是扩展而不是依赖：共享目录组件出现在**任意插件**的设置里
+        （image-viewer 的图片文件夹、media-player 的媒体目录…），壳不可能知道
+        group-mesh 这个名字，image-viewer 也不该为"可能有个远端图库"去声明依赖。
+        扩展机制里提供方与宿主互不认识，只认这一条 placement 约定。
+
+        刻意**不写 `host`**：组件会对所有宿主展示，提供方应当对所有宿主可用。
+
+        约定（见 `shell/frontend/public/shell/folder-picker.js`）：
+        * 组件用 `system_get_plugin_extensions(null, 'network-location')` 发现提供方；
+        * 提供方页面渲染在弹窗 iframe 里，选中后 `postMessage` 回填一个**本地目录**
+          （`{type:'omnibox:network-location', action:'picked', path, label}`）——
+          路径是本地的是关键：所有消费方的后端都只认本地路径。
+        """
+        return [{
+            'placement': 'network-location',
+            'id': 'group-mesh',
+            'label': '团体组网',
+            'icon': '🕸️',
+            'description': '把某台成员设备上的共享项取到本地一个目录，再加进列表',
+            'embedUrl': '/plugins/group-mesh/frontend/network-location.html',
+        }]
+
     def register_api(self) -> Dict[str, Callable]:
         return {
             'get_status': self.get_status,
@@ -2026,6 +2422,7 @@ class GroupMeshPlugin(PluginBase):
             'list_remote': self.list_remote,
             'download_remote': self.download_remote,
             'materialize_remote': self.materialize_remote,
+            'mirror_share': self.mirror_share,
             'remote_cache': self.remote_cache,
             'clear_remote_cache': self.clear_remote_cache,
             'start_node': self.start_node,

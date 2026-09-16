@@ -190,9 +190,13 @@ class Node:
         target = resolve_in_share(share.path, str(request.get('path', '.')))
         if not os.path.isfile(target):
             raise RemoteFailure('not_found', f'不是普通文件: {request.get("path")!r}')
-        size = os.path.getsize(target)
+        info = os.stat(target)
         return {'status': 'ok', 'share': share.share_id, 'path': request.get('path'),
-                'size': size, 'name': os.path.basename(target)}
+                'size': info.st_size, 'name': os.path.basename(target),
+                # 纳秒整数，不是 float 秒：消费方要用它判"对端内容换过没有"，
+                # float 在 2025 年的分辨率只有约 0.24 µs，且它是 st_mtime_ns 的
+                # 有损视图（CPython 内部就是 st_mtime_ns / 1e9）。
+                'mtime_ns': int(info.st_mtime_ns)}
 
     def _op_read(self, request: Dict[str, Any], peer: PeerIdentity) -> Dict[str, Any]:
         """读取一段文件内容。支持 offset/length，便于分段传输大文件。"""
@@ -307,10 +311,16 @@ class Node:
                                         f'目录项超过 {MAX_LIST_ENTRIES}，请缩小范围')
                 try:
                     is_dir = entry.is_dir()
-                    size = entry.stat().st_size if not is_dir else 0
+                    # 目录也要 stat（多一次系统调用，换来统一的 mtime 字段）：
+                    # 消费方用它判"这一层变了没有"，不必为了对比而把整个子树列一遍。
+                    info = entry.stat()
+                    size = 0 if is_dir else info.st_size
                 except OSError:
                     continue
-                entries.append({'name': entry.name, 'dir': is_dir, 'size': size})
+                entries.append({'name': entry.name, 'dir': is_dir, 'size': size,
+                                # 见 _op_stat：纳秒整数是给消费方做变更判定用的，
+                                # 不是给人看的。老客户端会忽略这个新字段。
+                                'mtime_ns': int(info.st_mtime_ns)})
         entries.sort(key=lambda e: (not e['dir'], e['name']))
         return {'status': 'ok', 'share': share.share_id, 'path': relative or '.',
                 'dir': True, 'entries': entries}

@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>从团体共享项添加网络位置</title>
+  <!--
+    「网络位置」提供方页面（壳共享目录组件 FolderPicker 会把它嵌进弹窗 iframe）。
+
+    它只做三件事：选设备 → 选共享项 → 选一个**本地目录**，然后把该目录回填给组件。
+    路径必须是本地的：所有消费方（image-viewer / media-player 的目录设置）后端都只认
+    本地路径，组件的 `getPaths()` 语义也因此完全不变。
+
+    回填协议（提供方 → 宿主）：
+      {type: 'omnibox:network-location', action: 'picked', path: '<本地绝对目录>', label: '团体组网 · 设备/共享'}
+      {type: 'omnibox:network-location', action: 'cancelled'}
+    宿主会校验消息来源（必须是它嵌的那个 iframe），所以这里用 '*' 作为 targetOrigin 也安全。
+
+    Bridge / Utils / Toast / FolderPicker 由壳注入（`serve_plugin_frontend` 对插件前端的
+    **每个** HTML 页面都注入引导片段）——本页面正是需要这条注入的子页面。
+  -->
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      margin: 0; padding: 14px 16px; font-size: 13px;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: var(--bg, #17181c); color: var(--text-primary, #e8e8ea);
+    }
+    h4 { margin: 0 0 8px; font-size: 13px; color: var(--text-secondary, #a0a0a8); font-weight: 600; }
+    .nl-step { margin-bottom: 12px; }
+    .nl-list { display: flex; flex-direction: column; gap: 4px; max-height: 150px; overflow-y: auto; }
+    .nl-item {
+      display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px;
+      border: 1px solid var(--border, #33343a); background: var(--bg-surface, #1e1f24);
+      cursor: pointer; font-size: 12px;
+    }
+    .nl-item:hover { background: var(--bg-hover, #26272d); }
+    .nl-item.is-active { border-color: var(--accent, #4c8dff); }
+    .nl-item .nl-sub { margin-left: auto; color: var(--text-muted, #7c7d86); font-size: 11px; }
+    .nl-empty { padding: 6px 2px; color: var(--text-muted, #7c7d86); font-size: 12px; }
+    .nl-path {
+      display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px;
+      border: 1px dashed var(--border, #33343a); font-size: 12px; word-break: break-all;
+      margin-top: 6px;
+    }
+    .nl-pick-row { display: flex; gap: 6px; align-items: center; }
+    .nl-pick-row input {
+      flex: 1; min-width: 0; box-sizing: border-box; height: 25px; padding: 0 8px;
+      font-size: 12px; border-radius: 6px; border: 1px solid var(--border, #33343a);
+      background: var(--bg-surface, #1e1f24); color: var(--text-primary, #e8e8ea);
+    }
+    .nl-actions { display: flex; gap: 8px; margin-top: 10px; }
+    .nl-note { color: var(--text-muted, #7c7d86); font-size: 11px; line-height: 1.5; margin-top: 8px; }
+    .btn {
+      padding: 4px 10px; font-size: 12px; border-radius: 6px; cursor: pointer;
+      border: 1px solid var(--border, #33343a); background: var(--bg-surface, #1e1f24);
+      color: var(--text-primary, #e8e8ea);
+    }
+    .btn:disabled { opacity: .45; cursor: default; }
+    .btn-primary { background: var(--accent, #4c8dff); border-color: var(--accent, #4c8dff); color: #fff; }
+  </style>
+</head>
+<body>
+  <div class="nl-step">
+    <h4>1. 选择设备</h4>
+    <div class="nl-list" id="nl-peers"><div class="nl-empty">正在读取设备…</div></div>
+  </div>
+  <div class="nl-step">
+    <h4>2. 选择共享项</h4>
+    <div class="nl-list" id="nl-shares"><div class="nl-empty">请先选择设备</div></div>
+  </div>
+  <div class="nl-step">
+    <h4>3. 选择本地落地目录</h4>
+    <div class="nl-pick-row">
+      <input type="text" id="nl-dest-input" placeholder="可直接粘贴绝对路径，如 D:\图库\朋友的相册">
+      <button class="btn" id="nl-pick">浏览…</button>
+    </div>
+    <div class="nl-path" id="nl-dest">尚未选择目录</div>
+  </div>
+  <div class="nl-actions">
+    <button class="btn btn-primary" id="nl-run" disabled>取回到该目录</button>
+    <button class="btn" id="nl-cancel">取消</button>
+  </div>
+  <p class="nl-note" id="nl-note">
+    会把该共享项的文件**完整取到**你选的目录（不是留占位），因此这是一个普通本地文件夹：
+    可以自己备份、自己删，也可以直接加进图片相册 / 媒体播放器的目录列表。
+  </p>
+
+  <script>
+    const MESSAGE_TYPE = 'omnibox:network-location';
+    const state = { deviceId: '', shareId: '', destination: '', busy: false };
+
+    const el = (id) => document.getElementById(id);
+    const esc = (text) => (window.Utils ? Utils.escapeHtml(text) : String(text == null ? '' : text));
+    const call = (method, args) => Bridge.call(method, args || {});
+    const toast = (message, isError) => {
+      if (!window.Toast) return;
+      (isError ? Toast.error : Toast.success)(message);
+    };
+
+    function setNote(text) { el('nl-note').textContent = text; }
+
+    function reply(payload) {
+      // 父窗口就是 FolderPicker 的弹窗（它自己校验 event.source），targetOrigin 用 '*' 即可
+      try { window.parent.postMessage(Object.assign({ type: MESSAGE_TYPE }, payload), '*'); }
+      catch (e) { /* 独立打开时没有可用的父窗口 */ }
+    }
+
+    async function loadPeers() {
+      try {
+        const result = await call('list_peers', { refresh: true });
+        const peers = (result && result.peers) || [];
+        if (!peers.length) {
+          el('nl-peers').innerHTML =
+            '<div class="nl-empty">没有可用设备：先在「团体组网」的“对端”里登记一台设备的地址。</div>';
+          return;
+        }
+        el('nl-peers').innerHTML = peers.map((peer) => `
+          <div class="nl-item" data-device="${esc(peer.device_id || '')}">
+            <span>🖥️</span><span>${esc(peer.name || peer.device_id || '未命名设备')}</span>
+            <span class="nl-sub">${esc((peer.endpoint || []).join(':'))}</span>
+          </div>`).join('');
+        el('nl-peers').querySelectorAll('[data-device]').forEach((item) => {
+          item.addEventListener('click', () => selectPeer(item.dataset.device));
+        });
+      } catch (e) {
+        el('nl-peers').innerHTML = `<div class="nl-empty">读取设备失败：${esc(e)}</div>`;
+      }
+    }
+
+    async function selectPeer(deviceId) {
+      state.deviceId = deviceId;
+      state.shareId = '';
+      el('nl-peers').querySelectorAll('.nl-item').forEach((item) => {
+        item.classList.toggle('is-active', item.dataset.device === deviceId);
+      });
+      el('nl-shares').innerHTML = '<div class="nl-empty">正在读取共享项…</div>';
+      updateRunButton();
+      try {
+        const result = await call('list_remote', { device_id: deviceId });
+        if (!result || !result.success) {
+          el('nl-shares').innerHTML = `<div class="nl-empty">${esc((result && result.error) || '读取失败')}</div>`;
+          return;
+        }
+        const shares = result.shares || [];
+        if (!shares.length) {
+          el('nl-shares').innerHTML =
+            '<div class="nl-empty">这台设备没有对你开放的共享项。</div>';
+          return;
+        }
+        el('nl-shares').innerHTML = shares.map((share) => `
+          <div class="nl-item" data-share="${esc(share.share_id || '')}">
+            <span>📁</span><span>${esc(share.share_id || '')}</span>
+            <span class="nl-sub">${esc(share.acl && share.acl.read ? '可读' : '')}</span>
+          </div>`).join('');
+        el('nl-shares').querySelectorAll('[data-share]').forEach((item) => {
+          item.addEventListener('click', () => selectShare(item.dataset.share));
+        });
+      } catch (e) {
+        el('nl-shares').innerHTML = `<div class="nl-empty">读取共享项失败：${esc(e)}</div>`;
+      }
+    }
+
+    function selectShare(shareId) {
+      state.shareId = shareId;
+      el('nl-shares').querySelectorAll('.nl-item').forEach((item) => {
+        item.classList.toggle('is-active', item.dataset.share === shareId);
+      });
+      updateRunButton();
+    }
+
+    function updateRunButton() {
+      el('nl-run').disabled = state.busy || !state.deviceId || !state.shareId || !state.destination;
+    }
+
+    async function pickDestination() {
+      // 复用壳的目录选择器：与「浏览…」同一个实现，用户熟悉的那套
+      const picked = await FolderPicker.openDirBrowser(state.destination || '');
+      if (!picked) return;
+      applyPickedDestination(picked);
+    }
+
+    function normalizeDestination(raw) {
+      // 去掉首尾空白、**包裹的引号**（资源管理器"复制路径"或聊天里粘过来常常带引号）、
+      // 以及末尾的分隔符。注意这只用于**传给后端**的值，不回写输入框（见 syncFromInput）。
+      return String(raw == null ? '' : raw)
+        .trim()
+        .replace(/^["']|["']$/g, '')
+        .replace(/[\\/]+$/, '');
+    }
+
+    /**
+     * 从输入框同步状态。**绝不回写输入框。**
+     *
+     * 回写会在逐字符输入时吃掉刚敲下的 `\`：规范化包含"去掉末尾分隔符"，于是每敲一个
+     * 反斜杠，随之而来的 `input` 事件就把它删掉 —— 最终得到
+     * `C:UsersADMINI~1AppDataLocalTemp...`（分隔符全丢）。症状是后端报"目标目录不存在"，
+     * 而输入框里的路径看上去"差不多是对的"，非常难查。【已实测：我自己用 send_keys 也复现】
+     */
+    function syncFromInput() {
+      state.destination = normalizeDestination(el('nl-dest-input').value);
+      updateHint();
+    }
+
+    /** 目录选择器选完之后填进输入框（这个时机没有逐字符输入的问题）。 */
+    function applyPickedDestination(path) {
+      el('nl-dest-input').value = path;
+      syncFromInput();
+    }
+
+    function updateHint() {
+      const problem = destinationProblem(state.destination);
+      el('nl-dest').textContent = state.destination || '尚未选择目录';
+      el('nl-dest').style.borderColor = problem ? 'var(--danger, #e5484d)' : '';
+      updateRunButton();
+    }
+
+    /** 路径的明显错误：目前只拦"分隔符丢了"这一种最常见的。 */
+    function destinationProblem(path) {
+      if (!path) return '';
+      // Windows 盘符后必须紧跟分隔符：`C:Users...` 这种是**驱动器相对路径**，
+      // 不是一个正常目录 —— 用户看到的却是"目标目录不存在"，很难联想到是少了 `\`。
+      if (/^[A-Za-z]:[^\\/]/.test(path)) {
+        return '路径少了一个分隔符：Windows 盘符后应当紧跟 \\ 或 /（如 D:\\图库\\相册）';
+      }
+      // 非 Windows 的绝对路径必须以 / 开头；两条都拦不住时后端还有一道 is_absolute 校验。
+      if (!/^[A-Za-z]:[\\/]/.test(path) && !path.startsWith('/') && !path.startsWith('\\\\')) {
+        return '请填**绝对**路径（如 D:\\图库\\相册 或 /home/me/pics）';
+      }
+      return '';
+    }
+
+    async function run() {
+      // 以**输入框当前的值**为准，不依赖 `input` 事件一定触发过：自动化（send_keys）、
+      // 输入法、以及"先粘贴再立刻点按钮"都可能让事件还没到，按钮却已经可点。
+      syncFromInput();
+      const problem = destinationProblem(state.destination);
+      if (problem) {
+        toast(problem, true);
+        setNote(problem);
+        return;
+      }
+      if (!state.destination) {
+        toast('请先选择或填写落地目录', true);
+        return;
+      }
+      state.busy = true;
+      updateRunButton();
+      setNote('正在取回…（文件多时请耐心等待，同一个目录重复执行只会补差异）');
+      try {
+        const result = await call('mirror_share', {
+          device_id: state.deviceId, share_id: state.shareId, destination: state.destination,
+        });
+        if (!result || !result.success) {
+          toast((result && result.error) || '取回失败', true);
+          setNote(`取回失败：${(result && result.error) || '未知原因'}`);
+          return;
+        }
+        const label = `团体组网 · ${result.name || state.deviceId.slice(0, 8)}/${state.shareId}`;
+        const parts = [`取回 ${result.fetched} 个文件`,
+                       `跳过 ${result.unchanged} 个（已一致）`];
+        if (result.error_count) parts.push(`失败 ${result.error_count} 个`);
+        if (result.truncated) parts.push('达到条目上限，只取了一部分');
+        toast(`已取回 ${result.fetched} 个文件`);
+        setNote(`${parts.join('，')}。目录：${result.root}`);
+        // 回填给组件：它会把该目录加进列表（去重 + 规范化），宿主插件保存时写入设置
+        reply({ action: 'picked', path: result.root, label });
+      } catch (e) {
+        toast(`取回失败：${e}`, true);
+        setNote(`取回失败：${e}`);
+      } finally {
+        state.busy = false;
+        updateRunButton();
+      }
+    }
+
+    el('nl-pick').addEventListener('click', pickDestination);
+    el('nl-dest-input').addEventListener('input', syncFromInput);
+    el('nl-dest-input').addEventListener('change', syncFromInput);
+    // 失焦后再回写规范化结果才是安全的（此时用户已经停止逐字符输入）
+    el('nl-dest-input').addEventListener('blur', () => {
+      syncFromInput();
+      el('nl-dest-input').value = state.destination;
+    });
+    el('nl-run').addEventListener('click', run);
+    el('nl-cancel').addEventListener('click', () => reply({ action: 'cancelled' }));
+    loadPeers();
+  </script>
+</body>
+</html>

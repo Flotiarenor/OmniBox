@@ -661,6 +661,22 @@ class EndToEndTest(unittest.TestCase):
             nested = client.list_directory(connection, 'pub', 'sub')
             self.assertEqual([e['name'] for e in nested['entries']], ['nested.txt'])
 
+    def test_listing_and_stat_carry_mtime_ns(self):
+        """目录项与 stat 都要带对端真实的 mtime，且必须是纳秒整数。
+
+        物化目录的变更判定（"对端换了没有"）与消费方插件的缓存失效都吃这个字段；
+        缺了它只能比大小，同大小的替换永远发现不了。用 int 而不是 float 秒：
+        float 在 2025 年的分辨率只有约 0.24 µs，且是 `st_mtime_ns / 1e9` 的有损视图。
+        """
+        expected = (self.shared / 'note.txt').stat().st_mtime_ns
+        with self._connect() as connection:
+            listing = client.list_directory(connection, 'pub', '.')
+            entry = next(e for e in listing['entries'] if e['name'] == 'note.txt')
+            stat_result = client.stat_share(connection, 'pub', 'note.txt')
+        self.assertIsInstance(entry['mtime_ns'], int)
+        self.assertEqual(entry['mtime_ns'], expected)
+        self.assertEqual(stat_result['mtime_ns'], expected)
+
     def test_path_traversal_is_forbidden(self):
         with self._connect() as connection:
             with self.assertRaises(RemoteError) as ctx:

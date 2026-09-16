@@ -92,8 +92,25 @@ class PluginContractTest(unittest.TestCase):
         但插件一条都没暴露 —— 于是"跨机联调通过"与"界面里拉不回一个文件"并存。
         """
         api = set(self.plugin.register_api())
-        for name in ('list_peers', 'list_remote', 'download_remote', 'refresh_share_roots'):
+        for name in ('list_peers', 'list_remote', 'download_remote', 'refresh_share_roots',
+                     'materialize_remote', 'mirror_share'):
             self.assertIn(name, api)
+
+    def test_declares_network_location_provider(self):
+        """注册成「网络位置」提供方，且 embedUrl 指向**真实存在**的页面。
+
+        壳的共享目录组件（FolderPicker）按这条 URL 去嵌 iframe，写错路径不会在任何
+        地方报错 —— 只会在用户点「🌐 网络位置」时弹出一个白屏。所以用文件存在性钉住它。
+        """
+        extensions = self.plugin.get_extensions()
+        provider = next((e for e in extensions if e.get('placement') == 'network-location'), None)
+        self.assertIsNotNone(provider, f'没有注册网络位置提供方: {extensions}')
+        # 不写 host：组件出现在**任意**插件的设置里，提供方要对所有宿主可用
+        self.assertNotIn('host', provider)
+        url = str(provider.get('embedUrl') or '')
+        self.assertTrue(url.startswith('/plugins/group-mesh/frontend/'), url)
+        page = PLUGIN_DIR / 'frontend' / url.split('/frontend/', 1)[1]
+        self.assertTrue(page.is_file(), f'提供方页面不存在: {page}')
 
     def test_identity_dir_is_protected(self):
         """§4.1：设备私钥不导出。插件至少必须申报身份目录，禁止文件服务端出去。"""
