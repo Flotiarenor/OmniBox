@@ -439,6 +439,22 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         if not (frontend_dist / filename).exists() and not filename.startswith('assets'):
             return send_from_directory(frontend_dist, 'index.html')
         return send_from_directory(frontend_dist, filename)
+    def _needs_content(instance, full_path: Path) -> bool:
+        """该路径是否"存在但内容还没真正取到本地"（决定要不要回调 `ensure_file`）。
+
+        两种情况缺一不可：
+          * 文件不存在 —— 普通插件按需生成内容的场景；
+          * **文件存在但是占位** —— 物化类插件（group-mesh）先造 0 字节占位文件、
+            再靠 `ensure_file` 取真字节。只判"不存在"会把占位当正常文件返回
+            （实测踩到：HTTP 200 + 0 字节，远端内容永远不会被取回）。
+        """
+        if not full_path.is_file():
+            return True
+        try:
+            return bool(instance.is_content_placeholder(full_path))
+        except Exception:
+            return False
+
     def serve_media_file(filepath, plugin_name):
         """媒体/文件访问：支持相对路径和绝对路径，并做越权目录校验。"""
         instance = plugin_manager.get_plugin_instance(plugin_name) if plugin_name else None
@@ -473,6 +489,16 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
                 _reject_protected_file(full_path)
                 if not any(_is_safe_path(full_path, root) for root in roots):
                     abort(403)
+                # 按需把内容取到本地（如 group-mesh 的远端共享项）：必须放在"文件
+                # 是否存在"判定之前，且**在根校验之后** —— 插件实现会按这个路径写盘，
+                # 先校验才不会让它往根之外写。与 /thumbs 的 ensure_thumb 同一顺序。
+                # 判定条件不能只看"文件不存在"：物化出来的占位文件是存在的（0 字节），
+                # 只判 exists 会把占位当正常文件返回（实测踩到：200 + 0 字节）。
+                if instance is not None and _needs_content(instance, full_path):
+                    try:
+                        instance.ensure_file(full_path)
+                    except Exception:
+                        pass
                 if not full_path.is_file():
                     abort(404)
                 return send_file(full_path, conditional=True)
@@ -482,6 +508,11 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             _reject_protected_file(full_path)
             if not _is_safe_path(full_path, data_root):
                 abort(403)
+            if not full_path.exists() and instance is not None:
+                try:
+                    instance.ensure_file(full_path)
+                except Exception:
+                    pass
             if not full_path.exists():
                 abort(404)
             return send_from_directory(data_root, filepath)

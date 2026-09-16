@@ -64,6 +64,10 @@ class _StubInstance:
     def ensure_thumb(self, rel_path):
         return None
 
+    def ensure_file(self, path):
+        """按需把内容取到本地（默认什么也不做，与 PluginBase 一致）。"""
+        return
+
 
 class _StubPluginManager:
     def __init__(self):
@@ -147,6 +151,76 @@ class _FileRouteFixture:
 
     def _token_path(self) -> Path:
         return get_token_file(get_config_dir())
+
+
+class OnDemandFileFetchTests(_FileRouteFixture, unittest.TestCase):
+    """`/file` 找不到文件时回调 `ensure_file`，让插件把内容取到本地。
+
+    这是"远端内容能被任何按本地路径工作的插件使用"的关键一环：group-mesh 把远端
+    共享项物化成目录 + 0 字节占位，真正的字节只在这个钩子里按需取回。
+    """
+
+    class _OnDemandInstance(_StubInstance):
+        def __init__(self, root, filler):
+            super().__init__([root])
+            self._filler = filler
+            self.calls = []
+
+        def ensure_file(self, path):
+            self.calls.append(str(path))
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_bytes(self._filler)
+
+    def _register(self, filler=b'FETCHED-FROM-REMOTE'):
+        root = Path(self._tmp.name) / 'remote-cache'
+        root.mkdir(exist_ok=True)
+        instance = self._OnDemandInstance(root, filler)
+        self.manager._instances['on-demand'] = instance
+        return root, instance
+
+    def test_missing_file_is_fetched_then_served(self):
+        root, instance = self._register()
+        target = root / 'share' / 'photo.bin'
+        self.assertFalse(target.exists())
+        resp = self._get('/file?path=' + quote(str(target)) + '&plugin=on-demand')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_data(), b'FETCHED-FROM-REMOTE')
+        # 回调收到的路径是壳归一化后的（Windows 上 8.3 短名会被展开成长名），
+        # 因此比"是否同一个文件"而不是逐字比字符串
+        self.assertEqual(len(instance.calls), 1, f'应当只回调一次: {instance.calls}')
+        self.assertTrue(os.path.samefile(instance.calls[0], target))
+        self.assertTrue(target.is_file(), '内容应当真的落到该路径')
+
+    def test_existing_file_does_not_trigger_fetch(self):
+        """本地已有的文件不该回调插件：那会把每次读取都变成一次远端往返。"""
+        root, instance = self._register()
+        target = root / 'share' / 'local.bin'
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b'ALREADY-LOCAL')
+        resp = self._get('/file?path=' + quote(str(target)) + '&plugin=on-demand')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_data(), b'ALREADY-LOCAL')
+        self.assertEqual(instance.calls, [])
+
+    def test_out_of_root_path_is_403_and_never_calls_plugin(self):
+        """越界路径必须 403，且**不得**回调插件。
+
+        顺序上必须先做根校验再回调：`ensure_file` 会按传入路径写盘，先回调就等于
+        允许插件往根之外写文件。
+        """
+        root, instance = self._register()
+        resp = self._get('/file?path=' + quote(str(self.outside)) + '&plugin=on-demand')
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(instance.calls, [], '越界路径不该触发插件回调')
+        self.assertEqual(self.outside.read_text(encoding='utf-8'), 'TOP-SECRET')
+
+    def test_plugin_that_cannot_fetch_still_yields_404(self):
+        """插件取不到时（不抛异常、也不落盘）应当是 404，而不是 500。"""
+        root = Path(self._tmp.name) / 'empty-cache'
+        root.mkdir(exist_ok=True)
+        self.manager._instances['no-fetch'] = _StubInstance([root])
+        resp = self._get('/file?path=' + quote(str(root / 'nope.bin')) + '&plugin=no-fetch')
+        self.assertEqual(resp.status_code, 404)
 
 
 class FilePathRouteTests(_FileRouteFixture, unittest.TestCase):
