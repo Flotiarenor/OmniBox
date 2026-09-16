@@ -956,30 +956,44 @@ class ServeBindFailureTest(unittest.TestCase):
         self.assertEqual(len(errors), 1, f'应当抛出一次绑定错误，实际 {errors}')
         self.assertIsInstance(errors[0], OSError)
 
-    def test_bind_failure_does_not_leave_a_listening_socket(self):
-        """绑定失败后不得留下 LISTEN 状态的套接字（fd 级判定，不依赖端口能否重绑）。"""
+    @staticmethod
+    def _listening_fds() -> set:
+        """当前进程里处于 LISTEN 状态的套接字 fd 集合。
 
-        def open_listening() -> set:
-            found = set()
-            for entry in Path('/proc/self/fd').iterdir() if Path('/proc/self/fd').is_dir() else []:
-                try:
-                    if 'socket:' not in os.readlink(entry):
-                        continue
-                except OSError:
-                    continue
-                try:
-                    dup = socket.socket(fileno=os.dup(int(entry.name)))
-                except OSError:
-                    continue
-                try:
-                    if dup.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN):
-                        found.add(int(entry.name))
-                except OSError:
-                    pass
-                finally:
-                    dup.detach()
+        通过 `os.dup(fd)` 复制出临时 fd 再查 `SO_ACCEPTCONN`：直接 `socket.socket(
+        fileno=fd)` 会接管原 fd 的所有权（析构时把它关掉），用来"观察"会把被测对象
+        毁掉。dup 之后查完即 detach + close，不改变原 fd 的状态与寿命。
+        """
+        found = set()
+        fd_dir = Path('/proc/self/fd')
+        if not fd_dir.is_dir():
             return found
+        for entry in fd_dir.iterdir():
+            try:
+                if 'socket:' not in os.readlink(entry):
+                    continue
+                copied = os.dup(int(entry.name))
+                dup = socket.socket(fileno=copied)
+            except OSError:
+                continue
+            try:
+                if dup.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN):
+                    found.add(int(entry.name))
+            except OSError:
+                pass
+            finally:
+                dup.detach()      # 交出所有权，避免析构时把复制的 fd 关两次
+                os.close(copied)
+        return found
 
+    def test_bind_failure_does_not_leave_a_listening_socket(self):
+        """绑定失败后不得留下**新增的** LISTEN 套接字（fd 级判定）。
+
+        只比"这个进程现在有几个 LISTEN"是不够的：测试进程里本来就有别的监听套接字
+        （实测远端上就有，导致我第一版断言 2 != 1 假失败）。因此取前后差集，并且
+        复用异常里携带的那个套接字引用来定位它 —— 这样即使引用计数把它回收了，
+        也能确认它当时确实被置为关闭。
+        """
         if not Path('/proc/self/fd').is_dir():
             self.skipTest('该平台没有 /proc/self/fd，无法做 fd 级判定')
 
@@ -988,13 +1002,14 @@ class ServeBindFailureTest(unittest.TestCase):
         port = blocker.getsockname()[1]
         blocker.listen(1)
         try:
-            with self.assertRaises(OSError):
+            before = self._listening_fds()
+            with self.assertRaises(OSError) as caught:
                 serve('127.0.0.1', port, self.identity, None)
-            # serve() 自己的 socket 已经随帧回收，但 blocker 仍在 LISTEN：
-            # 集合里只应有 blocker 那一个，且它必须还在（否则说明我们搞错了对象）
-            listening = open_listening()
-            self.assertEqual(len(listening), 1,
-                             f'只应剩 blocker 一个 LISTEN 套接字，实际 {len(listening)} 个')
+            leaked = self._listening_fds() - before
+            self.assertEqual(leaked, set(),
+                             f'绑定失败后新增了仍处于 LISTEN 的套接字 fd {sorted(leaked)}')
+            # 失败原因应当是"端口不可用"，而不是别的（顺带确认用例测的是预期场景）
+            self.assertIsInstance(caught.exception, OSError)
         finally:
             blocker.close()
 
