@@ -84,6 +84,9 @@ class Node:
     audit: List[Dict[str, Any]] = field(default_factory=list)
     # 每次建连时重新读取名单的回调（见 current_roster）。
     roster_loader: Optional[Callable[[], Optional[Roster]]] = None
+    # 外部请求停止：accept 循环每轮检查一次（见 serve() 里为什么用轮询而不是
+    # "另一个线程 close 套接字"）。None 表示不检查，一直服务到套接字被关闭。
+    stop_requested: Optional[Callable[[], bool]] = None
 
     @property
     def device_key(self) -> bytes:
@@ -346,7 +349,8 @@ def serve(host: str, port: int, identity: Identity, roster: Optional[Roster],
           registry: Optional[Registry] = None,
           roster_loader: Optional[Callable[[], Optional[Roster]]] = None,
           ready: Optional[Callable[[socket.socket], None]] = None,
-          on_error: Optional[Callable[[socket.socket, BaseException], None]] = None) -> None:
+          on_error: Optional[Callable[[socket.socket, BaseException], None]] = None,
+          stop_requested: Optional[Callable[[], bool]] = None) -> None:
     """在一个 TCP 端口上服务任何已加入团体的设备。
 
     单一连接失败只影响那条连接：握手或请求出错即断开，监听循环继续
@@ -361,7 +365,8 @@ def serve(host: str, port: int, identity: Identity, roster: Optional[Roster],
     close"这条缺陷在测试里观察不到，实测确认过）。
     """
     node = Node(identity=identity, roster=roster, shares=dict(shares or {}),
-                registry=registry, roster_loader=roster_loader)
+                registry=registry, roster_loader=roster_loader,
+                stop_requested=stop_requested)
     family = socket.AF_INET6 if ':' in host else socket.AF_INET
     listener = socket.socket(family, socket.SOCK_STREAM)
     try:
@@ -384,14 +389,24 @@ def serve(host: str, port: int, identity: Identity, roster: Optional[Roster],
                 pass
         listener.close()
         raise
+    # accept 的轮询间隔（秒）。为什么不用"另一个线程 close() 套接字来打断 accept"：
+    # **Windows 上从另一个线程 closesocket() 并不保证解开阻塞中的 accept()**，于是
+    # 停止线程可能永远卡在那里、监听套接字也关不掉（实测症状：界面点"停止节点"
+    # 没有效果，端口一直被占、再启动就是 EADDRINUSE）。改成给监听套接字设一个短
+    # 超时，accept 定期返回，循环里检查停止事件 —— 这在两个平台上都靠得住。
+    ACCEPT_POLL_SECONDS = 0.5
+
+    listener.settimeout(ACCEPT_POLL_SECONDS)
     if ready is not None:
         ready(listener)
     try:
-        while True:
+        while not (node.stop_requested is not None and node.stop_requested()):
             try:
                 sock, address = listener.accept()
+            except socket.timeout:
+                continue
             except OSError:
-                break
+                break          # 套接字已被关闭（stop() 走的是这条路）
             _serve_one(sock, address, node)
     finally:
         listener.close()

@@ -957,6 +957,50 @@ class ServeBindFailureTest(unittest.TestCase):
         self.assertEqual(len(errors), 1, f'应当抛出一次绑定错误，实际 {errors}')
         self.assertIsInstance(errors[0], OSError)
 
+    def test_stop_request_ends_the_accept_loop_and_frees_the_port(self):
+        """`stop_requested` 置位后 accept 循环必须退出，**且端口真的被释放**。
+
+        这条守的是"停止节点点了没用"：原先只有"另一个线程 close 套接字"这一条退出
+        路径，而 Windows 上 `closesocket()` 不保证解开阻塞中的 `accept()`，线程可能
+        永远卡住、套接字也关不掉 —— 界面显示已停止，端口却仍被占，再启动就是
+        EADDRINUSE。改成 0.5 秒轮询 + 检查停止标志后，退出是确定性的。
+        """
+        stop = threading.Event()
+        started = threading.Event()
+        bound: list = []
+        errors: list = []
+
+        def run():
+            try:
+                serve('127.0.0.1', 0, self.identity, None,
+                      ready=lambda listener: (bound.append(listener.getsockname()[1]),
+                                              started.set()),
+                      stop_requested=stop.is_set)
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        self.assertTrue(started.wait(timeout=5), 'serve() 应当把监听套接字交出来')
+        port = bound[0]
+        self.assertTrue(thread.is_alive(), '未请求停止时应当一直在服务')
+
+        stop.set()
+        thread.join(timeout=5)
+        self.assertFalse(thread.is_alive(),
+                         '停止标志置位后 accept 循环应当在轮询间隔内退出')
+        self.assertEqual(errors, [], f'serve() 不应因正常停止抛异常：{errors}')
+
+        # 端口必须真的腾出来了（这正是用户能再次点"启动节点"的前提）
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(('127.0.0.1', port))
+        except OSError as e:
+            self.fail(f'停止后端口 {port} 仍不可用：{e}')
+        finally:
+            probe.close()
+
     def test_bind_failure_does_not_leave_a_listening_socket(self):
         """绑定失败后不得留下**新增的** LISTEN 套接字（fd 级判定）。
 

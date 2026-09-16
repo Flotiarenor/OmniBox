@@ -1580,7 +1580,8 @@ class GroupMeshPlugin(PluginBase):
                 # roster_loader：每次建连重读名单。群主在别处加了成员后，
                 # 运行中的节点必须立刻认，而不是要求用户重启插件。
                 serve(bind, port, identity, roster, shares=shares, registry=registry,
-                      roster_loader=self._load_roster, ready=on_ready)
+                      roster_loader=self._load_roster, ready=on_ready,
+                      stop_requested=self._node_stop.is_set)
             except OSError as e:
                 self._last_error = self._listen_error(bind, port, e)
                 log.warning(f'[group-mesh] {self._last_error}')
@@ -1605,7 +1606,15 @@ class GroupMeshPlugin(PluginBase):
         return {'success': False, 'error': status.get('error') or '节点启动失败', 'node': status}
 
     def stop_node(self) -> Dict[str, Any]:
-        """停止监听：关掉监听套接字，accept 循环随之退出。"""
+        """停止监听：请求 accept 循环退出，**并确认线程真的结束了**。
+
+        为什么必须确认：原先是无条件 `_node_thread = None` + 返回 success —— 而
+        "另一个线程 close 监听套接字"在 Windows 上并不保证解开阻塞中的 `accept()`，
+        于是线程可能一直卡在那里、套接字也关不掉：界面显示"已停止"，端口却仍被占，
+        再点启动就是 EADDRINUSE（实测症状）。现在按 0.5 秒轮询（见内核 serve()），
+        最多等 `timeout` 秒；仍没停就**如实报失败**，并把线程引用留着 ——
+        谎报成功会让用户以为端口已经腾出来了。
+        """
         self._node_stop.set()
         listener = self._listener
         if listener is not None:
@@ -1615,8 +1624,19 @@ class GroupMeshPlugin(PluginBase):
                 pass
         thread = self._node_thread
         if thread is not None:
-            thread.join(timeout=5)
+            thread.join(timeout=8)
+            if thread.is_alive():
+                # 不置空 _node_thread：留着它，后续 start_node 的"已在运行"判定与
+                # 状态显示才与事实一致。
+                self._last_error = ('停止节点超时：监听线程没有在 8 秒内退出，'
+                                    '端口可能仍被占用。')
+                log.warning(f'[group-mesh] {self._last_error}')
+                return {'success': False, 'error': self._last_error,
+                        'node': self.get_node_status()}
         self._node_thread = None
+        self._listener = None
+        self._listening = None
+        self._published_seq = None
         return {'success': True, 'node': self.get_node_status()}
 
     def _publish_registration(self, bind: str, port: int) -> Optional[int]:
