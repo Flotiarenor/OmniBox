@@ -735,20 +735,29 @@ class GroupMeshPlugin(PluginBase):
         return names
 
     @staticmethod
-    def _pick_endpoint(endpoints: Iterable[Any]) -> Optional[Tuple[str, int]]:
-        """从注册记录的端点里挑一个可用的。优先 IPv6 —— 那是设计文档的主路径。"""
+    def _peer_endpoints(info: Dict[str, Any]) -> List[Tuple[str, int]]:
+        """一台设备发布的**全部**可用端点（IPv6 在前，然后 IPv4）。
+
+        为什么不能只返回一个：§4.6.1 把 IPv4 定位为可达性兜底，设备因此常常同时
+        发布两种端点。只挑一个的话，首选那个不通（IPv6 没路由、对端只在 v4 上可达）
+        就会把整台设备判成离线 —— 而它其实就在那儿。
+        """
         valid: List[Tuple[str, int]] = []
-        for item in endpoints or []:
+        for item in info.get('endpoints') or []:
             try:
-                address, port = item[0], int(item[1])
+                address, port = str(item[0]), int(item[1])
             except (TypeError, ValueError, IndexError):
                 continue
-            if address and 1 <= port <= 65535:
-                valid.append((str(address), port))
-        if not valid:
-            return None
+            if address and 1 <= port <= 65535 and (address, port) not in valid:
+                valid.append((address, port))
         valid.sort(key=lambda pair: 0 if ':' in pair[0] else 1)
-        return valid[0]
+        return valid
+
+    @staticmethod
+    def _pick_endpoint(endpoints: Iterable[Any]) -> Optional[Tuple[str, int]]:
+        """从端点列表里挑一个**首选**（用于界面展示）。优先 IPv6 —— 那是主路径。"""
+        picked = GroupMeshPlugin._peer_endpoints({'endpoints': list(endpoints or [])})
+        return picked[0] if picked else None
 
     def _peer_names(self, roster: Optional[Roster]) -> Dict[str, Dict[str, Any]]:
         """注册表里的每台设备 -> 它自称的名字与共享清单。"""
@@ -880,6 +889,7 @@ class GroupMeshPlugin(PluginBase):
             return {'success': False, 'error': '需要先创建身份与团体'}
 
         self._ensure_registry()
+        self_device_id = identity.device.public_key.hex()
         errors: List[Dict[str, str]] = []
         if refresh:
             # 先确保本机的注册记录是最新的（地址变化时递增 seq 重发，§7.4）。
@@ -901,21 +911,30 @@ class GroupMeshPlugin(PluginBase):
                 except (RemoteError, TransportError, OSError) as e:
                     errors.append({'device': str(entry.get('name') or endpoint[0]),
                                    'error': str(e)})
-            # 再按注册记录里已经学到的端点逐台刷新（§7.3）。对端不可达只影响它自己，
-            # 不能因为一台离线就让整张列表失败。
+            # 逐台刷新注册快照（§7.3：任一在线共享节点都能提供完整快照）。
+            # **每个端点都要试**，而不是只挑一个：§4.6.1 说明 IPv4 是可达性兜底，
+            # 所以设备常同时发布 IPv6 与 IPv4 端点 —— 只试一个的话，IPv6 不通就
+            # 会把一台其实能连的设备判成离线。
+            # 对端不可达只影响它自己，不能因为一台离线就让整张列表失败。
             for device_id, info in list(self._peer_names(roster).items()):
-                endpoint = self._pick_endpoint(info.get('endpoints'))
-                if endpoint is None or endpoint in seen:
+                if device_id == self_device_id:
                     continue
-                try:
-                    self._fetch_registry_from(endpoint, identity, roster)
-                except (RemoteError, TransportError, OSError) as e:
-                    errors.append({'device': info.get('name') or device_id,
-                                   'error': str(e)})
+                failure = ''
+                for endpoint in self._peer_endpoints(info):
+                    if endpoint in seen:
+                        continue
+                    seen.append(endpoint)
+                    try:
+                        self._fetch_registry_from(endpoint, identity, roster)
+                        failure = ''
+                        break
+                    except (RemoteError, TransportError, OSError) as e:
+                        failure = f'{endpoint[0]}:{endpoint[1]} 连不上: {e}'
+                if failure:
+                    errors.append({'device': info.get('name') or device_id, 'error': failure})
 
         peers: List[Dict[str, Any]] = []
         names = self._peer_names(roster)
-        self_device_id = identity.device.public_key.hex()
         for device_id, info in names.items():
             if device_id == self_device_id:
                 continue  # 本机不作为"对端"列出
@@ -1006,20 +1025,20 @@ class GroupMeshPlugin(PluginBase):
         return
 
     def _manual_endpoints(self, device_id: str, roster: Roster) -> List[Tuple[Tuple[str, int], str]]:
-        """手动登记里的候选端点（含注册表学到的那一个，如果已知）。
+        """候选端点（设备**发布过的全部端点** + 手动登记的那些）。
 
-        返回多个候选是为了"同一台设备在局域网与 IPv6 上各有一个地址"这种情形：
-        第一个连不上时再试下一个。**只对连接失败重试** —— 权限或路径错误是确定性
+        返回多个候选有两个来源，都需要：同一台设备可能同时发布 IPv6 与 IPv4
+        （§4.6.1 把 v4 当可达性兜底），以及用户在引导期手工填过一个地址。
+        第一个连不上时再试下一个；**只对连接失败重试** —— 权限或路径错误是确定性
         结论，换一台设备重试只会把真正的错误盖掉。
         """
         candidates: List[Tuple[Tuple[str, int], str]] = []
-        identity = self._load_identity()
         names = self._peer_names(roster) if self._registry is not None else {}
         info = names.get(device_id) if device_id else None
         if info is not None:
-            picked = self._pick_endpoint(info.get('endpoints'))
-            if picked is not None:
-                candidates.append((picked, str(info.get('name') or device_id)))
+            label = str(info.get('name') or device_id)
+            for endpoint in self._peer_endpoints(info):
+                candidates.append((endpoint, label))
         for entry in self._load_manual_peers():
             if info is not None and str(entry.get('name') or '') and \
                     str(entry.get('name')) != str(info.get('name') or ''):
@@ -1032,15 +1051,6 @@ class GroupMeshPlugin(PluginBase):
             label = str(entry.get('name') or '')
             if (endpoint, label) not in candidates:
                 candidates.append((endpoint, label))
-        # 引导：只有地址、还不知道设备 ID 时，手动登记的就是全部候选
-        if not device_id and not candidates:
-            for entry in self._load_manual_peers():
-                try:
-                    candidates.append(((str(entry['host']), int(entry['port'])),
-                                       str(entry.get('name') or '')))
-                except (KeyError, TypeError, ValueError):
-                    continue
-        _ = identity
         return candidates
 
     def list_remote(self, opts: Any = None, device_id: str = '', share_id: str = '',

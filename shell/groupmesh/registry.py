@@ -244,8 +244,15 @@ def local_addresses(prefer_ipv6: bool = True) -> List[str]:
 
     设计文档 §7.4 要求使用**稳定地址**（EUI-64 或 RFC 7217 stable-privacy），
     不使用 Windows 默认启用的 RFC 4941 临时地址（会轮换）。Python 标准库拿不到
-    "该地址是否是临时地址"这一信息，因此这里只做"排除回环与链路本地"的粗过滤，
-    **临时地址的识别留作待实测项**（见实现路径文档 P1）。"""
+    "该地址是否是临时地址"这一信息，因此这里只做**可达性不可能成立**的过滤，
+    **临时地址的识别留作待实测项**（见实现路径文档 P1）。
+
+    过滤掉：回环、链路本地、多播、未指定 —— 这些地址发布出去对任何对端都没有意义。
+    保留其余全部（含私有网段与虚拟网卡）：实测本机有一张 Radmin VPN 网卡
+    （`26.234.197.234`，PrefixOrigin=Manual），它对**同为该 VPN 成员**的设备是可用的，
+    因此按"是不是我认识的网段"来筛会误删合法端点。端点选择交给连接侧：连不上就换
+    下一个（`PluginBase` 的 `_peer_endpoints` 逐个尝试）。
+    """
     import socket
 
     addresses: List[str] = []
@@ -257,13 +264,22 @@ def local_addresses(prefer_ipv6: bool = True) -> List[str]:
         address = sockaddr[0]
         if family == socket.AF_INET6:
             address = address.split('%')[0]
-            if address.startswith('fe80') or address == '::1':
-                continue
-        elif family == socket.AF_INET:
-            if address.startswith('127.'):
-                continue
+        elif family != socket.AF_INET:
+            continue
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if parsed.is_loopback or parsed.is_link_local or parsed.is_multicast \
+                or parsed.is_unspecified:
+            continue
         if address not in addresses:
             addresses.append(address)
     if prefer_ipv6:
-        addresses.sort(key=lambda a: 0 if ':' in a else 1)
+        # IPv6 优先（主路径）；同族内私有网段排前面 —— 局域网直连通常比走公网
+        # 更快，也更可能真的可达（设计文档 §4.6.1：IPv4 是可达性兜底）。
+        addresses.sort(key=lambda a: (
+            0 if ':' in a else 1,
+            0 if ipaddress.ip_address(a).is_private else 1,
+        ))
     return addresses
