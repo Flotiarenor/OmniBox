@@ -157,7 +157,7 @@ class GroupMeshInShellTest(unittest.TestCase):
         frame = self.driver.find_element(By.TAG_NAME, 'iframe')
         self.driver.switch_to.frame(frame)
         self.assertTrue(self._wait_for(lambda: len(self.driver.find_elements(
-            By.CSS_SELECTOR, '#identity-actions .gm-btn, #roster-actions .gm-btn')) > 0),
+            By.CSS_SELECTOR, '#identity-actions .btn, #roster-actions .btn')) > 0),
             '插件应当渲染出动作按钮（说明 Bridge 与后端调用都是通的）')
         return frame
 
@@ -181,22 +181,35 @@ class GroupMeshInShellTest(unittest.TestCase):
                          '身份卡片不应是空白')
 
     def test_no_modal_overlays_the_plugin_on_open(self):
-        """回归：三个弹窗曾因 CSS 覆盖 `hidden` 而一打开就同时铺满整屏。"""
+        """回归：弹窗曾因 CSS 覆盖 `hidden` 而一打开就同时铺满整屏。
+
+        弹窗容器已迁到壳的 `.modal`（base.css），因此这里按壳的选择器断言；
+        同时校验用的是壳的模态框结构，避免有人加回一个自绘容器。
+        """
         from selenium.webdriver.common.by import By
         self._enter_plugin()
         visible = [m.get_attribute('id') for m in
-                   self.driver.find_elements(By.CSS_SELECTOR, '.gm-modal') if m.is_displayed()]
+                   self.driver.find_elements(By.CSS_SELECTOR, '.modal') if m.is_displayed()]
         self.assertEqual(visible, [], f'打开插件时不应有可见弹窗，实际: {visible}')
+        # 每个弹窗都必须是壳的 .modal-box 结构（而不是插件自绘的容器）
+        self.assertTrue(self.driver.find_elements(By.CSS_SELECTOR, '.modal .modal-box'))
+        self.assertTrue(self.driver.find_elements(By.CSS_SELECTOR, '.modal .modal-footer'))
 
     def test_create_or_join_entries_are_reachable(self):
         """全新安装必须能看到创建/加入团体的入口，不能被弹窗盖住。"""
         from selenium.webdriver.common.by import By
         self._enter_plugin()
+        # 动作区是**按状态异步渲染**的：先等出按钮再断言文案，
+        # 否则会在 get_status 还没回来的空档里读到空字符串。
+        self.assertTrue(self._wait_for(lambda: '创建团体' in self.driver.find_element(
+            By.ID, 'roster-actions').text or '显示邀请串' in self.driver.find_element(
+            By.ID, 'roster-actions').text), '动作区应当渲染出团体相关入口')
         actions = self.driver.find_element(By.ID, 'roster-actions').text
         roster = self.driver.find_element(By.ID, 'roster-body').text
         if '还没有团体名单' in roster:
             self.assertIn('创建团体', actions)
-            self.assertIn('加入团体', actions)
+            # 入口同时承担"更新名单"，因此标签是"加入 / 更新团体"
+            self.assertIn('加入 / 更新团体', actions)
             self.assertNotIn('添加成员', actions)
         else:
             # 已有团体：入口换成邀请串/添加成员，至少"显示邀请串"必须在

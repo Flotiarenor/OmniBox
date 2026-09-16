@@ -14,6 +14,7 @@
 """
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -82,6 +83,16 @@ class PluginContractTest(unittest.TestCase):
                     'start_node', 'stop_node', 'get_node_status'}
         self.assertTrue(expected <= set(self.plugin.register_api()))
 
+    def test_remote_api_surface(self):
+        """远端浏览/取回必须真的挂在 register_api 上。
+
+        在此之前内核已有 `client.list_shares / list_directory / fetch_to_file`，
+        但插件一条都没暴露 —— 于是"跨机联调通过"与"界面里拉不回一个文件"并存。
+        """
+        api = set(self.plugin.register_api())
+        for name in ('list_peers', 'list_remote', 'download_remote', 'refresh_share_roots'):
+            self.assertIn(name, api)
+
     def test_identity_dir_is_protected(self):
         """§4.1：设备私钥不导出。插件至少必须申报身份目录，禁止文件服务端出去。"""
         protected = [Path(p) for p in self.plugin.get_protected_paths()]
@@ -90,10 +101,15 @@ class PluginContractTest(unittest.TestCase):
 
     def test_settings_schema_shape(self):
         keys = {item['key'] for item in self.plugin.settings_schema}
-        self.assertEqual(keys, {'port', 'bind', 'group_name', 'principal_name', 'ttl_days'})
+        self.assertEqual(keys, {'port', 'bind', 'group_name', 'principal_name',
+                                'ttl_days', 'download_dir'})
         for item in self.plugin.settings_schema:
             self.assertIn('label', item)
             self.assertIn('type', item)
+        # 下载目录必须由 Shell 的目录选择器渲染（`directory` 类型），
+        # 否则用户又得手敲一个绝对路径。
+        download = next(i for i in self.plugin.settings_schema if i['key'] == 'download_dir')
+        self.assertEqual(download['type'], 'directory')
 
     def test_status_before_identity(self):
         status = self.plugin.get_status()
@@ -368,6 +384,219 @@ class RosterDistributionTest(unittest.TestCase):
         skipped = member.join_group({'invite': v3['invite']})
         self.assertFalse(skipped['success'], '跳版名单不应被接受')
         self.assertIn('prev', skipped['error'])
+
+
+class ShareLocationTest(unittest.TestCase):
+    """共享根是一个**有状态的位置**，而不是共享项里的一个字符串。
+
+    位置（`share_roots.json`）与对外声明（`shares.json` 里签名过的 declaration）
+    分开存：前者是本机事实、从不发给对端，后者是要签名的协议对象。混在一坨里，
+    "目录还在不在盘上"这类本机状态就会污染协议对象。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        module = load_plugin_module()
+        manifest = json.loads((PLUGIN_DIR / 'manifest.json').read_text(encoding='utf-8'))
+        config = {'directories': {'data_root': str(self.tmp / 'data')}}
+        self.plugin = module.GroupMeshPlugin(manifest, config)
+        self.plugin._settings_store = SettingsStore(str(self.tmp / 'settings'))
+        self.shared = self.tmp / 'shared'
+        self.shared.mkdir()
+
+    def tearDown(self):
+        self.plugin.on_unload()
+        self._tmp.cleanup()
+
+    def _add(self, share_id='docs'):
+        return self.plugin.add_share({'share_id': share_id, 'path': str(self.shared),
+                                      'read': 'group', 'write': 'owner', 'delete': 'owner'})
+
+    def assertSamePath(self, actual, expected, msg=''):
+        """比较两条路径是否指向同一位置。
+
+        不能逐字比字符串：Windows 上同一目录可能以 8.3 短名
+        （`C:\\Users\\ADMINI~1\\…`）或长名出现，`resolve()` 返回哪一种取决于该目录
+        当时是否已存在 —— 逐字比较会随机假失败（`test_plugin_host_contract` 里同款）。
+        """
+        try:
+            self.assertTrue(os.path.samefile(actual, expected), msg)
+        except OSError:
+            self.assertEqual(os.path.normcase(str(Path(actual).resolve())),
+                             os.path.normcase(str(Path(expected).resolve())), msg)
+
+    def test_location_is_stored_separately_from_declaration(self):
+        self.plugin.init_identity({'name': 'loc'})
+        self.assertTrue(self._add()['success'])
+        roots_file = self.plugin.identity_dir / 'share_roots.json'
+        self.assertTrue(roots_file.is_file(), '位置应写进独立的 share_roots.json')
+        roots = json.loads(roots_file.read_text(encoding='utf-8'))['roots']
+        self.assertSamePath(roots['docs']['path'], self.shared)
+        # 声明文件里不应再持有路径（那是本机事实，不该进签名对象）
+        shares = json.loads((self.plugin.identity_dir / 'shares.json')
+                            .read_text(encoding='utf-8'))['shares']
+        self.assertIn('declaration', shares['docs'])
+        self.assertEqual(shares['docs']['declaration']['acl']['read'], 'group')
+
+    def test_location_reports_missing_directory(self):
+        """共享根所在磁盘未接入时必须报"不可用"，而不是让对端看到空目录。"""
+        self.plugin.init_identity({'name': 'missing'})
+        self.assertTrue(self._add()['success'])
+        roots = self.plugin.get_share_roots()
+        self.assertEqual(len(roots), 1)
+        self.assertTrue(roots[0]['available'])
+
+        import shutil
+        shutil.rmtree(self.shared)
+        roots = self.plugin.get_share_roots()
+        self.assertFalse(roots[0]['available'], '目录没了却仍报可用会让对端看空目录')
+        self.assertIn('不存在', roots[0]['reason'] or '')
+
+    def test_downloads_dir_follows_setting(self):
+        default_dir = self.plugin.downloads_dir
+        self.assertEqual(default_dir.name, 'downloads')
+        custom = self.tmp / 'my-downloads'
+        custom.mkdir()
+        self.assertTrue(self.plugin.update_setting('download_dir', str(custom)))
+        self.assertSamePath(self.plugin.downloads_dir, custom)
+        # 缓存与下载必须是两个位置：前者可随时删，后者是用户要的文件
+        self.assertNotEqual(str(self.plugin.cache_dir.resolve()),
+                            str(self.plugin.downloads_dir.resolve()))
+
+    def test_refresh_reports_usage(self):
+        self.plugin.init_identity({'name': 'usage'})
+        (self.shared / 'a.bin').write_bytes(b'x' * 1000)
+        self.assertTrue(self._add()['success'])
+        result = self.plugin.refresh_share_roots()
+        self.assertTrue(result['success'])
+        item = result['roots'][0]
+        self.assertTrue(item['available'])
+        self.assertEqual(item['used_bytes'], 1000)
+        self.assertEqual(item['entries'], 1)
+
+
+class RemoteApiTest(unittest.TestCase):
+    """远端 API 的**离线**行为：参数校验、无注册表时的诚实回报。
+
+    真正跨机的部分由 `shell/groupmesh/tools/lan-test.ps1` / `ipv6-test.ps1` 与
+    手动联调覆盖；这里钉住的是"没有对端时也不能假装成功"。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        module = load_plugin_module()
+        manifest = json.loads((PLUGIN_DIR / 'manifest.json').read_text(encoding='utf-8'))
+        config = {'directories': {'data_root': str(self.tmp / 'data')}}
+        self.plugin = module.GroupMeshPlugin(manifest, config)
+        self.plugin._settings_store = SettingsStore(str(self.tmp / 'settings'))
+
+    def tearDown(self):
+        self.plugin.on_unload()
+        self._tmp.cleanup()
+
+    def test_list_peers_needs_identity_and_group(self):
+        result = self.plugin.list_peers(refresh=False)
+        self.assertFalse(result['success'])
+        self.assertIn('身份', result['error'])
+
+    def test_list_peers_without_registry_is_empty_and_honest(self):
+        self.plugin.init_identity({'name': 'solo'})
+        self.plugin.create_group({'group': 'solo-group'})
+        result = self.plugin.list_peers(refresh=False)
+        self.assertTrue(result['success'])
+        # 名单里只有自己：本机不作为"对端"列出
+        self.assertEqual(result['peers'], [])
+        self.assertEqual(result['registry_size'], 0)
+
+    def test_list_peers_lists_roster_members_without_registration(self):
+        """名单里有、注册表里没有的设备也要列出来。
+
+        否则用户会以为"名单里少了个人" —— 而实际只是那台设备没启动过节点。
+        """
+        owner = self.plugin
+        owner.init_identity({'name': 'owner'})
+        created = owner.create_group({'group': 'peer-group'})
+        self.assertTrue(created['success'])
+
+        member_dir = self.tmp / 'member'
+        member_manifest = json.loads((PLUGIN_DIR / 'manifest.json').read_text(encoding='utf-8'))
+        member = load_plugin_module().GroupMeshPlugin(
+            member_manifest, {'directories': {'data_root': str(member_dir / 'data')}})
+        member._settings_store = SettingsStore(str(member_dir / 'settings'))
+        self.addCleanup(member.on_unload)
+        member.init_identity({'name': 'member'})
+        keys = member.get_device_keys()
+        self.assertTrue(owner.add_member({'principal': keys['principal'],
+                                          'device': keys['device'], 'name': 'member'})['success'])
+
+        peers = owner.list_peers(refresh=False)['peers']
+        self.assertEqual(len(peers), 1)
+        self.assertEqual(peers[0]['name'], 'member')
+        self.assertEqual(peers[0]['shares'], [])
+        self.assertIn('注册记录', peers[0].get('note') or '')
+
+    def test_list_remote_without_any_peer_address_is_explained(self):
+        """发现必须先有起点：没有任何对端地址时要说清"去哪登记"，而不是空列表。"""
+        self.plugin.init_identity({'name': 'req'})
+        self.plugin.create_group({'group': 'req-group'})
+        result = self.plugin.list_remote({})
+        self.assertFalse(result['success'])
+        self.assertIn('对端', result['error'])
+
+    def test_list_remote_unknown_device_needs_an_address(self):
+        """注册表里没有这台设备（且没登记过地址）时，错误要给出下一步动作。"""
+        self.plugin.init_identity({'name': 'unknown'})
+        self.plugin.create_group({'group': 'unknown-group'})
+        result = self.plugin.list_remote({'device_id': 'ff' * 32})
+        self.assertFalse(result['success'])
+        self.assertIn('地址', result['error'])
+
+    def test_list_remote_reports_unreachable_endpoint(self):
+        """登记了地址但连不上：必须如实回报离线，不能假装成功。
+
+        用 TEST-NET-1（192.0.2.0/24，RFC 5737 保留给文档用，不会真的有人监听）。
+        """
+        self.plugin.init_identity({'name': 'offline'})
+        self.plugin.create_group({'group': 'offline-group'})
+        added = self.plugin.peers({'action': 'add', 'endpoint': '192.0.2.1:19443',
+                                   'name': 'nowhere'})
+        self.assertTrue(added['success'])
+        result = self.plugin.list_remote({})
+        self.assertFalse(result['success'])
+        self.assertTrue(result.get('offline'), result)
+        self.assertIn('连不上', result['error'])
+
+    def test_peers_endpoint_parsing(self):
+        """IPv6 必须写方括号 —— 裸地址里有多个冒号，按最后一个切会得到假合法结果。"""
+        self.plugin.init_identity({'name': 'parse'})
+        for bad in ('', 'host-only', 'a:b:c', '127.0.0.1:0', '[::1]'):
+            with self.subTest(bad=bad):
+                self.assertFalse(self.plugin.peers({'action': 'add', 'endpoint': bad})['success'])
+        good = self.plugin.peers({'action': 'add', 'endpoint': '[2409:8a60::1]:19443'})
+        self.assertTrue(good['success'], good)
+        self.assertEqual(good['peers'][0]['host'], '2409:8a60::1')
+        self.assertEqual(good['peers'][0]['port'], 19443)
+        removed = self.plugin.peers({'action': 'remove', 'endpoint': '[2409:8a60::1]:19443'})
+        self.assertTrue(removed['success'])
+        self.assertEqual(removed['removed'], 1)
+
+    def test_download_remote_rejects_traversal_before_connecting(self):
+        """对端给的相对路径可能带 `..`：必须在连之前就拒，不能靠对端自觉。"""
+        self.plugin.init_identity({'name': 'trav'})
+        self.plugin.create_group({'group': 'trav-group'})
+        result = self.plugin.download_remote({'device_id': 'ff' * 32, 'share_id': 'x',
+                                              'path': '../../escape.bin'})
+        self.assertFalse(result['success'])
+        self.assertIn('越界', result['error'])
+
+    def test_download_remote_requires_share_and_path(self):
+        self.plugin.init_identity({'name': 'needargs'})
+        self.plugin.create_group({'group': 'needargs-group'})
+        result = self.plugin.download_remote({'device_id': 'ff' * 32})
+        self.assertFalse(result['success'])
+        self.assertIn('share_id', result['error'])
 
 
 if __name__ == '__main__':

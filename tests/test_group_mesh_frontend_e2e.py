@@ -31,6 +31,7 @@ import json
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -39,6 +40,55 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 PLUGIN_DIR = PROJECT_ROOT / 'plugins' / 'group-mesh' / 'frontend'
+SHELL_PUBLIC = PROJECT_ROOT / 'shell' / 'frontend' / 'public' / 'shell'
+
+
+def wait_until(predicate, timeout: float = 3.0, interval: float = 0.05):
+    """轮询等待条件成立（默认最多 3 秒），返回条件是否成立。
+
+    为什么不能直接断言"点完就可见"：壳的 `.modal` 带 `fadeIn` 动画
+    （base.css，0.15s），在动画起始帧上 `opacity` 还是 0，Selenium 的
+    `is_displayed()` 因此返回 False —— 实测：点击后 0ms 为 False、100ms 为 True。
+    断言瞬间状态会把"动画还在跑"误判成"弹窗没打开"。
+
+    `--force-prefers-reduced-motion` 解决不了这件事：effects.css 里那个媒体查询
+    只管它自己的 `.obx-anim-*` 类，管不到 base.css 的 `fadeIn`。
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if predicate():
+                return True
+        except Exception:  # 元素在重渲染期间短暂失效
+            pass
+        time.sleep(interval)
+    try:
+        return bool(predicate())
+    except Exception:
+        return False
+
+
+def shell_injection() -> str:
+    """壳加载插件页面时注入到 </head> 之前的那几份资源。
+
+    为什么这个用例必须带上它：插件前端**依赖**壳注入的 variables.css / base.css /
+    effects.css（`docs/plugin-guide.md` §4.1 明确说"不要在 HTML 里手动引入"）。
+    而本用例是直接用 `file://` 打开插件页面的，一旦不补注入，测的就不是真实环境：
+
+      - `.modal` 的 `display:none` 在 base.css 里。不注入时弹窗就是普通 div，
+        默认**可见** —— 于是"弹窗不得在打开时自己显示"这条断言会以完全错误的方式失败；
+      - `.btn` / `.view-*` / `--bg-app` 等 token 同样来自壳。
+
+    之前这条用例"能过"，只是因为当时弹窗靠 `hidden` 属性控制显隐 —— 属性不依赖
+    任何样式表，于是测试在没有壳样式的情况下也碰巧成立。迁移到壳的 `.modal` 之后，
+    缺失的注入暴露了出来。
+    """
+    parts = []
+    for name in ('variables.css', 'base.css', 'effects.css'):
+        path = SHELL_PUBLIC / name
+        if path.is_file():
+            parts.append(f'<!-- {name} -->\n<style>\n{path.read_text(encoding="utf-8")}\n</style>')
+    return '\n'.join(parts)
 
 
 def _have_selenium() -> bool:
@@ -162,7 +212,8 @@ class FrontendRenderTest(unittest.TestCase):
         )
         html = self._html.replace('<script src="js/app.js"></script>',
                                   inject + '<script src="js/app.js"></script>')
-        # 绝对化静态资源路径（临时文件不在插件目录里）
+        # 补上壳会注入的样式（见 shell_injection 的说明），再注入桩，最后绝对化路径
+        html = html.replace('</head>', shell_injection() + '\n</head>')
         for asset in ('group-mesh.css', 'js/app.js'):
             html = html.replace(f'"{asset}"', f'"{self.base_url}{asset}"')
         self.page.write_text(html, encoding='utf-8')
@@ -177,23 +228,41 @@ class FrontendRenderTest(unittest.TestCase):
     # ── 缺陷回归：弹窗不得在打开时自己显示 ──────────────────────────────
 
     def test_modals_are_hidden_on_load(self):
-        """三个弹窗在初次打开时都必须不可见。
+        """五个弹窗在初次打开时都必须不可见。
 
-        这是那个真实缺陷的直接断言：`hidden` 属性写对了，但 `.gm-modal`
-        的 `display: flex` 把它覆盖掉，于是三个弹窗同时铺满整屏。
+        这是那个真实缺陷的直接断言：旧的 `.gm-modal { display: flex }` 会盖掉
+        浏览器给 `[hidden]` 的 `display:none`，于是弹窗同时铺满整屏。
+        现在弹窗用壳的 `.modal` + `.modal.active`（base.css），默认态没有任何
+        display 声明 —— 这条用例同时守住"迁移后仍然默认不可见"。
         """
         driver = self._load(FRESH_STATUS)
-        for modal_id in ('invite-box', 'join-box', 'member-box'):
+        for modal_id in ('invite-box', 'join-box', 'member-box', 'create-box', 'peer-box'):
             element = driver.find_element('id', modal_id)
             self.assertFalse(element.is_displayed(),
-                             f'#{modal_id} 在页面打开时不应可见（hidden 被 CSS 覆盖了？）')
+                             f'#{modal_id} 在页面打开时不应可见')
 
     def test_no_modal_overlays_the_page(self):
         """不能有任何弹窗铺满视口：它会把"创建身份"等入口全部盖住。"""
         driver = self._load(FRESH_STATUS)
-        overlays = [e for e in driver.find_elements('css selector', '.gm-modal')
+        overlays = [e for e in driver.find_elements('css selector', '.modal')
                     if e.is_displayed()]
         self.assertEqual(overlays, [], '有弹窗在打开时处于显示状态，会盖住整页')
+
+    def test_modals_use_the_shell_component(self):
+        """弹窗必须用壳的 `.modal`，而不是插件自绘的弹窗容器。
+
+        这条守的是"迁移不会悄悄退回"：自绘弹窗（`display: flex`）与 `[hidden]`/其它
+        显隐机制抢优先级正是 §5.7 那次事故的根因，一旦有人再加一个自绘弹窗，
+        这里会直接失败。
+        """
+        driver = self._load(FRESH_STATUS)
+        for modal_id in ('invite-box', 'join-box', 'member-box', 'create-box', 'peer-box'):
+            classes = driver.find_element('id', modal_id).get_attribute('class') or ''
+            self.assertIn('modal', classes.split(),
+                          f'#{modal_id} 应当使用壳的 .modal（当前 class="{classes}"）')
+        # 壳的模态框结构：.modal > .modal-box > .modal-footer
+        self.assertTrue(driver.find_elements('css selector', '.modal .modal-box'))
+        self.assertTrue(driver.find_elements('css selector', '.modal .modal-footer'))
 
     # ── 全新安装：入口必须是"创建身份" ──────────────────────────────────
 
@@ -249,33 +318,35 @@ class FrontendRenderTest(unittest.TestCase):
         member_box = driver.find_element('id', 'member-box')
         self.assertFalse(member_box.is_displayed())
 
-        add_button = next(b for b in driver.find_elements('css selector', '#roster-actions .gm-btn')
+        add_button = next(b for b in driver.find_elements('css selector', '#roster-actions .btn')
                           if '添加成员' in b.text)
         add_button.click()
-        self.assertTrue(member_box.is_displayed(), '点"添加成员"后弹窗应当显示')
+        self.assertTrue(wait_until(lambda: member_box.is_displayed()),
+                        '点"添加成员"后弹窗应当显示')
 
         close_button = driver.find_element('id', 'btn-close-member')
         close_button.click()
-        self.assertFalse(member_box.is_displayed(), '点"关闭"后弹窗应当隐藏')
+        self.assertTrue(wait_until(lambda: not member_box.is_displayed()),
+                        '点"关闭"后弹窗应当隐藏')
 
     def test_join_modal_opens_and_closes(self):
         driver = self._load(FRESH_STATUS)
         join_box = driver.find_element('id', 'join-box')
-        join_button = next(b for b in driver.find_elements('css selector', '#roster-actions .gm-btn')
+        join_button = next(b for b in driver.find_elements('css selector', '#roster-actions .btn')
                            if '加入 / 更新' in b.text)
         join_button.click()
-        self.assertTrue(join_box.is_displayed())
+        self.assertTrue(wait_until(lambda: join_box.is_displayed()))
 
         driver.find_element('id', 'btn-close-join').click()
-        self.assertFalse(join_box.is_displayed())
+        self.assertTrue(wait_until(lambda: not join_box.is_displayed()))
 
     def test_invite_modal_opens_with_invite_text(self):
         driver = self._load(JOINED_STATUS)
         invite_box = driver.find_element('id', 'invite-box')
-        invite_button = next(b for b in driver.find_elements('css selector', '#roster-actions .gm-btn')
+        invite_button = next(b for b in driver.find_elements('css selector', '#roster-actions .btn')
                              if '显示邀请串' in b.text)
         invite_button.click()
-        self.assertTrue(invite_box.is_displayed())
+        self.assertTrue(wait_until(lambda: invite_box.is_displayed()))
         # 桩 Bridge 对 get_invite 回的是占位成功，因此这里只断言弹窗确实打开、
         # 且文本域被赋值过（真实邀请串由内核生成，前端只负责展示）
         self.assertIsNotNone(driver.find_element('id', 'invite-text').get_attribute('value'))
@@ -288,17 +359,17 @@ class FrontendRenderTest(unittest.TestCase):
 
     def test_create_group_opens_a_dialog_not_native_confirm(self):
         driver = self._load(FRESH_STATUS)
-        create_button = next(b for b in driver.find_elements('css selector', '#roster-actions .gm-btn')
+        create_button = next(b for b in driver.find_elements('css selector', '#roster-actions .btn')
                              if '创建团体' in b.text)
         create_button.click()
-        self.assertTrue(driver.find_element('id', 'create-box').is_displayed(),
+        self.assertTrue(wait_until(lambda: driver.find_element('id', 'create-box').is_displayed()),
                         '点"创建团体"必须打开应用内弹窗（原生 confirm 在 WebView 里可能不可用）')
         # 团体名要有预填，用户可直接回车确认
         self.assertTrue(driver.find_element('id', 'create-group-name').get_attribute('value'))
 
     def test_create_group_submits_and_shows_invite(self):
         driver = self._load(FRESH_STATUS)
-        next(b for b in driver.find_elements('css selector', '#roster-actions .gm-btn')
+        next(b for b in driver.find_elements('css selector', '#roster-actions .btn')
              if '创建团体' in b.text).click()
         driver.find_element('id', 'create-group-name').clear()
         driver.find_element('id', 'create-group-name').send_keys('unit-group')
@@ -306,7 +377,8 @@ class FrontendRenderTest(unittest.TestCase):
 
         self.assertIn('create_group', driver.execute_script('return window.__stubResults'))
         # 创建成功后直接给出邀请串，省掉用户再点一次"显示邀请串"
-        self.assertTrue(driver.find_element('id', 'invite-box').is_displayed())
+        self.assertTrue(wait_until(
+            lambda: driver.find_element('id', 'invite-box').is_displayed()))
         self.assertEqual(driver.find_element('id', 'invite-text').get_attribute('value'), 'gm1:NEW')
 
     def test_every_action_button_reacts(self):
@@ -321,7 +393,8 @@ class FrontendRenderTest(unittest.TestCase):
         而不是缓存元素列表。
         """
         driver = self._load(FRESH_STATUS)
-        selector = '.gm-actions .gm-btn, .gm-form .gm-btn'
+        # 按钮类名已统一到壳的 .btn（base.css），不再是插件自绘的 .gm-btn
+        selector = '.gm-actions .btn, .gm-form .btn'
         labels = [b.text.strip() for b in driver.find_elements('css selector', selector)]
         self.assertTrue(any(labels), '页面上应当有动作按钮')
 
@@ -332,13 +405,13 @@ class FrontendRenderTest(unittest.TestCase):
                 # 清掉上一轮的痕迹：桩调用记录、所有弹窗、残留提示
                 driver.execute_script(
                     "window.__stubResults = [];"
-                    "document.querySelectorAll('.gm-modal')"
-                    ".forEach(function (m) { m.removeAttribute('data-open'); });"
+                    "document.querySelectorAll('.modal')"
+                    ".forEach(function (m) { m.classList.remove('active'); });"
                     "document.querySelectorAll('.gm-toast').forEach(function (t) { t.remove(); });")
                 driver.find_elements('css selector', selector)[index].click()
                 opened = driver.execute_script(
-                    "return Array.from(document.querySelectorAll('.gm-modal'))"
-                    ".some(function (m) { return m.getAttribute('data-open') === 'true'; });")
+                    "return Array.from(document.querySelectorAll('.modal'))"
+                    ".some(function (m) { return m.classList.contains('active'); });")
                 called = driver.execute_script('return window.__stubResults.length') > 0
                 # 壳提供 Toast 时不会生成 .gm-toast 节点，因此两种情况都算"有提示"
                 toasted = driver.execute_script(
@@ -346,6 +419,202 @@ class FrontendRenderTest(unittest.TestCase):
                     " || document.querySelectorAll('.gm-toast').length > 0;")
                 self.assertTrue(opened or called or toasted,
                                 f'按钮「{label}」点击后没有任何反馈（未开弹窗、未调后端、无提示）')
+
+
+REMOTE_STATUS = {
+    **JOINED_STATUS,
+    'locations': {'identity': '/repo/data/group-mesh/identity',
+                  'downloads': '/repo/data/group-mesh/downloads',
+                  'downloads_custom': False,
+                  'cache': '/repo/data/group-mesh/.cache',
+                  'remote_cache': '/repo/data/group-mesh/.cache/remote',
+                  'note': '远端缓存是目录结构的本地物化点，字节按需取回'},
+    'share_roots': [{'share_id': 'pub', 'path': '/srv/shared', 'available': False,
+                     'max_bytes': 1073741824, 'acl': {'read': 'group', 'write': 'owner',
+                                                      'delete': 'owner'},
+                     'reason': '目录不存在或所在磁盘未接入'}],
+}
+
+# 远端页的桩：list_peers 给两台设备（一台有共享项、一台没有端点），
+# list_remote 给一个目录列表，download_remote 给一次成功与一次"本机已有"。
+REMOTE_STUB = """
+window.__stubResults = [];
+window.__stubErrors = [];
+window.__remoteCalls = [];
+window.Bridge = {
+  call: function (method) {
+    var arg = arguments[1] || {};
+    if (method === 'get_status') { return Promise.resolve(window.__statusPayload); }
+    if (method === 'list_peers') {
+      window.__remoteCalls.push('list_peers');
+      return Promise.resolve({ success: true, registry_size: 1, errors: [], peers: [
+        { device_id: 'aa'.repeat(32), name: 'flotiarenorserver',
+          endpoint: ['192.168.31.16', 19450], endpoints: [['192.168.31.16', 19450]],
+          shares: ['land64b6e'], seq: 1, last_seen: 1789527237, online: null },
+        { device_id: 'bb'.repeat(32), name: 'member-pc', endpoint: null, endpoints: [],
+          shares: [], seq: null, last_seen: null, online: null,
+          note: '该设备尚未发布过注册记录（未启动节点或未启用注册表）' }
+      ] });
+    }
+    if (method === 'list_remote') {
+      window.__remoteCalls.push('list_remote:' + (arg.path || '.'));
+      return Promise.resolve({ success: true, device_id: arg.device_id,
+        peer_device_id: arg.device_id, name: 'flotiarenorserver',
+        share_id: arg.share_id, path: arg.path || '.', dir: true, entries: [
+          { name: 'sub', dir: true, size: 0 },
+          { name: 'big.bin', dir: false, size: 300000 },
+          { name: 'note.txt', dir: false, size: 23 }
+        ] });
+    }
+    if (method === 'download_remote') {
+      window.__remoteCalls.push('download_remote:' + arg.path);
+      if (window.__downloadSkips) {
+        return Promise.resolve({ success: true, skipped: true,
+          local_path: 'D:/downloads/big.bin', reason: '已有同名文件' });
+      }
+      return Promise.resolve({ success: true, local_path: 'D:/downloads/big.bin',
+        size: 300000, bytes: 300000 });
+    }
+    window.__stubResults.push(method);
+    return Promise.resolve({ success: true });
+  }
+};
+window.confirm = function () { return true; };
+window.openSettingsModal = function () { window.__settingsOpened = true; };
+"""
+
+
+@unittest.skipUnless(_have_selenium(), '未安装 selenium（见 requirements-e2e.txt）')
+@unittest.skipUnless(_have_browser(), '本机没有 Chrome / Edge')
+class RemotePageRenderTest(unittest.TestCase):
+    """远端页（网络邻居）的真实浏览器用例。
+
+    这一页是新加的，且它的失败模式与既有四页不同 —— 它依赖对端返回的数据形状
+    （peers / entries），而这些形状在桩里可以精确固定。没有这一层，"远端页
+    渲染空白"只会在真机上被发现。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from selenium import webdriver
+
+        options = webdriver.ChromeOptions()
+        options.add_argument('--headless=new')
+        options.add_argument('--disable-gpu')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--window-size=1280,900')
+        options.add_argument('--allow-file-access-from-files')
+        try:
+            cls.driver = webdriver.Chrome(options=options)
+        except Exception as e:  # pragma: no cover - 驱动问题不应让用例失败
+            raise unittest.SkipTest(f'无法启动浏览器: {e}') from e
+
+        cls.tmpdir = tempfile.TemporaryDirectory()
+        cls.page_path = Path(cls.tmpdir.name) / 'index.html'
+        cls.base_url = PLUGIN_DIR.as_uri() + '/'
+        cls._raw_html = (PLUGIN_DIR / 'index.html').read_text(encoding='utf-8')
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.driver.quit()
+        cls.tmpdir.cleanup()
+
+    def _load(self, status=REMOTE_STATUS, stub=REMOTE_STUB):
+        html = self._raw_html.replace(
+            '<script src="js/remote.js"></script>',
+            f'<script>window.__statusPayload = {json.dumps(status)};</script>'
+            f'<script>{stub}</script><script src="js/remote.js"></script>')
+        html = html.replace('</head>', shell_injection() + '\n</head>')
+        for asset in ('group-mesh.css', 'js/remote.js', 'js/app.js'):
+            html = html.replace(f'"{asset}"', f'"{self.base_url}{asset}"')
+        self.page_path.write_text(html, encoding='utf-8')
+        self.driver.get(self.page_path.as_uri())
+        for _ in range(60):
+            if 'flotiarenorserver' in self.driver.find_element('id', 'peers-body').text:
+                break
+        return self.driver
+
+    def test_peer_modal_is_hidden_on_load(self):
+        """新的"添加对端"弹窗同样不得在打开页面时自己显示。"""
+        driver = self._load()
+        self.assertFalse(driver.find_element('id', 'peer-box').is_displayed())
+
+    def test_peers_are_listed_with_shares(self):
+        driver = self._load()
+        peers = driver.find_element('id', 'peers-body').text
+        self.assertIn('flotiarenorserver', peers)
+        self.assertIn('192.168.31.16:19450', peers)
+        self.assertIn('land64b6e', peers)
+        # 名单里有、注册表里没有的设备：必须显示原因，而不是被静默丢掉
+        self.assertIn('member-pc', peers)
+        self.assertIn('注册记录', peers)
+
+    def test_share_root_unavailable_is_visible(self):
+        """共享根所在磁盘未接入时必须显示出来 —— 这正是 G:\\图库 拔盘后的表现。"""
+        self._load()
+        shares = self.driver.find_element('id', 'shares-body').text
+        self.assertIn('pub', shares)
+
+    def test_clicking_a_share_lists_directory(self):
+        driver = self._load()
+        button = next(b for b in driver.find_elements('css selector', '.gm-remote-item')
+                      if 'land64b6e' in b.text)
+        button.click()
+        for _ in range(50):
+            if 'big.bin' in driver.find_element('id', 'remote-body').text:
+                break
+        body = driver.find_element('id', 'remote-body').text
+        self.assertIn('big.bin', body)
+        self.assertIn('note.txt', body)
+        self.assertIn('sub', body)
+
+    def test_download_reports_local_path(self):
+        driver = self._load()
+        next(b for b in driver.find_elements('css selector', '.gm-remote-item')
+             if 'land64b6e' in b.text).click()
+        for _ in range(50):
+            if 'big.bin' in driver.find_element('id', 'remote-body').text:
+                break
+        download = next(b for b in driver.find_elements('css selector', '[data-download]')
+                        if 'big.bin' in b.get_attribute('data-download'))
+        download.click()
+        for _ in range(50):
+            progress = driver.find_element('id', 'remote-progress')
+            if progress.is_displayed() and 'big.bin' in progress.text:
+                break
+        progress = driver.find_element('id', 'remote-progress')
+        self.assertTrue(progress.is_displayed(), '取回后必须给出进度/结果提示')
+        self.assertIn('big.bin', progress.text)
+        self.assertIn('D:/downloads/big.bin', progress.text)
+        calls = driver.execute_script('return window.__remoteCalls')
+        self.assertTrue(any(c.startswith('download_remote:') for c in calls), calls)
+
+    def test_download_skips_existing_file(self):
+        driver = self._load()
+        driver.execute_script('window.__downloadSkips = true;')
+        next(b for b in driver.find_elements('css selector', '.gm-remote-item')
+             if 'land64b6e' in b.text).click()
+        for _ in range(50):
+            if 'note.txt' in driver.find_element('id', 'remote-body').text:
+                break
+        next(b for b in driver.find_elements('css selector', '[data-download]')
+             if 'note.txt' in b.get_attribute('data-download')).click()
+        for _ in range(50):
+            progress = driver.find_element('id', 'remote-progress')
+            if progress.is_displayed() and '已有' in progress.text:
+                break
+        self.assertIn('已有', driver.find_element('id', 'remote-progress').text)
+
+    def test_add_peer_dialog_opens_and_submits(self):
+        driver = self._load()
+        driver.find_element('id', 'btn-peer-add').click()
+        self.assertTrue(wait_until(lambda: driver.find_element('id', 'peer-box').is_displayed()))
+        driver.find_element('id', 'peer-endpoint').send_keys('192.168.31.16:19450')
+        driver.find_element('id', 'btn-do-add-peer').click()
+        # 提交后弹窗关闭发生在桩 Promise 落定之后，必须等而不是立即断言
+        self.assertTrue(wait_until(
+            lambda: not driver.find_element('id', 'peer-box').is_displayed()),
+            '提交成功后弹窗应关闭')
 
 
 if __name__ == '__main__':
