@@ -13,6 +13,7 @@
     python -m unittest tests.test_group_mesh_plugin -v
 """
 
+import base64
 import json
 import os
 import sys
@@ -27,6 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_utils import load_sibling
 from shell.backend.settings_store import SettingsStore
+from shell.groupmesh.transport import TransportError
 
 PLUGIN_DIR = PROJECT_ROOT / 'plugins' / 'group-mesh'
 
@@ -675,6 +677,47 @@ class AutoDiscoveryTest(unittest.TestCase):
             again = self.plugin.get_status()['node']
             self.assertTrue(again['running'])
         self.assertIs(self.plugin._node_thread, thread, '不应重建节点线程')
+
+    def test_all_published_endpoints_are_tried(self):
+        """设备发布了多个端点时必须逐个试，不能在第一个失败后放弃。
+
+        §4.6.1 把 IPv4 定位为可达性兜底，因此设备常同时发布 IPv6 与 IPv4 端点；
+        只试首选那个的话，IPv6 没路由就会把一台其实能连的设备判成离线。
+        """
+        if not self._ready():
+            self.skipTest('协议内核不可用')
+        self.plugin.init_identity({'name': 'multi-ep'})
+        self.plugin.create_group({'group': 'multi-ep-group'})
+        # 取一次状态让节点自启并载入注册表对象（_registry 在此之前是 None）
+        self.assertTrue(self.plugin.get_status()['node']['running'])
+
+        # 造一条"对端设备"的注册记录：两个端点，第一个一定连不上
+        cp = sys.modules['shell.groupmesh.crypto_prims']
+        registry_mod = sys.modules['shell.groupmesh.registry']
+        peer_priv, peer_pub = cp.generate_sign_keypair()
+        endpoints = [('2001:db8::bad', 19443), ('192.0.2.7', 19443)]
+        self.plugin._registry.add(registry_mod.new_registration(
+            device_key=peer_pub, device_private_key=peer_priv,
+            seq=1, endpoints=endpoints, shares=['pub']))
+        # 让这台设备出现在名单里（list_peers 只列名单内成员）
+        me = self.plugin._load_identity()
+        self.plugin.add_member({'principal': base64.b64encode(me.principal.public_key).decode(),
+                                'device': base64.b64encode(peer_pub).decode(), 'name': 'peer'})
+
+        attempted: list = []
+
+        def fake_fetch(endpoint, identity, roster):
+            attempted.append(endpoint)
+            if len(attempted) == 1:
+                raise TransportError('第一个端点刻意失败')
+            return 1
+
+        self.plugin._fetch_registry_from = fake_fetch
+        result = self.plugin.list_peers({'refresh': True})
+        self.assertTrue(result['success'])
+        self.assertEqual(len(attempted), 2, f'两个端点都该被尝试，实际: {attempted}')
+        self.assertEqual(attempted[0][0], '2001:db8::bad', 'IPv6 应当优先尝试（主路径）')
+        self.assertFalse(result['errors'], f'第二个端点成功后不该留下错误: {result["errors"]}')
 
     def test_endpoint_change_republishes_registration(self):
         """本机地址集合变化时必须递增 seq 重新发布（设计文档 §7.4）。
