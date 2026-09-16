@@ -52,6 +52,46 @@ mimetypes.add_type('font/woff2', '.woff2')
 mimetypes.add_type('font/woff', '.woff')
 mimetypes.add_type('image/webp', '.webp')
 
+# 注入到插件前端**每个** HTML 页面的引导片段（见 serve_plugin_frontend）：
+# 壳的样式与共享组件、Bridge 的插件前缀、以及主题/自定义颜色同步。
+# `PLACEHOLDER_NAME` 会被替换成路由里的插件名。
+_PLUGIN_BOOTSTRAP_SCRIPT = (
+    '<link rel="stylesheet" href="/shell/variables.css">'
+    '<link rel="stylesheet" href="/shell/base.css">'
+    '<link rel="stylesheet" href="/shell/folder-picker.css">'
+    '<link rel="stylesheet" href="/shell/effects.css">'
+    '<script src="/shell/base.js"></script>'
+    '<script src="/shell/folder-picker.js"></script>'
+    '<script src="/shell/motion.js"></script>'
+    '<script>'
+    "Bridge.setPrefix('PLACEHOLDER_NAME');"
+    '(function(){'
+    'var pd = parent.document.documentElement;'
+    "var t = pd.getAttribute('data-theme') || 'light';"
+    "document.documentElement.setAttribute('data-theme', t);"
+    'new MutationObserver(function(){'
+    "var nt = pd.getAttribute('data-theme') || 'light';"
+    "document.documentElement.setAttribute('data-theme', nt);"
+    '}).observe(pd, {attributes:true,attributeFilter:["data-theme"]});'
+    'var cc = pd.getAttribute("data-custom-colors");'
+    'if (cc) { try {'
+    'var map = JSON.parse(cc);'
+    'Object.keys(map).forEach(function(k){'
+    "document.documentElement.style.setProperty(k, map[k]); });"
+    '} catch(e) {} }'
+    'new MutationObserver(function(){'
+    'var ncc = pd.getAttribute("data-custom-colors");'
+    'if (ncc) { try {'
+    'var nmap = JSON.parse(ncc);'
+    'Object.keys(nmap).forEach(function(k){'
+    "document.documentElement.style.setProperty(k, nmap[k]); });"
+    '} catch(e) {} }'
+    '}).observe(pd, {attributes:true,attributeFilter:["data-custom-colors"]});'
+    '})();'
+    '</script>'
+)
+
+
 def _get_shell_dir() -> Path:
     if getattr(sys, 'frozen', False):
         meipass = getattr(sys, '_MEIPASS', None)
@@ -630,47 +670,21 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         # 受保护文件的出口：插件把凭据放进 frontend/、或申报了覆盖它的目录时，
         # 这里不判定就等于绕过了 /file 的同一份清单。
         _reject_protected_file(normalize_path(plugin_dir / filename))
-        if filename == 'index.html':
-            html_path = plugin_dir / 'index.html'
+        # 插件前端的**任何** HTML 页面都要注入壳的引导脚本（Bridge / Utils / Toast /
+        # 主题同步），不只是 index.html：插件可以有子页面 —— 例如"网络位置"提供方要在
+        # 共享目录组件（FolderPicker）弹窗的 iframe 里渲染一个选择器，那个页面同样需要
+        # `window.Bridge` 才能调宿主与插件接口。以前只有 index.html 走这条注入，子页面
+        # 拿不到 Bridge（症状是"PyWebView API 不可用"，而页面本身看起来完全正常）。
+        if filename.lower().endswith('.html'):
+            html_path = plugin_dir / filename
+            # 手工 open 的文件路径必须自己确认落在插件前端目录内（send_from_directory
+            # 那层防护只覆盖它自己的发送路径，不覆盖这里的读文件）。
+            if not _is_safe_path(normalize_path(html_path), normalize_path(plugin_dir)):
+                abort(403)
             if html_path.exists():
                 with open(html_path, 'r', encoding='utf-8') as f:
                     html = f.read()
-                SCRIPT_TPL = (
-                    '<link rel="stylesheet" href="/shell/variables.css">'
-                    '<link rel="stylesheet" href="/shell/base.css">'
-                    '<link rel="stylesheet" href="/shell/folder-picker.css">'
-                    '<link rel="stylesheet" href="/shell/effects.css">'
-                    '<script src="/shell/base.js"></script>'
-                    '<script src="/shell/folder-picker.js"></script>'
-                    '<script src="/shell/motion.js"></script>'
-                    '<script>'
-                    "Bridge.setPrefix('PLACEHOLDER_NAME');"
-                    '(function(){'
-                    'var pd = parent.document.documentElement;'
-                    "var t = pd.getAttribute('data-theme') || 'light';"
-                    "document.documentElement.setAttribute('data-theme', t);"
-                    'new MutationObserver(function(){'
-                    "var nt = pd.getAttribute('data-theme') || 'light';"
-                    "document.documentElement.setAttribute('data-theme', nt);"
-                    '}).observe(pd, {attributes:true,attributeFilter:["data-theme"]});'
-                    'var cc = pd.getAttribute("data-custom-colors");'
-                    'if (cc) { try {'
-                    'var map = JSON.parse(cc);'
-                    'Object.keys(map).forEach(function(k){'
-                    "document.documentElement.style.setProperty(k, map[k]); });"
-                    '} catch(e) {} }'
-                    'new MutationObserver(function(){'
-                    'var ncc = pd.getAttribute("data-custom-colors");'
-                    'if (ncc) { try {'
-                    'var nmap = JSON.parse(ncc);'
-                    'Object.keys(nmap).forEach(function(k){'
-                    "document.documentElement.style.setProperty(k, nmap[k]); });"
-                    '} catch(e) {} }'
-                    '}).observe(pd, {attributes:true,attributeFilter:["data-custom-colors"]});'
-                    '})();'
-                    '</script>'
-                )
-                inject = SCRIPT_TPL.replace('PLACEHOLDER_NAME', plugin_name)
+                inject = _PLUGIN_BOOTSTRAP_SCRIPT.replace('PLACEHOLDER_NAME', plugin_name)
                 return html.replace('</head>', inject + '</head>')
         return send_from_directory(plugin_dir, filename)
 
