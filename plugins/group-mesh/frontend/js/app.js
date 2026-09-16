@@ -243,12 +243,29 @@
     var actions = el('node-actions');
     var node = status.node;
 
+    // 自动启动节点（有身份与团体时后端会自己起）：失败原因必须显示出来，
+    // 否则用户看到的是"节点未运行"而不知道为什么。
+    var autoNote = '';
+    if (node.auto_start_error) {
+      autoNote = '<p class="gm-badge gm-badge-warn">自动启动失败：' +
+        escapeHtml(node.auto_start_error) + '</p>';
+    }
+    // 发布状态：节点在跑但没发布注册记录 = 本机对别人不可见（别人发现不了我）。
+    var published = '';
+    if (node.running) {
+      published = node.published
+        ? '<span class="gm-badge gm-badge-ok">已发布（别人可发现）</span>'
+        : '<span class="gm-badge gm-badge-warn">未发布注册记录 —— 别人发现不了本机</span>';
+    }
+
     body.innerHTML = '<dl class="gm-kv">' +
-      '<dt>状态</dt><dd>' + (node.running ? '运行中' : '未运行') + '</dd>' +
+      '<dt>状态</dt><dd>' + (node.running ? '运行中' : '未运行') + ' ' + published + '</dd>' +
       '<dt>监听</dt><dd>' + escapeHtml(node.listening || '-') + '</dd>' +
       '<dt>监听设置</dt><dd>' + escapeHtml(status.settings.bind) + ':' +
       escapeHtml(status.settings.port) + '</dd>' +
-      '</dl>' +
+      '<dt>下载目录</dt><dd>' + escapeHtml((status.locations || {}).downloads || '-') +
+      ((status.locations || {}).downloads_custom ? '' : '（默认）') + '</dd>' +
+      '</dl>' + autoNote +
       (node.error ? '<p class="gm-badge gm-badge-warn">' + escapeHtml(node.error) + '</p>' : '');
 
     if (node.running) {

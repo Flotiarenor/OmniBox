@@ -135,6 +135,9 @@ class GroupMeshPlugin(PluginBase):
         # 本次运行发布的注册记录序号（None = 还没发布成功）。界面据此显示
         # "本机是否已对其他设备可见" —— 发布失败时节点照常能收发，但别人发现不了。
         self._published_seq: Optional[int] = None
+        # 自动启动节点的状态：只尝试一次，失败原因留给界面显示（见 _auto_start_node）。
+        self._auto_start_attempted = False
+        self._auto_start_error: Optional[str] = None
         # 已建立的出站连接：(设备公钥 bytes, host, port) -> Connection。
         # 复用的理由：一次请求就是一次 Noise 握手（多个往返 + 公钥运算），
         # 逐次建连会让"浏览一个目录"变成几个握手的开销。
@@ -336,6 +339,15 @@ class GroupMeshPlugin(PluginBase):
 
     def get_status(self) -> Dict[str, Any]:
         """界面首屏用：内核版本、身份/团体/共享项/节点的当前状态。"""
+        # 先读身份与名单并（必要时）启动共享节点，**再**组装返回的 status：
+        # `status['node']` 是这一刻的快照，若先组装再启动，首次调用会报告"未运行"，
+        # 而节点其实已经起来了 —— 界面因此要刷新两次才显示正常。
+        identity = self._load_identity()
+        roster = self._load_roster()
+        # 有身份与团体就把节点跑起来（只尝试一次）：节点不跑 → 不发布注册记录
+        # → 别人发现不了本机。这里正是"用户打开插件"的时刻，而自动启动是幂等的。
+        self._auto_start_node(identity is not None, roster is not None)
+
         status: Dict[str, Any] = {
             'kernel': {
                 'available': True,
@@ -379,9 +391,7 @@ class GroupMeshPlugin(PluginBase):
             ],
         }
 
-        identity = self._load_identity()
         if identity is not None:
-            roster = self._load_roster()
             status['identity'] = {
                 'principal_name': identity.principal.name,
                 'principal_id': identity.principal.id,
@@ -872,7 +882,10 @@ class GroupMeshPlugin(PluginBase):
         self._ensure_registry()
         errors: List[Dict[str, str]] = []
         if refresh:
-            # 先用手动登记的端点做**引导**：注册表初始是空的，没有这一步就永远
+            # 先确保本机的注册记录是最新的（地址变化时递增 seq 重发，§7.4）。
+            # 没有这一步，"我换了网络"会让对端一直用旧端点连我。
+            self._refresh_own_registration()
+            # 再用手动登记的端点做**引导**：注册表初始是空的，没有这一步就永远
             # 学不到第一台设备的端点（鸡生蛋）。
             seen: List[Tuple[str, int]] = []
             for entry in self._load_manual_peers():
@@ -1182,7 +1195,12 @@ class GroupMeshPlugin(PluginBase):
             return {'success': False, 'error': '尚未加入任何团体（节点无法认证对端）'}
 
         bind = str(self.setting('bind', '::') or '::')
-        port = int(self.setting('port', DEFAULT_PORT) or DEFAULT_PORT)
+        # 端口必须区分"没配"与"配成 0"：0 是**合法**取值，表示让内核分配一个空闲
+        # 端口（用例与临时联调都用它）。原先写成 `setting(...) or DEFAULT_PORT`，
+        # 而 0 是 falsy，于是"端口 0"被静默换成 19443 —— 表现为"设了 0 却还是占
+        # 默认端口"，撞端口时很难查。
+        raw_port = self.setting('port', None)
+        port = DEFAULT_PORT if raw_port is None or raw_port == '' else int(raw_port)
         shares = self._load_shares()
         # 注册表（§7）：不注入的话 node 的 `_op_registry` 一律回 unavailable，
         # 于是"设备自己发布端点与共享清单、其他设备据此发现它"这条链断在插件层。
@@ -1232,6 +1250,10 @@ class GroupMeshPlugin(PluginBase):
         ready.wait(timeout=8)
         status = self.get_node_status()
         if status['running']:
+            # 用户手动启动成功：清掉自动启动的失败记录，并标记"已尝试"，
+            # 免得后续每次取状态都再试一遍（自动启动只该在需要时发生一次）。
+            self._auto_start_attempted = True
+            self._auto_start_error = None
             return {'success': True, 'node': status}
         return {'success': False, 'error': status.get('error') or '节点启动失败', 'node': status}
 
@@ -1286,6 +1308,7 @@ class GroupMeshPlugin(PluginBase):
             self._registry.add(registration)
             registry_mod.save_registry(self.identity_dir, self._registry)
             state['registration_seq'] = seq
+            state['endpoints'] = [[a, p] for a, p in endpoints]
             state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2) + '\n',
                                   encoding='utf-8')
             log.info(f'[group-mesh] 已发布注册记录 seq={seq}，端点 {endpoints}')
@@ -1293,6 +1316,68 @@ class GroupMeshPlugin(PluginBase):
         except Exception as e:  # 发布失败只记日志，不让节点起不来
             log.warning(f'[group-mesh] 注册记录发布失败: {e}')
             return None
+
+    def _refresh_own_registration(self) -> Optional[int]:
+        """本机地址或共享清单变了就递增 `seq` 重新发布（设计文档 §7.4）。
+
+        §7.4 要求的是两条：用**稳定地址**发布，以及"定期比对本机全球单播地址集合，
+        变化则递增 seq 并重新发布"。原先我只在节点启动时发布一次 —— 那两条都没满足：
+        换了网络（Wi-Fi 切换、DHCP 重新分配、IPv6 前缀变化）之后，对端的注册表里
+        留着的是旧端点，表现为"明明两边都开着却连不上"，而且没有任何提示。
+
+        触发点放在每次刷新设备列表时（进入插件、点"刷新设备"），不做后台定时器：
+        这条路径本来就要连对端，顺手做一次本地比对几乎不增加成本，而常驻定时器会
+        让插件在切到后台之后仍然干活（`onHide` 的语义是"停止轮询类工作"）。
+        """
+        if self._node_thread is None or not self._node_thread.is_alive():
+            return None   # 节点没在跑：没有"当前端点"可发布
+        bind = str(self.setting('bind', '::') or '::')
+        listening = self._listening
+        if not listening:
+            return None
+        port = int(listening[1])
+        if bind in ('0.0.0.0', '::'):
+            addresses = registry_mod.local_addresses() or [bind]
+        else:
+            addresses = [bind]
+        endpoints = [[addr, port] for addr in addresses]
+        try:
+            state = json.loads((self.identity_dir / 'state.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            state = {}
+        # 与上次发布的端点集合比较。共享清单变化不在这里管：共享项由
+        # `add_share` / `remove_share` 之后的下一次刷新自然带上。
+        if state.get('endpoints') == endpoints:
+            return None
+        published = self._publish_registration(bind, port)
+        if published is not None:
+            self._published_seq = published
+            log.info(f'[group-mesh] 本机端点变化，已重新发布注册记录 seq={published}：{endpoints}')
+        return published
+
+    def _auto_start_node(self, identity_exists: bool, roster_exists: bool) -> None:
+        """有身份与团体且节点没在跑时自动启动（只尝试一次，失败不重试）。
+
+        为什么必须自动：节点不跑 → 本机不发布注册记录 → **别人永远发现不了我**；
+        而"另一个成员要先手动点一次启动节点，我才能看到他"这件事没有任何提示，
+        表现出来就是"明明都在同一个团体里却看不到对方"。
+
+        为什么失败后不重试：失败原因通常是端口被占或防火墙拦截，重试不会有不同
+        结果，反而会在每次刷新状态时反复起线程。失败详情留在 `_last_error` 里，
+        由界面的节点卡片显示 —— 用户看到原因后可以改端口再点"启动节点"。
+        """
+        if self._auto_start_attempted or not (identity_exists and roster_exists):
+            return
+        if self._node_thread is not None and self._node_thread.is_alive():
+            return
+        self._auto_start_attempted = True
+        result = self.start_node()
+        if result.get('success'):
+            log.info('[group-mesh] 已自动启动共享节点（设计文档 §7：注册是设备自助行为）')
+            self._auto_start_error = None
+        else:
+            self._auto_start_error = result.get('error') or '自动启动失败'
+            log.warning(f'[group-mesh] 自动启动节点失败：{self._auto_start_error}')
 
     def get_node_status(self) -> Dict[str, Any]:
         thread = self._node_thread
@@ -1305,6 +1390,8 @@ class GroupMeshPlugin(PluginBase):
             # 本机是否已把自己发布出去：别人能不能发现我，只看这个。
             'published_seq': self._published_seq,
             'published': self._published_seq is not None,
+            # 自动启动失败的原因（None = 没失败或还没试过），交给界面显示
+            'auto_start_error': self._auto_start_error,
         }
 
     def _close_connections(self) -> None:
@@ -1331,6 +1418,10 @@ class GroupMeshPlugin(PluginBase):
         """
         if {'port', 'bind', 'download_dir'} & set(changed_keys or ()):
             self._close_connections()
+        if {'port', 'bind'} & set(changed_keys or ()):
+            # 端口/绑定变了：允许重新自动尝试一次（节点已停，旧尝试的结论作废）
+            self._auto_start_attempted = False
+            self._auto_start_error = None
 
     # ── 生命周期与 API ────────────────────────────────────────────────────
 
