@@ -957,36 +957,6 @@ class ServeBindFailureTest(unittest.TestCase):
         self.assertEqual(len(errors), 1, f'应当抛出一次绑定错误，实际 {errors}')
         self.assertIsInstance(errors[0], OSError)
 
-    @staticmethod
-    def _listening_fds() -> set:
-        """当前进程里处于 LISTEN 状态的套接字 fd 集合。
-
-        通过 `os.dup(fd)` 复制出临时 fd 再查 `SO_ACCEPTCONN`：直接 `socket.socket(
-        fileno=fd)` 会接管原 fd 的所有权（析构时把它关掉），用来"观察"会把被测对象
-        毁掉。dup 之后查完即 detach + close，不改变原 fd 的状态与寿命。
-        """
-        found = set()
-        fd_dir = Path('/proc/self/fd')
-        if not fd_dir.is_dir():
-            return found
-        for entry in fd_dir.iterdir():
-            try:
-                if 'socket:' not in os.readlink(entry):
-                    continue
-                copied = os.dup(int(entry.name))
-                dup = socket.socket(fileno=copied)
-            except OSError:
-                continue
-            try:
-                if dup.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN):
-                    found.add(int(entry.name))
-            except OSError:
-                pass
-            finally:
-                dup.detach()      # 交出所有权，避免析构时把复制的 fd 关两次
-                os.close(copied)
-        return found
-
     def test_bind_failure_does_not_leave_a_listening_socket(self):
         """绑定失败后不得留下**新增的** LISTEN 套接字（fd 级判定）。
 
@@ -998,12 +968,12 @@ class ServeBindFailureTest(unittest.TestCase):
         if not Path('/proc/self/fd').is_dir():
             self.skipTest('该平台没有 /proc/self/fd，无法做 fd 级判定')
 
-        # **必须关掉循环 GC**，否则这条用例没有判别力：实测（Linux）删掉 close 修复
-        # 后它照样通过 —— 异常抛出时 CPython 的循环 GC 顺手把那个 socket 回收了，
-        # 只在 stderr 留一条 `ResourceWarning: unclosed socket`，进程里看不到它。
-        # 关掉 GC 之后"没被显式关闭"才会留在 fd 表里，断言才判得到。这也正是生产
-        # 情形：节点线程报错后还要继续跑（`ready.set()` 唤醒等待方），
-        # gc 那一轮扫描不会恰好落在那里。
+        # 为什么用 on_error 回调拿到那个套接字，而不是只断言"没有新增 LISTEN fd"：
+        # 失败路径抛异常时，CPython 的引用计数/循环 GC 会顺手把 socket 回收，
+        # 于是"忘了 close"这条缺陷在测试里**观察不到**（实测：删掉修复用例照样通过，
+        # 只在 stderr 留一条 ResourceWarning）。回调让我们持有它、并**关掉 GC**，
+        # 没有显式 close 时它就会一直以 LISTEN 状态留在 fd 表里。
+        captured: list = []
         gc_was_enabled = gc.isenabled()
         gc.disable()
         blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1011,14 +981,15 @@ class ServeBindFailureTest(unittest.TestCase):
         port = blocker.getsockname()[1]
         blocker.listen(1)
         try:
-            before = self._listening_fds()
-            with self.assertRaises(OSError) as caught:
-                serve('127.0.0.1', port, self.identity, None)
-            leaked = self._listening_fds() - before
-            self.assertEqual(leaked, set(),
-                             f'绑定失败后新增了仍处于 LISTEN 的套接字 fd {sorted(leaked)}')
-            # 失败原因应当是"端口不可用"，而不是别的（顺带确认用例测的是预期场景）
-            self.assertIsInstance(caught.exception, OSError)
+            with self.assertRaises(OSError):
+                serve('127.0.0.1', port, self.identity, None,
+                      on_error=lambda sock, exc: captured.append(sock))
+            self.assertEqual(len(captured), 1, '失败时应把监听套接字交给 on_error')
+            listener = captured[0]
+            # 显式关闭过的 fd 在这里已经无效（fileno() 为 -1 或 dup 直接失败）；
+            # 没关的话它就还在 LISTEN —— 这正是"端口从此被占死"的现场。
+            self.assertEqual(listener.fileno(), -1,
+                             '绑定失败后监听套接字必须已被关闭（否则端口会一直被占）')
         finally:
             blocker.close()
             if gc_was_enabled:

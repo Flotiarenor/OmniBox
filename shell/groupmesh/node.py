@@ -345,13 +345,20 @@ def serve(host: str, port: int, identity: Identity, roster: Optional[Roster],
           shares: Optional[Dict[str, LocalShare]] = None,
           registry: Optional[Registry] = None,
           roster_loader: Optional[Callable[[], Optional[Roster]]] = None,
-          ready: Optional[Callable[[socket.socket], None]] = None) -> None:
+          ready: Optional[Callable[[socket.socket], None]] = None,
+          on_error: Optional[Callable[[socket.socket, BaseException], None]] = None) -> None:
     """在一个 TCP 端口上服务任何已加入团体的设备。
 
     单一连接失败只影响那条连接：握手或请求出错即断开，监听循环继续
     （无中心系统里，任何成员都可以随时上线/离线）。
 
     `roster_loader` 让长驻节点能拿到**最新**名单（见 `Node.current_roster`）。
+
+    `on_error` 在监听套接字创建后、`bind`/`listen` 失败时被调用（随后该套接字
+    会被关闭并把异常抛出）。存在的理由与 `ready` 对称：调用方要能知道"是哪个
+    套接字绑失败了"，测试也要能在**关闭之后**判定它确实被关了 —— 只看异常是判不到的
+    （CPython 的引用计数/循环 GC 会在异常传播时顺手回收那个 socket，于是"没显式
+    close"这条缺陷在测试里观察不到，实测确认过）。
     """
     node = Node(identity=identity, roster=roster, shares=dict(shares or {}),
                 registry=registry, roster_loader=roster_loader)
@@ -369,7 +376,12 @@ def serve(host: str, port: int, identity: Identity, roster: Optional[Roster],
         # 只能靠重启整个服务释放。
         listener.bind((host, port))
         listener.listen(16)
-    except BaseException:
+    except BaseException as exc:
+        if on_error is not None:
+            try:
+                on_error(listener, exc)
+            except Exception:
+                pass
         listener.close()
         raise
     if ready is not None:
