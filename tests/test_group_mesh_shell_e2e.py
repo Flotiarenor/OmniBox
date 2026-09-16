@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import json
 import socket
 import subprocess
 import sys
@@ -214,6 +215,49 @@ class GroupMeshInShellTest(unittest.TestCase):
         else:
             # 已有团体：入口换成邀请串/添加成员，至少"显示邀请串"必须在
             self.assertIn('显示邀请串', actions)
+
+
+    # ── 真实网络调用：不能把界面卡在"正在读取设备" ──────────────────────────
+
+    def test_peers_refresh_returns_quickly_with_real_endpoints(self):
+        """真实壳 + 真实网络下调用 list_peers，必须在几秒内返回。
+
+        诚实说明它的判别力：这个测试壳用的是仓库数据根，里面**只有本机自己**的
+        注册记录，而本机不作为"对端"被探测 —— 因此候选端点为 0，这条断言在
+        "退化实现"下也可能通过（我把探测改回串行 20 秒超时跑过一次，它照样绿）。
+        它真正守的是"接口在真实壳里不会异常/不返回"这类问题。
+
+        对"不可达端点会不会把刷新拖到几十秒"的确定性守卫在插件层：
+        `tests/test_group_mesh_plugin.py::RemoteApiTest.test_probe_with_dead_endpoint_
+        respects_overall_budget`，那里会真的放一条一定连不上的端点并卡时间。
+        """
+        self._enter_plugin()
+        script = (
+            "var t0 = Date.now();"
+            "return window.Bridge.call('list_peers', {refresh: true})"
+            ".then(function (r) { return JSON.stringify({ms: Date.now() - t0,"
+            " ok: !!(r && r.success), peers: (r && r.peers || []).length}); })"
+            ".catch(function (e) { return JSON.stringify({ms: Date.now() - t0, error: String(e)}); });"
+        )
+        raw = self.driver.execute_async_script(
+            "var done = arguments[arguments.length - 1];"
+            "Promise.resolve().then(function () { return (function () {" + script +
+            "})(); }).then(done, function (e) { done(JSON.stringify({error: String(e)})); });")
+        payload = json.loads(raw)
+        self.assertNotIn('error', payload, f'list_peers 调用失败: {payload}')
+        self.assertTrue(payload.get('ok'), payload)
+        self.assertLess(payload['ms'], 15000,
+                        f"list_peers 耗时 {payload['ms']}ms，界面会一直停在「正在读取设备」")
+
+    def test_my_endpoint_is_rendered_in_the_shell(self):
+        """「我的地址」在真实壳里必须能渲染出来（它是地址交换的入口）。"""
+        from selenium.webdriver.common.by import By
+        self._enter_plugin()
+        self.assertTrue(self._wait_for(
+            lambda: '节点未运行' in self.driver.find_element(By.ID, 'my-endpoint').text
+            or ':' in self.driver.find_element(By.ID, 'my-endpoint').text
+            or '尚未发布' in self.driver.find_element(By.ID, 'my-endpoint').text),
+            '「我的地址」应当渲染出地址或明确的未运行提示')
 
 
 if __name__ == '__main__':

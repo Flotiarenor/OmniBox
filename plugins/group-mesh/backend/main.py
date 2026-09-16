@@ -65,6 +65,16 @@ AUTO_START_RETRY_SECONDS = 30
 # 磁盘写满；超过上限的文件不自动取，界面会提示。
 DEFAULT_MAX_FETCH_BYTES = 1024 * 1024 * 1024
 
+# 探测端点的连接超时（秒）。刷新设备时要试多个端点，而设备常同时发布 IPv6 与
+# IPv4 —— IPv6 在本机没有路由时每次都要等满超时。内核默认 20 秒，实测 5 个端点
+# 串行等下来是 80 秒，界面看起来就是"卡住不动"。探测用短超时，真正的文件传输
+# 仍走内核默认值。
+PROBE_TIMEOUT_SECONDS = 3.0
+
+# 一次刷新的候选探测**总**等待上限（秒）。到点就带着已有结果返回，不再等剩下的
+# 端点 —— 界面上这是一次点击，不能因为几条死地址把用户按在那里。
+PROBE_OVERALL_SECONDS = 4.0
+
 
 def _opts(value: Any) -> Dict[str, Any]:
     """把"结构化参数"归一成字典。
@@ -156,6 +166,8 @@ class GroupMeshPlugin(PluginBase):
         # 远端物化索引的进程内缓存：`is_content_placeholder()` 每个 /file 请求都要查
         # 一次，逐次解析 JSON 太贵（见 _cached_remote_index）。
         self._remote_index_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        # 上一次刷新里连不上的端点 -> 失败原因（手动登记的地址失败时要回报给用户）
+        self._unreachable: Dict[Tuple[str, int], str] = {}
         # 已建立的出站连接：(设备公钥 bytes, host, port) -> Connection。
         # 复用的理由：一次请求就是一次 Noise 握手（多个往返 + 公钥运算），
         # 逐次建连会让"浏览一个目录"变成几个握手的开销。
@@ -1004,56 +1016,45 @@ class GroupMeshPlugin(PluginBase):
             # 先确保本机的注册记录是最新的（地址变化时递增 seq 重发，§7.4）。
             # 没有这一步，"我换了网络"会让对端一直用旧端点连我。
             self._refresh_own_registration()
-            # 再用手动登记的端点做**引导**：注册表初始是空的，没有这一步就永远
-            # 学不到第一台设备的端点（鸡生蛋）。
-            seen: List[Tuple[str, int]] = []
+            # 收集候选端点：手动登记的（**引导**，注册表初始为空时唯一的起点）、
+            # 本机自己发布的（**自举**，用本机地址去问任一在线节点拿完整快照，
+            # §7.3）、以及注册表里已经学到的。
+            candidates: List[Tuple[Tuple[str, int], str]] = []
+            seen: set = set()
+
+            def add(endpoint: Tuple[str, int], label: str) -> None:
+                if endpoint and endpoint not in seen:
+                    seen.add(endpoint)
+                    candidates.append((endpoint, label))
+
+            for entry in self._load_manual_peers():
+                try:
+                    add((str(entry['host']), int(entry['port'])),
+                        str(entry.get('name') or entry.get('host') or ''))
+                except (KeyError, TypeError, ValueError):
+                    continue
+            for endpoint, label in self._bootstrap_endpoints(identity):
+                add(endpoint, label)
+            for device_id, info in self._peer_names(roster).items():
+                if device_id == self_device_id:
+                    continue
+                for endpoint in self._peer_endpoints(info):
+                    add(endpoint, str(info.get('name') or device_id))
+
+            # **并行**探测。为什么必须并行：设备常同时发布 IPv6 与 IPv4 端点
+            # （§4.6.1 把 v4 当可达性兜底），而 IPv6 在本机常常没有路由 —— 串行
+            # 等超时的话，几个端点就能把"刷新设备"拖到一分钟以上（实测 80 秒，
+            # 界面一直停在"正在读取设备"）。并行 + 短超时后总耗时就接近单次超时。
+            self._fetch_registries_parallel(candidates, identity, roster)
+            # 手动登记的端点若仍然连不上，单独回报（用户刚填的地址，失败要说清楚）
             for entry in self._load_manual_peers():
                 try:
                     endpoint = (str(entry['host']), int(entry['port']))
                 except (KeyError, TypeError, ValueError):
                     continue
-                if endpoint in seen:
-                    continue
-                seen.append(endpoint)
-                try:
-                    self._fetch_registry_from(endpoint, identity, roster)
-                except (RemoteError, TransportError, OSError) as e:
+                if endpoint in self._unreachable:
                     errors.append({'device': str(entry.get('name') or endpoint[0]),
-                                   'error': str(e)})
-            # 自举：注册表里只有本机那条、又没有任何手工地址时，用**本机自己发布的
-            # 端点**去问一次快照（§7.3：任一在线共享节点都能提供完整快照）。
-            # 两台机器都还没跟对方说过话时，谁也不知道对方地址，但双方都把自己的
-            # 地址写进了自己的注册记录 —— 于是同一局域网里的第一次相遇不需要用户
-            # 手填任何东西。已经学到对方端点后这一步自然命中不了新记录，开销可忽略。
-            for endpoint, _label in self._bootstrap_endpoints(identity):
-                if endpoint in seen:
-                    continue
-                seen.append(endpoint)
-                try:
-                    self._fetch_registry_from(endpoint, identity, roster)
-                except (RemoteError, TransportError, OSError):
-                    pass   # 自举失败是常态（防火墙、对端未启动），不该报成设备错误
-            # 逐台刷新注册快照（§7.3：任一在线共享节点都能提供完整快照）。
-            # **每个端点都要试**，而不是只挑一个：§4.6.1 说明 IPv4 是可达性兜底，
-            # 所以设备常同时发布 IPv6 与 IPv4 端点 —— 只试一个的话，IPv6 不通就
-            # 会把一台其实能连的设备判成离线。
-            # 对端不可达只影响它自己，不能因为一台离线就让整张列表失败。
-            for device_id, info in list(self._peer_names(roster).items()):
-                if device_id == self_device_id:
-                    continue
-                failure = ''
-                for endpoint in self._peer_endpoints(info):
-                    if endpoint in seen:
-                        continue
-                    seen.append(endpoint)
-                    try:
-                        self._fetch_registry_from(endpoint, identity, roster)
-                        failure = ''
-                        break
-                    except (RemoteError, TransportError, OSError) as e:
-                        failure = f'{endpoint[0]}:{endpoint[1]} 连不上: {e}'
-                if failure:
-                    errors.append({'device': info.get('name') or device_id, 'error': failure})
+                                   'error': self._unreachable[endpoint]})
 
         peers: List[Dict[str, Any]] = []
         names = self._peer_names(roster)
@@ -1096,6 +1097,49 @@ class GroupMeshPlugin(PluginBase):
             self._registry = registry_mod.Registry()
             log.warning(f'[group-mesh] 注册表载入失败，按空表处理: {e}')
 
+    def _fetch_registries_parallel(self, candidates: List[Tuple[Tuple[str, int], str]],
+                                   identity: Identity, roster: Optional[Roster],
+                                   overall_timeout: float = PROBE_OVERALL_SECONDS) -> None:
+        """并行向多个候选端点拉注册快照，**只等第一个成功的**。
+
+        为什么不是"全部跑完再返回"：界面上这是一次点击，用户要的是尽快看到设备列表。
+        实测（4 条一定连不上的端点）：串行 21.1s → 并行等全部 6.0s → 只等第一个成功
+        0.0s（有一条可达时）。因此这里按"谁先成功就用谁"收尾，其余探测在
+        `overall_timeout` 之后不再等待（线程是 daemon，未完成的会自己结束）。
+        全部失败时最多等 `overall_timeout`，不会无限拖住界面。
+        """
+        from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+
+        self._unreachable: Dict[Tuple[str, int], str] = {}
+        if not candidates:
+            return
+
+        def probe(item: Tuple[Tuple[str, int], str]) -> bool:
+            endpoint, _label = item
+            try:
+                self._fetch_registry_from(endpoint, identity, roster)
+                return True
+            except (RemoteError, TransportError, OSError) as e:
+                self._unreachable[endpoint] = f'{endpoint[0]}:{endpoint[1]} 连不上: {e}'
+            except Exception as e:   # 兜底：一个端点出意外不该拖垮整次刷新
+                self._unreachable[endpoint] = f'{endpoint[0]}:{endpoint[1]} 失败: {e}'
+            return False
+
+        pool = ThreadPoolExecutor(max_workers=min(8, len(candidates)))
+        try:
+            pending = {pool.submit(probe, item) for item in candidates}
+            deadline = time.monotonic() + overall_timeout
+            while pending:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                done, pending = wait(pending, timeout=remaining, return_when=FIRST_COMPLETED)
+                if any(future.result() for future in done):
+                    break   # 已经拿到一份快照：够了，别让用户继续等
+        finally:
+            # 不 shutdown(wait=True)：未完成的探测线程不该阻塞调用方
+            pool.shutdown(wait=False)
+
     def _fetch_registry_from(self, endpoint: Tuple[str, int], identity: Identity,
                              roster: Optional[Roster]) -> int:
         """连过去拉一次注册快照并合并，返回采纳条数。"""
@@ -1104,21 +1148,28 @@ class GroupMeshPlugin(PluginBase):
             remote = mesh_client.fetch_registry(connection)
         finally:
             self._release(connection)
-        accepted = self._registry.merge(remote)
-        if accepted:
-            try:
-                registry_mod.save_registry(self.identity_dir, self._registry)
-            except OSError as e:
-                log.warning(f'[group-mesh] 注册表写盘失败: {e}')
+        with self._lock:
+            # 并行探测时多个线程会同时合并：Registry.merge 的 seq 单调性判定必须
+            # 串行化，否则同一设备的两条记录可能互相覆盖。
+            accepted = self._registry.merge(remote)
+            if accepted:
+                try:
+                    registry_mod.save_registry(self.identity_dir, self._registry)
+                except OSError as e:
+                    log.warning(f'[group-mesh] 注册表写盘失败: {e}')
         return accepted
 
     def _connect(self, endpoint: Tuple[str, int], identity: Identity,
-                 roster: Optional[Roster]) -> Any:
+                 roster: Optional[Roster], timeout: float = PROBE_TIMEOUT_SECONDS) -> Any:
         """取一条到 `endpoint` 的连接（复用或新建）。
 
         复用是必要的：一次 `Connection` 等于一次完整 Noise 握手，而"浏览一个目录"
         在界面上是多次请求（列共享、列目录、取缩略图）。连接失效时（对端重启、
         网络断开）丢弃重连一次 —— 只重连一次，不对着不可达地址反复重试。
+
+        `timeout` 默认取"探测用"的短超时：设备可能同时发布 IPv6 与 IPv4 端点，而
+        IPv6 在本机常常没有路由 —— 用内核默认的 20 秒去试，几条不可达端点就能把
+        "刷新设备"拖到一分钟以上（实测 80 秒，界面一直停在"正在读取设备"）。
         """
         key = (identity.device.public_key, endpoint[0], endpoint[1])
         with self._lock:
@@ -1133,7 +1184,8 @@ class GroupMeshPlugin(PluginBase):
                         cached.close()
                     except Exception:
                         pass
-        connection = mesh_client.open_connection(endpoint[0], endpoint[1], identity, roster)
+        connection = mesh_client.open_connection(endpoint[0], endpoint[1], identity, roster,
+                                                timeout=timeout)
         with self._lock:
             self._connections[key] = connection
         return connection

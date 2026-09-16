@@ -593,6 +593,38 @@ class RemoteApiTest(unittest.TestCase):
         self.assertFalse(result['success'])
         self.assertIn('越界', result['error'])
 
+    def test_probe_with_dead_endpoint_respects_overall_budget(self):
+        """有一条**一定连不上**的端点时，刷新也要在总预算内返回。
+
+        这是"界面一直停在「正在读取设备」"那条故障的确定性守卫：设备会同时发布
+        IPv6 与 IPv4 端点，而 IPv6 在本机常常没有路由 —— 用内核默认的 20 秒超时
+        串行试几条，实测就是 80 秒。修复后：单次探测 3 秒、整次刷新总预算 4 秒，
+        并且**谁先成功就用谁**。
+
+        用 TEST-NET-1（192.0.2.0/24，RFC 5737 保留给文档用，不会有人真在上面）
+        制造"确定连不上"，因此耗时只由超时策略决定，不受网络环境影响。
+        """
+        import time as _time
+
+        if not self.plugin.get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+        self.plugin.init_identity({'name': 'probe-budget'})
+        self.plugin.create_group({'group': 'budget-group'})
+        added = self.plugin.peers({'action': 'add', 'endpoint': '192.0.2.11:19443',
+                                   'name': 'dead'})
+        self.assertTrue(added['success'], added)
+
+        started = _time.monotonic()
+        result = self.plugin.list_peers({'refresh': True})
+        elapsed = _time.monotonic() - started
+        self.assertTrue(result['success'])
+        # 预算 4 秒 + 余量；旧实现（20 秒超时、串行）会远超这个值
+        self.assertLess(elapsed, 10.0,
+                        f'刷新耗时 {elapsed:.1f}s —— 不可达端点被串行等满超时了')
+        # 用户刚填的地址连不上，必须如实回报（不能静默）
+        self.assertTrue(any('dead' in e.get('device', '') for e in result['errors']),
+                        f'手动登记的地址失败应当回报: {result["errors"]}')
+
     def test_download_remote_requires_share_and_path(self):
         self.plugin.init_identity({'name': 'needargs'})
         self.plugin.create_group({'group': 'needargs-group'})
