@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from typing import ClassVar
@@ -1000,6 +1001,45 @@ class ServeBindFailureTest(unittest.TestCase):
             self.fail(f'停止后端口 {port} 仍不可用：{e}')
         finally:
             probe.close()
+
+    def test_stalled_connection_does_not_block_stopping(self):
+        """一个"连上就不说话"的对端不得阻止节点停止。
+
+        这是实测故障的复现：处理连接原先在 **accept 循环里同步**跑，而握手会阻塞在
+        对端 socket 上最多 60 秒；"从另一个线程关闭套接字"在 Windows 上不保证解开
+        阻塞中的 recv，于是循环回不到检查停止标志的地方 —— 日志里连续出现
+        "停止节点超时：监听线程没有在 8 秒内退出"，端口也就一直放不出来
+        （再启动就是 EADDRINUSE）。修法：每条连接单独开线程处理。
+        """
+        stop = threading.Event()
+        started = threading.Event()
+        bound: list = []
+        errors: list = []
+
+        def run():
+            try:
+                serve('127.0.0.1', 0, self.identity, None,
+                      ready=lambda listener: (bound.append(listener.getsockname()[1]),
+                                              started.set()),
+                      stop_requested=stop.is_set)
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        self.assertTrue(started.wait(timeout=5))
+        port = bound[0]
+
+        # 制造一个"只连上、不发任何数据"的对端：服务端会卡在握手的第一步
+        stalled = socket.create_connection(('127.0.0.1', port), timeout=5)
+        self.addCleanup(stalled.close)
+        time.sleep(0.3)                                # 让它进入握手
+
+        stop.set()
+        thread.join(timeout=5)
+        self.assertFalse(thread.is_alive(),
+                         '有僵死连接时停止也必须生效（accept 循环不该被它占住）')
+        self.assertEqual(errors, [], f'serve() 不应因正常停止抛异常：{errors}')
 
     def test_bind_failure_does_not_leave_a_listening_socket(self):
         """绑定失败后不得留下**新增的** LISTEN 套接字（fd 级判定）。

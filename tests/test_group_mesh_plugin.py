@@ -625,6 +625,49 @@ class RemoteApiTest(unittest.TestCase):
         self.assertTrue(any('dead' in e.get('device', '') for e in result['errors']),
                         f'手动登记的地址失败应当回报: {result["errors"]}')
 
+    def test_stalled_inbound_connection_does_not_break_stop(self):
+        """一个"连上并发了 hello 就不再说话"的对端，不得让停止节点失败或拖慢状态。
+
+        这是线上日志的复现形态：节点起来后，对端在**握手途中**连过来；处理连接原先
+        在 accept 循环里同步跑并阻塞在 recv（socket 超时 60 秒），于是循环回不到检查
+        停止标志的地方 —— 日志里连续出现"停止节点超时：监听线程没有在 8 秒内退出"，
+        端口也一直放不出来。插件层这条用例把它钉住：起节点、制造僵死连接、停止节点，
+        必须在超时预算内成功返回且状态如实。
+        """
+        import socket
+        import time as _time
+
+        from shell.groupmesh.transport import exchange_hello
+
+        if not self.plugin.get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+        self.plugin.init_identity({'name': 'stalled'})
+        self.plugin.create_group({'group': 'stalled-group'})
+        self.plugin.update_setting('bind', '127.0.0.1')
+        started = self.plugin.start_node()
+        self.assertTrue(started['success'], started)
+        host, port = started['node']['listening'].rsplit(':', 1)
+        port = int(port)
+
+        # 连上并发出 hello（走了协商的第一步），之后就什么也不做
+        stalled = socket.create_connection((host, port), timeout=5)
+        self.addCleanup(stalled.close)
+        exchange_hello(stalled)
+        _time.sleep(0.3)
+
+        began = _time.monotonic()
+        stopped = self.plugin.stop_node()
+        elapsed = _time.monotonic() - began
+        self.assertTrue(stopped['success'],
+                        f'有僵死连接时停止必须成功，实际: {stopped.get("error")}')
+        self.assertLess(elapsed, 8.0,
+                        f'停止耗时 {elapsed:.1f}s —— accept 循环被僵死连接占住了')
+        self.assertFalse(stopped['node']['running'])
+
+        # 停完必须能立刻重新起（端口真的释放了）
+        again = self.plugin.start_node()
+        self.assertTrue(again['success'], f'停止后应当能重新启动: {again.get("error")}')
+
     def test_download_remote_requires_share_and_path(self):
         self.plugin.init_identity({'name': 'needargs'})
         self.plugin.create_group({'group': 'needargs-group'})

@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import os
 import socket
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -66,6 +67,12 @@ def resolve_in_share(root: str, relative: str) -> str:
     if not inside:
         raise PathRejected(f'路径逃逸出共享根: {relative!r} -> {candidate}')
     return candidate
+
+
+# 单条已接受连接的读写超时（秒）。握手、请求应答都受它约束 —— 没有它，一个
+# "连上就不说话"的对端能把处理线程永远挂住（处理线程已独立于 accept 循环，
+# 但挂着的线程仍占着一条连接与一个线程名额）。
+CONNECTION_TIMEOUT_SECONDS = 30.0
 
 
 class PathRejected(Exception):
@@ -399,6 +406,7 @@ def serve(host: str, port: int, identity: Identity, roster: Optional[Roster],
     listener.settimeout(ACCEPT_POLL_SECONDS)
     if ready is not None:
         ready(listener)
+    handlers: List[threading.Thread] = []
     try:
         while not (node.stop_requested is not None and node.stop_requested()):
             try:
@@ -407,14 +415,44 @@ def serve(host: str, port: int, identity: Identity, roster: Optional[Roster],
                 continue
             except OSError:
                 break          # 套接字已被关闭（stop() 走的是这条路）
-            _serve_one(sock, address, node)
+            # **每条连接单独开线程**，不在这里同步处理。为什么必须这样：`_serve_one`
+            # 会跑完整的 Noise 握手并阻塞在 socket 上（超时 60 秒），而"从另一个线程
+            # 关闭套接字"在两个平台上都不保证解开阻塞中的 recv —— 于是只要有一个
+            # 半死不活的连接（对端建连到一半就没了），accept 循环就回不到检查停止
+            # 标志的地方：表现为停止超时、端口放不出来、再启动 EADDRINUSE。
+            # 实测日志：连续多条"停止节点超时：监听线程没有在 8 秒内退出"。
+            _spawn_handler(sock, address, node, handlers)
     finally:
         listener.close()
+        # 给处理中的连接一点收尾时间（它们各自有自己的 socket 超时兜底）
+        for handler in handlers:
+            handler.join(timeout=1.0)
+
+
+def _spawn_handler(sock: socket.socket, address: Any, node: Node,
+                   handlers: List[threading.Thread]) -> None:
+    """在独立线程里处理一条连接（见 serve() 里为什么要单开线程）。
+
+    线程是 daemon：进程退出时不阻塞；同时登记到 `handlers` 里，停止时给它们一点
+    收尾时间。处理完从列表里摘掉，避免长驻节点把已完成线程越攒越多。
+    """
+    def run() -> None:
+        try:
+            _serve_one(sock, address, node)
+        finally:
+            try:
+                handlers.remove(threading.current_thread())
+            except ValueError:
+                pass
+
+    thread = threading.Thread(target=run, name='group-mesh-conn', daemon=True)
+    handlers.append(thread)
+    thread.start()
 
 
 def _serve_one(sock: socket.socket, address: Any, node: Node) -> None:
     """处理一条连接：协商 → 握手 → 请求应答循环，直到对端断开或出错。"""
-    sock.settimeout(60.0)
+    sock.settimeout(CONNECTION_TIMEOUT_SECONDS)
     try:
         negotiation = exchange_hello(sock)
         # 每条连接都用最新名单授权：长驻节点期间名单可能已变（群主加人）
