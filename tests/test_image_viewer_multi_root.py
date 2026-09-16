@@ -108,6 +108,22 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
 
     # ---------- 多根目录：路径与命名空间 ----------
 
+    def test_constructs_without_any_settings(self):
+        """空白设置（新装用户的第一次启动）下也必须能构造出来。
+
+        实测踩到的缺陷：`root_dir` 未配置时 `self.setting('root_dir')` 为空，于是走到
+        `super().get_data_root()`；而本类的 MRO 以 mixin 开头，`super()` 命中的是
+        `ThumbMixin.get_data_root`（它读 `self.root_dir`）—— 恰好是这一行要算的东西。
+        结果是插件整体加载失败（`AttributeError: … has no attribute 'root_dir'`），
+        连带声明依赖它的 pixiv-sync 也没了。开发机上被
+        `.config/plugins/image-viewer.json` 里的历史 `root_dir` 掩盖，所以只有
+        "完全没有设置"这条分支会暴露它。
+        """
+        plugin = self._plugin({}, with_store=False)
+        self.assertTrue(_same(plugin.root_dir, self.root), '应当回退到 base 的数据根')
+        self.assertTrue(_same(plugin.get_data_root(), self.root))
+        self.assertTrue(_same(plugin.thumb_dir, self.root / '.cache' / 'thumbs'))
+
     def test_single_root_paths_unchanged(self):
         """只有第一根时，路径/根内相对路径与历史版本一致。"""
         plugin = self._plugin({'root_dir': str(self.root)})
