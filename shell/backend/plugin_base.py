@@ -220,7 +220,7 @@ class PluginBase(ABC):
         插件可覆写为"现场生成并落盘"；返回值被忽略，生成失败不应抛异常。
         """
 
-    def is_content_placeholder(self, path) -> bool:  # noqa: B027 - 有意的非抽象空钩子
+    def is_content_placeholder(self, path: Path | str) -> bool:
         r"""该路径是否"存在但内容还没真正取到本地"（`/file` 每次请求都会问一次）。
 
         为什么需要它，而不是只靠"文件不存在"来判断：**物化出来的占位文件是存在的**
@@ -233,8 +233,9 @@ class PluginBase(ABC):
         实现约定：这个方法会在**每个** `/file` 请求上被调用，必须廉价（一次
         `stat` + 路径归属判断，别在这里做网络或全目录扫描）。
         """
+        return False
 
-    def ensure_file(self, path) -> None:  # noqa: B027 - 有意的非抽象空钩子
+    def ensure_file(self, path: Path | str) -> None:  # noqa: B027 - 有意的非抽象空钩子
         r"""按需把内容取到本地（`/file` 找不到文件时调用）。默认什么都不做。
 
         与 `ensure_thumb` 是同一形状的钩子，区别在于服务的路由不同：这个作用于

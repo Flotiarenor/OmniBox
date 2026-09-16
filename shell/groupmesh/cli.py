@@ -33,7 +33,7 @@ import base64
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NoReturn, Optional
 
 try:  # 作为包运行：python -m shell.groupmesh.cli（推荐）
     from . import __version__ as KERNEL_VERSION
@@ -166,7 +166,16 @@ def require_roster(args: argparse.Namespace) -> Roster:
     return roster
 
 
-def die(message: str, code: int = 1) -> None:
+def die(message: str, code: int = 1) -> NoReturn:
+    """打印错误并退出。
+
+    返回类型必须是 `NoReturn`（而不是 `None`）：调用方普遍写成
+    `die('...')` 之后直接往下走，靠的就是"它不会返回"。写成 `-> None` 时
+    pyright 无法推断这一点，于是 `require_identity` 这类函数会报
+    "Function with declared return type ... must return value on all code paths"，
+    而 `_require_target` 里的 `host` / `connection` 会在调用 `die()` 之后
+    仍被判为 possibly unbound —— 那正是 pyright 硬门禁里的 12 条。
+    """
     print(f'错误: {message}', file=sys.stderr)
     raise SystemExit(code)
 

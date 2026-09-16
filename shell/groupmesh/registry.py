@@ -261,7 +261,10 @@ def local_addresses(prefer_ipv6: bool = True) -> List[str]:
     except OSError:
         infos = []
     for family, _, _, _, sockaddr in infos:
-        address = sockaddr[0]
+        # `str()` 是给类型检查看的：getaddrinfo 的 sockaddr 被推成 str | int 联合，
+        # 于是 `address.split(...)` 会被判成"对 int 调用 split"（本函数原先就有这条
+        # pyright 报错）。socket 实际给的地址部分一定是字符串，转一次不改变行为。
+        address = str(sockaddr[0])
         if family == socket.AF_INET6:
             address = address.split('%')[0]
         elif family != socket.AF_INET:

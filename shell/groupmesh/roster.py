@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 from . import crypto_prims as cp
 from .records import (
@@ -310,8 +310,15 @@ def founding_roster(group: str, owner: 'PrincipalLike', device_keys: List[bytes]
     return roster
 
 
-class PrincipalLike:
-    """`founding_roster` 需要的形状（避免 identity 与 roster 互相 import）。"""
+class PrincipalLike(Protocol):
+    """`founding_roster` 需要的形状（避免 identity 与 roster 互相 import）。
+
+    必须是 `Protocol`（结构化类型）而不是普通类：这只是"契约声明"，真实的
+    `Identity.Principal` 并不继承它。写成普通类时 pyright 会报
+    "Argument of type Principal cannot be assigned to parameter owner of type
+    PrincipalLike"（cli.py / selftest.py 里各有一批），而运行时从来没人 isinstance
+    过它 —— 声明成 Protocol 既保持零运行期影响，又让类型检查名副其实。
+    """
 
     name: str
     public_key: bytes

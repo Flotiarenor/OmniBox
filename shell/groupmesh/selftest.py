@@ -37,7 +37,14 @@ def _expect(condition: bool, message: str) -> None:
         raise Failure(message)
 
 
-def _expect_raises(kind, fn: Callable[[], None], message: str) -> None:
+def _expect_raises(kind, fn: Callable[[], object], message: str) -> None:
+    """断言 `fn()` 抛出 `kind`。
+
+    返回类型写成 `object`（而不是 `None`）：被断言的表达式常常**有返回值**
+    （`lambda: cp.dh(...)` 返回 bytes、`lambda: json.loads(...)` 返回对象），
+    而这里只关心"抛没抛"，不关心返回值。写成 `Callable[[], None]` 时 pyright 会
+    报 "Argument of type () -> bytes cannot be assigned to parameter fn"。
+    """
     try:
         fn()
     except kind:
@@ -260,7 +267,11 @@ def check_registry() -> None:
             '同 seq 的注册记录应被拒绝（防重放）')
     _expect(registry.add(new_registration(device_pk, device_sk, 2, [('::1', 19444)], ['docs'])),
             'seq 递增的注册记录应被采纳')
-    _expect(registry.get(device_pk).endpoints == [('::1', 19444)], '端点未更新为最新记录')
+    # `Registry.get` 的返回类型是 Optional（未收录该设备时返回 None）。前面刚断言过
+    # 它已被采纳，这里把"运行时已知非空"告诉类型检查，避免 reportOptionalMemberAccess。
+    latest = registry.get(device_pk)
+    assert latest is not None, '刚被采纳的注册记录不该查不到'
+    _expect(latest.endpoints == [('::1', 19444)], '端点未更新为最新记录')
 
     # 伪造签名必须被拒
     other_sk, _ = cp.generate_sign_keypair()

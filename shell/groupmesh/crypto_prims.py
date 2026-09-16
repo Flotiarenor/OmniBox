@@ -202,7 +202,11 @@ def _ed_private_key(seed: bytes):
     if len(seed) != 32:
         raise CryptoError(f'Ed25519 私钥必须是 32 字节种子，收到 {len(seed)}')
     try:
-        return ECC.construct(curve=SIG_CURVE, seed=seed)
+        # pycryptodome 的 Ed25519 用 32 字节 seed 还原私钥，运行期完全支持 bytes；
+        # 但它的类型标注把 seed 写成 str | int，因此这里显式抑制（与
+        # shell/backend/app_logging.py 里同一写法）。不能改成传 hex 字符串 ——
+        # 那会改变密钥的语义。
+        return ECC.construct(curve=SIG_CURVE, seed=seed)  # type: ignore[arg-type]
     except Exception as e:
         raise CryptoError(f'Ed25519 私钥无法还原: {e}') from e
 

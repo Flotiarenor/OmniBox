@@ -39,7 +39,7 @@ Noise 的参考实现（`noise-c`、`snow`、`noiseprotocol`）是"现成实现"
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, cast
 
 from . import crypto_prims as cp
 
@@ -234,6 +234,12 @@ class HandshakeState:
         index = self.message_index
         offset = 0
 
+        # 此处临时私钥必然已生成（在 write_message 的第 1 条消息里 step0 做过），
+        # 但字段声明是 Optional，pyright 因此报 "Argument of type bytes | None cannot
+        # be assigned to parameter private"（本文件 3 处）。用 cast 把"运行时已知"
+        # 告诉类型检查，不改运行逻辑（写成断言反而会在类型上留下运行时判断）。
+        ephemeral_private = cast(bytes, self.ephemeral_private)
+
         def take(n: int, what: str) -> bytes:
             nonlocal offset
             if offset + n > len(message):
@@ -255,14 +261,14 @@ class HandshakeState:
             self._mix_hash(peer_e)
             self._set_remote_ephemeral(peer_e)
             # ee：Call MixKey(DH(e, re))
-            self._mix_key(cp.dh(self.ephemeral_private, peer_e))
+            self._mix_key(cp.dh(ephemeral_private, peer_e))
             # s：Sets rs to DecryptAndHash(下一个 DHLEN+16 字节)，用 ee 的 k、nonce=0
             remote_static = self._decrypt_and_hash(take(32 + cp.TAGLEN, '对端静态公钥'))
             if len(remote_static) != 32:
                 raise NoiseError('对端静态公钥长度非法')
             self.remote_static_public = remote_static
             # es：Call MixKey(DH(e, rs)) —— 本方临时 × 对端静态
-            self._mix_key(cp.dh(self.ephemeral_private, remote_static))
+            self._mix_key(cp.dh(ephemeral_private, remote_static))
             # 负载：DecryptAndHash(剩余字节)，用 es 的新 k、nonce 从 0 开始
             payload = self._decrypt_and_hash(message[offset:])
             offset = len(message)
@@ -276,7 +282,7 @@ class HandshakeState:
                 raise NoiseError('对端静态公钥长度非法')
             self.remote_static_public = remote_static
             # se：Call MixKey(DH(e, rs)) —— 本方临时 × 对端静态（= 对端的 DH(s, re)）
-            self._mix_key(cp.dh(self.ephemeral_private, remote_static))
+            self._mix_key(cp.dh(ephemeral_private, remote_static))
             payload = self._decrypt_and_hash(message[offset:])
             offset = len(message)
         else:
