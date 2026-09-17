@@ -353,8 +353,15 @@ class Node:
                     f'超出共享项容量上限（{projected} > {share.max_bytes} 字节）')
 
         os.makedirs(os.path.dirname(target) or share.path, exist_ok=True)
+        # 写完在**取长度之前**刷一次缓冲（应答里的 `total` 就是这里 stat 出来的）：
+        # `written` / `total` 是"这些字节已经在暂存文件里"的承诺，上传方据此更新进度
+        # 与续传记录；不刷就可能报出尚未写入的旧长度，而对方按这个数字记了续传点
+        # （多实例用例在 CI 上偶发 "任务报的进度与对端暂存文件大小必须一致" 就是它）。
+        # 不用 fsync：续传以 (大小, mtime) 对账（设计 §6.4），掉电级持久化不是这条
+        # 路径的保证，而每 256 KiB 同步落盘会明显拖慢上传。
         with open(staging, 'wb' if truncate else 'ab') as handle:
             handle.write(data)
+            handle.flush()
         if usage is not None:
             usage['added'] += len(data)
 
