@@ -832,8 +832,11 @@ group-mesh 是参考实现（`get_extensions()` + `frontend/network-location.htm
 - 多实例夹具（`tests/harness/`、`tests/test_multi_instance_fixture.py`）：一个进程内跑
   多个真实插件实例，用于物化/网络位置/取字节的端到端验证；
 - 前端三层用例：纯渲染（桩 Bridge + 无头浏览器）、真实壳（起服务 + 导航 + iframe）、后端 API；
-- 非无头演示脚本（`tests/debug_materialized_gallery.py`、`tests/debug_network_location.py`）：
-  逐步截图，用于回答"肉眼才能回答"的问题。
+- 非无头演示脚本（`tests/debug_materialized_gallery.py`、`tests/debug_network_location.py`、
+  `tests/debug_connection.py`）：逐步截图，用于回答"肉眼才能回答"的问题。其中
+  `debug_connection.py` 专做连接与共享访问：两台实例、地址由脚本程序化登记（不要求手工
+  输入），在界面上依次验证设备发现（双向）、列远端目录、取回与上传，并用两侧文件的
+  sha256 对比给结论。
 
 ---
 
