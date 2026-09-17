@@ -24,17 +24,17 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import List
 
-from flask import Flask, abort, request, send_file, send_from_directory
+from flask import Flask, abort, g, request, send_file, send_from_directory
 
 from shell.backend.auth import (
     TOKEN_COOKIE,
     TOKEN_HEADER,
     get_or_create_token,
-    token_matches,
 )
 from shell.backend.media_catalog import list_subdirectories
 from shell.backend.paths import get_config_dir
 from shell.backend.plugin_manager import PluginManager
+from shell.backend.principal import CURRENT_PRINCIPAL, PrincipalStore
 from shell.backend.protected_paths import collect as collect_protected_files
 from shell.backend.protected_paths import matches as is_protected_path
 from shell.backend.protected_paths import normalize as normalize_path
@@ -323,6 +323,11 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
     app = Flask(__name__)
     frontend_dist = _SHELL_DIR / 'frontend' / 'dist'
     _token = get_or_create_token(get_config_dir())
+    # 凭据 → 主体的映射（设计文档 group-mesh §12 第 1 项）。自举：凭据表为空时
+    # 把**既有的**全局令牌登记为本机 owner，因此老部署升级后令牌继续可用，
+    # 而"这次调用是谁"从此有答案。
+    _principals = PrincipalStore(get_config_dir(), bootstrap_token=_token)
+    _principals.ensure_bootstrap()
 
     def _protected_paths() -> List[Path]:
         r"""当前必须拒绝返回的路径：壳自己的凭据 + 插件申报的受保护路径。
@@ -383,13 +388,48 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
 
     @app.before_request
     def _require_token():
-        """数据路由鉴权：Cookie 或 X-Omnibox-Token 头二选一。"""
+        """数据路由鉴权 + **确立主体上下文**。
+
+        两件事必须在这里一起做，顺序不能反：
+
+        1. 校验凭据（Cookie 或 `X-Omnibox-Token` 头二选一）；
+        2. 凭据通过后，把它解析成主体并写入 `CURRENT_PRINCIPAL`。
+
+        第 2 步是设计文档 §12 第 2 项要求的"受信注入"：主体只从**凭据**得到，
+        绝不从请求参数读 —— 一个带 `{"principal": "<别人的 id>"}` 的请求与不带
+        该字段的请求必须得到同一个主体。因此这里既不读 `request.args`，
+        也不读 JSON body。
+
+        令牌一律走 `PrincipalStore.resolve()`：它比的是**摘要**，未登记即 401，
+        **不降级为匿名主体**（"没有主体"是后台线程的状态，不是鉴权失败的出路）。
+        """
         if request.endpoint in _OPEN_ENDPOINTS:
             return
         supplied = request.cookies.get(TOKEN_COOKIE, '') or request.headers.get(TOKEN_HEADER, '')
-        if token_matches(supplied, _token):
+        principal = _principals.resolve(supplied)
+        if principal is None:
+            abort(401)
+        # 记下 token，请求收尾时**恢复**原值（见 _release_principal）：只 set 不
+        # reset 会让主体泄漏到同一执行上下文里的后续调用 —— 生产环境每个请求
+        # 一个上下文时看不出来，但 `test_client`（以及将来任何复用上下文的调用）
+        # 会看到"上一个请求的主体还在"，那是比没有主体更危险的形态。
+        #
+        # token 存在 `g`（请求域）而不是模块级变量：模块级列表会在并发请求之间
+        # 互相 pop 对方的 token，把主体错位到另一个请求上。
+        g.principal_token = CURRENT_PRINCIPAL.set(principal)
+
+    @app.teardown_request
+    def _release_principal(exception=None):
+        """请求结束时恢复主体上下文（鉴权失败时没有 token，什么也不做）。"""
+        token = g.pop('principal_token', None)
+        if token is None:
             return
-        abort(401)
+        try:
+            CURRENT_PRINCIPAL.reset(token)
+        except (LookupError, ValueError):
+            # reset 只能在**同一个** context 里做；跨 context 时无法恢复，
+            # 但此时那个 context 已经结束，不会影响后续请求。
+            pass
 
     @app.after_request
     def _attach_token_cookie(resp):

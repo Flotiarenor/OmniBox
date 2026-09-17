@@ -21,6 +21,9 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional, Tuple
 
+from shell.backend.principal import PrincipalContext
+from shell.backend.principal import current_principal as _current_principal
+from shell.backend.principal import require_principal as _require_principal
 from shell.backend.protected_paths import is_protected
 
 log = logging.getLogger(__name__)
@@ -284,6 +287,37 @@ class PluginBase(ABC):
         if self._plugin_manager is None:
             return None
         return self._plugin_manager.get_plugin_instance(name)
+
+    # ===== 主体上下文（设计文档 group-mesh §12 第 1/2 项）=====
+
+    def current_principal(self) -> Optional[PrincipalContext]:
+        r"""本次调用的主体：**由壳注入**，无法被请求参数影响。
+
+        壳在 `before_request` 里校验凭据并把主体写进 `ContextVar`
+        （`shell/backend/principal.py`），因此本方法拿到的是"已验证的凭据对应
+        的那个人"，而不是某个自称的 ID。没有主体时返回 `None`：
+
+        * **后台线程**：`ContextVar` 不跨线程继承，插件自起的线程永远读不到主体
+          —— 这是设计约束而不是缺陷（§12 第 2 项明确要求"涉及主体的后台任务必须
+          显式携带主体信息"）。因此不要在后台任务里用本方法推断操作者。
+        * CLI / 自检 / 直接调用插件实例：同样没有主体。
+
+        需要"必须有主体"的地方请用 `require_principal()`：让拒绝发生在业务逻辑
+        之前，而不是让 `None` 一路传下去被某处的 `or '本机'` 兜住。
+
+        典型用法::
+
+            def delete_folder(self, path):
+                principal = self.require_principal()      # 无主体即拒绝
+                if not principal.is_admin:
+                    return {'success': False, 'error': '需要管理员权限'}
+                ...
+        """
+        return _current_principal()
+
+    def require_principal(self) -> PrincipalContext:
+        """同上，但没有主体时抛 `PermissionError`（壳的 500 处理会转成错误响应）。"""
+        return _require_principal()
 
     def get_extensions(self) -> List[dict]:
         """宿主前端可渲染的动作。默认空。"""
