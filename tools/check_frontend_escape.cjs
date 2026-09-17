@@ -308,7 +308,7 @@ if (renderDetail) {
 // 外层表达式登记在前：精确移除时嵌套的内层表达式会一起被移走。
 checkInterpolationsRegistered('shell/frontend/public/shell/folder-picker.js', [
   "label ? `<span class=\"iv-dirbrowser-hint\">含 ${Utils.escapeHtml(label)}</span>` : ''",
-  "extra ? `<span class=\"iv-root-note\">${Utils.escapeHtml(extra)}</span>` : ''",
+  "note ? `<span class=\"iv-root-note\">${Utils.escapeHtml(note)}</span>` : ''",
   'Utils.escapeHtml(data.error)',
   'Utils.escapeHtml(entry.path)',
   'Utils.escapeHtml(entry.name)',
@@ -319,6 +319,13 @@ checkInterpolationsRegistered('shell/frontend/public/shell/folder-picker.js', [
   'Utils.escapeHtml(path)',
   'index',
   "Utils.escapeHtml(options.emptyText || '未添加任何目录')",
+  // 网络位置：提供方菜单与提供方页面。三个字段都来自**插件声明**，因此逐个转义后
+  // 才拼进模板（登记项与 providerRow / openNetworkPicker 里的写法逐字对应）。
+  'providers.map(providerRow).join(\'\')',
+  "Utils.escapeHtml(ext.icon || '🌐')",
+  "Utils.escapeHtml(ext.label || ext.plugin || '网络位置')",
+  "Utils.escapeHtml(provider.label || '网络位置')",
+  'Utils.escapeHtml(provider.embedUrl)',
 ]);
 
 /** 取多个方法块拼成对象（方法之间可能互相调用，如 _escapeAttr → _escapeHtml）。 */

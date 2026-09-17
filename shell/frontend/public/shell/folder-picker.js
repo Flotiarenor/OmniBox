@@ -155,6 +155,23 @@ window.FolderPicker = (function () {
     return { action: 'picked', path, label: typeof data.label === 'string' ? data.label : '' };
   }
 
+  /**
+   * 提供方菜单里的一行。
+   *
+   * 单独抽成函数而不是写在模板里直接 `.map(...)`：转义门禁要求模板里**每一个**插值
+   * 都在 `tools/check_frontend_escape.cjs` 的登记表里登记，而一个跨多行的嵌套模板
+   * 只能整段抄进登记表（缩进错一格就失效）。拆开之后外层是
+   * `${providers.map(providerRow).join('')}`，内层三处也各自是一行。
+   * `icon` / `label` 都来自插件声明，**必须转义**。
+   */
+  function providerRow(ext, index) {
+    return `
+                <div class="iv-dirbrowser-item" data-index="${index}">
+                  <span>${Utils.escapeHtml(ext.icon || '🌐')}</span>
+                  <span>${Utils.escapeHtml(ext.label || ext.plugin || '网络位置')}</span>
+                </div>`;
+  }
+
   /** 提供方选择菜单（只有一个提供方时不会走到这里）。 */
   function openProviderMenu(providers) {
     return new Promise((resolve) => {
@@ -165,11 +182,7 @@ window.FolderPicker = (function () {
           <h3>选择网络位置来源</h3>
           <div class="iv-dirbrowser">
             <div class="iv-dirbrowser-list" data-act="list">
-              ${providers.map((ext, index) => `
-                <div class="iv-dirbrowser-item" data-index="${index}">
-                  <span>${Utils.escapeHtml(ext.icon || '🌐')}</span>
-                  <span>${Utils.escapeHtml(ext.label || ext.plugin || '网络位置')}</span>
-                </div>`).join('')}
+              ${providers.map(providerRow).join('')}
             </div>
           </div>
           <div class="modal-footer">
@@ -350,5 +363,6 @@ window.FolderPicker = (function () {
     createList,
     loadNetworkProviders,
     readProviderMessage,
+    providerRow,
   };
 })();

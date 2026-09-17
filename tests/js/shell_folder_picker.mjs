@@ -243,4 +243,18 @@ await check('添加行含「网络位置」入口，且不改变原有三件套'
     assert.ok(addRow.innerHTML.includes('data-act="add"'), '添加按钮不应消失');
 });
 
+await check('提供方菜单的一行转义 icon/label（两者都来自插件声明）', () => {
+    // 多提供方时组件会弹这个菜单：里面的文字是插件 `get_extensions()` 给的，
+    // 属于外部数据，必须走 escapeHtml（转义门禁的登记表也按这一处登记）。
+    const html = FolderPicker.providerRow({ icon: PAYLOAD, label: PAYLOAD }, 3);
+    assert.ok(!html.includes('<img src=x'), `提供方行未转义：${html}`);
+    assert.ok(!/['"]><img/.test(html), `载荷逃出了属性：${html}`);
+    assert.ok(html.includes('&quot;') && html.includes('&lt;img'), '值没有被实体化');
+    assert.ok(html.includes('data-index="3"'), '索引要落进 data-index（选中时按它取回提供方）');
+    // 缺 icon / label 时回落默认值，不能渲染出 "undefined"
+    const fallback = FolderPicker.providerRow({}, 0);
+    assert.ok(fallback.includes('🌐') && fallback.includes('网络位置'), `默认值缺失：${fallback}`);
+    assert.ok(!fallback.includes('undefined'), `默认值缺失：${fallback}`);
+});
+
 console.log(`\nshell_folder_picker: ${passed} 项检查${process.exitCode ? '（有失败）' : '全部通过'}`);
