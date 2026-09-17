@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import __version__ as KERNEL_VERSION
 from .identity import Identity
+from .records import RecordError
 from .registry import Registration, Registry, new_registration
 from .roster import Roster
 from .shares import AclDenied, Authorizer, LocalShare, Permission
@@ -89,6 +90,9 @@ class Node:
     registry: Optional[Registry] = None
     # 每次建连时重新读取名单的回调（见 current_roster）。
     roster_loader: Optional[Callable[[], Optional[Roster]]] = None
+    # 采纳了对端推来的新名单时写回本地（见 _op_roster）。None = 只更新内存副本，
+    # 不落盘 —— 那种情况下重启会退回旧名单，因此插件与 CLI 都会传入。
+    roster_saver: Optional[Callable[[Roster], None]] = None
     # 外部请求停止：accept 循环每轮检查一次（见 serve() 里为什么用轮询而不是
     # "另一个线程 close 套接字"）。None 表示不检查，一直服务到套接字被关闭。
     stop_requested: Optional[Callable[[], bool]] = None
@@ -130,9 +134,19 @@ class Node:
     # ── 授权 ──────────────────────────────────────────────────────────────
 
     def _authorizer(self, peer: PeerIdentity) -> Authorizer:
+        """把对端身份转成 ACL 判定器。
+
+        不在名单里的设备（`peer.member is False`）一律按"非成员"处理：它的
+        `principal_key` 是空的（名单里查不到主体），因此 `group_member=False`，
+        任何 `group` / 具体主体列表的 ACL 都不会放行它。这一点必须写死在这里 ——
+        握手现在会接受未入名单的设备（为了让它能拉新名单，见 §5.7），
+        若这里不拦，它就等于一个直接拥有"成员"待遇的连接。
+        """
         roster = self.current_roster()
-        group_member = bool(roster and roster.contains_principal(peer.principal_key))
-        return Authorizer(requester_key=peer.principal_key, group_member=group_member,
+        group_member = bool(peer.member and roster
+                            and roster.contains_principal(peer.principal_key))
+        requester_key = peer.principal_key or peer.device_key
+        return Authorizer(requester_key=requester_key, group_member=group_member,
                           requester_device_key=peer.device_key)
 
     def _share_or_fail(self, share_id: Any) -> LocalShare:
@@ -149,11 +163,19 @@ class Node:
         `write_state` 是**每条连接**一份的临时状态（由 `_serve_one` 创建），目前只服务
         容量核算：同一条连接上连续写入的分块属于同一次上传，占用基线只要量一次。
         直接调用（用例、自检）不传，等价于每次请求一份新状态 —— 结果一样，只是多量几次。
+
+        **未入名单的设备只放行 `roster`**（§5.7 的名单分发前提）：握手不再按"在不在
+        名单里"拒绝连接（否则新成员永远收不到新名单），改为在这里按 op 收敛权限。
+        逐 op 判定而不是"连接建立时定生死"，是因为名单会在连接存活期内变（群主加人）。
         """
         write_state = {} if write_state is None else write_state
         op = request.get('op')
         if not isinstance(op, str):
             return {'status': 'error', 'code': 'bad_request', 'error': '缺少 op 字段'}
+        if not peer.member and op != 'roster':
+            return {'status': 'error', 'code': 'not-in-roster',
+                    'error': f'设备 {peer.device_id} 不在本机团体名单里，'
+                             f'只能拉取名单（op=roster），不能 {op!r}'}
         handler = {
             'hello': self._op_hello,
             'list': self._op_list,
@@ -161,6 +183,7 @@ class Node:
             'read': self._op_read,
             'write': self._op_write,
             'registry': self._op_registry,
+            'roster': self._op_roster,
         }.get(op)
         if handler is None:
             return {'status': 'error', 'code': 'bad_request', 'error': f'未知操作 {op!r}'}
@@ -360,6 +383,143 @@ class Node:
             return {'status': 'ok', 'accepted': accepted, 'total': len(self.registry)}
         raise RemoteFailure('bad_request', f'未知的 registry action: {action!r}')
 
+    # ── 名单分发（§5.7）───────────────────────────────────────────────────
+
+    def _op_roster(self, request: Dict[str, Any], peer: PeerIdentity) -> Dict[str, Any]:
+        """交换团体名单（§5.7）。
+
+        设计文档 §5.7 明确了两件事，本方法逐条落实：
+
+        * **分发通道不必可信**：名单自带群主/管理员签名，中转方无法篡改内容，只能
+          拒绝服务。因此这里对收到的名单一律跑 `Roster.accepts()` 的规则 1–6，
+          而不是"信任发来的人"。
+        * **首选载体是注册表/任一在线节点**：任一在线节点都能把完整名单给出来。
+
+        两个 action：
+
+        `list` —— 把本机名单给出去。**准入条件**（不是无条件公开）：对端要么已在
+        本机名单里，要么拿得出团体的历史名单（`history` / `roster` 字段），
+        即"它确实属于这个团体、只是版本旧"。没有这条，任何拿到端点的人都能取走
+        完整的成员名单。
+
+        `push` —— 接收对端名单并按规则 1–6 采纳；采纳后写回本地。
+        未入名单的设备也可以 push：这正是"新成员手里只有旧名单、需要被推上新名单"
+        的场景，而签名校验保证了它推不进来任何伪造内容。
+
+        请求字段：`history`（对端已知的历史名单，新→旧；可选）、
+        `roster`（对端当前名单；可选，等价于 history 的第一项）。
+        """
+        action = request.get('action', 'list')
+        if action == 'list':
+            local = self.current_roster()
+            if local is None:
+                raise RemoteFailure('no-roster', '本机还没有团体名单')
+            if not peer.member and not self._peer_knows_history(request, local):
+                raise RemoteFailure(
+                    'forbidden',
+                    '对端不在本机名单里，且没有提供任何本团体的历史名单：'
+                    '不能用本机名单做它的信任锚（先带外取得邀请串）')
+            return {'status': 'ok', 'roster': local.to_dict(),
+                    'version': local.version, 'group': local.group}
+
+        if action == 'push':
+            incoming = self._parse_incoming_roster(request)
+            current = self.current_roster()
+            try:
+                # 规则 1–6：版本前进、prev 指向当前名单哈希、签名者资格
+                incoming.accepts(current)
+            except RecordError as e:
+                raise RemoteFailure('rejected', f'名单未被接受: {e}') from e
+            saved = False
+            if self.roster_saver is not None:
+                try:
+                    self.roster_saver(incoming)
+                    saved = True
+                except Exception as e:
+                    # 写盘失败必须如实回报：对端会以为我们已经升级了名单
+                    raise RemoteFailure('save_failed', f'名单写盘失败: {e}') from e
+            self.roster = incoming
+            return {'status': 'ok', 'version': incoming.version,
+                    'previous_version': current.version if current else None,
+                    'saved': saved}
+
+        raise RemoteFailure('bad_request', f'未知的 roster action: {action!r}')
+
+    def _parse_incoming_roster(self, request: Dict[str, Any]) -> Roster:
+        payload = request.get('roster')
+        if not isinstance(payload, dict):
+            raise RemoteFailure('bad_request', 'push 必须给出 roster 对象')
+        try:
+            return Roster.from_dict(payload)
+        except RecordError as e:
+            raise RemoteFailure('bad_request', f'名单结构非法: {e}') from e
+
+    # 本机保留的名单历史深度（供准入判定使用，见 _local_roster_chain）。
+    LOCAL_ROSTER_HISTORY = 16
+
+    def _local_roster_chain(self, request: Dict[str, Any], local: Roster) -> List[Roster]:
+        """本机一侧的名单链 = 本机当前名单 +（对端顺带给到的）本机的历史。
+
+        为什么需要它：准入判定要回答"对端手里那份，是不是本机认得的某一份"。
+        只看本机当前那一份不够 —— 群主刚签发 v2、成员手里还是 v1 时，v1 正是
+        **最需要**拿到 v2 的那一个，而它不在本机当前名单里。
+
+        数据来源只有一个可靠渠道：`prev` 指向的哈希（那份名单本身我们没存）。
+        因此这里同时收集对端送来的名单里**能接到本机链上的**那些（哈希命中 `prev`）
+        —— 对端为了换取新名单而递来旧名单，正好把这段历史补上。
+        真正长久的做法是在本机保存名单历史（见 `_op_roster` 的说明），
+        当前深度上限 `LOCAL_ROSTER_HISTORY` 只是防止被塞爆。
+        """
+        history: List[Roster] = [local]
+        raw_candidates = list(request.get('history') or []) if isinstance(request.get('history'), list) else []
+        raw_current = request.get('roster')
+        if isinstance(raw_current, dict):
+            raw_candidates.insert(0, raw_current)
+        for item in raw_candidates[:self.LOCAL_ROSTER_HISTORY]:
+            try:
+                candidate = Roster.from_dict(item)
+            except RecordError:
+                continue
+            if candidate.group == local.group and candidate.version < local.version:
+                history.append(candidate)
+        return Roster.history_chain(*history)
+
+    def _peer_knows_history(self, request: Dict[str, Any], local: Roster) -> bool:
+        """对端手里的名单是否**本机认得**（§5.7 的准入条件）。
+
+        判据：对端给出的最新那份，必须出现在本机一侧的名单链里
+        （本机当前名单，或本机认得的某个历史版本）。
+
+        这条准入挡的是"任何拿到端点的人都能取走完整成员名单"。只验"是同一团体、
+        版本不比本机新"是不够的 —— 团体名是用户自己起的字符串（默认
+        `omnibox-group`），构造成本几乎为零；而 `content_hash` 无法伪造，
+        "本机认得这一份"才是真凭据。
+
+        血缘本身不构成授权，只是**准入**；内容一律由 `accepts()` 的规则 1–6
+        验签判定，伪造的名单进不来。
+        """
+        candidates = []
+        raw_current = request.get('roster')
+        if isinstance(raw_current, dict):
+            try:
+                candidates.append(Roster.from_dict(raw_current))
+            except RecordError:
+                pass
+        raw_history = request.get('history')
+        if isinstance(raw_history, list):
+            for item in raw_history[:8]:
+                try:
+                    candidates.append(Roster.from_dict(item))
+                except RecordError:
+                    continue
+        if not candidates:
+            return False
+        peer_chain = Roster.history_chain(*candidates)
+        if not peer_chain:
+            return False
+        our_chain = self._local_roster_chain(request, local)
+        return local.appears_in_chain(peer_chain[0], our_history=our_chain)
+
     # ── 辅助 ──────────────────────────────────────────────────────────────
 
     def _list_directory(self, share: LocalShare, target: str, relative: str) -> Dict[str, Any]:
@@ -418,6 +578,7 @@ def serve(host: str, port: int, identity: Identity, roster: Optional[Roster],
           shares: Optional[Dict[str, LocalShare]] = None,
           registry: Optional[Registry] = None,
           roster_loader: Optional[Callable[[], Optional[Roster]]] = None,
+          roster_saver: Optional[Callable[[Roster], None]] = None,
           ready: Optional[Callable[[socket.socket], None]] = None,
           on_error: Optional[Callable[[socket.socket, BaseException], None]] = None,
           stop_requested: Optional[Callable[[], bool]] = None) -> None:
@@ -426,7 +587,8 @@ def serve(host: str, port: int, identity: Identity, roster: Optional[Roster],
     单一连接失败只影响那条连接：握手或请求出错即断开，监听循环继续
     （无中心系统里，任何成员都可以随时上线/离线）。
 
-    `roster_loader` 让长驻节点能拿到**最新**名单（见 `Node.current_roster`）。
+    `roster_loader` 让长驻节点能拿到**最新**名单（见 `Node.current_roster`）；
+    `roster_saver` 让"采纳了对端推来的新名单"能落盘（见 `_op_roster`）。
 
     `on_error` 在监听套接字创建后、`bind`/`listen` 失败时被调用（随后该套接字
     会被关闭并把异常抛出）。存在的理由与 `ready` 对称：调用方要能知道"是哪个
@@ -436,7 +598,7 @@ def serve(host: str, port: int, identity: Identity, roster: Optional[Roster],
     """
     node = Node(identity=identity, roster=roster, shares=dict(shares or {}),
                 registry=registry, roster_loader=roster_loader,
-                stop_requested=stop_requested)
+                roster_saver=roster_saver, stop_requested=stop_requested)
     family = socket.AF_INET6 if ':' in host else socket.AF_INET
     listener = socket.socket(family, socket.SOCK_STREAM)
     try:

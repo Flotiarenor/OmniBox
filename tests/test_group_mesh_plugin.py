@@ -553,6 +553,82 @@ class RosterDistributionTest(unittest.TestCase):
         self.assertIn('prev', skipped['error'])
 
 
+    def test_roster_is_adopted_automatically_when_peers_push_it(self):
+        """成员不必再手工贴邀请串：从对端拉到的名单会被验签、采纳并落盘。
+
+        这条覆盖的是"自动分发"在插件层的接线（§5.7）：`_adopt_remote_roster`
+        要跑规则 1–6、要落盘、要让 `get_status()` 能显示出"已从对方升级"。
+        为什么必须锁落盘：只更新内存副本的话，插件重载（改设置、升级、壳重启）
+        会退回旧名单 —— 表现成"刚升级完又变回去了"。
+        """
+        if not self._plugin('probe4').get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+
+        owner = self._plugin('owner4')
+        member = self._plugin('member4')
+        owner.init_identity({'name': 'owner'})
+        member.init_identity({'name': 'member'})
+        created = owner.create_group({'group': 'auto-dist'})
+        self.assertTrue(member.join_group({'invite': created['invite']})['success'])
+
+        keys = member.get_device_keys()
+        added = owner.add_member({'principal': keys['principal'],
+                                  'device': keys['device'], 'name': 'member'})
+        self.assertEqual(added['version'], 2)
+        owner_roster = owner._load_roster()
+        assert owner_roster is not None
+
+        # 成员侧：拉一次"对端名单"，走的就是 `_fetch_registry_from` 里那条自动路径
+        class _FakeConnection:
+            def __init__(self, roster):
+                self.roster = roster
+
+            def request(self, payload):
+                assert payload['op'] == 'roster'
+                return {'status': 'ok', 'roster': self.roster.to_dict(),
+                        'version': self.roster.version, 'group': self.roster.group}
+
+        member._adopt_remote_roster(_FakeConnection(owner_roster), ('127.0.0.1', 19443))
+
+        after = member.get_status()
+        self.assertEqual(after['roster']['version'], 2, '成员应已升到 v2')
+        self.assertTrue(after['roster']['in_roster'], 'v2 之后成员能看到自己')
+        notice = after['roster']['adopted_notice']
+        self.assertIsNotNone(notice, '界面要能显示"已从对方升级名单"')
+        self.assertEqual((notice['previous_version'], notice['version']), (1, 2))
+        # 落盘：重新读盘仍是 v2（插件重载不会退回旧名单）
+        reloaded = member._load_roster()
+        assert reloaded is not None
+        self.assertEqual(reloaded.version, 2)
+        # 对端名单版本也被记下来，供界面做对照
+        self.assertEqual(member._peer_roster_notes[('127.0.0.1', 19443)]['version'], 2)
+
+    def test_stale_roster_from_a_peer_is_ignored(self):
+        """对端报的名单不比本机新时直接跳过：不该白白写盘，也不该把已采纳的清掉。"""
+        if not self._plugin('probe5').get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+
+        owner = self._plugin('owner5')
+        member = self._plugin('member5')
+        owner.init_identity({'name': 'owner'})
+        member.init_identity({'name': 'member'})
+        v1 = owner.create_group({'group': 'stale-dist'})['invite']
+        self.assertTrue(member.join_group({'invite': v1})['success'])
+        v1_roster = owner._load_roster()
+        assert v1_roster is not None
+
+        class _FakeConnection:
+            def __init__(self, roster):
+                self.roster = roster
+
+            def request(self, payload):
+                return {'status': 'ok', 'roster': self.roster.to_dict(),
+                        'version': self.roster.version, 'group': self.roster.group}
+
+        member._adopt_remote_roster(_FakeConnection(v1_roster), ('127.0.0.1', 19443))
+        self.assertIsNone(member.get_status()['roster']['adopted_notice'])
+
+
 class ShareLocationTest(unittest.TestCase):
     """共享根是一个**有状态的位置**，而不是共享项里的一个字符串。
 

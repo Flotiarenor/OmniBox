@@ -29,7 +29,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -39,6 +39,7 @@ from shell.groupmesh import PROTO_VERSION, client
 from shell.groupmesh import crypto_prims as cp
 from shell.groupmesh import noise as nm
 from shell.groupmesh.identity import (
+    Device,
     Identity,
     Principal,
     encode_binding_payload,
@@ -50,7 +51,14 @@ from shell.groupmesh.records import RecordError
 from shell.groupmesh.registry import Registry, new_registration
 from shell.groupmesh.roster import Roster, RosterEntry, founding_roster, next_roster, staleness_report
 from shell.groupmesh.shares import Acl, Authorizer, Permission, new_share
-from shell.groupmesh.transport import Negotiation, RemoteError, TransportError, authorize_peer, connect
+from shell.groupmesh.transport import (
+    Negotiation,
+    PeerIdentity,
+    RemoteError,
+    TransportError,
+    authorize_peer,
+    connect,
+)
 
 
 class CryptoPrimsTest(unittest.TestCase):
@@ -711,15 +719,262 @@ class AuthorizePeerTest(unittest.TestCase):
         self.assertEqual(peer.principal_key, self.alice.public_key)
         self.assertEqual(peer.role, 'member')
         self.assertEqual(peer.name, 'alice')
+        self.assertTrue(peer.member)
 
-    def test_unknown_device_is_rejected(self):
+    def test_unknown_device_is_accepted_but_marked_not_a_member(self):
+        """不在名单里的设备**可以完成握手**，但被明确标为"不是成员"。
+
+        为什么不是直接拒绝（v0.2 改）：名单是带外建立信任锚的，群主加人后签发
+        新名单，而新成员手里只有旧名单。若握手阶段就把不在名单的设备拒掉，它永远
+        收不到那份新名单 —— 这正是实现路径文档 §5.10 记录的"我已被加进名单却
+        连不上任何人"。准入改为"设备绑定证明有效"（密码学自足），能做什么由
+        `Node.handle()` 按 op 收敛。
+        """
         _priv, unknown = cp.generate_sign_keypair()
-        with self.assertRaises(TransportError):
-            authorize_peer(self.v2, unknown)
+        peer = authorize_peer(self.v2, unknown)
+        self.assertFalse(peer.member)
+        self.assertIsNone(peer.role)
+        self.assertEqual(peer.principal_key, b'', '未入名单的设备没有主体')
 
     def test_missing_roster_is_rejected(self):
         with self.assertRaises(TransportError):
             authorize_peer(None, self.device_pub)
+
+
+class RosterDistributionTest(unittest.TestCase):
+    """名单分发（§5.7）：通道不可信、签名是唯一判据、未入名单者只能拉名单。
+
+    这一组用例守的是"自动分发"能成立**而且不把名单公开给陌生人**：
+    准入判据是"对端拿得出本团体的历史名单"，采纳判据是 `Roster.accepts()` 的
+    规则 1–6。两者都不能省 —— 只验血缘会让伪造名单混进来，只验签名会让任何拿到
+    端点的人取走完整成员名单。
+    """
+
+    def setUp(self):
+        self.owner = Principal.create('owner')
+        self.alice = Principal.create('alice')
+        self.bob = Principal.create('bob')
+        self.alice_device = Device.create('laptop', self.alice).public_key
+
+        self.v1 = founding_roster('g', self.owner, [cp.generate_sign_keypair()[1]],
+                                  ttl_seconds=3600)
+        members = [*list(self.v1.members),
+                   RosterEntry('alice', self.alice.public_key, [self.alice_device])]
+        self.v2 = next_roster(self.v1, 'g', self.v1.owner_key, members, ttl_seconds=3600)
+        self.v2.sign(self.owner.private_key)
+        self.bob_device = cp.generate_sign_keypair()[1]
+        members_v3 = [*list(self.v2.members),
+                      RosterEntry('bob', self.bob.public_key, [self.bob_device])]
+        self.v3 = next_roster(self.v2, 'g', self.v2.owner_key, members_v3, ttl_seconds=3600)
+        self.v3.sign(self.owner.private_key)
+        # 三份名单到这一步都已签名完毕。**必须如此**：`content_hash` 是现算的，
+        # 而 `history_chain` 用它做去重键 —— 先入链、后签名会让同一个对象在链里
+        # 以两个不同的哈希各出现一次，血缘判定随之颠倒（实测踩到，表现为
+        # "更新的名单被判成更旧那份的祖先"）。
+
+        share_root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__('shutil').rmtree(share_root, ignore_errors=True))
+        self.node = Node(identity=self._identity(), roster=self.v2,
+                         shares={'docs': new_share('docs', str(share_root),
+                                                   owner_key=self.owner.public_key,
+                                                   node_key=self.owner.public_key,
+                                                   node_private_key=self.owner.private_key,
+                                                   acl=Acl(read='group', write='owner'))})
+        self.saved: list = []
+        self.node.roster_saver = self.saved.append
+
+    def _identity(self) -> Identity:
+        """一个真实身份（Node 需要 identity.principal / device 的形状）。"""
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__('shutil').rmtree(root, ignore_errors=True))
+        return Identity.init(root, self.owner.name, 'owner-pc')
+
+    def _peer(self, *, member: bool, device_key: Optional[bytes] = None,
+              principal_key: bytes = b'') -> PeerIdentity:
+        return PeerIdentity(device_key=device_key or cp.generate_sign_keypair()[1],
+                            principal_key=principal_key, name='alice' if member else '',
+                            role='member' if member else None, group='g', member=member)
+
+    # ── 血缘判定 ──────────────────────────────────────────────────────────
+
+    def test_appears_in_chain_follows_the_hash_chain(self):
+        """`A.appears_in_chain(B, history=...)` = "A 出现在 B 一侧的链里"。"""
+        chain = Roster.history_chain(self.v3, self.v2, self.v1)
+        self.assertTrue(self.v1.appears_in_chain(self.v3, history=chain))
+        self.assertTrue(self.v2.appears_in_chain(self.v3, history=chain))
+        self.assertTrue(self.v3.appears_in_chain(self.v3, history=chain))
+
+    def test_newer_roster_does_not_appear_in_the_older_chain(self):
+        """反向不成立：更新的名单不会出现在更旧那份的链里。
+
+        构造要点：查 `v3` 是否出现在 `v2` 一侧的链里时，history 必须**只含
+        v2 一侧**（[v2, v1]）。若把 v3 自己放进 history，判定会平凡成立 ——
+        这正是本方法存在的理由（见 `appears_in_chain` 的说明）。
+        """
+        chain_for_v2 = Roster.history_chain(self.v2, self.v1)
+        self.assertFalse(self.v3.appears_in_chain(self.v2, history=chain_for_v2))
+        # 不带 history 时只看 `other` 本身
+        self.assertFalse(self.v3.appears_in_chain(self.v2))
+        self.assertTrue(self.v3.appears_in_chain(self.v3))
+
+    def test_chain_search_does_not_depend_on_history_order(self):
+        """history 乱序也必须判对。
+
+        为什么要专门锁：调用方（尤其插件侧的历史拼接）不保证严格按版本降序，
+        而"遇到更旧的项就 break"这种单遍扫描一旦乱序就会漏判 ——
+        漏判的表现是"该发的名单没发"，在现场很难定位。
+        """
+        forward = Roster.history_chain(self.v3, self.v2, self.v1)
+        self.assertTrue(self.v2.appears_in_chain(self.v3, history=forward))
+        # 故意把最旧的一份排在最前面
+        self.assertTrue(self.v1.appears_in_chain(self.v3, history=[self.v1, self.v3, self.v2]))
+        self.assertTrue(self.v2.appears_in_chain(self.v3, history=[self.v1, self.v2, self.v3]))
+        # 不带 history 时只看 `other` 本身：更新的那份不会出现在旧者眼里
+        self.assertFalse(self.v3.appears_in_chain(self.v2))
+        self.assertTrue(self.v3.appears_in_chain(self.v3))
+
+    def test_unrelated_roster_does_not_contain_ours(self):
+        """血缘判定的前提是"同一条链"：别的团体里没有我们的名单。
+
+        这条用例的构造很关键：`other` 与 `v1` **只有团体名不同**（成员、设备、
+        版本号、有效期全部相同），因此 `content_hash` 的差别**只来自 group 字段**。
+        为什么必须这样构造：`content_hash` 只对参与签名的字段求值，它保证的是
+        "同一份名单"，不是"同一个团体"。少了 group 这一关，准入判定就会把无关
+        团体的名单也算成"见过本团体"。
+        （我第一版用例给两份名单用了不同的设备公钥，哈希天然不同，断言虽然过了
+        却什么都没验到 —— 判别力必须靠"只差一个字段"来保证。）
+        """
+        other = founding_roster('other', self.owner, [self.v1.members[0].device_keys[0]],
+                                ttl_seconds=self.v1.expires - int(time.time()))
+        # 差异只来自 group：成员与设备公钥完全一致
+        self.assertEqual(other.members, self.v1.members)
+        self.assertEqual(other.version, self.v1.version)
+        self.assertNotEqual(other.content_hash, self.v1.content_hash)
+        chain = Roster.history_chain(other)
+        # 本机（v3）不出现在 `other` 一侧的链里
+        self.assertFalse(self.v3.appears_in_chain(other, history=chain))
+        # `other` 也不出现在本机（v3）一侧的链里（v3 的链只含 'g' 的三份）
+        our_chain = Roster.history_chain(self.v3, self.v2, self.v1)
+        self.assertFalse(other.appears_in_chain(self.v3, history=our_chain))
+
+    def test_history_chain_deduplicates_and_sorts(self):
+        chain = Roster.history_chain(self.v2, self.v3, self.v2)
+        self.assertEqual([r.version for r in chain], [3, 2])
+
+    # ── op=roster 的准入 ──────────────────────────────────────────────────
+
+    def test_member_can_pull_without_proving_history(self):
+        response = self.node.handle({'op': 'roster', 'action': 'list'},
+                                    self._peer(member=True, principal_key=self.alice.public_key))
+        self.assertEqual(response['status'], 'ok')
+        self.assertEqual(response['version'], self.v2.version)
+
+    def test_pending_device_with_history_can_pull(self):
+        """新成员手里只有旧名单：这正是它必须能连进来的原因（§5.7）。"""
+        response = self.node.handle(
+            {'op': 'roster', 'action': 'list', 'history': [self.v1.to_dict()]},
+            self._peer(member=False))
+        self.assertEqual(response['status'], 'ok')
+        self.assertEqual(response['version'], self.v2.version)
+
+    def test_stranger_without_history_cannot_pull(self):
+        """没有本团体任何历史名单的设备拿不到名单（否则成员名单对任何 IP 公开）。"""
+        response = self.node.handle({'op': 'roster', 'action': 'list'},
+                                    self._peer(member=False))
+        self.assertEqual(response['status'], 'error')
+        self.assertEqual(response['code'], 'forbidden')
+
+    def test_unrelated_roster_does_not_grant_access(self):
+        """拿**别的团体**的名单来换本机名单必须被拒（准入条件是"同一条链"）。
+
+        注意："拿一份本机名单的副本"是**允许**的（它证明对端确实见过这个团体，
+        这正是分发的目的），因此这里用的是一个无关团体的名单 —— 而且它只有团体名
+        不同，是这份构造里最有判别力的形态。
+        """
+        other = founding_roster('other', self.owner, [self.v1.members[0].device_keys[0]],
+                                ttl_seconds=self.v1.expires - int(time.time()))
+        self.assertNotEqual(other.content_hash, self.v1.content_hash)
+        response = self.node.handle(
+            {'op': 'roster', 'action': 'list', 'history': [other.to_dict()]},
+            self._peer(member=False))
+        self.assertEqual(response['status'], 'error')
+        self.assertEqual(response['code'], 'forbidden')
+
+    # ── op=roster 的采纳 ──────────────────────────────────────────────────
+
+    def test_valid_successor_is_adopted_and_saved(self):
+        response = self.node.handle({'op': 'roster', 'action': 'push',
+                                     'roster': self.v3.to_dict()},
+                                    self._peer(member=False))
+        self.assertEqual(response['status'], 'ok', response)
+        self.assertEqual(response['previous_version'], 2)
+        self.assertEqual(len(self.saved), 1, '采纳后必须落盘，否则重启退回旧名单')
+        self.assertEqual(self.saved[0].content_hash, self.v3.content_hash)
+        self.assertEqual(self.node.current_roster().version, 3)
+
+    def test_forged_roster_is_rejected(self):
+        """没有群主/管理员私钥就签不出被接受的名单（规则 3）。"""
+        forged = next_roster(self.v2, 'g', self.v2.owner_key,
+                             [*list(self.v2.members),
+                              RosterEntry('mallory', self.bob.public_key,
+                                          [cp.generate_sign_keypair()[1]])],
+                             ttl_seconds=3600)
+        forged.sign(self.alice.private_key)      # 拿成员的私钥签
+        response = self.node.handle({'op': 'roster', 'action': 'push',
+                                     'roster': forged.to_dict()},
+                                    self._peer(member=False))
+        self.assertEqual(response['status'], 'error')
+        self.assertEqual(response['code'], 'rejected')
+        self.assertEqual(self.saved, [], '被拒绝的名单绝不能落盘')
+
+    def test_stale_roster_is_rejected(self):
+        """重放一份更旧的签名名单不能把本机回滚（规则 1）。"""
+        response = self.node.handle({'op': 'roster', 'action': 'push',
+                                     'roster': self.v1.to_dict()},
+                                    self._peer(member=True, principal_key=self.alice.public_key))
+        self.assertEqual(response['status'], 'error')
+        self.assertEqual(response['code'], 'rejected')
+        self.assertEqual(self.saved, [])
+
+    def test_skipping_a_version_is_rejected(self):
+        """跳版（v1 → v3）被规则 2 拒绝：名单链必须逐级前进。"""
+        node = Node(identity=self._identity(), roster=self.v1)
+        node.roster_saver = self.saved.append
+        response = node.handle({'op': 'roster', 'action': 'push',
+                                'roster': self.v3.to_dict()},
+                               self._peer(member=True, principal_key=self.owner.public_key))
+        self.assertEqual(response['status'], 'error')
+        self.assertEqual(response['code'], 'rejected')
+
+    # ── 未入名单者的权限收敛 ──────────────────────────────────────────────
+
+    def test_pending_device_can_only_use_the_roster_operation(self):
+        """未入名单的设备：只能拉名单，其余 op 一律 not-in-roster。
+
+        这条是"握手不再按名单拒绝"的**配套防线** —— 少了它，任何能完成握手的设备
+        都能直接读共享项，等于把团体墙拆掉。
+        """
+        pending = self._peer(member=False)
+        allowed = self.node.handle({'op': 'roster', 'action': 'list',
+                                    'roster': self.v2.to_dict()}, pending)
+        self.assertEqual(allowed['status'], 'ok')
+        for op in ('list', 'hello', 'registry', 'stat'):
+            with self.subTest(op=op):
+                response = self.node.handle({'op': op, 'share': 'docs'}, pending)
+                self.assertEqual(response['status'], 'error')
+                self.assertEqual(response['code'], 'not-in-roster')
+        # write 走的是另一条分派路径（带 write_state），单独确认同样被拦
+        response = self.node.handle({'op': 'write', 'share': 'docs', 'path': 'x',
+                                     'data': '', 'part': True, 'offset': 0}, pending)
+        self.assertEqual(response['code'], 'not-in-roster')
+
+    def test_pending_device_cannot_read_shares_even_when_acl_is_group(self):
+        """未入名单的设备走 ACL 也拿不到东西：`_authorizer` 里 group_member 恒为假。"""
+        node = Node(identity=self._identity(), roster=self.v2)
+        pending = self._peer(member=False)
+        response = node.handle({'op': 'list'}, pending)
+        self.assertEqual(response['status'], 'error')
+        self.assertEqual(response['code'], 'not-in-roster')
 
 
 class EndToEndTest(unittest.TestCase):
@@ -848,12 +1103,57 @@ class EndToEndTest(unittest.TestCase):
             result = client.push_registry(connection, registry)
             self.assertEqual(result.get('accepted'), 1)
 
-    def test_unknown_device_cannot_connect(self):
-        """不在名单里的设备即使完成 Noise 握手也会被拒。"""
+    def test_unknown_device_connects_but_can_only_pull_the_roster(self):
+        """不在名单里的设备**能完成握手**，但只能拉名单，别的 op 一律被拒。
+
+        这条用例在 v0.2 改过语义（原先是"握手即被拒"）。为什么要改：名单是带外
+        建立信任锚的，群主加人后签发新名单，而新成员手里只有旧名单 —— 握手阶段就
+        拒绝它，它永远收不到那份新名单（实现路径文档 §5.10 的真实故障就是
+        "我已被加进名单却连不上任何人"）。准入改为在 op 层收敛，因此这里断言的是
+        "连得上、但除 roster 之外都被拒"。
+        """
         outsider_root = Path(self._tmp.name) / 'outsider'
         outsider = Identity.init(outsider_root, 'outsider', 'outsider-pc')
-        with self.assertRaises((TransportError, OSError)):
-            connect('127.0.0.1', self.port, outsider, self.roster, timeout=10.0)
+        with connect('127.0.0.1', self.port, outsider, self.roster, timeout=10.0) as connection:
+            # 陌生设备手里没有本团体的任何名单：连名单都不给（否则成员名单
+            # 对所有能连上的人公开）。注意 `local=None` —— 一旦递上名单，
+            # 那恰恰是在证明"我见过这个团体"，就不该再期待被拒。
+            with self.assertRaises(RemoteError) as ctx:
+                client.fetch_roster(connection, None)
+            self.assertEqual(ctx.exception.code, 'forbidden')
+            for op in ('list', 'hello'):
+                with self.subTest(op=op):
+                    with self.assertRaises(RemoteError) as sub:
+                        connection.request({'op': op})
+                    self.assertEqual(sub.exception.code, 'not-in-roster')
+
+    def test_pending_member_with_old_roster_can_pull_the_new_one(self):
+        """群主加了人、成员手里还是旧名单时，它连得上并能把新名单拉走。
+
+        这是自动分发要解决的**那个**场景，因此必须有真实 TCP 的用例锁住：
+        先起节点（v1），成员拿着 v1 来拉，拿到 v2。名单在握手之后才重读，
+        因此这里也能顺带验证"运行中的节点认新名单"。
+        """
+        outsider_root = Path(self._tmp.name) / 'pending'
+        pending = Identity.init(outsider_root, 'pending', 'pending-pc')
+        # 把 pending 加进 v2（本机节点的名单），对端只持有 v1
+        members = [*list(self.roster.members),
+                   RosterEntry('pending', pending.principal.public_key,
+                               [pending.device.public_key])]
+        v2 = next_roster(self.roster, 'e2e', self.roster.owner_key, members, ttl_seconds=3600)
+        v2.sign(self.owner.principal.private_key)
+        self.node.roster = v2
+        try:
+            # 对端只有 v1（就是 self.roster），不带 roster 字段时它得把 v1 当历史递上
+            with connect('127.0.0.1', self.port, pending, self.roster, timeout=10.0) as connection:
+                fetched = client.fetch_roster(connection, self.roster, history=[self.roster])
+                self.assertIsNotNone(fetched)
+                assert fetched is not None
+                self.assertEqual(fetched.version, v2.version)
+                # 客户端侧按规则 1–6 验证并采纳（传输层不替调用方验签）
+                fetched.accepts(self.roster)
+        finally:
+            self.node.roster = self.roster
 
 
 class UploadTest(unittest.TestCase):

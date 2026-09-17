@@ -179,8 +179,17 @@ class PeerIdentity:
     device_key: bytes
     principal_key: bytes
     name: str
-    role: str
+    # 对端的角色/主体：**未入名单时为 None**（见 `member`）
+    role: Optional[str]
     group: str
+    # 该设备是否在本机名单里。
+    #
+    # 为什么"不在名单里"不是直接断开（v0.2 改）：名单是**带外**建立信任锚的，
+    # 群主加人后签发新名单，而新成员手里只有旧名单 —— 如果握手阶段就把不在名单的
+    # 设备拒掉，它永远收不到那份新名单（实现路径文档 §5.10 的真实故障）。
+    # 因此握手只要求**设备绑定证明有效**（密码学上自足），"能不能干活"由
+    # `Node.handle()` 按 op 逐条判定：不在名单者只放行 `roster`（拉新名单）。
+    member: bool = True
 
     @property
     def device_id(self) -> str:
@@ -192,21 +201,29 @@ class PeerIdentity:
 
 
 def authorize_peer(roster: Optional[Roster], device_key: bytes) -> PeerIdentity:
-    """按名单判定对端设备是否属于本团体，并解析出所属主体与角色。
+    """按名单判定对端设备属于哪个主体，并标出它是否已在名单里。
 
-    这是设计文档 §12 第 1 项"调用者身份"在协议层的对应物：插件与壳都必须能从
+    设计文档 §12 第 1 项"调用者身份"在协议层的对应物：插件与壳都必须能从
     **已验证的凭据**得到主体，而不是从请求参数里读一个自称的 ID。
+
+    `roster is None`（本机还没建团）仍然直接拒绝：那种状态下本机没有任何"团体"
+    可言，放行只会变成一个开放式入口。
+
+    不在名单里的设备返回 `member=False` 而不是抛错：它的设备绑定证明已经通过
+    Noise 验证，因此连接本身是可信的，只有"能做什么"受限（§5.7 的名单分发需要
+    让新成员连进来拿新名单）。
     """
     if roster is None:
         raise TransportError('本地没有团体名单，无法认证对端（先 join 或 create）')
     entry = roster.entry_of_device(device_key)
     if entry is None:
-        raise TransportError(f'对端设备 {device_key[:8].hex()} 不在团体名单里，拒绝连接')
+        return PeerIdentity(device_key=device_key, principal_key=b'', name='',
+                            role=None, group=roster.group, member=False)
     role = roster.role_of(entry.principal_key)
     if role is None:  # pragma: no cover - entry_of_device 命中时必定有角色
         raise TransportError('对端主体在名单里没有角色，名单结构异常')
     return PeerIdentity(device_key=device_key, principal_key=entry.principal_key,
-                        name=entry.name, role=role, group=roster.group)
+                        name=entry.name, role=role, group=roster.group, member=True)
 
 
 # ── 连接 ──────────────────────────────────────────────────────────────────

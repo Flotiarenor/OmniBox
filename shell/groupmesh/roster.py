@@ -198,6 +198,84 @@ class Roster(SignedRecord):
         now = int(time.time()) if now is None else now
         return now > self.expires
 
+    # ── 祖先判定（名单分发的准入条件，§5.7）───────────────────────────────
+
+    def appears_in_chain(self, other: 'Roster', *,
+                         history: Optional[List['Roster']] = None,
+                         our_history: Optional[List['Roster']] = None,
+                         max_depth: int = 64) -> bool:
+        """本名单是否出现在 `other` 一侧的名单链里（链 = `history` + `other`）。
+
+        这是"**对端拿得出本机这份名单（或它的后代）**"的判定，也是 §5.7 自动分发的
+        准入条件：能证明自己见过这个团体、且不比本机旧，才能换到本团体的名单。
+
+        ## 为什么不是 `is_ancestor_of(other)`
+
+        名字换掉是因为语义不同，而且原写法有个**真实的判定陷阱**：
+        "A 是 B 的祖先"在常规用法里含"就是 B"（A 出现在 B 自己的链上），
+        于是"在链里找 A"，而那个链**本来就含有 A** 时，判定总为真。
+        实测踩到：把待查的目标也放进 history，结论永远是"找到了" ——
+        一个无关团体的名单因此通过了准入。本方法只对调用方给出的链逐项比对
+        `self` 的 `(group, version, content_hash)`，不把 `self` 掺进待查链，
+        因此不存在这个自指问题。
+
+        ## 两个方向（比较的是不同的对象，容易写反）
+
+        `A.appears_in_chain(B, history=B 的链)`：在 **B 一侧**的链里找 **A** ——
+        用来回答"对端给的这份（或它的祖先）我们认不认"。
+
+        `A.appears_in_chain(B, our_history=A 一侧的链)`：在 **A 一侧**的链里找 **B**
+        —— 用来回答"对端手里那份是不是本机认得的某一份"。
+        **这一路的比较对象是 `other`，不是 `self`**：写成比 `self` 会让任何调用都
+        返回真（`self` 与 `self` 当然相等），实测就是这么错的 —— 表现是一个无关
+        团体的名单被判定为"本机认得"。
+
+        只比对 `(group, version, content_hash)` 不动签名：血缘本身不构成授权，
+        授权由 `accepts()` 的规则 1–6 判定（见 `Node._op_roster`）。
+        """
+        def same(left: 'Roster', right: 'Roster') -> bool:
+            return (left.group == right.group
+                    and left.version == right.version
+                    and left.content_hash == right.content_hash)
+
+        if same(self, other):
+            return True
+        if our_history is not None:
+            return any(same(other, item) for item in our_history[:max_depth])
+        # 在 `other` 一侧找 `self`：比 `self` 新的项不可能与它相同；同版本但内容
+        # 不同的候选仍需逐项比对（并发签发会产生同版本的两份候选，被丢弃的那份
+        # 要靠哈希区分）。
+        candidates = [item for item in (history or [])[:max_depth]
+                      if item.group == self.group and item.version <= self.version]
+        return any(same(self, item) for item in candidates)
+
+    @staticmethod
+    def history_chain(*rosters: 'Roster', max_depth: int = 64) -> List['Roster']:
+        """把若干份名单去重成一条链（`is_ancestor_of` 的 history 入参）。
+
+        去重键是 `content_hash`（只对参与签名的字段求值，因此与"谁转发"无关）。
+        传入顺序不限，函数自己按 `version` 降序整理。
+
+        **一项硬要求：不要在名单进入链之后再改动它。** `content_hash` 是**现算**的
+        （`encode_fields(self._to_fields())`），一旦签名或字段变了，这个对象在链里
+        的去重键就跟着变，"同一份名单只留一份"会静默失效。实测踩到：某份名单先被
+        放进链，随后才 `sign()`，于是链里出现了两份版本相同、内容哈希不同的它，
+        祖先判定把**更新的那份**当成了更旧那份的祖先 —— 一个只在测试里表现为
+        "断言方向反了"、在生产里表现为"多发了不该发的名单"的隐蔽缺陷。
+
+        实现上按"先按版本排序、再用当时算出的哈希去重"两步做；因为哈希现算，
+        正常使用（签名完成后再入链）不会有问题，这里只把约束写清楚。
+        """
+        ordered = sorted((r for r in rosters if r is not None), key=lambda r: -r.version)
+        result: List['Roster'] = []
+        seen = set()
+        for roster in ordered[:max_depth]:
+            key = roster.content_hash
+            if key not in seen:
+                seen.add(key)
+                result.append(roster)
+        return result
+
     # ── 验签与验证规则 ────────────────────────────────────────────────────
 
     def verify_signature(self) -> Tuple[bool, Optional[bytes]]:

@@ -417,7 +417,7 @@ def cmd_share(args: argparse.Namespace) -> int:
 
 def _serve_loop(args: argparse.Namespace, identity: Identity, roster: Roster,
                 shares: Dict[str, Any], registry: Registry,
-                roster_loader=None) -> None:
+                roster_loader=None, roster_saver=None) -> None:
     from .node import serve
 
     port = args.port
@@ -446,7 +446,7 @@ def _serve_loop(args: argparse.Namespace, identity: Identity, roster: Roster,
 
     try:
         serve(bind, port, identity, roster, shares=shares, registry=registry,
-              roster_loader=roster_loader, ready=publish)
+              roster_loader=roster_loader, roster_saver=roster_saver, ready=publish)
     except KeyboardInterrupt:
         info('\n已停止监听。')
     except OSError as e:
@@ -463,7 +463,14 @@ def cmd_serve(args: argparse.Namespace) -> int:
     def roster_loader() -> Optional[Roster]:
         return load_roster(Path(args.dir))
 
-    _serve_loop(args, identity, roster, shares, registry, roster_loader=roster_loader)
+    # 采纳对端推来的新名单后写回：内存里更新过、磁盘上没有的话，重启会退回旧名单，
+    # 表现成"刚升级完又变回去了"。
+    def roster_saver(adopted: Roster) -> None:
+        save_roster(Path(args.dir), adopted)
+        info(f'已从对端采纳新名单：版本 {adopted.version}，团体 {adopted.group!r}')
+
+    _serve_loop(args, identity, roster, shares, registry,
+                roster_loader=roster_loader, roster_saver=roster_saver)
     return 0
 
 

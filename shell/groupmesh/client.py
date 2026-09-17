@@ -194,3 +194,46 @@ def fetch_registry(connection: Connection) -> Registry:
 def push_registry(connection: Connection, registry: Registry) -> Dict[str, Any]:
     return connection.request({'op': 'registry', 'action': 'push',
                                'records': registry.snapshot_dicts()})
+
+
+# ── 名单分发（§5.7）───────────────────────────────────────────────────────
+#
+# 两个方向都要带"我知道哪些历史名单"：`list` 用它换准入（对端据此判断我们确实
+# 属于这个团体、只是版本旧），`push` 用它让对端把新名单推给我们。
+# 为什么两个方向都带：新成员手里只有旧名单，若不带历史，对端无法区分
+# "团体的老成员"与"随便一个拿到端点的陌生人"。
+
+def fetch_roster(connection: Connection, local: Optional[Roster],
+                 history: Optional[List[Roster]] = None) -> Optional[Roster]:
+    """从对端拉一份名单；对端没有名单时返回 None。
+
+    调用方拿到之后**必须**自己跑 `Roster.accepts(current)`：本函数只负责传输，
+    不做验证 —— 验证需要"本机当前名单"这个上下文，而它属于调用方（§5.2 规则 1–6）。
+    """
+    response = connection.request(_roster_payload('list', local, history))
+    payload = response.get('roster')
+    if not isinstance(payload, dict):
+        return None
+    return Roster.from_dict(payload)
+
+
+def push_roster(connection: Connection, roster: Roster,
+                history: Optional[List[Roster]] = None) -> Dict[str, Any]:
+    """把本机名单推给对端，由对端按规则 1–6 决定采纳与否（§5.7）。"""
+    request = _roster_payload('push', roster, history)
+    request['roster'] = roster.to_dict()
+    return connection.request(request)
+
+
+def _roster_payload(action: str, local: Optional[Roster],
+                     history: Optional[List[Roster]]) -> Dict[str, Any]:
+    """构造 roster 请求，带上"本机已知的历史名单"（新→旧，去重）。"""
+    known = list(history or [])
+    if local is not None:
+        known.append(local)
+    chain = Roster.history_chain(*known) if known else []
+    request: Dict[str, Any] = {'op': 'roster', 'action': action,
+                               'history': [item.to_dict() for item in chain]}
+    if local is not None:
+        request['roster'] = local.to_dict()
+    return request

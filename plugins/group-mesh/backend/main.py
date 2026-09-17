@@ -210,6 +210,11 @@ class GroupMeshPlugin(PluginBase):
         self._fetch_locks_guard = threading.Lock()
         # 上一次刷新里连不上的端点 -> 失败原因（手动登记的地址失败时要回报给用户）
         self._unreachable: Dict[Tuple[str, int], str] = {}
+        # 对端名单版本记录（端点 -> {group, version, hash}）：界面据此做
+        # "本机 v3 / 对方 v2" 的对照（§5.4 的宽限提示、§5.7 的分发可见性）。
+        self._peer_roster_notes: Dict[Tuple[str, int], Dict[str, Any]] = {}
+        # 最近一次自动采纳的新名单（界面提示"你的名单已从对方升级"）。
+        self._roster_notice: Optional[Dict[str, Any]] = None
         # 已建立的出站连接：(设备公钥 bytes, host, port) -> Connection。
         # 复用的理由：一次请求就是一次 Noise 握手（多个往返 + 公钥运算），
         # 逐次建连会让"浏览一个目录"变成几个握手的开销。
@@ -397,6 +402,19 @@ class GroupMeshPlugin(PluginBase):
             return None
         return Roster.from_dict(json.loads(path.read_text(encoding='utf-8')))
 
+    def _save_roster(self, roster: Roster) -> None:
+        """把名单写回 `identity/roster.json`（原子写）。
+
+        节点采纳对端推来的新名单后必须落盘：只更新内存副本的话，插件重载
+        （改设置、升级、壳重启）会退回旧名单，表现成"刚升级完又变回去了"。
+        """
+        self.identity_dir.mkdir(parents=True, exist_ok=True)
+        path = self.identity_dir / 'roster.json'
+        tmp = path.with_suffix('.json.tmp')
+        tmp.write_text(json.dumps(roster.to_dict(), ensure_ascii=False, indent=2) + '\n',
+                       encoding='utf-8')
+        os.replace(tmp, path)
+
     def _load_shares(self) -> Dict[str, LocalShare]:
         """把「声明的协议对象」与「本机的路径/配额」合成 `LocalShare`。
 
@@ -481,7 +499,6 @@ class GroupMeshPlugin(PluginBase):
             'unsupported': [
                 '内容寻址分块传输（§10）',
                 'Android 轻客户端（设计文档 §11.2，首版不实现）',
-                '壳侧主体上下文（§12 第 1/2 项，壳尚未提供）',
             ],
         }
 
@@ -505,6 +522,13 @@ class GroupMeshPlugin(PluginBase):
                     'member_count': len(roster.members),
                     'admin_count': len(roster.admin_keys),
                     'stale': staleness_report(roster, None),
+                    # 自动分发（§5.7）的可见性：最近一次采纳的新名单 + 各对端版本。
+                    # 没有这两个字段，用户无法判断"我是不是还停在旧名单上"。
+                    'adopted_notice': self._roster_notice,
+                    'peer_versions': [
+                        {'endpoint': f'{host}:{port}', **note}
+                        for (host, port), note in sorted(self._peer_roster_notes.items())
+                    ],
                     'members': [
                         {'name': m.name, 'principal_id': m.id,
                          'device_count': len(m.device_keys)}
@@ -1155,7 +1179,13 @@ class GroupMeshPlugin(PluginBase):
                               'note': '该设备尚未发布过注册记录（未启动节点或未启用注册表）'})
         return {'success': True, 'peers': peers, 'errors': errors,
                 'registry_enabled': self._registry is not None,
-                'registry_size': len(self._registry) if self._registry is not None else 0}
+                'registry_size': len(self._registry) if self._registry is not None else 0,
+                # 名单分发的可见性：各对端报出的名单版本（§5.7 要求界面能做对照）
+                'roster_versions': [
+                    {'endpoint': f'{host}:{port}', **note}
+                    for (host, port), note in sorted(self._peer_roster_notes.items())
+                ],
+                'roster_adopted': self._roster_notice}
 
     def _ensure_registry(self) -> None:
         """确保手上有注册表对象（节点没启动时也能读磁盘上的那份）。"""
@@ -1212,10 +1242,16 @@ class GroupMeshPlugin(PluginBase):
 
     def _fetch_registry_from(self, endpoint: Tuple[str, int], identity: Identity,
                              roster: Optional[Roster]) -> int:
-        """连过去拉一次注册快照并合并，返回采纳条数。"""
+        """连过去拉一次注册快照并合并，返回采纳条数。
+
+        **顺带做一次名单分发**（§5.7）：同一条连接上再问一次 `op=roster`，
+        因此"成员升级名单"不需要额外的探测预算（这条路径本来就要连对端）。
+        名单验证与采纳见 `_adopt_remote_roster` —— 通道不必可信，签名才是判据。
+        """
         connection = self._connect(endpoint, identity, roster)
         try:
             remote = mesh_client.fetch_registry(connection)
+            self._adopt_remote_roster(connection, endpoint)
         finally:
             self._release(connection)
         with self._lock:
@@ -1228,6 +1264,58 @@ class GroupMeshPlugin(PluginBase):
                 except OSError as e:
                     log.warning(f'[group-mesh] 注册表写盘失败: {e}')
         return accepted
+
+    def _adopt_remote_roster(self, connection: Any, endpoint: Tuple[str, int]) -> None:
+        """从对端拉一次名单，按规则 1–6 验证后采纳（§5.7）。
+
+        三层判断缺一不可：
+
+        1. 对端报的版本号**不大于**本机时直接跳过 —— 省一次写盘，也避免把
+           "并发签发里被丢弃的那一份"当更新（`accepts` 会按规则 1/2 再判一次）；
+        2. `Roster.accepts(current)` 校验签名者资格与版本链（规则 1–6）；
+        3. 采纳后写盘，并记下这个对端的名单版本供界面做对照。
+
+        任何失败都只记日志：名单没同步上不该让"刷新设备"整体失败 —— 用户至少还能
+        看到设备列表，并能在界面上看到版本不一致。
+
+        注意这里**不** `push`：本机的新名单会不会被对端采纳由对端决定，
+        而主动 push 需要一个明确的时机（当前是"群主加人后另一个成员上线时会被拉走"）。
+        """
+        current = self._load_roster()
+        try:
+            remote = mesh_client.fetch_roster(connection, current)
+        except (RemoteError, TransportError) as e:
+            # 老版本对端没有 `roster` op，会回 bad_request：只记调试日志，不噪音
+            log.debug(f'[group-mesh] 向 {endpoint} 拉名单失败: {e}')
+            return
+        if remote is None:
+            return
+        with self._lock:
+            self._peer_roster_notes[endpoint] = {
+                'group': remote.group, 'version': remote.version,
+                'hash': remote.content_hash.hex()[:16],
+            }
+        if current is not None and remote.version <= current.version:
+            return
+        try:
+            remote.accepts(current)
+        except RecordError as e:
+            log.warning(f'[group-mesh] 对端 {endpoint} 给的名单未被接受: {e}')
+            return
+        current_version = current.version if current is not None else None
+        try:
+            self._save_roster(remote)
+        except OSError as e:
+            log.warning(f'[group-mesh] 采纳的新名单写盘失败: {e}')
+            return
+        log.info(f'[group-mesh] 已从 {endpoint} 采纳新名单：'
+                 f'v{current_version} -> v{remote.version}')
+        self._roster_notice = {
+            'from': f'{endpoint[0]}:{endpoint[1]}',
+            'previous_version': current_version,
+            'version': remote.version,
+            'group': remote.group,
+        }
 
     def _connect(self, endpoint: Tuple[str, int], identity: Identity,
                  roster: Optional[Roster], timeout: float = PROBE_TIMEOUT_SECONDS) -> Any:
@@ -2538,8 +2626,8 @@ class GroupMeshPlugin(PluginBase):
                 # roster_loader：每次建连重读名单。群主在别处加了成员后，
                 # 运行中的节点必须立刻认，而不是要求用户重启插件。
                 serve(bind, port, identity, roster, shares=shares, registry=registry,
-                      roster_loader=self._load_roster, ready=on_ready,
-                      stop_requested=self._node_stop.is_set)
+                      roster_loader=self._load_roster, roster_saver=self._save_roster,
+                      ready=on_ready, stop_requested=self._node_stop.is_set)
             except OSError as e:
                 self._last_error = self._listen_error(bind, port, e)
                 log.warning(f'[group-mesh] {self._last_error}')
