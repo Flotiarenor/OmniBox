@@ -251,6 +251,7 @@ class PrincipalStore:
         self.path = Path(config_dir) / file_name
         self._records: List[PrincipalRecord] = []
         self._mtime_ns: Optional[int] = None
+        self._size: Optional[int] = None
         self._loaded = False
         if bootstrap_token:
             self._bootstrap_token = bootstrap_token
@@ -259,21 +260,36 @@ class PrincipalStore:
 
     # ── 读盘 ──────────────────────────────────────────────────────────────
 
-    def _load(self, force: bool = False) -> None:
-        """按需重读。
+    def _stamp(self) -> Optional[tuple]:
+        """文件指纹：`(mtime_ns, size)`；读不到（不存在）返回 `None`。
 
-        每次请求都看一次 mtime：`principals.json` 是**凭据**表，改完必须立即
-        生效（不然"撤销某个主体的令牌"要等重启才生效）。文件不存在时视为空表，
-        不报错（全新安装就是这种情况）。
+        只看 mtime 不够：文件系统的时间戳粒度可能比"两次写入的间隔"还粗
+        （Windows 上的实测表现是连续两次 `os.replace` 拿到**同一个** `mtime_ns`），
+        那样"外部改了凭据表"会被判成没变、撤销的令牌继续有效。大小是独立的正交
+        信号，两者合起来在没有内容哈希的代价下把这类漏检堵掉。文件很小且这是
+        每次请求一次 `stat()`，不值得为它读内容算哈希。
         """
         try:
             stat_result = self.path.stat()
         except OSError:
+            return None
+        return (stat_result.st_mtime_ns, stat_result.st_size)
+
+    def _load(self, force: bool = False) -> None:
+        """按需重读。
+
+        每次请求都看一次指纹：`principals.json` 是**凭据**表，改完必须立即
+        生效（不然"撤销某个主体的令牌"要等重启才生效）。文件不存在时视为空表，
+        不报错（全新安装就是这种情况）。
+        """
+        stamp = self._stamp()
+        if stamp is None:
             self._records = []
             self._mtime_ns = None
+            self._size = None
             self._loaded = True
             return
-        if not force and self._loaded and stat_result.st_mtime_ns == self._mtime_ns:
+        if not force and self._loaded and stamp == (self._mtime_ns, self._size):
             return
         try:
             payload = json.loads(self.path.read_text(encoding='utf-8'))
@@ -291,7 +307,7 @@ class PrincipalStore:
             log.warning(f'[Principal] {self.path} 中有 {len(raw_records) - len(records)} '
                         f'条记录形状非法，已忽略')
         self._records = records
-        self._mtime_ns = stat_result.st_mtime_ns
+        self._mtime_ns, self._size = stamp
         self._loaded = True
 
     def reload(self) -> None:
@@ -350,10 +366,12 @@ class PrincipalStore:
             pass
         os.replace(tmp, self.path)
         self._records = list(records)
-        try:
-            self._mtime_ns = self.path.stat().st_mtime_ns
-        except OSError:
+        stamp = self._stamp()
+        if stamp is None:
             self._mtime_ns = None
+            self._size = None
+        else:
+            self._mtime_ns, self._size = stamp
         self._loaded = True
 
     def add(self, principal_id: str, token: str, role: str = ROLE_MEMBER,

@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -135,6 +136,28 @@ class PrincipalStoreTest(unittest.TestCase):
         self.assertIsNotNone(self.store.resolve('token-alice'))
         PrincipalStore(self.config_dir).remove('alice')
         self.assertIsNone(self.store.resolve('token-alice'))
+
+    def test_external_edit_detected_when_mtime_is_unchanged(self):
+        """指纹只看 mtime 不够：mtime 相同时（粒度粗或两次写入落在同一刻）也要认出来。
+
+        这条守的是"撤销凭据必须立即生效"在最坏情况下的成立：文件系统的时间戳粒度
+        可能粗到两次写入拿到同一个 `st_mtime_ns`（Windows 上实测出现过），那时只看
+        mtime 会把"凭据表已被改"判成没变、被撤销的令牌继续有效。用例把 mtime 钉成
+        上一次读到的值，验证还有 size 这个独立信号兜住。
+        """
+        self.store.add('alice', 'token-alice')
+        self.assertIsNotNone(self.store.resolve('token-alice'))
+        path = principals_file(self.config_dir)
+        stamp = path.stat().st_mtime_ns
+
+        PrincipalStore(self.config_dir).remove('alice')
+        # 把 mtime 还原成"看起来没变"：内容（少了一条记录，长度不同）必须仍被认出来
+        os.utime(path, ns=(stamp, stamp))
+        self.assertEqual(path.stat().st_mtime_ns, stamp,
+                         '用例前提失败：没能把 mtime 还原成同一个值')
+
+        self.assertIsNone(self.store.resolve('token-alice'),
+                          'mtime 未变但内容已变时，撤销必须立即生效')
 
     def test_rejects_invalid_arguments(self):
         with self.assertRaises(ValueError):
