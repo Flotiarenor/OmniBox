@@ -53,7 +53,7 @@
 | §4.1 | 私钥由操作系统密钥存储保存 | [部分] 当前为明文落盘 + 受保护路径 | `identity.py` 的 `_write_private()` |
 | §4.2 | 新设备授权与设备凭据 | [部分] 凭据存在，但由主体自签、不进名单、握手不验 | `identity.py` 的 `Device`，`add_device()` 无调用方 |
 | §4.3 | 身份统一 | [已实现，措辞已修订] 同一身份种子派生签名/握手两把密钥 | `crypto_prims.py` 的 `dh_keypair_from_sign_seed()` |
-| §4.4 | Noise_XX 握手 | [部分] 原语正确、状态机自写、无官方向量、DH 编码非 RFC 7748 | `noise.py`，`crypto_prims.py` 的 `dh_public_bytes()` |
+| §4.4 | Noise_XX 握手 | [部分] 原语正确、状态机自写、无官方握手向量；DH 编码已到 RFC 7748 | `noise.py`，`crypto_prims.py` 的 `dh_public_bytes()` |
 | §4.4 | 长连接密钥轮换（Rekey） | [未实现] | — |
 | §4.5 | 协商字段与 prologue | [已实现] | `transport.py` 的 `negotiate()`，`noise.py` 的 prologue |
 | §5.1–§5.4 | 名单结构、规则 1–6、并发收敛、宽限 | [已实现] | `roster.py` 的 `Roster.accepts()` / `pick_concurrent()` / `staleness_report()` |
@@ -289,10 +289,14 @@ X25519 标量**，直接当 DH 用会让双方算出不同的共享密钥且都�
 >    本次实现中 XX 的 token 顺序与 nonce 延续规则确实错了三次（实现路径文档 §5.1）。
 > 2. **没有官方测试向量**。现有用例只验"两端能互通"（`tests/test_group_mesh_mvp.py` 的
 >    `NoiseXXTest`），仓库内没有任何 Noise 规范向量文件。
-> 3. **DH 公钥编码不是 RFC 7748**。`crypto_prims.py` 的 `dh_public_bytes()` 用的是
->    pycryptodome 的 `pointQ.x` 大端整数，与外部实现不互通。这一点决定了收敛顺序：
->    **必须先改公钥编码，再换 vetted 实现，官方向量才可能跑得通**；否则"换成
->    `snow`/`noiseprotocol`"这一步会以失败告终。
+> 3. **DH 公钥编码已符合 RFC 7748（2026-09-17 修）**。`crypto_prims.py` 的
+>    `dh_public_bytes()` / `dh_public_from_private()` 现在输出 RFC 7748 §5 的
+>    32 字节小端，`dh()` 也按 §5 屏蔽 u 坐标最高位。v0.1 用的是 pycryptodome 的
+>    `pointQ.x` 大端整数，且 `dh()` 按大端把字节解读回来 —— 两处错误互相抵消，
+>    "两端互通"的用例全绿而与外部实现不互通（实测：官方向量全部失败）。
+>    现在 `tests/test_group_mesh_mvp.py` 的 `X25519Rfc7748VectorTest` 用 §6.1 的
+>    官方向量锁住这条。**收敛顺序不变**：编码已就绪，换 vetted 实现的下一步
+>    才可能跑通官方向量。
 > 4. **密钥轮换未实现**：唯一的上限是 nonce 计数器耗尽（`noise.py` 直接报错终止，
 >    不是 rekey）。单条超长连接泄露一把传输密钥，该连接内全部内容可解。
 
@@ -870,7 +874,7 @@ group-mesh 是参考实现（`get_extensions()` + `frontend/network-location.htm
 | 高 | 名单自动分发（注册表承载已签名名单） | §5.7，当前必须手工发邀请串 |
 | 中 | 解散通告 | §5.5 |
 | 中 | 设备授权与凭据进名单 | §4.2 第 2–4 步；含 `add_device()` 的入口 |
-| 中 | Noise：先改 DH 编码到 RFC 7748，再换 vetted 实现 + 官方测试向量 | §4.4；顺序不能反 |
+| 中 | Noise：换 vetted 实现 + 官方测试向量（DH 编码到 RFC 7748 **已完成**） | §4.4；编码这一前置条件已就绪 |
 | 中 | 长连接 Rekey | §4.4 |
 | 低 | 注册表 `since` 游标 | §7.3（当前规模下不紧急） |
 | 低 | 稳定地址判定 | §7.4 |

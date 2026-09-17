@@ -312,7 +312,8 @@ RFC 4941 尚未确认（EUI-64 的 `ff:fe` 标志只出现在其中一个），�
 
 | 陷阱 | 表现 | 正确做法 |
 | --- | --- | --- |
-| Curve25519 的 `pointQ.x` 与 `export_key(format='raw')` **不是同一编码** | 用 raw 导出公钥、对端喂给 `EccXPoint`，DH 静默失败 | 统一用 `dh_public_bytes()`（`pointQ.x` 大端整数） |
+| Curve25519 的 `pointQ.x`、`export_key(format='raw')` 与 RFC 7748 三者**互不相同** | 用 raw 导出公钥、对端喂给 `EccXPoint`，DH 静默失败；按 `pointQ.x` 大端当线格式则**与外部实现不互通**（本项目 v0.1 的实际缺陷） | 线格式一律取 RFC 7748 §5 的 32 字节小端（`export_key(format='raw')` 正好是它）；`EccXPoint` 要的整数是 `int.from_bytes(小端字节, 'little')` |
+| X25519 私钥**不能**手工转成整数做标量乘 | 用普通 int 点乘得到的共享秘密与库自己的结果**不同**，两边都不报错（库里 `d` 是按曲线阶归约的 `ClampedInteger`） | 私钥一律经 `_dh_private_key()`（内部是 `ECC.construct(curve='Curve25519', seed=...)`）还原 |
 | Ed25519 的 `int(key.d)` 是**派生标量**，不是种子 | 存 `d` 再重建会得到另一把密钥 | 持久化用 `key.seed`；重建用 `ECC.construct(curve='Ed25519', seed=...)` |
 
 另有两处 API 事实：`ECC.import_key` **不接受** 32 字节裸 Ed25519 公钥（需补固定 SPKI
@@ -498,9 +499,9 @@ XX 的三条消息只完成"互相认证静态公钥"。响应方判定对端资
 3. ~~权限档位落地~~ **已完成**：协议 op、ACL 字段、CLI `rm` 与界面都收敛到
    `read` / `write` 与上传（设计文档 §6.2）。
 4. **替换为 vetted Noise 实现并用官方测试向量验证** —— 在把协议暴露给更多
-   Companion 插件之前完成。注意顺序：**必须先改 DH 公钥编码到 RFC 7748**
-   （`crypto_prims.py` 的 `dh_public_bytes()` 用的是 `pointQ.x` 大端整数），
-   否则官方向量跑不通。
+   Companion 插件之前完成。前置条件**已完成**（2026-09-17）：DH 公钥编码已改为
+   RFC 7748 §5 的 32 字节小端，且 §6.1 的官方向量在 `X25519Rfc7748VectorTest`
+   里通过 —— 这一步必须先做完，否则官方向量跑不通。
 5. 房间 / 语音 / 游戏面由 Companion 子插件承担，不在本插件的路线里
    （见 [Companion 子插件](./group-mesh-companions.md)）。
 
