@@ -833,6 +833,24 @@ const src = Bridge.originalUrl(encodeURIComponent('G:/音乐/cover.jpg'));
 const src = Bridge.originalUrl('subdir/photo.jpg');
 ```
 
+**虚拟路径（多根 / 命名空间）**：如果插件用 `__<名字>/…` 这类**虚拟路径**表示"另一个
+根下的文件"（如 `image-viewer` 的「图片文件夹」列表），覆写
+`PluginBase.resolve_file_path(rel_path)` 即可 —— Shell 在解析**相对路径**时先问它，
+返回 `None` 时按上面的老规矩用 `get_file_roots()[0]` 拼。没有这个钩子时，虚拟路径在
+第一根下并不存在，表现是"列表与缩略图都正常，点开原图 404"。
+
+```python
+def resolve_file_path(self, rel_path):
+    """虚拟路径 → 物理路径；答不上来返回 None（Shell 回退默认解析）。"""
+    root, inner = self._split_virtual(rel_path)      # 插件自己的映射
+    return (root / inner) if root and inner else None
+```
+
+三条约束由 Shell 执行，插件侧无法绕过：解析结果必须落在 `get_file_roots()` 的某一根
+之内（否则 `403`）；受保护路径判定照旧优先（返回 `403`）；返回值不是 `Path`、返回
+`None` 或实现抛错时一律**回退默认解析**，不会让路由 500 —— 与 `get_thumb_data()`
+那种"返回值不可信、Shell 先校验形状"的既有做法一致。
+
 **访问令牌（v3.1+）**：`/api`、`/file`、`/files`、`/thumbs` 均为**令牌保护路由**：
 
 - 令牌在首次启动时生成并持久化到 `.config/auth_token.txt`（重启不变）；
@@ -954,6 +972,7 @@ def browse_dir(self, path: str = ''):
 | `thumb_dir` | `数据根目录/.cache/thumbs` | 只读 property（`Path`）。可赋值覆盖（旧写法兼容），也可以什么都不做 |
 | `ensure_thumb(rel_path)` | 空实现 | `/thumbs` 找不到文件时调用，插件可现场生成并落盘；返回值被忽略 |
 | `get_file_roots()` | `[get_data_root()]` | 跨多根插件覆写（如 `media-player`） |
+| `resolve_file_path(rel_path)` | 返回 `None` | 让插件解释 `/file` 的**相对路径**（虚拟路径 / 命名空间）；`None` 表示按 `get_file_roots()[0]` 解析 |
 
 **优先级**：`get_thumb_data()` 命中（返回二元组）时直接响应；返回 `None` 或形状不对时，
 才回退到 `thumb_dir` 散文件布局。因此"只覆写 `get_thumb_data()`、不定义 `thumb_dir`"

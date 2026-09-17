@@ -63,6 +63,23 @@ class NamespaceMixin:
         except Exception:
             return [self.root_dir]
 
+    def resolve_file_path(self, rel_path: str):
+        """虚拟路径 → 物理路径（Shell 的 /file 相对路径分支调用它）。
+
+        没有这个方法时，`__额外图库/作者B/图.jpg` 会被 Shell 按**第一根**拼成
+        `<主目录>/__额外图库/作者B/图.jpg` —— 那个文件不存在，于是「网格与缩略图
+        都正常，点开任何一张原图 404」。`/thumbs` 一直是由插件解释路径的，这里把
+        `/file` 对齐到同一套。
+
+        未知命名空间（用户删掉了那个根、或拼写不对）返回 None → Shell 回退默认解析
+        → 最终 404，而不是把 `__额外图库` 当成第一根下的真实目录去读。
+        """
+        try:
+            target, _ = self._resolve_path(rel_path)
+        except Exception:
+            return None
+        return target
+
     def _first_root_dir_names(self) -> set:
         """第一根一级子目录名（命名空间不能与它们同名）。"""
         names = set()

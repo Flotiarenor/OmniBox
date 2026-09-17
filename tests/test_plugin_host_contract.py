@@ -375,5 +375,123 @@ class ThumbRouteContractTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 403)
 
 
+class FileRouteResolveContractTests(unittest.TestCase):
+    """`/file` 的相对路径：插件可以用 `resolve_file_path` 解释**虚拟路径**。
+
+    缺陷背景（image-viewer 多根目录）：`__额外图库/作者B/图.jpg` 这类虚拟路径在
+    第一根下并不存在，而 `/file` 原先只按 `get_file_roots()[0]` 拼，于是"网格与
+    缩略图都正常，点开任何一张原图都是破图"。`/thumbs` 一直是由插件解释路径的
+    （`get_thumb_data` / `ensure_thumb`），本契约把 `/file` 对齐到同一套。
+
+    这一组同时钉住三条安全语义：解析结果必须落在某一根之内、受保护文件仍 403、
+    插件实现抛错或返回错形状时**回退默认解析**而不是 500。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        base = Path(self._tmp.name)
+        self.data_root = base / 'data'
+        self.data_root.mkdir()
+        self.extra_root = base / 'extra'
+        self.extra_root.mkdir()
+        (self.extra_root / 'pic.jpg').write_bytes(b'EXTRA-ORIGINAL')
+        (self.data_root / 'secret.txt').write_bytes(b'SECRET')
+        self.outside = base / 'outside'
+        self.outside.mkdir()
+        (self.outside / 'leak.jpg').write_bytes(b'LEAK')
+        self.config = {
+            'server': {'host': '127.0.0.1', 'port': 18080},
+            'directories': {'data_root': str(self.data_root)},
+        }
+        self.headers = {TOKEN_HEADER: get_or_create_token(get_config_dir())}
+
+    def _plugin(self, resolver):
+        """伪插件：两个根（数据根 + 额外根）、一个受保护文件、可注入的解析器。"""
+        data_root, extra_root = self.data_root, self.extra_root
+
+        class _Virtual(PluginBase):
+            def register_api(self):
+                return {}
+
+            def get_data_root(self):
+                return data_root
+
+            def get_file_roots(self):
+                return [data_root, extra_root]
+
+            def get_protected_paths(self):
+                return [*super().get_protected_paths(), data_root / 'secret.txt']
+
+            def resolve_file_path(self, rel_path):
+                return resolver(rel_path)
+
+        return _Virtual({'name': 'virtual'}, self.config)
+
+    def _get(self, instance, url):
+        app = create_app(self.config, _StubPluginManager({'probe': instance}))
+        resp = app.test_client().get(url, headers=self.headers)
+        self.addCleanup(resp.close)
+        return resp
+
+    def test_default_resolver_is_none(self):
+        """不覆写时保持原语义：Shell 按第一根拼路径。"""
+        plugin = _DefaultPlugin({'name': 'p'}, self.config)
+        self.assertIsNone(plugin.resolve_file_path('a.jpg'))
+
+    def test_plugin_can_resolve_a_virtual_path_into_an_extra_root(self):
+        """核心回归：`__extra/pic.jpg` 必须打到额外根下的真实文件。"""
+        def resolver(rel_path):
+            if rel_path.startswith('__extra/'):
+                return self.extra_root / rel_path[len('__extra/'):]
+            return None
+
+        resp = self._get(self._plugin(resolver), '/file?path=__extra/pic.jpg&plugin=probe')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_data(), b'EXTRA-ORIGINAL')
+
+    def test_resolved_path_outside_every_root_is_403(self):
+        """解析结果不在任何根内 → 403（与越界同一语义），插件说了不算。"""
+        resp = self._get(self._plugin(lambda rel: self.outside / 'leak.jpg'),
+                         '/file?path=whatever.jpg&plugin=probe')
+        self.assertEqual(resp.status_code, 403)
+
+    def test_resolved_protected_file_is_403(self):
+        """即使插件把路径解析到自己的受保护文件，也照样 403。"""
+        resp = self._get(self._plugin(lambda rel: self.data_root / 'secret.txt'),
+                         '/file?path=secret.txt&plugin=probe')
+        self.assertEqual(resp.status_code, 403)
+
+    def test_missing_resolved_file_is_404_not_500(self):
+        resp = self._get(self._plugin(lambda rel: self.extra_root / 'nope.jpg'),
+                         '/file?path=nope.jpg&plugin=probe')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_raising_resolver_falls_back_to_the_first_root(self):
+        """插件实现抛错：回退默认解析，老行为不受影响，且不得 500。"""
+        (self.data_root / 'plain.jpg').write_bytes(b'PLAIN')
+
+        def resolver(rel_path):
+            raise RuntimeError('boom')
+
+        resp = self._get(self._plugin(resolver), '/file?path=plain.jpg&plugin=probe')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_data(), b'PLAIN')
+        resp = self._get(self._plugin(resolver), '/file?path=nope.jpg&plugin=probe')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_non_path_return_is_ignored(self):
+        """返回字符串这类错形状一律忽略（插件返回值不可信），不能当成路径用。"""
+        resp = self._get(self._plugin(lambda rel: str(self.extra_root / 'pic.jpg')),
+                         '/file?path=__extra/pic.jpg&plugin=probe')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_relative_traversal_is_still_403(self):
+        """解析器答不上来时，越界路径仍按老规矩 403。"""
+        payload = '..\\..\\secret.txt' if os.name == 'nt' else '../../secret.txt'
+        resp = self._get(self._plugin(lambda rel: None), f'/file?path={payload}&plugin=probe')
+        self.assertEqual(resp.status_code, 403)
+
+
 if __name__ == '__main__':
     unittest.main()

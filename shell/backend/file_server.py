@@ -542,7 +542,36 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
                 if not full_path.is_file():
                     abort(404)
                 return send_file(full_path, conditional=True)
-            # 相对路径：沿用「插件数据根目录」语义
+            # 相对路径：先问插件能不能解释这条虚拟路径（多根目录 / 命名空间前缀，
+            # 如 image-viewer 的 `__额外图库/…`），它答不上来再按老规矩用第一根拼。
+            # 顺序与绝对路径分支一致：解析 → 受保护判定 → 逐根校验 → 按需取字节。
+            resolved = None
+            if instance is not None:
+                try:
+                    candidate = instance.resolve_file_path(filepath)
+                except Exception as e:
+                    # 插件实现是自由代码：它抛错不能让整条路由 500，退回默认解析
+                    log.warning(f'[File_Server] {plugin_name}.resolve_file_path 失败，回退默认解析: {e}')
+                    candidate = None
+                if isinstance(candidate, Path):
+                    resolved = candidate
+                elif candidate is not None:
+                    log.warning(f'[File_Server] {plugin_name}.resolve_file_path 返回了 '
+                                f'{type(candidate).__name__}，已忽略（只接受 Path 或 None）')
+            if resolved is not None:
+                full_path = normalize_path(resolved)
+                _reject_protected_file(full_path)
+                if not any(_is_safe_path(full_path, root) for root in roots):
+                    abort(403)
+                if instance is not None and _needs_content(instance, full_path):
+                    try:
+                        instance.ensure_file(full_path)
+                    except Exception:
+                        pass
+                if not full_path.is_file():
+                    abort(404)
+                return send_file(full_path, conditional=True)
+            # 沿用「插件数据根目录」语义
             data_root = roots[0]
             full_path = normalize_path(data_root / filepath)
             _reject_protected_file(full_path)

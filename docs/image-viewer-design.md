@@ -126,8 +126,11 @@ plugins/image-viewer/
   depth 1，两层 Pixiv 布局（配置点 → 作者 → 作品）不会被命名空间顶掉。
 - 额外根的命名空间节点 `root_scope: true`，与第一根的合成根（`path == ''`）
   同地位：都是「顶层容器」，前端把它当 Pixiv 树的配置点。
-- **文件服务**：`get_file_roots()` 返回全部根，Shell 的 `/file` 相对路径仍以
-  第一根为数据根（`roots[0]`），跨根访问走逐根绝对路径校验。
+- **文件服务**：`get_file_roots()` 返回全部根；`/file` 的相对路径由本插件用
+  `resolve_file_path()` 解释（`__<命名空间>/…` → 额外根下的物理路径），
+  第一根以外的原图因此能直接打开 —— 在此之前 `/file` 只按 `roots[0]` 拼，
+  额外根的原图 404（「网格与缩略图正常、点开是破图」）。Shell 仍对解析结果逐根
+  做安全检查，并优先执行受保护路径判定。
 
 **设置页入口**：`root_dir` 不再有独立输入框——「图片文件夹」列表是唯一入口
 （第一行 = 主目录，其余 = 额外目录），保存时第一行写回 `root_dir`、其余写回
@@ -344,6 +347,7 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
 | `get_thumb_data(rel_path)` | Shell `/thumbs` 路由 | 经 `thumb_cache.get()`（ThumbCache 共享基建）读取/生成缩略图字节 `(data, mime)`；`_is_safe` 校验，失败返回 None → 404 |
 | `ensure_thumb(rel_path)` | 兼容旧调用方（image-cleaner） | 旧版文件式入口，新路由优先走 `get_thumb_data` |
 | `get_data_root()` / `get_file_roots()` | Shell 文件服务 | 数据根目录 / **全部**根目录（`root_dir` + `extra_roots`，逐根做路径校验） |
+| `resolve_file_path(rel_path)` | Shell 文件服务（`/file` 相对路径） | 虚拟路径 → 物理路径（命名空间前缀由本插件解释）；答不上来返回 `None` |
 | `get_extensions()` | Shell 扩展注册 | 挂载 image-cleaner 入口（在 `loadExtensions()` 渲染到左侧栏） |
 
 ## 7. 设置项
