@@ -38,6 +38,18 @@ if str(PROJECT_ROOT) not in sys.path:
 STARTUP_TIMEOUT = 40.0
 
 
+def text_for(driver, element_id: str) -> str:
+    """按 id 取文本，走 JS `innerText` 而不是 Selenium 的 `.text`。
+
+    原因见 `tests/test_group_mesh_frontend_e2e.py` 的 `text_of()`：插件的卡片/按钮带
+    入场动画（effects.css 的 obxFadeUp + 交错延迟），Selenium 的 getText 原子会对
+    已渲染的元素**间歇性**返回空串，失败信息会把排查引向"没渲染"这个错误方向。
+    """
+    return driver.execute_script(
+        'var n = document.getElementById(arguments[0]);'
+        'return n ? (n.innerText || n.textContent || "").trim() : "";', element_id)
+
+
 def _have_selenium() -> bool:
     try:
         import selenium  # noqa: F401
@@ -169,7 +181,6 @@ class GroupMeshInShellTest(unittest.TestCase):
             pass
 
     def test_plugin_loads_inside_shell_with_working_bridge(self):
-        from selenium.webdriver.common.by import By
         self._enter_plugin()
         self.assertEqual(self.driver.execute_script('return typeof window.Bridge'), 'object')
         # 真实调用一次后端：验证 <plugin>__<method> 前缀与令牌链路都通
@@ -178,8 +189,8 @@ class GroupMeshInShellTest(unittest.TestCase):
             ".then(function (r) { return r && r.kernel ? 'OK' : 'BAD'; })"
             ".catch(function (e) { return 'ERROR:' + e; });")
         self.assertEqual(result, 'OK', f'真实壳里调用插件后端失败: {result}')
-        self.assertFalse(self.driver.find_element(By.ID, 'identity-body').text.strip() == '',
-                         '身份卡片不应是空白')
+        self.assertTrue(self._wait_for(lambda: bool(text_for(self.driver, 'identity-body'))),
+                        '身份卡片不应是空白')
 
     def test_no_modal_overlays_the_plugin_on_open(self):
         """回归：弹窗曾因 CSS 覆盖 `hidden` 而一打开就同时铺满整屏。
@@ -198,15 +209,15 @@ class GroupMeshInShellTest(unittest.TestCase):
 
     def test_create_or_join_entries_are_reachable(self):
         """全新安装必须能看到创建/加入团体的入口，不能被弹窗盖住。"""
-        from selenium.webdriver.common.by import By
         self._enter_plugin()
         # 动作区是**按状态异步渲染**的：先等出按钮再断言文案，
         # 否则会在 get_status 还没回来的空档里读到空字符串。
-        self.assertTrue(self._wait_for(lambda: '创建团体' in self.driver.find_element(
-            By.ID, 'roster-actions').text or '显示邀请串' in self.driver.find_element(
-            By.ID, 'roster-actions').text), '动作区应当渲染出团体相关入口')
-        actions = self.driver.find_element(By.ID, 'roster-actions').text
-        roster = self.driver.find_element(By.ID, 'roster-body').text
+        self.assertTrue(self._wait_for(
+            lambda: '创建团体' in text_for(self.driver, 'roster-actions')
+            or '显示邀请串' in text_for(self.driver, 'roster-actions')),
+            '动作区应当渲染出团体相关入口')
+        actions = text_for(self.driver, 'roster-actions')
+        roster = text_for(self.driver, 'roster-body')
         if '还没有团体名单' in roster:
             self.assertIn('创建团体', actions)
             # 入口同时承担"更新名单"，因此标签是"加入 / 更新团体"
@@ -251,12 +262,14 @@ class GroupMeshInShellTest(unittest.TestCase):
 
     def test_my_endpoint_is_rendered_in_the_shell(self):
         """「我的地址」在真实壳里必须能渲染出来（它是地址交换的入口）。"""
-        from selenium.webdriver.common.by import By
         self._enter_plugin()
+        # 「我的地址」在「远端共享」面板里：面板是纯显隐切换，先切过去再读
+        self.driver.execute_script(
+            "document.querySelector('#gm-nav .gm-nav-item[data-panel=\"remote\"]').click();")
         self.assertTrue(self._wait_for(
-            lambda: '节点未运行' in self.driver.find_element(By.ID, 'my-endpoint').text
-            or ':' in self.driver.find_element(By.ID, 'my-endpoint').text
-            or '尚未发布' in self.driver.find_element(By.ID, 'my-endpoint').text),
+            lambda: '节点未运行' in text_for(self.driver, 'my-endpoint')
+            or ':' in text_for(self.driver, 'my-endpoint')
+            or '尚未发布' in text_for(self.driver, 'my-endpoint')),
             '「我的地址」应当渲染出地址或明确的未运行提示')
 
 

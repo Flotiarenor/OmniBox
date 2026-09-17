@@ -1,13 +1,26 @@
 /**
  * group-mesh 插件前端。
  *
- * 只做三件事：读状态、渲染、把用户动作转成 Bridge.call。所有判定都在后端 ——
+ * 只做四件事：读状态、切面板、渲染、把用户动作转成 Bridge.call。所有判定都在后端 ——
  * 前端不持有任何"谁能做什么"的规则（设计文档 §6.3：客户端隐藏按钮不构成授权）。
+ *
+ * 界面形态与仓库里其它插件一致（manga-library / media-player / image-cleaner）：
+ * 壳的 `.view-sub-sidebar` 常驻侧栏 + `.view-body > .view-toolbar + .view-content`。
+ * 面板切换是**纯显隐**（改 `data-active`，不销毁 DOM）：与壳"iframe 常驻、切走只是
+ * v-show"的策略一致，也让所有 id 在任何面板下都存在，渲染函数不必关心当前在哪一页。
+ * 面板的标题/副标题写在 index.html 的 `data-title` / `data-sub` 上（单一来源），
+ * 新增一个面板 = 侧栏加一个 `button[data-panel]` + 一个 `section[data-panel]`。
+ *
+ * 远端分片（设备 → 共享项 → 目录 → 取回/上传）在 js/remote.js，由 init() 注入回调；
+ * index.html 里 remote.js 必须排在 app.js 之前（契约见 tests/js/plugin_asset_contract.mjs）。
  */
 (function () {
   'use strict';
 
-  var state = { status: null };
+  var state = {
+    status: null,
+    panel: 'machine'
+  };
 
   // ── 工具 ────────────────────────────────────────────────────────────────
 
@@ -38,6 +51,24 @@
     return String(text === null || text === undefined ? '' : text)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  /** 给刚渲染出来的条目编交错延迟（配合 effects.css 的 `.obx-stagger` 与
+      行的 `--obx-i`）。Motion 由壳注入；脱离壳直接打开时安静跳过。 */
+  function stagger(container, selector) {
+    if (container && window.Motion && typeof window.Motion.stagger === 'function') {
+      window.Motion.stagger(container, selector);
+    }
+  }
+
+  /** 按状态给卡片换顶边色（.gm-card-ok/warn/error/muted）。状态只写在有意义的
+      div 上，卡片本身由调用方拿 id 的直接父节点，避免再加一层包装。 */
+  function cardOf(id, modifier) {
+    var body = el(id);
+    var card = body && body.closest ? body.closest('.gm-card') : null;
+    if (!card) { return; }
+    card.classList.remove('gm-card-ok', 'gm-card-warn', 'gm-card-error', 'gm-card-muted');
+    if (modifier) { card.classList.add(modifier); }
   }
 
   // 弹窗用壳的 `.modal` + `.modal.active`（base.css）。
@@ -80,6 +111,34 @@
     buttons.forEach(function (b) { container.appendChild(b); });
   }
 
+  // ── 面板切换 ────────────────────────────────────────────────────────────
+
+  function setPanel(name) {
+    var sections = document.querySelectorAll('#gm-panels > .gm-panel');
+    var found = false;
+    Array.prototype.forEach.call(sections, function (section) {
+      found = found || section.getAttribute('data-panel') === name;
+    });
+    if (!found) { return; }
+    state.panel = name;
+    Array.prototype.forEach.call(sections, function (section) {
+      section.setAttribute('data-active',
+        section.getAttribute('data-panel') === name ? 'true' : 'false');
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('#gm-nav .gm-nav-item'), function (item) {
+      item.setAttribute('data-active', item.getAttribute('data-panel') === name ? 'true' : 'false');
+    });
+    var section = document.querySelector('#gm-panels > .gm-panel[data-panel="' + name + '"]');
+    if (section) {
+      var title = el('gm-panel-title');
+      var sub = el('gm-panel-sub');
+      if (title) { title.textContent = section.getAttribute('data-title') || '团体组网'; }
+      if (sub) { sub.textContent = section.getAttribute('data-sub') || ''; }
+    }
+    var content = el('gm-content');
+    if (content) { content.scrollTop = 0; }
+  }
+
   // ── 渲染 ────────────────────────────────────────────────────────────────
 
   function render() {
@@ -93,6 +152,7 @@
     renderShares(status);
     renderNode(status);
     renderUnsupported(status);
+    renderSideSummary(status);
   }
 
   function protectionBadge(info) {
@@ -115,6 +175,7 @@
     var identity = status.identity;
 
     if (!identity) {
+      cardOf('identity-body', 'gm-card-muted');
       body.innerHTML = '<p class="gm-empty">本机还没有身份。创建后会生成主体密钥与首台设备密钥，' +
         '私钥保存在本机（<code>' + escapeHtml(status.identity_dir) + '</code>），不会经文件服务对外提供。</p>';
       fillActions(actions, [
@@ -126,6 +187,8 @@
       return;
     }
 
+    var protection = identity.secret_protection || {};
+    cardOf('identity-body', protection.protected ? 'gm-card-ok' : 'gm-card-warn');
     body.innerHTML = '<dl class="gm-kv">' +
       '<dt>主体</dt><dd>' + escapeHtml(identity.principal_name) + '</dd>' +
       '<dt>主体 ID</dt><dd>' + escapeHtml(identity.principal_id) + '</dd>' +
@@ -151,6 +214,7 @@
     var roster = status.roster;
 
     if (!roster) {
+      cardOf('roster-body', 'gm-card-muted');
       body.innerHTML = '<p class="gm-empty">本机还没有团体名单。可以创建一个新团体（你是群主），' +
         '或用群主给的邀请串加入已有团体。</p>';
       fillActions(actions, [
@@ -168,22 +232,28 @@
       return;
     }
 
-    var rows = roster.members.map(function (m) {
-      return '<tr><td>' + escapeHtml(m.name) + '</td><td><code>' + escapeHtml(m.principal_id) +
+    var rows = roster.members.map(function (m, index) {
+      return '<tr style="--obx-i:' + index + '"><td>' + escapeHtml(m.name) +
+        '</td><td><code>' + escapeHtml(m.principal_id) +
         '</code></td><td>' + m.device_count + '</td></tr>';
     }).join('');
 
+    var stale = roster.stale || {};
     var staleNote = '';
-    if (roster.stale && roster.stale.expired) {
-      staleNote = '<p class="gm-badge gm-badge-warn">名单已过期 ' +
-        escapeHtml(roster.stale.expired_days) + ' 天（仅提示，不阻断通信）</p>';
+    if (stale.expired) {
+      staleNote = '<p class="gm-hint"><span class="gm-badge gm-badge-warn">名单已过期 ' +
+        escapeHtml(stale.expired_days) + ' 天</span> 仅提示，不阻断通信</p>';
     }
 
+    // 名单过期只是提示（设计 §5.4：软件不做版本强制），因此顶边用 warn 而不是 error
+    cardOf('roster-body', stale.expired ? 'gm-card-warn' : 'gm-card-ok');
     body.innerHTML =
       '<dl class="gm-kv">' +
       '<dt>团体</dt><dd>' + escapeHtml(roster.group) + '</dd>' +
-      '<dt>名单版本</dt><dd>' + escapeHtml(roster.version) + '</dd>' +
+      '<dt>名单版本</dt><dd>v' + escapeHtml(roster.version) + '</dd>' +
       '<dt>你的角色</dt><dd>' + roleBadge(roster.role) + '</dd>' +
+      '<dt>成员</dt><dd>' + escapeHtml(roster.member_count) + ' 人（管理员 ' +
+      escapeHtml(roster.admin_count) + '）</dd>' +
       '</dl>' + staleNote +
       '<table class="gm-table"><thead><tr><th>成员</th><th>主体 ID</th><th>设备</th></tr></thead>' +
       '<tbody>' + rows + '</tbody></table>';
@@ -205,26 +275,31 @@
 
   function renderShares(status) {
     var body = el('shares-body');
+    var count = el('gm-count-shares');
+    if (count) { count.textContent = status.shares.length ? String(status.shares.length) : ''; }
+
     if (!status.shares.length) {
-      body.innerHTML = '<p class="gm-empty">本机还没有共享项。共享根建议放在专门目录，' +
-        '不要指向程序目录、配置目录或身份目录。</p>';
+      cardOf('shares-body', 'gm-card-muted');
+      body.innerHTML = '<p class="gm-empty"><strong>本机还没有共享项。</strong>' +
+        '共享根建议放在专门目录，不要指向程序目录、配置目录或身份目录。</p>';
       return;
     }
-    var rows = status.shares.map(function (share) {
+    cardOf('shares-body', 'gm-card-ok');
+    var rows = status.shares.map(function (share, index) {
       var acl = share.acl || {};
       var limit = share.max_bytes === null ? '不限制' : Math.round(share.max_bytes / 1048576) + ' MiB';
       // 共享根是**有状态的位置**：目录所在磁盘未接入时必须显示出来，
       // 否则对端看到的是空目录，而本机界面显示一切正常。
-      var state = share.available === false
+      var stateBadge = share.available === false
         ? '<span class="gm-badge gm-badge-warn">' + escapeHtml(share.reason || '不可用') + '</span>'
         : '<span class="gm-badge gm-badge-ok">可用</span>';
-      return '<tr>' +
+      return '<tr style="--obx-i:' + index + '">' +
         '<td><code>' + escapeHtml(share.share_id) + '</code></td>' +
         '<td><code>' + escapeHtml(share.path) + '</code></td>' +
-        '<td>' + state + '</td>' +
+        '<td>' + stateBadge + '</td>' +
         '<td>读 ' + escapeHtml(acl.read) + ' / 写 ' + escapeHtml(acl.write) + '</td>' +
         '<td>' + escapeHtml(limit) + '</td>' +
-        '<td><button type="button" class="btn btn-sm gm-btn-danger" data-remove="' +
+        '<td><button type="button" class="btn btn-sm btn-danger" data-remove="' +
         escapeHtml(share.share_id) + '">移除</button></td>' +
         '</tr>';
     }).join('');
@@ -235,7 +310,7 @@
       node.addEventListener('click', function () {
         var shareId = node.getAttribute('data-remove');
         // 用壳的 confirmDialog（base.js）。原生 window.confirm 在内嵌 WebView 里
-        // 可能被宿主禁用，点了毫无反馈 —— 本插件就踩过这个坑（见 app.js 里"创建团体"
+        // 可能被宿主禁用，点了毫无反馈 —— 本插件就踩过这个坑（见本文件"创建团体"
         // 的注释）。脱离壳打开时回退到原生 confirm。
         if (typeof window.confirmDialog !== 'function') {
           if (window.confirm('移除共享项「' + shareId + '」？只会取消共享，不会删除目录里的文件。')) {
@@ -261,8 +336,8 @@
     // 否则用户看到的是"节点未运行"而不知道为什么。
     var autoNote = '';
     if (node.auto_start_error) {
-      autoNote = '<p class="gm-badge gm-badge-warn">自动启动失败：' +
-        escapeHtml(node.auto_start_error) + '</p>';
+      autoNote = '<p class="gm-hint"><span class="gm-badge gm-badge-warn">自动启动失败：' +
+        escapeHtml(node.auto_start_error) + '</span></p>';
     }
     // 发布状态：节点在跑但没发布注册记录 = 本机对别人不可见（别人发现不了我）。
     var published = '';
@@ -270,6 +345,14 @@
       published = node.published
         ? '<span class="gm-badge gm-badge-ok">已发布（别人可发现）</span>'
         : '<span class="gm-badge gm-badge-warn">未发布注册记录 —— 别人发现不了本机</span>';
+    }
+
+    if (node.running && node.published && !node.error) {
+      cardOf('node-body', 'gm-card-ok');
+    } else if (node.error || node.auto_start_error) {
+      cardOf('node-body', 'gm-card-error');
+    } else {
+      cardOf('node-body', 'gm-card-warn');
     }
 
     body.innerHTML = '<dl class="gm-kv">' +
@@ -280,7 +363,8 @@
       '<dt>下载目录</dt><dd>' + escapeHtml((status.locations || {}).downloads || '-') +
       ((status.locations || {}).downloads_custom ? '' : '（默认）') + '</dd>' +
       '</dl>' + autoNote +
-      (node.error ? '<p class="gm-badge gm-badge-warn">' + escapeHtml(node.error) + '</p>' : '');
+      (node.error ? '<p class="gm-hint"><span class="gm-badge gm-badge-warn">' +
+        escapeHtml(node.error) + '</span></p>' : '');
 
     if (node.running) {
       fillActions(actions, [button('停止节点', function () {
@@ -300,9 +384,57 @@
   }
 
   function renderUnsupported(status) {
-    el('unsupported-list').innerHTML = (status.unsupported || []).map(function (item) {
-      return '<li>' + escapeHtml(item) + '</li>';
+    var items = status.unsupported || [];
+    el('unsupported-list').innerHTML = items.map(function (item, index) {
+      return '<li style="--obx-i:' + index + '">' + escapeHtml(item) + '</li>';
     }).join('');
+  }
+
+  /** 侧栏底部摘要：节点在不在跑、本机在哪个团体、名单第几版。
+      这几条是"我到底能不能被别人连上"的最小集合，因此常驻可见。 */
+  function renderSideSummary(status) {
+    var dot = el('gm-foot-dot');
+    var text = el('gm-foot-text');
+    if (!dot || !text) { return; }
+
+    var node = status.node || {};
+    var roster = status.roster;
+    var identity = status.identity;
+    var parts = [];
+
+    var level = 'idle';
+    if (node.running && node.published) {
+      level = 'ok';
+      parts.push('节点运行中');
+    } else if (node.running) {
+      level = 'warn';
+      parts.push('已运行 · 未发布');
+    } else if (node.auto_start_error || node.error) {
+      level = 'error';
+      parts.push('节点启动失败');
+    } else {
+      parts.push(identity ? '节点未运行' : '尚未创建身份');
+    }
+
+    if (roster) {
+      parts.push(roster.group + ' · v' + roster.version);
+      if ((roster.stale || {}).expired) { level = level === 'ok' ? 'warn' : level; }
+    }
+    dot.setAttribute('data-state', level);
+    text.textContent = parts.join(' · ');
+    text.title = parts.join(' · ');
+  }
+
+  /** 首屏：get_status 还没回来时给骨架，而不是几张空卡片。 */
+  function renderLoading() {
+    ['identity-body', 'roster-body', 'node-body', 'shares-body'].forEach(function (id) {
+      var body = el(id);
+      if (!body || body.childNodes.length) { return; }
+      body.innerHTML = '<span class="gm-skeleton-line obx-skeleton"></span>' +
+        '<span class="gm-skeleton-line obx-skeleton" style="width:80%"></span>';
+    });
+    var summary = el('gm-foot-text');
+    if (summary) { summary.textContent = '正在读取状态…'; }
   }
 
   // ── 动作 ────────────────────────────────────────────────────────────────
@@ -323,12 +455,18 @@
     return call('get_status').then(function (status) {
       state.status = status;
       render();
+      // 交错入场：每次状态刷新后重新编号，列表才有"更新了"的观感
+      stagger(el('gm-panels'), '.gm-card');
       // 设备列表是独立的一次后端往返（要连对端），不阻塞首屏渲染
       if (window.GroupMeshRemote && typeof window.GroupMeshRemote.refreshPeers === 'function') {
         window.GroupMeshRemote.refreshPeers();
       }
       return status;
     }).catch(function (err) {
+      var summary = el('gm-foot-text');
+      if (summary) { summary.textContent = '读取状态失败'; }
+      var dot = el('gm-foot-dot');
+      if (dot) { dot.setAttribute('data-state', 'error'); }
       showError(err);
     });
   }
@@ -351,6 +489,10 @@
         return;
       }
       window.openSettingsModal({ title: '团体组网设置' });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('#gm-nav .gm-nav-item'), function (item) {
+      item.addEventListener('click', function () { setPanel(item.getAttribute('data-panel')); });
     });
 
     el('btn-add-share').addEventListener('click', function () {
@@ -432,6 +574,8 @@
 
   function init() {
     bind();
+    setPanel(state.panel);
+    renderLoading();
     // 远端分片（js/remote.js）：把本文件的能力注入进去，它自己不碰后端与提示。
     // 注入而非全局互引：装载期两者都不触碰 DOM（资源契约要求），运行时也只依赖
     // 这几个回调，因此分片可以独立测试。
@@ -441,7 +585,12 @@
         toast: toast,
         escapeHtml: escapeHtml,
         openModal: openModal,
-        closeModal: closeModal
+        closeModal: closeModal,
+        // 设备数由远端分片拿到后回报，侧栏计数不必自己去连对端
+        onPeersLoaded: function (peers) {
+          var count = el('gm-count-peers');
+          if (count) { count.textContent = peers && peers.length ? String(peers.length) : ''; }
+        }
       });
     }
     refresh();

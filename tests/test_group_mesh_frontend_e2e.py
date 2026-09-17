@@ -68,6 +68,73 @@ def wait_until(predicate, timeout: float = 3.0, interval: float = 0.05):
         return False
 
 
+def text_of(element) -> str:
+    """元素文本，走 JS `innerText` 而不是 Selenium 的 `.text`。
+
+    为什么不能用 `.text`：Selenium 的 getText 原子会对"看起来没显示"的元素返回空串，
+    而本插件新加的卡片/按钮带入场动画（effects.css 的 `obxFadeUp` + `--obx-i` 交错延迟），
+    动画期间原子的判定会**间歇性**把已渲染、已可见的按钮认成不可见 —— 实测同一个
+    页面连续取三次：`['', ''] / innerText=['创建团体', '加入 / 更新团体'] / ['', '']`。
+    失败信息（按钮文本为空）会把排查引向"按钮没渲染"，而它其实好好地在 DOM 里。
+    """
+    return element.parent.execute_script(
+        'return (arguments[0].innerText || arguments[0].textContent || "").trim();', element)
+
+
+def visible_text_of(element) -> str:
+    """元素"可见且有内容"时的文本，否则空串（一次 JS 调用里同时判可见性）。"""
+    return element.parent.execute_script(
+        'var n = arguments[0];'
+        'var shown = !!(n.offsetWidth || n.offsetHeight || n.getClientRects().length);'
+        'return shown ? (n.innerText || n.textContent || "").trim() : "";', element)
+
+
+def text_for(driver, element_id: str) -> str:
+    """按 id 取文本（同样走 innerText：隐藏面板里的元素也能取到内容）。"""
+    return driver.execute_script(
+        'var n = document.getElementById(arguments[0]);'
+        'return n ? (n.innerText || n.textContent || "").trim() : "";', element_id)
+
+
+def wait_for_text(driver, element_id: str, needle: str, timeout: float = 5.0) -> bool:
+    """等某个容器的文本里出现 needle。
+
+    原来的写法是轮询 `.gm-card` 是否存在 —— 那是**静态骨架**里的元素，第一次
+    检查就命中，于是"等待"等于没等：`get_status` 的桩 Promise 只要比断言晚一个
+    微任务，读到的就是空字符串。容器文本才是"渲染真的发生了"的证据。
+    """
+    return wait_until(lambda: needle in text_for(driver, element_id), timeout=timeout)
+
+
+def show_panel(driver, name: str) -> None:
+    """切到侧栏的某个面板，并确认切换真的生效。
+
+    界面形态与仓库里其它插件一致：`.view-sub-sidebar` 常驻侧栏 + 主区面板，
+    面板是**纯显隐**（`data-active`，不销毁 DOM）。因此断言"某元素可见/可点"之前
+    必须先切到它所在的面板 —— 否则 Selenium 的 `is_displayed()` 会对隐藏面板里的
+    元素返回 False，`.text` 也拿不到文本（隐藏元素没有渲染盒），`.click()` 会因为
+    不可见而超时。
+
+    只读 `innerHTML` / textContent 的断言不需要切面板；但**任何 `.text` 或点击**都需要。
+    """
+    def active() -> str:
+        try:
+            return driver.execute_script(
+                "var p = document.querySelector('#gm-panels > .gm-panel[data-active=\"true\"]');"
+                "return p ? p.getAttribute('data-panel') : '';")
+        except Exception:
+            return ''
+
+    if active() == name:
+        return
+    assert wait_until(lambda: bool(driver.execute_script(
+        "return document.querySelector('#gm-nav .gm-nav-item[data-panel=\"%s\"]');" % name))), \
+        f'侧栏里没有 data-panel="{name}" 的入口'
+    driver.execute_script(
+        "document.querySelector('#gm-nav .gm-nav-item[data-panel=\"%s\"]').click();" % name)
+    assert wait_until(lambda: active() == name), f'切到面板 {name} 失败（当前 {active()}）'
+
+
 def shell_injection() -> str:
     """壳加载插件页面时注入到 </head> 之前的那几份资源。
 
@@ -218,11 +285,8 @@ class FrontendRenderTest(unittest.TestCase):
             html = html.replace(f'"{asset}"', f'"{self.base_url}{asset}"')
         self.page.write_text(html, encoding='utf-8')
         self.driver.get(self.page.as_uri())
-        # 等 app.js 完成一次 get_status 渲染
-        for _ in range(50):
-            if self.driver.find_elements('css selector', '.gm-card'):
-                break
-            self.driver.implicitly_wait(0.1)
+        # 等 app.js 完成一次 get_status 渲染：身份卡是最先渲的，用它的文本当信号
+        wait_until(lambda: bool(text_for(self.driver, 'identity-body')))
         return self.driver
 
     # ── 缺陷回归：弹窗不得在打开时自己显示 ──────────────────────────────
@@ -268,14 +332,14 @@ class FrontendRenderTest(unittest.TestCase):
 
     def test_fresh_install_offers_create_identity(self):
         driver = self._load(FRESH_STATUS)
-        body = driver.find_element('id', 'identity-body').text
+        body = text_for(driver, 'identity-body')
         self.assertIn('还没有身份', body)
-        actions = driver.find_element('id', 'identity-actions').text
+        actions = text_for(driver, 'identity-actions')
         self.assertIn('创建身份', actions)
 
     def test_fresh_install_offers_create_or_join_group(self):
         driver = self._load(FRESH_STATUS)
-        actions = driver.find_element('id', 'roster-actions').text
+        actions = text_for(driver, 'roster-actions')
         self.assertIn('创建团体', actions)
         # 入口同时承担"更新名单"，因此标签是"加入 / 更新团体"：
         # 群主加人后成员必须能再更新一次，否则会永远停在旧名单上。
@@ -284,7 +348,7 @@ class FrontendRenderTest(unittest.TestCase):
     def test_fresh_install_has_no_member_entry(self):
         """没有团体时不该给出"添加成员"—— 那是群主/管理员才有的动作。"""
         driver = self._load(FRESH_STATUS)
-        self.assertNotIn('添加成员', driver.find_element('id', 'roster-actions').text)
+        self.assertNotIn('添加成员', text_for(driver, 'roster-actions'))
 
     def test_kernel_banner_hidden_when_kernel_available(self):
         driver = self._load(FRESH_STATUS)
@@ -294,11 +358,12 @@ class FrontendRenderTest(unittest.TestCase):
 
     def test_joined_state_renders_identity_and_roster(self):
         driver = self._load(JOINED_STATUS)
-        self.assertIn('alice', driver.find_element('id', 'identity-body').text)
-        roster = driver.find_element('id', 'roster-body').text
+        self.assertIn('alice', text_for(driver, 'identity-body'))
+        wait_for_text(driver, 'roster-body', 'home-lab')
+        roster = text_for(driver, 'roster-body')
         self.assertIn('home-lab', roster)
         self.assertIn('bob', roster)
-        shares = driver.find_element('id', 'shares-body').text
+        shares = text_for(driver, 'shares-body')
         self.assertIn('pub', shares)
 
     def test_joined_state_modals_still_hidden(self):
@@ -309,17 +374,18 @@ class FrontendRenderTest(unittest.TestCase):
 
     def test_joined_state_owner_sees_add_member_button(self):
         driver = self._load(JOINED_STATUS)
-        self.assertIn('添加成员', driver.find_element('id', 'roster-actions').text)
+        self.assertIn('添加成员', text_for(driver, 'roster-actions'))
 
     # ── 弹窗的打开/关闭必须真的生效（新机制不能被"永远隐藏"蒙混过关）──────
 
     def test_add_member_modal_opens_and_closes(self):
         driver = self._load(JOINED_STATUS)
+        show_panel(driver, 'group')       # 入口在「团体」面板里，隐藏面板里的按钮点不动
         member_box = driver.find_element('id', 'member-box')
         self.assertFalse(member_box.is_displayed())
 
         add_button = next(b for b in driver.find_elements('css selector', '#roster-actions .btn')
-                          if '添加成员' in b.text)
+                          if '添加成员' in text_of(b))
         add_button.click()
         self.assertTrue(wait_until(lambda: member_box.is_displayed()),
                         '点"添加成员"后弹窗应当显示')
@@ -331,9 +397,10 @@ class FrontendRenderTest(unittest.TestCase):
 
     def test_join_modal_opens_and_closes(self):
         driver = self._load(FRESH_STATUS)
+        show_panel(driver, 'group')
         join_box = driver.find_element('id', 'join-box')
         join_button = next(b for b in driver.find_elements('css selector', '#roster-actions .btn')
-                           if '加入 / 更新' in b.text)
+                           if '加入 / 更新' in text_of(b))
         join_button.click()
         self.assertTrue(wait_until(lambda: join_box.is_displayed()))
 
@@ -342,9 +409,10 @@ class FrontendRenderTest(unittest.TestCase):
 
     def test_invite_modal_opens_with_invite_text(self):
         driver = self._load(JOINED_STATUS)
+        show_panel(driver, 'group')
         invite_box = driver.find_element('id', 'invite-box')
         invite_button = next(b for b in driver.find_elements('css selector', '#roster-actions .btn')
-                             if '显示邀请串' in b.text)
+                             if '显示邀请串' in text_of(b))
         invite_button.click()
         self.assertTrue(wait_until(lambda: invite_box.is_displayed()))
         # 桩 Bridge 对 get_invite 回的是占位成功，因此这里只断言弹窗确实打开、
@@ -359,8 +427,9 @@ class FrontendRenderTest(unittest.TestCase):
 
     def test_create_group_opens_a_dialog_not_native_confirm(self):
         driver = self._load(FRESH_STATUS)
+        show_panel(driver, 'group')
         create_button = next(b for b in driver.find_elements('css selector', '#roster-actions .btn')
-                             if '创建团体' in b.text)
+                             if '创建团体' in text_of(b))
         create_button.click()
         self.assertTrue(wait_until(lambda: driver.find_element('id', 'create-box').is_displayed()),
                         '点"创建团体"必须打开应用内弹窗（原生 confirm 在 WebView 里可能不可用）')
@@ -369,8 +438,9 @@ class FrontendRenderTest(unittest.TestCase):
 
     def test_create_group_submits_and_shows_invite(self):
         driver = self._load(FRESH_STATUS)
+        show_panel(driver, 'group')
         next(b for b in driver.find_elements('css selector', '#roster-actions .btn')
-             if '创建团体' in b.text).click()
+             if '创建团体' in text_of(b)).click()
         driver.find_element('id', 'create-group-name').clear()
         driver.find_element('id', 'create-group-name').send_keys('unit-group')
         driver.find_element('id', 'btn-do-create').click()
@@ -388,37 +458,57 @@ class FrontendRenderTest(unittest.TestCase):
         这是防止"按钮点了毫无反应"这类缺陷再次漏过去的兜底 —— 新增按钮若忘了接
         handler，这条会直接失败。
 
-        实现注意：每次点击后动作区会重新渲染，之前拿到的 WebElement 会失效
-        （StaleElementReferenceException），因此每轮都**按序号重新查找**，
-        而不是缓存元素列表。
+        实现注意三点：
+
+        1. 每次点击后动作区会重新渲染，之前拿到的 WebElement 会失效
+           （StaleElementReferenceException），因此每次点击都**重新查找**元素；
+        2. 按钮分散在侧栏的各个面板里（`.gm-panel` 是纯显隐切换，隐藏面板里的按钮
+           点不动），因此按面板逐个 `show_panel` 之后再点，并且选择器**限定在该面板
+           内**：全局 `.gm-actions .btn` 会把别的面板的按钮也匹配进来，按序号点击
+           就会点到隐藏面板里的那一个（ElementNotInteractableException）；
+        3. 点击统一走 JS（`.click()`）。真实用户点击需要元素稳定可点，而这些按钮带
+           入场动画（obxFadeUp + 交错延迟），Selenium 的"可交互"判定会在动画期间
+           间歇性失败 —— 与被测行为无关。
         """
         driver = self._load(FRESH_STATUS)
-        # 按钮类名已统一到壳的 .btn（base.css），不再是插件自绘的 .gm-btn
-        selector = '.gm-actions .btn, .gm-form .btn'
-        labels = [b.text.strip() for b in driver.find_elements('css selector', selector)]
-        self.assertTrue(any(labels), '页面上应当有动作按钮')
+        base_selector = '.gm-actions .btn, .gm-form .btn'
 
-        for index, label in enumerate(labels):
-            if not label:
-                continue
-            with self.subTest(button=label):
-                # 清掉上一轮的痕迹：桩调用记录、所有弹窗、残留提示
-                driver.execute_script(
-                    "window.__stubResults = [];"
-                    "document.querySelectorAll('.modal')"
-                    ".forEach(function (m) { m.classList.remove('active'); });"
-                    "document.querySelectorAll('.gm-toast').forEach(function (t) { t.remove(); });")
-                driver.find_elements('css selector', selector)[index].click()
-                opened = driver.execute_script(
-                    "return Array.from(document.querySelectorAll('.modal'))"
-                    ".some(function (m) { return m.classList.contains('active'); });")
-                called = driver.execute_script('return window.__stubResults.length') > 0
-                # 壳提供 Toast 时不会生成 .gm-toast 节点，因此两种情况都算"有提示"
-                toasted = driver.execute_script(
-                    "return Boolean(window.__toastCount)"
-                    " || document.querySelectorAll('.gm-toast').length > 0;")
-                self.assertTrue(opened or called or toasted,
-                                f'按钮「{label}」点击后没有任何反馈（未开弹窗、未调后端、无提示）')
+        checked = 0
+        for panel in ('machine', 'group', 'shares'):
+            show_panel(driver, panel)
+            # 等这个面板的按钮渲染出来再收集：切面板只是显隐，动作区的内容由
+            # get_status 的异步渲染写入 —— 上一次点击触发的 refresh 可能还没落定。
+            panel_selector = f'#panel-{panel} {base_selector}'
+            wait_until(lambda selector=panel_selector: any(
+                text_of(b) for b in driver.find_elements('css selector', selector)))
+            labels = [text_of(b) for b in driver.find_elements('css selector', panel_selector)]
+            self.assertTrue(any(labels), f'面板 {panel} 上应当有动作按钮')
+
+            for index, label in enumerate(labels):
+                if not label:
+                    continue
+                checked += 1
+                with self.subTest(panel=panel, button=label):
+                    # 清掉上一轮的痕迹：桩调用记录、所有弹窗、残留提示
+                    driver.execute_script(
+                        "window.__stubResults = [];"
+                        "document.querySelectorAll('.modal')"
+                        ".forEach(function (m) { m.classList.remove('active'); });"
+                        "document.querySelectorAll('.gm-toast').forEach(function (t) { t.remove(); });")
+                    driver.execute_script(
+                        "document.querySelectorAll(arguments[0])[arguments[1]].click();",
+                        panel_selector, index)
+                    opened = driver.execute_script(
+                        "return Array.from(document.querySelectorAll('.modal'))"
+                        ".some(function (m) { return m.classList.contains('active'); });")
+                    called = driver.execute_script('return window.__stubResults.length') > 0
+                    # 壳提供 Toast 时不会生成 .gm-toast 节点，因此两种情况都算"有提示"
+                    toasted = driver.execute_script(
+                        "return Boolean(window.__toastCount)"
+                        " || document.querySelectorAll('.gm-toast').length > 0;")
+                    self.assertTrue(opened or called or toasted,
+                                    f'按钮「{label}」点击后没有任何反馈（未开弹窗、未调后端、无提示）')
+        self.assertTrue(checked >= 4, f'动作按钮数量异常（只遍历到 {checked} 个）')
 
 
 REMOTE_STATUS = {
@@ -598,9 +688,10 @@ class RemotePageRenderTest(unittest.TestCase):
             html = html.replace(f'"{asset}"', f'"{self.base_url}{asset}"')
         self.page_path.write_text(html, encoding='utf-8')
         self.driver.get(self.page_path.as_uri())
-        for _ in range(60):
-            if 'flotiarenorserver' in self.driver.find_element('id', 'peers-body').text:
-                break
+        # 等同伴列表真的渲染出来（设备名来自 list_peers 的桩返回值）
+        wait_for_text(self.driver, 'peers-body', 'flotiarenorserver')
+        # 这一整类用例操作的都是「远端共享」面板里的东西，先切过去
+        show_panel(self.driver, 'remote')
         return self.driver
 
     def test_peer_modal_is_hidden_on_load(self):
@@ -610,7 +701,8 @@ class RemotePageRenderTest(unittest.TestCase):
 
     def test_peers_are_listed_with_shares(self):
         driver = self._load()
-        peers = driver.find_element('id', 'peers-body').text
+        wait_for_text(driver, 'peers-body', 'flotiarenorserver')
+        peers = text_for(driver, 'peers-body')
         self.assertIn('flotiarenorserver', peers)
         self.assertIn('192.168.31.16:19450', peers)
         self.assertIn('land64b6e', peers)
@@ -633,18 +725,18 @@ class RemotePageRenderTest(unittest.TestCase):
     def test_share_root_unavailable_is_visible(self):
         """共享根所在磁盘未接入时必须显示出来 —— 这正是 G:\\图库 拔盘后的表现。"""
         self._load()
-        shares = self.driver.find_element('id', 'shares-body').text
+        wait_for_text(self.driver, 'shares-body', 'pub')
+        shares = text_for(self.driver, 'shares-body')
         self.assertIn('pub', shares)
 
     def test_clicking_a_share_lists_directory(self):
         driver = self._load()
         button = next(b for b in driver.find_elements('css selector', '.gm-remote-item')
-                      if 'land64b6e' in b.text)
+                      if 'land64b6e' in text_of(b))
         button.click()
-        for _ in range(50):
-            if 'big.bin' in driver.find_element('id', 'remote-body').text:
-                break
-        body = driver.find_element('id', 'remote-body').text
+        # 等目录真的渲染出来（原来只等 50 次 0 延时的循环，等于没等）
+        wait_for_text(driver, 'remote-body', 'big.bin')
+        body = text_for(driver, 'remote-body')
         self.assertIn('big.bin', body)
         self.assertIn('note.txt', body)
         self.assertIn('sub', body)
@@ -657,7 +749,7 @@ class RemotePageRenderTest(unittest.TestCase):
         """
         driver = self._load()
         next(b for b in driver.find_elements('css selector', '.gm-remote-item')
-             if 'land64b6e' in b.text).click()
+             if 'land64b6e' in text_of(b)).click()
         for _ in range(50):
             if driver.find_elements('id', 'btn-remote-upload'):
                 break
@@ -667,7 +759,7 @@ class RemotePageRenderTest(unittest.TestCase):
         self.assertTrue(wait_until(
             lambda: driver.find_element('id', 'upload-box').is_displayed()),
             '上传弹窗没有打开')
-        self.assertIn('land64b6e', driver.find_element('id', 'upload-target').text)
+        self.assertIn('land64b6e', text_for(driver, 'upload-target'))
 
         driver.find_element('id', 'upload-local').send_keys(r'D:\照片\新图.jpg')
         driver.find_element('id', 'upload-name').send_keys('相册/新图.jpg')
@@ -683,9 +775,8 @@ class RemotePageRenderTest(unittest.TestCase):
         self.assertFalse(payload['overwrite'])
 
         # 上传中：弹窗留着，并在弹窗里显示进度（不是只显示"正在上传…"）
-        self.assertTrue(wait_until(lambda: '%' in driver.find_element(
-            'id', 'upload-progress').text),
-            '上传中没有显示百分比进度：' + driver.find_element('id', 'upload-progress').text)
+        self.assertTrue(wait_until(lambda: '%' in text_for(driver, 'upload-progress')),
+                        '上传中没有显示百分比进度：' + text_for(driver, 'upload-progress'))
         self.assertTrue(driver.find_element('id', 'upload-box').is_displayed())
         self.assertTrue(driver.find_element('id', 'btn-cancel-upload').is_displayed(),
                         '上传中必须能取消')
@@ -708,7 +799,7 @@ class RemotePageRenderTest(unittest.TestCase):
         """取消：调用 cancel_upload，结束后弹窗留着并说明"已传多少、可续传"。"""
         driver = self._load()
         next(b for b in driver.find_elements('css selector', '.gm-remote-item')
-             if 'land64b6e' in b.text).click()
+             if 'land64b6e' in text_of(b)).click()
         for _ in range(50):
             if driver.find_elements('id', 'btn-remote-upload'):
                 break
@@ -728,10 +819,9 @@ class RemotePageRenderTest(unittest.TestCase):
         self.assertTrue(any(c.startswith('cancel_upload:task-1') for c in calls), calls)
 
         # 轮询收敛到 cancelled：弹窗留着（用户可以再点一次续传），按钮恢复可用
-        self.assertTrue(wait_until(lambda: '已取消' in driver.find_element(
-            'id', 'upload-progress').text),
-            '取消后没有给出结论：' + driver.find_element('id', 'upload-progress').text)
-        self.assertIn('续传', driver.find_element('id', 'upload-progress').text)
+        self.assertTrue(wait_until(lambda: '已取消' in text_for(driver, 'upload-progress')),
+                        '取消后没有给出结论：' + text_for(driver, 'upload-progress'))
+        self.assertIn('续传', text_for(driver, 'upload-progress'))
         self.assertTrue(driver.find_element('id', 'upload-box').is_displayed())
         self.assertFalse(driver.find_element('id', 'btn-do-upload').get_attribute('disabled'))
 
@@ -739,7 +829,7 @@ class RemotePageRenderTest(unittest.TestCase):
         """目标文件名留空时取本机文件名（并带上当前目录前缀）。"""
         driver = self._load()
         next(b for b in driver.find_elements('css selector', '.gm-remote-item')
-             if 'land64b6e' in b.text).click()
+             if 'land64b6e' in text_of(b)).click()
         for _ in range(50):
             if driver.find_elements('id', 'btn-remote-upload'):
                 break
@@ -755,8 +845,9 @@ class RemotePageRenderTest(unittest.TestCase):
     def test_upload_button_is_absent_before_a_share_is_picked(self):
         """没选共享项时不该出现上传入口（它挂在目录工具栏上）。"""
         driver = self._load()
+        wait_for_text(driver, 'remote-body', '左边选一个共享项')
         self.assertFalse(driver.find_elements('id', 'btn-remote-upload'))
-        self.assertIn('左边选一个共享项', driver.find_element('id', 'remote-body').text)
+        self.assertIn('左边选一个共享项', text_for(driver, 'remote-body'))
 
     def test_modal_shows_the_interrupted_upload_from_last_time(self):
         """插件重载后打开上传弹窗：要说明"上次传到哪、同一文件再传会续传"。
@@ -768,36 +859,30 @@ class RemotePageRenderTest(unittest.TestCase):
             "window.__uploadHistory = [{ task_id: 'old', state: 'interrupted',"
             " sent: 4096, total: 8192, remote_path: '旧文件.bin', percent: 50 }];")
         next(b for b in driver.find_elements('css selector', '.gm-remote-item')
-             if 'land64b6e' in b.text).click()
+             if 'land64b6e' in text_of(b)).click()
         for _ in range(50):
             if driver.find_elements('id', 'btn-remote-upload'):
                 break
         driver.find_element('id', 'btn-remote-upload').click()
-        self.assertTrue(wait_until(lambda: '中断' in driver.find_element(
-            'id', 'upload-progress').text),
-            '没有说明上次的中断：' + driver.find_element('id', 'upload-progress').text)
-        text = driver.find_element('id', 'upload-progress').text
+        self.assertTrue(wait_until(lambda: '中断' in text_for(driver, 'upload-progress')),
+                        '没有说明上次的中断：' + text_for(driver, 'upload-progress'))
+        text = text_for(driver, 'upload-progress')
         self.assertIn('旧文件.bin', text)
         self.assertIn('续传', text)
 
     def test_download_reports_local_path(self):
         driver = self._load()
         next(b for b in driver.find_elements('css selector', '.gm-remote-item')
-             if 'land64b6e' in b.text).click()
-        for _ in range(50):
-            if 'big.bin' in driver.find_element('id', 'remote-body').text:
-                break
+             if 'land64b6e' in text_of(b)).click()
+        wait_for_text(driver, 'remote-body', 'big.bin')
         download = next(b for b in driver.find_elements('css selector', '[data-download]')
                         if 'big.bin' in b.get_attribute('data-download'))
         download.click()
-        for _ in range(50):
-            progress = driver.find_element('id', 'remote-progress')
-            if progress.is_displayed() and 'big.bin' in progress.text:
-                break
+        wait_for_text(driver, 'remote-progress', 'D:/downloads/big.bin')
         progress = driver.find_element('id', 'remote-progress')
         self.assertTrue(progress.is_displayed(), '取回后必须给出进度/结果提示')
-        self.assertIn('big.bin', progress.text)
-        self.assertIn('D:/downloads/big.bin', progress.text)
+        self.assertIn('big.bin', text_of(progress))
+        self.assertIn('D:/downloads/big.bin', text_of(progress))
         calls = driver.execute_script('return window.__remoteCalls')
         self.assertTrue(any(c.startswith('download_remote:') for c in calls), calls)
 
@@ -805,17 +890,12 @@ class RemotePageRenderTest(unittest.TestCase):
         driver = self._load()
         driver.execute_script('window.__downloadSkips = true;')
         next(b for b in driver.find_elements('css selector', '.gm-remote-item')
-             if 'land64b6e' in b.text).click()
-        for _ in range(50):
-            if 'note.txt' in driver.find_element('id', 'remote-body').text:
-                break
+             if 'land64b6e' in text_of(b)).click()
+        wait_for_text(driver, 'remote-body', 'note.txt')
         next(b for b in driver.find_elements('css selector', '[data-download]')
              if 'note.txt' in b.get_attribute('data-download')).click()
-        for _ in range(50):
-            progress = driver.find_element('id', 'remote-progress')
-            if progress.is_displayed() and '已有' in progress.text:
-                break
-        self.assertIn('已有', driver.find_element('id', 'remote-progress').text)
+        wait_for_text(driver, 'remote-progress', '已有')
+        self.assertIn('已有', text_for(driver, 'remote-progress'))
 
     def test_add_peer_dialog_opens_and_submits(self):
         """「高级：按地址登记」弹窗：打开、填地址、提交后关闭。"""
@@ -841,10 +921,8 @@ class RemotePageRenderTest(unittest.TestCase):
         driver.find_element('id', 'peer-endpoint').send_keys('[2409:8a60::1]:19443')
         driver.find_element('id', 'peer-device').send_keys('bb' * 32)
         driver.find_element('id', 'btn-update-peer').click()
-        for _ in range(60):
-            calls = driver.execute_script('return window.__remoteCalls')
-            if any(c.startswith('peers:update') for c in calls):
-                break
+        wait_until(lambda: any(c.startswith('peers:update')
+                               for c in driver.execute_script('return window.__remoteCalls')))
         calls = driver.execute_script('return window.__remoteCalls')
         self.assertTrue(any(c.startswith('peers:update') for c in calls), calls)
         # 提交后输入框被清空，方便下一次粘贴
@@ -854,7 +932,7 @@ class RemotePageRenderTest(unittest.TestCase):
         """「我的地址」要显示出来，并且复制按钮真的把整段说明写进剪贴板。"""
         driver = self._load()
         self.assertTrue(wait_until(
-            lambda: '19443' in driver.find_element('id', 'my-endpoint').text),
+            lambda: '19443' in text_for(driver, 'my-endpoint')),
             '我的地址应当在界面上显示出来（对方要复制它）')
         driver.execute_script(
             "window.__copied = null;"
@@ -879,17 +957,16 @@ class RemotePageRenderTest(unittest.TestCase):
         button = next(b for b in driver.find_elements('css selector', '[data-materialize]')
                       if b.get_attribute('data-materialize') == 'land64b6e')
         button.click()
-        for _ in range(60):
-            if '已物化' in driver.find_element('id', 'peers-body').text:
-                break
-        peers = driver.find_element('id', 'peers-body').text
+        wait_for_text(driver, 'peers-body', '已物化')
+        peers = text_for(driver, 'peers-body')
         self.assertIn('已物化', peers)
         calls = driver.execute_script('return window.__remoteCalls')
         self.assertTrue(any(c.startswith('materialize_remote:') for c in calls), calls)
         # 结果里必须给出缓存根，用户要把它加进别的插件
+        wait_for_text(driver, 'remote-progress', 'D:/cache/remote/dev/land64b6e')
         progress = driver.find_element('id', 'remote-progress')
         self.assertTrue(progress.is_displayed())
-        self.assertIn('D:/cache/remote/dev/land64b6e', progress.text)
+        self.assertIn('D:/cache/remote/dev/land64b6e', text_of(progress))
         # 缓存汇总出现，并提供清理入口
         self.assertTrue(driver.find_element('id', 'remote-cache').is_displayed())
         self.assertTrue(driver.find_element('id', 'btn-clear-cache').is_displayed())
@@ -898,9 +975,7 @@ class RemotePageRenderTest(unittest.TestCase):
         driver = self._load()
         next(b for b in driver.find_elements('css selector', '[data-materialize]')
              if b.get_attribute('data-materialize') == 'land64b6e').click()
-        for _ in range(60):
-            if driver.find_elements('id', 'btn-clear-cache'):
-                break
+        wait_until(lambda: driver.find_elements('id', 'btn-clear-cache'))
         driver.find_element('id', 'btn-clear-cache').click()
         for _ in range(60):
             calls = driver.execute_script('return window.__remoteCalls')
@@ -909,10 +984,8 @@ class RemotePageRenderTest(unittest.TestCase):
         calls = driver.execute_script('return window.__remoteCalls')
         self.assertIn('clear_remote_cache', calls)
         # 清理后徽章消失
-        for _ in range(60):
-            if '已物化' not in driver.find_element('id', 'peers-body').text:
-                break
-        self.assertNotIn('已物化', driver.find_element('id', 'peers-body').text)
+        wait_until(lambda: '已物化' not in text_for(driver, 'peers-body'))
+        self.assertNotIn('已物化', text_for(driver, 'peers-body'))
 
 
 if __name__ == '__main__':

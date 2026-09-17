@@ -605,6 +605,38 @@ XX 的三条消息只完成"互相认证静态公钥"。响应方判定对端资
 - 教训：**连接复用池的并发语义必须显式**。只要出现第二个后台线程访问对端，就必须
   问"它是否和 UI 共用连接"；共用就得加锁或改用专用连接，不能假设调用是串行的。
 
+### 5.19 前端 UI 改造：面板形态、级联优先级与两个测试坑
+
+界面从"一张 6 卡片栅格"改成**常驻侧栏 + 五个纯显隐面板**（形态与 manga-library /
+media-player / image-cleaner 一致，见设计文档 §1.4）。改造中踩到三件事，都属于
+"看代码看不出来、只有真跑才发现"：
+
+| # | 现象 | 根因 | 修正 |
+| --- | --- | --- | --- |
+| 0 | 布局与其它插件**一眼不同**：工具栏横跨整宽、侧栏从工具栏下方才开始 | 把 `.view-toolbar` 放在 `#app` 下当兄弟节点，而 image-viewer / manga-library / media-player 的结构是 `#app > (侧栏 + .view-body > 工具栏 + 内容区)` —— 侧栏是 `#app` 的直接子元素、跑满全高，工具栏属于右侧主区 | 按同一结构重排；分隔线跟着分工：侧栏只画 `border-right`、主区只画 `border-bottom`（两边都画会在交角叠成 2px）。`tests/debug_group_mesh_ui.py` 增了三条结构断言守着 |
+| 1 | 侧栏宽度设 236px 实际是 240px；窄窗口下侧栏不横向折叠（仍是竖排） | 壳的 `base.css` 用**同一个类** `.view-sub-sidebar`（0,1,0）写死 `width: var(--sub-sidebar-width)` 与 `flex-direction: column`，与本插件规则**同优先级**；两者都是作者样式，后注入的壳样式胜出 | 改选择器为 `.gm-side.view-sub-sidebar`（0,2,0），并在 CSS 里写清"不能靠改顺序，注入顺序由壳决定" |
+| 2 | 工具栏标题永远停在"团体组网" | `setPanel()` 读 `section[data-panel]` 的 `data-title` / `data-sub`，而 `index.html` 里这两个属性**当时忘了写** | 五个面板补齐 `data-title` / `data-sub`（它们是标题的单一来源） |
+| 3 | 窄窗口下卡片仍是两列 | 媒体查询顺序：`max-width: 1040px` 与 `max-width: 720px` 里都写了 `.gm-grid` 单列，两者同优先级时**后者胜出**，顺序不能对调 | 两条规则相邻并加注释说明顺序是硬约束 |
+
+测试侧两个坑（都会把排查引向错误方向）：
+
+- **Selenium 的 `.text` 会间歇性返回空串**。本插件新加的卡片/按钮带入场动画
+  （`effects.css` 的 `obxFadeUp` + `--obx-i` 交错延迟），实测同一个已渲染、已可见的
+  按钮连续取三次：`['', ''] / innerText=['创建团体','加入 / 更新团体'] / ['', '']`。
+  失败信息是"按钮文本为空"，看着像"没渲染"。两份浏览器用例因此改用
+  `text_of()` / `text_for()`（走 JS `innerText`），点击也改走 JS `.click()`
+  （Selenium 的"可交互"判定同样会在动画期间间歇失败）。
+- **等待条件必须是"渲染完成"而不是"元素存在"**。原用例轮询 `.gm-card` —— 那是静态
+  骨架，第一次检查就命中，于是"等待"等于没等，`get_status` 的桩 Promise 只要晚一个
+  微任务就读到空字符串（表现为整份用例随机红）。现在等**容器文本**出现期望内容。
+- 面板是纯显隐切换，隐藏面板里的按钮 `.text` 取不到、点不动；用例新增
+  `show_panel(driver, name)`（切面板并**校验切换生效**），任何 `.text`/点击之前先切。
+
+界面本身的几何自检（不截图，直接断言布局与配色）见 §6.2 的
+`tests/debug_group_mesh_ui.py`：24 项覆盖**结构归属**（侧栏是 `#app` 直接子元素、
+工具栏在主区内、侧栏与主区等高）、并排/堆叠、面板互斥、卡片底色与圆角来自 token、
+深浅主题对比、交错延迟是否真的写在卡片上。
+
 ---
 
 ## 6. 验证与测试工具一览
@@ -640,9 +672,12 @@ XX 的三条消息只完成"互相认证静态公钥"。响应方判定对端资
 | 网络位置 | `python -m unittest tests.test_group_mesh_network_location` | `placement: network-location` 契约、`mirror_share` 落真字节 | 无 |
 | 多实例端到端 | `python -m unittest tests.test_multi_instance_fixture` | 一个进程内两台真实实例：互相发现、物化/取字节、上传（含进度/取消/续传）、ACL 与覆盖策略、**后台同步变更传播（新增共享项无需手动刷新）** | 无 |
 | 壳主体上下文 | `python -m unittest tests.test_shell_principal` | 凭据→主体、伪造参数被忽略、后台线程无主体、管理员端点 403、**插件层**受信注入 | 无 |
-| 前端（纯渲染） | `python -m unittest tests.test_group_mesh_frontend_e2e` | 桩 Bridge + 无头浏览器：弹窗默认不可见、全新安装入口正确、按钮点击有反馈、**不再有"刷新设备"按钮、前端只读后端同步好的状态** | 本机浏览器 |
+| 前端（纯渲染） | `python -m unittest tests.test_group_mesh_frontend_e2e` | 桩 Bridge + 无头浏览器：侧栏面板切换（含"切了必须生效"的校验）、弹窗默认不可见、全新安装入口正确、按钮点击有反馈、**不再有"刷新设备"按钮、前端只读后端同步好的状态** | 本机浏览器 |
 | 前端（真实壳） | `python -m unittest tests.test_group_mesh_shell_e2e` | 起真实壳服务 + 导航 + iframe：令牌链路、真实 Bridge、`<插件>__<方法>` 前缀 | 本机浏览器 |
 | 前端脚本契约 | `python -m unittest tests.test_plugin_frontend_assets_js`（内部调 `node tests/js/plugin_asset_contract.mjs`） | 所有插件前端：`index.html` 与 `js/` 一致、按序装载、装载期不报错 | Node |
+| 前端几何/配色自检 | `python tests/debug_group_mesh_ui.py` | 20 项断言取代"看截图"：宽窗口并排 / 窄窗口堆叠、面板互斥、卡片底色与圆角来自壳 token、深浅主题对比、交错延迟写到卡片上；失败时非零退出 | 本机浏览器 |
+
+两条前端用例的排查经验（`.text` 空串、等待条件要看"渲染完成"）见 §5.19。
 
 ### 6.3 跨平台与跨机联调
 

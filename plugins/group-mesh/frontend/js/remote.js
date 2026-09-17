@@ -3,7 +3,8 @@
  *
  * 设备列表的**网络同步在插件后端**（定时轮询 + 名单/注册变更时 push，间隔见
  * 插件设置 `sync_interval_seconds`）；本文件只定期把后端已同步好的状态读回界面，
- * 不再提供"刷新设备"按钮。初始加载与手工登记地址后各读一次。
+ * 不再提供"刷新设备"按钮。初始加载与手工登记地址后各读一次，之后由壳的
+ * `onShow` / `onHide` 控制这个读回循环（iframe 常驻，切走时不能继续轮询）。
  *
  * 为什么单独一个文件而不是并进 app.js：这一步只加了一页，而下一步还要做侧边栏
  * 与设计系统对齐的整体改版。两件事放在同一个文件里改，冲突与回归都难定位。
@@ -32,6 +33,7 @@ window.GroupMeshRemote = (function () {
     escapeHtml: null,
     openModal: null,
     closeModal: null,
+    onPeersLoaded: null,
   };
 
   function el(id) { return document.getElementById(id); }
@@ -307,6 +309,7 @@ window.GroupMeshRemote = (function () {
         state.peers = [];
         state.peerErrors = [];
         renderPeers();
+        reportPeers();
         if (showLoading) {
           toast((result && result.error) || '读取设备失败', true);
         }
@@ -317,6 +320,7 @@ window.GroupMeshRemote = (function () {
       return refreshCache();
     }).then(function () {
       renderPeers();
+      reportPeers();
       if (state.current && !state.peers.some(function (peer) {
         return peer.device_id === state.current.device_id &&
           (peer.shares || []).indexOf(state.current.shareId) >= 0;
@@ -330,6 +334,13 @@ window.GroupMeshRemote = (function () {
     }).catch(function (err) {
       if (showLoading) { showError(err); }
     });
+  }
+
+  /** 设备数回报给 app.js（侧栏计数）。没注入回调时安静跳过。 */
+  function reportPeers() {
+    if (typeof state.onPeersLoaded === 'function') {
+      try { state.onPeersLoaded(state.peers); } catch (e) { /* 计数是装饰，不拖累主流程 */ }
+    }
   }
 
   function refreshCache() {
@@ -691,15 +702,36 @@ window.GroupMeshRemote = (function () {
   var VIEW_POLL_MS = 15000;
   var viewTimer = null;
 
+  /** 开始定期把后端同步好的状态读回界面（幂等）。 */
   function startViewPolling() {
-    // 后端负责真正的网络同步；这里只是定期把"后端已同步好的状态"读回界面。
-    // 页面隐藏时不读，避免无意义的 iframe 唤醒。
-    if (viewTimer) { clearInterval(viewTimer); }
-    viewTimer = setInterval(function () {
-      if (!document.hidden) { refreshPeers(false); }
-    }, VIEW_POLL_MS);
+    if (viewTimer || document.hidden) { return; }
+    viewTimer = setInterval(function () { refreshPeers(false); }, VIEW_POLL_MS);
+  }
+
+  /** 停止轮询（幂等）。 */
+  function stopViewPolling() {
+    if (viewTimer) {
+      clearInterval(viewTimer);
+      viewTimer = null;
+    }
+  }
+
+  /**
+   * 可见性：壳的 `onShow` / `onHide` 才是权威信号。
+   *
+   * 插件 iframe **常驻**（切到别的插件只是 v-show），因此 `document.hidden` 永远
+   * 是 false —— 只用它判断会把轮询一直挂在后台（plugin-guide §4.4 点名的场景）。
+   * 壳没注入生命周期（例如直接打开本页调试）时，退回 visibilitychange。
+   */
+  function bindLifecycle() {
+    if (typeof window.onShow === 'function' && typeof window.onHide === 'function') {
+      window.onShow(startViewPolling);
+      window.onHide(stopViewPolling);
+      if (typeof window.onDispose === 'function') { window.onDispose(stopViewPolling); }
+      return;
+    }
     document.addEventListener('visibilitychange', function () {
-      if (!document.hidden) { refreshPeers(false); }
+      if (document.hidden) { stopViewPolling(); } else { startViewPolling(); }
     });
   }
 
@@ -709,11 +741,14 @@ window.GroupMeshRemote = (function () {
     state.escapeHtml = deps.escapeHtml;
     state.openModal = deps.openModal;
     state.closeModal = deps.closeModal;
+    state.onPeersLoaded = deps.onPeersLoaded || null;
     bind();
     refreshMyEndpoint();
     renderPath();
     renderEntries();
-    startViewPolling();
+    bindLifecycle();
+    // 进入即读一次；之后靠 onShow/onHide 控制的轮询
+    refreshPeers(false);
   }
 
   return { init: init, refreshPeers: refreshPeers, refreshMyEndpoint: refreshMyEndpoint };
