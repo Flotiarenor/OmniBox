@@ -724,18 +724,17 @@ WebView 加载 `http://127.0.0.1:<端口>/`，页面内的 `/api`、`/file`、`/
 
 | # | 项 | 现状 | 需要新增 |
 | --- | --- | --- | --- |
-| 1 | 调用者身份 | **[未实现]**：`shell/backend/auth.py` 只有单一令牌（88 行），无账号、无按成员凭据 | 凭据到主体的映射；每请求确立主体上下文 |
-| 2 | 插件读取主体 | **[未实现]**：全仓无 `ContextVar`；`PluginBase` 无读取方法；插件以"本机身份即操作者"绕行 | Shell 以受信方式注入（`before_request` 设置 `ContextVar`），`PluginBase` 提供读取方法 |
-| 3 | 数据路由授权 | **[未实现]**：`/file`、`/thumbs` 只做令牌 + 路径安全校验 | 主体级授权检查点 |
+| 1 | 调用者身份 | **[已实现]**：`shell/backend/principal.py` 维护 `principals.json`（凭据只存 SHA-256），`file_server` 的 `before_request` 按凭据解析出主体；凭据表为空时把既有全局令牌自举为 owner，老部署不受影响 | 界面上的主体登记入口（当前只有自举与代码侧 `PrincipalStore.add()`） |
+| 2 | 插件读取主体 | **[已实现]**：`PluginBase.current_principal()` / `require_principal()`；壳在鉴权通过后写入 `ContextVar`，插件无法从请求参数影响它；后台线程读不到主体 | — |
+| 3 | 数据路由授权 | **[未实现]**：`/file`、`/thumbs` 只做令牌 + 路径安全校验，尚无主体级检查点 | 主体级授权检查点（`/file`、`/thumbs`） |
 | 4 | 文件根 | **[部分]**：`get_file_roots()` 仍只返回本机路径；等价能力由 `ensure_file()` 钩子 + 远端物化 + 网络位置扩展达成（§15） | 支持远端共享来源（或正式承认"物化 + 钩子"为契约并写进 plugin-guide） |
-| 5 | 设置写入 | **[未实现]**：`system_settings_save` 只校验令牌，任何持令牌者都能改任意插件设置 | 限群主与管理员 |
+| 5 | 设置写入 | **[未实现]**：`system_settings_save` 只校验令牌，任何持令牌者都能改任意插件设置 | 限群主与管理员（`PrincipalContext.is_admin` 已就绪） |
 | 6 | 插件兼容性 | **[未实现]**：`minShellVersion` 仅由 `tools/check_plugins.py` 读取，运行时既不告警也不拒绝加载 | 加载时运行时校验，不满足则拒绝加载并给出原因 |
 
-第 2 项的实现约束：插件自起的后台线程不继承请求上下文，涉及主体的后台任务必须显式携带主体信息。
+第 2 项的实现约束：插件自起的后台线程不继承请求上下文，涉及主体的后台任务必须显式携带主体信息（`with shell.backend.principal.use_principal(p):`）。
 
-第 1/2/3 项是**授权语义的前提**，也是所有 Companion 插件的公共依赖；第 4/5/6 项可以并行。
-验收标准（P1）：插件能通过 `self.current_principal()` 拿到**由壳注入**的主体标识，
-且该值无法被请求参数影响（用一个伪造 `principal` 字段的请求验证它被忽略）。
+第 1/2 项已落地（2026-09-17），验收用例见 `tests/test_shell_principal.py`；
+第 3/5/6 项仍待做，第 4 项由 §15.3 的"物化 + 网络位置"旁路达成。
 
 ---
 
@@ -863,7 +862,14 @@ group-mesh 是参考实现（`get_extensions()` + `frontend/network-location.htm
 | 4 | **权限档位落地**（§6.2）：协议 op、ACL 字段、CLI 与界面只保留 `read` / `write` 与上传 | 改动小、边界清晰；先做完可避免实现继续按旧的权限模型写 |
 | 5 | 设置写入限权（§12 第 5 项）、`minShellVersion` 运行时校验（§12 第 6 项） | 可并行 |
 
-验收：伪造 `principal` 参数的请求被忽略；权限模型只剩 `read` / `write` 且上传链路可用；
+**进度（2026-09-17）**：第 1/2 项**已完成**（`shell/backend/principal.py` +
+`PluginBase.current_principal()`，验收用例 `tests/test_shell_principal.py`）；
+第 3 项（数据路由授权）与第 5 项（设置写入限权、`minShellVersion`）待做；
+第 4 项见 §6.2 的现状标注。
+
+验收：伪造 `principal` 参数的请求被忽略（已由
+`tests/test_shell_principal.py::test_forged_principal_argument_is_ignored` 锁住）；
+权限模型只剩 `read` / `write` 且上传链路可用；
 `minShellVersion` 高于当前壳版本的插件被拒绝加载并给出原因。
 
 ### P2 —— 把偏离收敛掉（上生产前必须）

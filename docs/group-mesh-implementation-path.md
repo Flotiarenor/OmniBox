@@ -123,16 +123,22 @@ pwsh -File shell/groupmesh/tools/lan-test.ps1
 
 设计文档 §12 列了 6 项壳侧改造，其中第 1、2 项是**授权语义的前提**：
 
-| # | 项 | 为什么阻塞 |
+| # | 项 | 状态 |
 | --- | --- | --- |
-| 1 | 凭据到主体的映射 | 没有它，"谁在调用"只能靠插件猜；当前实现退化为"本机身份即操作者" |
-| 2 | 插件以受信方式读取主体 | 同上；且必须走 `ContextVar`，不能从请求参数读 |
-
-另 4 项（数据路由授权、文件根支持远端共享、设置写入限权、`minShellVersion` 运行时校验）
-可以与本阶段并行。
+| 1 | 凭据到主体的映射 | **已完成**（2026-09-17）：`shell/backend/principal.py` 的 `principals.json`，凭据只存 SHA-256 |
+| 2 | 插件以受信方式读取主体 | **已完成**：`PluginBase.current_principal()` / `require_principal()`，由 `before_request` 注入 `ContextVar` |
+| 3 | 数据路由授权（`/file`、`/thumbs` 主体级检查点） | 待做 |
+| 5 | 设置写入限权 | 待做（`PrincipalContext.is_admin` 已就绪） |
+| 6 | `minShellVersion` 运行时校验 | 待做 |
+| 4 | 文件根支持远端共享 | 由"物化 + `ensure_file()`"旁路达成，见 §15.3 |
 
 **验收标准**：插件能通过 `self.current_principal()` 拿到**由壳注入**的主体标识，
-且该值无法被请求参数影响（用一个伪造 `principal` 字段的请求验证它被忽略）。
+且该值无法被请求参数影响 —— 已由
+`tests/test_shell_principal.py::test_forged_principal_argument_is_ignored` 锁住
+（同一用例还覆盖"后台线程没有主体"与"未登记凭据 401"）。
+
+**向后兼容**：凭据表为空时，壳把既有的 `auth_token.txt` 自举成 `owner` 主体，
+因此老部署升级后令牌继续可用，而"这次调用是谁"从第一天就有答案。
 
 ### P2 —— 让共享面真正可用
 
@@ -493,8 +499,11 @@ XX 的三条消息只完成"互相认证静态公钥"。响应方判定对端资
 
 ## 7. 下一步建议顺序
 
-1. **P1 的壳侧主体上下文**（§12 第 1/2 项）—— 这是"授权"这件事有意义的前提，
-   也是所有 Companion 插件的公共依赖。
+1. ~~**P1 的壳侧主体上下文**（§12 第 1/2 项）~~ **已完成**（2026-09-17）：
+   `shell/backend/principal.py` + `PluginBase.current_principal()`，
+   验收用例 `tests/test_shell_principal.py`。**仍未做的同批项**：
+   `/file`、`/thumbs` 的主体级检查点（§12 第 3 项）、设置写入限权（第 5 项）、
+   `minShellVersion` 运行时校验（第 6 项）。
 2. **P2 的私钥保护（DPAPI / keyring）** —— 当前明文落盘是最高危的偏离。
 3. ~~权限档位落地~~ **已完成**：协议 op、ACL 字段、CLI `rm` 与界面都收敛到
    `read` / `write` 与上传（设计文档 §6.2）。
