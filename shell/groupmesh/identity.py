@@ -23,6 +23,7 @@ Android 为 Keystore）"。MVP 期间私钥是**明文落盘的**，仅靠文件
 from __future__ import annotations
 
 import json
+import logging
 import os
 import stat
 from dataclasses import dataclass
@@ -31,6 +32,8 @@ from typing import Any, Dict, List, Optional
 
 from . import crypto_prims as cp
 from .records import RecordError, b64_field, pretty, str_field
+
+log = logging.getLogger(__name__)
 
 
 def short_id(public_key: bytes) -> str:
@@ -149,12 +152,26 @@ class Device:
         credential = b64_field(data, 'credential', 64)
         if cp.sign_public_from_private(private_key) != public_key:
             raise RecordError('设备私钥与公钥不匹配')
-        # DH 密钥总是由种子重新派生，不依赖落盘的那一份；落盘的 dh_public 只作
-        # 交叉校验用（若与派生结果不符，说明文件被改过或是跨版本不兼容）。
+        # DH 密钥总是由种子重新派生，**派生值才是权威**；落盘的 dh_public 只是
+        # 派生结果的冗余副本。两种情形都只记警告、不阻断读取：
+        #
+        #   * 大端遗留（RFC 7748 修正之前存的是 `pointQ.x` 的大端整数）；
+        #   * 与派生值无关的陈旧值 —— 实测本仓库 `data/group-mesh` 里就有一份
+        #     来历不明（既不是现行编码，也不是大端遗留）的 dh_public。
+        #
+        # 为什么不能像以前那样判"文件被改动"就抛错：这个字段不参与任何密码学
+        # 计算（握手用的是派生值），却能把整个身份目录挡在门外。实测后果是
+        # "插件加载正常、节点永远起不来、界面停在正在读取设备"这种极难定位的
+        # 状态。真正的完整性由 Ed25519 私钥↔公钥的一致性检查负责（见上面）。
         dh_private, dh_public = cp.dh_keypair_from_sign_seed(private_key)
         stored_dh = data.get('dh_public')
-        if stored_dh is not None and cp.b64d(stored_dh) != dh_public:
-            raise RecordError('设备文件的 dh_public 与由私钥派生的结果不符（文件被改动）')
+        if stored_dh is not None:
+            stored = cp.b64d(stored_dh)
+            if len(stored) != 32:
+                raise RecordError(f'设备文件的 dh_public 长度应为 32，实际 {len(stored)}')
+            if stored != dh_public:
+                log.warning(f'设备文件的 dh_public 与由私钥派生的结果不符，'
+                            f'按派生值处理（{stored.hex()[:16]}… != {dh_public.hex()[:16]}…）')
         return Device(name=name, private_key=private_key, public_key=public_key,
                       principal_key=principal_key, credential=credential,
                       dh_private=dh_private, dh_public=dh_public)

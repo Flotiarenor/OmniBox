@@ -127,6 +127,113 @@ class CryptoPrimsTest(unittest.TestCase):
         self.assertEqual(private[31] & 0b01000000, 0b01000000, '第 254 位必须置一')
 
 
+class X25519Rfc7748VectorTest(unittest.TestCase):
+    """X25519 必须符合 RFC 7748，而不是"只有本项目两端互通"。
+
+    为什么单独一组用例：v0.1 的公钥编码与 DH 解码**两处都错**（一个把
+    `pointQ.x` 大端当线格式，另一个把字节按大端解读回来），两者互相抵消，
+    于是 `test_dh_agrees_both_directions` 这类"两端一致"的用例全是绿的，
+    但与任何外部实现都不互通。只有官方向量能发现这类缺陷，
+    因此这里的期望值逐字节抄自 RFC 7748 §6.1 / §5.2，不来自本实现的输出。
+    """
+
+    # RFC 7748 §6.1 的两组 X25519(scalar, u) 向量（含结果的全零/高位置位边界）
+    VECTOR_1 = (
+        'a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4',
+        'e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c',
+        'c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552',
+    )
+    VECTOR_2 = (
+        '4b66e9d4d1b4673c5ad22691957d6af5c11b6421e0ea01d42ca4169e7918ba0d',
+        'e5210f12786811d3f4b7959d0538ae2c31dbe7106fc03c3efc4cd549c715a493',
+        '95cbde9476e8907d7aade45cb4b873f88b595a68799fa152e6f8f7647aac7957',
+    )
+
+    def test_dh_matches_rfc7748_section_6_1(self):
+        for scalar_hex, u_hex, expected in (self.VECTOR_1, self.VECTOR_2):
+            with self.subTest(scalar=scalar_hex[:8]):
+                self.assertEqual(cp.dh(bytes.fromhex(scalar_hex), bytes.fromhex(u_hex)).hex(),
+                                 expected)
+
+    def test_dh_masks_the_high_bit_of_the_u_coordinate(self):
+        """RFC 7748 §5：解码公钥时必须屏蔽 `u[31]` 的最高位。
+
+        不屏蔽的实现会与按规范解码的对端算出不同的共享秘密，而两边都不报错
+        —— 只会在后面的 AEAD 上以 MAC 失败暴露。这条用例把"我按规范做的"
+        与"两端恰好一致"区分开。
+        """
+        scalar_hex, u_hex, expected = self.VECTOR_1
+        raised = bytearray(bytes.fromhex(u_hex))
+        raised[31] |= 0x80
+        self.assertEqual(cp.dh(bytes.fromhex(scalar_hex), bytes(raised)).hex(), expected)
+
+    def test_public_key_encoding_is_rfc7748(self):
+        """公钥字节必须等于 RFC 7748 §5 的编码。
+
+        §5.2 的基点迭代向量用的是**未 clamp** 的标量，而本项目与所有标准
+        X25519 实现一样先 clamp（§5 第 5 步），因此这里改用一个等价的、可复核
+        的判据：本实现的公钥/私钥字节必须与 pycryptodome 自己的 RFC 7748
+        导入导出路径逐字节相同（`import_x25519_public_key` 内部就是
+        `from_bytes(..., 'little')`）。
+        """
+        from Crypto.Protocol.DH import import_x25519_private_key, import_x25519_public_key
+
+        scalar_hex, u_hex, _ = self.VECTOR_1
+        scalar = bytes.fromhex(scalar_hex)
+        self.assertEqual(cp.dh_public_from_private(scalar),
+                         import_x25519_private_key(scalar).public_key().export_key(format='raw'))
+        self.assertEqual(cp.dh_public_bytes(import_x25519_public_key(bytes.fromhex(u_hex))),
+                         bytes.fromhex(u_hex))
+
+    def test_generated_keypair_round_trips_through_seed(self):
+        """生成的私钥字节重新装入必须得到同一把密钥（大端 ↔ 小端的往返）。"""
+        private, public = cp.generate_dh_keypair()
+        self.assertEqual(cp.dh_public_from_private(private), public)
+        self.assertEqual(cp.dh(private, public), cp.dh(private, public))
+        # 私钥字节必须与库自己认定的标量小端表示一致
+        from Crypto.Protocol.DH import import_x25519_private_key
+        self.assertEqual(int(import_x25519_private_key(private).d).to_bytes(32, 'little'),
+                         private)
+
+    def test_stale_device_dh_public_does_not_block_loading(self):
+        """落盘的 `dh_public` 与派生值不符时，读盘必须照常成功（派生值才是权威）。
+
+        为什么要专门锁这条：这个字段不参与任何密码学计算（握手用派生值），
+        但 v0.1 把它写成了"不符即判文件被改动"的硬校验。RFC 7748 修正之后，
+        磁盘上所有旧身份文件都不符 —— 于是插件加载正常、节点永远起不来、
+        界面停在"正在读取设备"。实测本仓库 `data/group-mesh` 里那份既不等于
+        现行编码、也不等于大端遗留，说明拿"大端兼容"打补丁不够，
+        正确语义是"警告并采用派生值"。
+        """
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            identity = Identity.init(root, 'alice', 'laptop')
+            device_path = next((root / 'devices').glob('*.json'))
+            payload = json.loads(device_path.read_text(encoding='utf-8'))
+            derived = cp.b64d(payload['dh_public'])
+
+            for label, stale in (
+                ('大端遗留', derived[::-1]),
+                ('来历不明的陈旧值', b'\x5a' * 32),
+            ):
+                with self.subTest(kind=label):
+                    payload['dh_public'] = cp.b64(stale)
+                    device_path.write_text(json.dumps(payload), encoding='utf-8')
+                    loaded = Identity.load(root)
+                    self.assertEqual(loaded.device.id, identity.device.id)
+                    self.assertEqual(loaded.device.dh_public, derived,
+                                     '必须采用由私钥派生的 DH 公钥')
+
+            # 长度不对仍然是结构性错误：它说明文件被截断或写坏，不能静默放过
+            payload['dh_public'] = cp.b64(b'\x11' * 8)
+            device_path.write_text(json.dumps(payload), encoding='utf-8')
+            with self.assertRaises(RecordError):
+                Identity.load(root)
+
+
 class Ed25519InteropTest(unittest.TestCase):
     """签名必须是标准 RFC 8032，外部实现能独立复核。"""
 

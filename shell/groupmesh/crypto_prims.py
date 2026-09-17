@@ -21,13 +21,28 @@ vetted 的 Noise 实现（如 `noiseprotocol`），本文件的 `noise.py` 是�
 `cryptography` / `ssh-keygen` 等外部工具独立复核。BLAKE2s 只服务于 Noise 套件
 （Hash/HMAC/HKDF），两者不混淆 —— 这与 `noise-c`、`snow` 等参考实现的做法一致。
 
-**两处 pycryptodome 编码坑**（本次实现实测，已在下面对应函数处写到断言级别）：
+**X25519 的字节编码以 RFC 7748 为准**（v0.1 → v0.2 修）：
 
-1. Curve25519 的 `key.pointQ.x` 与 `export_key(format='raw')` **不是同一个编码**。
-   公钥若按 raw 导出再喂给 `EccXPoint`，双方算出的共享密钥不一致，DH 静默失败。
-   因此 X25519 的公钥序列化统一走 `dh_public_bytes()`（`pointQ.x` 大端整数）。
-2. Ed25519 的 `int(key.d)` 是从种子派生的标量，**不是**可持久的私钥；持久化必须
-   用 `key.seed`。两者混用会得到另一把密钥。
+线格式（公钥、共享秘密）与私钥标准字节一律是 RFC 7748 §5 的 **32 字节小端**。
+pycryptodome 内部并不统一用这个编码：
+
+* `EccXPoint` 期望的 x 整数 = `int.from_bytes(小端字节, 'little')`
+  （构造函数走 `long_to_bytes`，而 `_import_curve25519_public_key()` 走
+  `from_bytes(..., 'little')`）；
+* 私钥必须经 `ECC.construct(curve='Curve25519', seed=<小端字节>)` 还原，
+  **不能**手工按整数给标量乘 —— 库里的 `d` 是按曲线阶归约的 `ClampedInteger`，
+  普通 int 走的是另一条路径，实测同一对密钥会算出不同的共享秘密且都不报错。
+
+v0.1 把 `pointQ.x` 按大端当线格式（既不符合 RFC 7748，也与外部实现不互通），
+`dh()` 那一侧又按大端把字节解读回来 —— 两处错误互相抵消，于是"两端互通"的
+用例一直是绿的。这正是只有官方向量才能发现的那类缺陷。
+现在换算只出现在 `_point_from_wire()` / `_dh_private_key()` / `dh_public_bytes()`
+三处，其余代码一律按 RFC 7748 字节思考。
+
+**一处 pycryptodome 编码坑**（本次实现实测，已在下面对应函数处写到断言级别）：
+
+Ed25519 的 `int(key.d)` 是从种子派生的标量，**不是**可持久的私钥；持久化必须
+用 `key.seed`。两者混用会得到另一把密钥。
 """
 
 from __future__ import annotations
@@ -99,68 +114,20 @@ def hkdf(ck: bytes, ikm: bytes, num_outputs: int = 2, info: bytes = b'') -> Tupl
     return tuple(outputs)
 
 
-# ── 密钥对 ────────────────────────────────────────────────────────────────
+# ── 字节编码（RFC 7748 ↔ pycryptodome 内部表示）───────────────────────────
+#
+# 这三处换算是"RFC 7748 字节"与 pycryptodome 内部表示之间唯一的桥。不在这里
+# 换算、而是在调用点各自 to_bytes/from_bytes，就等于把编码约定散到全仓 ——
+# v0.1 正是这样错的：`pointQ.x` 按大端导出、`dh()` 又按大端读回，
+# 两处错误互相抵消，两端互通但不符合 RFC 7748。
 
-def generate_dh_keypair() -> Tuple[bytes, bytes]:
-    """生成 X25519 密钥对，返回 (私钥 32 字节, 公钥 32 字节)。
+def _point_from_wire(raw: bytes):
+    """RFC 7748 §5 的 32 字节 u 坐标 → pycryptodome 的曲线点。
 
-    pycryptodome 的 Curve25519 标量固定 32 字节，不需要手工 clamp。
-    """
-    key = ECC.generate(curve=CURVE)
-    return _dh_private_bytes(key), dh_public_bytes(key.public_key())
-
-
-def _dh_private_bytes(key) -> bytes:
-    """X25519 私钥的字节表示。
-
-    **不能用** `export_key(format='raw')`：pycryptodome 对 Montgomery 曲线的
-    "raw" 私钥导出直接抛 ValueError（不提供），而它的 `d` 是已完成 RFC 7748
-    clamp 的标量，正是标量乘要用的那个值。
-    """
-    return int(key.d).to_bytes(32, 'big')
-
-
-def dh_public_bytes(public_key) -> bytes:
-    """把 X25519 公钥序列化成 32 字节。
-
-    **不能用** `export_key(format='raw')`。这是本次实现中踩到的真实坑：
-    pycryptodome 里 `key.pointQ.x`（标量乘使用的整数坐标）与 raw 导出的字节
-    **不是同一个编码** —— raw 导出做了额外的字节序处理。实测：
-    `int(key.pointQ.x) != int.from_bytes(export_key(format='raw'), 'big')`。
-    如果公钥按 raw 导出、对端再喂给 `EccXPoint`，双方算出的共享密钥不一致
-    （DH 静默失败，握手表现为 MAC 校验错误，极难定位）。
-
-    因此本项目统一采用 pycryptodome 自身的坐标编码：`pointQ.x` 的大端整数。
-    两端都用同一套库，一致性成立；代价是与 RFC 7748 的外部实现不互通 ——
-    与 §4.4"数据层两端都由本项目实现"一致。
-    """
-    return int(public_key.pointQ.x).to_bytes(32, 'big')
-
-
-def dh(private: bytes, public: bytes) -> bytes:
-    """X25519 标量乘，返回 32 字节共享秘密。
-
-    全零结果是已知的低阶点攻击面，必须显式拒绝（RFC 7748 §6.1）。
-    """
-    if len(private) != 32:
-        raise CryptoError(f'X25519 私钥必须是 32 字节，收到 {len(private)}')
-    if len(public) != 32:
-        raise CryptoError(f'X25519 公钥必须是 32 字节，收到 {len(public)}')
-    peer_point = _raw_to_x25519_point(public)
-    try:
-        shared = int((peer_point * int.from_bytes(private, 'big')).x).to_bytes(32, 'big')
-    except ValueError as e:
-        # 点乘结果落在无穷远点（对端给了低阶点）
-        raise CryptoError(f'X25519 协商得到无效点: {e}') from e
-    if shared == b'\x00' * 32:
-        raise CryptoError('X25519 协商结果全零（对端公钥是低阶点），拒绝继续')
-    return shared
-
-
-def _raw_to_x25519_point(raw: bytes):
-    """把 32 字节公钥还原成 Curve25519 上的点。
-
-    `raw` 必须来自 `dh_public_bytes()`（即 pycryptodome 的 `pointQ.x` 大端整数）。
+    RFC 7748 §5 规定：解码时**必须屏蔽最高位**（`u[31] &= 0x7f`），
+    即 `2^255` 位不参与编码。不屏蔽会与按规范解码的对端算出不同的共享秘密
+    （对端把 u 归约到 p，本端对 u + 2^255 做点乘），而两边都不报错 ——
+    表现为后面的 MAC 校验失败。
 
     不能用 `ECC.EccPoint`：那是 Weierstrass 曲线的仿射点，构造函数要求
     `(x, y)`，而 X25519 的公钥只带 u（x）坐标，y 由曲线方程推出、且有两个根。
@@ -173,10 +140,95 @@ def _raw_to_x25519_point(raw: bytes):
 
     if len(raw) != 32:
         raise CryptoError(f'X25519 公钥必须是 32 字节，收到 {len(raw)}')
+    masked = bytearray(raw)
+    masked[31] &= 0x7f
     try:
-        return EccXPoint(int.from_bytes(raw, 'big'), CURVE)
+        return EccXPoint(int.from_bytes(bytes(masked), 'little'), CURVE)
     except Exception as e:
         raise CryptoError(f'X25519 公钥无法还原为曲线点: {e}') from e
+
+
+def _dh_private_key(private: bytes):
+    """RFC 7748 小端私钥字节 → pycryptodome 的 X25519 私钥对象。
+
+    这是本文件里唯一"能算对"的私钥用法，理由不是风格而是数值：
+    pycryptodome 的 `d` 是 `Crypto.Math.Numbers.Integer` 的子类
+    `ClampedInteger`，标量乘时它按**曲线阶 ℓ 归约**；而把一个普通 Python int
+    传给 `EccXPoint.__mul__` 走的不是同一条路径。实测同一对 (私钥, 公钥)：
+    用 `import_x25519_private_key(k).d` 得到 RFC 7748 §6.1 的期望值，
+    用 `int.from_bytes(k, 'little')` 得到一个**完全不同**的共享秘密，
+    两边都不报错。因此私钥一律经本函数还原，不手工拼整数。
+
+    顺带解决 clamp：`EccKey.__init__` 对 Curve25519 的 seed 做
+    `tmp[0] &= 0xF8; tmp[31] = (tmp[31] & 0x7F) | 0x40`，与 RFC 7748 §5 一致，
+    因此传进来的字节可以是"未 clamp 的原始标量"。
+    """
+    if len(private) != 32:
+        raise CryptoError(f'X25519 私钥必须是 32 字节，收到 {len(private)}')
+    try:
+        return ECC.construct(curve=CURVE, seed=private)  # type: ignore[arg-type]
+    except Exception as e:
+        raise CryptoError(f'X25519 私钥无法还原: {e}') from e
+
+
+def generate_dh_keypair() -> Tuple[bytes, bytes]:
+    """生成 X25519 密钥对，返回 (私钥 32 字节, 公钥 32 字节)，两者都是 RFC 7748 编码。
+
+    pycryptodome 的 Curve25519 标量固定 32 字节，不需要手工 clamp。
+    """
+    key = ECC.generate(curve=CURVE)
+    return _dh_private_bytes(key), dh_public_bytes(key.public_key())
+
+
+def _dh_private_bytes(key) -> bytes:
+    """X25519 私钥的 RFC 7748 字节表示（小端标量）。
+
+    **不能用** `export_key(format='raw')`：pycryptodome 对 Montgomery 曲线的
+    "raw" 私钥导出直接抛 ValueError（不提供）。它的 `d` 是已完成 RFC 7748
+    clamp 的标量，正是标量乘要用的那个值，因此取 `d` 再按小端写成字节。
+
+    往返成立：`_dh_private_key()` 把这个小端字节当 seed 传给
+    `ECC.construct`，库里对 seed 做的 clamp 与 RFC 7748 §5 一致，
+    而已 clamp 的值再 clamp 一次不变（有往返用例锁住）。
+    """
+    return int(key.d).to_bytes(32, 'little')
+
+
+def dh_public_bytes(public_key) -> bytes:
+    """把 X25519 公钥序列化成 RFC 7748 §5 的 32 字节（小端）。
+
+    用的是 pycryptodome 自己的 RFC 7748 导出路径：`_import_curve25519_public_key()`
+    按 `from_bytes('little')` 解析入参，`export_key(format='raw')` 是它的逆
+    （实测逐字节等于 RFC 7748 §5 的编码），因此这条往返由库保证，
+    而不是由本文件手写换算。
+    """
+    raw = public_key.export_key(format='raw')
+    if len(raw) != 32:
+        raise CryptoError(f'X25519 公钥导出必须是 32 字节，实际 {len(raw)}')
+    return bytes(raw)
+
+
+def dh(private: bytes, public: bytes) -> bytes:
+    """X25519 标量乘，返回 RFC 7748 §5 编码的 32 字节共享秘密。
+
+    入参 `private` / `public` 都是 RFC 7748 小端字节；公钥先按 §5 屏蔽最高位。
+
+    全零结果是已知的低阶点攻击面，必须显式拒绝（RFC 7748 §6.1）。
+    """
+    if len(private) != 32:
+        raise CryptoError(f'X25519 私钥必须是 32 字节，收到 {len(private)}')
+    if len(public) != 32:
+        raise CryptoError(f'X25519 公钥必须是 32 字节，收到 {len(public)}')
+    peer_point = _point_from_wire(public)
+    try:
+        shared = (peer_point * _dh_private_key(private).d).x
+    except ValueError as e:
+        # 点乘结果落在无穷远点（对端给了低阶点）
+        raise CryptoError(f'X25519 协商得到无效点: {e}') from e
+    result = int(shared).to_bytes(32, 'little')
+    if result == b'\x00' * 32:
+        raise CryptoError('X25519 协商结果全零（对端公钥是低阶点），拒绝继续')
+    return result
 
 
 def generate_sign_keypair() -> Tuple[bytes, bytes]:
@@ -271,7 +323,9 @@ def dh_keypair_from_sign_seed(seed: bytes) -> Tuple[bytes, bytes]:
     两者都由种子唯一决定，因此设备仍然只有"一份身份密钥材料"，
     满足 §4.3 的"不维护第二套账号"；同时各自落在正确的曲线上。
 
-    `clamp` 按 RFC 7748：清低 3 位、清最高位、置第 254 位。
+    `clamp` 按 RFC 7748 §5 在**字节**上做：`k[0] &= 0xF8; k[31] = (k[31] & 0x7F) | 0x40`。
+    位操作与字节序无关，因此这里直接改小端字节串的第 0 / 第 31 字节，
+    不需要先转成整数（转与不转的结果相同，直接改字节更不易看错端序）。
     """
     if len(seed) != 32:
         raise CryptoError(f'身份种子必须是 32 字节，收到 {len(seed)}')
@@ -286,23 +340,16 @@ def dh_keypair_from_sign_seed(seed: bytes) -> Tuple[bytes, bytes]:
 
 
 def dh_public_from_private(private: bytes) -> bytes:
-    """由 X25519 私钥标量算出公钥（基点 × 标量）。
+    """由 X25519 私钥标量算出公钥（基点 × 标量），返回 RFC 7748 §5 的 32 字节。
 
-    基点取自 `_curves['Curve25519'].G`。注意**不能**用
-    `EccXPoint(None, CURVE)`：那个 x 为空表示的是**无穷远点**，
-    乘以任何标量仍是无穷远点，取 `.x` 会抛 "No X coordinate for the point at
-    infinity"。标量必须已是 clamp 后的 32 字节。
+    直接走 pycryptodome 的私钥对象（`_dh_private_key`）：它内部做的就是
+    "基点 × clamp 后的标量"，也因此本项目与 `import_x25519_private_key()` 的
+    公钥完全一致（有官方向量用例锁住这条）。
+
+    标量与返回值都在 RFC 7748 坐标系里。
     """
-    from Crypto.PublicKey._point import EccXPoint  # noqa: F401 - 触发子模块导入
-
-    if len(private) != 32:
-        raise CryptoError(f'X25519 私钥必须是 32 字节，收到 {len(private)}')
-    base = ECC._curves[CURVE].G
-    try:
-        point = base * int.from_bytes(private, 'big')
-        return int(point.x).to_bytes(32, 'big')
-    except Exception as e:
-        raise CryptoError(f'无法由私钥推导 X25519 公钥: {e}') from e
+    key = _dh_private_key(private)
+    return dh_public_bytes(key.public_key())
 
 
 def _ed_public_key(public: bytes):
