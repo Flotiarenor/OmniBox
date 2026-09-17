@@ -18,6 +18,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -112,6 +113,90 @@ class PluginContractTest(unittest.TestCase):
         no_id = self.plugin.cancel_upload({})
         self.assertFalse(no_id['success'])
         self.assertIn('task_id', no_id['error'])
+
+    def test_upload_task_is_persisted_to_disk(self):
+        """任务表要落盘：否则插件一重载，用户的上传就"凭空消失"。"""
+        self.plugin.init_identity({'name': 'up-persist'})
+        self.plugin.create_group({'group': 'up-group'})
+        source = self.tmp / 'persist.bin'
+        source.write_bytes(b'x' * 32)
+        started = self.plugin.upload_remote({'share_id': 'drop', 'local_path': str(source),
+                                             'remote_path': 'persist.bin'})
+        self.assertTrue(started['success'], started)
+        task_id = started['task_id']
+
+        # 没有登记任何对端地址 → 任务很快以 failed 结束（不碰网络）
+        task = {}
+        for _ in range(100):
+            task = self.plugin.upload_status({'task_id': task_id})['task']
+            if task['state'] in ('done', 'failed', 'cancelled', 'interrupted'):
+                break
+            time.sleep(0.05)
+        self.assertEqual(task['state'], 'failed', task)
+
+        on_disk = json.loads((self.plugin.get_data_root() / 'upload-tasks.json')
+                             .read_text(encoding='utf-8'))
+        self.assertIn(task_id, on_disk)
+        self.assertEqual(on_disk[task_id]['state'], 'failed')
+        self.assertEqual(on_disk[task_id]['remote_path'], 'persist.bin')
+
+    def test_reload_marks_running_tasks_as_interrupted(self):
+        """重载后未结束的任务必须标记为"被中断"，已结束的历史照旧保留。
+
+        这里的"重载"是壳真正做的事：**同一个数据根、新的插件对象、走 on_load()**。
+        进程没了线程就没了，把上次的 `running` 当成"正在上传"，界面会一直转圈等一个
+        不存在的进度。
+        """
+        self.plugin.on_load()
+        self.plugin.init_identity({'name': 'up-restore'})
+        path = self.plugin.get_data_root() / 'upload-tasks.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            'cut-off': {'task_id': 'cut-off', 'state': 'running', 'sent': 4096,
+                        'total': 8192, 'remote_path': 'b.bin', 'started_at': 3},
+            'old-done': {'task_id': 'old-done', 'state': 'done', 'sent': 10, 'total': 10,
+                         'remote_path': 'a.bin', 'started_at': 1, 'finished_at': 2},
+        }, ensure_ascii=False), encoding='utf-8')
+
+        reloaded = self._reload_plugin()
+
+        tasks = {task['task_id']: task for task in reloaded.upload_status()['tasks']}
+        self.assertEqual(tasks['old-done']['state'], 'done')
+        self.assertEqual(tasks['cut-off']['state'], 'interrupted')
+        self.assertEqual(tasks['cut-off']['sent'], 4096, '已传字节数要保留（界面据此说明续传点）')
+        self.assertIn('续传', tasks['cut-off']['error'])
+        # 纠正后的状态要写回文件，否则每次加载都会重复同一句"发现中断"
+        on_disk = json.loads(path.read_text(encoding='utf-8'))
+        self.assertEqual(on_disk['cut-off']['state'], 'interrupted')
+
+    def _reload_plugin(self):
+        """同一个数据根上再起一个插件对象并走 on_load —— 等价于壳重载本插件。"""
+        module = load_plugin_module()
+        manifest = json.loads((PLUGIN_DIR / 'manifest.json').read_text(encoding='utf-8'))
+        config = {'directories': {'data_root': str(self.tmp / 'data')}}
+        instance = module.GroupMeshPlugin(manifest, config)
+        instance._settings_store = SettingsStore(str(self.tmp / 'settings'))
+        instance.on_load()
+        self.addCleanup(instance.on_unload)
+        return instance
+
+    def test_unloaded_plugin_does_not_overwrite_the_task_file(self):
+        """卸载后老实例不得再写任务表。
+
+        取消是"到分块边界才生效"，所以老实例的上传线程会在卸载后继续收尾一段时间；
+        而同一个数据根已经交给新实例了 —— 让老线程把它的旧快照写回去，会把新实例
+        刚记下的任务覆盖掉。
+        """
+        self.plugin.on_load()
+        path = self.plugin.get_data_root() / 'upload-tasks.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({'newer': {'task_id': 'newer', 'state': 'done'}}),
+                        encoding='utf-8')
+
+        self.plugin.on_unload()
+        self.plugin._persist_uploads()          # 老线程迟到的落盘
+
+        self.assertEqual(set(json.loads(path.read_text(encoding='utf-8'))), {'newer'})
 
     def test_declares_network_location_provider(self):
         """注册成「网络位置」提供方，且 embedUrl 指向**真实存在**的页面。

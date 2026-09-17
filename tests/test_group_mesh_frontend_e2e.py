@@ -519,6 +519,11 @@ window.Bridge = {
     }
     if (method === 'upload_status') {
       window.__remoteCalls.push('upload_status:' + (arg.task_id || ''));
+      // 不带 task_id = 打开弹窗时的"上次传到哪"提示；带 task_id = 轮询本次进度
+      if (!arg.task_id) {
+        var history = window.__uploadHistory || [];
+        return Promise.resolve({ success: true, tasks: history });
+      }
       window.__uploadPolls = (window.__uploadPolls || 0) + 1;
       var task = window.__uploadTask;
       // 默认一直停在"传到一半"（600 / 1234），直到测试显式放行：
@@ -740,6 +745,28 @@ class RemotePageRenderTest(unittest.TestCase):
         driver = self._load()
         self.assertFalse(driver.find_elements('id', 'btn-remote-upload'))
         self.assertIn('左边选一个共享项', driver.find_element('id', 'remote-body').text)
+
+    def test_modal_shows_the_interrupted_upload_from_last_time(self):
+        """插件重载后打开上传弹窗：要说明"上次传到哪、同一文件再传会续传"。
+
+        没有这句话，用户只会看到进度凭空消失，然后重传一遍已经在对方机器上的字节。
+        """
+        driver = self._load()
+        driver.execute_script(
+            "window.__uploadHistory = [{ task_id: 'old', state: 'interrupted',"
+            " sent: 4096, total: 8192, remote_path: '旧文件.bin', percent: 50 }];")
+        next(b for b in driver.find_elements('css selector', '.gm-remote-item')
+             if 'land64b6e' in b.text).click()
+        for _ in range(50):
+            if driver.find_elements('id', 'btn-remote-upload'):
+                break
+        driver.find_element('id', 'btn-remote-upload').click()
+        self.assertTrue(wait_until(lambda: '中断' in driver.find_element(
+            'id', 'upload-progress').text),
+            '没有说明上次的中断：' + driver.find_element('id', 'upload-progress').text)
+        text = driver.find_element('id', 'upload-progress').text
+        self.assertIn('旧文件.bin', text)
+        self.assertIn('续传', text)
 
     def test_download_reports_local_path(self):
         driver = self._load()

@@ -16,8 +16,8 @@
 ## 当前状态（v0.1，骨架）
 
 已接通：身份初始化、团体创建/加入、名单查看与修改、共享项管理、节点启停与状态，
-以及双向传输（取回、物化、上传含进度/取消/续传）。
-**尚未接通**：内容寻址分块、上传任务的跨重载持久化、Android 轻客户端。
+以及双向传输（取回、物化、上传含进度/取消/续传，任务表落盘可跨重载）。
+**尚未接通**：内容寻址分块、Android 轻客户端。
 房间/语音/游戏面由未来的 Companion 子插件承担，不在本插件范围内。
 
 ## 未决的壳侧缺口（设计文档 §12）
@@ -86,6 +86,11 @@ UPLOAD_TIMEOUT_SECONDS = 30.0
 # 上传任务表里保留多少个**已结束**的任务。界面要能看到最后一次的结果（成功/失败原因），
 # 但也不能无限攒 —— 每个任务只是一小段字典，留 20 个足够翻看。
 UPLOAD_KEEP = 20
+
+# 上传任务表落盘的文件名（在插件数据根下）。与 uploads.json（续传记录）分开：
+# 那份每次上传进度更新都可能要写，这份只记状态与快照，混在一起会让"进度写坏"牵连到
+# "任务历史"。
+UPLOAD_TASK_FILE = 'upload-tasks.json'
 
 
 def _opts(value: Any) -> Dict[str, Any]:
@@ -215,6 +220,9 @@ class GroupMeshPlugin(PluginBase):
         self._uploads: Dict[str, Dict[str, Any]] = {}
         self._upload_order: List[str] = []
         self._uploads_guard = threading.Lock()
+        # 卸载后老实例的上传线程可能还在收尾（取消要等到分块边界）。它**不得**再写
+        # 任务表：同一个数据根已经交给新实例了，写回去会把新实例刚记下的任务覆盖掉。
+        self._unloading = False
 
     # ── 路径 ──────────────────────────────────────────────────────────────
 
@@ -472,7 +480,6 @@ class GroupMeshPlugin(PluginBase):
             'share_roots': [],
             'unsupported': [
                 '内容寻址分块传输（§10）',
-                '上传任务在插件重载后的持久化（§6.4）',
                 'Android 轻客户端（设计文档 §11.2，首版不实现）',
                 '壳侧主体上下文（§12 第 1/2 项，壳尚未提供）',
             ],
@@ -1515,12 +1522,82 @@ class GroupMeshPlugin(PluginBase):
         with self._uploads_guard:
             self._uploads[task['task_id']] = task
             self._upload_order.append(task['task_id'])
-            while len(self._upload_order) > UPLOAD_KEEP:
-                oldest = self._upload_order[0]
-                if self._uploads.get(oldest, {}).get('state') in ('running', 'cancelling'):
-                    break            # 还在传的不淘汰
-                self._upload_order.pop(0)
-                self._uploads.pop(oldest, None)
+            self._prune_uploads()
+            self._persist_uploads()
+
+    def _prune_uploads(self) -> None:
+        """按 `UPLOAD_KEEP` 淘汰最老的**已结束**任务（调用方持锁）。"""
+        while len(self._upload_order) > UPLOAD_KEEP:
+            oldest = self._upload_order[0]
+            if self._uploads.get(oldest, {}).get('state') in ('running', 'cancelling'):
+                break            # 还在传的不淘汰
+            self._upload_order.pop(0)
+            self._uploads.pop(oldest, None)
+
+    def _upload_task_file(self) -> Path:
+        return self.get_data_root() / UPLOAD_TASK_FILE
+
+    def _persist_uploads(self) -> None:
+        """把任务表快照落盘（调用方持锁）。
+
+        为什么值得落盘：插件重载（改设置、升级、壳重启）会把内存里的任务表抹掉，
+        用户看到的是"上传凭空消失了"。落盘之后至少能如实告诉他"上一次传到 X 时被
+        中断，同一个文件再传会续传"。
+
+        卸载之后不再写：老实例的上传线程可能还在收尾，而此时新实例已经接管了同一个
+        数据根（见 `_unloading`）。
+        """
+        if self._unloading:
+            return
+        snapshot = {task_id: self._upload_view(task)
+                    for task_id, task in self._uploads.items()}
+        try:
+            self.get_data_root().mkdir(parents=True, exist_ok=True)
+            self._upload_task_file().write_text(
+                json.dumps(snapshot, ensure_ascii=False, indent=2), encoding='utf-8')
+        except OSError as e:
+            log.warning(f'[group-mesh] 上传任务表写盘失败: {e}')
+
+    def _restore_uploads(self) -> None:
+        """启动时读回任务表：**未结束的一律标记为"被中断"**。
+
+        进程没了，线程就没了 —— 那些 `running` 是上次进程死亡时的快照，不能继续
+        当作"正在上传"（界面会一直转圈等一个不存在的进度）。已结束的历史照旧保留，
+        方便用户回看上次为什么失败。
+        """
+        path = self._upload_task_file()
+        if not path.is_file():
+            return
+        try:
+            data = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            log.warning('[group-mesh] 上传任务表读取失败，按空表处理')
+            return
+        if not isinstance(data, dict):
+            return
+        with self._uploads_guard:
+            visited: List[str] = []
+            for task_id in sorted(data, key=lambda t: int(
+                    (data.get(t) or {}).get('started_at') or 0)):
+                view = data.get(task_id)
+                if not isinstance(view, dict):
+                    continue
+                view = dict(view)
+                if view.get('state') in ('running', 'cancelling'):
+                    view['state'] = 'interrupted'
+                    view['error'] = ('插件重载导致上传中断；同一个文件再次上传会从断点续传')
+                    view['finished_at'] = view.get('finished_at') or int(time.time())
+                task = {key: view.get(key) for key in (
+                    'task_id', 'state', 'device_id', 'share_id', 'local_path', 'remote_path',
+                    'overwrite', 'total', 'sent', 'resumed_from', 'peer_device_id', 'peer_name',
+                    'error', 'started_at', 'finished_at')}
+                task['task_id'] = task['task_id'] or task_id
+                task['cancel'] = threading.Event()
+                self._uploads[task['task_id']] = task
+                visited.append(task['task_id'])
+            self._upload_order = visited
+            self._prune_uploads()
+            self._persist_uploads()
 
     def _upload_view(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """给界面看的副本：Event / 内部字段不能进 JSON。"""
@@ -1567,6 +1644,7 @@ class GroupMeshPlugin(PluginBase):
                         'error': f'任务已经结束（{task["state"]}）'}
             task['state'] = 'cancelling'
             task['cancel'].set()
+            self._persist_uploads()
             view = self._upload_view(task)
         return {'success': True, 'task': view}
 
@@ -1695,10 +1773,13 @@ class GroupMeshPlugin(PluginBase):
                     task['sent'] = sent
                     task['total'] = total
                     # 每 4 MiB 落一次盘：断在"进程被杀"上时也能续，而每分块写一次
-                    # JSON 会把时间都花在无关的 IO 上。
+                    # JSON 会把时间都花在无关的 IO 上。任务表一起刷新 —— 重载后
+                    # 界面看到的进度就是这里最后一次落盘的值。
                     if sent - int(task.get('saved') or 0) >= 4 * 1024 * 1024:
                         task['saved'] = sent
                         self._save_upload_record(key, *self._local_stamp(source), sent)
+                        with self._uploads_guard:
+                            self._persist_uploads()
 
                 try:
                     sent = mesh_client.push_file(
@@ -1744,6 +1825,7 @@ class GroupMeshPlugin(PluginBase):
         with self._uploads_guard:
             task['state'] = state
             task['finished_at'] = int(time.time())
+            self._persist_uploads()
 
     def _fail_upload(self, task: Dict[str, Any], error: str, offline: bool = False) -> None:
         with self._uploads_guard:
@@ -1751,6 +1833,7 @@ class GroupMeshPlugin(PluginBase):
             task['error'] = error
             task['offline'] = bool(offline)
             task['finished_at'] = int(time.time())
+            self._persist_uploads()
 
     def _cancel_all_uploads(self) -> None:
         with self._uploads_guard:
@@ -2713,9 +2796,14 @@ class GroupMeshPlugin(PluginBase):
 
     def on_load(self) -> None:
         self.get_data_root().mkdir(parents=True, exist_ok=True)
+        self._unloading = False
+        self._restore_uploads()
 
     def on_unload(self) -> None:
-        # 插件卸载必须留不下监听线程、上传线程与出站连接，否则重载会撞端口占用
+        # 插件卸载必须留不下监听线程、上传线程与出站连接，否则重载会撞端口占用。
+        # 先立起卸载标志：取消是"到分块边界才生效"，而新实例可能已经开始读同一个
+        # 数据根了。
+        self._unloading = True
         self._cancel_all_uploads()
         self._close_connections()
         self.stop_node()

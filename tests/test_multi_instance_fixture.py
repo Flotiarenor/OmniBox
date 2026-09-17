@@ -281,6 +281,12 @@ class MultiInstanceMeshTest(unittest.TestCase):
                          self._record_file().read_text(encoding='utf-8')
                          if self._record_file().is_file() else '',
                          '上传成功后不该留下续传记录')
+        # 任务表落盘：插件重载后仍能看到"上次传到哪、成没成"（见 upload-tasks.json）
+        task_file = Path(self.consumer.data_root) / 'group-mesh' / 'upload-tasks.json'
+        self.assertTrue(task_file.is_file(), '上传任务表没有落盘')
+        saved = json.loads(task_file.read_text(encoding='utf-8'))
+        self.assertEqual(saved[task['task_id']]['state'], 'done')
+        self.assertEqual(saved[task['task_id']]['remote_path'], '子目录/上传 结果.bin')
 
     def test_upload_respects_the_acl_of_the_owner_share(self):
         """`photos` 只给了读权限：上传必须被对端拒绝，且不得落盘。"""

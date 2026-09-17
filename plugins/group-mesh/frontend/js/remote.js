@@ -453,6 +453,19 @@ window.GroupMeshRemote = (function () {
     renderUploadProgress('');
     state.openModal('upload-box');
     if (local) { local.focus(); }
+    // 上次没传完的任务（含插件重载造成的中断）：把结论摆在弹窗里，用户才知道
+    // "再点一次上传会续传"，而不是以为白传了。
+    state.call('upload_status', {}).then(function (result) {
+      if (state.uploadTask) { return; }        // 已经在传了就别覆盖进度
+      var tasks = (result && result.tasks) || [];
+      var unfinished = tasks.filter(function (task) {
+        return task.state === 'interrupted' || task.state === 'cancelled';
+      })[0];
+      if (!unfinished) { return; }
+      var label = unfinished.state === 'interrupted' ? '上次上传被中断' : '上次上传已取消';
+      renderUploadProgress(label + '：' + unfinished.remote_path + ' 已传 ' +
+        formatSize(unfinished.sent) + '，同一文件再传会从断点续传');
+    }).catch(function () { /* 上次的记录只是提示，读不到不影响本次上传 */ });
   }
 
   /** 运行中把"上传"按钮换成"取消上传"，并锁住关闭按钮 —— 任务在后台跑，
@@ -531,6 +544,14 @@ window.GroupMeshRemote = (function () {
         setUploadRunning(false);
         // 已传的字节留在对端 .part 里：再点一次「上传」就是续传，所以这里明确说出来
         renderUploadProgress('已取消，已传 ' + formatSize(task.sent) +
+          '（再点「上传」会从这里续传）');
+        return;
+      }
+      if (task.state === 'interrupted') {
+        // 插件重载（或进程被杀）之后任务表被读回来的状态：线程已经不在了
+        stopUploadPolling();
+        setUploadRunning(false);
+        renderUploadProgress('上传被中断，已传 ' + formatSize(task.sent) +
           '（再点「上传」会从这里续传）');
         return;
       }
