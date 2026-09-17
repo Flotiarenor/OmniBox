@@ -91,11 +91,14 @@ python shell/groupmesh/tools/interop_fixture.py --check fixture.json   # 另一�
 | `registry.py` | 注册记录与注册表（seq 单调、防重放） |
 | `noise.py` | `Noise_XX_25519_ChaChaPoly_BLAKE2s` 握手与传输态 |
 | `transport.py` | 协商、授权、帧协议、请求应答 |
-| `node.py` | 节点服务端（路径安全、分块读写、审计） |
+| `node.py` | 节点服务端（路径安全、分块读写、暂存提交） |
 | `client.py` | 客户端封装（分块下载循环在这一层） |
 | `cli.py` / `selftest.py` | 命令行入口与自检 |
 
 ## 明确的未实现项
 
-游戏面（SoftEther）、语音、Android 轻客户端、应用级回收站、内容寻址分块传输、
-壳侧主体上下文。逐项的状态与收敛路径见实现路径文档 §3、§4。
+内容寻址分块传输、Android 轻客户端、壳侧主体上下文。
+逐项的状态与收敛路径见[设计文档](../../docs/group-mesh-design.md) §0、§16 与实现路径文档 §3、§4。
+
+房间 / 语音 / 游戏面**不属于本插件**，由未来的 Companion 子插件承担，
+草案见 [group-mesh 的 Companion 子插件](../../docs/group-mesh-companions.md)。
