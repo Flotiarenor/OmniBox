@@ -133,6 +133,7 @@ class RosterHistory:
 
         给 `Node._local_roster_chain()` 用：判定"本机认不认得对端那份"时，
         把本机当前名单一并纳入（它可能还没被 `record()` 过）。
+        `extra` 允许 None（调用方常有一个"可选的当前名单"），由 `history_chain` 跳过。
         """
         return Roster.history_chain(*(list(extra) + self.load()))
 

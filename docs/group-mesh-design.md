@@ -756,13 +756,15 @@ WebView 加载 `http://127.0.0.1:<端口>/`，页面内的 `/api`、`/file`、`/
 | 2 | 插件读取主体 | **[已实现]**：`PluginBase.current_principal()` / `require_principal()`；壳在鉴权通过后写入 `ContextVar`，插件无法从请求参数影响它；后台线程读不到主体 | — |
 | 3 | 数据路由授权 | **[未实现]**：`/file`、`/thumbs` 只做令牌 + 路径安全校验，尚无主体级检查点 | 主体级授权检查点（`/file`、`/thumbs`） |
 | 4 | 文件根 | **[部分]**：`get_file_roots()` 仍只返回本机路径；等价能力由 `ensure_file()` 钩子 + 远端物化 + 网络位置扩展达成（§15） | 支持远端共享来源（或正式承认"物化 + 钩子"为契约并写进 plugin-guide） |
-| 5 | 设置写入 | **[未实现]**：`system_settings_save` 只校验令牌，任何持令牌者都能改任意插件设置 | 限群主与管理员（`PrincipalContext.is_admin` 已就绪） |
+| 5 | 设置写入 | **[已实现]**：`system_settings_save` / `system_get_config` / `system_get_plugin_status` 限 owner 与 admin（403），普通成员仍可调插件 API | 插件侧如需限权，自行调 `PluginBase.require_principal()`（壳不硬编码插件名） |
 | 6 | 插件兼容性 | **[未实现]**：`minShellVersion` 仅由 `tools/check_plugins.py` 读取，运行时既不告警也不拒绝加载 | 加载时运行时校验，不满足则拒绝加载并给出原因 |
 
 第 2 项的实现约束：插件自起的后台线程不继承请求上下文，涉及主体的后台任务必须显式携带主体信息（`with shell.backend.principal.use_principal(p):`）。
 
-第 1/2 项已落地（2026-09-17），验收用例见 `tests/test_shell_principal.py`；
-第 3/5/6 项仍待做，第 4 项由 §15.3 的"物化 + 网络位置"旁路达成。
+第 1/2/5 项已落地（2026-09-17），验收用例见 `tests/test_shell_principal.py`
+（含**插件层**的验收：真实壳加载真实插件、经 `/api/<插件>__<方法>` 调用，
+伪造 `principal` 字段影响不了 `PluginBase.current_principal()`）；
+第 3/6 项仍待做，第 4 项由 §15.3 的"物化 + 网络位置"旁路达成。
 
 ---
 

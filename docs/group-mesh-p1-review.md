@@ -285,7 +285,7 @@ def current_principal(self) -> PrincipalContext | None:
 | --- | --- | --- | --- |
 | 1 | P1：`principals.json` + ContextVar + `current_principal()` | 无 | 中 |
 | 2 | P1：`/file`、`/thumbs` 的 `authorize_file()` 检查点 | 1 | 中 |
-| 3 | P1：设置写入限权 + `minShellVersion` 运行时校验 | 1 | 小 |
+| 3 | P1：设置写入限权（`minShellVersion` 按决定不做） | 1 | 小 | **已完成** |
 | 4 | ~~共享项容量上限进设置面板~~ **已决定不做**（§2.3：默认改为不限制） | — | — |
 | 5 | 私钥保护：Windows DPAPI / Linux keyring（§4.1） | 1 | 中大 |
 | 6 | Noise 换 vetted 实现 + 官方握手向量（编码前置已完成） | 无 | 大 |

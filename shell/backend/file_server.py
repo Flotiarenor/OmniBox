@@ -319,6 +319,24 @@ def _status_response(code: int, title: str, detail: str):
     return _status_page(code, title, detail), code
 
 
+# 只有管理员（owner / admin）能调用的 API 方法。
+#
+# 为什么需要这份清单（设计文档 group-mesh §12 第 5 项）：`/api/<插件>__<方法>` 原先
+# 只校验令牌，因此任何持令牌者都能改**任意**插件的设置、读走完整配置 ——
+# 而设置里可能包含绑定地址、下载目录、凭据键名这类"改了就等于改了别人机器行为"的
+# 项。判据是 `PrincipalContext.is_admin`；老部署的全局令牌会自举成 owner
+# （见 principal.py），因此本机使用者不受影响。
+#
+# 限定范围：**只守壳自己的端点**。插件方法（`<插件>__<方法>`）里确实有该限权的
+# （group-mesh 的节点开关、权限档位变更），但把插件名硬编码进壳会把两层耦合起来；
+# 插件侧需要限权时应调 `PluginBase.require_principal()` 自己判。
+_ADMIN_ONLY_API = frozenset({
+    'system_settings_save',
+    'system_get_config',
+    'system_get_plugin_status',
+})
+
+
 def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
     app = Flask(__name__)
     frontend_dist = _SHELL_DIR / 'frontend' / 'dist'
@@ -467,7 +485,8 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
     @app.errorhandler(403)
     def _err_403(e):
         return _status_response(403, '禁止访问',
-                                '请求的路径超出了允许访问的目录范围。')
+                                '请求的路径超出了允许访问的目录范围，'
+                                '或当前使用者没有执行该操作的权限。')
 
     @app.errorhandler(404)
     def _err_404(e):
@@ -499,6 +518,14 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         fn = api_methods.get(method)
         if fn is None:
             abort(404)
+
+        # 管理员专属端点（见 _ADMIN_ONLY_API）。主体由 _require_token 注入，
+        # 这里只判角色 —— 令牌有效但角色不够时返回 403，而不是 401：
+        # 401 的意思是"你没登录"，会让前端把人踢回登录流程。
+        if method in _ADMIN_ONLY_API:
+            principal = CURRENT_PRINCIPAL.get()
+            if principal is None or not principal.is_admin:
+                abort(403)
 
         try:
             payload = request.get_json(silent=True) or {}

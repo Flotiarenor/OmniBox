@@ -250,7 +250,7 @@ class Roster(SignedRecord):
         return any(same(self, item) for item in candidates)
 
     @staticmethod
-    def history_chain(*rosters: 'Roster', max_depth: int = 64) -> List['Roster']:
+    def history_chain(*rosters: Optional['Roster'], max_depth: int = 64) -> List['Roster']:
         """把若干份名单去重成一条链（`is_ancestor_of` 的 history 入参）。
 
         去重键是 `content_hash`（只对参与签名的字段求值，因此与"谁转发"无关）。

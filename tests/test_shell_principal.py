@@ -263,6 +263,14 @@ class ShellInjectionTest(unittest.TestCase):
         self.token = get_or_create_token(self.config_dir)
         self._observed = None
         self._install_observer()
+        # 一条只回"当前主体"的探针端点。为什么要它：验收标准关心的是"壳给插件/端点
+        # 注入了哪个主体"，而不关心某个具体端点的业务语义 —— 借用
+        # `system_get_config` 会因为该端点后来被加进管理员专属清单而误红。
+        @self.app.route('/api/_probe_principal', methods=['POST'])
+        def _probe_principal():
+            principal = current_principal()
+            return {'result': {'id': principal.id if principal else None,
+                               'role': principal.role if principal else None}}
 
     def _post(self, method, payload, headers=None):
         return self.client.post(f'/api/{method}', json=payload,
@@ -324,14 +332,10 @@ class ShellInjectionTest(unittest.TestCase):
         """按主体颁发令牌的意义所在：两个使用者拿到两个不同的主体。"""
         store = PrincipalStore(self.config_dir)
         store.add('alice', 'alice-token', role=ROLE_MEMBER, name='Alice')
-        seen = []
-        with self._observe_principal(seen):
-            response = self._post('system_get_config', {'args': [], 'kwargs': {}},
-                                  headers={TOKEN_HEADER: 'alice-token'})
+        response = self.client.post('/api/_probe_principal', json={},
+                                    headers={TOKEN_HEADER: 'alice-token'})
         self.assertEqual(response.status_code, 200)
-        assert seen[0] is not None
-        self.assertEqual((seen[0].id, seen[0].role), ('alice', ROLE_MEMBER))
-        self.assertFalse(seen[0].is_admin)
+        self.assertEqual(response.get_json()['result'], {'id': 'alice', 'role': ROLE_MEMBER})
 
     # ── 观测工具 ──────────────────────────────────────────────────────────
 
@@ -383,6 +387,188 @@ def _write_table(config_dir: Path, records) -> None:
     config_dir.mkdir(parents=True, exist_ok=True)
     principals_file(config_dir).write_text(
         json.dumps({'principals': records}, ensure_ascii=False), encoding='utf-8')
+
+
+class PluginPrincipalInjectionTest(unittest.TestCase):
+    """验收标准落在**插件**这一层：`PluginBase.current_principal()` 拿到的是壳注入的
+    主体，且请求体里的 `principal` 字段**影响不了它**。
+
+    为什么必须用真实的 `PluginManager` + 真实的 `/api/<插件>__<方法>` 通路，而不是
+    直接调 `current_principal()`：被验收的承诺是"插件读到的主体由壳注入"，
+    而"壳到插件"这一段（`before_request` → `ContextVar` → 插件方法）才是它要保证的。
+    壳自身端点上的同类断言见 `ShellInjectionTest`，两者不能互相替代。
+    """
+
+    PLUGIN_SOURCE = '''\
+from shell.backend.plugin_base import PluginBase
+
+
+class WhoAmIPlugin(PluginBase):
+    """最小插件：把本次调用的主体回给调用方。"""
+
+    def whoami(self):
+        principal = self.current_principal()
+        if principal is None:
+            return {'id': None, 'role': None, 'is_admin': False}
+        return {'id': principal.id, 'role': principal.role,
+                'is_admin': principal.is_admin, 'source': principal.source}
+
+    def require(self):
+        """没有主体时抛异常（走壳的 500 分支），有主体则回它的 id。"""
+        return {'id': self.require_principal().id}
+
+    def in_thread(self):
+        """在插件自起的线程里读主体：必须是 None（不跨线程继承）。"""
+        import threading
+        seen = []
+        thread = threading.Thread(target=lambda: seen.append(self.current_principal()))
+        thread.start()
+        thread.join()
+        return {'id': seen[0].id if seen[0] is not None else None}
+
+    def register_api(self):
+        return {'whoami': self.whoami, 'require': self.require, 'in_thread': self.in_thread}
+'''
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.home = Path(self._tmp.name)
+        self.config_dir = self.home / '.config'
+        self.data_root = self.home / 'data'
+        self.data_root.mkdir()
+
+        plugin_dir = self.home / 'plugins' / 'whoami'
+        (plugin_dir / 'backend').mkdir(parents=True)
+        (plugin_dir / 'backend' / 'main.py').write_text(self.PLUGIN_SOURCE, encoding='utf-8')
+        (plugin_dir / 'manifest.json').write_text(json.dumps({
+            'name': 'whoami', 'version': '0.1.0', 'displayName': 'WhoAmI',
+            'backend': {'entry': 'backend/main.py', 'class': 'WhoAmIPlugin'},
+        }), encoding='utf-8')
+
+        from shell.backend.plugin_manager import PluginManager
+        self.manager = PluginManager(self.home / 'plugins',
+                                     {'directories': {'data_root': str(self.data_root)}})
+        self.manager.load_all()
+        self.assertIn('whoami', self.manager._instances, '测试插件必须被真实加载')
+
+        config = {'server': {'host': '127.0.0.1', 'port': 18081},
+                  'directories': {'data_root': str(self.data_root)}}
+        with mock.patch('shell.backend.file_server.get_config_dir',
+                        return_value=self.config_dir):
+            self.app = create_app(config, self.manager)
+        self.client = self.app.test_client()
+        self.token = get_or_create_token(self.config_dir)
+
+    def _call(self, method, payload=None):
+        return self.client.post(f'/api/whoami__{method}', json=payload or {'args': [], 'kwargs': {}},
+                                headers={TOKEN_HEADER: self.token})
+
+    def test_plugin_reads_the_shell_injected_principal(self):
+        response = self._call('whoami')
+        self.assertEqual(response.status_code, 200)
+        result = response.get_json()['result']
+        self.assertEqual(result['id'], 'owner')
+        self.assertEqual(result['role'], ROLE_OWNER)
+        self.assertTrue(result['is_admin'])
+
+    def test_forged_principal_field_does_not_reach_the_plugin(self):
+        """验收标准：伪造 `principal` 的请求与不带的请求，插件读到**同一个**主体。"""
+        plain = self._call('whoami').get_json()['result']
+        forged = self._call('whoami', {
+            'args': [], 'kwargs': {},
+            'principal': 'bob', 'principal_id': 'bob', 'role': 'member',
+        }).get_json()['result']
+        self.assertEqual(plain, forged)
+        self.assertEqual(forged['id'], 'owner')
+
+    def test_forged_principal_in_kwargs_is_also_ignored(self):
+        """更坏的一种伪造：把 `principal` 塞进 kwargs，希望它成为方法参数。
+
+        壳只把 `args` / `kwargs` 展开成调用参数，而插件方法没有 `principal` 形参，
+        因此壳会回一个错误 —— 关键是它**绝不能**因此让插件拿到 'bob'。
+        """
+        response = self._call('whoami', {'args': [], 'kwargs': {'principal': 'bob'}})
+        self.assertEqual(response.status_code, 500)
+        self.assertNotIn('bob', json.dumps(response.get_json(), ensure_ascii=False))
+
+    def test_require_principal_succeeds_for_a_known_caller(self):
+        response = self._call('require')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()['result']['id'], 'owner')
+
+    def test_plugin_thread_has_no_principal(self):
+        """插件自起的线程读不到主体：设计文档 §12 要求的"后台任务必须显式携带"。"""
+        response = self._call('in_thread')
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.get_json()['result']['id'])
+
+    def test_second_principal_is_visible_to_the_plugin(self):
+        """两个使用者 → 插件看到两个不同主体（这才是"按主体颁发令牌"的意义）。"""
+        PrincipalStore(self.config_dir).add('alice', 'alice-token',
+                                            role=ROLE_MEMBER, name='Alice')
+        response = self.client.post('/api/whoami__whoami',
+                                    json={'args': [], 'kwargs': {}},
+                                    headers={TOKEN_HEADER: 'alice-token'})
+        self.assertEqual(response.status_code, 200)
+        result = response.get_json()['result']
+        self.assertEqual((result['id'], result['role']), ('alice', ROLE_MEMBER))
+        self.assertFalse(result['is_admin'])
+
+
+class AdminOnlyEndpointsTest(unittest.TestCase):
+    """管理员专属端点（设计文档 group-mesh §12 第 5 项）。
+
+    原状：`system_settings_save` / `system_get_config` 只校验令牌，任何持令牌者都能
+    改任意插件的设置、读走完整配置 —— 而设置里有绑定地址、下载目录这类"改了就等于
+    改了别人机器行为"的项。现在按角色判定：管理员通过，普通成员 403。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.home = Path(self._tmp.name)
+        self.config_dir = self.home / '.config'
+        self.data_root = self.home / 'data'
+        self.data_root.mkdir()
+        self.config = {'server': {'host': '127.0.0.1', 'port': 18082},
+                       'directories': {'data_root': str(self.data_root)}}
+        with mock.patch('shell.backend.file_server.get_config_dir',
+                        return_value=self.config_dir):
+            self.app = create_app(self.config, _StubPluginManager())
+        self.client = self.app.test_client()
+        self.owner_token = get_or_create_token(self.config_dir)
+        self.store = PrincipalStore(self.config_dir)
+
+    def _post(self, method, token, payload=None):
+        return self.client.post(f'/api/{method}',
+                                json=payload or {'args': [], 'kwargs': {}},
+                                headers={TOKEN_HEADER: token})
+
+    def test_owner_can_read_config_and_save_settings(self):
+        """自举成 owner 的老令牌不受影响：本机使用者无需任何操作。"""
+        self.assertEqual(self._post('system_get_config', self.owner_token).status_code, 200)
+        self.assertEqual(self._post('system_settings_save', self.owner_token).status_code, 200)
+
+    def test_member_is_forbidden_on_admin_endpoints(self):
+        self.store.add('alice', 'alice-token', role=ROLE_MEMBER, name='Alice')
+        for method in ('system_get_config', 'system_settings_save',
+                       'system_get_plugin_status'):
+            with self.subTest(method=method):
+                self.assertEqual(self._post(method, 'alice-token').status_code, 403)
+
+    def test_admin_role_passes(self):
+        self.store.add('carol', 'carol-token', role=ROLE_ADMIN, name='Carol')
+        self.assertEqual(self._post('system_get_config', 'carol-token').status_code, 200)
+
+    def test_member_can_still_call_plugin_apis(self):
+        """限权只覆盖壳自己的三个端点：插件 API 不受影响（由插件自己决定要不要限）。"""
+        self.store.add('alice', 'alice-token', role=ROLE_MEMBER)
+        self.assertEqual(self._post('system_get_plugins', 'alice-token').status_code, 200)
+
+    def test_unknown_token_is_still_401_not_403(self):
+        """未认证是 401（前端会引导重新取令牌），已认证但权限不够才是 403。"""
+        self.assertEqual(self._post('system_get_config', 'x' * 43).status_code, 401)
 
 
 if __name__ == '__main__':

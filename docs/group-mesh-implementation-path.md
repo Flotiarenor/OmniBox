@@ -127,9 +127,9 @@ pwsh -File shell/groupmesh/tools/lan-test.ps1
 | --- | --- | --- |
 | 1 | 凭据到主体的映射 | **已完成**（2026-09-17）：`shell/backend/principal.py` 的 `principals.json`，凭据只存 SHA-256 |
 | 2 | 插件以受信方式读取主体 | **已完成**：`PluginBase.current_principal()` / `require_principal()`，由 `before_request` 注入 `ContextVar` |
-| 3 | 数据路由授权（`/file`、`/thumbs` 主体级检查点） | 待做 |
-| 5 | 设置写入限权 | 待做（`PrincipalContext.is_admin` 已就绪） |
-| 6 | `minShellVersion` 运行时校验 | 待做 |
+| 3 | 数据路由授权（`/file`、`/thumbs` 主体级检查点） | 待做（需要新的 `authorize_file()` 钩子；注意"非必要不引入"的取舍） |
+| 5 | 设置写入限权 | **已完成**：`system_settings_save` / `system_get_config` / `system_get_plugin_status` 限 owner 与 admin |
+| 6 | `minShellVersion` 运行时校验 | **明确不做**（当前只支持最新版本；版本号纪律保留在 `PROTO_VERSION` 上） |
 | 4 | 文件根支持远端共享 | 由"物化 + `ensure_file()`"旁路达成，见 §15.3 |
 
 **验收标准**：插件能通过 `self.current_principal()` 拿到**由壳注入**的主体标识，
