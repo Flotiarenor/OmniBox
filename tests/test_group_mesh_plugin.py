@@ -92,9 +92,26 @@ class PluginContractTest(unittest.TestCase):
         但插件一条都没暴露 —— 于是"跨机联调通过"与"界面里拉不回一个文件"并存。
         """
         api = set(self.plugin.register_api())
-        for name in ('list_peers', 'list_remote', 'download_remote', 'refresh_share_roots',
+        for name in ('list_peers', 'list_remote', 'download_remote', 'upload_remote',
+                     'upload_status', 'cancel_upload', 'refresh_share_roots',
                      'materialize_remote', 'mirror_share'):
             self.assertIn(name, api)
+
+    def test_upload_status_and_cancel_are_honest_without_a_task(self):
+        """没有任务时不能假装成功：进度查询与取消都要给出明确结论。"""
+        self.plugin.init_identity({'name': 'up-status'})
+        self.plugin.create_group({'group': 'up-group'})
+        status = self.plugin.upload_status()
+        self.assertTrue(status['success'])
+        self.assertEqual(status['tasks'], [])
+        missing = self.plugin.upload_status({'task_id': 'nope'})
+        self.assertFalse(missing['success'])
+        self.assertIn('没有这个上传任务', missing['error'])
+        cancelled = self.plugin.cancel_upload({'task_id': 'nope'})
+        self.assertFalse(cancelled['success'])
+        no_id = self.plugin.cancel_upload({})
+        self.assertFalse(no_id['success'])
+        self.assertIn('task_id', no_id['error'])
 
     def test_declares_network_location_provider(self):
         """注册成「网络位置」提供方，且 embedUrl 指向**真实存在**的页面。
@@ -222,7 +239,7 @@ class PluginWorkflowTest(unittest.TestCase):
         (shared / 'file.txt').write_text('hi', encoding='utf-8')
 
         added = self.plugin.add_share({'share_id': 'docs', 'path': str(shared),
-                                       'read': 'group', 'write': 'owner', 'delete': 'owner'})
+                                       'read': 'group', 'write': 'owner'})
         self.assertTrue(added['success'], added)
         self.assertEqual(len(self.plugin.get_status()['shares']), 1)
 
@@ -430,7 +447,7 @@ class ShareLocationTest(unittest.TestCase):
 
     def _add(self, share_id='docs'):
         return self.plugin.add_share({'share_id': share_id, 'path': str(self.shared),
-                                      'read': 'group', 'write': 'owner', 'delete': 'owner'})
+                                      'read': 'group', 'write': 'owner'})
 
     def assertSamePath(self, actual, expected, msg=''):
         """比较两条路径是否指向同一位置。
@@ -691,6 +708,61 @@ class RemoteApiTest(unittest.TestCase):
         result = self.plugin.download_remote({'device_id': 'ff' * 32})
         self.assertFalse(result['success'])
         self.assertIn('share_id', result['error'])
+
+    # ── 上传：本地校验必须在连接之前完成 ────────────────────────────────────
+    #
+    # 这一组全部离线可测：被拒的理由都是本机就能判定的（缺参数、本地文件不存在、
+    # 来源不该外传、目标路径越界），不该因为"设备不可达"而改变结论。
+
+    def test_upload_remote_requires_share_and_local_path(self):
+        self.plugin.init_identity({'name': 'up-needargs'})
+        self.plugin.create_group({'group': 'up-group'})
+        result = self.plugin.upload_remote({'device_id': 'ff' * 32})
+        self.assertFalse(result['success'])
+        self.assertIn('share_id', result['error'])
+        result = self.plugin.upload_remote({'device_id': 'ff' * 32, 'share_id': 'x'})
+        self.assertFalse(result['success'])
+        self.assertIn('本机文件', result['error'])
+
+    def test_upload_remote_rejects_missing_local_file(self):
+        self.plugin.init_identity({'name': 'up-missing'})
+        self.plugin.create_group({'group': 'up-group'})
+        result = self.plugin.upload_remote({'device_id': 'ff' * 32, 'share_id': 'x',
+                                            'local_path': str(self.tmp / 'nope.bin')})
+        self.assertFalse(result['success'])
+        self.assertIn('不存在', result['error'])
+
+    def test_upload_remote_rejects_target_traversal(self):
+        """目标相对路径带 `..` 或绝对路径必须在连之前拒掉。"""
+        self.plugin.init_identity({'name': 'up-trav'})
+        self.plugin.create_group({'group': 'up-group'})
+        source = self.tmp / 'src.bin'
+        source.write_bytes(b'x')
+        for bad in ('../../escape.bin', '/etc/passwd', 'sub/../../escape.bin', 'sub/'):
+            result = self.plugin.upload_remote({'device_id': 'ff' * 32, 'share_id': 'x',
+                                                'local_path': str(source),
+                                                'remote_path': bad})
+            self.assertFalse(result['success'], f'{bad} 竟被接受')
+            self.assertIn('非法', result['error'])
+
+    def test_upload_remote_refuses_identity_and_cache_sources(self):
+        """身份目录（明文私钥）与远端物化缓存（别人的数据）都不许传出去。"""
+        self.plugin.init_identity({'name': 'up-guard'})
+        self.plugin.create_group({'group': 'up-group'})
+        secret = self.plugin.identity_dir / 'principal.json'
+        self.assertTrue(secret.is_file(), '前置条件：身份文件存在')
+        result = self.plugin.upload_remote({'device_id': 'ff' * 32, 'share_id': 'x',
+                                            'local_path': str(secret)})
+        self.assertFalse(result['success'])
+        self.assertIn('不允许上传', result['error'])
+
+        cached = self.plugin.remote_cache_dir / ('aa' * 16) / 'share' / 'x.bin'
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_bytes(b'other member data')
+        result = self.plugin.upload_remote({'device_id': 'ff' * 32, 'share_id': 'x',
+                                            'local_path': str(cached)})
+        self.assertFalse(result['success'])
+        self.assertIn('不允许上传', result['error'])
 
 
 class AutoDiscoveryTest(unittest.TestCase):

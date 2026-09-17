@@ -330,6 +330,31 @@ body {
   margin: 12px 0;
 }
 
+/* 上传弹窗里的进度行：与页面顶部的进度条同款配色，但留在弹窗里（用户正看着它） */
+.gm-upload-progress {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--obx-surface-2, rgba(255, 255, 255, 0.06));
+  color: var(--obx-text-2, inherit);
+  font-size: 13px;
+}
+
+/* 上传弹窗里的"覆盖同名文件"：复选框与文字同一行，且点击文字也算 */
+.gm-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+  cursor: pointer;
+  user-select: none;
+}
+
+.gm-check input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+
 .gm-remote {
   display: flex;
   gap: 14px;

@@ -12,14 +12,14 @@
 已验证的静态密钥，**不接受请求参数里的自称身份**。本模块的 `Authorizer` 只接受
 调用方传入的"已经过握手认证的主体公钥"，从而在结构上消除了"客户端自称"这条路。
 
-## 删除权由 ACL 决定，不由归属推断（§6.2）
+## 写权限只能新增（§6.2）
 
-因此不记录 `created_by` 用于授权判定；该元数据只用于界面展示。直接后果：
-「仅上传」档位下上传者不能撤回自己上传的文件（含误传），需由属主删除。
+写入是**可加**的：协议只提供"新增文件"与"提交上传"，不提供"减少内容"（§6.4）。
+因此判定只看 ACL，**不记录 `created_by`**：写权限是"能不能新增"，与"谁传的"无关。
 
 ## ACL 取值
 
-`read` / `write` / `delete` 三项取值均为 `"owner"`、`"group"` 或主体公钥数组。
+`read` / `write` 两项取值均为 `"owner"`、`"group"` 或主体公钥数组。
 """
 
 from __future__ import annotations
@@ -48,7 +48,6 @@ DEFAULT_MAX_BYTES = 1024 * 1024 * 1024
 class Permission(Enum):
     READ = 'read'
     WRITE = 'write'
-    DELETE = 'delete'
 
 
 def _validate_acl_value(value: Any, permission: str) -> Union[str, List[bytes]]:
@@ -80,26 +79,23 @@ def _acl_to_json(value: Union[str, List[bytes]]) -> Any:
 
 @dataclass
 class Acl:
-    """一个共享项的三档权限。"""
+    """一个共享项的两档权限。"""
 
     read: Union[str, List[bytes]] = ACL_GROUP
     write: Union[str, List[bytes]] = ACL_OWNER
-    delete: Union[str, List[bytes]] = ACL_OWNER
 
     def to_dict(self) -> Dict[str, Any]:
-        return {'read': _acl_to_json(self.read), 'write': _acl_to_json(self.write),
-                'delete': _acl_to_json(self.delete)}
+        return {'read': _acl_to_json(self.read), 'write': _acl_to_json(self.write)}
 
     @staticmethod
     def from_dict(data: Any) -> 'Acl':
         if not isinstance(data, dict):
             raise RecordError('acl 必须是对象')
-        missing = [p for p in ('read', 'write', 'delete') if p not in data]
+        missing = [p for p in ('read', 'write') if p not in data]
         if missing:
             raise RecordError(f'acl 缺少字段: {", ".join(missing)}')
         return Acl(read=_validate_acl_value(data['read'], 'read'),
-                   write=_validate_acl_value(data['write'], 'write'),
-                   delete=_validate_acl_value(data['delete'], 'delete'))
+                   write=_validate_acl_value(data['write'], 'write'))
 
     def allows(self, permission: Permission, requester_key: bytes, owner_key: bytes,
                group_member: bool) -> bool:
@@ -108,7 +104,7 @@ class Acl:
         `group_member` 由调用方按**当前团体名单**判定后传入 —— 本模块不持有名单，
         因此不可能出现"用过期名单放行"这种耦合。
         """
-        value = {'read': self.read, 'write': self.write, 'delete': self.delete}[permission.value]
+        value = {'read': self.read, 'write': self.write}[permission.value]
         if isinstance(value, str):
             if value == ACL_OWNER:
                 return requester_key == owner_key

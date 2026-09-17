@@ -126,7 +126,7 @@ FRESH_STATUS = {
     'identity': None,
     'roster': None,
     'shares': [],
-    'unsupported': ['语音（§8.3）', 'SoftEther 游戏面（§9）'],
+    'unsupported': ['上传入口（写权限已就绪，界面尚未接通）', '内容寻址分块传输（§10）'],
 }
 
 JOINED_STATUS = {
@@ -141,7 +141,7 @@ JOINED_STATUS = {
                'members': [{'name': 'alice', 'principal_id': 'aabbccdd', 'device_count': 1},
                            {'name': 'bob', 'principal_id': 'eeff0011', 'device_count': 1}]},
     'shares': [{'share_id': 'pub', 'path': '/srv/shared',
-                'acl': {'read': 'group', 'write': 'owner', 'delete': 'owner'},
+                'acl': {'read': 'group', 'write': 'owner'},
                 'max_bytes': 1073741824}],
 }
 
@@ -430,8 +430,7 @@ REMOTE_STATUS = {
                   'remote_cache': '/repo/data/group-mesh/.cache/remote',
                   'note': '远端缓存是目录结构的本地物化点，字节按需取回'},
     'share_roots': [{'share_id': 'pub', 'path': '/srv/shared', 'available': False,
-                     'max_bytes': 1073741824, 'acl': {'read': 'group', 'write': 'owner',
-                                                      'delete': 'owner'},
+                     'max_bytes': 1073741824, 'acl': {'read': 'group', 'write': 'owner'},
                      'reason': '目录不存在或所在磁盘未接入'}],
 }
 
@@ -505,6 +504,40 @@ window.Bridge = {
       }
       return Promise.resolve({ success: true, local_path: 'D:/downloads/big.bin',
         size: 300000, bytes: 300000 });
+    }
+    if (method === 'upload_remote') {
+      window.__remoteCalls.push('upload_remote:' + arg.remote_path +
+        (arg.overwrite ? ':overwrite' : ''));
+      window.__uploaded = arg;
+      window.__uploadPolls = 0;
+      window.__uploadFinish = false;
+      window.__uploadCancelSeen = false;
+      window.__uploadTask = { task_id: 'task-1', state: 'running', sent: 0, total: 1234,
+        percent: 0, resumed_from: 0, remote_path: arg.remote_path, error: '' };
+      return Promise.resolve({ success: true, task_id: 'task-1', size: 1234,
+        share_id: arg.share_id, path: arg.remote_path });
+    }
+    if (method === 'upload_status') {
+      window.__remoteCalls.push('upload_status:' + (arg.task_id || ''));
+      window.__uploadPolls = (window.__uploadPolls || 0) + 1;
+      var task = window.__uploadTask;
+      // 默认一直停在"传到一半"（600 / 1234），直到测试显式放行：
+      // 这样进度显示与取消两条路径都能稳定观察到中间态，而不是靠抢时序。
+      if (window.__uploadFinish) {
+        task.state = 'done'; task.sent = task.total; task.percent = 100;
+      } else if (window.__uploadCancelSeen) {
+        task.state = 'cancelled';
+      } else {
+        task.state = 'running'; task.sent = 600; task.percent = 48;
+      }
+      return Promise.resolve({ success: true, task: task });
+    }
+    if (method === 'cancel_upload') {
+      window.__remoteCalls.push('cancel_upload:' + arg.task_id);
+      window.__uploadCancelSeen = true;
+      var pending = window.__uploadTask;
+      pending.state = 'cancelling';
+      return Promise.resolve({ success: true, task: pending });
     }
     window.__stubResults.push(method);
     return Promise.resolve({ success: true });
@@ -598,6 +631,115 @@ class RemotePageRenderTest(unittest.TestCase):
         self.assertIn('big.bin', body)
         self.assertIn('note.txt', body)
         self.assertIn('sub', body)
+
+    def test_upload_button_sends_the_chosen_file(self):
+        """「上传文件到此处」：把本机路径 + 目标文件名交给后端，并刷新目录。
+
+        前端只负责收集三样东西（本机路径、目标名、是否覆盖）—— 权限与越界都由对端
+        判定；这里钉住的是"按钮真的把参数原样传下去"，包括当前目录前缀。
+        """
+        driver = self._load()
+        next(b for b in driver.find_elements('css selector', '.gm-remote-item')
+             if 'land64b6e' in b.text).click()
+        for _ in range(50):
+            if driver.find_elements('id', 'btn-remote-upload'):
+                break
+        driver.find_element('id', 'btn-remote-upload').click()
+        # 壳的 `.modal` 带 0.15s 的 fadeIn 动画：起始帧 opacity 为 0，is_displayed()
+        # 会返回 False（本文件顶部 wait_until 的注释记录了这条实测）。
+        self.assertTrue(wait_until(
+            lambda: driver.find_element('id', 'upload-box').is_displayed()),
+            '上传弹窗没有打开')
+        self.assertIn('land64b6e', driver.find_element('id', 'upload-target').text)
+
+        driver.find_element('id', 'upload-local').send_keys(r'D:\照片\新图.jpg')
+        driver.find_element('id', 'upload-name').send_keys('相册/新图.jpg')
+        driver.find_element('id', 'btn-do-upload').click()
+        # 桩在**返回前**就记下了调用，而进度轮询与刷新目录发生在后续的 then 里，
+        # 因此每一步都要等目标状态出现，不能只等 upload_remote。
+        self.assertTrue(wait_until(
+            lambda: driver.execute_script('return window.__uploaded')), '没有发起上传')
+        payload = driver.execute_script('return window.__uploaded')
+        self.assertEqual(payload['local_path'], r'D:\照片\新图.jpg')
+        # 目标路径带当前目录前缀（这里浏览的是根，所以不加前缀）
+        self.assertEqual(payload['remote_path'], '相册/新图.jpg')
+        self.assertFalse(payload['overwrite'])
+
+        # 上传中：弹窗留着，并在弹窗里显示进度（不是只显示"正在上传…"）
+        self.assertTrue(wait_until(lambda: '%' in driver.find_element(
+            'id', 'upload-progress').text),
+            '上传中没有显示百分比进度：' + driver.find_element('id', 'upload-progress').text)
+        self.assertTrue(driver.find_element('id', 'upload-box').is_displayed())
+        self.assertTrue(driver.find_element('id', 'btn-cancel-upload').is_displayed(),
+                        '上传中必须能取消')
+
+        # 放行完成：弹窗关闭、目录被重新拉一次（新文件才看得见）
+        driver.execute_script('window.__uploadFinish = true;')
+        calls = None
+        for _ in range(60):
+            calls = driver.execute_script('return window.__remoteCalls')
+            if calls and calls[-1].startswith('list_remote'):
+                break
+            time.sleep(0.05)
+        self.assertTrue(any(c.startswith('upload_remote:') for c in calls), calls)
+        self.assertTrue(calls[-1].startswith('list_remote'), calls)
+        self.assertTrue(wait_until(
+            lambda: not driver.find_element('id', 'upload-box').is_displayed()),
+            '上传完成后弹窗应当关闭')
+
+    def test_upload_can_be_cancelled_from_the_modal(self):
+        """取消：调用 cancel_upload，结束后弹窗留着并说明"已传多少、可续传"。"""
+        driver = self._load()
+        next(b for b in driver.find_elements('css selector', '.gm-remote-item')
+             if 'land64b6e' in b.text).click()
+        for _ in range(50):
+            if driver.find_elements('id', 'btn-remote-upload'):
+                break
+        driver.find_element('id', 'btn-remote-upload').click()
+        driver.find_element('id', 'upload-local').send_keys(r'D:\照片\大文件.jpg')
+        driver.find_element('id', 'btn-do-upload').click()
+        self.assertTrue(wait_until(lambda: driver.find_element(
+            'id', 'btn-cancel-upload').is_displayed()), '取消按钮没有出现')
+
+        driver.find_element('id', 'btn-cancel-upload').click()
+        for _ in range(60):
+            calls = driver.execute_script('return window.__remoteCalls')
+            if any(c.startswith('cancel_upload:') for c in calls):
+                break
+            time.sleep(0.05)
+        calls = driver.execute_script('return window.__remoteCalls')
+        self.assertTrue(any(c.startswith('cancel_upload:task-1') for c in calls), calls)
+
+        # 轮询收敛到 cancelled：弹窗留着（用户可以再点一次续传），按钮恢复可用
+        self.assertTrue(wait_until(lambda: '已取消' in driver.find_element(
+            'id', 'upload-progress').text),
+            '取消后没有给出结论：' + driver.find_element('id', 'upload-progress').text)
+        self.assertIn('续传', driver.find_element('id', 'upload-progress').text)
+        self.assertTrue(driver.find_element('id', 'upload-box').is_displayed())
+        self.assertFalse(driver.find_element('id', 'btn-do-upload').get_attribute('disabled'))
+
+    def test_upload_defaults_to_the_local_file_name(self):
+        """目标文件名留空时取本机文件名（并带上当前目录前缀）。"""
+        driver = self._load()
+        next(b for b in driver.find_elements('css selector', '.gm-remote-item')
+             if 'land64b6e' in b.text).click()
+        for _ in range(50):
+            if driver.find_elements('id', 'btn-remote-upload'):
+                break
+        driver.find_element('id', 'btn-remote-upload').click()
+        driver.find_element('id', 'upload-local').send_keys(r'D:\照片\新图.jpg')
+        driver.find_element('id', 'btn-do-upload').click()
+        for _ in range(60):
+            if driver.execute_script('return window.__uploaded'):
+                break
+        payload = driver.execute_script('return window.__uploaded')
+        self.assertEqual(payload['remote_path'], '新图.jpg')
+
+    def test_upload_button_is_absent_before_a_share_is_picked(self):
+        """没选共享项时不该出现上传入口（它挂在目录工具栏上）。"""
+        driver = self._load()
+        self.assertFalse(driver.find_elements('id', 'btn-remote-upload'))
+        self.assertIn('左边选一个共享项', driver.find_element('id', 'remote-body').text)
 
     def test_download_reports_local_path(self):
         driver = self._load()

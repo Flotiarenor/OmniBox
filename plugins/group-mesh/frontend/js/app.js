@@ -207,8 +207,7 @@
         '<td><code>' + escapeHtml(share.share_id) + '</code></td>' +
         '<td><code>' + escapeHtml(share.path) + '</code></td>' +
         '<td>' + state + '</td>' +
-        '<td>读 ' + escapeHtml(acl.read) + ' / 写 ' + escapeHtml(acl.write) +
-        ' / 删 ' + escapeHtml(acl.delete) + '</td>' +
+        '<td>读 ' + escapeHtml(acl.read) + ' / 写 ' + escapeHtml(acl.write) + '</td>' +
         '<td>' + escapeHtml(limit) + '</td>' +
         '<td><button type="button" class="btn btn-sm gm-btn-danger" data-remove="' +
         escapeHtml(share.share_id) + '">移除</button></td>' +
@@ -345,7 +344,7 @@
       if (!shareId || !path) { toast('请填写共享标识与本机目录', true); return; }
       call('add_share', {
         share_id: shareId, path: path, read: 'group',
-        write: el('share-write').value, delete: 'owner',
+        write: el('share-write').value,
         max_bytes: 1024 * 1024 * 1024
       })
         .then(function (res) {

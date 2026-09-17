@@ -10,7 +10,7 @@
   * X25519 密钥必须由身份种子**派生**，Ed25519 私钥不能直接当 DH 标量；
   * Noise_XX 的 token 顺序与 nonce 延续规则（本实现曾在此处取错密钥与 nonce）；
   * 名单验证规则 1–6 与并发收敛（§5.2/§5.3）；
-  * 共享项 ACL（§6.2：删除权由 ACL 决定，不由归属推断）；
+  * 共享项 ACL（§6.2：读 / 写按主体判定，写入可加）；
   * 注册表 seq 单调性（§7）；
   * 真实 TCP 的端到端链路，含越界路径与无权限写入必须被拒。
 
@@ -18,6 +18,7 @@
     python -m unittest tests.test_group_mesh_mvp -v
 """
 
+import base64
 import gc
 import os
 import socket
@@ -373,7 +374,7 @@ class RosterRulesTest(unittest.TestCase):
 
 
 class ShareAclTest(unittest.TestCase):
-    """§6.2 / §6.3：授权按主体判定，删除权由 ACL 决定。"""
+    """§6.2 / §6.3：授权按主体判定，写入是**可加**的（只能新增）。"""
 
     def setUp(self):
         self.owner = Principal.create('owner')
@@ -385,16 +386,21 @@ class ShareAclTest(unittest.TestCase):
         return new_share('docs', '/tmp/docs', owner_key=self.owner.public_key,
                          node_key=self.node_pub, node_private_key=self.node_priv, acl=acl)
 
-    def test_upload_only_tier_cannot_delete(self):
-        share = self._share(Acl(read='group', write=[self.alice.public_key], delete='owner'))
+    def test_write_tier_is_granted_per_principal(self):
+        share = self._share(Acl(read='group', write=[self.alice.public_key]))
         alice = Authorizer(requester_key=self.alice.public_key, group_member=True)
         self.assertTrue(alice.allows(share.declaration, Permission.READ))
         self.assertTrue(alice.allows(share.declaration, Permission.WRITE))
-        self.assertFalse(alice.allows(share.declaration, Permission.DELETE),
-                         '「仅上传」档位下上传者不得删除自己上传的文件')
+
+    def test_write_owner_only_denies_members(self):
+        """write=owner 时成员只能读 —— 可上传档位必须显式授予。"""
+        share = self._share(Acl(read='group', write='owner'))
+        alice = Authorizer(requester_key=self.alice.public_key, group_member=True)
+        self.assertTrue(alice.allows(share.declaration, Permission.READ))
+        self.assertFalse(alice.allows(share.declaration, Permission.WRITE))
 
     def test_owner_has_all_permissions(self):
-        share = self._share(Acl(read='group', write=[self.alice.public_key], delete='owner'))
+        share = self._share(Acl(read='group', write=[self.alice.public_key]))
         owner = Authorizer(requester_key=self.owner.public_key, group_member=False)
         for permission in Permission:
             self.assertTrue(owner.allows(share.declaration, permission))
@@ -403,22 +409,28 @@ class ShareAclTest(unittest.TestCase):
         share = self._share(Acl())
         stranger = Authorizer(requester_key=self.stranger.public_key, group_member=False)
         self.assertFalse(stranger.allows(share.declaration, Permission.READ))
+        self.assertFalse(stranger.allows(share.declaration, Permission.WRITE))
 
     def test_tampered_acl_fails_signature(self):
         """改 ACL 会让签名失效 —— 这是「客户端不能自称权限」的根据。"""
         import copy
-        share = self._share(Acl(read='owner', write='owner', delete='owner'))
+        share = self._share(Acl(read='owner', write='owner'))
         tampered = copy.deepcopy(share.declaration)
         tampered.acl.read = 'group'
         self.assertFalse(tampered.verify_signature())
 
     def test_acl_field_validation(self):
         with self.assertRaises(RecordError):
-            Acl.from_dict({'read': 'everyone', 'write': 'owner', 'delete': 'owner'})
+            Acl.from_dict({'read': 'everyone', 'write': 'owner'})
         with self.assertRaises(RecordError):
-            Acl.from_dict({'read': [], 'write': 'owner', 'delete': 'owner'})
+            Acl.from_dict({'read': [], 'write': 'owner'})
         with self.assertRaises(RecordError):
-            Acl.from_dict({'read': 'group', 'write': 'owner'})
+            Acl.from_dict({'read': 'group'})
+
+    def test_legacy_delete_field_is_ignored(self):
+        """旧 `shares.json` 里的 delete 字段不再参与解析，也不会被写回。"""
+        acl = Acl.from_dict({'read': 'group', 'write': 'owner', 'delete': 'group'})
+        self.assertEqual(acl.to_dict(), {'read': 'group', 'write': 'owner'})
 
     def test_share_id_charset_is_enforced(self):
         for bad in ('../evil', 'a/b', '', 'x' * 80):
@@ -604,7 +616,7 @@ class EndToEndTest(unittest.TestCase):
         share = new_share('pub', str(cls.shared), owner_key=cls.owner.principal.public_key,
                           node_key=cls.owner.device.public_key,
                           node_private_key=cls.owner.device.private_key,
-                          acl=Acl(read='group', write='owner', delete='owner'))
+                          acl=Acl(read='group', write='owner'))
         cls.node = Node(identity=cls.owner, roster=cls.roster, shares={'pub': share},
                         registry=Registry())
 
@@ -708,6 +720,273 @@ class EndToEndTest(unittest.TestCase):
         outsider = Identity.init(outsider_root, 'outsider', 'outsider-pc')
         with self.assertRaises((TransportError, OSError)):
             connect('127.0.0.1', self.port, outsider, self.roster, timeout=10.0)
+
+
+class UploadTest(unittest.TestCase):
+    """§6.4 写入语义：暂存 + 提交、覆盖策略、配额、断线只留 `.part`。
+
+    这一组是"共享面能不能投放"的核心：上传走 `<目标>.part` 分块写、最后一块 `eof`
+    时原子改名。直接用 `push_bytes(part=False)` 覆写目标文件的话，一次断线就等于
+    毁掉对端已有的那份内容。
+    """
+
+    CAP = 4 * 1024 * 1024
+    TINY_CAP = 16 * 1024
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        root = Path(cls._tmp.name)
+        cls.owner = Identity.init(root / 'owner', 'owner', 'owner-pc')
+        cls.member = Identity.init(root / 'member', 'member', 'member-pc')
+
+        roster = founding_roster('upload', cls.owner.principal,
+                                 [cls.owner.device.public_key], ttl_seconds=3600)
+        members = [*list(roster.members),
+                   RosterEntry('member', cls.member.principal.public_key,
+                               [cls.member.device.public_key])]
+        cls.roster = next_roster(roster, 'upload', roster.owner_key, members,
+                                 ttl_seconds=3600)
+        cls.roster.sign(cls.owner.principal.private_key)
+        cls.roster.accepts(roster)
+
+        cls.shared = root / 'dropbox'
+        cls.shared.mkdir()
+        (cls.shared / 'keep.txt').write_text('keep me', encoding='utf-8')
+        # 配额用例单独一个共享项与目录：共用目录会让"前面用例上传的文件"改变基线，
+        # 配额判定随之飘（实测就是这么红的）。
+        cls.tiny = root / 'tiny'
+        cls.tiny.mkdir()
+
+        def _share(share_id: str, path: Path, acl: Acl, cap: 'int | None') -> tuple:
+            return (share_id, new_share(share_id, str(path),
+                                        owner_key=cls.owner.principal.public_key,
+                                        node_key=cls.owner.device.public_key,
+                                        node_private_key=cls.owner.device.private_key,
+                                        acl=acl, max_bytes=cap))
+
+        cls.node = Node(
+            identity=cls.owner, roster=cls.roster,
+            shares=dict([
+                _share('drop', cls.shared, Acl(read='group', write='group'), cls.CAP),
+                _share('tiny', cls.tiny, Acl(read='group', write='group'), cls.TINY_CAP),
+                _share('ro', cls.shared, Acl(read='group', write='owner'), None),
+            ]),
+            registry=Registry())
+
+        cls.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        cls.listener.bind(('127.0.0.1', 0))
+        cls.listener.listen(4)
+        cls.port = cls.listener.getsockname()[1]
+        cls.stop = threading.Event()
+
+        def accept_loop():
+            cls.listener.settimeout(0.5)
+            while not cls.stop.is_set():
+                try:
+                    sock, address = cls.listener.accept()
+                except (socket.timeout, OSError):
+                    continue
+                _serve_one(sock, address, cls.node)
+
+        cls.thread = threading.Thread(target=accept_loop, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.stop.set()
+        cls.listener.close()
+        cls.thread.join(timeout=3)
+        cls._tmp.cleanup()
+
+    def _connect(self):
+        return connect('127.0.0.1', self.port, self.member, self.roster, timeout=10.0)
+
+    def _local(self, name: str, payload: bytes) -> Path:
+        path = Path(self._tmp.name) / name
+        path.write_bytes(payload)
+        return path
+
+    def test_upload_commits_and_leaves_no_part_file(self):
+        payload = cp.random_bytes(40 * 1024)
+        source = self._local('upload-ok.bin', payload)
+        with self._connect() as connection:
+            written = client.push_file(connection, 'drop', source, 'new.bin',
+                                       chunk_bytes=8 * 1024)
+        self.assertEqual(written, len(payload))
+        self.assertEqual((self.shared / 'new.bin').read_bytes(), payload)
+        self.assertFalse((self.shared / 'new.bin.part').exists(),
+                         '提交之后不该留下暂存文件')
+
+    def test_upload_creates_subdirectories(self):
+        source = self._local('deep.bin', b'x' * 10)
+        with self._connect() as connection:
+            client.push_file(connection, 'drop', source, 'sub/dir/deep.bin')
+        self.assertEqual((self.shared / 'sub' / 'dir' / 'deep.bin').read_bytes(), b'x' * 10)
+
+    def test_empty_file_is_committed(self):
+        source = self._local('empty.bin', b'')
+        with self._connect() as connection:
+            written = client.push_file(connection, 'drop', source, 'empty.bin')
+        self.assertEqual(written, 0)
+        self.assertEqual((self.shared / 'empty.bin').stat().st_size, 0)
+
+    def test_upload_refuses_to_clobber_without_overwrite(self):
+        source = self._local('clobber.bin', b'other content')
+        before = (self.shared / 'keep.txt').read_bytes()
+        with self._connect() as connection:
+            with self.assertRaises(RemoteError) as ctx:
+                client.push_file(connection, 'drop', source, 'keep.txt')
+            self.assertEqual(ctx.exception.code, 'exists')
+        self.assertEqual((self.shared / 'keep.txt').read_bytes(), before,
+                         '被拒绝的上传不得改动已有文件')
+        self.assertFalse((self.shared / 'keep.txt.part').exists())
+
+    def test_upload_with_overwrite_replaces_content(self):
+        source = self._local('replace.bin', b'replaced')
+        with self._connect() as connection:
+            client.push_file(connection, 'drop', source, 'keep.txt', overwrite=True)
+        self.assertEqual((self.shared / 'keep.txt').read_bytes(), b'replaced')
+
+    def test_interrupted_upload_leaves_target_intact(self):
+        """模拟"传到一半断线"：目标文件必须原封不动，只多一个 `.part`。
+
+        这是 `part` 暂存的全部意义 —— 直接覆写目标文件的话，这条用例会看到
+        keep.txt 已经被截断成半份。
+        """
+        self.addCleanup(lambda: (self.shared / 'keep.txt.part').unlink(missing_ok=True))
+        before = (self.shared / 'keep.txt').read_bytes()
+        with self._connect() as connection:
+            # 显式走暂存路径，但**不**发 eof：等价于客户端中途掉线
+            connection.request({'op': 'write', 'share': 'drop', 'path': 'keep.txt',
+                                'data': base64.b64encode(b'a' * 4096).decode('ascii'),
+                                'part': True, 'offset': 0, 'overwrite': True, 'eof': False})
+        self.assertEqual((self.shared / 'keep.txt').read_bytes(), before)
+        self.assertTrue((self.shared / 'keep.txt.part').exists(),
+                        '未提交的上传应当只留下 .part')
+
+    def test_stale_part_does_not_block_a_retry(self):
+        """断线留下的 `.part` 不阻塞重传：重传从第一个分块开始覆盖它。"""
+        payload = b'retry payload'
+        source = self._local('retry.bin', payload)
+        (self.shared / 'retry.bin.part').write_bytes(b'stale partial data')
+        with self._connect() as connection:
+            client.push_file(connection, 'drop', source, 'retry.bin')
+        self.assertEqual((self.shared / 'retry.bin').read_bytes(), payload)
+        self.assertFalse((self.shared / 'retry.bin.part').exists())
+
+    def test_quota_rejects_before_writing_anything(self):
+        """第一个分块就超上限：必须在写盘**之前**拒绝，不留 `.part`。"""
+        payload = cp.random_bytes(20 * 1024)
+        source = self._local('tiny-over.bin', payload)
+        with self._connect() as connection:
+            with self.assertRaises(RemoteError) as ctx:
+                client.push_file(connection, 'tiny', source, 'over.bin',
+                                 chunk_bytes=len(payload))
+            self.assertEqual(ctx.exception.code, 'quota_exceeded')
+        self.assertFalse((self.tiny / 'over.bin').exists())
+        self.assertFalse((self.tiny / 'over.bin.part').exists(),
+                         '被配额拒绝的上传不该留下暂存文件')
+
+    def test_quota_accounting_frees_the_stale_part(self):
+        """重传时基线要扣掉被覆盖的 `.part`，否则"上次传了一半"会把这次挡在配额之外。
+
+        12 KiB 陈旧 `.part` + 8 KiB 新文件，上限 16 KiB：不扣的话 12 + 8 = 20 > 16，
+        就会被误拒 —— 而那份陈旧数据正是这次上传要丢掉的。
+        """
+        (self.tiny / 'again.bin.part').write_bytes(b'p' * (12 * 1024))
+        payload = b'q' * (8 * 1024)
+        source = self._local('again.bin', payload)
+        with self._connect() as connection:
+            client.push_file(connection, 'tiny', source, 'again.bin',
+                             chunk_bytes=len(payload))
+        self.assertEqual((self.tiny / 'again.bin').read_bytes(), payload)
+        self.assertFalse((self.tiny / 'again.bin.part').exists())
+
+    def test_write_without_permission_is_forbidden(self):
+        source = self._local('nope.bin', b'nope')
+        with self._connect() as connection:
+            with self.assertRaises(RemoteError) as ctx:
+                client.push_file(connection, 'ro', source, 'nope.bin')
+            self.assertEqual(ctx.exception.code, 'forbidden')
+
+    def test_direct_write_still_works(self):
+        """`part=False` 的直写路径保留：小文件与旧客户端走它。"""
+        with self._connect() as connection:
+            client.push_bytes(connection, 'drop', 'direct.bin', b'direct')
+        self.assertEqual((self.shared / 'direct.bin').read_bytes(), b'direct')
+
+    # ── 续传与取消 ─────────────────────────────────────────────────────────
+
+    def test_probe_reports_staged_bytes(self):
+        """续传前先问对端收了多少：没有暂存文件时是 0，有则报真实大小。"""
+        with self._connect() as connection:
+            probe = client.probe_upload(connection, 'drop', 'resume.bin')
+            self.assertEqual(probe['staged'], 0)
+            self.assertFalse(probe['exists'])
+
+            (self.shared / 'resume.bin.part').write_bytes(b'x' * 1234)
+            probe = client.probe_upload(connection, 'drop', 'resume.bin')
+            self.assertEqual(probe['staged'], 1234)
+        (self.shared / 'resume.bin.part').unlink()
+
+    def test_probe_needs_write_not_read(self):
+        """只有写权限的共享项也要能续传：probe 走 write 权限。"""
+        with self._connect() as connection:
+            with self.assertRaises(RemoteError) as ctx:
+                client.probe_upload(connection, 'ro', 'x.bin')
+            self.assertEqual(ctx.exception.code, 'forbidden')
+
+    def test_resume_continues_from_staged_offset(self):
+        """断点续传：对端已有前 4096 字节，客户端只补后半段，最终内容完整。"""
+        payload = cp.random_bytes(10 * 1024)
+        source = self._local('resume-full.bin', payload)
+        (self.shared / 'resume-full.bin.part').write_bytes(payload[:4096])
+        with self._connect() as connection:
+            total = client.push_file(connection, 'drop', source, 'resume-full.bin',
+                                     offset=4096, chunk_bytes=2048)
+        self.assertEqual(total, len(payload))
+        self.assertEqual((self.shared / 'resume-full.bin').read_bytes(), payload)
+        self.assertFalse((self.shared / 'resume-full.bin.part').exists())
+
+    def test_offset_mismatch_is_rejected(self):
+        """游标与对端暂存大小不符时拒绝 —— 两个上传方抢同一个目标不会拼出垃圾。"""
+        source = self._local('mismatch.bin', b'm' * 100)
+        (self.shared / 'mismatch.bin.part').write_bytes(b'x' * 50)
+        with self._connect() as connection:
+            with self.assertRaises(RemoteError) as ctx:
+                client.push_file(connection, 'drop', source, 'mismatch.bin', offset=10)
+            self.assertEqual(ctx.exception.code, 'offset_mismatch')
+        self.assertEqual((self.shared / 'mismatch.bin.part').read_bytes(), b'x' * 50,
+                         '被拒绝的续传不得改动暂存文件')
+        (self.shared / 'mismatch.bin.part').unlink()
+
+    def test_cancel_stops_at_a_chunk_boundary_and_keeps_staged_bytes(self):
+        """取消：抛 UploadCancelled、保留已传的 `.part`，之后能接着传完。"""
+        payload = cp.random_bytes(64 * 1024)
+        source = self._local('cancelled.bin', payload)
+        chunk = 8 * 1024
+        seen = {'sent': 0}
+
+        def progress(sent: int, _total: int) -> None:
+            seen['sent'] = sent
+
+        def cancelled() -> bool:
+            # 传满 3 个分块就取消（检查发生在分块边界上）
+            return seen['sent'] >= 3 * chunk
+
+        with self._connect() as connection:
+            with self.assertRaises(client.UploadCancelled):
+                client.push_file(connection, 'drop', source, 'cancelled.bin',
+                                 chunk_bytes=chunk, progress=progress,
+                                 cancelled=cancelled)
+            staged = client.probe_upload(connection, 'drop', 'cancelled.bin')['staged']
+            self.assertEqual(staged, 3 * chunk, '取消后应当保留已传的分块')
+            # 接着传：offset 取对端报的值，最终内容必须完整
+            total = client.push_file(connection, 'drop', source, 'cancelled.bin',
+                                     offset=staged, chunk_bytes=chunk)
+        self.assertEqual(total, len(payload))
+        self.assertEqual((self.shared / 'cancelled.bin').read_bytes(), payload)
 
 
 class RosterRefreshTest(unittest.TestCase):

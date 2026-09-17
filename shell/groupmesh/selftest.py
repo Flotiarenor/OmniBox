@@ -225,26 +225,25 @@ def check_share_acl() -> None:
     stranger = Principal.create('stranger')
     node_sk, node_pk = cp.generate_sign_keypair()
 
-    # 仅上传档位：write 授予 alice，delete 仅属主
+    # 可上传档位：read 给团体，write 只授予 alice（可加性：只能新增）
     share = new_share('docs', '/tmp/docs', owner_key=owner.public_key, node_key=node_pk,
                       node_private_key=node_sk,
-                      acl=Acl(read='group', write=[alice.public_key], delete='owner'))
+                      acl=Acl(read='group', write=[alice.public_key]))
 
     # 属主有全部权限
     owner_auth = Authorizer(requester_key=owner.public_key, group_member=False)
-    for permission in (Permission.READ, Permission.WRITE, Permission.DELETE):
+    for permission in (Permission.READ, Permission.WRITE):
         _expect(owner_auth.allows(share.declaration, permission), f'属主应具备 {permission.value}')
 
-    # alice 可读可写，但**不能删除**（§6.2：删除权由 ACL 决定，不由归属推断）
+    # alice 可读可写；bob（同为成员）只能读 —— 写权限按主体判定
     alice_auth = Authorizer(requester_key=alice.public_key, group_member=True)
     _expect(alice_auth.allows(share.declaration, Permission.READ), 'alice 应可读')
     _expect(alice_auth.allows(share.declaration, Permission.WRITE), 'alice 应可写')
-    _expect(not alice_auth.allows(share.declaration, Permission.DELETE),
-            'alice 不应有删除权（仅上传档位）')
 
     # 陌生人：read=group 但他不是成员
     stranger_auth = Authorizer(requester_key=stranger.public_key, group_member=False)
     _expect(not stranger_auth.allows(share.declaration, Permission.READ), '非成员不应可读')
+    _expect(not stranger_auth.allows(share.declaration, Permission.WRITE), '非成员不应可写')
 
     # 声明验签
     _expect(share.declaration.verify_signature(), '共享项声明验签失败')
@@ -313,8 +312,16 @@ def check_end_to_end(verbose: bool = False) -> None:
         share = new_share('pub', str(shared_dir), owner_key=owner.principal.public_key,
                           node_key=owner.device.public_key,
                           node_private_key=owner.device.private_key,
-                          acl=Acl(read='group', write='owner', delete='owner'))
-        node = Node(identity=owner, roster=roster_v2, shares={'pub': share}, registry=Registry())
+                          acl=Acl(read='group', write='owner'))
+        # 第二个共享项授予成员写权限，用来验上传（暂存 + 提交）
+        drop_dir = root / 'dropbox'
+        drop_dir.mkdir()
+        drop = new_share('drop', str(drop_dir), owner_key=owner.principal.public_key,
+                         node_key=owner.device.public_key,
+                         node_private_key=owner.device.private_key,
+                         acl=Acl(read='group', write='group'))
+        node = Node(identity=owner, roster=roster_v2, shares={'pub': share, 'drop': drop},
+                    registry=Registry())
 
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listener.bind(('127.0.0.1', 0))
@@ -351,7 +358,8 @@ def check_end_to_end(verbose: bool = False) -> None:
 
                 from . import client
                 shares = client.list_shares(connection)
-                _expect([s['share_id'] for s in shares] == ['pub'], '共享项列表不符')
+                _expect(sorted(s['share_id'] for s in shares) == ['drop', 'pub'],
+                        '共享项列表不符')
 
                 listing = client.list_directory(connection, 'pub', '.')
                 names = sorted(e['name'] for e in listing.get('entries') or [])
@@ -378,6 +386,21 @@ def check_end_to_end(verbose: bool = False) -> None:
                 except RemoteError as e:
                     _expect('forbidden' in str(e.code), f'写入应返回 forbidden，实际 {e.code}')
 
+                # 有写权限时上传要真的落盘（暂存 + 提交），且目标已存在时默认拒绝
+                upload = root / 'to-upload.bin'
+                upload.write_bytes(cp.random_bytes(200 * 1024))  # 跨多个分块
+                written = client.push_file(connection, 'drop', upload, 'up.bin',
+                                           chunk_bytes=64 * 1024)
+                _expect(written == upload.stat().st_size, '上传字节数与本地文件不符')
+                _expect((drop_dir / 'up.bin').read_bytes() == upload.read_bytes(),
+                        '上传落盘的内容与本地文件不一致')
+                _expect(not (drop_dir / 'up.bin.part').exists(), '提交后不应留下 .part')
+                try:
+                    client.push_file(connection, 'drop', upload, 'up.bin')
+                    raise Failure('同名文件应被拒绝（写权限只能新增）')
+                except RemoteError as e:
+                    _expect('exists' in str(e.code), f'同名应返回 exists，实际 {e.code}')
+
                 # 注册表同步
                 registry = Registry()
                 registry.add(node.make_registration([('127.0.0.1', port)], 1))
@@ -395,9 +418,9 @@ CHECKS: List[Tuple[str, Callable[[], None]]] = [
     ('密码学原语（X25519 / Ed25519 / AEAD / HKDF）', check_crypto),
     ('Noise_XX 握手与传输态', check_noise),
     ('团体名单状态机（规则 1-6 与并发收敛）', check_roster),
-    ('共享项 ACL（§6.2 删除权由 ACL 决定）', check_share_acl),
+    ('共享项 ACL（§6.2 读 / 写按主体判定）', check_share_acl),
     ('注册表单调性与防重放（§7）', check_registry),
-    ('真实 TCP 端到端（协商+握手+分块取文件+越界拒绝）', check_end_to_end),
+    ('真实 TCP 端到端（协商+握手+分块取文件+上传+越界拒绝）', check_end_to_end),
 ]
 
 

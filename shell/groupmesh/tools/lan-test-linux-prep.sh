@@ -24,9 +24,9 @@ printf 'hello from linux owner\n' > "$BASE/shared/note.txt"
 "$PY" -m shell.groupmesh.cli init --dir "$BASE/node" --name flotiarenor --device-name ubuntu-server >/dev/null
 "$PY" -m shell.groupmesh.cli create --dir "$BASE/node" --group home-lab >/dev/null
 
-# read=group 让所有成员可读；write/delete 保持仅属主（验证 ACL 的另一半）
+# read=group 让所有成员可读；write 保持仅属主（验证 ACL 的另一半：越权上传必须被拒）
 "$PY" -m shell.groupmesh.cli share add --dir "$BASE/node" --share-id pub \
-      --path "$BASE/shared" --read group --write owner --delete owner >/dev/null
+      --path "$BASE/shared" --read group --write owner >/dev/null
 
 # 邀请串与设备/主体公钥由 Python 打印，避免在 bash 里拼 base64
 "$PY" - "$BASE" > "$BASE/handoff.txt" <<'PYEOF'

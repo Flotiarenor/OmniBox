@@ -21,7 +21,6 @@ Windows 与 Linux 用同一份代码，`python` 换成各自解释器即可（�
     stat      查看对端某个文件的大小
     get       从对端取回文件
     put       向对端共享项上传文件（需要写权限）
-    rm        删除对端共享项里的文件（需要删除权限）
     registry  注册表同步（pull / push / show）
     selftest  本机自检：密码学 + 握手 + 名单状态机
 """
@@ -397,7 +396,7 @@ def cmd_share(args: argparse.Namespace) -> int:
         path = Path(args.path).resolve()
         if not path.exists():
             die(f'路径不存在: {path}')
-        acl = Acl(read=args.read, write=args.write, delete=args.delete)
+        acl = Acl(read=args.read, write=args.write)
         share = new_share(share_id=args.share_id, path=str(path),
                           owner_key=identity.principal.public_key,
                           node_key=identity.device.public_key,
@@ -589,16 +588,9 @@ def cmd_put(args: argparse.Namespace) -> int:
         if not local.is_file():
             die(f'本地文件不存在: {local}')
         written = client.push_file(connection, args.share_id, local,
-                                   args.remote_path or local.name)
+                                   args.remote_path or local.name,
+                                   overwrite=args.overwrite)
         info(f'已上传 {written} 字节 -> {args.share_id}:{args.remote_path or local.name}')
-    return 0
-
-
-def cmd_rm(args: argparse.Namespace) -> int:
-    connection = _require_target(args)
-    with connection:
-        info(json.dumps(client.delete_remote(connection, args.share_id, args.path),
-                        ensure_ascii=False))
     return 0
 
 
@@ -683,7 +675,6 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_argument('--path', help='本机目录')
     sub.add_argument('--read', default='group', help='read ACL：owner / group / 公钥')
     sub.add_argument('--write', default='owner', help='write ACL：owner / group / 公钥')
-    sub.add_argument('--delete', default='owner', help='delete ACL：owner / group / 公钥')
     sub.add_argument('--max-bytes', type=int, default=1024 * 1024 * 1024,
                      help='容量上限字节数；0 表示不限制')
     sub.set_defaults(func=cmd_share)
@@ -722,13 +713,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_argument('--share-id', required=True)
     sub.add_argument('--file', required=True)
     sub.add_argument('--remote-path', default=None)
+    sub.add_argument('--overwrite', action='store_true',
+                     help='允许覆盖对端同名文件（默认拒绝：写权限是"只能新增"）')
     sub.set_defaults(func=cmd_put)
-
-    sub = subparsers.add_parser('rm', help='删除对端共享项里的文件')
-    add_common(sub, with_target=True)
-    sub.add_argument('--share-id', required=True)
-    sub.add_argument('--path', required=True)
-    sub.set_defaults(func=cmd_rm)
 
     sub = subparsers.add_parser('registry', help='注册表同步')
     add_common(sub, with_target=False)

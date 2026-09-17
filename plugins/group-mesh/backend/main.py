@@ -15,8 +15,10 @@
 
 ## 当前状态（v0.1，骨架）
 
-已接通：身份初始化、团体创建/加入、名单查看与修改、共享项管理、节点启停与状态。
-**尚未接通**：Android 轻客户端、SoftEther 游戏面、语音、回收站、内容寻址分块。
+已接通：身份初始化、团体创建/加入、名单查看与修改、共享项管理、节点启停与状态，
+以及双向传输（取回、物化、上传含进度/取消/续传）。
+**尚未接通**：内容寻址分块、上传任务的跨重载持久化、Android 轻客户端。
+房间/语音/游戏面由未来的 Companion 子插件承担，不在本插件范围内。
 
 ## 未决的壳侧缺口（设计文档 §12）
 
@@ -37,6 +39,7 @@ import os
 import socket
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, ClassVar, Dict, Iterable, List, Optional, Tuple
 
@@ -75,6 +78,15 @@ PROBE_TIMEOUT_SECONDS = 3.0
 # 端点 —— 界面上这是一次点击，不能因为几条死地址把用户按在那里。
 PROBE_OVERALL_SECONDS = 4.0
 
+# 上传的 socket 超时（秒）。比探测用的 3 秒宽得多：一个分块要走 Noise 加密 + 落盘，
+# 慢盘或大分块下 3 秒会误判成"传输失败"。取消不靠超时兜底 —— 客户端在分块边界
+# 检查取消标志（见 _upload_worker）。
+UPLOAD_TIMEOUT_SECONDS = 30.0
+
+# 上传任务表里保留多少个**已结束**的任务。界面要能看到最后一次的结果（成功/失败原因），
+# 但也不能无限攒 —— 每个任务只是一小段字典，留 20 个足够翻看。
+UPLOAD_KEEP = 20
+
 
 def _opts(value: Any) -> Dict[str, Any]:
     """把"结构化参数"归一成字典。
@@ -82,7 +94,7 @@ def _opts(value: Any) -> Dict[str, Any]:
     `/api/<plugin>__<method>` 会把 payload 的 `args`/`kwargs` 原样展开成位置/关键字
     参数（`shell/backend/file_server.py`），因此前端既可以传一个对象、也可以逐个传。
     两种形态都接受，避免以后前端或桥接实现改动时**参数静默错位**
-    （例如 delete 的值跑进 max_bytes，只在运行时才炸）。
+    （例如 write 的值跑进 max_bytes，只在运行时才炸）。
     """
     return value if isinstance(value, dict) else {}
 
@@ -197,6 +209,12 @@ class GroupMeshPlugin(PluginBase):
         # 复用的理由：一次请求就是一次 Noise 握手（多个往返 + 公钥运算），
         # 逐次建连会让"浏览一个目录"变成几个握手的开销。
         self._connections: Dict[Tuple[bytes, str, int], Any] = {}
+        # 上传任务表（见 upload_remote）：task_id -> 任务字典（进度、状态、取消标志）。
+        # 后台线程写、界面线程读，因此用一把独立的锁 —— 与 _lock（连接/共享项）分开，
+        # 避免上传线程持锁时把界面请求堵住。
+        self._uploads: Dict[str, Dict[str, Any]] = {}
+        self._upload_order: List[str] = []
+        self._uploads_guard = threading.Lock()
 
     # ── 路径 ──────────────────────────────────────────────────────────────
 
@@ -453,11 +471,9 @@ class GroupMeshPlugin(PluginBase):
             'shares': [],
             'share_roots': [],
             'unsupported': [
-                'Android 轻客户端（设计文档 §11.2，首版不实现）',
-                'SoftEther 游戏面（§9）',
-                '语音（§8.3）',
-                '应用级回收站（§6.4）',
                 '内容寻址分块传输（§10）',
+                '上传任务在插件重载后的持久化（§6.4）',
+                'Android 轻客户端（设计文档 §11.2，首版不实现）',
                 '壳侧主体上下文（§12 第 1/2 项，壳尚未提供）',
             ],
         }
@@ -682,7 +698,7 @@ class GroupMeshPlugin(PluginBase):
     # ── 共享项 ────────────────────────────────────────────────────────────
 
     def add_share(self, opts: Any = None, share_id: str = '', path: str = '',
-                  read: str = 'group', write: str = 'owner', delete: str = 'owner',
+                  read: str = 'group', write: str = 'owner',
                   max_bytes: int = 1024 * 1024 * 1024) -> Dict[str, Any]:
         """挂载一个本机共享项。
 
@@ -696,7 +712,6 @@ class GroupMeshPlugin(PluginBase):
         path = str(options.get('path') or path or '')
         read = str(options.get('read') or read or 'group')
         write = str(options.get('write') or write or 'owner')
-        delete = str(options.get('delete') or delete or 'owner')
         if 'max_bytes' in options:
             max_bytes = options['max_bytes']
 
@@ -723,7 +738,7 @@ class GroupMeshPlugin(PluginBase):
             return {'success': False, 'error': f'max_bytes 必须是整数或 0，收到 {max_bytes!r}'}
 
         try:
-            acl = Acl(read=read, write=write, delete=delete)
+            acl = Acl(read=read, write=write)
             share = new_share(share_id=share_id, path=str(target),
                               owner_key=identity.principal.public_key,
                               node_key=identity.device.public_key,
@@ -1418,8 +1433,333 @@ class GroupMeshPlugin(PluginBase):
         return {'success': False, 'error': last_error or '所有候选地址都连不上',
                 'device_id': device_id, 'offline': True}
 
-    # ── 远端：物化与按需取字节 ────────────────────────────────────────────
+    # ── 上传：把一个本机文件投放到对端共享项 ──────────────────────────────
     #
+    # 与取回对称，但方向相反：写权限由**对端**按 ACL 判定，落点也由对端决定。
+    # 本机这一侧只做三件事：拒掉不该上传的来源、把相对路径的越界拒在连接之前、
+    # 逐个尝试候选端点。
+
+    def upload_remote(self, opts: Any = None, device_id: str = '', share_id: str = '',
+                      local_path: str = '', remote_path: str = '',
+                      overwrite: bool = False) -> Dict[str, Any]:
+        """把本机文件上传到对端共享项（需要该共享项授予本机主体 `write`）。
+
+        `remote_path` 留空时取本地文件名；可以带子目录（`sub/a.bin`），对端会自动建目录。
+        目标已存在时默认**拒绝**，要覆盖必须显式 `overwrite=True` —— 写权限是可加的
+        （设计文档 §6.2），覆盖等于让属主少一份内容，不能由上传方默认决定。
+        """
+        options = _opts(opts)
+        device_id = str(options.get('device_id') or device_id or '')
+        share_id = str(options.get('share_id') or share_id or '')
+        local_path = str(options.get('local_path') or local_path or '')
+        remote_path = str(options.get('remote_path') or remote_path or '')
+        overwrite = bool(options.get('overwrite', overwrite))
+
+        if not share_id:
+            return {'success': False, 'error': '必须给出 share_id'}
+        if not local_path:
+            return {'success': False, 'error': '必须给出要上传的本机文件路径'}
+
+        source = Path(local_path).expanduser()
+        if not source.is_file():
+            return {'success': False, 'error': f'本机文件不存在: {source}'}
+        # 两类不许上传的来源：身份目录（明文私钥）与远端物化缓存（那是**其他成员**
+        # 的数据，传出去等于二次分发，见 .dsh/group-mesh-materialize.md §2.2）。
+        resolved = source.resolve()
+        for guarded in (self.identity_dir, self.remote_cache_dir, self.staging_dir):
+            try:
+                resolved.relative_to(guarded.resolve())
+            except ValueError:
+                continue
+            return {'success': False, 'error': f'不允许上传 {guarded} 之内的文件'}
+
+        target = remote_path.strip().replace('\\', '/') or source.name
+        if target.startswith('/') or target.endswith('/') \
+                or any(part == '..' for part in Path(target).parts):
+            return {'success': False, 'error': f'目标路径非法: {target!r}'}
+
+        try:
+            size = source.stat().st_size
+        except OSError as e:
+            return {'success': False, 'error': f'读不到本机文件: {e}'}
+
+        task: Dict[str, Any] = {
+            'task_id': uuid.uuid4().hex[:12],
+            'state': 'running',
+            'device_id': device_id,
+            'share_id': share_id,
+            'local_path': str(source),
+            'remote_path': target,
+            'overwrite': overwrite,
+            'total': size,
+            'sent': 0,
+            'resumed_from': 0,
+            'peer_device_id': '',
+            'peer_name': '',
+            'error': '',
+            'started_at': int(time.time()),
+            'finished_at': None,
+            'cancel': threading.Event(),
+        }
+        self._register_upload(task)
+        threading.Thread(target=self._upload_worker, args=(task,), daemon=True,
+                         name=f'group-mesh-upload-{task["task_id"]}').start()
+        return {'success': True, 'task_id': task['task_id'], 'state': 'running',
+                'size': size, 'share_id': share_id, 'path': target,
+                'local_path': str(source)}
+
+    # ── 上传任务表 ────────────────────────────────────────────────────────
+
+    def _register_upload(self, task: Dict[str, Any]) -> None:
+        """登记任务，并只保留最近 `UPLOAD_KEEP` 个已结束的（界面轮询要看结果）。"""
+        with self._uploads_guard:
+            self._uploads[task['task_id']] = task
+            self._upload_order.append(task['task_id'])
+            while len(self._upload_order) > UPLOAD_KEEP:
+                oldest = self._upload_order[0]
+                if self._uploads.get(oldest, {}).get('state') in ('running', 'cancelling'):
+                    break            # 还在传的不淘汰
+                self._upload_order.pop(0)
+                self._uploads.pop(oldest, None)
+
+    def _upload_view(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        """给界面看的副本：Event / 内部字段不能进 JSON。"""
+        total = int(task.get('total') or 0)
+        sent = int(task.get('sent') or 0)
+        view = {key: task.get(key) for key in
+                ('task_id', 'state', 'device_id', 'share_id', 'local_path', 'remote_path',
+                 'overwrite', 'total', 'sent', 'resumed_from', 'peer_device_id', 'peer_name',
+                 'error', 'started_at', 'finished_at')}
+        view['percent'] = int(sent * 100 / total) if total else 100
+        return view
+
+    def upload_status(self, opts: Any = None, task_id: str = '') -> Dict[str, Any]:
+        """上传进度：不传 `task_id` 时返回本次运行的全部任务（新的在前）。"""
+        options = _opts(opts)
+        task_id = str(options.get('task_id') or task_id or '')
+        with self._uploads_guard:
+            if task_id:
+                task = self._uploads.get(task_id)
+                if task is None:
+                    return {'success': False, 'error': f'没有这个上传任务: {task_id}'}
+                return {'success': True, 'task': self._upload_view(task)}
+            tasks = [self._upload_view(self._uploads[t]) for t in reversed(self._upload_order)
+                     if t in self._uploads]
+        return {'success': True, 'tasks': tasks}
+
+    def cancel_upload(self, opts: Any = None, task_id: str = '') -> Dict[str, Any]:
+        """取消一次上传。
+
+        取消在**分块边界**生效：已经传给对端的字节留在 `<目标>.part` 里，不清除 ——
+        它就是下次续传的起点（协议里没有远程删除，这也是刻意的）。因此取消的代价
+        最多是"少传一点"，不是"白传一遍"。
+        """
+        options = _opts(opts)
+        task_id = str(options.get('task_id') or task_id or '')
+        if not task_id:
+            return {'success': False, 'error': '必须给出 task_id'}
+        with self._uploads_guard:
+            task = self._uploads.get(task_id)
+            if task is None:
+                return {'success': False, 'error': f'没有这个上传任务: {task_id}'}
+            if task['state'] in ('done', 'failed', 'cancelled'):
+                return {'success': False, 'state': task['state'],
+                        'error': f'任务已经结束（{task["state"]}）'}
+            task['state'] = 'cancelling'
+            task['cancel'].set()
+            view = self._upload_view(task)
+        return {'success': True, 'task': view}
+
+    # ── 续传记录（本机） ──────────────────────────────────────────────────
+
+    def _upload_record_file(self) -> Path:
+        return self.get_data_root() / 'uploads.json'
+
+    def _upload_key(self, device_id: str, share_id: str, remote_path: str,
+                    local_path: str) -> str:
+        return '|'.join((device_id, share_id, remote_path, local_path))
+
+    def _load_upload_records(self) -> Dict[str, Any]:
+        path = self._upload_record_file()
+        if not path.is_file():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _save_upload_record(self, key: str, size: int, mtime_ns: int, sent: int) -> None:
+        """记下"这个本地文件传到哪了"，供下次续传判断是不是同一份内容的前缀。"""
+        with self._uploads_guard:
+            records = self._load_upload_records()
+            records[key] = {'size': size, 'mtime_ns': mtime_ns, 'sent': sent,
+                            'ts': int(time.time())}
+            self._write_upload_records(records)
+
+    def _clear_upload_record(self, key: str) -> None:
+        with self._uploads_guard:
+            records = self._load_upload_records()
+            if records.pop(key, None) is not None:
+                self._write_upload_records(records)
+
+    def _write_upload_records(self, records: Dict[str, Any]) -> None:
+        try:
+            self.get_data_root().mkdir(parents=True, exist_ok=True)
+            self._upload_record_file().write_text(
+                json.dumps(records, ensure_ascii=False, indent=2), encoding='utf-8')
+        except OSError as e:
+            log.warning(f'[group-mesh] 续传记录写盘失败: {e}')
+
+    def _resume_offset(self, key: str, source: Path, staged: int) -> int:
+        """决定这次从哪儿开始传。
+
+        三个条件缺一不可：本机有记录、记录与**当前**本地文件的 (大小, mtime) 一致、
+        对端暂存字节数与记录一致。任何一个不符都从头传 —— 拿一份对不上的 `.part`
+        去续，产出的是拼接垃圾，而且没人会发现。
+        """
+        if staged <= 0:
+            return 0
+        record = self._load_upload_records().get(key)
+        if not isinstance(record, dict):
+            return 0
+        size, mtime_ns = self._local_stamp(source)
+        if record.get('size') != size or record.get('mtime_ns') != mtime_ns:
+            return 0
+        if record.get('sent') != staged or staged >= size:
+            return 0
+        return staged
+
+    def _local_stamp(self, source: Path) -> tuple:
+        """本地文件的 (大小, mtime_ns)：续传时必须与记录一致，否则从头传。"""
+        try:
+            stat = source.stat()
+        except OSError:
+            return 0, 0
+        return stat.st_size, stat.st_mtime_ns
+
+    # ── 上传线程 ──────────────────────────────────────────────────────────
+
+    def _upload_worker(self, task: Dict[str, Any]) -> None:
+        """后台把文件推上去：续传起点 → 分块 → 提交；进度写回 task。
+
+        用**专用连接**（`open_connection`，不进复用池）：复用池里的连接会被界面线程
+        同时用于列目录等请求，而一条 Noise 连接上的请求是严格串行的，两个线程交错
+        发送会把帧拼坏。用完即关，代价只有一次握手。
+        """
+        key = self._upload_key(task['device_id'], task['share_id'], task['remote_path'],
+                               task['local_path'])
+        source = Path(task['local_path'])
+        connection = None
+        try:
+            identity = self._load_identity()
+            roster = self._load_roster()
+            if identity is None or roster is None:
+                self._fail_upload(task, '需要先创建身份与团体')
+                return
+            candidates = self._manual_endpoints(task['device_id'], roster)
+            if not candidates:
+                self._fail_upload(task, '还没有可用的对端地址。请先在"对端"里登记一台设备的'
+                                        '地址，或刷新一次让本机通过注册记录发现它')
+                return
+
+            last_error = ''
+            for endpoint, label in candidates:
+                if task['cancel'].is_set():
+                    self._finish_upload(task, 'cancelled')
+                    self._save_upload_record(key, *self._local_stamp(source), task['sent'])
+                    return
+                try:
+                    connection = mesh_client.open_connection(
+                        endpoint[0], endpoint[1], identity, roster,
+                        timeout=UPLOAD_TIMEOUT_SECONDS)
+                except (RemoteError, TransportError, OSError) as e:
+                    last_error = f'{label or endpoint[0]}:{endpoint[1]} 连不上: {e}'
+                    continue
+                task['peer_device_id'] = connection.peer.device_key.hex()
+                task['peer_name'] = label or connection.peer.name
+
+                try:
+                    probe = mesh_client.probe_upload(connection, task['share_id'],
+                                                     task['remote_path'])
+                except RemoteError as e:
+                    self._fail_upload(task, str(e))
+                    return
+
+                offset = self._resume_offset(key, source, int(probe.get('staged') or 0))
+                task['resumed_from'] = offset
+                task['sent'] = offset
+                task['saved'] = offset
+
+                def on_progress(sent: int, total: int) -> None:
+                    task['sent'] = sent
+                    task['total'] = total
+                    # 每 4 MiB 落一次盘：断在"进程被杀"上时也能续，而每分块写一次
+                    # JSON 会把时间都花在无关的 IO 上。
+                    if sent - int(task.get('saved') or 0) >= 4 * 1024 * 1024:
+                        task['saved'] = sent
+                        self._save_upload_record(key, *self._local_stamp(source), sent)
+
+                try:
+                    sent = mesh_client.push_file(
+                        connection, task['share_id'], source, task['remote_path'],
+                        overwrite=task['overwrite'], offset=offset,
+                        progress=on_progress, cancelled=task['cancel'].is_set)
+                except mesh_client.UploadCancelled:
+                    self._finish_upload(task, 'cancelled')
+                    self._save_upload_record(key, *self._local_stamp(source), task['sent'])
+                    return
+                except RemoteError as e:
+                    # 无权限 / 已存在 / 超配额 / 越界 / 游标不符：对端的确定性拒绝
+                    self._fail_upload(task, str(e))
+                    return
+                except (TransportError, OSError) as e:
+                    last_error = f'传输失败: {e}'
+                    # 传输断了但字节留在了对端：记下进度，下次续传
+                    self._save_upload_record(key, *self._local_stamp(source), task['sent'])
+                    continue
+                finally:
+                    try:
+                        connection.close()
+                    except Exception:
+                        pass
+                    connection = None
+
+                task['sent'] = sent
+                self._clear_upload_record(key)
+                self._finish_upload(task, 'done')
+                return
+
+            self._fail_upload(task, last_error or '所有候选地址都连不上', offline=True)
+        except Exception as e:      # 兜底：后台线程的异常不能让任务永远停在 running
+            self._fail_upload(task, f'{type(e).__name__}: {e}')
+        finally:
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+
+    def _finish_upload(self, task: Dict[str, Any], state: str) -> None:
+        with self._uploads_guard:
+            task['state'] = state
+            task['finished_at'] = int(time.time())
+
+    def _fail_upload(self, task: Dict[str, Any], error: str, offline: bool = False) -> None:
+        with self._uploads_guard:
+            task['state'] = 'failed'
+            task['error'] = error
+            task['offline'] = bool(offline)
+            task['finished_at'] = int(time.time())
+
+    def _cancel_all_uploads(self) -> None:
+        with self._uploads_guard:
+            running = [t for t in self._uploads.values()
+                       if t['state'] in ('running', 'cancelling')]
+        for task in running:
+            task['cancel'].set()
+
+    # ── 远端：物化与按需取字节 ────────────────────────────────────────────
     # 「物化」= 在本地 `.cache/remote/<设备ID>/<共享标识>/…` 造出与远端同形的目录树：
     # 目录真的建出来、文件先放 0 字节占位，真实大小记在 <共享标识>.index.json 里；
     # 字节在**第一次真去读这个文件**时才取回（由 `ensure_file` 钩子驱动）。
@@ -2375,7 +2715,8 @@ class GroupMeshPlugin(PluginBase):
         self.get_data_root().mkdir(parents=True, exist_ok=True)
 
     def on_unload(self) -> None:
-        # 插件卸载必须留不下监听线程与出站连接，否则重载会撞端口占用
+        # 插件卸载必须留不下监听线程、上传线程与出站连接，否则重载会撞端口占用
+        self._cancel_all_uploads()
         self._close_connections()
         self.stop_node()
 
@@ -2421,6 +2762,9 @@ class GroupMeshPlugin(PluginBase):
             'list_peers': self.list_peers,
             'list_remote': self.list_remote,
             'download_remote': self.download_remote,
+            'upload_remote': self.upload_remote,
+            'upload_status': self.upload_status,
+            'cancel_upload': self.cancel_upload,
             'materialize_remote': self.materialize_remote,
             'mirror_share': self.mirror_share,
             'remote_cache': self.remote_cache,

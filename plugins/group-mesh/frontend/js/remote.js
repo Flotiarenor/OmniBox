@@ -20,6 +20,8 @@ window.GroupMeshRemote = (function () {
     cacheBytes: 0,
     current: null,       // { device_id, name, shareId, path }
     entries: [],
+    uploadTask: null,    // 正在轮询的上传任务 id
+    uploadTimer: null,   // 轮询定时器
     // init() 注入的依赖
     call: null,
     toast: null,
@@ -164,10 +166,16 @@ window.GroupMeshRemote = (function () {
     if (state.current.path && state.current.path !== '.') {
       up = '<button type="button" id="btn-remote-up" class="btn btn-sm">↑ 上级</button>';
     }
-    body.innerHTML = '<div class="gm-remote-tools">' + up + '</div>' +
+    body.innerHTML = '<div class="gm-remote-tools">' +
+      '<button type="button" id="btn-remote-upload" class="btn btn-sm btn-primary">上传文件到此处</button>' +
+      up + '</div>' +
       '<table class="gm-table"><thead><tr><th>名称</th><th>大小</th><th></th></tr></thead>' +
       '<tbody>' + rows + '</tbody></table>';
 
+    var uploadBtn = el('btn-remote-upload');
+    if (uploadBtn) {
+      uploadBtn.addEventListener('click', openUpload);
+    }
     var upBtn = el('btn-remote-up');
     if (upBtn) {
       upBtn.addEventListener('click', function () {
@@ -418,6 +426,181 @@ window.GroupMeshRemote = (function () {
       }).catch(function (err) { renderProgress('取回失败', true); showError(err); });
   }
 
+  // ── 上传 ────────────────────────────────────────────────────────────────
+  //
+  // 与"取回"的方向相反：本机出文件、对端落盘。界面这一侧只负责取三样东西
+  // （本机路径、目标文件名、是否覆盖），越界与权限都由对端判定 —— 客户端隐藏
+  // 按钮不构成授权（设计文档 §6.3）。
+
+  function openUpload() {
+    if (!state.current) {
+      toast('先在左边选一个共享项', true);
+      return;
+    }
+    var label = state.current.path && state.current.path !== '.' ? state.current.path : '/';
+    var target = el('upload-target');
+    if (target) {
+      target.textContent = '目标：' + (state.current.name || '') + ' · ' +
+        state.current.shareId + ' · ' + label;
+    }
+    var local = el('upload-local');
+    if (local) { local.value = ''; }
+    var name = el('upload-name');
+    if (name) { name.value = ''; }
+    var overwrite = el('upload-overwrite');
+    if (overwrite) { overwrite.checked = false; }
+    setUploadRunning(false);
+    renderUploadProgress('');
+    state.openModal('upload-box');
+    if (local) { local.focus(); }
+  }
+
+  /** 运行中把"上传"按钮换成"取消上传"，并锁住关闭按钮 —— 任务在后台跑，
+      关掉弹窗只会让用户以为它停了。 */
+  function setUploadRunning(running) {
+    var doBtn = el('btn-do-upload');
+    var cancelBtn = el('btn-cancel-upload');
+    var closeBtn = el('btn-close-upload');
+    // 用 style.display 而不是 hidden 属性：壳的 .btn 自带 display，作者样式会盖掉
+    // 浏览器给 [hidden] 的 display:none（本插件踩过这个级联陷阱，见 CSS 顶部注释）。
+    if (doBtn) {
+      doBtn.disabled = running;
+      doBtn.textContent = running ? '上传中…' : '上传';
+    }
+    if (cancelBtn) {
+      cancelBtn.style.display = running ? '' : 'none';
+      cancelBtn.disabled = false;
+      cancelBtn.textContent = '取消上传';
+    }
+    if (closeBtn) { closeBtn.disabled = running; }
+  }
+
+  function renderUploadProgress(text) {
+    var box = el('upload-progress');
+    if (!box) { return; }
+    box.textContent = text || '';
+    box.style.display = text ? '' : 'none';
+    renderProgress(text);
+  }
+
+  function uploadText(task) {
+    var sent = Number(task.sent || 0);
+    var total = Number(task.total || 0);
+    var prefix = task.resumed_from > 0 ? '续传中' : '正在上传';
+    return prefix + ' ' + formatSize(sent) + ' / ' + formatSize(total) +
+      '（' + Number(task.percent || 0) + '%）';
+  }
+
+  function stopUploadPolling() {
+    if (state.uploadTimer) {
+      clearTimeout(state.uploadTimer);
+      state.uploadTimer = null;
+    }
+    state.uploadTask = null;
+  }
+
+  function pollUpload(taskId) {
+    if (state.uploadTask !== taskId) { return; }   // 已被取消或换了任务
+    state.call('upload_status', { task_id: taskId }).then(function (result) {
+      if (state.uploadTask !== taskId) { return; }
+      var task = (result && result.task) || null;
+      if (!task) {
+        stopUploadPolling();
+        setUploadRunning(false);
+        renderUploadProgress('读取上传进度失败：' + ((result && result.error) || '未知原因'));
+        return;
+      }
+      if (task.state === 'done') {
+        stopUploadPolling();
+        setUploadRunning(false);
+        renderUploadProgress('已上传 ' + formatSize(task.total) + ' → ' + task.remote_path);
+        toast('已上传 ' + task.remote_path);
+        state.closeModal('upload-box');
+        listDirectory(state.current.device_id, state.current.shareId, state.current.path);
+        return;
+      }
+      if (task.state === 'failed') {
+        stopUploadPolling();
+        setUploadRunning(false);
+        renderUploadProgress('上传失败：' + (task.error || '未知原因'));
+        toast(task.error || '上传失败', true);
+        return;
+      }
+      if (task.state === 'cancelled') {
+        stopUploadPolling();
+        setUploadRunning(false);
+        // 已传的字节留在对端 .part 里：再点一次「上传」就是续传，所以这里明确说出来
+        renderUploadProgress('已取消，已传 ' + formatSize(task.sent) +
+          '（再点「上传」会从这里续传）');
+        return;
+      }
+      renderUploadProgress(uploadText(task) +
+        (task.state === 'cancelling' ? '，正在取消…' : ''));
+      state.uploadTimer = setTimeout(function () { pollUpload(taskId); }, 300);
+    }).catch(function (err) {
+      if (state.uploadTask !== taskId) { return; }
+      stopUploadPolling();
+      setUploadRunning(false);
+      renderUploadProgress('读取上传进度失败');
+      showError(err);
+    });
+  }
+
+  function doUpload() {
+    if (!state.current) { return Promise.resolve(); }
+    var local = (el('upload-local').value || '').trim();
+    if (!local) { toast('请填写要上传的本机文件路径', true); return Promise.resolve(); }
+    var name = (el('upload-name').value || '').trim().replace(/\\/g, '/');
+    if (!name) { name = local.replace(/\\/g, '/').split('/').pop(); }
+    var base = state.current.path === '.' ? '' : state.current.path + '/';
+    var remotePath = base + name;
+    var overwrite = !!(el('upload-overwrite') && el('upload-overwrite').checked);
+
+    setUploadRunning(true);
+    renderUploadProgress('正在上传 ' + name + '…');
+    return state.call('upload_remote', { device_id: state.current.device_id,
+      share_id: state.current.shareId, local_path: local, remote_path: remotePath,
+      overwrite: overwrite })
+      .then(function (result) {
+        if (!result || !result.success) {
+          setUploadRunning(false);
+          renderUploadProgress('上传失败：' + ((result && result.error) || '未知原因'), true);
+          toast((result && result.error) || '上传失败', true);
+          return result;
+        }
+        state.uploadTask = result.task_id;
+        pollUpload(result.task_id);
+        return result;
+      }).catch(function (err) {
+        setUploadRunning(false);
+        renderUploadProgress('上传失败', true);
+        showError(err);
+      });
+  }
+
+  function cancelUpload() {
+    var taskId = state.uploadTask;
+    if (!taskId) { return Promise.resolve(); }
+    var btn = el('btn-cancel-upload');
+    if (btn) { btn.disabled = true; btn.textContent = '正在取消…'; }
+    return state.call('cancel_upload', { task_id: taskId }).then(function (result) {
+      if (!result || !result.success) {
+        toast((result && result.error) || '取消失败', true);
+        if (btn) { btn.disabled = false; btn.textContent = '取消上传'; }
+        return result;
+      }
+      // 状态由轮询收敛到 cancelled（取消在分块边界生效，可能需要等一个分块）
+      var task = result.task || {};
+      if (task.state === 'cancelling') {
+        renderUploadProgress('正在取消…已传 ' + formatSize(task.sent));
+      }
+      return result;
+    }).catch(function (err) {
+      if (btn) { btn.disabled = false; btn.textContent = '取消上传'; }
+      showError(err);
+    });
+  }
+
   function bind() {
     var refresh = el('btn-peer-refresh');
     if (refresh) { refresh.addEventListener('click', refreshPeers); }
@@ -437,6 +620,14 @@ window.GroupMeshRemote = (function () {
     if (close) {
       close.addEventListener('click', function () { state.closeModal('peer-box'); });
     }
+    var uploadClose = el('btn-close-upload');
+    if (uploadClose) {
+      uploadClose.addEventListener('click', function () { state.closeModal('upload-box'); });
+    }
+    var uploadDo = el('btn-do-upload');
+    if (uploadDo) { uploadDo.addEventListener('click', doUpload); }
+    var uploadCancel = el('btn-cancel-upload');
+    if (uploadCancel) { uploadCancel.addEventListener('click', cancelUpload); }
     var doAdd = el('btn-do-add-peer');
     if (doAdd) {
       doAdd.addEventListener('click', function () {

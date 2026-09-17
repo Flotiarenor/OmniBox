@@ -187,6 +187,31 @@
     </div>
   </div>
 
+  <div id="upload-box" class="modal">
+    <div class="modal-box obx-anim-scale" style="width:560px;">
+      <h3>上传文件</h3>
+      <div class="modal-body">
+        <p class="gm-hint" id="upload-target"></p>
+        <input type="text" id="upload-local" placeholder="本机文件绝对路径（如 D:\照片\a.jpg）">
+        <input type="text" id="upload-name" placeholder="目标文件名（留空取本机文件名，可写 sub/a.jpg）">
+        <label class="gm-check">
+          <input type="checkbox" id="upload-overwrite"> 覆盖对端同名文件（默认拒绝：写权限只能新增）
+        </label>
+        <div id="upload-progress" class="gm-upload-progress" style="display:none"></div>
+        <p class="gm-hint">
+          能否上传由<strong>对端</strong>按共享项的 ACL 判定：没有授予你写权限时会直接拒绝。
+          上传走"暂存 + 提交"——中途断线只会在对端留下 <code>.part</code>，不会毁掉已有文件；
+          取消或断线后再次上传会<strong>从断点续传</strong>。
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="btn-close-upload" class="btn">取消</button>
+        <button type="button" id="btn-cancel-upload" class="btn" style="display:none">取消上传</button>
+        <button type="button" id="btn-do-upload" class="btn btn-primary">上传</button>
+      </div>
+    </div>
+  </div>
+
   <div id="peer-box" class="modal">
     <div class="modal-box obx-anim-scale" style="width:520px;">
       <h3>高级：按地址登记对端</h3>

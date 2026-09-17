@@ -87,8 +87,6 @@ class Node:
     roster: Optional[Roster]
     shares: Dict[str, LocalShare] = field(default_factory=dict)
     registry: Optional[Registry] = None
-    # 记录审计：谁在何时写入/删除了什么（§6.4）。MVP 先落内存，见实现路径文档 P2。
-    audit: List[Dict[str, Any]] = field(default_factory=list)
     # 每次建连时重新读取名单的回调（见 current_roster）。
     roster_loader: Optional[Callable[[], Optional[Roster]]] = None
     # 外部请求停止：accept 循环每轮检查一次（见 serve() 里为什么用轮询而不是
@@ -144,8 +142,15 @@ class Node:
 
     # ── 请求分派 ──────────────────────────────────────────────────────────
 
-    def handle(self, request: Dict[str, Any], peer: PeerIdentity) -> Dict[str, Any]:
-        """处理一条请求，返回应答。任何异常都转成 error 应答，不断开连接。"""
+    def handle(self, request: Dict[str, Any], peer: PeerIdentity,
+               write_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """处理一条请求，返回应答。任何异常都转成 error 应答，不断开连接。
+
+        `write_state` 是**每条连接**一份的临时状态（由 `_serve_one` 创建），目前只服务
+        容量核算：同一条连接上连续写入的分块属于同一次上传，占用基线只要量一次。
+        直接调用（用例、自检）不传，等价于每次请求一份新状态 —— 结果一样，只是多量几次。
+        """
+        write_state = {} if write_state is None else write_state
         op = request.get('op')
         if not isinstance(op, str):
             return {'status': 'error', 'code': 'bad_request', 'error': '缺少 op 字段'}
@@ -155,12 +160,13 @@ class Node:
             'stat': self._op_stat,
             'read': self._op_read,
             'write': self._op_write,
-            'delete': self._op_delete,
             'registry': self._op_registry,
         }.get(op)
         if handler is None:
             return {'status': 'error', 'code': 'bad_request', 'error': f'未知操作 {op!r}'}
         try:
+            if op == 'write':
+                return self._op_write(request, peer, write_state)
             return handler(request, peer)
         except AclDenied as e:
             # 403 语义：越界与无权限同一语义（§6.5 / plugin-guide 的既有约定）
@@ -224,12 +230,28 @@ class Node:
         with open(target, 'rb') as handle:
             handle.seek(offset)
             data = handle.read(length)
-        self._record(peer, 'read', share.share_id, relative, len(data))
         return {'status': 'ok', 'share': share.share_id, 'path': relative, 'offset': offset,
                 'size': size, 'length': len(data), 'eof': offset + len(data) >= size,
                 'data': base64.b64encode(data).decode('ascii')}
 
-    def _op_write(self, request: Dict[str, Any], peer: PeerIdentity) -> Dict[str, Any]:
+    def _op_write(self, request: Dict[str, Any], peer: PeerIdentity,
+                  write_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """写入一个分块（§6.4 写入语义）。
+
+        三种用法：
+
+        * `part=True` + `offset=N`（**上传走这条**）：分块写进 `<目标>.part`，
+          `offset` 是"对端已经收下的字节数"，必须等于暂存文件当前大小（`0` 表示
+          从头开始，会丢掉上次没传完的暂存数据）。最后一块带 `eof=True` 时由服务端
+          原子改名成目标文件。因此断线只会在属主磁盘上留下一个 `.part`，
+          而**续传**就是从 `probe` 问出的那个大小继续。
+        * `probe=True`：只回答"对端已经收下多少字节"，不写任何东西（续传前的探询）。
+          它要求的是 **write** 权限而不是 read —— 上传方可能只有写权限。
+        * `part=False`：直接写目标文件。小文件与兼容旧客户端用。
+
+        覆盖策略：目标已存在且 `overwrite` 不为真时拒绝（`exists`）。写权限是**可加**
+        的（§6.2），覆盖等于让别人少一份内容，必须由发起方显式要求。
+        """
         share = self._share_or_fail(request.get('share'))
         self._authorizer(peer).check(share.declaration, Permission.WRITE)
 
@@ -237,6 +259,19 @@ class Node:
         if not relative or relative.endswith('/'):
             raise RemoteFailure('bad_request', '写入必须给出文件名')
         target = resolve_in_share(share.path, relative)
+
+        part = bool(request.get('part'))
+        overwrite = bool(request.get('overwrite'))
+        staging = target + '.part' if part else target
+
+        if request.get('probe'):
+            if not part:
+                raise RemoteFailure('bad_request', 'probe 只对 part 写入有意义')
+            return {'status': 'ok', 'share': share.share_id, 'path': relative,
+                    'staged': os.path.getsize(staging) if os.path.isfile(staging) else 0,
+                    'exists': os.path.exists(target),
+                    'target_size': os.path.getsize(target) if os.path.isfile(target) else None}
+
         data_b64 = request.get('data')
         if not isinstance(data_b64, str):
             raise RemoteFailure('bad_request', 'data 必须是 base64 字符串')
@@ -247,41 +282,66 @@ class Node:
         if len(data) > MAX_WRITE_BYTES:
             raise RemoteFailure('too_large', f'单次写入不得超过 {MAX_WRITE_BYTES} 字节')
 
-        # 容量上限（§6.5）：授予写权限等于允许对方占用磁盘
+        eof = bool(request.get('eof'))
+        if part:
+            offset = request.get('offset')
+            if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+                raise RemoteFailure('bad_request', 'part 写入必须给出非负整数 offset')
+            current = os.path.getsize(staging) if os.path.isfile(staging) else 0
+            if offset == 0:
+                truncate = True
+            elif offset == current:
+                truncate = False
+            else:
+                raise RemoteFailure(
+                    'offset_mismatch',
+                    f'续传起点不符：对端已有 {current} 字节，客户端要从 {offset} 续传')
+        else:
+            offset = None
+            truncate = not bool(request.get('append'))
+
+        # 目标已存在时**尽早拒绝**：等到最后一块才说"已存在"等于白传一遍。
+        exists = os.path.exists(target)
+        if exists and not overwrite and (truncate or part):
+            raise RemoteFailure('exists', f'目标已存在: {relative}（需要 overwrite=true）')
+
+        # 容量上限（§6.5）：授予写权限等于允许对方占用磁盘。
+        # 基线**每条连接只量一次**：每个分块都 os.walk 一遍共享根会让大文件上传慢到不可用
+        # （1 GiB / 256 KiB 分块 = 4096 次全树遍历），因此按"基线 − 本次丢弃 + 已写入"推算。
+        usage: Optional[Dict[str, Any]] = None
         if share.max_bytes is not None:
-            existing = os.path.getsize(target) if os.path.exists(target) else 0
-            projected = self._share_usage(share) - existing + len(data)
+            tracking = write_state.setdefault('usage', {}) if write_state is not None else {}
+            usage = tracking.get(share.share_id)
+            if usage is None:
+                usage = {'baseline': self._share_usage(share), 'freed': 0, 'added': 0}
+                tracking[share.share_id] = usage
+            if truncate:
+                # 从头开始会截断暂存/目标文件，那部分占用本次不再计入
+                usage['freed'] += os.path.getsize(staging) if os.path.exists(staging) else 0
+            projected = usage['baseline'] - usage['freed'] + usage['added'] + len(data)
             if projected > share.max_bytes:
                 raise RemoteFailure(
                     'quota_exceeded',
                     f'超出共享项容量上限（{projected} > {share.max_bytes} 字节）')
 
         os.makedirs(os.path.dirname(target) or share.path, exist_ok=True)
-        append = bool(request.get('append'))
-        with open(target, 'ab' if append else 'wb') as handle:
+        with open(staging, 'wb' if truncate else 'ab') as handle:
             handle.write(data)
-        self._record(peer, 'write', share.share_id, relative, len(data))
+        if usage is not None:
+            usage['added'] += len(data)
+
+        committed = False
+        if part and eof:
+            if os.path.exists(target) and not overwrite:
+                raise RemoteFailure('exists', f'目标已存在: {relative}（需要 overwrite=true）')
+            os.replace(staging, target)
+            committed = True
+        final = target if committed or not part else staging
         return {'status': 'ok', 'share': share.share_id, 'path': relative,
-                'written': len(data), 'total': os.path.getsize(target)}
-
-    def _op_delete(self, request: Dict[str, Any], peer: PeerIdentity) -> Dict[str, Any]:
-        """删除。
-
-        §6.2：**删除权完全由 ACL 决定，不由归属推断** —— 不查"是谁上传的"，
-        只查 ACL 的 delete 项。§6.4 要求不做物理删除（先进应用级回收站），
-        本 MVP 尚未实现回收站，见实现路径文档 P2。
-        """
-        share = self._share_or_fail(request.get('share'))
-        self._authorizer(peer).check(share.declaration, Permission.DELETE)
-        relative = str(request.get('path', ''))
-        target = resolve_in_share(share.path, relative)
-        if not os.path.isfile(target):
-            raise RemoteFailure('not_found', f'文件不存在: {relative!r}')
-        size = os.path.getsize(target)
-        os.remove(target)
-        self._record(peer, 'delete', share.share_id, relative, size)
-        return {'status': 'ok', 'share': share.share_id, 'path': relative, 'deleted': size,
-                'note': 'MVP 为物理删除，应用级回收站未实现'}
+                'written': len(data), 'total': os.path.getsize(final),
+                # 续传游标：客户端拿它与本地已读数对账，不一致就重新探询
+                'offset': None if offset is None else offset + len(data),
+                'staged': part and not committed, 'committed': committed}
 
     def _op_registry(self, request: Dict[str, Any], peer: PeerIdentity) -> Dict[str, Any]:
         """交换注册表快照（§7.3）。
@@ -334,13 +394,6 @@ class Node:
                 except OSError:
                     continue
         return total
-
-    def _record(self, peer: PeerIdentity, action: str, share_id: str, path: str,
-                size: int) -> None:
-        import time
-        self.audit.append({'ts': int(time.time()), 'actor': peer.principal_id,
-                           'device': peer.device_id, 'action': action,
-                           'share': share_id, 'path': path, 'bytes': size})
 
     # ── 注册自己的记录 ────────────────────────────────────────────────────
 
@@ -469,12 +522,15 @@ def _serve_one(sock: socket.socket, address: Any, node: Node) -> None:
         session, peer = run_handshake(sock, node.identity, node.current_roster(), negotiation,
                                       initiator=False)
         connection = Connection(sock, session, peer, negotiation)
+        # 每条连接一份写入状态：同一条连接上的多个分块属于同一次上传，
+        # 容量基线只量一次（见 _op_write）。
+        write_state: Dict[str, Any] = {}
         while True:
             try:
                 request = connection.recv()
             except TransportError:
                 break
-            connection.send(node.handle(request, peer))
+            connection.send(node.handle(request, peer, write_state))
     except (TransportError, OSError, AclDenied):
         # 认证失败、对端半途断开、路径越界：都只影响这条连接
         pass

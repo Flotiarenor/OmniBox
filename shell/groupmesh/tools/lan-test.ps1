@@ -156,7 +156,6 @@ Write-Ok2 '700 KB 文件跨机（Noise 加密通道）传输校验通过'
 Write-Step2 "附加验证：越权与越界必须被拒"
 $negative = @(
     @{ Name = '无写权限上传'; Result = (Invoke-Cli put --dir $WinDir --target $Target --share-id pub --file $download --remote-path evil.bin) },
-    @{ Name = '无删除权限删除'; Result = (Invoke-Cli rm --dir $WinDir --target $Target --share-id pub --path note.txt) },
     @{ Name = '路径越界读取'; Result = (Invoke-Cli get --dir $WinDir --target $Target --share-id pub --path '../../etc/passwd' --output (Join-Path $WinDir 'evil.txt')) }
 )
 foreach ($check in $negative) {

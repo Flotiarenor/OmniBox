@@ -100,28 +100,89 @@ def fetch_to_file(connection: Connection, share_id: str, path: str, destination:
 
 def push_bytes(connection: Connection, share_id: str, path: str, data: bytes,
                append: bool = False) -> Dict[str, Any]:
-    """上传内容到对端共享项。服务端会按 ACL 的 write 项判定权限。"""
+    """上传一段内容到对端共享项。服务端会按 ACL 的 write 项判定权限。"""
     return connection.request({'op': 'write', 'share': share_id, 'path': path,
                                'data': base64.b64encode(data).decode('ascii'),
                                'append': append})
 
 
+class UploadCancelled(Exception):
+    """上传被调用方主动取消（`cancelled` 回调返回真）。
+
+    单独一个异常类型：调用方要能把"用户点了取消"与"传输失败"分开 —— 前者不该
+    报错、也不该重试，而对端暂存的 `.part` 是**要保留**的（它就是续传的起点）。
+    """
+
+
+def probe_upload(connection: Connection, share_id: str, path: str) -> Dict[str, Any]:
+    """问对端：这个目标已经收下多少字节（续传起点）。
+
+    需要 **write** 权限而不是 read —— 上传方可能只有写权限（§6.2 的两档是独立的）。
+    """
+    return connection.request({'op': 'write', 'share': share_id, 'path': path,
+                               'part': True, 'probe': True})
+
+
 def push_file(connection: Connection, share_id: str, local_path: Path,
-              remote_path: str) -> int:
+              remote_path: str, overwrite: bool = False, offset: int = 0,
+              chunk_bytes: int = DEFAULT_CHUNK_BYTES,
+              progress: Optional[ProgressFn] = None,
+              cancelled: Optional[Callable[[], bool]] = None) -> int:
+    """把本地文件上传到对端共享项，返回**上传完成后对端持有的字节数**。
+
+    走**暂存 + 提交**：分块写进对端的 `<目标>.part`，最后一块带 `eof=True`，由服务端
+    原子改名成目标文件。这样中途断线（或进程被杀）只会在属主磁盘上留下 `.part`，
+    不会把目标文件截断成半份 —— 直接覆写目标文件的话，断线等于毁掉对端已有的那份。
+
+    续传：`offset` 是"对端已经收下的字节数"，调用方先用 `probe_upload()` 问出来，
+    确认它与本地文件是同一份内容的前缀之后再传。每个分块都带 `offset`，对端会核对
+    （不一致就回 `offset_mismatch`），因此两个上传方抢同一个目标不会拼出垃圾。
+
+    取消：`cancelled()` 返回真时抛 `UploadCancelled`；此时抛出的位置是**分块边界**，
+    已传的分块留在对端 `.part` 里，下次带同样的 `offset` 继续即可。
+
+    目标已存在且 `overwrite=False` 时服务端会在第一个分块就回 `exists` 拒绝。
+    """
     local_path = Path(local_path)
-    written = 0
+    total = local_path.stat().st_size
+    sent = offset
+    pushed = False
+    if progress is not None:
+        progress(sent, total)
     with open(local_path, 'rb') as handle:
+        handle.seek(offset)
         while True:
-            block = handle.read(DEFAULT_CHUNK_BYTES)
+            if cancelled is not None and cancelled():
+                raise UploadCancelled(f'已传 {sent} / {total} 字节')
+            block = handle.read(chunk_bytes)
             if not block:
                 break
-            push_bytes(connection, share_id, remote_path, block, append=written > 0)
-            written += len(block)
-    return written
-
-
-def delete_remote(connection: Connection, share_id: str, path: str) -> Dict[str, Any]:
-    return connection.request({'op': 'delete', 'share': share_id, 'path': path})
+            # 预读一个字节判断这是不是最后一块：用文件大小算"最后一块"在上传过程中
+            # 文件被追加时会永远等不到 eof，对端就只剩一个 .part。
+            tail = handle.read(1)
+            last = not tail
+            if tail:
+                handle.seek(-1, os.SEEK_CUR)
+            response = connection.request({
+                'op': 'write', 'share': share_id, 'path': remote_path,
+                'data': base64.b64encode(block).decode('ascii'),
+                'part': True, 'offset': sent, 'eof': last, 'overwrite': overwrite})
+            pushed = True
+            sent += len(block)
+            # 对端回的游标必须与本地账一致：不一致说明有别人在写同一个暂存文件，
+            # 继续传只会拼出更坏的结果。
+            reported = response.get('offset')
+            if isinstance(reported, int) and reported != sent:
+                raise RemoteError(f'对端游标 {reported} 与本地 {sent} 不一致', 'offset_mismatch')
+            if progress is not None:
+                progress(sent, total)
+    if not pushed:
+        # 一个分块都没发：要么是空文件，要么**整个文件已经在对方暂存里**（上次传完但
+        # 没提交）。两种情况都必须补一次提交，否则对端只剩一个 `.part`。
+        connection.request({'op': 'write', 'share': share_id, 'path': remote_path,
+                            'data': '', 'part': True, 'offset': sent, 'eof': True,
+                            'overwrite': overwrite})
+    return sent
 
 
 def fetch_registry(connection: Connection) -> Registry:
