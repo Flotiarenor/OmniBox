@@ -112,9 +112,24 @@ def load_roster(root: Path) -> Optional[Roster]:
 
 
 def save_roster(root: Path, roster: Roster) -> None:
+    """写当前名单，并把它并入名单历史（准入判定要用，见 roster_history.py）。
+
+    两件事必须一起做：只写当前名单的话，本机就"不认得"自己签发/持有过的旧版本，
+    落后多版的设备会被 `_peer_knows_history` 挡住 —— 表现为"我明明被加进去了，
+    却拉不到新名单"。
+    """
+    from .roster_history import RosterHistory
+
     path = Path(root) / ROSTER_FILE
     path.write_text(json.dumps(roster.to_dict(), ensure_ascii=False, indent=2) + '\n',
                     encoding='utf-8')
+    RosterHistory(root).record(roster)
+
+
+def load_roster_history(root: Path) -> List[Roster]:
+    """读名单历史（新→旧）：根目录下 `roster-history.json`。"""
+    from .roster_history import RosterHistory
+    return RosterHistory(root).load()
 
 
 def load_shares(root: Path, identity: Identity) -> Dict[str, Any]:
@@ -417,7 +432,8 @@ def cmd_share(args: argparse.Namespace) -> int:
 
 def _serve_loop(args: argparse.Namespace, identity: Identity, roster: Roster,
                 shares: Dict[str, Any], registry: Registry,
-                roster_loader=None, roster_saver=None) -> None:
+                roster_loader=None, roster_saver=None,
+                roster_history_loader=None) -> None:
     from .node import serve
 
     port = args.port
@@ -446,7 +462,8 @@ def _serve_loop(args: argparse.Namespace, identity: Identity, roster: Roster,
 
     try:
         serve(bind, port, identity, roster, shares=shares, registry=registry,
-              roster_loader=roster_loader, roster_saver=roster_saver, ready=publish)
+              roster_loader=roster_loader, roster_saver=roster_saver,
+              roster_history_loader=roster_history_loader, ready=publish)
     except KeyboardInterrupt:
         info('\n已停止监听。')
     except OSError as e:
@@ -470,7 +487,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
         info(f'已从对端采纳新名单：版本 {adopted.version}，团体 {adopted.group!r}')
 
     _serve_loop(args, identity, roster, shares, registry,
-                roster_loader=roster_loader, roster_saver=roster_saver)
+                roster_loader=roster_loader, roster_saver=roster_saver,
+                roster_history_loader=lambda: load_roster_history(Path(args.dir)))
     return 0
 
 

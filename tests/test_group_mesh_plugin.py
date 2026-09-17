@@ -629,6 +629,56 @@ class RosterDistributionTest(unittest.TestCase):
         self.assertIsNone(member.get_status()['roster']['adopted_notice'])
 
 
+    def test_group_operations_record_roster_history(self):
+        """群主加人与成员加入都必须把名单并入历史 —— 准入判定靠它。
+
+        为什么锁在插件层：本机"认不认得某个旧版本"完全取决于这些入口有没有写历史。
+        少了任何一处，落后多版的设备就会过不了准入，表现为"我明明被加进去了，
+        却拉不到新名单"，而原因藏在另一台机器上。
+        """
+        if not self._plugin('probe6').get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+
+        owner = self._plugin('owner6')
+        member = self._plugin('member6')
+        owner.init_identity({'name': 'owner'})
+        member.init_identity({'name': 'member'})
+        created = owner.create_group({'group': 'history-group'})          # v1
+        self.assertEqual([r.version for r in owner._load_roster_history()], [1])
+
+        keys = member.get_device_keys()
+        added = owner.add_member({'principal': keys['principal'],
+                                  'device': keys['device'], 'name': 'member'})   # v2
+        self.assertEqual([r.version for r in owner._load_roster_history()], [2, 1],
+                         '群主签发的新版本必须进历史')
+        # 历史落盘：换一个实例（模拟插件重载）仍读得到
+        reloaded = self._plugin('owner6')
+        self.assertEqual([r.version for r in reloaded._load_roster_history()], [2, 1])
+
+        # 成员用 v1 加入、再用 v2 更新：两次都要进它自己的历史
+        self.assertTrue(member.join_group({'invite': created['invite']})['success'])
+        self.assertEqual([r.version for r in member._load_roster_history()], [1])
+        self.assertTrue(member.join_group({'invite': added['invite']})['success'])
+        self.assertEqual([r.version for r in member._load_roster_history()], [2, 1],
+                         '成员收到的每个版本都必须进历史')
+
+    def test_history_survives_plugin_reload(self):
+        """历史落盘：插件重载（改设置、升级、壳重启）后仍然认得出旧版本。"""
+        if not self._plugin('probe7').get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+
+        owner = self._plugin('owner7')
+        owner.init_identity({'name': 'owner'})
+        owner.create_group({'group': 'reload-group'})
+        member = self._plugin('member7')
+        member.init_identity({'name': 'member'})
+        self.assertTrue(member.join_group(
+            {'invite': owner.get_invite()['invite']})['success'])
+
+        reloaded = self._plugin('member7')
+        self.assertEqual([r.version for r in reloaded._load_roster_history()], [1])
+
+
 class ShareLocationTest(unittest.TestCase):
     """共享根是一个**有状态的位置**，而不是共享项里的一个字符串。
 

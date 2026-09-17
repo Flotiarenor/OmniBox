@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import socket
 import threading
@@ -33,6 +34,8 @@ from .registry import Registration, Registry, new_registration
 from .roster import Roster
 from .shares import AclDenied, Authorizer, LocalShare, Permission
 from .transport import Connection, PeerIdentity, TransportError, exchange_hello, run_handshake
+
+log = logging.getLogger(__name__)
 
 # 目录枚举与文件大小的硬上限
 MAX_LIST_ENTRIES = 2000
@@ -93,6 +96,9 @@ class Node:
     # 采纳了对端推来的新名单时写回本地（见 _op_roster）。None = 只更新内存副本，
     # 不落盘 —— 那种情况下重启会退回旧名单，因此插件与 CLI 都会传入。
     roster_saver: Optional[Callable[[Roster], None]] = None
+    # 读取本机名单历史（新→旧）的回调，供准入判定使用（见 _local_roster_chain）。
+    # None = 没有历史可查，此时只能靠对端自己递上来的旧名单判定准入。
+    roster_history_loader: Optional[Callable[[], List[Roster]]] = None
     # 外部请求停止：accept 循环每轮检查一次（见 serve() 里为什么用轮询而不是
     # "另一个线程 close 套接字"）。None 表示不检查，一直服务到套接字被关闭。
     stop_requested: Optional[Callable[[], bool]] = None
@@ -117,8 +123,7 @@ class Node:
             try:
                 loaded = self.roster_loader()
             except Exception as e:
-                import logging
-                logging.getLogger(__name__).warning(f'重新读取名单失败，沿用内存副本: {e}')
+                log.warning(f'重新读取名单失败，沿用内存副本: {e}')
             else:
                 if loaded is not None:
                     self.roster = loaded
@@ -454,41 +459,40 @@ class Node:
         except RecordError as e:
             raise RemoteFailure('bad_request', f'名单结构非法: {e}') from e
 
-    # 本机保留的名单历史深度（供准入判定使用，见 _local_roster_chain）。
+    # 本机保留的名单历史深度上限（仅用于限制对端能塞进来的条数）。
     LOCAL_ROSTER_HISTORY = 16
 
+    def _local_roster_history(self) -> List[Roster]:
+        """本机保存的名单历史（新→旧）；没有 loader 时返回空表。"""
+        if self.roster_history_loader is None:
+            return []
+        try:
+            loaded = self.roster_history_loader()
+        except Exception as e:
+            # 历史只是准入旁证：读不出来就退化为"只能靠对端递上来的旧名单判定"，
+            # 绝不能让一次 IO 错误把所有未入名单的连接都拒掉。
+            log.warning(f'读取名单历史失败，按空历史处理: {e}')
+            return []
+        return [item for item in (loaded or []) if isinstance(item, Roster)]
+
     def _local_roster_chain(self, request: Dict[str, Any], local: Roster) -> List[Roster]:
-        """本机一侧的名单链 = 本机当前名单 +（对端顺带给到的）本机的历史。
+        """本机一侧的名单链 = 本机保留的历史 + 当前名单。
 
-        为什么需要它：准入判定要回答"对端手里那份，是不是本机认得的某一份"。
-        只看本机当前那一份不够 —— 群主刚签发 v2、成员手里还是 v1 时，v1 正是
-        **最需要**拿到 v2 的那一个，而它不在本机当前名单里。
+        **只由本机掌握的内容构成，绝不含对端送来的字段。** 这一点是准入判定的
+        成败所在：一旦把对端递上来的名单也算进"本机认得"，判定就变成"对端能证明
+        自己给的名单等于自己给的名单"，对任何请求都成立（我第一版就是这么写的，
+        用例 `test_peer_far_behind_is_rejected_without_history` 把它抓了出来）。
 
-        数据来源只有一个可靠渠道：`prev` 指向的哈希（那份名单本身我们没存）。
-        因此这里同时收集对端送来的名单里**能接到本机链上的**那些（哈希命中 `prev`）
-        —— 对端为了换取新名单而递来旧名单，正好把这段历史补上。
-        真正长久的做法是在本机保存名单历史（见 `_op_roster` 的说明），
-        当前深度上限 `LOCAL_ROSTER_HISTORY` 只是防止被塞爆。
+        `request` 参数保留在签名里只为了让调用点不必区分两种情形（将来的准入条件
+        可能需要参考对端的版本号），当前实现**刻意不读它**。
         """
-        history: List[Roster] = [local]
-        raw_candidates = list(request.get('history') or []) if isinstance(request.get('history'), list) else []
-        raw_current = request.get('roster')
-        if isinstance(raw_current, dict):
-            raw_candidates.insert(0, raw_current)
-        for item in raw_candidates[:self.LOCAL_ROSTER_HISTORY]:
-            try:
-                candidate = Roster.from_dict(item)
-            except RecordError:
-                continue
-            if candidate.group == local.group and candidate.version < local.version:
-                history.append(candidate)
-        return Roster.history_chain(*history)
+        return Roster.history_chain(local, *self._local_roster_history())
 
     def _peer_knows_history(self, request: Dict[str, Any], local: Roster) -> bool:
         """对端手里的名单是否**本机认得**（§5.7 的准入条件）。
 
         判据：对端给出的最新那份，必须出现在本机一侧的名单链里
-        （本机当前名单，或本机认得的某个历史版本）。
+        （本机当前名单，或本机保存/收到的某个历史版本）。
 
         这条准入挡的是"任何拿到端点的人都能取走完整成员名单"。只验"是同一团体、
         版本不比本机新"是不够的 —— 团体名是用户自己起的字符串（默认
@@ -579,6 +583,7 @@ def serve(host: str, port: int, identity: Identity, roster: Optional[Roster],
           registry: Optional[Registry] = None,
           roster_loader: Optional[Callable[[], Optional[Roster]]] = None,
           roster_saver: Optional[Callable[[Roster], None]] = None,
+          roster_history_loader: Optional[Callable[[], List[Roster]]] = None,
           ready: Optional[Callable[[socket.socket], None]] = None,
           on_error: Optional[Callable[[socket.socket, BaseException], None]] = None,
           stop_requested: Optional[Callable[[], bool]] = None) -> None:
@@ -588,7 +593,9 @@ def serve(host: str, port: int, identity: Identity, roster: Optional[Roster],
     （无中心系统里，任何成员都可以随时上线/离线）。
 
     `roster_loader` 让长驻节点能拿到**最新**名单（见 `Node.current_roster`）；
-    `roster_saver` 让"采纳了对端推来的新名单"能落盘（见 `_op_roster`）。
+    `roster_saver` 让"采纳了对端推来的新名单"能落盘（见 `_op_roster`）；
+    `roster_history_loader` 提供本机名单历史，供准入判定使用（见
+    `_local_roster_chain`）。
 
     `on_error` 在监听套接字创建后、`bind`/`listen` 失败时被调用（随后该套接字
     会被关闭并把异常抛出）。存在的理由与 `ready` 对称：调用方要能知道"是哪个
@@ -598,7 +605,9 @@ def serve(host: str, port: int, identity: Identity, roster: Optional[Roster],
     """
     node = Node(identity=identity, roster=roster, shares=dict(shares or {}),
                 registry=registry, roster_loader=roster_loader,
-                roster_saver=roster_saver, stop_requested=stop_requested)
+                roster_saver=roster_saver,
+                roster_history_loader=roster_history_loader,
+                stop_requested=stop_requested)
     family = socket.AF_INET6 if ':' in host else socket.AF_INET
     listener = socket.socket(family, socket.SOCK_STREAM)
     try:
@@ -697,8 +706,7 @@ def _serve_one(sock: socket.socket, address: Any, node: Node) -> None:
         # 认证失败、对端半途断开、路径越界：都只影响这条连接
         pass
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f'处理连接 {address} 时异常: {e}')
+        log.warning(f'处理连接 {address} 时异常: {e}')
     finally:
         try:
             sock.close()

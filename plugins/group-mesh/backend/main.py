@@ -48,6 +48,7 @@ from shell.backend.plugin_base import PluginBase
 from shell.groupmesh import __version__ as KERNEL_VERSION
 from shell.groupmesh import client as mesh_client
 from shell.groupmesh import registry as registry_mod
+from shell.groupmesh import roster_history as roster_history_mod
 from shell.groupmesh.identity import Identity
 from shell.groupmesh.node import serve
 from shell.groupmesh.records import RecordError
@@ -210,6 +211,10 @@ class GroupMeshPlugin(PluginBase):
         self._fetch_locks_guard = threading.Lock()
         # 上一次刷新里连不上的端点 -> 失败原因（手动登记的地址失败时要回报给用户）
         self._unreachable: Dict[Tuple[str, int], str] = {}
+        # 名单历史（`roster-history.json`）：准入判定要回答"本机认不认得对端手里
+        # 那份"，只有当前名单说明不了"见过它前面的那些"（见 roster_history.py）。
+        # 惰性构造：不是每个实例都会跑节点。
+        self._roster_history_store: Optional[roster_history_mod.RosterHistory] = None
         # 对端名单版本记录（端点 -> {group, version, hash}）：界面据此做
         # "本机 v3 / 对方 v2" 的对照（§5.4 的宽限提示、§5.7 的分发可见性）。
         self._peer_roster_notes: Dict[Tuple[str, int], Dict[str, Any]] = {}
@@ -403,10 +408,15 @@ class GroupMeshPlugin(PluginBase):
         return Roster.from_dict(json.loads(path.read_text(encoding='utf-8')))
 
     def _save_roster(self, roster: Roster) -> None:
-        """把名单写回 `identity/roster.json`（原子写）。
+        """把名单写回 `identity/roster.json`（原子写），并并入名单历史。
 
-        节点采纳对端推来的新名单后必须落盘：只更新内存副本的话，插件重载
-        （改设置、升级、壳重启）会退回旧名单，表现成"刚升级完又变回去了"。
+        两件事必须一起做：
+
+        1. **落盘当前名单**：只更新内存副本的话，插件重载（改设置、升级、壳重启）
+           会退回旧名单，表现成"刚升级完又变回去了"。
+        2. **并入历史**（`roster-history.json`）：准入判定要回答"本机认不认得对端
+           手里那份"，而本机当前名单只说明"见过这一份"。缺了历史，落后多版的设备
+           （群主连加两人，它只有 v1）就取不到新名单，只能回去要邀请串。
         """
         self.identity_dir.mkdir(parents=True, exist_ok=True)
         path = self.identity_dir / 'roster.json'
@@ -414,6 +424,29 @@ class GroupMeshPlugin(PluginBase):
         tmp.write_text(json.dumps(roster.to_dict(), ensure_ascii=False, indent=2) + '\n',
                        encoding='utf-8')
         os.replace(tmp, path)
+        self._record_roster_history(roster)
+
+    def _roster_history(self) -> roster_history_mod.RosterHistory:
+        """名单历史表（读盘按需，进程内缓存由一个实例承载）。"""
+        history = self._roster_history_store
+        if history is None:
+            history = roster_history_mod.RosterHistory(self.identity_dir)
+            self._roster_history_store = history
+        return history
+
+    def _record_roster_history(self, roster: Roster) -> None:
+        """把一份**已签名**的名单并入历史。失败只记日志：历史不是通信的前提。"""
+        try:
+            self._roster_history().record(roster)
+        except Exception as e:
+            log.warning(f'[group-mesh] 名单历史写入失败（不影响通信）: {e}')
+
+    def _load_roster_history(self) -> List[Roster]:
+        try:
+            return self._roster_history().load()
+        except Exception as e:
+            log.warning(f'[group-mesh] 名单历史读取失败，按空历史处理: {e}')
+            return []
 
     def _load_shares(self) -> Dict[str, LocalShare]:
         """把「声明的协议对象」与「本机的路径/配额」合成 `LocalShare`。
@@ -566,7 +599,6 @@ class GroupMeshPlugin(PluginBase):
 
     def create_group(self, opts: Any = None, group: str = '') -> Dict[str, Any]:
         """创建团体：调用方成为群主，创始名单里只有自己的一台设备。"""
-        import json
         options = _opts(opts)
         identity = self._load_identity()
         if identity is None:
@@ -582,9 +614,10 @@ class GroupMeshPlugin(PluginBase):
         except RecordError as e:
             return {'success': False, 'error': str(e)}
 
-        self.identity_dir.mkdir(parents=True, exist_ok=True)
-        (self.identity_dir / 'roster.json').write_text(
-            json.dumps(roster.to_dict(), ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        # 走 `_save_roster` 而不是直接写文件：它同时把名单并入历史 ——
+        # 少了那一步，本机就"不认得"自己签发过的旧版本，落后多版的设备会被准入
+        # 判定挡住（见 roster_history.py）。
+        self._save_roster(roster)
         return {'success': True, 'group': roster.group, 'version': roster.version,
                 'invite': self._invite_string(roster)}
 
@@ -626,9 +659,9 @@ class GroupMeshPlugin(PluginBase):
             return {'success': False, 'error': f'名单未被接受: {e}{hint}'}
 
         previous_version = current.version if current is not None else None
-        self.identity_dir.mkdir(parents=True, exist_ok=True)
-        (self.identity_dir / 'roster.json').write_text(
-            jsonlib.dumps(roster.to_dict(), ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        # 走 `_save_roster`：同时并入名单历史（每收到新版本都留下，
+        # 否则本机不认得自己曾经持有的旧版本）
+        self._save_roster(roster)
         identity = self._load_identity()
         entry = roster.entry_of(identity.principal.public_key)
         return {'success': True,
@@ -676,7 +709,6 @@ class GroupMeshPlugin(PluginBase):
         集合都会被拒绝，因此这里不需要（也不应该）在插件层重写一套角色判断。
         """
         import base64
-        import json as jsonlib
         options = _opts(opts)
         principal = str(options.get('principal') or principal or '')
         device = str(options.get('device') or device or '')
@@ -720,9 +752,9 @@ class GroupMeshPlugin(PluginBase):
         except RecordError as e:
             return {'success': False, 'error': f'你的角色无权做这次改动: {e}'}
 
-        (self.identity_dir / 'roster.json').write_text(
-            jsonlib.dumps(candidate.to_dict(), ensure_ascii=False, indent=2) + '\n',
-            encoding='utf-8')
+        # 走 `_save_roster` 而不是直接写文件：它同时把新名单并入历史，
+        # 本机才"认得"自己签发过的每一版（落后多版的设备靠它通过准入判定）
+        self._save_roster(candidate)
         return {'success': True, 'action': action, 'version': candidate.version,
                 'invite': self._invite_string(candidate)}
 
@@ -2627,6 +2659,7 @@ class GroupMeshPlugin(PluginBase):
                 # 运行中的节点必须立刻认，而不是要求用户重启插件。
                 serve(bind, port, identity, roster, shares=shares, registry=registry,
                       roster_loader=self._load_roster, roster_saver=self._save_roster,
+                      roster_history_loader=self._load_roster_history,
                       ready=on_ready, stop_requested=self._node_stop.is_set)
             except OSError as e:
                 self._last_error = self._listen_error(bind, port, e)

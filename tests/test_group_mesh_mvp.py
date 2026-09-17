@@ -741,6 +741,96 @@ class AuthorizePeerTest(unittest.TestCase):
             authorize_peer(None, self.device_pub)
 
 
+class RosterHistoryTest(unittest.TestCase):
+    """名单历史（`roster-history.json`）：准入判定要用的"本机认得哪些旧版本"。
+
+    为什么必须有这个文件：本机的 `roster.json` 只说明"见过这一份"，说明不了
+    "见过它前面的那些"。群主连着加两个人（v1→v2→v3）而某台设备一直离线、手里
+    只有 v1 时，`v3.prev` 指向 v2，只看当前名单就无从判断"本机认得 v1"。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.owner = Principal.create('owner')
+        self.v1 = founding_roster('g', self.owner, [cp.generate_sign_keypair()[1]],
+                                  ttl_seconds=3600)
+        self.v2 = next_roster(self.v1, 'g', self.v1.owner_key,
+                              list(self.v1.members), ttl_seconds=3600)
+        self.v2.sign(self.owner.private_key)
+        self.v3 = next_roster(self.v2, 'g', self.v2.owner_key,
+                              list(self.v2.members), ttl_seconds=3600)
+        self.v3.sign(self.owner.private_key)
+
+    def _store(self, keep=12):
+        from shell.groupmesh.roster_history import RosterHistory
+        return RosterHistory(self.root, keep=keep)
+
+    def test_record_and_load_round_trip(self):
+        store = self._store()
+        store.record(self.v1)
+        store.record(self.v3)
+        store.record(self.v2)
+        # 新→旧，与并入顺序无关
+        self.assertEqual(store.versions(), [3, 2, 1])
+        # 另一个实例读盘得到同样的历史（落盘生效）
+        self.assertEqual(self._store().versions(), [3, 2, 1])
+
+    def test_record_deduplicates_by_content_hash(self):
+        store = self._store()
+        store.record(self.v1)
+        store.record(self.v1)
+        self.assertEqual(store.versions(), [1])
+
+    def test_history_is_bounded(self):
+        store = self._store(keep=2)
+        for roster in (self.v1, self.v2, self.v3):
+            store.record(roster)
+        self.assertEqual(store.versions(), [3, 2], '只保留最近 keep 份')
+
+    def test_record_puts_the_newest_first(self):
+        """刚并入的那份排在最前：调用方据此判断"最近用的是哪一版"。"""
+        store = self._store()
+        store.record(self.v1)
+        store.record(self.v3)
+        self.assertEqual(store.load()[0].version, 3)
+
+    def test_missing_file_is_an_empty_history(self):
+        from shell.groupmesh.roster_history import RosterHistory
+        self.assertEqual(RosterHistory(self.root / 'nope').load(), [])
+
+    def test_corrupt_file_degrades_to_empty_history(self):
+        """读坏了只降级，不抛异常：历史只是准入旁证，不能因此让节点不可用。"""
+        store = self._store()
+        store.record(self.v1)
+        from shell.groupmesh.roster_history import HISTORY_FILE
+        (self.root / HISTORY_FILE).write_text('{ not json', encoding='utf-8')
+        self.assertEqual(self._store().load(), [])
+
+    def test_single_bad_entry_does_not_invalidate_the_rest(self):
+        import json as jsonlib
+
+        store = self._store()
+        store.record(self.v1)
+        store.record(self.v2)
+        from shell.groupmesh.roster_history import HISTORY_FILE
+        payload = jsonlib.loads((self.root / HISTORY_FILE).read_text(encoding='utf-8'))
+        payload['rosters'].append({'group': 'g'})       # 缺字段的坏条目
+        (self.root / HISTORY_FILE).write_text(jsonlib.dumps(payload), encoding='utf-8')
+        self.assertEqual(self._store().versions(), [2, 1])
+
+    def test_contains_uses_content_hash(self):
+        store = self._store()
+        store.record(self.v2)
+        self.assertTrue(store.contains(self.v2))
+        self.assertFalse(store.contains(self.v1))
+        # 同版本、同成员，但团体名不同 -> 不算"认得"
+        other = founding_roster('other', self.owner, list(self.v2.members[0].device_keys),
+                                ttl_seconds=3600)
+        self.assertFalse(store.contains(other))
+
+
 class RosterDistributionTest(unittest.TestCase):
     """名单分发（§5.7）：通道不可信、签名是唯一判据、未入名单者只能拉名单。
 
@@ -782,6 +872,8 @@ class RosterDistributionTest(unittest.TestCase):
                                                    acl=Acl(read='group', write='owner'))})
         self.saved: list = []
         self.node.roster_saver = self.saved.append
+        # 本机名单历史 = [v2, v1]：准入判定要用它认出"手里只有 v1 的对端"
+        self.node.roster_history_loader = lambda: [self.v2, self.v1]
 
     def _identity(self) -> Identity:
         """一个真实身份（Node 需要 identity.principal / device 的形状）。"""
@@ -884,6 +976,35 @@ class RosterDistributionTest(unittest.TestCase):
         self.assertEqual(response['status'], 'error')
         self.assertEqual(response['code'], 'forbidden')
 
+    def test_echoing_our_roster_back_is_not_a_credential(self):
+        """把本机**当前**名单原样递回来不算凭据 —— 判定读的是本机历史，不是对端输入。
+
+        这条用例的结论分两半，两半都要锁住：
+
+        * 对端把本机当前名单递回来时**会**通过。这不是漏洞：递得出这一份，就证明它
+          确实见过本团的这份名单（哈希伪造不了），而见面礼本来就是分发名单。
+        * 但它**不能**凭自己拼出来的历史混进来：本机没有历史表时，一个只递上
+          "本机没见过的版本 + 自编链表"的设备必须被拒 —— 准入读的是**本机掌握**
+          的历史，而不是"对端送的名单里有没有本机这一份"（后者对任何请求都成立，
+          等于没有准入；第一版实现正是这么错的）。
+        """
+        # 第一半：递回本机当前名单 -> 通过
+        node_without_history = Node(identity=self._identity(), roster=self.v2)
+        echoed = node_without_history.handle(
+            {'op': 'roster', 'action': 'list', 'roster': self.v2.to_dict(),
+             'history': [self.v2.to_dict()]},
+            self._peer(member=False))
+        self.assertEqual(echoed['status'], 'ok')
+
+        # 第二半：本机是 v1、对端声称有 v3（本机根本没见过的版本）-> 拒绝
+        behind = Node(identity=self._identity(), roster=self.v1)
+        fabricated = behind.handle(
+            {'op': 'roster', 'action': 'list', 'roster': self.v3.to_dict(),
+             'history': [self.v3.to_dict(), self.v2.to_dict()]},
+            self._peer(member=False))
+        self.assertEqual(fabricated['status'], 'error')
+        self.assertEqual(fabricated['code'], 'forbidden')
+
     def test_unrelated_roster_does_not_grant_access(self):
         """拿**别的团体**的名单来换本机名单必须被拒（准入条件是"同一条链"）。
 
@@ -947,6 +1068,61 @@ class RosterDistributionTest(unittest.TestCase):
         self.assertEqual(response['code'], 'rejected')
 
     # ── 未入名单者的权限收敛 ──────────────────────────────────────────────
+
+    # ── 本机保存的名单历史（§5.7 的准入凭据）────────────────────────────
+
+    def test_peer_far_behind_is_admitted_when_history_is_kept(self):
+        """落后多版的设备靠**本机历史**通过准入 —— 这才是不必手工贴串的关键。
+
+        场景：群主连加两人（v1→v2→v3），某台设备一直离线、手里只有 v1。
+        `v3.prev` 指向 v2 而不是 v1，所以"只看当前名单"根本无从判断本机认不认得 v1。
+        历史表补上这一段之后，对端只要递上手电的 v1 就能换到 v3。
+        """
+        node = Node(identity=self._identity(), roster=self.v3)
+        node.roster_history_loader = lambda: [self.v3, self.v2, self.v1]
+        response = node.handle(
+            {'op': 'roster', 'action': 'list', 'history': [self.v1.to_dict()]},
+            self._peer(member=False))
+        self.assertEqual(response['status'], 'ok', response)
+        self.assertEqual(response['version'], 3)
+
+    def test_peer_far_behind_is_rejected_without_history(self):
+        """同一场景、没有历史表时会被拒 —— 这正是历史要解决的问题。
+
+        这条用例是该功能的**判别力**所在：它证明上一条不是因为"准入本来就宽松"
+        而通过的。
+        """
+        node = Node(identity=self._identity(), roster=self.v3)
+        # 没有 roster_history_loader：只有当前名单与对端自己递上来的 v1
+        response = node.handle(
+            {'op': 'roster', 'action': 'list', 'history': [self.v1.to_dict()]},
+            self._peer(member=False))
+        self.assertEqual(response['status'], 'error')
+        self.assertEqual(response['code'], 'forbidden')
+
+    def test_history_loader_failure_does_not_break_the_rest(self):
+        """历史读盘失败只降级，不能让节点整体不可用。
+
+        预期结果是**被拒**而不是放行：没了历史，"本机认得哪些版本"就只剩当前那一份，
+        而准入判定**不能**靠对端自己递上来的名单来证明它自己（那对任何请求都成立）。
+        这里锁的是"降级成严格"而不是"降级成放行" —— 后者等于把名单公开给任何
+        能连上的人，是比拒绝严重得多的事故方向。
+        """
+        def boom():
+            raise OSError('磁盘故障')
+
+        node = Node(identity=self._identity(), roster=self.v2)
+        node.roster_history_loader = boom
+        response = node.handle(
+            {'op': 'roster', 'action': 'list', 'history': [self.v1.to_dict()]},
+            self._peer(member=False))
+        self.assertEqual(response['status'], 'error')
+        self.assertEqual(response['code'], 'forbidden')
+        # 已在名单里的设备不受影响（它们走 peer.member 那条分支）
+        allowed = node.handle(
+            {'op': 'roster', 'action': 'list'},
+            self._peer(member=True, principal_key=self.alice.public_key))
+        self.assertEqual(allowed['status'], 'ok')
 
     def test_pending_device_can_only_use_the_roster_operation(self):
         """未入名单的设备：只能拉名单，其余 op 一律 not-in-roster。

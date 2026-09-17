@@ -46,6 +46,7 @@ HIDDEN_IMPORTS = [
     'shell.groupmesh.records',
     'shell.groupmesh.identity',
     'shell.groupmesh.roster',
+    'shell.groupmesh.roster_history',
     'shell.groupmesh.shares',
     'shell.groupmesh.registry',
     'shell.groupmesh.noise',
