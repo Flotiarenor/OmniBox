@@ -35,7 +35,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from shell.groupmesh import client
+from shell.groupmesh import PROTO_VERSION, client
 from shell.groupmesh import crypto_prims as cp
 from shell.groupmesh import noise as nm
 from shell.groupmesh.identity import (
@@ -333,36 +333,63 @@ class NoiseXXTest(unittest.TestCase):
 
 
 class NegotiationTest(unittest.TestCase):
-    """§4.5 协商字段的边界检查。"""
+    """§4.5 协商字段的边界检查。
 
-    LOCAL: ClassVar[dict] = {'proto': 1, 'suites': ['noise-XX-25519-chacha20poly1305-blake2s'],
+    `LOCAL` 的 `proto` 取自 `PROTO_VERSION` 而不是写字面量：这里要验的是"匹配则
+    通过、不匹配则拒绝"，把版本号写死会让每次递增版本都改一遍用例，而真正的
+    回归点（本机 hello 报的是不是当前版本）由 `NoiseXXTest` 里那条用例守。
+    """
+
+    LOCAL: ClassVar[dict] = {'proto': PROTO_VERSION,
+                             'suites': ['noise-XX-25519-chacha20poly1305-blake2s'],
                              'features': ['roster-v1', 'share-read']}
 
     def _resolve(self, remote):
         return Negotiation.resolve(self.LOCAL, remote, b'{}', b'{}')
 
     def test_accepts_matching_hello(self):
-        result = self._resolve({'proto': 1, 'suites': ['noise-XX-25519-chacha20poly1305-blake2s'],
+        result = self._resolve({'proto': PROTO_VERSION,
+                                'suites': ['noise-XX-25519-chacha20poly1305-blake2s'],
                                 'features': ['roster-v1', 'unknown-feature']})
         self.assertEqual(result.suite, 'noise-XX-25519-chacha20poly1305-blake2s')
         self.assertEqual(result.features, ['roster-v1'])
 
     def test_rejects_proto_mismatch(self):
-        with self.assertRaises(TransportError):
-            self._resolve({'proto': 2, 'suites': ['noise-XX-25519-chacha20poly1305-blake2s']})
+        with self.assertRaises(TransportError) as ctx:
+            self._resolve({'proto': PROTO_VERSION + 1,
+                           'suites': ['noise-XX-25519-chacha20poly1305-blake2s']})
+        # 报错必须点名两个版本号：v1 与 v2 的 X25519 编码互为字节序反转，
+        # 若只说"握手失败"，用户看到的是 MAC 校验失败而不是"版本不同"。
+        message = str(ctx.exception)
+        self.assertIn(str(PROTO_VERSION), message)
+        self.assertIn(str(PROTO_VERSION + 1), message)
 
     def test_rejects_no_common_suite(self):
         with self.assertRaises(TransportError):
-            self._resolve({'proto': 1, 'suites': ['something-else']})
+            self._resolve({'proto': PROTO_VERSION, 'suites': ['something-else']})
 
     def test_rejects_malformed_fields(self):
         for bad in ({'proto': '1', 'suites': ['x']},
-                    {'proto': 1, 'suites': []},
-                    {'proto': 1, 'suites': [1, 2]},
-                    {'proto': 1, 'suites': ['x'], 'features': 'not-a-list'},
-                    {'proto': 1, 'suites': ['x'], 'features': [1]}):
+                    {'proto': PROTO_VERSION, 'suites': []},
+                    {'proto': PROTO_VERSION, 'suites': [1, 2]},
+                    {'proto': PROTO_VERSION, 'suites': ['x'], 'features': 'not-a-list'},
+                    {'proto': PROTO_VERSION, 'suites': ['x'], 'features': [1]}):
             with self.subTest(bad=bad), self.assertRaises(TransportError):
                 self._resolve(bad)
+
+    def test_local_hello_reports_the_current_protocol_version(self):
+        """本机 hello 必须报出 `PROTO_VERSION` 本身。
+
+        存在理由：本轮把 X25519 编码改成 RFC 7748 时**忘了**递增版本号，于是新旧
+        节点都自报"版本 1"，而真正的失败发生在握手末尾 —— 对端只看到一句
+        MAC 校验失败，看不出是版本不同。这条用例让"改了不兼容的线格式却没动版本号"
+        这件事至少能被测试提醒一次。
+        """
+        payload = Negotiation.local_hello_payload()
+        self.assertEqual(payload['proto'], PROTO_VERSION)
+        self.assertIsInstance(PROTO_VERSION, int)
+        # 版本 2 = RFC 7748 编码；回到 1 意味着线格式又变回大端
+        self.assertGreaterEqual(PROTO_VERSION, 2)
 
 
 class RosterRulesTest(unittest.TestCase):

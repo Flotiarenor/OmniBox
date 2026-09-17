@@ -336,6 +336,52 @@ class PluginWorkflowTest(unittest.TestCase):
         self.assertTrue(removed['success'])
         self.assertEqual(self.plugin.get_status()['shares'], [])
 
+    def test_new_share_has_no_capacity_limit(self):
+        """**界面挂载共享项不设容量上限**（按实测放宽，见 shares.DEFAULT_MAX_BYTES）。
+
+        为什么要专门锁这条：协议侧的容量判定是"每条连接量一次基线再推算"，实测
+        8 条并发连接能在"上限 1000 字节"的共享项上写进 3200 字节且全部成功 ——
+        它给不出可信保证，却会让人以为有防线。因此默认不设限，且**界面不再发送
+        硬编码的 1 GiB**（那既不是用户选的，也挡不住并发）。
+        """
+        if not self.plugin.get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+        self.plugin.init_identity({'name': 'no-cap'})
+        shared = self.tmp / 'shared-nocap'
+        shared.mkdir()
+
+        added = self.plugin.add_share({'share_id': 'open', 'path': str(shared)})
+        self.assertTrue(added['success'], added)
+        self.assertIsNone(added['max_bytes'], '不传 max_bytes 必须落成"不限制"')
+        self.assertIsNone(self.plugin._load_shares()['open'].max_bytes)
+        # 状态载荷里也要是"不限制"，否则界面会显示成 0 MiB
+        roots = self.plugin.get_share_roots()
+        self.assertIsNone(roots[0]['max_bytes'])
+
+        # 显式给 0 / None 同样是"不限制"
+        self.assertIsNone(self.plugin.add_share(
+            {'share_id': 'open0', 'path': str(shared), 'max_bytes': 0})['max_bytes'])
+        self.assertIsNone(self.plugin._load_shares()['open0'].max_bytes)
+
+    def test_explicit_capacity_limit_is_still_honoured(self):
+        """保留显式设置上限的通道：它是"尽力而为"的防线，不是不可用的功能。"""
+        if not self.plugin.get_status()['kernel']['available']:
+            self.skipTest('协议内核不可用')
+        self.plugin.init_identity({'name': 'with-cap'})
+        shared = self.tmp / 'shared-cap'
+        shared.mkdir()
+
+        added = self.plugin.add_share({'share_id': 'capped', 'path': str(shared),
+                                       'max_bytes': 2 * 1024 * 1024})
+        self.assertTrue(added['success'], added)
+        self.assertEqual(added['max_bytes'], 2 * 1024 * 1024)
+        self.assertEqual(self.plugin._load_shares()['capped'].max_bytes, 2 * 1024 * 1024)
+        # 非法取值必须明确拒绝，而不是静默当成"不限制"
+        bad = self.plugin.add_share({'share_id': 'bad-cap', 'path': str(shared),
+                                     'max_bytes': 'many'})
+        self.assertFalse(bad['success'])
+        self.assertIn('max_bytes', bad['error'])
+
     def test_bad_share_id_rejected(self):
         if not self.plugin.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')

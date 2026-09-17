@@ -705,22 +705,23 @@ class GroupMeshPlugin(PluginBase):
     # ── 共享项 ────────────────────────────────────────────────────────────
 
     def add_share(self, opts: Any = None, share_id: str = '', path: str = '',
-                  read: str = 'group', write: str = 'owner',
-                  max_bytes: int = 1024 * 1024 * 1024) -> Dict[str, Any]:
-        """挂载一个本机共享项。
+                  read: str = 'group', write: str = 'owner') -> Dict[str, Any]:
+        """挂载一个本机共享项（默认**不限制容量**）。
 
-        §6.5 的三条硬约束在插件层就挡掉，不推给用户自觉：
+        §6.5 的两条硬约束在插件层就挡掉，不推给用户自觉：
           * 共享根不得落在程序数据目录 / 身份目录之内（避免把私钥或程序本身共享出去）；
-          * 共享根必须是已存在的目录；
-          * 授予写权限等于允许对方占用磁盘，因此容量上限显式可见（0 表示不限制）。
+          * 共享根必须是已存在的目录。
+
+        容量上限（`max_bytes`）**刻意不做成界面设置项、默认也不设限**：
+        `node.py` 的判定是"每条连接量一次基线再推算"，实测 8 条并发连接能在
+        "上限 1000 字节"的共享项上写进 3200 字节且全部成功 —— 它给不出可信保证，
+        却会让人以为有防线。需要时仍可显式传入（`0` 或不传 = 不限制）。
         """
         options = _opts(opts)
         share_id = str(options.get('share_id') or share_id or '')
         path = str(options.get('path') or path or '')
         read = str(options.get('read') or read or 'group')
         write = str(options.get('write') or write or 'owner')
-        if 'max_bytes' in options:
-            max_bytes = options['max_bytes']
 
         identity = self._load_identity()
         if identity is None:
@@ -739,10 +740,16 @@ class GroupMeshPlugin(PluginBase):
             return {'success': False,
                     'error': f'共享根不得位于 {guarded} 之内（那里是程序数据与身份私钥）'}
 
-        try:
-            limit = None if int(max_bytes) == 0 else int(max_bytes)
-        except (TypeError, ValueError):
-            return {'success': False, 'error': f'max_bytes 必须是整数或 0，收到 {max_bytes!r}'}
+        # 容量上限：不传 / 传 0 / 传 null 一律表示不限制。保留显式传入的通道，
+        # 但**界面不再发送硬编码的 1 GiB**（那既不是用户选的，也限不住并发上传）。
+        limit: Optional[int] = None
+        if 'max_bytes' in options and options['max_bytes'] not in (None, 0, '0', ''):
+            try:
+                limit = int(options['max_bytes'])
+            except (TypeError, ValueError):
+                return {'success': False,
+                        'error': f'max_bytes 必须是整数、0 或 null（0/null = 不限制），'
+                                 f'收到 {options["max_bytes"]!r}'}
 
         try:
             acl = Acl(read=read, write=write)
@@ -759,7 +766,7 @@ class GroupMeshPlugin(PluginBase):
             shares[share_id] = share
             self._save_shares(shares)
         return {'success': True, 'share_id': share_id, 'path': str(target),
-                'acl': acl.to_dict()}
+                'acl': acl.to_dict(), 'max_bytes': limit}
 
     def remove_share(self, opts: Any = None, share_id: str = '') -> Dict[str, Any]:
         """取消一个本机共享项（只删声明，不碰共享根里的文件）。"""

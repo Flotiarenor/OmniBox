@@ -344,8 +344,7 @@
       if (!shareId || !path) { toast('请填写共享标识与本机目录', true); return; }
       call('add_share', {
         share_id: shareId, path: path, read: 'group',
-        write: el('share-write').value,
-        max_bytes: 1024 * 1024 * 1024
+        write: el('share-write').value
       })
         .then(function (res) {
           if (!res || !res.success) { toast((res && res.error) || '挂载失败', true); return; }
