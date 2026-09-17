@@ -35,7 +35,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from shell.groupmesh import PROTO_VERSION, client
+from shell.groupmesh import PROTO_VERSION, client, secret_store
 from shell.groupmesh import crypto_prims as cp
 from shell.groupmesh import noise as nm
 from shell.groupmesh.identity import (
@@ -220,7 +220,7 @@ class X25519Rfc7748VectorTest(unittest.TestCase):
             root = Path(tmp)
             identity = Identity.init(root, 'alice', 'laptop')
             device_path = next((root / 'devices').glob('*.json'))
-            payload = json.loads(device_path.read_text(encoding='utf-8'))
+            payload = json.loads(secret_store.unprotect(device_path.read_bytes()).decode('utf-8'))
             derived = cp.b64d(payload['dh_public'])
 
             for label, stale in (
@@ -229,7 +229,8 @@ class X25519Rfc7748VectorTest(unittest.TestCase):
             ):
                 with self.subTest(kind=label):
                     payload['dh_public'] = cp.b64(stale)
-                    device_path.write_text(json.dumps(payload), encoding='utf-8')
+                    device_path.write_bytes(secret_store.protect(
+                        json.dumps(payload).encode('utf-8')))
                     loaded = Identity.load(root)
                     self.assertEqual(loaded.device.id, identity.device.id)
                     self.assertEqual(loaded.device.dh_public, derived,
@@ -237,7 +238,8 @@ class X25519Rfc7748VectorTest(unittest.TestCase):
 
             # 长度不对仍然是结构性错误：它说明文件被截断或写坏，不能静默放过
             payload['dh_public'] = cp.b64(b'\x11' * 8)
-            device_path.write_text(json.dumps(payload), encoding='utf-8')
+            device_path.write_bytes(secret_store.protect(
+                json.dumps(payload).encode('utf-8')))
             with self.assertRaises(RecordError):
                 Identity.load(root)
 

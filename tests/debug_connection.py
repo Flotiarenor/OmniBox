@@ -8,11 +8,11 @@
    文件的目录、两台都起共享节点；
 2. 把两台设备**真实的监听地址程序化登记**进各自的手工对端（`MeshCluster.link()`）——
    等价于用户粘贴一次对方地址，脚本不要求人工输入连接信息；
-3. 左窗口（`member`）：「团体组网」→「远端共享」→「刷新设备」→ 设备与共享项出现 →
-   点共享项 → 列目录 → 「取回」一份中文名文件，界面给出落点；
+3. 左窗口（`member`）：「团体组网」→「远端共享」→ 等后台同步（脚本把间隔设为 5 秒）→
+   设备与共享项出现 → 点共享项 → 列目录 → 「取回」一份中文名文件，界面给出落点；
 4. 同一个窗口点「上传文件到此处」：把 `member` 本机的一份文件投放到 `owner` 的共享项，
    弹窗里能看到进度 → 完成后目录自动刷新、新文件出现在列表里；
-5. 右窗口（`owner`）：「刷新状态」看团体/名单/节点/共享项，再「刷新设备」确认 `member`
+5. 右窗口（`owner`）：「刷新状态」看团体/名单/节点/共享项，等后台同步确认 `member`
    也在自己的设备列表里（双向可达）。
 6. 结论以**字节**为准：脚本对两侧文件取 sha256 做对比，并逐项打印设备发现（双向）、
    列目录、取回一致、上传一致的结论。
@@ -174,7 +174,8 @@ def main() -> int:
 
     # ── 1. 两台空白实例 + 建团 + 起节点 ──────────────────────────────────────
     say('准备两台空白实例（owner / member）并建团')
-    cluster = MeshCluster(workdir / 'instances', names=('owner', 'member'))
+    cluster = MeshCluster(workdir / 'instances', names=('owner', 'member'),
+                          plugin_settings={'group-mesh': {'sync_interval_seconds': 5}})
     owner, member = cluster.instances
     cluster.start()
     cluster.form_group()
@@ -245,11 +246,9 @@ def main() -> int:
         say(f'  节点：{node_text.replace(chr(10), " | ")}')
         say(f'  共享项：{shares_text.replace(chr(10), " | ")}')
 
-        # owner 也刷新设备：它应当在设备列表里看到 member（双向可达）。
-        # 注意判据是 `#peers-body` 的**文本**而不是 `.gm-remote-item`：后者只在
-        # "该设备有共享项"时才有——member 没有共享项，它的条目里只有名字与说明。
-        click(owner_driver, owner_driver.find_element(By.ID, 'btn-peer-refresh'),
-              '（右窗口）点「刷新设备」：owner 也要看到 member')
+        # owner 侧不需要点"刷新设备"：后台同步按 `sync_interval_seconds`（脚本设为 5 秒）
+        # 自动拉注册表/名单。判据是 `#peers-body` 的**文本**而不是 `.gm-remote-item`：
+        # 后者只在"该设备有共享项"时才有——member 没有共享项，它的条目里只有名字与说明。
         wait_for(owner_driver, lambda: 'member' in owner_driver.find_element(
             By.ID, 'peers-body').text, 30.0)
         pause('右窗口的设备列表：member 在这里（说明连接是双向的）')
@@ -258,12 +257,8 @@ def main() -> int:
         say(f'  owner 的设备页：{owner_peers.replace(chr(10), " | ")}')
         seen_both_ways = 'member' in owner_peers
 
-        # ── 4. member 窗口：发现 owner → 列共享项 → 取回 ──────────────────────
+        # ── 4. member 窗口：等后台同步发现 owner → 列共享项 → 取回 ────────────
         enter_plugin(member_driver, '团体组网', 'group-mesh')
-        wait_for(member_driver, lambda: len(member_driver.find_elements(
-            By.ID, 'btn-peer-refresh')) > 0)
-        click(member_driver, member_driver.find_element(By.ID, 'btn-peer-refresh'),
-              '（左窗口）点「刷新设备」：从登记过的地址连过去，找回对方的共享清单')
         if not wait_for(member_driver, lambda: len(member_driver.find_elements(
                 By.CSS_SELECTOR, '.gm-remote-item')) > 0, 30.0):
             say('左窗口没有列出任何设备/共享项 —— 看截图与实例日志')

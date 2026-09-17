@@ -13,21 +13,28 @@
 `PluginBase.get_dependency('group-mesh')` 复用它，把内核塞进某个插件的私有目录
 会让它们依赖另一个插件的内部结构。
 
-## 当前状态（v0.1，骨架）
+## 当前状态
 
 已接通：身份初始化、团体创建/加入、名单查看与修改、共享项管理、节点启停与状态，
-以及双向传输（取回、物化、上传含进度/取消/续传，任务表落盘可跨重载）。
+双向传输（取回、物化、上传含进度/取消/续传，任务表落盘可跨重载），
+名单/注册的后台同步（定时轮询 + 变更时 push，间隔见设置 `sync_interval_seconds`）。
+私钥由 `secret_store` 保护（Windows DPAPI / 桌面 keyring / 口令 AES-GCM）。
 **尚未接通**：内容寻址分块、Android 轻客户端。
 房间/语音/游戏面由未来的 Companion 子插件承担，不在本插件范围内。
 
-## 未决的壳侧缺口（设计文档 §12）
+## 壳侧主体上下文（设计文档 §12）
 
 设计文档 §12 第 1/2 项要求"凭据到主体的映射"与"插件以受信方式读取主体"。
-壳目前**没有**这个能力（`shell/backend/auth.py` 只有单一令牌），因此本插件
-所有涉及主体的判定都以**本机主体**为准（本机就是这个团体的一个节点），
-不接收请求参数里的身份。等壳侧补上主体上下文后，这里应改为：
-    `self.current_principal()` → 由 Shell 注入的 ContextVar 读取
-而不是现在的"本机身份即操作者"。
+壳侧**已经落地**：`shell/backend/principal.py` 在鉴权通过后把主体写入
+`ContextVar`，插件用 `self.current_principal()` / `self.require_principal()`
+读取；请求参数里的 `principal` / `role` 字段影响不了它，后台线程读不到主体
+（后台任务需要显式携带主体，见 `shell/backend/principal.use_principal()`）。
+
+**本插件尚未接入**：下面所有涉及主体的判定仍以**本机主体**为准（本机就是这个
+团体里的一个节点），访问控制只到"有效令牌"这一层。收尾时应在有副作用的方法
+（`add_member` / `add_share` / `start_node` / `stop_node` / `upload_remote` /
+`mirror_share` / `clear_remote_cache` 等）上调用 `require_principal()` 并按角色
+判定；背景与风险见 `docs/group-mesh-implementation-path.md` §4.9。
 """
 
 from __future__ import annotations
@@ -49,6 +56,7 @@ from shell.groupmesh import __version__ as KERNEL_VERSION
 from shell.groupmesh import client as mesh_client
 from shell.groupmesh import registry as registry_mod
 from shell.groupmesh import roster_history as roster_history_mod
+from shell.groupmesh import secret_store
 from shell.groupmesh.identity import Identity
 from shell.groupmesh.node import serve
 from shell.groupmesh.records import RecordError
@@ -78,6 +86,10 @@ PROBE_TIMEOUT_SECONDS = 3.0
 # 一次刷新的候选探测**总**等待上限（秒）。到点就带着已有结果返回，不再等剩下的
 # 端点 —— 界面上这是一次点击，不能因为几条死地址把用户按在那里。
 PROBE_OVERALL_SECONDS = 4.0
+
+# 后台同步一轮的总等待上限（秒）。后台不面向"点一下要立刻看到"，因此等所有候选
+# 都试一遍，尽量从多个对端合并到最新注册表/名单；但也不能让一轮无限拖住下一轮。
+SYNC_OVERALL_SECONDS = 10.0
 
 # 上传的 socket 超时（秒）。比探测用的 3 秒宽得多：一个分块要走 Noise 加密 + 落盘，
 # 慢盘或大分块下 3 秒会误判成"传输失败"。取消不靠超时兜底 —— 客户端在分块边界
@@ -179,8 +191,12 @@ class GroupMeshPlugin(PluginBase):
         {'key': 'max_fetch_mb', 'label': '按需取回单文件上限（MiB）', 'type': 'number',
          'default': 1024, 'min': 0, 'max': 102400,
          'help': '浏览远端目录时，超过这个大小的文件不会自动取回（0 表示不限制）。'
-                 '远端目录先物化成目录结构与占位文件，字节在第一次读取时才取 —— '
+                 '远端目录先物化成目录结构与占位文件，字节在第一次取回时才取 —— '
                  '这个上限用来避免"点开一个目录就把磁盘写满"。'},
+        {'key': 'sync_interval_seconds', 'label': '后台同步间隔（秒）', 'type': 'number',
+         'default': 60, 'min': 5, 'max': 3600,
+         'help': '节点运行期间每隔这么久拉取一次注册表与团体名单，并把本机变更推给对端。'
+                 '默认 60 秒；调小更及时，但会更频繁地连接对端。'},
     ]
 
     def __init__(self, manifest: dict, config: dict) -> None:
@@ -233,6 +249,23 @@ class GroupMeshPlugin(PluginBase):
         # 卸载后老实例的上传线程可能还在收尾（取消要等到分块边界）。它**不得**再写
         # 任务表：同一个数据根已经交给新实例了，写回去会把新实例刚记下的任务覆盖掉。
         self._unloading = False
+        # 后台同步（设计文档 §5.7 / §7.3）：
+        #   - 定时轮询：每 `sync_interval_seconds` 拉一次注册表与名单；
+        #   - 变更时 push：名单/注册变更后立即唤醒循环，把新版本推给对端。
+        # `_sync_lock` 保证"后台同步"与显式 `list_peers(refresh=True)` 不会同时
+        # 探测/合并；`_sync_state_lock` 只保护两个 dirty 标志。
+        self._sync_thread: Optional[threading.Thread] = None
+        self._sync_stop = threading.Event()
+        self._sync_wake = threading.Event()
+        self._sync_lock = threading.Lock()
+        self._sync_state_lock = threading.Lock()
+        # 注册记录的"读 seq → 写注册表 → 写 state.json"必须串行化：节点启动、
+        # 后台同步、共享项变更都会触发发布。
+        self._registration_lock = threading.Lock()
+        self._roster_dirty = False
+        self._registry_dirty = False
+        self._last_sync_at: Optional[int] = None
+        self._last_sync_error = ''
 
     # ── 路径 ──────────────────────────────────────────────────────────────
 
@@ -380,8 +413,10 @@ class GroupMeshPlugin(PluginBase):
     def get_protected_paths(self) -> List[Path]:
         """身份目录整个申报为受保护：里面是主体的长期私钥与设备私钥。
 
-        设计文档 §4.1 要求"设备私钥不导出"；MVP 阶段私钥是明文落盘的，
-        因此**至少**要保证它不会经 `/file`、`/files`、`/thumbs` 被端出去。
+        设计文档 §4.1 要求"设备私钥不导出"。私钥内容现在由 `secret_store`
+        保护（Windows DPAPI / 桌面 keyring / `OMNIBOX_SECRET_KEY` 口令），这里
+        再申报为受保护路径，保证它不会经 `/file`、`/files`、`/thumbs` 被端出去
+        —— `plain` 回落时这条是唯一防线，因此不能省。
         """
         return [*super().get_protected_paths(), self.identity_dir]
 
@@ -425,6 +460,8 @@ class GroupMeshPlugin(PluginBase):
                        encoding='utf-8')
         os.replace(tmp, path)
         self._record_roster_history(roster)
+        # 名单变了：唤醒后台同步，把它 push 给对端；否则只能等对方下一次轮询来拉。
+        self._request_sync(roster_dirty=True)
 
     def _roster_history(self) -> roster_history_mod.RosterHistory:
         """名单历史表（读盘按需，进程内缓存由一个实例承载）。"""
@@ -523,8 +560,10 @@ class GroupMeshPlugin(PluginBase):
                 'group_name': self.setting('group_name', '') or '',
                 'principal_name': self.setting('principal_name', '') or '',
                 'download_dir': self.setting('download_dir', '') or '',
+                'sync_interval_seconds': self._sync_interval_seconds(),
             },
             'node': self.get_node_status(),
+            'sync': self.get_sync_status(),
             'identity': None,
             'roster': None,
             'shares': [],
@@ -543,6 +582,9 @@ class GroupMeshPlugin(PluginBase):
                 'device_name': identity.device.name,
                 'device_id': identity.device.id,
                 'device_key': identity.device.public_key.hex(),
+                # 私钥保护级别（DPAPI / keyring / passphrase / plain）：
+                # 界面据此告警；`plain` 是旧版行为，不是"已保护"。
+                'secret_protection': secret_store.describe(),
             }
             if roster is not None:
                 role = roster.role_of(identity.principal.public_key)
@@ -821,6 +863,8 @@ class GroupMeshPlugin(PluginBase):
             shares = self._load_shares()
             shares[share_id] = share
             self._save_shares(shares)
+        # 共享清单变了：立刻重发注册记录并 push 给对端；节点没跑时留给后台同步兜底。
+        self._republish_registration()
         return {'success': True, 'share_id': share_id, 'path': str(target),
                 'acl': acl.to_dict(), 'max_bytes': limit}
 
@@ -834,6 +878,8 @@ class GroupMeshPlugin(PluginBase):
                 return {'success': False, 'error': f'没有共享项 {share_id}'}
             del shares[share_id]
             self._save_shares(shares)
+        # 共享清单变了：立刻重发注册记录并 push 给对端。
+        self._republish_registration()
         return {'success': True, 'share_id': share_id}
 
     def refresh_share_roots(self) -> Dict[str, Any]:
@@ -1018,6 +1064,8 @@ class GroupMeshPlugin(PluginBase):
             entries.append({'host': host, 'port': port, 'name': name or '',
                             'device_id': device_id, 'added_at': int(time.time())})
             self._save_manual_peers(entries)
+            # 新登记的地址是发现的起点：立刻唤醒后台同步去探测。
+            self._request_sync()
             return {'success': True, 'peers': entries}
 
         if action == 'update':
@@ -1032,6 +1080,7 @@ class GroupMeshPlugin(PluginBase):
             kept.append({'host': host, 'port': port, 'name': updated,
                          'device_id': device_id, 'updated_at': int(time.time())})
             self._save_manual_peers(kept)
+            self._request_sync()
             return {'success': True, 'peers': kept,
                     'replaced': len(entries) - len(kept) + 1}
 
@@ -1039,6 +1088,7 @@ class GroupMeshPlugin(PluginBase):
             remaining = [e for e in entries
                          if not (e.get('host') == host and int(e.get('port') or 0) == port)]
             self._save_manual_peers(remaining)
+            self._request_sync()
             return {'success': True, 'peers': remaining,
                     'removed': len(entries) - len(remaining)}
 
@@ -1138,40 +1188,22 @@ class GroupMeshPlugin(PluginBase):
         self._ensure_registry()
         self_device_id = identity.device.public_key.hex()
         errors: List[Dict[str, str]] = []
-        if refresh:
-            # 先确保本机的注册记录是最新的（地址变化时递增 seq 重发，§7.4）。
-            # 没有这一步，"我换了网络"会让对端一直用旧端点连我。
-            self._refresh_own_registration()
-            # 收集候选端点：手动登记的（**引导**，注册表初始为空时唯一的起点）、
-            # 本机自己发布的（**自举**，用本机地址去问任一在线节点拿完整快照，
-            # §7.3）、以及注册表里已经学到的。
-            candidates: List[Tuple[Tuple[str, int], str]] = []
-            seen: set = set()
-
-            def add(endpoint: Tuple[str, int], label: str) -> None:
-                if endpoint and endpoint not in seen:
-                    seen.add(endpoint)
-                    candidates.append((endpoint, label))
-
-            for entry in self._load_manual_peers():
-                try:
-                    add((str(entry['host']), int(entry['port'])),
-                        str(entry.get('name') or entry.get('host') or ''))
-                except (KeyError, TypeError, ValueError):
-                    continue
-            for endpoint, label in self._bootstrap_endpoints(identity):
-                add(endpoint, label)
-            for device_id, info in self._peer_names(roster).items():
-                if device_id == self_device_id:
-                    continue
-                for endpoint in self._peer_endpoints(info):
-                    add(endpoint, str(info.get('name') or device_id))
-
-            # **并行**探测。为什么必须并行：设备常同时发布 IPv6 与 IPv4 端点
-            # （§4.6.1 把 v4 当可达性兜底），而 IPv6 在本机常常没有路由 —— 串行
-            # 等超时的话，几个端点就能把"刷新设备"拖到一分钟以上（实测 80 秒，
-            # 界面一直停在"正在读取设备"）。并行 + 短超时后总耗时就接近单次超时。
-            self._fetch_registries_parallel(candidates, identity, roster)
+        if refresh and self._sync_lock.acquire(blocking=False):
+            try:
+                # 先确保本机的注册记录是最新的（地址/共享变化时递增 seq 重发，§7.4）。
+                # 没有这一步，"我换了网络/改了共享项"会让对端一直用旧记录。
+                self._refresh_own_registration()
+                # 候选端点：手动登记的（**引导**）、本机自己发布的（**自举**）、
+                # 以及注册表里已经学到的。后台同步用的是同一个 `_sync_candidates`。
+                candidates = self._sync_candidates(identity, roster)
+                # **并行**探测。为什么必须并行：设备常同时发布 IPv6 与 IPv4 端点
+                # （§4.6.1 把 v4 当可达性兜底），而 IPv6 在本机常常没有路由 —— 串行
+                # 等超时的话，几个端点就能把一次刷新拖到一分钟以上（实测 80 秒）。
+                # 界面路径只等第一个成功，后台路径等全部（见 `_fetch_registries_parallel`）。
+                self._fetch_registries_parallel(candidates, identity, roster)
+            finally:
+                self._sync_lock.release()
+            # 拿不到锁说明后台同步正在跑：不要在这里等它，直接读它已经同步好的状态。
             # 手动登记的端点若仍然连不上，单独回报（用户刚填的地址，失败要说清楚）
             for entry in self._load_manual_peers():
                 try:
@@ -1219,6 +1251,226 @@ class GroupMeshPlugin(PluginBase):
                 ],
                 'roster_adopted': self._roster_notice}
 
+    # ── 后台同步（定时轮询 + 变更时 push）───────────────────────────────
+
+    def _sync_interval_seconds(self) -> int:
+        """后台同步间隔；设置越界或非法时回落到默认 60 秒。"""
+        try:
+            value = int(self.setting('sync_interval_seconds', 60) or 60)
+        except (TypeError, ValueError):
+            value = 60
+        return max(5, min(3600, value))
+
+    def get_sync_status(self) -> Dict[str, Any]:
+        with self._sync_state_lock:
+            roster_dirty = self._roster_dirty
+            registry_dirty = self._registry_dirty
+        return {
+            'interval': self._sync_interval_seconds(),
+            'running': bool(self._sync_thread is not None and self._sync_thread.is_alive()),
+            'last_sync_at': self._last_sync_at,
+            'last_error': self._last_sync_error,
+            'roster_dirty': roster_dirty,
+            'registry_dirty': registry_dirty,
+        }
+
+    def _request_sync(self, *, roster_dirty: bool = False,
+                      registry_dirty: bool = False) -> None:
+        """标记"有变更待同步"并立刻唤醒后台循环（不等下一个轮询周期）。"""
+        with self._sync_state_lock:
+            if roster_dirty:
+                self._roster_dirty = True
+            if registry_dirty:
+                self._registry_dirty = True
+        self._sync_wake.set()
+
+    def _clear_sync_dirty(self, *, roster: bool = False, registry: bool = False) -> None:
+        with self._sync_state_lock:
+            if roster:
+                self._roster_dirty = False
+            if registry:
+                self._registry_dirty = False
+
+    def _start_sync(self) -> None:
+        if self._sync_thread is not None and self._sync_thread.is_alive():
+            return
+        self._sync_stop.clear()
+        self._sync_thread = threading.Thread(target=self._sync_loop,
+                                             name='group-mesh-sync', daemon=True)
+        self._sync_thread.start()
+        log.debug('[group-mesh] 后台同步线程已启动')
+
+    def _stop_sync(self) -> None:
+        self._sync_stop.set()
+        self._sync_wake.set()
+        thread = self._sync_thread
+        if thread is not None:
+            thread.join(timeout=5)
+        self._sync_thread = None
+
+    def _sync_loop(self) -> None:
+        while not self._sync_stop.is_set():
+            woke = self._sync_wake.wait(self._sync_interval_seconds())
+            if self._sync_stop.is_set():
+                break
+            self._sync_wake.clear()
+            if woke:
+                # 把短时间内的多次变更合并成一次同步：`add_member` 之类的连续操作
+                # 会多次 `_request_sync`，不该触发多次 push。
+                self._sync_stop.wait(0.3)
+                if self._sync_stop.is_set():
+                    break
+            try:
+                self._sync_once()
+            except Exception as e:  # 后台线程不能因为一次失败退出
+                self._last_sync_error = f'{type(e).__name__}: {e}'
+                log.warning('[group-mesh] 后台同步失败: %s', e)
+
+    def _sync_once(self) -> None:
+        if not self._sync_lock.acquire(blocking=False):
+            return  # 已经有一轮在跑（另一轮或显式刷新），不叠加
+        try:
+            identity = self._load_identity()
+            roster = self._load_roster()
+            if identity is None or roster is None:
+                return
+            self._refresh_own_registration()
+            self._ensure_registry()
+            candidates = self._sync_candidates(identity, roster)
+            # 后台不抢"第一个成功"，尽量把多个对端的注册表/名单都合并进来。
+            self._fetch_registries_parallel(candidates, identity, roster,
+                                            overall_timeout=SYNC_OVERALL_SECONDS,
+                                            first_only=False)
+            if self._sync_stop.is_set():
+                return  # 卸载中：不要再发起推送
+            self._push_pending_changes(identity, roster, candidates)
+            self._last_sync_at = int(time.time())
+            self._last_sync_error = ''
+        finally:
+            self._sync_lock.release()
+
+    def _sync_candidates(self, identity: Identity,
+                         roster: Roster) -> List[Tuple[Tuple[str, int], str]]:
+        """后台同步与显式刷新共用的候选端点集合。"""
+        candidates: List[Tuple[Tuple[str, int], str]] = []
+        seen: set = set()
+
+        def add(endpoint: Tuple[str, int], label: str) -> None:
+            if endpoint and endpoint not in seen:
+                seen.add(endpoint)
+                candidates.append((endpoint, label))
+
+        for entry in self._load_manual_peers():
+            try:
+                add((str(entry['host']), int(entry['port'])),
+                    str(entry.get('name') or entry.get('host') or ''))
+            except (KeyError, TypeError, ValueError):
+                continue
+        for endpoint, label in self._bootstrap_endpoints(identity):
+            add(endpoint, label)
+        self_device_id = identity.device.public_key.hex()
+        for device_id, info in self._peer_names(roster).items():
+            if device_id == self_device_id:
+                continue
+            for endpoint in self._peer_endpoints(info):
+                add(endpoint, str(info.get('name') or device_id))
+        return candidates
+
+    def _push_pending_changes(self, identity: Identity, roster: Roster,
+                              candidates: List[Tuple[Tuple[str, int], str]]) -> None:
+        with self._sync_state_lock:
+            roster_dirty = self._roster_dirty
+            registry_dirty = self._registry_dirty
+        if not (roster_dirty or registry_dirty):
+            return
+        # 本机自己的端点不是"对端"，不推给自己。
+        self_endpoints = {endpoint for endpoint, _ in self._bootstrap_endpoints(identity)}
+        targets = [(endpoint, label) for endpoint, label in candidates
+                   if endpoint not in self_endpoints]
+        if roster_dirty:
+            self._push_roster(identity, roster, targets)
+        if registry_dirty:
+            self._push_registry(identity, roster, targets)
+
+    def _push_roster(self, identity: Identity, roster: Roster,
+                     targets: List[Tuple[Tuple[str, int], str]]) -> None:
+        if not targets:
+            return  # 还没有对端地址可推；保持 dirty，等发现到对端再试
+        local_version = roster.version
+        with self._lock:
+            notes = dict(self._peer_roster_notes)
+        pending = []
+        for endpoint, label in targets:
+            note = notes.get(endpoint) or {}
+            try:
+                known = int(note.get('version') or 0)
+            except (TypeError, ValueError):
+                known = 0
+            if known < local_version:
+                pending.append((endpoint, label))
+        if not pending:
+            self._clear_sync_dirty(roster=True)
+            return
+        pushed = 0
+        history = self._load_roster_history()
+        for endpoint, _label in pending:
+            if self._sync_stop.is_set():
+                return
+            try:
+                connection = self._open_dedicated(endpoint, identity, roster)
+                try:
+                    result = mesh_client.push_roster(connection, roster, history)
+                finally:
+                    connection.close()
+                version = result.get('version', local_version) if isinstance(result, dict) else local_version
+                with self._lock:
+                    self._peer_roster_notes[endpoint] = {
+                        'group': roster.group,
+                        'version': int(version or local_version),
+                        'hash': roster.content_hash.hex()[:16],
+                    }
+                pushed += 1
+            except (RemoteError, TransportError, OSError) as e:
+                self._unreachable[endpoint] = f'{endpoint[0]}:{endpoint[1]} 推送名单失败: {e}'
+            except Exception as e:  # 兜底：单个端点失败不该中断整轮
+                self._unreachable[endpoint] = f'{endpoint[0]}:{endpoint[1]} 推送名单异常: {e}'
+        if pushed:
+            log.info('[group-mesh] 已把名单 v%s 推给 %d 个对端', local_version, pushed)
+            self._clear_sync_dirty(roster=True)
+
+    def _push_registry(self, identity: Identity, roster: Roster,
+                       targets: List[Tuple[Tuple[str, int], str]]) -> None:
+        if self._published_seq is None:
+            return  # 本机还没发布注册记录：等节点发布后再推
+        if not targets:
+            return  # 还没有对端地址可推；保持 dirty，等发现到对端再试
+        self._ensure_registry()
+        if self._registry is None:
+            return
+        # 取一份当前快照再推：后台拉取线程可能同时在 merge，直接推同一个对象会在
+        # 序列化到一半时被改写。
+        with self._lock:
+            snapshot = registry_mod.Registry.from_snapshot_dicts(self._registry.snapshot_dicts())
+        pushed = 0
+        for endpoint, _label in targets:
+            if self._sync_stop.is_set():
+                return
+            try:
+                connection = self._open_dedicated(endpoint, identity, roster)
+                try:
+                    mesh_client.push_registry(connection, snapshot)
+                finally:
+                    connection.close()
+                pushed += 1
+            except (RemoteError, TransportError, OSError) as e:
+                self._unreachable[endpoint] = f'{endpoint[0]}:{endpoint[1]} 推送注册表失败: {e}'
+            except Exception as e:
+                self._unreachable[endpoint] = f'{endpoint[0]}:{endpoint[1]} 推送注册表异常: {e}'
+        if pushed:
+            log.info('[group-mesh] 已把注册表推给 %d 个对端（本机 seq=%s）',
+                     pushed, self._published_seq)
+            self._clear_sync_dirty(registry=True)
+
     def _ensure_registry(self) -> None:
         """确保手上有注册表对象（节点没启动时也能读磁盘上的那份）。"""
         if self._registry is not None:
@@ -1231,14 +1483,16 @@ class GroupMeshPlugin(PluginBase):
 
     def _fetch_registries_parallel(self, candidates: List[Tuple[Tuple[str, int], str]],
                                    identity: Identity, roster: Optional[Roster],
-                                   overall_timeout: float = PROBE_OVERALL_SECONDS) -> None:
-        """并行向多个候选端点拉注册快照，**只等第一个成功的**。
+                                   overall_timeout: float = PROBE_OVERALL_SECONDS,
+                                   first_only: bool = True) -> None:
+        """并行向多个候选端点拉注册快照。
 
-        为什么不是"全部跑完再返回"：界面上这是一次点击，用户要的是尽快看到设备列表。
-        实测（4 条一定连不上的端点）：串行 21.1s → 并行等全部 6.0s → 只等第一个成功
-        0.0s（有一条可达时）。因此这里按"谁先成功就用谁"收尾，其余探测在
-        `overall_timeout` 之后不再等待（线程是 daemon，未完成的会自己结束）。
-        全部失败时最多等 `overall_timeout`，不会无限拖住界面。
+        `first_only=True`（界面点击用）：**只等第一个成功的**。为什么不是"全部跑完再
+        返回"：界面上这是一次点击，用户要的是尽快看到设备列表。实测（4 条一定连不上
+        的端点）：串行 21.1s → 并行等全部 6.0s → 只等第一个成功 0.0s（有一条可达时）。
+
+        `first_only=False`（后台同步用）：等所有候选（最多 `overall_timeout`），
+        以便从多个对端合并到最新注册表/名单。
         """
         from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
@@ -1266,8 +1520,10 @@ class GroupMeshPlugin(PluginBase):
                 if remaining <= 0:
                     break
                 done, pending = wait(pending, timeout=remaining, return_when=FIRST_COMPLETED)
-                if any(future.result() for future in done):
+                if first_only and any(future.result() for future in done):
                     break   # 已经拿到一份快照：够了，别让用户继续等
+                if not first_only and not pending:
+                    break   # 后台：等全部跑完（或到 deadline）
         finally:
             # 不 shutdown(wait=True)：未完成的探测线程不该阻塞调用方
             pool.shutdown(wait=False)
@@ -1279,13 +1535,21 @@ class GroupMeshPlugin(PluginBase):
         **顺带做一次名单分发**（§5.7）：同一条连接上再问一次 `op=roster`，
         因此"成员升级名单"不需要额外的探测预算（这条路径本来就要连对端）。
         名单验证与采纳见 `_adopt_remote_roster` —— 通道不必可信，签名才是判据。
+
+        **用专用连接**：这一条会被后台同步线程调用，不能借 UI 的复用连接池 ——
+        一条 Noise 连接上的请求是严格串行的，两个线程同时 send 会把帧拼坏
+        （实现路径文档 §5.11 记的就是这个坑）。
         """
-        connection = self._connect(endpoint, identity, roster)
+        if self._sync_stop.is_set():
+            return 0
+        connection = self._open_dedicated(endpoint, identity, roster)
         try:
             remote = mesh_client.fetch_registry(connection)
             self._adopt_remote_roster(connection, endpoint)
         finally:
-            self._release(connection)
+            connection.close()
+        if self._sync_stop.is_set():
+            return 0  # 卸载中：不要再 merge/写盘，避免和新实例抢数据根
         with self._lock:
             # 并行探测时多个线程会同时合并：Registry.merge 的 seq 单调性判定必须
             # 串行化，否则同一设备的两条记录可能互相覆盖。
@@ -1387,6 +1651,17 @@ class GroupMeshPlugin(PluginBase):
         而不用去翻每个调用方 —— 连接的生死只应在一处决定。
         """
         return
+
+    def _open_dedicated(self, endpoint: Tuple[str, int], identity: Identity,
+                        roster: Optional[Roster]) -> Any:
+        """开一条**专用**连接（用完即关），不进入 UI 的复用池。
+
+        后台同步线程与 UI 请求会并发；复用池里的 Connection 是"一条 Noise 连接上
+        请求严格串行"的，两线程同时 send 会把帧拼坏（实现路径文档 §5.11）。因此
+        后台同步、以及显式探测，都走这里；UI 的浏览/取文件继续用 `_connect` 复用池。
+        """
+        return mesh_client.open_connection(endpoint[0], endpoint[1], identity, roster,
+                                           timeout=PROBE_TIMEOUT_SECONDS)
 
     def _manual_endpoints(self, device_id: str, roster: Roster) -> List[Tuple[Tuple[str, int], str]]:
         """候选端点（设备**发布过的全部端点** + 手动登记的那些）。
@@ -2681,6 +2956,8 @@ class GroupMeshPlugin(PluginBase):
             # 免得后续每次取状态都再试一遍（自动启动只该在需要时发生一次）。
             self._auto_start_attempted = True
             self._auto_start_error = None
+            # 节点刚起来：唤醒后台同步，立刻做一轮发现并把本机注册记录推出去。
+            self._request_sync()
             return {'success': True, 'node': status}
         return {'success': False, 'error': status.get('error') or '节点启动失败', 'node': status}
 
@@ -2726,38 +3003,52 @@ class GroupMeshPlugin(PluginBase):
         插件起的节点从不发布，于是其他设备的注册表里永远没有它的端点，
         "看得到对方"这条链在插件层就是断的。
 
+        `_registration_lock` 串行化"读 seq → 写注册表 → 写 state.json"：后台同步、
+        节点启动、共享项变更都会触发发布，不串行化会把 seq 写乱。注册表本身再加
+        `_lock`，与 `_fetch_registry_from()` 的 merge 互斥。
+
         返回新的 `seq`；发布失败（例如注册表写不进去）不阻断节点启动 ——
         节点能收能发才是主要功能，发现能力是附加的。
         """
         identity = self._load_identity()
         if identity is None:
             return None
+        self._ensure_registry()
+        if self._registry is None:
+            return None
         try:
-            state_file = self.identity_dir / 'state.json'
-            state: Dict[str, Any] = {}
-            if state_file.is_file():
-                try:
-                    state = json.loads(state_file.read_text(encoding='utf-8'))
-                except (OSError, ValueError):
-                    state = {}
-            seq = int(state.get('registration_seq', 0) or 0) + 1
-            # 绑到具体地址时只发布那个地址；绑到通配地址时发布本机全部可用地址。
-            if bind in ('0.0.0.0', '::'):
-                addresses = registry_mod.local_addresses() or [bind]
-            else:
-                addresses = [bind]
-            endpoints = [(addr, int(port)) for addr in addresses]
-            registration = registry_mod.new_registration(
-                device_key=identity.device.public_key,
-                device_private_key=identity.device.private_key,
-                seq=seq, endpoints=endpoints, shares=sorted(self._load_shares()))
-            self._registry.add(registration)
-            registry_mod.save_registry(self.identity_dir, self._registry)
-            state['registration_seq'] = seq
-            state['endpoints'] = [[a, p] for a, p in endpoints]
-            state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2) + '\n',
-                                  encoding='utf-8')
-            log.info(f'[group-mesh] 已发布注册记录 seq={seq}，端点 {endpoints}')
+            with self._registration_lock:
+                state_file = self.identity_dir / 'state.json'
+                state: Dict[str, Any] = {}
+                if state_file.is_file():
+                    try:
+                        state = json.loads(state_file.read_text(encoding='utf-8'))
+                    except (OSError, ValueError):
+                        state = {}
+                seq = int(state.get('registration_seq', 0) or 0) + 1
+                # 绑到具体地址时只发布那个地址；绑到通配地址时发布本机全部可用地址。
+                if bind in ('0.0.0.0', '::'):
+                    addresses = registry_mod.local_addresses() or [bind]
+                else:
+                    addresses = [bind]
+                endpoints = [(addr, int(port)) for addr in addresses]
+                shares = sorted(self._load_shares())
+                registration = registry_mod.new_registration(
+                    device_key=identity.device.public_key,
+                    device_private_key=identity.device.private_key,
+                    seq=seq, endpoints=endpoints, shares=shares)
+                with self._lock:
+                    self._registry.add(registration)
+                    registry_mod.save_registry(self.identity_dir, self._registry)
+                state['registration_seq'] = seq
+                state['endpoints'] = [[a, p] for a, p in endpoints]
+                # 记下共享清单，`_refresh_own_registration` 才能发现"共享项变了要重发"。
+                state['shares'] = shares
+                state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2) + '\n',
+                                      encoding='utf-8')
+            log.info(f'[group-mesh] 已发布注册记录 seq={seq}，端点 {endpoints}，共享项 {shares}')
+            # 注册记录变了：唤醒后台同步，把它 push 给对端。
+            self._request_sync(registry_dirty=True)
             return seq
         except Exception as e:  # 发布失败只记日志，不让节点起不来
             log.warning(f'[group-mesh] 注册记录发布失败: {e}')
@@ -2771,9 +3062,9 @@ class GroupMeshPlugin(PluginBase):
         换了网络（Wi-Fi 切换、DHCP 重新分配、IPv6 前缀变化）之后，对端的注册表里
         留着的是旧端点，表现为"明明两边都开着却连不上"，而且没有任何提示。
 
-        触发点放在每次刷新设备列表时（进入插件、点"刷新设备"），不做后台定时器：
-        这条路径本来就要连对端，顺手做一次本地比对几乎不增加成本，而常驻定时器会
-        让插件在切到后台之后仍然干活（`onHide` 的语义是"停止轮询类工作"）。
+        现在由后台同步每一轮调用：既比端点，也比共享清单 —— 共享项变化后
+        `add_share` / `remove_share` 会立刻走一次（见 `_republish_registration`），
+        这里再兜底一次，保证"改完共享项"最终一定重新发布。
         """
         if self._node_thread is None or not self._node_thread.is_alive():
             return None   # 节点没在跑：没有"当前端点"可发布
@@ -2787,18 +3078,32 @@ class GroupMeshPlugin(PluginBase):
         else:
             addresses = [bind]
         endpoints = [[addr, port] for addr in addresses]
+        shares = sorted(self._load_shares())
         try:
             state = json.loads((self.identity_dir / 'state.json').read_text(encoding='utf-8'))
         except (OSError, ValueError):
             state = {}
-        # 与上次发布的端点集合比较。共享清单变化不在这里管：共享项由
-        # `add_share` / `remove_share` 之后的下一次刷新自然带上。
-        if state.get('endpoints') == endpoints:
+        if state.get('endpoints') == endpoints and state.get('shares') == shares:
             return None
         published = self._publish_registration(bind, port)
         if published is not None:
             self._published_seq = published
-            log.info(f'[group-mesh] 本机端点变化，已重新发布注册记录 seq={published}：{endpoints}')
+            log.info(f'[group-mesh] 本机端点/共享清单变化，已重新发布注册记录 '
+                     f'seq={published}：{endpoints} / {shares}')
+        return published
+
+    def _republish_registration(self) -> Optional[int]:
+        """共享项变化后立刻重发注册记录；节点没跑时留给后台同步兜底。"""
+        if self._node_thread is None or not self._node_thread.is_alive():
+            self._request_sync(registry_dirty=True)
+            return None
+        bind = str(self.setting('bind', '::') or '::')
+        listening = self._listening
+        if not listening:
+            return None
+        published = self._publish_registration(bind, int(listening[1]))
+        if published is not None:
+            self._published_seq = published
         return published
 
     def _auto_start_node(self, identity_exists: bool, roster_exists: bool) -> None:
@@ -2919,6 +3224,9 @@ class GroupMeshPlugin(PluginBase):
             # 端口/绑定变了：允许重新自动尝试一次（节点已停，旧尝试的结论作废）
             self._auto_start_attempted = False
             self._auto_start_error = None
+        if 'sync_interval_seconds' in set(changed_keys or ()):
+            # 间隔变了：唤醒后台循环，让它按新间隔重新等待。
+            self._sync_wake.set()
 
     # ── 生命周期与 API ────────────────────────────────────────────────────
 
@@ -2926,12 +3234,15 @@ class GroupMeshPlugin(PluginBase):
         self.get_data_root().mkdir(parents=True, exist_ok=True)
         self._unloading = False
         self._restore_uploads()
+        # 后台同步随插件加载启动；`on_unload` 必须把它停掉，否则重载会留下线程。
+        self._start_sync()
 
     def on_unload(self) -> None:
         # 插件卸载必须留不下监听线程、上传线程与出站连接，否则重载会撞端口占用。
         # 先立起卸载标志：取消是"到分块边界才生效"，而新实例可能已经开始读同一个
         # 数据根了。
         self._unloading = True
+        self._stop_sync()
         self._cancel_all_uploads()
         self._close_connections()
         self.stop_node()

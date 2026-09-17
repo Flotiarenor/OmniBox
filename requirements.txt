@@ -43,6 +43,14 @@ pycryptodome==3.23.0
 # novel-reader 用它嗅探 .txt 的编码（HIDDEN_IMPORTS 里也有，缺了会被静默跳过）
 chardet==7.4.3
 
+# --- group-mesh 协议内核 ---
+# Noise_XX 握手由 noiseprotocol 提供（依赖 cryptography）。
+# 私钥保护：Windows 走 DPAPI（系统自带，无依赖）；桌面 Linux/macOS 走 keyring；
+# 两者都不可用时可用 OMNIBOX_SECRET_KEY 走口令派生的 AES-GCM，或如实回落到明文。
+noiseprotocol==0.3.1
+cryptography==50.0.1
+keyring==25.7.0
+
 # --- 插件依赖（pixiv-sync 等在同进程内 import） ---
 jmcomic==2.6.19
 commonX==0.6.40

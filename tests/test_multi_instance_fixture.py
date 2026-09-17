@@ -391,5 +391,50 @@ class MultiInstanceMeshTest(unittest.TestCase):
 
 
 
+@unittest.skipUnless(_BOOT_OK, f'本机无法启动应用实例（{_BOOT_REASON}）')
+class BackgroundSyncPropagationTest(unittest.TestCase):
+    """后台定时轮询 + 变更时 push：不点"刷新设备"，共享变更也要到达对端。
+
+    这是"把手动刷新换成后台同步"这条设计改动的端到端验收：owner 新增共享项后，
+    只依赖后台循环把注册记录推给 member（或 member 自己轮询拉到），member 的
+    `list_peers(refresh=False)` 就能看到新共享项。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._root = Path(tempfile.mkdtemp(prefix='omnibox-sync-'))
+        cls.addClassCleanup(cleanup_tree, cls._root)
+        root = cls._root
+        cls.shared = root / 'shared'
+        cls.shared.mkdir()
+        # 把间隔压到 5 秒，避免用例等默认的 60 秒。
+        cls.cluster = MeshCluster(
+            root / 'instances', names=('owner', 'member'),
+            plugin_settings={'group-mesh': {'sync_interval_seconds': 5}})
+        cls.addClassCleanup(cls.cluster.stop)
+        cls.cluster.start()
+        cls.cluster.form_group()
+        endpoints = cls.cluster.start_nodes()
+        # 双向登记：owner 能 push 给 member，member 也能 pull owner。
+        cls.cluster.link(cls.cluster.members[0], endpoints[0], name='owner')
+        cls.cluster.link(cls.cluster.owner, endpoints[1], name='member')
+
+    def test_share_change_reaches_member_without_manual_refresh(self):
+        share_id = 'late-share'
+        shared = self.shared / 'late'
+        shared.mkdir()
+        self.cluster.call(self.cluster.owner, 'add_share',
+                          {'share_id': share_id, 'path': str(shared), 'read': 'group'})
+
+        def member_sees() -> bool:
+            result = self.cluster.call(self.cluster.members[0], 'list_peers',
+                                       {'refresh': False})
+            return any(share_id in (peer.get('shares') or [])
+                       for peer in (result.get('peers') or []))
+
+        self.assertTrue(wait_until(member_sees, 25.0),
+                        '后台同步没有把新增共享项带到成员端（且没有手动刷新）')
+
+
 if __name__ == '__main__':
     unittest.main()

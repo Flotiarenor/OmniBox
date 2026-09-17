@@ -1,7 +1,8 @@
 # group-mesh 协议内核
 
 > 位置：shell/groupmesh（与 shell/backend、shell/frontend 并列的壳层包）
-> 依赖：仅标准库 + pycryptodome；**不 import Flask / pywebview**
+> 依赖：标准库 + pycryptodome + noiseprotocol（依赖 cryptography）；
+> **不 import Flask / pywebview**
 
 `docs/group-mesh-design.md` 的**可运行验证内核**。它不依赖 Shell、不依赖 GUI，
 Windows 与 Linux 上可以直接跑，用来把协议先跑通、把接口试出来。
@@ -95,9 +96,15 @@ python shell/groupmesh/tools/interop_fixture.py --check fixture.json   # 另一�
 | `client.py` | 客户端封装（分块下载循环在这一层） |
 | `cli.py` / `selftest.py` | 命令行入口与自检 |
 
+## 后台同步
+
+插件加载后每 `sync_interval_seconds`（设置项，默认 60 秒）拉一次注册表与名单；
+名单/注册变更时立即 push 给已知对端。同步用专用连接，不复用 UI 连接池
+（原因见实现路径文档 §5.18）。
+
 ## 明确的未实现项
 
-内容寻址分块传输、Android 轻客户端、壳侧主体上下文。
+内容寻址分块传输、Android 轻客户端、插件层按主体限权（当前按"本地使用者可信"模型）。
 逐项的状态与收敛路径见[设计文档](../../docs/group-mesh-design.md) §0、§16 与实现路径文档 §3、§4。
 
 房间 / 语音 / 游戏面**不属于本插件**，由未来的 Companion 子插件承担，

@@ -12,12 +12,14 @@
       principal.json      主体：名称 + 长期私钥（主密钥）
       devices/<dev_id>.json  设备：名称 + 设备私钥
 
-## 明文私钥的定位（重要，需在实现路径文档中标注为待办）
+## 私钥保护
 
 设计文档要求"设备私钥不导出，由操作系统提供的密钥存储保存（Windows 为 DPAPI，
-Android 为 Keystore）"。MVP 期间私钥是**明文落盘的**，仅靠文件权限保护，
-且密钥文件已声明为受保护路径（不给文件服务端出去）。这是 MVP 与设计文档之间
-已知的偏离，上生产前必须换成 DPAPI / keyring。
+Android 为 Keystore）"。本模块把私钥文件交给 `secret_store` 保护：Windows 用
+DPAPI，桌面 Linux / macOS 用 OS keyring，设置 `OMNIBOX_SECRET_KEY` 时用口令派生
+的 AES-256-GCM；三者都不可用时才回落到旧版明文，并在插件状态里如实标记。
+密钥文件同时申报为受保护路径（不给文件服务端出去）。旧版明文文件会在首次
+读取时**单向升级**成当前可用的最强保护，不会反向降级。
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import crypto_prims as cp
+from . import secret_store
 from .records import RecordError, b64_field, pretty, str_field
 
 log = logging.getLogger(__name__)
@@ -292,16 +295,45 @@ def deny_reason(payload: bytes) -> Optional[str]:
 # ── 落盘 ──────────────────────────────────────────────────────────────────
 
 def _write_private(path: Path, payload: Dict[str, Any]) -> None:
-    """写私钥文件：目录 0700、文件 0600（Windows 上退化为目录属性）。"""
+    """写私钥文件：内容交给 `secret_store` 保护，目录 0700、文件 0600。"""
     path.parent.mkdir(parents=True, exist_ok=True)
+    raw = (json.dumps(payload, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
+    try:
+        blob = secret_store.protect(raw)
+    except secret_store.SecretError as e:
+        raise RecordError(f'{path} 无法写入受保护内容: {e}') from e
     tmp = path.with_suffix(path.suffix + '.tmp')
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    tmp.write_bytes(blob)
     try:
         os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
         # Windows 上 chmod 语义受限；真正生效的是目录 ACL，这里不阻断流程
         pass
     tmp.replace(path)
+
+
+def _read_private(path: Path) -> Dict[str, Any]:
+    """读私钥文件：先解保护，再解析 JSON。
+
+    旧版明文（没有 `format` 信封）照常读；如果当前环境能提供更强的保护，
+    `migrate_file()` 会把它单向升级，失败只告警、不影响本次读取。
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError as e:
+        raise RecordError(f'读不到密钥文件 {path}: {e}') from e
+    try:
+        plain = secret_store.unprotect(raw)
+    except secret_store.SecretError as e:
+        raise RecordError(f'{path} 无法解保护: {e}') from e
+    try:
+        payload = json.loads(plain.decode('utf-8'))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise RecordError(f'{path} 内容不是合法 JSON: {e}') from e
+    if not isinstance(payload, dict):
+        raise RecordError(f'{path} 内容必须是 JSON 对象')
+    secret_store.migrate_file(path)
+    return payload
 
 
 @dataclass
@@ -336,7 +368,7 @@ class Identity:
         principal_path = root / 'principal.json'
         if not principal_path.exists():
             raise RecordError(f'身份目录缺少 principal.json: {root}（先跑 init）')
-        principal = Principal.from_dict(json.loads(principal_path.read_text(encoding='utf-8')))
+        principal = Principal.from_dict(_read_private(principal_path))
 
         device_files = sorted((root / 'devices').glob('*.json'))
         if not device_files:
@@ -347,7 +379,7 @@ class Identity:
         path = device_files[0] if device_id is None else (root / 'devices' / f'{device_id}.json')
         if not path.exists():
             raise RecordError(f'找不到设备 {device_id}（可用: {", ".join(p.stem for p in device_files)}）')
-        device = Device.from_dict(json.loads(path.read_text(encoding='utf-8')))
+        device = Device.from_dict(_read_private(path))
 
         if not device.verify_credential(principal.public_key):
             raise RecordError(f'设备 {device.id} 的凭据无法用主体公钥验证（文件被改动）')

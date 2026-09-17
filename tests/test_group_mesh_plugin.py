@@ -21,6 +21,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -223,7 +224,8 @@ class PluginContractTest(unittest.TestCase):
     def test_settings_schema_shape(self):
         keys = {item['key'] for item in self.plugin.settings_schema}
         self.assertEqual(keys, {'port', 'bind', 'group_name', 'principal_name',
-                                'ttl_days', 'download_dir', 'max_fetch_mb'})
+                                'ttl_days', 'download_dir', 'max_fetch_mb',
+                                'sync_interval_seconds'})
         for item in self.plugin.settings_schema:
             self.assertIn('label', item)
             self.assertIn('type', item)
@@ -1178,6 +1180,120 @@ class AutoDiscoveryTest(unittest.TestCase):
         first_seq = self.plugin.get_status()['node']['published_seq']
         self.plugin.list_peers(refresh=True)
         self.assertEqual(self.plugin.get_status()['node']['published_seq'], first_seq)
+
+
+class SyncStateTest(unittest.TestCase):
+    """后台同步的"变更标记 + push"逻辑。
+
+    不启动后台线程，也不连任何真实对端：这里只验证"名单/注册变更一定会被标记，
+    并进入待推送队列"，网络轮询由 `BackgroundSyncThreadTest` 与多实例夹具覆盖。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        module = load_plugin_module()
+        manifest = json.loads((PLUGIN_DIR / 'manifest.json').read_text(encoding='utf-8'))
+        config = {'directories': {'data_root': str(self.tmp / 'data')}}
+        self.plugin = module.GroupMeshPlugin(manifest, config)
+        self.plugin._settings_store = SettingsStore(str(self.tmp / 'settings'))
+
+    def tearDown(self):
+        self.plugin.on_unload()
+        self._tmp.cleanup()
+
+    def test_sync_interval_setting_is_reported_and_bounded(self):
+        status = self.plugin.get_status()
+        self.assertEqual(status['settings']['sync_interval_seconds'], 60)
+        self.assertTrue(status['sync']['running'] is False)  # 没走 on_load 时不启线程
+        self.plugin.update_setting('sync_interval_seconds', 5)
+        self.assertEqual(self.plugin.get_sync_status()['interval'], 5)
+        self.plugin.update_setting('sync_interval_seconds', 99999)
+        self.assertEqual(self.plugin.get_sync_status()['interval'], 3600)
+
+    def test_roster_change_marks_roster_dirty(self):
+        self.plugin.init_identity({'name': 'sync-roster'})
+        self.plugin._clear_sync_dirty(roster=True, registry=True)
+        self.plugin._sync_wake.clear()
+
+        self.plugin.create_group({'group': 'sync-group'})
+
+        sync = self.plugin.get_sync_status()
+        self.assertTrue(sync['roster_dirty'], '建团/改名单后应标记待推送')
+        self.assertTrue(self.plugin._sync_wake.is_set(), '应立即唤醒后台循环')
+
+    def test_share_change_marks_registry_dirty(self):
+        self.plugin.init_identity({'name': 'sync-share'})
+        self.plugin.create_group({'group': 'sync-share-group'})
+        self.plugin._clear_sync_dirty(roster=True, registry=True)
+        self.plugin._sync_wake.clear()
+
+        shared = self.tmp / 'shared'
+        shared.mkdir()
+        result = self.plugin.add_share({'share_id': 'docs', 'path': str(shared)})
+        self.assertTrue(result['success'], result)
+
+        self.assertTrue(self.plugin.get_sync_status()['registry_dirty'],
+                        '共享清单变化后应重发注册记录并标记待推送')
+        self.assertTrue(self.plugin._sync_wake.is_set())
+
+    def test_push_roster_sends_and_clears_dirty(self):
+        self.plugin.init_identity({'name': 'sync-push'})
+        self.plugin.create_group({'group': 'sync-push-group'})
+        identity = self.plugin._load_identity()
+        roster = self.plugin._load_roster()
+        self.assertIsNotNone(identity)
+        self.assertIsNotNone(roster)
+        self.plugin._clear_sync_dirty(roster=True, registry=True)
+        self.plugin._sync_wake.clear()
+        self.plugin._request_sync(roster_dirty=True)
+
+        endpoint = ('203.0.113.9', 19443)
+        calls = []
+
+        def fake_push(connection, pushed_roster, history=None):
+            calls.append((connection, pushed_roster.version))
+            return {'status': 'ok', 'version': pushed_roster.version}
+
+        fake_connection = mock.Mock()
+        with mock.patch.object(self.plugin, '_open_dedicated',
+                               return_value=fake_connection), \
+                mock.patch.object(self.plugin, '_load_roster_history', return_value=[]), \
+                mock.patch('shell.groupmesh.client.push_roster', side_effect=fake_push):
+            self.plugin._push_pending_changes(identity, roster, [(endpoint, 'peer')])
+
+        self.assertEqual(len(calls), 1, '应把名单推给对端')
+        self.assertEqual(calls[0][1], roster.version)
+        self.assertFalse(self.plugin.get_sync_status()['roster_dirty'])
+        self.assertEqual(self.plugin._peer_roster_notes[endpoint]['version'], roster.version)
+
+
+class BackgroundSyncThreadTest(unittest.TestCase):
+    """后台同步线程随 on_load / on_unload 启停。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        module = load_plugin_module()
+        manifest = json.loads((PLUGIN_DIR / 'manifest.json').read_text(encoding='utf-8'))
+        config = {'directories': {'data_root': str(self.tmp / 'data')}}
+        self.plugin = module.GroupMeshPlugin(manifest, config)
+        self.plugin._settings_store = SettingsStore(str(self.tmp / 'settings'))
+        # 拉长间隔，确保测试只验证"线程在跑/能停"，不触发网络轮询。
+        self.plugin.update_setting('sync_interval_seconds', 3600)
+        self.plugin.on_load()
+
+    def tearDown(self):
+        self.plugin.on_unload()
+        self._tmp.cleanup()
+
+    def test_sync_thread_starts_and_stops_with_lifecycle(self):
+        status = self.plugin.get_sync_status()
+        self.assertTrue(status['running'])
+        self.assertIsNotNone(self.plugin._sync_thread)
+        self.plugin.on_unload()
+        self.assertIsNone(self.plugin._sync_thread)
+        self.assertFalse(self.plugin.get_sync_status()['running'])
 
 
 if __name__ == '__main__':

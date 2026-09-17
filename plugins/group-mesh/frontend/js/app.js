@@ -95,6 +95,20 @@
     renderUnsupported(status);
   }
 
+  function protectionBadge(info) {
+    var labels = {
+      dpapi: 'Windows DPAPI',
+      keyring: '系统 keyring',
+      passphrase: '口令派生密钥',
+      plain: '明文（未保护）'
+    };
+    var name = labels[(info && info.active) || ''] || (info && info.active) || '未知';
+    if (info && info.protected) {
+      return '<span class="gm-badge gm-badge-ok">已加密 · ' + escapeHtml(name) + '</span>';
+    }
+    return '<span class="gm-badge gm-badge-warn">未加密 · ' + escapeHtml(name) + '</span>';
+  }
+
   function renderIdentity(status) {
     var body = el('identity-body');
     var actions = el('identity-actions');
@@ -117,6 +131,7 @@
       '<dt>主体 ID</dt><dd>' + escapeHtml(identity.principal_id) + '</dd>' +
       '<dt>设备</dt><dd>' + escapeHtml(identity.device_name) + '（' + escapeHtml(identity.device_id) + '）</dd>' +
       '<dt>主体公钥</dt><dd>' + escapeHtml(shortKey(identity.principal_key)) + '</dd>' +
+      '<dt>私钥保护</dt><dd>' + protectionBadge(identity.secret_protection) + '</dd>' +
       '</dl>';
     fillActions(actions, [
       button('显示公钥（发给群主登记）', function () {

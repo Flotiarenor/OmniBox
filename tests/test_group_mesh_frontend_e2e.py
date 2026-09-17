@@ -445,7 +445,7 @@ window.Bridge = {
     var arg = arguments[1] || {};
     if (method === 'get_status') { return Promise.resolve(window.__statusPayload); }
     if (method === 'list_peers') {
-      window.__remoteCalls.push('list_peers');
+      window.__remoteCalls.push('list_peers:' + (arg.refresh === true ? 'refresh' : 'cached'));
       return Promise.resolve({ success: true, registry_size: 1, errors: [], peers: [
         { device_id: 'aa'.repeat(32), name: 'flotiarenorserver',
           endpoint: ['192.168.31.16', 19450], endpoints: [['192.168.31.16', 19450]],
@@ -617,6 +617,18 @@ class RemotePageRenderTest(unittest.TestCase):
         # 名单里有、注册表里没有的设备：必须显示原因，而不是被静默丢掉
         self.assertIn('member-pc', peers)
         self.assertIn('注册记录', peers)
+
+    def test_manual_refresh_button_is_gone(self):
+        """网络同步已改为后台定时轮询 + 变更时 push，界面不再有"刷新设备"。"""
+        driver = self._load()
+        self.assertEqual(driver.find_elements('id', 'btn-peer-refresh'), [])
+
+    def test_remote_page_reads_cached_state_not_network(self):
+        """前端只读后端同步好的状态，不应该自己触发网络探测。"""
+        driver = self._load()
+        calls = driver.execute_script('return window.__remoteCalls || []')
+        self.assertIn('list_peers:cached', calls)
+        self.assertNotIn('list_peers:refresh', calls)
 
     def test_share_root_unavailable_is_visible(self):
         """共享根所在磁盘未接入时必须显示出来 —— 这正是 G:\\图库 拔盘后的表现。"""

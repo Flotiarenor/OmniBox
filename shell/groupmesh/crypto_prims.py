@@ -1,13 +1,11 @@
 """密码学原语封装。
 
 设计文档 §4.4 要求"握手使用 Noise 框架的现成实现，不自行设计密码学组合"。
-MVP 阶段的做法是**只复用已审计的密码学原语，协议状态机自己写**，并把这个偏离
-明确记录在 `docs/group-mesh-implementation-path.md` 里 —— 上生产前必须换成
-vetted 的 Noise 实现（如 `noiseprotocol`），本文件的 `noise.py` 是那一步的占位。
+Noise 状态机现在由 `noise.py` 包装的 `noiseprotocol` 提供；本文件只保留
+**独立可复核的原语**：
 
 选 pycryptodome 作为原语来源的理由：它已在 `requirements.txt` 中（pixiv-sync 引入），
-因此 MVP 不需要为"只跑一次验证"新增依赖；Windows venv 与 Linux venv 版本一致
-（3.23.0），跨机联调不会撞版本差异。
+且 Windows venv 与 Linux venv 版本一致（3.23.0），跨机联调不会撞版本差异。
 
 原语与用途的对应：
 

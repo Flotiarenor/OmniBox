@@ -280,7 +280,8 @@ def local_addresses(prefer_ipv6: bool = True) -> List[str]:
             addresses.append(address)
     if prefer_ipv6:
         # IPv6 优先（主路径）；同族内私有网段排前面 —— 局域网直连通常比走公网
-        # 更快，也更可能真的可达（设计文档 §4.6.1：IPv4 是可达性兜底）。
+        # 更快，也更可能真的可达（设计文档 §4.6：IPv4 是可达性兜底；
+        # §4.6.1 讲的是临时/稳定地址的识别）。
         addresses.sort(key=lambda a: (
             0 if ':' in a else 1,
             0 if ipaddress.ip_address(a).is_private else 1,

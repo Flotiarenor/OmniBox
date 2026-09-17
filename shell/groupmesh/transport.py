@@ -314,20 +314,29 @@ def run_handshake(sock: socket.socket, identity: Identity, roster: Optional[Rost
                                      prologue=prologue)
 
     if initiator:
-        send_frame(sock, state.write_message())
-        peer_payload = state.read_message(recv_frame(sock))
-        send_frame(sock, state.write_message(binding))
+        try:
+            send_frame(sock, state.write_message())
+            peer_payload = state.read_message(recv_frame(sock))
+            send_frame(sock, state.write_message(binding))
+        except noise_mod.NoiseError as e:
+            raise TransportError(f'Noise 握手失败（发起方）: {e}') from e
     else:
-        state.read_message(recv_frame(sock))
-        send_frame(sock, state.write_message(binding))
-        peer_payload = state.read_message(recv_frame(sock))
+        try:
+            state.read_message(recv_frame(sock))
+            send_frame(sock, state.write_message(binding))
+            peer_payload = state.read_message(recv_frame(sock))
+        except noise_mod.NoiseError as e:
+            raise TransportError(f'Noise 握手失败（响应方）: {e}') from e
 
     remote_static = state.remote_static_public
     if remote_static is None:  # pragma: no cover - XX 必然交换静态公钥
         raise TransportError('握手结束仍未获得对端静态公钥')
 
     send, recv = state.split()
-    session = noise_mod.SecureSession(send, recv, remote_static, state.handshake_hash)
+    handshake_hash = state.handshake_hash
+    if handshake_hash is None:  # pragma: no cover - split 成功必然已有转录哈希
+        raise TransportError('握手完成但没有转录哈希')
+    session = noise_mod.SecureSession(send, recv, remote_static, handshake_hash)
 
     if initiator:
         # 等服务端的授权结论

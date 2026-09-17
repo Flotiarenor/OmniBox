@@ -1,6 +1,10 @@
 /**
  * group-mesh 插件的「远端共享」分片：设备 → 共享项 → 目录 → 取回。
  *
+ * 设备列表的**网络同步在插件后端**（定时轮询 + 名单/注册变更时 push，间隔见
+ * 插件设置 `sync_interval_seconds`）；本文件只定期把后端已同步好的状态读回界面，
+ * 不再提供"刷新设备"按钮。初始加载与手工登记地址后各读一次。
+ *
  * 为什么单独一个文件而不是并进 app.js：这一步只加了一页，而下一步还要做侧边栏
  * 与设计系统对齐的整体改版。两件事放在同一个文件里改，冲突与回归都难定位。
  * 分片契约由 tests/js/plugin_asset_contract.mjs 把关：js/ 下不得有未被
@@ -284,21 +288,28 @@ window.GroupMeshRemote = (function () {
         }
         if (endpointInput) { endpointInput.value = ''; }
         if (deviceInput) { deviceInput.value = ''; }
-        toast('已更新该设备的地址，正在刷新…');
-        return refreshPeers();
+        toast('已更新该设备的地址，后台正在同步…');
+        refreshPeers(true);
+        return refreshMyEndpoint();
       }).catch(showError);
   }
 
-  function refreshPeers() {
-    var body = el('peers-body');
-    if (body) { body.innerHTML = '<p class="gm-empty">正在读取设备…</p>'; }
-    return state.call('list_peers', { refresh: true }).then(function (result) {
+  function refreshPeers(showLoading) {
+    // 后端在后台定时轮询 + 变更时 push；这里只读后端已经同步好的状态，
+    // 不再由前端触发网络探测（手动"刷新设备"按钮已移除）。
+    if (showLoading) {
+      var body = el('peers-body');
+      if (body) { body.innerHTML = '<p class="gm-empty">正在读取设备…</p>'; }
+    }
+    return state.call('list_peers', { refresh: false }).then(function (result) {
       state.peersLoaded = true;
       if (!result || !result.success) {
         state.peers = [];
         state.peerErrors = [];
         renderPeers();
-        toast((result && result.error) || '读取设备失败', true);
+        if (showLoading) {
+          toast((result && result.error) || '读取设备失败', true);
+        }
         return result;
       }
       state.peers = result.peers || [];
@@ -316,7 +327,9 @@ window.GroupMeshRemote = (function () {
         renderEntries();
       }
       return state.peers;
-    }).catch(showError);
+    }).catch(function (err) {
+      if (showLoading) { showError(err); }
+    });
   }
 
   function refreshCache() {
@@ -623,8 +636,6 @@ window.GroupMeshRemote = (function () {
   }
 
   function bind() {
-    var refresh = el('btn-peer-refresh');
-    if (refresh) { refresh.addEventListener('click', refreshPeers); }
     var copy = el('btn-copy-my-endpoint');
     if (copy) { copy.addEventListener('click', copyMyEndpoint); }
     var update = el('btn-update-peer');
@@ -664,8 +675,8 @@ window.GroupMeshRemote = (function () {
             state.closeModal('peer-box');
             el('peer-manual-endpoint').value = '';
             el('peer-name').value = '';
-            toast(result.existed ? '该地址已在列表里' : '已登记对端');
-            refreshPeers();
+            toast(result.existed ? '该地址已在列表里' : '已登记对端，后台正在同步…');
+            refreshPeers(true);
           }).catch(showError);
       });
     }
@@ -677,6 +688,21 @@ window.GroupMeshRemote = (function () {
    * 依赖注入而不是直接引用 app.js 内部的函数：装载期不得触碰 DOM（资源契约），
    * 且 app.js 的回调（call / toast / 弹窗开关）本身就是它需要对外提供的全部能力。
    */
+  var VIEW_POLL_MS = 15000;
+  var viewTimer = null;
+
+  function startViewPolling() {
+    // 后端负责真正的网络同步；这里只是定期把"后端已同步好的状态"读回界面。
+    // 页面隐藏时不读，避免无意义的 iframe 唤醒。
+    if (viewTimer) { clearInterval(viewTimer); }
+    viewTimer = setInterval(function () {
+      if (!document.hidden) { refreshPeers(false); }
+    }, VIEW_POLL_MS);
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) { refreshPeers(false); }
+    });
+  }
+
   function init(deps) {
     state.call = deps.call;
     state.toast = deps.toast;
@@ -687,6 +713,7 @@ window.GroupMeshRemote = (function () {
     refreshMyEndpoint();
     renderPath();
     renderEntries();
+    startViewPolling();
   }
 
   return { init: init, refreshPeers: refreshPeers, refreshMyEndpoint: refreshMyEndpoint };
