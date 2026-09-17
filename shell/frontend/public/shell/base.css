@@ -281,6 +281,71 @@ body {
   background: var(--bg-app);
 }
 
+/* ===== 导航项（侧栏内的页面/分类入口） =====
+   侧栏导航在 image-viewer / manga-library / media-player / group-mesh 四处各写过一遍
+   （结构、hover、选中态逐字重复，只有类名前缀不同）。这里定义一次，插件直接引用：
+   结构属性（flex / radius / cursor / 过渡）由 `.obx-nav-item` 给，视觉参数走
+   `--obx-nav-*`，插件**只保留自己的差异**（图标栏宽度、字号、是否 position:relative…）。
+   新增侧栏请不要再复制一份 hover / 选中态。 */
+:root {
+  --obx-nav-gap: 10px;
+  --obx-nav-pad-y: 9px;
+  --obx-nav-pad-x: 12px;
+  --obx-nav-radius: 10px;
+  --obx-nav-font-size: 13px;
+  --obx-nav-accent: var(--accent);
+  /* 选中态用"左缘一道强调色竖线 + 极淡底色 + 强调色文字"：底色只表达"当前在哪一页"，
+     靠竖线提供位置感，比整块实心填充更轻，也不必担心用户的 `--accent` 是浅色时
+     实心底色压不住白色文字（自定义颜色由壳写入，插件无法预知）。 */
+  --obx-nav-active-bar: 2px solid var(--obx-nav-accent);
+  --obx-nav-active-bg: color-mix(in srgb, var(--obx-nav-accent) 9%, transparent);
+  --obx-nav-active-color: var(--obx-nav-accent);
+}
+
+.obx-nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--obx-nav-gap);
+  padding: var(--obx-nav-pad-y) var(--obx-nav-pad-x);
+  border: none;
+  border-radius: var(--obx-nav-radius);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--obx-nav-font-size);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.obx-nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.obx-nav-item:active { transform: scale(0.98); }
+/* 三种选中态标记都认：`.is-active`（仓库既有写法）、`.active`（image-viewer /
+   media-player 既有写法）、`[data-active="true"]`（group-mesh 用属性而不是类，
+   属性还能被测试与调试直接读）。 */
+.obx-nav-item.is-active,
+.obx-nav-item.active,
+.obx-nav-item[data-active="true"] {
+  background: var(--obx-nav-active-bg);
+  color: var(--obx-nav-active-color);
+  font-weight: 600;
+}
+.obx-nav-item.is-active:hover,
+.obx-nav-item.active:hover,
+.obx-nav-item[data-active="true"]:hover { color: var(--obx-nav-active-color); }
+.obx-nav-item.is-active::before,
+.obx-nav-item.active::before,
+.obx-nav-item[data-active="true"]::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 2px;
+  height: 62%;
+  transform: translateY(-50%);
+  border-radius: 0 2px 2px 0;
+  background: var(--obx-nav-accent);
+}
+
 /* ===== 通用扩展入口（Companion 插件挂载到宿主侧边栏/工具栏） ===== */
 .obx-extensions {
   display: flex;
@@ -297,22 +362,45 @@ body {
   letter-spacing: 0.4px;
 }
 .obx-extension {
+  /* 结构与视觉都走上面的导航项约定，这里只保留它自己的差异：
+     宽度撑满、图标栏更宽。宿主想改外观直接覆盖 `--obx-nav-*`。 */
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 8px 10px;
+  position: relative;
+  padding: var(--obx-nav-pad-y, 9px) var(--obx-nav-pad-x, 12px);
   border: none;
   background: transparent;
   color: var(--text-sidebar, var(--text-primary));
-  border-radius: 8px;
-  font-size: 13px;
+  border-radius: var(--obx-nav-radius, 10px);
+  font-size: var(--obx-nav-font-size, 13px);
   text-align: left;
   cursor: pointer;
-  transition: background var(--transition-fast, 0.15s ease);
+  transition: background var(--transition-fast, 0.15s ease), color var(--transition-fast, 0.15s ease);
 }
 .obx-extension:hover {
   background: var(--bg-hover, rgba(128, 128, 128, 0.12));
+}
+/* 选中态与插件侧栏的导航项一致（宿主可给 `active` / `is-active` 两者之一）；
+   宿主想让某个入口保持自己的外观，覆写这两条即可。 */
+.obx-extension.active,
+.obx-extension.is-active {
+  background: var(--obx-nav-active-bg, color-mix(in srgb, var(--accent) 9%, transparent));
+  color: var(--obx-nav-active-color, var(--accent));
+  font-weight: 600;
+}
+.obx-extension.active::before,
+.obx-extension.is-active::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 2px;
+  height: 62%;
+  transform: translateY(-50%);
+  border-radius: 0 2px 2px 0;
+  background: var(--obx-nav-accent, var(--accent));
 }
 .obx-extension-icon {
   width: 20px;

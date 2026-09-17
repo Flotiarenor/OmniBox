@@ -206,46 +206,12 @@ body {
   color: var(--text-muted);
 }
 
+/* 导航项的结构 / hover / 选中态全部来自壳的 `.obx-nav-item`（base.css 的「导航项」
+   一节，含 `[data-active="true"]` 这一档）；这里只留本插件自己的差异：
+   撑满侧栏宽度 + 图标栏 18px。选中态的视觉参数可覆写
+   `--obx-nav-active-bg` / `--obx-nav-accent` 等 token。 */
 .gm-nav-item {
-  display: flex;
-  align-items: center;
-  gap: 9px;
   width: 100%;
-  padding: 8px 10px;
-  border: none;
-  border-radius: var(--gm-radius-sm);
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 13px;
-  text-align: left;
-  cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast),
-              transform var(--transition-fast);
-}
-
-.gm-nav-item:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-  transform: translateX(2px);
-}
-
-.gm-nav-item:active {
-  transform: translateX(2px) scale(0.98);
-}
-
-/* 选中态是**整块填色**（与 image-viewer / manga-library 的 `--xx-gradient` 同款），
-   不是左侧一条边线高亮：边线高亮在"当前在哪一页"上读得比整块慢，而侧栏本来就是
-   导航。填充色用 `--gm-accent-soft` + 强调色文字 —— 不用渐变实心，
-   是因为壳允许用户改 --accent，实心渐变在浅色自定义色下容易压不住对比度。 */
-.gm-nav-item[data-active="true"] {
-  background: var(--gm-accent-soft);
-  color: var(--accent);
-  font-weight: 600;
-  box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 18%, transparent);
-}
-
-.gm-nav-item[data-active="true"]:hover {
-  transform: none;
 }
 
 .gm-nav-icon {

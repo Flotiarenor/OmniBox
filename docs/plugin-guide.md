@@ -585,6 +585,29 @@ class AudioCoverCache(ThumbCache):
 | `.sub-sidebar-header` | 侧边栏标题行（大写标签，底部边框）                                    |
 | `.sub-sidebar-footer` | 侧边栏底部统计区（小字体，顶部边框）                                  |
 | `.view-content`       | 内容滚动区（`flex: 1; overflow-y: auto; padding: 16px`）            |
+| `.obx-nav-item`       | 侧栏导航项（结构 + hover + 选中态；选中态标 `is-active` / `active` / `data-active="true"` 均可） |
+
+`.obx-nav-item` 的视觉参数走 `--obx-nav-*`（`base.css` 的「导航项」一节）：
+
+| token | 默认 | 说明 |
+| --- | --- | --- |
+| `--obx-nav-gap` / `--obx-nav-pad-y` / `--obx-nav-pad-x` | `10px` / `9px` / `12px` | 图标与文字的间距、内边距 |
+| `--obx-nav-radius` / `--obx-nav-font-size` | `10px` / `13px` | 圆角与字号 |
+| `--obx-nav-accent` | `var(--accent)` | 选中态用色 |
+| `--obx-nav-active-bg` | `color-mix(in srgb, var(--obx-nav-accent) 9%, transparent)` | 选中态底色（极淡） |
+| `--obx-nav-active-color` | `var(--obx-nav-accent)` | 选中态文字色 |
+
+选中态的"左缘 2px 强调色竖线"由 `.obx-nav-item` 的 `::before` 提供，插件**不要**再各自
+实现一遍选中态（image-viewer 曾把它整块填成渐变，与其它插件不一致）。插件只需保留自己的
+差异，例如图标栏宽度：
+
+```css
+.iv-nav-item { gap: 9px; }              /* 结构/选中态都在 .obx-nav-item 里 */
+.iv-nav-item span { width: 18px; text-align: center; }
+```
+
+回归用例：`python tests/debug_nav_style_ui.py` —— 起真实壳服务，对四个插件的导航项断言
+"token 生效、选中态有底色与竖线、四个插件算出的样式一致"。
 
 **示例 HTML 结构**：
 

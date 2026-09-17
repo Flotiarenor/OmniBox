@@ -88,36 +88,13 @@
   padding: 6px 10px;
 }
 
+/* 结构、hover、选中态都来自壳的 `.obx-nav-item`（base.css 的「导航项」一节），
+   这里只留本插件自己的差异：图标栏宽度 20px、图标字号 15px、文字 13px。
+   外观参数可覆写 `--obx-nav-*`（例如 --obx-nav-gap / --obx-nav-active-bg）。 */
 .mp-nav-item {
-  position: relative;
-  display: flex;
-  align-items: center;
   gap: 10px;
-  padding: 9px 12px;
-  border: none;
-  border-radius: var(--mp-radius-sm);
-  background: transparent;
-  color: var(--text-secondary);
+  position: relative;
   font-size: 13px;
-  cursor: pointer;
-  text-align: left;
-  transition: background var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
-}
-
-.mp-nav-item:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-  transform: translateX(2px);
-}
-
-.mp-nav-item:active {
-  transform: translateX(2px) scale(0.98);
-}
-
-.mp-nav-item.active {
-  background: var(--mp-gradient);
-  color: var(--text-on-accent);
-  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 32%, transparent);
 }
 
 .mp-nav-ico {
