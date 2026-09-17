@@ -242,10 +242,15 @@ window.FolderPicker = (function () {
    * opts.placeholder  输入框占位符
    * opts.emptyText    列表为空时的提示
    * opts.onBeforeOpen 打开选择器前的钩子，可在此时把新发现的目录 push 进 paths
+   * opts.localOnly    可选，true 时**不显示「🌐 网络位置」**：该字段只接受本机目录。
+   *                    用于"目录本身就是产物"的字段（如 group-mesh 的远端下载目录）——
+   *                    在那种字段上选"网络位置"语义是错的（远端内容要取到本地，
+   *                    而下载目录正是落点），见 docs/group-mesh-design.md §1.4。
    */
   function createList(opts) {
     const options = opts || {};
     const paths = options.paths || [];
+    const localOnly = options.localOnly === true;
     const root = document.createElement('div');
     root.className = 'iv-roots';
     // 两段式：列表与「添加目录」行分开，中间那条 2px 是刻意留的（与图片相册一致）
@@ -256,8 +261,15 @@ window.FolderPicker = (function () {
     addRow.innerHTML = `
       <input type="text" class="search-input" placeholder="${Utils.escapeHtml(options.placeholder || '输入目录绝对路径')}">
       <button class="btn btn-sm" data-act="browse">浏览…</button>
-      <button class="btn btn-sm" data-act="add">添加</button>
-      <button class="btn btn-sm" data-act="network" title="从其它设备取一个共享项到本地目录">🌐 网络位置</button>`;
+      <button class="btn btn-sm" data-act="add">添加</button>`;
+    // 「网络位置」只在允许远端来源的字段里给：目录本身就是产物时（下载落点）选了它
+    // 语义不成立，按钮放出来只会误导。用 DOM 追加而不是写进上面的模板 ——
+    // 模板里的条件插值要额外走转义登记（tools/check_frontend_escape.cjs）。
+    if (!localOnly) {
+      addRow.insertAdjacentHTML('beforeend',
+        '<button class="btn btn-sm" data-act="network" '
+        + 'title="从其它设备取一个共享项到本地目录">🌐 网络位置</button>');
+    }
     root.append(listBox, addRow);
 
     const input = addRow.querySelector('input');
@@ -321,7 +333,8 @@ window.FolderPicker = (function () {
       const picked = await openDirBrowser(input.value.trim());
       if (picked) addPath(picked);
     });
-    networkBtn.addEventListener('click', async () => {
+    // localOnly 时这个按钮根本不在 DOM 里（见上面的模板），因此要判空
+    if (networkBtn) networkBtn.addEventListener('click', async () => {
       if (options.onBeforeOpen) options.onBeforeOpen();
       const providers = await loadNetworkProviders();
       if (!providers.length) {

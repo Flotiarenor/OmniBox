@@ -188,14 +188,7 @@ body {
   gap: 2px;
 }
 
-.gm-nav-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-}
-
-.gm-nav-scroll:hover {
-  scrollbar-color: color-mix(in srgb, var(--text-secondary) 38%, transparent) transparent;
-}
+/* 滚动条走壳的 `.obx-scroll`（本文件不再自己写一份 thin/transparent 规则） */
 
 .gm-nav-label {
   padding: 12px 8px 4px;

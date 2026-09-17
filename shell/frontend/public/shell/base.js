@@ -442,6 +442,9 @@ function createSettingsForm(container, schema, values = {}) {
         paths: raw.split('\n').map(line => line.trim()).filter(Boolean),
         placeholder: field.placeholder,
         emptyText: field.emptyText,
+        // 目录字段默认允许「网络位置」来源；声明 local_only 的字段（该目录本身就是
+        // 产物，例如下载落点）不显示它 —— 在那类字段上选网络位置语义不成立。
+        localOnly: field.local_only === true,
       });
       wrap.append(label, list.element);
       fieldEls[field.key] = list;

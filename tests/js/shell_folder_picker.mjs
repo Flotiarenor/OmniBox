@@ -76,6 +76,8 @@ function makeElement(tag = 'div') {
         classList: { add() { }, remove() { }, toggle() { }, contains: () => false },
         append(...nodes) { el.children.push(...nodes); },
         appendChild(node) { el.children.push(node); return node; },
+        // 组件用 insertAdjacentHTML('beforeend', …) 追加「网络位置」按钮（默认才有）
+        insertAdjacentHTML(position, html) { el.innerHTML += html; },
         remove() { },
         addEventListener() { },
         removeEventListener() { },
@@ -241,6 +243,22 @@ await check('添加行含「网络位置」入口，且不改变原有三件套'
     assert.ok(addRow.innerHTML.includes('data-act="network"'), '缺少网络位置按钮');
     assert.ok(addRow.innerHTML.includes('data-act="browse"'), '浏览按钮不应消失');
     assert.ok(addRow.innerHTML.includes('data-act="add"'), '添加按钮不应消失');
+});
+
+await check('localOnly 的字段不给「网络位置」入口（该目录本身就是产物）', () => {
+    // 背景：group-mesh 的「远端下载目录」是取回文件的落点，在那里选"网络位置"
+    // 等于用取回的中间目录当下载目录，语义不成立 —— schema 声明 local_only 后
+    // 组件不能把入口渲染出来。三件套仍要在。
+    const list = FolderPicker.createList({ paths: [], localOnly: true });
+    const addRow = list.element.children[1];
+    assert.ok(!addRow.innerHTML.includes('data-act="network"'),
+        `localOnly 时不应有网络位置按钮：${addRow.innerHTML}`);
+    assert.ok(addRow.innerHTML.includes('data-act="browse"'), '浏览按钮不应消失');
+    assert.ok(addRow.innerHTML.includes('data-act="add"'), '添加按钮不应消失');
+    // 默认（未声明）仍然是有的，避免"改错了方向"也通过
+    const normal = FolderPicker.createList({ paths: [] });
+    assert.ok(normal.element.children[1].innerHTML.includes('data-act="network"'),
+        '未声明 localOnly 时应保留网络位置入口');
 });
 
 await check('提供方菜单的一行转义 icon/label（两者都来自插件声明）', () => {

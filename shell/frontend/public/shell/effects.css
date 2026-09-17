@@ -130,21 +130,39 @@
   pointer-events: none;
 }
 
-/* ---------- 现代窄滚动条：悬停渐显 ---------- */
-.obx-scroll {
+/* ---------- 现代窄滚动条：悬停渐显 ----------
+   用法：给**每个会滚动的容器**加 `.obx-scroll`。壳自己的界面里滚动条是全局隐藏的
+   （`src/styles/shell.css` 的 `*::-webkit-scrollbar { display: none }`），插件 iframe
+   不在那份样式的作用域内，所以插件不写就是系统默认滚动条 —— 又粗又白，深浅主题下
+   都突兀。弹窗正文（`.modal-body`）与共享目录选择器的列表是**壳渲染**的滚动容器，
+   插件加不上类，因此一并写进选择器清单：在壳注入的样式表里定义一次，插件的所有
+   弹窗都受益（.tree-container 有自己的 6px 规则，选择器优先级更高，保持原样）。 */
+.obx-scroll,
+.modal-body,
+.iv-dirbrowser-list {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
 }
 
-.obx-scroll:hover {
+.obx-scroll:hover,
+.modal-body:hover,
+.iv-dirbrowser-list:hover {
   scrollbar-color: color-mix(in srgb, var(--text-secondary) 38%, transparent) transparent;
 }
 
-.obx-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
-.obx-scroll::-webkit-scrollbar-track { background: transparent; }
-.obx-scroll::-webkit-scrollbar-corner { background: transparent; }
+.obx-scroll::-webkit-scrollbar,
+.modal-body::-webkit-scrollbar,
+.iv-dirbrowser-list::-webkit-scrollbar { width: 6px; height: 6px; }
+.obx-scroll::-webkit-scrollbar-track,
+.modal-body::-webkit-scrollbar-track,
+.iv-dirbrowser-list::-webkit-scrollbar-track { background: transparent; }
+.obx-scroll::-webkit-scrollbar-corner,
+.modal-body::-webkit-scrollbar-corner,
+.iv-dirbrowser-list::-webkit-scrollbar-corner { background: transparent; }
 
-.obx-scroll::-webkit-scrollbar-thumb {
+.obx-scroll::-webkit-scrollbar-thumb,
+.modal-body::-webkit-scrollbar-thumb,
+.iv-dirbrowser-list::-webkit-scrollbar-thumb {
   background-color: transparent;
   border-radius: 999px;
   border: 1px solid transparent;
@@ -152,11 +170,15 @@
   transition: background-color 0.25s ease;
 }
 
-.obx-scroll:hover::-webkit-scrollbar-thumb {
+.obx-scroll:hover::-webkit-scrollbar-thumb,
+.modal-body:hover::-webkit-scrollbar-thumb,
+.iv-dirbrowser-list:hover::-webkit-scrollbar-thumb {
   background-color: color-mix(in srgb, var(--text-secondary) 38%, transparent);
 }
 
-.obx-scroll::-webkit-scrollbar-thumb:hover {
+.obx-scroll::-webkit-scrollbar-thumb:hover,
+.modal-body::-webkit-scrollbar-thumb:hover,
+.iv-dirbrowser-list::-webkit-scrollbar-thumb:hover {
   background-color: color-mix(in srgb, var(--text-secondary) 62%, transparent);
 }
 

@@ -564,7 +564,11 @@ class AudioCoverCache(ThumbCache):
   - 玻璃面板：`.obx-glass` / `.obx-glass-strong`
   - 卡片悬浮抬升：`.obx-card-lift`
   - 骨架屏：`.obx-skeleton`
-  - 现代窄滚动条（鼠标悬停渐显、深浅色兼容）：`.obx-scroll`
+  - 现代窄滚动条（鼠标悬停渐显、深浅色兼容）：`.obx-scroll` —— **每个会滚动的容器都要加**。
+    壳自己的界面里滚动条是全局隐藏的（`src/styles/shell.css` 的
+    `*::-webkit-scrollbar { display: none }`），插件 iframe 不在那份样式的作用域内，
+    插件不写就退回系统默认滚动条（又粗又白）。弹窗正文 `.modal-body` 与共享目录组件的
+    `.iv-dirbrowser-list` 由壳渲染、插件加不上类，已在 `effects.css` 里一并覆盖。
 - `/shell/motion.js` — `window.Motion`：
   - `Motion.stagger(container, selector?)` 为子元素写入交错延迟
   - `Motion.retrigger(el, className?)` 重新触发动画（默认 `obx-anim-heart`）
@@ -1096,6 +1100,7 @@ class MyPlugin(PluginBase):
 | `options`                  | 可选 | select 类型的选项列表                                                                     |
 | `multi`                    | 可选 | 仅 `directory`：多值字段，列表可增删多行，第 2 行起标「额外」                          |
 | `placeholder` / `emptyText` | 可选 | 仅 `directory`：输入框占位符 / 列表为空时的提示文字                                      |
+| `local_only`               | 可选 | 仅 `directory`：`True` 时**不显示「🌐 网络位置」入口**（该目录只接受本机路径，见下）   |
 | `secret`                   | 可选 | `True` 表示**凭据类**设置项：Shell 拒绝把该插件的设置文件当媒体资源返回（见下）        |
 
 #### 凭据类设置项：`"secret": True`
@@ -1199,6 +1204,25 @@ def get_protected_paths(self):
 > 把多行文本字段合并成一个多值 `directory` 字段时，**记得让后端兼容旧键**，
 > 否则老用户配置里的值会看起来"丢了"（media-player 的
 > `_configured_roots()` 就是这种兼容：新键优先，没有才回退旧键）。
+
+#### `local_only`：该目录只接受本机路径
+
+默认情况下目录列表带一个「🌐 网络位置」入口：让用户把某个远端共享项取回本地一个
+目录，再把**那个本地目录**加进列表（详见 §7.2.1）。这对"媒体根目录"是正确的 ——
+取回来的就是本地文件。
+
+但对**目录本身就是产物**的字段，这个入口是错的：例如 group-mesh 的「远端下载目录」
+（`download_dir`）就是"从对端取回的文件落在哪"，在那里选网络位置等于"把取回的中间
+目录当作下载目录"，语义不成立。这类字段声明：
+
+```python
+{"key": "download_dir", "label": "远端下载目录", "type": "directory",
+ "local_only": True,          # 不渲染「🌐 网络位置」入口
+ "default": "", "placeholder": "默认：数据根/group-mesh/downloads"},
+```
+
+判断标准一句话：**这个目录是用来"装结果"的，还是用来"当来源"的？** 装结果的
+（下载落点、导出目录）用 `local_only`；当来源的（媒体根、相册根）不要用。
 
 ### 8.3 读取与写入
 

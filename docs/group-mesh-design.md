@@ -145,7 +145,7 @@ plugins/group-mesh/
 | `identity/shares.json` | 共享项**声明**（签名协议对象） | 本机，声明会发给成员 |
 | `identity/share_roots.json` | 共享项的**本机路径/容量**（本机事实，从不发出） | 本机 |
 | `identity/registry.json` | 注册表快照 | 本机 |
-| `downloads/` | 显式取回的文件（`download_dir` 可改） | 经 `/file?plugin=group-mesh` |
+| `downloads/` | 显式取回的文件（`download_dir` 可改，设置里**只接受本机目录**：该字段声明 `local_only`，不显示「网络位置」入口 —— 它是取回的落点，不能当自己的来源） | 经 `/file?plugin=group-mesh` |
 | `uploads.json` | 上传续传记录（每 4 MiB 落盘） | 本机 |
 | `upload-tasks.json` | 上传任务历史（最近 20 条） | 本机 |
 | `.cache/remote/<设备ID>/<共享标识>/` | 物化目录（占位 + 已取字节）与索引 | 经 `/file` 可读，属本机可信域 |
