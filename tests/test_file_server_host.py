@@ -175,5 +175,65 @@ class TrustedHostListTests(unittest.TestCase):
         self.assertIn('127.0.0.1', _build_trusted_hosts({'server': 'not-a-dict'}))
 
 
+class PluginFrontendBootstrapTest(unittest.TestCase):
+    """插件前端的**每个** HTML 页面都要拿到壳的引导脚本（Bridge / 共享组件 / 主题同步）。
+
+    以前只有 `index.html` 走这条注入。子页面（例如"网络位置"提供方要在共享目录组件
+    FolderPicker 的弹窗 iframe 里渲染的选择器）因此拿不到 `window.Bridge`，界面上报
+    "PyWebView API 不可用"，而页面本身看起来毫无异常。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        plugin_dir = Path(self._tmp.name) / 'demo'
+        frontend = plugin_dir / 'frontend'
+        (frontend / 'sub').mkdir(parents=True)
+        (frontend / 'index.html').write_text(
+            '<html><head></head><body>main-page</body></html>', encoding='utf-8')
+        (frontend / 'sub' / 'picker.html').write_text(
+            '<html><head></head><body>picker-page</body></html>', encoding='utf-8')
+        (frontend / 'plain.txt').write_text('not html', encoding='utf-8')
+        # 插件目录**之外**的同名文件：子页面注入是自己 open 文件的，包含判定必须挡住它
+        (Path(self._tmp.name) / 'outside.html').write_text(
+            '<html><head></head><body>outside</body></html>', encoding='utf-8')
+
+        class _Manager(_StubPluginManager):
+            def get_plugin_dir(self, name):
+                return plugin_dir if name == 'demo' else None
+
+        config = {
+            'server': {'host': '127.0.0.1', 'port': 18080},
+            'directories': {'data_root': tempfile.gettempdir()},
+        }
+        self.client = create_app(config, _Manager()).test_client()
+
+    def test_every_html_page_gets_the_bootstrap(self):
+        for path, marker in (('/plugins/demo/frontend/index.html', 'main-page'),
+                             ('/plugins/demo/frontend/sub/picker.html', 'picker-page')):
+            with self.subTest(path=path):
+                resp = self.client.get(path)
+                self.assertEqual(resp.status_code, 200)
+                html = resp.get_data(as_text=True)
+                self.assertIn(marker, html, '页面本身的内容不该被改动')
+                self.assertIn('/shell/base.js', html, '缺少壳的 Bridge/Utils')
+                self.assertIn('/shell/folder-picker.js', html, '缺少共享目录组件')
+                self.assertIn("Bridge.setPrefix('demo');", html, '插件前缀必须按路由替换')
+
+    def test_non_html_is_served_untouched(self):
+        resp = self.client.get('/plugins/demo/frontend/plain.txt')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_data(as_text=True), 'not html')
+
+    def test_html_outside_the_plugin_dir_is_not_served(self):
+        """越界路径绝不能读到插件目录外的文件（手工 open 的那条路要自己判定）。"""
+        for path in ('/plugins/demo/frontend/../../outside.html',
+                     '/plugins/demo/frontend/%2e%2e/%2e%2e/outside.html'):
+            with self.subTest(path=path):
+                resp = self.client.get(path)
+                self.assertNotEqual(resp.status_code, 200)
+                self.assertNotIn('outside', resp.get_data(as_text=True))
+
+
 if __name__ == '__main__':
     unittest.main()

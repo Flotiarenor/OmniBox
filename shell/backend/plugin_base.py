@@ -21,6 +21,9 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional, Tuple
 
+from shell.backend.principal import PrincipalContext
+from shell.backend.principal import current_principal as _current_principal
+from shell.backend.principal import require_principal as _require_principal
 from shell.backend.protected_paths import is_protected
 
 log = logging.getLogger(__name__)
@@ -122,6 +125,25 @@ class PluginBase(ABC):
         """
         return [self.get_data_root()]
 
+    def resolve_file_path(self, rel_path: str) -> Path | None:
+        """把 `/file?plugin=X&path=<相对路径>` 的相对路径解释成本机物理路径。
+
+        默认返回 `None`，表示"按老规矩办"：Shell 用 `get_file_roots()[0]` 拼出路径。
+        需要**虚拟路径**的插件（多根目录、命名空间前缀）可以覆写本方法，让 Shell
+        按插件自己的映射去解析 —— 否则诸如 `__额外图库/作者B/图.jpg` 这种路径在
+        第一根下根本不存在，表现就是"网格与缩略图正常，点开原图 404"。
+
+        约束（Shell 侧执行，插件无法绕过）：
+
+        - 返回值**必须**落在 `get_file_roots()` 的某一根之内，否则 403（与越界同一语义）；
+        - 仍然先过受保护路径判定，插件申报的凭据文件即使被解析出来也返回 403；
+        - 返回 `None`、抛异常或返回非 `Path` 时一律回退到默认解析，**不得**让整条
+          路由 500（形状不可信的返回值由 Shell 归一化）。
+
+        `/thumbs` 早就是这条契约（路径交给插件解释），本方法是 `/file` 与之对齐。
+        """
+        return None
+
     # ===== 受保护路径契约（插件"申请"、Shell 执行）=====
     #
     # 定位：插件**自己申报**哪些路径是敏感内容，Shell 在文件路由上无条件拒绝把
@@ -220,6 +242,42 @@ class PluginBase(ABC):
         插件可覆写为"现场生成并落盘"；返回值被忽略，生成失败不应抛异常。
         """
 
+    def is_content_placeholder(self, path: Path | str) -> bool:
+        r"""该路径是否"存在但内容还没真正取到本地"（`/file` 每次请求都会问一次）。
+
+        为什么需要它，而不是只靠"文件不存在"来判断：**物化出来的占位文件是存在的**
+        （0 字节）。实测踩到的正是这一点 —— `/file` 只在"文件不存在"时回调
+        `ensure_file`，于是占位文件被当作正常文件直接返回，客户端拿到 200 + 0 字节，
+        远端取回永远不会发生。所以调用方必须能区分"真的没有"与"有壳没内容"。
+
+        返回 True 时 Shell 会接着调用 `ensure_file`。默认返回 False（内容都在本地）。
+
+        实现约定：这个方法会在**每个** `/file` 请求上被调用，必须廉价（一次
+        `stat` + 路径归属判断，别在这里做网络或全目录扫描）。
+        """
+        return False
+
+    def ensure_file(self, path: Path | str) -> None:  # noqa: B027 - 有意的非抽象空钩子
+        r"""按需把内容取到本地（`/file` 找不到文件时调用）。默认什么都不做。
+
+        与 `ensure_thumb` 是同一形状的钩子，区别在于服务的路由不同：这个作用于
+        `/file`（原图/媒体/任意文件），那个作用于 `/thumbs`。
+
+        为什么需要它：插件的内容不必都在本地。group-mesh 这类"另一台机器上的库"
+        的插件，把远端共享项**物化**成本地目录（目录结构与文件占位先落地，字节按需
+        取回）—— 消费方插件扫描时看到的是真实目录，读到某个文件时由这里现取。
+        没有这个钩子，"浏览远端目录"就只能做成插件私有的浏览界面，image-viewer /
+        media-player 这些按"本地路径"工作的插件永远接不进来。
+
+        实现约定：
+          * `path` 是**已通过根校验与受保护判定**的绝对路径（Shell 先校验再回调，
+            顺序与 `ensure_thumb` 一致）—— 插件不需要再判越界；
+          * 放不进本地或取不到时**直接返回**，不要抛异常：调用方会继续走它自己的
+            404 分支，异常只会把一个正常的"没有这个文件"变成 500；
+          * 这个方法会在请求线程上被调用，实现方自己负责超时与限额（远端不可达时
+            不能让请求线程无限等待）。
+        """
+
     def get_dependency(self, name: str) -> PluginBase | None:
         """返回已加载依赖插件实例；未声明依赖或未加载时返回 None。"""
         dependencies = self.manifest.get('dependencies', []) or []
@@ -229,6 +287,37 @@ class PluginBase(ABC):
         if self._plugin_manager is None:
             return None
         return self._plugin_manager.get_plugin_instance(name)
+
+    # ===== 主体上下文（设计文档 group-mesh §12 第 1/2 项）=====
+
+    def current_principal(self) -> Optional[PrincipalContext]:
+        r"""本次调用的主体：**由壳注入**，无法被请求参数影响。
+
+        壳在 `before_request` 里校验凭据并把主体写进 `ContextVar`
+        （`shell/backend/principal.py`），因此本方法拿到的是"已验证的凭据对应
+        的那个人"，而不是某个自称的 ID。没有主体时返回 `None`：
+
+        * **后台线程**：`ContextVar` 不跨线程继承，插件自起的线程永远读不到主体
+          —— 这是设计约束而不是缺陷（§12 第 2 项明确要求"涉及主体的后台任务必须
+          显式携带主体信息"）。因此不要在后台任务里用本方法推断操作者。
+        * CLI / 自检 / 直接调用插件实例：同样没有主体。
+
+        需要"必须有主体"的地方请用 `require_principal()`：让拒绝发生在业务逻辑
+        之前，而不是让 `None` 一路传下去被某处的 `or '本机'` 兜住。
+
+        典型用法::
+
+            def delete_folder(self, path):
+                principal = self.require_principal()      # 无主体即拒绝
+                if not principal.is_admin:
+                    return {'success': False, 'error': '需要管理员权限'}
+                ...
+        """
+        return _current_principal()
+
+    def require_principal(self) -> PrincipalContext:
+        """同上，但没有主体时抛 `PermissionError`（壳的 500 处理会转成错误响应）。"""
+        return _require_principal()
 
     def get_extensions(self) -> List[dict]:
         """宿主前端可渲染的动作。默认空。"""

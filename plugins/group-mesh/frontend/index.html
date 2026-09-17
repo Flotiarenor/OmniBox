@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>团体组网</title>
+  <link rel="stylesheet" href="group-mesh.css">
+  <!--
+    布局沿仓库里其它插件的同一套形态（manga-library / media-player / image-cleaner）：
+    常驻侧栏 `.view-sub-sidebar` + 主区 `.view-body > .view-toolbar + .view-content`。
+    这些类由壳注入（plugin-guide §4.1 明确"不应在插件 CSS 里重复定义"），
+    本文件也**不**手动引入 /shell/*.css —— 壳会把样式与 Bridge 注入每个 HTML 页面
+    （file_server 的 _PLUGIN_BOOTSTRAP_SCRIPT）。
+
+    高度链仍由本插件 CSS 给全（html / body / #app 各 100%）：base.css 给 body 设了
+    overflow: hidden，缺了这条 `.view-content` 的 overflow-y 不生效。
+
+    面板切换是纯显隐（`data-active`），不销毁 DOM：与壳"iframe 常驻、切走只是 v-show"
+    的策略一致，也让下面所有 id 在任何时刻都存在（渲染函数不必关心当前在哪个面板）。
+  -->
+</head>
+<body>
+  <div id="app">
+    <!-- 结构与其他插件一致（image-viewer / manga-library / media-player）：
+         侧栏是 #app 的**直接子元素**、跑满全高，工具栏属于**右侧主区**。
+         本插件先前把 `.view-toolbar` 放在 `#app` 下当兄弟节点，于是工具栏横跨整宽、
+         侧栏从工具栏下方才开始 —— 与别的插件一眼就能看出不同。
+         分隔线的归属也按这套结构分开：侧栏只画 border-right（右边缘那一竖条），
+         主区只画 border-bottom（工具栏那一条横线）；两边都画会在交角处叠成 2px。 -->
+    <aside class="gm-side view-sub-sidebar obx-glass">
+      <div class="gm-brand">
+        <span class="gm-brand-icon">🕸️</span>
+        <div class="gm-brand-text">
+          <div class="gm-brand-title">团体组网</div>
+          <div class="gm-brand-sub">无中心 · IPv6</div>
+        </div>
+      </div>
+
+      <nav class="gm-nav obx-scroll" id="gm-nav">
+        <div class="gm-nav-label">本机</div>
+        <button type="button" class="obx-nav-item gm-nav-item" data-panel="machine">
+          <span class="gm-nav-icon">🖥️</span><span class="gm-nav-text">身份与节点</span>
+        </button>
+
+        <div class="gm-nav-label">团体</div>
+        <button type="button" class="obx-nav-item gm-nav-item" data-panel="group">
+          <span class="gm-nav-icon">👥</span><span class="gm-nav-text">名单与成员</span>
+        </button>
+        <button type="button" class="obx-nav-item gm-nav-item" data-panel="shares">
+          <span class="gm-nav-icon">📁</span><span class="gm-nav-text">共享项</span>
+          <span class="gm-nav-count" id="gm-count-shares"></span>
+        </button>
+
+        <div class="gm-nav-label">传输</div>
+        <button type="button" class="obx-nav-item gm-nav-item" data-panel="remote">
+          <span class="gm-nav-icon">🌐</span><span class="gm-nav-text">远端共享</span>
+          <span class="gm-nav-count" id="gm-count-peers"></span>
+        </button>
+
+        <div class="gm-nav-label">关于</div>
+        <button type="button" class="obx-nav-item gm-nav-item" data-panel="roadmap">
+          <span class="gm-nav-icon">🧭</span><span class="gm-nav-text">路线图</span>
+        </button>
+      </nav>
+
+      <div class="gm-side-foot sub-sidebar-footer" id="gm-side-summary">
+        <span class="gm-foot-dot" id="gm-foot-dot"></span>
+        <span class="gm-foot-text" id="gm-foot-text">正在读取状态…</span>
+      </div>
+    </aside>
+
+    <div class="view-body gm-main">
+      <div class="view-toolbar gm-toolbar">
+        <div class="toolbar-group gm-heading">
+          <span class="gm-icon">🕸️</span>
+          <div class="gm-heading-text">
+            <div class="gm-title" id="gm-panel-title">团体组网</div>
+            <div class="gm-sub" id="gm-panel-sub">无中心团体：身份、名单、共享节点与加密传输</div>
+          </div>
+        </div>
+        <div class="toolbar-group gm-toolbar-right">
+          <button type="button" id="btn-refresh" class="btn btn-sm">刷新状态</button>
+          <button type="button" id="btn-settings" class="btn btn-sm">⚙ 设置</button>
+        </div>
+      </div>
+
+      <!-- 内核缺失横幅。文案与后端一起改：`kernel.available` 现在恒为 True，
+           这条横幅只在真的 import 不到 shell.groupmesh 时才有意义，
+           旧文案里的 tools/group-mesh-mvp/groupmesh 是迁移前的路径，已不存在。 -->
+      <div id="kernel-missing" class="gm-banner gm-banner-error" hidden>
+        <strong>协议内核不可用</strong>
+        <p>本机找不到 <code>shell.groupmesh</code>（协议内核）。请确认仓库完整，然后先跑自检：</p>
+        <pre>python -m shell.groupmesh.cli selftest</pre>
+      </div>
+
+      <div class="view-content gm-content obx-scroll" id="gm-content">
+        <div class="gm-panels obx-stagger" id="gm-panels">
+
+          <!-- ===== 面板：本机（身份 + 节点） =====
+               data-title / data-sub 是工具栏标题的**单一来源**（app.js 的 setPanel 读它们）。
+               新增一个面板 = 这里加一个 section + 侧栏加一个 button[data-panel]。 -->
+          <section class="gm-panel" data-panel="machine" id="panel-machine"
+                   data-title="本机身份与共享节点"
+                   data-sub="主体 / 设备密钥、监听地址与注册发布状态">
+            <div class="gm-grid">
+              <section class="gm-card obx-card-lift">
+                <h2>本机身份</h2>
+                <div id="identity-body" class="gm-body"></div>
+                <div id="identity-actions" class="gm-actions"></div>
+              </section>
+
+              <section class="gm-card obx-card-lift">
+                <h2>共享节点</h2>
+                <div id="node-body" class="gm-body"></div>
+                <div id="node-actions" class="gm-actions"></div>
+              </section>
+            </div>
+
+            <!-- 后续留位：设备配对 / 多设备 / 二维码授权（设计 §4.2，当前 add_device() 无调用方）。
+                 实现时在这里加一张卡即可，不必动侧栏与其它面板。 -->
+          </section>
+
+          <!-- ===== 面板：团体（名单 + 成员） ===== -->
+          <section class="gm-panel" data-panel="group" id="panel-group"
+                   data-title="团体与名单"
+                   data-sub="成员、角色与邀请串（名单更新靠邀请串或对端分发）">
+            <section class="gm-card">
+              <h2>团体与名单</h2>
+              <div id="roster-body" class="gm-body"></div>
+              <div id="roster-actions" class="gm-actions"></div>
+            </section>
+
+            <!-- 后续留位：群主转移 / 任免管理员（设计 §5.6，目前只有 CLI）与解散通告（§5.5）。 -->
+          </section>
+
+          <!-- ===== 面板：共享项 ===== -->
+          <section class="gm-panel" data-panel="shares" id="panel-shares"
+                   data-title="共享项"
+                   data-sub="把本机目录按 ACL 提供给团体成员">
+            <section class="gm-card">
+              <h2>我共享出去的目录</h2>
+              <div id="shares-body" class="gm-body"></div>
+              <div class="gm-form">
+                <input type="text" id="share-id" placeholder="共享标识（字母数字与 . _ -）">
+                <input type="text" id="share-path" placeholder="本机目录绝对路径（建议用设置里的目录选择器）">
+                <select id="share-write">
+                  <option value="owner">写：仅属主</option>
+                  <option value="group">写：全体成员</option>
+                </select>
+                <button type="button" id="btn-add-share" class="btn">挂载共享项</button>
+              </div>
+            </section>
+
+            <!-- 后续留位：属主端的遗留 <目标>.part 可见性与清理（实现路径 §4.7、P2.5）。 -->
+          </section>
+
+          <!-- ===== 面板：远端共享（设备 → 共享项 → 目录 → 取回/上传） ===== -->
+          <section class="gm-panel" data-panel="remote" id="panel-remote"
+                   data-title="远端共享"
+                   data-sub="发现到的设备、对端共享项与地址交换">
+            <section class="gm-card">
+              <h2>远端共享</h2>
+              <p class="gm-hint">
+                列团体里其它设备对<strong>你</strong>开放的共享项，并把它上面的文件取回本机。
+                地址不会自动跨机传播：把<strong>你的地址复制</strong>给对方、把对方的地址
+                粘到下面，双方就互相认识了；之后对方换地址只需再更新一次。
+              </p>
+              <div class="gm-address">
+                <div class="gm-address-row">
+                  <span class="gm-address-label">我的地址</span>
+                  <span id="my-endpoint" class="gm-address-value">读取中…</span>
+                  <button type="button" id="btn-copy-my-endpoint" class="btn btn-sm">复制</button>
+                </div>
+                <div class="gm-address-row">
+                  <span class="gm-address-label">更新地址</span>
+                  <input type="text" id="peer-endpoint" placeholder="粘贴对方地址，如 [2409:…]:19443 或 192.168.31.16:19450">
+                  <input type="text" id="peer-device" placeholder="对方设备公钥（可选，填了就能按设备更新）">
+                  <button type="button" id="btn-update-peer" class="btn btn-sm btn-primary">更新</button>
+                </div>
+              </div>
+              <div class="gm-remote-tools">
+                <span class="gm-hint">设备与共享项由后台定时同步；名单/注册变更会立即推送到对端。</span>
+                <button type="button" id="btn-peer-add" class="btn btn-sm">高级：按地址登记</button>
+              </div>
+              <div id="remote-cache" class="gm-remote-cache" hidden></div>
+              <div class="gm-remote">
+                <div class="gm-remote-peers obx-scroll">
+                  <div class="gm-remote-head">设备 / 共享项</div>
+                  <div id="peers-body" class="gm-body"></div>
+                </div>
+                <div class="gm-remote-files obx-scroll">
+                  <div class="gm-remote-head" id="remote-path">未选择共享项</div>
+                  <div id="remote-body" class="gm-body"></div>
+                </div>
+              </div>
+              <div id="remote-progress" class="gm-remote-progress" hidden></div>
+            </section>
+
+            <!-- 后续留位：内容寻址 / 做种 / 房间与语音入口（设计 §8–§10）。 -->
+          </section>
+
+          <!-- ===== 面板：路线图（原「尚未实现」列表，默认收起） ===== -->
+          <section class="gm-panel" data-panel="roadmap" id="panel-roadmap"
+                   data-title="路线图"
+                   data-sub="尚未实现的能力（与设计文档的差距清单）">
+            <section class="gm-card">
+              <h2>尚未实现</h2>
+              <p class="gm-hint">
+                这份列表由后端 <code>get_status()['unsupported']</code> 给出，是本插件
+                与设计文档之间的差距清单；下面按模块折叠，需不需要看由你决定。
+              </p>
+              <details class="gm-details">
+                <summary>查看未实现项</summary>
+                <ul id="unsupported-list" class="gm-list"></ul>
+              </details>
+            </section>
+          </section>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 弹窗一律用壳的 .modal + .modal.active（base.css）。
+       不再自绘 .gm-modal：壳的默认态**没有 display 声明**，因此不存在
+       "作者样式的 display:flex 盖掉 UA 样式表给 [hidden] 的 display:none"
+       那个级联陷阱（记录见 docs/group-mesh-implementation-path.md §5.7）。 -->
+  <div id="create-box" class="modal">
+    <div class="modal-box obx-anim-scale" style="width:480px;">
+      <h3>创建团体</h3>
+      <div class="modal-body">
+        <p class="gm-hint">创建后你成为群主。把生成的邀请串通过可信渠道交给成员，他们才能加入。</p>
+        <input type="text" id="create-group-name" placeholder="团体名称（如 home-lab）">
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="btn-close-create" class="btn">取消</button>
+        <button type="button" id="btn-do-create" class="btn btn-primary">创建</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="invite-box" class="modal">
+    <div class="modal-box obx-anim-scale" style="width:560px;">
+      <h3>邀请串</h3>
+      <div class="modal-body">
+        <p class="gm-hint">通过可信渠道（面对面 / 二维码 / 局域网）交给成员，让他们在本机"加入 / 更新团体"。</p>
+        <textarea id="invite-text" readonly rows="6"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="btn-close-invite" class="btn">关闭</button>
+        <button type="button" id="btn-copy-invite" class="btn btn-primary">复制</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="join-box" class="modal">
+    <div class="modal-box obx-anim-scale" style="width:560px;">
+      <h3>加入 / 更新团体</h3>
+      <div class="modal-body">
+        <p class="gm-hint">
+          粘贴群主给你的最新 <code>gm1:</code> 邀请串。<br>
+          · 本机还没有团体时会加入该团体；<br>
+          · 本机已有旧名单时会更新到这一版（<strong>群主每次加人后都要把新邀请串发给你</strong>，
+          否则你会停在旧名单上，看不到新成员、也连不上他们）。
+        </p>
+        <textarea id="join-text" rows="6" placeholder="gm1:..."></textarea>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="btn-close-join" class="btn">关闭</button>
+        <button type="button" id="btn-do-join" class="btn btn-primary">加入 / 更新</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="member-box" class="modal">
+    <div class="modal-box obx-anim-scale" style="width:520px;">
+      <h3>添加成员</h3>
+      <div class="modal-body">
+        <p class="gm-hint">让对方在它的"本机身份"里点"显示公钥"，把主体与设备公钥贴到这里。</p>
+        <input type="text" id="member-principal" placeholder="主体公钥（base64）">
+        <input type="text" id="member-device" placeholder="设备公钥（base64）">
+        <input type="text" id="member-name" placeholder="显示名（可选）">
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="btn-close-member" class="btn">关闭</button>
+        <button type="button" id="btn-do-add-member" class="btn btn-primary">添加</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="upload-box" class="modal">
+    <div class="modal-box obx-anim-scale" style="width:560px;">
+      <h3>上传文件</h3>
+      <div class="modal-body">
+        <p class="gm-hint" id="upload-target"></p>
+        <input type="text" id="upload-local" placeholder="本机文件绝对路径（如 D:\照片\a.jpg）">
+        <input type="text" id="upload-name" placeholder="目标文件名（留空取本机文件名，可写 sub/a.jpg）">
+        <label class="gm-check">
+          <input type="checkbox" id="upload-overwrite"> 覆盖对端同名文件（默认拒绝：写权限只能新增）
+        </label>
+        <div id="upload-progress" class="gm-upload-progress" style="display:none"></div>
+        <p class="gm-hint">
+          能否上传由<strong>对端</strong>按共享项的 ACL 判定：没有授予你写权限时会直接拒绝。
+          上传走"暂存 + 提交"——中途断线只会在对端留下 <code>.part</code>，不会毁掉已有文件；
+          取消或断线后再次上传会<strong>从断点续传</strong>。
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="btn-close-upload" class="btn">取消</button>
+        <button type="button" id="btn-cancel-upload" class="btn" style="display:none">取消上传</button>
+        <button type="button" id="btn-do-upload" class="btn btn-primary">上传</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="peer-box" class="modal">
+    <div class="modal-box obx-anim-scale" style="width:520px;">
+      <h3>高级：按地址登记对端</h3>
+      <div class="modal-body">
+        <p class="gm-hint">
+          平时用不到这里 —— 主界面的「更新地址」就够（粘贴对方复制给你的地址）。
+          这里用于"只知道地址、还不知道对方设备公钥"的场合；登记后本机会连过去，
+          把对方的设备公钥与共享清单一起学回来。
+        </p>
+        <input type="text" id="peer-manual-endpoint" placeholder="192.168.31.16:19450">
+        <input type="text" id="peer-name" placeholder="备注名（可选）">
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="btn-close-peer" class="btn">关闭</button>
+        <button type="button" id="btn-do-add-peer" class="btn btn-primary">登记</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/remote.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

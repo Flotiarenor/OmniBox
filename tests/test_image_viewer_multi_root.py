@@ -20,7 +20,9 @@ import shutil
 import sys
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
+from typing import ClassVar
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -28,8 +30,45 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from PIL import Image
 
+from shell.backend.auth import TOKEN_HEADER, get_or_create_token
+from shell.backend.file_server import create_app
 from shell.backend.media_catalog import DRIVES_SENTINEL
+from shell.backend.paths import get_config_dir, get_plugins_config_dir
+from shell.backend.plugin_manager import collect_protected_paths
 from shell.backend.settings_store import SettingsStore
+
+
+class _StubPluginManager:
+    """只提供 create_app 在请求期会用到的接口（与 tests/test_plugin_host_contract.py 同形）。"""
+
+    _instances: ClassVar[dict] = {}
+
+    def __init__(self, instances: dict | None = None):
+        self._provided = dict(instances or {})
+
+    def get_api_methods(self):
+        return {}
+
+    def get_frontend_manifests(self):
+        return []
+
+    def get_plugin_extensions(self):
+        return {}
+
+    def get_plugin_status(self):
+        return {'loaded': [], 'failures': []}
+
+    def get_settings_panels(self):
+        return []
+
+    def save_settings_panel(self, *args, **kwargs):
+        return None
+
+    def get_plugin_instance(self, name):
+        return self._provided.get(name)
+
+    def get_protected_paths(self):
+        return collect_protected_paths(self._provided, get_plugins_config_dir())
 
 
 def _same(a, b) -> bool:
@@ -108,6 +147,22 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
 
     # ---------- 多根目录：路径与命名空间 ----------
 
+    def test_constructs_without_any_settings(self):
+        """空白设置（新装用户的第一次启动）下也必须能构造出来。
+
+        实测踩到的缺陷：`root_dir` 未配置时 `self.setting('root_dir')` 为空，于是走到
+        `super().get_data_root()`；而本类的 MRO 以 mixin 开头，`super()` 命中的是
+        `ThumbMixin.get_data_root`（它读 `self.root_dir`）—— 恰好是这一行要算的东西。
+        结果是插件整体加载失败（`AttributeError: … has no attribute 'root_dir'`），
+        连带声明依赖它的 pixiv-sync 也没了。开发机上被
+        `.config/plugins/image-viewer.json` 里的历史 `root_dir` 掩盖，所以只有
+        "完全没有设置"这条分支会暴露它。
+        """
+        plugin = self._plugin({}, with_store=False)
+        self.assertTrue(_same(plugin.root_dir, self.root), '应当回退到 base 的数据根')
+        self.assertTrue(_same(plugin.get_data_root(), self.root))
+        self.assertTrue(_same(plugin.thumb_dir, self.root / '.cache' / 'thumbs'))
+
     def test_single_root_paths_unchanged(self):
         """只有第一根时，路径/根内相对路径与历史版本一致。"""
         plugin = self._plugin({'root_dir': str(self.root)})
@@ -137,6 +192,60 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
         self.assertEqual(plugin._split_virtual('__不存在/作者A'), (None, ''))
         self.assertFalse(plugin._is_safe('__不存在/作者A'))
         self.assertEqual(len(plugin.get_file_roots()), 3)
+
+    # ---------- 多根目录：/file 必须能打开额外根的原图 ----------
+
+    def _file_client(self, plugin):
+        config = {
+            'server': {'host': '127.0.0.1', 'port': 18080},
+            'directories': {'data_root': str(self.root)},
+        }
+        app = create_app(config, _StubPluginManager({'image-viewer': plugin}))
+        return app.test_client()
+
+    def _get_file(self, client, rel_path: str):
+        url = '/file?path=' + urllib.parse.quote(rel_path) + '&plugin=image-viewer'
+        resp = client.get(url, headers={TOKEN_HEADER: get_or_create_token(get_config_dir())})
+        self.addCleanup(resp.close)
+        return resp
+
+    def test_file_route_serves_extra_root_original(self):
+        """回归：额外根的原图必须能打开。
+
+        实测缺陷（与 group-mesh 无关的既有问题）：网格与缩略图都正常，点开任何一张
+        都是破图 —— 因为 `/file` 的相对路径只按**第一根**拼，
+        `__额外图库/作者B/作品1/1.jpg` 在第一根下根本不存在。`/thumbs` 一直是由插件
+        解释路径的（`get_thumb_data` / `ensure_thumb`），`resolve_file_path` 把
+        `/file` 对齐到同一套契约。
+        """
+        plugin = self._multi()
+        client = self._file_client(plugin)
+        ns1 = f'__{self.extra.name}'
+
+        resp = self._get_file(client, f'{ns1}/作者B/作品1/1.jpg')
+        self.assertEqual(resp.status_code, 200, '额外根的原图仍然打不开')
+        self.assertEqual(resp.get_data(),
+                         (self.extra / '作者B' / '作品1' / '1.jpg').read_bytes())
+
+        # 第二个额外根（命名空间带序号）同样要能打开
+        ns2 = f'__{self.extra2.name} (2)'
+        resp = self._get_file(client, f'{ns2}/作者C/作品1/1.jpg')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_data(),
+                         (self.extra2 / '作者C' / '作品1' / '1.jpg').read_bytes())
+
+    def test_file_route_keeps_first_root_behaviour(self):
+        """第一根的相对路径语义不变（历史链接、缓存键都不受影响）。"""
+        client = self._file_client(self._multi())
+        resp = self._get_file(client, '作者A/作品1/1.jpg')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_data(), (self.root / '作者A' / '作品1' / '1.jpg').read_bytes())
+
+    def test_file_route_unknown_namespace_is_404_not_500(self):
+        """未知命名空间（根被删掉、或路径拼错）→ 404，且不得落到第一根去猜。"""
+        client = self._file_client(self._multi())
+        resp = self._get_file(client, '__不存在/作者B/作品1/1.jpg')
+        self.assertEqual(resp.status_code, 404)
 
     def test_namespace_avoids_first_root_dir_names(self):
         """命名空间是虚拟顶层节点，不能和第一根的真实目录同名。"""

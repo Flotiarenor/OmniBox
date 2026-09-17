@@ -24,6 +24,11 @@ data/
 # 脚本
 scripts/
 
+# Selenium Manager 在本机跑浏览器用例（tests/test_group_mesh_*_e2e.py）时，
+# 会把驱动与元数据解到**当前工作目录**：不忽略就会把 ~24 MB 的 chromedriver 提交进去。
+chromedriver/
+se-metadata.json
+
 docs/Releases/*.exe
 docs/Releases/*.7z
 docs/Releases/*.zip

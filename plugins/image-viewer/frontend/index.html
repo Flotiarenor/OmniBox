@@ -16,15 +16,15 @@
           <div class="iv-brand-sub">Gallery</div>
         </div>
       </div>
-      <nav class="iv-nav">
+      <nav class="iv-nav obx-scroll">
         <div class="iv-nav-label">浏览</div>
-        <button class="iv-nav-item active" data-view="albums"><span>🗂️</span>全部相册</button>
-        <button class="iv-nav-item" data-view="timeline"><span>🕐</span>时间线</button>
-        <button class="iv-nav-item" data-view="latest"><span>✨</span>最近添加</button>
+        <button class="obx-nav-item iv-nav-item active" data-view="albums"><span>🗂️</span>全部相册</button>
+        <button class="obx-nav-item iv-nav-item" data-view="timeline"><span>🕐</span>时间线</button>
+        <button class="obx-nav-item iv-nav-item" data-view="latest"><span>✨</span>最近添加</button>
         <div id="iv-extensions"></div>
       </nav>
       <div class="iv-nav-footer">
-        <button id="iv-new-album" class="iv-nav-item"><span>＋</span>新建相册</button>
+        <button id="iv-new-album" class="obx-nav-item iv-nav-item"><span>＋</span>新建相册</button>
       </div>
       <div class="iv-sidebar-footer" id="iv-stats">正在读取…</div>
     </aside>
@@ -103,7 +103,7 @@
     <div id="settings-modal" class="modal">
       <div class="modal-box obx-anim-scale" style="width:400px;">
         <h3>显示与排序设置</h3>
-        <div class="iv-settings-body">
+        <div class="iv-settings-body obx-scroll">
           <div class="iv-setting-section iv-setting-section-first">图片文件夹</div>
           <!-- 列表由共享组件 shell/folder-picker.js 填充（插件不再自带实现） -->
           <div id="setting-roots"></div>

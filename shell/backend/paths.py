@@ -58,9 +58,31 @@ def _can_write_app_dir(candidate: Path) -> bool:
         return False
 
 
+# 实例数据根的环境变量覆盖。多实例与端到端测试用它把每个实例的状态
+# （`.config`、`data`、日志、插件设置、身份私钥、缓存）落到各自的目录里。
+#
+# 为什么必须是环境变量而不是函数参数：`get_user_data_dir()` 是全仓**所有可写路径**
+# 的派生根（get_config_dir / get_plugins_config_dir / resolve_data_root），而它在
+# 开发模式下恒等于项目根目录 —— 同一台机器上起第二个实例就会与第一个共用 `data/`
+# 与 `.config/`（同一份设备私钥、同一份注册表、同一份插件设置），表现是"两个实例
+# 其实是同一台设备"；而且会在工作区里留下用户数据（AGENTS.md 明令不许进产物）。
+# 环境变量在进程边界上生效，天然按实例隔离；未设置时行为与以前完全一致。
+USER_DATA_DIR_ENV = 'OMNIBOX_HOME'
+
+
 @lru_cache(maxsize=1)
 def get_user_data_dir() -> Path:
-    """返回可写的用户数据根目录（配置、插件、数据文件都锚定在这里）。"""
+    """返回可写的用户数据根目录（配置、插件、数据文件都锚定在这里）。
+
+    设了环境变量 `OMNIBOX_HOME`（`USER_DATA_DIR_ENV`）就整体挪到那个目录，供多实例
+    与端到端测试使用。注意它是**进程级**覆盖：值在首次调用时读入并缓存，之后改
+    环境变量不会生效 —— 覆盖必须发生在任何 `get_config_dir()` 调用之前，入口
+    `main()` 把它放在第一行就是这个原因。
+    """
+    override = os.environ.get(USER_DATA_DIR_ENV, '').strip()
+    if override:
+        return Path(override).expanduser().resolve()
+
     if not is_frozen():
         return get_project_root()
 

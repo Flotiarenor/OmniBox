@@ -37,6 +37,7 @@ from typing import List, Optional
 
 from shell.backend.auth import get_token_file
 from shell.backend.paths import get_config_dir
+from shell.backend.principal import principals_file
 
 log = logging.getLogger(__name__)
 
@@ -104,6 +105,14 @@ def collect(plugin_manager=None, config_dir: Optional[Path] = None) -> List[Path
         paths.append(normalize(get_token_file(config_dir or get_config_dir())))
     except (OSError, TypeError, ValueError) as exc:
         log.warning(f'[ProtectedPaths] 解析访问令牌路径失败，壳凭据防护未生效: {exc}')
+
+    # 主体凭据表（`<config>/principals.json`）：里面是各主体令牌的 SHA-256。
+    # 虽然摘要不能直接当令牌用，但它是"哪些主体存在、各自什么角色"的完整清单，
+    # 而离线爆破短令牌的入口正是它 —— 与 auth_token.txt 同级保护，不单独放行。
+    try:
+        paths.append(normalize(principals_file(config_dir or get_config_dir())))
+    except (OSError, TypeError, ValueError) as exc:
+        log.warning(f'[ProtectedPaths] 解析主体凭据表路径失败，该文件防护未生效: {exc}')
 
     if plugin_manager is not None:
         try:

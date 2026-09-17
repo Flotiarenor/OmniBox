@@ -90,7 +90,17 @@ class ImageViewerPlugin(
 
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
-        root = self.setting('root_dir') or str(super().get_data_root())
+        # 必须显式写 `PluginBase.get_data_root(self)`，不能用 `super().get_data_root()`：
+        # 本类的 MRO 以 mixin 开头，`super()` 命中的是 `ThumbMixin.get_data_root`，而它
+        # 读的正是这一行要算的 `self.root_dir`。后果不是"回退值不对"，而是**插件整体
+        # 加载失败**：`AttributeError: 'ImageViewerPlugin' object has no attribute
+        # 'root_dir'`，并且声明 `dependencies: ["image-viewer"]` 的 pixiv-sync 一起挂掉。
+        # 只在**空白设置**下触发（`self.setting('root_dir')` 为空才会走到 `or` 右边），
+        # 因此开发机上被 `.config/plugins/image-viewer.json` 里的历史 root_dir 掩盖，
+        # 新装用户则必然踩到。守卫用例：tests/test_image_viewer_multi_root.py 的
+        # `test_constructs_without_any_settings` 与
+        # tests/test_multi_instance_mesh.py 的 `test_fresh_instance_loads_all_plugins`。
+        root = self.setting('root_dir') or str(PluginBase.get_data_root(self))
         self.root_dir = Path(root).resolve()
         self._rebuild_paths()
         self._meta_cache = self._load_meta()

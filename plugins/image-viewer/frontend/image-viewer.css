@@ -39,23 +39,14 @@
 .iv-brand-sub { font-size: 11px; color: var(--text-secondary); margin-top: 1px; letter-spacing: 0.4px; }
 
 .iv-nav { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; }
+/* 结构、hover、选中态都来自壳的 `.obx-nav-item`（base.css 的「导航项」一节），
+   这里只留本插件自己的差异（图标栏宽度）。外观可覆写 `--obx-nav-*`。 */
 .iv-nav-item {
-  display: flex; align-items: center; gap: 9px; padding: 9px 12px;
-  border: none; border-radius: var(--iv-radius-sm); background: transparent;
-  color: var(--text-secondary); font-size: 13px; cursor: pointer; text-align: left;
-  transition: background var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
-}
-.iv-nav-item:hover { background: var(--bg-hover); color: var(--text-primary); transform: translateX(2px); }
-.iv-nav-item.active {
-  background: var(--iv-gradient); color: var(--text-on-accent);
-  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 32%, transparent);
+  gap: 9px;
 }
 .iv-nav-item span { width: 18px; text-align: center; }
-#iv-extensions .obx-extension.active {
-  background: var(--iv-gradient);
-  color: var(--text-on-accent);
-  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 32%, transparent);
-}
+/* 侧栏里的扩展入口（`.obx-extension.active`）不在这里覆写：选中态由壳的 base.css
+   提供，本插件先前把它整块填成渐变，与上面刚统一的导航项不一致。 */
 .iv-sidebar-footer { padding: 11px 14px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-secondary); }
 
 /* ===== 工具栏 ===== */

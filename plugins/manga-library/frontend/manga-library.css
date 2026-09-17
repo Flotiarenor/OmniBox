@@ -70,27 +70,10 @@
   color: var(--text-muted);
 }
 
+/* 结构、hover、选中态都来自壳的 `.obx-nav-item`（base.css 的「导航项」一节），
+   这里只留本插件自己的差异（图标栏宽度）。外观可覆写 `--obx-nav-*`。 */
 .ml-nav-item {
-  display: flex;
-  align-items: center;
   gap: 9px;
-  padding: 9px 12px;
-  border: none;
-  border-radius: var(--ml-radius-sm);
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 13px;
-  cursor: pointer;
-  text-align: left;
-  transition: background var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
-}
-
-.ml-nav-item:hover { background: var(--bg-hover); color: var(--text-primary); transform: translateX(2px); }
-.ml-nav-item:active { transform: translateX(2px) scale(0.98); }
-.ml-nav-item.active {
-  background: var(--ml-gradient);
-  color: var(--text-on-accent);
-  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 32%, transparent);
 }
 .ml-nav-item span { width: 18px; text-align: center; }
 

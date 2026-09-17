@@ -19,22 +19,22 @@
       </div>
 
       <nav class="mp-nav">
-        <button class="mp-nav-item active" data-view="recent">
+        <button class="obx-nav-item mp-nav-item active" data-view="recent">
           <span class="mp-nav-ico">🕘</span><span>最近播放</span>
         </button>
-        <button class="mp-nav-item" data-view="audio-albums">
+        <button class="obx-nav-item mp-nav-item" data-view="audio-albums">
           <span class="mp-nav-ico">💿</span><span>音乐专辑</span>
         </button>
-        <button class="mp-nav-item" data-view="all-audio">
+        <button class="obx-nav-item mp-nav-item" data-view="all-audio">
           <span class="mp-nav-ico">🎵</span><span>全部音乐</span>
         </button>
-        <button class="mp-nav-item" data-view="video-albums">
+        <button class="obx-nav-item mp-nav-item" data-view="video-albums">
           <span class="mp-nav-ico">📀</span><span>视频专辑</span>
         </button>
-        <button class="mp-nav-item" data-view="all-video">
+        <button class="obx-nav-item mp-nav-item" data-view="all-video">
           <span class="mp-nav-ico">🎬</span><span>全部视频</span>
         </button>
-        <button class="mp-nav-item" data-view="favorites">
+        <button class="obx-nav-item mp-nav-item" data-view="favorites">
           <span class="mp-nav-ico">❤️</span><span>我的喜欢</span>
         </button>
         <div id="mp-extensions"></div>
@@ -45,7 +45,7 @@
           <span>我的歌单</span>
           <button id="btn-new-playlist" class="mp-ghost-btn" title="新建歌单">＋</button>
         </div>
-        <div id="mp-playlist-list" class="mp-playlist-list"></div>
+        <div id="mp-playlist-list" class="mp-playlist-list obx-scroll"></div>
       </div>
 
       <div class="mp-sidebar-footer" id="mp-stats">
@@ -183,7 +183,7 @@
         <span>播放队列 · <span id="queue-count">0</span></span>
         <button class="mp-ghost-btn" id="btn-clear-queue">清空</button>
       </div>
-      <div class="mp-pop-body mp-queue-list" id="queue-list"></div>
+      <div class="mp-pop-body mp-queue-list obx-scroll" id="queue-list"></div>
     </div>
 
     <!-- ===== 均衡器 ===== -->
@@ -197,7 +197,7 @@
           <button class="mp-ghost-btn" id="btn-eq-close">✕</button>
         </div>
       </div>
-      <div class="mp-pop-body mp-eq-body">
+      <div class="mp-pop-body mp-eq-body obx-scroll">
         <div class="mp-eq-bands" id="eq-bands"></div>
       </div>
     </div>
@@ -209,7 +209,7 @@
           <h3 id="playlist-modal-title">新建歌单</h3>
           <button class="mp-ghost-btn" id="btn-playlist-cancel">✕</button>
         </div>
-        <div class="mp-modal-body">
+        <div class="mp-modal-body obx-scroll">
           <input type="text" id="input-playlist-name" class="mp-input" placeholder="歌单名称" maxlength="40">
         </div>
         <div class="mp-modal-foot">
@@ -226,7 +226,7 @@
           <h3>加入歌单</h3>
           <button class="mp-ghost-btn" id="btn-add-pl-close">✕</button>
         </div>
-        <div class="mp-modal-body">
+        <div class="mp-modal-body obx-scroll">
           <div id="add-pl-list" class="mp-add-pl-list"></div>
         </div>
         <div class="mp-modal-foot">
@@ -243,7 +243,7 @@
           <h3>保存均衡器预设</h3>
           <button class="mp-ghost-btn" id="btn-eq-name-cancel">✕</button>
         </div>
-        <div class="mp-modal-body">
+        <div class="mp-modal-body obx-scroll">
           <input type="text" id="input-eq-name" class="mp-input" placeholder="预设名称" maxlength="40">
         </div>
         <div class="mp-modal-foot">

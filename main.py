@@ -32,6 +32,7 @@ from shell.backend.auth import get_or_create_token, get_token_file
 from shell.backend.file_server import create_app
 from shell.backend.media_catalog import list_subdirectories
 from shell.backend.paths import (
+    USER_DATA_DIR_ENV,
     get_config_dir,
     get_plugin_search_dirs,
     get_user_data_dir,
@@ -57,6 +58,26 @@ DEFAULT_CONFIG = {
 
 
 
+
+
+def _argv_value(flag: str) -> str | None:
+    """取 `--flag value` 形式的参数值；没有该参数、或值缺失/是另一个开关时返回 None。
+
+    刻意不用 argparse：入口既有的两个开关（`--web-only`、`--status-debug`）都是
+    `in sys.argv` 判断，混进一个解析器会让"未识别的参数"从静默忽略变成直接退出 ——
+    而打包产物是用固定命令行启动的，多一个必填解析器就多一处启动失败面。同时
+    `--port` 原先就允许"值非法时回退配置端口"，这里保持同一语义。
+    """
+    argv = sys.argv
+    if flag not in argv:
+        return None
+    index = argv.index(flag) + 1
+    if index >= len(argv):
+        return None
+    value = argv[index].strip()
+    if not value or value.startswith('--'):
+        return None
+    return value
 
 
 def load_config():
@@ -144,6 +165,23 @@ class ShellAPI:
     """PyWebView 的 js_api 载体占位类：方法在 _run_app 里动态挂载。"""
 
 
+def _resolve_port(config) -> int:
+    """本次启动真正监听的 HTTP 端口：`--port` 覆盖配置，值非法时回退配置值。
+
+    覆盖的用途：nginx 反代时后端监听内网端口；多实例夹具靠它让每个实例各占一个
+    端口（"不同端口"就是它模拟出的"不同网络"）。
+    """
+    port = int(config['server']['port'])
+    override = _argv_value('--port')
+    if not override:
+        return port
+    try:
+        return int(override)
+    except ValueError:
+        log.warning(f"[OmniBox] --port 不是整数，按配置端口 {port} 启动: {override!r}")
+        return port
+
+
 def _run_app(config, manager):
     """启动应用（Web-only 或桌面窗口），阻塞到用户退出。"""
     # Web-only 模式：不启动 PyWebView 桌面窗口，只运行 Flask 服务。
@@ -151,13 +189,7 @@ def _run_app(config, manager):
     if '--web-only' in sys.argv:
         app = create_app(config, manager)
         host = config['server']['host']
-        port = int(config['server']['port'])
-        # 允许用 --port 覆盖配置端口，便于 nginx 反代时后端监听内网端口。
-        if '--port' in sys.argv:
-            try:
-                port = int(sys.argv[sys.argv.index('--port') + 1])
-            except (IndexError, ValueError):
-                pass
+        port = _resolve_port(config)
         log.info(f"[OmniBox] Web-only 模式启动: http://{host}:{port}")
         # threaded=True：单线程下大文件媒体流会阻塞所有请求（无法跳转/元数据读取/API），
         # 流媒体（Range 请求）与后台扫描任务都需要并发处理。
@@ -191,7 +223,7 @@ def _run_app(config, manager):
         setattr(api, method_name, method_fn)
 
     app = create_app(config, manager)
-    host, port = config['server']['host'], config['server']['port']
+    host, port = config['server']['host'], _resolve_port(config)
     # threaded=True：媒体流/Range 请求与后台扫描任务需要并发，见 --web-only 分支注释
     threading.Thread(target=lambda: app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True), daemon=True).start()
     if not wait_for_server(host, port):
@@ -203,6 +235,14 @@ def _run_app(config, manager):
 
 
 def main():
+    # 实例数据根覆盖必须**最先**处理：`setup_logging` 与 `load_config` 都要去读
+    # `<config_dir>`，而 `get_user_data_dir()` 是进程级缓存 —— 晚一步设置，这个实例
+    # 仍然会往仓库/程序目录的 `data/`、`.config/` 里写（端到端夹具正是靠这一行做到
+    # "每个实例一份空白状态"）。
+    user_data_dir = _argv_value('--user-data-dir')
+    if user_data_dir:
+        os.environ[USER_DATA_DIR_ENV] = user_data_dir
+
     # 日志必须最先初始化：发行版打包 console=False 时没有控制台，
     # 所有诊断信息只能靠文件通道（shell/backend/app_logging.py）。
     log_file = setup_logging(get_config_dir())
@@ -210,6 +250,11 @@ def main():
         log.info(f"[OmniBox] 日志文件: {log_file}")
 
     config = load_config()
+    # 数据根覆盖：不传时行为不变；传相对路径仍锚定到本实例的用户数据目录
+    # （resolve_data_root 的既有语义），因此夹具可以只给一个空的 OMNIBOX_HOME。
+    data_root_override = _argv_value('--data-root')
+    if data_root_override:
+        config['directories']['data_root'] = str(resolve_data_root(data_root_override))
     os.makedirs(config['directories']['data_root'], exist_ok=True)
 
     # 状态调试模式（--status-debug）：壳内 /status 视图显示调试面板

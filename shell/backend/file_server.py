@@ -24,17 +24,17 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import List
 
-from flask import Flask, abort, request, send_file, send_from_directory
+from flask import Flask, abort, g, request, send_file, send_from_directory
 
 from shell.backend.auth import (
     TOKEN_COOKIE,
     TOKEN_HEADER,
     get_or_create_token,
-    token_matches,
 )
 from shell.backend.media_catalog import list_subdirectories
 from shell.backend.paths import get_config_dir
 from shell.backend.plugin_manager import PluginManager
+from shell.backend.principal import CURRENT_PRINCIPAL, PrincipalStore
 from shell.backend.protected_paths import collect as collect_protected_files
 from shell.backend.protected_paths import matches as is_protected_path
 from shell.backend.protected_paths import normalize as normalize_path
@@ -51,6 +51,46 @@ mimetypes.add_type('application/wasm', '.wasm')
 mimetypes.add_type('font/woff2', '.woff2')
 mimetypes.add_type('font/woff', '.woff')
 mimetypes.add_type('image/webp', '.webp')
+
+# 注入到插件前端**每个** HTML 页面的引导片段（见 serve_plugin_frontend）：
+# 壳的样式与共享组件、Bridge 的插件前缀、以及主题/自定义颜色同步。
+# `PLACEHOLDER_NAME` 会被替换成路由里的插件名。
+_PLUGIN_BOOTSTRAP_SCRIPT = (
+    '<link rel="stylesheet" href="/shell/variables.css">'
+    '<link rel="stylesheet" href="/shell/base.css">'
+    '<link rel="stylesheet" href="/shell/folder-picker.css">'
+    '<link rel="stylesheet" href="/shell/effects.css">'
+    '<script src="/shell/base.js"></script>'
+    '<script src="/shell/folder-picker.js"></script>'
+    '<script src="/shell/motion.js"></script>'
+    '<script>'
+    "Bridge.setPrefix('PLACEHOLDER_NAME');"
+    '(function(){'
+    'var pd = parent.document.documentElement;'
+    "var t = pd.getAttribute('data-theme') || 'light';"
+    "document.documentElement.setAttribute('data-theme', t);"
+    'new MutationObserver(function(){'
+    "var nt = pd.getAttribute('data-theme') || 'light';"
+    "document.documentElement.setAttribute('data-theme', nt);"
+    '}).observe(pd, {attributes:true,attributeFilter:["data-theme"]});'
+    'var cc = pd.getAttribute("data-custom-colors");'
+    'if (cc) { try {'
+    'var map = JSON.parse(cc);'
+    'Object.keys(map).forEach(function(k){'
+    "document.documentElement.style.setProperty(k, map[k]); });"
+    '} catch(e) {} }'
+    'new MutationObserver(function(){'
+    'var ncc = pd.getAttribute("data-custom-colors");'
+    'if (ncc) { try {'
+    'var nmap = JSON.parse(ncc);'
+    'Object.keys(nmap).forEach(function(k){'
+    "document.documentElement.style.setProperty(k, nmap[k]); });"
+    '} catch(e) {} }'
+    '}).observe(pd, {attributes:true,attributeFilter:["data-custom-colors"]});'
+    '})();'
+    '</script>'
+)
+
 
 def _get_shell_dir() -> Path:
     if getattr(sys, 'frozen', False):
@@ -279,10 +319,33 @@ def _status_response(code: int, title: str, detail: str):
     return _status_page(code, title, detail), code
 
 
+# 只有管理员（owner / admin）能调用的 API 方法。
+#
+# 为什么需要这份清单（设计文档 group-mesh §12 第 5 项）：`/api/<插件>__<方法>` 原先
+# 只校验令牌，因此任何持令牌者都能改**任意**插件的设置、读走完整配置 ——
+# 而设置里可能包含绑定地址、下载目录、凭据键名这类"改了就等于改了别人机器行为"的
+# 项。判据是 `PrincipalContext.is_admin`；老部署的全局令牌会自举成 owner
+# （见 principal.py），因此本机使用者不受影响。
+#
+# 限定范围：**只守壳自己的端点**。插件方法（`<插件>__<方法>`）里确实有该限权的
+# （group-mesh 的节点开关、权限档位变更），但把插件名硬编码进壳会把两层耦合起来；
+# 插件侧需要限权时应调 `PluginBase.require_principal()` 自己判。
+_ADMIN_ONLY_API = frozenset({
+    'system_settings_save',
+    'system_get_config',
+    'system_get_plugin_status',
+})
+
+
 def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
     app = Flask(__name__)
     frontend_dist = _SHELL_DIR / 'frontend' / 'dist'
     _token = get_or_create_token(get_config_dir())
+    # 凭据 → 主体的映射（设计文档 group-mesh §12 第 1 项）。自举：凭据表为空时
+    # 把**既有的**全局令牌登记为本机 owner，因此老部署升级后令牌继续可用，
+    # 而"这次调用是谁"从此有答案。
+    _principals = PrincipalStore(get_config_dir(), bootstrap_token=_token)
+    _principals.ensure_bootstrap()
 
     def _protected_paths() -> List[Path]:
         r"""当前必须拒绝返回的路径：壳自己的凭据 + 插件申报的受保护路径。
@@ -343,13 +406,48 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
 
     @app.before_request
     def _require_token():
-        """数据路由鉴权：Cookie 或 X-Omnibox-Token 头二选一。"""
+        """数据路由鉴权 + **确立主体上下文**。
+
+        两件事必须在这里一起做，顺序不能反：
+
+        1. 校验凭据（Cookie 或 `X-Omnibox-Token` 头二选一）；
+        2. 凭据通过后，把它解析成主体并写入 `CURRENT_PRINCIPAL`。
+
+        第 2 步是设计文档 §12 第 2 项要求的"受信注入"：主体只从**凭据**得到，
+        绝不从请求参数读 —— 一个带 `{"principal": "<别人的 id>"}` 的请求与不带
+        该字段的请求必须得到同一个主体。因此这里既不读 `request.args`，
+        也不读 JSON body。
+
+        令牌一律走 `PrincipalStore.resolve()`：它比的是**摘要**，未登记即 401，
+        **不降级为匿名主体**（"没有主体"是后台线程的状态，不是鉴权失败的出路）。
+        """
         if request.endpoint in _OPEN_ENDPOINTS:
             return
         supplied = request.cookies.get(TOKEN_COOKIE, '') or request.headers.get(TOKEN_HEADER, '')
-        if token_matches(supplied, _token):
+        principal = _principals.resolve(supplied)
+        if principal is None:
+            abort(401)
+        # 记下 token，请求收尾时**恢复**原值（见 _release_principal）：只 set 不
+        # reset 会让主体泄漏到同一执行上下文里的后续调用 —— 生产环境每个请求
+        # 一个上下文时看不出来，但 `test_client`（以及将来任何复用上下文的调用）
+        # 会看到"上一个请求的主体还在"，那是比没有主体更危险的形态。
+        #
+        # token 存在 `g`（请求域）而不是模块级变量：模块级列表会在并发请求之间
+        # 互相 pop 对方的 token，把主体错位到另一个请求上。
+        g.principal_token = CURRENT_PRINCIPAL.set(principal)
+
+    @app.teardown_request
+    def _release_principal(exception=None):
+        """请求结束时恢复主体上下文（鉴权失败时没有 token，什么也不做）。"""
+        token = g.pop('principal_token', None)
+        if token is None:
             return
-        abort(401)
+        try:
+            CURRENT_PRINCIPAL.reset(token)
+        except (LookupError, ValueError):
+            # reset 只能在**同一个** context 里做；跨 context 时无法恢复，
+            # 但此时那个 context 已经结束，不会影响后续请求。
+            pass
 
     @app.after_request
     def _attach_token_cookie(resp):
@@ -387,7 +485,8 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
     @app.errorhandler(403)
     def _err_403(e):
         return _status_response(403, '禁止访问',
-                                '请求的路径超出了允许访问的目录范围。')
+                                '请求的路径超出了允许访问的目录范围，'
+                                '或当前使用者没有执行该操作的权限。')
 
     @app.errorhandler(404)
     def _err_404(e):
@@ -420,6 +519,14 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         if fn is None:
             abort(404)
 
+        # 管理员专属端点（见 _ADMIN_ONLY_API）。主体由 _require_token 注入，
+        # 这里只判角色 —— 令牌有效但角色不够时返回 403，而不是 401：
+        # 401 的意思是"你没登录"，会让前端把人踢回登录流程。
+        if method in _ADMIN_ONLY_API:
+            principal = CURRENT_PRINCIPAL.get()
+            if principal is None or not principal.is_admin:
+                abort(403)
+
         try:
             payload = request.get_json(silent=True) or {}
             args = payload.get('args', []) if isinstance(payload.get('args'), list) else []
@@ -439,6 +546,22 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         if not (frontend_dist / filename).exists() and not filename.startswith('assets'):
             return send_from_directory(frontend_dist, 'index.html')
         return send_from_directory(frontend_dist, filename)
+    def _needs_content(instance, full_path: Path) -> bool:
+        """该路径是否"存在但内容还没真正取到本地"（决定要不要回调 `ensure_file`）。
+
+        两种情况缺一不可：
+          * 文件不存在 —— 普通插件按需生成内容的场景；
+          * **文件存在但是占位** —— 物化类插件（group-mesh）先造 0 字节占位文件、
+            再靠 `ensure_file` 取真字节。只判"不存在"会把占位当正常文件返回
+            （实测踩到：HTTP 200 + 0 字节，远端内容永远不会被取回）。
+        """
+        if not full_path.is_file():
+            return True
+        try:
+            return bool(instance.is_content_placeholder(full_path))
+        except Exception:
+            return False
+
     def serve_media_file(filepath, plugin_name):
         """媒体/文件访问：支持相对路径和绝对路径，并做越权目录校验。"""
         instance = plugin_manager.get_plugin_instance(plugin_name) if plugin_name else None
@@ -473,15 +596,59 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
                 _reject_protected_file(full_path)
                 if not any(_is_safe_path(full_path, root) for root in roots):
                     abort(403)
+                # 按需把内容取到本地（如 group-mesh 的远端共享项）：必须放在"文件
+                # 是否存在"判定之前，且**在根校验之后** —— 插件实现会按这个路径写盘，
+                # 先校验才不会让它往根之外写。与 /thumbs 的 ensure_thumb 同一顺序。
+                # 判定条件不能只看"文件不存在"：物化出来的占位文件是存在的（0 字节），
+                # 只判 exists 会把占位当正常文件返回（实测踩到：200 + 0 字节）。
+                if instance is not None and _needs_content(instance, full_path):
+                    try:
+                        instance.ensure_file(full_path)
+                    except Exception:
+                        pass
                 if not full_path.is_file():
                     abort(404)
                 return send_file(full_path, conditional=True)
-            # 相对路径：沿用「插件数据根目录」语义
+            # 相对路径：先问插件能不能解释这条虚拟路径（多根目录 / 命名空间前缀，
+            # 如 image-viewer 的 `__额外图库/…`），它答不上来再按老规矩用第一根拼。
+            # 顺序与绝对路径分支一致：解析 → 受保护判定 → 逐根校验 → 按需取字节。
+            resolved = None
+            if instance is not None:
+                try:
+                    candidate = instance.resolve_file_path(filepath)
+                except Exception as e:
+                    # 插件实现是自由代码：它抛错不能让整条路由 500，退回默认解析
+                    log.warning(f'[File_Server] {plugin_name}.resolve_file_path 失败，回退默认解析: {e}')
+                    candidate = None
+                if isinstance(candidate, Path):
+                    resolved = candidate
+                elif candidate is not None:
+                    log.warning(f'[File_Server] {plugin_name}.resolve_file_path 返回了 '
+                                f'{type(candidate).__name__}，已忽略（只接受 Path 或 None）')
+            if resolved is not None:
+                full_path = normalize_path(resolved)
+                _reject_protected_file(full_path)
+                if not any(_is_safe_path(full_path, root) for root in roots):
+                    abort(403)
+                if instance is not None and _needs_content(instance, full_path):
+                    try:
+                        instance.ensure_file(full_path)
+                    except Exception:
+                        pass
+                if not full_path.is_file():
+                    abort(404)
+                return send_file(full_path, conditional=True)
+            # 沿用「插件数据根目录」语义
             data_root = roots[0]
             full_path = normalize_path(data_root / filepath)
             _reject_protected_file(full_path)
             if not _is_safe_path(full_path, data_root):
                 abort(403)
+            if not full_path.exists() and instance is not None:
+                try:
+                    instance.ensure_file(full_path)
+                except Exception:
+                    pass
             if not full_path.exists():
                 abort(404)
             return send_from_directory(data_root, filepath)
@@ -599,47 +766,21 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         # 受保护文件的出口：插件把凭据放进 frontend/、或申报了覆盖它的目录时，
         # 这里不判定就等于绕过了 /file 的同一份清单。
         _reject_protected_file(normalize_path(plugin_dir / filename))
-        if filename == 'index.html':
-            html_path = plugin_dir / 'index.html'
+        # 插件前端的**任何** HTML 页面都要注入壳的引导脚本（Bridge / Utils / Toast /
+        # 主题同步），不只是 index.html：插件可以有子页面 —— 例如"网络位置"提供方要在
+        # 共享目录组件（FolderPicker）弹窗的 iframe 里渲染一个选择器，那个页面同样需要
+        # `window.Bridge` 才能调宿主与插件接口。以前只有 index.html 走这条注入，子页面
+        # 拿不到 Bridge（症状是"PyWebView API 不可用"，而页面本身看起来完全正常）。
+        if filename.lower().endswith('.html'):
+            html_path = plugin_dir / filename
+            # 手工 open 的文件路径必须自己确认落在插件前端目录内（send_from_directory
+            # 那层防护只覆盖它自己的发送路径，不覆盖这里的读文件）。
+            if not _is_safe_path(normalize_path(html_path), normalize_path(plugin_dir)):
+                abort(403)
             if html_path.exists():
                 with open(html_path, 'r', encoding='utf-8') as f:
                     html = f.read()
-                SCRIPT_TPL = (
-                    '<link rel="stylesheet" href="/shell/variables.css">'
-                    '<link rel="stylesheet" href="/shell/base.css">'
-                    '<link rel="stylesheet" href="/shell/folder-picker.css">'
-                    '<link rel="stylesheet" href="/shell/effects.css">'
-                    '<script src="/shell/base.js"></script>'
-                    '<script src="/shell/folder-picker.js"></script>'
-                    '<script src="/shell/motion.js"></script>'
-                    '<script>'
-                    "Bridge.setPrefix('PLACEHOLDER_NAME');"
-                    '(function(){'
-                    'var pd = parent.document.documentElement;'
-                    "var t = pd.getAttribute('data-theme') || 'light';"
-                    "document.documentElement.setAttribute('data-theme', t);"
-                    'new MutationObserver(function(){'
-                    "var nt = pd.getAttribute('data-theme') || 'light';"
-                    "document.documentElement.setAttribute('data-theme', nt);"
-                    '}).observe(pd, {attributes:true,attributeFilter:["data-theme"]});'
-                    'var cc = pd.getAttribute("data-custom-colors");'
-                    'if (cc) { try {'
-                    'var map = JSON.parse(cc);'
-                    'Object.keys(map).forEach(function(k){'
-                    "document.documentElement.style.setProperty(k, map[k]); });"
-                    '} catch(e) {} }'
-                    'new MutationObserver(function(){'
-                    'var ncc = pd.getAttribute("data-custom-colors");'
-                    'if (ncc) { try {'
-                    'var nmap = JSON.parse(ncc);'
-                    'Object.keys(nmap).forEach(function(k){'
-                    "document.documentElement.style.setProperty(k, nmap[k]); });"
-                    '} catch(e) {} }'
-                    '}).observe(pd, {attributes:true,attributeFilter:["data-custom-colors"]});'
-                    '})();'
-                    '</script>'
-                )
-                inject = SCRIPT_TPL.replace('PLACEHOLDER_NAME', plugin_name)
+                inject = _PLUGIN_BOOTSTRAP_SCRIPT.replace('PLACEHOLDER_NAME', plugin_name)
                 return html.replace('</head>', inject + '</head>')
         return send_from_directory(plugin_dir, filename)
 

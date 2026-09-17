@@ -564,7 +564,11 @@ class AudioCoverCache(ThumbCache):
   - 玻璃面板：`.obx-glass` / `.obx-glass-strong`
   - 卡片悬浮抬升：`.obx-card-lift`
   - 骨架屏：`.obx-skeleton`
-  - 现代窄滚动条（鼠标悬停渐显、深浅色兼容）：`.obx-scroll`
+  - 现代窄滚动条（鼠标悬停渐显、深浅色兼容）：`.obx-scroll` —— **每个会滚动的容器都要加**。
+    壳自己的界面里滚动条是全局隐藏的（`src/styles/shell.css` 的
+    `*::-webkit-scrollbar { display: none }`），插件 iframe 不在那份样式的作用域内，
+    插件不写就退回系统默认滚动条（又粗又白）。弹窗正文 `.modal-body` 与共享目录组件的
+    `.iv-dirbrowser-list` 由壳渲染、插件加不上类，已在 `effects.css` 里一并覆盖。
 - `/shell/motion.js` — `window.Motion`：
   - `Motion.stagger(container, selector?)` 为子元素写入交错延迟
   - `Motion.retrigger(el, className?)` 重新触发动画（默认 `obx-anim-heart`）
@@ -585,6 +589,29 @@ class AudioCoverCache(ThumbCache):
 | `.sub-sidebar-header` | 侧边栏标题行（大写标签，底部边框）                                    |
 | `.sub-sidebar-footer` | 侧边栏底部统计区（小字体，顶部边框）                                  |
 | `.view-content`       | 内容滚动区（`flex: 1; overflow-y: auto; padding: 16px`）            |
+| `.obx-nav-item`       | 侧栏导航项（结构 + hover + 选中态；选中态标 `is-active` / `active` / `data-active="true"` 均可） |
+
+`.obx-nav-item` 的视觉参数走 `--obx-nav-*`（`base.css` 的「导航项」一节）：
+
+| token | 默认 | 说明 |
+| --- | --- | --- |
+| `--obx-nav-gap` / `--obx-nav-pad-y` / `--obx-nav-pad-x` | `10px` / `9px` / `12px` | 图标与文字的间距、内边距 |
+| `--obx-nav-radius` / `--obx-nav-font-size` | `10px` / `13px` | 圆角与字号 |
+| `--obx-nav-accent` | `var(--accent)` | 选中态用色 |
+| `--obx-nav-active-bg` | `color-mix(in srgb, var(--obx-nav-accent) 9%, transparent)` | 选中态底色（极淡） |
+| `--obx-nav-active-color` | `var(--obx-nav-accent)` | 选中态文字色 |
+
+选中态的"左缘 2px 强调色竖线"由 `.obx-nav-item` 的 `::before` 提供，插件**不要**再各自
+实现一遍选中态（image-viewer 曾把它整块填成渐变，与其它插件不一致）。插件只需保留自己的
+差异，例如图标栏宽度：
+
+```css
+.iv-nav-item { gap: 9px; }              /* 结构/选中态都在 .obx-nav-item 里 */
+.iv-nav-item span { width: 18px; text-align: center; }
+```
+
+回归用例：`python tests/debug_nav_style_ui.py` —— 起真实壳服务，对四个插件的导航项断言
+"token 生效、选中态有底色与竖线、四个插件算出的样式一致"。
 
 **示例 HTML 结构**：
 
@@ -833,6 +860,24 @@ const src = Bridge.originalUrl(encodeURIComponent('G:/音乐/cover.jpg'));
 const src = Bridge.originalUrl('subdir/photo.jpg');
 ```
 
+**虚拟路径（多根 / 命名空间）**：如果插件用 `__<名字>/…` 这类**虚拟路径**表示"另一个
+根下的文件"（如 `image-viewer` 的「图片文件夹」列表），覆写
+`PluginBase.resolve_file_path(rel_path)` 即可 —— Shell 在解析**相对路径**时先问它，
+返回 `None` 时按上面的老规矩用 `get_file_roots()[0]` 拼。没有这个钩子时，虚拟路径在
+第一根下并不存在，表现是"列表与缩略图都正常，点开原图 404"。
+
+```python
+def resolve_file_path(self, rel_path):
+    """虚拟路径 → 物理路径；答不上来返回 None（Shell 回退默认解析）。"""
+    root, inner = self._split_virtual(rel_path)      # 插件自己的映射
+    return (root / inner) if root and inner else None
+```
+
+三条约束由 Shell 执行，插件侧无法绕过：解析结果必须落在 `get_file_roots()` 的某一根
+之内（否则 `403`）；受保护路径判定照旧优先（返回 `403`）；返回值不是 `Path`、返回
+`None` 或实现抛错时一律**回退默认解析**，不会让路由 500 —— 与 `get_thumb_data()`
+那种"返回值不可信、Shell 先校验形状"的既有做法一致。
+
 **访问令牌（v3.1+）**：`/api`、`/file`、`/files`、`/thumbs` 均为**令牌保护路由**：
 
 - 令牌在首次启动时生成并持久化到 `.config/auth_token.txt`（重启不变）；
@@ -913,8 +958,34 @@ def browse_dir(self, path: str = ''):
 - 需要自己控制布局时才直接用 `window.FolderPicker.createList({paths, placeholder, emptyText, labels, onBeforeOpen})`，
   返回 `{element, getPaths, setPaths, addPath, render}`；
 - 需要单独弹一次目录选择器用 `await window.FolderPicker.openDirBrowser(startPath)`（取消返回 `null`）。
-- 两个文件都由 `file_server` 的插件页注入模板（`SCRIPT_TPL`）带进每个插件 iframe，
-  插件自己的 HTML 不用声明 `<script>` / `<link>`。
+- 两个文件都由 `file_server` 的插件页注入模板（`_PLUGIN_BOOTSTRAP_SCRIPT`）带进插件的
+  **每个 HTML 页面**（不只是 `index.html`：插件可以有子页面），插件自己的 HTML
+  不用声明 `<script>` / `<link>`。
+
+#### 7.2.1 「网络位置」：把远端共享项变成一个本地目录（供方契约）
+
+目录列表里的「🌐 网络位置」按钮按 **placement = `network-location`** 发现提供方，因此
+**壳不认识任何具体插件、提供方与宿主互不声明依赖**（没有 `dependencies`）：
+
+| 环节 | 约定 |
+| --- | --- |
+| 提供方声明 | `get_extensions()` 返回 `{'placement': 'network-location', 'label', 'icon', 'embedUrl'}`；**不写 `host`**（组件出现在任意插件的设置里，提供方应对所有宿主可用） |
+| 宿主发现 | `system_get_plugin_extensions(null, 'network-location')`；无提供方时按钮提示"需要安装提供该能力的插件" |
+| 提供方界面 | 组件把 `embedUrl` 嵌进弹窗 iframe；子页面同样被注入 BootStrap（`Bridge` / `Utils` / `Toast` / `FolderPicker`） |
+| 回填 | 提供方向父窗口 `postMessage({type:'omnibox:network-location', action:'picked', path, label})`；组件**校验 `event.source` 必须是它嵌的那个 iframe**（否则任何同源页面都能往用户的文件夹列表里塞路径），并校验 `path` 非空。取消用 `action:'cancelled'` |
+| 产物 | 回填的 `path` 必须是**本地绝对目录**：所有消费方的后端只认本地路径，`getPaths()` 语义因此完全不变 |
+
+两条实现约束（踩过才知道）：
+
+1. **提供方只负责"把远端内容取到那里"**，不写宿主的设置 —— 它把目录回填给组件，
+   由宿主插件自己的保存流程写进 `root_dir` / `extra_roots`。于是提供方不需要知道
+   宿主是谁，也不需要跨插件后端调用。
+2. **取回必须是"完整取回"而不是占位**。镜像目标是普通本地目录，消费方按本地文件工作、
+   **没有** `ensure_file` 钩子可依赖：留 0 字节占位就是宽高 0×0 与整片 404 缩略图
+   （见 `plugins/group-mesh` 的 `mirror_share` 与 `.dsh/group-mesh-materialize.md` §2.2）。
+
+参考实现：`plugins/group-mesh`（`get_extensions()` + `frontend/network-location.html` +
+后端 `mirror_share`）。
 
 ### 7.3 插件如何生成缩略图
 
@@ -928,6 +999,7 @@ def browse_dir(self, path: str = ''):
 | `thumb_dir` | `数据根目录/.cache/thumbs` | 只读 property（`Path`）。可赋值覆盖（旧写法兼容），也可以什么都不做 |
 | `ensure_thumb(rel_path)` | 空实现 | `/thumbs` 找不到文件时调用，插件可现场生成并落盘；返回值被忽略 |
 | `get_file_roots()` | `[get_data_root()]` | 跨多根插件覆写（如 `media-player`） |
+| `resolve_file_path(rel_path)` | 返回 `None` | 让插件解释 `/file` 的**相对路径**（虚拟路径 / 命名空间）；`None` 表示按 `get_file_roots()[0]` 解析 |
 
 **优先级**：`get_thumb_data()` 命中（返回二元组）时直接响应；返回 `None` 或形状不对时，
 才回退到 `thumb_dir` 散文件布局。因此"只覆写 `get_thumb_data()`、不定义 `thumb_dir`"
@@ -1028,6 +1100,7 @@ class MyPlugin(PluginBase):
 | `options`                  | 可选 | select 类型的选项列表                                                                     |
 | `multi`                    | 可选 | 仅 `directory`：多值字段，列表可增删多行，第 2 行起标「额外」                          |
 | `placeholder` / `emptyText` | 可选 | 仅 `directory`：输入框占位符 / 列表为空时的提示文字                                      |
+| `local_only`               | 可选 | 仅 `directory`：`True` 时**不显示「🌐 网络位置」入口**（该目录只接受本机路径，见下）   |
 | `secret`                   | 可选 | `True` 表示**凭据类**设置项：Shell 拒绝把该插件的设置文件当媒体资源返回（见下）        |
 
 #### 凭据类设置项：`"secret": True`
@@ -1131,6 +1204,25 @@ def get_protected_paths(self):
 > 把多行文本字段合并成一个多值 `directory` 字段时，**记得让后端兼容旧键**，
 > 否则老用户配置里的值会看起来"丢了"（media-player 的
 > `_configured_roots()` 就是这种兼容：新键优先，没有才回退旧键）。
+
+#### `local_only`：该目录只接受本机路径
+
+默认情况下目录列表带一个「🌐 网络位置」入口：让用户把某个远端共享项取回本地一个
+目录，再把**那个本地目录**加进列表（详见 §7.2.1）。这对"媒体根目录"是正确的 ——
+取回来的就是本地文件。
+
+但对**目录本身就是产物**的字段，这个入口是错的：例如 group-mesh 的「远端下载目录」
+（`download_dir`）就是"从对端取回的文件落在哪"，在那里选网络位置等于"把取回的中间
+目录当作下载目录"，语义不成立。这类字段声明：
+
+```python
+{"key": "download_dir", "label": "远端下载目录", "type": "directory",
+ "local_only": True,          # 不渲染「🌐 网络位置」入口
+ "default": "", "placeholder": "默认：数据根/group-mesh/downloads"},
+```
+
+判断标准一句话：**这个目录是用来"装结果"的，还是用来"当来源"的？** 装结果的
+（下载落点、导出目录）用 `local_only`；当来源的（媒体根、相册根）不要用。
 
 ### 8.3 读取与写入
 

@@ -1,0 +1,905 @@
+/* ============================================================================
+   group-mesh 插件前端样式。
+
+   依赖壳注入的 resources（plugin-guide §4.1，**不在 HTML 里手动引入**）：
+     · variables.css —— 主题 token：--bg-* / --text-* / --border / --accent /
+       --success / --danger / --warning / --radius* / --shadow* / --transition-*
+     · base.css      —— 通用类：.btn 系列 / .view-body / .view-toolbar /
+       .toolbar-group / .view-sub-sidebar / .view-content / .modal / .obx-scroll…
+     · effects.css   —— 动效：.obx-glass / .obx-scroll / .obx-card-lift /
+       .obx-anim-* / .obx-stagger + --obx-radius / --obx-ease / --obx-shadow-*
+     · motion.js     —— window.Motion（本插件只用 Motion.stagger 编交错延迟）
+     · base.js       —— Bridge / Utils / Toast / confirmDialog / PluginLifecycle
+
+   本文件因此**只写壳没有的东西**：插件前缀 token、侧栏导航、面板栅格、
+   KV 表 / 徽章 / 空态 / 远端两栏的细节。颜色一律走 token，不再写死（旧版把
+   角色徽章写死成 #f59e0b / #8b5cf6，toast 用 --text-primary 当底色），
+   这样才能跟随壳的深浅主题与「外观设置」里的自定义颜色。
+
+   两条历史坑（务必保留，避免重犯）：
+   1. `docs/group-mesh-implementation-path.md` §5.7：曾经自绘 `.gm-modal{display:flex}`，
+      作者样式盖掉了浏览器给 `[hidden]` 的 `display:none`（同优先级作者样式胜出），
+      结果三个弹窗在打开页面时同时铺满整屏。现在弹窗一律用壳的
+      `.modal` + `.modal.active`，本文件不再出现任何弹窗容器样式。
+   2. `remote.js` 用 `style.display` 而不是 `hidden` 属性切上传按钮，理由同上。
+   ============================================================================ */
+
+/* ---------- 插件前缀 token（承接壳 token，集中定义尺寸/软色） ---------- */
+:root {
+  --gm-radius: var(--radius-lg, 12px);
+  --gm-radius-sm: var(--radius, 8px);
+  --gm-accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --gm-success-soft: color-mix(in srgb, var(--success) 15%, transparent);
+  --gm-warn-soft: color-mix(in srgb, var(--warning) 18%, transparent);
+  --gm-danger-soft: var(--danger-soft, color-mix(in srgb, var(--danger) 15%, transparent));
+  --gm-side-width: 236px;
+  --gm-peers-width: 272px;
+}
+
+/* ---------- 高度链 ----------
+   结构与壳的其它插件保持一致（image-viewer / manga-library / media-player）：
+   `#app` 自己就是 flex 行容器（侧栏 + 右侧主区），侧栏跑满全高；主区是
+   壳的 `.view-body`，内部再是 `.view-toolbar` + `.view-content`。
+
+   这条链不能省：base.css 给 body 设了 `overflow: hidden`，而 `.view-body`
+   是 `flex: 1`，父级没有确定高度时它的 `min-height: 0` 链断掉，
+   `.view-content` 的 overflow-y 就不生效（内容直接被裁掉而不是滚动）。 */
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+#app {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-app);
+}
+
+.gm-main {
+  min-width: 0;
+}
+
+/* ============================ 工具栏 ============================ */
+
+.gm-toolbar {
+  gap: 12px;
+}
+
+.gm-heading {
+  gap: 10px;
+  min-width: 0;
+}
+
+.gm-heading-text {
+  min-width: 0;
+}
+
+.gm-icon {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.gm-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.gm-sub {
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gm-toolbar-right {
+  margin-left: auto;
+}
+
+.gm-banner {
+  margin: 12px 16px 0;
+  padding: 12px 16px;
+  border-radius: var(--gm-radius-sm);
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.gm-banner-error {
+  border: 1px solid var(--danger);
+  background: var(--gm-danger-soft);
+  color: var(--text-primary);
+}
+
+.gm-banner pre {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--bg-hover);
+  font-size: 12px;
+  overflow-x: auto;
+}
+
+/* ====================== 侧栏 + 主区（两栏） ======================
+   与 manga-library / media-player / image-viewer 同一套形态：侧栏是 `#app` 的
+   直接子元素、用壳的 `.view-sub-sidebar`（宽度/边框/底色由壳给），右侧是
+   `.view-body`（工具栏 + 内容区）。这里只补"本插件的侧栏"需要的排布。
+
+   分隔线按结构分工：侧栏只画 `border-right`，主区的 `.view-toolbar` 画
+   `border-bottom`。两边都画会在交角处叠成 2px（实测）。
+
+   选择器带上 `.view-sub-sidebar` 是有意的：壳的 base.css 用**同一个类**（0,1,0）
+   把宽度写死成 `--sub-sidebar-width`（240px）、方向写死成 column。两边同优先级时
+   后注入的壳样式胜出，本插件的 `--gm-side-width` 与窄窗口的横向排布都会失效
+   （实测：设成 236 实际 240，窄窗口侧栏仍是竖排）。提高一格优先级即可，
+   不能靠改顺序 —— 注入顺序由壳决定。 */
+
+.gm-side.view-sub-sidebar {
+  width: var(--gm-side-width);
+  flex-shrink: 0;
+  gap: 0;
+}
+
+.gm-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 14px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.gm-brand-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--gm-radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+  background: var(--gm-accent-soft);
+}
+
+.gm-brand-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.gm-brand-sub {
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  letter-spacing: 0.3px;
+}
+
+.gm-nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 滚动条走壳的 `.obx-scroll`（本文件不再自己写一份 thin/transparent 规则） */
+
+.gm-nav-label {
+  padding: 12px 8px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* 导航项的结构 / hover / 选中态全部来自壳的 `.obx-nav-item`（base.css 的「导航项」
+   一节，含 `[data-active="true"]` 这一档）；这里只留本插件自己的差异：
+   撑满侧栏宽度 + 图标栏 18px。选中态的视觉参数可覆写
+   `--obx-nav-active-bg` / `--obx-nav-accent` 等 token。 */
+.gm-nav-item {
+  width: 100%;
+}
+
+.gm-nav-icon {
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.gm-nav-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 侧栏计数：有数据才出现（由 app.js 决定显隐），避免一排 0 占地方 */
+.gm-nav-count {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.gm-nav-count:empty {
+  display: none;
+}
+
+/* 侧栏底部摘要：节点状态 + 团体/名单（app.js 的 renderSideSummary 写） */
+.gm-side-foot {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  min-width: 0;
+}
+
+.gm-foot-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.gm-foot-dot[data-state="ok"] { background: var(--success); }
+.gm-foot-dot[data-state="warn"] { background: var(--warning); }
+.gm-foot-dot[data-state="error"] { background: var(--danger); }
+.gm-foot-dot[data-state="idle"] { background: var(--text-muted); }
+
+.gm-foot-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ============================ 内容区 ============================ */
+
+.gm-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 16px;
+  background: transparent;
+}
+
+/* 面板是**纯显隐**切换：不销毁 DOM，切换只改 data-active。
+   与壳"iframe 常驻、切走只是 v-show"的策略一致，也让所有 id 恒存在。 */
+.gm-panel {
+  display: none;
+}
+
+.gm-panel[data-active="true"] {
+  display: block;
+}
+
+/* 面板内的一行卡片：宽面板占满一行，其余按 2 列排 */
+.gm-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.gm-card {
+  border: 1px solid var(--border);
+  border-top: 2px solid transparent;
+  border-radius: var(--gm-radius);
+  padding: 16px;
+  background: var(--bg-surface);
+  min-width: 0;
+  animation: obxFadeUp 0.45s var(--obx-ease, ease) both;
+  animation-delay: calc(var(--obx-i, 0) * 30ms);
+}
+
+/* 卡片顶边表达"这张卡的状态"：由 app.js 按后端状态加类，不再让用户逐行读文字 */
+.gm-card-ok { border-top-color: color-mix(in srgb, var(--success) 65%, transparent); }
+.gm-card-warn { border-top-color: color-mix(in srgb, var(--warning) 75%, transparent); }
+.gm-card-error { border-top-color: color-mix(in srgb, var(--danger) 70%, transparent); }
+.gm-card-muted { border-top-color: var(--border); }
+
+.gm-card-wide {
+  grid-column: 1 / -1;
+}
+
+.gm-card h2 {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* 远端面板：卡片撑满可用高度，两栏内部各自滚动（页面只滚一次） */
+#panel-remote > .gm-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.gm-body {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-primary);
+}
+
+/* ---------- 键值表（身份 / 名单 / 节点三张卡共用） ---------- */
+
+.gm-kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 5px 14px;
+}
+
+.gm-kv dt {
+  color: var(--text-secondary);
+}
+
+.gm-kv dd {
+  margin: 0;
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+/* ---------- 动作区 / 表单 ---------- */
+
+.gm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.gm-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+/* 表单控件：壳没有为 input / select / textarea 提供通用类
+   （.search-input 只适合搜索框，.field 那套挂在设置弹窗的 schema 渲染上），
+   因此这里按 token 自绘。**只有这一处**定义，三处旧副本已合并到这里。 */
+.gm-form input,
+.gm-form select,
+.gm-address input,
+.modal-body input,
+.modal-body textarea {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.gm-form input:focus,
+.gm-form select:focus,
+.gm-address input:focus,
+.modal-body input:focus,
+.modal-body textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--gm-accent-soft);
+}
+
+.gm-form input::placeholder,
+.gm-address input::placeholder,
+.modal-body input::placeholder,
+.modal-body textarea::placeholder {
+  color: var(--text-muted);
+}
+
+.gm-form input {
+  min-width: 160px;
+}
+
+.gm-form input#share-id {
+  max-width: 200px;
+}
+
+.modal-body input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 8px;
+}
+
+.modal-body textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  resize: vertical;
+}
+
+/* ---------- 表格 ---------- */
+
+.gm-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.gm-table th,
+.gm-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.gm-table tbody tr {
+  animation: obxFadeUp 0.4s var(--obx-ease, ease) both;
+  animation-delay: calc(var(--obx-i, 0) * 26ms);
+}
+
+.gm-table tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+.gm-table th {
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.gm-table code {
+  font-size: 12px;
+  word-break: break-all;
+}
+
+/* ---------- 徽章 ----------
+   角色/状态色全部走壳 token（旧版写死的 #f59e0b / #8b5cf6 / #28a745 在暗色
+   主题与自定义外观下都不会跟随）。 */
+
+.gm-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid currentColor;
+  opacity: 0.92;
+  white-space: nowrap;
+}
+
+.gm-badge-owner { color: var(--warning); }
+.gm-badge-admin { color: var(--accent); }
+.gm-badge-member { color: var(--success); }
+.gm-badge-ok { color: var(--success); }
+.gm-badge-warn { color: var(--danger); }
+
+/* ---------- 提示 / 空态 / 加载 ---------- */
+
+.gm-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 6px 0 10px;
+  line-height: 1.6;
+}
+
+.gm-hint code {
+  font-size: 11px;
+}
+
+.gm-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 2px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.gm-empty strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* 首屏 get_status 未回来时的骨架行（app.js 的 renderLoading 用 .obx-skeleton） */
+.gm-skeleton-line {
+  display: block;
+  height: 12px;
+  margin: 6px 0;
+  border-radius: 6px;
+}
+
+.gm-skeleton-line:last-child {
+  width: 60%;
+}
+
+.gm-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--text-secondary);
+}
+
+/* ---------- 折叠区块（路线图） ---------- */
+
+.gm-details {
+  border: 1px solid var(--border);
+  border-radius: var(--gm-radius-sm);
+  background: var(--bg-app);
+  padding: 0 12px;
+}
+
+.gm-details > summary {
+  padding: 9px 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.gm-details[open] > summary {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+
+.gm-details .gm-list {
+  padding: 0 0 10px 18px;
+}
+
+/* ---------- 危险动作：复用壳的 .btn-danger（旧版另造了一个 .gm-btn-danger） ---------- */
+
+.gm-table .btn-danger {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+/* ================= 地址交换（我的地址 / 更新对方地址） ================= */
+
+.gm-address {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--gm-radius-sm);
+  background: var(--bg-app);
+}
+
+.gm-address-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.gm-address-label {
+  flex: 0 0 72px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.gm-address-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+#peer-endpoint {
+  flex: 1 1 260px;
+  min-width: 180px;
+}
+
+#peer-device {
+  flex: 0 1 220px;
+  min-width: 140px;
+}
+
+/* ==================== 远端页（设备 → 共享项 → 目录） ==================== */
+
+.gm-remote-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.gm-remote-tools .gm-hint {
+  flex: 1 1 260px;
+  margin: 0;
+  min-width: 0;
+}
+
+.gm-remote {
+  display: flex;
+  gap: 14px;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 280px;
+}
+
+.gm-remote-peers {
+  flex: 0 0 var(--gm-peers-width);
+  min-width: 0;
+  border-right: 1px solid var(--border);
+  padding-right: 12px;
+  overflow-y: auto;
+}
+
+.gm-remote-files {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.gm-remote-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 0;
+}
+
+.gm-remote-peer {
+  margin-bottom: 12px;
+}
+
+.gm-remote-peer-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 4px;
+}
+
+.gm-remote-peer-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gm-remote-peer-ep {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gm-remote-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--gm-radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.gm-remote-item:hover {
+  background: var(--bg-hover);
+}
+
+.gm-remote-item-active {
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+
+/* 一行 = 共享项按钮 + 物化状态徽章 + 缓存按钮 */
+.gm-remote-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+
+.gm-remote-badge {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  border: 1px solid var(--success);
+  color: var(--success);
+  white-space: nowrap;
+}
+
+.gm-remote-cache {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border-radius: var(--gm-radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-app);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.gm-remote-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 2px 2px 6px;
+  line-height: 1.5;
+}
+
+.gm-remote-crumb {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.gm-remote-progress {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: var(--gm-radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-app);
+  font-size: 12px;
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-primary);
+}
+
+.gm-remote-progress-error {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* 上传弹窗里的进度行：与页面里的进度条同款配色，但留在弹窗里（用户正看着它） */
+.gm-upload-progress {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--gm-radius-sm);
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+/* 上传弹窗里的"覆盖同名文件"：复选框与文字同一行，且点击文字也算 */
+.gm-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.gm-check input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* ==================== 兜底提示 ====================
+   壳提供 window.Toast（base.js）时用壳的；脱离壳直接打开本页时回退到这个自绘提示。
+   底色用 --bg-surface + 边框表达语义，不再用 --text-primary 当背景（暗色主题下
+   那是浅色底 + 深色字，与壳的 .toast 观感相反）。 */
+.gm-toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  padding: 10px 16px;
+  border-radius: var(--gm-radius-sm);
+  border: 1px solid var(--success);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-md, var(--obx-shadow-2, 0 10px 30px rgba(0, 0, 0, 0.2)));
+  font-size: 13px;
+  z-index: 3000;
+  max-width: 420px;
+  animation: obxFadeUp 0.25s var(--obx-ease, ease) both;
+}
+
+.gm-toast-error {
+  border-color: var(--danger);
+}
+
+/* ==================== 响应式 ==================== */
+
+/* 窄窗口：侧栏折成一条横向导航，远端两栏改为上下堆叠 */
+@media (max-width: 720px) {
+  /* 两栏变上下：`#app` 是行容器，折成列即可（`.gm-main` 会自动占满剩余高度） */
+  #app {
+    flex-direction: column;
+  }
+
+  .gm-side.view-sub-sidebar {
+    width: 100%;
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+    /* 分隔线换边：窄布局下侧栏与主区是"上下"关系，因此改成 border-bottom
+       并去掉右侧那条竖线（否则会多出一条悬空的边）。 */
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .gm-brand {
+    border-bottom: none;
+    padding: 8px 10px;
+  }
+
+  .gm-brand-text,
+  .gm-nav-label,
+  .gm-side-foot,
+  .gm-nav-icon {
+    display: none;
+  }
+
+  .gm-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    overflow: visible;
+    padding: 6px 8px;
+  }
+
+  .gm-nav-item {
+    width: auto;
+    padding: 6px 10px;
+  }
+
+  .gm-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .gm-remote {
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .gm-remote-peers {
+    flex: 0 0 auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding: 0 0 10px;
+    max-height: 42vh;
+  }
+
+  .gm-remote-files {
+    max-height: none;
+  }
+}
+
+/* 中等宽度：栅格一列，避免两张卡挤成窄条。
+   注意顺序：720 那条（窄窗口）在**后面**，它把 `.gm-grid` 写回单列（与这里同值）
+   并额外把远端两栏改成上下堆叠。两条规则同优先级时后者胜出，顺序不能对调。 */
+@media (max-width: 1040px) {
+  .gm-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
