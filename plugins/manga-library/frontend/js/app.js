@@ -7,6 +7,7 @@ class MangaLibraryApp {
         this.downloadFilter = 'all';
         this.tasks = [];
         this.pollTimer = null;
+        this._tasksKey = '';   // 上一次渲染所依据的任务快照，用于跳过无变化的重渲染
         this.reader = null;
 
         this.currentFolderName = '';
@@ -24,7 +25,29 @@ class MangaLibraryApp {
         this._bindUI();
         await this.loadView();
         await this.loadTasks();
+        this._bindPluginLifecycle();
+        this._startPoll();
+    }
+
+    // 可见性通知（与 image-viewer 同一约定）：常驻 iframe 切到后台后，没有任何理由
+    // 继续每 2s 拉一次任务列表，轮询停掉，回到前台由 onShow 重新拉起。
+    _bindPluginLifecycle() {
+        if (!window.PluginLifecycle) return;
+        const lifecycle = window.PluginLifecycle;
+        lifecycle.onHide(() => this._stopPoll());
+        lifecycle.onShow(() => this._startPoll());
+        lifecycle.onDispose(() => this._stopPoll());
+    }
+
+    _startPoll() {
+        if (this.pollTimer) return;
         this.pollTimer = setInterval(() => this.loadTasks(), 2000);
+    }
+
+    _stopPoll() {
+        if (!this.pollTimer) return;
+        clearInterval(this.pollTimer);
+        this.pollTimer = null;
     }
 
     // ============================================================
@@ -368,7 +391,11 @@ class MangaLibraryApp {
             const result = await Bridge.call('download_list');
             this.tasks = result.tasks || [];
             this.updateStats();
-            if (this.currentView === 'downloads') this.renderDownloads();
+            // 数据没变就不重渲染：整段 innerHTML 重建会让每个 .ml-task 的入场动画
+            // 从头播一遍，看起来就像页面每 2s 自己刷新一次。
+            if (this.currentView === 'downloads' && JSON.stringify(this.tasks) !== this._tasksKey) {
+                this.renderDownloads(false);
+            }
         } catch (e) {
             console.error('加载下载任务失败:', e);
         }
@@ -385,9 +412,12 @@ class MangaLibraryApp {
         if (this.currentView === 'downloads' && sub) sub.textContent = `全部 ${total} · 下载中 ${active} · 已完成 ${completed} · 排队 ${queued}`;
     }
 
-    renderDownloads() {
+    // animate=false 用于轮询驱动的刷新：只换内容、不重播入场动画（.ml-no-anim）。
+    renderDownloads(animate = true) {
         const content = document.getElementById('ml-content');
         if (!content) return;
+        this._tasksKey = JSON.stringify(this.tasks);
+        content.classList.toggle('ml-no-anim', !animate);
         const filtered = this.downloadFilter === 'all'
             ? this.tasks
             : this.tasks.filter(t => t.status === this.downloadFilter);

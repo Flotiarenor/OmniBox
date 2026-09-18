@@ -228,6 +228,9 @@
   border: 1px solid var(--border);
   animation: obxFadeUp 0.4s ease both; animation-delay: calc(var(--obx-i, 0) * 22ms);
 }
+/* 轮询驱动的原地刷新不重播入场动画：否则任务数据一变化，整张列表就闪一遍 */
+.ml-content.ml-no-anim .ml-task,
+.ml-content.ml-no-anim .ml-empty { animation: none; }
 .ml-task-thumb { width: 54px; height: 72px; border-radius: 8px; object-fit: cover; background: var(--bg-hover); flex-shrink: 0; }
 .ml-task-main { flex: 1; min-width: 0; }
 .ml-task-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
