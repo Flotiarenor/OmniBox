@@ -125,7 +125,20 @@ group-mesh 是**核心插件**：自身不直接面向最终用途，只提供�
 plugins/group-mesh/
 ├── manifest.json
 ├── backend/
-│   └── main.py              # GroupMeshPlugin：API、数据目录、节点/上传线程
+│   ├── main.py            # GroupMeshPlugin：类骨架、settings_schema、生命周期与 API 注册
+│   ├── common.py          # 各分片共用的常量与纯函数（_opts / _mtime_ns）
+│   ├── storage.py         # 路径、受保护路径与身份 / 名单 / 共享项的本机读写
+│   ├── status.py          # get_status 首屏状态汇总
+│   ├── group.py           # 身份、建团 / 加入、邀请串、成员增减
+│   ├── shares.py          # 共享根挂载 / 移除 / 状态与用量
+│   ├── peers.py           # 对端发现、手动登记、端点解析、list_peers
+│   ├── sync.py            # 注册表 / 名单后台同步与出站连接
+│   ├── remote.py          # 列远端目录与取回单文件
+│   ├── upload.py          # 上传任务表、续传记录与上传线程
+│   ├── materialize.py     # 远端目录树物化与索引对账
+│   ├── mirror.py          # 共享项镜像到用户目录（「网络位置」）
+│   ├── fetch.py           # 占位判定 / ensure_file、并发去重、缓存清理
+│   └── node.py            # 节点启停、注册记录发布、自动启动
 └── frontend/
     ├── index.html           # 主页面：状态、身份、名单、共享项、共享节点、远端共享
     ├── network-location.html# "网络位置"扩展页面（壳共享目录组件内嵌）
@@ -134,6 +147,12 @@ plugins/group-mesh/
         ├── app.js           # 状态读取与渲染、主页面事件绑定
         └── remote.js        # 远端共享分片：设备→共享项→目录→下载/上传/物化
 ```
+
+后端按方法职责拆成 12 个 mixin 分片，各分片由 `main.py` 用
+`shell.backend.plugin_utils.load_sibling` 加载后混入 `GroupMeshPlugin`：分片不能互相
+import `main.py`（后端入口由 PluginManager 用 importlib 直接加载，会成环），共用的
+常量与纯函数放在 `common.py`；mixin 必须排在 `PluginBase` 之前，否则
+`get_data_root` / `get_protected_paths` / `on_settings_changed` 等覆写会被基类实现盖掉。
 
 数据布局（全部在 `get_data_root()` = `<全局数据根>/group-mesh` 之下）：
 
