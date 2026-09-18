@@ -270,7 +270,8 @@ class ImageViewer {
         });
 
         document.querySelectorAll('.modal').forEach(modal => {
-            modal.addEventListener('click', (e) => {
+            // pointerdown：按在遮罩上就关，按在弹窗内（哪怕拖到遮罩上松开）不关
+            modal.addEventListener('pointerdown', (e) => {
                 if (e.target === modal) modal.classList.remove('active');
             });
         });

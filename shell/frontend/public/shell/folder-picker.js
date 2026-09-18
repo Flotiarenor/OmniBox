@@ -106,7 +106,8 @@ window.FolderPicker = (function () {
       drivesBtn.addEventListener('click', () => load(DRIVES_SENTINEL));
       selectBtn.addEventListener('click', () => finish(currentPath));
       overlay.querySelector('[data-act="cancel"]').addEventListener('click', () => finish(null));
-      overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(null); });
+      // pointerdown：只看按下位置，弹窗内按下再拖到遮罩上松开不应关闭
+      overlay.addEventListener('pointerdown', (e) => { if (e.target === overlay) finish(null); });
 
       load(startPath || DRIVES_SENTINEL);
     });
@@ -198,7 +199,7 @@ window.FolderPicker = (function () {
         item.addEventListener('click', () => finish(providers[Number(item.dataset.index)]));
       });
       overlay.querySelector('[data-act="cancel"]').addEventListener('click', () => finish(null));
-      overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(null); });
+      overlay.addEventListener('pointerdown', (e) => { if (e.target === overlay) finish(null); });
     });
   }
 
@@ -230,7 +231,7 @@ window.FolderPicker = (function () {
       }
       window.addEventListener('message', onMessage);
       overlay.querySelector('[data-act="cancel"]').addEventListener('click', () => finish(null));
-      overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(null); });
+      overlay.addEventListener('pointerdown', (e) => { if (e.target === overlay) finish(null); });
     });
   }
 

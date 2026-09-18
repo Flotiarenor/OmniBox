@@ -407,7 +407,9 @@ function confirmDialog(message, options = {}) {
       </div>`;
     document.body.appendChild(overlay);
     const close = (val) => { overlay.remove(); resolve(val); };
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
+    // pointerdown 而非 click：click 的 target 是按下/松开的最近公共祖先，
+    // 在弹窗内按下、拖到遮罩上松开会被误判成"点了遮罩"。这里只看按下的位置。
+    overlay.addEventListener('pointerdown', (e) => { if (e.target === overlay) close(false); });
     overlay.querySelector('[data-act="cancel"]').addEventListener('click', () => close(false));
     overlay.querySelector('[data-act="ok"]').addEventListener('click', () => close(true));
   });
@@ -596,7 +598,8 @@ async function openSettingsModal(options = {}) {
   }
 
   const close = () => overlay.remove();
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  // pointerdown：按在遮罩上就关，按在弹窗内（哪怕拖到遮罩上松开）不关
+  overlay.addEventListener('pointerdown', (e) => { if (e.target === overlay) close(); });
   overlay.querySelector('[data-act="cancel"]').addEventListener('click', close);
 
   overlay.querySelector('[data-act="save"]').addEventListener('click', async () => {
@@ -830,7 +833,7 @@ function createLightbox(options = {}) {
     img.style.cursor = scale > 1 ? 'grab' : 'zoom-out';
   }
 
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) hide(); });
+  overlay.addEventListener('pointerdown', (e) => { if (e.target === overlay) hide(); });
   closeBtn.addEventListener('click', hide);
   leftArrow.addEventListener('click', (e) => { e.stopPropagation(); navigate(-1); });
   rightArrow.addEventListener('click', (e) => { e.stopPropagation(); navigate(1); });

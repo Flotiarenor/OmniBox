@@ -123,9 +123,9 @@ Object.assign(MediaPlayerApp.prototype, {
             if (e.key === 'Enter') this._confirmEQName();
         });
 
-        // 点击遮罩关闭弹窗 / 面板
+        // 按在遮罩上关闭弹窗 / 面板（pointerdown：只看按下位置，拖到遮罩上松开不算）
         document.querySelectorAll('.mp-modal').forEach(modal => {
-            modal.addEventListener('click', (e) => {
+            modal.addEventListener('pointerdown', (e) => {
                 if (e.target === modal) modal.classList.remove('active');
             });
         });
