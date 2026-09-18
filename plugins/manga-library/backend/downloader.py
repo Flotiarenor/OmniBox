@@ -137,6 +137,8 @@ def execute_download(task, manga_dir: str, state_dir: str, lock, logger=None) ->
     option_dict = {
         "dir_rule": {
             "base_dir": manga_dir,
+            # 单章漫画：图片直接放在 <漫画根>/<漫画 ID>/ 下，与漫画库的"没有子目录
+            # 就是单章"判定一致；多章漫画在 before_album 里换成按章节分目录。
             "rule": "Bd / Aid"
         },
         "download": {
@@ -176,6 +178,14 @@ def execute_download(task, manga_dir: str, state_dir: str, lock, logger=None) ->
             self.progress = progress_ref
 
         def before_album(self, album):
+            # 多章漫画按章节分目录：jmcomic 落盘用的就是站点的图片名（00001.jpg …），
+            # 不含任何章节信息，全塞进同一个作品目录时后下的章节会盖掉前面的。
+            # 规则是每张图片落盘前才求值的，这里换掉还来得及，也省得为了提前知道
+            # 章节数再请求一次漫画详情。
+            if len(album) > 1:
+                self.option.dir_rule = jmcomic.DirRule(
+                    rule='Bd / Aid / Pindextitle', base_dir=manga_dir)
+
             super().before_album(album)
             self.progress.before_album(album)
 
