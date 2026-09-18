@@ -426,7 +426,9 @@ class MangaLibraryPlugin(PluginBase):
             download_dir = task.download_dir or os.path.join(str(self.manga_dir), task.album_id)
             json_path = os.path.join(download_dir, "album_info.json")
             album_info['download_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            album_info['total_page_count'] = task.completed_images
+            # 早先漫画的 page_count 恒为 0（api 客户端），只能拿"已完成数"充总数；
+            # 现在 downloader 按章节累加出了真值，优先写它，避免续传时把总数写小。
+            album_info['total_page_count'] = task.total_images or task.completed_images
             with open(json_path, 'w', encoding='utf-8') as f:
                 json.dump(album_info, f, ensure_ascii=False, indent=2, default=str)
         except Exception as e:

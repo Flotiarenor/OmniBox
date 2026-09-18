@@ -24,7 +24,9 @@ def execute_download(task, manga_dir: str, state_dir: str, lock, logger=None) ->
         raise ValueError(f'下载目录越界: {download_dir!r} 不在漫画根目录 {manga_dir!r} 内')
     os.makedirs(download_dir, exist_ok=True)
 
-    class ProgressCallback(jmcomic.DownloadCallback):
+    class ProgressCallback:
+        """进度回调：把 jmcomic 的通知写进任务对象（由下面的 ProgressDownloader 调用）。"""
+
         def __init__(self, task_ref, lock_ref, state_dir, dl_dir):
             self.task = task_ref
             self.lock = lock_ref
@@ -33,17 +35,33 @@ def execute_download(task, manga_dir: str, state_dir: str, lock, logger=None) ->
             self.last_update = time.time()
             self.last_count = 0
             self.album_info = None
+            self.album_page_count = 0  # 漫画声明的总页数（api 客户端恒为 0）
+            self.photo_total = 0       # 各章节 len(photo) 的累加值
 
         def before_album(self, album):
             with self.lock:
                 self.task.title = album.name
-                self.task.total_images = album.page_count
+                # 总页数不能只信漫画：api 客户端的漫画数据里根本没有这个字段，
+                # jmcomic 的 JmApiAdaptTool.post_adapt_album 会把它写死成 '0'，
+                # 于是页数永远显示 "?"。真实页数只能按章节累加（见 before_photo）；
+                # 这里先归零，续传/重试重跑漫画时不会把上一轮的累加值再算一遍。
+                self.album_page_count = int(getattr(album, 'page_count', 0) or 0)
+                self.photo_total = 0
+                self.task.total_images = self.album_page_count
                 if hasattr(album, 'album_id'):
                     self.task.thumb_url = JmcomicText.get_album_cover_url(album.album_id)
 
                 self.album_info = self._build_album_info(album)
                 self._save_album_info_local()
                 self._save_state_locked()
+
+        def before_photo(self, photo):
+            # 章节详情到手时才知道图片数（jmcomic 日志里的"图片数为[N]"就是这个值，
+            # 来自 API 的 images 字段）。漫画维度为 0 时以累加值为准；两者都有效时
+            # 取大值，多章漫画不会因为两处来源相加而翻倍。
+            with self.lock:
+                self.photo_total += len(photo)
+                self.task.total_images = max(self.album_page_count, self.photo_total)
 
         def after_image(self, image, img_save_path):
             with self.lock:
@@ -145,13 +163,34 @@ def execute_download(task, manga_dir: str, state_dir: str, lock, logger=None) ->
         }
     }
 
+    class ProgressDownloader(jmcomic.JmDownloader):
+        """挂钩子用子类，而不是往实例上赋属性。
+
+        JmDownloader 的同名方法除了通知回调，还要维护自己的簿记（download_success_dict
+        与 plugin / feature 回调链）；用 `downloader.before_album = ...` 覆盖实例属性会
+        把这些静默跳过。子类里 super() 一次，两边都不丢。
+        """
+
+        def __init__(self, jm_option, progress_ref):
+            super().__init__(jm_option)
+            self.progress = progress_ref
+
+        def before_album(self, album):
+            super().before_album(album)
+            self.progress.before_album(album)
+
+        def before_photo(self, photo):
+            super().before_photo(photo)
+            self.progress.before_photo(photo)
+
+        def after_image(self, image, img_save_path):
+            super().after_image(image, img_save_path)
+            self.progress.after_image(image, img_save_path)
+
     option = jmcomic.JmOption.construct(option_dict)
     progress = ProgressCallback(task, lock, state_dir, download_dir)
 
-    with jmcomic.new_downloader(option) as downloader:
-        downloader.before_album = progress.before_album
-        downloader.after_image = progress.after_image
-
+    with ProgressDownloader(option, progress) as downloader:
         if task._stop_event.is_set():
             return None
 
