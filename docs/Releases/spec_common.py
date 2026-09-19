@@ -64,6 +64,7 @@ HIDDEN_IMPORTS = [
     'PIL',
     'natsort',
     'chardet',
+    'markdown_it',
     'jmcomic',
     'common',
     'curl_cffi',

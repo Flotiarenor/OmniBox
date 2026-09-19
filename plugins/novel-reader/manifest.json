@@ -1,7 +1,7 @@
 {
   "name": "novel-reader",
-  "version": "3.2.0",
-  "displayName": "小说阅读",
+  "version": "3.4.0",
+  "displayName": "文档阅读",
   "icon": "📖",
   "dependencies": [],
   "backend": {

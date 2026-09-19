@@ -24,7 +24,9 @@
 .sidebar-panel {
     flex: 1;
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 4px 0;
+    min-width: 0;
 }
 /* ===== 书架列表 ===== */
 .novel-shelf-list {
@@ -55,8 +57,9 @@
     text-overflow: ellipsis;
     margin-bottom: 2px;
 }
-.novel-shelf-author {
-    font-size: 12px;
+/* 子目录里的文档：显示所属目录（主目录下的文件不占这一行） */
+.novel-shelf-dir {
+    font-size: 11px;
     color: var(--text-secondary);
     white-space: nowrap;
     overflow: hidden;
@@ -368,7 +371,18 @@
     var(--bg-app);
 }
 
-.nr-sidebar { width: 252px; }
+/* 侧栏宽度只由这里决定。两点缺一不可：
+   1. 选择器要带上 .view-sub-sidebar —— 壳的 base.css 是在插件样式**之后**注入的，
+      同特异性的 `.view-sub-sidebar{width:...}` 会把下面这行覆盖掉（宽度和窄屏
+      媒体查询一直是死代码）；
+   2. min-width:0 —— flex 项的"自动最小尺寸"等于内容的 min-content 宽度，一行不换行
+      的长书名就是整个书名的宽度，不压成 0 的话侧栏会被书名顶宽。 */
+.view-sub-sidebar.nr-sidebar {
+  width: 252px;
+  min-width: 0;
+  flex: 0 0 auto;
+  overflow: hidden;
+}
 
 .nr-brand { display: flex; align-items: center; gap: 12px; padding: 18px 16px 14px; }
 .nr-brand-icon {
@@ -438,7 +452,7 @@
 }
 
 @media (max-width: 860px) {
-  .nr-sidebar { width: 210px; }
+  .view-sub-sidebar.nr-sidebar { width: 210px; }
   #novel-browse-group .search-input, #novel-browse-group .search-input:focus { width: 170px; }
 }
 
@@ -589,4 +603,157 @@
 .novel-content-area.theme-custom {
   background: var(--reader-bg-color, var(--bg-surface));
   color: var(--reader-text-color, var(--text-primary));
+}
+
+/* ============================================================
+   v7 多格式文档：书架格式徽标 + 富文本（md / epub）排版 + PDF 内嵌
+   ============================================================ */
+
+/* 书架：标题行改成 名称 + 格式徽标 */
+.novel-shelf-list,
+.novel-shelf-item,
+.novel-shelf-title,
+.novel-shelf-dir,
+.novel-shelf-meta {
+  min-width: 0;
+}
+
+.novel-shelf-item { overflow: hidden; }
+
+.novel-shelf-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.novel-shelf-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.novel-shelf-kind {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--accent);
+  background: var(--nr-accent-soft);
+}
+
+/* 富文本正文：后端白名单转换器输出的标签集合 */
+.chapter-content h1,
+.chapter-content h2,
+.chapter-content h3,
+.chapter-content h4,
+.chapter-content h5,
+.chapter-content h6 {
+  margin: 1.2em 0 0.6em;
+  line-height: 1.4;
+  font-weight: 700;
+}
+
+.chapter-content h1 { font-size: 1.5em; }
+.chapter-content h2 { font-size: 1.3em; }
+.chapter-content h3 { font-size: 1.15em; }
+.chapter-content h4,
+.chapter-content h5,
+.chapter-content h6 { font-size: 1em; }
+.chapter-content h1:first-child,
+.chapter-content h2:first-child,
+.chapter-content h3:first-child { margin-top: 0; }
+
+.chapter-content img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 1em auto;
+  border-radius: var(--nr-radius-sm);
+}
+
+.chapter-content blockquote {
+  margin: 0.9em 0;
+  padding: 0.2em 1em;
+  border-left: 3px solid var(--accent);
+  color: var(--text-secondary);
+}
+
+.chapter-content ul,
+.chapter-content ol {
+  margin: 0 0 0.9em;
+  padding-left: 1.6em;
+}
+
+.chapter-content li { margin: 0.25em 0; }
+
+.chapter-content table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+  font-size: 0.95em;
+}
+
+.chapter-content th,
+.chapter-content td {
+  border: 1px solid var(--border);
+  padding: 6px 9px;
+  text-align: left;
+}
+
+.chapter-content th {
+  background: var(--bg-hover);
+  font-weight: 600;
+}
+
+.chapter-content pre {
+  margin: 0.9em 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  background: var(--bg-hover);
+  border-radius: var(--nr-radius-sm);
+}
+
+.chapter-content code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.92em;
+}
+
+.chapter-content hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 1.4em 0;
+}
+
+.chapter-content a { color: var(--accent); }
+
+/* 列表 / 表格 / 引用里的段落不要再首行缩进两格 */
+.chapter-content li p,
+.chapter-content td p,
+.chapter-content th p,
+.chapter-content blockquote p { text-indent: 0; }
+
+/* PDF：填满阅读区，右上角留一个"系统程序打开"的出口 */
+.novel-content-area:has(> .novel-pdf-frame) {
+  padding: 0;
+  display: block;
+}
+
+.novel-pdf-frame {
+  width: 100%;
+  height: 100%;
+  min-height: 60vh;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  display: block;
+}
+
+.novel-pdf-open {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  z-index: 6;
 }

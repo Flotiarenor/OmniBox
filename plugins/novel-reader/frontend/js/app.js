@@ -20,6 +20,7 @@ class NovelReader {
         this._sidebarMode = 'shelf';
         this._lastSavedChapter = -1;
         this._lastSavedPosition = -1;
+        this._chromeChapterIndex = -1;
 
         this.engine = new NovelReaderEngine(this);
         this._chapterListBuiltFor = null;
@@ -92,7 +93,7 @@ class NovelReader {
 
     _bindSettingsButton() {
         const btn = document.getElementById('btn-settings');
-        if (btn) btn.addEventListener('click', () => openSettingsModal({ title: '小说阅读设置' }));
+        if (btn) btn.addEventListener('click', () => openSettingsModal({ title: '阅读设置' }));
     }
 
     _bindEvents() {
@@ -109,16 +110,25 @@ class NovelReader {
             });
         }
 
-        // 滚动模式：轻量节流地让引擎处理连续加载
-        let lastScroll = 0;
+        // 滚动 / 滚轮走同一条节流通道，合并成"每 60ms 至多一次"，而不是"距上次不足
+        // 80ms 就丢弃"：后者会丢掉最后一次滚动事件，滑到底停住后下一章永远不加载。
+        // 另外内容填不满一屏时（短文）浏览器不会有滚动事件 —— 用户"滑不动"时唯一还
+        // 能收到的事件就是 wheel，所以两个都要监听。
+        let scrollTimer = null;
+        const onScrollActivity = () => {
+            this._scheduleProgressSave();
+            if (scrollTimer) return;
+            scrollTimer = setTimeout(() => {
+                scrollTimer = null;
+                this.engine.handleScroll().then(() => {
+                    this._syncReaderChrome();
+                    this._updateProgressBar();
+                });
+            }, 60);
+        };
         if (this._dom.contentArea) {
-            this._dom.contentArea.addEventListener('scroll', () => {
-                const now = performance.now();
-                if (now - lastScroll < 80) return;
-                lastScroll = now;
-                this.engine.handleScroll();
-                this._scheduleProgressSave();
-            }, { passive: true });
+            this._dom.contentArea.addEventListener('scroll', onScrollActivity, { passive: true });
+            this._dom.contentArea.addEventListener('wheel', onScrollActivity, { passive: true });
         }
         if (this._dom.shelfToggle) this._dom.shelfToggle.addEventListener('click', () => this._switchSidebar('shelf'));
         if (this._dom.chapterToggle) this._dom.chapterToggle.addEventListener('click', () => this._switchSidebar('chapters'));
@@ -127,6 +137,12 @@ class NovelReader {
         if (this._dom.contentArea) {
             this._dom.contentArea.addEventListener('click', (e) => {
                 if (!this._isReaderMode) return;
+                // 连续滚动模式没有"翻页"这回事：点击触发的整章重建会让阅读位置跳走、
+                // 内容区闪一下（用户看到的就是"点一下像刷新/卡住一次"）。
+                if (this.mode === 'scroll') return;
+                // 选中文字时的 click 不该被当成翻页
+                const selection = window.getSelection ? String(window.getSelection()) : '';
+                if (selection) return;
                 const rect = this._dom.contentArea.getBoundingClientRect();
                 const x = e.clientX - rect.left;
                 if (x < rect.width * 0.25) this._turnPage(-1);
@@ -258,14 +274,15 @@ class NovelReader {
         this._saveCurrentProgress(true);
         this._isReaderMode = false;
         this._setToolbarMode('browse');
+        this._setChapterTabVisible(true);
         this._switchSidebar('shelf');
-        if (this._dom.chapterTitle) this._dom.chapterTitle.textContent = '未打开小说';
+        if (this._dom.chapterTitle) this._dom.chapterTitle.textContent = '未打开文档';
         if (this._dom.progressFill) this._dom.progressFill.style.width = '0%';
         if (this._dom.contentArea) {
             this._dom.contentArea.innerHTML = `
                 <div class="novel-empty">
                     <div class="novel-empty-icon">📖</div>
-                    <div class="novel-empty-text">在左侧书架选择一本小说开始阅读</div>
+                    <div class="novel-empty-text">在左侧书架选择一份文档开始阅读</div>
                 </div>
             `;
         }
@@ -290,18 +307,21 @@ class NovelReader {
             container.innerHTML = `
                 <div class="novel-empty">
                     <div class="novel-empty-icon">📖</div>
-                    <div class="novel-empty-text">没有找到小说</div>
-                    <div class="novel-empty-hint">请将 .txt 文件放入小说目录</div>
+                    <div class="novel-empty-text">没有找到文档</div>
+                    <div class="novel-empty-hint">请把 .txt / .md / .epub 放进文档目录</div>
                 </div>
             `;
             return;
         }
         container.innerHTML = novels.map(novel => `
-            <div class="novel-shelf-item ${this.currentNovel && novel.id === this.currentNovel.id ? 'active' : ''}" data-id="${novel.id}">
-                <div class="novel-shelf-title">${Utils.escapeHtml(novel.title)}</div>
-                <div class="novel-shelf-author">${Utils.escapeHtml(novel.author)}</div>
+            <div class="novel-shelf-item ${this.currentNovel && novel.id === this.currentNovel.id ? 'active' : ''}" data-id="${Utils.escapeHtml(novel.id)}">
+                <div class="novel-shelf-title">
+                    <span class="novel-shelf-name">${Utils.escapeHtml(novel.title)}</span>
+                    <span class="novel-shelf-kind">${Utils.escapeHtml((novel.kind || 'txt').toUpperCase())}</span>
+                </div>
+                ${novel.dir ? `<div class="novel-shelf-dir">${Utils.escapeHtml(novel.dir)}</div>` : ''}
                 <div class="novel-shelf-meta">
-                    <span>${novel.chapter_count || '?'} 章</span>
+                    <span>${this._shelfMetaText(novel)}</span>
                     <span class="novel-shelf-progress">${Math.round((novel.progress || 0) * 100)}%</span>
                 </div>
             </div>
@@ -310,6 +330,29 @@ class NovelReader {
         container.querySelectorAll('.novel-shelf-item').forEach(item => {
             item.addEventListener('click', () => this._openNovel(item.dataset.id));
         });
+    }
+
+    // 只切"当前正在读"的高亮。开书时以前调的是 _renderShelf()：整列表重建 + 逐个
+    // 入场动画，看起来就像点一下"刷新"了一次。
+    _markShelfActive() {
+        const container = this._dom.shelfList;
+        if (!container) return;
+        container.querySelectorAll('.novel-shelf-item').forEach(item => {
+            item.classList.toggle('active',
+                !!this.currentNovel && item.dataset.id === this.currentNovel.id);
+        });
+    }
+
+    _shelfMetaText(novel) {
+        if (novel.kind === 'pdf' || novel.kind === 'external') return '系统程序打开';
+        // 章节数要解析过一次才知道；没解析过就显示体积，别显示 "?"
+        if (novel.chapter_count) return `${novel.chapter_count} 章`;
+        return NovelUtils.formatSize(novel.file_size);
+    }
+
+    // 非章节型文档（pdf / 外部打开）没有目录可看，藏掉那个标签页，避免点开是空的
+    _setChapterTabVisible(visible) {
+        if (this._dom.chapterToggle) this._dom.chapterToggle.style.display = visible ? '' : 'none';
     }
 
     async _openNovel(novelId, startChapter = null, fraction = 0) {
@@ -322,15 +365,25 @@ class NovelReader {
                 if (this._dom.encodingSelect) this._dom.encodingSelect.value = this.encoding;
             }
 
+            // pdf / 交给系统程序的格式没有章节模型，直接换内容区，不进阅读引擎
+            if (this.currentNovel.kind === 'pdf' || this.currentNovel.kind === 'external') {
+                this._showLoading(false);
+                this._openNonChapter(this.currentNovel);
+                return;
+            }
+
             const result = await Bridge.call('novel_get_chapters', novelId, this.encoding);
             const chapters = result.chapters || [];
+            // 章节数现在知道了：回填到列表项，回到书架时那一行显示的就是真实章数
+            this.currentNovel.chapter_count = chapters.length;
             this.engine.setMode(this.mode);
             this.engine.reset(novelId, chapters, this.encoding);
 
             this._isReaderMode = true;
             this._setToolbarMode('reader');
+            this._setChapterTabVisible(true);
             this._switchSidebar('chapters');
-            this._renderShelf();
+            this._markShelfActive();
             this._chapterListBuiltFor = null;
             this._renderChapterList();
 
@@ -346,8 +399,56 @@ class NovelReader {
             this._afterPageRender(true);
             this._showLoading(false);
         } catch (e) {
-            console.error('打开小说失败:', e);
+            console.error('打开文档失败:', e);
             this._showLoading(false);
+        }
+    }
+
+    // 非章节型文档（pdf / 交给系统程序的格式）：不进阅读引擎，只换内容区。
+    _openNonChapter(novel) {
+        this.engine.reset(novel.id, [], 'auto');
+        this._isReaderMode = true;
+        this._setToolbarMode('reader');
+        this._setChapterTabVisible(false);
+        this._switchSidebar('shelf');
+        this._markShelfActive();
+        this._chapterListBuiltFor = null;
+        this._renderChapterList();
+        if (this._dom.chapterTitle) this._dom.chapterTitle.textContent = novel.title;
+        if (this._dom.progressFill) this._dom.progressFill.style.width = '0%';
+
+        const area = this._dom.contentArea;
+        if (!area) return;
+        if (novel.kind === 'pdf') {
+            // WebView 自带 PDF 阅览器：同源 /file 路由直接嵌，零依赖
+            const src = Bridge.originalUrl(novel.file_path);
+            area.innerHTML = `
+                <iframe class="novel-pdf-frame" src="${Utils.escapeHtml(src)}"
+                        title="${Utils.escapeHtml(novel.title)}"></iframe>
+                <button class="btn novel-pdf-open" id="novel-open-external">↗ 系统程序打开</button>
+            `;
+        } else {
+            area.innerHTML = `
+                <div class="novel-empty">
+                    <div class="novel-empty-icon">📄</div>
+                    <div class="novel-empty-text">${Utils.escapeHtml(novel.title)}</div>
+                    <div class="novel-empty-hint">该格式不在阅读器内渲染，可交给系统默认程序打开</div>
+                    <button class="btn" id="novel-open-external">↗ 用系统程序打开</button>
+                </div>
+            `;
+        }
+        const btn = document.getElementById('novel-open-external');
+        if (btn) btn.addEventListener('click', () => this._openExternal(novel));
+    }
+
+    async _openExternal(novel) {
+        try {
+            const result = await Bridge.call('novel_open_external', novel.id);
+            if (result && result.error) Toast.error(result.error);
+            else Toast.success('已交给系统程序打开');
+        } catch (e) {
+            console.error('调用系统程序失败:', e);
+            Toast.error('调用系统程序失败');
         }
     }
 
@@ -365,9 +466,17 @@ class NovelReader {
     }
 
     _afterPageRender(scrollList = false) {
+        // 记下界面当前反映的是哪一章：滚动时只有"真的换章"才需要重刷目录高亮
+        this._chromeChapterIndex = this.engine.currentChapterIndex;
         this._updateChapterListActive(scrollList);
         this._updateChapterTitle();
         this._updateProgressBar();
+    }
+
+    /** 滚动过程中当前章会变：只有换章时才重刷目录/标题（每 60ms 刷一次太贵）。 */
+    _syncReaderChrome() {
+        if (this.engine.currentChapterIndex === this._chromeChapterIndex) return;
+        this._afterPageRender(false);
     }
 
     _updateChapterTitle() {
@@ -387,6 +496,7 @@ class NovelReader {
 
     async _saveCurrentProgress(force = false) {
         if (!this.currentNovel || !this._isReaderMode) return;
+        if (!this.engine.chapters.length) return;   // pdf / 非章节型文档没有进度可存
         const chapter = this.engine.currentChapterIndex;
         const position = this.engine.chapterFraction();
         if (!force && chapter === this._lastSavedChapter

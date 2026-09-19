@@ -60,7 +60,13 @@ class NovelReaderEngine {
         if (this._htmlPromises.has(index)) return this._htmlPromises.get(index);
         const promise = Bridge.call('novel_get_content', this.novelId, index, this.encoding)
             .then(result => {
-                const html = result.error ? '' : NovelUtils.formatContent(result.content || '');
+                // 后端给两种内容：txt 是纯文本（这里转义成段落），md/epub 已经是后端
+                // 白名单转换器产出的 HTML 片段，直接插入即可。
+                const html = result.error
+                    ? ''
+                    : (result.format === 'html'
+                        ? (result.content || '')
+                        : NovelUtils.formatContent(result.content || ''));
                 this.chapterHtmlCache.set(index, html);
                 this._htmlPromises.delete(index);
                 return html;
@@ -110,6 +116,10 @@ class NovelReaderEngine {
         this._prefetchChapter(index - 1);
         this._prefetchChapter(index + 1);
         this._busy = false;
+        // 滚动模式下刚打开的这一章可能填不满一屏（EPUB / Markdown 的小章节很常见），
+        // 此时容器根本滚不动、浏览器不会产生滚动事件 —— 不主动补满就是"只显示一章、
+        // 再也滑不动，只能用目录跳章"。
+        if (this.mode === 'scroll') await this._fillViewport();
         return true;
     }
 
@@ -128,30 +138,63 @@ class NovelReaderEngine {
     // ============================================================
     // 滚动模式：连续滚动加载
     // ============================================================
+    /**
+     * 处理一次滚动。返回 Promise（调用方据此在加载完成后刷新界面）。
+     *
+     * 三处踩过的坑：
+     *   - 以前只在"加载相邻章"时才同步当前章，于是章内滚动/滚到下一章时，左侧目录
+     *     高亮、工具栏标题、进度条全都停在跳转前那一章不动；
+     *   - 以前没有任何"补满视图"的动作：短文（EPUB / Markdown 常见的小章节）三章
+     *     都填不满一屏时浏览器不会产生滚动事件，加载就此停死，只能靠点目录跳章；
+     *   - 滚动到底后如果没有新事件，就再也没有下一次加载的机会。
+     */
     handleScroll() {
-        if (this.mode !== 'scroll') return;
+        if (this.mode !== 'scroll') return Promise.resolve(false);
         const el = this.contentArea;
-        if (!el || this._busy) return;
-        if (performance.now() < this._suppressUntil) return;
+        if (!el || this._busy) return Promise.resolve(false);
+
+        this._syncChapterFromScroll();
+        if (performance.now() < this._suppressUntil) return Promise.resolve(false);
 
         const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 300;
         const nearTop = el.scrollTop < 200;
 
         if (nearBottom && !this._loadingNext && this.loadedEnd < this.chapters.length - 1) {
             this._loadingNext = true;
-            this._loadAdjacent(this.loadedEnd + 1, 'append').finally(() => { this._loadingNext = false; });
+            return this._loadAdjacent(this.loadedEnd + 1, 'append')
+                .then((loaded) => (loaded ? this._fillViewport() : false))
+                .finally(() => { this._loadingNext = false; });
         } else if (nearTop && !this._loadingPrev && this.loadedStart > 0) {
             this._loadingPrev = true;
-            this._loadAdjacent(this.loadedStart - 1, 'prepend').finally(() => { this._loadingPrev = false; });
+            return this._loadAdjacent(this.loadedStart - 1, 'prepend')
+                .finally(() => { this._loadingPrev = false; });
         }
+        return Promise.resolve(false);
     }
 
+    /**
+     * 把内容补到"能滚"为止：一章只有几行时，三章窗口填不满一屏 → 没有滚动事件 →
+     * 永远不会再加载下一章。
+     */
+    async _fillViewport() {
+        const el = this.contentArea;
+        let guard = 0;
+        while (this.loadedEnd < this.chapters.length - 1 && guard < 60) {
+            if (el.scrollHeight > el.clientHeight + 120) break;
+            guard++;
+            const loaded = await this._loadAdjacent(this.loadedEnd + 1, 'append');
+            if (!loaded) break;
+        }
+        return true;
+    }
+
+    /** 返回是否真的追加/插入了内容（调用方据此决定要不要继续补满视图）。 */
     async _loadAdjacent(index, mode) {
         const token = this._token;
         const html = await this._getChapterHtml(index);
-        if (!html || token !== this._token || this._busy) return;
-        if (mode === 'append' && index !== this.loadedEnd + 1) return;
-        if (mode === 'prepend' && index !== this.loadedStart - 1) return;
+        if (!html || token !== this._token || this._busy) return false;
+        if (mode === 'append' && index !== this.loadedEnd + 1) return false;
+        if (mode === 'prepend' && index !== this.loadedStart - 1) return false;
 
         const el = this.contentArea;
         if (mode === 'append') {
@@ -169,6 +212,7 @@ class NovelReaderEngine {
         }
         this._syncChapterFromScroll();
         this._prefetchChapter(mode === 'append' ? this.loadedEnd + 1 : this.loadedStart - 1);
+        return true;
     }
 
     _appendChapterDiv(index, html, withSeparator = false) {
@@ -206,7 +250,13 @@ class NovelReaderEngine {
         while (this.loadedEnd - this.loadedStart > 2 && el.firstElementChild) {
             const chapter = el.firstElementChild;
             const sep = chapter.nextElementSibling;
-            const removed = chapter.offsetHeight + (sep ? sep.offsetHeight : 0);
+            const sepHeight = sep && sep.classList.contains('chapter-separator') ? sep.offsetHeight : 0;
+            const removed = chapter.offsetHeight + sepHeight;
+            // 删掉之后还得留下"一屏 + 一点余量"：小章节（EPUB / Markdown 常见，一章
+            // 只有几行）删早了会让内容永远填不满视图，表现就是"显示不全、再也滑不动"。
+            if (el.scrollHeight - removed < el.clientHeight + 200) break;
+            // 视图里还看得见这一章时不要删（删了内容会整体上移）
+            if (el.scrollTop < removed) break;
             el.scrollTop -= removed;
             chapter.remove();
             if (sep && sep.classList.contains('chapter-separator')) sep.remove();
@@ -228,6 +278,7 @@ class NovelReaderEngine {
         }
     }
 
+    /** 按视口 35% 处所在的分章块判断"当前章"，返回是否发生了变化。 */
     _syncChapterFromScroll() {
         const el = this.contentArea;
         const target = el.scrollTop + el.clientHeight * 0.35;
@@ -236,11 +287,24 @@ class NovelReaderEngine {
             const top = div.offsetTop;
             if (top <= target) current = parseInt(div.dataset.chapterIndex, 10);
         });
+        const changed = current !== this.currentChapterIndex;
         this.currentChapterIndex = current;
+        return changed;
     }
 
+    /**
+     * 当前章的阅读进度（0~1）。
+     *
+     * 以前用的是整个滚动容器的比例，可滚动模式下容器里同时挂着 2~3 章，
+     * 于是进度条与保存的位置都按"三章窗口"算，跳章/重开就会落到莫名其妙的地方。
+     */
     chapterFraction() {
         const el = this.contentArea;
+        const node = el.querySelector(`.chapter-content[data-chapter-index="${this.currentChapterIndex}"]`);
+        if (node && node.offsetHeight > 0) {
+            const within = (el.scrollTop - node.offsetTop) / node.offsetHeight;
+            return Math.max(0, Math.min(1, within));
+        }
         const range = el.scrollHeight - el.clientHeight;
         if (range <= 0) return 0;
         return Math.max(0, Math.min(1, el.scrollTop / range));
