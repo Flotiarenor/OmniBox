@@ -248,10 +248,10 @@ Object.assign(MediaPlayerApp.prototype, {
         }
     },
 
-    _renderNeteasePlaylists(playlists) {
+    _renderNeteasePlaylists(playlists, emptyText = '暂无推荐歌单') {
         const content = document.getElementById('media-content');
         if (!playlists || !playlists.length) {
-            this._renderEmpty('📋', '暂无推荐歌单');
+            this._renderEmpty('📋', emptyText);
             return;
         }
         content.innerHTML = `<div class="mp-list">${playlists.map((p, i) => `

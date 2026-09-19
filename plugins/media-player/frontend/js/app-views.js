@@ -222,7 +222,7 @@ Object.assign(MediaPlayerApp.prototype, {
                 if (keyword && this.currentView === 'ncm-playlists') {
                     const ncm = await Bridge.callPlugin('netease-music', 'search_playlist', keyword);
                     if (seq !== this._loadSeq) return;
-                    this._renderNeteasePlaylists(ncm.results || []);
+                    this._renderNeteasePlaylists(ncm.results || [], '没有匹配的歌单');
                     titleEl.textContent = `搜索 “${keyword}”`;
                     subEl.textContent = `${(ncm.results || []).length} 个歌单`;
                     return;
@@ -240,7 +240,7 @@ Object.assign(MediaPlayerApp.prototype, {
                     case 'ncm-daily': {
                         const cacheKey = 'ncm-daily';
                         const cached = this._ncmCacheGet(cacheKey);
-                        if (cached && this._isSameDay(cached.date)) {
+                        if (cached && (cached.results || []).length && this._isSameDay(cached.date)) {
                             data = (cached.results || []).map(song => this._neteaseToMediaItem(song));
                             if (seq !== this._loadSeq) return;
                             this._renderList(data, { showAlbum: true, showTag: true });
@@ -248,7 +248,15 @@ Object.assign(MediaPlayerApp.prototype, {
                         }
                         const ncm = await Bridge.callPlugin('netease-music', 'get_daily_recommend');
                         if (seq !== this._loadSeq) return;
-                        this._ncmCacheSet(cacheKey, { date: new Date().toISOString(), results: ncm.results || [] });
+                        // 与「我的歌单」同一个坑：失败返回的空结果被按日缓存，当天就再也刷不出来
+                        if (ncm && ncm.success === false) {
+                            this._renderEmpty('⚠️', '每日推荐加载失败',
+                                ncm.error || '请先在「登录」中完成网易云登录');
+                            return;
+                        }
+                        if ((ncm.results || []).length) {
+                            this._ncmCacheSet(cacheKey, { date: new Date().toISOString(), results: ncm.results });
+                        }
                         data = (ncm.results || []).map(song => this._neteaseToMediaItem(song));
                         this._renderList(data, { showAlbum: true, showTag: true });
                         return;
@@ -257,21 +265,24 @@ Object.assign(MediaPlayerApp.prototype, {
                         const cacheKey = 'ncm-playlists';
                         const cached = this._ncmCacheGet(cacheKey);
                         const twoHours = 2 * 60 * 60 * 1000;
-                        if (cached && cached.ts && (Date.now() - cached.ts < twoHours)) {
+                        // 空结果不算命中：一次网络失败会把「空」缓存住，之后一直显示空列表
+                        if (cached && (cached.results || []).length && cached.ts && (Date.now() - cached.ts < twoHours)) {
                             if (seq !== this._loadSeq) return;
                             this._renderNeteasePlaylists(cached.results || []);
                             return;
                         }
                         const ncm = await Bridge.callPlugin('netease-music', 'search_playlist', '推荐');
                         if (seq !== this._loadSeq) return;
-                        this._ncmCacheSet(cacheKey, { ts: Date.now(), results: ncm.results || [] });
+                        if ((ncm.results || []).length) {
+                            this._ncmCacheSet(cacheKey, { ts: Date.now(), results: ncm.results });
+                        }
                         this._renderNeteasePlaylists(ncm.results || []);
                         return;
                     }
                     case 'ncm-liked': {
                         const cacheKey = 'ncm-liked';
                         const cached = this._ncmCacheGet(cacheKey);
-                        if (cached && cached.results) {
+                        if (cached && (cached.results || []).length) {
                             data = (cached.results || []).map(song => this._neteaseToMediaItem(song));
                             if (seq !== this._loadSeq) return;
                             this._renderList(data, { showAlbum: true, showTag: true });
@@ -279,7 +290,14 @@ Object.assign(MediaPlayerApp.prototype, {
                         }
                         const ncm = await Bridge.callPlugin('netease-music', 'get_liked_songs', 100);
                         if (seq !== this._loadSeq) return;
-                        this._ncmCacheSet(cacheKey, { results: ncm.results || [] });
+                        if (ncm && ncm.success === false) {
+                            this._renderEmpty('⚠️', '喜欢列表加载失败',
+                                ncm.error || '请先在「登录」中完成网易云登录');
+                            return;
+                        }
+                        if ((ncm.results || []).length) {
+                            this._ncmCacheSet(cacheKey, { results: ncm.results });
+                        }
                         data = (ncm.results || []).map(song => this._neteaseToMediaItem(song));
                         this._renderList(data, { showAlbum: true, showTag: true });
                         return;
@@ -287,7 +305,7 @@ Object.assign(MediaPlayerApp.prototype, {
                     case 'ncm-my-playlists': {
                         const cacheKey = 'ncm-my-playlists';
                         const cached = this._ncmCacheGet(cacheKey);
-                        if (cached && cached.results) {
+                        if (cached && (cached.results || []).length) {
                             if (seq !== this._loadSeq) return;
                             this._renderNeteasePlaylists(cached.results || []);
                             return;
@@ -301,11 +319,19 @@ Object.assign(MediaPlayerApp.prototype, {
                         const add = (arr) => (arr || []).forEach(p => {
                             if (p && p.id && !map.has(p.id)) map.set(p.id, p);
                         });
-                        add(created.status === 'fulfilled' ? created.value.results : []);
-                        add(collected.status === 'fulfilled' ? collected.value.results : []);
+                        const settled = [created, collected].map(r => (r.status === 'fulfilled' ? r.value : null));
+                        add(settled[0] && settled[0].results);
+                        add(settled[1] && settled[1].results);
                         const results = Array.from(map.values());
-                        this._ncmCacheSet(cacheKey, { results });
-                        this._renderNeteasePlaylists(results);
+                        const failed = settled.filter(v => v && v.success === false);
+                        // 两个接口都失败才是失败：单边失败仍可能是「创建 0 个 + 收藏若干」
+                        if (!results.length && failed.length) {
+                            this._renderEmpty('⚠️', '我的歌单加载失败',
+                                failed[0].error || '请先在「登录」中完成网易云登录');
+                            return;
+                        }
+                        if (results.length) this._ncmCacheSet(cacheKey, { results });
+                        this._renderNeteasePlaylists(results, '暂无我的歌单');
                         return;
                     }
                 }
