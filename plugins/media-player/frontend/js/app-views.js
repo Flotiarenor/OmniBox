@@ -305,7 +305,8 @@ Object.assign(MediaPlayerApp.prototype, {
                     case 'ncm-my-playlists': {
                         const cacheKey = 'ncm-my-playlists';
                         const cached = this._ncmCacheGet(cacheKey);
-                        if (cached && (cached.results || []).length) {
+                        // v2：旧缓存没有 origin，认了会渲染成不分段的平表（读到就该重拉）
+                        if (cached && cached.v === 2 && (cached.results || []).length) {
                             if (seq !== this._loadSeq) return;
                             this._renderNeteasePlaylists(cached.results || []);
                             return;
@@ -316,13 +317,15 @@ Object.assign(MediaPlayerApp.prototype, {
                         ]);
                         if (seq !== this._loadSeq) return;
                         const map = new Map();
-                        const add = (arr) => (arr || []).forEach(p => {
-                            if (p && p.id && !map.has(p.id)) map.set(p.id, p);
+                        // 标出来源：创建 / 收藏要分得清（列表分段，全量同步只默认同步创建的）
+                        const add = (arr, origin) => (arr || []).forEach(p => {
+                            if (p && p.id && !map.has(p.id)) map.set(p.id, { ...p, origin });
                         });
                         const settled = [created, collected].map(r => (r.status === 'fulfilled' ? r.value : null));
-                        add(settled[0] && settled[0].results);
-                        add(settled[1] && settled[1].results);
-                        const results = Array.from(map.values());
+                        add(settled[0] && settled[0].results, 'created');
+                        add(settled[1] && settled[1].results, 'collected');
+                        const results = Array.from(map.values())
+                            .sort((a, b) => (a.origin === b.origin ? 0 : (a.origin === 'created' ? -1 : 1)));
                         const failed = settled.filter(v => v && v.success === false);
                         // 两个接口都失败才是失败：单边失败仍可能是「创建 0 个 + 收藏若干」
                         if (!results.length && failed.length) {
@@ -330,7 +333,7 @@ Object.assign(MediaPlayerApp.prototype, {
                                 failed[0].error || '请先在「登录」中完成网易云登录');
                             return;
                         }
-                        if (results.length) this._ncmCacheSet(cacheKey, { results });
+                        if (results.length) this._ncmCacheSet(cacheKey, { v: 2, results });
                         this._renderNeteasePlaylists(results, '暂无我的歌单');
                         return;
                     }

@@ -6,6 +6,9 @@
 // app.js 之后、实例化之前（见 index.html），契约由 tests/js/media_player_app_split.mjs 把关。
 // ============================================================
 
+// 在线歌单最多读取的曲目数：单个歌单可能有几千首，全量同步要按这个上限收敛耗时
+const NCM_PLAYLIST_SONG_CAP = 1000;
+
 Object.assign(MediaPlayerApp.prototype, {
 
     // ============================================================
@@ -189,7 +192,33 @@ Object.assign(MediaPlayerApp.prototype, {
         try {
             const login = await Bridge.callPlugin('netease-music', 'check_login');
             if (login && login.success) {
-                content.innerHTML = '<div class="mp-empty-state"><div class="empty-icon">✅</div><div class="empty-text">已登录网易云音乐</div></div>';
+                // 同步能力只在登录完成后提供：未登录时这些接口必然失败
+                content.innerHTML = `
+            <div class="mp-empty-state">
+                <div class="empty-icon">✅</div>
+                <div class="empty-text">已登录网易云音乐</div>
+                <div class="empty-hint">本地歌单是在线歌单的镜像：只收录本地媒体库里已有的曲目（按歌名 + 歌手匹配），可反复同步。</div>
+                <div style="margin-top:14px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
+                    <button class="btn btn-primary" id="ncm-sync-all-btn">🔄 全量同步所有歌单</button>
+                    <button class="btn" id="ncm-import-liked-btn">❤ 导入「喜欢」到我的喜欢</button>
+                </div>
+                <label class="empty-hint" style="display:inline-flex;align-items:center;gap:6px;margin-top:14px;cursor:pointer;">
+                    <input type="checkbox" id="ncm-sync-collected"${this._syncCollectedEnabled() ? ' checked' : ''}>
+                    全量同步也包含「收藏的歌单」（默认只同步自己创建的歌单）
+                </label>
+                <label class="empty-hint" style="display:inline-flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
+                    <input type="checkbox" id="ncm-export-missing"${this._exportMissingEnabled() ? ' checked' : ''}>
+                    同步时输出本地缺失曲目清单（写到媒体库根目录，便于补档）
+                </label>
+            </div>`;
+                document.getElementById('ncm-sync-all-btn')
+                    .addEventListener('click', () => this._syncAllNeteasePlaylists());
+                document.getElementById('ncm-import-liked-btn')
+                    .addEventListener('click', () => this._importNeteaseLiked());
+                document.getElementById('ncm-sync-collected')
+                    .addEventListener('change', (e) => this._rememberSyncCollected(e.target.checked));
+                document.getElementById('ncm-export-missing')
+                    .addEventListener('change', (e) => this._rememberExportMissing(e.target.checked));
                 return;
             }
         } catch (e) { }
@@ -201,6 +230,254 @@ Object.assign(MediaPlayerApp.prototype, {
                 <button class="btn btn-primary" id="ncm-login-btn" style="margin-top:12px;">我已登录</button>
             </div>`;
         document.getElementById('ncm-login-btn').addEventListener('click', () => this._loadCurrentView());
+    },
+
+    // ============================================================
+    // 网易云 → 本地：喜欢导入 / 歌单重建
+    //
+    // 两侧数据只能在前端汇合：在线曲目来自 netease-music 插件，本地曲目 id 来自
+    // media-player 索引，匹配用的就是本页已加载的本地条目，不需要给后端加耦合。
+    // ============================================================
+
+    async _localAudioItems() {
+        try {
+            return (await Bridge.call('media_all_audio')) || [];
+        } catch (e) {
+            return [];
+        }
+    },
+
+    async _importNeteaseLiked() {
+        const btn = document.getElementById('ncm-import-liked-btn');
+        const label = '⬇ 导入「喜欢」到我的喜欢';
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = '⏳ 正在匹配本地媒体库…';
+        }
+        try {
+            const liked = await Bridge.callPlugin('netease-music', 'get_liked_songs', 500);
+            if (!liked || liked.success === false) {
+                throw new Error((liked && liked.error) || '获取红心歌曲失败');
+            }
+            const songs = liked.results || [];
+            const { ids, matched, missed } = MPUtils.matchNeteaseToLocal(songs, await this._localAudioItems());
+            if (!ids.length) {
+                Toast.info(`网易云喜欢 ${songs.length} 首，本地媒体库中没有可匹配的曲目`);
+                return;
+            }
+            const result = await Bridge.call('media_add_favorites', ids);
+            if (!result || result.success === false) {
+                throw new Error((result && result.error) || '写入喜欢失败');
+            }
+            ids.forEach(id => this.favIds.add(id));
+            const added = result.added || 0;
+            Toast.success(`已加入 ${added} 首到我的喜欢`
+                + `（匹配 ${matched} 首，本地媒体库缺失 ${missed} 首`
+                + `${matched > added ? `，${matched - added} 首已在喜欢` : ''}）`);
+        } catch (e) {
+            Toast.error('导入失败：' + ((e && e.message) || e));
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = label;
+            }
+        }
+    },
+
+    // 歌单详情页的曲目只加载了首屏，重建要用全量曲目（分页读取，上限防超长歌单打爆）
+    async _fetchNeteasePlaylistSongs(playlistId, cap = NCM_PLAYLIST_SONG_CAP) {
+        const page = 500;
+        const songs = [];
+        while (songs.length < cap) {
+            const data = await Bridge.callPlugin('netease-music', 'get_playlist_tracks',
+                playlistId, page, songs.length);
+            if (data && data.success === false) {
+                throw new Error(data.error || '读取歌单曲目失败');
+            }
+            const batch = (data && data.results) || [];
+            songs.push(...batch);
+            if (batch.length < page) break;
+        }
+        return songs.slice(0, cap);
+    },
+
+    async _rebuildLocalPlaylistFromNetease(playlist) {
+        if (!playlist) return;
+        const btn = document.querySelector('[data-hero-action="rebuild-local"]');
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = '⏳ 正在匹配本地媒体库…';
+        }
+        try {
+            const songs = await this._fetchNeteasePlaylistSongs(playlist.id);
+            const { ids, matched, missed, missedSongs } = MPUtils.matchNeteaseToLocal(
+                songs, await this._localAudioItems());
+            const listPath = await this._exportMissingIfEnabled(playlist.name || '歌单', missedSongs);
+            if (!ids.length) {
+                Toast.info(`已读取 ${songs.length} 首，本地媒体库中没有可匹配的曲目`
+                    + (listPath ? `；缺失清单：${listPath}` : ''));
+                return;
+            }
+            // 带来源前缀 + 同名即更新：重建同一个在线歌单只会覆盖镜像歌单本身，
+            // 不会碰到用户自己的同名歌单。
+            const name = `网易云 · ${playlist.name || '歌单'}`;
+            const existing = (this.playlists.playlists || []).find(p => p.name === name);
+            const saved = await Bridge.call('media_playlist_save', name, existing ? existing.id : '', ids);
+            if (!saved || saved.success === false) {
+                throw new Error((saved && saved.error) || '写入歌单失败');
+            }
+            await this.playlists.load();
+            Toast.success(`${existing ? '已重建' : '已创建'}本地歌单「${name}」`
+                + `：命中 ${matched} 首，本地缺失 ${missed} 首`
+                + (listPath ? `；缺失清单：${listPath}` : ''));
+        } catch (e) {
+            Toast.error('重建失败：' + ((e && e.message) || e));
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = '⬇ 重建为本地歌单';
+            }
+        }
+    },
+
+    async _syncAllNeteasePlaylists() {
+        const btn = document.getElementById('ncm-sync-all-btn');
+        this._rememberExportMissing(this._exportMissingEnabled());
+        this._rememberSyncCollected(this._syncCollectedEnabled());
+        const exportMissing = this._exportMissingEnabled();
+        // 默认只同步自己创建的歌单：收藏的歌单（别人的）动辄几千首，全量镜像又慢又没用
+        const includeCollected = this._syncCollectedEnabled();
+        if (btn) btn.disabled = true;
+        const step = (text) => { if (btn) btn.textContent = text; };
+        try {
+            const sources = await Promise.all([
+                Bridge.callPlugin('netease-music', 'get_created_playlists', 200),
+                includeCollected
+                    ? Bridge.callPlugin('netease-music', 'get_collected_playlists', 200)
+                    : Promise.resolve(null),
+            ]);
+            const playlists = [];
+            const seen = new Set();
+            for (const source of sources) {
+                for (const pl of (source && source.results) || []) {
+                    if (pl && pl.id && !seen.has(pl.id)) {
+                        seen.add(pl.id);
+                        playlists.push(pl);
+                    }
+                }
+            }
+            if (!playlists.length) {
+                Toast.info(includeCollected
+                    ? '没有可同步的歌单：请先在终端完成 ncm-cli login，或账号下确实没有歌单'
+                    : '没有可同步的自建歌单（收藏的歌单默认跳过，可在上面勾选后重试）');
+                return;
+            }
+            const local = await this._localAudioItems();
+            const missingLines = [];
+            let matched = 0;
+            let missed = 0;
+            let written = 0;
+            let capped = 0;
+            for (let i = 0; i < playlists.length; i++) {
+                const playlist = playlists[i];
+                step(`⏳ ${i + 1}/${playlists.length}：${playlist.name || ''}`);
+                const songs = await this._fetchNeteasePlaylistSongs(playlist.id);
+                if (songs.length >= NCM_PLAYLIST_SONG_CAP) capped += 1;
+                const result = MPUtils.matchNeteaseToLocal(songs, local);
+                matched += result.matched;
+                missed += result.missed;
+                if (result.ids.length) {
+                    const name = `网易云 · ${playlist.name || '歌单'}`;
+                    const existing = (this.playlists.playlists || []).find(p => p.name === name);
+                    const saved = await Bridge.call('media_playlist_save', name,
+                        existing ? existing.id : '', result.ids);
+                    if (saved && saved.success !== false) written += 1;
+                }
+                if (exportMissing) {
+                    missingLines.push(...this._missingLines(playlist.name || '歌单', result.missedSongs));
+                }
+            }
+            await this.playlists.load();
+            const listPath = exportMissing
+                ? await this._writeMissingList('网易云缺失曲目', missingLines) : '';
+            Toast.success(`全量同步完成（${includeCollected ? '创建 + 收藏' : '仅自建'}歌单）：`
+                + `${playlists.length} 个歌单 → 写入 ${written} 个本地歌单`
+                + `（命中 ${matched} 首，本地缺失 ${missed} 首`
+                + `${capped ? `；${capped} 个歌单超过 ${NCM_PLAYLIST_SONG_CAP} 首只取前 ${NCM_PLAYLIST_SONG_CAP} 首` : ''}）`
+                + (listPath ? `；缺失清单：${listPath}` : ''));
+        } catch (e) {
+            Toast.error('全量同步失败：' + ((e && e.message) || e));
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = '🔄 全量同步所有歌单';
+            }
+        }
+    },
+
+    // 「全量同步也包含收藏的歌单」：默认关 —— 收藏的多是别人的几千首大歌单，
+    // 全量镜像既慢又没意义；想同步时在登录页勾一下（偏好存 localStorage）。
+    _syncCollectedEnabled() {
+        const box = document.getElementById('ncm-sync-collected');
+        if (box) return !!box.checked;
+        try {
+            return localStorage.getItem('ncmSyncCollected') === '1';
+        } catch (e) {
+            return false;
+        }
+    },
+
+    _rememberSyncCollected(enabled) {
+        try {
+            localStorage.setItem('ncmSyncCollected', enabled ? '1' : '0');
+        } catch (e) { }
+    },
+
+    // 「同步时输出缺失曲目清单」：登录页有勾选框，其它入口（歌单详情重建）读存档值。
+    // 默认开 —— 这份清单就是补档用的，关掉才需要显式操作。
+    _exportMissingEnabled() {
+        const box = document.getElementById('ncm-export-missing');
+        if (box) return !!box.checked;
+        try {
+            return localStorage.getItem('ncmExportMissing') !== '0';
+        } catch (e) {
+            return true;
+        }
+    },
+
+    _rememberExportMissing(enabled) {
+        try {
+            localStorage.setItem('ncmExportMissing', enabled ? '1' : '0');
+        } catch (e) { }
+    },
+
+    _missingLines(playlistName, missedSongs) {
+        const songs = missedSongs || [];
+        if (!songs.length) return [];
+        const lines = [`【${playlistName}】${songs.length} 首本地缺失`];
+        for (const song of songs) {
+            const artists = Array.isArray(song.artists)
+                ? song.artists.join('/') : (song.artists || '');
+            lines.push(`  ${artists || '未知歌手'} - ${song.name || '未知歌曲'}`);
+        }
+        return lines;
+    },
+
+    // 清单文件按范围分开：全量同步写「网易云缺失曲目.txt」，单个歌单重建写
+    // 「网易云缺失曲目 · <歌单名>.txt」—— 单歌单的结果不该覆盖全量清单。
+    async _writeMissingList(title, lines) {
+        try {
+            const result = await Bridge.call('media_export_missing', lines, title);
+            return (result && result.success && result.path) || '';
+        } catch (e) {
+            return '';
+        }
+    },
+
+    async _exportMissingIfEnabled(playlistName, missedSongs) {
+        if (!this._exportMissingEnabled()) return '';
+        return await this._writeMissingList(`网易云缺失曲目 · ${playlistName}`,
+            this._missingLines(playlistName, missedSongs));
     },
 
     async openNeteasePlaylist(playlist) {
@@ -218,11 +495,14 @@ Object.assign(MediaPlayerApp.prototype, {
         const cacheKey = 'ncm-playlist-detail-' + playlist.id;
         const cached = this._ncmCacheGet(cacheKey);
         const twoHours = 2 * 60 * 60 * 1000;
+        // 来源标签：从「我的歌单」进来时带 origin，搜索/推荐进来的（别人的歌单）留空
+        const label = playlist.origin === 'created' ? '创建的歌单'
+            : (playlist.origin === 'collected' ? '收藏的歌单' : '歌单');
         if (cached && cached.ts && (Date.now() - cached.ts < twoHours) && cached.results) {
             if (seq !== this._loadSeq) return;
             const items = (cached.results || []).map(song => this._neteaseToMediaItem(song));
             this._renderDetail(items, {
-                label: '歌单',
+                label,
                 title: playlist.name || '歌单',
                 sub: `${playlist.track_count || 0} 首 · 播放 ${playlist.play_count || 0}`,
                 cover: playlist.cover_url || '',
@@ -237,7 +517,7 @@ Object.assign(MediaPlayerApp.prototype, {
             this._ncmCacheSet(cacheKey, { ts: Date.now(), results: data.results || [] });
             const items = (data.results || []).map(song => this._neteaseToMediaItem(song));
             this._renderDetail(items, {
-                label: '歌单',
+                label,
                 title: playlist.name || '歌单',
                 sub: `${playlist.track_count || 0} 首 · 播放 ${playlist.play_count || 0}`,
                 cover: playlist.cover_url || '',
@@ -254,7 +534,24 @@ Object.assign(MediaPlayerApp.prototype, {
             this._renderEmpty('📋', emptyText);
             return;
         }
-        content.innerHTML = `<div class="mp-list">${playlists.map((p, i) => `
+        // 带 origin 的列表（我的歌单）按来源分段：创建在前、收藏在后，段头带数量。
+        // 段头不带 data-idx，点击委派只认 .mp-row，索引映射不受影响。
+        const counts = playlists.reduce((acc, p) => {
+            if (p && p.origin) acc[p.origin] = (acc[p.origin] || 0) + 1;
+            return acc;
+        }, {});
+        const groupTitle = {
+            created: `创建的歌单 · ${counts.created || 0}`,
+            collected: `收藏的歌单 · ${counts.collected || 0}`,
+        };
+        let current = '';
+        content.innerHTML = `<div class="mp-list">${playlists.map((p, i) => {
+            let head = '';
+            if (p.origin && p.origin !== current) {
+                current = p.origin;
+                head = `<div class="mp-list-group">${MPUtils.escapeHtml(groupTitle[p.origin] || p.origin)}</div>`;
+            }
+            return head + `
             <div class="mp-row" data-idx="${i}">
                 <span class="mp-row-index">${i + 1}</span>
                 <div class="mp-row-cover">${p.cover_url ? `<img src="${MPUtils.escapeHtml(p.cover_url)}" onerror="this.outerHTML='📋'">` : '📋'}</div>
@@ -262,7 +559,8 @@ Object.assign(MediaPlayerApp.prototype, {
                     <div class="mp-row-title">${MPUtils.escapeHtml(p.name)}</div>
                     <div class="mp-row-sub">${p.track_count} 首 · 播放 ${p.play_count}</div>
                 </div>
-            </div>`).join('')}</div>`;
+            </div>`;
+        }).join('')}</div>`;
         this._currentListData = playlists;
     },
 
@@ -401,6 +699,10 @@ Object.assign(MediaPlayerApp.prototype, {
                 </div>
                 <div class="mp-detail-actions">
                     <button class="btn btn-primary" data-hero-action="play-all">▶ 播放全部</button>
+                    ${header.kind === 'ncm-playlist' ? `
+                        <button class="btn" data-hero-action="rebuild-local"
+                                title="按歌名与歌手匹配本地媒体库，生成/覆盖同名镜像歌单">⬇ 重建为本地歌单</button>
+                    ` : ''}
                     ${header.playlistId ? `
                         <button class="btn" data-hero-action="rename-pl">✎ 重命名</button>
                         <button class="btn btn-danger" data-hero-action="delete-pl">🗑 删除</button>
@@ -434,6 +736,8 @@ Object.assign(MediaPlayerApp.prototype, {
                     } else {
                         this.core.setQueue(items, 0);
                     }
+                } else if (action === 'rebuild-local' && header.kind === 'ncm-playlist') {
+                    await this._rebuildLocalPlaylistFromNetease(this.currentNeteasePlaylist);
                 } else if (action === 'rename-pl' && header.playlistId) {
                     this._openPlaylistModal('rename', this.currentPlaylist);
                 } else if (action === 'delete-pl' && header.playlistId) {

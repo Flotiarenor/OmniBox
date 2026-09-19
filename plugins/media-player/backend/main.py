@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import re
 import time
 import uuid
 from pathlib import Path
@@ -623,6 +624,23 @@ class MediaPlayerPlugin(PluginBase):
         self._save_state()
         return {'is_fav': is_fav}
 
+    def add_favorites(self, item_ids: Optional[List[str]] = None) -> dict:
+        """批量加入喜欢（幂等）。网易云「喜欢」导入用它一次写盘。
+
+        只接受索引中存在的 id：`get_state` 是按索引解析收藏的，写入索引外的 id
+        会变成看不见也删不掉的死条目。已存在的 id 不计入 added（重复导入不重复计数）。
+        """
+        favs = self._state.setdefault('favorites', [])
+        added = []
+        for raw in item_ids or []:
+            item_id = str(raw or '')
+            if item_id and item_id in self._items and item_id not in favs and item_id not in added:
+                added.append(item_id)
+        if added:
+            favs.extend(added)
+            self._save_state()
+        return {'success': True, 'added': len(added)}
+
     def update_recent(self, item_id: str) -> dict:
         recent = self._state.setdefault('recent', [])
         recent = [r for r in recent if r.get('id') != item_id]
@@ -731,6 +749,53 @@ class MediaPlayerPlugin(PluginBase):
                 self._cache_dir / 'thumbs.db', size=(640, 640),
                 generator=cover_generator, workers=3)
 
+    # ---------- 导出清单 ----------
+
+    def _report_root(self) -> Path:
+        """清单落点：音频最多的媒体根（补档清单要和音乐放一起）。
+
+        「数据根」不一定是音乐根 —— 多根配置下第一行可能是视频盘（当前配置就是这样）。
+        按谁的音频条目多来挑，挑不出来才退回数据根。
+        """
+        best: Optional[Path] = None
+        best_count = 0
+        for root in self._scan_roots or [self.root_dir]:
+            count = 0
+            for item in self._items.values():
+                if item.kind != 'audio':
+                    continue
+                try:
+                    if Path(item.path).is_relative_to(root):
+                        count += 1
+                except (OSError, ValueError):
+                    continue
+            if count > best_count:
+                best, best_count = root, count
+        return best or self.root_dir
+
+    def export_missing(self, lines: Optional[List[str]] = None, title: str = '网易云缺失曲目') -> dict:
+        """把「在线歌单里本地缺失的曲目」写成文本清单，供补档。
+
+        **每次整体重写**（不是追加）：清单要能反映最近一次同步后的真实状态，否则把缺的歌
+        补齐后旧清单还挂在那里，看着像没同步。没有缺失时也照样写一份（正文写「没有缺失」），
+        不留着上一次的旧内容。
+
+        文件名固定（标题去路径字符后当名字）、内容逐行清洗，只写进自己的媒体根：
+        这是个结果导出，不该变成一个能写任意路径 / 任意内容的文件接口。
+        """
+        clean = [re.sub(r'\s+', ' ', str(x or '')).strip() for x in (lines or [])]
+        clean = [x for x in clean if x]
+        body = clean or ['（本次同步没有缺失曲目）']
+        safe_title = re.sub(r'[\\/:*?"<>|\r\n]', '', str(title or '')).strip()[:60] or '网易云缺失曲目'
+        target = self._report_root() / f'{safe_title}.txt'
+        header = f'# {safe_title}\n# 生成时间：{time.strftime("%Y-%m-%d %H:%M:%S")}\n'
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(header + '\n'.join(body) + '\n', encoding='utf-8')
+        except OSError as e:
+            return {'success': False, 'error': f'写入失败: {e}'}
+        return {'success': True, 'path': str(target), 'count': len(clean)}
+
     # ---------- 歌词 / 调试 / EQ ----------
 
     def get_lyrics(self, item_id: str) -> dict:
@@ -827,12 +892,14 @@ class MediaPlayerPlugin(PluginBase):
             'media_playlist_save': self.playlist_save,
             'media_playlist_delete': self.playlist_delete,
             'media_toggle_favorite': self.toggle_favorite,
+            'media_add_favorites': self.add_favorites,
             'media_update_recent': self.update_recent,
             'media_get_state': self.get_state,
             'media_save_playback': self.save_playback,
             'media_save_queue': self.save_queue,
             'media_get_playback': self.get_playback,
             'media_get_lyrics': self.get_lyrics,
+            'media_export_missing': self.export_missing,
             'media_put_thumb': self.put_thumb,
             'media_thumb_missing': self.thumb_missing,
             'media_debug_meta': self.debug_meta,

@@ -172,6 +172,85 @@ const MPUtils = {
         input.style.setProperty('--range-val', `${pct}%`);
     },
 
+    // ===== 网易云曲目 ↔ 本地媒体库匹配 =====
+    // 「重建本地歌单」与「导入我的喜欢」共用：把在线曲目映射成本地条目 id。
+    // 归一化：大小写 / 全半角 / 空白 / 常见标点与括号一律抹平，让「歌名 (Live)」
+    // 这类后缀不至于把同一条曲目判成两首。
+    normNcmText(text) {
+        return String(text == null ? '' : text)
+            .toLowerCase()
+            .normalize('NFKC')
+            .replace(/[\s\u3000]+/g, '')
+            .replace(/[.,!?'"`~@#$%^&*()\[\]{}<>:;+\-_=|\\/、。，！？：；（）【】《》“”‘’·・]/g, '');
+    },
+
+    // 歌手串 → token 集合：本地标签常见 "A/B"、"A、B"，在线是多元素数组
+    ncmArtistTokens(value) {
+        const parts = (Array.isArray(value) ? value : [value])
+            .flatMap(raw => String(raw == null ? '' : raw).split(/[\/、,，;；&]|\sfeat\.?\s|\sft\.?\s/i));
+        const tokens = new Set();
+        for (const part of parts) {
+            const token = MPUtils.normNcmText(part);
+            if (token) tokens.add(token);
+        }
+        return tokens;
+    },
+
+    /**
+     * 按在线曲目顺序匹配本地条目，返回 `{ids, matched, missed, missedSongs}`。
+     *
+     * 判定保守优先，宁缺勿错配（错配会把别人的歌塞进本地歌单）：
+     *   1. 归一化歌名必须一致；
+     *   2. 歌手有交集（最可信）→ 命中；否则时长差 ≤3s → 命中；
+     *   3. 两条都不满足时，只有当本地库里这个歌名唯一才接受（本地标签常缺歌手）。
+     * 同一个本地条目只被认领一次，同名重复曲目不会互相抢。
+     * `missedSongs` 是没匹配上的在线曲目本体（补档清单要用歌名 + 歌手）。
+     */
+    matchNeteaseToLocal(songs, localItems) {
+        const byTitle = new Map();
+        for (const item of localItems || []) {
+            const key = MPUtils.normNcmText(item && item.title);
+            if (!key) continue;
+            if (!byTitle.has(key)) byTitle.set(key, []);
+            byTitle.get(key).push(item);
+        }
+        const ids = [];
+        const missedSongs = [];
+        const used = new Set();
+        for (const song of songs || []) {
+            const candidates = (byTitle.get(MPUtils.normNcmText(song && song.name)) || [])
+                .filter(c => c && !used.has(c.id));
+            if (!candidates.length) {
+                missedSongs.push(song);
+                continue;
+            }
+            const wanted = MPUtils.ncmArtistTokens(song.artists);
+            const duration = Number(song.duration || 0) / 1000;
+            let best = null;
+            let bestScore = 0;
+            let bestDelta = Infinity;
+            for (const candidate of candidates) {
+                const delta = (candidate.duration && duration)
+                    ? Math.abs(candidate.duration - duration) : Infinity;
+                const overlap = [...MPUtils.ncmArtistTokens(candidate.artist)]
+                    .some(a => wanted.has(a));
+                const score = overlap ? 3 : (delta <= 3 ? 2 : (candidates.length === 1 ? 1 : 0));
+                if (score > bestScore || (score === bestScore && delta < bestDelta)) {
+                    best = candidate;
+                    bestScore = score;
+                    bestDelta = delta;
+                }
+            }
+            if (!best) {
+                missedSongs.push(song);
+                continue;
+            }
+            used.add(best.id);
+            ids.push(best.id);
+        }
+        return { ids, matched: ids.length, missed: missedSongs.length, missedSongs };
+    },
+
     openModal(id) {
         const modal = document.getElementById(id);
         if (modal) {
