@@ -2,7 +2,7 @@
 
 缺陷背景：插件前端没有构建步骤，`index.html` 的 `<script src>` 顺序是唯一的依赖声明。
 此前只有 image-viewer / media-player 两个插件有专门的装载契约用例（各 1500 行的
-app.js 拆分时才加的），novel-reader（4 个脚本）、manga-library（3 个）、
+app.js 拆分时才加的），document-reader（4 个脚本）、manga-library（3 个）、
 image-cleaner / netease-music（各 1 个）完全没有门禁：新分片忘了挂进 index.html、
 顺序写错、或脚本搬走后副本没删，都只会在运行时表现成 `X is not defined`。
 

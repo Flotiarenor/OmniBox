@@ -15,13 +15,13 @@ from shell.backend.plugin_utils import load_sibling
 log = logging.getLogger(__name__)
 
 
-_parser_mod = load_sibling(__file__, 'parser', 'novel_reader')
-NovelParser = _parser_mod.NovelParser
+_parser_mod = load_sibling(__file__, 'parser', 'document_reader')
+TxtParser = _parser_mod.TxtParser
 
-_docs_mod = load_sibling(__file__, 'documents', 'novel_reader')
+_docs_mod = load_sibling(__file__, 'documents', 'document_reader')
 open_document = _docs_mod.open_document
 
-class NovelReaderPlugin(PluginBase):
+class DocumentReaderPlugin(PluginBase):
     settings_schema: ClassVar[List[Dict[str, Any]]] = [
         {"key": "root_dir", "label": "文档根目录", "type": "directory", "multi": True,
          "placeholder": "输入目录绝对路径，如 D:\\文档",
@@ -30,13 +30,17 @@ class NovelReaderPlugin(PluginBase):
                  "每个目录都会递归扫描子目录"},
     ]
 
-    CACHE_FILE = '.novel_cache.json'
-    PROGRESS_FILE = '.novel_progress.json'
+    CACHE_FILE = '.document_cache.json'
+    PROGRESS_FILE = '.document_progress.json'
     # 章节缓存键加入格式与编码、文档 id 改为完整文件名（含扩展名）后升版：
     # 旧版的章节/偏移缓存与新的键对不上，留着只会变成读不到的垃圾。
     CACHE_VERSION = 3
 
-    CACHE_DIR_NAME = '.novel_state'
+    CACHE_DIR_NAME = '.document_state'
+    # 改名前的名字：只用于把旧数据搬过来，别拿它们当新写入口
+    LEGACY_CACHE_DIR = '.novel_state'
+    LEGACY_CACHE_FILE = '.novel_cache.json'
+    LEGACY_PROGRESS_FILE = '.novel_progress.json'
 
     # 扩展名 → 处理方式。
     #   txt      原有偏移切片（前端转义成段落，行为逐字节不变）
@@ -64,11 +68,11 @@ class NovelReaderPlugin(PluginBase):
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
         self._roots: List[str] = []
-        self.novel_dir = ''
+        self.document_dir = ''
         self._cache_dir = ''
         self._set_roots(self._parse_roots(self.setting('root_dir')))
 
-        self._novel_cache: Dict[str, dict] = {}
+        self._document_cache: Dict[str, dict] = {}
         self._chapter_cache: Dict[str, List[dict]] = {}
         self._offset_cache: Dict[str, List] = {}
         self._full_content_cache: Dict[str, str] = {}
@@ -81,7 +85,7 @@ class NovelReaderPlugin(PluginBase):
 
     def get_data_root(self) -> Path:
         """主目录（第一行）：缓存、EPUB 解包产物与阅读进度都在它下面。"""
-        return Path(self.novel_dir)
+        return Path(self.document_dir)
 
     def get_file_roots(self) -> List[Path]:
         """`/file` 允许访问的根：全部配置目录（EPUB 解包出来的图片按绝对路径引用）。"""
@@ -115,9 +119,47 @@ class NovelReaderPlugin(PluginBase):
 
     def _set_roots(self, roots: List[str]) -> None:
         self._roots = roots
-        self.novel_dir = roots[0]
-        self._cache_dir = os.path.join(self.novel_dir, self.CACHE_DIR_NAME)
+        self.document_dir = roots[0]
+        self._cache_dir = os.path.join(self.document_dir, self.CACHE_DIR_NAME)
+        # 迁移必须早于 makedirs：新目录一旦建出来，旧目录就搬不过去了
+        self._migrate_legacy_state()
         os.makedirs(self._cache_dir, exist_ok=True)
+
+    def _migrate_legacy_state(self) -> None:
+        """把旧插件名下的状态目录/文件搬到新名。
+
+        状态放在**用户的文档目录**里（`.novel_state/`），改名后新代码找的是
+        `.document_state/` —— 不搬就是"升级后所有阅读进度归零"。
+        """
+        legacy_dir = os.path.join(self.document_dir, self.LEGACY_CACHE_DIR)
+        if not os.path.isdir(legacy_dir):
+            return
+        try:
+            if not os.path.isdir(self._cache_dir):
+                os.rename(legacy_dir, self._cache_dir)
+                log.info(f'[{self.name}] 已迁移状态目录 {self.LEGACY_CACHE_DIR} → {self.CACHE_DIR_NAME}')
+            # 目录搬过来后文件名还是旧的，逐个补上（包含解包产物所在子目录，不用动）。
+            # 源文件可能在新目录里（刚整体搬过来），也可能还在旧目录里（新目录先建好了）。
+            for old_name, new_name in ((self.LEGACY_CACHE_FILE, self.CACHE_FILE),
+                                       (self.LEGACY_PROGRESS_FILE, self.PROGRESS_FILE)):
+                dst = os.path.join(self._cache_dir, new_name)
+                if os.path.exists(dst):
+                    continue
+                for base in (self._cache_dir, legacy_dir):
+                    src = os.path.join(base, old_name)
+                    if os.path.isfile(src):
+                        os.replace(src, dst)
+                        break
+        except OSError as e:
+            # 迁移失败只影响缓存与进度，不该让插件加载不了
+            log.warning(f'[{self.name}] 旧状态目录迁移失败: {e}')
+            return
+        # 搬空的旧目录不该继续留在用户的文档目录里
+        try:
+            if os.path.isdir(legacy_dir) and not os.listdir(legacy_dir):
+                os.rmdir(legacy_dir)
+        except OSError:
+            pass
 
     def on_settings_changed(self, changed_keys):
         if 'root_dir' in changed_keys:
@@ -125,34 +167,55 @@ class NovelReaderPlugin(PluginBase):
 
     def _apply_root_dir(self, raw_dir):
         self._set_roots(self._parse_roots(raw_dir))
-        self._novel_cache = {}
+        self._document_cache = {}
         self._chapter_cache = {}
         self._offset_cache = {}
         self._full_content_cache = {}
         self._doc_cache = {}
         self._load_cache()
 
+    def on_load(self) -> None:
+        """改名迁移：旧插件名（novel-reader）的设置文件里存着用户配置的 root_dir。
+
+        构造期 `_settings_store` 尚未注入（`setting()` 那时只能读到壳预解析的
+        `_resolved_config`），所以迁移放在 on_load：先补写新名下的设置，再按它重建根目录。
+        迁移只在新区没有 root_dir 时发生，用户之后自己保存的设置不会被覆盖。
+        """
+        if self._settings_store is None or str(self.setting('root_dir') or '').strip():
+            return
+        try:
+            legacy = self._settings_store.get('novel-reader') or {}
+        except (TypeError, ValueError) as e:
+            log.warning(f'[{self.name}] 读取旧插件名下的设置失败: {e}')
+            return
+        root_dir = str(legacy.get('root_dir') or '').strip()
+        if not root_dir:
+            return
+        self.update_setting('root_dir', root_dir)
+        log.info(f'[{self.name}] 已从 novel-reader 的设置迁移 root_dir')
+        self._apply_root_dir(root_dir)
+
     # ===== API 注册 =====
 
     def register_api(self) -> dict:
         return {
-            'novel_list': self.list_novels,
-            'novel_get_chapters': self.get_chapters,
-            'novel_get_content': self.get_content,
-            'novel_update_progress': self.update_progress,
-            'novel_open_external': self.open_external,
+            'document_list': self.list_documents,
+            'document_get_chapters': self.get_chapters,
+            'document_get_content': self.get_content,
+            'document_update_progress': self.update_progress,
+            'document_open_external': self.open_external,
             'get_settings': self.get_settings,
             'save_settings': self.save_settings,
         }
 
-    # ===== 核心业务（由旧版 NovelModule 迁移） =====
+    # ===== 核心业务（由旧版 DocumentModule 迁移） =====
 
     def _cache_path(self, name: str) -> str:
         return os.path.join(self._cache_dir, name)
 
-    def _extract_dir(self, novel_id: str) -> str:
+    def _extract_dir(self, document_id: str) -> str:
         """EPUB 内嵌图片的解包目录（目录名用哈希，书名里的字符不进路径）。"""
-        return os.path.join(self._cache_dir, 'extract', hashlib.md5(novel_id.encode('utf-8')).hexdigest())
+        return os.path.join(self._cache_dir, 'extract', hashlib.md5(document_id.encode('utf-8')).hexdigest())
 
     def _image_url(self, abs_path: str) -> str:
         """把解包/引用的图片拼成 Shell 文件路由的 URL。
@@ -168,7 +231,8 @@ class NovelReaderPlugin(PluginBase):
             try:
                 with open(cache_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    self._novel_cache = data.get('novels', {})
+                    # 迁移过来的旧缓存文件里这个键叫 novels：认一下，省掉一次全量重解析
+                    self._document_cache = data.get('documents') or data.get('novels') or {}
                     if data.get('parser_version') == self.CACHE_VERSION:
                         self._chapter_cache = data.get('chapters', {})
                         self._offset_cache = data.get('offsets', {})
@@ -185,7 +249,7 @@ class NovelReaderPlugin(PluginBase):
             with open(cache_file, 'w', encoding='utf-8') as f:
                 json.dump({
                     'parser_version': self.CACHE_VERSION,
-                    'novels': self._novel_cache,
+                    'documents': self._document_cache,
                     'chapters': self._chapter_cache,
                     'offsets': self._offset_cache
                 }, f, ensure_ascii=False, indent=2)
@@ -216,24 +280,24 @@ class NovelReaderPlugin(PluginBase):
         except Exception:
             pass
 
-    def _drop_book_cache(self, novel_id: str) -> None:
+    def _drop_book_cache(self, document_id: str) -> None:
         """文件被改动/删除后清掉这本书的全部缓存，含 EPUB 解包出来的图片。"""
-        prefix = novel_id + ':'
+        prefix = document_id + ':'
         for cache in (self._chapter_cache, self._offset_cache,
                       self._full_content_cache, self._doc_cache):
-            for key in [k for k in cache if k == novel_id or k.startswith(prefix)]:
+            for key in [k for k in cache if k == document_id or k.startswith(prefix)]:
                 cache.pop(key, None)
-        shutil.rmtree(self._extract_dir(novel_id), ignore_errors=True)
+        shutil.rmtree(self._extract_dir(document_id), ignore_errors=True)
 
     def _kind_of(self, filename: str) -> Optional[str]:
         return self.KIND_BY_EXT.get(os.path.splitext(filename)[1].lower())
 
     def _iter_documents(self) -> Iterator[Tuple[str, str, str, str, str]]:
-        """递归产出 (novel_id, 绝对路径, 所属根, 相对根的 posix 路径, kind)。
+        """递归产出 (document_id, 绝对路径, 所属根, 相对根的 posix 路径, kind)。
 
         - id 就是"相对根目录的路径"：主目录第一层的文件 id 仍然是文件名，老的阅读进度
           与缓存键不受影响；子目录里的文件是 `子目录/书.epub`。
-        - 跳过以 `.` 开头的目录与文件：自己的 `.novel_state` 就在里面。
+        - 跳过以 `.` 开头的目录与文件：自己的 `.document_state` 就在里面。
         - 多个根目录下出现相同相对路径时加序号区分（否则后一个会覆盖前一个）。
         """
         taken: set = set()
@@ -250,28 +314,28 @@ class NovelReaderPlugin(PluginBase):
                         continue
                     abs_path = os.path.join(dirpath, filename)
                     rel = Path(abs_path).relative_to(root).as_posix()
-                    novel_id, index = rel, 2
-                    while novel_id in taken:
-                        novel_id = f'{rel}#{index}'
+                    document_id, index = rel, 2
+                    while document_id in taken:
+                        document_id = f'{rel}#{index}'
                         index += 1
-                    taken.add(novel_id)
-                    yield novel_id, abs_path, root, rel, kind
+                    taken.add(document_id)
+                    yield document_id, abs_path, root, rel, kind
 
-    def list_novels(self) -> Dict[str, Any]:
+    def list_documents(self) -> Dict[str, Any]:
         """获取文档列表，检查文件修改时间"""
         current_files: Dict[str, dict] = {}
-        for novel_id, abs_path, _root, _rel, _kind in self._iter_documents():
+        for document_id, abs_path, _root, _rel, _kind in self._iter_documents():
             try:
                 stat = os.stat(abs_path)
             except OSError as e:
                 log.warning(f'[{self.name}] 读取文件信息失败 {abs_path}: {e}')
                 continue
-            current_files[novel_id] = {'mtime': stat.st_mtime, 'size': stat.st_size}
+            current_files[document_id] = {'mtime': stat.st_mtime, 'size': stat.st_size}
 
         # 检查哪些文件需要更新
         needs_update = False
         for name, info in current_files.items():
-            cached = self._novel_cache.get(name)
+            cached = self._document_cache.get(name)
 
             # 如果文件是新添加的，或者修改时间/大小变化了，需要重新解析。
             # 注意这里读的是 `file_size`（缓存条目本身就是返回给前端的那个 dict），
@@ -287,7 +351,7 @@ class NovelReaderPlugin(PluginBase):
                     cached['chapter_count'] = 0
 
         # 检查是否有文件被删除
-        cached_ids = set(self._novel_cache.keys())
+        cached_ids = set(self._document_cache.keys())
         current_ids = set(current_files)
         if cached_ids != current_ids:
             needs_update = True
@@ -295,23 +359,23 @@ class NovelReaderPlugin(PluginBase):
                 self._drop_book_cache(name)
 
         # 如果没有变化，直接返回缓存
-        if not needs_update and self._novel_cache:
-            return {'novels': list(self._novel_cache.values())}
+        if not needs_update and self._document_cache:
+            return {'documents': list(self._document_cache.values())}
 
         # 重新扫描（按 id 排序：多根目录、递归之后 os.walk 的顺序不稳定）
-        novels = []
-        for novel_id, abs_path, root, rel, kind in self._iter_documents():
-            novel_info = self._scan_novel_meta(novel_id, abs_path, root, rel, kind)
-            if novel_info:
-                novels.append(novel_info)
-        novels.sort(key=lambda item: item['id'].lower())
+        documents = []
+        for document_id, abs_path, root, rel, kind in self._iter_documents():
+            document_info = self._scan_document_meta(document_id, abs_path, root, rel, kind)
+            if document_info:
+                documents.append(document_info)
+        documents.sort(key=lambda item: item['id'].lower())
 
-        self._novel_cache = {n['id']: n for n in novels}
+        self._document_cache = {n['id']: n for n in documents}
         self._save_cache()
 
-        return {'novels': novels}
+        return {'documents': documents}
 
-    def _scan_novel_meta(self, novel_id: str, abs_path: str, root: str,
+    def _scan_document_meta(self, document_id: str, abs_path: str, root: str,
                          rel: str, kind: str) -> Optional[dict]:
         """扫描文档元信息，记录修改时间和大小"""
         try:
@@ -331,12 +395,12 @@ class NovelReaderPlugin(PluginBase):
             progress = self._load_progress()
             # 进度键在 3.3.0 从"去扩展名的文件名"改成完整文件名（不同格式可能同名）。
             # 旧键仍要读得出来，否则升级后所有旧的阅读进度看起来被清零。
-            novel_progress = progress.get(novel_id) or progress.get(name_without_ext) or {}
+            document_progress = progress.get(document_id) or progress.get(name_without_ext) or {}
             # 章节数解析过一次就一直留着：只在文件变更时清零，列表里别显示成 "?"
-            cached = self._novel_cache.get(novel_id) or {}
+            cached = self._document_cache.get(document_id) or {}
 
             return {
-                'id': novel_id,
+                'id': document_id,
                 'title': title,
                 'author': author,
                 'kind': kind,
@@ -346,30 +410,30 @@ class NovelReaderPlugin(PluginBase):
                 'file_size': stat.st_size,
                 'mtime': stat.st_mtime,  # 记录修改时间
                 'chapter_count': cached.get('chapter_count') or 0,
-                'last_read_time': novel_progress.get('last_read_time', ''),
-                'last_read_chapter': novel_progress.get('last_read_chapter', 0),
-                'progress': novel_progress.get('progress', 0.0),
-                'scroll_position': novel_progress.get('scroll_position', 0.0),
-                'encoding': novel_progress.get('encoding', 'auto')
+                'last_read_time': document_progress.get('last_read_time', ''),
+                'last_read_chapter': document_progress.get('last_read_chapter', 0),
+                'progress': document_progress.get('progress', 0.0),
+                'scroll_position': document_progress.get('scroll_position', 0.0),
+                'encoding': document_progress.get('encoding', 'auto')
             }
         except Exception as e:
             log.error(f"扫描文档失败 {abs_path}: {e}")
             return None
 
-    def _document(self, novel_id: str, encoding: str = 'auto'):
+    def _document(self, document_id: str, encoding: str = 'auto'):
         """构造并缓存格式文档对象（EPUB 的解包目录与图片 URL 在这里注入）。"""
-        key = f"{novel_id}:{encoding}"
+        key = f"{document_id}:{encoding}"
         doc = self._doc_cache.get(key)
         if doc is not None:
             return doc
 
-        novel_info = self._novel_cache[novel_id]
+        document_info = self._document_cache[document_id]
         doc = open_document(
-            novel_info['file_path'],
-            novel_info['kind'],
+            document_info['file_path'],
+            document_info['kind'],
             encoding=encoding,
-            root_dir=novel_info.get('root') or self.novel_dir,
-            extract_dir=self._extract_dir(novel_id),
+            root_dir=document_info.get('root') or self.document_dir,
+            extract_dir=self._extract_dir(document_id),
             image_url=self._image_url,
         )
         if len(self._doc_cache) >= 3:
@@ -377,50 +441,50 @@ class NovelReaderPlugin(PluginBase):
         self._doc_cache[key] = doc
         return doc
 
-    def get_chapters(self, novel_id: str, encoding: str = 'auto') -> Dict[str, Any]:
+    def get_chapters(self, document_id: str, encoding: str = 'auto') -> Dict[str, Any]:
         """获取章节目录（缓存按文档 + 格式 + 编码隔离）"""
-        novel_info = self._novel_cache.get(novel_id)
-        if not novel_info:
+        document_info = self._document_cache.get(document_id)
+        if not document_info:
             return {'error': '文档不存在', 'chapters': []}
 
-        kind = novel_info['kind']
+        kind = document_info['kind']
         if kind not in self.IN_APP_KINDS:
             # pdf / 其他格式没有章节模型，前端据此直接进"系统程序打开"分支
             return {'chapters': []}
 
-        key = f"{novel_id}:{kind}:{encoding}"
+        key = f"{document_id}:{kind}:{encoding}"
         if key in self._chapter_cache:
             return {'chapters': self._chapter_cache[key]}
 
         try:
             if kind == 'txt':
-                chapters, offsets = NovelParser.parse_txt(novel_info['file_path'], encoding)
+                chapters, offsets = TxtParser.parse_txt(document_info['file_path'], encoding)
                 self._offset_cache[key] = offsets
             else:
-                chapters = self._document(novel_id, encoding).chapters()
+                chapters = self._document(document_id, encoding).chapters()
 
             self._chapter_cache[key] = chapters
             self._save_cache()
 
-            if novel_id in self._novel_cache:
-                self._novel_cache[novel_id]['chapter_count'] = len(chapters)
+            if document_id in self._document_cache:
+                self._document_cache[document_id]['chapter_count'] = len(chapters)
 
             return {'chapters': chapters}
         except Exception as e:
             return {'error': f'解析章节失败: {e}', 'chapters': []}
 
-    def get_full_content(self, novel_id: str, encoding: str = 'auto') -> Dict[str, Any]:
-        """获取纯文本小说完整内容（缓存按小说 + 编码隔离）"""
-        key = f"{novel_id}:{encoding}"
+    def get_full_content(self, document_id: str, encoding: str = 'auto') -> Dict[str, Any]:
+        """获取纯文本文档完整内容（缓存按文档 + 编码隔离）"""
+        key = f"{document_id}:{encoding}"
         if key in self._full_content_cache:
             return {'content': self._full_content_cache[key]}
 
-        novel_info = self._novel_cache.get(novel_id)
-        if not novel_info:
-            return {'error': '小说不存在', 'content': ''}
+        document_info = self._document_cache.get(document_id)
+        if not document_info:
+            return {'error': '文档不存在', 'content': ''}
 
         try:
-            content = NovelParser.read_full_content(novel_info['file_path'], encoding)
+            content = TxtParser.read_full_content(document_info['file_path'], encoding)
             if key not in self._full_content_cache and len(self._full_content_cache) >= 3:
                 for old_id in list(self._full_content_cache.keys()):
                     self._full_content_cache.pop(old_id, None)
@@ -428,9 +492,9 @@ class NovelReaderPlugin(PluginBase):
             self._full_content_cache[key] = content
             return {'content': content}
         except Exception as e:
-            return {'error': f'读取小说失败: {e}', 'content': ''}
+            return {'error': f'读取文档失败: {e}', 'content': ''}
 
-    def get_content(self, novel_id: str, chapter_index: int,
+    def get_content(self, document_id: str, chapter_index: int,
                     encoding: str = 'auto') -> Dict[str, Any]:
         """获取指定章节内容。
 
@@ -438,29 +502,29 @@ class NovelReaderPlugin(PluginBase):
           * `text` —— 纯文本，前端转义成段落（txt 的历史行为，保持不变）；
           * `html` —— 后端白名单转换器产出的片段，可直接插入 `.chapter-content`。
         """
-        novel_info = self._novel_cache.get(novel_id)
-        if not novel_info:
+        document_info = self._document_cache.get(document_id)
+        if not document_info:
             return {'error': '文档不存在', 'content': ''}
 
-        kind = novel_info['kind']
+        kind = document_info['kind']
         if kind in ('md', 'epub'):
             try:
-                html = self._document(novel_id, encoding).chapter_html(chapter_index)
+                html = self._document(document_id, encoding).chapter_html(chapter_index)
             except Exception as e:
                 return {'error': f'读取章节失败: {e}', 'content': ''}
             return {'content': html, 'format': 'html'}
         if kind != 'txt':
             return {'error': '该格式不支持在阅读器内打开', 'content': ''}
 
-        content_result = self.get_full_content(novel_id, encoding)
+        content_result = self.get_full_content(document_id, encoding)
         if content_result.get('error'):
             return content_result
 
         full_content = content_result['content']
-        key = f"{novel_id}:{kind}:{encoding}"
+        key = f"{document_id}:{kind}:{encoding}"
 
         if key not in self._offset_cache:
-            chapters_result = self.get_chapters(novel_id, encoding)
+            chapters_result = self.get_chapters(document_id, encoding)
             if chapters_result.get('error'):
                 return {'error': chapters_result['error'], 'content': ''}
 
@@ -479,13 +543,13 @@ class NovelReaderPlugin(PluginBase):
         chapter_content = full_content[int(start_offset):int(end_offset)]
         return {'content': chapter_content, 'format': 'text'}
 
-    def open_external(self, novel_id: str) -> Dict[str, Any]:
+    def open_external(self, document_id: str) -> Dict[str, Any]:
         """用系统默认程序打开文档（阅读器内不渲染的格式：pdf/docx/mobi…）。"""
-        novel_info = self._novel_cache.get(novel_id)
-        if not novel_info:
+        document_info = self._document_cache.get(document_id)
+        if not document_info:
             return {'error': '文档不存在'}
         try:
-            path = Path(novel_info['file_path']).resolve()
+            path = Path(document_info['file_path']).resolve()
             roots = [Path(root).resolve() for root in self._roots]
         except (OSError, ValueError) as e:
             return {'error': f'路径无效: {e}'}
@@ -504,14 +568,14 @@ class NovelReaderPlugin(PluginBase):
             return {'error': f'调用系统程序失败: {e}'}
         return {'success': True}
 
-    def update_progress(self, novel_id: str, chapter_index: int,
+    def update_progress(self, document_id: str, chapter_index: int,
                         scroll_position: float = 0.0,
                         encoding: str = 'auto') -> Dict[str, Any]:
         """更新阅读进度"""
         progress = self._load_progress()
 
-        kind = (self._novel_cache.get(novel_id) or {}).get('kind', 'txt')
-        chapters = self._chapter_cache.get(f"{novel_id}:{kind}:{encoding}", [])
+        kind = (self._document_cache.get(document_id) or {}).get('kind', 'txt')
+        chapters = self._chapter_cache.get(f"{document_id}:{kind}:{encoding}", [])
         total_chapters = len(chapters)
         if not isinstance(chapter_index, int) or chapter_index < 0:
             chapter_index = 0
@@ -519,7 +583,7 @@ class NovelReaderPlugin(PluginBase):
             chapter_index = min(chapter_index, total_chapters - 1)
         overall_progress = (chapter_index + scroll_position) / total_chapters if total_chapters > 0 else 0.0
 
-        progress[novel_id] = {
+        progress[document_id] = {
             'last_read_time': time.strftime('%Y-%m-%d %H:%M:%S'),
             'last_read_chapter': chapter_index,
             'scroll_position': scroll_position,
@@ -529,9 +593,9 @@ class NovelReaderPlugin(PluginBase):
 
         self._save_progress(progress)
 
-        if novel_id in self._novel_cache:
-            self._novel_cache[novel_id].update({
-                'last_read_time': progress[novel_id]['last_read_time'],
+        if document_id in self._document_cache:
+            self._document_cache[document_id].update({
+                'last_read_time': progress[document_id]['last_read_time'],
                 'last_read_chapter': chapter_index,
                 'progress': overall_progress,
                 'encoding': encoding

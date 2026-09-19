@@ -951,7 +951,7 @@ def browse_dir(self, path: str = ''):
 | `.iv-root-*` / `.iv-dirbrowser-*` 样式 | `shell/frontend/public/shell/folder-picker.css` | 同上 |
 
 这套组件原本长在 image-viewer 里（`app.js` 的 `_renderRoots` / `openDirBrowser`），
-因为媒体播放器 / 漫画 / 小说也要同一套「多位置文件夹」界面，才**整体搬**到 Shell：
+因为媒体播放器 / 漫画 / 文档阅读也要同一套「多位置文件夹」界面，才**整体搬**到 Shell：
 类名与数值都没改，image-viewer 改成引用回来。所以：
 
 - **插件侧声明 `type:"directory"` 即可**，不需要写任何前端代码（见 §8.2）；

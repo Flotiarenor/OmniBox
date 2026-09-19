@@ -1,4 +1,4 @@
-"""小说 TXT 解析器。"""
+"""TXT 解析器（章节识别与偏移切分）。"""
 
 import os
 import re
@@ -10,7 +10,7 @@ except ImportError:
     chardet = None
 
 
-class NovelParser:
+class TxtParser:
     """章节识别与内容切分。
 
     返回的 offset 为 [content_start, content_end] 闭开区间，
@@ -50,7 +50,7 @@ class NovelParser:
         with open(file_path, 'rb') as f:
             raw_bytes = f.read()
         if encoding == 'auto':
-            encoding = NovelParser.detect_encoding(file_path)
+            encoding = TxtParser.detect_encoding(file_path)
         try:
             return raw_bytes.decode(encoding)
         except (UnicodeDecodeError, UnicodeError):
@@ -67,7 +67,7 @@ class NovelParser:
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"文件不存在: {file_path}")
 
-        content = NovelParser.read_full_content(file_path, encoding)
+        content = TxtParser.read_full_content(file_path, encoding)
         lines = content.splitlines(keepends=True)
 
         line_offsets = [0]
@@ -79,13 +79,13 @@ class NovelParser:
             stripped = line.strip()
             if not stripped:
                 continue
-            for pattern in NovelParser.CHAPTER_PATTERNS:
+            for pattern in TxtParser.CHAPTER_PATTERNS:
                 if pattern.match(stripped):
                     chapter_starts.append((i, stripped))
                     break
 
         if not chapter_starts:
-            return NovelParser._split_by_word_count(content)
+            return TxtParser._split_by_word_count(content)
 
         chapters = []
         offsets = []

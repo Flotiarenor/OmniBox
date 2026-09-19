@@ -185,7 +185,7 @@
 /* ===== 图片文件夹 / 目录选择器 ===== */
 /* 这两块的样式与实现已搬到 Shell 共享组件，由 /shell/folder-picker.css 注入
    （见 shell/frontend/public/shell/folder-picker.js）：媒体播放器 / 漫画 /
-   小说用的是同一套 DOM 与样式，所以这里不再保留一份副本。*/
+   文档阅读用的是同一套 DOM 与样式，所以这里不再保留一份副本。*/
 
 .iv-empty {
   display: flex; flex-direction: column; align-items: center; justify-content: center;

@@ -1,15 +1,15 @@
 {
-  "name": "novel-reader",
-  "version": "3.4.0",
+  "name": "document-reader",
+  "version": "3.4.1",
   "displayName": "文档阅读",
   "icon": "📖",
   "dependencies": [],
   "backend": {
     "entry": "backend/main.py",
-    "class": "NovelReaderPlugin"
+    "class": "DocumentReaderPlugin"
   },
   "frontend": {
     "entry": "frontend/index.html",
-    "route": "/novel-reader"
+    "route": "/document-reader"
   }
 }

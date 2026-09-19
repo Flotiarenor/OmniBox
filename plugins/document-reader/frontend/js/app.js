@@ -1,11 +1,11 @@
 // ============================================================
-// 小说阅读器 — UI 控制器
+// 文档阅读器 — UI 控制器
 // 分页 / 测量 / 翻页逻辑位于 reader-engine.js。
 // ============================================================
-class NovelReader {
+class DocumentReader {
     constructor() {
-        this.novels = [];
-        this.currentNovel = null;
+        this.documents = [];
+        this.currentDocument = null;
 
         this.fontSize = 16;
         this.lineHeight = 1.8;
@@ -22,7 +22,7 @@ class NovelReader {
         this._lastSavedPosition = -1;
         this._chromeChapterIndex = -1;
 
-        this.engine = new NovelReaderEngine(this);
+        this.engine = new DocumentReaderEngine(this);
         this._chapterListBuiltFor = null;
         this._dom = {};
         this.settings = null;
@@ -35,7 +35,7 @@ class NovelReader {
         this.settings = new ReaderSettingsStore(this);
         this.settings.load();
         this.engine.setMode(this.mode);
-        await this._loadNovels();
+        await this._loadDocuments();
 
         let resizeTimer = null;
         let savedScrollTop = 0;
@@ -61,33 +61,33 @@ class NovelReader {
 
     _cacheDom() {
         this._dom = {
-            contentArea: document.getElementById('novel-content-area'),
-            chapterTitle: document.getElementById('novel-chapter-title'),
-            progressFill: document.getElementById('novel-progress-fill'),
-            modeSelect: document.getElementById('novel-mode-select'),
-            searchInput: document.getElementById('novel-search'),
-            browseGroup: document.getElementById('novel-browse-group'),
-            readerNav: document.getElementById('novel-reader-nav'),
-            readerSettingsBar: document.getElementById('novel-reader-settings-bar'),
-            fontToggle: document.getElementById('novel-font-toggle'),
-            shelfPanel: document.getElementById('novel-shelf-panel'),
-            chapterPanel: document.getElementById('novel-chapter-panel'),
+            contentArea: document.getElementById('document-content-area'),
+            chapterTitle: document.getElementById('document-chapter-title'),
+            progressFill: document.getElementById('document-progress-fill'),
+            modeSelect: document.getElementById('document-mode-select'),
+            searchInput: document.getElementById('document-search'),
+            browseGroup: document.getElementById('document-browse-group'),
+            readerNav: document.getElementById('document-reader-nav'),
+            readerSettingsBar: document.getElementById('document-reader-settings-bar'),
+            fontToggle: document.getElementById('document-font-toggle'),
+            shelfPanel: document.getElementById('document-shelf-panel'),
+            chapterPanel: document.getElementById('document-chapter-panel'),
             shelfToggle: document.getElementById('sidebar-toggle-shelf'),
             chapterToggle: document.getElementById('sidebar-toggle-chapters'),
-            shelfList: document.getElementById('novel-shelf-list'),
-            chapterList: document.getElementById('novel-chapter-list'),
-            fontSizeSlider: document.getElementById('novel-font-size'),
-            fontSizeValue: document.getElementById('novel-font-size-value'),
-            lineHeightSlider: document.getElementById('novel-line-height'),
-            lineHeightValue: document.getElementById('novel-line-height-value'),
-            letterSpacingSlider: document.getElementById('novel-letter-spacing'),
-            letterSpacingValue: document.getElementById('novel-letter-spacing-value'),
-            themeSelect: document.getElementById('novel-theme-select'),
-            bgColorInput: document.getElementById('novel-bg-color'),
-            textColorInput: document.getElementById('novel-text-color'),
+            shelfList: document.getElementById('document-shelf-list'),
+            chapterList: document.getElementById('document-chapter-list'),
+            fontSizeSlider: document.getElementById('document-font-size'),
+            fontSizeValue: document.getElementById('document-font-size-value'),
+            lineHeightSlider: document.getElementById('document-line-height'),
+            lineHeightValue: document.getElementById('document-line-height-value'),
+            letterSpacingSlider: document.getElementById('document-letter-spacing'),
+            letterSpacingValue: document.getElementById('document-letter-spacing-value'),
+            themeSelect: document.getElementById('document-theme-select'),
+            bgColorInput: document.getElementById('document-bg-color'),
+            textColorInput: document.getElementById('document-text-color'),
             customColorLabel: document.getElementById('custom-color-label'),
             customTextLabel: document.getElementById('custom-text-label'),
-            encodingSelect: document.getElementById('novel-encoding'),
+            encodingSelect: document.getElementById('document-encoding'),
         };
     }
 
@@ -204,7 +204,7 @@ class NovelReader {
         if (this._dom.encodingSelect) {
             this._dom.encodingSelect.addEventListener('change', () => {
                 this.encoding = e.target.value;
-                if (this.currentNovel && this._isReaderMode) this._reloadNovel();
+                if (this.currentDocument && this._isReaderMode) this._reloadDocument();
             });
         }
     }
@@ -280,55 +280,55 @@ class NovelReader {
         if (this._dom.progressFill) this._dom.progressFill.style.width = '0%';
         if (this._dom.contentArea) {
             this._dom.contentArea.innerHTML = `
-                <div class="novel-empty">
-                    <div class="novel-empty-icon">📖</div>
-                    <div class="novel-empty-text">在左侧书架选择一份文档开始阅读</div>
+                <div class="document-empty">
+                    <div class="document-empty-icon">📖</div>
+                    <div class="document-empty-text">在左侧书架选择一份文档开始阅读</div>
                 </div>
             `;
         }
         this._renderShelf();
     }
 
-    async _loadNovels() {
+    async _loadDocuments() {
         try {
-            const result = await Bridge.call('novel_list');
-            this.novels = result.novels || [];
+            const result = await Bridge.call('document_list');
+            this.documents = result.documents || [];
             this._renderShelf();
         } catch (e) {
-            console.error('加载小说列表失败:', e);
+            console.error('加载文档列表失败:', e);
         }
     }
 
-    _renderShelf(filteredNovels) {
+    _renderShelf(filteredDocuments) {
         const container = this._dom.shelfList;
         if (!container) return;
-        const novels = filteredNovels || this.novels;
-        if (!novels.length) {
+        const documents = filteredDocuments || this.documents;
+        if (!documents.length) {
             container.innerHTML = `
-                <div class="novel-empty">
-                    <div class="novel-empty-icon">📖</div>
-                    <div class="novel-empty-text">没有找到文档</div>
-                    <div class="novel-empty-hint">请把 .txt / .md / .epub 放进文档目录</div>
+                <div class="document-empty">
+                    <div class="document-empty-icon">📖</div>
+                    <div class="document-empty-text">没有找到文档</div>
+                    <div class="document-empty-hint">请把 .txt / .md / .epub 放进文档目录</div>
                 </div>
             `;
             return;
         }
-        container.innerHTML = novels.map(novel => `
-            <div class="novel-shelf-item ${this.currentNovel && novel.id === this.currentNovel.id ? 'active' : ''}" data-id="${Utils.escapeHtml(novel.id)}">
-                <div class="novel-shelf-title">
-                    <span class="novel-shelf-name">${Utils.escapeHtml(novel.title)}</span>
-                    <span class="novel-shelf-kind">${Utils.escapeHtml((novel.kind || 'txt').toUpperCase())}</span>
+        container.innerHTML = documents.map(document => `
+            <div class="document-shelf-item ${this.currentDocument && document.id === this.currentDocument.id ? 'active' : ''}" data-id="${Utils.escapeHtml(document.id)}">
+                <div class="document-shelf-title">
+                    <span class="document-shelf-name">${Utils.escapeHtml(document.title)}</span>
+                    <span class="document-shelf-kind">${Utils.escapeHtml((document.kind || 'txt').toUpperCase())}</span>
                 </div>
-                ${novel.dir ? `<div class="novel-shelf-dir">${Utils.escapeHtml(novel.dir)}</div>` : ''}
-                <div class="novel-shelf-meta">
-                    <span>${this._shelfMetaText(novel)}</span>
-                    <span class="novel-shelf-progress">${Math.round((novel.progress || 0) * 100)}%</span>
+                ${document.dir ? `<div class="document-shelf-dir">${Utils.escapeHtml(document.dir)}</div>` : ''}
+                <div class="document-shelf-meta">
+                    <span>${this._shelfMetaText(document)}</span>
+                    <span class="document-shelf-progress">${Math.round((document.progress || 0) * 100)}%</span>
                 </div>
             </div>
         `).join('');
-        if (window.Motion) Motion.stagger(container, '.novel-shelf-item');
-        container.querySelectorAll('.novel-shelf-item').forEach(item => {
-            item.addEventListener('click', () => this._openNovel(item.dataset.id));
+        if (window.Motion) Motion.stagger(container, '.document-shelf-item');
+        container.querySelectorAll('.document-shelf-item').forEach(item => {
+            item.addEventListener('click', () => this._openDocument(item.dataset.id));
         });
     }
 
@@ -337,17 +337,17 @@ class NovelReader {
     _markShelfActive() {
         const container = this._dom.shelfList;
         if (!container) return;
-        container.querySelectorAll('.novel-shelf-item').forEach(item => {
+        container.querySelectorAll('.document-shelf-item').forEach(item => {
             item.classList.toggle('active',
-                !!this.currentNovel && item.dataset.id === this.currentNovel.id);
+                !!this.currentDocument && item.dataset.id === this.currentDocument.id);
         });
     }
 
-    _shelfMetaText(novel) {
-        if (novel.kind === 'pdf' || novel.kind === 'external') return '系统程序打开';
+    _shelfMetaText(document) {
+        if (document.kind === 'pdf' || document.kind === 'external') return '系统程序打开';
         // 章节数要解析过一次才知道；没解析过就显示体积，别显示 "?"
-        if (novel.chapter_count) return `${novel.chapter_count} 章`;
-        return NovelUtils.formatSize(novel.file_size);
+        if (document.chapter_count) return `${document.chapter_count} 章`;
+        return DocumentUtils.formatSize(document.file_size);
     }
 
     // 非章节型文档（pdf / 外部打开）没有目录可看，藏掉那个标签页，避免点开是空的
@@ -355,29 +355,29 @@ class NovelReader {
         if (this._dom.chapterToggle) this._dom.chapterToggle.style.display = visible ? '' : 'none';
     }
 
-    async _openNovel(novelId, startChapter = null, fraction = 0) {
+    async _openDocument(documentId, startChapter = null, fraction = 0) {
         try {
             this._showLoading(true);
-            this.currentNovel = this.novels.find(n => n.id === novelId);
-            if (!this.currentNovel) return;
-            if (this.currentNovel.encoding) {
-                this.encoding = this.currentNovel.encoding;
+            this.currentDocument = this.documents.find(n => n.id === documentId);
+            if (!this.currentDocument) return;
+            if (this.currentDocument.encoding) {
+                this.encoding = this.currentDocument.encoding;
                 if (this._dom.encodingSelect) this._dom.encodingSelect.value = this.encoding;
             }
 
             // pdf / 交给系统程序的格式没有章节模型，直接换内容区，不进阅读引擎
-            if (this.currentNovel.kind === 'pdf' || this.currentNovel.kind === 'external') {
+            if (this.currentDocument.kind === 'pdf' || this.currentDocument.kind === 'external') {
                 this._showLoading(false);
-                this._openNonChapter(this.currentNovel);
+                this._openNonChapter(this.currentDocument);
                 return;
             }
 
-            const result = await Bridge.call('novel_get_chapters', novelId, this.encoding);
+            const result = await Bridge.call('document_get_chapters', documentId, this.encoding);
             const chapters = result.chapters || [];
             // 章节数现在知道了：回填到列表项，回到书架时那一行显示的就是真实章数
-            this.currentNovel.chapter_count = chapters.length;
+            this.currentDocument.chapter_count = chapters.length;
             this.engine.setMode(this.mode);
-            this.engine.reset(novelId, chapters, this.encoding);
+            this.engine.reset(documentId, chapters, this.encoding);
 
             this._isReaderMode = true;
             this._setToolbarMode('reader');
@@ -389,10 +389,10 @@ class NovelReader {
 
             const saved = startChapter !== null && startChapter !== undefined
                 ? startChapter
-                : (this.currentNovel.last_read_chapter || 0);
+                : (this.currentDocument.last_read_chapter || 0);
             const savedFraction = startChapter !== null && startChapter !== undefined
                 ? fraction
-                : (Number(this.currentNovel.scroll_position) || 0);
+                : (Number(this.currentDocument.scroll_position) || 0);
 
             await this.engine.goToChapter(
                 Math.max(0, Math.min(saved, chapters.length - 1)), savedFraction);
@@ -405,8 +405,8 @@ class NovelReader {
     }
 
     // 非章节型文档（pdf / 交给系统程序的格式）：不进阅读引擎，只换内容区。
-    _openNonChapter(novel) {
-        this.engine.reset(novel.id, [], 'auto');
+    _openNonChapter(document) {
+        this.engine.reset(document.id, [], 'auto');
         this._isReaderMode = true;
         this._setToolbarMode('reader');
         this._setChapterTabVisible(false);
@@ -414,36 +414,36 @@ class NovelReader {
         this._markShelfActive();
         this._chapterListBuiltFor = null;
         this._renderChapterList();
-        if (this._dom.chapterTitle) this._dom.chapterTitle.textContent = novel.title;
+        if (this._dom.chapterTitle) this._dom.chapterTitle.textContent = document.title;
         if (this._dom.progressFill) this._dom.progressFill.style.width = '0%';
 
         const area = this._dom.contentArea;
         if (!area) return;
-        if (novel.kind === 'pdf') {
+        if (document.kind === 'pdf') {
             // WebView 自带 PDF 阅览器：同源 /file 路由直接嵌，零依赖
-            const src = Bridge.originalUrl(novel.file_path);
+            const src = Bridge.originalUrl(document.file_path);
             area.innerHTML = `
-                <iframe class="novel-pdf-frame" src="${Utils.escapeHtml(src)}"
-                        title="${Utils.escapeHtml(novel.title)}"></iframe>
-                <button class="btn novel-pdf-open" id="novel-open-external">↗ 系统程序打开</button>
+                <iframe class="document-pdf-frame" src="${Utils.escapeHtml(src)}"
+                        title="${Utils.escapeHtml(document.title)}"></iframe>
+                <button class="btn document-pdf-open" id="document-open-external">↗ 系统程序打开</button>
             `;
         } else {
             area.innerHTML = `
-                <div class="novel-empty">
-                    <div class="novel-empty-icon">📄</div>
-                    <div class="novel-empty-text">${Utils.escapeHtml(novel.title)}</div>
-                    <div class="novel-empty-hint">该格式不在阅读器内渲染，可交给系统默认程序打开</div>
-                    <button class="btn" id="novel-open-external">↗ 用系统程序打开</button>
+                <div class="document-empty">
+                    <div class="document-empty-icon">📄</div>
+                    <div class="document-empty-text">${Utils.escapeHtml(document.title)}</div>
+                    <div class="document-empty-hint">该格式不在阅读器内渲染，可交给系统默认程序打开</div>
+                    <button class="btn" id="document-open-external">↗ 用系统程序打开</button>
                 </div>
             `;
         }
-        const btn = document.getElementById('novel-open-external');
-        if (btn) btn.addEventListener('click', () => this._openExternal(novel));
+        const btn = document.getElementById('document-open-external');
+        if (btn) btn.addEventListener('click', () => this._openExternal(document));
     }
 
-    async _openExternal(novel) {
+    async _openExternal(document) {
         try {
-            const result = await Bridge.call('novel_open_external', novel.id);
+            const result = await Bridge.call('document_open_external', document.id);
             if (result && result.error) Toast.error(result.error);
             else Toast.success('已交给系统程序打开');
         } catch (e) {
@@ -452,12 +452,12 @@ class NovelReader {
         }
     }
 
-    async _reloadNovel() {
-        if (!this.currentNovel) return;
+    async _reloadDocument() {
+        if (!this.currentDocument) return;
         const chapter = this.engine.currentChapterIndex;
         const fraction = this.engine.chapterFraction();
         await this._saveCurrentProgress(true);
-        await this._openNovel(this.currentNovel.id, chapter, fraction);
+        await this._openDocument(this.currentDocument.id, chapter, fraction);
     }
 
     _scheduleProgressSave() {
@@ -495,7 +495,7 @@ class NovelReader {
     }
 
     async _saveCurrentProgress(force = false) {
-        if (!this.currentNovel || !this._isReaderMode) return;
+        if (!this.currentDocument || !this._isReaderMode) return;
         if (!this.engine.chapters.length) return;   // pdf / 非章节型文档没有进度可存
         const chapter = this.engine.currentChapterIndex;
         const position = this.engine.chapterFraction();
@@ -503,8 +503,8 @@ class NovelReader {
             && Math.abs(position - this._lastSavedPosition) < 0.001) return;
         try {
             const result = await Bridge.call(
-                'novel_update_progress',
-                this.currentNovel.id,
+                'document_update_progress',
+                this.currentDocument.id,
                 chapter,
                 position,
                 this.encoding
@@ -521,23 +521,23 @@ class NovelReader {
     _renderChapterList() {
         const list = this._dom.chapterList;
         const chapters = this.engine.chapters;
-        if (!list || !this.currentNovel) return;
-        if (this._chapterListBuiltFor !== this.currentNovel.id) {
+        if (!list || !this.currentDocument) return;
+        if (this._chapterListBuiltFor !== this.currentDocument.id) {
             list.innerHTML = chapters.map((chapter, index) => `
-                <div class="novel-chapter-item" data-index="${index}">
+                <div class="document-chapter-item" data-index="${index}">
                     <span>${Utils.escapeHtml(chapter.title)}</span>
                     <span class="chapter-words">${chapter.word_count}字</span>
                 </div>
             `).join('');
-            if (window.Motion) Motion.stagger(list, '.novel-chapter-item');
-            list.querySelectorAll('.novel-chapter-item').forEach(item => {
+            if (window.Motion) Motion.stagger(list, '.document-chapter-item');
+            list.querySelectorAll('.document-chapter-item').forEach(item => {
                 item.addEventListener('click', async () => {
                     this._saveCurrentProgress(true);
                     await this.engine.goToChapter(parseInt(item.dataset.index, 10), 0);
                     this._afterPageRender(true);
                 });
             });
-            this._chapterListBuiltFor = this.currentNovel.id;
+            this._chapterListBuiltFor = this.currentDocument.id;
         }
         this._updateChapterListActive(true);
     }
@@ -545,23 +545,23 @@ class NovelReader {
     _updateChapterListActive(scrollList = false) {
         const list = this._dom.chapterList;
         if (!list) return;
-        list.querySelectorAll('.novel-chapter-item').forEach(item => {
+        list.querySelectorAll('.document-chapter-item').forEach(item => {
             item.classList.toggle('active',
                 parseInt(item.dataset.index, 10) === this.engine.currentChapterIndex);
         });
         if (scrollList) {
-            const active = list.querySelector('.novel-chapter-item.active');
+            const active = list.querySelector('.document-chapter-item.active');
             if (active) active.scrollIntoView({ block: 'nearest' });
         }
     }
 
     _showLoading(show) {
-        let loadingEl = document.getElementById('novel-loading');
+        let loadingEl = document.getElementById('document-loading');
         if (show) {
             if (!loadingEl) {
                 loadingEl = document.createElement('div');
-                loadingEl.id = 'novel-loading';
-                loadingEl.className = 'novel-loading';
+                loadingEl.id = 'document-loading';
+                loadingEl.className = 'document-loading';
                 loadingEl.innerHTML = '<div class="spinner"></div><span>加载中...</span>';
                 if (this._dom.contentArea) this._dom.contentArea.appendChild(loadingEl);
             }
@@ -576,16 +576,16 @@ class NovelReader {
             this._renderShelf();
             return;
         }
-        const filtered = this.novels.filter(novel =>
-            novel.title.includes(keyword) ||
-            novel.author.includes(keyword)
+        const filtered = this.documents.filter(document =>
+            document.title.includes(keyword) ||
+            document.author.includes(keyword)
         );
         this._renderShelf(filtered);
     }
 
     destroy() {
         this._saveCurrentProgress(true);
-        this.currentNovel = null;
+        this.currentDocument = null;
         this._isReaderMode = false;
     }
 }

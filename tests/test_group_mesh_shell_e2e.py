@@ -158,16 +158,23 @@ class GroupMeshInShellTest(unittest.TestCase):
         return False
 
     def _enter_plugin(self):
-        """点导航进入团体组网，切换到插件 iframe。"""
+        """点导航进入团体组网，切换到**它自己**那个 iframe。
+
+        不能用 `find_elements(TAG_NAME, 'iframe')[0]`：插件 iframe 常驻，且壳启动就落在
+        `plugins[0].route`（`shell/frontend/src/App.vue`），于是最先出现的 iframe 可能是
+        别的插件 —— 按目录名排序，`document-reader` 正好排在 `group-mesh` 之前。
+        壳给每个 iframe 标了 `data-plugin-name`，按它取才不依赖排序。
+        """
         from selenium.webdriver.common.by import By
 
         nav = next((e for e in self.driver.find_elements(By.CSS_SELECTOR, '.nav-item')
                     if '团体组网' in e.text), None)
         self.assertIsNotNone(nav, '导航里应当有「团体组网」入口')
         nav.click()
-        self.assertTrue(self._wait_for(lambda: len(self.driver.find_elements(By.TAG_NAME, 'iframe')) > 0),
-                        '进入插件后应当出现 iframe')
-        frame = self.driver.find_element(By.TAG_NAME, 'iframe')
+        frame_css = 'iframe[data-plugin-name="group-mesh"]'
+        self.assertTrue(self._wait_for(lambda: len(self.driver.find_elements(By.CSS_SELECTOR, frame_css)) > 0),
+                        '进入插件后应当出现它自己的 iframe')
+        frame = self.driver.find_element(By.CSS_SELECTOR, frame_css)
         self.driver.switch_to.frame(frame)
         self.assertTrue(self._wait_for(lambda: len(self.driver.find_elements(
             By.CSS_SELECTOR, '#identity-actions .btn, #roster-actions .btn')) > 0),

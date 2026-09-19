@@ -86,7 +86,7 @@ class NoPrintInRuntimeTests(unittest.TestCase):
         self.assertIn('shell/backend/plugin_manager.py', scanned)
         self.assertIn('shell/backend/file_server.py', scanned)
         for expected in ('media-player', 'image-viewer', 'image-cleaner',
-                         'manga-library', 'novel-reader', 'pixiv-sync', 'netease-music'):
+                         'manga-library', 'document-reader', 'pixiv-sync', 'netease-music'):
             self.assertIn(f'plugins/{expected}/backend/main.py', scanned, f'漏扫 {expected}')
         self.assertGreater(len(scanned), 15)
 

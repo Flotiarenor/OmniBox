@@ -41,8 +41,8 @@ try:
 except ImportError:  # pragma: no cover - requirements.txt 已声明，缺了只有 md 不可用
     MarkdownIt = None
 
-_parser_mod = load_sibling(__file__, 'parser', 'novel_reader')
-NovelParser = _parser_mod.NovelParser
+_parser_mod = load_sibling(__file__, 'parser', 'document_reader')
+TxtParser = _parser_mod.TxtParser
 
 # 单个 zip 成员（图片）与单本书解包总量的上限：zip 炸弹与超大图不能把磁盘写满。
 MAX_MEMBER_BYTES = 32 * 1024 * 1024
@@ -286,7 +286,7 @@ class MarkdownDocument:
     def _load(self) -> List[Tuple[Optional[str], str]]:
         if self._chapters is not None:
             return self._chapters
-        text = NovelParser.read_full_content(self._path, self._encoding)
+        text = TxtParser.read_full_content(self._path, self._encoding)
         segments: List[Tuple[Optional[str], str]] = []
         title: Optional[str] = None
         buf: List[str] = []

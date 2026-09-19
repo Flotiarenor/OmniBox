@@ -347,7 +347,7 @@ RUF100（未使用的 noqa）会把这些标注判为冗余并删除——它们
 这些是**已确认但未在本次修改**的项，留作后续提交：
 
 1. `plugins/image-cleaner` / `image-viewer` 等插件的状态文件仍是 `open(w)` 直写
-   （`download_state.json`、`novel_progress`、`media_set_config` 等），崩溃即丢文件。
+   （`download_state.json`、`document_progress`、`media_set_config` 等），崩溃即丢文件。
    仓库里已有原子写实现（`tasks.py`），应抽成公共工具后统一替换。
 2. `pixiv-sync` 的 `collect_bookmarks_pending` / `fetch_artist` 两处分页循环没有
    页数上限（`_fetch_follow_stream` 有 `MAX_FOLLOW_PAGES=40`）；且每页都重写整张
@@ -355,7 +355,7 @@ RUF100（未使用的 noqa）会把这些标注判为冗余并删除——它们
 3. `pixiv_purge_non_original.py` 把"长边 == 1200px"当作缩放副本的证据，会删掉
    恰好 1200px 的原图，并造成"删除→重新下载"循环；建议增加 URL 含 `master1200`
    的条件。
-4. `novel-reader` 每章都整文件重读并重解码（内容缓存只有 3 条且非 LRU）；
+4. `document-reader` 每章都整文件重读并重解码（内容缓存只有 3 条且非 LRU）；
    可用已持久化的 offset 做 `seek/read` 切片。
 5. `media-player` 的 `eq-presets` 写在插件目录内，frozen 后位于 `_MEIPASS`
    （只读或被更新覆盖），应迁到 `get_data_root()`。

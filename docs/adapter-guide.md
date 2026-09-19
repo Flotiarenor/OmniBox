@@ -164,7 +164,7 @@ CREATE TABLE player_teams (
 ## 7. 插件设计（可选，按需拆）
 
 > ⚠️ **下表全部是规划中的插件名，一个都还不存在**：`plugins/` 当前只有 7 个真实插件
-> （`image-viewer`、`media-player`、`manga-library`、`novel-reader`、`image-cleaner`、
+> （`image-viewer`、`media-player`、`manga-library`、`document-reader`、`image-cleaner`、
 > `pixiv-sync`、`netease-music`）。本表用于描述未来形态，不要当作可用的插件清单。
 
 | 插件 | 形态 | 后端 API | 前端 |

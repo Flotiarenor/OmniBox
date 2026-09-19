@@ -1,4 +1,8 @@
 // ===== 阅读器设置持久化与应用 =====
+const READER_SETTINGS_KEY = 'document-reader-settings';
+// 插件改名前的键：读过一次就搬到新键，用户调好的字号/主题不至于丢
+const LEGACY_SETTINGS_KEY = 'novel-reader-settings';
+
 class ReaderSettingsStore {
     constructor(app) {
         this.app = app;
@@ -7,7 +11,11 @@ class ReaderSettingsStore {
     load() {
         const app = this.app;
         try {
-            const saved = localStorage.getItem('novel-reader-settings');
+            let saved = localStorage.getItem(READER_SETTINGS_KEY);
+            if (!saved) {
+                saved = localStorage.getItem(LEGACY_SETTINGS_KEY);
+                if (saved) localStorage.setItem(READER_SETTINGS_KEY, saved);
+            }
             if (saved) {
                 const settings = JSON.parse(saved);
                 app.fontSize = settings.fontSize || 16;
@@ -53,17 +61,17 @@ class ReaderSettingsStore {
         // 主题设计：默认「跟随主题」，完全使用 Shell 的 CSS 变量，
         // 与设置中的浅色 / 深色 / 自定义配色自动同步。
         if (app.theme === 'auto') {
-            contentArea.className = 'novel-content-area theme-auto';
+            contentArea.className = 'document-content-area theme-auto';
             contentArea.style.removeProperty('--reader-bg-color');
             contentArea.style.removeProperty('--reader-text-color');
         } else if (app.theme === 'custom') {
-            contentArea.className = 'novel-content-area theme-custom';
+            contentArea.className = 'document-content-area theme-custom';
             contentArea.style.setProperty('--reader-bg-color', app.bgColor);
             contentArea.style.setProperty('--reader-text-color', app.textColor);
         } else {
             contentArea.style.removeProperty('--reader-bg-color');
             contentArea.style.removeProperty('--reader-text-color');
-            contentArea.className = `novel-content-area theme-${app.theme}`;
+            contentArea.className = `document-content-area theme-${app.theme}`;
         }
         this.save();
     }
@@ -80,6 +88,6 @@ class ReaderSettingsStore {
             encoding: app.encoding,
             mode: app.mode,
         };
-        localStorage.setItem('novel-reader-settings', JSON.stringify(settings));
+        localStorage.setItem(READER_SETTINGS_KEY, JSON.stringify(settings));
     }
 }

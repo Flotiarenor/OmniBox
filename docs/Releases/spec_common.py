@@ -27,7 +27,7 @@ from pathlib import Path
 # 规则：插件源码里出现的每一个 shell.backend.* 与第三方模块都要在这里有一份 ——
 # 漏掉的表现是"装好后那个插件整个不出现"（运行时 ModuleNotFoundError），构建日志
 # 却是全绿的。真实事故：shell.backend.tasks / shell.backend.thumb_cache 漏在这里，
-# 只有 image-viewer 与 media-player 用它们，于是用户装完只剩漫画和小说两个插件。
+# 只有 image-viewer 与 media-player 用它们，于是用户装完只剩漫画和文档两个插件。
 # tools/check_packaging.py 现在会把这条规则当作门禁检查。
 HIDDEN_IMPORTS = [
     'shell.backend.paths',
@@ -64,6 +64,7 @@ HIDDEN_IMPORTS = [
     'PIL',
     'natsort',
     'chardet',
+    # document-reader 的 Markdown 渲染（requirements.txt 里随 rich 一起声明）
     'markdown_it',
     'jmcomic',
     'common',

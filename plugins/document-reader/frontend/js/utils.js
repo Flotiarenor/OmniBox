@@ -1,5 +1,5 @@
-// ===== 小说阅读器工具函数 =====
-const NovelUtils = {
+// ===== 文档阅读器工具函数 =====
+const DocumentUtils = {
     splitParagraphs(text) {
         if (!text) return [];
         return text.split(/\r?\n+/).map(line => line.trim()).filter(Boolean);

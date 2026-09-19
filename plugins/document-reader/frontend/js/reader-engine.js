@@ -1,15 +1,15 @@
 // ============================================================
-// 小说阅读器 — 双模式引擎
+// 文档阅读器 — 双模式引擎
 // - page  翻页模式：同一章内自然滚动，章节之间用按钮/目录切换
 // - scroll 滚动模式：跨章节连续滚动（append/prepend + 3 章窗口）
 // 滚动容器统一禁用 scroll anchoring，补偿全部由本引擎完成。
 // ============================================================
-class NovelReaderEngine {
+class DocumentReaderEngine {
     constructor(app) {
         this.app = app;
         this.mode = 'page'; // 'page' | 'scroll'
 
-        this.novelId = '';
+        this.documentId = '';
         this.chapters = [];
         this.encoding = 'auto';
         this.currentChapterIndex = 0;
@@ -37,8 +37,8 @@ class NovelReaderEngine {
         this.mode = mode === 'scroll' ? 'scroll' : 'page';
     }
 
-    reset(novelId, chapters, encoding) {
-        this.novelId = novelId;
+    reset(documentId, chapters, encoding) {
+        this.documentId = documentId;
         this.chapters = chapters || [];
         this.encoding = encoding || 'auto';
         this.currentChapterIndex = 0;
@@ -58,7 +58,7 @@ class NovelReaderEngine {
             return Promise.resolve(this.chapterHtmlCache.get(index));
         }
         if (this._htmlPromises.has(index)) return this._htmlPromises.get(index);
-        const promise = Bridge.call('novel_get_content', this.novelId, index, this.encoding)
+        const promise = Bridge.call('document_get_content', this.documentId, index, this.encoding)
             .then(result => {
                 // 后端给两种内容：txt 是纯文本（这里转义成段落），md/epub 已经是后端
                 // 白名单转换器产出的 HTML 片段，直接插入即可。
@@ -66,7 +66,7 @@ class NovelReaderEngine {
                     ? ''
                     : (result.format === 'html'
                         ? (result.content || '')
-                        : NovelUtils.formatContent(result.content || ''));
+                        : DocumentUtils.formatContent(result.content || ''));
                 this.chapterHtmlCache.set(index, html);
                 this._htmlPromises.delete(index);
                 return html;

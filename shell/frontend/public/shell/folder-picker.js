@@ -2,11 +2,11 @@
 //
 // 这套东西原本长在 image-viewer 里（`plugins/image-viewer/frontend/js/app.js` 的
 // `_renderRoots` / `_addRootFromInput` / `openDirBrowser` / `_loadDirBrowser`，样式是
-// image-viewer.css 的 `.iv-root-*` 与 `.iv-dirbrowser-*`）。媒体播放器 / 漫画 / 小说
+// image-viewer.css 的 `.iv-root-*` 与 `.iv-dirbrowser-*`）。媒体播放器 / 漫画 / 文档
 // 也需要同一套「多位置文件夹」界面，所以整体搬到这里，**实现只有这一份**：
 //
 //   - image-viewer：标签用「主要 / 额外」，空列表提示回退 ./data，引用回来即可；
-//   - media-player / manga-library / novel-reader：走设置弹窗的
+//   - media-player / manga-library / document-reader：走设置弹窗的
 //     `settings_schema` type:"directory"，同一套 DOM 与样式，由 base.js 调用。
 //
 // 类名与样式值保持原样（`.iv-root-row` / `.iv-root-tag` / `.iv-dirbrowser-item` …）

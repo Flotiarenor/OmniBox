@@ -1,4 +1,4 @@
-"""novel-reader 前端的真实浏览器用例（本地手动运行，不进 CI）。
+"""document-reader 前端的真实浏览器用例（本地手动运行，不进 CI）。
 
 为什么需要它（都是实测踩到的，node 桩与 Python 单测都看不见）：
 
@@ -16,7 +16,7 @@
 只有 Bridge 换成打到该服务的假实现，因此测的是真布局、真滚动事件。
 
 本地运行：
-    venv/Scripts/python -m unittest tests.test_novel_reader_browser_e2e -v
+    venv/Scripts/python -m unittest tests.test_document_reader_browser_e2e -v
 
 依赖：本机有 Chrome 或 Edge，以及 selenium（requirements-e2e.txt）；缺任一项则跳过。
 """
@@ -36,7 +36,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-PLUGIN_FRONTEND = PROJECT_ROOT / 'plugins' / 'novel-reader' / 'frontend'
+PLUGIN_FRONTEND = PROJECT_ROOT / 'plugins' / 'document-reader' / 'frontend'
 SHELL_PUBLIC = PROJECT_ROOT / 'shell' / 'frontend' / 'public' / 'shell'
 
 LONG_TITLE = '长书名测试：这是一本名字特别特别长的电子书用来验证侧栏宽度不会被顶开（第二版）'
@@ -80,7 +80,7 @@ window.Bridge = {
       body: JSON.stringify({method: method, args: args})
     }).then(function (r) { return r.json(); });
   },
-  originalUrl: function (p) { return '/file?path=' + encodeURIComponent(p) + '&plugin=novel-reader'; }
+  originalUrl: function (p) { return '/file?path=' + encodeURIComponent(p) + '&plugin=document-reader'; }
 };
 </script>
 """
@@ -90,10 +90,10 @@ SHELL_STYLES = ('<link rel="stylesheet" href="/shell/variables.css">'
                 '<link rel="stylesheet" href="/shell/effects.css">')
 
 
-def _novel(novel_id: str, title: str, count: int = 12, file_size: int = 0,
+def _document(document_id: str, title: str, count: int = 12, file_size: int = 0,
            directory: str = '', kind: str = 'epub') -> dict:
-    return {'id': novel_id, 'title': title, 'author': '', 'kind': kind, 'dir': directory,
-            'root': 'D:/docs', 'file_path': f'D:/docs/{novel_id}', 'file_size': file_size,
+    return {'id': document_id, 'title': title, 'author': '', 'kind': kind, 'dir': directory,
+            'root': 'D:/docs', 'file_path': f'D:/docs/{document_id}', 'file_size': file_size,
             'chapter_count': count, 'last_read_chapter': 0, 'progress': 0.0,
             'scroll_position': 0.0, 'encoding': 'auto'}
 
@@ -141,14 +141,14 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, '{}', 'application/json')
             return
         method, args = payload.get('method'), payload.get('args') or []
-        if method == 'novel_list':
-            body = json.dumps({'novels': self.state.get('novels', [])})
-        elif method == 'novel_get_chapters':
+        if method == 'document_list':
+            body = json.dumps({'documents': self.state.get('documents', [])})
+        elif method == 'document_get_chapters':
             body = json.dumps({'chapters': self.state.get('chapters', [])})
-        elif method == 'novel_get_content':
+        elif method == 'document_get_content':
             content = (self.state.get('bodies') or {}).get(args[0], {}).get(str(args[1]), '')
             body = json.dumps({'content': content, 'format': 'html'})
-        elif method == 'novel_update_progress':
+        elif method == 'document_update_progress':
             body = json.dumps({'success': True})
         else:
             body = '{}'
@@ -157,7 +157,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 @unittest.skipUnless(_have_selenium() and _have_browser(),
                      '需要 selenium 与 Chrome/Edge（见 requirements-e2e.txt）')
-class NovelReaderBrowserTests(unittest.TestCase):
+class DocumentReaderBrowserTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from selenium import webdriver
@@ -187,7 +187,7 @@ class NovelReaderBrowserTests(unittest.TestCase):
 
     def open_app(self, route: str = '/'):
         self.driver.get(self.base + route)
-        self.wait('window.novelReader && window.novelReader.novels.length > 0')
+        self.wait('window.documentReader && window.documentReader.documents.length > 0')
 
     def wait(self, condition: str, timeout: float = 10.0):
         from selenium.webdriver.support.ui import WebDriverWait
@@ -202,15 +202,15 @@ class NovelReaderBrowserTests(unittest.TestCase):
         geometry = {}
         for label, route in (('带壳样式', '/'), ('无壳样式', '/bare')):
             for tag, title in (('long', LONG_TITLE), ('short', SHORT_TITLE)):
-                self.set_state(novels=[_novel('probe.epub', title)],
+                self.set_state(documents=[_document('probe.epub', title)],
                                chapters=[{'index': 0, 'title': '第一章', 'word_count': 10}],
                                bodies={})
                 self.open_app(route)
                 geometry[(label, tag)] = self.driver.execute_script("""
                     const sidebar = document.querySelector('.nr-sidebar');
-                    const list = document.getElementById('novel-shelf-list');
+                    const list = document.getElementById('document-shelf-list');
                     const panel = document.querySelector('.sidebar-panel');
-                    const name = document.querySelector('.novel-shelf-name');
+                    const name = document.querySelector('.document-shelf-name');
                     return {
                         sidebar: sidebar.getBoundingClientRect().width,
                         listClient: list.clientWidth, listScroll: list.scrollWidth,
@@ -246,24 +246,24 @@ class NovelReaderBrowserTests(unittest.TestCase):
     def test_shelf_meta_shows_size_instead_of_question_mark(self):
         """章节数还没解析出来时显示体积；有章节数就显示章数，任何情况下都不显示 "?"。"""
         self.set_state(
-            novels=[_novel('never-opened.epub', '没打开过', count=0, file_size=1572864),
-                    _novel('opened.epub', '打开过', count=12),
-                    _novel('sub/nested.epub', '子目录里的', count=3, directory='小说/武侠')],
+            documents=[_document('never-opened.epub', '没打开过', count=0, file_size=1572864),
+                    _document('opened.epub', '打开过', count=12),
+                    _document('sub/nested.epub', '子目录里的', count=3, directory='文档/武侠')],
             chapters=[{'index': 0, 'title': '第一章', 'word_count': 1}], bodies={})
         self.open_app()
         shelf = self.driver.execute_script("""
             return {
-                metas: [...document.querySelectorAll('.novel-shelf-meta span:first-child')]
+                metas: [...document.querySelectorAll('.document-shelf-meta span:first-child')]
                     .map(e => e.textContent),
-                dirs: [...document.querySelectorAll('.novel-shelf-dir')].map(e => e.textContent),
-                authors: document.querySelectorAll('.novel-shelf-author').length,
+                dirs: [...document.querySelectorAll('.document-shelf-dir')].map(e => e.textContent),
+                authors: document.querySelectorAll('.document-shelf-author').length,
             };
         """)
         joined = ' | '.join(shelf['metas'])
         self.assertNotIn('?', joined, f'书架上不该出现 "?"：{joined}')
         self.assertIn('1.5 MB', joined, f'没解析过的书应当显示体积：{joined}')
         self.assertIn('12 章', joined, f'解析过的书应当显示章数：{joined}')
-        self.assertEqual(shelf['dirs'], ['小说/武侠'], '子目录里的文档要显示所属目录')
+        self.assertEqual(shelf['dirs'], ['文档/武侠'], '子目录里的文档要显示所属目录')
         self.assertEqual(shelf['authors'], 0, '已经不再渲染作者那一行')
 
     # ===== 连续滚动 =====
@@ -272,15 +272,15 @@ class NovelReaderBrowserTests(unittest.TestCase):
         """打开一本"每章只有三行"的书并切到连续滚动模式。"""
         items = [{'index': i, 'title': f'第{i + 1}章', 'word_count': 6} for i in range(chapters)]
         bodies = {str(i): f'<p>第{i + 1}章正文</p>' * 3 for i in range(chapters)}
-        self.set_state(novels=[_novel(SHORT_BOOK, SHORT_TITLE, count=chapters)],
+        self.set_state(documents=[_document(SHORT_BOOK, SHORT_TITLE, count=chapters)],
                        chapters=items, bodies={SHORT_BOOK: bodies})
         self.open_app()
         self.driver.execute_script("""
-            const app = window.novelReader;
+            const app = window.documentReader;
             app.mode = 'scroll';
             app.engine.setMode('scroll');
-            document.getElementById('novel-mode-select').value = 'scroll';
-            return app._openNovel(arguments[0]);
+            document.getElementById('document-mode-select').value = 'scroll';
+            return app._openDocument(arguments[0]);
         """, SHORT_BOOK)
         time.sleep(0.6)
 
@@ -288,10 +288,10 @@ class NovelReaderBrowserTests(unittest.TestCase):
         """短文打开后必须补满一屏，否则容器滚不动、浏览器不会再给滚动事件。"""
         self._open_scroll_mode()
         fill = self.driver.execute_script("""
-            const el = document.getElementById('novel-content-area');
+            const el = document.getElementById('document-content-area');
             return {scroll: el.scrollHeight, client: el.clientHeight,
-                    loaded: [window.novelReader.engine.loadedStart,
-                             window.novelReader.engine.loadedEnd]};
+                    loaded: [window.documentReader.engine.loadedStart,
+                             window.documentReader.engine.loadedEnd]};
         """)
         self.assertGreater(fill['scroll'], fill['client'] + 100,
                            f'短文打开后没有补满一屏（会永远滑不动）: {json.dumps(fill)}')
@@ -300,31 +300,31 @@ class NovelReaderBrowserTests(unittest.TestCase):
     def test_keep_loading_after_reaching_the_bottom(self):
         """滑到底停住（不再有滚动事件）之后，下一章仍然要加载。"""
         self._open_scroll_mode()
-        before = self.driver.execute_script("return window.novelReader.engine.loadedEnd")
+        before = self.driver.execute_script("return window.documentReader.engine.loadedEnd")
         self.driver.execute_script("""
-            const el = document.getElementById('novel-content-area');
+            const el = document.getElementById('document-content-area');
             el.scrollTop = el.scrollHeight;
             el.dispatchEvent(new Event('scroll'));
         """)
         time.sleep(0.7)
-        after = self.driver.execute_script("return window.novelReader.engine.loadedEnd")
+        after = self.driver.execute_script("return window.documentReader.engine.loadedEnd")
         self.assertGreater(after, before, f'滑到底后没有再加载下一章: {before} -> {after}')
 
     def test_sidebar_highlight_follows_scrolling(self):
         """滚动换章后，左侧目录高亮与工具栏标题必须跟着走。"""
         self._open_scroll_mode()
         self.driver.execute_script("""
-            const el = document.getElementById('novel-content-area');
+            const el = document.getElementById('document-content-area');
             const node = el.querySelector('.chapter-content[data-chapter-index="3"]');
             if (node) el.scrollTop = node.offsetTop + 10;
             el.dispatchEvent(new Event('scroll'));
         """)
         time.sleep(0.5)
         chrome = self.driver.execute_script("""
-            const app = window.novelReader;
-            const active = document.querySelector('.novel-chapter-item.active');
+            const app = window.documentReader;
+            const active = document.querySelector('.document-chapter-item.active');
             return {index: app.engine.currentChapterIndex,
-                    title: document.getElementById('novel-chapter-title').textContent,
+                    title: document.getElementById('document-chapter-title').textContent,
                     activeIndex: active ? parseInt(active.dataset.index, 10) : null};
         """)
         details = json.dumps(chrome, ensure_ascii=False)
@@ -337,38 +337,38 @@ class NovelReaderBrowserTests(unittest.TestCase):
         """连续滚动模式下点内容区不该翻页（整章重建会让阅读位置跳走）。"""
         self._open_scroll_mode()
         index_before = self.driver.execute_script(
-            "return window.novelReader.engine.currentChapterIndex")
+            "return window.documentReader.engine.currentChapterIndex")
         self.driver.execute_script("""
-            const el = document.getElementById('novel-content-area');
+            const el = document.getElementById('document-content-area');
             const r = el.getBoundingClientRect();
             el.dispatchEvent(new MouseEvent('click',
                 {clientX: r.left + r.width * 0.9, clientY: r.top + 40, bubbles: true}));
         """)
         time.sleep(0.4)
         index_after = self.driver.execute_script(
-            "return window.novelReader.engine.currentChapterIndex")
+            "return window.documentReader.engine.currentChapterIndex")
         self.assertEqual(index_after, index_before, '滚动模式下点击内容区不该换章')
 
     def test_click_still_turns_page_in_page_mode(self):
         """翻页模式的行为不能被上面的改动带坏。"""
         self._open_scroll_mode()
         self.driver.execute_script("""
-            const app = window.novelReader;
+            const app = window.documentReader;
             app.mode = 'page';
             app.engine.setMode('page');
-            document.getElementById('novel-mode-select').value = 'page';
-            return app._openNovel(arguments[0]);
+            document.getElementById('document-mode-select').value = 'page';
+            return app._openDocument(arguments[0]);
         """, SHORT_BOOK)
         time.sleep(0.4)
         self.driver.execute_script("""
-            const el = document.getElementById('novel-content-area');
+            const el = document.getElementById('document-content-area');
             const r = el.getBoundingClientRect();
             el.dispatchEvent(new MouseEvent('click',
                 {clientX: r.left + r.width * 0.9, clientY: r.top + 40, bubbles: true}));
         """)
         time.sleep(0.4)
         index = self.driver.execute_script(
-            "return window.novelReader.engine.currentChapterIndex")
+            "return window.documentReader.engine.currentChapterIndex")
         self.assertGreaterEqual(index, 1, '翻页模式下点击右半区应当翻到下一章')
 
 

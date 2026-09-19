@@ -29,27 +29,27 @@
     min-width: 0;
 }
 /* ===== 书架列表 ===== */
-.novel-shelf-list {
+.document-shelf-list {
     display: flex;
     flex-direction: column;
     gap: 2px;
     padding: 4px;
 }
-.novel-shelf-item {
+.document-shelf-item {
     padding: 10px 12px;
     border-radius: var(--radius-sm);
     cursor: pointer;
     transition: background var(--transition-fast);
     border-left: 3px solid transparent;
 }
-.novel-shelf-item:hover {
+.document-shelf-item:hover {
     background: var(--bg-hover);
 }
-.novel-shelf-item.active {
+.document-shelf-item.active {
     background: var(--bg-hover);
     border-left-color: var(--accent);
 }
-.novel-shelf-title {
+.document-shelf-title {
     font-size: 14px;
     font-weight: 600;
     white-space: nowrap;
@@ -58,7 +58,7 @@
     margin-bottom: 2px;
 }
 /* 子目录里的文档：显示所属目录（主目录下的文件不占这一行） */
-.novel-shelf-dir {
+.document-shelf-dir {
     font-size: 11px;
     color: var(--text-secondary);
     white-space: nowrap;
@@ -66,24 +66,24 @@
     text-overflow: ellipsis;
     margin-bottom: 2px;
 }
-.novel-shelf-meta {
+.document-shelf-meta {
     display: flex;
     justify-content: space-between;
     font-size: 11px;
     color: var(--text-secondary);
 }
-.novel-shelf-progress {
+.document-shelf-progress {
     color: var(--accent);
     font-weight: 500;
 }
 /* ===== 章节目录 ===== */
-.novel-chapter-list {
+.document-chapter-list {
     display: flex;
     flex-direction: column;
     gap: 2px;
     padding: 4px;
 }
-.novel-chapter-item {
+.document-chapter-item {
     padding: 8px 12px;
     cursor: pointer;
     border-radius: var(--radius-sm);
@@ -94,37 +94,37 @@
     justify-content: space-between;
     gap: 8px;
 }
-.novel-chapter-item:hover {
+.document-chapter-item:hover {
     background: var(--bg-hover);
 }
-.novel-chapter-item.active {
+.document-chapter-item.active {
     background: var(--accent);
     color: var(--text-on-accent);
 }
-.novel-chapter-item .chapter-words {
+.document-chapter-item .chapter-words {
     font-size: 11px;
     opacity: 0.7;
     white-space: nowrap;
 }
 /* ===== 书架空状态 ===== */
-.novel-shelf-list .novel-empty {
+.document-shelf-list .document-empty {
     min-height: 200px;
     height: auto;
     padding: 24px 12px;
     gap: 8px;
     text-align: center;
 }
-.novel-shelf-list .novel-empty-icon {
+.document-shelf-list .document-empty-icon {
     font-size: 40px;
 }
 /* ===== 阅读器 ===== */
-.novel-reader-container {
+.document-reader-container {
     display: flex;
     flex-direction: column;
     height: 100%;
     background: var(--bg-surface);
 }
-.novel-reader-toolbar {
+.document-reader-toolbar {
     display: flex;
     align-items: center;
     padding: 8px 16px;
@@ -133,7 +133,7 @@
     gap: 8px;
     flex-shrink: 0;
 }
-.novel-reader-toolbar .btn-icon {
+.document-reader-toolbar .btn-icon {
     width: 32px;
     height: 32px;
     display: flex;
@@ -146,10 +146,10 @@
     font-size: 18px;
     color: var(--text-primary);
 }
-.novel-reader-toolbar .btn-icon:hover {
+.document-reader-toolbar .btn-icon:hover {
     background: var(--bg-hover);
 }
-.novel-reader-title {
+.document-reader-title {
     flex: 1;
     font-size: 14px;
     font-weight: 500;
@@ -159,7 +159,7 @@
     text-overflow: ellipsis;
 }
 /* 阅读器设置 */
-.novel-reader-settings {
+.document-reader-settings {
     display: flex;
     align-items: center;
     gap: 16px;
@@ -169,7 +169,7 @@
     flex-shrink: 0;
     flex-wrap: wrap;
 }
-.novel-reader-settings label {
+.document-reader-settings label {
     font-size: 12px;
     color: var(--text-secondary);
     display: flex;
@@ -177,26 +177,26 @@
     gap: 6px;
     white-space: nowrap;
 }
-.novel-reader-settings select,
-.novel-reader-settings input[type="range"] {
+.document-reader-settings select,
+.document-reader-settings input[type="range"] {
     font-size: 12px;
     padding: 2px 4px;
     border: 1px solid var(--border);
     border-radius: 3px;
     background: var(--bg-surface);
 }
-.novel-reader-settings input[type="range"] {
+.document-reader-settings input[type="range"] {
     width: 80px;
     cursor: pointer;
 }
-.novel-reader-settings .setting-value {
+.document-reader-settings .setting-value {
     font-size: 11px;
     color: var(--text-secondary);
     min-width: 20px;
     text-align: center;
 }
 /* 章节选择器 */
-.novel-chapter-selector {
+.document-chapter-selector {
     position: fixed;
     top: 0;
     left: 0;
@@ -208,10 +208,10 @@
     align-items: center;
     z-index: 1000;
 }
-.novel-chapter-selector.active {
+.document-chapter-selector.active {
     display: flex;
 }
-.novel-chapter-list {
+.document-chapter-list {
     background: var(--bg-surface);
     border-radius: var(--radius);
     width: 400px;
@@ -219,22 +219,22 @@
     overflow-y: auto;
     padding: 16px;
 }
-.novel-chapter-item {
+.document-chapter-item {
     padding: 8px 12px;
     cursor: pointer;
     border-radius: var(--radius-sm);
     transition: background var(--transition-fast);
     font-size: 14px;
 }
-.novel-chapter-item:hover {
+.document-chapter-item:hover {
     background: var(--bg-hover);
 }
-.novel-chapter-item.active {
+.document-chapter-item.active {
     background: var(--accent);
     color: white;
 }
 /* 阅读内容区 */
-.novel-content-area {
+.document-content-area {
     flex: 1;
     overflow-y: auto;
     padding: 24px 48px;
@@ -246,34 +246,34 @@
     user-select: text !important;
     -webkit-user-select: text !important;
 }
-.novel-content-area * {
+.document-content-area * {
     user-select: text !important;
     -webkit-user-select: text !important;
 }
 /* 主题变体 */
-.novel-content-area.theme-dark {
+.document-content-area.theme-dark {
     --reader-bg-color: #1a1a1a;
     --reader-text-color: #cccccc;
 }
-.novel-content-area.theme-sepia {
+.document-content-area.theme-sepia {
     --reader-bg-color: #f5e6c8;
     --reader-text-color: #5b4636;
 }
-.novel-content-area.theme-green {
+.document-content-area.theme-green {
     --reader-bg-color: #c7edcc;
     --reader-text-color: #2d4a2d;
 }
-.novel-content-area.theme-blue {
+.document-content-area.theme-blue {
     --reader-bg-color: #d4e8f5;
     --reader-text-color: #1a3a5c;
 }
 /* 段落样式 */
-.novel-content-area p {
+.document-content-area p {
     margin-bottom: 8px;
     text-indent: 2em;
     line-height: inherit;
 }
-.novel-content-area p:first-of-type {
+.document-content-area p:first-of-type {
     margin-top: 0;
 }
 /* 章节分隔符 */
@@ -292,18 +292,18 @@
     display: none;
 }
 /* 进度指示器 */
-.novel-progress-bar {
+.document-progress-bar {
     height: 3px;
     background: var(--border);
     flex-shrink: 0;
 }
-.novel-progress-fill {
+.document-progress-fill {
     height: 100%;
     background: var(--accent);
     transition: width 0.3s ease;
 }
 /* 空状态 */
-.novel-empty {
+.document-empty {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -313,28 +313,28 @@
     gap: 16px;
 }
 /* 空状态时内容区居中填满 */
-.novel-content-area:has(> .novel-empty) {
+.document-content-area:has(> .document-empty) {
     display: flex;
     align-items: center;
     justify-content: center;
     padding: 0;
 }
-.novel-content-area:has(> .novel-empty) .novel-empty {
+.document-content-area:has(> .document-empty) .document-empty {
     height: auto;
 }
-.novel-empty-icon {
+.document-empty-icon {
     font-size: 64px;
     opacity: 0.5;
 }
-.novel-empty-text {
+.document-empty-text {
     font-size: 16px;
 }
-.novel-empty-hint {
+.document-empty-hint {
     font-size: 13px;
     opacity: 0.7;
 }
 /* 加载动画 */
-.novel-loading {
+.document-loading {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -401,65 +401,65 @@
   border-color: transparent; box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 32%, transparent);
 }
 
-.novel-shelf-item { border-radius: var(--nr-radius-sm); padding: 10px 12px; }
-.novel-shelf-item:hover { background: var(--bg-hover); transform: translateX(2px); }
-.novel-shelf-item.active { background: var(--nr-accent-soft); border-left-color: var(--accent); }
-.novel-chapter-item { border-radius: var(--nr-radius-sm); }
-.novel-chapter-item.active {
+.document-shelf-item { border-radius: var(--nr-radius-sm); padding: 10px 12px; }
+.document-shelf-item:hover { background: var(--bg-hover); transform: translateX(2px); }
+.document-shelf-item.active { background: var(--nr-accent-soft); border-left-color: var(--accent); }
+.document-chapter-item { border-radius: var(--nr-radius-sm); }
+.document-chapter-item.active {
   background: var(--nr-gradient); color: var(--text-on-accent);
   box-shadow: 0 6px 14px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 /* 搜索框胶囊化 */
-#novel-browse-group .search-input {
+#document-browse-group .search-input {
   width: 260px; border-radius: 999px; padding: 7px 14px;
   transition: width 0.25s ease, border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
-#novel-browse-group .search-input:focus {
+#document-browse-group .search-input:focus {
   width: 320px; border-color: var(--accent); box-shadow: 0 0 0 3px var(--nr-accent-soft);
 }
 
 /* 阅读区卡片化 */
-.novel-content-area { background: transparent; padding: 14px 18px; }
-.novel-content-area > * {
+.document-content-area { background: transparent; padding: 14px 18px; }
+.document-content-area > * {
   border-radius: var(--nr-radius);
   box-shadow: var(--shadow-sm);
 }
 
-.novel-reader-settings {
+.document-reader-settings {
   margin: 0 18px 10px; border-radius: var(--nr-radius);
   background: var(--bg-surface); border: 1px solid var(--border);
   padding: 10px 16px; flex-wrap: wrap; gap: 12px;
 }
-.novel-reader-settings input[type="range"] { accent-color: var(--accent); }
-.novel-reader-settings select {
+.document-reader-settings input[type="range"] { accent-color: var(--accent); }
+.document-reader-settings select {
   border: 1px solid var(--border); border-radius: var(--nr-radius-sm);
   background: var(--bg-surface); color: var(--text-primary); padding: 4px 8px;
 }
 
 /* 底部进度条 */
-.novel-progress-bar { height: 4px; background: var(--bg-hover); border-radius: 999px; overflow: hidden; }
-.novel-progress-fill {
+.document-progress-bar { height: 4px; background: var(--bg-hover); border-radius: 999px; overflow: hidden; }
+.document-progress-fill {
   background: var(--nr-gradient); border-radius: 999px;
   transition: width 0.3s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* 空状态动效 */
-.novel-empty-icon { animation: obxFloat 4s ease-in-out infinite; }
-.novel-shelf-item, .novel-chapter-item {
+.document-empty-icon { animation: obxFloat 4s ease-in-out infinite; }
+.document-shelf-item, .document-chapter-item {
   animation: obxFadeUp 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
   animation-delay: calc(var(--obx-i, 0) * 20ms);
 }
 
 @media (max-width: 860px) {
   .view-sub-sidebar.nr-sidebar { width: 210px; }
-  #novel-browse-group .search-input, #novel-browse-group .search-input:focus { width: 170px; }
+  #document-browse-group .search-input, #document-browse-group .search-input:focus { width: 170px; }
 }
 
 /* ============================================================
    阅读性能优化：稳定的滚动容器与轻量章节布局
    ============================================================ */
-.novel-content-area {
+.document-content-area {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
@@ -479,17 +479,17 @@
   flex-shrink: 0;
 }
 
-.novel-chapter-item,
-.novel-shelf-item {
+.document-chapter-item,
+.document-shelf-item {
   contain: content;
 }
 
-.novel-chapter-list,
-.novel-shelf-list {
+.document-chapter-list,
+.document-shelf-list {
   overscroll-behavior: contain;
 }
 
-#novel-loading {
+#document-loading {
   position: sticky;
   bottom: 12px;
   left: 0;
@@ -502,13 +502,13 @@
 /* ============================================================
    v4 滑动窗口：隐藏阅读区滚动条，锚定基准修正
    ============================================================ */
-.novel-content-area {
+.document-content-area {
   position: relative;
   scrollbar-width: none;          /* Firefox */
   -ms-overflow-style: none;       /* 旧 Edge */
 }
 
-.novel-content-area::-webkit-scrollbar {
+.document-content-area::-webkit-scrollbar {
   display: none;
   width: 0;
   height: 0;
@@ -517,7 +517,7 @@
 /* 关键修复：禁用浏览器滚动锚定（scroll anchoring）。
    滚动锚定会在 DOM 顶部增删内容时自动补偿 scrollTop，
    与我们的窗口滑动补偿叠加后就是「偶发往前跳」的元凶之一。 */
-.novel-content-area {
+.document-content-area {
   overflow-anchor: none;
 }
 
@@ -528,24 +528,24 @@
 /* ============================================================
    v6 分页模式：阅读区不滚动，页面固定
    ============================================================ */
-.novel-content-area {
+.document-content-area {
   overflow: hidden;
   display: block;
 }
 
-.novel-page {
+.document-page {
   height: 100%;
   overflow: hidden;
 }
 
-.novel-page p {
+.document-page p {
   margin: 0 0 0.75em;
   line-height: var(--reader-line-height, 1.8);
   letter-spacing: var(--reader-letter-spacing, 0);
 }
 
 /* 隐形分页测量容器：与正文完全相同的排版上下文 */
-.novel-measure {
+.document-measure {
   position: absolute;
   left: 0;
   top: 0;
@@ -555,14 +555,14 @@
   z-index: -1;
 }
 
-.novel-measure p {
+.document-measure p {
   margin: 0 0 0.75em;
   line-height: var(--reader-line-height, 1.8);
   letter-spacing: var(--reader-letter-spacing, 0);
 }
 
 /* 连续分页流：页面内章节小标题 */
-.novel-page-chapter {
+.document-page-chapter {
   margin: 0 0 0.9em;
   padding-bottom: 0.4em;
   border-bottom: 1px solid var(--border);
@@ -572,7 +572,7 @@
 }
 
 /* 双模式：阅读区恢复为单章滚动容器（滚动条保持隐藏） */
-.novel-content-area {
+.document-content-area {
   overflow-y: auto;
   overflow-x: hidden;
   display: block;
@@ -584,23 +584,23 @@
 }
 
 /* 窗口拖动期间隐藏阅读内容，避免大段文字反复重排造成卡顿 */
-.novel-content-area.resizing {
+.document-content-area.resizing {
   display: none;
 }
 
 /* 主题跟随模式：完全使用 Shell 变量，不做任何覆盖 */
-.novel-content-area.theme-auto {
+.document-content-area.theme-auto {
   background: var(--bg-surface);
   color: var(--text-primary);
 }
 
 /* 主题跟随与自定义：明确覆盖所有旧规则 */
-.novel-content-area.theme-auto {
+.document-content-area.theme-auto {
   background: var(--bg-surface);
   color: var(--text-primary);
 }
 
-.novel-content-area.theme-custom {
+.document-content-area.theme-custom {
   background: var(--reader-bg-color, var(--bg-surface));
   color: var(--reader-text-color, var(--text-primary));
 }
@@ -610,30 +610,30 @@
    ============================================================ */
 
 /* 书架：标题行改成 名称 + 格式徽标 */
-.novel-shelf-list,
-.novel-shelf-item,
-.novel-shelf-title,
-.novel-shelf-dir,
-.novel-shelf-meta {
+.document-shelf-list,
+.document-shelf-item,
+.document-shelf-title,
+.document-shelf-dir,
+.document-shelf-meta {
   min-width: 0;
 }
 
-.novel-shelf-item { overflow: hidden; }
+.document-shelf-item { overflow: hidden; }
 
-.novel-shelf-title {
+.document-shelf-title {
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
-.novel-shelf-name {
+.document-shelf-name {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.novel-shelf-kind {
+.document-shelf-kind {
   flex-shrink: 0;
   font-size: 10px;
   font-weight: 600;
@@ -736,12 +736,12 @@
 .chapter-content blockquote p { text-indent: 0; }
 
 /* PDF：填满阅读区，右上角留一个"系统程序打开"的出口 */
-.novel-content-area:has(> .novel-pdf-frame) {
+.document-content-area:has(> .document-pdf-frame) {
   padding: 0;
   display: block;
 }
 
-.novel-pdf-frame {
+.document-pdf-frame {
   width: 100%;
   height: 100%;
   min-height: 60vh;
@@ -751,7 +751,7 @@
   display: block;
 }
 
-.novel-pdf-open {
+.document-pdf-open {
   position: absolute;
   top: 10px;
   right: 14px;

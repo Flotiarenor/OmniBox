@@ -2,7 +2,7 @@
 
 缺陷背景：`window.FolderPicker.createList` 渲染的是**磁盘目录名与完整路径**，而
 Linux 的文件名可以含 `<` / `"` / `&`（Windows 禁用这几个字符，所以开发机上很难撞见）。
-这套组件被 image-viewer / media-player / manga-library / novel-reader 共用一份实现，
+这套组件被 image-viewer / media-player / manga-library / document-reader 共用一份实现，
 未转义就是一个影响面很宽的注入点。
 
 另一个背景：`tests/js/image_viewer_roots_list.mjs` 一直引用

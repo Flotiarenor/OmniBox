@@ -1,4 +1,4 @@
-"""novel-reader 多格式读取契约（Markdown / EPUB / pdf / 外部打开）。
+"""document-reader 多格式读取契约（Markdown / EPUB / pdf / 外部打开）。
 
 守三件事：
 
@@ -8,7 +8,7 @@
 3. 进度键从"去扩展名的文件名"改成完整文件名后，旧进度仍要读得出来。
 
 运行：
-    venv\\Scripts\\python.exe -m unittest tests.test_novel_reader_formats -v
+    venv\\Scripts\\python.exe -m unittest tests.test_document_reader_formats -v
 """
 
 import json
@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-PLUGIN_DIR = PROJECT_ROOT / 'plugins' / 'novel-reader'
+PLUGIN_DIR = PROJECT_ROOT / 'plugins' / 'document-reader'
 OPF_PATH = 'OEBPS/content.opf'
 
 
@@ -79,7 +79,7 @@ def _write_epub(path: Path, docs, nav=None, extra=None) -> None:
             zf.writestr(name, data)
 
 
-class NovelReaderFormatTests(unittest.TestCase):
+class DocumentReaderFormatTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -91,11 +91,11 @@ class NovelReaderFormatTests(unittest.TestCase):
     def _new_plugin(self, root_dirs=None):
         from tools.check_plugins import _load_backend_class
 
-        cls = _load_backend_class(PLUGIN_DIR, 'backend/main.py', 'NovelReaderPlugin')
+        cls = _load_backend_class(PLUGIN_DIR, 'backend/main.py', 'DocumentReaderPlugin')
         # 直接喂"已解决设置"，省掉 SettingsStore 与一次 root_dir 切换
         raw = root_dirs if root_dirs is not None else str(self.docs)
         cls._resolved_config = {'root_dir': '\n'.join(raw) if isinstance(raw, list) else raw}
-        return cls({'name': 'novel-reader'}, {'directories': {'data_root': str(self.root / 'data')}})
+        return cls({'name': 'document-reader'}, {'directories': {'data_root': str(self.root / 'data')}})
 
     # ===== 列表与格式分派 =====
 
@@ -105,7 +105,7 @@ class NovelReaderFormatTests(unittest.TestCase):
         (self.docs / '2024年度-报告.docx').write_bytes(b'PK\x03\x04')
         (self.docs / 'note.log').write_text('x', encoding='utf-8')
 
-        items = {n['id']: n for n in self.plugin.list_novels()['novels']}
+        items = {n['id']: n for n in self.plugin.list_documents()['documents']}
         self.assertEqual(set(items), {'a.txt', 'b.md', '2024年度-报告.docx'})
         self.assertEqual(items['b.md']['kind'], 'md')
         self.assertEqual(items['2024年度-报告.docx']['kind'], 'external')
@@ -116,11 +116,11 @@ class NovelReaderFormatTests(unittest.TestCase):
         self.assertEqual(items['a.txt']['dir'], '')
 
     def test_scans_subdirectories_and_multiple_roots(self):
-        nested = self.docs / '小说' / '武侠'
+        nested = self.docs / '文档' / '武侠'
         nested.mkdir(parents=True)
         (self.docs / '顶层.txt').write_text('第一章\n正文\n', encoding='utf-8')
         (nested / '剑来.epub').write_bytes(b'PK\x03\x04')
-        # 隐藏目录（自己的 .novel_state 就走这条路）不进列表
+        # 隐藏目录（自己的 .document_state 就走这条路）不进列表
         hidden = self.docs / '.hidden'
         hidden.mkdir()
         (hidden / '藏起来.txt').write_text('第一章\n', encoding='utf-8')
@@ -130,11 +130,11 @@ class NovelReaderFormatTests(unittest.TestCase):
         (second / '另一本.md').write_text('# 一\n正文\n', encoding='utf-8')
         self.plugin = self._new_plugin([str(self.docs), str(second)])
 
-        items = {n['id']: n for n in self.plugin.list_novels()['novels']}
-        self.assertEqual(set(items), {'顶层.txt', '小说/武侠/剑来.epub', '另一本.md'})
+        items = {n['id']: n for n in self.plugin.list_documents()['documents']}
+        self.assertEqual(set(items), {'顶层.txt', '文档/武侠/剑来.epub', '另一本.md'})
         # id 是相对各自根目录的路径，主目录第一层仍是文件名（老进度键不受影响）
-        self.assertEqual(items['小说/武侠/剑来.epub']['dir'], '小说/武侠')
-        self.assertEqual(items['小说/武侠/剑来.epub']['title'], '剑来')
+        self.assertEqual(items['文档/武侠/剑来.epub']['dir'], '文档/武侠')
+        self.assertEqual(items['文档/武侠/剑来.epub']['title'], '剑来')
         self.assertEqual(items['另一本.md']['dir'], '')
         # 两个根目录都要能被文件路由访问（EPUB 图片按绝对路径引用）
         self.assertEqual([str(path) for path in self.plugin.get_file_roots()],
@@ -146,7 +146,7 @@ class NovelReaderFormatTests(unittest.TestCase):
         (self.docs / 'c.pdf').write_bytes(b'%PDF-1.4\n')
         (self.docs / 'd.docx').write_bytes(b'PK\x03\x04')
 
-        kinds = {n['id']: n['kind'] for n in self.plugin.list_novels()['novels']}
+        kinds = {n['id']: n['kind'] for n in self.plugin.list_documents()['documents']}
         self.assertEqual(kinds, {'c.pdf': 'pdf', 'd.docx': 'external'})
         self.assertEqual(self.plugin.get_chapters('c.pdf')['chapters'], [])
         self.assertEqual(self.plugin.get_chapters('d.docx')['chapters'], [])
@@ -164,7 +164,7 @@ class NovelReaderFormatTests(unittest.TestCase):
             '- 项目一\n',
             encoding='utf-8',
         )
-        self.plugin.list_novels()
+        self.plugin.list_documents()
 
         chapters = self.plugin.get_chapters('book.md')['chapters']
         self.assertEqual([c['title'] for c in chapters], ['前言', '第一章 起点', '小节'])
@@ -181,11 +181,11 @@ class NovelReaderFormatTests(unittest.TestCase):
         (self.docs / 'pic.png').write_bytes(b'\x89PNG\r\n\x1a\n')
         (self.docs / 'notes.md').write_text('# 一\n\n![图](pic.png)\n\n![外链](https://x/y.png)\n',
                                             encoding='utf-8')
-        self.plugin.list_novels()
+        self.plugin.list_documents()
 
         html = self.plugin.get_content('notes.md', 0)['content']
         # 图片 URL 用绝对路径：多根目录下相对路径只认第一根
-        self.assertIn(f'src="/file?path={quote(str((self.docs / "pic.png").resolve()))}&amp;plugin=novel-reader"',
+        self.assertIn(f'src="/file?path={quote(str((self.docs / "pic.png").resolve()))}&amp;plugin=document-reader"',
                       html)
         self.assertNotIn('x/y.png', html)
 
@@ -203,7 +203,7 @@ class NovelReaderFormatTests(unittest.TestCase):
             nav=[('ch1.xhtml', '目录一'), ('ch2.xhtml', '目录二')],
             extra={'OEBPS/Images/pic.png': b'\x89PNG\r\n\x1a\n'},
         )
-        self.plugin.list_novels()
+        self.plugin.list_documents()
 
         chapters = self.plugin.get_chapters('book.epub')['chapters']
         self.assertEqual([c['title'] for c in chapters], ['目录一', '目录二'])
@@ -236,7 +236,7 @@ class NovelReaderFormatTests(unittest.TestCase):
             nav=[],
             extra={'secret.png': b'outside', 'OEBPS/abs.png': b'abs'},
         )
-        self.plugin.list_novels()
+        self.plugin.list_documents()
 
         # nav 为空 → 标题回落到正文里的第一个标题
         self.assertEqual([c['title'] for c in self.plugin.get_chapters('evil.epub')['chapters']],
@@ -246,7 +246,7 @@ class NovelReaderFormatTests(unittest.TestCase):
         self.assertNotIn('<img', html)
         self.assertFalse((self.root / 'secret.png').exists())
         self.assertFalse((self.docs / 'secret.png').exists())
-        extract_root = self.docs / '.novel_state' / 'extract'
+        extract_root = self.docs / '.document_state' / 'extract'
         written = [p for p in extract_root.rglob('*') if p.is_file()] if extract_root.exists() else []
         self.assertEqual(written, [])
 
@@ -254,23 +254,23 @@ class NovelReaderFormatTests(unittest.TestCase):
 
     def test_legacy_progress_keyed_by_stem_still_reads(self):
         (self.docs / '旧书.txt').write_text('第一章\n正文\n', encoding='utf-8')
-        state = self.docs / '.novel_state'
+        state = self.docs / '.document_state'
         state.mkdir(parents=True, exist_ok=True)
-        (state / '.novel_progress.json').write_text(
+        (state / '.document_progress.json').write_text(
             json.dumps({'旧书': {'last_read_chapter': 3, 'progress': 0.5, 'encoding': 'gbk'}},
                        ensure_ascii=False),
             encoding='utf-8',
         )
         self.plugin._progress_cache = None      # 构造时已读过一次（那时文件还不存在）
 
-        item = next(n for n in self.plugin.list_novels()['novels'] if n['id'] == '旧书.txt')
+        item = next(n for n in self.plugin.list_documents()['documents'] if n['id'] == '旧书.txt')
         self.assertEqual(item['last_read_chapter'], 3)
         self.assertEqual(item['encoding'], 'gbk')
 
         # 新写入用完整文件名：旧进度被读到后自然迁移到新键
         self.plugin._chapter_cache['旧书.txt:txt:gbk'] = [{'index': i} for i in range(4)]
         self.plugin.update_progress('旧书.txt', 1, 0.0, 'gbk')
-        saved = json.loads((state / '.novel_progress.json').read_text(encoding='utf-8'))
+        saved = json.loads((state / '.document_progress.json').read_text(encoding='utf-8'))
         self.assertIn('旧书.txt', saved)
 
     # ===== 外部打开 =====
@@ -285,7 +285,7 @@ class NovelReaderFormatTests(unittest.TestCase):
         far_inside = second / 'b.docx'
         far_inside.write_bytes(b'PK\x03\x04')
         self.plugin = self._new_plugin([str(self.docs), str(second)])
-        self.plugin.list_novels()
+        self.plugin.list_documents()
 
         opened = []
         docs_mod = type(self.plugin).open_external.__globals__['_docs_mod']
@@ -299,7 +299,7 @@ class NovelReaderFormatTests(unittest.TestCase):
         self.assertEqual(opened, [inside.resolve(), far_inside.resolve()])
 
         # 越界：把缓存里的路径改成配置目录之外，必须拒绝且不调用外部程序
-        self.plugin._novel_cache['a.docx']['file_path'] = str(outside)
+        self.plugin._document_cache['a.docx']['file_path'] = str(outside)
         self.assertIn('越界', self.plugin.open_external('a.docx').get('error', ''))
         self.assertEqual(len(opened), 2)
 
@@ -324,23 +324,81 @@ class NovelReaderFormatTests(unittest.TestCase):
         self.assertEqual(self.plugin.save_settings({'root_dir': f'{self.docs}\n{second}'}),
                          {'success': True})
 
-        ids = {n['id'] for n in self.plugin.list_novels()['novels']}
+        ids = {n['id'] for n in self.plugin.list_documents()['documents']}
         self.assertEqual(ids, {'y.txt', 'x.md'})
         self.assertEqual([str(path) for path in self.plugin.get_file_roots()],
                          [str(self.docs.resolve()), str(second.resolve())])
+
+    # ===== 改名迁移 =====
+
+    def test_legacy_settings_file_is_migrated_on_load(self):
+        """插件改名后新名下没有 root_dir 时，从旧名（novel-reader）的设置文件迁移过来。"""
+        from shell.backend.settings_store import SettingsStore
+        from tools.check_plugins import _load_backend_class
+
+        legacy_root = self.root / '旧配置目录'
+        legacy_root.mkdir()
+        (legacy_root / 'x.md').write_text('# 一\n正文\n', encoding='utf-8')
+        store = SettingsStore(str(self.root / 'config' / 'plugins'))
+        store.set('novel-reader', {'root_dir': str(legacy_root)})
+
+        # 改名后的真实状态：新名下既没有设置文件，壳预解析的 _resolved_config 也是空的
+        cls = _load_backend_class(PLUGIN_DIR, 'backend/main.py', 'DocumentReaderPlugin')
+        cls._resolved_config = {}
+        plugin = cls({'name': 'document-reader'},
+                     {'directories': {'data_root': str(self.root / 'data')}})
+        plugin._settings_store = store
+        self.assertEqual(str(plugin.get_data_root()), str((self.root / 'data').resolve()))
+
+        plugin.on_load()
+        self.assertEqual(plugin.setting('root_dir'), str(legacy_root))
+        self.assertEqual([str(path) for path in plugin.get_file_roots()],
+                         [str(legacy_root.resolve())])
+        self.assertEqual({n['id'] for n in plugin.list_documents()['documents']}, {'x.md'})
+        # 迁移结果写进新名下：下次启动不必再迁一次
+        self.assertEqual(store.get('document-reader')['root_dir'], str(legacy_root))
+
+    def test_legacy_state_directory_is_migrated(self):
+        """旧名（.novel_state）下的状态要搬到新名下：改名不该让阅读进度归零。"""
+        # 情况一：新目录还不存在 → 整个目录搬过去（真实升级路径）
+        fresh = self.root / '另一个库'
+        (fresh / '.novel_state').mkdir(parents=True)
+        (fresh / '.novel_state' / '.novel_progress.json').write_text(
+            json.dumps({'a.txt': {'last_read_chapter': 2}}, ensure_ascii=False), encoding='utf-8')
+        (fresh / 'a.txt').write_text('第一章\n正文\n第二章\n正文\n', encoding='utf-8')
+
+        plugin = self._new_plugin([str(fresh)])
+        self.assertFalse((fresh / '.novel_state').exists())
+        state = fresh / '.document_state'
+        self.assertTrue((state / '.document_progress.json').is_file())
+        item = next(n for n in plugin.list_documents()['documents'] if n['id'] == 'a.txt')
+        self.assertEqual(item['last_read_chapter'], 2)
+
+        # 情况二：新目录已经建出来（插件先加载过一次）→ 逐个文件搬
+        second = self.root / '第三个库'
+        (second / '.document_state').mkdir(parents=True)
+        (second / '.novel_state').mkdir()
+        (second / '.novel_state' / '.novel_cache.json').write_text(
+            json.dumps({'parser_version': 3, 'novels': {'a.txt': {'id': 'a.txt'}}},
+                       ensure_ascii=False), encoding='utf-8')
+        plugin2 = self._new_plugin([str(second)])
+        migrated = second / '.document_state' / '.document_cache.json'
+        self.assertTrue(migrated.is_file())
+        # 旧缓存文件里这个键叫 novels：读得出来，不必全量重解析
+        self.assertIn('a.txt', plugin2._document_cache)
 
     # ===== 章节数缓存 =====
 
     def test_chapter_count_survives_rescan(self):
         """列表里那一行不该永远是 "?"：解析过一次的章节数要活过重新扫描。"""
         (self.docs / 'a.txt').write_text('第一章\n正文\n第二章\n正文\n', encoding='utf-8')
-        self.plugin.list_novels()
+        self.plugin.list_documents()
         chapters = self.plugin.get_chapters('a.txt')['chapters']
         self.plugin._save_cache()          # get_chapters 内部已保存，这里只是明确语义
 
         # 新增一个文件迫使重新扫描
         (self.docs / 'b.txt').write_text('第一章\n正文\n', encoding='utf-8')
-        items = {n['id']: n for n in self.plugin.list_novels()['novels']}
+        items = {n['id']: n for n in self.plugin.list_documents()['documents']}
         self.assertEqual(items['a.txt']['chapter_count'], len(chapters))
         self.assertEqual(items['b.txt']['chapter_count'], 0)   # 还没解析过 → 前端显示体积
 

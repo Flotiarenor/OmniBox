@@ -244,7 +244,7 @@ class ImageViewer {
         // 图片文件夹：多位置列表（主要 / 额外 + 浏览…）由 Shell 共享组件提供，
         // 本插件只负责把列表里的路径在保存时写回 root_dir / extra_roots。
         // 这套实现原本长在这里（_renderRoots / openDirBrowser / _loadDirBrowser），
-        // 因为媒体播放器 / 漫画 / 小说也要同一套界面，已整体搬到
+        // 因为媒体播放器 / 漫画 / 文档阅读也要同一套界面，已整体搬到
         // shell/frontend/public/shell/folder-picker.js + folder-picker.css。
         // 列表实例在 init() 里由 _resetRootsList() 建立。
 
