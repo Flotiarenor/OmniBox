@@ -172,16 +172,32 @@ class TtsMixin:
 
         只认音频扩展名 —— 同一把钥匙旁边还躺着 `.json` 元数据文件，用 startswith
         直接取第一个会把元数据当成音频返回（前端拿到噪音）。
+
+        **空文件不算命中**：写盘写了一半就被中断（进程被杀、磁盘满）会留下 0 字节的
+        mp3，它会被当成"已缓存"永久命中，表现是这段文字再也读不出声。删掉重新合成。
         """
         try:
             names = os.listdir(cache_dir)
         except OSError:
             return None
         for name in names:
-            if name.startswith(prefix + '.') and name.lower().endswith(_AUDIO_EXTS):
-                path = os.path.join(cache_dir, name)
-                meta = self._tts_read_json(os.path.join(cache_dir, prefix + '.json'))
-                return path, meta
+            if not (name.startswith(prefix + '.') and name.lower().endswith(_AUDIO_EXTS)):
+                continue
+            path = os.path.join(cache_dir, name)
+            try:
+                if os.path.getsize(path) <= 0:
+                    raise OSError('缓存音频为空')
+            except OSError as e:
+                log.warning(f'缓存音频不可用（{e}），删除后重新合成: {name}')
+                for target in (path, os.path.join(cache_dir, prefix + '.json')):
+                    try:
+                        if os.path.exists(target):
+                            os.remove(target)
+                    except OSError:
+                        pass
+                return None
+            meta = self._tts_read_json(os.path.join(cache_dir, prefix + '.json'))
+            return path, meta
         return None
 
     def _tts_meta_marks(self, cache_dir: str, prefix: str) -> list:

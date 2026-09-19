@@ -80,7 +80,8 @@ class ReaderVoicePage {
         if (this._bound) return;
         this._bound = true;
         const dom = this._dom();
-        document.getElementById('nr-voice-back').addEventListener('click', () => this.close());
+        // 没有"返回"按钮：朗读设置是左栏的导航项，切回去点书架/书签即可
+        // （与其它主区面板一致，少一个语义重复的按钮）
         document.getElementById('nr-voice-refresh').addEventListener('click', async () => {
             await this.app.tts.refreshStatus();
             this._renderStatus();
@@ -88,12 +89,14 @@ class ReaderVoicePage {
         });
         dom.rate.addEventListener('input', () => {
             dom.rateValue.textContent = `${dom.rate.value}%`;
+            // 语速是连续输入，防抖落盘即可
             this._save({ tts_rate: parseInt(dom.rate.value, 10) });
         });
+        // 离散控件改完就生效：它们后面往往紧接着"试听"，等防抖会合成到旧值
         [dom.engine, dom.base, dom.model, dom.voice].forEach((input) => {
-            input.addEventListener('change', () => this._save(this._collect()));
+            input.addEventListener('change', () => this._save(this._collect(), true));
         });
-        dom.key.addEventListener('change', () => this._save({ tts_api_key: dom.key.value }));
+        dom.key.addEventListener('change', () => this._save({ tts_api_key: dom.key.value }, true));
         dom.test.addEventListener('click', () => this._test());
         this._renderVoices();
     }
@@ -154,17 +157,30 @@ class ReaderVoicePage {
         };
     }
 
-    /** 串行保存：连点两下不该产生"后写的被先写的覆盖"。 */
-    _save(patch) {
+    /**
+     * 保存设置，返回"真正写完"的 promise。
+     *
+     * `immediate` 用于点选音色这类"选完马上就要用到"的改动：防抖保存会让紧随其后的
+     * 试听读到**旧音色**（实测：点云希立刻试听，后端合成出来的还是晓晓）。
+     * 只有拖语速滑杆这种连续输入才需要防抖。
+     *
+     * 必须返回 write() 本身的 promise：返回一个已 resolve 的 promise 会让
+     * `await this._save(...)` 立刻通过，试听照样跑在保存之前。
+     */
+    _save(patch, immediate = false) {
         clearTimeout(this._saving);
-        this._saving = setTimeout(async () => {
+        const write = async () => {
+            this._saving = null;
             try {
                 const result = await Bridge.call('save_settings', patch);
                 if (result && result.success === false) Toast.error(result.error || '保存失败');
             } catch (e) {
                 Toast.error('保存朗读设置失败');
             }
-        }, 300);
+        };
+        if (immediate) return write();
+        this._saving = setTimeout(write, 300);
+        return Promise.resolve();
     }
 
     _renderStatus() {
@@ -194,7 +210,8 @@ class ReaderVoicePage {
         dom.list.querySelectorAll('.nr-voice-item').forEach((btn) => {
             btn.addEventListener('click', () => {
                 dom.voice.value = btn.dataset.voice;
-                this._save({ tts_voice: btn.dataset.voice });
+                // 立刻落盘：紧接着的"试听"要读到这个音色
+                this._save({ tts_voice: btn.dataset.voice }, true);
                 dom.list.querySelectorAll('.nr-voice-item').forEach((other) => {
                     other.classList.toggle('active', other === btn);
                 });
@@ -207,6 +224,8 @@ class ReaderVoicePage {
 
     async _test() {
         const dom = this._dom();
+        // 先把"刚选的音色"落盘，再合成：否则后端读到的还是上一个音色
+        await this._save(this._collect(), true);
         dom.testResult.textContent = '合成中…';
         dom.test.disabled = true;
         try {
@@ -217,8 +236,14 @@ class ReaderVoicePage {
                 return;
             }
             dom.testResult.textContent = `引擎：${result.engine || '?'}（缓存${result.cached ? '命中' : '未命中'}）`;
-            const audio = new Audio(result.url);
-            audio.play().catch(() => Toast.info('自动播放被拦，请手动点一下播放'));
+            // 音频对象必须挂在实例上：`new Audio()` 不入 DOM，局部变量在函数返回后
+            // 就被回收，Chromium 会中断已经开始播放的音频（表现是只念出开头几个字）。
+            if (this._preview) {
+                this._preview.pause();
+                this._preview.removeAttribute('src');
+            }
+            this._preview = new Audio(result.url);
+            this._preview.play().catch(() => Toast.info('自动播放被拦，请手动点一下播放'));
         } catch (e) {
             dom.testResult.textContent = `失败：${e}`;
         } finally {

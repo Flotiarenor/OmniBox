@@ -189,6 +189,44 @@ class EngineDispatchTests(unittest.TestCase):
             tts.synthesize('随便', params)
         self.assertIn('boom', str(ctx.exception))
 
+    def test_transient_failure_is_retried_before_falling_back(self):
+        """同一引擎要先重试：edge 是网络调用，偶发失败不该直接降级到系统音色。
+
+        用户侧的表现为"偶尔听到系统音色"，而偶发失败重试一次通常就好。
+        """
+        calls = []
+
+        def flaky(text, params):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError('第一次连接被重置')
+            return _fake_audio()
+
+        params = {**self.base_params, 'mode': 'edge'}
+        with mock.patch.dict(tts._RUNNERS, {'edge': flaky}), \
+                mock.patch.object(tts, 'ENGINE_ATTEMPTS', 3), \
+                mock.patch.object(tts, 'RETRY_DELAY_SECONDS', 0):
+            result = tts.synthesize('今天下雨了。', params)
+        self.assertEqual(result['engine'], 'edge')
+        self.assertEqual(len(calls), 2, '应当在同一引擎上重试一次再成功')
+
+    def test_engine_gives_up_after_all_attempts_then_falls_back(self):
+        """重试次数用尽才降级：`auto` 下最终落到下一个可用引擎。"""
+        calls = []
+
+        def always_fail(text, params):
+            calls.append(1)
+            raise RuntimeError('一直失败')
+
+        params = {**self.base_params, 'mode': 'auto', 'order': ['edge', 'openai'],
+                  'base_url': self.endpoint.base_url}
+        with mock.patch.dict(tts._RUNNERS, {'edge': always_fail}), \
+                mock.patch.object(tts, 'ENGINE_ATTEMPTS', 3), \
+                mock.patch.object(tts, 'RETRY_DELAY_SECONDS', 0):
+            result = tts.synthesize('今天下雨了。', params)
+        self.assertEqual(result['engine'], 'openai', '重试耗尽后应降级到端点')
+        self.assertEqual(len(calls), 3, f'应当重试满 3 次，实际 {len(calls)} 次')
+
     def test_empty_text_rejected(self):
         with self.assertRaises(ValueError):
             tts.synthesize('   ', {**self.base_params, 'mode': 'auto'})
@@ -202,6 +240,11 @@ class EngineDispatchTests(unittest.TestCase):
 
 def _boom(text, params):
     raise RuntimeError('boom（测试用的必失败引擎）')
+
+
+def _fake_audio():
+    """一个可分辨的合成结果：(音频字节, 后缀, 时间戳)。"""
+    return WAV_BYTES, '.wav', [{'text': '测', 'chars': 1, 'startMs': 0.0, 'durationMs': 100.0}]
 
 
 class PluginSpeakDirectTests(unittest.TestCase):
@@ -256,6 +299,25 @@ class PluginSpeakDirectTests(unittest.TestCase):
         result = self.plugin.tts_speak('今天下雨了。', 'abc123', 0)
         self.assertFalse(result['cached'])
         self.assertEqual(len(_OpenAIHandler.seen), 2)
+
+    def test_empty_cached_audio_is_regenerated(self):
+        """0 字节的缓存音频不算命中：写盘写了一半被中断时，它会让这段文字永远读不出声。"""
+        first = self.plugin.tts_speak('今天下雨了。', 'emptycache', 0)
+        self.assertFalse(first['cached'])
+        path = self._cache_audio_path('emptycache')
+        self.assertTrue(path.is_file(), f'没找到缓存音频: {path}')
+        path.write_bytes(b'')                     # 模拟被中断的半成品
+        again = self.plugin.tts_speak('今天下雨了。', 'emptycache', 0)
+        self.assertFalse(again['cached'], '空文件被当成了缓存命中')
+        self.assertGreater(len(_OpenAIHandler.seen), 1, '空缓存应当触发重新合成')
+        self.assertGreater(path.stat().st_size, 0, '重新合成后应当写回非空音频')
+
+    def _cache_audio_path(self, key: str) -> Path:
+        cache_dir = Path(self.plugin._tts_cache_dir())
+        found = [p for p in cache_dir.iterdir()
+                 if p.name.startswith(key + '-') and p.suffix == '.wav']
+        self.assertEqual(len(found), 1, f'缓存里应恰好一个该键的 wav: {list(cache_dir.iterdir())}')
+        return found[0]
 
     def test_speak_reports_engine_failure_as_error(self):
         self.plugin.update_setting('tts_base_url', '')  # 端点没了，且只准用 openai

@@ -735,7 +735,7 @@
     color: var(--text-primary);
 }
 
-.nr-voice-head .btn:last-child {
+.nr-voice-head .btn {
     margin-left: auto;
 }
 

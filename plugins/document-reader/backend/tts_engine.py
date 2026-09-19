@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -301,15 +302,45 @@ def engine_available(engine: str, params: Dict[str, Any]) -> bool:
     return False
 
 
+# 同一引擎的尝试次数：edge 是网络调用，偶发失败（握手超时、连接被重置）很常见。
+# 一次就降级等于把偶发当永久 —— 用户会听到系统音色或旧缓存，却再也不会回到首选引擎。
+ENGINE_ATTEMPTS = 3
+# 重试间隔：网络抖动很快过去，等太久会让"点朗读后半天不响"。
+RETRY_DELAY_SECONDS = 0.4
+
+
 def available_engines(params: Dict[str, Any]) -> List[str]:
     return [name for name in ENGINES if engine_available(name, params)]
+
+
+def _attempt_engine(engine: str, text: str, params: Dict[str, Any], errors: List[str]):
+    """同一引擎重试 `ENGINE_ATTEMPTS` 次；失败返回 (None, 是否还有别的可试)。
+
+    只有"还有重试次数"时才算可重试 —— 参数类错误（如端点返回 400）重试也是白等，
+    但网络类错误（超时、连接重置）重试往往就好了，而调用方无法可靠区分两者，
+    所以统一重试：代价是最多多等 0.8 秒，收益是不必降到系统音色。
+    """
+    runner = _RUNNERS[engine]
+    last_error: Optional[Exception] = None
+    for attempt in range(1, ENGINE_ATTEMPTS + 1):
+        try:
+            return runner(text, params), True
+        except Exception as e:
+            last_error = e
+            log.warning(f'[document-reader] 朗读引擎 {engine} 第 {attempt}/'
+                        f'{ENGINE_ATTEMPTS} 次失败: {e}')
+            if attempt < ENGINE_ATTEMPTS:
+                time.sleep(RETRY_DELAY_SECONDS * attempt)
+    errors.append(f'{engine}: {last_error}')
+    return None, False
 
 
 def synthesize(text: str, params: Dict[str, Any]) -> Dict[str, Any]:
     """合成一段文本，返回 `{audio, ext, marks, engine}`。
 
     `mode` 为具体引擎名时只用它（失败直接抛，不偷偷换音色）；为 `auto` 时按
-    `order`（默认 ENGINES）逐个尝试，第一个成功的即结果。全部失败则抛出最后一个异常。
+    `order`（默认 ENGINES）逐个尝试，**每个引擎先重试 `ENGINE_ATTEMPTS` 次**，
+    都失败才降级到下一个。全部失败则抛出最后一个异常。
     """
     text = (text or '').strip()
     if not text:
@@ -328,13 +359,10 @@ def synthesize(text: str, params: Dict[str, Any]) -> Dict[str, Any]:
         if not engine_available(engine, params):
             errors.append(f'{engine}: 不可用（未安装/未配置/平台不支持）')
             continue
-        try:
-            audio, ext, marks = _RUNNERS[engine](text, params)
-        except Exception as e:
-            log.warning(f'[document-reader] 朗读引擎 {engine} 失败，尝试下一个: {e}')
-            errors.append(f'{engine}: {e}')
-            continue
-        return {'audio': audio, 'ext': ext, 'marks': marks, 'engine': engine}
+        result, _ = _attempt_engine(engine, text, params, errors)
+        if result is not None:
+            audio, ext, marks = result
+            return {'audio': audio, 'ext': ext, 'marks': marks, 'engine': engine}
 
     raise RuntimeError('所有朗读引擎都不可用 —— ' + '；'.join(errors))
 
