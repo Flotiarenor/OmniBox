@@ -2,6 +2,9 @@
 const READER_SETTINGS_KEY = 'document-reader-settings';
 // 插件改名前的键：读过一次就搬到新键，用户调好的字号/主题不至于丢
 const LEGACY_SETTINGS_KEY = 'novel-reader-settings';
+const READER_SETTINGS_VERSION = 2;
+const READER_DEFAULT_THEME = 'auto';    // 跟随主题
+const READER_DEFAULT_MODE = 'scroll';   // 连续滚动
 
 class ReaderSettingsStore {
     constructor(app) {
@@ -18,13 +21,18 @@ class ReaderSettingsStore {
             }
             if (saved) {
                 const settings = JSON.parse(saved);
+                // v1 的设置文件里存着"旧默认值"：load() 末尾的 apply() 会自动 save 一遍，
+                // 连没动过的设置也落了盘。默认值改成「跟随主题 + 连续滚动」之后，那些记录
+                // 并不是用户的选择 —— 没有 version 字段的旧文件按新默认走一次，
+                // 字号、行距、自定义配色原样保留。
+                const oldDefaults = settings.version !== READER_SETTINGS_VERSION;
                 app.fontSize = settings.fontSize || 16;
                 app.lineHeight = settings.lineHeight || 1.8;
                 app.letterSpacing = settings.letterSpacing || 0;
-                app.theme = settings.theme || 'auto';
+                app.theme = oldDefaults ? READER_DEFAULT_THEME : (settings.theme || READER_DEFAULT_THEME);
                 app.bgColor = settings.bgColor || '#ffffff';
                 app.textColor = settings.textColor || '#1a1a1a';
-                app.mode = settings.mode || 'page';
+                app.mode = oldDefaults ? READER_DEFAULT_MODE : (settings.mode || READER_DEFAULT_MODE);
             }
         } catch (e) {
             console.error('加载设置失败:', e);
@@ -38,7 +46,7 @@ class ReaderSettingsStore {
         if (dom.letterSpacingSlider) dom.letterSpacingSlider.value = app.letterSpacing;
         if (dom.letterSpacingValue) dom.letterSpacingValue.textContent = `${app.letterSpacing}px`;
         if (dom.themeSelect) dom.themeSelect.value = app.theme;
-        if (dom.modeSelect) dom.modeSelect.value = app.mode || 'page';
+        if (dom.modeSelect) dom.modeSelect.value = app.mode || READER_DEFAULT_MODE;
         if (dom.bgColorInput) dom.bgColorInput.value = app.bgColor;
         if (dom.textColorInput) dom.textColorInput.value = app.textColor;
 
@@ -77,6 +85,7 @@ class ReaderSettingsStore {
     save() {
         const app = this.app;
         const settings = {
+            version: READER_SETTINGS_VERSION,
             fontSize: app.fontSize,
             lineHeight: app.lineHeight,
             letterSpacing: app.letterSpacing,

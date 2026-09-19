@@ -10,14 +10,14 @@ class DocumentReader {
         this.fontSize = 16;
         this.lineHeight = 1.8;
         this.letterSpacing = 0;
-        this.theme = 'light';
+        this.theme = 'auto';
         this.bgColor = '#ffffff';
         this.textColor = '#1a1a1a';
         // 编码全自动、没有开关：后端的解码链（UTF-8 自证 → 中文编码 → gb18030）现在比
         // 让用户手选任何一个编码都强 —— 手选唯一能做到的"额外效果"是把本来能读的书
         // 解成乱码，所以界面上干脆不提供这个选择（见 parser.read_full_content）。
         this.encoding = 'auto';
-        this.mode = 'page'; // 'page' | 'scroll'
+        this.mode = 'scroll'; // 'page' | 'scroll'
 
         this._isReaderMode = false;
         this._sidebarMode = 'shelf';

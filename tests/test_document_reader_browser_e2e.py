@@ -407,6 +407,44 @@ class DocumentReaderBrowserTests(unittest.TestCase):
         self.assertEqual(state['lastEncoding'], 'auto', f'重读没有用自动检测 {details}')
         self.assertNotIn('encoding', state['saved'], f'设置里还留着已经删掉的编码项 {details}')
 
+    def test_defaults_are_follow_theme_and_continuous_scroll(self):
+        """默认是「跟随主题 + 连续滚动」，且旧设置文件不会把用户锁在旧默认上。
+
+        旧设置文件里存着的主题/模式是每次加载时自动 save 进去的旧默认值，不是用户的
+        选择：升到 v2 时按新默认走一次，字号这些真偏好原样保留；之后用户在界面上选的
+        仍然记得住。
+        """
+        self._open_book()                      # 先拿到同源页面，才能写 localStorage
+        self.driver.execute_script("""
+            localStorage.setItem('document-reader-settings', JSON.stringify(
+                {fontSize: 22, theme: 'sepia', mode: 'page', encoding: 'auto'}));
+        """)
+        self.open_app()
+        state = self.driver.execute_script("""
+            const app = window.documentReader;
+            return {theme: app.theme, mode: app.mode, fontSize: app.fontSize,
+                    themeSelect: document.getElementById('document-theme-select').value,
+                    modeSelect: document.getElementById('document-mode-select').value,
+                    engineMode: app.engine.mode};
+        """)
+        details = json.dumps(state, ensure_ascii=False)
+        self.assertEqual(state['theme'], 'auto', f'默认主题不是跟随主题 {details}')
+        self.assertEqual(state['themeSelect'], 'auto', f'主题下拉框没跟着默认值 {details}')
+        self.assertEqual(state['mode'], 'scroll', f'默认阅读模式不是连续滚动 {details}')
+        self.assertEqual(state['modeSelect'], 'scroll', f'阅读模式下拉框没跟着默认值 {details}')
+        self.assertEqual(state['engineMode'], 'scroll', f'引擎没跟着默认值 {details}')
+        self.assertEqual(state['fontSize'], 22, f'旧设置里的字号被改掉了 {details}')
+
+        # 用户自己改过之后必须记住（这一份设置带 version 字段，不该再被迁移覆盖）
+        self.driver.execute_script("""
+            const select = document.getElementById('document-mode-select');
+            select.value = 'page';
+            select.dispatchEvent(new Event('change'));
+        """)
+        self.open_app()
+        self.assertEqual(self.driver.execute_script('return window.documentReader.mode'), 'page',
+                         '用户自己选的阅读模式没有被记住')
+
 
 if __name__ == '__main__':   # pragma: no cover
     unittest.main()
