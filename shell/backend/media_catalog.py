@@ -98,36 +98,61 @@ def find_kinds(
     return [k for k in wanted if k in found]
 
 
-def list_system_roots() -> List[Path]:
-    """文件系统根：Windows 列存在的盘符，其他平台为 `/`。"""
-    if os.name == 'nt':
-        return [Path(f'{letter}:\\') for letter in string.ascii_uppercase
-                if Path(f'{letter}:\\').exists()]
-    return [Path('/')]
+def _windows_drive_letters() -> Optional[str]:
+    r"""Windows 上可用的盘符字母（一次系统查询，不做任何落盘探测）。
 
+    为什么不用 `Path('Z:\\').exists()`：断开的网络映射盘会让它等 SMB 超时
+    （实测 9 秒以上），遍历 A:–Z: 就是几分钟。`GetLogicalDrives()` 只读内核里的
+    盘符位图，**与盘是否可达无关**，因此不会阻塞。
 
-def list_subdirectories(path: str = '',
-                        kinds: Optional[Set[str]] = None) -> Dict:
-    """浏览绝对路径下的子目录（本地目录选择器共用基建）。
-
-    空路径（或 `DRIVES_SENTINEL`）返回「我的电脑」：列出盘符/文件系统根，
-    `parent` 为 None 表示已经到顶。每个目录带 `kinds`，提示它**直接下级**里
-    有哪些媒体类型（`kinds=None` 表示三类都探测，传集合可限定）。
+    返回 None 表示这条路不可用（非 Windows、或 ctypes 调用失败），由调用方回退。
     """
-    if not str(path or '').strip() or str(path).strip() == DRIVES_SENTINEL:
-        return {
-            'path': '', 'parent': None,
-            'entries': [{'name': str(root), 'path': str(root), 'is_dir': True,
-                         'kinds': find_kinds(root, kinds)}
-                        for root in list_system_roots()],
-        }
+    if os.name != 'nt':
+        return None
     try:
-        target = Path(path).expanduser().resolve()
+        import ctypes
+        mask = ctypes.windll.kernel32.GetLogicalDrives()
     except Exception:
-        return {'path': '', 'parent': None, 'entries': [], 'error': '路径无法解析'}
-    if not target.is_dir():
-        return {'path': '', 'parent': None, 'entries': [], 'error': '目录不存在'}
-    parent = str(target.parent) if target.parent != target else None
+        return None
+    if not mask:
+        return None
+    return ''.join(letter for index, letter in enumerate(string.ascii_uppercase)
+                   if mask & (1 << index))
+
+
+def list_system_roots() -> List[Path]:
+    """文件系统根：Windows 列存在的盘符，其他平台为 `/`。
+
+    **不做落盘探测**（见 `_windows_drive_letters`）：断开的网络盘不该拖住枚举。
+    代价是它也包含"映射还在、机器没开机"的盘 —— 那些盘在展开时才会失败，
+    由 `list_subdirectories` 把错误如实报给调用方（那里已有 OSError 分支）。
+    """
+    letters = _windows_drive_letters()
+    if letters is None:
+        return [Path('/')] if os.name != 'nt' else _fallback_existing_roots()
+    return [Path(f'{letter}:\\') for letter in letters]
+
+
+def _fallback_existing_roots() -> List[Path]:
+    """ctypes 不可用时的退路：老老实实逐个探（可能被网络盘拖慢，但至少能用）。"""
+    roots = []
+    for letter in string.ascii_uppercase:
+        target = Path(f'{letter}:\\')
+        try:
+            if target.exists():
+                roots.append(target)
+        except OSError:
+            continue
+    return roots
+
+
+def _scan_dirs(target: Path, limit: int = 2000) -> Optional[List]:
+    r"""列出一层子目录；不可达的路径返回 None（而不是抛异常）。
+
+    对断开的网络盘，`os.scandir` 会等 SMB 超时。这里**不做超时包装**：把这种调用
+    丢进被遗弃的线程，会让解释器退出时卡死（实测：daemon 线程即使已放弃，进程也退
+    不掉）。宁可让这一次浏览慢，也不要让进程收不了尾。调用方拿到 None 时如实报错。
+    """
     dirs = []
     try:
         with os.scandir(target) as entries:
@@ -140,11 +165,40 @@ def list_subdirectories(path: str = '',
                 except OSError:
                     continue
                 dirs.append(entry)
-                if len(dirs) >= 2000:      # 极端目录（如整个盘符根）限流
+                if len(dirs) >= limit:     # 极端目录（如整个盘符根）限流
                     break
-    except OSError as e:
+    except OSError:
+        return None
+    return dirs
+
+
+def list_subdirectories(path: str = '',
+                        kinds: Optional[Set[str]] = None) -> Dict:
+    """浏览绝对路径下的子目录（本地目录选择器共用基建）。
+
+    空路径（或 `DRIVES_SENTINEL`）返回「我的电脑」：列出盘符/文件系统根，
+    `parent` 为 None 表示已经到顶。每个目录带 `kinds`，提示它**直接下级**里
+    有哪些媒体类型（`kinds=None` 表示三类都探测，传集合可限定）。
+    """
+    if not str(path or '').strip() or str(path).strip() == DRIVES_SENTINEL:
+        entries = []
+        for root in list_system_roots():
+            # 这里只报盘符本身，不去探它的内容：不可达的盘会让 find_kinds 卡在
+            # SMB 超时上（展开该盘时才会真正去读，那时失败也只是一条错误条目）
+            entries.append({'name': str(root), 'path': str(root), 'is_dir': True,
+                            'kinds': []})
+        return {'path': '', 'parent': None, 'entries': entries}
+    try:
+        target = Path(path).expanduser().resolve()
+    except Exception:
+        return {'path': '', 'parent': None, 'entries': [], 'error': '路径无法解析'}
+    if not target.is_dir():
+        return {'path': '', 'parent': None, 'entries': [], 'error': '目录不存在'}
+    parent = str(target.parent) if target.parent != target else None
+    dirs = _scan_dirs(target)
+    if dirs is None:
         return {'path': str(target), 'parent': parent, 'entries': [],
-                'error': f'无法读取目录: {e}'}
+                'error': '无法读取目录（网络盘可能已断开）'}
     dirs.sort(key=lambda e: e.name.lower())
     return {
         'path': str(target),

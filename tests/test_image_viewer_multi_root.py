@@ -32,7 +32,33 @@ from PIL import Image
 
 from shell.backend.auth import TOKEN_HEADER, get_or_create_token
 from shell.backend.file_server import create_app
-from shell.backend.media_catalog import DRIVES_SENTINEL
+from shell.backend.media_catalog import DRIVES_SENTINEL, list_system_roots
+
+
+def _has_network_drive() -> bool:
+    """本机是否有网络盘映射（UNC/映射盘）。
+
+    有就跳过"展开盘符"的用例：断开的映射盘会让任何落盘探测等 SMB 超时，而盘符
+    枚举现在是**零探测**的（`GetLogicalDrives()`），会把不可达的盘也列出来 ——
+    用例再去展开它就会卡住。开发机上有这么一个映射（一台关机的测试机）。
+
+    判定只用 `GetDriveTypeW`（读盘符类型，实测 0.000s）；**不要**用
+    `Path.is_dir()` 或 `GetVolumeInformationW`，那两个在断开的网络盘上会真的阻塞。
+    """
+    if os.name != 'nt':
+        return False
+    try:
+        import ctypes
+        for root in list_system_roots():
+            letter = str(root)[0]
+            if ctypes.windll.kernel32.GetDriveTypeW(f'{letter}:\\') == 4:   # DRIVE_REMOTE
+                return True
+    except Exception:
+        return False
+    return False
+
+
+HAS_NETWORK_DRIVE = _has_network_drive()
 from shell.backend.paths import get_config_dir, get_plugins_config_dir
 from shell.backend.plugin_manager import collect_protected_paths
 from shell.backend.settings_store import SettingsStore
@@ -525,6 +551,7 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
 
     # ---------- 目录选择器 ----------
 
+    @unittest.skipIf(HAS_NETWORK_DRIVE, '本机有不可达的网络盘，展开盘符会卡 SMB 超时')
     def test_browse_dir_lists_drives_and_subdirs(self):
         plugin = self._plugin({'root_dir': str(self.root)})
         top = plugin.browse_dir('')
@@ -547,6 +574,7 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
         self.assertEqual(bad['entries'], [])
         self.assertTrue(bad.get('error'))
 
+    @unittest.skipIf(HAS_NETWORK_DRIVE, '本机有不可达的网络盘，展开盘符会卡 SMB 超时')
     def test_browse_dir_drives_sentinel(self):
         """「我的电脑」层：哨兵路径与空路径等价，且没有上级（不会越过顶层）。"""
         plugin = self._plugin({'root_dir': str(self.root)})
@@ -590,3 +618,4 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
 
 if __name__ == '__main__':   # pragma: no cover
     unittest.main()
+
