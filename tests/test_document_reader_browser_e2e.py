@@ -80,8 +80,20 @@ window.Bridge = {
       body: JSON.stringify({method: method, args: args})
     }).then(function (r) { return r.json(); });
   },
+  callSystem: function (method) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    return fetch('/api', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({method: method, args: args})
+    }).then(function (r) { return r.json(); });
+  },
   originalUrl: function (p) { return '/file?path=' + encodeURIComponent(p) + '&plugin=document-reader'; }
 };
+// 朗读在本用例里不参与：初始化不跑（否则每个用例都会去打 tts_status），
+// 相关方法留空实现，保证 app.js 里的调用点不炸。
+window.__TTS_STUB__ = true;
+try { localStorage.setItem('document-reader-tts', 'off'); } catch (e) {}
 </script>
 """
 
@@ -150,6 +162,21 @@ class _Handler(BaseHTTPRequestHandler):
             body = json.dumps({'content': content, 'format': 'html'})
         elif method == 'document_update_progress':
             body = json.dumps({'success': True})
+        elif method == 'get_settings':
+            body = json.dumps(dict(self.state.get('settings') or {}))
+        elif method == 'save_settings':
+            # 阅读偏好存在后端设置里（跨设备持久化）：桩必须真的记住，
+            # 否则"用户改过的选择要能记住"这条永远测不出来
+            stored = dict(self.state.get('settings') or {})
+            stored.update((args[0] if args and isinstance(args[0], dict) else {}))
+            self.state['settings'] = stored
+            body = json.dumps({'success': True})
+        elif method == 'marks_list':
+            body = json.dumps({'marks': []})
+        elif method == 'document_cover':
+            body = json.dumps({'cover': ''})
+        elif method == 'tts_status':
+            body = json.dumps({'engines': [], 'order': [], 'mode': 'auto', 'voice': '', 'rate': 0})
         else:
             body = '{}'
         self._send(200, body, 'application/json')
@@ -194,11 +221,14 @@ class DocumentReaderBrowserTests(unittest.TestCase):
         WebDriverWait(self.driver, timeout, poll_frequency=0.05).until(
             lambda d: d.execute_script(f'return !!({condition});'))
 
-    # ===== 侧栏宽度 =====
+    # ===== 封面卡网格 =====
 
-    def test_shelf_width_does_not_depend_on_title_length(self):
-        """长书名不许把侧栏顶宽，也不许把书架行撑出横向溢出。"""
-        self.set_state(chapters=[{'index': 0, 'title': '第一章', 'word_count': 10}], bodies={})
+    def test_cover_grid_survives_long_titles(self):
+        """长书名不许把卡片撑出横向溢出，也不许把侧栏顶宽。
+
+        重构前这条测的是"书架那行不把侧栏撑宽"（书架当时在侧栏里）；现在书架是主区的
+        封面网格，同样的隐患换了个位置：书名在卡片里必须省略号截断，不能把网格撑破。
+        """
         geometry = {}
         for label, route in (('带壳样式', '/'), ('无壳样式', '/bare')):
             for tag, title in (('long', LONG_TITLE), ('short', SHORT_TITLE)):
@@ -208,42 +238,44 @@ class DocumentReaderBrowserTests(unittest.TestCase):
                 self.open_app(route)
                 geometry[(label, tag)] = self.driver.execute_script("""
                     const sidebar = document.querySelector('.nr-sidebar');
-                    const list = document.getElementById('document-shelf-list');
-                    const panel = document.querySelector('.sidebar-panel');
-                    const name = document.querySelector('.document-shelf-name');
+                    const grid = document.querySelector('.nr-grid');
+                    const card = document.querySelector('.nr-card');
+                    const title = document.querySelector('.nr-card-title');
                     return {
                         sidebar: sidebar.getBoundingClientRect().width,
-                        listClient: list.clientWidth, listScroll: list.scrollWidth,
-                        panelClient: panel.clientWidth, panelScroll: panel.scrollWidth,
-                        nameClient: name.clientWidth, nameScroll: name.scrollWidth,
+                        gridClient: grid.clientWidth, gridScroll: grid.scrollWidth,
+                        cardWidth: card.getBoundingClientRect().width,
+                        titleClient: title.clientWidth, titleScroll: title.scrollWidth,
                     };
                 """)
             long_geo, short_geo = geometry[(label, 'long')], geometry[(label, 'short')]
             details = json.dumps([long_geo, short_geo], ensure_ascii=False)
             self.assertLess(abs(long_geo['sidebar'] - short_geo['sidebar']), 1,
                             f'{label}：侧栏宽度不该随书名长度变化 {details}')
-            self.assertLessEqual(long_geo['listScroll'], long_geo['listClient'] + 1,
-                                 f'{label}：长书名把书架撑出了横向溢出 {details}')
-            self.assertLessEqual(long_geo['panelScroll'], long_geo['panelClient'] + 1,
-                                 f'{label}：长书名把侧栏撑出了横向溢出 {details}')
-            self.assertGreater(long_geo['nameScroll'], long_geo['nameClient'],
+            self.assertLessEqual(long_geo['gridScroll'], long_geo['gridClient'] + 1,
+                                 f'{label}：长书名把封面网格撑出了横向溢出 {details}')
+            # 长书名的标题必须真的被截断（scroll > client），否则就是"把卡片撑宽了"
+            self.assertGreater(long_geo['titleScroll'], long_geo['titleClient'],
                                f'{label}：长书名没有被截断 {details}')
-            self.assertGreater(long_geo['nameClient'], 40,
-                               f'{label}：书名格子被挤没了 {details}')
+            self.assertGreater(long_geo['cardWidth'], 80,
+                               f'{label}：封面卡被挤没了 {details}')
 
-        # 窄屏媒体查询过去是同特异性的壳样式在后面注入而被覆盖的死代码，这里守住它
+        # 窄屏：封面网格要跟着变小，不能横向溢出
         self.driver.set_window_size(800, 900)
         try:
             self.open_app('/')
-            narrow = self.driver.execute_script(
-                "return document.querySelector('.nr-sidebar').getBoundingClientRect().width;")
+            narrow = self.driver.execute_script("""
+                const grid = document.querySelector('.nr-grid');
+                return {client: grid.clientWidth, scroll: grid.scrollWidth};
+            """)
         finally:
             self.driver.set_window_size(1280, 900)
-        self.assertLess(abs(narrow - 210), 1.5, f'窄屏下侧栏宽度应为 210px，实测 {narrow}px')
+        self.assertLessEqual(narrow['scroll'], narrow['client'] + 1,
+                             f'窄屏下封面网格横向溢出了: {narrow}')
 
-    # ===== 书架那一行显示什么 =====
+    # ===== 卡片副标题显示什么 =====
 
-    def test_shelf_meta_shows_size_instead_of_question_mark(self):
+    def test_card_subtitle_shows_size_instead_of_question_mark(self):
         """章节数还没解析出来时显示体积；有章节数就显示章数，任何情况下都不显示 "?"。"""
         self.set_state(
             documents=[_document('never-opened.epub', '没打开过', count=0, file_size=1572864),
@@ -251,20 +283,16 @@ class DocumentReaderBrowserTests(unittest.TestCase):
                     _document('sub/nested.epub', '子目录里的', count=3, directory='文档/武侠')],
             chapters=[{'index': 0, 'title': '第一章', 'word_count': 1}], bodies={})
         self.open_app()
-        shelf = self.driver.execute_script("""
-            return {
-                metas: [...document.querySelectorAll('.document-shelf-meta span:first-child')]
-                    .map(e => e.textContent),
-                dirs: [...document.querySelectorAll('.document-shelf-dir')].map(e => e.textContent),
-                authors: document.querySelectorAll('.document-shelf-author').length,
-            };
+        cards = self.driver.execute_script("""
+            return [...document.querySelectorAll('.nr-card')].map(card => ({
+                title: card.querySelector('.nr-card-title').textContent,
+                sub: card.querySelector('.nr-card-sub').textContent,
+            }));
         """)
-        joined = ' | '.join(shelf['metas'])
-        self.assertNotIn('?', joined, f'书架上不该出现 "?"：{joined}')
+        joined = ' | '.join(f"{c['title']}={c['sub']}" for c in cards)
+        self.assertNotIn('?', joined, f'卡片上不该出现 "?"：{joined}')
         self.assertIn('1.5 MB', joined, f'没解析过的书应当显示体积：{joined}')
         self.assertIn('12 章', joined, f'解析过的书应当显示章数：{joined}')
-        self.assertEqual(shelf['dirs'], ['文档/武侠'], '子目录里的文档要显示所属目录')
-        self.assertEqual(shelf['authors'], 0, '已经不再渲染作者那一行')
 
     # ===== 连续滚动 =====
 
@@ -280,7 +308,7 @@ class DocumentReaderBrowserTests(unittest.TestCase):
             app.mode = 'scroll';
             app.engine.setMode('scroll');
             document.getElementById('document-mode-select').value = 'scroll';
-            return app._openDocument(arguments[0]);
+            return app.openDocument(arguments[0]);
         """, SHORT_BOOK)
         time.sleep(0.6)
 
@@ -310,8 +338,14 @@ class DocumentReaderBrowserTests(unittest.TestCase):
         after = self.driver.execute_script("return window.documentReader.engine.loadedEnd")
         self.assertGreater(after, before, f'滑到底后没有再加载下一章: {before} -> {after}')
 
-    def test_sidebar_highlight_follows_scrolling(self):
-        """滚动换章后，左侧目录高亮与工具栏标题必须跟着走。"""
+    def test_toc_modal_highlights_current_chapter(self):
+        """滚动换章后，目录弹窗里高亮的必须是新章。
+
+        重构前这里测的是"侧栏目录的高亮跟着滚动走"（目录当时常驻侧栏，靠
+        `_syncReaderChrome` 那套节流刷新同步）。现在目录改成弹窗、打开时按
+        `engine.currentChapterIndex` 现刷 —— 所以校验点跟着搬到"打开弹窗后看到什么"，
+        这也正是用户能看见的那部分。
+        """
         self._open_scroll_mode()
         self.driver.execute_script("""
             const el = document.getElementById('document-content-area');
@@ -319,19 +353,26 @@ class DocumentReaderBrowserTests(unittest.TestCase):
             if (node) el.scrollTop = node.offsetTop + 10;
             el.dispatchEvent(new Event('scroll'));
         """)
-        time.sleep(0.5)
-        chrome = self.driver.execute_script("""
+        time.sleep(0.6)
+        opened = self.driver.execute_script("""
             const app = window.documentReader;
-            const active = document.querySelector('.document-chapter-item.active');
-            return {index: app.engine.currentChapterIndex,
-                    title: document.getElementById('document-chapter-title').textContent,
-                    activeIndex: active ? parseInt(active.dataset.index, 10) : null};
+            document.getElementById('nr-open-toc').click();
+            const active = document.querySelector('#nr-toc-list .document-chapter-item.active');
+            return {
+                index: app.engine.currentChapterIndex,
+                modalOpen: document.getElementById('nr-toc-modal').classList.contains('active'),
+                activeIndex: active ? parseInt(active.dataset.index, 10) : null,
+                title: document.getElementById('nr-view-title').textContent,
+                book: (app.currentDocument || {}).title,
+            };
         """)
-        details = json.dumps(chrome, ensure_ascii=False)
-        self.assertEqual(chrome['activeIndex'], chrome['index'],
-                         f'滚动换章后目录高亮没跟着走 {details}')
-        self.assertEqual(chrome['title'], f"第{chrome['index'] + 1}章",
-                         f'滚动换章后工具栏标题没跟着走 {details}')
+        details = json.dumps(opened, ensure_ascii=False)
+        self.assertTrue(opened['modalOpen'], f'目录弹窗没打开 {details}')
+        self.assertEqual(opened['activeIndex'], opened['index'],
+                         f'目录弹窗里高亮的不是当前章 {details}')
+        # 新形态下工具栏放的是书名（章节名在目录弹窗与正文里，不再挤工具栏）
+        self.assertEqual(opened['title'], opened['book'],
+                         f'工具栏没显示当前书名 {details}')
 
     def test_click_does_not_turn_page_in_scroll_mode(self):
         """连续滚动模式下点内容区不该翻页（整章重建会让阅读位置跳走）。"""
@@ -357,16 +398,16 @@ class DocumentReaderBrowserTests(unittest.TestCase):
             app.mode = 'page';
             app.engine.setMode('page');
             document.getElementById('document-mode-select').value = 'page';
-            return app._openDocument(arguments[0]);
+            return app.openDocument(arguments[0], {chapter: 0});
         """, SHORT_BOOK)
-        time.sleep(0.4)
+        time.sleep(0.6)
         self.driver.execute_script("""
             const el = document.getElementById('document-content-area');
             const r = el.getBoundingClientRect();
             el.dispatchEvent(new MouseEvent('click',
                 {clientX: r.left + r.width * 0.9, clientY: r.top + 40, bubbles: true}));
         """)
-        time.sleep(0.4)
+        time.sleep(0.5)
         index = self.driver.execute_script(
             "return window.documentReader.engine.currentChapterIndex")
         self.assertGreaterEqual(index, 1, '翻页模式下点击右半区应当翻到下一章')
@@ -379,7 +420,7 @@ class DocumentReaderBrowserTests(unittest.TestCase):
                        chapters=[{'index': 0, 'title': '第1章', 'word_count': 3}],
                        bodies={book: {'0': '正文'}})
         self.open_app()
-        self.driver.execute_script('window.documentReader._openDocument(arguments[0]);', book)
+        self.driver.execute_script('window.documentReader.openDocument(arguments[0]);', book)
         self.wait('window.documentReader._isReaderMode')
 
     def test_encoding_is_fully_automatic(self):
@@ -394,8 +435,8 @@ class DocumentReaderBrowserTests(unittest.TestCase):
             self.driver.execute_script("return document.getElementById('document-encoding');"),
             '编码下拉框应该已经删掉')
 
-        self.driver.execute_script('window.documentReader._reloadDocument();')
-        time.sleep(0.5)
+        self.driver.execute_script('window.documentReader.reloadDocument();')
+        time.sleep(0.6)
         state = self.driver.execute_script("""
             const calls = window.__CALLS__.filter(c => c[0] === 'document_get_chapters');
             return {encoding: window.documentReader.encoding,
@@ -413,6 +454,9 @@ class DocumentReaderBrowserTests(unittest.TestCase):
         旧设置文件里存着的主题/模式是每次加载时自动 save 进去的旧默认值，不是用户的
         选择：升到 v2 时按新默认走一次，字号这些真偏好原样保留；之后用户在界面上选的
         仍然记得住。
+
+        偏好存在**后端设置**里（跨设备持久化），写入带 400ms 防抖 —— 改完要等落盘
+        再 reload，否则读到的是旧值（这条以前是 localStorage 同步写，不需要等）。
         """
         self._open_book()                      # 先拿到同源页面，才能写 localStorage
         self.driver.execute_script("""
@@ -420,6 +464,7 @@ class DocumentReaderBrowserTests(unittest.TestCase):
                 {fontSize: 22, theme: 'sepia', mode: 'page', encoding: 'auto'}));
         """)
         self.open_app()
+        self.wait('window.documentReader.settings && window.documentReader.fontSize === 22')
         state = self.driver.execute_script("""
             const app = window.documentReader;
             return {theme: app.theme, mode: app.mode, fontSize: app.fontSize,
@@ -435,13 +480,15 @@ class DocumentReaderBrowserTests(unittest.TestCase):
         self.assertEqual(state['engineMode'], 'scroll', f'引擎没跟着默认值 {details}')
         self.assertEqual(state['fontSize'], 22, f'旧设置里的字号被改掉了 {details}')
 
-        # 用户自己改过之后必须记住（这一份设置带 version 字段，不该再被迁移覆盖）
+        # 用户自己改过之后必须记住（带 version 的那次迁移不该覆盖用户的新选择）
         self.driver.execute_script("""
             const select = document.getElementById('document-mode-select');
             select.value = 'page';
             select.dispatchEvent(new Event('change'));
         """)
+        time.sleep(1.0)                        # 等 400ms 防抖落盘
         self.open_app()
+        self.wait('window.documentReader.settings')
         self.assertEqual(self.driver.execute_script('return window.documentReader.mode'), 'page',
                          '用户自己选的阅读模式没有被记住')
 

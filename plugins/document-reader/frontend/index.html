@@ -8,108 +8,222 @@
 </head>
 <body>
   <div id="app">
-    <!-- 左侧边栏：书架 / 章节目录 -->
-    <div class="view-sub-sidebar nr-sidebar obx-glass">
+    <!-- ============ 左侧栏：只放导航与按钮，不放任何滑杆 ============
+         阅读器与目录/设置的关系见 docs/document-reader-redesign.md：
+         目录、阅读设置是弹窗，朗读设置是覆盖主区的独立页，入口都在这里。 -->
+    <aside class="view-sub-sidebar nr-sidebar obx-glass">
       <div class="nr-brand">
         <div class="nr-brand-icon">📖</div>
-        <div>
+        <div class="nr-brand-text">
           <div class="nr-brand-title">文档阅读</div>
           <div class="nr-brand-sub">Reader</div>
         </div>
       </div>
-      <div class="sidebar-toggle">
-        <button id="sidebar-toggle-shelf" class="btn btn-sm active">📚 书架</button>
-        <button id="sidebar-toggle-chapters" class="btn btn-sm">📖 章节</button>
-      </div>
 
-      <!-- 书架面板 -->
-      <div id="document-shelf-panel" class="sidebar-panel obx-scroll">
-        <div id="document-shelf-list" class="document-shelf-list"></div>
-      </div>
+      <!-- 统一导航。结构对齐 manga-library / group-mesh：
+           分组标题 + .obx-nav-item 按钮；没有自定义的"行内块"样式。
+           阅读时多出两组：左栏最上面一个"返回"，以及"当前文档"（目录 / 阅读设置）。 -->
+      <nav class="nr-nav obx-scroll">
+        <div class="nr-nav-label">浏览</div>
+        <button type="button" class="obx-nav-item nr-nav-item active" data-view="all">
+          <span class="nr-nav-icon">📚</span><span>全部文档</span>
+          <span class="nr-nav-count" id="nr-count-all"></span>
+        </button>
+        <button type="button" class="obx-nav-item nr-nav-item" data-view="recent">
+          <span class="nr-nav-icon">🕐</span><span>最近阅读</span>
+        </button>
+        <button type="button" class="obx-nav-item nr-nav-item" data-view="marks">
+          <span class="nr-nav-icon">⭐</span><span>书签</span>
+          <span class="nr-nav-count" id="nr-count-marks"></span>
+        </button>
+        <button type="button" class="obx-nav-item nr-nav-item" id="nr-open-voice">
+          <span class="nr-nav-icon">🔊</span><span>朗读设置</span>
+        </button>
 
-      <!-- 章节目录面板 -->
-      <div id="document-chapter-panel" class="sidebar-panel obx-scroll" style="display:none;">
-        <div id="document-chapter-list" class="document-chapter-list obx-scroll"></div>
-      </div>
-    </div>
+        <div id="nr-reader-tools" class="hidden">
+          <div class="nr-nav-label">当前文档</div>
+          <button type="button" class="obx-nav-item nr-nav-item" id="nr-open-toc">
+            <span class="nr-nav-icon">☰</span><span>目录</span>
+          </button>
+          <button type="button" class="obx-nav-item nr-nav-item" id="nr-open-read-settings">
+            <span class="nr-nav-icon">A</span><span>阅读设置</span>
+          </button>
+        </div>
 
-    <!-- 右侧主区域 -->
+        <div id="nr-extensions"></div>
+      </nav>
+
+      <!-- 底部状态行：文案等布局落地后再定（先占位） -->
+      <div class="sub-sidebar-footer nr-sidebar-footer" id="nr-status">正在读取…</div>
+    </aside>
+
+    <!-- ============ 主区 ============ -->
     <div class="view-body">
-      <!-- 单排工具栏：书架模式显示搜索，阅读模式显示导航；设置固定在右上角 -->
-      <div class="view-toolbar">
-        <div class="toolbar-group" id="document-browse-group">
-          <input type="text" id="document-search" class="search-input" placeholder="搜索标题或作者...">
+      <div class="view-toolbar nr-toolbar">
+        <div class="toolbar-group nr-heading">
+          <button type="button" class="btn btn-sm nr-back-btn hidden" id="nr-back-to-shelf">← 返回</button>
+          <span class="nr-title" id="nr-view-title">全部文档</span>
+          <span class="nr-sub" id="nr-view-sub"></span>
         </div>
-        <div class="toolbar-group" id="document-reader-nav" style="display:none;">
-          <div class="document-reader-title" id="document-chapter-title">未打开文档</div>
-        </div>
-        <div class="toolbar-group" style="margin-left:auto;">
-          <button id="document-font-toggle" class="btn" title="阅读设置" style="display:none;">A·文</button>
-          <button id="btn-settings" class="btn">⚙ 设置</button>
-        </div>
-      </div>
-
-      <!-- 阅读设置栏（仅阅读时显示，可折叠） -->
-      <div class="document-reader-settings" id="document-reader-settings-bar" style="display:none;">
-        <label>
-          字号:
-          <input type="range" id="document-font-size" min="12" max="32" value="16" step="1">
-          <span class="setting-value" id="document-font-size-value">16</span>
-        </label>
-        <label>
-          行距:
-          <input type="range" id="document-line-height" min="1.2" max="2.5" value="1.8" step="0.1">
-          <span class="setting-value" id="document-line-height-value">1.8</span>
-        </label>
-        <label>
-          字间距:
-          <input type="range" id="document-letter-spacing" min="0" max="5" value="0" step="0.5">
-          <span class="setting-value" id="document-letter-spacing-value">0px</span>
-        </label>
-        <label>
-          主题:
-          <select id="document-theme-select">
-            <option value="auto">跟随主题</option>
-            <option value="sepia">护眼纸</option>
-            <option value="dark">夜间</option>
-            <option value="green">绿色</option>
-            <option value="blue">蓝色</option>
-            <option value="custom">自定义</option>
-          </select>
-        </label>
-        <label id="custom-color-label" style="display:none;">
-          背景:
-          <input type="color" id="document-bg-color" value="#ffffff">
-        </label>
-        <label id="custom-text-label" style="display:none;">
-          文字:
-          <input type="color" id="document-text-color" value="#1a1a1a">
-        </label>
-        <label>
-          阅读模式:
-          <select id="document-mode-select">
-            <option value="page">翻页（章内滚动）</option>
-            <option value="scroll">连续滚动</option>
-          </select>
-        </label>
-      </div>
-
-      <div class="document-content-area" id="document-content-area">
-        <div class="document-empty">
-          <div class="document-empty-icon">📖</div>
-          <div class="document-empty-text">在左侧书架选择一份文档开始阅读</div>
+        <div class="toolbar-group nr-toolbar-right">
+          <div class="nr-search">
+            <span class="nr-search-ico">🔍</span>
+            <input type="text" id="nr-search" placeholder="搜索书名、作者…" autocomplete="off">
+            <button type="button" id="nr-search-clear" class="nr-search-clear hidden" title="清除">✕</button>
+          </div>
+          <button type="button" id="btn-settings" class="btn btn-sm">⚙ 设置</button>
         </div>
       </div>
 
+      <!-- 书架态：封面网格 -->
+      <div class="view-content nr-content obx-scroll" id="nr-shelf-view">
+        <div class="nr-grid" id="nr-grid"></div>
+      </div>
+
+      <!-- 阅读态：正文 + 底部进度条（进度条通栏，不随正文缩进） -->
+      <div class="nr-reader-view hidden" id="nr-reader-view">
+        <div class="document-content-area" id="document-content-area"></div>
+      </div>
       <div class="document-progress-bar">
         <div class="document-progress-fill" id="document-progress-fill" style="width:0%"></div>
       </div>
+
+      <!-- 朗读设置：占主区（与 .view-content 同一个位置），不遮挡左侧栏 -->
+      <div class="nr-voice-page hidden" id="nr-voice-page">
+        <div class="nr-voice-head">
+          <button type="button" class="btn btn-sm" id="nr-voice-back">← 返回</button>
+          <span class="nr-voice-title">朗读设置</span>
+          <button type="button" class="btn btn-sm" id="nr-voice-refresh">刷新引擎状态</button>
+        </div>
+        <div class="nr-voice-body obx-scroll">
+          <section class="nr-voice-card">
+            <h4>引擎</h4>
+            <p class="nr-voice-hint" id="nr-voice-status">正在检测…</p>
+            <div class="nr-setting-row">
+              <label for="nr-voice-engine">使用引擎</label>
+              <select id="nr-voice-engine">
+                <option value="auto">自动（按音质降级）</option>
+                <option value="edge">edge-tts（联网，支持逐字跟随）</option>
+                <option value="openai">OpenAI 兼容端点</option>
+                <option value="system">系统离线音色（SAPI5）</option>
+              </select>
+            </div>
+            <div class="nr-setting-row">
+              <label for="nr-voice-base">端点地址</label>
+              <input type="text" id="nr-voice-base" placeholder="http://127.0.0.1:8880">
+            </div>
+            <div class="nr-setting-row">
+              <label for="nr-voice-key">API Key</label>
+              <input type="text" id="nr-voice-key" placeholder="本地服务通常留空">
+            </div>
+            <div class="nr-setting-row">
+              <label for="nr-voice-model">模型名</label>
+              <input type="text" id="nr-voice-model" placeholder="留空则不发送">
+            </div>
+          </section>
+
+          <section class="nr-voice-card">
+            <h4>音色与语速</h4>
+            <div class="nr-setting-row">
+              <label for="nr-voice-name">音色</label>
+              <input type="text" id="nr-voice-name" placeholder="zh-CN-XiaoxiaoNeural">
+            </div>
+            <div class="nr-setting-row">
+              <label for="nr-voice-rate">语速</label>
+              <input type="range" id="nr-voice-rate" min="-50" max="100" step="5" value="100">
+              <span class="nr-setting-value" id="nr-voice-rate-value">100%</span>
+            </div>
+            <div class="nr-voice-actions">
+              <button type="button" class="btn" id="nr-voice-test">试听这一句</button>
+              <span class="nr-voice-hint" id="nr-voice-test-result"></span>
+            </div>
+          </section>
+
+          <section class="nr-voice-card">
+            <h4>可用的 edge-tts 音色</h4>
+            <p class="nr-voice-hint">
+              下面是本机 edge-tts 端点可见的中文音色，点一下填进上面的音色框；
+              晓晓（zh-CN-XiaoxiaoNeural）最通用。
+            </p>
+            <div class="nr-voice-list" id="nr-voice-list"></div>
+          </section>
+        </div>
+      </div>
     </div>
+  </div>
+
+  <!-- ============ 目录弹窗（自适应大小 + 内部滚动） ============ -->
+    <div class="modal" id="nr-toc-modal">
+      <div class="modal-box nr-modal-box">
+        <h3>目录<span class="nr-modal-sub" id="nr-toc-sub"></span></h3>
+        <div class="modal-body">
+          <input type="text" id="nr-toc-filter" class="search-input nr-toc-filter" placeholder="筛选章节…">
+          <div class="document-chapter-list" id="nr-toc-list"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn" data-nr-close="nr-toc-modal">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 阅读设置弹窗 ============ -->
+    <div class="modal" id="nr-read-settings-modal">
+      <div class="modal-box nr-modal-box nr-modal-sm">
+        <h3>阅读设置</h3>
+        <div class="modal-body">
+          <div class="nr-setting-row">
+            <label for="document-font-size">字号</label>
+            <input type="range" id="document-font-size" min="12" max="32" value="16" step="1">
+            <span class="nr-setting-value" id="document-font-size-value">16</span>
+          </div>
+          <div class="nr-setting-row">
+            <label for="document-line-height">行距</label>
+            <input type="range" id="document-line-height" min="1.2" max="2.5" value="1.8" step="0.1">
+            <span class="nr-setting-value" id="document-line-height-value">1.8</span>
+          </div>
+          <div class="nr-setting-row">
+            <label for="document-letter-spacing">字间距</label>
+            <input type="range" id="document-letter-spacing" min="0" max="5" value="0" step="0.5">
+            <span class="nr-setting-value" id="document-letter-spacing-value">0px</span>
+          </div>
+          <div class="nr-setting-row">
+            <label for="document-theme-select">主题</label>
+            <select id="document-theme-select">
+              <option value="auto">跟随主题</option>
+              <option value="sepia">护眼纸</option>
+              <option value="dark">夜间</option>
+              <option value="green">绿色</option>
+              <option value="blue">蓝色</option>
+              <option value="custom">自定义</option>
+            </select>
+          </div>
+          <div class="nr-setting-row" id="custom-color-row" style="display:none;">
+            <label for="document-bg-color">背景色</label>
+            <input type="color" id="document-bg-color" value="#ffffff">
+          </div>
+          <div class="nr-setting-row" id="custom-text-row" style="display:none;">
+            <label for="document-text-color">文字色</label>
+            <input type="color" id="document-text-color" value="#1a1a1a">
+          </div>
+          <div class="nr-setting-row">
+            <label for="document-mode-select">阅读模式</label>
+            <select id="document-mode-select">
+              <option value="scroll">连续滚动</option>
+              <option value="page">翻页（章内滚动）</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-primary" data-nr-close="nr-read-settings-modal">完成</button>
+        </div>
+      </div>
   </div>
 
   <script src="js/utils.js"></script>
   <script src="js/reader-engine.js"></script>
   <script src="js/settings.js"></script>
+  <script src="js/reader-tts.js"></script>
+  <script src="js/reader-voice-page.js"></script>
   <script src="js/app.js"></script>
   <script>
     window.documentReader = new DocumentReader();

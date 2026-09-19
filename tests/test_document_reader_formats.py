@@ -25,6 +25,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 PLUGIN_DIR = PROJECT_ROOT / 'plugins' / 'document-reader'
 OPF_PATH = 'OEBPS/content.opf'
+# 一个最小 PNG 头（测试只关心"字节原样搬运"，不解码）
+_PNG_BYTES = b'\x89PNG\r\n\x1a\n'
 
 
 def _chapter_xhtml(title: str, body: str) -> str:
@@ -35,8 +37,14 @@ def _chapter_xhtml(title: str, body: str) -> str:
     )
 
 
-def _write_epub(path: Path, docs, nav=None, extra=None) -> None:
-    """写一个最小合法 EPUB：mimetype + container.xml + OPF + nav.xhtml + 正文。"""
+def _write_epub(path: Path, docs, nav=None, extra=None, cover=None) -> None:
+    """写一个最小合法 EPUB：mimetype + container.xml + OPF + nav.xhtml + 正文。
+
+    `cover` 指定封面的声明方式（三种真实存在的写法各测一遍）：
+      `('properties', 'cover.png')` —— EPUB3：manifest 上的 `properties="cover-image"`；
+      `('meta', 'cover.png')`       —— EPUB2：`<meta name="cover" content="封面 item 的 id">`；
+      `('guide', 'cover.png')`      —— 更老的：`<guide><reference type="cover" href="...">`。
+    """
     items, spine = [], []
     for index, (href, _title, _body) in enumerate(docs):
         items.append(f'<item id="doc{index}" href="{href}" media-type="application/xhtml+xml"/>')
@@ -45,14 +53,23 @@ def _write_epub(path: Path, docs, nav=None, extra=None) -> None:
     if nav is not None:
         nav_item = '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
         links = ''.join(f'<li><a href="{href}">{title}</a></li>' for href, title in nav)
+    cover_item, cover_meta, guide = '', '', ''
+    if cover:
+        kind, name = cover
+        properties = ' properties="cover-image"' if kind == 'properties' else ''
+        cover_item = f'<item id="coverimg" href="{name}" media-type="image/png"{properties}/>'
+        if kind == 'meta':
+            cover_meta = '<meta name="cover" content="coverimg"/>'
+        elif kind == 'guide':
+            guide = f'<guide><reference type="cover" href="{name}"/></guide>'
     opf = (
         '<?xml version="1.0" encoding="utf-8"?>\n'
         '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">'
         '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
         '<dc:identifier id="bookid">urn:uuid:test</dc:identifier>'
-        '<dc:title>测试书</dc:title><dc:language>zh</dc:language></metadata>'
-        f'<manifest>{nav_item}{"".join(items)}</manifest>'
-        f'<spine>{"".join(spine)}</spine></package>'
+        f'<dc:title>测试书</dc:title><dc:language>zh</dc:language>{cover_meta}</metadata>'
+        f'<manifest>{nav_item}{cover_item}{"".join(items)}</manifest>'
+        f'<spine>{"".join(spine)}</spine>{guide}</package>'
     )
     nav_doc = (
         '<?xml version="1.0" encoding="utf-8"?>\n'
@@ -249,6 +266,117 @@ class DocumentReaderFormatTests(unittest.TestCase):
         extract_root = self.docs / '.document_state' / 'extract'
         written = [p for p in extract_root.rglob('*') if p.is_file()] if extract_root.exists() else []
         self.assertEqual(written, [])
+
+    # ===== 封面 =====
+
+    def test_cover_from_epub3_properties(self):
+        """EPUB3：manifest 上的 properties="cover-image"。封面不在 spine 里，必须单独取。"""
+        self._write_cover_epub('epub3.epub', ('properties', 'cover.png'))
+        cover = self.plugin.document_cover('epub3.epub')['cover']
+        self.assertTrue(cover, 'EPUB3 的 cover-image 没被取到')
+        self.assertIn('/file?path=', cover)
+        self.assertIn('plugin=document-reader', cover)
+        # 封面文件真的落盘了，而且落在主目录的 .document_state 下
+        written = list((self.docs / '.document_state' / 'extract').rglob('cover.png'))
+        self.assertEqual(len(written), 1)
+        self.assertEqual(written[0].read_bytes(), _PNG_BYTES)
+
+    def test_cover_from_epub2_meta(self):
+        self._write_cover_epub('epub2.epub', ('meta', 'cover.png'))
+        self.assertTrue(self.plugin.document_cover('epub2.epub')['cover'])
+
+    def test_cover_from_guide_reference(self):
+        self._write_cover_epub('old.epub', ('guide', 'cover.png'))
+        self.assertTrue(self.plugin.document_cover('old.epub')['cover'])
+
+    def test_cover_missing_file_is_not_an_error(self):
+        """声明了封面但 zip 里没有那个成员：返回空串（前端画生成式封面），不是异常。"""
+        _write_epub(self.docs / 'broken.epub',
+                    docs=[('ch1.xhtml', '第一章', '<p>正文</p>')],
+                    cover=('properties', 'not-there.png'))
+        self.plugin.list_documents()
+        self.assertEqual(self.plugin.document_cover('broken.epub'), {'cover': ''})
+
+    def test_cover_for_non_epub_and_unknown_doc(self):
+        (self.docs / 'a.txt').write_text('第一章\n正文\n', encoding='utf-8')
+        self.plugin.list_documents()
+        # txt 没有封面概念；不存在的 id 也不该炸
+        self.assertEqual(self.plugin.document_cover('a.txt'), {'cover': ''})
+        self.assertEqual(self.plugin.document_cover('没有这本书.epub'), {'cover': ''})
+
+    def _write_cover_epub(self, name: str, cover) -> None:
+        _write_epub(
+            self.docs / name,
+            docs=[('ch1.xhtml', '第一章', '<p>正文</p>')],
+            nav=[('ch1.xhtml', '第一章')],
+            cover=cover,
+            extra={'OEBPS/cover.png': _PNG_BYTES},
+        )
+        self.plugin.list_documents()
+
+    # ===== 书签 =====
+
+    def test_marks_add_list_remove(self):
+        (self.docs / 'a.txt').write_text('第一章\n正文\n', encoding='utf-8')
+        self.plugin.list_documents()
+
+        added = self.plugin.marks_add('a.txt', 1, 128, '他忽然想起很多年前', '第三章')
+        self.assertTrue(added['success'])
+        self.assertEqual(len(added['marks']), 1)
+        self.assertEqual(added['marks'][0]['char'], 128)
+
+        listed = self.plugin.marks_list('a.txt')['marks']
+        self.assertEqual(listed[0]['snippet'], '他忽然想起很多年前')
+        # 不带 id 时列出全部，并补上 document_id（书架左侧「书签」要用）
+        self.assertEqual(self.plugin.marks_list()['marks'][0]['document_id'], 'a.txt')
+
+        removed = self.plugin.marks_remove('a.txt', 1, 128)
+        self.assertEqual(removed['marks'], [])
+        self.assertEqual(self.plugin.marks_list('a.txt')['marks'], [])
+
+    def test_marks_same_position_is_idempotent(self):
+        (self.docs / 'a.txt').write_text('第一章\n正文\n', encoding='utf-8')
+        self.plugin.list_documents()
+        self.plugin.marks_add('a.txt', 0, 10, '第一段')
+        self.plugin.marks_add('a.txt', 0, 10, '第一段（重复点了一次）')
+        marks = self.plugin.marks_list('a.txt')['marks']
+        self.assertEqual(len(marks), 1)
+        self.assertIn('重复', marks[0]['snippet'])
+
+    def test_marks_persist_across_plugin_reload(self):
+        (self.docs / 'a.txt').write_text('第一章\n正文\n', encoding='utf-8')
+        self.plugin.list_documents()
+        self.plugin.marks_add('a.txt', 2, 33, '摘录')
+
+        fresh = self._new_plugin()
+        fresh.list_documents()
+        self.assertEqual(fresh.marks_list('a.txt')['marks'][0]['char'], 33)
+
+    def test_marks_reject_unknown_document_and_bad_position(self):
+        self.assertEqual(self.plugin.marks_add('没有这本书.txt', 0, 0)['success'], False)
+        (self.docs / 'a.txt').write_text('第一章\n正文\n', encoding='utf-8')
+        self.plugin.list_documents()
+        # 位置参数不是数字时给错误，而不是 500
+        self.assertFalse(self.plugin.marks_add('a.txt', 'x', 'y')['success'])
+        # 负数与非法章节被夹回合法范围，不产生负偏移
+        added = self.plugin.marks_add('a.txt', -5, -20, 'x')
+        self.assertEqual(added['marks'][0]['chapter'], 0)
+        self.assertEqual(added['marks'][0]['char'], 0)
+
+    def test_marks_stay_per_document_when_ids_collide_across_roots(self):
+        """两个根目录下同名文件：id 会被去重成 `a.txt` / `a.txt#2`，书签必须各归各。"""
+        other = self.root / 'other'
+        other.mkdir()
+        (self.docs / 'a.txt').write_text('第一章\n正文\n', encoding='utf-8')
+        (other / 'a.txt').write_text('第一章\n另一本正文\n', encoding='utf-8')
+        plugin = self._new_plugin([str(self.docs), str(other)])
+        ids = sorted(item['id'] for item in plugin.list_documents()['documents'])
+        self.assertEqual(ids, ['a.txt', 'a.txt#2'])
+
+        plugin.marks_add('a.txt', 0, 5, '第一本')
+        plugin.marks_add('a.txt#2', 0, 9, '第二本')
+        self.assertEqual(plugin.marks_list('a.txt')['marks'][0]['snippet'], '第一本')
+        self.assertEqual(plugin.marks_list('a.txt#2')['marks'][0]['char'], 9)
 
     # ===== 进度键迁移 =====
 

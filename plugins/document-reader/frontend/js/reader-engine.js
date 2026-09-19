@@ -309,4 +309,181 @@ class DocumentReaderEngine {
         if (range <= 0) return 0;
         return Math.max(0, Math.min(1, el.scrollTop / range));
     }
+
+    // ============================================================
+    // 正文坐标系（朗读与书签共用）
+    //
+    // 字符偏移的坐标系就是 `chapterEl.textContent`：与后端切句用的是同一份文本，
+    // 与书签存的 `char` 也是同一个数，因此"高亮的那一句"、"书签记的那个字"、
+    // "朗读起点"三者天然对齐，不需要任何换算。
+    //
+    // 注意**不能缓存 DOM 节点或 Range**：滚动模式下 2~3 章共存且会被 _trimTop /
+    // _trimBottom 真的删掉，缓存下来的引用会指向已移除的节点（Range.setStart 直接抛）。
+    // 所以下面每个方法都是"当场遍历、当场用完"。
+    // ============================================================
+
+    /** 当前章的正文元素（可能为空：pdf / 加载中）。 */
+    chapterElement(index = this.currentChapterIndex) {
+        const el = this.contentArea;
+        if (!el) return null;
+        return el.querySelector(`.chapter-content[data-chapter-index="${index}"]`);
+    }
+
+    /** 给朗读用：当前章的文本、DOM 与字符区间。 */
+    getChapterContext(index = this.currentChapterIndex) {
+        const el = this.chapterElement(index);
+        if (!el) return null;
+        return {
+            chapter: index,
+            element: el,
+            text: el.textContent || '',
+            startChar: 0,
+        };
+    }
+
+    /** 收集章节里所有非空文本节点（文档顺序）。 */
+    static _textNodes(root) {
+        const nodes = [];
+        if (!root) return nodes;
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        let node = walker.nextNode();
+        while (node) {
+            if (node.nodeValue) nodes.push(node);
+            node = walker.nextNode();
+        }
+        return nodes;
+    }
+
+    /** 字符偏移 → (文本节点, 节点内偏移)。越界时夹到末尾。 */
+    static _pointAt(root, offset) {
+        const nodes = DocumentReaderEngine._textNodes(root);
+        if (!nodes.length) return null;
+        let remaining = Math.max(0, offset | 0);
+        for (const node of nodes) {
+            const length = node.nodeValue.length;
+            if (remaining <= length) return { node, offset: remaining };
+            remaining -= length;
+        }
+        const last = nodes[nodes.length - 1];
+        return { node: last, offset: last.nodeValue.length };
+    }
+
+    /** 字符区间 → Range（拿不到就返回 null）。 */
+    _rangeFor(root, start, end) {
+        const from = DocumentReaderEngine._pointAt(root, start);
+        const to = DocumentReaderEngine._pointAt(root, end);
+        if (!from || !to) return null;
+        try {
+            const range = document.createRange();
+            range.setStart(from.node, from.offset);
+            range.setEnd(to.node, to.offset);
+            return range;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    /** 视口顶部对应的字符偏移：二分查找第一个落在视口线以下的字符。 */
+    _charAtViewportTop(el, root) {
+        const line = el.getBoundingClientRect().top + 2;
+        let low = 0;
+        let high = root.textContent.length;
+        while (low < high) {
+            const mid = (low + high) >> 1;
+            const range = this._rangeFor(root, mid, Math.min(mid + 2, root.textContent.length));
+            const rect = range && range.getClientRects()[0];
+            if (!rect || rect.bottom >= line) high = mid;
+            else low = mid + 1;
+        }
+        return low;
+    }
+
+    /** 句子起点：往前找句末标点（与后端 split_text 的切点同一套字符）。 */
+    static sentenceStart(text, offset) {
+        const stops = '。！？；…!?;\n';
+        let index = Math.max(0, Math.min(offset, text.length));
+        while (index > 0 && !stops.includes(text[index - 1])) index -= 1;
+        return index;
+    }
+
+    /**
+     * 视口顶部那一句的锚点：`{chapter, char, snippet}`。
+     *
+     * 这是"开始朗读"与"添加书签"共用的定位法则 —— 用户看着哪儿，就从哪儿开始。
+     */
+    anchorAtViewportTop() {
+        const el = this.contentArea;
+        const root = this.chapterElement();
+        if (!el || !root) return null;
+        const text = root.textContent || '';
+        if (!text) return null;
+        const raw = this._charAtViewportTop(el, root);
+        const char = DocumentReaderEngine.sentenceStart(text, raw);
+        return {
+            chapter: this.currentChapterIndex,
+            char,
+            snippet: text.slice(char, char + 16),
+        };
+    }
+
+    /** 某个节点落在哪一章（滚动模式下窗口里同时挂着 2~3 章）。找不到返回 -1。 */
+    chapterIndexForNode(node) {
+        let current = node;
+        while (current && current !== this.contentArea) {
+            if (current.classList && current.classList.contains('chapter-content')) {
+                return parseInt(current.dataset.chapterIndex, 10);
+            }
+            current = current.parentNode;
+        }
+        return -1;
+    }
+
+    /**
+     * 选中文本的锚点：`{chapter, char, snippet}`。
+     *
+     * **章号由选区自己决定，不是 `currentChapterIndex`** —— 滚动模式下"当前章"是
+     * 视口 35% 处那一章，而用户完全可能选上面/下面那一章的句子。以前按当前章找，
+     * 选区不在那一章时直接返回 null（表现是"明明选中了，却提示请先选中一段文字"）。
+     */
+    anchorFromRange(range) {
+        if (!range) return null;
+        const root = this.contentArea;
+        if (!root || !root.contains(range.startContainer)) return null;
+        const chapter = this.chapterIndexForNode(range.startContainer);
+        const chapterEl = this.chapterElement(chapter);
+        if (!chapterEl) return null;
+        const nodes = DocumentReaderEngine._textNodes(chapterEl);
+        let total = 0;
+        for (const node of nodes) {
+            if (node === range.startContainer) {
+                const offset = total + range.startOffset;
+                const text = chapterEl.textContent || '';
+                const char = DocumentReaderEngine.sentenceStart(text, offset);
+                return { chapter, char, snippet: text.slice(char, char + 16) };
+            }
+            total += node.nodeValue.length;
+        }
+        return null;
+    }
+
+    /** 把某个字符偏移滚到视口顶部（书签跳转用）。 */
+    scrollToChar(char, snippet = '') {
+        const el = this.contentArea;
+        const root = this.chapterElement();
+        if (!el || !root) return false;
+        const text = root.textContent || '';
+        let offset = Math.max(0, Math.min(Number(char) || 0, text.length));
+        // snippet 校验：解析器换了输出、正文节点漂移之后，按 char 直接定位会**静默**
+        // 落到隔壁段落。对不上就在本章内搜一次；再找不到就退回章首 —— 宁可从头，
+        // 也不落到错的地方。
+        if (snippet && text.slice(offset, offset + snippet.length) !== snippet) {
+            const found = text.indexOf(snippet.slice(0, 8));
+            offset = found >= 0 ? found : 0;
+        }
+        const range = this._rangeFor(root, offset, offset + 1);
+        const rect = range && range.getClientRects()[0];
+        if (!rect) return false;
+        el.scrollTop += rect.top - el.getBoundingClientRect().top - 8;
+        return true;
+    }
 }

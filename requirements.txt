@@ -43,10 +43,10 @@ pycryptodome==3.23.0
 # document-reader 用它嗅探 .txt 的编码（HIDDEN_IMPORTS 里也有，缺了会被静默跳过）
 chardet==7.4.3
 
+# --- document-reader 的朗读（TTS）---
+edge-tts==7.2.8
+
 # --- group-mesh 协议内核 ---
-# Noise_XX 握手由 noiseprotocol 提供（依赖 cryptography）。
-# 私钥保护：Windows 走 DPAPI（系统自带，无依赖）；桌面 Linux/macOS 走 keyring；
-# 两者都不可用时可用 OMNIBOX_SECRET_KEY 走口令派生的 AES-GCM，或如实回落到明文。
 noiseprotocol==0.3.1
 cryptography==50.0.1
 keyring==25.7.0
@@ -57,7 +57,6 @@ commonX==0.6.40
 
 # --- 终端输出（jmcomic / rich 链路） ---
 rich==15.0.0
-# document-reader 的 .md 渲染也直接用它（HIDDEN_IMPORTS 里也有）
 markdown-it-py==4.2.0
 mdurl==0.1.2
 Pygments==2.21.0

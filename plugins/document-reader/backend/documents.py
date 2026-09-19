@@ -56,6 +56,9 @@ if MarkdownIt is not None:
 
 _HEADING_RE = re.compile(r'^(#{1,3})[ \t]+(.+?)[ \t]*#*[ \t]*$')
 _EXT_RE = re.compile(r'^\.[a-z0-9]{1,5}$')
+# 封面只认真正的图片扩展名：正文抽图可以把未知扩展名存成 `.img` 交给浏览器试，
+# 但封面是列表里每本书都要加载的东西，落一个浏览器解不开的文件就是一张破图。
+_COVER_EXTS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'}
 _SPACE_RE = re.compile(r'\s+')
 
 
@@ -283,6 +286,10 @@ class MarkdownDocument:
         self._root_dir = Path(root_dir).resolve() if root_dir else None
         self._chapters: Optional[List[Tuple[Optional[str], str]]] = None
 
+    def cover(self) -> Optional[str]:
+        """Markdown 没有封面这个概念 —— 交给前端画生成式封面。"""
+        return None
+
     def _load(self) -> List[Tuple[Optional[str], str]]:
         if self._chapters is not None:
             return self._chapters
@@ -403,8 +410,18 @@ def _find_opf(zf: zipfile.ZipFile) -> str:
     raise DocError('EPUB 的 container.xml 里没有 rootfile')
 
 
-def _parse_opf(zf: zipfile.ZipFile, opf_path: str) -> Tuple[Dict[str, dict], List[str]]:
-    """返回 (manifest, spine 的 zip 成员路径列表)。"""
+def _parse_opf(zf: zipfile.ZipFile, opf_path: str) -> Tuple[Dict[str, dict], List[str], str]:
+    """返回 (manifest, spine 的 zip 成员路径列表, 封面成员路径)。
+
+    封面的三条来路都要认，实测三种书各占一部分：
+
+      1. EPUB3：manifest 里 `<item properties="cover-image">`；
+      2. EPUB2：`<metadata><meta name="cover" content="封面 item 的 id">`；
+      3. 更老的：`<guide><reference type="cover" href="...">`（部分书只有这条）。
+
+    封面文件**通常不在 spine 里**（它不是正文），所以必须单独取出来 —— 靠读 spine
+    顺手带出封面是行不通的。三条都没有就返回空串，交给前端画生成式封面。
+    """
     root = ET.fromstring(_read_member(zf, opf_path))
     opf_dir = posixpath.dirname(opf_path)
     manifest: Dict[str, dict] = {}
@@ -420,6 +437,33 @@ def _parse_opf(zf: zipfile.ZipFile, opf_path: str) -> Tuple[Dict[str, dict], Lis
             'properties': (node.get('properties') or '').split(),
         }
 
+    cover = ''
+    for item in manifest.values():
+        if 'cover-image' in item['properties'] and 'image' in item['type']:
+            cover = item['href']
+            break
+    if not cover:
+        cover_id = ''
+        for node in root.iter():
+            if _local(node.tag) == 'meta' and (node.get('name') or '').lower() == 'cover':
+                cover_id = (node.get('content') or '').strip()
+                break
+        item = manifest.get(cover_id)
+        if item and item['href']:
+            cover = item['href']
+    if not cover:
+        for node in root.iter():
+            if _local(node.tag) != 'reference':
+                continue
+            if (node.get('type') or '').lower() != 'cover':
+                continue
+            href = (node.get('href') or '').strip()
+            if href:
+                cover = _zip_join(opf_dir, href)
+                break
+    if cover and not _is_safe_member(cover):
+        cover = ''
+
     spine: List[str] = []
     for node in root.iter():
         if _local(node.tag) != 'spine':
@@ -434,7 +478,7 @@ def _parse_opf(zf: zipfile.ZipFile, opf_path: str) -> Tuple[Dict[str, dict], Lis
         # 没有可用 spine 的坏书：按 manifest 里的 XHTML 顺序兜底，总比打不开好
         spine = [item['href'] for item in manifest.values()
                  if 'html' in item['type'] and item['href']]
-    return manifest, spine
+    return manifest, spine, cover
 
 
 class _AnchorCollector(HTMLParser):
@@ -522,6 +566,7 @@ class EpubDocument:
         self._spine: List[Dict[str, str]] = []
         self._meta: Dict[int, Tuple[str, int]] = {}
         self._extracted_bytes = 0
+        self._cover_href = ''
         self._load()
 
     # ---- 解析 ----
@@ -532,8 +577,9 @@ class EpubDocument:
         try:
             with zipfile.ZipFile(self._path) as zf:
                 opf_path = _find_opf(zf)
-                manifest, spine = _parse_opf(zf, opf_path)
+                manifest, spine, cover = _parse_opf(zf, opf_path)
                 titles = _toc_titles(zf, manifest)
+                self._cover_href = cover
         except (zipfile.BadZipFile, OSError, ET.ParseError) as e:
             raise DocError(f'EPUB 结构无法解析: {e}') from None
         if not spine:
@@ -557,6 +603,31 @@ class EpubDocument:
         with zipfile.ZipFile(self._path) as zf:
             raw = _read_member(zf, href)
             return _clean(_decode(raw), image_src=self._image_resolver(zf, href))
+
+    def cover(self) -> Optional[str]:
+        """封面图的 URL；没有封面返回 None（前端画生成式封面）。"""
+        href = self._cover_href
+        if not href or self._extract_dir is None or self._image_url is None:
+            return None
+        try:
+            with zipfile.ZipFile(self._path) as zf:
+                try:
+                    info = zf.getinfo(href)
+                except KeyError:
+                    return None
+                if info.is_dir() or info.file_size > MAX_MEMBER_BYTES:
+                    return None
+                ext = posixpath.splitext(href)[1].lower()
+                # 与正文抽图同一套成员名校验，避免把 zip 里的垃圾成员当图片落盘
+                if not _is_safe_member(href) or ext not in _COVER_EXTS:
+                    return None
+                target = self._extract_dir / ('cover' + ext)
+                if not target.is_file():
+                    self._extract_dir.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(zf.read(href))
+                return self._image_url(str(target))
+        except (zipfile.BadZipFile, OSError):
+            return None
 
     # ---- 章节元信息 ----
 
@@ -619,7 +690,10 @@ class EpubDocument:
 def open_document(path: str, kind: str, encoding: str = 'auto', root_dir: Optional[str] = None,
                   extract_dir: Optional[str] = None,
                   image_url: Optional[Callable[[str], str]] = None) -> object:
-    """按格式返回统一形状的文档对象：`.chapters()` / `.chapter_html(index)`。"""
+    """按格式返回统一形状的文档对象：`.chapters()` / `.chapter_html(index)` / `.cover()`。
+
+    `.cover()` 返回封面图 URL 或 None（None 表示"这本书没有封面图，前端自己画一张"）。
+    """
     if kind == 'epub':
         return EpubDocument(path, extract_dir=extract_dir, image_url=image_url)
     if kind == 'md':

@@ -1,659 +1,394 @@
-/* ===== 主布局：左侧边栏 + 右侧阅读区 ===== */
+/* ============================================================
+   文档阅读器样式
+
+   组织顺序（改之前先看这一行，别再把新规则追加到文件末尾）：
+     1. 变量        本插件自己的色板，全部派生自壳的 CSS 变量
+     2. 布局        #app / 侧栏 / 主区 / 阅读区（壳的基类不再重定义）
+     3. 组件        封面卡 / 目录项 / 弹窗内容 / 朗读卡 / 朗读设置页 / 空状态
+     4. 状态        主题变体、选中、加载中、动效降级
+
+   壳注入的类（`.view-sub-sidebar` / `.view-body` / `.view-toolbar` / `.view-content` /
+   `.obx-nav-item` / `.obx-scroll` / `.modal` / `.btn`）**不在这里重定义** ——
+   plugin-guide §4.1 明确要求，之前这份文件把 `.document-content-area` 等规则
+   在末尾又覆盖了一遍，改一个颜色要找三处，现在按上面四段归位。
+   ============================================================ */
+
+/* ===== 1. 变量 ===== */
+
+#app {
+    --nr-radius: 12px;
+    --nr-radius-sm: 8px;
+    --nr-gradient: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #7aa2ff));
+    --nr-accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+    --nr-cover-frame: hsl(210 24% 62%);
+    --nr-cover-spine: hsl(210 28% 46%);
+    --nr-cover-bars: hsl(210 24% 88%);
+}
+
+/* ===== 2. 布局 ===== */
+
 #app {
     display: flex;
     height: 100vh;
     overflow: hidden;
+    /* 朗读设置页（.nr-voice-page）用 absolute inset:0 覆盖整个插件区 */
+    position: relative;
 }
-.sidebar-toggle {
+
+.nr-sidebar {
     display: flex;
-    gap: 4px;
-    padding: 8px;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.nr-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 14px 12px;
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
 }
-.sidebar-toggle .btn {
-    flex: 1;
-    padding: 5px 8px;
-    font-size: 12px;
-}
-.sidebar-toggle .btn.active {
-    background: var(--accent);
-    color: var(--text-on-accent);
-    border-color: var(--accent);
-}
-.sidebar-panel {
-    flex: 1;
-    overflow-y: auto;
-    overflow-x: hidden;
-    padding: 4px 0;
-    min-width: 0;
-}
-/* ===== 书架列表 ===== */
-.document-shelf-list {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 4px;
-}
-.document-shelf-item {
-    padding: 10px 12px;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    transition: background var(--transition-fast);
-    border-left: 3px solid transparent;
-}
-.document-shelf-item:hover {
-    background: var(--bg-hover);
-}
-.document-shelf-item.active {
-    background: var(--bg-hover);
-    border-left-color: var(--accent);
-}
-.document-shelf-title {
-    font-size: 14px;
-    font-weight: 600;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    margin-bottom: 2px;
-}
-/* 子目录里的文档：显示所属目录（主目录下的文件不占这一行） */
-.document-shelf-dir {
-    font-size: 11px;
-    color: var(--text-secondary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    margin-bottom: 2px;
-}
-.document-shelf-meta {
-    display: flex;
-    justify-content: space-between;
-    font-size: 11px;
-    color: var(--text-secondary);
-}
-.document-shelf-progress {
-    color: var(--accent);
-    font-weight: 500;
-}
-/* ===== 章节目录 ===== */
-.document-chapter-list {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 4px;
-}
-.document-chapter-item {
-    padding: 8px 12px;
-    cursor: pointer;
-    border-radius: var(--radius-sm);
-    transition: background var(--transition-fast);
-    font-size: 13px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-}
-.document-chapter-item:hover {
-    background: var(--bg-hover);
-}
-.document-chapter-item.active {
-    background: var(--accent);
-    color: var(--text-on-accent);
-}
-.document-chapter-item .chapter-words {
-    font-size: 11px;
-    opacity: 0.7;
-    white-space: nowrap;
-}
-/* ===== 书架空状态 ===== */
-.document-shelf-list .document-empty {
-    min-height: 200px;
-    height: auto;
-    padding: 24px 12px;
-    gap: 8px;
-    text-align: center;
-}
-.document-shelf-list .document-empty-icon {
-    font-size: 40px;
-}
-/* ===== 阅读器 ===== */
-.document-reader-container {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    background: var(--bg-surface);
-}
-.document-reader-toolbar {
-    display: flex;
-    align-items: center;
-    padding: 8px 16px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-surface);
-    gap: 8px;
-    flex-shrink: 0;
-}
-.document-reader-toolbar .btn-icon {
-    width: 32px;
-    height: 32px;
+
+.nr-brand-icon {
+    width: 34px;
+    height: 34px;
+    border-radius: var(--nr-radius-sm);
     display: flex;
     align-items: center;
     justify-content: center;
-    border: none;
-    background: transparent;
-    cursor: pointer;
-    border-radius: var(--radius-sm);
     font-size: 18px;
+    flex-shrink: 0;
+    background: var(--nr-accent-soft);
+}
+
+.nr-brand-text {
+    min-width: 0;
+}
+
+.nr-brand-title {
+    font-size: 14px;
+    font-weight: 700;
     color: var(--text-primary);
 }
-.document-reader-toolbar .btn-icon:hover {
-    background: var(--bg-hover);
+
+.nr-brand-sub {
+    margin-top: 1px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    letter-spacing: 0.4px;
 }
-.document-reader-title {
+
+.nr-nav {
     flex: 1;
-    font-size: 14px;
-    font-weight: 500;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 6px 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+/* 分组标题：与 manga-library 的 .ml-nav-label 同一套（壳没有共享类） */
+.nr-nav-label {
+    padding: 12px 10px 5px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    color: var(--text-muted);
+}
+
+/* 导航项：间距交给 .ml-nav-item / .gm-nav-item 的同一份写法，图标列固定 18px */
+.nr-nav-item {
+    gap: 9px;
+}
+
+.nr-nav-icon {
+    width: 18px;
     text-align: center;
+    flex-shrink: 0;
+}
+
+.nr-nav-item > span:nth-child(2) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 计数徽标：与 group-mesh 的 .gm-nav-count 同一套（壳没有共享类，各插件抄同一份） */
+.nr-nav-count {
+    flex-shrink: 0;
+    margin-left: auto;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+
+.nr-nav-count:empty {
+    display: none;
+}
+
+.nr-sidebar-footer {
+    flex-shrink: 0;
+    padding: 11px 14px;
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--text-secondary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
-/* 阅读器设置 */
-.document-reader-settings {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 8px 16px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-surface);
-    flex-shrink: 0;
-    flex-wrap: wrap;
+
+.nr-toolbar-right {
+    gap: 10px;
+    /* 右侧动作组靠右：`.toolbar-group` 自身没有 margin-left:auto（壳只在部分插件
+       的 HTML 里用行内样式写的），漏了就会贴着标题，看起来像"设置跑到左边去了" */
+    margin-left: auto;
 }
-.document-reader-settings label {
+
+.nr-back-btn {
+    flex-shrink: 0;
+}
+
+.nr-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.nr-sub {
     font-size: 12px;
     color: var(--text-secondary);
+}
+
+.nr-search {
     display: flex;
     align-items: center;
     gap: 6px;
-    white-space: nowrap;
-}
-.document-reader-settings select,
-.document-reader-settings input[type="range"] {
-    font-size: 12px;
-    padding: 2px 4px;
+    padding: 4px 10px;
     border: 1px solid var(--border);
-    border-radius: 3px;
+    border-radius: 999px;
     background: var(--bg-surface);
 }
-.document-reader-settings input[type="range"] {
-    width: 80px;
-    cursor: pointer;
+
+.nr-search input {
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--text-primary);
+    width: 180px;
+    font-size: 13px;
 }
-.document-reader-settings .setting-value {
-    font-size: 11px;
+
+.nr-search-clear {
+    border: 0;
+    background: transparent;
     color: var(--text-secondary);
-    min-width: 20px;
-    text-align: center;
-}
-/* 章节选择器 */
-.document-chapter-selector {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0,0,0,0.5);
-    display: none;
-    justify-content: center;
-    align-items: center;
-    z-index: 1000;
-}
-.document-chapter-selector.active {
-    display: flex;
-}
-.document-chapter-list {
-    background: var(--bg-surface);
-    border-radius: var(--radius);
-    width: 400px;
-    max-height: 80vh;
-    overflow-y: auto;
-    padding: 16px;
-}
-.document-chapter-item {
-    padding: 8px 12px;
     cursor: pointer;
-    border-radius: var(--radius-sm);
-    transition: background var(--transition-fast);
-    font-size: 14px;
 }
-.document-chapter-item:hover {
-    background: var(--bg-hover);
+
+.nr-content {
+    padding: 18px;
 }
-.document-chapter-item.active {
-    background: var(--accent);
-    color: white;
+
+/* 阅读区：内容区自己滚（壳的 .view-content 不参与，避免两个滚动容器） */
+.nr-reader-view {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
 }
-/* 阅读内容区 */
+
+.nr-reader-view.hidden {
+    display: none;
+}
+
 .document-content-area {
     flex: 1;
     overflow-y: auto;
-    padding: 24px 48px;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    overflow-anchor: none;
+    scrollbar-width: none;
+    /* 左右留白按行宽上限算：中文一行 45~50 字最好读，通栏（1176px）会是 90 字，
+       眼睛横移距离翻倍、换行容易串行。`margin-inline: auto` 让正文块居中。 */
+    padding: 24px clamp(24px, 8vw, 140px) 40px;
     line-height: var(--reader-line-height, 1.8);
     font-size: var(--reader-font-size, 16px);
-    letter-spacing: var(--reader-letter-spacing, 0px);
+    letter-spacing: var(--reader-letter-spacing, 0);
     color: var(--reader-text-color, var(--text-primary));
     background: var(--reader-bg-color, var(--bg-surface));
     user-select: text !important;
-    -webkit-user-select: text !important;
-}
-.document-content-area * {
-    user-select: text !important;
-    -webkit-user-select: text !important;
-}
-/* 主题变体 */
-.document-content-area.theme-dark {
-    --reader-bg-color: #1a1a1a;
-    --reader-text-color: #cccccc;
-}
-.document-content-area.theme-sepia {
-    --reader-bg-color: #f5e6c8;
-    --reader-text-color: #5b4636;
-}
-.document-content-area.theme-green {
-    --reader-bg-color: #c7edcc;
-    --reader-text-color: #2d4a2d;
-}
-.document-content-area.theme-blue {
-    --reader-bg-color: #d4e8f5;
-    --reader-text-color: #1a3a5c;
-}
-/* 段落样式 */
-.document-content-area p {
-    margin-bottom: 8px;
-    text-indent: 2em;
-    line-height: inherit;
-}
-.document-content-area p:first-of-type {
-    margin-top: 0;
-}
-/* 章节分隔符 */
-.chapter-separator {
-    margin: 30px 0;
-    text-align: center;
-    color: var(--text-secondary);
-    font-size: 13px;
-    opacity: 0.5;
-    letter-spacing: 2px;
-}
-.chapter-content {
-    margin-bottom: 10px;
-}
-.chapter-title {
-    display: none;
-}
-/* 进度指示器 */
-.document-progress-bar {
-    height: 3px;
-    background: var(--border);
-    flex-shrink: 0;
-}
-.document-progress-fill {
-    height: 100%;
-    background: var(--accent);
-    transition: width 0.3s ease;
-}
-/* 空状态 */
-.document-empty {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    color: var(--text-secondary);
-    gap: 16px;
-}
-/* 空状态时内容区居中填满 */
-.document-content-area:has(> .document-empty) {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-}
-.document-content-area:has(> .document-empty) .document-empty {
-    height: auto;
-}
-.document-empty-icon {
-    font-size: 64px;
-    opacity: 0.5;
-}
-.document-empty-text {
-    font-size: 16px;
-}
-.document-empty-hint {
-    font-size: 13px;
-    opacity: 0.7;
-}
-/* 加载动画 */
-.document-loading {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    padding: 20px;
-    color: var(--text-secondary);
-    font-size: 13px;
-}
-.spinner {
-    width: 16px;
-    height: 16px;
-    border: 2px solid var(--border);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-}
-@keyframes spin {
-    to { transform: rotate(360deg); }
-}
-
-/* ============================================================
-   现代化覆盖（漫画中心 / 图片相册同款风格）
-   ============================================================ */
-:root {
-  --nr-radius: 14px;
-  --nr-radius-sm: 10px;
-  --nr-gradient: linear-gradient(135deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 55%, #f59e0b) 100%);
-  --nr-accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
-}
-
-#app {
-  background:
-    radial-gradient(1000px 420px at 92% -12%, var(--nr-accent-soft), transparent 62%),
-    var(--bg-app);
-}
-
-/* 侧栏宽度只由这里决定。两点缺一不可：
-   1. 选择器要带上 .view-sub-sidebar —— 壳的 base.css 是在插件样式**之后**注入的，
-      同特异性的 `.view-sub-sidebar{width:...}` 会把下面这行覆盖掉（宽度和窄屏
-      媒体查询一直是死代码）；
-   2. min-width:0 —— flex 项的"自动最小尺寸"等于内容的 min-content 宽度，一行不换行
-      的长书名就是整个书名的宽度，不压成 0 的话侧栏会被书名顶宽。 */
-.view-sub-sidebar.nr-sidebar {
-  width: 252px;
-  min-width: 0;
-  flex: 0 0 auto;
-  overflow: hidden;
-}
-
-.nr-brand { display: flex; align-items: center; gap: 12px; padding: 18px 16px 14px; }
-.nr-brand-icon {
-  width: 40px; height: 40px; border-radius: 12px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 21px; color: var(--text-on-accent); background: var(--nr-gradient);
-  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 35%, transparent);
-}
-.nr-brand-title { font-size: 15px; font-weight: 700; color: var(--text-primary); }
-.nr-brand-sub { font-size: 11px; color: var(--text-secondary); margin-top: 1px; letter-spacing: 0.4px; }
-
-.sidebar-toggle { padding: 8px 10px; gap: 6px; }
-.sidebar-toggle .btn { border-radius: 999px; padding: 6px 10px; }
-.sidebar-toggle .btn.active {
-  background: var(--nr-gradient); color: var(--text-on-accent);
-  border-color: transparent; box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 32%, transparent);
-}
-
-.document-shelf-item { border-radius: var(--nr-radius-sm); padding: 10px 12px; }
-.document-shelf-item:hover { background: var(--bg-hover); transform: translateX(2px); }
-.document-shelf-item.active { background: var(--nr-accent-soft); border-left-color: var(--accent); }
-.document-chapter-item { border-radius: var(--nr-radius-sm); }
-.document-chapter-item.active {
-  background: var(--nr-gradient); color: var(--text-on-accent);
-  box-shadow: 0 6px 14px color-mix(in srgb, var(--accent) 30%, transparent);
-}
-
-/* 搜索框胶囊化 */
-#document-browse-group .search-input {
-  width: 260px; border-radius: 999px; padding: 7px 14px;
-  transition: width 0.25s ease, border-color var(--transition-fast), box-shadow var(--transition-fast);
-}
-#document-browse-group .search-input:focus {
-  width: 320px; border-color: var(--accent); box-shadow: 0 0 0 3px var(--nr-accent-soft);
-}
-
-/* 阅读区卡片化 */
-.document-content-area { background: transparent; padding: 14px 18px; }
-.document-content-area > * {
-  border-radius: var(--nr-radius);
-  box-shadow: var(--shadow-sm);
-}
-
-.document-reader-settings {
-  margin: 0 18px 10px; border-radius: var(--nr-radius);
-  background: var(--bg-surface); border: 1px solid var(--border);
-  padding: 10px 16px; flex-wrap: wrap; gap: 12px;
-}
-.document-reader-settings input[type="range"] { accent-color: var(--accent); }
-.document-reader-settings select {
-  border: 1px solid var(--border); border-radius: var(--nr-radius-sm);
-  background: var(--bg-surface); color: var(--text-primary); padding: 4px 8px;
-}
-
-/* 底部进度条 */
-.document-progress-bar { height: 4px; background: var(--bg-hover); border-radius: 999px; overflow: hidden; }
-.document-progress-fill {
-  background: var(--nr-gradient); border-radius: 999px;
-  transition: width 0.3s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-/* 空状态动效 */
-.document-empty-icon { animation: obxFloat 4s ease-in-out infinite; }
-.document-shelf-item, .document-chapter-item {
-  animation: obxFadeUp 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
-  animation-delay: calc(var(--obx-i, 0) * 20ms);
-}
-
-@media (max-width: 860px) {
-  .view-sub-sidebar.nr-sidebar { width: 210px; }
-  #document-browse-group .search-input, #document-browse-group .search-input:focus { width: 170px; }
-}
-
-/* ============================================================
-   阅读性能优化：稳定的滚动容器与轻量章节布局
-   ============================================================ */
-.document-content-area {
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
 }
 
 .chapter-content {
-  contain: layout;
-}
-
-.chapter-content p {
-  margin: 0 0 0.75em;
-  line-height: var(--reader-line-height, 1.8);
-  letter-spacing: var(--reader-letter-spacing, 0);
-}
-
-.chapter-separator {
-  height: 2em;
-  flex-shrink: 0;
-}
-
-.document-chapter-item,
-.document-shelf-item {
-  contain: content;
-}
-
-.document-chapter-list,
-.document-shelf-list {
-  overscroll-behavior: contain;
-}
-
-#document-loading {
-  position: sticky;
-  bottom: 12px;
-  left: 0;
-  right: 0;
-  margin: 0 auto;
-  width: max-content;
-  z-index: 5;
-}
-
-/* ============================================================
-   v4 滑动窗口：隐藏阅读区滚动条，锚定基准修正
-   ============================================================ */
-.document-content-area {
-  position: relative;
-  scrollbar-width: none;          /* Firefox */
-  -ms-overflow-style: none;       /* 旧 Edge */
+    max-width: 760px;
+    margin: 0 auto 10px;
 }
 
 .document-content-area::-webkit-scrollbar {
-  display: none;
-  width: 0;
-  height: 0;
+    display: none;
+    width: 0;
 }
 
-/* 关键修复：禁用浏览器滚动锚定（scroll anchoring）。
-   滚动锚定会在 DOM 顶部增删内容时自动补偿 scrollTop，
-   与我们的窗口滑动补偿叠加后就是「偶发往前跳」的元凶之一。 */
-.document-content-area {
-  overflow-anchor: none;
+.document-content-area * {
+    user-select: text !important;
 }
 
-.chapter-content {
-  overflow-anchor: none;
-}
-
-/* ============================================================
-   v6 分页模式：阅读区不滚动，页面固定
-   ============================================================ */
-.document-content-area {
-  overflow: hidden;
-  display: block;
-}
-
-.document-page {
-  height: 100%;
-  overflow: hidden;
-}
-
-.document-page p {
-  margin: 0 0 0.75em;
-  line-height: var(--reader-line-height, 1.8);
-  letter-spacing: var(--reader-letter-spacing, 0);
-}
-
-/* 隐形分页测量容器：与正文完全相同的排版上下文 */
-.document-measure {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 100%;
-  visibility: hidden;
-  pointer-events: none;
-  z-index: -1;
-}
-
-.document-measure p {
-  margin: 0 0 0.75em;
-  line-height: var(--reader-line-height, 1.8);
-  letter-spacing: var(--reader-letter-spacing, 0);
-}
-
-/* 连续分页流：页面内章节小标题 */
-.document-page-chapter {
-  margin: 0 0 0.9em;
-  padding-bottom: 0.4em;
-  border-bottom: 1px solid var(--border);
-  font-size: calc(var(--reader-font-size, 16px) * 1.15);
-  font-weight: 700;
-  letter-spacing: 0.5px;
-}
-
-/* 双模式：阅读区恢复为单章滚动容器（滚动条保持隐藏） */
-.document-content-area {
-  overflow-y: auto;
-  overflow-x: hidden;
-  display: block;
-}
-
-/* 翻页模式：章节间不连续，自然滚动到底即止 */
-.chapter-content p {
-  margin: 0 0 0.75em;
-}
-
-/* 窗口拖动期间隐藏阅读内容，避免大段文字反复重排造成卡顿 */
 .document-content-area.resizing {
-  display: none;
+    display: none;
 }
 
-/* 主题跟随模式：完全使用 Shell 变量，不做任何覆盖 */
-.document-content-area.theme-auto {
-  background: var(--bg-surface);
-  color: var(--text-primary);
+.document-progress-bar {
+    flex-shrink: 0;
+    height: 4px;
+    background: var(--bg-hover);
+    border-radius: 999px;
+    overflow: hidden;
 }
 
-/* 主题跟随与自定义：明确覆盖所有旧规则 */
-.document-content-area.theme-auto {
-  background: var(--bg-surface);
-  color: var(--text-primary);
+.document-progress-fill {
+    height: 100%;
+    background: var(--nr-gradient);
+    border-radius: 999px;
+    transition: width 0.3s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.document-content-area.theme-custom {
-  background: var(--reader-bg-color, var(--bg-surface));
-  color: var(--reader-text-color, var(--text-primary));
+/* ===== 3. 组件 ===== */
+
+/* ---- 封面网格 ---- */
+.nr-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 18px;
+    align-content: start;
 }
 
-/* ============================================================
-   v7 多格式文档：书架格式徽标 + 富文本（md / epub）排版 + PDF 内嵌
-   ============================================================ */
-
-/* 书架：标题行改成 名称 + 格式徽标 */
-.document-shelf-list,
-.document-shelf-item,
-.document-shelf-title,
-.document-shelf-dir,
-.document-shelf-meta {
-  min-width: 0;
+.nr-card {
+    cursor: pointer;
+    animation: obxFadeUp 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation-delay: calc(var(--obx-i, 0) * 20ms);
+    min-width: 0;
 }
 
-.document-shelf-item { overflow: hidden; }
-
-.document-shelf-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.nr-cover {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 3 / 4;
+    border-radius: var(--nr-radius);
+    overflow: hidden;
+    background: var(--bg-hover);
+    box-shadow: var(--shadow-sm);
+    transition: transform var(--transition-fast), box-shadow var(--transition-fast);
 }
 
-.document-shelf-name {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.nr-card:hover .nr-cover {
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-md);
 }
 
-.document-shelf-kind {
-  flex-shrink: 0;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.4px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  color: var(--accent);
-  background: var(--nr-accent-soft);
+.nr-cover-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
 }
 
-/* 富文本正文：后端白名单转换器输出的标签集合 */
+.nr-badge {
+    position: absolute;
+    left: 8px;
+    bottom: 8px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(4px);
+}
+
+.nr-mark-count {
+    position: absolute;
+    right: 8px;
+    top: 8px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 10px;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.45);
+}
+
+.nr-cover-progress {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 3px;
+    background: rgba(0, 0, 0, 0.25);
+}
+
+.nr-cover-progress span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+}
+
+.nr-card-body {
+    padding: 8px 2px 0;
+    min-width: 0;
+}
+
+.nr-card-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.nr-card-sub {
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 2px;
+}
+
+/* ---- 正文排版 ---- */
+.chapter-content {
+    contain: layout;
+    overflow-anchor: none;
+    margin-bottom: 10px;
+}
+
+.chapter-content p {
+    margin: 0 0 0.75em;
+    text-indent: 2em;
+    line-height: var(--reader-line-height, 1.8);
+    letter-spacing: var(--reader-letter-spacing, 0);
+}
+
+.chapter-content p:first-of-type {
+    margin-top: 0;
+}
+
 .chapter-content h1,
 .chapter-content h2,
 .chapter-content h3,
 .chapter-content h4,
 .chapter-content h5,
 .chapter-content h6 {
-  margin: 1.2em 0 0.6em;
-  line-height: 1.4;
-  font-weight: 700;
+    margin: 1.2em 0 0.6em;
+    line-height: 1.4;
+    font-weight: 700;
+    text-indent: 0;
 }
 
 .chapter-content h1 { font-size: 1.5em; }
@@ -662,98 +397,644 @@
 .chapter-content h4,
 .chapter-content h5,
 .chapter-content h6 { font-size: 1em; }
+
 .chapter-content h1:first-child,
 .chapter-content h2:first-child,
 .chapter-content h3:first-child { margin-top: 0; }
 
 .chapter-content img {
-  max-width: 100%;
-  height: auto;
-  display: block;
-  margin: 1em auto;
-  border-radius: var(--nr-radius-sm);
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 1em auto;
+    border-radius: var(--nr-radius-sm);
 }
 
 .chapter-content blockquote {
-  margin: 0.9em 0;
-  padding: 0.2em 1em;
-  border-left: 3px solid var(--accent);
-  color: var(--text-secondary);
+    margin: 0.9em 0;
+    padding: 0.2em 1em;
+    border-left: 3px solid var(--accent);
+    color: var(--text-secondary);
 }
 
 .chapter-content ul,
 .chapter-content ol {
-  margin: 0 0 0.9em;
-  padding-left: 1.6em;
+    margin: 0 0 0.9em;
+    padding-left: 1.6em;
 }
 
 .chapter-content li { margin: 0.25em 0; }
 
-.chapter-content table {
-  border-collapse: collapse;
-  width: 100%;
-  margin: 1em 0;
-  font-size: 0.95em;
-}
-
-.chapter-content th,
-.chapter-content td {
-  border: 1px solid var(--border);
-  padding: 6px 9px;
-  text-align: left;
-}
-
-.chapter-content th {
-  background: var(--bg-hover);
-  font-weight: 600;
-}
-
-.chapter-content pre {
-  margin: 0.9em 0;
-  padding: 10px 12px;
-  overflow-x: auto;
-  background: var(--bg-hover);
-  border-radius: var(--nr-radius-sm);
-}
-
-.chapter-content code {
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 0.92em;
-}
-
-.chapter-content hr {
-  border: 0;
-  border-top: 1px solid var(--border);
-  margin: 1.4em 0;
-}
-
-.chapter-content a { color: var(--accent); }
-
-/* 列表 / 表格 / 引用里的段落不要再首行缩进两格 */
 .chapter-content li p,
 .chapter-content td p,
 .chapter-content th p,
 .chapter-content blockquote p { text-indent: 0; }
 
+.chapter-content table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1em 0;
+    font-size: 0.95em;
+}
+
+.chapter-content th,
+.chapter-content td {
+    border: 1px solid var(--border);
+    padding: 6px 9px;
+    text-align: left;
+}
+
+.chapter-content th {
+    background: var(--bg-hover);
+    font-weight: 600;
+}
+
+.chapter-content pre {
+    margin: 0.9em 0;
+    padding: 10px 12px;
+    overflow-x: auto;
+    background: var(--bg-hover);
+    border-radius: var(--nr-radius-sm);
+}
+
+.chapter-content code {
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 0.92em;
+}
+
+.chapter-content hr {
+    border: 0;
+    border-top: 1px solid var(--border);
+    margin: 1.4em 0;
+}
+
+.chapter-content a { color: var(--accent); }
+
+.chapter-separator {
+    height: 2em;
+    flex-shrink: 0;
+}
+
 /* PDF：填满阅读区，右上角留一个"系统程序打开"的出口 */
 .document-content-area:has(> .document-pdf-frame) {
-  padding: 0;
-  display: block;
+    padding: 0;
 }
 
 .document-pdf-frame {
-  width: 100%;
-  height: 100%;
-  min-height: 60vh;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-  display: block;
+    width: 100%;
+    height: 100%;
+    min-height: 60vh;
+    border: 0;
+    display: block;
 }
 
 .document-pdf-open {
-  position: absolute;
-  top: 10px;
-  right: 14px;
-  z-index: 6;
+    position: absolute;
+    top: 10px;
+    right: 14px;
+    z-index: 6;
+}
+
+/* 朗读高亮：正在念的那一整句整体加深加粗。
+   **刻意不铺底色** —— 底色会盖住浏览器原生的文字选区（蓝色），用户"选中要看哪里"
+   时看到的是灰扑扑的一片，分不清"我选中了"还是"系统在读"。用加粗 + 前景色加深 +
+   左侧竖线来标记，既显眼又永远不与"选中"混淆。 */
+::highlight(nr-reading) {
+    color: var(--reader-highlight, #12305a);
+    font-weight: 700;
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--accent) 60%, transparent);
+    text-decoration-thickness: 2px;
+    text-underline-offset: 3px;
+}
+
+/* ---- 目录弹窗 ---- */
+.nr-modal-box {
+    width: min(560px, 92vw);
+    max-height: 78vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.nr-modal-sm {
+    width: min(460px, 92vw);
+}
+
+.nr-modal-sub {
+    margin-left: 8px;
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--text-secondary);
+}
+
+.nr-toc-filter {
+    width: 100%;
+    margin-bottom: 10px;
+}
+
+.document-chapter-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.document-chapter-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: var(--nr-radius-sm);
+    font-size: 13px;
+    color: var(--text-primary);
+    cursor: pointer;
+    contain: content;
+}
+
+.document-chapter-item:hover {
+    background: var(--bg-hover);
+}
+
+.document-chapter-item.active {
+    background: var(--nr-accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.document-chapter-item.is-read .nr-toc-title {
+    color: var(--text-secondary);
+}
+
+.nr-toc-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.nr-toc-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.chapter-words {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+/* 右键菜单里的分隔线（壳的 .context-menu li 没有这一项） */
+.nr-menu-sep {
+    height: 1px;
+    margin: 4px 6px;
+    padding: 0 !important;
+    background: var(--border);
+    pointer-events: none;
+}
+
+/* ---- 设置弹窗里的行 ---- */
+.nr-setting-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 0;
+}
+
+.nr-setting-row label {
+    width: 72px;
+    flex-shrink: 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.nr-setting-row input[type="range"] {
+    flex: 1;
+    accent-color: var(--accent);
+}
+
+.nr-setting-row input[type="text"],
+.nr-setting-row select {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 9px;
+    font-size: 13px;
+    color: var(--text-primary);
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--nr-radius-sm);
+}
+
+.nr-setting-value {
+    min-width: 42px;
+    text-align: right;
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ---- 朗读浮动卡 ---- */
+.nr-tts-card {
+    position: fixed;
+    right: 16px;
+    /* 抬到 4px 进度条之上，别压在进度条上 */
+    bottom: 18px;
+    z-index: 1200;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px;
+    border-radius: 999px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-md);
+}
+
+.nr-tts-card.hidden {
+    display: none;
+}
+
+.nr-tts-btn {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.nr-tts-btn:hover {
+    background: var(--nr-accent-soft);
+    color: var(--accent);
+}
+
+.nr-tts-card[data-state="loading"] .nr-tts-toggle {
+    animation: nrPulse 1s ease-in-out infinite;
+}
+
+/* 收起态：只剩最左那一块，贴右边缘 */
+.nr-tts-card.is-collapsed {
+    right: 0;
+    bottom: 22px;
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+    padding: 4px 2px;
+}
+
+.nr-tts-card.is-collapsed .nr-tts-toggle,
+.nr-tts-card.is-collapsed .nr-tts-stop {
+    display: none;
+}
+
+@keyframes nrPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.45; }
+}
+
+/* 朗读设置面板的定位参照：`position: absolute` 的最近已定位祖先。
+   必须给在 `.view-body` 上 —— 给在 `#app` 上会让面板盖住左栏（实测 paneLeft=0）。 */
+.view-body {
+    position: relative;
+}
+
+/* ---- 朗读设置：主区里的一个面板（与 .view-content 同一位置），不遮挡左侧栏 ---- */
+.nr-voice-page {
+    position: absolute;
+    /* 顶部让开工具栏：它是"主区内容切换"，不是盖住整个插件的独立页 */
+    inset: 48px 0 0 0;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-app);
+}
+
+.nr-voice-page.hidden {
+    display: none;
+}
+
+.nr-voice-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.nr-voice-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.nr-voice-head .btn:last-child {
+    margin-left: auto;
+}
+
+.nr-voice-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 18px 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.nr-voice-card {
+    border: 1px solid var(--border);
+    border-radius: var(--nr-radius);
+    background: var(--bg-surface);
+    padding: 14px 16px;
+}
+
+.nr-voice-card h4 {
+    margin: 0 0 6px;
+    font-size: 14px;
+    color: var(--text-primary);
+}
+
+.nr-voice-hint {
+    margin: 0 0 8px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+}
+
+.nr-voice-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-top: 8px;
+}
+
+.nr-voice-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 8px;
+}
+
+.nr-voice-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 10px;
+    text-align: left;
+    border: 1px solid var(--border);
+    border-radius: var(--nr-radius-sm);
+    background: var(--bg-surface);
+    cursor: pointer;
+}
+
+.nr-voice-item:hover {
+    background: var(--bg-hover);
+    border-color: var(--accent);
+}
+
+.nr-voice-name {
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.nr-voice-id {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: ui-monospace, Consolas, monospace;
+}
+
+/* ---- 空状态与加载 ---- */
+.nr-empty {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 60px 20px;
+    text-align: center;
+    color: var(--text-secondary);
+}
+
+.nr-empty-icon {
+    font-size: 40px;
+    animation: obxFloat 4s ease-in-out infinite;
+}
+
+.nr-empty-text {
+    font-size: 15px;
+    color: var(--text-primary);
+}
+
+.nr-empty-hint {
+    font-size: 12px;
+}
+
+#document-loading {
+    position: sticky;
+    bottom: 12px;
+    margin: 0 auto;
+    width: max-content;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-sm);
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+/* ---- 书签视图（主区） ---- */
+.nr-mark-group {
+    margin-bottom: 18px;
+    border: 1px solid var(--border);
+    border-radius: var(--nr-radius);
+    background: var(--bg-surface);
+    overflow: hidden;
+}
+
+.nr-mark-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-hover);
+}
+
+.nr-mark-book {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.nr-mark-clear {
+    margin-left: auto;
+    border: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: var(--nr-radius-sm);
+}
+
+.nr-mark-clear:hover {
+    background: var(--bg-surface);
+    color: var(--danger);
+}
+
+.nr-mark-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    position: relative;
+}
+
+.nr-mark-item:last-child {
+    border-bottom: 0;
+}
+
+.nr-mark-item:hover {
+    background: var(--bg-hover);
+}
+
+.nr-mark-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.nr-mark-meta {
+    display: flex;
+    gap: 10px;
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.nr-mark-del {
+    border: 0;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 13px;
+    padding: 2px 6px;
+    border-radius: var(--nr-radius-sm);
+}
+
+.nr-mark-del:hover {
+    background: var(--bg-surface);
+    color: var(--danger);
+}
+
+/* ---- 正文里的书签标记（覆盖层，不往正文里插 DOM） ---- */
+.document-content-area {
+    position: relative;
+}
+
+.nr-mark-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 0;
+    pointer-events: none;
+    z-index: 4;
+}
+
+.nr-mark-pin {
+    position: absolute;
+    left: 6px;
+    width: 10px;
+    height: 16px;
+    margin-top: -8px;
+    background: var(--accent);
+    border-radius: 0 3px 3px 0;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    pointer-events: auto;
+    cursor: pointer;
+}
+
+.nr-mark-pin:hover {
+    transform: scaleX(1.4);
+}
+
+/* ===== 4. 状态 ===== */
+
+/* 主题变体：只覆盖两个变量，正文其余样式全部走变量 */
+.document-content-area.theme-auto {
+    --reader-bg-color: var(--bg-surface);
+    --reader-text-color: var(--text-primary);
+    --reader-highlight: color-mix(in srgb, var(--accent) 62%, #000);
+}
+
+.document-content-area.theme-dark {
+    --reader-bg-color: #1a1a1a;
+    --reader-text-color: #cccccc;
+    --reader-highlight: #9ecbff;
+}
+
+.document-content-area.theme-sepia {
+    --reader-bg-color: #f5e6c8;
+    --reader-text-color: #5b4636;
+    --reader-highlight: #7a3b12;
+}
+
+.document-content-area.theme-green {
+    --reader-bg-color: #c7edcc;
+    --reader-text-color: #2d4a2d;
+    --reader-highlight: #14532d;
+}
+
+.document-content-area.theme-blue {
+    --reader-bg-color: #d4e8f5;
+    --reader-text-color: #1a3a5c;
+    --reader-highlight: #0b3a63;
+}
+
+.document-content-area.theme-custom {
+    --reader-highlight: color-mix(in srgb, var(--reader-text-color, #1a1a1a) 70%, #000);
+}
+
+@media (max-width: 860px) {
+    .nr-grid {
+        grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+        gap: 12px;
+    }
+
+    .nr-search input {
+        width: 130px;
+    }
+
+    .document-content-area {
+        padding: 16px 18px 32px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .nr-card,
+    .nr-empty-icon {
+        animation: none;
+    }
 }

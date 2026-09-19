@@ -66,6 +66,9 @@ HIDDEN_IMPORTS = [
     'chardet',
     # document-reader 的 Markdown 渲染（requirements.txt 里随 rich 一起声明）
     'markdown_it',
+    # document-reader 的朗读引擎：插件后端 importlib 动态加载，静态分析看不到；
+    # 漏在这里的表现是"冻结后点朗读报没有可用引擎"（tts_engine 里是函数内 import）
+    'edge_tts',
     'jmcomic',
     'common',
     'curl_cffi',
