@@ -272,6 +272,11 @@ class PluginSpeakDirectTests(unittest.TestCase):
         self.plugin.update_setting('tts_engine', 'openai')
         self.plugin.update_setting('tts_base_url', self.endpoint.base_url)
         self.plugin.update_setting('tts_voice', 'alloy')
+        # 缓存目录的真实位置是 <config>/plugins/<插件名>/tts；测试里把它指到临时目录，
+        # 否则会往开发机的 .config 里写，也会与并行跑的用例互相干扰。
+        # 给实例挂同名属性即可覆盖类方法，实例销毁后自动失效，无需还原。
+        self.cache_dir = Path(self.tmp.name) / 'tts-cache'
+        self.plugin._tts_cache_dir = lambda: self.cache_dir
 
     def test_segment_splits_and_preserves(self):
         text = '第一句。第二句！第三句？'
@@ -313,11 +318,77 @@ class PluginSpeakDirectTests(unittest.TestCase):
         self.assertGreater(path.stat().st_size, 0, '重新合成后应当写回非空音频')
 
     def _cache_audio_path(self, key: str) -> Path:
-        cache_dir = Path(self.plugin._tts_cache_dir())
-        found = [p for p in cache_dir.iterdir()
+        found = [p for p in self.cache_dir.iterdir()
                  if p.name.startswith(key + '-') and p.suffix == '.wav']
-        self.assertEqual(len(found), 1, f'缓存里应恰好一个该键的 wav: {list(cache_dir.iterdir())}')
+        self.assertEqual(len(found), 1, f'缓存里应恰好一个该键的 wav: {list(self.cache_dir.iterdir())}')
         return found[0]
+
+    def test_cache_lives_under_config_and_can_be_cleared(self):
+        """缓存位置与清理接口：位置必须落在 <config>/plugins 下，且能一键清空。
+
+        放在 `<config>` 而不是文档根目录：用户找得到、清得掉，换文档根时缓存也不散落。
+        """
+        from shell.backend.paths import get_plugins_config_dir
+        real_dir = self.module.DocumentReaderPlugin._tts_cache_dir(self.plugin)
+        self.assertTrue(
+            real_dir.is_relative_to(get_plugins_config_dir()),
+            f'缓存目录不在 <config> 下: {real_dir}')
+
+        self.plugin.tts_speak('今天下雨了。', 'clearme', 0)
+        info = self.plugin.tts_cache_info()
+        self.assertGreater(info['files'], 0)
+        self.assertEqual(Path(info['path']), self.cache_dir)
+        self.assertGreater(info['bytes'], 0)
+
+        cleared = self.plugin.tts_clear_cache()
+        self.assertTrue(cleared['success'])
+        self.assertGreater(cleared['removed'], 0)
+        self.assertEqual(self.plugin.tts_cache_info()['files'], 0, '清空后仍有残留文件')
+
+    def test_clear_cache_on_fresh_install_is_not_an_error(self):
+        """从没合成过时清缓存是幂等操作，不是"目录不可读"。"""
+        result = self.plugin.tts_clear_cache()
+        self.assertTrue(result['success'], result)
+        self.assertEqual(result['removed'], 0)
+
+    def test_plugin_class_does_not_shadow_mixin_members(self):
+        """本类（MRO 最前）不得重复定义分片里的方法。
+
+        真实事故：`main.py` 里留着一份旧的 `get_file_roots()`，本类排在 MRO 最前，
+        于是分片里的新版（要包含朗读缓存目录）被静默盖掉 —— `/file` 不认缓存目录，
+        合成成功的音频取回来是 403。常量与 `on_load`（自主覆写并调用基类）除外。
+        """
+        cls = self.module.DocumentReaderPlugin
+        mixin_members: set = set()
+        for base in cls.__mro__[1:]:
+            if base.__name__ == 'PluginBase':
+                break
+            mixin_members |= set(base.__dict__)
+
+        allowed = {
+            # 常量：分片与入口各留一份，值必须一致
+            'CACHE_DIR_NAME', 'CACHE_FILE', 'CACHE_VERSION', 'PROGRESS_FILE',
+            'LEGACY_CACHE_DIR', 'LEGACY_CACHE_FILE', 'LEGACY_PROGRESS_FILE',
+            # 生命周期的自主覆写（内部调用 super()）
+            'on_load',
+        }
+        shadowed = sorted(
+            name for name in mixin_members
+            if name in cls.__dict__ and not name.startswith('__') and name not in allowed)
+        self.assertEqual(shadowed, [], f'本类重复定义了分片成员，会静默覆盖分片: {shadowed}')
+
+        # 常量也要真的同值，否则"两份"会漂移
+        for name in allowed & mixin_members:
+            if name == 'on_load':
+                continue
+            own = cls.__dict__[name]
+            for base in cls.__mro__[1:]:
+                if base.__name__ == 'PluginBase':
+                    break
+                if name in base.__dict__:
+                    self.assertEqual(own, base.__dict__[name],
+                                     f'{name} 在入口与分片里取值不同，会以入口为准')
+                    break
 
     def test_speak_reports_engine_failure_as_error(self):
         self.plugin.update_setting('tts_base_url', '')  # 端点没了，且只准用 openai

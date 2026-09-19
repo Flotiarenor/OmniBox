@@ -97,8 +97,68 @@ class ReaderVoicePage {
             input.addEventListener('change', () => this._save(this._collect(), true));
         });
         dom.key.addEventListener('change', () => this._save({ tts_api_key: dom.key.value }, true));
+        document.getElementById('nr-voice-cache-clear')
+            .addEventListener('click', () => this._clearCache());
+        document.getElementById('nr-voice-cache-open')
+            .addEventListener('click', () => this._openCacheDir());
         dom.test.addEventListener('click', () => this._test());
         this._renderVoices();
+        this._renderCache();
+    }
+
+    /** 缓存位置与占用：用户不必自己去翻目录找。 */
+    async _renderCache() {
+        const pathEl = document.getElementById('nr-voice-cache-path');
+        const sizeEl = document.getElementById('nr-voice-cache-size');
+        if (!pathEl || !sizeEl) return;
+        let info = null;
+        try {
+            info = await Bridge.call('tts_cache_info');
+        } catch (e) {
+            info = null;
+        }
+        if (!info || info.error) {
+            pathEl.textContent = '读取失败';
+            sizeEl.textContent = '';
+            return;
+        }
+        this._cachePath = info.path;
+        pathEl.textContent = info.path;
+        pathEl.title = info.path;
+        const mb = (info.bytes || 0) / 1024 / 1024;
+        sizeEl.textContent = `${info.files} 个文件 · ${mb.toFixed(1)} MB（上限 ${(info.limitBytes || 0) / 1024 / 1024 | 0} MB，超出自动清理最旧的）`;
+    }
+
+    async _clearCache() {
+        const sizeEl = document.getElementById('nr-voice-cache-size');
+        const ok = await confirmDialog('清空朗读缓存？\n\n音频会按需重新合成，书签与阅读进度不受影响。',
+            { danger: true });
+        if (!ok) return;
+        try {
+            const result = await Bridge.call('tts_clear_cache');
+            if (result && result.success) {
+                Toast.success(`已清理 ${result.removed} 个文件`);
+                if (sizeEl) sizeEl.textContent = '已清空';
+            } else {
+                Toast.error((result && result.error) || '清理失败');
+            }
+        } catch (e) {
+            Toast.error('清理失败');
+        }
+    }
+
+    /** 打开缓存所在文件夹：真调系统文件管理器（不是只复制路径）。 */
+    async _openCacheDir() {
+        try {
+            const result = await Bridge.call('tts_open_cache_dir');
+            if (!result || !result.success) {
+                Toast.error((result && result.error) || '打开目录失败');
+                return;
+            }
+            Toast.success('已打开缓存目录');
+        } catch (e) {
+            Toast.error('打开目录失败');
+        }
     }
 
     async _load() {

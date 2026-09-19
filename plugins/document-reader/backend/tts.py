@@ -21,9 +21,12 @@ import hashlib
 import json
 import logging
 import os
+import tempfile
 import time
+from pathlib import Path
 from typing import Any, Dict
 
+from shell.backend.paths import get_plugins_config_dir
 from shell.backend.plugin_utils import load_sibling
 
 log = logging.getLogger(__name__)
@@ -40,16 +43,84 @@ _AUDIO_EXTS = ('.mp3', '.wav', '.ogg', '.opus', '.m4a')
 class TtsMixin:
     """朗读的设置读取、切句、合成与缓存。"""
 
-    _tts_cache_dir_name = 'tts'
+    # 缓存放在 `<config>/plugins/<插件名>/tts/`：
+    #   * 跟其它状态放一起（`<config>` 本来就是本机状态的家），容易找到与清理；
+    #   * 文档根目录换成外接盘/网络盘时，缓存不会散落在各个盘上；
+    #   * `<config>` 已被 .gitignore 与打包门禁排除，不会混进产物。
+    # 不放在文档目录的 `.document_state/` 里：那里埋得深、跟着文档根到处跑，
+    # 用户想清缓存得先知道根目录在哪。
+    _tts_cache_subdir = 'document-reader'
 
     # 子类（main.py 的插件类）提供：
-    #   _cache_dir / _raw_settings / _image_url
-    _cache_dir: str
+    #   _raw_settings / _image_url
+    #   （缓存目录由这里自己解析，不依赖文档根，见 `_tts_cache_dir`）
 
-    # ===== 参数与状态 =====
+    def _tts_cache_dir(self) -> Path:
+        """朗读缓存目录：`<config>/plugins/<插件名>/tts`。
 
-    def _tts_cache_dir(self) -> str:
-        return os.path.join(self._cache_dir, self._tts_cache_dir_name)
+        放在这里而不是文档根目录的 `.document_state/` 里：
+          * `<config>` 本来就是本机状态的家，用户找得到、清得掉；
+          * 文档根换成外接盘/网络盘时缓存不散落在各个盘上；
+          * `<config>` 已被 .gitignore 与打包门禁（`tools/check_build_tree.py`）排除，
+            不会混进发布产物。
+
+        **纯路径计算，不建目录、不落盘**：只读的调用方（`get_file_roots()` /
+        `tts_cache_info()`）不该因为问一次路径就造出一个空目录。需要写入的地方
+        （`tts_speak`）自己 `mkdir`。
+        """
+        return get_plugins_config_dir() / self._tts_cache_subdir / 'tts'
+
+    def _tts_cache_dir_for_write(self) -> Path:
+        """取可写的缓存目录，必要时创建；`<config>` 不可写时退到系统临时目录。"""
+        cache_dir = self._tts_cache_dir()
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            log.warning(f'[{self.name}] 朗读缓存目录不可写（{e}），改用临时目录')
+            cache_dir = (Path(tempfile.gettempdir()) / 'omnibox-tts'
+                         / self._tts_cache_subdir / 'tts')
+            cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir
+
+    # ===== 缓存管理（给界面用：用户要能看到它在哪、多大、能不能一键清） =====
+
+    def tts_cache_info(self) -> Dict[str, Any]:
+        """朗读缓存的位置与占用。界面把它显示出来，用户不必自己去翻目录。"""
+        cache_dir = self._tts_cache_dir()
+        files = 0
+        total = 0
+        try:
+            for entry in os.scandir(cache_dir):
+                if entry.is_file():
+                    files += 1
+                    total += entry.stat().st_size
+        except OSError:
+            pass
+        return {'path': str(cache_dir), 'files': files,
+                'bytes': total, 'limitBytes': TTS_CACHE_LIMIT}
+
+    def tts_clear_cache(self) -> Dict[str, Any]:
+        """清空朗读缓存。缓存按需重建，删掉不影响书签与阅读进度。
+
+        "目录还不存在"不是错误 —— 从没合成过就是这状态（清理是幂等的）。
+        """
+        cache_dir = self._tts_cache_dir()
+        if not cache_dir.is_dir():
+            return {'success': True, 'removed': 0, 'bytes': 0}
+        removed = 0
+        total = 0
+        for entry in os.scandir(cache_dir):
+            if not entry.is_file():
+                continue
+            try:
+                size = entry.stat().st_size
+                os.remove(entry.path)
+                removed += 1
+                total += size
+            except OSError:
+                continue
+        log.info(f'[{self.name}] 已清除朗读缓存 {removed} 个文件 / {total / 1024 / 1024:.1f} MB')
+        return {'success': True, 'removed': removed, 'bytes': total}
 
     def _tts_params(self) -> Dict[str, Any]:
         """把设置项整理成引擎参数。语音名交给引擎自己解释（各家音色命名不同）。"""
@@ -234,14 +305,18 @@ class TtsMixin:
             return
         entries.sort()
         for _mtime, size, path in entries:
-            stem, _ext = os.path.splitext(path)
+            # 一对文件（音频 + 时间戳）都要删，但**只按音频**扣减总量 ——
+            # 时间戳的字节本来就没计入 total，两边都减会让统计偏低、多删一批。
+            stem, ext = os.path.splitext(path)
             for target in (path, stem + '.json'):
                 try:
                     if os.path.exists(target):
                         os.remove(target)
                 except OSError:
                     pass
-            total -= size
+            if ext.lower() in _AUDIO_EXTS:
+                total -= size
             if total <= keep_bytes:
                 break
         log.info(f'朗读缓存超过上限，已清理到 {total / 1024 / 1024:.0f} MB')
+

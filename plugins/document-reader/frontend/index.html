@@ -139,6 +139,26 @@
           </section>
 
           <section class="nr-voice-card">
+            <h4>朗读缓存</h4>
+            <p class="nr-voice-hint">
+              合成好的音频按内容缓存，重复朗读同一段不再联网。
+              删掉不影响书签与阅读进度，下次朗读按需重建。
+            </p>
+            <div class="nr-setting-row">
+              <label>位置</label>
+              <code class="nr-voice-path" id="nr-voice-cache-path">读取中…</code>
+            </div>
+            <div class="nr-setting-row">
+              <label>占用</label>
+              <span class="nr-voice-hint" id="nr-voice-cache-size"></span>
+            </div>
+            <div class="nr-voice-actions">
+              <button type="button" class="btn" id="nr-voice-cache-open">打开所在文件夹</button>
+              <button type="button" class="btn btn-danger" id="nr-voice-cache-clear">清空缓存</button>
+            </div>
+          </section>
+
+          <section class="nr-voice-card">
             <h4>可用的 edge-tts 音色</h4>
             <p class="nr-voice-hint">
               下面是本机 edge-tts 端点可见的中文音色，点一下填进上面的音色框；

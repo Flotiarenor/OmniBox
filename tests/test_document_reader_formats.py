@@ -153,9 +153,11 @@ class DocumentReaderFormatTests(unittest.TestCase):
         self.assertEqual(items['文档/武侠/剑来.epub']['dir'], '文档/武侠')
         self.assertEqual(items['文档/武侠/剑来.epub']['title'], '剑来')
         self.assertEqual(items['另一本.md']['dir'], '')
-        # 两个根目录都要能被文件路由访问（EPUB 图片按绝对路径引用）
-        self.assertEqual([str(path) for path in self.plugin.get_file_roots()],
-                         [str(self.docs.resolve()), str(second.resolve())])
+        # 两个根目录都要能被文件路由访问（EPUB 图片按绝对路径引用）；
+        # 朗读缓存目录（<config>/plugins/<插件名>）也必须在内 —— 音频经 /file 播放。
+        roots = [str(path) for path in self.plugin.get_file_roots()]
+        self.assertEqual(roots[:2], [str(self.docs.resolve()), str(second.resolve())])
+        self.assertIn(str(self.plugin._tts_cache_dir().parent), roots)
         # 主目录是第一根：缓存与阅读进度存在它下面
         self.assertEqual(str(self.plugin.get_data_root()), str(self.docs.resolve()))
 
@@ -497,8 +499,9 @@ class DocumentReaderFormatTests(unittest.TestCase):
 
         ids = {n['id'] for n in self.plugin.list_documents()['documents']}
         self.assertEqual(ids, {'y.txt', 'x.md'})
-        self.assertEqual([str(path) for path in self.plugin.get_file_roots()],
-                         [str(self.docs.resolve()), str(second.resolve())])
+        roots = [str(path) for path in self.plugin.get_file_roots()]
+        self.assertEqual(roots[:2], [str(self.docs.resolve()), str(second.resolve())],
+                         '配置的两个根要按顺序生效')
 
     # ===== 改名迁移 =====
 
@@ -523,8 +526,9 @@ class DocumentReaderFormatTests(unittest.TestCase):
 
         plugin.on_load()
         self.assertEqual(plugin.setting('root_dir'), str(legacy_root))
-        self.assertEqual([str(path) for path in plugin.get_file_roots()],
-                         [str(legacy_root.resolve())])
+        self.assertEqual([str(path) for path in plugin.get_file_roots()][:1],
+                         [str(legacy_root.resolve())],
+                         '迁移后的第一根应当是旧配置里的目录')
         self.assertEqual({n['id'] for n in plugin.list_documents()['documents']}, {'x.md'})
         # 迁移结果写进新名下：下次启动不必再迁一次
         self.assertEqual(store.get('document-reader')['root_dir'], str(legacy_root))

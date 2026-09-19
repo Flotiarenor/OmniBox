@@ -44,8 +44,26 @@ class RootsMixin:
         return Path(self.document_dir)
 
     def get_file_roots(self) -> List[Path]:
-        """`/file` 允许访问的根：全部配置目录（EPUB 解包出来的图片按绝对路径引用）。"""
-        return [Path(root) for root in self._roots]
+        r"""`/file` 允许访问的根。
+
+        除了全部配置的文档目录（EPUB 解包出来的图片按绝对路径引用），还必须包含
+        **朗读缓存目录** —— 音频是经 `/file` 交给 `<audio>` 播放的，不列进来就 403。
+        缓存目录在 `<config>/plugins/<插件名>/tts/`（见 `tts.py`），那里受保护的只有
+        插件设置文件本身，音频不受影响。
+        """
+        roots = [Path(root) for root in self._roots]
+        try:
+            # **不要用 is_dir() 过滤**：只读调用不会创建缓存目录（见 tts.py 的
+            # `_tts_cache_dir`），首次合成前它并不存在 —— 过滤掉就会让"合成成功后
+            # 音频仍取不回来"（403）。多一个暂时不存在的根没有代价：路径不匹配它
+            # 自然判定为越界，匹配时才需要它存在。
+            cache_root = self._tts_cache_dir().parent
+            if cache_root not in roots:
+                roots.append(cache_root)
+        except Exception as e:
+            # 缓存目录解析失败不该让整个文件路由失效：正文里的图片仍然要能取
+            log.warning(f'[{self.name}] 朗读缓存根无法解析，/file 将不含它: {e}')
+        return roots
 
     # ===== 根目录解析与切换 =====
 
@@ -155,3 +173,4 @@ class RootsMixin:
         self.update_setting('root_dir', root_dir)
         log.info(f'[{self.name}] 已从 {self.LEGACY_PLUGIN_NAME} 的设置迁移 root_dir')
         self._apply_root_dir(root_dir)
+

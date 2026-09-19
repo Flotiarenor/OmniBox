@@ -150,18 +150,12 @@ class DocumentReaderPlugin(
 
         self._load_cache()
 
-    # ===== 文件服务根目录 =====
-
-    def get_data_root(self) -> Path:
-        """主目录（第一行）：缓存、EPUB 解包产物与阅读进度都在它下面。"""
-        return Path(self.document_dir)
-
-    def get_file_roots(self) -> List[Path]:
-        """`/file` 允许访问的根：全部配置目录（EPUB 解包出来的图片按绝对路径引用）。"""
-        return [Path(root) for root in self._roots]
-
-    # ===== 设置持久化 =====
-
+    # ===== 文件服务根目录 / 设置持久化 =====
+    #
+    # `get_data_root` / `get_file_roots` / `_parse_roots` / `_set_roots` /
+    # `_migrate_legacy_state` / `_apply_root_dir` / `on_settings_changed` / `on_load`
+    # 全部在 roots.py 的 RootsMixin 里。**不要在本类里再定义一份**：本类排在 MRO
+    # 最前，重复定义会静默盖掉分片（曾经因此让 `/file` 不认朗读缓存目录 → 音频 403）。
 
     def on_load(self) -> None:
         """改名迁移：旧插件名（novel-reader）的设置文件里存着用户配置的 root_dir。
@@ -204,6 +198,9 @@ class DocumentReaderPlugin(
             'tts_speak': self.tts_speak,
             'tts_status': self.tts_status,
             'tts_voices': self.tts_voices,
+            'tts_cache_info': self.tts_cache_info,
+            'tts_clear_cache': self.tts_clear_cache,
+            'tts_open_cache_dir': self.tts_open_cache_dir,
         }
 
     # ===== 核心业务（由旧版 DocumentModule 迁移） =====
@@ -368,6 +365,21 @@ class DocumentReaderPlugin(
         chapter_content = full_content[int(start_offset):int(end_offset)]
         return {'content': chapter_content, 'format': 'text'}
 
+    def tts_open_cache_dir(self) -> Dict[str, Any]:
+        """用系统文件管理器打开朗读缓存目录（用户在界面点"打开所在文件夹"）。
+
+        路径不来自请求参数，而是缓存目录自身，所以不存在越界问题；仍然先确认它存在，
+        避免系统弹出一个"找不到路径"的对话框。
+        """
+        cache_dir = self._tts_cache_dir()
+        if not cache_dir.is_dir():
+            return {'success': False, 'error': '缓存目录不存在'}
+        try:
+            _docs_mod.open_with_system(cache_dir)
+        except Exception as e:
+            return {'success': False, 'error': f'调用文件管理器失败: {e}'}
+        return {'success': True, 'path': str(cache_dir)}
+
     def open_external(self, document_id: str) -> Dict[str, Any]:
         """用系统默认程序打开文档（阅读器内不渲染的格式：pdf/docx/mobi…）。"""
         document_info = self._document_cache.get(document_id)
@@ -392,4 +404,5 @@ class DocumentReaderPlugin(
         except Exception as e:
             return {'error': f'调用系统程序失败: {e}'}
         return {'success': True}
+
 
