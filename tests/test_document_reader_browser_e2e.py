@@ -372,5 +372,41 @@ class DocumentReaderBrowserTests(unittest.TestCase):
         self.assertGreaterEqual(index, 1, '翻页模式下点击右半区应当翻到下一章')
 
 
+    # ===== 设置与编码 =====
+
+    def _open_book(self, book: str = 'book.txt') -> None:
+        self.set_state(documents=[_document(book, '书', count=1, kind='txt')],
+                       chapters=[{'index': 0, 'title': '第1章', 'word_count': 3}],
+                       bodies={book: {'0': '正文'}})
+        self.open_app()
+        self.driver.execute_script('window.documentReader._openDocument(arguments[0]);', book)
+        self.wait('window.documentReader._isReaderMode')
+
+    def test_encoding_is_fully_automatic(self):
+        """编码不再由用户选：界面上没有那个下拉框，重读也永远用 auto。
+
+        手选的选项在后端已经被解码链完全覆盖（UTF-8 自证 → 中文编码 → gb18030），
+        手选唯一能做到的"额外效果"是把本来能读的书解成乱码；前端那份还曾经因为回调里
+        的 `e` 未定义而完全无效、修好后又被 currentDocument 的旧值盖回去。整项删掉。
+        """
+        self._open_book()
+        self.assertIsNone(
+            self.driver.execute_script("return document.getElementById('document-encoding');"),
+            '编码下拉框应该已经删掉')
+
+        self.driver.execute_script('window.documentReader._reloadDocument();')
+        time.sleep(0.5)
+        state = self.driver.execute_script("""
+            const calls = window.__CALLS__.filter(c => c[0] === 'document_get_chapters');
+            return {encoding: window.documentReader.encoding,
+                    lastEncoding: calls.length ? calls[calls.length - 1][2] : null,
+                    saved: JSON.parse(localStorage.getItem('document-reader-settings') || '{}')};
+        """)
+        details = json.dumps(state, ensure_ascii=False)
+        self.assertEqual(state['encoding'], 'auto', f'应用内的编码不是自动检测 {details}')
+        self.assertEqual(state['lastEncoding'], 'auto', f'重读没有用自动检测 {details}')
+        self.assertNotIn('encoding', state['saved'], f'设置里还留着已经删掉的编码项 {details}')
+
+
 if __name__ == '__main__':   # pragma: no cover
     unittest.main()

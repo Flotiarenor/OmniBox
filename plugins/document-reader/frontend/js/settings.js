@@ -24,7 +24,6 @@ class ReaderSettingsStore {
                 app.theme = settings.theme || 'auto';
                 app.bgColor = settings.bgColor || '#ffffff';
                 app.textColor = settings.textColor || '#1a1a1a';
-                app.encoding = settings.encoding || 'auto';
                 app.mode = settings.mode || 'page';
             }
         } catch (e) {
@@ -42,7 +41,6 @@ class ReaderSettingsStore {
         if (dom.modeSelect) dom.modeSelect.value = app.mode || 'page';
         if (dom.bgColorInput) dom.bgColorInput.value = app.bgColor;
         if (dom.textColorInput) dom.textColorInput.value = app.textColor;
-        if (dom.encodingSelect) dom.encodingSelect.value = app.encoding;
 
         const isCustom = app.theme === 'custom';
         if (dom.customColorLabel) dom.customColorLabel.style.display = isCustom ? 'inline-flex' : 'none';
@@ -85,7 +83,6 @@ class ReaderSettingsStore {
             theme: app.theme,
             bgColor: app.bgColor,
             textColor: app.textColor,
-            encoding: app.encoding,
             mode: app.mode,
         };
         localStorage.setItem(READER_SETTINGS_KEY, JSON.stringify(settings));

@@ -13,6 +13,9 @@ class DocumentReader {
         this.theme = 'light';
         this.bgColor = '#ffffff';
         this.textColor = '#1a1a1a';
+        // 编码全自动、没有开关：后端的解码链（UTF-8 自证 → 中文编码 → gb18030）现在比
+        // 让用户手选任何一个编码都强 —— 手选唯一能做到的"额外效果"是把本来能读的书
+        // 解成乱码，所以界面上干脆不提供这个选择（见 parser.read_full_content）。
         this.encoding = 'auto';
         this.mode = 'page'; // 'page' | 'scroll'
 
@@ -87,7 +90,6 @@ class DocumentReader {
             textColorInput: document.getElementById('document-text-color'),
             customColorLabel: document.getElementById('custom-color-label'),
             customTextLabel: document.getElementById('custom-text-label'),
-            encodingSelect: document.getElementById('document-encoding'),
         };
     }
 
@@ -199,12 +201,6 @@ class DocumentReader {
             this._dom.textColorInput.addEventListener('change', (e) => {
                 this.textColor = e.target.value;
                 this.settings.apply();
-            });
-        }
-        if (this._dom.encodingSelect) {
-            this._dom.encodingSelect.addEventListener('change', () => {
-                this.encoding = e.target.value;
-                if (this.currentDocument && this._isReaderMode) this._reloadDocument();
             });
         }
     }
@@ -360,10 +356,6 @@ class DocumentReader {
             this._showLoading(true);
             this.currentDocument = this.documents.find(n => n.id === documentId);
             if (!this.currentDocument) return;
-            if (this.currentDocument.encoding) {
-                this.encoding = this.currentDocument.encoding;
-                if (this._dom.encodingSelect) this._dom.encodingSelect.value = this.encoding;
-            }
 
             // pdf / 交给系统程序的格式没有章节模型，直接换内容区，不进阅读引擎
             if (this.currentDocument.kind === 'pdf' || this.currentDocument.kind === 'external') {
