@@ -225,6 +225,11 @@
   <script src="js/reader-tts.js"></script>
   <script src="js/reader-voice-page.js"></script>
   <script src="js/app.js"></script>
+  <!-- DocumentReader.prototype 的分片：顺序是硬约束，必须排在 app.js 之后、实例化之前。
+       漏挂或错序会在装载期抛 `DocumentReader is not defined`。 -->
+  <script src="js/app-shelf.js"></script>
+  <script src="js/app-toc.js"></script>
+  <script src="js/app-menu.js"></script>
   <script>
     window.documentReader = new DocumentReader();
     documentReader.init();
