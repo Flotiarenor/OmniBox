@@ -273,6 +273,49 @@ class DocumentReaderFormatTests(unittest.TestCase):
         saved = json.loads((state / '.document_progress.json').read_text(encoding='utf-8'))
         self.assertIn('旧书.txt', saved)
 
+    # ===== 编码兜底 =====
+
+    def test_truncated_gbk_txt_still_reads(self):
+        """末尾被截断半个字的 GBK txt 必须还能读出来。
+
+        旧实现严格解码失败后统一退回 utf-8 + errors='ignore'：对 GBK 中文就是满屏乱码，
+        而且不抛异常 —— 表现就是"auto、gbk、gb2312 换哪个编码都读不出来"。
+        """
+        body = '第一章 起点\r\n正文一\r\n第二章 终点\r\n正文二\r\n'
+        (self.docs / '残卷.txt').write_bytes(body.encode('gbk') + '尾'.encode('gbk')[:1])
+        self.plugin.list_documents()
+
+        for encoding in ('auto', 'gbk', 'gb2312'):
+            chapters = self.plugin.get_chapters('残卷.txt', encoding)['chapters']
+            self.assertEqual([c['title'] for c in chapters], ['第一章 起点', '第二章 终点'],
+                             f'{encoding}: 截断结尾的 GBK 文件没解对')
+            content = self.plugin.get_content('残卷.txt', 0, encoding)['content']
+            self.assertIn('正文一', content, f'{encoding}: 正文是乱码')
+
+    def test_truncated_utf8_txt_still_reads(self):
+        """UTF-8 的文件末尾同样可能被截断：不能因为 gbk / gb18030 也"解得开"就换成乱码。"""
+        (self.docs / 'utf8残卷.txt').write_bytes(
+            '第一章 起点\n正文一\n'.encode('utf-8') + '尾'.encode('utf-8')[:1])
+        self.plugin.list_documents()
+
+        for encoding in ('auto', 'utf-8'):
+            chapters = self.plugin.get_chapters('utf8残卷.txt', encoding)['chapters']
+            self.assertEqual([c['title'] for c in chapters], ['第一章 起点'],
+                             f'{encoding}: 截断结尾的 UTF-8 文件没解对')
+            content = self.plugin.get_content('utf8残卷.txt', 0, encoding)['content']
+            self.assertIn('正文一', content, f'{encoding}: 正文是乱码')
+
+    def test_gbk_only_char_reads_under_gb2312_selection(self):
+        """选了 gb2312 而正文里有 GBK 扩展字（"玥"不在 GB2312 里）时也要读得出来：
+        gb2312 / gbk 都是 gb18030 的子集，按 gb18030 解不会有损失。"""
+        (self.docs / '扩展字.txt').write_bytes('第一章 起点\n玥儿登场\n'.encode('gbk'))
+        self.plugin.list_documents()
+
+        result = self.plugin.get_content('扩展字.txt', 0, 'gb2312')
+        self.assertIn('玥儿登场', result['content'])
+        self.assertEqual([c['title'] for c in self.plugin.get_chapters('扩展字.txt', 'gb2312')['chapters']],
+                         ['第一章 起点'])
+
     # ===== 外部打开 =====
 
     def test_open_external_rejects_path_outside_root(self):

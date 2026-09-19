@@ -34,7 +34,9 @@ class DocumentReaderPlugin(PluginBase):
     PROGRESS_FILE = '.document_progress.json'
     # 章节缓存键加入格式与编码、文档 id 改为完整文件名（含扩展名）后升版：
     # 旧版的章节/偏移缓存与新的键对不上，留着只会变成读不到的垃圾。
-    CACHE_VERSION = 3
+    # v4：TxtParser 的编码兜底修好后，同一本书解出来的正文长度会变（GBK 文件过去被
+    # 按 utf-8 + ignore 解成了乱码），旧偏移切片到新正文上就是错位的章节。
+    CACHE_VERSION = 4
 
     CACHE_DIR_NAME = '.document_state'
     # 改名前的名字：只用于把旧数据搬过来，别拿它们当新写入口

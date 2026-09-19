@@ -2,7 +2,7 @@
 
 import os
 import re
-from typing import ClassVar, List, Pattern, Tuple
+from typing import ClassVar, List, Optional, Pattern, Tuple
 
 try:
     import chardet
@@ -27,40 +27,75 @@ class TxtParser:
 
     @staticmethod
     def detect_encoding(file_path: str) -> str:
+        """猜编码。
+
+        顺序：BOM → UTF-8 自证 → chardet → gb18030。
+
+        为什么不先信 chardet：它对中文 txt 的置信度经常低得离谱（实测一本 5 MB 的
+        GBK 小说被猜成 koi8-u、置信度 0.036），旧代码低于 0.5 就直接当 UTF-8，
+        于是整个文件只能靠"解码失败后的兜底"来救，而那个兜底恰恰是错的。
+        UTF-8 能自证，所以先试它；反过来 chardet 只用来在"不是 UTF-8"之后分辨是
+        哪种中文编码（big5 / shift_jis / 无 BOM 的 utf-16 …）。
+        """
         try:
             with open(file_path, 'rb') as f:
                 raw_data = f.read(100000)
-                if chardet:
-                    result = chardet.detect(raw_data)
-                    if result.get('encoding') and result.get('confidence', 0) > 0.5:
-                        encoding = result['encoding'].lower()
-                        if encoding in ('gb2312', 'gbk', 'gb18030'):
-                            return 'gbk'
-                        if encoding in ('utf-8', 'utf8'):
-                            return 'utf-8'
-                        if 'utf-16' in encoding:
-                            return 'utf-16'
-                        return encoding
-        except Exception:
-            pass
-        return 'utf-8'
+        except OSError:
+            return 'utf-8'
+
+        if raw_data[:2] in (b'\xff\xfe', b'\xfe\xff'):
+            return 'utf-16'
+        # 采样是按固定长度切的，末尾可能正好切在一个汉字的中间：只容忍末尾一个替换符
+        if '\ufffd' not in raw_data.decode('utf-8', errors='replace')[:-1]:
+            return 'utf-8'
+        if chardet:
+            result = chardet.detect(raw_data) or {}
+            guess = (result.get('encoding') or '').lower()
+            if guess in ('gb2312', 'gbk', 'gb18030'):
+                return 'gb18030'        # gb2312 / gbk 都是 gb18030 的子集
+            if guess and (result.get('confidence') or 0) > 0.5:
+                return guess
+        return 'gb18030'                # 中文 txt 的大多数
+
+    @staticmethod
+    def _decode_strict(raw_bytes: bytes, encoding: str) -> Optional[str]:
+        """按 encoding 严格解码；只有"末尾被截断"才容忍，丢掉最后那个不完整的字。
+
+        返回 None 表示这个编码解不开（选错了编码，或者文件本身就是坏的）。
+        """
+        try:
+            return raw_bytes.decode(encoding)
+        except UnicodeDecodeError as e:
+            if e.start >= len(raw_bytes) - 4:
+                return raw_bytes[:e.start].decode(encoding, errors='replace')
+            return None
+        except LookupError:
+            return None
 
     @staticmethod
     def read_full_content(file_path: str, encoding: str = 'auto') -> str:
+        """按编码读出全文。
+
+        界面上没有编码开关（`auto` 是唯一会被用到的值）；显式编码保留给 API 调用方，
+        行为与 auto 一致 —— 解不开就沿解码链往下走，不会因为一个错的编码把整本书作废。
+        """
         with open(file_path, 'rb') as f:
             raw_bytes = f.read()
-        if encoding == 'auto':
+        if not encoding or encoding == 'auto':
             encoding = TxtParser.detect_encoding(file_path)
-        try:
-            return raw_bytes.decode(encoding)
-        except (UnicodeDecodeError, UnicodeError):
-            for enc in ('utf-8', 'gbk', 'gb2312', 'gb18030'):
-                if enc != encoding:
-                    try:
-                        return raw_bytes.decode(enc)
-                    except (UnicodeDecodeError, UnicodeError):
-                        continue
-            return raw_bytes.decode('utf-8', errors='ignore')
+        # GBK 家族统一按 gb18030 解：gb2312 / gbk 都是它的子集，传进来的编码是哪个
+        # 都不该因为正文里一个 GBK 扩展字就整篇解不开。
+        if encoding.lower().startswith('gb'):
+            encoding = 'gb18030'
+        # 选中的编码解不开就按最可能的顺序再试（chardet 猜错、文件被截断、传进来的编码
+        # 本身就不对）。绝不能退回 utf-8 + errors='ignore'：那对中文 GBK 只会吐出满屏
+        # 乱码，而且不抛异常 —— 用户看到的就是"换哪个编码都读不出来"，还找不到原因。
+        for candidate in (encoding, 'gb18030', 'utf-8'):
+            text = TxtParser._decode_strict(raw_bytes, candidate)
+            if text is not None:
+                return text
+        # 谁都不行：就地替换着解，至少把能看的部分给出来
+        return raw_bytes.decode('gb18030', errors='replace')
 
     @staticmethod
     def parse_txt(file_path: str, encoding: str = 'auto') -> Tuple[List[dict], List[Tuple[int, int]]]:
