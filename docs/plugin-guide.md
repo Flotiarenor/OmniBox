@@ -78,7 +78,7 @@ plugins/
 | `libs`            | 可选 | 插件本地附加库目录列表，默认`["backend/libs"]`，加载后端前会加入 `sys.path` |
 | `permissions`     | 可选 | 权限声明，**仅作知情明示**：运行时不做强制、也不在设置页展示（代码里没有任何读取方） |
 | `minShellVersion` | 可选 | 要求的最低 Shell 版本。**仅 `tools/check_plugins.py` 读取**：发布前自检时会拒绝高于当前 shell 的声明，但运行时既不告警也不拒绝加载（旧版 shell 会照常载入该插件） |
-| `destroyOnLeave`  | 可选 | `true` 时离开页面销毁 iframe 重新加载（默认保持存活）                         |
+| `keepAlive`       | 可选 | `true` 时离开页面**不**卸载 iframe（`v-show` 隐藏，DOM 与 JS 状态保留、播放与朗读不中断）；**默认离开即卸载，回来重新加载**。详见 §4.4 |
 | `hidden`          | 可选 | `true` 时不显示在 Shell 主导航，但仍可被宿主内嵌或通过插件 URL 访问           |
 | `kind`            | 可选 | `local-adapter`：声明本插件管理独立运行环境（重依赖插件使用；**尚未实装，只告警不阻断**，当前声明不生效） |
 | `runtime`         | 可选 | **规划中，尚未实装：填入不生效**，运行时没有任何读取方；独立运行环境声明（venv / 入口 / requirements），见 §2.2 |
@@ -726,17 +726,21 @@ lightbox.show(images, 0);
 
 ### 4.4 前端生命周期（onShow / onHide / onDispose）
 
-插件 iframe **默认常驻**：切到别的插件时壳只是用 `v-show` 把它隐藏，DOM 与 JS 状态都保留
-（`readme.md` 记载这是有意设计 —— 切换时媒体播放不中断）。代价是切走以后插件的定时器、
-`requestAnimationFrame` 自循环与轮询仍在运行，而且插件前端无从知道自己的 iframe 是否可见。
+插件 iframe **默认随路由卸载**：切到别的插件时壳把 iframe 整棵卸掉，再进来是一次干净的重新
+加载，前端 JS 状态不保留。需要"切走不中断、回来接着用"的插件在 manifest 里声明
+`"keepAlive": true` —— 壳改用 `v-show` 隐藏，DOM 与 JS 状态都保留，媒体播放与 TTS 朗读
+不会因为切走而中断。申请它要有一份说得清的代价理由：播放/朗读不能断、要持续上报状态、
+首屏加载很贵（仓库里的 `media-player`、`document-reader`、`group-mesh`、`image-viewer`、
+`manga-library` 都属于这几类）；代价是切走以后插件的定时器、`requestAnimationFrame`
+自循环与轮询仍在运行，而且插件前端无从知道自己的 iframe 是否可见。
 
 壳因此在可见性变化时通知插件，`base.js` 提供三个注册入口：
 
 | 入口 | 触发时机 | 典型用途 |
 | --- | --- | --- |
 | `onShow(fn)` | iframe 由隐藏转为显示（含注册时已可见的情况，会立即补一次） | 恢复轮询 / 继续动画 / 暂停过的进度刷新 |
-| `onHide(fn)` | iframe 由显示转为隐藏（常驻组切走、窗口最小化、切换标签页） | 停 `setInterval`、停 rAF 自循环、停轮询 |
-| `onDispose(fn)` | iframe 即将销毁（`destroyOnLeave: true` 的插件离开时、页面卸载时） | 摘掉 `window`/`document` 上的监听器、释放资源 |
+| `onHide(fn)` | iframe 由显示转为隐藏（保活插件切走、窗口最小化、切换标签页） | 停 `setInterval`、停 rAF 自循环、停轮询 |
+| `onDispose(fn)` | iframe 即将销毁（不保活的插件离开时、任何插件在页面卸载时） | 摘掉 `window`/`document` 上的监听器、释放资源 |
 
 ```javascript
 // 三个入口同时挂在 window 上，也等价于 window.PluginLifecycle.onShow 等
@@ -754,8 +758,8 @@ onDispose(() => {
 
 **约定与注意事项**：
 
-- **`onHide` 的语义是"停止视觉与轮询类工作"，不是"停止播放"。** 常驻正是为了让媒体播放
-  在切换时不中断，因此 `media-player` 在 `onHide` 里只停 `lyrics-parser` 的 rAF 自循环，
+- **`onHide` 的语义是"停止视觉与轮询类工作"，不是"停止播放"。** 申请 `keepAlive` 正是为了让
+  媒体播放在切换时不中断，因此 `media-player` 在 `onHide` 里只停 `lyrics-parser` 的 rAF 自循环，
   保留 `player-core` 的播放进度保存；是否暂停由插件自行决定。
 - **只发状态真变化的通知**，重复的 `shown` / `hidden` 不会重复触发；钩子抛异常只记日志，
   不会影响其它钩子与宿主。
@@ -763,11 +767,12 @@ onDispose(() => {
   若注册时 iframe 已经可见，`onShow` 会立即执行一次（常见写法"进入即恢复"无需额外处理）。
 - **消息来源经过校验**：只接受父窗口直接发来的消息（仅校验 `origin` 不足以拦截同源嵌套
   frame）。插件不需要自己监听 `message`。
-- **`destroyOnLeave` 与生命周期是互补的**：`"destroyOnLeave": true` 让 iframe 离开即销毁
-  重载（适合状态重且切换代价低的插件），此时壳会在卸载前发 `onDispose`；
-  常驻插件则只会收到 `onHide` / `onShow`，`onDispose` 只在页面卸载时到达。
+- **`keepAlive` 与生命周期是互补的**：默认（不声明）离开即卸载重载，壳会在卸载前发
+  `onDispose`，这类插件只会收到 `dispose`；`"keepAlive": true` 的插件则会在切走 / 最小化时
+  收到 `onHide`、回来收到 `onShow`，`onDispose` 只在页面卸载时到达。
 - **迁移范例**：`plugins/image-viewer/frontend/js/app.js` 的 `_bindPluginLifecycle()`
-  在 `onHide` 里停掉幻灯片定时器并记住位置、`onShow` 原位继续、`onDispose` 摘掉 `resize`
+  在 `onHide` 里停掉幻灯片定时器并记住位置、`onShow` 原位继续（这两条覆盖窗口最小化 /
+  切标签页；切插件离开时 iframe 直接卸载，收尾走 `onDispose`）、`onDispose` 摘掉 `resize`
   监听器（该文件此前是 `addEventListener` 35 : `removeEventListener` 0）。
   回归用例见 `tests/js/image_viewer_lifecycle.mjs` 与 `tests/js/plugin_lifecycle.mjs`。
 

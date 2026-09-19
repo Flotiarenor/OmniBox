@@ -5,6 +5,7 @@
   "description": "浏览本地图片，支持多个图片目录、按文件夹聚合的相册、混合瀑布流、时间线与幻灯片浏览。",
   "icon": "🖼️",
   "dependencies": [],
+  "keepAlive": true,
   "permissions": ["filesystem:read", "filesystem:write"],
   "backend": {
     "entry": "backend/main.py",

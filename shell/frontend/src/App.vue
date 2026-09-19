@@ -30,8 +30,9 @@ const reloadCounters = reactive<Record<string, number>>({})
 
 // 必须定义在下面的 route watcher 之前：watcher 是 immediate，会在 setup 期同步执行
 const plugins = computed(() => getPlugins())
-const keepAlivePlugins = computed(() => plugins.value.filter(p => !p.destroyOnLeave))
-const destroyOnLeavePlugins = computed(() => plugins.value.filter(p => p.destroyOnLeave))
+const keepAlivePlugins = computed(() => plugins.value.filter(p => p.keepAlive))
+// 默认组：不声明 keepAlive 的插件离开即卸载 iframe，回来是干净重载
+const transientPlugins = computed(() => plugins.value.filter(p => !p.keepAlive))
 const currentPlugin = computed(() => route.meta.pluginName as string || '')
 const isSettings = computed(() => route.path === '/settings')
 const isStatus = computed(() => route.path === '/status')
@@ -54,7 +55,7 @@ function onFrameLoad(e: Event, name: string) {
     // 跨域无法读取内容时不处理，保持原行为
     delete frameErrors[name]
   }
-  // 新挂载/重载的 frame 必须显式登记初始状态：destroyOnLeave 插件在 iframe 加载完成前
+  // 新挂载/重载的 frame 必须显式登记初始状态：不保活的插件在 iframe 加载完成前
   // 就可能被切走，此时它还没有过任何状态；不登记的话它会在后台被误判为"可见"，
   // 第一次真正显示时反而收不到通知。重载（重试 / 设置变更改 src）会递增文档代次，
   // 让状态机丢掉旧文档的结论并重新通知一次 —— 否则后台重载的新文档会以为自己可见。
@@ -77,14 +78,15 @@ function pluginSrc(p: { name: string; entryUrl: string }): string {
 }
 
 // ===== 插件生命周期通知（docs/core-contract-fixes.md §3） =====
-// 常驻插件默认 keep-alive（v-show 隐藏），切走以后其定时器 / rAF 自循环 / 轮询仍在跑，
-// 插件前端也无从知道自己的 iframe 是否可见。宿主因此在三种情形下通知插件：
+// 声明了 `keepAlive: true` 的插件用 keep-alive（v-show 隐藏），切走以后其定时器 /
+// rAF 自循环 / 轮询仍在跑，插件前端也无从知道自己的 iframe 是否可见。宿主因此在三种
+// 情形下通知插件（不保活的插件切走即卸载，只会收到 dispose）：
 //   1. 切换插件（activePlugin 变化）：刚变为非活动 → hidden，刚变为活动 → shown；
 //   2. 窗口 visibilitychange（最小化 / 切标签页）：与"可见"取交集；
 //   3. beforeunload / pagehide：已挂载的 frame 一律 dispose。
 // "该不该发"由 plugin-visibility 状态机判定（只发真正的状态变化）。
 const frameRefs = new Map<string, HTMLIFrameElement>()
-// 每个 frame 是否已作为活动插件挂载（destroyOnLeave 插件切走即卸载）
+// 每个 frame 是否已作为活动插件挂载（不保活的插件切走即卸载）
 const frameMounted = new Map<string, boolean>()
 // 每个 frame 的文档代次（每次 iframe load 递增）：重载后旧文档的可见性结论作废
 const frameEpochs = new Map<string, number>()
@@ -128,7 +130,7 @@ function refreshAllFrameVisibility() {
   frameRefs.forEach((_frame, name) => refreshFrameVisibility(name))
 }
 
-// 销毁组：离开即卸载 iframe，卸载前发一次 dispose
+// 不保活组：离开即卸载 iframe，卸载前发一次 dispose
 function disposeLeavingFrames(keepAliveNames: Set<string>) {
   const leaving = Array.from(frameRefs.keys()).filter(name => {
     if (keepAliveNames.has(name)) return false
@@ -232,12 +234,12 @@ watch(
       activePlugin.value = null
     }
     // 路由切换后的可见性收敛：keep-alive 的 iframe 已存在（这里同步发通知），
-    // destroyOnLeave 的 iframe 由本次渲染挂载/卸载，交给 setFrameRef 与下面的
+    // 不保活的 iframe 由本次渲染挂载/卸载，交给 setFrameRef 与下面的
     // nextTick 兜底，保证两种形态都恰好收到一次 shown / hidden / dispose。
     refreshAllFrameVisibility()
     nextTick(() => {
       frameRefs.forEach((_frame, frameName) => {
-        if (destroyOnLeavePlugins.value.some(p => p.name === frameName)) {
+        if (transientPlugins.value.some(p => p.name === frameName)) {
           frameMounted.set(frameName, activePlugin.value === frameName)
           notifyFrame(frameName, ensureFrame(frameName, activePlugin.value === frameName))
         }
@@ -294,7 +296,7 @@ watch(
             ></iframe>
           </div>
         </template>
-        <template v-for="p in destroyOnLeavePlugins" :key="p.name">
+        <template v-for="p in transientPlugins" :key="p.name">
           <div
             v-if="activePlugin === p.name" class="plugin-frame-container"
             :ref="el => setFrameRef(p.name, el as Element | null)"

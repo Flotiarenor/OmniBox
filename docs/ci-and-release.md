@@ -363,7 +363,7 @@ RUF100（未使用的 noqa）会把这些标注判为冗余并删除——它们
    该路径当前是死代码。
 7. 插件设置文件未 `chmod 0600`（Linux 上权限取决于 umask），而令牌文件是显式
    `0600`；密钥类设置应统一收紧。
-8. `docs/plugin-guide.md:751` 建议 `Bridge.originalUrl(encodeURIComponent(path))`，
+8. `docs/plugin-guide.md:863` 建议 `Bridge.originalUrl(encodeURIComponent(path))`，
    与 `base.js` 内部已编码的实现冲突（双重编码）。
 
 ---

@@ -55,5 +55,16 @@ class ShellLifecycleWiringTests(unittest.TestCase):
                 self.assertIn(needle, app)
 
 
+    def test_app_splits_plugins_by_keep_alive_with_the_right_polarity(self):
+        """常驻组必须是"申请了 keepAlive 的那些"，反过来就是全仓插件静默恢复常驻。"""
+        app = (PROJECT_ROOT / 'shell' / 'frontend' / 'src' / 'App.vue').read_text(encoding='utf-8')
+        for needle in (
+            'filter(p => p.keepAlive)',
+            'filter(p => !p.keepAlive)',
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, app)
+
+
 if __name__ == '__main__':   # pragma: no cover
     unittest.main()

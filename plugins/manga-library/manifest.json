@@ -4,6 +4,7 @@
   "displayName": "漫画中心",
   "icon": "📚",
   "dependencies": [],
+  "keepAlive": true,
   "backend": {
     "entry": "backend/main.py",
     "class": "MangaLibraryPlugin"

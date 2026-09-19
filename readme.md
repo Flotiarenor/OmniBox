@@ -41,7 +41,7 @@ graph TB
     PM --> Flask
 ```
 
-- **前端壳**：Vue 3 + Vue Router，动态加载插件清单并生成导航和 iframe 路由。插件 iframe 保持存活（keep-alive），切换时媒体播放不中断。
+- **前端壳**：Vue 3 + Vue Router，动态加载插件清单并生成导航和 iframe 路由。插件 iframe 默认离开即卸载、回来重新加载；在 manifest 里声明 `"keepAlive": true` 的插件保持存活（播放/朗读不中断、状态持续上报、首屏加载贵的那几类），切换时不受影响。
 - **后端壳**：Python 插件管理器，负责插件的发现、依赖解析、加载和 API 聚合。
 - **通信**：所有页面同源（`http://127.0.0.1`），插件前端可直接调用 `parent.pywebview.api` 访问后端方法；Web-only 模式下自动使用 HTTP API 桥接。
 - **Web-only 模式**：可通过 `python main.py --web-only` 启动，无需桌面窗口，适合 Linux 服务器 / NAS / 浏览器访问。

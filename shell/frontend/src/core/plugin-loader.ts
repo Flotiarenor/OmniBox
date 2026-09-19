@@ -7,7 +7,7 @@ export interface PluginManifest {
   icon: string
   route: string
   entryUrl: string
-  destroyOnLeave?: boolean
+  keepAlive?: boolean
 }
 
 // 必须是响应式容器，不能是普通数组。

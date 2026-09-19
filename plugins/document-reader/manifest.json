@@ -4,6 +4,7 @@
   "displayName": "文档阅读",
   "icon": "📖",
   "dependencies": [],
+  "keepAlive": true,
   "description": "读写文档目录与本机状态，朗读时联网请求 edge-tts 语音端点",
   "permissions": ["filesystem:read", "filesystem:write", "network:outbound"],
   "backend": {

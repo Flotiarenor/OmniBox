@@ -5,6 +5,7 @@
   "icon": "🕸️",
   "description": "无中心团体组网：身份、团体名单、共享节点与加密传输（协议内核见 shell/groupmesh）",
   "dependencies": [],
+  "keepAlive": true,
   "permissions": [
     "filesystem:read",
     "filesystem:write",

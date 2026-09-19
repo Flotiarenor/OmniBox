@@ -22,8 +22,7 @@ class ReaderTts {
         this.pieces = [];          // [{text, start, end}]（相对本章 textContent）
         this.chapter = 0;
         this.index = 0;
-        this.audio = new Audio();
-        this.audio.preload = 'auto';
+        this.audio = this._createAudio();   // 挂进 DOM，见 _createAudio 的说明
         this._seq = 0;             // 每次开播自增：过期的响应一律丢弃
         this._prefetched = new Map();
         this._state = 'idle';      // idle | loading | playing | paused
@@ -31,6 +30,21 @@ class ReaderTts {
         this._markedRange = null;
         this._chapterElement = null;
         this._card = null;
+    }
+
+    /**
+     * 建播放元素并**挂进 DOM**（`hidden`）。
+     *
+     * 游离的 `new Audio()` 也能播，但窗口最小化 / 切到后台时不如在 DOM 里的元素可靠
+     * —— media-player 的 `<video>` 就在 DOM 里，所以它切走不断音。这里对齐同一种做法。
+     */
+    _createAudio() {
+        const audio = document.createElement('audio');
+        audio.id = 'nr-tts-audio';
+        audio.hidden = true;
+        audio.preload = 'auto';
+        document.body.appendChild(audio);
+        return audio;
     }
 
     async init() {
@@ -347,12 +361,11 @@ class ReaderTts {
         }
     }
 
-    pause(fromLifecycle = false) {
+    pause() {
         if (this._state !== 'playing' && this._state !== 'loading') return;
         this._state = 'paused';
         try { this.audio.pause(); } catch (e) { /* 忽略：没在播就无所谓 */ }
         this._syncCard();
-        if (fromLifecycle) this._clearHighlight();
     }
 
     resume() {

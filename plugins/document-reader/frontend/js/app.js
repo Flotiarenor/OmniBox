@@ -244,10 +244,16 @@ class DocumentReader {
         });
     }
 
-    /** 常驻插件切走后不该继续朗读（听不见还费流量），也顺手暂停进度保存。 */
+    /**
+     * 常驻插件被切到后台时的收尾。
+     *
+     * **刻意不绑 onHide 去暂停朗读**：切插件或最小化窗口时朗读应当继续（与
+     * media-player 一致 —— 它压根不绑生命周期钩子，音频元素常驻所以不断）。
+     * 之前这里写了 `onHide → tts.pause()`，表现就是"一切走朗读就断"。
+     * 只保留 dispose：插件真被卸载/刷新时再收尾。
+     */
     _bindLifecycle() {
         if (!window.PluginLifecycle) return;
-        window.PluginLifecycle.onHide(() => this.tts.pause(true));
         window.PluginLifecycle.onDispose(() => this.tts.stop());
     }
 

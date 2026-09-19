@@ -63,7 +63,7 @@ window.PluginLifecycle = (function() {
   /**
    * 注册"iframe 即将销毁"的回调（可注册多个，按注册顺序调用）。
    *
-   * 触发时机：`destroyOnLeave: true` 的插件离开页面时、整个页面卸载时。
+   * 触发时机：不保活的插件离开页面时（iframe 即将卸载）、整个页面卸载时。
    * 用于摘掉 window/document 上的监听器、清掉定时器与 rAF 自循环。
    * @param {() => void} fn
    */

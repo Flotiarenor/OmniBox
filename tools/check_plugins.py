@@ -75,7 +75,7 @@ RUNTIME_FIELD_READERS: Dict[str, List[Tuple[str, str]]] = {
     'displayName': [('shell/backend/plugin_manager.py', "'displayName', m['name']")],
     'icon': [('shell/backend/plugin_manager.py', "'icon', '📦'")],
     'hidden': [('shell/backend/plugin_manager.py', "m.get('hidden')")],
-    'destroyOnLeave': [('shell/backend/plugin_manager.py', "'destroyOnLeave'")],
+    'keepAlive': [('shell/backend/plugin_manager.py', "'keepAlive'")],
     'dependencies': [('shell/backend/plugin_manager.py', "'dependencies'")],
     'libs': [('shell/backend/plugin_manager.py', "manifest.get('libs'")],
     'backend.entry': [('shell/backend/plugin_manager.py', "backend_cfg.get('entry'")],

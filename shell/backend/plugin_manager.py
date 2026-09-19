@@ -243,7 +243,7 @@ class PluginManager:
                 'icon': m.get('icon', '📦'),
                 'route': m['frontend']['route'],
                 'entryUrl': f"/plugins/{m['name']}/frontend/index.html",
-                'destroyOnLeave': m.get('destroyOnLeave', False)
+                'keepAlive': bool(m.get('keepAlive', False))
             }
             for m in self._manifests.values()
             if not m.get('hidden')

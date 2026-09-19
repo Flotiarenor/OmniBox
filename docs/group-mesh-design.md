@@ -192,7 +192,7 @@ import `main.py`（后端入口由 PluginManager 用 importlib 直接加载，�
   侧栏按「本机 / 团体 / 传输 / 关于」分组导航并在底部常驻节点与名单摘要，
   主区是五个**纯显隐**面板 —— 身份与节点（本机身份 + 共享节点）、名单与成员、
   共享项、远端共享、路线图（原「尚未实现」列为可折叠区块）。
-  面板切换只改 `data-active`、不销毁 DOM，与壳"iframe 常驻"的策略一致；
+  面板切换只改 `data-active`、不销毁 DOM，与壳给保活插件用的"iframe 常驻"策略一致；
   面板的标题/副标题写在 `section[data-panel]` 的 `data-title` / `data-sub` 上，
   新增一个面板 = 侧栏多一个 `button[data-panel]` + 一个 `section[data-panel]`。
   所有判定在后端，前端只读状态、渲染、调 Bridge。
@@ -200,8 +200,9 @@ import `main.py`（后端入口由 PluginManager 用 importlib 直接加载，�
   物化缓存），由 `app.js` 在 `DOMContentLoaded` 后注入回调并调用
   `GroupMeshRemote.init()`。`index.html` 里 `remote.js` 必须排在 `app.js`
   之前；`tests/js/plugin_asset_contract.mjs` 把关"无孤立脚本、装载期不碰 DOM"。
-  该分片的读回轮询（15 秒）挂在壳的 `onShow` / `onHide` 上：iframe 常驻，
-  切走时必须停表（`docs/plugin-guide.md` §4.4）。
+  该分片的读回轮询（15 秒）挂在壳的 `onShow` / `onHide` 上：本插件声明
+  `"keepAlive": true`（状态要持续上报，切走不该停），因此 iframe 常驻、切走只会收到
+  `onHide`，必须靠它停表（`docs/plugin-guide.md` §4.4）。
 - 前端只复用壳注入的基建，不重复造：主题 token（`variables.css`）、通用类
   （`base.css` 的 `.btn` 系列 / `.view-*`）、动效类（`effects.css` 的 `.obx-glass` /
   `.obx-scroll` / `.obx-card-lift` / `.obx-skeleton` / `.obx-stagger`）、

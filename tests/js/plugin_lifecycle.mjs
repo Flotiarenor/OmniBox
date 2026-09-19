@@ -175,7 +175,7 @@ console.log('场景 D：可见性状态机（挂载 × 活动 × 窗口可见）
     check('窗口恢复可见 → shown', JSON.stringify(see('media-player', true, true, true)) === SHOWN);
 }
 
-console.log('场景 E：destroyOnLeave 形态（iframe 加载完成前就切走）');
+console.log('场景 E：默认（不保活）形态 —— iframe 加载完成前就切走');
 {
     visibility.disposeFrames();
     // 插件还没加载完成（未登记），就被切走：不得发出"可见"
@@ -191,7 +191,7 @@ console.log('场景 E：destroyOnLeave 形态（iframe 加载完成前就切走�
         JSON.stringify(visibility.ensureFrame('lazy-plugin', true)) === SHOWN);
 }
 
-console.log('场景 E2：文档代次（destroyOnLeave 插件被重载）');
+console.log('场景 E2：文档代次（不保活插件每次进来都是新文档 / 重载）');
 {
     visibility.disposeFrames();
     check('首次登记代次视为变化', visibility.noteFrameEpoch('reload-plugin', 1) === true);

@@ -76,7 +76,7 @@ class Plugin(PluginBase):
 '''
 
 
-def _write_plugin(root: Path, name: str, source: str, deps=None) -> Path:
+def _write_plugin(root: Path, name: str, source: str, deps=None, extra=None) -> Path:
     plugin_dir = root / name
     (plugin_dir / 'backend').mkdir(parents=True, exist_ok=True)
     manifest = {
@@ -87,6 +87,7 @@ def _write_plugin(root: Path, name: str, source: str, deps=None) -> Path:
         'backend': {'entry': 'backend/main.py', 'class': 'Plugin'},
         'frontend': {'entry': 'frontend/index.html', 'route': f'/{name}'},
     }
+    manifest.update(extra or {})
     (plugin_dir / 'manifest.json').write_text(
         json.dumps(manifest, ensure_ascii=False), encoding='utf-8'
     )
@@ -239,6 +240,30 @@ class PluginUnloadTests(unittest.TestCase):
             manager.load_all()
 
             self.assertIn(lib_path, sys.path, '成功的插件必须保留私有库路径')
+
+
+class PluginKeepAliveManifestTests(unittest.TestCase):
+    """`manifest.keepAlive` 是"离开页面是否保活"的唯一开关，且默认必须是不保活。
+
+    壳的契约是"不声明就卸载"（App.vue 按这个布尔量把插件分成 v-show 常驻组与按需
+    挂载组），只有媒体播放、TTS 朗读这类显式申请的插件才常驻。默认值一旦被改成
+    true，所有插件都会悄悄恢复常驻 —— 现象是插件切走不停表，且没有任何报错。
+    """
+
+    def test_default_false_and_explicit_true_passthrough(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'plugins'
+            root.mkdir()
+            _write_plugin(root, 'plain', _OK_PLUGIN)
+            _write_plugin(root, 'player', _OK_PLUGIN, extra={'keepAlive': True})
+            data_root = Path(td) / 'data'
+            data_root.mkdir()
+            manager = PluginManager([str(root)], config={'directories': {'data_root': str(data_root)}})
+
+            manager.load_all()
+
+            flags = {m['name']: m['keepAlive'] for m in manager.get_frontend_manifests()}
+            self.assertEqual(flags, {'plain': False, 'player': True})
 
 
 class PluginSettingsPersistenceTests(unittest.TestCase):
