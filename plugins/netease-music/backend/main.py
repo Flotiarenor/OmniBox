@@ -19,15 +19,15 @@ class NeteaseMusicPlugin(PluginBase):
 
     def get_extensions(self) -> list:
         return [
-            {'host': 'media-player', 'id': 'netease-daily', 'label': '每日推荐', 'icon': '🎵',
+            {'host': 'media-player', 'id': 'netease-daily', 'label': '每日推荐', 'icon': 'icon:music',
              'view': 'ncm-daily', 'placement': 'sidebar', 'scope': 'all'},
-            {'host': 'media-player', 'id': 'netease-playlists', 'label': '推荐歌单', 'icon': '📋',
+            {'host': 'media-player', 'id': 'netease-playlists', 'label': '推荐歌单', 'icon': 'icon:list-music',
              'view': 'ncm-playlists', 'placement': 'sidebar', 'scope': 'all'},
-            {'host': 'media-player', 'id': 'netease-liked', 'label': '我的喜欢', 'icon': '❤️',
+            {'host': 'media-player', 'id': 'netease-liked', 'label': '我的喜欢', 'icon': 'icon:heart',
              'view': 'ncm-liked', 'placement': 'sidebar', 'scope': 'all'},
-            {'host': 'media-player', 'id': 'netease-my-playlists', 'label': '我的歌单', 'icon': '📚',
+            {'host': 'media-player', 'id': 'netease-my-playlists', 'label': '我的歌单', 'icon': 'icon:library',
              'view': 'ncm-my-playlists', 'placement': 'sidebar', 'scope': 'all'},
-            {'host': 'media-player', 'id': 'netease-login', 'label': '登录', 'icon': '👤',
+            {'host': 'media-player', 'id': 'netease-login', 'label': '登录', 'icon': 'icon:user',
              'view': 'ncm-login', 'placement': 'sidebar', 'scope': 'all'},
         ]
 

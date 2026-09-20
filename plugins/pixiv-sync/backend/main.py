@@ -742,7 +742,7 @@ class PixivSyncPlugin(PluginBase):
                 "host": "image-viewer",
                 "id": "pixiv-sync",
                 "label": "Pixiv 同步",
-                "icon": "🎨",
+                "icon": "icon:palette",
                 "description": "同步下载关注画师新作与收藏画作",
                 "section": "Pixiv 同步",
                 "embedUrl": "/plugins/pixiv-sync/frontend/index.html",

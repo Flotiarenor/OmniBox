@@ -137,7 +137,7 @@ class GroupMeshPlugin(
         # 位置之四：从对端取回的文件落点。留空时回落到 <数据根>/group-mesh/downloads。
         # 由 Shell 的 FolderPicker 渲染（`directory` 类型），值仍是字符串，
         # 因此这里不需要为它写任何解析代码。
-        # `local_only`：本字段**只接受本机目录**，不显示「🌐 网络位置」按钮 ——
+        # `local_only`：本字段**只接受本机目录**，不显示「网络位置」按钮 ——
         # 那是"把远端共享项取回本地"的入口，而这里正是取回后的落点，语义上不能用它
         # 自己当自己的来源（而且取回的中间目录不是用户想要的下载目录）。
         {'key': 'download_dir', 'label': '远端下载目录', 'type': 'directory',
@@ -244,7 +244,7 @@ class GroupMeshPlugin(
         self.stop_node()
 
     def get_extensions(self) -> List[dict]:
-        """把自己注册成"网络位置"提供方（壳共享目录组件的「🌐 网络位置」按钮用它）。
+        """把自己注册成"网络位置"提供方（壳共享目录组件的「网络位置」按钮用它）。
 
         为什么是扩展而不是依赖：共享目录组件出现在**任意插件**的设置里
         （image-viewer 的图片文件夹、media-player 的媒体目录…），壳不可能知道
@@ -263,7 +263,7 @@ class GroupMeshPlugin(
             'placement': 'network-location',
             'id': 'group-mesh',
             'label': '团体组网',
-            'icon': '🕸️',
+            'icon': 'icon:network',
             'description': '把某台成员设备上的共享项取到本地一个目录，再加进列表',
             'embedUrl': '/plugins/group-mesh/frontend/network-location.html',
         }]
