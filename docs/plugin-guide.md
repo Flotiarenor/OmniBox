@@ -673,7 +673,6 @@ Shell 还注入了以下可复用的 UI 组件函数（无需引入，直接使�
 | `createLightbox(options)`                                         | 创建灯箱组件                              |
 | `createPagination(container, options)`                            | 创建分页组件                              |
 | `createContextMenu(options)`                                      | 创建右键菜单组件                          |
-| `createCardGrid(container, options)`                              | 创建卡片网格组件                          |
 | `createSettingsForm(container, schema, values)`                   | 按 schema 渲染设置表单                    |
 | `renderExtensions(container, host, placement, options?)`          | 渲染注册到宿主侧边栏/工具栏的扩展插件入口 |
 | `openSettingsModal(options)`                                      | 打开统一设置弹窗                          |
@@ -685,18 +684,6 @@ Shell 还注入了以下可复用的 UI 组件函数（无需引入，直接使�
 **示例**：
 
 ```javascript
-// 创建卡片网格
-const grid = createCardGrid(document.getElementById('grid'), {
-  cardRenderer: (item) => ({
-    image: item.cover_url,
-    title: item.title,
-    subtitle: item.author,
-    badge: `${item.count} 项`,
-  }),
-  onClick: (item, index) => openDetail(item),
-});
-grid.render(items);
-
 // 打开设置弹窗
 openSettingsModal({
   title: '媒体库设置',

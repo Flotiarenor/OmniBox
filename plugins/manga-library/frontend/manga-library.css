@@ -20,8 +20,9 @@
 }
 
 /* ===== 侧边栏 ===== */
+/* 宽度由壳的 `.view-sub-sidebar` 提供（var(--sub-sidebar-width)，默认 240px）：
+   同优先级时壳胜出，写死宽度不生效（见 docs/plugin-ui-guide.md §3.1）。 */
 .ml-sidebar {
-  width: 248px;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--border);
@@ -307,7 +308,8 @@
 
 /* ===== 响应式 ===== */
 @media (max-width: 860px) {
-  .ml-sidebar { width: 210px; }
+  /* 窄窗口要压过壳的宽度必须提高特异性：媒体查询不改变特异性 */
+  .ml-sidebar.view-sub-sidebar { width: 200px; }
   .ml-search input { width: 160px; }
   .ml-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
   .ml-task-progress { width: 100px; }

@@ -303,7 +303,7 @@ background: var(--mp-glass, var(--bg-surface));
 | 搜索框 | `base.css:38-50` `.search-input`（`max-width:400px`） | 用 `.search-input`；要更宽就加类，不要内联 style 反制 | image-viewer 自造 `.iv-search`；pixiv-sync 无搜索 |
 | 侧栏导航 | `base.css:290-347` `.obx-nav-item` + `--obx-nav-*` | 结构/选中态都靠壳；只保留图标栏宽度等差异 | 5 个插件已用；image-cleaner/pixiv-sync 无 |
 | 侧栏标题/底栏 | `.sub-sidebar-header` / `.sub-sidebar-footer` | 分组标题用大写小字；底栏放统计 | image-viewer 用 `.iv-sidebar-footer` |
-| 卡片/网格 | 无壳类（`createCardGrid`（`base.js:915`）采用数 **0**） | 建议固化为"封面 + 标题 + 副标题/徽标"，圆角走 `--radius-lg`，悬浮 `.obx-card-lift`，选中态 = 2px `--accent` 描边；否则明确宣告 `createCardGrid` 不再推荐 | media-player `.mp-card-grid`、manga-library 自建网格、image-viewer 自建 `.iv-image-grid` |
+| 卡片/网格 | 无壳类（曾有 `createCardGrid`，因零采用且渲染的 `.manga-*` 无任何样式定义，已删除） | 卡片属插件自己的内容区布局：建议统一"封面 + 标题 + 副标题/徽标"，圆角走 `--radius-lg`，悬浮 `.obx-card-lift`，选中态 = 2px `--accent` 描边 | media-player `.mp-card-grid`、manga-library `.ml-grid`、image-viewer `.iv-image-grid` |
 | 弹窗 | `base.css:159-179` `.modal` / `.modal-box` / `.modal-body` / `.modal-footer` | 入场 `.obx-anim-scale`/`-pop`；遮罩关闭用 `pointerdown` 并判 `e.target === overlay`（`base.js:602`，`tests/debug_modal_backdrop_press.py` 守） | image-viewer/manga-library/document-reader 已用；pixiv-sync 自造 `.psync-modal` |
 | 设置弹窗 | `base.js:566-628` `openSettingsModal()` + `settings_schema` | 首选；schema 类型 `text`（默认）/ `number` / `range` / `checkbox` / `select` / `textarea` / `directory`；`secret: True` 标记敏感字段（壳负责掩码与"留空即不改"）；`directory` 自动接入 `folder-picker`，`local_only` 可关掉"网络位置"入口 | 5 个插件调用；document-reader / image-viewer 另有自建设置面板；pixiv-sync 完全旁路 |
 | 表单控件 | `base.css:181-206` `.settings-form` / `.field*` / `.field-range*` | 自建设置面板也必须复用这些类 | image-viewer 自造 `.iv-field`/`.iv-setting-item` |
@@ -486,7 +486,7 @@ background: var(--mp-glass, var(--bg-surface));
 6. `media-player` 大规模重复造壳：8 个关键帧逐值复制成 `mpSpin`/`mpFadeUp`/…（css:1965-2015）、
    `--mp-shadow-*`/`--mp-glass*` 与 `--obx-*` 数值逐字相同、整段滚动条规则（css:879-947）重复
    `.obx-scroll`，另有 `.mp-modal`（z-index 500）对 `.modal`、`.mp-context-menu` 对
-   `createContextMenu`、`.mp-empty-state` 对 `.empty-state`、`.mp-card-grid` 对 `createCardGrid`。
+   `createContextMenu`、`.mp-empty-state` 对 `.empty-state`。
    同时它的主内容区 `#media-content` 反而漏了 `.obx-scroll`。
 7. 设置入口四套并存：`openSettingsModal`（5 个插件）、自建设置弹窗（image-viewer
    `#settings-modal`）、自绘阅读设置弹窗 + 整页朗读设置（document-reader，同一插件三套）、
@@ -512,8 +512,9 @@ background: var(--mp-glass, var(--bg-surface));
 15. 工具栏右侧靠 `style="margin-left:auto;"` 而不是类。
 16. 遮罩黑度 4 档（0.45/0.55/0.62/0.65）未走 `--bg-overlay`。
 17. 死代码：`--nr-cover-*` 3 个变量（document-reader.css:23-25）、`.psync-empty`（pixiv-sync）。
-18. `createCardGrid`（0 采用）、`createSettingsForm`（0 直接采用，仅被 `openSettingsModal`
-    间接使用）、`createPagination`（1 处）、`.obx-skeleton`（0）——共享组件要么推广，要么明确废弃。
+18. `createCardGrid` 已删除（零采用，且它渲染的 `.manga-*` 在壳与任何插件样式里都没有定义，
+    谁用谁拿到无样式 DOM）；`createSettingsForm`（0 直接采用，仅被 `openSettingsModal`
+    间接使用）、`createPagination`（1 处）、`.obx-skeleton`（0）仍需决定推广还是废弃。
 19. `netease-music` 的独立页（154 行）无人可达且与 media-player 的原生视图重复，
     其 `parent.mediaPlayerApp` 在壳直接加载时必然失败；`#content` 的 `class="empty"`
     渲染后从不移除。
@@ -582,7 +583,7 @@ background: var(--mp-glass, var(--bg-surface));
 | --- | --- |
 | 工具栏右侧分组 | 加 `.toolbar-group.right { margin-left: auto; }`，插件去掉内联 `style` |
 | 进度条 | 提取 `.obx-progress` + `.obx-progress-bar`（现在只有 pixiv-sync 有，且是私有类） |
-| 卡片/网格 | 定一个最小契约（封面/标题/副标题/徽章/选中态），或明确宣告 `createCardGrid` 不再推荐 |
+| 卡片/网格 | 已定为"插件自建"（`createCardGrid` 删除，见 §9.5）；若以后要共享，先定义 `.obx-card*` 类与样式再推广 |
 | 空/加载/错误态 | `base.css` 已有 `.empty-state` / `.loading`：补 `.error-state` + 重试按钮样式，并在文档里点名"不要自造 `.xx-empty`" |
 | 侧栏宽度策略 | 决定：全部跟随 `--sub-sidebar-width`，或把它也做成用户可调（现在只暴露了 `--nav-width`） |
 | 浮层层级与遮罩 | 在 base.css 注释里写死层级约定（modal 1500 / toast 3000），并提供 `.obx-overlay` 使用 `--bg-overlay` |
@@ -601,7 +602,7 @@ background: var(--mp-glass, var(--bg-surface));
    改成 `type: "directory"`）；统一空/加载态类与搜索框类；内嵌页去掉自带工具栏；
    侧栏宽度统一跟随 token；补 `image-cleaner` 的设置入口。
 3. **P2**：批量操作向固定底栏收敛；工具栏右侧用类；清理死变量与死类；
-   决定共享组件（`createCardGrid` / `createSettingsForm` / `createPagination`）的去留。
+   决定其余共享组件（`createSettingsForm` / `createPagination`）的去留（`createCardGrid` 已删除）。
 
 ### 10.3 加可验证项（否则一定会退回去）
 

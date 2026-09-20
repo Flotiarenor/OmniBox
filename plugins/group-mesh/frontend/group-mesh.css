@@ -32,7 +32,8 @@
   --gm-success-soft: color-mix(in srgb, var(--success) 15%, transparent);
   --gm-warn-soft: color-mix(in srgb, var(--warning) 18%, transparent);
   --gm-danger-soft: var(--danger-soft, color-mix(in srgb, var(--danger) 15%, transparent));
-  --gm-side-width: 236px;
+  /* 与其它插件同宽：直接跟随壳的 --sub-sidebar-width（默认 240px） */
+  --gm-side-width: var(--sub-sidebar-width);
   --gm-peers-width: 272px;
 }
 
@@ -132,11 +133,11 @@ body {
    分隔线按结构分工：侧栏只画 `border-right`，主区的 `.view-toolbar` 画
    `border-bottom`。两边都画会在交角处叠成 2px（实测）。
 
-   选择器带上 `.view-sub-sidebar` 是有意的：壳的 base.css 用**同一个类**（0,1,0）
-   把宽度写死成 `--sub-sidebar-width`（240px）、方向写死成 column。两边同优先级时
-   后注入的壳样式胜出，本插件的 `--gm-side-width` 与窄窗口的横向排布都会失效
-   （实测：设成 236 实际 240，窄窗口侧栏仍是竖排）。提高一格优先级即可，
-   不能靠改顺序 —— 注入顺序由壳决定。 */
+   选择器带上 `.view-sub-sidebar` 是有意的：壳的 base.css 用**同一个类**（0,1,0）把
+   方向和边框写死，与本插件规则同优先级时后注入的壳样式胜出。宽度已经跟随壳的
+   `--sub-sidebar-width`，不再各自取值；但窄窗口的横向排布（下面的 `@media
+   (max-width: 720px)`）仍要压过壳的 `flex-direction: column`，所以选择器保持 0,2,0。
+   不能靠改顺序 —— 注入顺序由壳决定（实测：裸 `.gm-side` 时窄窗口侧栏仍是竖排）。 */
 
 .gm-side.view-sub-sidebar {
   width: var(--gm-side-width);

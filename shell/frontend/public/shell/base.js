@@ -911,44 +911,8 @@ function createContextMenu(options = {}) {
   return { show, getTargetData, element: menu };
 }
 
-// ==================== 卡片网格组件 ====================
-function createCardGrid(container, options = {}) {
-  function renderCard(item) {
-    const data = options.cardRenderer(item);
-    const card = document.createElement('div');
-    card.className = 'manga-card';
-    card.dataset.folderName = item.folder_name || '';
-    card.innerHTML = `
-      <div class="manga-cover">
-        <img src="${Utils.escapeHtml(data.image)}" loading="lazy" alt="${Utils.escapeHtml(data.title)}">
-        ${data.badge ? `<span class="manga-badge">${Utils.escapeHtml(data.badge)}</span>` : ''}
-        ${data.extraHtml || ''}
-      </div>
-      <div class="manga-info">
-        <p class="manga-title">${Utils.escapeHtml(data.title)}</p>
-        ${data.subtitle ? `<p class="manga-author">${Utils.escapeHtml(data.subtitle)}</p>` : ''}
-      </div>
-    `;
-    card.addEventListener('click', (e) => {
-      if (e.target.closest('.card-extra-item')) return;
-      if (options.onClick) options.onClick(item, Array.from(container.children).indexOf(card));
-    });
-    if (options.onContextMenu) {
-      card.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        options.onContextMenu(item, Array.from(container.children).indexOf(card), e);
-      });
-    }
-    return card;
-  }
-
-  return {
-    render(items) {
-      container.innerHTML = '';
-      items.forEach(item => container.appendChild(renderCard(item)));
-    },
-    append(items) {
-      items.forEach(item => container.appendChild(renderCard(item)));
-    }
-  };
-}
+// 注：这里曾有一个 `createCardGrid()`，实际采用数为 0，且它渲染的
+// `.manga-card / .manga-cover / .manga-info …` 在壳与任何插件样式里都没有定义 ——
+// 它是某个插件旧实现的视觉词汇被搬进"共享"组件，谁用谁拿到无样式 DOM，已删除。
+// 卡片网格属各插件的内容区布局（image-viewer 用瀑布流、manga-library / media-player
+// 用自适应栅格），由插件自建；见 docs/plugin-ui-guide.md §5。

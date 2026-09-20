@@ -20,8 +20,10 @@
 }
 
 /* ===== 侧边栏 ===== */
+/* 宽度由壳的 `.view-sub-sidebar` 提供（var(--sub-sidebar-width)，默认 240px）。
+   这里不要写死宽度：壳与本规则同为 0,1,0，而壳的样式注入在 </head> 之前，
+   等特异性时壳胜出，写死值不生效（见 docs/plugin-ui-guide.md §3.1）。 */
 .iv-sidebar {
-  width: 240px;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--border);
@@ -196,7 +198,8 @@
 .iv-empty .iv-empty-hint { font-size: 12px; color: var(--text-muted); }
 
 @media (max-width: 860px) {
-  .iv-sidebar { width: 200px; }
+  /* 窄窗口要压过壳的宽度必须提高特异性：媒体查询不改变特异性 */
+  .iv-sidebar.view-sub-sidebar { width: 200px; }
   .iv-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
 }
 

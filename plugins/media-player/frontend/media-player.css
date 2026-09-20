@@ -7,19 +7,19 @@
    ============================================================ */
 
 :root {
-  --mp-radius: 14px;
-  --mp-radius-sm: 10px;
+  /* 圆角 / 玻璃 / 阴影 / 派生色一律引用壳的 --obx-*（effects.css）：这些值与壳逐字
+     相同，重复一份只会在壳调整时漂移。以下三项是本插件独有的尺寸与第二强调色。 */
+  --mp-radius: var(--obx-radius);
+  --mp-radius-sm: var(--obx-radius-sm);
   --mp-stage-vh: 224px;
   --mp-pb-height: 76px;
   --mp-accent-2: color-mix(in srgb, var(--accent) 55%, #8b5cf6);
-  --mp-accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
-  --mp-glass: color-mix(in srgb, var(--bg-surface) 84%, transparent);
-  --mp-glass-strong: color-mix(in srgb, var(--bg-surface) 92%, transparent);
-  --mp-shadow-1: 0 6px 24px rgba(0, 0, 0, 0.10);
-  --mp-shadow-2: 0 14px 44px rgba(0, 0, 0, 0.18);
+  --mp-accent-soft: var(--obx-accent-soft);
+  --mp-glass: var(--obx-glass-bg);
+  --mp-glass-strong: var(--obx-glass-bg-strong);
+  --mp-shadow-1: var(--obx-shadow-1);
+  --mp-shadow-2: var(--obx-shadow-2);
   --mp-gradient: linear-gradient(135deg, var(--accent) 0%, var(--mp-accent-2) 100%);
-  --mp-scroll-thumb: color-mix(in srgb, var(--text-secondary) 38%, transparent);
-  --mp-scroll-thumb-hover: color-mix(in srgb, var(--text-secondary) 62%, transparent);
 }
 
 #app {
@@ -34,8 +34,9 @@
 /* ============================================================
    左侧导航
    ============================================================ */
+/* 宽度由壳的 `.view-sub-sidebar` 提供（var(--sub-sidebar-width)，默认 240px）：
+   同优先级时壳胜出，写死宽度不生效（见 docs/plugin-ui-guide.md §3.1）。 */
 .mp-sidebar {
-  width: 252px;
   background: var(--mp-glass);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
@@ -416,7 +417,7 @@
 }
 
 .mp-stage-cover.spinning img {
-  animation: mpSpin 16s linear infinite;
+  animation: obxSpin 16s linear infinite;
 }
 
 .mp-stage-cover.paused img {
@@ -537,7 +538,7 @@
 
 .mp-stage-empty-icon {
   font-size: 44px;
-  animation: mpFloat 4s ease-in-out infinite;
+  animation: obxFloat 4s ease-in-out infinite;
 }
 
 .mp-stage-empty-text {
@@ -640,7 +641,7 @@
 
 .mp-stage.video-on .mp-stage-big-btn.show {
   display: block;
-  animation: mpPopIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+  animation: obxPopIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 /* ============================================================
@@ -759,7 +760,7 @@
 
 .mp-icon-btn.fav-active {
   color: #f43f5e;
-  animation: mpHeart 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  animation: obxHeart 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .mp-play-btn {
@@ -873,78 +874,10 @@
   background: transparent;
 }
 
-/* ============================================================
-   现代窄滚动条：暗色主题兼容，默认隐藏，鼠标悬停渐显
-   ============================================================ */
-.mp-content,
-.mp-playlist-list,
-.mp-pop-body,
-.mp-add-pl-list,
-.mp-eq-body {
-  scrollbar-width: thin;                /* Firefox */
-  scrollbar-color: transparent transparent;
-}
-
-.mp-content:hover,
-.mp-playlist-list:hover,
-.mp-pop-body:hover,
-.mp-add-pl-list:hover,
-.mp-eq-body:hover {
-  scrollbar-color: var(--mp-scroll-thumb) transparent;
-}
-
-.mp-content::-webkit-scrollbar,
-.mp-playlist-list::-webkit-scrollbar,
-.mp-pop-body::-webkit-scrollbar,
-.mp-add-pl-list::-webkit-scrollbar,
-.mp-eq-body::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-.mp-content::-webkit-scrollbar-track,
-.mp-playlist-list::-webkit-scrollbar-track,
-.mp-pop-body::-webkit-scrollbar-track,
-.mp-add-pl-list::-webkit-scrollbar-track,
-.mp-eq-body::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.mp-content::-webkit-scrollbar-thumb,
-.mp-playlist-list::-webkit-scrollbar-thumb,
-.mp-pop-body::-webkit-scrollbar-thumb,
-.mp-add-pl-list::-webkit-scrollbar-thumb,
-.mp-eq-body::-webkit-scrollbar-thumb {
-  background-color: transparent;
-  border-radius: 999px;
-  border: 1px solid transparent;
-  background-clip: padding-box;
-  transition: background-color 0.25s ease;
-}
-
-.mp-content:hover::-webkit-scrollbar-thumb,
-.mp-playlist-list:hover::-webkit-scrollbar-thumb,
-.mp-pop-body:hover::-webkit-scrollbar-thumb,
-.mp-add-pl-list:hover::-webkit-scrollbar-thumb,
-.mp-eq-body:hover::-webkit-scrollbar-thumb {
-  background-color: var(--mp-scroll-thumb);
-}
-
-.mp-content::-webkit-scrollbar-thumb:hover,
-.mp-playlist-list::-webkit-scrollbar-thumb:hover,
-.mp-pop-body::-webkit-scrollbar-thumb:hover,
-.mp-add-pl-list::-webkit-scrollbar-thumb:hover,
-.mp-eq-body::-webkit-scrollbar-thumb:hover {
-  background-color: var(--mp-scroll-thumb-hover);
-}
-
-.mp-content::-webkit-scrollbar-corner,
-.mp-playlist-list::-webkit-scrollbar-corner,
-.mp-pop-body::-webkit-scrollbar-corner,
-.mp-add-pl-list::-webkit-scrollbar-corner,
-.mp-eq-body::-webkit-scrollbar-corner {
-  background: transparent;
-}
+/* 滚动条由壳的 `.obx-scroll`（effects.css）统一提供：默认透明、悬停渐显。
+   本插件原先自带一份同构实现（覆盖 .mp-content / .mp-playlist-list / .mp-pop-body /
+   .mp-add-pl-list / .mp-eq-body），已删除；上述滚动容器在 index.html 上都带 obx-scroll
+   （.mp-add-pl-list 不自己滚动，靠父级 .mp-modal-body 的 obx-scroll）。 */
 
 .mp-loading {
   display: flex;
@@ -970,7 +903,7 @@
   border-radius: 50%;
   border: 3px solid var(--mp-accent-soft);
   border-top-color: var(--accent);
-  animation: mpSpin 0.8s linear infinite;
+  animation: obxSpin 0.8s linear infinite;
 }
 
 .mp-empty-state {
@@ -981,7 +914,7 @@
   gap: 8px;
   min-height: 240px;
   color: var(--text-secondary);
-  animation: mpFadeUp 0.4s ease both;
+  animation: obxFadeUp 0.4s ease both;
 }
 
 .mp-empty-state .empty-icon { font-size: 44px; opacity: 0.55; }
@@ -1004,7 +937,7 @@
   cursor: pointer;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
   transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
-  animation: mpFadeUp 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: obxFadeUp 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
   animation-delay: calc(var(--i, 0) * 26ms);
 }
 
@@ -1162,7 +1095,7 @@ img.mp-thumb-pending { opacity: 0.45; transition: opacity .3s; }
   color: var(--text-primary);
   border: 1px solid transparent;
   transition: background var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast);
-  animation: mpFadeUp 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: obxFadeUp 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
   animation-delay: calc(var(--i, 0) * 18ms);
 }
 
@@ -1299,7 +1232,7 @@ img.mp-thumb-pending { opacity: 0.45; transition: opacity .3s; }
   overflow: hidden;
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  animation: mpFadeUp 0.45s ease both;
+  animation: obxFadeUp 0.45s ease both;
 }
 
 .mp-detail-hero::before {
@@ -1400,7 +1333,7 @@ img.mp-thumb-pending { opacity: 0.45; transition: opacity .3s; }
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  animation: mpPopIn 0.22s cubic-bezier(0.34, 1.4, 0.64, 1);
+  animation: obxPopIn 0.22s cubic-bezier(0.34, 1.4, 0.64, 1);
 }
 
 .mp-pop.hidden { display: none; }
@@ -1594,7 +1527,7 @@ img.mp-thumb-pending { opacity: 0.45; transition: opacity .3s; }
   display: none;
   align-items: center;
   justify-content: center;
-  animation: mpFade 0.2s ease;
+  animation: obxFade 0.2s ease;
 }
 
 .mp-modal.active { display: flex; }
@@ -1609,7 +1542,7 @@ img.mp-thumb-pending { opacity: 0.45; transition: opacity .3s; }
   border: 1px solid var(--border);
   border-radius: 18px;
   box-shadow: var(--mp-shadow-2);
-  animation: mpScaleIn 0.24s cubic-bezier(0.34, 1.45, 0.64, 1);
+  animation: obxScaleIn 0.24s cubic-bezier(0.34, 1.45, 0.64, 1);
 }
 
 .mp-modal-sm { width: 320px; }
@@ -1697,7 +1630,7 @@ img.mp-thumb-pending { opacity: 0.45; transition: opacity .3s; }
   display: flex;
   flex-direction: column;
   gap: 2px;
-  animation: mpPopIn 0.18s cubic-bezier(0.34, 1.4, 0.64, 1);
+  animation: obxPopIn 0.18s cubic-bezier(0.34, 1.4, 0.64, 1);
 }
 
 .mp-context-menu button {
@@ -1961,32 +1894,10 @@ img.mp-thumb-pending { opacity: 0.45; transition: opacity .3s; }
 
 /* ============================================================
    关键帧动画
+   通用动效（旋转 / 入场 / 心跳 / 浮动 / 微光）由壳的 effects.css 提供，
+   直接用关键帧名即可：animation: obxSpin / obxFadeUp / obxPopIn /
+   obxScaleIn / obxFade / obxHeart / obxFloat。以下两个是本插件专属的。
    ============================================================ */
-@keyframes mpSpin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-@keyframes mpFadeUp {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes mpPopIn {
-  from { opacity: 0; transform: scale(0.94) translateY(6px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
-}
-
-@keyframes mpScaleIn {
-  from { opacity: 0; transform: scale(0.92) translateY(10px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
-}
-
-@keyframes mpFade {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
 @keyframes mpEq {
   0%, 100% { height: 4px; }
   50% { height: 13px; }
@@ -1997,23 +1908,6 @@ img.mp-thumb-pending { opacity: 0.45; transition: opacity .3s; }
   50% { transform: rotate(2deg) scale(1.08) translate(2%, -2%); }
   100% { transform: rotate(-1deg) scale(1.04) translate(-2%, 2%); }
 }
-
-@keyframes mpHeart {
-  0% { transform: scale(1); }
-  40% { transform: scale(1.45); }
-  100% { transform: scale(1); }
-}
-
-@keyframes mpFloat {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-7px); }
-}
-
-@keyframes mpShimmer {
-  0% { background-position: -400px 0; }
-  100% { background-position: 400px 0; }
-}
-
 /* ============================================================
    响应式
    ============================================================ */
@@ -2026,7 +1920,8 @@ img.mp-thumb-pending { opacity: 0.45; transition: opacity .3s; }
 }
 
 @media (max-width: 860px) {
-  .mp-sidebar { width: 210px; }
+  /* 窄窗口要压过壳的宽度必须提高特异性：媒体查询不改变特异性 */
+  .mp-sidebar.view-sub-sidebar { width: 200px; }
   .mp-search input { width: 150px; }
   .mp-pb-right .mp-volume { display: none; }
   #btn-stop { display: none; }
