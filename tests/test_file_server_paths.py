@@ -217,6 +217,77 @@ class OnDemandFileFetchTests(_FileRouteFixture, unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
 
 
+class RelativePathPlaceholderTests(_FileRouteFixture, unittest.TestCase):
+    """`/file` 默认相对路径分支（及兼容路由 `/files/<path>`）必须识别 0 字节占位。
+
+    回归：该分支曾经只判 `exists()`，于是物化类插件写下的 0 字节占位被当作正常
+    文件返回 200 + 0 字节，`ensure_file` 永远不触发；绝对路径与
+    `resolve_file_path()` 两个分支早已改为 `_needs_content()`。
+    """
+
+    class _PlaceholderInstance(_StubInstance):
+        """物化类插件桩：0 字节占位 + `ensure_file` 写回真字节。"""
+
+        def __init__(self, root, filler=b'FETCHED-FROM-RELATIVE'):
+            super().__init__([root])
+            self._filler = filler
+            self.calls = []
+
+        def resolve_file_path(self, rel_path):
+            # 显式返回 None，走 Shell 的「插件数据根目录」默认解析分支
+            return None
+
+        def is_content_placeholder(self, path):
+            return True
+
+        def ensure_file(self, path):
+            self.calls.append(str(path))
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_bytes(self._filler)
+
+    def _register(self):
+        root = Path(self._tmp.name) / 'relative-cache'
+        root.mkdir(exist_ok=True)
+        instance = self._PlaceholderInstance(root)
+        self.manager._instances['placeholder'] = instance
+        return root, instance
+
+    def test_relative_placeholder_is_fetched_then_served(self):
+        root, instance = self._register()
+        target = root / 'share' / 'photo.bin'
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b'')          # 0 字节占位
+        resp = self._get('/file?path=share/photo.bin&plugin=placeholder')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_data(), b'FETCHED-FROM-RELATIVE')
+        self.assertEqual(len(instance.calls), 1, f'应当只回调一次: {instance.calls}')
+        self.assertTrue(os.path.samefile(instance.calls[0], target))
+
+    def test_legacy_files_route_relative_placeholder_is_fetched(self):
+        root, instance = self._register()
+        target = root / 'share' / 'photo.bin'
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b'')
+        resp = self._get('/files/share/photo.bin?plugin=placeholder')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_data(), b'FETCHED-FROM-RELATIVE')
+
+    def test_relative_missing_file_is_fetched(self):
+        """既有的「文件不存在时按需生成」行为不变。"""
+        root, instance = self._register()
+        resp = self._get('/file?path=share/new.bin&plugin=placeholder')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_data(), b'FETCHED-FROM-RELATIVE')
+
+    def test_relative_directory_is_404_without_ensure_file(self):
+        """目录不是「内容没取回的文件」：不得回调 `ensure_file`，返回 404。"""
+        root, instance = self._register()
+        (root / 'share').mkdir(parents=True, exist_ok=True)
+        resp = self._get('/file?path=share&plugin=placeholder')
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(instance.calls, [], '目录不应触发 ensure_file')
+
+
 class FilePathRouteTests(_FileRouteFixture, unittest.TestCase):
     def test_thumbs_traversal_is_403_not_400(self):
         """越界访问必须 403：403 被吞成 400 会掩盖真实的拒绝原因。"""

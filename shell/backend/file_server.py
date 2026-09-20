@@ -588,18 +588,22 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
     def _needs_content(instance, full_path: Path) -> bool:
         """该路径是否"存在但内容还没真正取到本地"（决定要不要回调 `ensure_file`）。
 
-        两种情况缺一不可：
-          * 文件不存在 —— 普通插件按需生成内容的场景；
+        判定：
+          * 文件不存在 —— 普通插件按需生成内容的场景，返回 True；
           * **文件存在但是占位** —— 物化类插件（group-mesh）先造 0 字节占位文件、
-            再靠 `ensure_file` 取真字节。只判"不存在"会把占位当正常文件返回
-            （实测踩到：HTTP 200 + 0 字节，远端内容永远不会被取回）。
+            再靠 `ensure_file` 取真字节，返回 True。只判"不存在"会把占位当正常文件
+            返回（实测踩到：HTTP 200 + 0 字节，远端内容永远不会被取回）；
+          * 目录 —— 返回 False，不触发 `ensure_file`。
         """
-        if not full_path.is_file():
-            return True
-        try:
-            return bool(instance.is_content_placeholder(full_path))
-        except Exception:
-            return False
+        if full_path.is_file():
+            try:
+                return bool(instance.is_content_placeholder(full_path))
+            except Exception:
+                return False
+        # 目录不是"内容还没取回的文件"：交给 ensure_file 是误用（插件会按文件
+        # 处理它），目录请求由调用方的 is_file() 判定 404；其余形态（不存在、
+        # 断裂符号链接）都按"需要取内容"处理。
+        return not full_path.is_dir()
 
     def serve_media_file(filepath, plugin_name):
         """媒体/文件访问：支持相对路径和绝对路径，并做越权目录校验。"""
@@ -683,14 +687,18 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             _reject_protected_file(full_path)
             if not _is_safe_path(full_path, data_root):
                 abort(403)
-            if not full_path.exists() and instance is not None:
+            # 与上面两个分支一致：文件不存在、或存在但是 0 字节占位时都回调
+            # `ensure_file`。只判 `exists()` 会把占位当正常文件直接返回
+            # 200 + 0 字节，远端内容永远不会被取回（见 `_needs_content` 的说明；
+            # `/files/<相对路径>` 这类请求正走这里）。
+            if instance is not None and _needs_content(instance, full_path):
                 try:
                     instance.ensure_file(full_path)
                 except Exception:
                     pass
-            if not full_path.exists():
+            if not full_path.is_file():
                 abort(404)
-            return send_from_directory(data_root, filepath)
+            return send_file(full_path, conditional=True)
         except Exception as e:
             code = getattr(e, 'code', None)
             if code in (400, 403, 404):
