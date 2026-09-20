@@ -229,6 +229,16 @@ def _run_app(config, manager):
         'system_open_log_dir': shell_info.open_log_dir,
     }
     shell_methods.update(manager.get_api_methods())
+    # 桌面模式**不**套 `guard_admin_methods`，理由必须写在代码里，否则下一个人会
+    # 把它当成"漏了一处"补上、然后所有管理员端点在桌面模式全部拒绝：
+    #   * js_api 由 pywebview 反射调用，不经过 Flask 的 before_request，执行上下文里
+    #     没有主体（CURRENT_PRINCIPAL 只在 file_server._require_token 里设置）；
+    #   * 而"这次调用是谁"在本机没有第二个答案 —— 窗口页面本身就是 owner 令牌的持有者，
+    #     插件 iframe 与它同源，同样能经 Bridge.callSystem 沿 parent 链取到
+    #     pywebview.api 说话。**角色判定分不开同源的插件前端与壳**。
+    # 能分开的只有 origin 隔离（插件前端独立端口/子域 + postMessage 桥），见审计报告
+    # P1-8 的后续方案。HTTP 路径继续走同一份判定（file_server.guard_admin_methods），
+    # 那是能携带非 owner 令牌、判定真正生效的通道。
     for method_name, method_fn in shell_methods.items():
         setattr(api, method_name, method_fn)
 

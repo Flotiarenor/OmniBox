@@ -141,10 +141,10 @@ class GroupMeshPlugin(
         # 那是"把远端共享项取回本地"的入口，而这里正是取回后的落点，语义上不能用它
         # 自己当自己的来源（而且取回的中间目录不是用户想要的下载目录）。
         {'key': 'download_dir', 'label': '远端下载目录', 'type': 'directory',
-         'local_only': True,
+         'local_only': True, 'admin_only': True,
          'default': '', 'placeholder': '默认：数据根/group-mesh/downloads',
          'help': '从团体成员那里取回的文件保存在这里。该目录经 /file 对界面可读，'
-                 '但不对团体共享 —— 要共享它请单独挂一个共享项。'},
+                 '但不对团体共享 —— 要共享它请单独挂一个共享项（改动需管理员）。'},
         {'key': 'max_fetch_mb', 'label': '按需取回单文件上限（MiB）', 'type': 'number',
          'default': 1024, 'min': 0, 'max': 102400,
          'help': '浏览远端目录时，超过这个大小的文件不会自动取回（0 表示不限制）。'

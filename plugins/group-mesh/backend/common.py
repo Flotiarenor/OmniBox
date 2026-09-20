@@ -5,6 +5,7 @@ import main.py（会成环），所以共用的常量与纯函数需要一个中
 名字重新绑定成原来的名字，于是 main.py 的既有引用与测试对模块级名字的引用都不用改。
 """
 
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 # 默认监听端口。与设计文档 §13 的默认参数一致，可被设置项覆盖。
@@ -75,3 +76,51 @@ def _mtime_ns(payload: Any) -> Optional[int]:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
     return value
+
+
+def safe_rel(value: Any) -> Optional[str]:
+    """把对端给的条目名/路径归一成本机可用的相对路径；不可用时返回 None。
+
+    对端是**不可信输入**：协议允许它回任何字符串，而调用方会把它拼成本机路径
+    （`root / rel`）。Python 的 `Path` 除法在 rel 是绝对路径时**直接返回该路径**，
+    `..` 段也不被拒绝 —— 于是一个 `../../../tmp/x` 或 `/tmp/x` 就能让"物化 / 镜像 /
+    对账删除"作用到根之外（审计项 P1-5；实测可把根外文件覆盖为对端内容并删除根外文件）。
+    这里是**唯一**的一处归一，物化与镜像两条路径共用：
+
+      * 分隔符统一成正斜杠（Windows 上 `\\` 同样是分隔符，不能只挡 `/`）；
+      * 拒绝空值、含 NUL、绝对路径（`/x`、`C:\\x`、`\\\\server\\share`）；
+      * 拒绝任何一段是 `..`；
+      * 丢弃空段与 `.` 段（`a//b` 与 `a/./b` 归一成 `a/b`）。
+
+    合法输入（`img.jpg`、`作者/作品/1.jpg`）原样返回（分隔符已归一）。
+    """
+    if not isinstance(value, str):
+        return None
+    if '\x00' in value:
+        return None                      # NUL 会让底层路径调用截断，直接拒绝而不是清洗
+    text = value.replace('\\', '/')
+    if not text.strip():
+        return None
+    if text.startswith('/'):
+        return None
+    if len(text) >= 2 and text[1] == ':' and text[0].isalpha():
+        return None                      # C:/x 这类盘符绝对路径
+    segments = [seg for seg in text.split('/') if seg not in ('', '.')]
+    if not segments or any(seg == '..' for seg in segments):
+        return None
+    return '/'.join(segments)
+
+
+def within_root(root: Any, rel: str) -> Optional[Path]:
+    """`root / rel` 解析后的绝对路径；不在 root 之内时返回 None。
+
+    纵深防御：`safe_rel` 已经挡过一轮，这一层保证"即使以后有人放宽了名字规则，
+    落盘/删除目标也仍在根内"，并顺带覆盖符号链接把路径引到根外的情形
+    （resolve() 之后比较，因此链接目标也必须在根内）。
+    """
+    try:
+        base = Path(root).resolve()
+        target = (base / rel).resolve()
+    except (OSError, ValueError):
+        return None
+    return target if target.is_relative_to(base) else None

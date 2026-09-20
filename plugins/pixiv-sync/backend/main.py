@@ -62,8 +62,11 @@ class PixivSyncPlugin(PluginBase):
             # directory 类型由壳的共享组件 folder-picker 渲染（单值字段取首行路径，
             # 见 base.js 的 createSettingsForm）；原先声明成 text 时用户只能手打路径
             "type": "directory",
+            # 它决定插件的落盘根（`_root()`），也就决定 /file 的允许根之一：
+            # 改写它等于让下载内容落到任意目录、并把该目录对界面开放。
+            "admin_only": True,
             "placeholder": "默认: image-viewer 数据根目录",
-            "help": "留空 = 写入 image-viewer 相册根目录，下载后自动出现在相册",
+            "help": "留空 = 写入 image-viewer 相册根目录，下载后自动出现在相册（改动需管理员）",
         },
         # 注：原图下载与多图子文件夹为固定行为（默认开启），不提供设置开关；
         #     如需调整请直接改 backend/pixiv_sync/download.py 中 all_image_urls 的

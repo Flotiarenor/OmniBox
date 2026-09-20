@@ -45,11 +45,14 @@ class ImageViewerPlugin(
     PluginBase,
 ):
     settings_schema: ClassVar[List[Dict[str, Any]]] = [
-        {"key": "root_dir", "label": "数据根目录", "type": "text",
-         "placeholder": "默认: ./data", "help": "图片浏览的数据根目录"},
-        {"key": "extra_roots", "label": "额外图片目录", "type": "textarea",
+        # root_dir / extra_roots 决定 `/file`、`/thumbs` 的允许根，因此改动它们
+        # 等于改动本机可读/可删/可移的文件范围 —— 声明 admin_only，由
+        # PluginBase.save_settings / update_setting 统一判定（见 docs/plugin-guide.md §8.2）。
+        {"key": "root_dir", "label": "数据根目录", "type": "text", "admin_only": True,
+         "placeholder": "默认: ./data", "help": "图片浏览的数据根目录（改动需管理员）"},
+        {"key": "extra_roots", "label": "额外图片目录", "type": "textarea", "admin_only": True,
          "placeholder": "每行一个目录（也可在插件设置面板里增删）",
-         "help": "与主根目录一起浏览：每个目录在相册树里显示为顶层节点"},
+         "help": "与主根目录一起浏览：每个目录在相册树里显示为顶层节点（改动需管理员）"},
         {"key": "row_height", "label": "图片行高", "type": "range",
          "min": 100, "max": 400, "default": 200, "help": "Justified 布局的每行目标高度"},
         {"key": "per_page", "label": "每页图片数", "type": "number",

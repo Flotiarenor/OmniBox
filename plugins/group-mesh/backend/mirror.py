@@ -141,7 +141,14 @@ class MirrorMixin:
         truncated = False
         errors: List[str] = []
         for rel, info in sorted(walked.items()):
-            target = root / rel
+            # 目标路径由"用户指定目录 + 对端给的相对路径"拼成，对端那一半不可信：
+            # 绝对路径或 `..` 段能让一次"取回"覆盖根外的任意文件（审计项 P1-5）。
+            # 归一与拒绝规则在 _common.safe_rel / _common.within_root，与物化共用。
+            target = _common.within_root(root, rel)
+            if target is None:
+                log.warning(f'[group-mesh] 忽略越界的远端条目: {rel!r}')
+                errors.append(f'{rel}: 路径越界，已忽略')
+                continue
             if info['dir']:
                 try:
                     target.mkdir(parents=True, exist_ok=True)

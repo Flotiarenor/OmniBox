@@ -37,6 +37,7 @@ from shell.backend.principal import (
     ROLE_ADMIN,
     ROLE_MEMBER,
     ROLE_OWNER,
+    AdminRequired,
     PrincipalContext,
     PrincipalScope,
     PrincipalStore,
@@ -585,6 +586,54 @@ class AdminOnlyEndpointsTest(unittest.TestCase):
     def test_unknown_token_is_still_401_not_403(self):
         """未认证是 401（前端会引导重新取令牌），已认证但权限不够才是 403。"""
         self.assertEqual(self._post('system_get_config', 'x' * 43).status_code, 401)
+
+
+class AdminOnlyGuardTests(unittest.TestCase):
+    """`guard_admin_methods`：管理员判定只写一处，供两条通道共用。
+
+    审计项 P2-3：判定原先硬编码在 `api_proxy` 里。同一批壳级端点在桌面模式还会经
+    pywebview `js_api` 反射暴露（`main._run_app`），那里不判角色。现在判定下沉到方法
+    本身（`principal.require_admin`），由 `guard_admin_methods` 按清单套用。
+
+    注意桌面 js_api 通道**当前不套**这个包装：该通道没有主体（不经过 Flask 的
+    `before_request`），套上会让所有管理员端点在桌面模式全部拒绝，而同源的插件前端
+    与壳又无法用角色区分（理由见 `main._run_app` 的注释）。本用例锁住"包装本身按角色
+    放行/拒绝"，即两条通道一旦共用它就会得到同一结论。
+    """
+
+    def _guarded(self):
+        from shell.backend.file_server import guard_admin_methods
+
+        return guard_admin_methods({
+            'system_get_config': lambda: 'config',
+            'image-viewer__list_images': lambda: 'images',
+        })
+
+    def test_non_admin_and_missing_principal_are_rejected(self):
+        member = PrincipalContext(id='m', name='成员', role=ROLE_MEMBER, source='enrolled')
+        admin = PrincipalContext(id='a', name='管理员', role=ROLE_ADMIN, source='enrolled')
+        methods = self._guarded()
+        for principal, allowed in ((admin, True), (member, False), (None, False)):
+            role = principal.role if principal is not None else '无主体'
+            with self.subTest(role=role), use_principal(principal):
+                if allowed:
+                    self.assertEqual(methods['system_get_config'](), 'config')
+                else:
+                    with self.assertRaises(AdminRequired):
+                        methods['system_get_config']()
+
+    def test_methods_outside_the_list_are_untouched(self):
+        """限权只覆盖清单内的壳端点：插件 API 原样放行（由插件自己决定要不要限）。"""
+        member = PrincipalContext(id='m', name='成员', role=ROLE_MEMBER, source='enrolled')
+        methods = self._guarded()
+        for principal in (member, None):
+            with use_principal(principal):
+                self.assertEqual(methods['image-viewer__list_images'](), 'images')
+
+    def test_admin_required_is_a_permission_error(self):
+        """调用方据此把它翻成 403：`api_proxy` 捕获的就是这个类型。"""
+        self.assertTrue(issubclass(AdminRequired, PermissionError))
+        self.assertTrue(issubclass(AdminRequired, Exception))
 
 
 if __name__ == '__main__':

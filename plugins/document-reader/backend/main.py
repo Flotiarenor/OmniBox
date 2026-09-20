@@ -35,10 +35,11 @@ class DocumentReaderPlugin(
 ):
     settings_schema: ClassVar[List[Dict[str, Any]]] = [
         {"key": "root_dir", "label": "文档根目录", "type": "directory", "multi": True,
+         "admin_only": True,
          "placeholder": "输入目录绝对路径，如 D:\\文档",
          "emptyText": "未添加任何目录，将使用默认数据目录（./data）",
          "help": "可添加多个目录（每行一个，第一行为主目录，缓存与阅读进度存在它下面）；"
-                 "每个目录都会递归扫描子目录"},
+                 "每个目录都会递归扫描子目录。改动需管理员（它决定 /file 的允许根）"},
         # ===== 朗读（见 backend/tts_engine.py）=====
         {"key": "tts_engine", "label": "朗读引擎", "type": "select", "default": "auto",
          "options": [
@@ -49,13 +50,18 @@ class DocumentReaderPlugin(
          ]},
         {"key": "tts_order", "label": "自动模式顺序", "type": "text", "default": "edge,openai,system",
          "help": "逗号分隔，留空用默认顺序。例如只想要本地：openai,system"},
+        # 端点是"进程会带着 Authorization: Bearer <tts_api_key> 去请求的地址"：
+        # 允许任意主体改写它，等于把 owner 配置的凭据交给任意主机（并让本进程成为
+        # 可读回内网响应的 SSRF 跳板）。两个键都声明 admin_only，由 PluginBase 统一判定。
         {"key": "tts_base_url", "label": "OpenAI 兼容端点", "type": "text", "default": "",
+         "admin_only": True,
          "placeholder": "http://127.0.0.1:8880",
          "help": "只填根地址，程序会请求 <它>/v1/audio/speech。插件不含模型，"
-                 "模型由你自己的服务提供（Kokoro-FastAPI / GPT-SoVITS / 云 API 均可）"},
+                 "模型由你自己的服务提供（Kokoro-FastAPI / GPT-SoVITS / 云 API 均可）；"
+                 "该地址会收到 Authorization 头，改动需管理员"},
         {"key": "tts_api_key", "label": "端点 API Key", "type": "text", "default": "",
-         "secret": True,
-         "help": "本地服务通常不需要；云服务填这里（保存后不明文回显）"},
+         "secret": True, "admin_only": True,
+         "help": "本地服务通常不需要；云服务填这里（保存后不明文回显，改动需管理员）"},
         {"key": "tts_model", "label": "端点模型名", "type": "text", "default": "",
          "placeholder": "留空则不发送 model 字段"},
         {"key": "tts_voice", "label": "朗读音色", "type": "text", "default": "zh-CN-XiaoxiaoNeural",

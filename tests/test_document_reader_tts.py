@@ -155,6 +155,24 @@ class EngineDispatchTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             tts.synthesize('随便', {**self.base_params, 'mode': 'openai', 'base_url': ''})
 
+    def test_openai_engine_rejects_non_http_endpoint(self):
+        """端点地址会收到 `Authorization: Bearer <api_key>`，因此只放行 http/https。
+
+        审计项 P1-4：该地址原先不做任何校验，改它就能把 owner 配置的云 TTS 凭据发给
+        任意主机；`file://` / `ftp://` 一类还会走别的 requests 适配器。改这个地址的
+        权限另由设置项的 `"admin_only": True` 限定（见 tests/test_settings_admin_only.py）。
+        """
+        for base in ('file:///etc/passwd', 'ftp://127.0.0.1', 'http://', 'not-a-url', '//x/y'):
+            with self.subTest(base=base):
+                params = {**self.base_params, 'mode': 'openai', 'base_url': base,
+                          'api_key': 'sk-secret'}
+                with self.assertRaises(RuntimeError):
+                    tts.synthesize('随便', params)
+        # 正常地址（含本地端点与带路径前缀的反代）必须继续可用
+        for base in ('http://127.0.0.1:8880', 'https://api.example.com', 'http://host:1/api'):
+            with self.subTest(base=base):
+                self.assertEqual(tts._validated_endpoint_base(base), base)
+
     def test_openai_engine_surfaces_http_error(self):
         params = {**self.base_params, 'mode': 'openai', 'base_url': self.endpoint.base_url}
         with self.assertRaises(RuntimeError) as ctx:
@@ -307,15 +325,61 @@ class PluginSpeakDirectTests(unittest.TestCase):
 
     def test_empty_cached_audio_is_regenerated(self):
         """0 字节的缓存音频不算命中：写盘写了一半被中断时，它会让这段文字永远读不出声。"""
-        first = self.plugin.tts_speak('今天下雨了。', 'emptycache', 0)
+        # 缓存键现在只接受十六进制指纹（它是文件名前缀，见 test_traversal_cache_key_*），
+        # 因此这里用一个合法的十六进制串而不是可读词。
+        first = self.plugin.tts_speak('今天下雨了。', 'e0decafe', 0)
         self.assertFalse(first['cached'])
-        path = self._cache_audio_path('emptycache')
+        path = self._cache_audio_path('e0decafe')
         self.assertTrue(path.is_file(), f'没找到缓存音频: {path}')
         path.write_bytes(b'')                     # 模拟被中断的半成品
-        again = self.plugin.tts_speak('今天下雨了。', 'emptycache', 0)
+        again = self.plugin.tts_speak('今天下雨了。', 'e0decafe', 0)
         self.assertFalse(again['cached'], '空文件被当成了缓存命中')
         self.assertGreater(len(_OpenAIHandler.seen), 1, '空缓存应当触发重新合成')
         self.assertGreater(path.stat().st_size, 0, '重新合成后应当写回非空音频')
+
+    def test_traversal_cache_key_cannot_escape_cache_dir(self):
+        """`cache_key` 是请求参数，被当成缓存文件名前缀 —— 它必须挡住路径穿越。
+
+        历史缺口（审计项 P1-3）：`cache_key` 只做 `[:32]` 截断，`'../../../../tmp/x'`
+        就能把音频与 .json 元数据写到缓存目录之外（实测 `os.path.normpath` 落在
+        `/tmp/x-<stamp>.mp3`）。修复是"只接受十六进制指纹，否则回落按文本现算"，
+        外加落盘前的包含判定。
+        """
+        outside = Path(self.tmp.name).parent / 'omnibox-tts-traversal-marker'
+        evil_key = '../' * 8 + outside.name
+        result = self.plugin.tts_speak('穿越测试。', evil_key, 0)
+        self.assertNotIn('error', result)
+        self.assertFalse(list(Path(self.tmp.name).parent.glob(outside.name + '*')),
+                         '缓存文件落到了缓存目录之外')
+        # 回落按文本现算：文件名是文本 md5 前缀，且仍落在缓存目录内
+        names = [p.name for p in self.cache_dir.iterdir()]
+        self.assertTrue(names, f'缓存目录里没有任何文件: {list(self.cache_dir.iterdir())}')
+        for name in names:
+            self.assertNotIn('/', name)
+            self.assertNotIn('..', name)
+
+    def test_cache_prefix_rejects_non_hex_keys(self):
+        """前缀只含十六进制与连字符：任何分隔符形态都不得进入文件名。"""
+        params = {'mode': 'openai', 'voice': 'alloy', 'rate': 0, 'base_url': 'http://x'}
+        for key in ('../../etc/passwd', 'a/b', 'a\\b', '..', 'x' * 200, '你好'):
+            with self.subTest(key=key):
+                prefix = self.plugin._tts_cache_prefix('文本', key, params, str(self.cache_dir))
+                self.assertRegex(prefix, r'^[0-9a-f]{32}-[0-9a-f]{8}$', prefix)
+
+    def test_member_cannot_redirect_tts_endpoint(self):
+        """改端点 = 把已配置的 api_key 交给新地址，因此需要管理员主体（审计项 P1-4）。"""
+        from shell.backend.principal import ROLE_MEMBER, PrincipalContext, use_principal
+
+        self.plugin.save_settings({'tts_api_key': 'sk-owner'})     # 无主体：owner 侧写入
+        member = PrincipalContext(id='m', name='成员', role=ROLE_MEMBER, source='enrolled')
+        with use_principal(member):
+            denied = self.plugin.save_settings({'tts_base_url': 'http://attacker.invalid'})
+        self.assertFalse(denied['success'])
+        self.assertIn('管理员', denied.get('error', ''))
+        self.assertEqual(self.plugin.setting('tts_base_url'), self.endpoint.base_url)
+        # 未声明 admin_only 的朗读偏好不受影响
+        with use_principal(member):
+            self.assertTrue(self.plugin.save_settings({'tts_voice': 'echo'})['success'])
 
     def _cache_audio_path(self, key: str) -> Path:
         found = [p for p in self.cache_dir.iterdir()

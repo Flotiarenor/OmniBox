@@ -21,6 +21,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -38,6 +39,10 @@ TTS_CACHE_LIMIT = 200 * 1024 * 1024
 # 单次合成结果的合理上限：超过它说明引擎返回了异常内容，别往磁盘写
 TTS_RESULT_LIMIT = 40 * 1024 * 1024
 _AUDIO_EXTS = ('.mp3', '.wav', '.ogg', '.opus', '.m4a')
+# 缓存键形状：前端给的是文本指纹（SHA-1 前 32 位十六进制；没有 SubtleCrypto 时
+# 是 `f<hex>`）。它会被拼成**文件名前缀**，所以只能接受十六进制 —— 一旦放开字符集，
+# 一个 `../../../../tmp/x` 就是"以插件权限往任意目录写文件"（见 _tts_cache_prefix）。
+_CACHE_KEY_RE = re.compile(r'^[0-9a-fA-F]{1,64}$')
 
 
 class TtsMixin:
@@ -207,11 +212,17 @@ class TtsMixin:
         if len(result['audio']) > TTS_RESULT_LIMIT:
             return {'error': '合成结果异常大，已放弃播放'}
 
-        path = os.path.join(cache_dir, prefix + result['ext'])
+        # 落盘路径再过一次包含判定：前缀已做过字符白名单，这里是纵深防御 ——
+        # 音频与 .json 元数据都必须落在缓存目录内（审计项 P1-3）。
+        path = self._tts_cache_path(cache_dir, prefix + result['ext'])
+        meta_path = self._tts_cache_path(cache_dir, prefix + '.json')
+        if path is None or meta_path is None:
+            log.warning(f'[{self.name}] 朗读缓存路径越界，已放弃写入: {prefix!r}')
+            return {'error': '缓存路径越界，已放弃写入'}
         try:
             with open(path, 'wb') as handle:
                 handle.write(result['audio'])
-            with open(os.path.join(cache_dir, prefix + '.json'), 'w', encoding='utf-8') as handle:
+            with open(meta_path, 'w', encoding='utf-8') as handle:
                 json.dump({'engine': result['engine'], 'marks': result['marks']},
                           handle, ensure_ascii=False)
         except OSError as e:
@@ -231,12 +242,34 @@ class TtsMixin:
 
         指纹里带上引擎/音色/语速/端点 —— 换了任何一个都该重新合成，否则用户切换后
         听到的还是上一种声音（缓存"命中"得太成功）。
+
+        `cache_key` 由前端给，但**请求体里的东西一律不可信**：它只接受十六进制
+        指纹（`_CACHE_KEY_RE`），形状不符就回落到按文本现算。历史缺口：它被当成
+        文件名前缀直接拼进 `os.path.join`，于是 `cache_key='../../../../tmp/x'`
+        就能把音频与元数据写到缓存目录之外（审计项 P1-3）。
         """
-        key = str(cache_key or hashlib.md5(text.encode('utf-8')).hexdigest())[:32]
+        raw_key = str(cache_key or '')
+        if not _CACHE_KEY_RE.match(raw_key):
+            raw_key = hashlib.md5(text.encode('utf-8')).hexdigest()
+        key = raw_key[:32]
         stamp = hashlib.md5(
             f"{params['mode']}|{params['voice']}|{params['rate']}|{params['base_url']}"
             .encode('utf-8')).hexdigest()[:8]
         return f'{key}-{stamp}'
+
+    @staticmethod
+    def _tts_cache_path(cache_dir: str, name: str) -> str | None:
+        """拼出缓存文件路径；结果不在 `cache_dir` 之内时返回 None。
+
+        纵深防御：前缀已经做过字符白名单，这一层保证"即使以后有人放宽了白名单，
+        落盘位置也不会跑出缓存目录"。同一判定也用在 .json 元数据上。
+        """
+        try:
+            base = Path(cache_dir).resolve()
+            target = Path(os.path.join(cache_dir, name)).resolve()
+        except (OSError, ValueError):
+            return None
+        return str(target) if target.is_relative_to(base) else None
 
     def _tts_hit(self, cache_dir: str, prefix: str):
         """缓存命中：返回 (音频路径, 元信息)。

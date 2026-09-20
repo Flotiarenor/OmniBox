@@ -469,6 +469,56 @@ class RosterRulesTest(unittest.TestCase):
         with self.assertRaises(RecordError):
             escalate.accepts(v3)
 
+    def test_rule5_admin_cannot_rebind_any_device(self):
+        """管理员不得把设备挂到别人（尤其群主）名下 —— 那是管理员到群主的提权。
+
+        历史缺口：规则 5 只比对 owner 与 admins 集合，成员条目的 device_keys 完全不看。
+        而"设备 → 主体"的映射由名单提供（transport 用 entry_of_device().principal_key），
+        于是管理员签一份 owner/admins 一字未改、只把 owner 条目的 devices 换成自己设备的
+        名单，就能让该设备在全部采纳者那里被解析成群主主体。实测原实现放行。
+        """
+        roster, members = self._v2_with_alice()
+        members = [*list(members),
+                   RosterEntry('admin', self.admin.public_key, [cp.generate_sign_keypair()[1]])]
+        v3 = next_roster(roster, 'g', roster.owner_key, members,
+                         admin_keys=[self.admin.public_key], ttl_seconds=3600)
+        v3.sign(self.owner.private_key)
+        v3.accepts(roster)
+
+        mallory_device = cp.generate_sign_keypair()[1]
+        owner_entry = v3.entry_of(v3.owner_key)
+        hijacked = next_roster(
+            v3, 'g', v3.owner_key,
+            [RosterEntry(owner_entry.name, owner_entry.principal_key,
+                         [*owner_entry.device_keys, mallory_device]),
+             *[m for m in v3.members if m.principal_key != v3.owner_key]],
+            admin_keys=list(v3.admin_keys), ttl_seconds=3600)
+        hijacked.sign(self.admin.private_key)
+
+        with self.assertRaises(RecordError) as ctx:
+            hijacked.accepts(v3)
+        self.assertIn('设备', str(ctx.exception))
+
+    def test_rule5_admin_cannot_drop_existing_device(self):
+        """删设备同理：让某个主体"登不进来"也是改绑定，需要群主签发。"""
+        roster, members = self._v2_with_alice()
+        members = [*list(members),
+                   RosterEntry('admin', self.admin.public_key, [cp.generate_sign_keypair()[1]])]
+        v3 = next_roster(roster, 'g', roster.owner_key, members,
+                         admin_keys=[self.admin.public_key], ttl_seconds=3600)
+        v3.sign(self.owner.private_key)
+        v3.accepts(roster)
+
+        alice_entry = v3.entry_of(self.alice.public_key)
+        stripped = next_roster(
+            v3, 'g', v3.owner_key,
+            [m for m in v3.members if m.principal_key != self.alice.public_key]
+            + [RosterEntry(alice_entry.name, alice_entry.principal_key, [])],
+            admin_keys=list(v3.admin_keys), ttl_seconds=3600)
+        stripped.sign(self.admin.private_key)
+        with self.assertRaises(RecordError):
+            stripped.accepts(v3)
+
     def test_rule5_admin_can_add_plain_member(self):
         roster, members = self._v2_with_alice()
         members = [*list(members), RosterEntry('admin', self.admin.public_key, [cp.generate_sign_keypair()[1]])]

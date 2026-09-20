@@ -34,7 +34,12 @@ from shell.backend.auth import (
 from shell.backend.media_catalog import list_subdirectories
 from shell.backend.paths import get_config_dir
 from shell.backend.plugin_manager import PluginManager
-from shell.backend.principal import CURRENT_PRINCIPAL, PrincipalStore
+from shell.backend.principal import (
+    CURRENT_PRINCIPAL,
+    AdminRequired,
+    PrincipalStore,
+    require_admin,
+)
 from shell.backend.protected_paths import collect as collect_protected_files
 from shell.backend.protected_paths import matches as is_protected_path
 from shell.backend.protected_paths import normalize as normalize_path
@@ -368,6 +373,18 @@ _ADMIN_ONLY_API = frozenset({
 })
 
 
+def guard_admin_methods(api_methods: dict) -> dict:
+    """给方法表里属于 `_ADMIN_ONLY_API` 的项套上管理员判定，返回新表。
+
+    包装本身在 `principal.require_admin`（判定只写一处）。本函数被**两条通道**共用：
+    HTTP 的 `api_proxy` 与桌面模式的 `main._run_app`（pywebview `js_api`）。原先判定
+    只写在 HTTP 路径里，桌面模式不判角色 —— 插件 iframe 经 `Bridge.callSystem` 沿
+    parent 链就能调到 `system_get_config`（审计项 P1-8 / P2-3）。
+    """
+    return {name: (require_admin(fn) if name in _ADMIN_ONLY_API else fn)
+            for name, fn in api_methods.items()}
+
+
 def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
     app = Flask(__name__)
     frontend_dist = _SHELL_DIR / 'frontend' / 'dist'
@@ -553,25 +570,24 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             'system_clear_thumb_caches': shell_info.clear_thumb_caches,
             'system_open_log_dir': shell_info.open_log_dir,
         })
+        # 管理员判定包在方法本身上：HTTP 与桌面 js_api 共用同一份（见 guard_admin_methods）
+        api_methods = guard_admin_methods(api_methods)
 
         fn = api_methods.get(method)
         if fn is None:
             abort(404)
 
-        # 管理员专属端点（见 _ADMIN_ONLY_API）。主体由 _require_token 注入，
-        # 这里只判角色 —— 令牌有效但角色不够时返回 403，而不是 401：
+        # 管理员专属端点（见 _ADMIN_ONLY_API）：判定包在方法上（guard_admin_methods，
+        # 与桌面模式的 js_api 通道共用）。令牌有效但角色不够时返回 403 而不是 401 ——
         # 401 的意思是"你没登录"，会让前端把人踢回登录流程。
-        if method in _ADMIN_ONLY_API:
-            principal = CURRENT_PRINCIPAL.get()
-            if principal is None or not principal.is_admin:
-                abort(403)
-
         try:
             payload = request.get_json(silent=True) or {}
             args = payload.get('args', []) if isinstance(payload.get('args'), list) else []
             kwargs = payload.get('kwargs', {}) if isinstance(payload.get('kwargs'), dict) else {}
             result = fn(*args, **kwargs)
             return {'result': result}
+        except AdminRequired:
+            abort(403)
         except Exception as e:
             return {'error': str(e)}, 500
 

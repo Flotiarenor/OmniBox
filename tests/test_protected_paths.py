@@ -229,6 +229,32 @@ class ProtectedPathNormalizationTests(unittest.TestCase):
         self.assertNotEqual(normalize(real), normalize(alias))
         self.assertTrue(matches(alias, [normalize(real)]), '硬链接绕过了受保护判定')
 
+    def test_ancestor_directory_of_protected_entry_is_protected(self):
+        """受保护文件的**上级目录**同样受保护（不可逆删除以目录为单位）。
+
+        历史缺口：判定只有"target 在受保护路径之内"这一个方向，于是把插件根设成
+        包含 `<config>` 的目录、再对 `.config` 调 delete_folder（shutil.rmtree），
+        auth_token.txt 与 principals.json 被连带删除 —— 判定本身却认为"目标不是
+        受保护路径"。反向包含必须在同一处补上，读路由与插件写删自查共用这份实现。
+        """
+        config = self.tmp / '.config'
+        plugins = config / 'plugins'
+        plugins.mkdir(parents=True)
+        secret = config / 'auth_token.txt'
+        secret.write_text('TOKEN', encoding='utf-8')
+        plugin_secret = plugins / 'pixiv-sync.json'
+        plugin_secret.write_text('{}', encoding='utf-8')
+        protected = [normalize(secret), normalize(plugin_secret)]
+
+        self.assertTrue(matches(config, protected), '受保护文件的父目录未被判定为受保护')
+        self.assertTrue(matches(plugins, protected), '受保护文件的祖先目录未被判定为受保护')
+        # 兄弟目录与无关目录不受影响（防护不能扩散到整棵树）
+        sibling = self.tmp / 'media'
+        sibling.mkdir()
+        self.assertFalse(matches(sibling, protected))
+        self.assertFalse(matches(sibling / 'photo.jpg', protected))
+        self.assertFalse(matches(self.tmp / 'missing-dir', protected))
+
     def test_is_protected_defaults_to_shell_token_file(self):
         """不传插件管理器时，清单至少含壳自己的凭据。"""
         token = get_token_file(get_config_dir())

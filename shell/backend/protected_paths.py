@@ -70,11 +70,18 @@ def normalize(path) -> Path:
 
 
 def matches(target, protected: Iterable[Path]) -> bool:
-    """target 是否等于某个受保护路径，或落在其下。
+    """target 是否等于某个受保护路径、落在其下，或是它的**上级目录**。
 
     两侧都先归一（调用方已经归一过也不会出错，resolve 幂等）。
     除词法比较外再用 os.path.samefile 做一次"同一个文件"判定：硬链接的两条
     路径彼此不相等、也不互相包含，只有文件标识能认出它们。
+
+    反向包含（`item` 在 `target` 之内）也判 True：删除/移动这类操作以**目录**为
+    单位（image-viewer 的 delete_folder 走 shutil.rmtree），只判"target 在受保护
+    路径之内"会漏掉"受保护文件在 target 之内"这一形态 —— 把插件根设成包含
+    `<config>` 的目录再删该目录，auth_token.txt 与 principals.json 会被连带删除
+    （实测通过；tests/test_protected_paths.py 锁住这条）。文件不可能是另一个路径的
+    上级目录，因此该分支只会命中目录（或不存在/待创建的路径），不会误伤正常读取。
     """
     try:
         normalized_target = normalize(target)
@@ -82,6 +89,8 @@ def matches(target, protected: Iterable[Path]) -> bool:
         return False
     for item in protected:
         if normalized_target == item or normalized_target.is_relative_to(item):
+            return True
+        if item.is_relative_to(normalized_target):
             return True
         try:
             if item.is_file() and normalized_target.is_file() \

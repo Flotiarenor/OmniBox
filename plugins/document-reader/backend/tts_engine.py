@@ -139,6 +139,25 @@ def edge_synthesize(text: str, params: Dict[str, Any]) -> Tuple[bytes, str, List
     return audio, '.mp3', marks
 
 
+def _validated_endpoint_base(base: str) -> str:
+    """校验 OpenAI 兼容端点的根地址，返回去掉尾部 `/` 的形式；不合法时抛异常。
+
+    这个地址会收到 `Authorization: Bearer <tts_api_key>`，因此**不能接受任意字符串**：
+      * 只放行 http/https —— `file://`、`ftp://` 一类会让 requests 走别的适配器，
+        或在报错信息里回显本地内容；
+      * 必须带主机名 —— `http:///v1/audio/speech` 之类是拼错的地址，早失败早报错。
+    保留环回与私网地址：本地 TTS 端点（`http://127.0.0.1:8880`）正是设置项文档推荐的
+    用法，用"禁私网"来防 SSRF 会把正常功能一起砍掉。改这个地址的权限另由设置项的
+    `"admin_only": True` 限定（见 PluginBase.save_settings）。
+    """
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(base)
+    if parts.scheme not in ('http', 'https') or not parts.netloc:
+        raise RuntimeError(f'朗读端点地址必须以 http:// 或 https:// 开头并带主机名: {base!r}')
+    return base
+
+
 # ===== OpenAI 兼容端点 =====
 
 
@@ -148,6 +167,7 @@ def openai_synthesize(text: str, params: Dict[str, Any]) -> Tuple[bytes, str, Li
     base = str(params.get('base_url') or '').strip().rstrip('/')
     if not base:
         raise RuntimeError('未配置 OpenAI 兼容端点地址')
+    base = _validated_endpoint_base(base)
     payload = {
         'input': text,
         'voice': str(params.get('voice') or 'alloy'),

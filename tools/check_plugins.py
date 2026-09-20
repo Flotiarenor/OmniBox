@@ -44,6 +44,9 @@ ALLOWED_SCHEMA_TYPES = {'text', 'number', 'range', 'select', 'checkbox', 'textar
 # 设置项上的可选标记（除 type/default/min/max/options/help 之外）：
 #   "secret": True —— 申请 Shell 文件防护：该插件设置文件不得被文件路由返回，
 #   见 PluginBase.get_protected_paths() 与 docs/plugin-guide.md §8.2
+#   "admin_only": True —— 该设置项的改动需要管理员主体：它会改变插件对外的能力
+#   边界（媒体根、朗读端点一类），见 PluginBase.save_settings() 与
+#   docs/plugin-guide.md §8.2
 #
 # 键名里"看起来是凭据"的词：命中却没声明 secret 就是一条真实泄露路径。
 # 匹配方式：先把键名规范化成「小写 + 去掉非字母数字」（refreshToken / API_TOKEN /
@@ -428,6 +431,13 @@ def _check_schema(cls) -> List[str]:
         # 意图相反的结论 —— 而"以为没开、其实开了"会把插件自己的媒体文件一起挡掉。
         if 'secret' in field and not isinstance(field['secret'], bool):
             errors.append(f'{where}.secret 应为 bool（true/false），实际是 {type(field["secret"]).__name__}')
+
+        # "admin_only": True 让 Shell 在写设置时要求管理员主体（PluginBase.save_settings
+        # / update_setting）。同样必须是 bool：非空字符串是真值，而 "false" 会让作者
+        # 以为限权开了、其实没开。
+        if 'admin_only' in field and not isinstance(field['admin_only'], bool):
+            errors.append(f'{where}.admin_only 应为 bool（true/false），'
+                          f'实际是 {type(field["admin_only"]).__name__}')
 
         # 凭据类键名却没申报 → 拦住。这条规则的价值在于"下一个插件不会再犯"：
         # 凭据值会落到 <config>/plugins/<name>.json，而该文件（或它所在的目录）可能

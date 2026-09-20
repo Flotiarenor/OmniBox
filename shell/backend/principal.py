@@ -48,6 +48,7 @@ OmniBox 的**主体（principal）上下文**：把"请求带来的凭据"映射
 from __future__ import annotations
 
 import contextvars
+import functools
 import hashlib
 import hmac
 import json
@@ -57,7 +58,7 @@ import stat
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 log = logging.getLogger(__name__)
 
@@ -135,6 +136,36 @@ def require_principal() -> PrincipalContext:
         raise PermissionError('该操作需要已认证的主体（当前上下文没有主体：'
                               '可能是后台线程或未经壳注入的直接调用）')
     return principal
+
+
+class AdminRequired(PermissionError):
+    """当前主体存在但不是管理员，而该操作要求管理员。
+
+    单独一个类型（而不是直接抛 `PermissionError`）是为了让调用方能把它翻译成
+    **403**：在壳的 HTTP 路径上"令牌有效但角色不够"与"没有令牌"必须是两个状态码，
+    401 会把使用者踢回登录流程（见 `file_server.api_proxy`）。
+    """
+
+
+def require_admin(fn: Callable) -> Callable:
+    """包一层：当前主体必须是管理员，否则抛 `AdminRequired`。
+
+    为什么需要这个包装，而不是把 `if not principal.is_admin` 抄在每个端点里：
+    同一批壳级端点在**两条通道**上暴露 —— HTTP 的 `/api/<方法>`（file_server）与
+    桌面模式的 pywebview `js_api`（main.py）。判定原先只写在 HTTP 路径里，桌面模式
+    因此完全不判角色：插件 iframe 经 `Bridge.callSystem` 沿 parent 链取到
+    `pywebview.api` 就能直接调用 `system_get_config` 一类端点（审计项 P1-8 / P2-3）。
+    判定下沉到方法本身、由两条通道共用同一份包装，就不会再出现"加了一处、漏了另一处"。
+    """
+    @functools.wraps(fn)
+    def guarded(*args: Any, **kwargs: Any) -> Any:
+        principal = CURRENT_PRINCIPAL.get()
+        if principal is None or not principal.is_admin:
+            who = principal.name if principal is not None else '（当前上下文没有主体）'
+            raise AdminRequired(f'该操作需要管理员权限（当前主体：{who}）')
+        return fn(*args, **kwargs)
+
+    return guarded
 
 
 class PrincipalScope:

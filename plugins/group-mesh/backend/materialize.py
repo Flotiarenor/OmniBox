@@ -145,7 +145,12 @@ class MaterializeMixin:
             invalidated = 0
             entries: Dict[str, Any] = {}
             for rel, info in walked.items():
-                target = root / rel
+                # 纵深防御：walked 的键已由 _walk_remote 过 safe_rel，这里再确认一次
+                # 拼接结果落在根内 —— 建目录、写占位、unlink 都以 target 为准。
+                target = _common.within_root(root, rel)
+                if target is None:
+                    log.warning(f'[group-mesh] 忽略越界的远端条目: {rel!r}')
+                    continue
                 if info['dir']:
                     target.mkdir(parents=True, exist_ok=True)
                     created_dirs += 1
@@ -242,7 +247,12 @@ class MaterializeMixin:
         removed = 0
         gone = sorted(set(previous) - set(keep), key=lambda rel: rel.count('/'), reverse=True)
         for rel in gone:
-            target = root / rel
+            # `previous` 来自上一次的索引文件，键是"当时对端给的路径"——同样是不可信
+            # 输入，删除前必须再确认一次落在根内（审计项 P1-5：越界键会删掉根外文件）。
+            target = _common.within_root(root, rel)
+            if target is None:
+                log.warning(f'[group-mesh] 忽略越界的索引条目，不执行删除: {rel!r}')
+                continue
             try:
                 if target.is_dir():
                     target.rmdir()
@@ -270,14 +280,20 @@ class MaterializeMixin:
             current, depth = pending.popleft()
             result = mesh_client.list_directory(connection, share_id, current)
             if not result.get('dir'):
-                # 调用方给的是个文件路径：直接当作单个条目
-                name = str(result.get('path') or current).lstrip('./')
+                # 调用方给的是个文件路径：直接当作单个条目。该路径同样来自对端
+                # （`result['path']`），必须过同一条归一规则。
+                name = _common.safe_rel(str(result.get('path') or current))
+                if name is None:
+                    return found
                 found[name] = {'dir': False, 'size': int(result.get('size') or 0),
                                'mtime_ns': _mtime_ns(result)}
                 continue
             for entry in result.get('entries') or []:
-                name = str(entry.get('name') or '')
-                if not name or name in ('.', '..'):
+                # 条目名来自对端，只做"非空、不是 . / .."是不够的：它会被拼成本机
+                # 路径（root / rel），而绝对路径与 `..` 段都能跑出根（审计项 P1-5）。
+                # 归一与拒绝规则集中在 _common.safe_rel，物化与镜像共用同一处。
+                name = _common.safe_rel(entry.get('name'))
+                if name is None:
                     continue
                 rel = name if current in ('.', '') else f"{current.strip('/')}/{name}"
                 if rel in found:

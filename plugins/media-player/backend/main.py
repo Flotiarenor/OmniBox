@@ -36,10 +36,11 @@ class MediaPlayerPlugin(PluginBase):
         # 目录列表（type:"directory"）由 Shell 共享组件渲染，与图片相册的
         # 「图片文件夹」是同一套实现（shell/frontend/public/shell/folder-picker.js）
         {"key": "media_roots", "label": "媒体文件夹", "type": "directory", "multi": True,
+         "admin_only": True,
          "placeholder": "输入目录绝对路径，如 D:\\音乐",
          "emptyText": "未添加任何目录，将使用默认数据目录（./data）",
          "help": "第一行为主目录（数据根 + 扫描根），其余目录作为额外扫描根，"
-                 "各根以目录名做前缀聚合；保存后生效"},
+                 "各根以目录名做前缀聚合；保存后生效。改动需管理员（它决定 /file 的允许根）"},
         {"key": "lyrics_enabled", "label": "启用歌词显示", "type": "checkbox",
          "default": True, "help": "关闭后不显示歌词入口"},
         {"key": "lyrics_font_size", "label": "歌词字号", "type": "range",

@@ -67,6 +67,26 @@ def secret_keys(schema) -> set:
     }
 
 
+def admin_only_keys(schema) -> set:
+    """schema 里声明了 `"admin_only": True` 的设置键（改根、改端点一类）。
+
+    为什么需要这个标记：文件路由的放行范围**就是**插件自己的根
+    （`get_file_roots()` / `thumb_dir`），而根由设置项决定。于是"任何持令牌者都能改
+    根"等价于"任何持令牌者都能读、删、移本机任意文件" —— 越权不在文件路由里，
+    而在设置入口。判定必须发生在**写设置**这一步，且写在基类：插件会覆写
+    `save_settings`（image-viewer 的 `save_folder_settings`），只写在某个插件里
+    等于把防护寄托在每个插件的实现细节上。
+
+    标记的语义是"改动该键需要管理员主体"（`PrincipalContext.is_admin`）。
+    没有主体的调用（用例、CLI、插件自身的运行期回写）不受限 —— 它们不经过网络，
+    判据是凭据而不是"有没有主体"，与 principal.py 的三条硬约束一致。
+    """
+    return {
+        str(item['key']) for item in (schema or [])
+        if isinstance(item, dict) and item.get('admin_only') and item.get('key')
+    }
+
+
 def mask_secrets(schema, values):
     """把 schema 声明的凭据类键替换成 `SECRET_MASK`（非字典原样返回）。
 
@@ -329,6 +349,30 @@ class PluginBase(ABC):
         """schema 里声明了 `"secret": True` 的设置键（凭据类）。"""
         return secret_keys(self.settings_schema)
 
+    def _admin_only_keys(self) -> set:
+        """schema 里声明了 `"admin_only": True` 的设置键（改根、改端点一类）。"""
+        return admin_only_keys(self.settings_schema)
+
+    def _admin_denial(self, keys) -> Optional[str]:
+        """本次写入是否因角色不足被拒：被拒时返回错误文案，放行时返回 None。
+
+        判据是**当前主体**（`principal.py` 的受信注入），不是请求参数：
+        `save_settings` / `update_setting` 的参数里出现什么都不影响结论。
+
+        "没有主体"按放行处理，理由见 `admin_only_keys()`：HTTP 路径下主体必然存在
+        （`file_server._require_token` 先鉴权再分发），没有主体的调用方是进程内的
+        可信代码。真正需要"无主体即拒绝"的场景应直接在插件方法里调
+        `require_principal()`。
+        """
+        guarded = self._admin_only_keys() & {str(key) for key in keys}
+        if not guarded:
+            return None
+        principal = _current_principal()
+        if principal is None or principal.is_admin:
+            return None
+        return (f'设置项 {", ".join(sorted(guarded))} 需要管理员权限'
+                f'（当前主体 {principal.name!r} 的角色是 {principal.role}）')
+
     def is_protected_path(self, path) -> bool:
         r"""该路径是否属于 Shell 的受保护清单（壳凭据 + 全插件申报）。
 
@@ -396,6 +440,13 @@ class PluginBase(ABC):
             if clean.get(key) == SECRET_MASK:
                 clean.pop(key)
 
+        # 改根/改端点一类设置项需要管理员主体（见 admin_only_keys 的说明）。
+        # 判定必须放在掩码回传处理**之后**：把掩码原样提交回来等于"不改动"，
+        # 不该因此被判越权。
+        denial = self._admin_denial(clean)
+        if denial:
+            return {"success": False, "error": denial}
+
         if self._settings_store:
             try:
                 # 必须"合并写入"而不是"整文件覆盖"：插件会用 update_setting() 把
@@ -455,7 +506,16 @@ class PluginBase(ABC):
         return default
 
     def update_setting(self, key: str, value: Any) -> bool:
-        """更新单个设置项（保留其他设置不变），不校验 schema 以支持运行时状态持久化"""
+        """更新单个设置项（保留其他设置不变），不校验 schema 以支持运行时状态持久化
+
+        即使不校验 schema，**改根/改端点一类设置项仍然要过角色判定**：该键会经
+        `update_setting` 落进与 `save_settings` 同一个 JSON，进程重启后由
+        `setting()` 读回并生效 —— 绕过这一步等于绕过 `save_settings` 的限权。
+        """
+        denial = self._admin_denial([key])
+        if denial:
+            log.warning(f"[{self.name}] 拒绝写入设置项 {key!r}: {denial}")
+            return False
         if self._settings_store:
             current = self._settings_store.get(self.name) or {}
             current[key] = value

@@ -337,6 +337,27 @@ class Roster(SignedRecord):
         if set(self.admin_keys) != set(current.admin_keys):
             raise RecordError('规则 5：管理员不得变更管理员集合（含自我提权）')
 
+        # 规则 5 续：**既有成员的设备绑定不得被改写**。
+        #
+        # 只比对 owner/admins 集合是不够的："设备 → 主体"的映射完全由名单提供
+        # （`transport.authorize_peer` 用 `entry_of_device(device).principal_key`），
+        # 因此管理员只要把自己的设备公钥挂到群主条目下，该设备就会在全部采纳这份
+        # 名单的节点上被解析成**群主主体**（`role_of` 返回 owner，ACL 的 owner 分支
+        # 放行）。实测原实现在"owner/admins 一字未改、只换 owner 条目的 devices"时
+        # 放行 —— 这是管理员到群主的单向提权。
+        #
+        # 允许的仍然是"增删普通成员"：本机名单里没有的主体可以带任意设备进来；
+        # 既有主体的设备集合必须逐个相同。给已入团的人加第二台设备属于该主体的
+        # 身份变更，需要群主签发（设计 §4.2 的设备凭据实装后可另行放开）。
+        for entry in current.members:
+            incoming = self.entry_of(entry.principal_key)
+            if incoming is None:
+                continue                      # 删除成员是管理员的权限（规则 5 允许）
+            if set(incoming.device_keys) != set(entry.device_keys):
+                raise RecordError(
+                    f'规则 5：管理员不得改动既有成员（{entry.name}）的设备绑定'
+                    f'（设备是主体身份的凭据，需群主签发）')
+
     # ── 冲突收敛（§5.3）──────────────────────────────────────────────────
 
     @staticmethod

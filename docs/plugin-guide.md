@@ -1109,6 +1109,37 @@ class MyPlugin(PluginBase):
 | `placeholder` / `emptyText` | 可选 | 仅 `directory`：输入框占位符 / 列表为空时的提示文字                                      |
 | `local_only`               | 可选 | 仅 `directory`：`True` 时**不显示「网络位置」入口**（该目录只接受本机路径，见下）   |
 | `secret`                   | 可选 | `True` 表示**凭据类**设置项：Shell 拒绝把该插件的设置文件当媒体资源返回（见下）        |
+| `admin_only`               | 可选 | `True` 表示**改动该键需要管理员主体**（改媒体根、改对外端点一类，见下）              |
+
+#### 能力边界类设置项：`"admin_only": True`
+
+决定"这个插件能碰本机哪些文件、能连哪些地址"的设置项要声明 `"admin_only": True`：
+
+```python
+{"key": "media_roots", "label": "媒体文件夹", "type": "directory", "multi": True,
+ "admin_only": True},
+```
+
+原因：`/file`、`/files`、`/thumbs` 的允许范围**就是**插件自己返回的根
+（`get_file_roots()` / `thumb_dir`），而根由设置项决定。于是"谁都能改根"等价于
+"谁都能读、删、移本机任意文件"——越权点不在文件路由，而在设置入口。同类还包括
+"进程会带着凭据去请求的地址"（如朗读端点），它同时是 SSRF 跳板与凭据外发通道。
+
+声明之后：
+
+- `save_settings()` 里改动该键**需要管理员主体**（`PrincipalContext.is_admin`，
+  即壳设置页里的 `owner` / `admin`），否则返回
+  `{"success": False, "error": "设置项 … 需要管理员权限（…）"}`，且不写入；
+- `update_setting()` 写同一个键时同样判定，返回 `False` —— 否则运行期回写可以绕过
+  设置面板的限权，重启后仍会生效；
+- 判定做在 `PluginBase`，**覆写 `save_settings()` 不会绕过**（image-viewer 的
+  `save_folder_settings` 就调用的基类实现）；
+- 未声明的键（每页数量、字号、排序一类）行为完全不变，任何主体都能改；
+- 没有主体的调用（用例、CLI、插件自身的运行期回写）不受限：判据是**凭据**而不是
+  "有没有主体"，网络请求路径上主体必然存在（壳在 `before_request` 里鉴权后注入）。
+
+判据必须是"改这个键要不要管理员"，不要图省事把整个插件的 `save_settings` 都限权：
+那会让普通使用者连字号都改不了。
 
 #### 凭据类设置项：`"secret": True`
 

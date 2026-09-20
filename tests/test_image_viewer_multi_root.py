@@ -471,6 +471,30 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
         self.assertFalse(result['success'])
         self.assertTrue(vault.exists(), '受保护目录被删掉了')
 
+    def test_delete_folder_refuses_ancestor_of_protected_file(self):
+        """受保护文件所在的**上层目录**同样必须拒绝：删除以目录为单位，会连带删掉凭据。
+
+        历史缺口：受保护判定只有"目标在受保护路径之内"这一个方向。把根设成包含
+        `<config>` 的目录后，`.config` 自己不是受保护路径（受保护的是它里面的
+        auth_token.txt / principals.json / plugins/*.json），于是 delete_folder('.config')
+        会通过 rmtree 把全局访问令牌与主体凭据表一起删掉（实测通过）。
+        """
+        vault = self.root / '凭据父目录'
+        secret = vault / 'nested' / 'auth_token.txt'
+        secret.parent.mkdir(parents=True)
+        secret.write_text('TOKEN', encoding='utf-8')
+        self.addCleanup(lambda: shutil.rmtree(vault, ignore_errors=True))
+
+        plugin = self._with_protected(
+            self._plugin({'root_dir': str(self.root)}), [secret])
+        # 判定必须靠反向包含：目标目录不在受保护清单之内（清单里只有那个文件），
+        # 而兄弟目录不受影响 —— 防护不能扩散到整棵树。
+        self.assertTrue(plugin.is_protected_path(vault))
+        self.assertFalse(plugin.is_protected_path(self.root / '普通相册'))
+        result = plugin.delete_folder('凭据父目录')
+        self.assertFalse(result['success'])
+        self.assertTrue(secret.exists(), '受保护凭据被随父目录一起删掉了')
+
     def test_delete_folder_refuses_protected_directory_via_extra_root(self):
         """改根链路：extra_roots 指向父目录后，凭据目录变成 `__<命名空间>/名字`。"""
         extra_parent = self.root.parent / '外部根'
