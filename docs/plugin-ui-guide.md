@@ -148,8 +148,29 @@
 
 **被内嵌页的附加契约**：
 
-- 不得再画自己的"工具栏 + 侧栏"骨架，也不得重复"标题 + 返回"——宿主已经给了；
-  只渲染内容区，根容器接近 `.view-content.obx-scroll` 形态。
+- 宿主在 URL 上追加 `?embed=1`（image-viewer 的扩展面板 `_embedUrl()`、
+  `folder-picker.js` 的 `openNetworkPicker()` 都已经这么做）；页面据此把**自己的工具栏
+  降级为普通操作行**——不搬按钮、不删 DOM，只收起"标题 + 48px 底边横条"这些与宿主
+  header 重复的 chrome：
+
+  ```html
+  <!-- 页面 <head>：早于正文渲染，避免先闪一下完整工具栏 -->
+  <script>
+    if (new URLSearchParams(location.search).has('embed')) {
+      document.documentElement.classList.add('is-embedded');
+    }
+  </script>
+  ```
+  ```css
+  /* html.is-embedded 是 0,1,1，压得过 base.css 的 .view-toolbar(0,1,0)，与注入顺序无关 */
+  html.is-embedded .view-toolbar {
+    height: auto; padding: 2px 16px 0; border-bottom: none; background: transparent;
+  }
+  html.is-embedded .<prefix>-title { display: none; }   /* 标题交给宿主 header */
+  ```
+- 页面级操作（"重新扫描""取消任务"）可以留在工具栏里：内嵌时工具栏只是被降级为普通
+  操作行，按钮仍然可见可点；但**不要把自己的标题、说明文字或侧栏塞进工具栏**，
+  那些与宿主 header 重复的部分才是要收掉的。
 - 视觉上必须与宿主同族（同一个 token 体系、同一套按钮/卡片），因为用户看到的是
   宿主面板里的一块，不是另一个应用。
 - `hidden: true` 的插件（image-cleaner / netease-music / pixiv-sync）不出现在壳导航，
@@ -582,7 +603,7 @@ background: var(--mp-glass, var(--bg-surface));
 | 1 | **删除死组件 `createCardGrid`**：零采用，且它渲染的 `.manga-*` 在壳与任何插件样式里都没有定义 | `plugin-guide.md` §4.3 与本文件 §5/§9.2/§10 同步 |
 | 2 | **壳空态升级**：`.empty-state` 改为四段结构（+ `.empty-state--inline`、`--obx-empty-min-h`）；`effects.css` 的 reduced-motion 白名单补上 `.empty-state-icon` | `base.css`「通用状态」一节；壳内既有使用者（`base.js` 的设置弹窗）无需改动 |
 | 2 | **7 个插件迁移**到壳类并删除各自实现：`.iv-empty*`、`.nr-empty*`、`.ml-empty*`、`.mp-empty-state*`、`.cleaner-empty`、`.empty`（netease）、`.nl-empty`、`.psync-empty`（死类） | 全仓 `class="empty-state"` 约 57 处；`grep '(iv\|nr\|ml\|mp\|cleaner\|psync\|nl)-empty'` 只剩注释与 `.nr-empty-span` |
-| 3（待做） | 内嵌页 `?embed=1` 信号：宿主的扩展面板与 folder-picker 提供方 iframe 各追加参数，image-cleaner / pixiv-sync 据此把工具栏降级为普通操作行（不搬按钮） | 见 §3.4 的宿主 header 说明；验收方式是断言"宿主 header 存在时不再出现 48px 的 `.view-toolbar`" |
+| 3 | **内嵌页信号**：image-viewer 的扩展面板与 `folder-picker.js` 的提供方 iframe 在 URL 上追加 `?embed=1`；image-cleaner / pixiv-sync 在 `<head>` 里据此打上 `html.is-embedded`，把工具栏降级为普通操作行并隐藏与宿主重复的标题 | `app.js` 的 `_embedUrl()`、`folder-picker.js:207-215`、两个页面的 `<head>` 与 CSS（0,2,1 选择器）；`plugin-guide.md` §2.1 与本文件 §3.4 已写明约定 |
 
 **保留的插件专属"空态"（不是漏改）**：
 
@@ -621,9 +642,10 @@ background: var(--mp-glass, var(--bg-surface));
      `--obx-*` 与壳的关键帧名（media-player）；侧栏宽度统一；删除死组件 `createCardGrid`。
    - 已完成（第二批）：空态统一到 `.empty-state`（7 个插件 57 处），并给壳的
      reduced-motion 白名单补上 `.empty-state-icon`。
+   - 已完成（第三批）：内嵌页 `?embed=1` 信号（宿主两处追加参数 + image-cleaner /
+     pixiv-sync 把工具栏降级为普通行）。
    - 待做：`pixiv-sync` 的设置改走 `openSettingsModal`（并把 `download_dir` 改成
-     `type: "directory"`）；统一搜索框类；内嵌页去掉自带工具栏（第三批）；
-     补 `image-cleaner` 的设置入口；`.error-state`。
+     `type: "directory"`）；统一搜索框类；补 `image-cleaner` 的设置入口；`.error-state`。
 3. **P2**：批量操作向固定底栏收敛；工具栏右侧用类；清理死变量；
    决定其余共享组件（`createSettingsForm` / `createPagination`）的去留（`createCardGrid` 已删除）；
    骨架屏试点；media-player 的 modal / 右键菜单结构替换（风险最高，建议单独立项）。

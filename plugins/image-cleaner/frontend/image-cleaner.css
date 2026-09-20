@@ -139,3 +139,14 @@
   flex-shrink: 0;
 }
 /* 结果区空态用壳的 .empty-state（base.css），不再自带 .cleaner-empty */
+
+/* 内嵌进宿主面板时（宿主在 embedUrl 上加了 ?embed=1，见 index.html <head> 里的脚本）：
+   宿主已经给了标题与「返回相册」，这里把工具栏降级为普通操作行，避免两层横条。
+   `html.is-embedded` 是 0,1,1，压得过 base.css 的 `.view-toolbar`(0,1,0)，
+   与本文件注入在壳样式之前无关。 */
+html.is-embedded .view-toolbar {
+  height: auto;
+  padding: 2px 16px 0;
+  border-bottom: none;
+  background: transparent;
+}

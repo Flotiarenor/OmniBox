@@ -4,6 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>相册清理</title>
+  <script>
+    // 宿主（图片相册的扩展面板）在 embedUrl 上追加 ?embed=1：此时宿主已经给了标题与
+    // 「返回相册」，本页把工具栏降级成普通操作行，避免两层横条（见 docs/plugin-ui-guide.md §3.4）。
+    if (new URLSearchParams(location.search).has('embed')) {
+      document.documentElement.classList.add('is-embedded');
+    }
+  </script>
   <link rel="stylesheet" href="image-cleaner.css">
 </head>
 <body>

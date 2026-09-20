@@ -163,6 +163,12 @@ class ImageCleanerPlugin(PluginBase):
 | `route` | 独立路由型：跳转到插件自己的页面 |
 | `method` | 纯后端方法型：`Bridge.callPlugin(ext.plugin, ext.method)` 跨插件调用 |
 
+> **内嵌时宿主必须追加 `?embed=1`**（`embedUrl` 与"网络位置"提供方页同理，见
+> `shell/frontend/public/shell/folder-picker.js` 的 `openNetworkPicker`）：插件页据此知道
+> "我正被嵌在宿主面板里，宿主已经给了标题与返回"，从而收起自己的工具栏/标题。只看
+> `window.self !== window.top` 分辨不出来 —— 壳按路由加载插件时也在 iframe 里。
+> 约定与示例见 `docs/plugin-ui-guide.md` §3.4。
+
 宿主前端：
 
 ```javascript

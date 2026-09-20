@@ -4,6 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Pixiv 同步</title>
+  <script>
+    // 宿主（图片相册的扩展面板）在 embedUrl 上追加 ?embed=1：此时宿主已经给了标题与
+    // 「返回相册」，本页把工具栏降级成普通操作行，避免两层横条（见 docs/plugin-ui-guide.md §3.4）。
+    if (new URLSearchParams(location.search).has('embed')) {
+      document.documentElement.classList.add('is-embedded');
+    }
+  </script>
   <style>
     /* 颜色一律走壳注入的主题 token（/shell/variables.css），不再自带浅色兜底：
        原先用的 --color-text / --color-border / --color-bg / --color-bg-input 在壳里
@@ -62,6 +69,15 @@
       border: 1px solid var(--border); border-radius: var(--radius-sm);
       background: var(--bg-surface); color: var(--text-primary); font-size: 13px; }
     .psync-modal-row { display: flex; gap: 8px; justify-content: flex-end; }
+
+    /* 内嵌进宿主面板时（宿主在 embedUrl 上加了 ?embed=1，见 <head> 里的脚本）：
+       宿主已经给了标题与「返回相册」，这里把工具栏降级为普通操作行，避免两层横条。
+       `html.is-embedded` 是 0,1,1，压得过 base.css 的 `.view-toolbar`(0,1,0)，
+       与本文件注入在壳样式之前无关。 */
+    html.is-embedded .view-toolbar {
+      height: auto; padding: 2px 16px 0; border-bottom: none; background: transparent;
+    }
+    html.is-embedded .psync-title { display: none; }
   </style>
 </head>
 <body>

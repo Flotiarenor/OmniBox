@@ -160,8 +160,15 @@ class ImageViewer {
         const title = document.getElementById('extension-view-title');
         if (!view || !frame) return;
         if (title) title.textContent = ext.label || '扩展';
-        frame.src = ext.embedUrl || 'about:blank';
+        frame.src = this._embedUrl(ext.embedUrl);
         view.classList.remove('hidden');
+    }
+
+    // 内嵌进本面板的插件页要收起自己的工具栏（宿主已给标题与「返回相册」）：
+    // 用 `?embed=1` 通知它，页面对应 html.is-embedded（见 docs/plugin-ui-guide.md §3.4）。
+    _embedUrl(url) {
+        if (!url) return 'about:blank';
+        return url + (url.includes('?') ? '&' : '?') + 'embed=1';
     }
 
     closeExtensionView() {

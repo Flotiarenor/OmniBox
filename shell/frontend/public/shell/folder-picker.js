@@ -206,12 +206,16 @@ window.FolderPicker = (function () {
   /** 打开提供方页面，等它回填一个本地目录（取消 / 关窗返回 null）。 */
   function openNetworkPicker(provider) {
     return new Promise((resolve) => {
+      // 与插件的扩展面板同一条约定：内嵌时在 URL 上追加 `?embed=1`，页面据此收起
+      // 自己的标题/工具栏（宿主已经给了）。见 docs/plugin-ui-guide.md §3.4。
+      const url = String(provider.embedUrl || '');
+      const src = url + (url.includes('?') ? '&' : '?') + 'embed=1';
       const overlay = document.createElement('div');
       overlay.className = 'modal active';
       overlay.innerHTML = `
         <div class="modal-box obx-anim-scale" style="width:640px;">
           <h3>${Utils.escapeHtml(provider.label || '网络位置')}</h3>
-          <iframe class="iv-network-frame" src="${Utils.escapeHtml(provider.embedUrl)}"
+          <iframe class="iv-network-frame" src="${Utils.escapeHtml(src)}"
                   title="${Utils.escapeHtml(provider.label || '网络位置')}"></iframe>
           <div class="modal-footer">
             <button class="btn" data-act="cancel">取消</button>
