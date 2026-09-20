@@ -58,6 +58,8 @@ DYNAMIC_ICON_RE = re.compile(r'icon:\$\{')
 SHORT_NAME_RE = re.compile(r"icon:\s*'([a-z0-9]+(?:-[a-z0-9]+)*)'")
 # manifest 的 `"icon": "icon:x"` 与 Python 里的 `'icon:x'` 都要认
 MANIFEST_USE_RE = re.compile(r'["\']icon:([a-z0-9-]+)["\']')
+# 静态标记里直接写 `<use href="#名字">`，不带 `icon:` 前缀
+USE_HREF_RE = re.compile(r'<use\s+href="#([a-z0-9]+(?:-[a-z0-9]+)*)"')
 
 ICON_NAME_RE = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
 
@@ -82,10 +84,10 @@ _INJECTOR_TEMPLATE = """/**
  *
  * 为什么图标要内联进文档，而不是 <use href="/res/icons/icons.svg#名字"> 引用外部文件：
  * **外部文件的 <use> 在 pywebview 的 WebView2 里不渲染**。实机三层对照（包围盒宽度）：
- *   同文档 symbol + use（同一个 <svg>）→ 16px   ✅
- *   同文档 symbol + use（另一个 <svg>）→ 16px   ✅
- *   外部文件 href / xlink:href / 全 URL  → 0px   ❌
- *   形状直接内联                        → 16px   ✅
+ *   同文档 symbol + use（同一个 <svg>）→ 16px   正常
+ *   同文档 symbol + use（另一个 <svg>）→ 16px   正常
+ *   外部文件 href / xlink:href / 全 URL  → 0px   空白
+ *   形状直接内联                        → 16px   正常
  * Chrome 会渲染外部引用，所以这个缺陷在浏览器里完全测不出来：DOM 正确、类名正确、
  * 控制台无报错，只是窗口里一片空白。因此运行时把 sprite 内联进文档一次，
  * 之后页面里一律写 <svg class="obx-icon"><use href="#名字"></use></svg>。
@@ -195,26 +197,41 @@ def load_data() -> dict:
 def collect_references() -> dict:
     """扫描仓库里真实引用到的图标名 → 引用它的文件（用于反向校验）。
 
-    动态插值（`icon:${s.icon}`）扫不出具体名字，但它一定读的是同一文件里的
-    SECTIONS 表，所以对 `.vue` 额外把 `icon: '短名'` 这种表项也收进来 ——
-    否则设置页那 6 个图标会全部漏检。
+    引用点有四种写法，缺一种就会有图标"被用了却没人校验"：
+      1. manifest 的 `"icon": "icon:名字"`；
+      2. 壳与插件源码里的静态字面量 `icon:名字`，以及 `icon:${...}` 对应的短名表；
+      3. 插件页面 HTML 里的 `<use href="#名字">`（静态标记不带 `icon:` 前缀）；
+      4. 插件后端扩展/位置声明的 `'icon': 'icon:名字'`。
+
+    生成物（icons.generated.js/ts、icons.svg）与构建产物（dist/、node_modules/）不算引用点：
+    它们含全部图标，收进来会让"引用了未冻结的图标"这条校验失去判别力。
     """
     refs: dict = {}
-    sources = list((PROJECT_ROOT / 'plugins').glob('*/manifest.json'))
+    sources: list = []
+    sources += list((PROJECT_ROOT / 'plugins').glob('*/manifest.json'))
+    sources += list((PROJECT_ROOT / 'plugins').glob('*/backend/**/*.py'))
+    sources += list((PROJECT_ROOT / 'plugins').glob('*/frontend/**/*.js'))
+    sources += list((PROJECT_ROOT / 'plugins').glob('*/frontend/**/*.html'))
+    sources += list((PROJECT_ROOT / 'plugins').glob('*/frontend/**/*.css'))
     sources += list((PROJECT_ROOT / 'shell' / 'frontend' / 'src').rglob('*.vue'))
+    sources += list((PROJECT_ROOT / 'shell' / 'frontend' / 'src').rglob('*.ts'))
+    sources += list((PROJECT_ROOT / 'shell' / 'frontend' / 'public' / 'shell').glob('*.js'))
     # 后端也会给出图标（manifest 缺失 icon 字段时的默认值），一并算作引用点
     sources += [PROJECT_ROOT / 'shell' / 'backend' / 'plugin_manager.py']
 
     for path in sources:
+        if not path.is_file() or '__pycache__' in path.parts:
+            continue
+        if 'icons.generated' in path.name:
+            continue
         text = path.read_text(encoding='utf-8')
         rel = path.relative_to(PROJECT_ROOT).as_posix()
-        if path.suffix == '.vue':
-            # 静态字面量 + `icon:${...}` 动态插值对应的短名表
-            names = set(STATIC_ICON_RE.findall(text))
-            if DYNAMIC_ICON_RE.search(text):
-                names |= set(SHORT_NAME_RE.findall(text))
-        else:
-            names = set(MANIFEST_USE_RE.findall(text))
+        names = set(STATIC_ICON_RE.findall(text))
+        names |= set(MANIFEST_USE_RE.findall(text))
+        names |= set(USE_HREF_RE.findall(text))
+        if path.suffix in ('.vue', '.ts') and DYNAMIC_ICON_RE.search(text):
+            # 动态插值扫不出具体名字，但它一定读的是同一文件里的短名表
+            names |= set(SHORT_NAME_RE.findall(text))
         for name in names:
             refs.setdefault(name, []).append(rel)
     return refs
