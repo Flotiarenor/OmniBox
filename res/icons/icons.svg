@@ -3,7 +3,11 @@
   OmniBox 图标 sprite —— 由 tools/build_icons.py 生成，请勿手工编辑。
   图标来自 Lucide（lucide-static@1.47.0），授权 ISC（https://lucide.dev/license）。
   增删图标：tools/fetch_lucide_icons.py --add <名字>，再跑 tools/build_icons.py。
-  引用方式：<svg class="obx-icon"><use href="/res/icons/icons.svg#名字"></use></svg>
+
+  注意：本文件是**源与调试用**，不是加载路径。页面里引用外部文件的 <use> 在
+  pywebview 的 WebView2 里不渲染（实测包围盒恒为 0），所以运行时由
+  toolbox 注入函数把这份 sprite 内联进文档，再用同文档的 <use href="#名字"> 引用。
+  详见 shell/frontend/public/shell/icons.generated.js。
 -->
 <svg xmlns="http://www.w3.org/2000/svg" style="display:none">
   <symbol id="book-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

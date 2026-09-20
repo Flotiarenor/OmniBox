@@ -26,15 +26,27 @@
 ## 发布与打包
 
 本目录由 `shell/backend/file_server.py` 的 `/res/<path:filename>` 路由发布（免令牌），
-公开 URL 为 `/res/icons/icons.svg`。**不被 Vite 处理**，所以源文件就是发布文件，
-改完立即生效；但打包时必须由 `docs/Releases/spec_common.py` 单独收集，否则冻结后
-所有图标 404（`tools/check_packaging.py` 与 `tools/check_build_tree.py` 各有一条断言兜住）。
+公开 URL 为 `/res/icons/icons.svg`。**不被 Vite 处理**，所以源文件就是发布文件；
+打包时必须由 `docs/Releases/spec_common.py` 单独收集，否则冻结后访问会 404
+（`tools/check_packaging.py` 与 `tools/check_build_tree.py` 各有一条断言兜住）。
+
+注意 `icons.svg` 目前**不是加载路径**，而是人读、diff 与调试用的副本：
+运行时由 `tools/build_icons.py` 生成的注入函数
+（`shell/frontend/public/shell/icons.generated.js` 与
+`shell/frontend/src/core/icons.generated.ts`）把 sprite **内联进文档**，
+页面里再用同文档的 `<use href="#名字">` 引用。
+
+原因是实测出来的：**外部文件的 `<use>` 在 pywebview 的 WebView2 里不渲染**
+（包围盒恒为 0），而 Chrome 会渲染 —— 直接引用外部文件会出现"浏览器正常、
+OmniBox 窗口里图标全空、DOM 与控制台都干净"。完整对照表见 `tools/build_icons.py` 的文件头。
 
 ## 增删图标
 
 ```bash
 venv/Scripts/python tools/fetch_lucide_icons.py --add <kebab-case 名字>
 venv/Scripts/python tools/build_icons.py
+npm --prefix shell/frontend run build
 ```
 
-图标名去 https://lucide.dev/icons 搜。改这里**不需要** `npm run build`。
+图标名去 https://lucide.dev/icons 搜。第三行不能省：注入函数与 `.obx-icon`
+样式都通过 `/shell/*` 发布，而那条路由优先发 `dist/` 里的副本。

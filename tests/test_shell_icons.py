@@ -28,10 +28,14 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from tools.build_icons import (
     DATA_FILE,
+    JS_MODULE,
     SPRITE_FILE,
+    TS_MODULE,
     collect_references,
     render,
 )
+from tools.build_icons import _render_js_iife as js_iife_source
+from tools.build_icons import _render_ts as ts_module_source
 from tools.check_plugins import UI_EMOJI_RE
 
 SHELL_CSS = PROJECT_ROOT / 'shell' / 'frontend' / 'src' / 'styles' / 'shell.css'
@@ -159,11 +163,55 @@ class IconStyleTests(unittest.TestCase):
         self.assertIn('width: 1em', block)
         self.assertIn('height: 1em', block)
 
-    def test_component_uses_absolute_shell_path(self):
-        """`href` 必须是绝对路径：壳是 history 路由，相对路径在嵌套路由下会解析错。"""
+    def test_component_uses_same_document_reference(self):
+        """`href` 必须是同文档的 `#名字`。
+
+        外部文件的 `<use>` 在 pywebview 的 WebView2 里**不渲染**（实测包围盒恒为 0），
+        而 Chrome 会渲染 —— 写成外部路径就会"浏览器正常、窗口全空"，且 DOM 与控制台
+        都干净。这条用例是那个缺陷的静态守卫（真渲染守卫见 debug_shell_icons_ui.py）。
+        """
         source = ICON_COMPONENT.read_text(encoding='utf-8')
-        self.assertIn('/res/icons/icons.svg#', source)
-        self.assertNotIn("href=\"icons.svg#", source)
+        self.assertIn('`#${symbolId.value}`', source)
+        self.assertNotIn('/res/icons/icons.svg#', source, '不能引用外部文件，WebView2 不渲染')
+
+    def test_component_inlines_the_sprite(self):
+        """组件必须调用注入函数，把 sprite 内联进文档，否则 `#名字` 无处可解析。"""
+        source = ICON_COMPONENT.read_text(encoding='utf-8')
+        self.assertIn('ensureIcons', source)
+        self.assertIn("from '../core/icons.generated'", source)
+
+
+class GeneratedInjectorTests(unittest.TestCase):
+    """内联注入函数：与源数据同步，且两个目标（插件页 IIFE / 壳 ES module）同源。"""
+
+    def test_injector_outputs_are_generated_and_in_sync(self):
+        data = load_data()
+        for path, renderer in ((TS_MODULE, ts_module_source), (JS_MODULE, js_iife_source)):
+            with self.subTest(path=path.name):
+                self.assertTrue(path.is_file(), f'{path.name} 未生成：跑 tools/build_icons.py')
+                self.assertEqual(
+                    path.read_text(encoding='utf-8'), renderer(data['icons'], data),
+                    f'{path.name} 与 res/icons/icon_data.json 不一致',
+                )
+
+    def test_injector_contains_the_sprite_and_is_idempotent(self):
+        for path in (TS_MODULE, JS_MODULE):
+            text = path.read_text(encoding='utf-8')
+            with self.subTest(path=path.name):
+                # sprite 以 JSON 字符串字面量内联，引号是转义过的
+                self.assertIn('symbol id=\\"settings\\"', text, '脚本里没有内联 sprite 正文')
+                self.assertIn("getElementById('obx-icons')", text, '注入函数必须幂等')
+
+    def test_plugin_iife_auto_injects(self):
+        """插件页只加载一个 <script>，所以 IIFE 版本必须自己注入。"""
+        text = JS_MODULE.read_text(encoding='utf-8')
+        self.assertIn('DOMContentLoaded', text)
+        self.assertNotIn('export function', text, 'IIFE 版本不能有 export（无法直接 <script> 加载）')
+
+    def test_shell_module_exports_ensure(self):
+        text = TS_MODULE.read_text(encoding='utf-8')
+        self.assertIn('export function ensureIcons()', text)
+        self.assertNotIn('DOMContentLoaded', text, '壳侧挂载时机由组件决定，不要抢跑')
 
 
 class EmojiGatePolicyTests(unittest.TestCase):

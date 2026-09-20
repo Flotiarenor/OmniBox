@@ -1,19 +1,21 @@
 <!--This product includes software developed by flotiarenor.Copyright 2026 flotiarenor-->
 <script setup lang="ts">
 /**
- * 图标组件：渲染壳 sprite（`/res/icons/icons.svg`）里的一个图标。
+ * 图标组件：渲染壳图标集里的一个图标。
  *
  * 用法：`<Icon name="settings" />`（或 manifest 的 `icon:settings` 原样传入）
  *
- * 两条刻意的设计：
+ * 三条刻意的设计：
  * 1. **`icon:` 前缀的字符串仍按文本渲染**。manifest 的 `icon` 字段历史上存的是 emoji，
  *    第三方/旧插件不改也能正常显示；新插件写成 `icon:<名字>` 即得到矢量图标。
  *    这样"统一图标"不需要给 manifest 加新字段，也不需要枚举映射表。
- * 2. 单个 `<use>` 指向外部 sprite，**不内联图形**：一份 sprite 被壳与所有插件 iframe
- *    共享，浏览器只下载一次。`href` 用绝对路径 `/res/icons/icons.svg` —— 壳是 history
- *    路由（`/settings` 这类路径），相对路径会在嵌套路由下解析错。
+ * 2. **引用的是同文档的 `#名字`，不是外部文件**。外部文件的 `<use>` 在 pywebview 的
+ *    WebView2 里不渲染（实测包围盒恒为 0，DOM 与控制台都正常），所以 sprite 由
+ *    `icons.generated.ts` 在挂载前内联进文档。详见该文件头的实测对照表。
+ * 3. `ensureIcons()` 幂等，且在组件挂载前先调一次，避免首帧取不到 symbol。
  */
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
+import { ensureIcons } from '../core/icons.generated'
 
 const props = withDefaults(defineProps<{ name?: string; large?: boolean }>(), {
   name: '',
@@ -25,11 +27,14 @@ const TEXT_FALLBACK = '📦'
 
 const isSprite = computed(() => props.name.startsWith('icon:'))
 
-const symbolId = computed(() => (isSprite.value ? props.name.slice('icon:'.length) : ''))
+const symbolId = computed(() => props.name.slice('icon:'.length))
 
-const spriteHref = computed(() => `/res/icons/icons.svg#${symbolId.value}`)
+/** 同文档引用：`#名字`。外部文件引用在 WebView2 里不渲染，见文件头说明。 */
+const spriteHref = computed(() => `#${symbolId.value}`)
 
 const textValue = computed(() => (isSprite.value ? '' : props.name || TEXT_FALLBACK))
+
+onMounted(ensureIcons)
 </script>
 
 <template>

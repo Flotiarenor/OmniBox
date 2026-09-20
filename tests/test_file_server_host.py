@@ -212,7 +212,7 @@ class PluginFrontendBootstrapTest(unittest.TestCase):
                 self.assertIn(marker, html, '页面本身的内容不该被改动')
                 self.assertIn('/shell/base.js', html, '缺少壳的 Bridge/Utils')
                 self.assertIn('/shell/folder-picker.js', html, '缺少共享目录组件')
-                self.assertIn('/res/icons/icons.svg', html, '缺少图标 sprite 的预取，首屏图标会闪空')
+                self.assertIn('/shell/icons.generated.js', html, '缺少图标集注入脚本，图标会全空')
                 self.assertIn("Bridge.setPrefix('demo');", html, '插件前缀必须按路由替换')
 
     def test_non_html_is_served_untouched(self):
@@ -233,13 +233,16 @@ class PluginFrontendBootstrapTest(unittest.TestCase):
 class ResAssetTests(unittest.TestCase):
     """`/res/*`：仓库级共享资源（图标 sprite）的发布路由。
 
-    两个必须钉住的点，都是"不报错、只是全部失效"的形态：
+    三个必须钉住的点，都是"不报错、只是全部失效"的形态：
 
     1. **免令牌**。新增路由默认受保护（见 `_OPEN_ENDPOINTS` 的注释），漏登记时
        `/res/icons/icons.svg` 会返回 401 —— 页面本身能打开，只是所有图标都不显示。
        实装时确实先踩了这一条。
     2. **只有一份副本**。`/shell/*` 是"dist 优先"（因为 public/shell 会被 Vite 复制进
-       dist），图标刻意不走那条路：源文件就是发布文件，改完立即生效。
+       dist），图标刻意不走那条路：源文件就是发布文件。
+    3. 但它**不是加载路径**。运行时靠内联 sprite（`/shell/icons.generated.js`）+
+       同文档 `#名字` 引用 —— 外部文件的 `<use>` 在 pywebview 的 WebView2 里不渲染。
+       `/res/icons/icons.svg` 仅用于阅读、diff 与直接打开查看。
     """
 
     def setUp(self):
@@ -253,6 +256,19 @@ class ResAssetTests(unittest.TestCase):
             body = resp.get_data(as_text=True)
             self.assertIn('<symbol id="settings"', body)
             self.assertIn('stroke="currentColor"', body, '描边必须写在 symbol 上，否则图标不跟随主题')
+        finally:
+            resp.close()
+
+    def test_injector_script_is_served_and_self_contained(self):
+        """插件页加载的注入脚本必须是自包含的（把 sprite 直接内联在脚本里）。"""
+        resp = self.client.get('/shell/icons.generated.js')
+        try:
+            self.assertEqual(resp.status_code, 200, '插件引导脚本引用了它，取不到则图标全空')
+            body = resp.get_data(as_text=True)
+            self.assertIn('function ensureIcons()', body)
+            self.assertIn("container.id = 'obx-icons'", body)
+            # sprite 作为 JSON 字符串字面量内联在脚本里（引号已转义）——自包含，不依赖网络
+            self.assertIn('symbol id=\\"settings\\"', body, '脚本里没有内联 sprite 正文')
         finally:
             resp.close()
 

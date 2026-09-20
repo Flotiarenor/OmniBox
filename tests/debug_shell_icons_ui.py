@@ -1,20 +1,24 @@
-"""壳图标 sprite 的**真渲染**自检（本地手动运行，不进 CI）。
+"""壳图标集的**真渲染**自检（本地手动运行，不进 CI）。
 
 为什么必需
 ----------
-sprite 里的 `<symbol>` 是 shadow tree，**外部样式进不去**。于是两个最容易犯的错
-在静态检查与普通 DOM 断言里都是隐形的：
+图标的失效形态全都是"不报错、只是画不出来"，静态检查与普通 DOM 断言都看不见：
 
-- 只写 `viewBox` 不给宽高 → `<svg>` 按默认 300×150 渲染，图标撑开整行；
-- `<symbol>` 上漏写 `stroke="currentColor"` → 图标永远是黑的，不跟随主题与
-  用户在设置页自定义的颜色。
+- 只写 `viewBox` 不给宽高 → `<svg>` 按默认 300×150 撑开整行；
+- `<symbol>` 上漏写 `stroke="currentColor"` → 图标恒为黑色，不跟随主题；
+- **`<use>` 引用外部文件 → 在这个应用真正使用的内核（pywebview / WebView2）里根本不渲染**，
+  而 Chrome 会渲染它。于是"Chrome 里一切正常、窗口里一片空白、DOM 与控制台都干净"。
+  这一条只能靠真实渲染 + 读取图形包围盒（`getBBox()`）来发现：
+  `<svg>` 的 `getBoundingClientRect()` 会被 CSS 撑成 18×18（"有位置"是假象），
+  而 `getBBox()` 会诚实地给出 0。
 
-`tests/test_shell_icons.py` 只能断言源数据、生成物与样式表**声明**正确；声明正确
-不等于画出来正确。这里起真实壳服务 + 无头 Chrome，量 `<svg>` 的实际尺寸与取色。
-
-用法（需要本机有 Chrome/Edge，约 15 秒）
-----------------------------------------
+用法（需要本机有 Chrome，约 15 秒）
+----------------------------------
     venv/Scripts/python.exe tests/debug_shell_icons_ui.py
+
+注意：本用例用 Chrome 跑。**Chrome 通过不代表窗口通过** —— 外部引用的那条缺陷恰恰
+Chrome 测不出来，所以脚本会显式断言"引用必须是同文档的 `#名字`"与"图形包围盒非零"，
+而不是只断言"图标存在且尺寸对"。
 """
 from __future__ import annotations
 
@@ -43,22 +47,28 @@ return (function () {
     var r = s.getBoundingClientRect();
     var use = s.querySelector('use');
     var href = use ? (use.getAttribute('href') || '') : '';
-    return { id: href.split('#')[1] || href, w: Math.round(r.width), h: Math.round(r.height),
+    // 真正画出来没有：<svg> 的宽高会被 CSS 撑开（那只是"有位置"），
+    // 图形本体在不在要看 getBBox()。外部文件的 <use> 会让它恒为 0。
+    var drawn = 0;
+    try { drawn = Math.round(s.getBBox().width); } catch (e) { drawn = -1; }
+    return { id: href.replace(/^#/, ''), href: href,
+             w: Math.round(r.width), h: Math.round(r.height), drawn: drawn,
              color: getComputedStyle(s).color };
   });
+  // sprite 必须**内联在文档里**：引用外部文件在 WebView2 里不渲染（见 tools/build_icons.py）
+  var container = document.getElementById('obx-icons');
+  out.spriteInlined = !!container;
+  out.symbolCount = container ? container.querySelectorAll('symbol').length : 0;
+  out.hasCurrentColor = container
+    ? container.innerHTML.indexOf('stroke="currentColor"') >= 0 : false;
+  out.foreignHrefs = out.icons.filter(function (i) { return i.href.indexOf('icons.svg') >= 0; }).length;
   // viewBox 只写不写宽高时会变成 300×150；这里同时排除 0 尺寸与异常大尺寸
   out.allSized = svgs.every(function (s) {
     var r = s.getBoundingClientRect();
     return r.width > 6 && r.width < 40 && Math.abs(r.width - r.height) < 1;
   });
-  var xhr = new XMLHttpRequest();
-  xhr.open('GET', '/res/icons/icons.svg', false);
-  try {
-    xhr.send();
-    out.spriteStatus = xhr.status;
-    out.symbolCount = (xhr.responseText.match(/<symbol /g) || []).length;
-    out.spriteHasCurrentColor = xhr.responseText.indexOf('stroke="currentColor"') >= 0;
-  } catch (e) { out.spriteError = String(e); }
+  // 最要紧的一条：图形本体非空
+  out.allDrawn = out.icons.every(function (i) { return i.drawn > 4; });
   return out;
 })();
 """
@@ -142,10 +152,21 @@ def main() -> int:
             time.sleep(3)
             shell = driver.execute_script(PROBE_SHELL)
             print('侧栏：', json.dumps(shell, ensure_ascii=False))
-            if shell.get('spriteStatus') != 200:
-                failures.append(f"/res/icons/icons.svg 不可取：{shell.get('spriteStatus')} {shell.get('spriteError', '')}")
-            if not shell.get('spriteHasCurrentColor'):
+            if not shell.get('spriteInlined'):
+                failures.append('文档里没有内联的 sprite 容器 #obx-icons：图标会全空')
+            if not shell.get('hasCurrentColor'):
                 failures.append('sprite 的 <symbol> 上没有 stroke="currentColor"，图标不会跟随主题')
+            if shell.get('foreignHrefs'):
+                failures.append(
+                    f"有 {shell.get('foreignHrefs')} 个 <use> 仍引用外部文件："
+                    f"该形态在 pywebview 的 WebView2 里不渲染（必须用 #同文档 引用）"
+                )
+            # 这一条是本次缺陷的直接守卫：图形本体必须有非零包围盒
+            if not shell.get('allDrawn'):
+                failures.append(
+                    f"图标没有画出图形本体（getBBox 为 0）："
+                    f"{[i for i in shell.get('icons', []) if i.get('drawn', 0) <= 4]}"
+                )
             if not shell.get('allSized'):
                 failures.append(f"侧栏图标尺寸异常（应为 18×18）：{shell.get('icons')}")
             if shell.get('textFallbacks'):

@@ -64,10 +64,11 @@ _PLUGIN_BOOTSTRAP_SCRIPT = (
     '<script src="/shell/base.js"></script>'
     '<script src="/shell/folder-picker.js"></script>'
     '<script src="/shell/motion.js"></script>'
-    # 图标 sprite 是"按需引用"而不是"注入执行"，所以不是 <script>/<link rel=stylesheet>：
-    # 预取一下，让插件页第一次渲染 <use> 时不必等一次网络往返（否则首屏图标会闪空）。
-    # 必须写在 <head> 里：<use> 指向外部 sprite 时，浏览器要在用到它之前就发起请求。
-    '<link rel="preload" as="image" href="/res/icons/icons.svg" crossorigin="anonymous">'
+    # 图标 sprite：必须**内联进文档**，不能靠 <use href="外部.svg#名字"> 引用。
+    # 实测（pywebview / WebView2 / Edge 153）：外部文件的 <use> 一律不渲染，包围盒恒为 0，
+    # 而同文档的 # 引用正常 —— 而 Chrome 会渲染外部引用，所以这个缺陷在浏览器里测不出来。
+    # 本脚本把 sprite 注入文档，插件页随后写 <svg class="obx-icon"><use href="#名字"> 即可。
+    '<script src="/shell/icons.generated.js"></script>'
     '<script>'
     "Bridge.setPrefix('PLACEHOLDER_NAME');"
     '(function(){'

@@ -1,25 +1,32 @@
-"""由 `res/icons/icon_data.json` 生成 `res/icons/icons.svg`。
+"""由 `res/icons/icon_data.json` 生成图标资源与注入函数。
 
-产物是**一个 sprite**：每个图标一个 `<symbol id="名字">`，页面里用
-`<svg class="obx-icon"><use href="/res/icons/icons.svg#名字"></use></svg>` 引用。
-选 sprite 而不是图标字体或逐处内联的理由（顺带决定了下面每个属性的写法）：
+产出三份（同一份图形，分别给不同地方用）：
 
-1. 走 `<use>` + 同源 URL，命中 `img-src 'self'`，**不需要动 CSP**（图标字体要先把
-   `font-src` 从 Report-Only 提进强执行档）；
-2. 没有字体加载前的图标闪烁；
-3. 同一份 sprite 被壳页面与所有插件 iframe 共享，浏览器只下载一次；
-4. `<symbol>` 是 shadow tree，外部无法继承页面的 fill/stroke，所以描边属性必须写在
-   sprite 自己身上 —— 且必须写 `currentColor`，否则图标不跟随主题与用户自定义颜色。
+1. `res/icons/icons.svg` —— sprite 本体（**源与调试用**，也可直接 URL 打开看全部图标）；
+2. `toolbox/shell/icons.generated.js` —— 供插件页与壳共用的一次性注入函数；
+3. `shell/frontend/src/core/icons.generated.ts` —— 壳（Vue）导入同一份函数。
 
-产物位置见 `docs/ci-and-release.md`：`res/` 与 `shell/`、`plugins/` 同级，由
-`file_server.py` 的 `/res/<path:filename>` 路由发布，打包时由
-`docs/Releases/spec_common.py` 一并收集。**没有第二份副本** —— 早先放在
-`shell/frontend/public/shell/` 时，那份会被 Vite 复制进 `dist/`，于是同一份图形
-在仓库里存在两个位置，改一个忘一个就会"源码改了、界面没变"。
+为什么不是"页面里用 `<use href="/res/icons/icons.svg#名字">` 引用外部文件"
+--------------------------------------------------------------------------
+**外部文件的 `<use>` 在 pywebview 的 WebView2 里不渲染。** 实机实测（三层对照）：
+
+| 形态 | 结果 |
+| --- | --- |
+| `<use href="#同文档 symbol">`（同一个 `<svg>`） | 正常 |
+| `<use href="#同文档 symbol">`（同文档的另一个 `<svg>`） | 正常 |
+| `<use href="外部.svg#symbol">` | **空白**（包围盒 0） |
+| `<use xlink:href="外部.svg#symbol">` | **空白** |
+| `<use href="http://host/外部.svg#symbol">` | **空白** |
+| 形状直接内联 | 正常 |
+
+Chrome 会渲染外部引用，所以这类缺陷在浏览器里测不出来 —— 只有真的用 `main.py`
+打开窗口才会暴露"图标全空、DOM 却正确"。因此选择把 sprite **内联进文档**：
+同文档引用在两个内核里都正常。`res/icons/icons.svg` 仍然生成（可读、可 diff、
+可用 URL 直接查看），但**不是加载路径**。
 
 用法
 ----
-    venv/Scripts/python tools/build_icons.py           # 生成 sprite
+    venv/Scripts/python tools/build_icons.py           # 生成
     venv/Scripts/python tools/build_icons.py --check   # 只校验，不写文件（门禁用）
 """
 from __future__ import annotations
@@ -36,6 +43,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ICON_DIR = PROJECT_ROOT / 'res' / 'icons'
 DATA_FILE = ICON_DIR / 'icon_data.json'
 SPRITE_FILE = ICON_DIR / 'icons.svg'
+# 注入函数：插件页与壳各一份（一个 ES module，一个可直接 <script> 的 IIFE）
+JS_MODULE = PROJECT_ROOT / 'shell' / 'frontend' / 'public' / 'shell' / 'icons.generated.js'
+TS_MODULE = PROJECT_ROOT / 'shell' / 'frontend' / 'src' / 'core' / 'icons.generated.ts'
 
 # 引用点：Vue 模板里的静态字面量、JS/模板字符串里的动态插值、manifest 的 icon: 值。
 # 三者的写法都要认，否则"引用了未冻结的图标"这条校验会对真实代码视而不见：
@@ -56,9 +66,77 @@ HEADER = """<!--This product includes software developed by flotiarenor.Copyrigh
   OmniBox 图标 sprite —— 由 tools/build_icons.py 生成，请勿手工编辑。
   图标来自 Lucide（{package}），授权 {license}（https://lucide.dev/license）。
   增删图标：tools/fetch_lucide_icons.py --add <名字>，再跑 tools/build_icons.py。
-  引用方式：<svg class="obx-icon"><use href="/res/icons/icons.svg#名字"></use></svg>
+
+  注意：本文件是**源与调试用**，不是加载路径。页面里引用外部文件的 <use> 在
+  pywebview 的 WebView2 里不渲染（实测包围盒恒为 0），所以运行时由
+  toolbox 注入函数把这份 sprite 内联进文档，再用同文档的 <use href="#名字"> 引用。
+  详见 shell/frontend/public/shell/icons.generated.js。
 -->
 <svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+"""
+
+# 注入函数：一份 IIFE（插件页 <script>）与一份 ES module（壳 Vue 导入）。
+# 两份内容同源，正文用占位符替换，避免"改了一份忘另一份"。
+_INJECTOR_TEMPLATE = """/**
+ * 图标 sprite 的注入函数 —— 由 tools/build_icons.py 生成，请勿手工编辑。
+ *
+ * 为什么图标要内联进文档，而不是 <use href="/res/icons/icons.svg#名字"> 引用外部文件：
+ * **外部文件的 <use> 在 pywebview 的 WebView2 里不渲染**。实机三层对照（包围盒宽度）：
+ *   同文档 symbol + use（同一个 <svg>）→ 16px   ✅
+ *   同文档 symbol + use（另一个 <svg>）→ 16px   ✅
+ *   外部文件 href / xlink:href / 全 URL  → 0px   ❌
+ *   形状直接内联                        → 16px   ✅
+ * Chrome 会渲染外部引用，所以这个缺陷在浏览器里完全测不出来：DOM 正确、类名正确、
+ * 控制台无报错，只是窗口里一片空白。因此运行时把 sprite 内联进文档一次，
+ * 之后页面里一律写 <svg class="obx-icon"><use href="#名字"></use></svg>。
+ *
+ * 描边属性写在 <symbol> 自己身上（shadow tree，外部样式进不去），且必须是
+ * currentColor，否则图标不跟随主题与用户自定义颜色。
+ */
+
+/** 内联 sprite。幂等：重复调用不会重复插入。返回是否成功插入。 */
+export function ensureIcons() {
+%(body)s
+}
+"""
+
+_SPRITE_MARKER = 'obx-icons'
+
+
+def _sprite_markup(icons: dict, meta: dict) -> str:
+    """sprite 的完整标记（含 XML 注释头），注入时直接 innerHTML 用。"""
+    return render(icons, meta)
+
+
+def _render_ts(icons: dict, meta: dict) -> str:
+    markup = _sprite_markup(icons, meta)
+    body = (
+        f"  if (document.getElementById('{_SPRITE_MARKER}')) return false;\n"
+        f"  var container = document.createElement('div');\n"
+        f"  container.id = '{_SPRITE_MARKER}';\n"
+        f"  container.setAttribute('aria-hidden', 'true');\n"
+        f"  container.style.cssText = 'position:absolute;width:0;height:0;overflow:hidden';\n"
+        f"  container.innerHTML = SPRITE;\n"
+        f"  document.body.appendChild(container);\n"
+        f"  return true;\n"
+    )
+    const = 'const SPRITE = ' + json.dumps(markup, ensure_ascii=False) + '\n\n'
+    return const + _INJECTOR_TEMPLATE % {'body': body}
+
+
+def _render_js_iife(icons: dict, meta: dict) -> str:
+    """插件页用的 IIFE 版本：<script src="/shell/icons.generated.js"> 后直接生效。"""
+    ts = _render_ts(icons, meta)
+    body = ts  # 与 TS 版本同源，仅去掉 export 并包一层
+    return body.replace('export function ensureIcons()', 'function ensureIcons()') + """
+
+// 自动注入：插件页在 <head> 里同步加载本脚本，此时还没有 body，
+// 因此挂在 DOMContentLoaded 上（早于任何插件代码渲染图标）。
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', ensureIcons);
+} else {
+  ensureIcons();
+}
 """
 
 
@@ -143,25 +221,32 @@ def main() -> int:
             print(f'[error] {error}', file=sys.stderr)
         return 1
 
-    content = render(icons, data)
+    outputs = {
+        SPRITE_FILE: render(icons, data),
+        TS_MODULE: _render_ts(icons, data),
+        JS_MODULE: _render_js_iife(icons, data),
+    }
+
     if args.check:
-        current = SPRITE_FILE.read_text(encoding='utf-8') if SPRITE_FILE.is_file() else ''
-        if current != content:
-            print(
-                f'[error] {SPRITE_FILE.relative_to(PROJECT_ROOT).as_posix()} 与 icon_data.json 不一致：'
-                f'运行 venv/Scripts/python tools/build_icons.py',
-                file=sys.stderr,
-            )
+        stale = []
+        for path, expected in outputs.items():
+            current = path.read_text(encoding='utf-8') if path.is_file() else ''
+            if current != expected:
+                stale.append(path.relative_to(PROJECT_ROOT).as_posix())
+        if stale:
+            for rel in stale:
+                print(f'[error] {rel} 与 res/icons/icon_data.json 不一致', file=sys.stderr)
+            print('        运行 venv/Scripts/python tools/build_icons.py 重新生成', file=sys.stderr)
             return 1
-        print(f'icons: OK（{len(icons)} 个图标，sprite 与源数据一致）')
+        print(f'icons: OK（{len(icons)} 个图标，sprite 与注入函数均与源数据一致）')
         return 0
 
-    SPRITE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SPRITE_FILE.write_text(content, encoding='utf-8')
-    print(
-        f'icons: 已生成 {SPRITE_FILE.relative_to(PROJECT_ROOT).as_posix()}'
-        f'（{len(icons)} 个图标，引用点 {len(refs)} 个）'
-    )
+    for path, content in outputs.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding='utf-8')
+    print(f'icons: 已生成 {len(outputs)} 份产物（{len(icons)} 个图标，引用点 {len(refs)} 个）')
+    for path in outputs:
+        print(f'  {path.relative_to(PROJECT_ROOT).as_posix()}')
     return 0
 
 

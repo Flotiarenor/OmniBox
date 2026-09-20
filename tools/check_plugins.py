@@ -334,8 +334,9 @@ def _check_frontend_ui(plugin_dir: Path) -> Tuple[List[str], List[str]]:
                     seen_emoji[char] = scan.count('\n', 0, match.start()) + 1
             for char, line in sorted(seen_emoji.items(), key=lambda item: item[1]):
                 errors.append(
-                    f'{rel}:{line} 出现图形化 emoji {char}（U+{ord(char):04X}）：图标改用壳的 sprite，'
-                    f'写法 `<svg class="obx-icon"><use href="/res/icons/icons.svg#名字"></use></svg>`；'
+                    f'{rel}:{line} 出现图形化 emoji {char}（U+{ord(char):04X}）：图标改用壳的图标集，'
+                    f'写法 `<svg class="obx-icon"><use href="#名字"></use></svg>`（引用必须是同文档的 '
+                    f'`#名字`，写外部文件路径在 WebView2 里不渲染）；'
                     f'图标名表与新增方式见 res/icons/icon_data.json / tools/fetch_lucide_icons.py'
                     f'（docs/plugin-ui-guide.md §5）'
                 )

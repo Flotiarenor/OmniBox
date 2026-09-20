@@ -453,11 +453,16 @@ body {
   background: var(--bg-surface);
 }
 
-/* ===== 图标（sprite 引用）=====
-   图标统一来自壳的 sprite：/res/icons/icons.svg（由 tools/build_icons.py 生成，
-   源数据 res/icons/icon_data.json）。用法只有一个：
+/* ===== 图标（同文档 sprite 引用）=====
+   图标统一来自壳的图标集（源数据 res/icons/icon_data.json，由 tools/build_icons.py
+   生成）。用法只有一个：
 
-     <svg class="obx-icon"><use href="/res/icons/icons.svg#gear"></use></svg>
+     <svg class="obx-icon"><use href="#gear"></use></svg>
+
+   **引用必须是同文档的 `#名字`，不能写外部文件路径。** 外部文件的 <use>
+   （`href="/res/icons/icons.svg#gear"`）在 pywebview 的 WebView2 里不渲染，
+   而 Chrome 会渲染 —— 于是"浏览器里正常、窗口里全空"。sprite 由
+   /shell/icons.generated.js（插件页）或 icons.generated.ts（壳）内联进文档。
 
    尺寸走 1em、颜色走 currentColor，所以图标自动跟随所在元素的字号与文字色
    （含用户自定义的 --accent / --text-*），换图标时不需要重调排版 —— 这是替换

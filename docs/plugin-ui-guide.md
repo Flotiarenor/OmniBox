@@ -60,8 +60,9 @@
     错误就地提示 + 重试入口（不用 alert）。
 11. **覆盖壳的布局类必须提高特异性**（`.mp-side.view-sub-sidebar`，0,2,0），不能依赖
     注入顺序；不用 `!important` 与 `*` 选择器。
-12. **图标只用壳的 sprite**：`<svg class="obx-icon"><use href="/res/icons/icons.svg#名字"></use></svg>`，
-    不用图形化 emoji（🖼🔄🗑🎧 这类）。跨平台字形与字重不一致正是"不像一个软件"的来源之一，
+12. **图标只用壳的图标集**：`<svg class="obx-icon"><use href="#名字"></use></svg>` ——
+    引用**必须是同文档的 `#名字`**（写外部文件路径在 WebView2 里不渲染），
+    且不用图形化 emoji（🖼🔄🗑🎧 这类）。跨平台字形与字重不一致正是"不像一个软件"的来源之一，
     详见本节「补充约定」的第一条与 §9.7。
 
 ---
@@ -344,56 +345,62 @@ background: var(--mp-glass, var(--bg-surface));
 
 补充约定：
 
-- **图标源与运行方式**。所有图标来自**一个 sprite**：`/res/icons/icons.svg`，
-  由 `tools/build_icons.py` 从 `res/icons/icon_data.json` 生成；源图形取自
-  [Lucide](https://lucide.dev)（`lucide-static` @1.47.0，ISC 授权，可商用）。
-  选 sprite 而不是图标字体或逐处内联的三个理由：
-
-  1. `<use>` 走同源 URL，命中 `img-src 'self'`，**不需要改 CSP** ——
-     图标字体要先把 `font-src 'self' data:` 从 Report-Only 提进强执行档（`file_server.py:143`）；
-  2. 没有字体加载前的图标闪烁（FOUT）；
-  3. 同一份 sprite 被壳页面与全部插件 iframe 共享，浏览器只下载一次。
+- **图标源与运行方式**。所有图标来自**一个图标集**：源数据 `res/icons/icon_data.json`，
+  由 `tools/build_icons.py` 生成 `res/icons/icons.svg`（人读/调试用）。
+  源图形取自 [Lucide](https://lucide.dev)（`lucide-static` @1.47.0，ISC 授权，可商用）。
+  页面里的写法只有一个：
 
   ```html
-  <!-- 唯一的写法；尺寸 1em、颜色 currentColor，自动跟随字号与主题 -->
-  <svg class="obx-icon"><use href="/res/icons/icons.svg#refresh-cw"></use></svg>
-  <svg class="obx-icon obx-icon-lg"><use href="/res/icons/icons.svg#settings"></use></svg>
+  <!-- 尺寸 1em、颜色 currentColor，自动跟随字号与主题 -->
+  <svg class="obx-icon"><use href="#refresh-cw"></use></svg>
+  <svg class="obx-icon obx-icon-lg"><use href="#settings"></use></svg>
   ```
 
-  为什么 `res/` 与 `/shell/*` 分开：`/shell/*` 是**壳注入的 CSS/JS**
-  （由 `_PLUGIN_BOOTSTRAP_SCRIPT` 自动挂进每个插件页），`/res/*` 是**按需引用**的资源。
-  更实际的区别是**副本数**：`shell/frontend/public/shell/` 里的文件会被 Vite 复制进
-  `dist/shell/`，因此 `/shell/*` 必须"dist 优先"，改完不重新构建就是"源码改了、界面没变"；
-  `res/` 不被 Vite 处理，**源文件就是发布文件**，改完立即生效、也不需要重新构建。
+  **引用必须是同文档的 `#名字`。** 这是本项目最容易踩、也最难发现的一条：
+
+  - 实测（pywebview / WebView2 / Edge 153，读图形包围盒 `getBBox()`）：
+    同文档 `#名字` → 正常；`<use href="/res/icons/icons.svg#名字">`（外部文件）
+    → **恒为 0，画不出来**；`xlink:href` 与写全 URL 同样为 0；形状直接内联正常。
+  - 而 **Chrome 会渲染外部引用**，所以"在浏览器里打开一切正常、在 OmniBox 窗口里
+    一片空白、DOM 与控制台都干净"。这类缺陷靠 Chrome 测不出来。
+  - 因此 sprite 由 `shell/frontend/public/shell/icons.generated.js`（插件页，
+    引导脚本自动加载）或 `shell/frontend/src/core/icons.generated.ts`（壳）
+    **内联进文档**一次，之后 `#名字` 才有处可解析。两份产物同一个生成器，不会漂移。
 
   三个必须知道的约束：
 
   - **宽高必须由 CSS 给**。sprite 里的 `<symbol>` 是 shadow tree，外部样式进不去；
     只写 `viewBox` 的 `<svg>` 会按默认 300×150 渲染，把所在行撑开。
+    （注意：`getBoundingClientRect()` 会被 CSS 撑成 18×18，看着"有位置"，
+    真正判断图形在不在要看 `getBBox()`。）
   - **描边只能写在 sprite 自己身上**，且必须是 `currentColor`（`build_icons.py` 生成时统一写死）。
     漏掉时图标恒为黑色，不跟主题、也不跟用户自定义的 `--accent`。
   - **壳页面不注入 `base.css`**，所以 `.obx-icon` 在 `shell/frontend/public/shell/base.css`
     与 `shell/frontend/src/styles/shell.css` 各有一份，**必须逐值一致**
     （`tests/test_shell_icons.py` 会比对两份规则）。这两份是 `/shell/*` 资源，
-    改完仍必须 `npm --prefix shell/frontend run build`。
+    改完必须 `npm --prefix shell/frontend run build`。
 
 - **插件图标怎么声明**：`manifest.icon` 写 `icon:<名字>`（如 `"icon": "images"`，名字取自
   Lucide 的 kebab-case 图标名），
-  壳的 `<Icon>` 组件据此渲染 sprite；写成 emoji 或任意文本时按文本渲染，
+  壳的 `<Icon>` 组件据此渲染；写成 emoji 或任意文本时按文本渲染，
   第三方/旧插件不改也不会坏。缺省值是 `icon:package`（`plugin_manager.py`）。
   壳侧栏与设置页见 `shell/frontend/src/components/Icon.vue`。
 
-- **新增一个图标**（两步，都不参与常规构建）：
+- **新增一个图标**：
 
   ```bash
-  venv/Scripts/python tools/fetch_lucide_icons.py --add refresh-cw   # 从 lucide-static 冻结进 res/icons/icon_data.json
-  venv/Scripts/python tools/build_icons.py                            # 生成 res/icons/icons.svg
+  venv/Scripts/python tools/fetch_lucide_icons.py --add refresh-cw   # 冻结进 res/icons/icon_data.json
+  venv/Scripts/python tools/build_icons.py                            # 重新生成 3 份产物
+  npm --prefix shell/frontend run build                               # /shell/* 资源变了，必须重建
   ```
 
   图标名去 [lucide.dev/icons](https://lucide.dev/icons) 搜（kebab-case）。
   引用了未冻结的名字时，`build_icons.py` 直接报错 —— 否则 `<use>` 指向不存在的 id，
-  界面是一片空白且没有任何提示。改 `res/` 之后**不需要** `npm run build`；
-  新增图标后插件侧不需要改任何代码，`<use>` 按名字取。
+  界面是一片空白且没有任何提示。**插件侧不需要改任何代码**，`<use>` 按名字取。
+
+- **改完图标一定要在窗口里看一次**，不要只看浏览器：
+  `venv/Scripts/python tests/debug_shell_icons_ui.py` 会断言每个图标的
+  `getBBox()` 非零（外部引用会让它恒为 0），Chrome 下即可跑出结论。
 
 - **emoji 门禁**：`tools/check_plugins.py` 已实装"插件前端不得出现图形化 emoji"的规则
   （区段见 `UI_EMOJI_RE`，**不含** `★☆❤✓✕⚠❮❯` 这类跨平台稳定的符号写法与数据语义符号）。
