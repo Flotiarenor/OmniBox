@@ -132,7 +132,15 @@ def wait_for_server(host, port, timeout=5):
     start = time.time()
     while time.time() - start < timeout:
         try:
-            r = requests.get(f"http://{host}:{port}/health", timeout=0.5)
+            # 显式关闭代理：requests 默认读取 HTTP_PROXY/HTTPS_PROXY，环境里存在
+            # 代理时探活请求会被交给代理（实测 ProxyError），Flask 已监听也会被判成
+            # 启动超时。本请求只访问本机 Flask，不走代理。
+            r = requests.get(
+                f"http://{host}:{port}/health", timeout=0.5,
+                # requests 运行期用 None 表示"禁用该协议的代理"；其类型 stub 只声明
+                # str，故加定点 ignore（见 requests 文档的 proxies 用法）。
+                proxies={'http': None, 'https': None},  # type: ignore[arg-type]
+            )
             if r.status_code == 200:
                 return True
         except requests.RequestException:
