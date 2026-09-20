@@ -9,6 +9,12 @@
 //
 // 分页 / 测量 / 滚动加载在 reader-engine.js；阅读偏好持久化在 settings.js。
 // ============================================================
+// 图标名 → 标记。sprite 与 Icons.html 由壳注入的 /shell/icons.generated.js 提供；
+// 缺失时（本页脱离壳单独打开）返回空串，不写 emoji 兜底。
+const nrAppIcon = (name) => (window.Icons && typeof window.Icons.html === 'function')
+    ? window.Icons.html(name)
+    : '';
+
 class DocumentReader {
     constructor() {
         this.documents = [];
@@ -498,7 +504,7 @@ class DocumentReader {
             area.innerHTML = `
                 <iframe class="document-pdf-frame" src="${Utils.escapeHtml(src)}"
                         title="${Utils.escapeHtml(doc.title || doc.id)}"></iframe>
-                <button type="button" class="btn document-pdf-open" id="document-open-external">↗ 系统程序打开</button>
+                <button type="button" class="btn document-pdf-open" id="document-open-external">${nrAppIcon('icon:external-link')} 系统程序打开</button>
             `;
         } else {
             area.innerHTML = `
@@ -506,7 +512,7 @@ class DocumentReader {
                     <div class="empty-state-icon"><svg class="obx-icon"><use href="#file-text"></use></svg></div>
                     <div class="empty-state-text">${Utils.escapeHtml(doc.title || doc.id)}</div>
                     <div class="empty-state-hint">该格式不在阅读器内渲染，可交给系统默认程序打开</div>
-                    <button type="button" class="btn" id="document-open-external">↗ 用系统程序打开</button>
+                    <button type="button" class="btn" id="document-open-external">${nrAppIcon('icon:external-link')} 用系统程序打开</button>
                 </div>`;
         }
         const btn = document.getElementById('document-open-external');

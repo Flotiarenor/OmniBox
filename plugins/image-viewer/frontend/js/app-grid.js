@@ -59,7 +59,7 @@ Object.assign(ImageViewer.prototype, {
             }
             this.pagination.render(data.page, Math.ceil(data.total / perPage));
         } catch (error) {
-            grid.innerHTML = this._emptyHtml('⚠️', '图片加载失败');
+            grid.innerHTML = this._emptyHtml('icon:triangle-alert', '图片加载失败');
             grid.style.height = 'auto';
         }
     },
@@ -217,7 +217,7 @@ Object.assign(ImageViewer.prototype, {
         this._slideshowWanted = true;
         this.lightbox.show(this.currentAllImages, index);
         this.slideshowTimer = setInterval(() => this.lightbox.navigate(1), 3000);
-        document.getElementById('btn-slideshow').textContent = '⏸ 停止';
+        document.getElementById('btn-slideshow').innerHTML = Icons.html('icon:pause') + ' 停止';
         Toast.info('幻灯片播放中，每 3 秒切换一张');
     },
 
@@ -227,7 +227,7 @@ Object.assign(ImageViewer.prototype, {
             this.slideshowTimer = null;
         }
         const btn = document.getElementById('btn-slideshow');
-        if (btn) btn.textContent = '▶ 幻灯片';
+        if (btn) btn.innerHTML = Icons.html('icon:play') + ' 幻灯片';
     },
 
     // 离开当前列表（换相册 / 换文件夹）：用户已经不在这个上下文里，

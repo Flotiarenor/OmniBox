@@ -292,6 +292,9 @@
     position: absolute;
     right: 8px;
     top: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
     padding: 1px 7px;
     border-radius: 999px;
     font-size: 10px;

@@ -121,7 +121,7 @@ class MediaPlaylistManager {
         if (!container) return;
 
         if (!this.playlists.length) {
-            container.innerHTML = '<div class="mp-playlist-empty">暂无歌单，点击 ＋ 创建</div>';
+            container.innerHTML = '<div class="mp-playlist-empty">暂无歌单，点击上方「新建歌单」创建</div>';
             return;
         }
 

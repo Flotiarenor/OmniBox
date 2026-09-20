@@ -129,7 +129,7 @@ Object.assign(MediaPlayerApp.prototype, {
     onPlayStateChange(playing) {
         this._playing = playing;
         const playBtn = document.getElementById('btn-play-pause');
-        playBtn.textContent = playing ? '⏸' : '▶';
+        playBtn.innerHTML = MPUtils.icon(playing ? 'icon:pause' : 'icon:play');
         playBtn.title = playing ? '暂停' : '播放';
 
         const stage = document.getElementById('mp-stage');
@@ -144,7 +144,7 @@ Object.assign(MediaPlayerApp.prototype, {
         const bigBtn = document.getElementById('btn-stage-play');
         const showVideo = stage.classList.contains('video-on');
         bigBtn.classList.toggle('show', showVideo && !playing);
-        bigBtn.textContent = playing ? '⏸' : '▶';
+        bigBtn.innerHTML = MPUtils.icon(playing ? 'icon:pause' : 'icon:play');
 
         this._updateMiniEq(playing);
         if (playing && this.isFullscreen) this._scheduleAutoHide();
@@ -200,7 +200,7 @@ Object.assign(MediaPlayerApp.prototype, {
         const btn = document.getElementById('btn-toggle-fav');
         if (!btn) return;
         const fav = itemId && this.favIds.has(itemId);
-        btn.textContent = fav ? '❤️' : '♡';
+        btn.innerHTML = MPUtils.icon('icon:heart');
         btn.classList.toggle('fav-active', !!fav);
         btn.title = fav ? '取消喜欢' : '喜欢';
     },
@@ -214,7 +214,7 @@ Object.assign(MediaPlayerApp.prototype, {
             else this.favIds.delete(item.id);
             item.is_fav = result.is_fav;
             const btn = document.getElementById('btn-toggle-fav');
-            btn.textContent = result.is_fav ? '❤️' : '♡';
+            btn.innerHTML = MPUtils.icon('icon:heart');
             btn.classList.toggle('fav-active', result.is_fav);
             btn.classList.remove('fav-active');
             void btn.offsetWidth; // 重置动画
@@ -270,7 +270,7 @@ Object.assign(MediaPlayerApp.prototype, {
                     <span class="q-index">${idx + 1}</span>
                     <span class="q-kind">${MPUtils.itemIcon(item)}</span>
                     <span class="q-title">${MPUtils.escapeHtml(item.title)}</span>
-                    <button class="q-remove" data-remove-idx="${idx}" title="移除">✕</button>
+                    <button class="q-remove" data-remove-idx="${idx}" title="移除">${MPUtils.icon('icon:x')}</button>
                 </div>`;
         }).join('');
 
@@ -381,7 +381,7 @@ Object.assign(MediaPlayerApp.prototype, {
         menu.className = 'mp-context-menu';
         menu.id = 'mp-context-menu';
         menu.innerHTML = `
-            <button data-menu-act="rename">✎ 重命名</button>
+            <button data-menu-act="rename">${MPUtils.icon('icon:pencil')} 重命名</button>
             <button data-menu-act="delete" class="danger">${MPUtils.icon('icon:trash-2')} 删除歌单</button>`;
         menu.style.left = `${Math.min(e.clientX, window.innerWidth - 150)}px`;
         menu.style.top = `${Math.min(e.clientY, window.innerHeight - 100)}px`;

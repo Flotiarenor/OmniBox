@@ -2,7 +2,7 @@
 // （emoji 字面量会让 check_plugins 的 emoji 门禁永远清不掉）。
 // 本插件的 5 个原生视图实际由 media-player 渲染，这份页面只在直接打开时才用到。
 const icon = (name) => (window.Icons && typeof window.Icons.html === 'function')
-  ? window.Icons.html('icon:' + name)
+  ? window.Icons.html(name)
   : '';
 
 class NeteaseApp {
@@ -72,7 +72,7 @@ class NeteaseApp {
     try {
       const login = await this.call('check_login');
       if (login.success) {
-        content.innerHTML = '<div class="empty-state">✅ 已登录网易云音乐</div>';
+        content.innerHTML = '<div class="empty-state">' + icon('icon:circle-check') + ' 已登录网易云音乐</div>';
         return;
       }
     } catch (e) {}
@@ -85,7 +85,7 @@ class NeteaseApp {
     if (!songs.length) { content.innerHTML = '<div class="empty-state">暂无歌曲</div>'; return; }
     content.innerHTML = songs.map((s, i) => `
       <div class="item" data-idx="${i}">
-        <span>${icon('music')}</span>
+        <span>${icon('icon:music')}</span>
         <div><div class="t">${this.esc(s.name)}</div><div class="s">${this.esc((s.artists || []).join(', '))}</div></div>
       </div>`).join('');
     content.querySelectorAll('.item').forEach(el => {
@@ -120,7 +120,7 @@ class NeteaseApp {
     if (!playlists.length) { content.innerHTML = '<div class="empty-state">暂无歌单</div>'; return; }
     content.innerHTML = playlists.map(p => `
       <div class="item">
-        <span>${icon('list-music')}</span>
+        <span>${icon('icon:list-music')}</span>
         <div><div class="t">${this.esc(p.name)}</div><div class="s">${p.track_count} 首</div></div>
       </div>`).join('');
   }

@@ -27,7 +27,7 @@ window.GroupMeshRemote = (function () {
    */
   function gmIcon(name) {
     if (window.Icons && typeof window.Icons.html === 'function') {
-      return window.Icons.html('icon:' + name);
+      return window.Icons.html(name);
     }
     return '';
   }
@@ -97,7 +97,7 @@ window.GroupMeshRemote = (function () {
           return '<div class="gm-remote-row' + (active ? ' gm-remote-item-active' : '') + '">' +
             '<button type="button" class="gm-remote-item" data-device="' + esc(peer.device_id) +
             '" data-share="' + esc(shareId) + '">' +
-            '<span>' + gmIcon('folder') + '</span><span>' + esc(shareId) + '</span></button>' + badge +
+            '<span>' + gmIcon('icon:folder') + '</span><span>' + esc(shareId) + '</span></button>' + badge +
             '<button type="button" class="btn btn-sm" data-materialize="' + esc(shareId) +
             '" data-device="' + esc(peer.device_id) + '" title="把目录结构缓存到本地，' +
             '之后读文件时按需取回">缓存</button>' +
@@ -177,7 +177,7 @@ window.GroupMeshRemote = (function () {
         : '<button type="button" class="btn btn-sm" data-download="' +
           esc(entry.name) + '">取回</button>';
       return '<tr>' +
-        '<td>' + gmIcon(entry.dir ? 'folder' : 'file-text') + ' ' + esc(entry.name) + '</td>' +
+        '<td>' + gmIcon(entry.dir ? 'icon:folder' : 'icon:file-text') + ' ' + esc(entry.name) + '</td>' +
         '<td>' + (entry.dir ? '目录' : formatSize(entry.size)) + '</td>' +
         '<td>' + action + '</td>' +
         '</tr>';
@@ -185,7 +185,7 @@ window.GroupMeshRemote = (function () {
 
     var up = '';
     if (state.current.path && state.current.path !== '.') {
-      up = '<button type="button" id="btn-remote-up" class="btn btn-sm">↑ 上级</button>';
+      up = '<button type="button" id="btn-remote-up" class="btn btn-sm">' + Icons.html('icon:arrow-up') + ' 上级</button>';
     }
     body.innerHTML = '<div class="gm-remote-tools">' +
       '<button type="button" id="btn-remote-upload" class="btn btn-sm btn-primary">上传文件到此处</button>' +

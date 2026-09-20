@@ -18,7 +18,7 @@ Object.assign(MediaPlayerApp.prototype, {
         const deepBtn = document.getElementById('btn-deep-scan');
         btn.disabled = true;
         if (deepBtn) deepBtn.disabled = true;
-        btn.textContent = this.currentView.startsWith('ncm-') ? '⏳ 刷新中…' : '⏳ 扫描中…';
+        btn.innerHTML = MPUtils.icon('icon:loader') + (this.currentView.startsWith('ncm-') ? ' 刷新中…' : ' 扫描中…');
         if (this.currentView.startsWith('ncm-')) {
             this._clearNeteaseCache();
             try {
@@ -250,7 +250,7 @@ Object.assign(MediaPlayerApp.prototype, {
                         if (seq !== this._loadSeq) return;
                         // 与「我的歌单」同一个坑：失败返回的空结果被按日缓存，当天就再也刷不出来
                         if (ncm && ncm.success === false) {
-                            this._renderEmpty('⚠️', '每日推荐加载失败',
+                            this._renderEmpty('icon:triangle-alert', '每日推荐加载失败',
                                 ncm.error || '请先在「登录」中完成网易云登录');
                             return;
                         }
@@ -291,7 +291,7 @@ Object.assign(MediaPlayerApp.prototype, {
                         const ncm = await Bridge.callPlugin('netease-music', 'get_liked_songs', 100);
                         if (seq !== this._loadSeq) return;
                         if (ncm && ncm.success === false) {
-                            this._renderEmpty('⚠️', '喜欢列表加载失败',
+                            this._renderEmpty('icon:triangle-alert', '喜欢列表加载失败',
                                 ncm.error || '请先在「登录」中完成网易云登录');
                             return;
                         }
@@ -329,7 +329,7 @@ Object.assign(MediaPlayerApp.prototype, {
                         const failed = settled.filter(v => v && v.success === false);
                         // 两个接口都失败才是失败：单边失败仍可能是「创建 0 个 + 收藏若干」
                         if (!results.length && failed.length) {
-                            this._renderEmpty('⚠️', '我的歌单加载失败',
+                            this._renderEmpty('icon:triangle-alert', '我的歌单加载失败',
                                 failed[0].error || '请先在「登录」中完成网易云登录');
                             return;
                         }
@@ -419,7 +419,7 @@ Object.assign(MediaPlayerApp.prototype, {
             }
         } catch (e) {
             console.error('加载视图失败:', e);
-            this._renderEmpty('⚠️', '加载失败', String(e && e.message || e));
+            this._renderEmpty('icon:triangle-alert', '加载失败', String(e && e.message || e));
         }
     },
 

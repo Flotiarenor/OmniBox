@@ -35,7 +35,7 @@
           <span class="mp-nav-ico"><svg class="obx-icon"><use href="#clapperboard"></use></svg></span><span>全部视频</span>
         </button>
         <button class="obx-nav-item mp-nav-item" data-view="favorites">
-          <span class="mp-nav-ico">❤️</span><span>我的喜欢</span>
+          <span class="mp-nav-ico"><svg class="obx-icon"><use href="#heart"></use></svg></span><span>我的喜欢</span>
         </button>
         <div id="mp-extensions"></div>
       </nav>
@@ -43,7 +43,7 @@
       <div class="mp-playlist-section">
         <div class="mp-section-label">
           <span>我的歌单</span>
-          <button id="btn-new-playlist" class="mp-ghost-btn" title="新建歌单">＋</button>
+          <button id="btn-new-playlist" class="mp-ghost-btn" title="新建歌单"><svg class="obx-icon"><use href="#plus"></use></svg></button>
         </div>
         <div id="mp-playlist-list" class="mp-playlist-list obx-scroll"></div>
       </div>
@@ -67,11 +67,11 @@
         <div class="search-field">
           <span class="search-field-icon"><svg class="obx-icon"><use href="#search"></use></svg></span>
           <input type="text" id="media-search" placeholder="搜索媒体、专辑、艺术家…" autocomplete="off">
-          <button id="btn-search-clear" class="search-field-clear hidden" title="清除">✕</button>
+          <button id="btn-search-clear" class="search-field-clear hidden" title="清除"><svg class="obx-icon"><use href="#x"></use></svg></button>
         </div>
           <button id="btn-scan" class="btn mp-tool-btn" title="增量扫描：只处理新增或变更的文件，秒级完成"><svg class="obx-icon"><use href="#refresh-cw"></use></svg> 扫描</button>
-          <button id="btn-deep-scan" class="btn mp-tool-btn" title="深度扫描：重新读取全部文件的标签与时长，耗时较长">⚡ 深度扫描</button>
-          <button id="btn-settings" class="btn mp-tool-btn">⚙ 设置</button>
+          <button id="btn-deep-scan" class="btn mp-tool-btn" title="深度扫描：重新读取全部文件的标签与时长，耗时较长"><svg class="obx-icon"><use href="#zap"></use></svg> 深度扫描</button>
+          <button id="btn-settings" class="btn mp-tool-btn"><svg class="obx-icon"><use href="#settings"></use></svg> 设置</button>
         </div>
       </div>
 
@@ -105,7 +105,7 @@
             <div class="mp-video-hint" id="mp-video-hint">
               <div class="mp-video-hint-title" id="mp-video-hint-title"></div>
             </div>
-            <button id="btn-stage-play" class="mp-stage-big-btn" title="播放/暂停">▶</button>
+            <button id="btn-stage-play" class="mp-stage-big-btn" title="播放/暂停"><svg class="obx-icon"><use href="#play"></use></svg></button>
           </div>
 
           <!-- ===== 底部播放栏（舞台内，全屏时叠加在视频上） ===== -->
@@ -118,16 +118,16 @@
                 <div class="mp-pb-title" id="player-title">未在播放</div>
                 <div class="mp-pb-artist" id="player-artist"></div>
               </div>
-              <button id="btn-toggle-fav" class="mp-icon-btn" title="喜欢">♡</button>
+              <button id="btn-toggle-fav" class="mp-icon-btn" title="喜欢"><svg class="obx-icon"><use href="#heart"></use></svg></button>
             </div>
 
             <div class="mp-pb-center">
               <div class="mp-controls">
                 <button id="btn-play-mode" class="mp-icon-btn" title="顺序播放"><svg class="obx-icon"><use href="#repeat"></use></svg></button>
-                <button id="btn-prev" class="mp-icon-btn" title="上一曲">⏮</button>
-                <button id="btn-play-pause" class="mp-play-btn" title="播放/暂停">▶</button>
-                <button id="btn-next" class="mp-icon-btn" title="下一曲">⏭</button>
-                <button id="btn-stop" class="mp-icon-btn" title="停止">⏹</button>
+                <button id="btn-prev" class="mp-icon-btn" title="上一曲"><svg class="obx-icon"><use href="#skip-back"></use></svg></button>
+                <button id="btn-play-pause" class="mp-play-btn" title="播放/暂停"><svg class="obx-icon"><use href="#play"></use></svg></button>
+                <button id="btn-next" class="mp-icon-btn" title="下一曲"><svg class="obx-icon"><use href="#skip-forward"></use></svg></button>
+                <button id="btn-stop" class="mp-icon-btn" title="停止"><svg class="obx-icon"><use href="#square"></use></svg></button>
               </div>
               <div class="mp-progress-row">
                 <span id="time-current" class="mp-time">00:00</span>
@@ -161,9 +161,9 @@
       <div class="mp-lyrics-aurora" id="lyrics-page-aurora"></div>
       <canvas id="lyrics-viz-canvas" class="mp-lyrics-viz"></canvas>
       <div class="mp-lyrics-toolbar">
-        <button class="mp-ghost-btn mp-ghost-light" id="btn-lyrics-back" title="返回">←</button>
+        <button class="mp-ghost-btn mp-ghost-light" id="btn-lyrics-back" title="返回"><svg class="obx-icon"><use href="#arrow-left"></use></svg></button>
         <span class="mp-lyrics-title" id="lyrics-page-title">未在播放</span>
-        <button class="mp-ghost-btn mp-ghost-light" id="btn-lyrics-settings" title="歌词设置">⚙</button>
+        <button class="mp-ghost-btn mp-ghost-light" id="btn-lyrics-settings" title="歌词设置"><svg class="obx-icon"><use href="#settings"></use></svg></button>
       </div>
       <div class="mp-lyrics-body">
         <div class="mp-lyrics-content" id="lyrics-page-content">
@@ -194,7 +194,7 @@
           <select id="eq-preset-select" class="mp-select"><option value="">内置预设</option></select>
           <button class="mp-ghost-btn" id="btn-eq-reset">重置</button>
           <button class="mp-ghost-btn mp-ghost-accent" id="btn-eq-save">保存</button>
-          <button class="mp-ghost-btn" id="btn-eq-close">✕</button>
+          <button class="mp-ghost-btn" id="btn-eq-close"><svg class="obx-icon"><use href="#x"></use></svg></button>
         </div>
       </div>
       <div class="mp-pop-body mp-eq-body obx-scroll">
@@ -207,7 +207,7 @@
       <div class="mp-modal-box">
         <div class="mp-modal-head">
           <h3 id="playlist-modal-title">新建歌单</h3>
-          <button class="mp-ghost-btn" id="btn-playlist-cancel">✕</button>
+          <button class="mp-ghost-btn" id="btn-playlist-cancel"><svg class="obx-icon"><use href="#x"></use></svg></button>
         </div>
         <div class="mp-modal-body obx-scroll">
           <input type="text" id="input-playlist-name" class="mp-input" placeholder="歌单名称" maxlength="40">
@@ -224,13 +224,13 @@
       <div class="mp-modal-box">
         <div class="mp-modal-head">
           <h3>加入歌单</h3>
-          <button class="mp-ghost-btn" id="btn-add-pl-close">✕</button>
+          <button class="mp-ghost-btn" id="btn-add-pl-close"><svg class="obx-icon"><use href="#x"></use></svg></button>
         </div>
         <div class="mp-modal-body obx-scroll">
           <div id="add-pl-list" class="mp-add-pl-list"></div>
         </div>
         <div class="mp-modal-foot">
-          <button class="btn" id="btn-add-pl-new">＋ 新建歌单</button>
+          <button class="btn" id="btn-add-pl-new"><svg class="obx-icon"><use href="#plus"></use></svg> 新建歌单</button>
           <button class="btn btn-primary hidden" id="btn-add-pl-confirm">加入</button>
         </div>
       </div>
@@ -241,7 +241,7 @@
       <div class="mp-modal-box mp-modal-sm">
         <div class="mp-modal-head">
           <h3>保存均衡器预设</h3>
-          <button class="mp-ghost-btn" id="btn-eq-name-cancel">✕</button>
+          <button class="mp-ghost-btn" id="btn-eq-name-cancel"><svg class="obx-icon"><use href="#x"></use></svg></button>
         </div>
         <div class="mp-modal-body obx-scroll">
           <input type="text" id="input-eq-name" class="mp-input" placeholder="预设名称" maxlength="40">

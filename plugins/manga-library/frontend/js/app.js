@@ -179,14 +179,14 @@ class MangaLibraryApp {
             }
         } catch (e) {
             console.error('加载视图失败:', e);
-            content.innerHTML = this._emptyHtml('⚠️', '加载失败', String(e && e.message || e));
+            content.innerHTML = this._emptyHtml('icon:triangle-alert', '加载失败', String(e && e.message || e));
         }
     }
 
     _emptyHtml(icon, text, hint) {
         // 结构走壳的 .empty-state（base.css），插件不再自带一套 .ml-empty 样式
         return `<div class="empty-state">
-            <div class="empty-state-icon">${icon}</div>
+            <div class="empty-state-icon">${Icons.html(icon)}</div>
             <div class="empty-state-text">${MangaUtils.escapeHtml(text)}</div>
             ${hint ? `<div class="empty-state-hint">${MangaUtils.escapeHtml(hint)}</div>` : ''}
         </div>`;
@@ -206,7 +206,7 @@ class MangaLibraryApp {
                 : `<div class="ml-cover-fallback">${Icons.html('icon:library')}</div>`;
             return `
             <div class="ml-card" data-folder="${MangaUtils.escapeHtml(manga.folder_name)}" style="--obx-i:${Math.min(i, 32)}">
-                <button class="ml-fav-star ${manga.is_fav ? 'active' : ''}" data-folder="${MangaUtils.escapeHtml(manga.folder_name)}" title="收藏">${manga.is_fav ? '★' : '☆'}</button>
+                <button class="ml-fav-star ${manga.is_fav ? 'active' : ''}" data-folder="${MangaUtils.escapeHtml(manga.folder_name)}" title="收藏">${Icons.html('icon:star')}</button>
                 <div class="ml-cover">${cover}<span class="ml-badge">${manga.page_count}页</span></div>
                 <div class="ml-info">
                     <div class="ml-card-title">${MangaUtils.escapeHtml(manga.title)}</div>
@@ -246,7 +246,7 @@ class MangaLibraryApp {
             document.querySelectorAll('.ml-fav-star').forEach(el => {
                 if (el.dataset.folder === folderName) {
                     el.classList.toggle('active', isFav);
-                    el.textContent = isFav ? '★' : '☆';
+                    el.innerHTML = Icons.html('icon:star');
                     Motion.retrigger(el, 'obx-anim-heart');
                 }
             });
@@ -282,7 +282,7 @@ class MangaLibraryApp {
         const infoHtml = this._detailInfoHtml(detail.info);
         content.innerHTML = `
             <div class="ml-detail-hero" style="--ml-hero-bg:${detail.chapters[0] && detail.chapters[0].cover_url ? `url("${Bridge.originalUrl(detail.chapters[0].cover_url)}")` : 'none'}">
-                <button class="btn ml-hero-back" id="ml-detail-back">← 返回</button>
+                <button class="btn ml-hero-back" id="ml-detail-back">${Icons.html('icon:arrow-left')} 返回</button>
                 <div class="ml-detail-cover">${detail.chapters[0] && detail.chapters[0].cover_url ? MangaUtils.coverImg(Bridge.originalUrl(detail.chapters[0].cover_url)) : Icons.html('icon:library')}</div>
                 <div class="ml-detail-info">
                     <div class="ml-detail-label">漫画详情</div>
@@ -290,7 +290,7 @@ class MangaLibraryApp {
                     <div class="ml-detail-author">${MangaUtils.escapeHtml(detail.author)}</div>
                 </div>
                 <div class="ml-detail-actions">
-                    <button class="btn ${detail.is_fav ? 'btn-primary' : ''}" id="ml-detail-fav">${detail.is_fav ? '★ 已收藏' : '☆ 收藏'}</button>
+                    <button class="btn ${detail.is_fav ? 'btn-primary' : ''}" id="ml-detail-fav">${Icons.html('icon:star')} ${detail.is_fav ? '已收藏' : '收藏'}</button>
                 </div>
             </div>
             ${infoHtml}
@@ -304,7 +304,7 @@ class MangaLibraryApp {
             const btn = e.target;
             const isFav = await Bridge.call('manga_toggle_favorite', this.currentFolderName);
             btn.classList.toggle('btn-primary', isFav);
-            btn.textContent = isFav ? '★ 已收藏' : '☆ 收藏';
+            btn.innerHTML = Icons.html('icon:star') + (isFav ? ' 已收藏' : ' 收藏');
         });
 
         const grid = document.getElementById('ml-chapters');
@@ -326,7 +326,7 @@ class MangaLibraryApp {
         const detail = this.currentDetail;
         content.innerHTML = `
             <div class="ml-detail-hero">
-                <button class="btn ml-hero-back" id="ml-detail-back">← 返回</button>
+                <button class="btn ml-hero-back" id="ml-detail-back">${Icons.html('icon:arrow-left')} 返回</button>
                 <div class="ml-detail-info">
                     <div class="ml-detail-label">阅读</div>
                     <div class="ml-detail-title">${MangaUtils.escapeHtml(detail.title)}</div>
@@ -364,7 +364,7 @@ class MangaLibraryApp {
                 card.addEventListener('click', () => this.reader.open(pages, parseInt(card.dataset.page, 10)));
             });
         } catch (e) {
-            grid.innerHTML = this._emptyHtml('⚠️', '加载失败');
+            grid.innerHTML = this._emptyHtml('icon:triangle-alert', '加载失败');
         }
     }
 
@@ -425,7 +425,7 @@ class MangaLibraryApp {
             : this.tasks.filter(t => t.status === this.downloadFilter);
 
         if (!filtered.length) {
-            content.innerHTML = this._emptyHtml('⬇️', '暂无下载任务', '点击右上角「添加任务」开始下载漫画');
+            content.innerHTML = this._emptyHtml('icon:download', '暂无下载任务', '点击右上角「添加任务」开始下载漫画');
             return;
         }
 
@@ -449,9 +449,9 @@ class MangaLibraryApp {
                     <div class="ml-task-percent">${percent}%</div>
                 </div>
                 <div class="ml-task-actions">
-                    ${task.status === 'downloading' || task.status === 'queued' ? `<button data-act="pause" title="暂停">⏸</button>` : ''}
-                    ${task.status === 'paused' ? `<button data-act="resume" title="继续">▶</button>` : ''}
-                    ${task.status === 'failed' ? `<button data-act="retry" title="重试">↻</button>` : ''}
+                    ${task.status === 'downloading' || task.status === 'queued' ? `<button data-act="pause" title="暂停">${Icons.html('icon:pause')}</button>` : ''}
+                    ${task.status === 'paused' ? `<button data-act="resume" title="继续">${Icons.html('icon:play')}</button>` : ''}
+                    ${task.status === 'failed' ? `<button data-act="retry" title="重试">${Icons.html('icon:rotate-cw')}</button>` : ''}
                     <button data-act="detail" title="详情">ℹ</button>
                     <button data-act="delete" class="danger" title="删除"><svg class="obx-icon"><use href="#trash-2"></use></svg></button>
                 </div>

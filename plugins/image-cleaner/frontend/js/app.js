@@ -89,7 +89,7 @@ class ImageCleaner {
     } catch (e) {
       console.error(e);
       box.innerHTML = '<div class="empty-state empty-state--error">'
-        + '<div class="empty-state-icon">⚠️</div>'
+        + '<div class="empty-state-icon"><svg class="obx-icon"><use href="#triangle-alert"></use></svg></div>'
         + '<div class="empty-state-text">扫描失败</div>'
         + '<div class="empty-state-hint">请确认「图片相册」已加载、相册目录可访问，然后点「重新扫描」</div>'
         + '</div>';
@@ -101,10 +101,10 @@ class ImageCleaner {
     const visibleGroups = this.groups.slice(0, this.visibleCount);
     if (!visibleGroups.length) {
       box.innerHTML = '<div class="empty-state">'
-        + '<div class="empty-state-icon">✨</div>'
+        + '<div class="empty-state-icon"><svg class="obx-icon"><use href="#sparkles"></use></svg></div>'
         + '<div class="empty-state-text">未发现' + (this.mode === 'dupe' ? '完全重复' : '相似') + '图片</div>'
         + '<div class="empty-state-hint">可切到「' + (this.mode === 'dupe' ? '相似图片' : '完全重复')
-        + '」标签，或在「⚙ 设置」里调整相似判定阈值</div>'
+        + '」标签，或在「<svg class="obx-icon"><use href="#settings"></use></svg> 设置」里调整相似判定阈值</div>'
         + '</div>';
       return;
     }

@@ -9,6 +9,12 @@
 // 因此这里改的就是插件设置面板里那几项，不存在两份配置。
 // ============================================================
 
+// 图标值（`icon:名字`）→ 标记。sprite 与 Icons.html 由壳注入的 /shell/icons.generated.js 提供；
+// 缺失时（本页脱离壳单独打开）返回空串，不写 emoji 兜底。
+const nrVoiceIcon = (name) => (window.Icons && typeof window.Icons.html === 'function')
+    ? window.Icons.html(name)
+    : '';
+
 // edge 端点上可见的中文音色（2026-09 实测；音色池由微软维护，会变）。
 // 写成静态表是为了不依赖网络：列表本身不该因为断网就空掉。
 const TTS_VOICE_SUGGESTIONS = [
@@ -250,9 +256,15 @@ class ReaderVoicePage {
             dom.status.textContent = '引擎状态不可用（后端 tts_status 调用失败）';
             return;
         }
-        dom.status.textContent = status.engines
-            .map((item) => `${item.available ? '✅' : '⛔'} ${item.label}`)
-            .join('　');
+        // 图标用 innerHTML 写（标记是仓库常量），引擎名一律走文本节点：
+        // 原来整段走 textContent，改成 innerHTML 时名称必须继续按纯文本插入。
+        dom.status.textContent = '';
+        status.engines.forEach((item, index) => {
+            if (index) dom.status.appendChild(document.createTextNode('　'));
+            const icon = document.createElement('span');
+            icon.innerHTML = nrVoiceIcon(item.available ? 'icon:circle-check' : 'icon:ban');
+            dom.status.append(icon, document.createTextNode(' ' + item.label));
+        });
     }
 
     _renderVoices(items = null, source = '') {
@@ -260,7 +272,7 @@ class ReaderVoicePage {
         if (!dom.list) return;
         const list = items || TTS_VOICE_SUGGESTIONS.map(([name, note]) => ({ name, note }));
         const hint = source === 'fallback'
-            ? '<div class="nr-voice-hint">⚠️ 读不到 edge 端点，下面是内置的常用音色（非完整列表）</div>'
+            ? `<div class="nr-voice-hint">${nrVoiceIcon('icon:triangle-alert')} 读不到 edge 端点，下面是内置的常用音色（非完整列表）</div>`
             : '';
         dom.list.innerHTML = hint + list.map((item) => `
             <button type="button" class="nr-voice-item" data-voice="${item.name}">

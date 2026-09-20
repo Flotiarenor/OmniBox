@@ -37,8 +37,11 @@ Object.assign(ImageViewer.prototype, {
 
     _emptyHtml(icon, text, hint) {
         // 结构走壳的 .empty-state（base.css），插件不再自带一套 .iv-empty 样式。
-        // 图标名 → 标记交给壳的 Icons（见 icons.generated.js）
-        const iconHtml = window.Icons ? window.Icons.html(icon, 'empty-state-icon') : icon;
+        // 图标名 → 标记交给壳的 Icons（见 icons.generated.js）；Icons 缺失时（本页脱离壳
+        // 单独打开）返回空串，不写字形兜底 —— 兜底会把待迁移的 emoji 字面量留在源码里。
+        // 影响范围：本插件 4 个空态调用点（app-albums.js:93、app-grid.js:50/62/200），
+        // 均已传 `icon:名字` 形式。
+        const iconHtml = window.Icons ? window.Icons.html(icon, 'empty-state-icon') : '';
         return `<div class="empty-state">
             <div class="empty-state-icon">${iconHtml}</div>
             <div class="empty-state-text">${this._escapeHtml(text)}</div>

@@ -21,16 +21,16 @@
       <nav class="ml-nav obx-scroll">
         <div class="ml-nav-label">漫画库</div>
         <button class="obx-nav-item ml-nav-item active" data-view="all"><svg class="obx-icon"><use href="#library"></use></svg>全部漫画</button>
-        <button class="obx-nav-item ml-nav-item" data-view="favorites"><span>⭐</span>我的收藏</button>
+        <button class="obx-nav-item ml-nav-item" data-view="favorites"><span><svg class="obx-icon"><use href="#star"></use></svg></span>我的收藏</button>
         <button class="obx-nav-item ml-nav-item" data-view="recent"><svg class="obx-icon"><use href="#history"></use></svg>最近阅读</button>
 
         <div class="ml-nav-label">下载中心</div>
-        <button class="obx-nav-item ml-nav-item" data-view="downloads" data-dl-filter="all"><span>⬇️</span>全部任务</button>
-        <button class="obx-nav-item ml-nav-item" data-view="downloads" data-dl-filter="downloading"><span>▶</span>下载中</button>
+        <button class="obx-nav-item ml-nav-item" data-view="downloads" data-dl-filter="all"><span><svg class="obx-icon"><use href="#download"></use></svg></span>全部任务</button>
+        <button class="obx-nav-item ml-nav-item" data-view="downloads" data-dl-filter="downloading"><span><svg class="obx-icon"><use href="#loader"></use></svg></span>下载中</button>
         <button class="obx-nav-item ml-nav-item" data-view="downloads" data-dl-filter="queued"><svg class="obx-icon"><use href="#clock"></use></svg>排队中</button>
-        <button class="obx-nav-item ml-nav-item" data-view="downloads" data-dl-filter="paused"><span>⏸</span>已暂停</button>
-        <button class="obx-nav-item ml-nav-item" data-view="downloads" data-dl-filter="completed"><span>✅</span>已完成</button>
-        <button class="obx-nav-item ml-nav-item" data-view="downloads" data-dl-filter="failed"><span>⚠️</span>失败</button>
+        <button class="obx-nav-item ml-nav-item" data-view="downloads" data-dl-filter="paused"><span><svg class="obx-icon"><use href="#pause"></use></svg></span>已暂停</button>
+        <button class="obx-nav-item ml-nav-item" data-view="downloads" data-dl-filter="completed"><span><svg class="obx-icon"><use href="#circle-check"></use></svg></span>已完成</button>
+        <button class="obx-nav-item ml-nav-item" data-view="downloads" data-dl-filter="failed"><span><svg class="obx-icon"><use href="#triangle-alert"></use></svg></span>失败</button>
       </nav>
 
       <div class="ml-sidebar-footer" id="ml-stats">正在读取…</div>
@@ -47,13 +47,13 @@
           <div class="search-field" id="ml-search-wrap">
             <span class="search-field-icon"><svg class="obx-icon"><use href="#search"></use></svg></span>
             <input type="text" id="manga-search" placeholder="搜索漫画、作者…" autocomplete="off">
-            <button id="ml-search-clear" class="search-field-clear hidden" title="清除">✕</button>
+            <button id="ml-search-clear" class="search-field-clear hidden" title="清除"><svg class="obx-icon"><use href="#x"></use></svg></button>
           </div>
-          <button id="ml-add-task" class="btn btn-primary hidden">＋ 添加任务</button>
-          <button id="ml-start-all" class="btn hidden">▶ 全部开始</button>
-          <button id="ml-pause-all" class="btn hidden">⏸ 全部暂停</button>
+          <button id="ml-add-task" class="btn btn-primary hidden"><svg class="obx-icon"><use href="#plus"></use></svg> 添加任务</button>
+          <button id="ml-start-all" class="btn hidden"><svg class="obx-icon"><use href="#play"></use></svg> 全部开始</button>
+          <button id="ml-pause-all" class="btn hidden"><svg class="obx-icon"><use href="#pause"></use></svg> 全部暂停</button>
           <button id="ml-clear-completed" class="btn hidden"><svg class="obx-icon"><use href="#trash-2"></use></svg> 清除已完成</button>
-          <button id="btn-settings" class="btn">⚙ 设置</button>
+          <button id="btn-settings" class="btn"><svg class="obx-icon"><use href="#settings"></use></svg> 设置</button>
         </div>
       </div>
 
@@ -63,7 +63,7 @@
     <!-- ===== 沉浸式阅读器 ===== -->
     <div class="manga-reader no-select" id="manga-reader-container">
       <div class="reader-toolbar">
-        <button class="reader-close btn-icon">✕</button>
+        <button class="reader-close btn-icon"><svg class="obx-icon"><use href="#x"></use></svg></button>
         <span class="reader-info">1 / 1</span>
       </div>
       <button class="reader-arrow reader-prev">‹</button>

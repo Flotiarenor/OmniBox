@@ -103,8 +103,8 @@
 
       <!-- 操作按钮 -->
       <div class="psync-btns">
-        <button id="btn-following" class="btn" title="一步完成：先自动刷新关注清单（增量），再下载新作">⬇️ 同步画师</button>
-        <button id="btn-bookmarks" class="btn" title="一步完成：先自动刷新收藏清单（增量），再下载新作">❤️ 同步喜欢</button>
+        <button id="btn-following" class="btn" title="一步完成：先自动刷新关注清单（增量），再下载新作"><svg class="obx-icon"><use href="#download"></use></svg> 同步画师</button>
+        <button id="btn-bookmarks" class="btn" title="一步完成：先自动刷新收藏清单（增量），再下载新作"><svg class="obx-icon"><use href="#heart"></use></svg> 同步喜欢</button>
       </div>
       <div class="psync-btns" style="padding-top:0;">
         <button id="btn-refresh-following" class="btn btn-sm" title="仅更新关注清单、不下载；同步画师已内置自动刷新（首次大批量铺底或想先看清单统计时用）"><svg class="obx-icon"><use href="#refresh-cw"></use></svg> 刷新关注名单</button>
@@ -159,7 +159,7 @@
     <div class="modal-box psync-oauth-box">
       <h3><svg class="obx-icon"><use href="#key-round"></use></svg> 获取 Pixiv Token</h3>
       <div class="modal-body">
-        <p class="psync-note psync-danger">⚠️ 下面步骤中<b>不要重新点</b>「获取 Token」按钮，否则验证码会失效，需重来。</p>
+        <p class="psync-note psync-danger"><svg class="obx-icon"><use href="#triangle-alert"></use></svg> 下面步骤中<b>不要重新点</b>「获取 Token」按钮，否则验证码会失效，需重来。</p>
         <ol class="psync-oauth-steps">
           <li>浏览器会自动打开 Pixiv 登录页；若没打开或跳转异常，在<b>已登录</b>的浏览器新标签页粘贴下面地址回车</li>
         </ol>
@@ -195,7 +195,10 @@
           const mm = String(Math.floor(total / 60)).padStart(2, '0');
           const ss = String(total % 60).padStart(2, '0');
           el.style.display = 'block';
-          el.textContent = '⏳ Pixiv 限流冷却参考：' + mm + ':' + ss + '（建议等冷却结束再刷新）';
+          // 冷却文案前置图标：Icons.html 返回 <svg> 标记，因此本行由 textContent 改为
+          // innerHTML 写入；mm / ss 由上方 padStart 生成为两位数字，无外部输入插值。
+          // 本文件共两处 innerHTML 写入，另一处是 renderTask 的 p-meta。
+          el.innerHTML = Icons.html('icon:loader') + ' Pixiv 限流冷却参考：' + mm + ':' + ss + '（建议等冷却结束再刷新）';
         } else {
           el.style.display = 'none';
           el.textContent = '';
@@ -240,16 +243,22 @@
           $('st-last').textContent = '';
           return;
         }
+        // 完成/失败/取消/暂停四种终态改用壳图标集标记（Icons.html 返回 <svg>），因此下面
+        // p-meta 由 textContent 改为 innerHTML 写入；表外的 state 先经 Utils.escapeHtml
+        // 转义，其余插值来自后端 status() 的计数。本文件只有这一处写 p-meta。
         const states = {
-          queued: '排队中', running: '同步中', done: '✅ 完成',
-          failed: '❌ 失败', cancelled: '⏹ 已取消', paused: '⏸ 已暂停(可重新同步续跑)'
+          queued: '排队中', running: '同步中',
+          done: Icons.html('icon:circle-check') + ' 完成',
+          failed: Icons.html('icon:circle-x') + ' 失败',
+          cancelled: Icons.html('icon:square') + ' 已取消',
+          paused: Icons.html('icon:pause') + ' 已暂停(可重新同步续跑)'
         };
-        const label = states[task.state] || task.state;
+        const label = states[task.state] || Utils.escapeHtml(task.state);
         const done = task.done || 0, total = task.total || 0;
         const pct = total > 0 ? Math.min(100, Math.round(done / total * 100)) : 0;
         $('bar').style.width = pct + '%';
         $('p-pct').textContent = pct + '%';
-        $('p-meta').textContent = `${label} — 作品 ${done}/${total}，下载 ${task.downloaded}，跳过 ${task.skipped}，失败 ${task.failed}`;
+        $('p-meta').innerHTML = `${label} — 作品 ${done}/${total}，下载 ${task.downloaded}，跳过 ${task.skipped}，失败 ${task.failed}`;
         $('p-current').textContent = task.current ? '正在处理: ' + task.current : '';
         box.style.display = 'block';
 

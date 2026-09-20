@@ -156,6 +156,7 @@
 }
 .ml-fav-star:hover { transform: scale(1.25); }
 .ml-fav-star.active { color: #ffd166; }
+.ml-fav-star.active .obx-icon { fill: currentColor; }
 
 /* ===== 详情 ===== */
 .ml-detail-hero {

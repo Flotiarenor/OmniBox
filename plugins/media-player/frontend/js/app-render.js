@@ -31,7 +31,7 @@ Object.assign(MediaPlayerApp.prototype, {
         const content = document.getElementById('media-content');
         content.innerHTML = `
             <div class="empty-state">
-                <div class="empty-state-icon">${icon}</div>
+                <div class="empty-state-icon">${MPUtils.icon(icon)}</div>
                 <div class="empty-state-text">${MPUtils.escapeHtml(text)}</div>
                 ${hint ? `<div class="empty-state-hint">${MPUtils.escapeHtml(hint)}</div>` : ''}
             </div>`;
@@ -66,7 +66,7 @@ Object.assign(MediaPlayerApp.prototype, {
                 <div class="mp-card-cover">
                     ${cover}
                     <span class="mp-card-badge">${album.count} 项</span>
-                    <button class="mp-card-play" data-key="${MPUtils.escapeHtml(album.key)}" data-kind="${album.kind}" title="播放全部">▶</button>
+                    <button class="mp-card-play" data-key="${MPUtils.escapeHtml(album.key)}" data-kind="${album.kind}" title="播放全部">${MPUtils.icon('icon:play')}</button>
                 </div>
                 <div class="mp-card-body">
                     <div class="mp-card-title">${MPUtils.escapeHtml(album.name)}</div>
@@ -102,7 +102,7 @@ Object.assign(MediaPlayerApp.prototype, {
         const div = document.createElement('div');
         div.className = 'empty-state';
         div.innerHTML = `
-            <div class="empty-state-icon">${icon}</div>
+            <div class="empty-state-icon">${MPUtils.icon(icon)}</div>
             <div class="empty-state-text">${MPUtils.escapeHtml(text)}</div>
             ${hint ? `<div class="empty-state-hint">${MPUtils.escapeHtml(hint)}</div>` : ''}`;
         return div;
@@ -125,10 +125,10 @@ Object.assign(MediaPlayerApp.prototype, {
 
         const actions = [];
         if (opts.playlistId) {
-            actions.push(`<button class="mp-row-action danger" data-mp-action="remove" data-idx="${index}" title="移出歌单">✕</button>`);
+            actions.push(`<button class="mp-row-action danger" data-mp-action="remove" data-idx="${index}" title="移出歌单">${MPUtils.icon('icon:x')}</button>`);
         } else {
-            actions.push(`<button class="mp-row-action ${isFav ? 'fav-active' : ''}" data-mp-action="fav" data-idx="${index}" title="${isFav ? '取消喜欢' : '喜欢'}">${isFav ? '❤️' : '♡'}</button>`);
-            actions.push(`<button class="mp-row-action" data-mp-action="queue" data-idx="${index}" title="添加到队列">＋</button>`);
+            actions.push(`<button class="mp-row-action ${isFav ? 'fav-active' : ''}" data-mp-action="fav" data-idx="${index}" title="${isFav ? '取消喜欢' : '喜欢'}">${MPUtils.icon('icon:heart')}</button>`);
+            actions.push(`<button class="mp-row-action" data-mp-action="queue" data-idx="${index}" title="添加到队列">${MPUtils.icon('icon:plus')}</button>`);
             actions.push(`<button class="mp-row-action" data-mp-action="playlist" data-idx="${index}" title="加入歌单">${MPUtils.icon('icon:list-music')}</button>`);
         }
 
@@ -171,7 +171,7 @@ Object.assign(MediaPlayerApp.prototype, {
         const error = status.error || '';
         content.innerHTML = `
             <div class="empty-state">
-                <div class="empty-state-icon">⚠️</div>
+                <div class="empty-state-icon">${MPUtils.icon('icon:triangle-alert')}</div>
                 <div class="empty-state-text">未检测到 ncm-cli</div>
                 <div class="empty-state-hint">网易云音乐插件需要 ncm-cli 才能登录和播放。</div>
                 <div style="margin-top:14px;text-align:left;max-width:520px;margin-left:auto;margin-right:auto;line-height:1.9;font-size:13px;">
@@ -195,12 +195,12 @@ Object.assign(MediaPlayerApp.prototype, {
                 // 同步能力只在登录完成后提供：未登录时这些接口必然失败
                 content.innerHTML = `
             <div class="empty-state">
-                <div class="empty-state-icon">✅</div>
+                <div class="empty-state-icon">${MPUtils.icon('icon:circle-check')}</div>
                 <div class="empty-state-text">已登录网易云音乐</div>
                 <div class="empty-state-hint">本地歌单是在线歌单的镜像：只收录本地媒体库里已有的曲目（按歌名 + 歌手匹配），可反复同步。</div>
                 <div style="margin-top:14px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
                     <button class="btn btn-primary" id="ncm-sync-all-btn">${MPUtils.icon('icon:refresh-cw')} 全量同步所有歌单</button>
-                    <button class="btn" id="ncm-import-liked-btn">❤ 导入「喜欢」到我的喜欢</button>
+                    <button class="btn" id="ncm-import-liked-btn">${MPUtils.icon('icon:heart')} 导入「喜欢」到我的喜欢</button>
                 </div>
                 <label class="empty-state-hint" style="display:inline-flex;align-items:center;gap:6px;margin-top:14px;cursor:pointer;">
                     <input type="checkbox" id="ncm-sync-collected"${this._syncCollectedEnabled() ? ' checked' : ''}>
@@ -249,10 +249,10 @@ Object.assign(MediaPlayerApp.prototype, {
 
     async _importNeteaseLiked() {
         const btn = document.getElementById('ncm-import-liked-btn');
-        const label = '⬇ 导入「喜欢」到我的喜欢';
+        const label = MPUtils.icon('icon:download') + ' 导入「喜欢」到我的喜欢';
         if (btn) {
             btn.disabled = true;
-            btn.textContent = '⏳ 正在匹配本地媒体库…';
+            btn.innerHTML = MPUtils.icon('icon:loader') + ' 正在匹配本地媒体库…';
         }
         try {
             const liked = await Bridge.callPlugin('netease-music', 'get_liked_songs', 500);
@@ -279,7 +279,7 @@ Object.assign(MediaPlayerApp.prototype, {
         } finally {
             if (btn) {
                 btn.disabled = false;
-                btn.textContent = label;
+                btn.innerHTML = label;
             }
         }
     },
@@ -306,7 +306,7 @@ Object.assign(MediaPlayerApp.prototype, {
         const btn = document.querySelector('[data-hero-action="rebuild-local"]');
         if (btn) {
             btn.disabled = true;
-            btn.textContent = '⏳ 正在匹配本地媒体库…';
+            btn.innerHTML = MPUtils.icon('icon:loader') + ' 正在匹配本地媒体库…';
         }
         try {
             const songs = await this._fetchNeteasePlaylistSongs(playlist.id);
@@ -335,7 +335,7 @@ Object.assign(MediaPlayerApp.prototype, {
         } finally {
             if (btn) {
                 btn.disabled = false;
-                btn.textContent = '⬇ 重建为本地歌单';
+                btn.innerHTML = MPUtils.icon('icon:download') + ' 重建为本地歌单';
             }
         }
     },
@@ -348,7 +348,7 @@ Object.assign(MediaPlayerApp.prototype, {
         // 默认只同步自己创建的歌单：收藏的歌单（别人的）动辄几千首，全量镜像又慢又没用
         const includeCollected = this._syncCollectedEnabled();
         if (btn) btn.disabled = true;
-        const step = (text) => { if (btn) btn.textContent = text; };
+        const step = (text) => { if (btn) btn.innerHTML = text; };
         try {
             const sources = await Promise.all([
                 Bridge.callPlugin('netease-music', 'get_created_playlists', 200),
@@ -380,7 +380,7 @@ Object.assign(MediaPlayerApp.prototype, {
             let capped = 0;
             for (let i = 0; i < playlists.length; i++) {
                 const playlist = playlists[i];
-                step(`⏳ ${i + 1}/${playlists.length}：${playlist.name || ''}`);
+                step(MPUtils.icon('icon:loader') + ` ${i + 1}/${playlists.length}：${MPUtils.escapeHtml(playlist.name || '')}`);
                 const songs = await this._fetchNeteasePlaylistSongs(playlist.id);
                 if (songs.length >= NCM_PLAYLIST_SONG_CAP) capped += 1;
                 const result = MPUtils.matchNeteaseToLocal(songs, local);
@@ -525,9 +525,9 @@ Object.assign(MediaPlayerApp.prototype, {
             });
         } catch (e) {
             content.innerHTML = '<div class="empty-state empty-state--error">'
-                + '<div class="empty-state-icon">⚠️</div>'
+                + '<div class="empty-state-icon">' + MPUtils.icon('icon:triangle-alert') + '</div>'
                 + '<div class="empty-state-text">歌单加载失败</div>'
-                + '<div class="empty-state-hint">检查网络 / 代理设置，或到「⚙ 设置」重新登录后再试</div>'
+                + '<div class="empty-state-hint">检查网络 / 代理设置，或到「' + MPUtils.icon('icon:settings') + ' 设置」重新登录后再试</div>'
                 + '</div>';
         }
     },
@@ -674,7 +674,7 @@ Object.assign(MediaPlayerApp.prototype, {
             if (favBtn) {
                 const fav = this.favIds.has(item.id);
                 favBtn.classList.toggle('fav-active', fav);
-                favBtn.textContent = fav ? '❤️' : '♡';
+                favBtn.innerHTML = MPUtils.icon('icon:heart');
                 favBtn.title = fav ? '取消喜欢' : '喜欢';
             }
         });
@@ -691,7 +691,7 @@ Object.assign(MediaPlayerApp.prototype, {
 
         content.innerHTML = `
             <div class="mp-detail-hero" style="--hero-bg:${MPUtils.heroBg(coverSrc)}">
-                <button class="mp-ghost-btn mp-hero-back" data-hero-action="back" title="返回">← 返回</button>
+                <button class="mp-ghost-btn mp-hero-back" data-hero-action="back" title="返回">${MPUtils.icon('icon:arrow-left')} 返回</button>
                 <div class="mp-detail-cover">${coverSrc ? MPUtils.coverImg(coverSrc, header.kind === 'video' ? 'icon:clapperboard' : 'icon:disc',
                     (header.kind === 'video' && header.cover && header.cover.id) ? `data-mp-thumb-id="${header.cover.id}"` : '',
                     (header.kind === 'video' && header.cover && header.cover.id) ? header.cover.id : '') : (header.kind === 'video' ? MPUtils.icon('icon:clapperboard') : MPUtils.icon('icon:disc'))}</div>
@@ -702,13 +702,13 @@ Object.assign(MediaPlayerApp.prototype, {
                     <div class="mp-detail-meta">${items.length} 个媒体 · ${MPUtils.fmtDuration(totalDuration)}</div>
                 </div>
                 <div class="mp-detail-actions">
-                    <button class="btn btn-primary" data-hero-action="play-all">▶ 播放全部</button>
+                    <button class="btn btn-primary" data-hero-action="play-all">${MPUtils.icon('icon:play')} 播放全部</button>
                     ${header.kind === 'ncm-playlist' ? `
                         <button class="btn" data-hero-action="rebuild-local"
-                                title="按歌名与歌手匹配本地媒体库，生成/覆盖同名镜像歌单">⬇ 重建为本地歌单</button>
+                                title="按歌名与歌手匹配本地媒体库，生成/覆盖同名镜像歌单">${MPUtils.icon('icon:download')} 重建为本地歌单</button>
                     ` : ''}
                     ${header.playlistId ? `
-                        <button class="btn" data-hero-action="rename-pl">✎ 重命名</button>
+                        <button class="btn" data-hero-action="rename-pl">${MPUtils.icon('icon:pencil')} 重命名</button>
                         <button class="btn btn-danger" data-hero-action="delete-pl">${MPUtils.icon('icon:trash-2')} 删除</button>
                     ` : ''}
                 </div>

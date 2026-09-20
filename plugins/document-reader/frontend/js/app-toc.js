@@ -4,6 +4,12 @@
 // `DocumentReader.prototype` 的分片：加载顺序是硬约束（必须排在 app.js 之后、
 // 实例化之前），见 index.html。
 // ============================================================
+// 图标值（`icon:名字`）→ 标记。sprite 与 Icons.html 由壳注入的 /shell/icons.generated.js 提供；
+// 缺失时（本页脱离壳单独打开）返回空串，不写 emoji 兜底。
+const nrTocIcon = (name) => (window.Icons && typeof window.Icons.html === 'function')
+    ? window.Icons.html(name)
+    : '';
+
 Object.assign(DocumentReader.prototype, {
     openToc() {
         if (!this._isReaderMode) return;
@@ -51,7 +57,7 @@ Object.assign(DocumentReader.prototype, {
                             ${read ? 'is-read' : ''}" data-index="${index}">
                     <span class="nr-toc-title">${Utils.escapeHtml(chapter.title || `第${index + 1}章`)}</span>
                     <span class="nr-toc-meta">
-                        ${marks.length ? `<span class="nr-toc-mark" title="${Utils.escapeHtml(marks[0].snippet || '')}">⭐</span>` : ''}
+                        ${marks.length ? `<span class="nr-toc-mark" title="${Utils.escapeHtml(marks[0].snippet || '')}">${nrTocIcon('icon:star')}</span>` : ''}
                         ${chapter.word_count ? `<span class="chapter-words">${chapter.word_count}字</span>` : ''}
                     </span>
                 </div>`;

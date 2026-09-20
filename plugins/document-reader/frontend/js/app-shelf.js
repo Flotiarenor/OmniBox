@@ -4,6 +4,12 @@
 // `DocumentReader.prototype` 的分片：加载顺序是硬约束（必须排在 app.js 之后、
 // 实例化之前），见 index.html。
 // ============================================================
+// 图标值（`icon:名字`）→ 标记。sprite 与 Icons.html 由壳注入的 /shell/icons.generated.js 提供；
+// 缺失时（本页脱离壳单独打开）返回空串，不写 emoji 兜底。
+const nrShelfIcon = (name) => (window.Icons && typeof window.Icons.html === 'function')
+    ? window.Icons.html(name)
+    : '';
+
 Object.assign(DocumentReader.prototype, {
     _renderShelf(keyword = '') {
         const grid = this._dom.grid;
@@ -81,7 +87,7 @@ Object.assign(DocumentReader.prototype, {
                             <span>第 ${Number(mark.chapter) + 1} 章</span>
                             <span>${Utils.escapeHtml(mark.time || '')}</span>
                         </div>
-                        <button type="button" class="nr-mark-del" title="删除这条书签">✕</button>
+                        <button type="button" class="nr-mark-del" title="删除这条书签">${nrShelfIcon('icon:x')}</button>
                     </div>`).join('')}
             </section>`).join('');
 
@@ -139,8 +145,8 @@ Object.assign(DocumentReader.prototype, {
     _emptyHtml(icon, text, hint = '') {
         // 结构走壳的 .empty-state（base.css）；`.nr-empty-span` 只负责网格里跨列占位。
         // 图标走壳的图标集：传 `icon:名字`。`window.Icons` 缺失时（插件页脱离壳单独打开）
-        // 原样渲染传入值，旧插件的 emoji 仍然能显示。
-        const iconHtml = window.Icons ? window.Icons.html(icon, 'empty-state-icon') : icon;
+        // 返回空串，不写 emoji 兜底。
+        const iconHtml = window.Icons ? window.Icons.html(icon, 'empty-state-icon') : '';
         return `<div class="empty-state nr-empty-span">
             <div class="empty-state-icon">${iconHtml}</div>
             <div class="empty-state-text">${Utils.escapeHtml(text)}</div>
@@ -161,7 +167,7 @@ Object.assign(DocumentReader.prototype, {
                     <img class="nr-cover-img" alt="" loading="lazy"
                          src="${DocumentUtils.coverDataUrl(doc.title || doc.id)}">
                     <span class="nr-badge">${Utils.escapeHtml(kind)}</span>
-                    ${markCount ? `<span class="nr-mark-count">⭐ ${markCount}</span>` : ''}
+                    ${markCount ? `<span class="nr-mark-count">${nrShelfIcon('icon:star')} ${markCount}</span>` : ''}
                     ${percent ? `<div class="nr-cover-progress"><span style="width:${percent}%"></span></div>` : ''}
                 </div>
                 <div class="nr-card-body">

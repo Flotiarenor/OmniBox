@@ -14,6 +14,12 @@
 // 任何 wrap 出来的 <span> 都会在裁剪时消失或错位）。浏览器不支持时退化为只画
 // 浮动框，功能不受影响。
 // ============================================================
+// 图标名 → 标记。壳把图标集内联进文档后由 /shell/icons.generated.js 提供 Icons.html；
+// 缺失时（本页脱离壳单独打开调试）返回空串，不写 emoji 兜底。
+const nrIcon = (name) => (window.Icons && typeof window.Icons.html === 'function')
+    ? window.Icons.html(name)
+    : '';
+
 class ReaderTts {
     constructor(app) {
         this.app = app;
@@ -66,11 +72,11 @@ class ReaderTts {
         card.className = 'nr-tts-card hidden';
         card.innerHTML = `
             <button type="button" class="nr-tts-btn nr-tts-collapse" id="nr-tts-collapse"
-                    title="收到侧边">⤢</button>
+                    title="收到侧边">${nrIcon('icon:maximize-2')}</button>
             <button type="button" class="nr-tts-btn nr-tts-toggle" id="nr-tts-toggle"
-                    title="暂停">⏸</button>
+                    title="暂停">${nrIcon('icon:pause')}</button>
             <button type="button" class="nr-tts-btn nr-tts-stop" id="nr-tts-stop"
-                    title="停止">⏹</button>`;
+                    title="停止">${nrIcon('icon:square')}</button>`;
         document.body.appendChild(card);
         this._card = card;
         card.querySelector('#nr-tts-collapse').addEventListener('click', () => this.toggleCollapse());
@@ -86,12 +92,12 @@ class ReaderTts {
         this._card.dataset.state = this._state;
         const toggle = this._card.querySelector('#nr-tts-toggle');
         if (toggle) {
-            toggle.textContent = this._state === 'paused' ? '▶' : '⏸';
+            toggle.innerHTML = nrIcon(this._state === 'paused' ? 'icon:play' : 'icon:pause');
             toggle.title = this._state === 'paused' ? '继续' : '暂停';
         }
         const collapse = this._card.querySelector('#nr-tts-collapse');
         if (collapse) {
-            collapse.textContent = this._collapsed ? '▶' : '⤢';
+            collapse.innerHTML = nrIcon(this._collapsed ? 'icon:chevron-right' : 'icon:maximize-2');
             collapse.title = this._collapsed ? '展开' : '收到侧边';
         }
     }
