@@ -49,25 +49,35 @@ body {
 }
 .search-input:focus { border-color: var(--accent); }
 
-/* 搜索框（图标 + 输入 + 清除按钮）。结构必须一致：
-   .search-field > .search-field-icon + input + .search-field-clear
-   —— 原先 image-viewer / manga-library / media-player 各写了一遍同样的三条规则，
-   只有宽度与背景不同；插件现在只保留自己的差异（如 `.iv-search input { width: 220px }`）。 */
-.search-field { position: relative; display: flex; align-items: center; }
-.search-field-icon { position: absolute; left: 10px; font-size: 12px; opacity: 0.55; pointer-events: none; }
-.search-field input {
-  width: 220px; padding: 7px 30px;
+/* 搜索框 —— 全仓唯一实现。形态取自 document-reader 的紧凑胶囊（原先最好的一版）：
+   外框是胶囊，图标在流内，输入框无边框无底色，聚焦靠 :focus-within 给外框描边，
+   没有"聚焦时变宽"的动画（那会让工具栏抖动，也要靠 30px 内边距给绝对定位的图标让位）。
+   结构固定为：.search-field > .search-field-icon + input + .search-field-clear
+   宽度走 --obx-search-width，窄窗口由壳统一收窄。插件不要再写搜索样式，
+   也不要给容器再加插件类名（原先四个插件四套类名，看起来是四个搜索框）。 */
+.search-field {
+  --obx-search-width: 180px;
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 10px;
   border: 1px solid var(--border); border-radius: 999px;
-  background: var(--bg-surface); color: var(--text-primary); font-size: 13px; outline: none;
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), width 0.25s ease;
+  background: var(--bg-surface);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
-.search-field input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--obx-accent-soft); }
+.search-field:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--obx-accent-soft); }
+@media (max-width: 1060px) { .search-field { --obx-search-width: 150px; } }
+@media (max-width: 860px) { .search-field { --obx-search-width: 120px; } }
+.search-field-icon { font-size: 12px; opacity: 0.55; pointer-events: none; }
+.search-field input {
+  width: var(--obx-search-width); padding: 0;
+  border: 0; outline: 0; background: transparent;
+  color: var(--text-primary); font-size: 13px;
+}
 .search-field input::placeholder { color: var(--text-muted); }
 .search-field-clear {
-  position: absolute; right: 8px; border: none; background: transparent;
-  color: var(--text-muted); cursor: pointer; font-size: 12px; padding: 2px 5px; border-radius: 50%;
+  border: 0; background: transparent; color: var(--text-secondary);
+  cursor: pointer; font-size: 12px; padding: 0 2px; line-height: 1;
 }
-.search-field-clear:hover { color: var(--text-primary); background: var(--bg-hover); }
+.search-field-clear:hover { color: var(--text-primary); }
 
 /* 树组件 */
 .tree-container {

@@ -93,10 +93,8 @@
 .ml-view-sub { font-size: 11px; color: var(--text-secondary); }
 .ml-toolbar-right { margin-left: auto; }
 
-/* 搜索框的结构、图标、清除按钮与聚焦效果走壳的 .search-field（base.css）；
-   这里只保留本插件的宽度差异 */
-.ml-search input { width: 250px; }
-.ml-search input:focus { width: 300px; }
+/* 搜索框：结构与宽度全部走壳的 .search-field（base.css 的 --obx-search-width），
+   本插件不再写搜索样式（原 .ml-search 的 250/300/160px 三档宽度已删） */
 
 /* ===== 内容区 ===== */
 .ml-content { padding: 16px; background: transparent; }
@@ -286,9 +284,8 @@
 
 /* ===== 响应式 ===== */
 @media (max-width: 860px) {
-  /* 窄窗口要压过壳的宽度必须提高特异性：媒体查询不改变特异性 */
+  /* 窄窗口的侧栏宽度必须提高特异性：媒体查询不改变特异性 */
   .ml-sidebar.view-sub-sidebar { width: 200px; }
-  .ml-search input { width: 160px; }
   .ml-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
   .ml-task-progress { width: 100px; }
 }

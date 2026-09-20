@@ -318,7 +318,7 @@ background: var(--mp-glass, var(--bg-surface));
 | --- | --- | --- | --- |
 | 按钮 | `base.css:13-36` `.btn` / `-primary` / `-danger` / `-danger-solid` / `-sm` / `.active` | 工具条 `.btn`/`.btn-sm`；主操作 `-primary`；破坏性 `-danger` 且二次确认 | 全部插件在用 |
 | 分组切换 | 无专用类 | `.btn.btn-sm.active`（image-cleaner 的 tab）或 `.obx-nav-item` | image-cleaner 用前者 |
-| 搜索框 | 两种：单输入框用 `.search-input`（`max-width:400px`）；带图标/清除按钮的搜索行用 `.search-field > .search-field-icon + input + .search-field-clear` | 结构、图标与清除按钮定位、聚焦效果都走壳；插件只保留宽度（以及 media-player 的玻璃底）差异 | 已统一：image-viewer / manga-library / media-player 三处各自的 15-40 行重复规则删除，改为只写宽度。例外：document-reader 的 `.nr-search` 是"外层胶囊容器 + 图标静态排列"的紧凑型，套壳类要写 5 条覆盖，登记为插件差异 |
+| 搜索框 | 两种：单输入框用 `.search-input`（`max-width:400px`）；带图标/清除按钮的搜索框用 `.search-field > .search-field-icon + input + .search-field-clear` | 结构与外观**只有这一份实现**：胶囊外框 + 图标在流内 + 输入无边框，聚焦用 `:focus-within` 描边外框；宽度走 `--obx-search-width`（窄窗口由壳统一收窄）。插件不写搜索样式，**也不给容器再加插件类名** | 已统一：四个插件（document-reader / image-viewer / manga-library / media-player）现在标记完全同构，插件侧搜索样式删净（原先共 4 套类名、7 档宽度、1 处玻璃底、1 处边框重写）。形态取自 document-reader 的紧凑胶囊版本 |
 | 侧栏导航 | `base.css:290-347` `.obx-nav-item` + `--obx-nav-*` | 结构/选中态都靠壳；只保留图标栏宽度等差异 | 5 个插件已用；image-cleaner/pixiv-sync 无 |
 | 侧栏标题/底栏 | `.sub-sidebar-header` / `.sub-sidebar-footer` | 分组标题用大写小字；底栏放统计 | image-viewer 用 `.iv-sidebar-footer` |
 | 卡片/网格 | 无壳类（曾有 `createCardGrid`，因零采用且渲染的 `.manga-*` 无任何样式定义，已删除） | 卡片属插件自己的内容区布局：建议统一"封面 + 标题 + 副标题/徽标"，圆角走 `--radius-lg`，悬浮 `.obx-card-lift`，选中态 = 2px `--accent` 描边 | media-player `.mp-card-grid`、manga-library `.ml-grid`、image-viewer `.iv-image-grid` |
@@ -374,6 +374,10 @@ background: var(--mp-glass, var(--bg-surface));
 2. **壳类不重定义**，只补差异。需要覆盖壳规则时提高特异性而不是改顺序——
    顺序由壳的注入决定：`.gm-side.view-sub-sidebar`（0,2,0）才能压过 `base.css` 的
    `.view-sub-sidebar`（0,1,0）。
+   **优先改 token，而不是叠插件类名**：壳组件的尺寸/配色都应暴露成 `--obx-*`（如
+   `.search-field { --obx-search-width: 160px; }`、`--obx-nav-*`），插件覆写 token 即为"差异"。
+   `.iv-search input { width: 220px }` 这种"壳类 + 插件类 + 选择器"是反例：四个插件四套类名、
+   七档宽度，看起来就是四个搜索框 —— 本轮已全部删除。
 3. **不要用元素级选择器穿透壳组件**：group-mesh 用 13 个 `.modal-body input/textarea` 之类
    的规则改壳弹窗里的控件外观（`group-mesh.css:375-426`），壳一改结构就失效；
    要改就改自己的类，或者提出新的壳 token。
@@ -514,9 +518,10 @@ background: var(--mp-glass, var(--bg-surface));
    （由壳的 folder-picker 渲染，单值取首行路径）。
 8. 空态已统一到壳的 `.empty-state`（本轮，见 §9.6）；骨架屏 `.obx-skeleton` 采纳数仍为 **0**
    —— 它是"新增能力"而非契约违背，已降级到 §10.5。
-9. 搜索框已统一：image-viewer / manga-library / media-player 三处 `-search` 的重复规则
-   （各 15-40 行）删除，改用壳的 `.search-field`，插件只保留宽度（mp 另保留玻璃底）。
-   document-reader 的 `.nr-search` 是另一种构造（外层胶囊 + 图标静态排列），登记为差异。
+9. 搜索框已统一为**一个**组件：四个插件标记完全同构（`.search-field > .search-field-icon +
+   input + .search-field-clear`），插件侧不再有搜索样式或插件类名；宽度与窄窗口行为由壳的
+   `--obx-search-width` 与两条媒体查询统一给。形态取自 document-reader 原先那版
+   （胶囊外框 + 图标在流内 + 无"聚焦变宽"动画）。
 10. 内嵌页 image-cleaner / pixiv-sync 自带工具栏与标题，与宿主 header 重复（双层横条）。
     `network-location.html` **不属于这一类**：它没有工具栏，是"内嵌提供方页"的正面样例
     （见 §3.4）；它的问题是另一处 —— 曾经的 `var(--bg, #17181c)` 未定义 token（P0-4 已修）
@@ -549,6 +554,7 @@ background: var(--mp-glass, var(--bg-surface));
 
 | 做法 | 出处 | 解决的问题 |
 | --- | --- | --- |
+| 搜索框：胶囊外框 + 图标在流内 + 输入无边框，聚焦用 `:focus-within` | document-reader 的原 `.nr-search` | 不需要 30px 内边距给绝对定位的图标让位，也没有"聚焦变宽"导致的工具栏抖动；已成为壳的 `.search-field`，另外三个插件向它收敛 |
 | 固定底栏承载批量操作与选中计数 | image-cleaner `index.html:30-34` | 批量操作不随内容滚走 |
 | 扩展面板内嵌范式（header 标题 + 返回 / body iframe） | image-viewer `index.html:65-73` | 宿主与 Companion 插件解耦 |
 | 幂等的轮询托管 | manga-library `app.js:34-40` | `onHide` 停 / `onShow` 起 / `onDispose` 兜底，不会重复起定时器 |
@@ -608,7 +614,7 @@ background: var(--mp-glass, var(--bg-surface));
 | 2 | **7 个插件迁移**到壳类并删除各自实现：`.iv-empty*`、`.nr-empty*`、`.ml-empty*`、`.mp-empty-state*`、`.cleaner-empty`、`.empty`（netease）、`.nl-empty`、`.psync-empty`（死类） | 全仓 `class="empty-state"` 约 57 处；`grep '(iv\|nr\|ml\|mp\|cleaner\|psync\|nl)-empty'` 只剩注释与 `.nr-empty-span` |
 | 3 | **内嵌页信号**：image-viewer 的扩展面板与 `folder-picker.js` 的提供方 iframe 在 URL 上追加 `?embed=1`；image-cleaner / pixiv-sync 在 `<head>` 里据此打上 `html.is-embedded`，把工具栏降级为普通操作行并隐藏与宿主重复的标题 | `app.js` 的 `_embedUrl()`、`folder-picker.js:207-215`、两个页面的 `<head>` 与 CSS（0,2,1 选择器） |
 | 4 | **静态门禁落地**：`tools/check_plugins.py` 新增前端 UI 契约检查（未定义变量与原生 `alert`/`confirm` 为 error，`!important` 与重复/越权关键帧为 warning），并在 `tests/test_plugin_spec.py` 补 `FrontendUiContractTests`（8 例） | 全仓运行：0 error、46 warning（40 基线 + 6 处 `!important`）；实装当天抓到 image-viewer 的 `obxRebuildSlide` 越权前缀，已改名 `iv-rebuild-slide` |
-| 5 | **设置入口与搜索框收敛**：pixiv-sync 删除手写设置表单（字段/默认值/范围钳制/保存逻辑），改走 `openSettingsModal`，后端 `download_dir` 由 `text` 改为 `directory`；image-cleaner 补上工具栏「⚙ 设置」（此前 `threshold` 无入口）；壳新增 `.search-field`（图标+输入+清除），image-viewer / manga-library / media-player 删除各自重复的搜索样式；壳新增 `.empty-state--error`，用于扫描失败与歌单加载失败 | pixiv-sync 前端 521 → 441 行；三处搜索共删约 74 行重复规则；`grep` 确认无 `loadSettings/saveSettings/intSetting/set-token/btn-save` 残留；检查器 0 error |
+| 5 | **设置入口与搜索框收敛**：pixiv-sync 删除手写设置表单（字段/默认值/范围钳制/保存逻辑），改走 `openSettingsModal`，后端 `download_dir` 由 `text` 改为 `directory`；image-cleaner 补上工具栏「⚙ 设置」（此前 `threshold` 无入口）；搜索框按 document-reader 的构造（胶囊外框 + 图标在流内 + 无聚焦变宽）做成壳的 `.search-field` 唯一实现，四个插件标记同构、插件侧样式删净，宽度走 `--obx-search-width`、窄窗口在壳里统一收窄；壳新增 `.empty-state--error`，用于扫描失败与歌单加载失败 | pixiv-sync 前端 521 → 441 行；插件侧共删约 130 行搜索样式（4 套类名 / 7 档宽度）；`grep` 确认无 `loadSettings/saveSettings/intSetting/set-token/btn-save` 与 `*-search` 规则残留；检查器 0 error |
 
 **保留的插件专属"空态"（不是漏改）**：
 

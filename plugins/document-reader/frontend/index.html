@@ -66,12 +66,11 @@
           <span class="nr-sub" id="nr-view-sub"></span>
         </div>
         <div class="toolbar-group nr-toolbar-right">
-          <!-- 工具栏内的紧凑搜索：图标静态排列 + 外层胶囊容器，与壳的 .search-field
-               （图标绝对定位）构造不同，按 docs/plugin-ui-guide.md §5 登记为插件差异 -->
-          <div class="nr-search">
-            <span class="nr-search-ico">🔍</span>
+          <!-- 搜索框就是壳的 .search-field（base.css）：本插件的这一版是壳组件的形态来源 -->
+          <div class="search-field">
+            <span class="search-field-icon">🔍</span>
             <input type="text" id="nr-search" placeholder="搜索书名、作者…" autocomplete="off">
-            <button type="button" id="nr-search-clear" class="nr-search-clear hidden" title="清除">✕</button>
+            <button type="button" id="nr-search-clear" class="search-field-clear hidden" title="清除">✕</button>
           </div>
           <button type="button" id="btn-settings" class="btn btn-sm">⚙ 设置</button>
         </div>

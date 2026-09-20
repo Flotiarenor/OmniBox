@@ -165,32 +165,8 @@
     color: var(--text-secondary);
 }
 
-.nr-search {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 10px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--bg-surface);
-}
-
-.nr-search input {
-    border: 0;
-    outline: 0;
-    background: transparent;
-    color: var(--text-primary);
-    width: 180px;
-    font-size: 13px;
-}
-
-.nr-search-clear {
-    border: 0;
-    background: transparent;
-    color: var(--text-secondary);
-    cursor: pointer;
-}
-
+/* 搜索框已抽到壳的 .search-field（base.css）——这一版的构造（胶囊外框 + 图标在流内 +
+   输入无边框）就是壳组件的形态来源，本文件不再保留副本。 */
 .nr-content {
     padding: 18px;
 }
@@ -1002,12 +978,9 @@
         grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
         gap: 12px;
     }
-
-    .nr-search input {
-        width: 130px;
-    }
-
     .document-content-area {
+        padding: 16px 18px 32px;
+    }    .document-content-area {
         padding: 16px 18px 32px;
     }
 }

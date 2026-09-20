@@ -206,10 +206,8 @@
 .iv-nav-footer { padding: 8px 10px; border-top: 1px solid var(--border); }
 .iv-nav-footer .iv-nav-item { width: 100%; }
 
-/* 搜索框的结构、图标、清除按钮与聚焦效果走壳的 .search-field / .search-field-icon /
-   .search-field-clear（base.css）；这里只保留本插件的宽度差异 */
-.iv-search input { width: 220px; }
-.iv-search input:focus { width: 270px; }
+/* 搜索框：结构与宽度全部走壳的 .search-field（base.css 的 --obx-search-width），
+   本插件不再写搜索样式（原 .iv-search 的 220/270px 两档宽度已删） */
 
 .iv-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
 .iv-field label { font-size: 13px; font-weight: 500; color: var(--text-primary); }

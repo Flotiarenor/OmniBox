@@ -268,17 +268,8 @@
   margin-left: auto;
 }
 
-/* 搜索框的结构、图标、清除按钮与聚焦效果走壳的 .search-field（base.css）；
-   这里只保留本插件的宽度与玻璃底 */
-.mp-search input {
-  width: 270px;
-  background: var(--mp-glass);
-}
-
-.mp-search input:focus {
-  width: 320px;
-}
-
+/* 搜索框：结构与宽度全部走壳的 .search-field（base.css 的 --obx-search-width），
+   本插件不再写搜索样式（原 .mp-search 的 270/320/200/240/150px 与玻璃底已删） */
 .mp-tool-btn {
   border-radius: 999px;
 }
@@ -1864,8 +1855,6 @@ img.mp-thumb-pending { opacity: 0.45; transition: opacity .3s; }
    ============================================================ */
 @media (max-width: 1060px) {
   .mp-volume-bar { width: 60px; }
-  .mp-search input { width: 200px; }
-  .mp-search input:focus { width: 240px; }
   .mp-stage-cover { width: 124px; height: 124px; }
   .mp-stage-title { font-size: 20px; }
 }
@@ -1873,7 +1862,6 @@ img.mp-thumb-pending { opacity: 0.45; transition: opacity .3s; }
 @media (max-width: 860px) {
   /* 窄窗口要压过壳的宽度必须提高特异性：媒体查询不改变特异性 */
   .mp-sidebar.view-sub-sidebar { width: 200px; }
-  .mp-search input { width: 150px; }
   .mp-pb-right .mp-volume { display: none; }
   #btn-stop { display: none; }
   .mp-card-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
