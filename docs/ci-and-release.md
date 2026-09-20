@@ -18,6 +18,7 @@
 | 单元测试 | `python -m unittest discover -s tests` | **290 passed**（硬门禁；Windows 专属用例在 Linux 上自动 skip，见 §2） |
 | 运行时禁止 print | `python -m unittest tests.test_no_print_in_runtime` | 通过（硬门禁） |
 | 前端转义一致性 | `node tools/check_frontend_escape.cjs` | **OK**（硬门禁） |
+| 前端依赖漏洞 | `python tools/check_npm_audit.py` | **OK**（硬门禁；脚本内固定官方 registry，见下） |
 | 前端类型+构建 | `npm --prefix shell/frontend run build` | 通过（硬门禁） |
 | 图标 sprite 一致性 | `python tools/build_icons.py --check` | **OK**（硬门禁；校验 `shell/frontend/public/shell/icons.svg` 与 `tools/icon_data.json` 同步，且模板/manifest 引用的图标全部已冻结） |
 | 打包冒烟 + 产物校验 | `python tools/check_build_tree.py <dist>/OmniBox --expect-exe OmniBox.exe` | 通过（硬门禁；CI 里只在 push main / 手动触发 / 打包路径变更时跑） |
@@ -36,10 +37,20 @@ $py = ".\venv\Scripts\python.exe"
 & $py tools/build_icons.py --check
 & $py tools/check_packaging.py
 & $py tools/check_version.py
+& $py tools/check_npm_audit.py
 & $py -m pyright main.py shell tools
 & $py -m unittest discover -s tests
 node tools/check_frontend_escape.cjs
 ```
+
+> `check_npm_audit.py` 为什么不能用一句 `npm audit` 代替：本机 `npm config get registry`
+> 指向 npmmirror，而它**不实现 audit 端点**，直接跑得到的是
+> `[NOT_IMPLEMENTED] /-/npm/v1/security/* not implemented yet` —— 工具在跑、结论为空，
+> 这个仓库因此从来没检查过前端依赖漏洞（实装当天查出 5 条）。脚本内部固定
+> `--registry=https://registry.npmjs.org`，不依赖使用者配置；registry 不可达时跳过而非判失败。
+> 当前有 4 条例外（vite 三条 + esbuild 一条，均为 dev server 场景，只能随 vite 8 消除），
+> 登记在 `tools/check_npm_audit.py` 的 `ACCEPTED`；**登记项会自动过期**：上游修好后不删，
+> 门禁会因为它"已不在报告里"而报错。Vite 跨大版本升级见 §8。
 
 ---
 
@@ -367,6 +378,25 @@ RUF100（未使用的 noqa）会把这些标注判为冗余并删除——它们
    `0600`；密钥类设置应统一收紧。
 8. `docs/plugin-guide.md:863` 建议 `Bridge.originalUrl(encodeURIComponent(path))`，
    与 `base.js` 内部已编码的实现冲突（双重编码）。
+9. **前端工具链落后一个大版本以上，且 Vite 5 已停止接收安全补丁。** 核实结论：
+   - Vite 的支持政策是"当前 minor 常规修复 / 前两个 major 只发安全补丁"（映射
+     `{5:'5.4', 6:'6.4', 7:'7.3'}`）。当前 8.3 → **5.4 什么都不发**，而
+     `tools/check_npm_audit.py` 里那 3 条 vite 公告的受影范围是 `<=6.4.2`，7.x 已修，
+     唯一的修复路径就是跨大版本（这正是它们被登记为例外的原因）。
+   - 最小耦合集：`vite ^8.3.0` + `@vitejs/plugin-vue ^6.0.9` + `vue-tsc ^3.3.11`，
+     **`typescript` 留在 5.9.3**（vue-tsc 3.x 的 peer 只有 `>=5.0.0`，且不依赖 Vite）。
+     `vue` / `vue-router` / `pinia` 可不动。
+   - **不要把 TypeScript 升到 7.0**：7.0 是 Go 原生端口，不提供编程 API，微软明确说
+     Volar 这类"把 TS 嵌进自己编译器"的工具目前只能用 6.0；本仓 `package.json` 的
+     `build` 是 `vue-tsc --noEmit && vite build`，升了会直接断在门禁上。
+   - `vue-tsc 3.x` 与 `plugin-vue 6.x` 的硬要求是 Node 20.19+/22.12+（本机 24.16 满足）。
+   - 升级前必须实测：Vite 8 的默认 `build.target` 抬到 Chrome 111+ / Safari 16.4，
+     需与桌面 WebView 的内核版本核对；另需复核 Oxc / Lightning CSS 压缩后的产物差异。
+   - 低风险依据：`shell/frontend/vite.config.ts` 只有 17 行，无 `rollupOptions` /
+     `manualChunks` / `publicDir` 覆盖 / CSS 预处理器 / postcss 配置，纯 ESM 且无 CJS 依赖，
+     所以 Vite 8 的 Rolldown 相关破坏性改动基本碰不到。
+   - 顺带纠正一处传闻：**Vite 5/6/7/8 的 `publicDir` 都是 `string | false`，没有数组形式**，
+     多静态目录只能合并进一个 `public/` 或自己加拷贝步骤。
 
 ---
 

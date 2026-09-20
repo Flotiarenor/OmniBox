@@ -162,11 +162,21 @@ jobs:
           cache: npm
           cache-dependency-path: shell/frontend/package-lock.json
 
+      # audit 门禁是 Python 脚本（只用到标准库），显式装一遍而不是赌 runner 自带的 python
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
       - name: 前端转义一致性（属性注入门禁）
         run: node tools/check_frontend_escape.cjs
 
       - name: 安装依赖（npm ci：按锁文件可复现）
         run: npm --prefix shell/frontend ci
+
+      - name: 依赖漏洞门禁（npm audit，显式走官方 registry）
+        # 本机默认 registry 是 npmmirror，它不实现 audit 端点 —— 直接 npm audit 只会
+        # 得到 NOT_IMPLEMENTED，等于这个仓库从来没检查过漏洞。脚本内部固定官方源。
+        run: python tools/check_npm_audit.py
 
       - name: 类型检查与构建（vue-tsc --noEmit && vite build）
         run: npm --prefix shell/frontend run build
