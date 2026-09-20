@@ -781,8 +781,10 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
                 abort(code)
             abort(400)
 
-        # 按需生成缩略图（如 image-viewer）：文件不存在时交给插件现场生成
-        if instance is not None:
+        # 按需生成缩略图：契约是"散文件不存在时现场生成并落盘"
+        # （PluginBase.ensure_thumb 的说明）。散文件已存在时不再回调插件，
+        # 避免每次 /thumbs 请求都进入插件代码。
+        if instance is not None and not full_path.exists():
             try:
                 instance.ensure_thumb(filepath)
             except Exception:

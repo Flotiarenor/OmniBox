@@ -329,6 +329,61 @@ class FilePathRouteTests(_FileRouteFixture, unittest.TestCase):
         self.assertEqual(resp.status_code, 401)
 
 
+class ThumbEnsureHookTests(_FileRouteFixture, unittest.TestCase):
+    """`/thumbs` 散文件布局只在目标文件不存在时回调插件的 `ensure_thumb`。
+
+    回归：此前无条件回调，每次请求都会进入插件代码；`PluginBase.ensure_thumb`
+    的契约是"散文件不存在时现场生成并落盘"。
+    """
+
+    class _ThumbInstance(_StubInstance):
+        def __init__(self, root, thumb_dir):
+            super().__init__([root], thumb_dir=thumb_dir)
+            self.ensure_calls = []
+
+        def get_thumb_data(self, rel_path):
+            return None
+
+        def ensure_thumb(self, rel_path):
+            self.ensure_calls.append(rel_path)
+
+    def _register(self):
+        root = Path(self._tmp.name) / 'thumb-root'
+        root.mkdir()
+        thumb_dir = Path(self._tmp.name) / 'thumb-cache'
+        thumb_dir.mkdir()
+        instance = self._ThumbInstance(root, thumb_dir)
+        self.manager._instances['thumb-plugin'] = instance
+        return thumb_dir, instance
+
+    def test_existing_thumb_does_not_call_ensure_thumb(self):
+        thumb_dir, instance = self._register()
+        (thumb_dir / 'a.jpg').write_bytes(b'THUMB')
+        resp = self._get('/thumbs/a.jpg?plugin=thumb-plugin')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_data(), b'THUMB')
+        self.assertEqual(instance.ensure_calls, [], '散文件已存在时不得回调 ensure_thumb')
+
+    def test_missing_thumb_calls_ensure_thumb_then_serves(self):
+        thumb_dir, instance = self._register()
+
+        def ensure(rel_path):
+            instance.ensure_calls.append(rel_path)
+            (thumb_dir / rel_path).write_bytes(b'GENERATED')
+
+        instance.ensure_thumb = ensure
+        resp = self._get('/thumbs/b.jpg?plugin=thumb-plugin')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_data(), b'GENERATED')
+        self.assertEqual(instance.ensure_calls, ['b.jpg'])
+
+    def test_missing_thumb_without_generation_is_404(self):
+        _thumb_dir, instance = self._register()
+        resp = self._get('/thumbs/c.jpg?plugin=thumb-plugin')
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(instance.ensure_calls, ['c.jpg'], '缺失时应当回调一次')
+
+
 class ProtectedCredentialFileTests(_FileRouteFixture, unittest.TestCase):
     """壳自己的凭据文件不得从任何数据路由流出去。
 
