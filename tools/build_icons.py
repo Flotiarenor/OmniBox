@@ -1,7 +1,7 @@
-"""由 `tools/icon_data.json` 生成 `shell/frontend/public/shell/icons.svg`。
+"""由 `res/icons/icon_data.json` 生成 `res/icons/icons.svg`。
 
 产物是**一个 sprite**：每个图标一个 `<symbol id="名字">`，页面里用
-`<svg class="obx-icon"><use href="/shell/icons.svg#名字"></use></svg>` 引用。
+`<svg class="obx-icon"><use href="/res/icons/icons.svg#名字"></use></svg>` 引用。
 选 sprite 而不是图标字体或逐处内联的理由（顺带决定了下面每个属性的写法）：
 
 1. 走 `<use>` + 同源 URL，命中 `img-src 'self'`，**不需要动 CSP**（图标字体要先把
@@ -11,9 +11,11 @@
 4. `<symbol>` 是 shadow tree，外部无法继承页面的 fill/stroke，所以描边属性必须写在
    sprite 自己身上 —— 且必须写 `currentColor`，否则图标不跟随主题与用户自定义颜色。
 
-生成物进提交（`public/shell/` 目录本身就是要进提交的），运行时零依赖、完全离线。
-改完 `public/shell/*` 必须 `npm --prefix shell/frontend run build`，否则 `/shell/<file>`
-路由优先发的仍是 dist 里的旧副本（见 AGENTS.md）。
+产物位置见 `docs/ci-and-release.md`：`res/` 与 `shell/`、`plugins/` 同级，由
+`file_server.py` 的 `/res/<path:filename>` 路由发布，打包时由
+`docs/Releases/spec_common.py` 一并收集。**没有第二份副本** —— 早先放在
+`shell/frontend/public/shell/` 时，那份会被 Vite 复制进 `dist/`，于是同一份图形
+在仓库里存在两个位置，改一个忘一个就会"源码改了、界面没变"。
 
 用法
 ----
@@ -29,8 +31,11 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_FILE = PROJECT_ROOT / 'tools' / 'icon_data.json'
-SPRITE_FILE = PROJECT_ROOT / 'shell' / 'frontend' / 'public' / 'shell' / 'icons.svg'
+# 源数据与产物同目录：`res/icons/` 是图标这件事的唯一落点。生成器放在 tools/ 是因为
+# 它属于"开发期脚本"（与 check_*.py 同类）；数据与授权属于资产，不该埋在脚本目录里。
+ICON_DIR = PROJECT_ROOT / 'res' / 'icons'
+DATA_FILE = ICON_DIR / 'icon_data.json'
+SPRITE_FILE = ICON_DIR / 'icons.svg'
 
 # 引用点：Vue 模板里的静态字面量、JS/模板字符串里的动态插值、manifest 的 icon: 值。
 # 三者的写法都要认，否则"引用了未冻结的图标"这条校验会对真实代码视而不见：
@@ -41,6 +46,7 @@ STATIC_ICON_RE = re.compile(r'icon:([a-z0-9]+(?:-[a-z0-9]+)*)')
 DYNAMIC_ICON_RE = re.compile(r'icon:\$\{')
 # SECTIONS 这类"id → 短名"表：图标名以带引号的短字符串出现，靠上下文约束而不是逐条匹配
 SHORT_NAME_RE = re.compile(r"icon:\s*'([a-z0-9]+(?:-[a-z0-9]+)*)'")
+# manifest 的 `"icon": "icon:x"` 与 Python 里的 `'icon:x'` 都要认
 MANIFEST_USE_RE = re.compile(r'["\']icon:([a-z0-9-]+)["\']')
 
 ICON_NAME_RE = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
@@ -50,7 +56,7 @@ HEADER = """<!--This product includes software developed by flotiarenor.Copyrigh
   OmniBox 图标 sprite —— 由 tools/build_icons.py 生成，请勿手工编辑。
   图标来自 Lucide（{package}），授权 {license}（https://lucide.dev/license）。
   增删图标：tools/fetch_lucide_icons.py --add <名字>，再跑 tools/build_icons.py。
-  改完本文件必须重新构建：npm --prefix shell/frontend run build
+  引用方式：<svg class="obx-icon"><use href="/res/icons/icons.svg#名字"></use></svg>
 -->
 <svg xmlns="http://www.w3.org/2000/svg" style="display:none">
 """
@@ -150,6 +156,7 @@ def main() -> int:
         print(f'icons: OK（{len(icons)} 个图标，sprite 与源数据一致）')
         return 0
 
+    SPRITE_FILE.parent.mkdir(parents=True, exist_ok=True)
     SPRITE_FILE.write_text(content, encoding='utf-8')
     print(
         f'icons: 已生成 {SPRITE_FILE.relative_to(PROJECT_ROOT).as_posix()}'

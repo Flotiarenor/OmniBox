@@ -20,7 +20,7 @@
 | 前端转义一致性 | `node tools/check_frontend_escape.cjs` | **OK**（硬门禁） |
 | 前端依赖漏洞 | `python tools/check_npm_audit.py` | **OK**（硬门禁；脚本内固定官方 registry，见下） |
 | 前端类型+构建 | `npm --prefix shell/frontend run build` | 通过（硬门禁） |
-| 图标 sprite 一致性 | `python tools/build_icons.py --check` | **OK**（硬门禁；校验 `shell/frontend/public/shell/icons.svg` 与 `tools/icon_data.json` 同步，且模板/manifest 引用的图标全部已冻结） |
+| 图标 sprite 一致性 | `python tools/build_icons.py --check` | **OK**（硬门禁；校验 `res/icons/icons.svg` 与 `res/icons/icon_data.json` 同步，且模板/manifest 引用的图标全部已冻结） |
 | 打包冒烟 + 产物校验 | `python tools/check_build_tree.py <dist>/OmniBox --expect-exe OmniBox.exe` | 通过（硬门禁；CI 里只在 push main / 手动触发 / 打包路径变更时跑） |
 
 > `unittest` 这一行里包含插件前端的脚本契约用例：`tests/test_*_js.py` 包装器调用
@@ -165,6 +165,11 @@ node tools/check_frontend_escape.cjs
   `collect_data_files()` 直接抛 `SystemExit`。
 - **不打缓存与用户数据**：跳过 `__pycache__` / `*.pyc` / `.git` / `node_modules`，
   以及 `data/`、`.config/`（后者含 `auth_token.txt`）。
+- **`res/` 必须由 spec 单独收集**：`res/`（仓库级共享资源，目前只有图标 sprite
+  `res/icons/icons.svg`）**不经过 Vite**，所以既不会被 `shell/frontend/dist` 的收集覆盖，
+  也不会被 `publicDir` 复制。漏掉它的表现是：构建全绿、应用能开，但所有图标都不显示
+  （`<use>` 指向的资源 404）。`REQUIRED_PAYLOAD`（静态）与 `check_build_tree.py` 的
+  `REQUIRED`（产物）各有一条断言兜住。
 - **产物校验**：`tools/check_build_tree.py` 断言必需文件存在、禁止内容不出现
   （含字节码与用户数据目录），并且会**解析产物 exe 里的 PYZ**，确认
   `HIDDEN_IMPORTS` 声明的纯 Python 模块真的打进去了 —— 插件是动态加载的，

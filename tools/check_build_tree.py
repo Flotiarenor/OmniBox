@@ -38,6 +38,8 @@ for _p in (str(PROJECT_ROOT), str(SPEC_DIR)):
 REQUIRED = [
     'shell/frontend/dist/index.html',
     'shell/frontend/dist/shell/base.js',
+    # res/ 不被 Vite 处理，靠 spec 单独收集 + /res/* 路由发布；漏了它产物里所有图标 404
+    'res/icons/icons.svg',
     'plugins/media-player/manifest.json',
     'plugins/media-player/backend/main.py',
     'base_library.zip',

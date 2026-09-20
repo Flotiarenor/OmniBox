@@ -52,7 +52,7 @@ return (function () {
     return r.width > 6 && r.width < 40 && Math.abs(r.width - r.height) < 1;
   });
   var xhr = new XMLHttpRequest();
-  xhr.open('GET', '/shell/icons.svg', false);
+  xhr.open('GET', '/res/icons/icons.svg', false);
   try {
     xhr.send();
     out.spriteStatus = xhr.status;
@@ -143,7 +143,7 @@ def main() -> int:
             shell = driver.execute_script(PROBE_SHELL)
             print('侧栏：', json.dumps(shell, ensure_ascii=False))
             if shell.get('spriteStatus') != 200:
-                failures.append(f"/shell/icons.svg 不可取：{shell.get('spriteStatus')} {shell.get('spriteError', '')}")
+                failures.append(f"/res/icons/icons.svg 不可取：{shell.get('spriteStatus')} {shell.get('spriteError', '')}")
             if not shell.get('spriteHasCurrentColor'):
                 failures.append('sprite 的 <symbol> 上没有 stroke="currentColor"，图标不会跟随主题')
             if not shell.get('allSized'):

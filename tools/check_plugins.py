@@ -188,7 +188,7 @@ UI_IMPORTANT_RE = re.compile(r'!important')
 UI_KEYFRAME_RE = re.compile(r'@keyframes\s+([A-Za-z0-9_-]+)\s*\{((?:[^{}]|\{[^{}]*\})*)\}')
 UI_BLOCK_COMMENT_RE = re.compile(r'/\*.*?\*/', re.DOTALL)
 UI_HTML_COMMENT_RE = re.compile(r'<!--.*?-->', re.DOTALL)
-# 图标统一走壳的 sprite（`/shell/icons.svg` + `.obx-icon`，见 docs/plugin-ui-guide.md §5）。
+# 图标统一走壳的 sprite（`/res/icons/icons.svg` + `.obx-icon`，见 docs/plugin-ui-guide.md §5）。
 # 这里只拦**图形化 emoji**：它们在不同平台的字形、字重、基线都不同，是"看起来不像一个
 # 软件"的主要来源，也正是 sprite 要替代的东西。
 #
@@ -335,8 +335,8 @@ def _check_frontend_ui(plugin_dir: Path) -> Tuple[List[str], List[str]]:
             for char, line in sorted(seen_emoji.items(), key=lambda item: item[1]):
                 errors.append(
                     f'{rel}:{line} 出现图形化 emoji {char}（U+{ord(char):04X}）：图标改用壳的 sprite，'
-                    f'写法 `<svg class="obx-icon"><use href="/shell/icons.svg#名字"></use></svg>`；'
-                    f'图标名表与新增方式见 tools/icon_data.json / tools/fetch_lucide_icons.py'
+                    f'写法 `<svg class="obx-icon"><use href="/res/icons/icons.svg#名字"></use></svg>`；'
+                    f'图标名表与新增方式见 res/icons/icon_data.json / tools/fetch_lucide_icons.py'
                     f'（docs/plugin-ui-guide.md §5）'
                 )
 

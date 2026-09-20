@@ -64,6 +64,10 @@ _PLUGIN_BOOTSTRAP_SCRIPT = (
     '<script src="/shell/base.js"></script>'
     '<script src="/shell/folder-picker.js"></script>'
     '<script src="/shell/motion.js"></script>'
+    # 图标 sprite 是"按需引用"而不是"注入执行"，所以不是 <script>/<link rel=stylesheet>：
+    # 预取一下，让插件页第一次渲染 <use> 时不必等一次网络往返（否则首屏图标会闪空）。
+    # 必须写在 <head> 里：<use> 指向外部 sprite 时，浏览器要在用到它之前就发起请求。
+    '<link rel="preload" as="image" href="/res/icons/icons.svg" crossorigin="anonymous">'
     '<script>'
     "Bridge.setPrefix('PLACEHOLDER_NAME');"
     '(function(){'
@@ -101,6 +105,25 @@ def _get_shell_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 _SHELL_DIR = _get_shell_dir()
+
+
+def _get_res_dir() -> Path:
+    """仓库级共享资源目录（`res/`，与 `shell/`、`plugins/` 同级）。
+
+    放"不是代码、但要按 URL 发布给壳页面与插件 iframe"的东西，目前只有图标
+    sprite（`res/icons/icons.svg`）。它与 `/shell/*` 的分工：
+    `/shell/*` 是**壳注入的 CSS/JS**（由 `_PLUGIN_BOOTSTRAP_SCRIPT` 自动挂进每个
+    插件页），`/res/*` 是**按需引用**的资源。两者都不必新增打包配置之外的东西：
+    产物由 docs/Releases/spec_common.py 收集。
+    """
+    if getattr(sys, 'frozen', False):
+        meipass = getattr(sys, '_MEIPASS', None)
+        if meipass:
+            return Path(meipass) / 'res'
+    return Path(__file__).resolve().parent.parent.parent / 'res'
+
+
+_RES_DIR = _get_res_dir()
 
 def _is_safe_path(full_path: Path, root: Path) -> bool:
     """路径包含检查：必须位于 root 内，避免字符串前缀误判。"""
@@ -229,7 +252,8 @@ def _build_trusted_hosts(config: dict) -> list:
 
 # 无需令牌即可访问的路由（页面与静态资源本身不含用户数据）。
 # 数据路由（/api、/file、/files、/thumbs）默认全部要求令牌，新增路由默认受保护。
-_OPEN_ENDPOINTS = {'health', 'serve_shell', 'serve_shell_assets', 'serve_plugin_frontend'}
+_OPEN_ENDPOINTS = {'health', 'serve_shell', 'serve_shell_assets', 'serve_res_assets',
+                   'serve_plugin_frontend'}
 
 # ===== 状态标记页 =====
 # 401/403/404 等错误在浏览器中返回可读的标记页（/api 前缀返回 JSON，
@@ -770,6 +794,18 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         # 开发期未构建进 dist 的新共享组件直接从 public/shell 提供。
         public_shell = _SHELL_DIR / 'frontend' / 'public' / 'shell'
         return send_from_directory(public_shell, filename)
+
+    @app.route('/res/<path:filename>')
+    def serve_res_assets(filename):
+        """仓库级共享资源（`res/`）：**只有一份**，没有 dist/public 两层。
+
+        与 `/shell/*` 的关键区别在这里：`/shell/*` 的"优先发 dist"是因为
+        `public/shell/*` 会被 Vite 复制进 `dist/shell/`，于是同一个文件存在两份。
+        图标 sprite 刻意避开这个模式 —— 早先它放在 `public/shell/` 时确实出现过
+        "改了源文件、界面没变"（发的是 dist 里的旧副本）。`res/` 不被 Vite 处理，
+        所以这里直接发源文件，改完立即生效，不需要重新构建。
+        """
+        return send_from_directory(_RES_DIR, filename)
 
     @app.route('/plugins/<plugin_name>/frontend/<path:filename>')
     def serve_plugin_frontend(plugin_name, filename):

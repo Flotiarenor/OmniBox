@@ -1,7 +1,7 @@
 <!--This product includes software developed by flotiarenor.Copyright 2026 flotiarenor-->
 <script setup lang="ts">
 /**
- * 图标组件：渲染壳 sprite（`/shell/icons.svg`）里的一个图标。
+ * 图标组件：渲染壳 sprite（`/res/icons/icons.svg`）里的一个图标。
  *
  * 用法：`<Icon name="settings" />`（或 manifest 的 `icon:settings` 原样传入）
  *
@@ -10,7 +10,7 @@
  *    第三方/旧插件不改也能正常显示；新插件写成 `icon:<名字>` 即得到矢量图标。
  *    这样"统一图标"不需要给 manifest 加新字段，也不需要枚举映射表。
  * 2. 单个 `<use>` 指向外部 sprite，**不内联图形**：一份 sprite 被壳与所有插件 iframe
- *    共享，浏览器只下载一次。`href` 用绝对路径 `/shell/icons.svg` —— 壳是 history
+ *    共享，浏览器只下载一次。`href` 用绝对路径 `/res/icons/icons.svg` —— 壳是 history
  *    路由（`/settings` 这类路径），相对路径会在嵌套路由下解析错。
  */
 import { computed } from 'vue'
@@ -27,7 +27,7 @@ const isSprite = computed(() => props.name.startsWith('icon:'))
 
 const symbolId = computed(() => (isSprite.value ? props.name.slice('icon:'.length) : ''))
 
-const spriteHref = computed(() => `/shell/icons.svg#${symbolId.value}`)
+const spriteHref = computed(() => `/res/icons/icons.svg#${symbolId.value}`)
 
 const textValue = computed(() => (isSprite.value ? '' : props.name || TEXT_FALLBACK))
 </script>

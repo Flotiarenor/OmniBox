@@ -7,7 +7,7 @@
 1. sprite 里的 `<symbol>` 是 shadow tree，**外部样式进不去** —— 漏写
    `stroke="currentColor"` 时图标仍是黑的，不跟随主题与用户自定义颜色；只写 viewBox
    不写宽高时 `<svg>` 按默认 300×150 撑开整行。这两类静态看 DOM 都"存在且正确"。
-2. `tools/icon_data.json`（冻结的图标源）与生成物 `icons.svg` 可能不同步 ——
+2. `res/icons/icon_data.json`（冻结的图标源）与生成物 `icons.svg` 可能不同步 ——
    有人改了源数据没重新生成，界面照旧是旧图形。
 3. 模板里引用了没冻结的图标名时，`<use>` 指向不存在的 id，结果是**一片空白且无报错**。
 
@@ -83,7 +83,7 @@ class SpriteBuildTests(unittest.TestCase):
         current = SPRITE_FILE.read_text(encoding='utf-8')
         self.assertEqual(
             current, render(load_data()['icons'], load_data()),
-            'icons.svg 与 tools/icon_data.json 不一致：运行 venv/Scripts/python tools/build_icons.py',
+            'icons.svg 与 res/icons/icon_data.json 不一致：运行 venv/Scripts/python tools/build_icons.py',
         )
 
     def test_sprite_contains_exactly_the_frozen_icons(self):
@@ -162,7 +162,7 @@ class IconStyleTests(unittest.TestCase):
     def test_component_uses_absolute_shell_path(self):
         """`href` 必须是绝对路径：壳是 history 路由，相对路径在嵌套路由下会解析错。"""
         source = ICON_COMPONENT.read_text(encoding='utf-8')
-        self.assertIn('/shell/icons.svg#', source)
+        self.assertIn('/res/icons/icons.svg#', source)
         self.assertNotIn("href=\"icons.svg#", source)
 
 

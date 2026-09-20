@@ -454,10 +454,10 @@ body {
 }
 
 /* ===== 图标（sprite 引用）=====
-   图标统一来自壳的 sprite：/shell/icons.svg（由 tools/build_icons.py 生成，
-   源数据 tools/icon_data.json）。用法只有一个：
+   图标统一来自壳的 sprite：/res/icons/icons.svg（由 tools/build_icons.py 生成，
+   源数据 res/icons/icon_data.json）。用法只有一个：
 
-     <svg class="obx-icon"><use href="/shell/icons.svg#gear"></use></svg>
+     <svg class="obx-icon"><use href="/res/icons/icons.svg#gear"></use></svg>
 
    尺寸走 1em、颜色走 currentColor，所以图标自动跟随所在元素的字号与文字色
    （含用户自定义的 --accent / --text-*），换图标时不需要重调排版 —— 这是替换

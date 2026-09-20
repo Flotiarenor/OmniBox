@@ -212,6 +212,7 @@ class PluginFrontendBootstrapTest(unittest.TestCase):
                 self.assertIn(marker, html, '页面本身的内容不该被改动')
                 self.assertIn('/shell/base.js', html, '缺少壳的 Bridge/Utils')
                 self.assertIn('/shell/folder-picker.js', html, '缺少共享目录组件')
+                self.assertIn('/res/icons/icons.svg', html, '缺少图标 sprite 的预取，首屏图标会闪空')
                 self.assertIn("Bridge.setPrefix('demo');", html, '插件前缀必须按路由替换')
 
     def test_non_html_is_served_untouched(self):
@@ -227,6 +228,49 @@ class PluginFrontendBootstrapTest(unittest.TestCase):
                 resp = self.client.get(path)
                 self.assertNotEqual(resp.status_code, 200)
                 self.assertNotIn('outside', resp.get_data(as_text=True))
+
+
+class ResAssetTests(unittest.TestCase):
+    """`/res/*`：仓库级共享资源（图标 sprite）的发布路由。
+
+    两个必须钉住的点，都是"不报错、只是全部失效"的形态：
+
+    1. **免令牌**。新增路由默认受保护（见 `_OPEN_ENDPOINTS` 的注释），漏登记时
+       `/res/icons/icons.svg` 会返回 401 —— 页面本身能打开，只是所有图标都不显示。
+       实装时确实先踩了这一条。
+    2. **只有一份副本**。`/shell/*` 是"dist 优先"（因为 public/shell 会被 Vite 复制进
+       dist），图标刻意不走那条路：源文件就是发布文件，改完立即生效。
+    """
+
+    def setUp(self):
+        self.client = _make_client()
+
+    def test_sprite_is_served_without_token(self):
+        # send_from_directory 会持有文件句柄；测试客户端下不关会冒 ResourceWarning
+        resp = self.client.get('/res/icons/icons.svg')
+        try:
+            self.assertEqual(resp.status_code, 200, '免令牌白名单漏登记时这里会是 401')
+            body = resp.get_data(as_text=True)
+            self.assertIn('<symbol id="settings"', body)
+            self.assertIn('stroke="currentColor"', body, '描边必须写在 symbol 上，否则图标不跟随主题')
+        finally:
+            resp.close()
+
+    def test_stale_shell_path_is_not_served(self):
+        """旧的 `/shell/icons.svg` 必须不再存在：留着就是第二份副本的来源。"""
+        self.assertEqual(self.client.get('/shell/icons.svg').status_code, 404)
+
+    def test_missing_res_file_is_404(self):
+        self.assertEqual(self.client.get('/res/icons/nope.svg').status_code, 404)
+
+    def test_path_traversal_outside_res_is_rejected(self):
+        for path in ('/res/../pyproject.toml',
+                     '/res/%2e%2e/pyproject.toml',
+                     '/res/icons/../../pyproject.toml'):
+            with self.subTest(path=path):
+                resp = self.client.get(path)
+                self.assertNotEqual(resp.status_code, 200)
+                self.assertNotIn('[project]', resp.get_data(as_text=True))
 
 
 if __name__ == '__main__':

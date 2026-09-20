@@ -7,8 +7,8 @@ OmniBox 是本地桌面应用，运行期不能依赖 CDN，也不该为了几�
 连带影响打包收集规则（`docs/Releases/spec_common.py`、`tools/check_packaging.py`）。
 
 所以采用"取一次、冻结进仓库"：本脚本把用到的图标从 `lucide-static` 的官方 SVG
-抽成 `tools/icon_data.json`（只留图形本体与 viewBox，去掉许可注释以外的冗余属性）。
-`tools/build_icons.py` 再据此生成 `shell/frontend/public/shell/icons.svg`。
+抽成 `res/icons/icon_data.json`（只留图形本体与 viewBox，去掉许可注释以外的冗余属性）。
+`tools/build_icons.py` 再据此生成 `res/icons/icons.svg`。
 两个脚本都不参与常规构建，只有增删图标时才需要手动运行本脚本。
 
 用法
@@ -31,7 +31,8 @@ import urllib.request
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_FILE = PROJECT_ROOT / 'tools' / 'icon_data.json'
+# 与生成物同目录：res/icons/ 是图标这件事的唯一落点（源数据、授权、产物都在这里）
+DATA_FILE = PROJECT_ROOT / 'res' / 'icons' / 'icon_data.json'
 CDN = 'https://unpkg.com/lucide-static@{version}/icons/{name}.svg'
 REGISTRY = 'https://registry.npmjs.org/lucide-static'
 
@@ -83,7 +84,7 @@ def load_data() -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description='冻结 Lucide 图标到 tools/icon_data.json')
+    parser = argparse.ArgumentParser(description='冻结 Lucide 图标到 res/icons/icon_data.json')
     parser.add_argument('--add', action='append', default=[], metavar='NAME',
                         help='新增一个图标名（kebab-case，可重复）')
     parser.add_argument('--list', action='store_true', help='只列出已冻结的图标')

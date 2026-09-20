@@ -39,6 +39,9 @@ REQUIRED_PAYLOAD = [
     'plugins/media-player/manifest.json',
     'plugins/media-player/backend/main.py',
     'shell/backend/file_server.py',
+    # res/ 不被 Vite 处理，只由 file_server 的 /res/* 路由发布，必须单独收集；
+    # 漏了它冻结后所有图标 404（界面只剩文字），而构建日志全绿。
+    'res/icons/icons.svg',
 ]
 
 # 绝不能进包的东西
@@ -120,6 +123,10 @@ def _copy_minimal_project(dest: Path) -> None:
     plugin.mkdir(parents=True)
     (dest / 'plugins' / 'demo' / 'manifest.json').write_text('{}', encoding='utf-8')
     (plugin / 'main.py').write_text('# demo', encoding='utf-8')
+
+    # 仓库级共享资源（不被 Vite 处理，必须由 spec 单独收集）
+    (dest / 'res' / 'icons').mkdir(parents=True)
+    (dest / 'res' / 'icons' / 'icons.svg').write_text('<svg></svg>', encoding='utf-8')
 
     # 噪声：缓存目录与字节码不应进包
     cache = plugin / '__pycache__'

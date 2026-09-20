@@ -131,6 +131,14 @@ def collect_data_files(root: Path):
     for src, rel in _iter_files(frontend_dist, root):
         datas.append((str(src), str(rel.parent)))
 
+    # ── 仓库级共享资源（res/：目前是图标 sprite）──
+    # 与 /shell/* 不同：这批不被 Vite 处理，只由 file_server.py 的 /res/* 路由发布，
+    # 所以必须单独收集，否则冻结后图标一律 404（界面只剩文字）。
+    res_dir = root / 'res'
+    if res_dir.is_dir():
+        for src, rel in _iter_files(res_dir, root):
+            datas.append((str(src), str(rel.parent)))
+
     # ── 插件目录（保持 plugins/<name>/... 结构）──
     plugins_dir = root / 'plugins'
     if not plugins_dir.is_dir():
