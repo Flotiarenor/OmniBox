@@ -40,7 +40,6 @@ class PixivSyncPlugin(PluginBase):
             "key": "refresh_token",
             "label": "Pixiv Refresh Token",
             "type": "text",
-            "central": False,  # 敏感项，不出现在集中设置面板
             # 申请 Shell 文件防护：本插件的设置文件（<config>/plugins/pixiv-sync.json）
             # 会被 /file、/files、/thumbs 无条件拒绝。refresh_token 是账号级长期凭据
             # （可无限换取 access_token 且自动轮换），而插件文件根由设置改写，

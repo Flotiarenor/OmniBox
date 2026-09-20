@@ -42,7 +42,6 @@ if TYPE_CHECKING:
 #   {"key": "sort_by", "label": "排序方式", "type": "select",
 #    "options": [{"label": "修改时间", "value": "mtime"}, {"label": "文件名", "value": "name"}]}
 # 可选字段：
-#   "central": False   — 不在集中设置面板显示（默认显示）
 #   "help": "..."      — 设置面板悬浮提示
 #   "secret": True     — 凭据类设置项。两件事一起生效：
 #                        ① get_settings() 对外返回掩码（本方法会经 register_api

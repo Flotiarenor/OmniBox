@@ -25,7 +25,9 @@ limitations under the License.
 - 单图按需生成（/thumbs 路由），批量并行生成（全量重建/同步任务）；
 - `clear()` 先 `wal_checkpoint(TRUNCATE)` 再 `VACUUM`，并加进程级锁，
   避免与按需生成的连接交错导致收缩静默失败；
-- 生成失败返回 None 且不写缓存（不缓存假缩略图）。
+- 生成失败返回 None 且不写缓存（不缓存假缩略图）；
+- 实例登记在模块级弱引用表里，`cache_stats()` / `clear_all_caches()` 供壳回答
+  "缩略图缓存占了多少、能不能一次清掉"（不需要插件配合，也不去猜插件的属性名）。
 
 典型用法：
     cache = ThumbCache(root / '.cache' / 'thumbs.db', size=(300, 300))
@@ -40,6 +42,7 @@ import os
 import sqlite3
 import threading
 import time
+import weakref
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -55,6 +58,13 @@ DEFAULT_MIME_MAP = {
 
 # 保护「清空+收缩」段的进程级锁：VACUUM 需要独占数据库。
 _CLEAR_LOCK = threading.Lock()
+
+# 已创建的缓存实例登记表（弱引用：插件卸载后自动出表，不会把实例吊住）。
+# 实例由各插件自己持有，而「一共占了多少、能不能一次清掉」是壳要回答的问题；
+# 靠遍历插件实例猜属性名（`thumb_cache` / `_thumb_cache` 两种写法都在用）会在
+# 插件改名后静默漏掉一个缓存，登记表把"谁在用这套缓存"变成一处事实。
+_INSTANCES: "weakref.WeakSet[ThumbCache]" = weakref.WeakSet()
+_INSTANCES_LOCK = threading.Lock()
 
 
 class ThumbCache:
@@ -82,6 +92,8 @@ class ThumbCache:
         self._mtime_tolerance = 0.5
         # 自定义生成器（可选）：优先于默认 Pillow 实现；子类也可直接覆写 _generate()
         self._generator = generator
+        with _INSTANCES_LOCK:
+            _INSTANCES.add(self)
 
     # ===== 内部 =====
 
@@ -418,5 +430,63 @@ class ThumbCache:
         except Exception:
             pass
 
+    def stats(self) -> Dict[str, int]:
+        """该缓存的条目数与磁盘占用（DB + WAL/SHM）。
+
+        DB 文件还不存在时直接返回 0：不调 `_connect()`，否则"看一眼占用"就会
+        给每个插件凭空建出一个空数据库。文件损坏 / 表缺失时占用照报，条目数记 0。
+        """
+        if not self.db_path.exists():
+            return {'count': 0, 'bytes': 0}
+        count = 0
+        try:
+            conn = sqlite3.connect(str(self.db_path), timeout=15)
+            try:
+                row = conn.execute('SELECT COUNT(*) FROM thumbs').fetchone()
+                count = int(row[0]) if row else 0
+            finally:
+                conn.close()
+        except Exception:
+            count = 0
+        return {'count': count, 'bytes': self._disk_bytes()}
+
+    def _disk_bytes(self) -> int:
+        """DB 及其 WAL / SHM 副文件的实际占用（缺失的按 0 计）。"""
+        total = 0
+        for suffix in ('', '-wal', '-shm'):
+            try:
+                total += self.db_path.with_name(self.db_path.name + suffix).stat().st_size
+            except OSError:
+                pass
+        return total
+
     def close(self) -> None:
         """无长连接（每次操作短连接），保留接口便于对称管理。"""
+
+
+# ===== 进程级维护入口（集中设置页的「数据与缓存」段用） =====
+
+def all_caches() -> List["ThumbCache"]:
+    """当前进程内所有缩略图缓存实例的快照（先取快照再遍历，避免迭代中改动）。"""
+    with _INSTANCES_LOCK:
+        return list(_INSTANCES)
+
+
+def cache_stats() -> List[Dict[str, Any]]:
+    """全部缓存的占用快照：[{path, count, bytes}, ...]，按路径排序保证显示稳定。"""
+    items = [{'path': str(cache.db_path), **cache.stats()} for cache in all_caches()]
+    return sorted(items, key=lambda item: item['path'])
+
+
+def clear_all_caches() -> Dict[str, int]:
+    """清空所有缓存，返回 {caches: 实例数, freed_bytes: 释放字节数}。
+
+    逐个调用实例自己的 `clear()`（而不是删文件）：SQLite 句柄由实例管理，
+    外部直接删一个还开着的 DB 在 Windows 上会失败，而且 WAL 会留下孤儿文件。
+    """
+    caches = all_caches()
+    before = sum(cache.stats()['bytes'] for cache in caches)
+    for cache in caches:
+        cache.clear()
+    after = sum(cache.stats()['bytes'] for cache in caches)
+    return {'caches': len(caches), 'freed_bytes': max(0, before - after)}

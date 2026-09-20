@@ -229,7 +229,7 @@ Pixiv 树按作品号大者优先（老作品被重新下载、目录 mtime 更�
 
 `get_settings(rel_path)` 按「当前文件夹 → 父文件夹 → … → 全局 → 硬默认」合并；
 全局来源有两处：`folders.__global__`（更早的兼容位置，当前代码不再写入）与
-`settings_schema` 声明的插件级键（壳设置面板与 `save_folder_settings('')` 走
+`settings_schema` 声明的插件级键（插件的设置弹窗与 `save_folder_settings('')` 走
 `PluginBase.save_settings()` 写入，是当前写入路径）。**只有真正存过值的插件级键**
 才覆盖 `__global__`——用 `self.setting()` 的 schema 默认值去覆盖会让老配置里的
 全局值被默认值悄悄顶掉。`folders` 的文件夹级键存在即覆盖全局。
@@ -352,7 +352,7 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
 
 ## 7. 设置项
 
-`settings_schema`（全局，集中设置面板可见）：
+`settings_schema`（在插件自己的设置弹窗里可见，经 `<插件>__get_settings_schema` 读取）：
 
 | key | 类型 | 默认 | 说明 |
 |-----|------|------|------|

@@ -55,7 +55,7 @@
 
 ```python
 [
-    {"key": "root_dir", "label": "ALAS 项目根目录", "type": "directory", "central": True},
+    {"key": "root_dir", "label": "ALAS 项目根目录", "type": "directory"},
     {"key": "port", "label": "Web 端口", "type": "number", "default": 22267},
     {"key": "password", "label": "访问密码（--key）", "type": "text"},
     {"key": "use_proxy", "label": "经 OmniBox 反代同源嵌入", "type": "checkbox", "default": False},
@@ -177,7 +177,7 @@ CREATE TABLE player_teams (
 **设置项**（公共）：
 
 ```python
-[{"key": "root_dir", "label": "识别系统项目根目录", "type": "directory", "central": True}]
+[{"key": "root_dir", "label": "识别系统项目根目录", "type": "directory"}]
 ```
 
 ---

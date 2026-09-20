@@ -107,7 +107,7 @@ plugins/
 
 ```python
 settings_schema = [
-    {"key": "model_path", "label": "打标模型 (.onnx)", "type": "text", "central": True,
+    {"key": "model_path", "label": "打标模型 (.onnx)", "type": "text",
      "placeholder": "backend/runtime/models/wd-swinv2-tagger-v2.onnx",
      "help": "支持 WD SwinV2 / EVA02 / ConvNext / ViT；JoyTag 需额外安装 joytag 运行时"},
     {"key": "threshold", "label": "标签置信度阈值", "type": "range",

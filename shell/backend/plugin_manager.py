@@ -572,7 +572,7 @@ class PluginManager:
                 self._api_methods.pop(method_key, None)
             fail(str(e))
 
-    # ---------- 集中设置面板 ----------
+    # ---------- 插件方法出口约束 ----------
 
     @staticmethod
     def _exposed_method(instance: PluginBase, method_name: str, method_fn: Callable) -> Callable:
@@ -592,51 +592,3 @@ class PluginManager:
                                 method_fn(*args, **kwargs))
 
         return masked
-
-    def get_settings_panels(self) -> List[dict]:
-        """返回声明了 settings_schema 的插件的设置面板数据。
-        只显示 root_dir 或声明 central:true 的字段，其余在插件内部设置。"""
-        panels = []
-        for name, inst in self._instances.items():
-            schema = getattr(inst, 'settings_schema', None) or []
-            if not schema:
-                continue
-            # 过滤：若 schema 中有 central 标记，仅显示 root_dir 或 central:true 的字段
-            # 若无标记（旧版兼容），显示全部字段
-            has_central = any('central' in f for f in schema)
-            if has_central:
-                central_schema = [f for f in schema if f.get('key') == 'root_dir' or f.get('central') is True]
-            else:
-                central_schema = schema
-            if not central_schema:
-                continue
-            try:
-                values = inst.get_settings()
-            except Exception as e:
-                values = {}
-                log.error(f"[PluginManager] 读取设置失败 {name}: {e}")
-            # 集中设置面板同样走 Shell 侧脱敏：面板的 values 也会发给前端，
-            # 与 /api/<插件>__get_settings 是同一条泄露路径。
-            values = mask_secrets(schema, values)
-            manifest = self._manifests.get(name, {})
-            panels.append({
-                'name': name,
-                'displayName': manifest.get('displayName', name),
-                'icon': manifest.get('icon', '📦'),
-                'schema': central_schema,
-                'values': values if isinstance(values, dict) else {},
-            })
-        return panels
-
-    def save_settings_panel(self, plugin_name: str, values: dict) -> dict:
-        """保存指定插件的设置（走插件自身的 save_settings）"""
-        inst = self._instances.get(plugin_name)
-        if inst is None:
-            return {"success": False, "error": f"插件不存在: {plugin_name}"}
-        try:
-            result = inst.save_settings(values)
-            if isinstance(result, dict):
-                return result
-            return {"success": True}
-        except Exception as e:
-            return {"success": False, "error": str(e)}

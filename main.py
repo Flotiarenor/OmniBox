@@ -39,6 +39,7 @@ from shell.backend.paths import (
     resolve_data_root,
 )
 from shell.backend.plugin_manager import PluginManager
+from shell.backend.shell_info import ShellInfo, stored_log_level
 
 log = logging.getLogger(__name__)
 
@@ -199,6 +200,8 @@ def _run_app(config, manager):
     class ShellAPI:
         """PyWebView 的 js_api 载体：属性即暴露给前端的 system_* 方法。"""
 
+    shell_info = ShellInfo(config, str(get_config_dir()))
+
     # PyWebView 的 js_api 载体：属性名即暴露给前端的方法名。
     # 这里刻意用 setattr 动态挂载（而不是逐个 `api.xxx = ...`）：方法集合包含
     # 由插件注册的动态名（<插件>__<方法>），静态属性声明无法覆盖；集中成一张
@@ -211,12 +214,15 @@ def _run_app(config, manager):
         'system_get_plugin_extensions': manager.get_plugin_extensions,
         'system_get_plugin_status': manager.get_plugin_status,
         'system_get_config': lambda: config,
-        'system_settings_list': manager.get_settings_panels,
-        'system_settings_save': manager.save_settings_panel,
         'system_toggle_fullscreen': _toggle_fullscreen,
         # 插件设置弹窗的目录选择器（shell/base.js 的 type:"directory"）用它列盘符/子目录；
         # 桌面模式下 js_api 只拿到这张表，所以必须在这里也注册一次（web 模式在 file_server）
         'system_browse_dir': lambda path='': list_subdirectories(path),
+        # 集中设置页「数据与缓存 / 诊断 / 关于」段（web 模式在 file_server 同一份实现）
+        'system_get_shell_info': shell_info.get_info,
+        'system_set_log_level': shell_info.set_log_level,
+        'system_clear_thumb_caches': shell_info.clear_thumb_caches,
+        'system_open_log_dir': shell_info.open_log_dir,
     }
     shell_methods.update(manager.get_api_methods())
     for method_name, method_fn in shell_methods.items():
@@ -245,7 +251,8 @@ def main():
 
     # 日志必须最先初始化：发行版打包 console=False 时没有控制台，
     # 所有诊断信息只能靠文件通道（shell/backend/app_logging.py）。
-    log_file = setup_logging(get_config_dir())
+    # 级别取集中设置页保存过的那一档（未设置/非法时回退 INFO）。
+    log_file = setup_logging(get_config_dir(), level=stored_log_level(get_config_dir()))
     if log_file:
         log.info(f"[OmniBox] 日志文件: {log_file}")
 

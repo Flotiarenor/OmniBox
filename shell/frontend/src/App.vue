@@ -14,9 +14,12 @@ import {
 import SettingsView from './views/SettingsView.vue'
 import StatusView from './views/StatusView.vue'
 import { toastError } from './core/toast'
+import { useBridge } from './core/bridge'
+import { getStartupPrefs, rememberLastRoute, resolveStartRoute } from './core/preferences'
 
 const router = useRouter()
 const route = useRoute()
+const bridge = useBridge()
 const isReady = ref(false)
 const error = ref('')
 const navHidden = ref(false)
@@ -184,15 +187,19 @@ onMounted(async () => {
         meta: { entryUrl: p.entryUrl, pluginName: p.name }
       })
     })
-    if (plugins.length > 0 && route.path === '/') {
-      router.replace(plugins[0].route)
-    } else if (route.path === '/') {
-      router.replace('/settings')
+    if (route.path === '/') {
+      // 首屏目标由「启动与窗口」偏好决定（默认回到上次离开的页面）
+      router.replace(resolveStartRoute(plugins.map(p => p.route)))
     }
     // 供插件 iframe 内通用扩展入口调用：跳转到某个插件路由
     ;(window as any).__omniboxNavigate = (path: string) => router.push(path)
 
     isReady.value = true
+
+    if (getStartupPrefs().fullscreen) {
+      // 桌面窗口：让 pywebview 进全屏；浏览器模式下后端是空实现，忽略即可
+      try { await bridge.call('system_toggle_fullscreen') } catch { /* 非桌面模式 */ }
+    }
   } catch (e: any) {
     error.value = e.message || '未知错误'
     console.error('插件加载失败:', e)
@@ -233,6 +240,8 @@ watch(
     } else if (route.path === '/status') {
       activePlugin.value = null
     }
+    // 记下当前页面：下次启动若选「上次离开的页面」就回到这里
+    if (name || route.path === '/settings') rememberLastRoute(route.path)
     // 路由切换后的可见性收敛：keep-alive 的 iframe 已存在（这里同步发通知），
     // 不保活的 iframe 由本次渲染挂载/卸载，交给 setFrameRef 与下面的
     // nextTick 兜底，保证两种形态都恰好收到一次 shown / hidden / dispose。

@@ -433,13 +433,6 @@ class PluginSpeakDirectTests(unittest.TestCase):
         self.assertEqual(settings['reader_font_size'], 22)
         self.assertEqual(settings['reader_theme'], 'sepia')
 
-    def test_tts_settings_are_not_in_central_panel(self):
-        """朗读项全部 central:False：集中设置面板不该再出现引擎/端点/音色。"""
-        for item in self.plugin.settings_schema:
-            if str(item['key']).startswith('tts_'):
-                self.assertFalse(item.get('central', True),
-                                 f"{item['key']} 仍会出现在集中设置面板里")
-
     # ===== 前端调用形态（transport 层回归） =====
     #
     # 真实事故：前端写 `Bridge.call('get_settings', '')`（抄了 image-viewer 的写法，

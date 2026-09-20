@@ -330,8 +330,8 @@ class AppInstance:
 
         位置是 `<user_data>/.config/plugins/<插件名>.json`（`SettingsStore` 的
         路径规则，`shell/backend/settings_store.py`）。直接写文件而不是走
-        `system_settings_save`：后者要求先知道设置面板的 id，而且用它会让"实例
-        启动时就带着正确端口"这件事退化成"启动后再改、再重启节点"。
+        `<插件>__save_settings`：后者要求插件实例已启动并注册好 API，而这里要的
+        正是"实例启动时就带着正确端口"，用它会让这件事退化成"启动后再改、再重启节点"。
         """
         payload: Dict[str, Dict[str, Any]] = {}
         for plugin_name, values in self.plugin_settings.items():

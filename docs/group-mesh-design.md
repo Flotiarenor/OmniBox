@@ -749,7 +749,7 @@ Flask 服务，不是"WebView → 127.0.0.1 网关 → 加密通道"这一层。
 | 2 | 插件读取主体 | **[已实现]** | `PluginBase.current_principal()` / `require_principal()`；壳在鉴权通过后写入 `ContextVar`，插件无法从请求参数影响它；后台线程读不到主体 |
 | 3 | 数据路由授权 | **[未实现]** | `/file`、`/thumbs` 仍只做令牌 + 路径安全 + 受保护判定，没有主体级检查点；物化缓存因此对本机持令牌者全开 |
 | 4 | 文件根支持远端来源 | **[部分 / 旁路达成]** | `get_file_roots()` 仍只返回本机路径；等价能力由 `ensure_file()` 钩子 + 远端物化 + 网络位置扩展达成（§15.1、§15.3） |
-| 5 | 设置写入限权 | **[已实现]** | `system_settings_save` / `system_get_config` / `system_get_plugin_status` 限 owner 与 admin（403），普通成员仍可调插件 API |
+| 5 | 壳端点限权 | **[已实现]** | `system_get_config` / `system_get_plugin_status` 与壳自身运维端点（日志级别、清空缩略图缓存、打开日志目录）限 owner 与 admin（403），普通成员仍可调插件 API；插件设置由 `<插件>__save_settings` 写入，是否限权由插件自行判定 |
 | 6 | `minShellVersion` 运行时校验 | **[未实现 / 决定不做]** | 当前只由 `tools/check_plugins.py` 门禁校验格式；壳加载时不比较版本。当前只支持与最新壳配套发布，因此不引入运行时拒绝逻辑 |
 
 **第 2 项的注入约束**：插件自起的后台线程不继承请求上下文，涉及主体的后台任务

@@ -299,9 +299,10 @@ from pathlib import Path
 from shell.backend.plugin_base import PluginBase
 
 class MyPlugin(PluginBase):
-    # 声明设置项：集中设置面板 + SettingsStore 持久化由框架自动处理
+    # 声明设置项：设置弹窗（shell/base.js 的 openSettingsModal）+ SettingsStore
+    # 持久化由框架自动处理
     settings_schema = [
-        {"key": "root_dir", "label": "数据根目录", "type": "text", "central": True,
+        {"key": "root_dir", "label": "数据根目录", "type": "text",
          "help": "存放数据的根目录"},
         {"key": "per_page", "label": "每页数量", "type": "number",
          "default": 40, "min": 10, "max": 200},
@@ -1073,7 +1074,8 @@ def _get_thumb(self, rel_path: str) -> Path:
 
 ### 8.2 声明设置项
 
-在插件类中通过 `settings_schema` 声明设置项，框架自动完成持久化 + 集中设置面板集成：
+在插件类中通过 `settings_schema` 声明设置项，框架自动完成持久化，壳的
+`openSettingsModal()`（`shell/base.js`，插件自己在设置按钮里调用）按 schema 渲染表单：
 
 ```python
 class MyPlugin(PluginBase):
@@ -1100,7 +1102,6 @@ class MyPlugin(PluginBase):
 | `type`                     | 必填 | `text` / `number` / `range` / `select` / `checkbox` / `textarea` / `directory` |
 | `default`                  | 可选 | 默认值（未保存过时使用）                                                                  |
 | `help`                     | 可选 | 悬浮`?` 提示文本（鼠标悬停显示）                                                        |
-| `central`                  | 可选 | `True` 在集中设置面板显示；默认仅显示 `root_dir` 或有 `central` 标记的字段          |
 | `min` / `max` / `step` | 可选 | number/range 类型约束                                                                     |
 | `options`                  | 可选 | select 类型的选项列表                                                                     |
 | `multi`                    | 可选 | 仅 `directory`：多值字段，列表可增删多行，第 2 行起标「额外」                          |
@@ -1128,7 +1129,7 @@ class MyPlugin(PluginBase):
   而插件 iframe 与壳同源 —— 返回明文等于让任何一段同源脚本直接问 API 拿到凭据，
   根本不用碰文件；
 - 脱敏**不依赖你覆写 get_settings 时记得调 super()**：Shell 在
-  `<插件>__get_settings` 与集中设置面板这两个出口还会按 schema 再掩一次
+  `<插件>__get_settings` 这个出口还会按 schema 再掩一次
   （`PluginBase.mask_secrets`）。覆写只影响你自己看到的形状，不影响对外安全；
 - 插件侧**不需要写任何代码**：`setting()` 读到的仍是明文（插件自己要用），
   只有对外的 `get_settings()` 脱敏；

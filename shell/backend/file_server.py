@@ -38,6 +38,7 @@ from shell.backend.principal import CURRENT_PRINCIPAL, PrincipalStore
 from shell.backend.protected_paths import collect as collect_protected_files
 from shell.backend.protected_paths import matches as is_protected_path
 from shell.backend.protected_paths import normalize as normalize_path
+from shell.backend.shell_info import ShellInfo
 
 log = logging.getLogger(__name__)
 
@@ -322,18 +323,23 @@ def _status_response(code: int, title: str, detail: str):
 # 只有管理员（owner / admin）能调用的 API 方法。
 #
 # 为什么需要这份清单（设计文档 group-mesh §12 第 5 项）：`/api/<插件>__<方法>` 原先
-# 只校验令牌，因此任何持令牌者都能改**任意**插件的设置、读走完整配置 ——
-# 而设置里可能包含绑定地址、下载目录、凭据键名这类"改了就等于改了别人机器行为"的
-# 项。判据是 `PrincipalContext.is_admin`；老部署的全局令牌会自举成 owner
+# 只校验令牌，任何持令牌者都能拿到壳的完整配置（含绑定地址与数据目录）、
+# 翻看各插件加载状态、改别人的日志级别或一次清空全部缩略图缓存。
+# 这些不是"某个插件的功能"，而是描述这台机器本身的壳级事实。
+# 判据是 `PrincipalContext.is_admin`；老部署的全局令牌会自举成 owner
 # （见 principal.py），因此本机使用者不受影响。
 #
 # 限定范围：**只守壳自己的端点**。插件方法（`<插件>__<方法>`）里确实有该限权的
 # （group-mesh 的节点开关、权限档位变更），但把插件名硬编码进壳会把两层耦合起来；
 # 插件侧需要限权时应调 `PluginBase.require_principal()` 自己判。
 _ADMIN_ONLY_API = frozenset({
-    'system_settings_save',
     'system_get_config',
     'system_get_plugin_status',
+    # 壳自身的运维端点：磁盘路径 / 日志级别 / 清缓存 / 开目录，一律管理员专属
+    'system_get_shell_info',
+    'system_set_log_level',
+    'system_clear_thumb_caches',
+    'system_open_log_dir',
 })
 
 
@@ -346,6 +352,8 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
     # 而"这次调用是谁"从此有答案。
     _principals = PrincipalStore(get_config_dir(), bootstrap_token=_token)
     _principals.ensure_bootstrap()
+    # 壳自身信息 / 运维端点（集中设置页的「数据与缓存 / 诊断 / 关于」段）
+    shell_info = ShellInfo(config, str(get_config_dir()))
 
     def _protected_paths() -> List[Path]:
         r"""当前必须拒绝返回的路径：壳自己的凭据 + 插件申报的受保护路径。
@@ -506,13 +514,19 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             'system_get_plugins': plugin_manager.get_frontend_manifests,
             'system_get_plugin_extensions': plugin_manager.get_plugin_extensions,
             'system_get_plugin_status': plugin_manager.get_plugin_status,
-            'system_settings_list': plugin_manager.get_settings_panels,
-            'system_settings_save': plugin_manager.save_settings_panel,
             'system_get_config': lambda: config,
-            'system_toggle_fullscreen': lambda: None,
-            # 集中设置面板的 folder 类型字段：浏览本机绝对路径，走共享基建
-            # （与 image-viewer 的 browse_dir 同一套实现；空路径/哨兵 = 盘符层）。
+            # 浏览器模式没有桌面窗口可全屏：显式回失败，免得设置页报「已切换」
+            # 却什么都没发生（插件侧调用点都忽略返回值，不受影响）
+            'system_toggle_fullscreen': lambda: {
+                'success': False, 'error': '浏览器访问模式没有桌面窗口可全屏'},
+            # 插件设置弹窗里 type:"directory" 字段的浏览入口（shell/folder-picker.js）：
+            # 浏览本机绝对路径，走共享基建（与 image-viewer 的 browse_dir 同一套实现；
+            # 空路径/哨兵 = 盘符层）。
             'system_browse_dir': lambda path='': list_subdirectories(path),
+            'system_get_shell_info': shell_info.get_info,
+            'system_set_log_level': shell_info.set_log_level,
+            'system_clear_thumb_caches': shell_info.clear_thumb_caches,
+            'system_open_log_dir': shell_info.open_log_dir,
         })
 
         fn = api_methods.get(method)

@@ -11,7 +11,6 @@ html, body {
 .app-shell {
   /* Shell 专属变量（深色侧边栏，不随主题变化） */
   --sidebar-bg: #1e2a3a;
-  --sidebar-width: 200px;
 
   display: flex;
   height: 100vh;
@@ -21,8 +20,10 @@ html, body {
   font-family: 'Segoe UI', system-ui, sans-serif;
 }
 
+/* 宽度取插件契约 token --nav-width（默认 200px）：集中设置页的「导航栏宽度」
+   写的就是它，插件自己的导航也会跟着对齐。 */
 .nav-sidebar {
-  width: var(--sidebar-width);
+  width: var(--nav-width, 200px);
   background: var(--sidebar-bg);
   color: #ecf0f1;
   display: flex;
@@ -84,31 +85,57 @@ html, body {
 }
 .error { color: var(--danger); }
 
-/* ===== 集中设置面板 ===== */
+/* ===== 集中设置页（左侧分类 + 右侧面板） ===== */
 .settings-page {
   flex: 1;
+  display: flex;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.settings-nav {
+  width: 180px;
+  flex-shrink: 0;
+  padding: 20px 10px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-surface);
+  overflow-y: auto;
+}
+.settings-nav-title {
+  padding: 0 10px 12px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  margin-bottom: 2px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.settings-nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.settings-nav-item.active { background: var(--bg-active); color: var(--accent); font-weight: 600; }
+.settings-nav-item .icon { font-size: 15px; }
+
+.settings-main {
+  flex: 1;
+  min-width: 0;
   overflow-y: auto;
   padding: 24px 32px;
   box-sizing: border-box;
 }
-.settings-page-header h1 {
-  margin: 0 0 4px;
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-.settings-page-header p {
-  margin: 0 0 24px;
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-.settings-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-  gap: 16px;
-  align-items: start;
-}
 .settings-panel {
+  max-width: 820px;
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -124,42 +151,53 @@ html, body {
 }
 .settings-panel-header .panel-icon { font-size: 20px; }
 .settings-panel-header .panel-title { font-size: 15px; font-weight: 600; color: var(--text-primary); }
-.settings-panel-body { padding: 16px 18px; }
-.settings-panel-footer {
+.settings-panel-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 16px; }
+.settings-hint { margin: 0; }
+
+/* 只读信息行（路径、版本、许可等） */
+.info-row {
   display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 12px 18px;
-  border-top: 1px solid var(--border);
-  background: var(--bg-app);
+  align-items: baseline;
+  gap: 12px;
+  font-size: 13px;
 }
-.settings-empty {
-  padding: 48px 0;
-  text-align: center;
-  color: var(--text-secondary);
+.info-label { flex-shrink: 0; width: 84px; color: var(--text-secondary); }
+.info-value {
+  min-width: 0;
+  color: var(--text-primary);
+  word-break: break-all;
+  font-family: inherit;
 }
+code.info-value { font-family: Consolas, 'Courier New', monospace; font-size: 12px; }
+a.info-value { color: var(--accent); text-decoration: none; }
+a.info-value:hover { text-decoration: underline; }
+
+/* 插件缓存 / 插件清单一览表 */
+.table-scroll { overflow-x: auto; }
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.data-table th, .data-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  color: var(--text-primary);
+}
+.data-table th { font-weight: 500; color: var(--text-secondary); }
+.data-table tfoot td { border-bottom: 0; border-top: 1px solid var(--border); color: var(--text-secondary); }
+.data-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.data-table .mono { font-family: Consolas, 'Courier New', monospace; font-size: 12px; word-break: break-all; }
+
+.fail-list { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-primary); }
+.fail-list li { margin-bottom: 4px; }
+.fail-list .mono { margin-left: 8px; color: var(--text-secondary); font-size: 12px; }
 
 /* ===== 设置表单（与 base.css 的 .field 系列同名同款） ===== */
-.settings-form { display: flex; flex-direction: column; gap: 14px; }
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field-label { font-size: 13px; font-weight: 500; color: var(--text-primary); }
-.field-label.required::after { content: ' *'; color: var(--danger); }
 .field-help { font-size: 12px; color: var(--text-secondary); }
-.field-tip {
-  display: inline-block;
-  width: 16px; height: 16px;
-  line-height: 16px;
-  text-align: center;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
-  background: var(--bg-hover);
-  border-radius: 50%;
-  cursor: help;
-  margin-left: 4px;
-  vertical-align: middle;
-}
-.field-tip:hover { color: var(--accent); background: var(--bg-active); }
 .field input[type="text"],
 .field input[type="number"],
 .field select,
@@ -175,11 +213,14 @@ html, body {
 }
 .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); }
 .field textarea { min-height: 120px; resize: vertical; font-family: inherit; }
-.field-checkbox { flex-direction: row; align-items: center; gap: 8px; }
-.field-checkbox input { width: 16px; height: 16px; accent-color: var(--accent); }
 .field-range { display: flex; align-items: center; gap: 12px; }
 .field-range input[type="range"] { flex: 1; accent-color: var(--accent); }
 .field-range-value { min-width: 40px; text-align: right; font-size: 13px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.field-inline { display: flex; align-items: center; gap: 8px; }
+/* 纵向 flex 容器里的按钮默认会被拉成整行宽：设置页的按钮按内容宽度排 */
+.field > .btn { align-self: flex-start; }
+.field-checkbox-row { display: flex; align-items: center; gap: 8px; }
+.field-checkbox-row input { width: 16px; height: 16px; accent-color: var(--accent); }
 
 /* ===== Shell Toast ===== */
 .toast-container {
@@ -222,7 +263,7 @@ html, body {
   border-color: var(--accent);
 }
 
-/* 颜色分组 - 展开折叠 */\n.color-section { margin-top: 0; }
+/* 颜色分组 - 展开折叠 */
 .color-section { margin-top: 0; }
 .color-group-header {
   display: flex;

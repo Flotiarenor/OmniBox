@@ -250,12 +250,6 @@ class _StubPluginManager:
     def get_plugin_status(self):
         return []
 
-    def get_settings_panels(self):
-        return []
-
-    def save_settings_panel(self, *_args, **_kwargs):
-        return {'success': True}
-
     def get_plugin_instance(self, _name):
         return None
 
@@ -542,9 +536,9 @@ class WhoAmIPlugin(PluginBase):
 class AdminOnlyEndpointsTest(unittest.TestCase):
     """管理员专属端点（设计文档 group-mesh §12 第 5 项）。
 
-    原状：`system_settings_save` / `system_get_config` 只校验令牌，任何持令牌者都能
-    改任意插件的设置、读走完整配置 —— 而设置里有绑定地址、下载目录这类"改了就等于
-    改了别人机器行为"的项。现在按角色判定：管理员通过，普通成员 403。
+    原状：`system_get_config` / `system_get_plugin_status` 只校验令牌，任何持令牌者
+    都能读走完整配置（含绑定地址、数据目录）与各插件加载状态。现在按角色判定：
+    管理员通过，普通成员 403。
     """
 
     def setUp(self):
@@ -568,15 +562,14 @@ class AdminOnlyEndpointsTest(unittest.TestCase):
                                 json=payload or {'args': [], 'kwargs': {}},
                                 headers={TOKEN_HEADER: token})
 
-    def test_owner_can_read_config_and_save_settings(self):
+    def test_owner_is_not_blocked_on_admin_endpoints(self):
         """自举成 owner 的老令牌不受影响：本机使用者无需任何操作。"""
         self.assertEqual(self._post('system_get_config', self.owner_token).status_code, 200)
-        self.assertEqual(self._post('system_settings_save', self.owner_token).status_code, 200)
+        self.assertEqual(self._post('system_get_plugin_status', self.owner_token).status_code, 200)
 
     def test_member_is_forbidden_on_admin_endpoints(self):
         self.store.add('alice', 'alice-token', role=ROLE_MEMBER, name='Alice')
-        for method in ('system_get_config', 'system_settings_save',
-                       'system_get_plugin_status'):
+        for method in ('system_get_config', 'system_get_plugin_status'):
             with self.subTest(method=method):
                 self.assertEqual(self._post(method, 'alice-token').status_code, 403)
 
@@ -585,7 +578,7 @@ class AdminOnlyEndpointsTest(unittest.TestCase):
         self.assertEqual(self._post('system_get_config', 'carol-token').status_code, 200)
 
     def test_member_can_still_call_plugin_apis(self):
-        """限权只覆盖壳自己的三个端点：插件 API 不受影响（由插件自己决定要不要限）。"""
+        """限权只覆盖壳自己的端点：插件 API 不受影响（由插件自己决定要不要限）。"""
         self.store.add('alice', 'alice-token', role=ROLE_MEMBER)
         self.assertEqual(self._post('system_get_plugins', 'alice-token').status_code, 200)
 

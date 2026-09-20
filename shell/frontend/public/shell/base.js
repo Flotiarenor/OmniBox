@@ -145,7 +145,7 @@ window.addEventListener('message', function(event) {
   var data = event.data;
   if (!data || typeof data.type !== 'string') return;
   if (data.type === 'omnibox:settings-changed') {
-    // 集中设置变更：整页重载（插件自身状态由设置重新拉取）
+    // 壳通知设置已变更：整页重载（插件自身状态由设置重新拉取）
     window.location.href = window.location.href.split('?')[0] + '?_t=' + Date.now();
     return;
   }

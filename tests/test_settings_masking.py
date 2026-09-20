@@ -245,13 +245,6 @@ class ShellSideMaskingTests(unittest.TestCase):
         self.plugin._settings_store = SettingsStore(str(self.tmp / 'config' / 'plugins'))
         self.plugin.update_setting('refresh_token', REAL_TOKEN)
 
-    def _manager(self):
-        # 不走 __init__：它要扫描真实插件目录，而这里只需要实例表与清单表。
-        manager = PluginManager.__new__(PluginManager)
-        manager._instances = {self.plugin.name: self.plugin}
-        manager._manifests = {'demo': {'displayName': 'Demo', 'icon': '📦'}}
-        return manager
-
     def test_override_indeed_bypasses_the_base_class_mask(self):
         """前置条件：覆写后的返回值是明文 —— 这正是需要 Shell 兜住的场景。"""
         self.assertEqual(self.plugin.get_settings()['refresh_token'], REAL_TOKEN)
@@ -281,14 +274,6 @@ class ShellSideMaskingTests(unittest.TestCase):
         wrapped = PluginManager._exposed_method(
             self.plugin, 'get_settings', lambda: ['not-a-dict'])
         self.assertEqual(wrapped(), ['not-a-dict'])
-
-    def test_settings_panel_values_are_masked(self):
-        """集中设置面板（system_settings_list）是同一条泄露路径，同样要脱敏。"""
-        panels = self._manager().get_settings_panels()
-        self.assertEqual(len(panels), 1)
-        values = panels[0]['values']
-        self.assertEqual(values['refresh_token'], SECRET_MASK)
-        self.assertNotIn(REAL_TOKEN, str(panels))
 
 
 if __name__ == '__main__':   # pragma: no cover

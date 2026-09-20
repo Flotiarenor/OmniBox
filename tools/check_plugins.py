@@ -38,7 +38,7 @@ RESERVED_ROUTES = {'/', '/settings'}
 # folder 是文档里曾出现过但从未实装的旧名，保留在允许列表里避免老插件被误判为错误
 ALLOWED_SCHEMA_TYPES = {'text', 'number', 'range', 'select', 'checkbox', 'textarea',
                         'directory', 'folder'}
-# 设置项上的可选标记（除 type/default/min/max/options/central/help 之外）：
+# 设置项上的可选标记（除 type/default/min/max/options/help 之外）：
 #   "secret": True —— 申请 Shell 文件防护：该插件设置文件不得被文件路由返回，
 #   见 PluginBase.get_protected_paths() 与 docs/plugin-guide.md §8.2
 #
