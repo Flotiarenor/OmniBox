@@ -120,12 +120,13 @@ export function ensureIcons() {
  * 毫无线索的现象（本项目已经因为这类"不报错、只是空白"的缺陷吃过一次亏）。
  * 非 `icon:` 前缀的值（旧插件的 emoji）原样返回，保证旧插件不坏。
  */
-export function iconHtml(name, className) {
+export function iconHtml(name: string, className?: string): string {
   if (typeof name !== 'string' || name.slice(0, 5) !== 'icon:') {
     return name || '';
   }
   var id = name.slice(5);
-  if (!KNOWN[id]) {
+  var known: Record<string, boolean> = KNOWN;
+  if (!known[id]) {
     if (typeof console !== 'undefined') {
       console.warn('[icons] 未冻结的图标名：' + id + '（先跑 tools/fetch_lucide_icons.py --add ' + id + '）');
     }

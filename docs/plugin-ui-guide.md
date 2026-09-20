@@ -321,7 +321,7 @@ background: var(--mp-glass, var(--bg-surface));
 | 组件 | 壳提供的入口 | 规范用法 | 现状 |
 | --- | --- | --- | --- |
 | 按钮 | `base.css:13-36` `.btn` / `-primary` / `-danger` / `-danger-solid` / `-sm` / `.active` | 工具条 `.btn`/`.btn-sm`；主操作 `-primary`；破坏性 `-danger` 且二次确认 | 全部插件在用 |
-| 图标 | `base.css` 的 `.obx-icon`（+ `.obx-icon-lg`）、sprite `/res/icons/icons.svg` | 只用 sprite，不用图形化 emoji；尺寸走 `1em`、颜色走 `currentColor`，详见本节「补充约定」第一条 | 壳侧栏与设置页已迁移；插件的 149 处 emoji 待迁移（见 §9.7） |
+| 图标 | `base.css` 的 `.obx-icon`（+ `.obx-icon-lg`）、图标集 `res/icons/` | 只用图标集，不用图形化 emoji；尺寸走 `1em`、颜色走 `currentColor`，详见本节「补充约定」第一条 | 壳与 7 个插件均已迁移（含壳自带的 `base.js` / `folder-picker.js` / 状态页）；emoji 门禁已启用 |
 | 分组切换 | 无专用类 | `.btn.btn-sm.active`（image-cleaner 的 tab）或 `.obx-nav-item` | image-cleaner 用前者 |
 | 搜索框 | 两种：单输入框用 `.search-input`（`max-width:400px`）；带图标/清除按钮的搜索框用 `.search-field > .search-field-icon + input + .search-field-clear` | 结构与外观**只有这一份实现**：胶囊外框 + 图标在流内 + 输入无边框，聚焦用 `:focus-within` 描边外框；宽度走 `--obx-search-width`（窄窗口由壳统一收窄）。插件不写搜索样式，**也不给容器再加插件类名** | 已统一：四个插件（document-reader / image-viewer / manga-library / media-player）现在标记完全同构，插件侧搜索样式删净（原先共 4 套类名、7 档宽度、1 处玻璃底、1 处边框重写）。形态取自 document-reader 的紧凑胶囊版本 |
 | 侧栏导航 | `base.css:290-347` `.obx-nav-item` + `--obx-nav-*` | 结构/选中态都靠壳；只保留图标栏宽度等差异 | 5 个插件已用；image-cleaner/pixiv-sync 无 |
@@ -402,10 +402,22 @@ background: var(--mp-glass, var(--bg-surface));
   `venv/Scripts/python tests/debug_shell_icons_ui.py` 会断言每个图标的
   `getBBox()` 非零（外部引用会让它恒为 0），Chrome 下即可跑出结论。
 
-- **emoji 门禁**：`tools/check_plugins.py` 已实装"插件前端不得出现图形化 emoji"的规则
+- **emoji 门禁（已启用）**：`tools/check_plugins.py` 检查插件前端不得出现图形化 emoji
   （区段见 `UI_EMOJI_RE`，**不含** `★☆❤✓✕⚠❮❯` 这类跨平台稳定的符号写法与数据语义符号）。
-  但**暂未接入**：存量 149 处未清完（见 §9.7），现在打开会让门禁长期红着。
-  阶段 2 清完后把该分支的 `if False and` 去掉即可启用，规则与用例已就位。
+  存量 137 处已在图标迁移中清空，因此规则已接入。
+
+- **拼字符串时取图标**：模板字符串、`innerHTML` 这类没法直接写 `<svg>` 的场景，
+  用壳暴露的 `Icons.html('icon:名字', 附加类名)`：
+
+  ```js
+  grid.innerHTML = Icons.html('icon:images', 'empty-state-icon');
+  badges.push(Icons.html('icon:pin') + ' 已提升');
+  btn.innerHTML = Icons.html('icon:refresh-cw') + ' 刷新';
+  ```
+
+  `Icons` 由引导脚本提供，插件页不需要自己引用。名字未冻结时它返回空串并
+  `console.warn`（不静默空白）；**不要写 emoji 兜底** —— 那会把 emoji 字面量留在源码里，
+  门禁永远清不掉，而壳是唯一运行环境。
 
 - **设置优先走 schema，不要双轨。** 后端 `settings_schema` 声明了什么，前端就该用
   `openSettingsModal()` 渲染同一份；手写第二份字段列表必然漂移。pixiv-sync 就是双轨
@@ -714,18 +726,15 @@ background: var(--mp-glass, var(--bg-surface));
 选中项图标色与文字色同为 `rgb(47,129,247)`；sprite HTTP 200、18 个 symbol、含
 `stroke="currentColor"`；控制台无报错。
 
-**待做（阶段 2/3）**
+**待做（阶段 3）**
 
-- 插件侧 149 处图形化 emoji 待迁移：media-player 最多（舞台/歌词/播放控制），
-  其次 document-reader、pixiv-sync、image-viewer、manga-library。分两批：
-  先工具栏按钮 + `.empty-state-icon`（`.empty-state-icon` 已统一，改传图标名即可一处收口），
-  再处理嵌在文案里的（`「⚙ 设置」`）与运行时切换的（`★/☆/❤`）。
-- 清完后启用 `check_plugins.py` 的 emoji 门禁（`UI_EMOJI_RE` 分支）。
-- 16 处测试断言写死了 emoji（`debug_status_pages.py` 的 `"icon": "💥"`、
-  `shell_folder_picker.mjs:274` 断言 `'🌐'` 等），迁移时要同步改。
-- `shell/frontend/public/shell/base.js` 与 `folder-picker.js` 里还有壳自带的 emoji
-  （`createContextMenu` / `createTree` / 灯箱箭头 / 文件夹选择器的 `📁💻🌐`），
-  属于壳侧第二批。
+- 插件侧 137 处图形化 emoji 已全部迁移（本阶段完成）。剩下的是**符号类**写法：
+  `★☆❤✓✕⚠❮❯` 与箭头 —— 它们跨平台字形稳定，且部分是数据语义（收藏星、评级心），
+  emoji 门禁刻意不拦。要不要换成图标是观感取舍，不是一致性缺陷。
+- `shell/frontend/public/shell/base.js` 里的 Toast 前缀（✓ / ✕ / ⚠）是 CSS
+  `content` 生成的符号，不是 emoji 字面量，同样不在门禁范围内。
+- 新增图标后要在窗口里看一次（不是只看浏览器）：
+  `venv/Scripts/python tests/debug_shell_icons_ui.py` 会断言 `getBBox()` 非零。
 
 ---
 

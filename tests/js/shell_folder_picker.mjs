@@ -269,10 +269,20 @@ await check('提供方菜单的一行转义 icon/label（两者都来自插件�
     assert.ok(!/['"]><img/.test(html), `载荷逃出了属性：${html}`);
     assert.ok(html.includes('&quot;') && html.includes('&lt;img'), '值没有被实体化');
     assert.ok(html.includes('data-index="3"'), '索引要落进 data-index（选中时按它取回提供方）');
-    // 缺 icon / label 时回落默认值，不能渲染出 "undefined"
+    // 缺 icon / label 时回落默认值，不能渲染出 "undefined"。
+    // 默认图标现在是图标集里的 `icon:globe`（由壳内联的 sprite 渲染），不再是 emoji：
+    // 沙箱里补一个最小的 Icons 桩，验证落到的是图标标记而不是空串。
+    sandbox.window.Icons = {
+        html: (name) => `<svg class="obx-icon"><use href="#${String(name).slice(5)}"></use></svg>`,
+    };
     const fallback = FolderPicker.providerRow({}, 0);
-    assert.ok(fallback.includes('🌐') && fallback.includes('网络位置'), `默认值缺失：${fallback}`);
+    assert.ok(fallback.includes('#globe') && fallback.includes('网络位置'), `默认值缺失：${fallback}`);
     assert.ok(!fallback.includes('undefined'), `默认值缺失：${fallback}`);
+    // 反过来：没有图标集时（脱离壳单独打开）也不能渲染出 undefined 或残留占位
+    delete sandbox.window.Icons;
+    const noIcons = FolderPicker.providerRow({}, 0);
+    assert.ok(!noIcons.includes('undefined') && noIcons.includes('网络位置'),
+        `图标集缺失时回退异常：${noIcons}`);
 });
 
 console.log(`\nshell_folder_picker: ${passed} 项检查${process.exitCode ? '（有失败）' : '全部通过'}`);

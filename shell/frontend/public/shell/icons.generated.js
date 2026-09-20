@@ -125,7 +125,8 @@ function iconHtml(name, className) {
     return name || '';
   }
   var id = name.slice(5);
-  if (!KNOWN[id]) {
+  var known = KNOWN;
+  if (!known[id]) {
     if (typeof console !== 'undefined') {
       console.warn('[icons] 未冻结的图标名：' + id + '（先跑 tools/fetch_lucide_icons.py --add ' + id + '）');
     }

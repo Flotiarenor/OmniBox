@@ -322,7 +322,9 @@ checkInterpolationsRegistered('shell/frontend/public/shell/folder-picker.js', [
   // 网络位置：提供方菜单与提供方页面。三个字段都来自**插件声明**，因此逐个转义后
   // 才拼进模板（登记项与 providerRow / openNetworkPicker 里的写法逐字对应）。
   'providers.map(providerRow).join(\'\')',
-  "Utils.escapeHtml(ext.icon || '🌐')",
+  // 提供方行的图标改走 Utils.iconHtml：`icon:` 名字由壳的图标集渲染，其余值转义后原样输出
+  // （Utils.iconHtml 内部对非 icon: 的值走 escapeHtml，所以这里登记的是同一个安全出口）
+  "Utils.iconHtml(ext.icon || 'icon:globe')",
   "Utils.escapeHtml(ext.label || ext.plugin || '网络位置')",
   "Utils.escapeHtml(provider.label || '网络位置')",
   // openNetworkPicker 把 embedUrl 与 `embed=1` 先拼成 src 再转义（161cdef 加的 embed 信号），

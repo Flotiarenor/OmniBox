@@ -34,7 +34,7 @@ window.FolderPicker = (function () {
           <h3>选择目录</h3>
           <div class="iv-dirbrowser">
             <div class="iv-dirbrowser-bar">
-              <button class="btn btn-sm" data-act="drives">💻 我的电脑</button>
+              <button class="btn btn-sm" data-act="drives"><svg class="obx-icon"><use href="#monitor"></use></svg> 我的电脑</button>
               <button class="btn btn-sm" data-act="up">↑ 上级</button>
               <span class="iv-dirbrowser-path" data-act="path"></span>
             </div>
@@ -90,7 +90,7 @@ window.FolderPicker = (function () {
             const label = kinds.map(k => KIND_LABELS[k] || '').filter(Boolean).join('·');
             return `
             <div class="iv-dirbrowser-item" data-path="${Utils.escapeHtml(entry.path)}">
-                <span>📁</span><span>${Utils.escapeHtml(entry.name)}</span>
+                <span><svg class="obx-icon"><use href="#folder"></use></svg></span><span>${Utils.escapeHtml(entry.name)}</span>
                 ${label ? `<span class="iv-dirbrowser-hint">含 ${Utils.escapeHtml(label)}</span>` : ''}
             </div>`;
           }).join('');
@@ -168,7 +168,7 @@ window.FolderPicker = (function () {
   function providerRow(ext, index) {
     return `
                 <div class="iv-dirbrowser-item" data-index="${index}">
-                  <span>${Utils.escapeHtml(ext.icon || '🌐')}</span>
+                  <span>${Utils.iconHtml(ext.icon || 'icon:globe')}</span>
                   <span>${Utils.escapeHtml(ext.label || ext.plugin || '网络位置')}</span>
                 </div>`;
   }
@@ -247,7 +247,7 @@ window.FolderPicker = (function () {
    * opts.placeholder  输入框占位符
    * opts.emptyText    列表为空时的提示
    * opts.onBeforeOpen 打开选择器前的钩子，可在此时把新发现的目录 push 进 paths
-   * opts.localOnly    可选，true 时**不显示「🌐 网络位置」**：该字段只接受本机目录。
+   * opts.localOnly    可选，true 时**不显示「网络位置」**：该字段只接受本机目录。
    *                    用于"目录本身就是产物"的字段（如 group-mesh 的远端下载目录）——
    *                    在那种字段上选"网络位置"语义是错的（远端内容要取到本地，
    *                    而下载目录正是落点），见 docs/group-mesh-design.md §1.4。
@@ -273,7 +273,7 @@ window.FolderPicker = (function () {
     if (!localOnly) {
       addRow.insertAdjacentHTML('beforeend',
         '<button class="btn btn-sm" data-act="network" '
-        + 'title="从其它设备取一个共享项到本地目录">🌐 网络位置</button>');
+        + 'title="从其它设备取一个共享项到本地目录"><svg class="obx-icon"><use href="#globe"></use></svg> 网络位置</button>');
     }
     root.append(listBox, addRow);
 

@@ -109,12 +109,13 @@ export function ensureIcons() {
  * 毫无线索的现象（本项目已经因为这类"不报错、只是空白"的缺陷吃过一次亏）。
  * 非 `icon:` 前缀的值（旧插件的 emoji）原样返回，保证旧插件不坏。
  */
-export function iconHtml(name, className) {
+%(icon_sig)s {
   if (typeof name !== 'string' || name.slice(0, 5) !== 'icon:') {
     return name || '';
   }
   var id = name.slice(5);
-  if (!KNOWN[id]) {
+  %(known_decl)s
+  if (!known[id]) {
     if (typeof console !== 'undefined') {
       console.warn('[icons] 未冻结的图标名：' + id + '（先跑 tools/fetch_lucide_icons.py --add ' + id + '）');
     }
@@ -151,14 +152,26 @@ def _render_ts(icons: dict, meta: dict) -> str:
         f"  '{name}': true,\n" for name in sorted(icons)
     ) + '};\n\n'
     const = 'const SPRITE = ' + json.dumps(markup, ensure_ascii=False) + ';\n\n'
-    return const + _INJECTOR_TEMPLATE % {'names': names, 'body': body}
+    return const + _INJECTOR_TEMPLATE % {
+        'names': names,
+        'body': body,
+        # TS 版本带类型；JS 版本（IIFE）不能有类型标注 —— 那是语法错误
+        'icon_sig': 'export function iconHtml(name: string, className?: string): string',
+        'known_decl': 'var known: Record<string, boolean> = KNOWN;',
+    }
 
 
 def _render_js_iife(icons: dict, meta: dict) -> str:
     """插件页用的 IIFE 版本：<script src="/shell/icons.generated.js"> 后直接生效。"""
     body = _render_ts(icons, meta)
-    # 与 TS 版本同源：去掉 export 关键字，并把两个函数挂到 window 上供插件页面调用
-    body = body.replace('export function', 'function')
+    # 与 TS 版本同源，但必须剥掉类型标注与 export：JS 里写 `name: string` 是语法错误
+    body = body.replace(
+        'export function iconHtml(name: string, className?: string): string',
+        'function iconHtml(name, className)',
+    ).replace(
+        'var known: Record<string, boolean> = KNOWN;',
+        'var known = KNOWN;',
+    ).replace('export function', 'function')
     return body + """
 
 window.Icons = { ensure: ensureIcons, html: iconHtml };

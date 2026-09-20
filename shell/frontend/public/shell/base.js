@@ -265,7 +265,7 @@ function renderExtensions(container, host, placement, options = {}) {
           btn.className = 'obx-extension' + (options.itemClass ? ' ' + options.itemClass : '');
           btn.title = ext.description || ext.label || ext.id || '';
           btn.innerHTML =
-            `<span class="obx-extension-icon">${Utils.escapeHtml(ext.icon || '🧩')}</span>` +
+            `<span class="obx-extension-icon">${Utils.iconHtml(ext.icon || 'icon:puzzle')}</span>` +
             `<span class="obx-extension-label">${Utils.escapeHtml(ext.label || ext.id || '扩展')}</span>`;
 
           btn.addEventListener('click', () => {
@@ -345,6 +345,23 @@ window.Utils = {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
+  },
+
+  /**
+   * 图标值 → 可直接插入的标记。
+   *
+   * 接受两种写法，两种都**已经安全**（图标名来自仓库常量，emoji 走转义）：
+   *   `icon:名字` —— 壳图标集（/shell/icons.generated.js 的 Icons.html）
+   *   其它任何字符串 —— 转义后原样渲染（旧插件传 emoji，不能因为换了图标集就白屏）
+   */
+  iconHtml(value) {
+    if (typeof value === 'string' && value.slice(0, 5) === 'icon:') {
+      if (window.Icons && typeof window.Icons.html === 'function') {
+        return window.Icons.html(value);
+      }
+      return '';
+    }
+    return this.escapeHtml(value || '');
   },
 
   // 内联事件处理器里的字符串参数（onerror="f('${...}')"）：
@@ -629,7 +646,7 @@ async function openSettingsModal(options = {}) {
 
 // ==================== 树组件 ====================
 function createTree(container, options = {}) {
-  const icon = options.icon || '📁';
+  const icon = Utils.iconHtml(options.icon || 'icon:folder');
   let selectedLabel = null;
 
   function renderNode(item, depth) {

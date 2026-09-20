@@ -108,7 +108,7 @@ async function apiDemo(mode: 'none' | 'cookie' | 'bad') {
   <div class="status-view">
     <!-- ===== 插件加载失败：任何模式下都显示（用户最容易遇到、也最需要线索） ===== -->
     <div v-if="pluginFailures.length" class="status-plugin-failures">
-      <div class="status-error-title">⚠️ 有 {{ pluginFailures.length }} 个插件加载失败</div>
+      <div class="status-error-title"><svg class="obx-icon"><use href="#circle-x"></use></svg> 有 {{ pluginFailures.length }} 个插件加载失败</div>
       <div class="status-error-detail">
         这些插件不会出现在侧边栏里。原因如下（完整日志见 &lt;配置目录&gt;/logs/omnibox.log）：
       </div>
@@ -132,7 +132,7 @@ async function apiDemo(mode: 'none' | 'cookie' | 'bad') {
     <!-- ===== 调试模式：--status-debug 启动时显示 ===== -->
     <div v-else-if="debugMode" class="status-debug">
       <div class="status-debug-header">
-        <div class="status-debug-title">🔬 状态调试面板</div>
+        <div class="status-debug-title"><svg class="obx-icon"><use href="#stethoscope"></use></svg> 状态调试面板</div>
         <div class="status-debug-sub">触发 200 / 401 / 403 / 404 场景，观察标记页与壳内错误区域</div>
       </div>
 
@@ -175,11 +175,11 @@ async function apiDemo(mode: 'none' | 'cookie' | 'bad') {
       <div class="section">
         <h2>4️⃣ 壳内错误区域（iframe 404 → 自动跳转到本视图）</h2>
         <div class="row">
-          <span class="desc">导航栏打开「💥 调试坏插件」（调试服务器注入）→ 壳检测到 iframe 加载了
+          <span class="desc">导航栏打开「调试坏插件」（调试服务器注入）→ 壳检测到 iframe 加载了
             404 标记页 → 自动跳转到 <code>/status?code=404&from=…</code>，显示上方错误卡片；点「重试」返回并强制重载。</span>
         </div>
         <div class="row">
-          <span class="hint">💡 API 错误 Toast：在主界面 F12 Console 执行<br>
+          <span class="hint"><svg class="obx-icon"><use href="#info"></use></svg> API 错误 Toast：在主界面 F12 Console 执行<br>
             <code>fetch('/api/no_such_method', {method:'POST'})</code> → 404 Toast<br>
             <code>fetch('/api/system_get_config', {method:'POST', credentials:'omit'})</code> → 401 Toast</span>
         </div>
@@ -201,7 +201,7 @@ async function apiDemo(mode: 'none' | 'cookie' | 'bad') {
 
     <!-- ===== 普通模式：未开启调试 ===== -->
     <div v-else-if="configLoaded" class="status-error-card">
-      <div class="status-error-code">🔒</div>
+      <div class="status-error-code"><svg class="obx-icon"><use href="#eye-off"></use></svg></div>
       <div class="status-error-title">调试模式未开启</div>
       <div class="status-error-detail">
         状态调试面板仅在启动时携带 <code>--status-debug</code> 参数时可用。<br>

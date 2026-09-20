@@ -312,14 +312,9 @@ def _check_frontend_ui(plugin_dir: Path) -> Tuple[List[str], List[str]]:
                     f'（docs/plugin-ui-guide.md §5）'
                 )
 
-        # 图形化 emoji 一律改为壳 sprite 里的图标（与未定义变量同为"静默不一致"类缺陷）。
-        #
-        # **暂未接入**：实测全仓存量 151 处（media-player 33、document-reader 19、pixiv-sync 15……），
-        # 清完是图标迁移的阶段 2/3。现在打开会让 check_plugins 从"0 error"变成"152 error"，
-        # 门禁红着就失去意义（既拦不住新问题，也让真实回归淹没在噪声里）。
-        # 阶段 2 清完最后一个插件时，把下面的 `if False` 去掉即可启用 —— 规则本身与
-        # 用例（tests/test_shell_icons.py）已就位，届时不需要再改这里。
-        if False and suffix in ('.css', '.html', '.js'):   # noqa: SIM223 - 见上方说明
+        # 图形化 emoji 一律改为壳图标集里的图标（与未定义变量同为"静默不一致"类缺陷）。
+        # 存量 137 处已在图标迁移中清空（7 个插件、28 个文件），因此这里已启用。
+        if suffix in ('.css', '.html', '.js'):
             scan = text
             if suffix == '.js':
                 scan = _strip_js_comments(text)
@@ -336,7 +331,8 @@ def _check_frontend_ui(plugin_dir: Path) -> Tuple[List[str], List[str]]:
                 errors.append(
                     f'{rel}:{line} 出现图形化 emoji {char}（U+{ord(char):04X}）：图标改用壳的图标集，'
                     f'写法 `<svg class="obx-icon"><use href="#名字"></use></svg>`（引用必须是同文档的 '
-                    f'`#名字`，写外部文件路径在 WebView2 里不渲染）；'
+                    f'`#名字`，写外部文件路径在 WebView2 里不渲染）；拼字符串的场景用 '
+                    f'`Icons.html(\'icon:名字\', 附加类名)`；'
                     f'图标名表与新增方式见 res/icons/icon_data.json / tools/fetch_lucide_icons.py'
                     f'（docs/plugin-ui-guide.md §5）'
                 )
