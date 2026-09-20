@@ -252,7 +252,7 @@ def main():
     # 日志必须最先初始化：发行版打包 console=False 时没有控制台，
     # 所有诊断信息只能靠文件通道（shell/backend/app_logging.py）。
     # 级别取集中设置页保存过的那一档（未设置/非法时回退 INFO）。
-    log_file = setup_logging(get_config_dir(), level=stored_log_level(get_config_dir()))
+    log_file = setup_logging(get_config_dir(), level=stored_log_level(str(get_config_dir())))
     if log_file:
         log.info(f"[OmniBox] 日志文件: {log_file}")
 
