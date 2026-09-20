@@ -485,14 +485,17 @@
 }
 
 /* ---- 目录弹窗 ---- */
-.nr-modal-box {
+/* 必须写成 `.modal-box.nr-modal-box`（0,2,0）：壳的样式注入在插件 <link> 之后，
+   同特异性的 `.modal-box{width:400px}`（base.css）会赢，这里的宽度就是死代码。
+   契约见 docs/plugin-ui-guide.md §2.11「覆盖壳的布局类必须提高特异性」。 */
+.modal-box.nr-modal-box {
     width: min(560px, 92vw);
     max-height: 78vh;
     display: flex;
     flex-direction: column;
 }
 
-.nr-modal-sm {
+.modal-box.nr-modal-sm {
     width: min(460px, 92vw);
 }
 
@@ -974,13 +977,18 @@
 }
 
 @media (max-width: 860px) {
+    /* 窄窗口收窄侧栏：媒体查询不改变特异性，裸 .nr-sidebar（0,1,0）会被壳的
+       .view-sub-sidebar（0,1,0，注入在插件样式之后）按 240px 盖回去，
+       必须写成 0,2,0 —— 与 iv/ml/mp/gm 四个插件同一写法（见 plugin-ui-guide.md §3.1）。
+       此前本插件是唯一在窄窗口不收窄侧栏的。 */
+    .nr-sidebar.view-sub-sidebar {
+        width: 200px;
+    }
     .nr-grid {
         grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
         gap: 12px;
     }
     .document-content-area {
-        padding: 16px 18px 32px;
-    }    .document-content-area {
         padding: 16px 18px 32px;
     }
 }
