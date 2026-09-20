@@ -162,16 +162,16 @@ def main() -> int:
 
     print()
     if FAKE_MPV_LOG.exists():
-        print("[result] ✅ 假 mpv 被调用了，日志如下:")
+        print("[result] OK：假 mpv 被调用了，日志如下:")
         print(FAKE_MPV_LOG.read_text(encoding="utf-8"))
     else:
-        print("[result] ❌ 假 mpv 没有被调用。")
+        print("[result] FAIL：假 mpv 没有被调用。")
         print("[result] 最可能原因是尚未登录，ncm-cli 在拿到播放 URL 之前就退出了。")
         print("[result] 请先完成 ncm-cli login，再重新运行本测试。")
 
     if CAPTURED_URL_FILE.exists():
         url = CAPTURED_URL_FILE.read_text(encoding="utf-8").strip()
-        print(f"[result] 🎯 捕获到播放 URL: {url}")
+        print(f"[result] 捕获到播放 URL: {url}")
         return 0
 
     return 1

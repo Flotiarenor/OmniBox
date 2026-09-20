@@ -2,7 +2,7 @@
   "name": "__NAME__",
   "version": "1.0.0",
   "displayName": "__DISPLAY__",
-  "icon": "📦",
+  "icon": "icon:package",
   "dependencies": [],
   "backend": {
     "entry": "backend/main.py",
