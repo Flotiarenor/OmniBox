@@ -325,7 +325,10 @@ checkInterpolationsRegistered('shell/frontend/public/shell/folder-picker.js', [
   "Utils.escapeHtml(ext.icon || '🌐')",
   "Utils.escapeHtml(ext.label || ext.plugin || '网络位置')",
   "Utils.escapeHtml(provider.label || '网络位置')",
-  'Utils.escapeHtml(provider.embedUrl)',
+  // openNetworkPicker 把 embedUrl 与 `embed=1` 先拼成 src 再转义（161cdef 加的 embed 信号），
+  // 登记项必须跟着指向当前真源码，否则是"过期登记 + 未登记插值"两条误报：
+  // 过期的登记项拦不住回归，未登记的插值会让门禁从此对真正的新插值也报同一句。
+  'Utils.escapeHtml(src)',
 ]);
 
 /** 取多个方法块拼成对象（方法之间可能互相调用，如 _escapeAttr → _escapeHtml）。 */
