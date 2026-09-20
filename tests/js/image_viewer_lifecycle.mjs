@@ -122,6 +122,17 @@ function loadImageViewer() {
         Map, Set, Date, RegExp, parseInt, parseFloat, isNaN, Infinity, console,
     };
     vm.createContext(sandbox);
+    // 图标集桩：壳由引导脚本注入 /shell/icons.generated.js 并把 Icons 挂到全局。
+    // 沙箱里 `window` 只是普通对象，所以 `window.Icons` 与裸标识符 `Icons` 要各挂一次
+    // （插件代码两种写法都有：app-utils.js 用 window.Icons，app-grid.js 用 Icons）。
+    // 桩按壳产物的形态给出 `icon:名字` → `<svg class="obx-icon"><use href="#名字"></use></svg>`，
+    // 用例据此断言幻灯片按钮的图标标记。
+    const iconsStub = {
+        html: (name, className) => '<svg class="obx-icon'
+            + (className ? ' ' + className : '') + '"><use href="#' + String(name).slice(5) + '"></use></svg>',
+    };
+    sandbox.Icons = iconsStub;
+    win.Icons = iconsStub;
     // 先注入 Shell 基础运行时（提供 window.PluginLifecycle），再按 index.html 的声明
     // 顺序装载插件自己的全部脚本 —— 不写死单个文件名，这样 app.js 拆成分片后本用例
     // 自动跟着走（顺序或漏挂出错会在装载期直接抛，见 tests/js/script_load_contract.mjs）。
@@ -150,13 +161,18 @@ console.log('场景 1：onHide 停掉幻灯片定时器（修复前切走后每 
 
     iv.toggleSlideshow();
     check('启动幻灯片后有定时器', iv.slideshowTimer !== null);
-    check('按钮变成"停止"', env.getEl('btn-slideshow').textContent === '⏸ 停止',
-        `实际 ${env.getEl('btn-slideshow').textContent}`);
+    const stopHtml = env.getEl('btn-slideshow').innerHTML;
+    check('按钮变成"停止"',
+        stopHtml.includes('<use href="#pause">') && stopHtml.includes('停止'),
+        `实际 ${stopHtml}`);
 
     env.lifecycle.setVisible(false);
     check('onHide 后定时器被清空', iv.slideshowTimer === null);
     check('onHide 记住了播放位置', iv._slideshowResumeIndex === 4, `实际 ${iv._slideshowResumeIndex}`);
-    check('按钮恢复"▶ 幻灯片"', env.getEl('btn-slideshow').textContent === '▶ 幻灯片');
+    const playHtml = env.getEl('btn-slideshow').innerHTML;
+    check('按钮恢复"幻灯片"',
+        playHtml.includes('<use href="#play">') && playHtml.includes('幻灯片'),
+        `实际 ${playHtml}`);
 
     env.lifecycle.setVisible(true);
     await tick();

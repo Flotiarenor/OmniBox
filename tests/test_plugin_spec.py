@@ -319,6 +319,7 @@ class FrontendUiContractTests(unittest.TestCase):
 
     这些缺陷的共性是"不报错、只是静默失效"：壳里没有的变量名会被 var() 的兜底吃掉，
     原生 alert 会打断宿主面板里的操作流。用例固定住"能拦住"与"不误报"两侧。
+    字形用例里的字符是被拦对象本身（测试夹具，必须真实出现才能验证正则）。
     """
 
     def _plugin_with_frontend(self, root: Path, name: str, **files: str) -> Path:
@@ -440,6 +441,77 @@ class FrontendUiContractTests(unittest.TestCase):
             matched = [e for e in errors if '未定义的 CSS 变量 --color-text' in e]
             self.assertEqual(len(matched), 1, matched)
             self.assertIn('共 3 处', matched[0])
+
+    def test_pictographic_emoji_in_frontend_is_an_error(self):
+        """图形化 emoji 由系统字体决定字形，必须改用壳图标集。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._plugin_with_frontend(
+                root, 'ui-emoji',
+                **{'panel.html': '<button>🌐 网络位置</button>\n'},
+            )
+            errors, _ = check_plugins(root, load_backends=False)
+            self.assertTrue(any('U+1F310' in error for error in errors), errors)
+
+    def test_symbol_glyph_in_frontend_is_an_error(self):
+        """★☆✕⚙ 这类单独承担图标职能的符号字形同样拦下（不带颜色但字重随字体变）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._plugin_with_frontend(
+                root, 'ui-symbol',
+                **{'app.js': "btn.textContent = fav ? '★' : '☆';\n"},
+            )
+            errors, _ = check_plugins(root, load_backends=False)
+            self.assertTrue(any('符号字形' in error for error in errors), errors)
+
+    def test_text_punctuation_is_not_flagged(self):
+        """句内作分隔符的箭头与乘号是文本标点，不能因为图标门禁被误报。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._plugin_with_frontend(
+                root, 'ui-punct',
+                **{'app.js': "Toast.info('已写入 2 个歌单 → 共 12 首');\nlabel.textContent = '1920 × 1080';\n"},
+            )
+            errors, _ = check_plugins(root, load_backends=False)
+            self.assertFalse([e for e in errors if '符号字形' in e or 'emoji' in e], errors)
+
+    def test_backend_icon_declaration_must_use_icon_set(self):
+        """后端扩展声明的 icon 写成 emoji 时，壳按纯文本渲染，必须拦下。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _make_plugin(
+                root, 'be-icon', _manifest('be-icon', '/be-icon'),
+                backend_code=(
+                    'class BeIconPlugin:\n'
+                    '    def get_extensions(self):\n'
+                    "        return [{'icon': '🧹', 'label': '清理'}]\n"
+                ),
+            )
+            errors, _ = check_plugins(root, load_backends=False)
+            self.assertTrue(any('不是壳图标集' in error for error in errors), errors)
+
+    def test_backend_icon_name_and_clean_sources_pass(self):
+        """写成 icon:<名字> 且源码无字形时不报错（否则这条规则会误伤正常插件）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _make_plugin(
+                root, 'be-ok', _manifest('be-ok', '/be-ok'),
+                backend_code=(
+                    'class BeOkPlugin:\n'
+                    '    def get_extensions(self):\n'
+                    "        return [{'icon': 'icon:brush-cleaning', 'label': '清理'}]\n"
+                ),
+            )
+            errors, _ = check_plugins(root, load_backends=False)
+            self.assertFalse([e for e in errors if '壳图标集' in e or '符号字形' in e], errors)
+
+    def test_manifest_icon_must_use_icon_set(self):
+        """manifest.icon 缺省时壳回落 icon:package；给了 emoji 值则与其余入口不一致。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _make_plugin(root, 'mf-icon', _manifest('mf-icon', '/mf-icon', extra={'icon': '📦'}))
+            errors, _ = check_plugins(root, load_backends=False)
+            self.assertTrue(any('manifest.icon' in error for error in errors), errors)
 
 
 if __name__ == '__main__':

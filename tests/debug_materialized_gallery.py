@@ -80,8 +80,8 @@ PHOTO_TIMEOUT = 60.0
 def _force_utf8_stdout() -> None:
     """让 stdout/stderr 用 UTF-8 输出。
 
-    脚本会打印中文与符号（`✕`、`…`、`→`），而 Windows 控制台默认是 GBK —— `✕` 不在
-    GBK 里，`print` 会直接抛 UnicodeEncodeError 把演示打断在半路（实测踩到，正好发生在
+    脚本会打印中文与排版符号（`…`、`→`）；Windows 控制台默认是 GBK，历史上曾因为
+    打印一个不在 GBK 内的符号（U+2715）而抛 UnicodeEncodeError，把演示打断在半路（实测踩到，正好发生在
     "关灯箱"那一步，于是后半段取字节/刷新的演示全没了）。`errors='replace'` 保证即使
     某个字符打不出来也只显示成 `?`，不会中断。
     """
@@ -235,13 +235,13 @@ def lightbox_state(driver) -> str:
 
 
 def close_lightbox(driver) -> None:
-    """点 ✕ 关掉灯箱（壳的通用 Lightbox，见 shell/frontend/public/shell/base.js）。"""
+    """点灯箱右上角的关闭按钮（壳的通用 Lightbox，见 shell/frontend/public/shell/base.js）。"""
     from selenium.webdriver.common.by import By
 
     close = next((e for e in driver.find_elements(By.CSS_SELECTOR, '.lightbox-close')
                   if e.is_displayed()), None)
     if close is not None:
-        click(driver, close, '点关闭按钮（×）关掉灯箱')
+        click(driver, close, '点关闭按钮关掉灯箱')
 
 
 def fetch_all_through_group_mesh(driver, cache_root: Path) -> str:

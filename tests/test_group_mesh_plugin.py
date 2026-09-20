@@ -203,7 +203,7 @@ class PluginContractTest(unittest.TestCase):
         """注册成「网络位置」提供方，且 embedUrl 指向**真实存在**的页面。
 
         壳的共享目录组件（FolderPicker）按这条 URL 去嵌 iframe，写错路径不会在任何
-        地方报错 —— 只会在用户点「🌐 网络位置」时弹出一个白屏。所以用文件存在性钉住它。
+        地方报错 —— 只会在用户点「网络位置」时弹出一个白屏。所以用文件存在性钉住它。
         """
         extensions = self.plugin.get_extensions()
         provider = next((e for e in extensions if e.get('placement') == 'network-location'), None)

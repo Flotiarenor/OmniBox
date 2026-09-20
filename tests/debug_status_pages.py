@@ -36,7 +36,7 @@ BAD_PLUGIN_MANIFEST = {
     "name": BAD_PLUGIN_NAME,
     "version": "1.0.0",
     "displayName": "调试坏插件 (404)",
-    "icon": "💥",
+    "icon": "icon:triangle-alert",
     "description": "调试用：backend 正常、frontend 缺失，用于触发壳内 404 错误视图",
     "dependencies": [],
     "permissions": [],
@@ -148,7 +148,7 @@ def probe_all(port: int) -> None:
 # 调试面板不再是独立页面：它由壳内建视图 /status 渲染（与 /settings 同级），
 # 启动参数 --status-debug 时显示健康检查 / API 鉴权 / 标记页演示。
 # 本脚本以 --status-debug 语义启动服务器，浏览器打开 /status 即为调试面板；
-# 导航栏「💥 调试坏插件」用于触发「iframe 404 → 壳检测 → 跳转 /status?code=404」链路。
+# 导航栏「调试坏插件」用于触发「iframe 404 → 壳检测 → 跳转 /status?code=404」链路。
 
 
 def main():
@@ -180,7 +180,7 @@ def main():
 
         url = f'http://127.0.0.1:{port}/status'
         print(f'调试面板: {url}（壳内 /status 视图，需 --status-debug 启动）')
-        print('导航栏中新增「💥 调试坏插件」入口，点击可触发: iframe 404 → 壳检测 → 跳转 /status?code=404 → 错误卡片 → 重试返回')
+        print('导航栏中新增「调试坏插件」入口，点击可触发: iframe 404 → 壳检测 → 跳转 /status?code=404 → 错误卡片 → 重试返回')
         print('Ctrl+C 退出（自动清理坏插件与临时数据）。')
         if not args.no_open:
             webbrowser.open(url)

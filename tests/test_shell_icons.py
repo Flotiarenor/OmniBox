@@ -36,7 +36,7 @@ from tools.build_icons import (
 )
 from tools.build_icons import _render_js_iife as js_iife_source
 from tools.build_icons import _render_ts as ts_module_source
-from tools.check_plugins import UI_EMOJI_RE
+from tools.check_plugins import UI_EMOJI_RE, UI_SYMBOL_GLYPH_RE
 
 SHELL_CSS = PROJECT_ROOT / 'shell' / 'frontend' / 'src' / 'styles' / 'shell.css'
 BASE_CSS = PROJECT_ROOT / 'shell' / 'frontend' / 'public' / 'shell' / 'base.css'
@@ -215,22 +215,35 @@ class GeneratedInjectorTests(unittest.TestCase):
 
 
 class EmojiGatePolicyTests(unittest.TestCase):
-    """emoji 门禁的策略本身（存量未清完，规则先就位，见 tools/check_plugins.py 的说明）。"""
+    """emoji 与符号字形门禁的策略（插件前端与后端共用同一套正则，见 tools/check_plugins.py）。
+
+    用例里的字符是被拦对象本身：它们是**测试夹具**，必须真实出现才能验证正则命中与不误报，
+    与"界面里不得出现"这条规则不冲突（本仓库其余位置的这类字形已清空）。
+    """
 
     def test_pictographic_emoji_is_matched(self):
         for char in ('🖼', '🔄', '🗑', '🎧'):
             with self.subTest(char=char):
                 self.assertIsNotNone(UI_EMOJI_RE.search(char))
 
-    def test_symbol_glyphs_are_deliberately_allowed(self):
-        """箭头、几何符号与符号类（✓✕⚠★☆❤❮❯）不在拦截范围：跨平台字形稳定，且部分是数据语义。"""
-        for char in ('✕', '⚠', '★', '☆', '❤', '✓', '→', '❮', '❯', '✦', '⑨'):
+    def test_icon_glyphs_are_matched(self):
+        """单独承担图标职能的符号字形也拦：不带颜色，但字重与基线同样随系统字体变。"""
+        for char in ('✕', '★', '☆', '♡', '❤', '⚙', '⚠', '▶', '⏸', '⏹', '⏮', '⏭',
+                     '✅', '❌', '⛔', '⏳', '⬇', '✨', '⭐', '✎', '↻', '⚡', '＋', '❮', '❯'):
+            with self.subTest(char=char):
+                self.assertIsNotNone(UI_SYMBOL_GLYPH_RE.search(char))
+
+    def test_text_punctuation_is_deliberately_allowed(self):
+        """句内作分隔符的箭头与乘号是文本标点，不是图标（中文文案里大量出现）。"""
+        for char in ('→', '←', '↔', '↑', '×', '·', '—', '…'):
             with self.subTest(char=char):
                 self.assertIsNone(UI_EMOJI_RE.search(char))
+                self.assertIsNone(UI_SYMBOL_GLYPH_RE.search(char))
 
     def test_variation_selector_alone_is_not_an_error(self):
         """U+FE0F 只修饰前一个字符，单独出现不应判错（否则错误信息指向不可见的字符）。"""
         self.assertIsNone(UI_EMOJI_RE.search('\ufe0f'))
+        self.assertIsNone(UI_SYMBOL_GLYPH_RE.search('\ufe0f'))
 
 
 if __name__ == '__main__':

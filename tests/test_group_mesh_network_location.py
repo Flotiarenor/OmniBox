@@ -72,7 +72,7 @@ class NetworkLocationTest(unittest.TestCase):
     def test_shell_offers_the_provider_to_the_folder_picker(self):
         """壳按 placement 就能发现提供方，且提供方页面拿到壳的引导脚本。
 
-        这是「🌐 网络位置」这条路唯一的装配契约：共享目录组件用
+        这是「网络位置」这条路唯一的装配契约：共享目录组件用
         `system_get_plugin_extensions(null, 'network-location')` 发现提供方，再按
         `embedUrl` 嵌 iframe。两处任一断掉，用户看到的都是"点了没反应 / 弹出一个白屏"，
         而单元测试各自都能过 —— 所以这里把「发现 → 取页面 → 页面里有 Bridge」串起来验。

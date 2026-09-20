@@ -1,11 +1,11 @@
-"""「远端下载目录」字段不该出现「🌐 网络位置」入口 —— 真壳真渲染的验证。
+"""「远端下载目录」字段不该出现「网络位置」入口 —— 真壳真渲染的验证。
 
 问题：设置里的 `directory` 字段默认允许「网络位置」来源（把远端共享项取回本地），
 但 group-mesh 的「远端下载目录」**本身就是取回文件的落点**，在那里选网络位置语义
 不成立（等于拿取回的中间目录当下载目录）。修法是 schema 声明 `local_only: True`。
 
 这里走真实壳服务与真实插件页：进插件 iframe → 调壳的 `openSettingsModal()`（与用户
-点「⚙ 设置」同一条路径）→ 在设置弹窗里找该字段，断言没有网络位置按钮、其余控件仍在；
+点「设置」同一条路径）→ 在设置弹窗里找该字段，断言没有网络位置按钮、其余控件仍在；
 同时断言别的字段（媒体文件夹那种）**仍然有**，避免"改错方向"也算通过。
 
 用法：
@@ -80,7 +80,7 @@ def open_plugin_settings_directly(driver, base_url: str, plugin: str) -> bool:
 
 
 def open_plugin_settings(driver, plugin: str, nav_label: str) -> bool:
-    """进插件 iframe 并调壳的 openSettingsModal（与点「⚙ 设置」同一条路径）。
+    """进插件 iframe 并调壳的 openSettingsModal（与点「设置」同一条路径）。
 
     开头必须先 `switch_to.default_content()`：上一次调用结束时停在**上一个插件的
     iframe** 里，不回到顶层就 `switch_to.frame()` 会嵌进旧 iframe 的内部 frame，

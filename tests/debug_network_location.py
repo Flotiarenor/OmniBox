@@ -3,7 +3,7 @@
 它把这条链完整走一遍，让人看着它点：
 
 1. 起两台空白实例（各自一份 OMNIBOX_HOME），建团、共享一个含真实 JPEG 的目录、起节点、登记对端；
-2. 在「图片相册」的设置弹窗里点「🌐 网络位置」→ 壳的共享目录组件按 placement 发现提供方
+2. 在「图片相册」的设置弹窗里点「网络位置」→ 壳的共享目录组件按 placement 发现提供方
    （group-mesh 的 `get_extensions()`）→ 弹窗里嵌入提供方页面；
 3. 提供方页面里：选设备 → 选共享项 → 填本地落地目录 → 取回（`mirror_share`：**完整取字节**，
    不是留占位）；
@@ -134,17 +134,17 @@ def main() -> int:
         driver.get(viewer.base_url)
         wait_for(driver, lambda: len(driver.find_elements(By.CSS_SELECTOR, '.nav-item')) > 0)
 
-        # ── 1. 指给用户看「🌐 网络位置」在哪 ────────────────────────────────────
+        # ── 1. 指给用户看「网络位置」在哪 ────────────────────────────────────
         enter_plugin(driver, '图片相册', 'image-viewer')
         wait_for(driver, lambda: len(driver.find_elements(By.ID, 'btn-settings')) > 0)
         click(driver, driver.find_element(By.ID, 'btn-settings'), '点「设置」打开显示与排序设置')
         wait_for(driver, lambda: driver.find_elements(By.CSS_SELECTOR, '#settings-modal.active'))
-        pause('「图片文件夹」区块：输入框旁边就是新增的「🌐 网络位置」按钮')
+        pause('「图片文件夹」区块：输入框旁边就是新增的「网络位置」按钮')
         shoot(driver, out_dir, '01-settings-with-network-button')
 
         # ── 2. 点它：组件发现提供方 → 弹窗里嵌提供方页面 ────────────────────────
         click(driver, driver.find_element(By.CSS_SELECTOR, '#setting-roots [data-act="network"]'),
-              '点「🌐 网络位置」：壳去发现提供方并弹出它的页面')
+              '点「网络位置」：壳去发现提供方并弹出它的页面')
         if not wait_for(driver, lambda: driver.find_elements(By.CSS_SELECTOR, '.iv-network-frame')):
             say('提供方 iframe 没出现，后面的演示跳过')
         else:
