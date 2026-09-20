@@ -195,7 +195,7 @@ class MangaLibraryApp {
     _renderGrid(container, items, opts = {}) {
         if (!container) return;
         if (!items || !items.length) {
-            container.innerHTML = this._emptyHtml('📚', '暂无漫画', opts.single ? '可在设置中调整漫画根目录' : '');
+            container.innerHTML = this._emptyHtml('icon:library', '暂无漫画', opts.single ? '可在设置中调整漫画根目录' : '');
             return;
         }
         // 单视图容器不是网格时，内部包一层 .ml-grid，避免卡片撑满整行
@@ -203,7 +203,7 @@ class MangaLibraryApp {
         target.innerHTML = items.map((manga, i) => {
             const cover = manga.cover_url
                 ? MangaUtils.coverImg(Bridge.originalUrl(manga.cover_url))
-                : `<div class="ml-cover-fallback">📚</div>`;
+                : `<div class="ml-cover-fallback">${Icons.html('icon:library')}</div>`;
             return `
             <div class="ml-card" data-folder="${MangaUtils.escapeHtml(manga.folder_name)}" style="--obx-i:${Math.min(i, 32)}">
                 <button class="ml-fav-star ${manga.is_fav ? 'active' : ''}" data-folder="${MangaUtils.escapeHtml(manga.folder_name)}" title="收藏">${manga.is_fav ? '★' : '☆'}</button>
@@ -283,7 +283,7 @@ class MangaLibraryApp {
         content.innerHTML = `
             <div class="ml-detail-hero" style="--ml-hero-bg:${detail.chapters[0] && detail.chapters[0].cover_url ? `url("${Bridge.originalUrl(detail.chapters[0].cover_url)}")` : 'none'}">
                 <button class="btn ml-hero-back" id="ml-detail-back">← 返回</button>
-                <div class="ml-detail-cover">${detail.chapters[0] && detail.chapters[0].cover_url ? MangaUtils.coverImg(Bridge.originalUrl(detail.chapters[0].cover_url)) : '📚'}</div>
+                <div class="ml-detail-cover">${detail.chapters[0] && detail.chapters[0].cover_url ? MangaUtils.coverImg(Bridge.originalUrl(detail.chapters[0].cover_url)) : Icons.html('icon:library')}</div>
                 <div class="ml-detail-info">
                     <div class="ml-detail-label">漫画详情</div>
                     <div class="ml-detail-title">${MangaUtils.escapeHtml(detail.title)}</div>
@@ -295,7 +295,7 @@ class MangaLibraryApp {
             </div>
             ${infoHtml}
             <section class="ml-section">
-                <h3 class="ml-section-title">📖 章节</h3>
+                <h3 class="ml-section-title"><svg class="obx-icon"><use href="#book-open"></use></svg> 章节</h3>
                 <div id="ml-chapters" class="ml-grid"></div>
             </section>`;
 
@@ -310,7 +310,7 @@ class MangaLibraryApp {
         const grid = document.getElementById('ml-chapters');
         grid.innerHTML = detail.chapters.map((ch, i) => `
             <div class="ml-card" data-chapter="${MangaUtils.escapeHtml(ch.path)}" style="--obx-i:${Math.min(i, 32)}">
-                <div class="ml-cover">${ch.cover_url ? MangaUtils.coverImg(Bridge.originalUrl(ch.cover_url)) : `<div class="ml-cover-fallback">📖</div>`}</div>
+                <div class="ml-cover">${ch.cover_url ? MangaUtils.coverImg(Bridge.originalUrl(ch.cover_url)) : `<div class="ml-cover-fallback">${Icons.html('icon:book-open')}</div>`}</div>
                 <div class="ml-info"><div class="ml-card-title">${MangaUtils.escapeHtml(ch.name)}</div></div>
             </div>`).join('');
         grid.querySelectorAll('.ml-card').forEach(card => {
@@ -335,7 +335,7 @@ class MangaLibraryApp {
             </div>
             ${this._detailInfoHtml(detail.info)}
             <section class="ml-section">
-                <h3 class="ml-section-title">🖼 图片</h3>
+                <h3 class="ml-section-title"><svg class="obx-icon"><use href="#images"></use></svg> 图片</h3>
                 <div id="ml-pages" class="ml-grid"></div>
             </section>`;
         document.getElementById('ml-detail-back').addEventListener('click', () => {
@@ -352,13 +352,13 @@ class MangaLibraryApp {
         try {
             const pages = await Bridge.call('manga_get_pages', this.currentFolderName, this._chapterPath || '');
             if (!pages.length) {
-                grid.innerHTML = this._emptyHtml('🖼', '无图片');
+                grid.innerHTML = this._emptyHtml('icon:images', '无图片');
                 return;
             }
             Bridge.call('manga_update_recent', this.currentFolderName, 0);
             grid.innerHTML = pages.map((url, i) => `
                 <div class="ml-card" data-page="${i}" style="--obx-i:${Math.min(i, 32)}">
-                    <div class="ml-cover" style="padding-top:140%;">${MangaUtils.coverImg(Bridge.originalUrl(url), '🖼')}</div>
+                    <div class="ml-cover" style="padding-top:140%;">${MangaUtils.coverImg(Bridge.originalUrl(url), 'icon:images')}</div>
                 </div>`).join('');
             grid.querySelectorAll('.ml-card').forEach(card => {
                 card.addEventListener('click', () => this.reader.open(pages, parseInt(card.dataset.page, 10)));
@@ -434,7 +434,7 @@ class MangaLibraryApp {
             const thumb = MangaUtils.escapeHtml(task.thumbUrl || '');
             return `
             <div class="ml-task" data-task-id="${task.id}" style="--obx-i:${Math.min(i, 24)}">
-                ${thumb ? `<img class="ml-task-thumb" src="${thumb}" alt="" onerror="this.style.display='none'">` : `<div class="ml-task-thumb" style="display:flex;align-items:center;justify-content:center;font-size:22px;">📚</div>`}
+                ${thumb ? `<img class="ml-task-thumb" src="${thumb}" alt="" onerror="this.style.display='none'">` : `<div class="ml-task-thumb" style="display:flex;align-items:center;justify-content:center;font-size:22px;">${Icons.html('icon:library')}</div>`}
                 <div class="ml-task-main">
                     <div class="ml-task-title">${MangaUtils.escapeHtml(task.title || `漫画 #${task.albumId}`)}</div>
                     <div class="ml-task-meta">
@@ -453,7 +453,7 @@ class MangaLibraryApp {
                     ${task.status === 'paused' ? `<button data-act="resume" title="继续">▶</button>` : ''}
                     ${task.status === 'failed' ? `<button data-act="retry" title="重试">↻</button>` : ''}
                     <button data-act="detail" title="详情">ℹ</button>
-                    <button data-act="delete" class="danger" title="删除">🗑</button>
+                    <button data-act="delete" class="danger" title="删除"><svg class="obx-icon"><use href="#trash-2"></use></svg></button>
                 </div>
             </div>`;
         }).join('');

@@ -11,7 +11,7 @@
     <!-- ===== 左侧导航 ===== -->
     <aside class="mp-sidebar view-sub-sidebar">
       <div class="mp-brand">
-        <div class="mp-brand-icon">🎧</div>
+        <div class="mp-brand-icon"><svg class="obx-icon"><use href="#headphones"></use></svg></div>
         <div class="mp-brand-text">
           <div class="mp-brand-title">媒体库</div>
           <div class="mp-brand-sub">Music · Video</div>
@@ -20,19 +20,19 @@
 
       <nav class="mp-nav">
         <button class="obx-nav-item mp-nav-item active" data-view="recent">
-          <span class="mp-nav-ico">🕘</span><span>最近播放</span>
+          <span class="mp-nav-ico"><svg class="obx-icon"><use href="#history"></use></svg></span><span>最近播放</span>
         </button>
         <button class="obx-nav-item mp-nav-item" data-view="audio-albums">
-          <span class="mp-nav-ico">💿</span><span>音乐专辑</span>
+          <span class="mp-nav-ico"><svg class="obx-icon"><use href="#disc"></use></svg></span><span>音乐专辑</span>
         </button>
         <button class="obx-nav-item mp-nav-item" data-view="all-audio">
-          <span class="mp-nav-ico">🎵</span><span>全部音乐</span>
+          <span class="mp-nav-ico"><svg class="obx-icon"><use href="#music"></use></svg></span><span>全部音乐</span>
         </button>
         <button class="obx-nav-item mp-nav-item" data-view="video-albums">
-          <span class="mp-nav-ico">📀</span><span>视频专辑</span>
+          <span class="mp-nav-ico"><svg class="obx-icon"><use href="#disc-3"></use></svg></span><span>视频专辑</span>
         </button>
         <button class="obx-nav-item mp-nav-item" data-view="all-video">
-          <span class="mp-nav-ico">🎬</span><span>全部视频</span>
+          <span class="mp-nav-ico"><svg class="obx-icon"><use href="#clapperboard"></use></svg></span><span>全部视频</span>
         </button>
         <button class="obx-nav-item mp-nav-item" data-view="favorites">
           <span class="mp-nav-ico">❤️</span><span>我的喜欢</span>
@@ -65,11 +65,11 @@
         </div>
         <div class="toolbar-group mp-toolbar-right">
         <div class="search-field">
-          <span class="search-field-icon">🔍</span>
+          <span class="search-field-icon"><svg class="obx-icon"><use href="#search"></use></svg></span>
           <input type="text" id="media-search" placeholder="搜索媒体、专辑、艺术家…" autocomplete="off">
           <button id="btn-search-clear" class="search-field-clear hidden" title="清除">✕</button>
         </div>
-          <button id="btn-scan" class="btn mp-tool-btn" title="增量扫描：只处理新增或变更的文件，秒级完成">🔄 扫描</button>
+          <button id="btn-scan" class="btn mp-tool-btn" title="增量扫描：只处理新增或变更的文件，秒级完成"><svg class="obx-icon"><use href="#refresh-cw"></use></svg> 扫描</button>
           <button id="btn-deep-scan" class="btn mp-tool-btn" title="深度扫描：重新读取全部文件的标签与时长，耗时较长">⚡ 深度扫描</button>
           <button id="btn-settings" class="btn mp-tool-btn">⚙ 设置</button>
         </div>
@@ -96,7 +96,7 @@
             </div>
 
             <div class="mp-stage-empty" id="mp-stage-empty">
-              <div class="mp-stage-empty-icon">🎧</div>
+              <div class="mp-stage-empty-icon"><svg class="obx-icon"><use href="#headphones"></use></svg></div>
               <div class="mp-stage-empty-text">选择一首音乐或视频开始播放</div>
             </div>
 
@@ -123,7 +123,7 @@
 
             <div class="mp-pb-center">
               <div class="mp-controls">
-                <button id="btn-play-mode" class="mp-icon-btn" title="顺序播放">🔁</button>
+                <button id="btn-play-mode" class="mp-icon-btn" title="顺序播放"><svg class="obx-icon"><use href="#repeat"></use></svg></button>
                 <button id="btn-prev" class="mp-icon-btn" title="上一曲">⏮</button>
                 <button id="btn-play-pause" class="mp-play-btn" title="播放/暂停">▶</button>
                 <button id="btn-next" class="mp-icon-btn" title="下一曲">⏭</button>
@@ -137,14 +137,14 @@
             </div>
 
             <div class="mp-pb-right">
-              <button id="btn-queue" class="mp-icon-btn" title="播放队列">📋</button>
-              <button id="btn-eq" class="mp-icon-btn" title="均衡器">🎚</button>
+              <button id="btn-queue" class="mp-icon-btn" title="播放队列"><svg class="obx-icon"><use href="#list-music"></use></svg></button>
+              <button id="btn-eq" class="mp-icon-btn" title="均衡器"><svg class="obx-icon"><use href="#sliders-horizontal"></use></svg></button>
               <div class="mp-volume">
-                <button id="btn-volume-icon" class="mp-icon-btn" title="静音">🔊</button>
+                <button id="btn-volume-icon" class="mp-icon-btn" title="静音"><svg class="obx-icon"><use href="#volume-2"></use></svg></button>
                 <input type="range" id="volume-bar" class="mp-range mp-volume-bar" min="0" max="1" step="0.02" value="1">
               </div>
-              <button id="btn-video-mode" class="mp-icon-btn hidden" title="画面 / 仅声音">🎬</button>
-              <button id="btn-wide" class="mp-icon-btn" title="宽屏模式">🖥</button>
+              <button id="btn-video-mode" class="mp-icon-btn hidden" title="画面 / 仅声音"><svg class="obx-icon"><use href="#clapperboard"></use></svg></button>
+              <button id="btn-wide" class="mp-icon-btn" title="宽屏模式"><svg class="obx-icon"><use href="#monitor"></use></svg></button>
               <button id="btn-fullscreen" class="mp-icon-btn" title="沉浸歌词">⛶</button>
             </div>
           </div>
@@ -189,7 +189,7 @@
     <!-- ===== 均衡器 ===== -->
     <div class="mp-pop mp-eq-pop hidden" id="eq-panel">
       <div class="mp-pop-head">
-        <span>🎚 均衡器</span>
+        <span><svg class="obx-icon"><use href="#sliders-horizontal"></use></svg> 均衡器</span>
         <div class="mp-eq-actions">
           <select id="eq-preset-select" class="mp-select"><option value="">内置预设</option></select>
           <button class="mp-ghost-btn" id="btn-eq-reset">重置</button>

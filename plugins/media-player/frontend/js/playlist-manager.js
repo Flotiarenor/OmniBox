@@ -127,7 +127,7 @@ class MediaPlaylistManager {
 
         container.innerHTML = this.playlists.map(pl => `
             <div class="mp-playlist-item ${pl.id === this.currentId ? 'active' : ''}" data-pl-id="${pl.id}">
-                <span class="pl-name">📋 ${MPUtils.escapeHtml(pl.name)}</span>
+                <span class="pl-name">${MPUtils.icon('icon:list-music')} ${MPUtils.escapeHtml(pl.name)}</span>
                 <span class="pl-count">${(pl.item_ids || []).length}</span>
                 <button class="pl-more" data-pl-id="${pl.id}" title="更多操作">⋯</button>
             </div>

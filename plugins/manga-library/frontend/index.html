@@ -11,7 +11,7 @@
     <!-- ===== 左侧导航：漫画库 + 下载中心 ===== -->
     <aside class="ml-sidebar view-sub-sidebar obx-glass">
       <div class="ml-brand">
-        <div class="ml-brand-icon">📚</div>
+        <div class="ml-brand-icon"><svg class="obx-icon"><use href="#library"></use></svg></div>
         <div class="ml-brand-text">
           <div class="ml-brand-title">漫画中心</div>
           <div class="ml-brand-sub">Library · Download</div>
@@ -20,14 +20,14 @@
 
       <nav class="ml-nav obx-scroll">
         <div class="ml-nav-label">漫画库</div>
-        <button class="obx-nav-item ml-nav-item active" data-view="all"><span>📚</span>全部漫画</button>
+        <button class="obx-nav-item ml-nav-item active" data-view="all"><svg class="obx-icon"><use href="#library"></use></svg>全部漫画</button>
         <button class="obx-nav-item ml-nav-item" data-view="favorites"><span>⭐</span>我的收藏</button>
-        <button class="obx-nav-item ml-nav-item" data-view="recent"><span>🕐</span>最近阅读</button>
+        <button class="obx-nav-item ml-nav-item" data-view="recent"><svg class="obx-icon"><use href="#history"></use></svg>最近阅读</button>
 
         <div class="ml-nav-label">下载中心</div>
         <button class="obx-nav-item ml-nav-item" data-view="downloads" data-dl-filter="all"><span>⬇️</span>全部任务</button>
         <button class="obx-nav-item ml-nav-item" data-view="downloads" data-dl-filter="downloading"><span>▶</span>下载中</button>
-        <button class="obx-nav-item ml-nav-item" data-view="downloads" data-dl-filter="queued"><span>🕓</span>排队中</button>
+        <button class="obx-nav-item ml-nav-item" data-view="downloads" data-dl-filter="queued"><svg class="obx-icon"><use href="#clock"></use></svg>排队中</button>
         <button class="obx-nav-item ml-nav-item" data-view="downloads" data-dl-filter="paused"><span>⏸</span>已暂停</button>
         <button class="obx-nav-item ml-nav-item" data-view="downloads" data-dl-filter="completed"><span>✅</span>已完成</button>
         <button class="obx-nav-item ml-nav-item" data-view="downloads" data-dl-filter="failed"><span>⚠️</span>失败</button>
@@ -45,14 +45,14 @@
         </div>
         <div class="toolbar-group ml-toolbar-right">
           <div class="search-field" id="ml-search-wrap">
-            <span class="search-field-icon">🔍</span>
+            <span class="search-field-icon"><svg class="obx-icon"><use href="#search"></use></svg></span>
             <input type="text" id="manga-search" placeholder="搜索漫画、作者…" autocomplete="off">
             <button id="ml-search-clear" class="search-field-clear hidden" title="清除">✕</button>
           </div>
           <button id="ml-add-task" class="btn btn-primary hidden">＋ 添加任务</button>
           <button id="ml-start-all" class="btn hidden">▶ 全部开始</button>
           <button id="ml-pause-all" class="btn hidden">⏸ 全部暂停</button>
-          <button id="ml-clear-completed" class="btn hidden">🗑 清除已完成</button>
+          <button id="ml-clear-completed" class="btn hidden"><svg class="obx-icon"><use href="#trash-2"></use></svg> 清除已完成</button>
           <button id="btn-settings" class="btn">⚙ 设置</button>
         </div>
       </div>

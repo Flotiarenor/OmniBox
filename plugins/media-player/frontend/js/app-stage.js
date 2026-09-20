@@ -189,7 +189,7 @@ Object.assign(MediaPlayerApp.prototype, {
         if (!item || item.kind !== 'video') return;
         this.core.setVideoMode(!this.core.videoMode);
         const btn = document.getElementById('btn-video-mode');
-        btn.textContent = this.core.videoMode ? '🎬' : '🎵';
+        btn.innerHTML = MPUtils.icon(this.core.videoMode ? 'icon:clapperboard' : 'icon:music');
         btn.title = this.core.videoMode ? '切换到仅声音' : '切换到画面';
         Bridge.call('media_set_config', 'default_video_mode', this.core.videoMode ? 'video' : 'audio').catch(() => { });
     },

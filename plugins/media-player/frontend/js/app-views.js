@@ -30,7 +30,7 @@ Object.assign(MediaPlayerApp.prototype, {
                 this._scanning = false;
                 if (btn) {
                     btn.disabled = false;
-                    btn.textContent = this.currentView.startsWith('ncm-') ? '🔄 刷新' : '🔄 扫描';
+                    btn.innerHTML = MPUtils.icon('icon:refresh-cw') + (this.currentView.startsWith('ncm-') ? ' 刷新' : ' 扫描');
                 }
             }
             return;
@@ -64,7 +64,7 @@ Object.assign(MediaPlayerApp.prototype, {
         } finally {
             this._scanning = false;
             btn.disabled = false;
-            btn.textContent = '🔄 扫描';
+            btn.innerHTML = MPUtils.icon('icon:refresh-cw') + ' 扫描';
             const deepBtn = document.getElementById('btn-deep-scan');
             if (deepBtn) deepBtn.disabled = false;
             await this._loadCurrentView();
@@ -184,7 +184,7 @@ Object.assign(MediaPlayerApp.prototype, {
         const titleEl = document.getElementById('mp-view-title');
         const subEl = document.getElementById('mp-view-sub');
         const scanBtn = document.getElementById('btn-scan');
-        if (scanBtn) scanBtn.textContent = this.currentView.startsWith('ncm-') ? '🔄 刷新' : '🔄 扫描';
+        if (scanBtn) scanBtn.innerHTML = MPUtils.icon('icon:refresh-cw') + (this.currentView.startsWith('ncm-') ? ' 刷新' : ' 扫描');
         const deepScanBtn = document.getElementById('btn-deep-scan');
         if (deepScanBtn) deepScanBtn.classList.toggle('hidden', this.currentView.startsWith('ncm-'));
         const viewsTitle = {
@@ -386,7 +386,7 @@ Object.assign(MediaPlayerApp.prototype, {
                     return;
                 case 'album-detail': {
                     const album = this.currentAlbum;
-                    if (!album) return this._renderEmpty('🎧', '请选择一个专辑');
+                    if (!album) return this._renderEmpty('icon:headphones', '请选择一个专辑');
                     const items = await Bridge.call('media_album_items', album.key, album.kind);
                     titleEl.textContent = album.kind === 'video' ? '视频专辑' : '音乐专辑';
                     subEl.textContent = `${items.length} 个媒体`;
@@ -401,7 +401,7 @@ Object.assign(MediaPlayerApp.prototype, {
                 }
                 case 'playlist': {
                     const pl = this.currentPlaylist;
-                    if (!pl) return this._renderEmpty('📋', '请选择一个歌单');
+                    if (!pl) return this._renderEmpty('icon:list-music', '请选择一个歌单');
                     titleEl.textContent = pl.name || '歌单';
                     subEl.textContent = `${(pl.items || []).length} 个媒体`;
                     this._renderDetail(pl.items || [], {
@@ -415,7 +415,7 @@ Object.assign(MediaPlayerApp.prototype, {
                     return;
                 }
                 default:
-                    this._renderEmpty('🎧', '未知视图');
+                    this._renderEmpty('icon:headphones', '未知视图');
             }
         } catch (e) {
             console.error('加载视图失败:', e);

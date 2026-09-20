@@ -42,7 +42,7 @@ Object.assign(MediaPlayerApp.prototype, {
         const isVideo = !!(item && item.kind === 'video');
         videoModeBtn.classList.toggle('hidden', !isVideo);
         if (isVideo) {
-            videoModeBtn.textContent = this.core.videoMode ? '🎬' : '🎵';
+            videoModeBtn.innerHTML = MPUtils.icon(this.core.videoMode ? 'icon:clapperboard' : 'icon:music');
             videoModeBtn.title = this.core.videoMode ? '切换到仅声音' : '切换到画面';
         }
 
@@ -78,7 +78,7 @@ Object.assign(MediaPlayerApp.prototype, {
             img.removeAttribute('src');
             img.style.display = 'none';
             coverEl.classList.add('no-cover');
-            coverEl.dataset.icon = item ? MPUtils.itemIcon(item) : '🎵';
+            coverEl.dataset.icon = item ? MPUtils.itemIcon(item) : 'icon:music';
         };
         if (url) {
             // 相同 src 时浏览器不会重新加载（可能覆盖抽帧成功的 &v= 状态）→ 强制重载
@@ -99,7 +99,7 @@ Object.assign(MediaPlayerApp.prototype, {
             img.removeAttribute('src');
             img.style.display = 'none';
             coverEl.classList.add('no-cover');
-            coverEl.dataset.icon = item ? MPUtils.itemIcon(item) : '🎵';
+            coverEl.dataset.icon = item ? MPUtils.itemIcon(item) : 'icon:music';
         }
         coverEl.classList.toggle('spinning', !!(item && item.kind === 'audio' && this._playing));
         coverEl.classList.toggle('paused', !!(item && item.kind === 'audio' && !this._playing));
@@ -176,9 +176,9 @@ Object.assign(MediaPlayerApp.prototype, {
     updatePlayModeUI() {
         const btn = document.getElementById('btn-play-mode');
         if (!btn) return;
-        const icons = ['🔁', '🔀', '🔂'];
+        const icons = ['icon:repeat', 'icon:shuffle', 'icon:repeat-1'];
         const titles = ['顺序播放', '随机播放', '单曲循环'];
-        btn.textContent = icons[this.core.playMode] || '🔁';
+        btn.innerHTML = MPUtils.icon(icons[this.core.playMode] || 'icon:repeat');
         btn.title = titles[this.core.playMode] || '顺序播放';
     },
 
@@ -189,10 +189,10 @@ Object.assign(MediaPlayerApp.prototype, {
         bar.value = this.core.volume;
         MPUtils.setRangePercent(bar, this.core.volume * 100);
         if (icon) {
-            if (this.core._muted || this.core.volume === 0) icon.textContent = '🔇';
-            else if (this.core.volume < 0.35) icon.textContent = '🔈';
-            else if (this.core.volume < 0.7) icon.textContent = '🔉';
-            else icon.textContent = '🔊';
+            if (this.core._muted || this.core.volume === 0) icon.innerHTML = MPUtils.icon('icon:volume-x');
+            else if (this.core.volume < 0.35) icon.innerHTML = MPUtils.icon('icon:volume-1');
+            else if (this.core.volume < 0.7) icon.innerHTML = MPUtils.icon('icon:volume-1');
+            else icon.innerHTML = MPUtils.icon('icon:volume-2');
         }
     },
 
@@ -355,7 +355,7 @@ Object.assign(MediaPlayerApp.prototype, {
 
         list.innerHTML = this.playlists.playlists.map(pl => `
             <div class="mp-add-pl-item" data-pl-id="${pl.id}">
-                <span>📋</span>
+                <span>${MPUtils.icon('icon:list-music')}</span>
                 <span>${MPUtils.escapeHtml(pl.name)}</span>
                 <span class="pl-count">${(pl.item_ids || []).length} 项</span>
             </div>`).join('');
@@ -382,7 +382,7 @@ Object.assign(MediaPlayerApp.prototype, {
         menu.id = 'mp-context-menu';
         menu.innerHTML = `
             <button data-menu-act="rename">✎ 重命名</button>
-            <button data-menu-act="delete" class="danger">🗑 删除歌单</button>`;
+            <button data-menu-act="delete" class="danger">${MPUtils.icon('icon:trash-2')} 删除歌单</button>`;
         menu.style.left = `${Math.min(e.clientX, window.innerWidth - 150)}px`;
         menu.style.top = `${Math.min(e.clientY, window.innerHeight - 100)}px`;
         document.body.appendChild(menu);

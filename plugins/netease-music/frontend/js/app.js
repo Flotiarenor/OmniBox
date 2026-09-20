@@ -1,3 +1,10 @@
+// 图标走壳的图标集（引导脚本已内联 sprite）。`Icons` 缺失时返回空串，不写 emoji 兜底
+// （emoji 字面量会让 check_plugins 的 emoji 门禁永远清不掉）。
+// 本插件的 5 个原生视图实际由 media-player 渲染，这份页面只在直接打开时才用到。
+const icon = (name) => (window.Icons && typeof window.Icons.html === 'function')
+  ? window.Icons.html('icon:' + name)
+  : '';
+
 class NeteaseApp {
   constructor() {
     this.view = 'daily';
@@ -78,7 +85,7 @@ class NeteaseApp {
     if (!songs.length) { content.innerHTML = '<div class="empty-state">暂无歌曲</div>'; return; }
     content.innerHTML = songs.map((s, i) => `
       <div class="item" data-idx="${i}">
-        <span>🎵</span>
+        <span>${icon('music')}</span>
         <div><div class="t">${this.esc(s.name)}</div><div class="s">${this.esc((s.artists || []).join(', '))}</div></div>
       </div>`).join('');
     content.querySelectorAll('.item').forEach(el => {
@@ -113,7 +120,7 @@ class NeteaseApp {
     if (!playlists.length) { content.innerHTML = '<div class="empty-state">暂无歌单</div>'; return; }
     content.innerHTML = playlists.map(p => `
       <div class="item">
-        <span>📋</span>
+        <span>${icon('list-music')}</span>
         <div><div class="t">${this.esc(p.name)}</div><div class="s">${p.track_count} 首</div></div>
       </div>`).join('');
   }

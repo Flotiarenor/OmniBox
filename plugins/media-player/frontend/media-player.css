@@ -947,12 +947,13 @@
 /* 视频封面前端抽帧进行中：轻微降透明度提示加载态 */
 img.mp-thumb-pending { opacity: 0.45; transition: opacity .3s; }
 
-/* 封面图片加载失败时的统一占位 */
-.mp-card-cover.img-broken::after,
-.mp-row-cover.img-broken::after,
-.mp-detail-cover.img-broken::after,
-.mp-pb-cover.img-broken::after {
-  content: attr(data-fallback);
+/* 封面图片加载失败时的统一占位。
+   以前是 `::after { content: attr(data-fallback) }` —— 伪元素只能放文本，塞不进 SVG
+   图标（图标集是 <svg><use> 标记）。所以改成由 MPUtils.fallbackCover() 往容器里插入
+   一个真实的 .cover-fallback 元素，样式（含图标尺寸）与下面卡片那条共用。 */
+.mp-row-cover.img-broken .cover-fallback,
+.mp-detail-cover.img-broken .cover-fallback,
+.mp-pb-cover.img-broken .cover-fallback {
   position: absolute;
   inset: 0;
   display: flex;

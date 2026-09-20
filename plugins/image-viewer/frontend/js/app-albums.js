@@ -90,7 +90,7 @@ Object.assign(ImageViewer.prototype, {
         }
 
         if (!albums.length) {
-            content.innerHTML = this._emptyHtml('🖼️', '暂无相册', keyword ? '换个关键词试试' : '点击左侧「新建相册」开始整理');
+            content.innerHTML = this._emptyHtml('icon:images', '暂无相册', keyword ? '换个关键词试试' : '点击左侧「新建相册」开始整理');
             this._updateStats();
             return;
         }
@@ -136,11 +136,11 @@ Object.assign(ImageViewer.prototype, {
             const sub = album.path ? album.path : '根目录 · 未分类';
             const time = opts.showTime ? `<span class="iv-time-badge">${this._timeAgo(album.mtime)}</span>` : '';
             const badges = [];
-            if (collapsed.has(album.path)) badges.push('<span class="iv-album-tag">📦 已收纳</span>');
-            if (promoted.has(album.path)) badges.push('<span class="iv-album-tag iv-album-tag-hot">📌 已提升</span>');
+            if (collapsed.has(album.path)) badges.push(`<span class="iv-album-tag">${Icons.html('icon:package')} 已收纳</span>`);
+            if (promoted.has(album.path)) badges.push(`<span class="iv-album-tag iv-album-tag-hot">${Icons.html('icon:pin')} 已提升</span>`);
             // 空目录默认不显示，显示出来的都是「新建相册」保留可见的
             if (visibleEmpty.has(album.path) && !album.readable) {
-                badges.push('<span class="iv-album-tag">📁 空相册</span>');
+                badges.push(`<span class="iv-album-tag">${Icons.html('icon:folder')} 空相册</span>`);
             }
             const menu = (album.depth >= 1 && album.path !== '')
                 ? `<button class="iv-album-menu" data-path="${this._escapeAttr(album.path)}" title="相册设置">⋯</button>`
@@ -154,7 +154,7 @@ Object.assign(ImageViewer.prototype, {
             <div class="iv-album" data-path="${this._escapeAttr(album.path)}">
                 <div class="iv-album-cover">
                     ${album.cover ? `<img src="${Bridge.thumbUrl(album.cover)}" loading="lazy" alt=""
-                        onerror="if(!this.dataset.r){this.dataset.r='1';const u=new URL(this.src,location.origin);u.searchParams.set('r',Date.now());this.src=u.toString();}else{this.outerHTML='<div class=\'iv-cover-fallback\'>🖼️</div>';}">` : '<div class="iv-cover-fallback">🖼️</div>'}
+                        onerror="if(!this.dataset.r){this.dataset.r='1';const u=new URL(this.src,location.origin);u.searchParams.set('r',Date.now());this.src=u.toString();}else{this.outerHTML='<div class=\'iv-cover-fallback\'>' + Icons.html('icon:image-off') + '</div>';}">` : '<div class="iv-cover-fallback">' + Icons.html('icon:image-off') + '</div>'}
                     <span class="iv-album-badge">${countText}</span>
                     ${time}
                     ${badges.join('')}

@@ -95,6 +95,12 @@
 
     const el = (id) => document.getElementById(id);
     const esc = (text) => (window.Utils ? Utils.escapeHtml(text) : String(text == null ? '' : text));
+
+// 图标走壳的图标集（引导脚本已内联 sprite）。`Icons` 缺失时（本页脱离壳单独打开调试）
+// 返回空串 —— 不要写 emoji 兜底，否则 emoji 字面量留在源码里，门禁永远清不掉。
+const nlIcon = (name) => (window.Icons && typeof window.Icons.html === 'function')
+  ? window.Icons.html('icon:' + name)
+  : '';
     const call = (method, args) => Bridge.call(method, args || {});
     const toast = (message, isError) => {
       if (!window.Toast) return;
@@ -120,7 +126,7 @@
         }
         el('nl-peers').innerHTML = peers.map((peer) => `
           <div class="nl-item" data-device="${esc(peer.device_id || '')}">
-            <span>🖥️</span><span>${esc(peer.name || peer.device_id || '未命名设备')}</span>
+            <span>" + nlIcon("monitor") + "</span><span>${esc(peer.name || peer.device_id || '未命名设备')}</span>
             <span class="nl-sub">${esc((peer.endpoint || []).join(':'))}</span>
           </div>`).join('');
         el('nl-peers').querySelectorAll('[data-device]').forEach((item) => {
@@ -153,7 +159,7 @@
         }
         el('nl-shares').innerHTML = shares.map((share) => `
           <div class="nl-item" data-share="${esc(share.share_id || '')}">
-            <span>📁</span><span>${esc(share.share_id || '')}</span>
+            <span>" + nlIcon("folder") + "</span><span>${esc(share.share_id || '')}</span>
             <span class="nl-sub">${esc(share.acl && share.acl.read ? '可读' : '')}</span>
           </div>`).join('');
         el('nl-shares').querySelectorAll('[data-share]').forEach((item) => {

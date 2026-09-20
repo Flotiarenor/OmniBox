@@ -28,7 +28,7 @@ Object.assign(DocumentReader.prototype, {
 
         if (!items.length) {
             grid.innerHTML = this._emptyHtml(
-                keyword ? '🔍' : '📚',
+                keyword ? 'icon:search' : 'icon:book-open',
                 keyword ? '没有匹配的文档' : '这个分类还是空的',
                 keyword ? '换个关键词试试' : '把 .txt / .md / .epub 放进文档目录');
             this._updateStatus();
@@ -61,7 +61,7 @@ Object.assign(DocumentReader.prototype, {
         const total = groups.reduce((sum, item) => sum + item.marks.length, 0);
         this._dom.viewSub.textContent = `${total} 条 · 来自 ${groups.length} 本`;
         if (!total) {
-            grid.innerHTML = this._emptyHtml('⭐', '还没有书签',
+            grid.innerHTML = this._emptyHtml('icon:star', '还没有书签',
                 '在正文里选中一句话 → 右键 → 添加书签');
             this._updateStatus();
             return;
@@ -137,9 +137,12 @@ Object.assign(DocumentReader.prototype, {
     },
 
     _emptyHtml(icon, text, hint = '') {
-        // 结构走壳的 .empty-state（base.css）；`.nr-empty-span` 只负责网格里跨列占位
+        // 结构走壳的 .empty-state（base.css）；`.nr-empty-span` 只负责网格里跨列占位。
+        // 图标走壳的图标集：传 `icon:名字`。`window.Icons` 缺失时（插件页脱离壳单独打开）
+        // 原样渲染传入值，旧插件的 emoji 仍然能显示。
+        const iconHtml = window.Icons ? window.Icons.html(icon, 'empty-state-icon') : icon;
         return `<div class="empty-state nr-empty-span">
-            <div class="empty-state-icon">${icon}</div>
+            <div class="empty-state-icon">${iconHtml}</div>
             <div class="empty-state-text">${Utils.escapeHtml(text)}</div>
             ${hint ? `<div class="empty-state-hint">${Utils.escapeHtml(hint)}</div>` : ''}
         </div>`;

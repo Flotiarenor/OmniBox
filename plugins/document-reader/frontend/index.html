@@ -13,7 +13,7 @@
          目录、阅读设置是弹窗，朗读设置是覆盖主区的独立页，入口都在这里。 -->
     <aside class="view-sub-sidebar nr-sidebar obx-glass">
       <div class="nr-brand">
-        <div class="nr-brand-icon">📖</div>
+        <div class="nr-brand-icon"><svg class="obx-icon"><use href="#book-open"></use></svg></div>
         <div class="nr-brand-text">
           <div class="nr-brand-title">文档阅读</div>
           <div class="nr-brand-sub">Reader</div>
@@ -26,24 +26,24 @@
       <nav class="nr-nav obx-scroll">
         <div class="nr-nav-label">浏览</div>
         <button type="button" class="obx-nav-item nr-nav-item active" data-view="all">
-          <span class="nr-nav-icon">📚</span><span>全部文档</span>
+          <span class="nr-nav-icon"><svg class="obx-icon"><use href="#library"></use></svg></span><span>全部文档</span>
           <span class="nr-nav-count" id="nr-count-all"></span>
         </button>
         <button type="button" class="obx-nav-item nr-nav-item" data-view="recent">
-          <span class="nr-nav-icon">🕐</span><span>最近阅读</span>
+          <span class="nr-nav-icon"><svg class="obx-icon"><use href="#history"></use></svg></span><span>最近阅读</span>
         </button>
         <button type="button" class="obx-nav-item nr-nav-item" data-view="marks">
-          <span class="nr-nav-icon">⭐</span><span>书签</span>
+          <span class="nr-nav-icon"><svg class="obx-icon"><use href="#star"></use></svg></span><span>书签</span>
           <span class="nr-nav-count" id="nr-count-marks"></span>
         </button>
         <button type="button" class="obx-nav-item nr-nav-item" id="nr-open-voice">
-          <span class="nr-nav-icon">🔊</span><span>朗读设置</span>
+          <span class="nr-nav-icon"><svg class="obx-icon"><use href="#volume-2"></use></svg></span><span>朗读设置</span>
         </button>
 
         <div id="nr-reader-tools" class="hidden">
           <div class="nr-nav-label">当前文档</div>
           <button type="button" class="obx-nav-item nr-nav-item" id="nr-open-toc">
-            <span class="nr-nav-icon">☰</span><span>目录</span>
+            <span class="nr-nav-icon"><svg class="obx-icon"><use href="#list"></use></svg></span><span>目录</span>
           </button>
           <button type="button" class="obx-nav-item nr-nav-item" id="nr-open-read-settings">
             <span class="nr-nav-icon">A</span><span>阅读设置</span>
@@ -68,11 +68,11 @@
         <div class="toolbar-group nr-toolbar-right">
           <!-- 搜索框就是壳的 .search-field（base.css）：本插件的这一版是壳组件的形态来源 -->
           <div class="search-field">
-            <span class="search-field-icon">🔍</span>
+            <span class="search-field-icon"><svg class="obx-icon"><use href="#search"></use></svg></span>
             <input type="text" id="nr-search" placeholder="搜索书名、作者…" autocomplete="off">
             <button type="button" id="nr-search-clear" class="search-field-clear hidden" title="清除">✕</button>
           </div>
-          <button type="button" id="btn-settings" class="btn btn-sm">⚙ 设置</button>
+          <button type="button" id="btn-settings" class="btn btn-sm"><svg class="obx-icon"><use href="#settings-2"></use></svg> 设置</button>
         </div>
       </div>
 

@@ -79,7 +79,7 @@
     <!-- 顶部工具栏 -->
     <div class="view-toolbar">
       <div class="toolbar-group">
-        <span class="psync-title" style="font-weight:600;">🎨 Pixiv 同步</span>
+        <span class="psync-title" style="font-weight:600;"><svg class="obx-icon"><use href="#palette"></use></svg> Pixiv 同步</span>
       </div>
       <div class="toolbar-group" style="margin-left:auto;">
         <button id="btn-cancel" class="btn btn-sm" style="display:none;">取消</button>
@@ -107,13 +107,13 @@
         <button id="btn-bookmarks" class="btn" title="一步完成：先自动刷新收藏清单（增量），再下载新作">❤️ 同步喜欢</button>
       </div>
       <div class="psync-btns" style="padding-top:0;">
-        <button id="btn-refresh-following" class="btn btn-sm" title="仅更新关注清单、不下载；同步画师已内置自动刷新（首次大批量铺底或想先看清单统计时用）">🔄 刷新关注名单</button>
-        <button id="btn-refresh-bookmarks" class="btn btn-sm" title="仅更新收藏清单、不下载；同步喜欢已内置自动刷新">🔄 刷新喜欢名单</button>
+        <button id="btn-refresh-following" class="btn btn-sm" title="仅更新关注清单、不下载；同步画师已内置自动刷新（首次大批量铺底或想先看清单统计时用）"><svg class="obx-icon"><use href="#refresh-cw"></use></svg> 刷新关注名单</button>
+        <button id="btn-refresh-bookmarks" class="btn btn-sm" title="仅更新收藏清单、不下载；同步喜欢已内置自动刷新"><svg class="obx-icon"><use href="#refresh-cw"></use></svg> 刷新喜欢名单</button>
       </div>
       <div class="psync-btns" style="padding-top:0;">
-        <button id="btn-refresh-dl" class="btn btn-sm" title="扫描本地文件重建已下载记录（手动删过的移除、手动加的导入、0字节清理）">📋 刷新记录</button>
-        <button id="btn-verify" class="btn btn-sm" title="校验已下载内容：移除记录中本地无有效文件的失效 id，下次同步重下">🔍 校验内容</button>
-        <button id="btn-retry-failed" class="btn btn-sm btn-danger" title="清除失败的404（永久跳过）记录，并自动重新同步一次重试这些作品">🗑 重试失败作品</button>
+        <button id="btn-refresh-dl" class="btn btn-sm" title="扫描本地文件重建已下载记录（手动删过的移除、手动加的导入、0字节清理）"><svg class="obx-icon"><use href="#list-checks"></use></svg> 刷新记录</button>
+        <button id="btn-verify" class="btn btn-sm" title="校验已下载内容：移除记录中本地无有效文件的失效 id，下次同步重下"><svg class="obx-icon"><use href="#search"></use></svg> 校验内容</button>
+        <button id="btn-retry-failed" class="btn btn-sm btn-danger" title="清除失败的404（永久跳过）记录，并自动重新同步一次重试这些作品"><svg class="obx-icon"><use href="#trash-2"></use></svg> 重试失败作品</button>
       </div>
 
       <!-- 进度条 -->
@@ -141,9 +141,9 @@
       <div class="psync-status" style="padding-top:0;">
         <span class="field-help" id="st-selected">画师名单: 全部</span>
         <div style="margin-left:auto;display:flex;gap:8px;">
-          <button id="btn-oauth" class="btn btn-sm" title="通过浏览器登录 Pixiv 重新获取 refresh_token（token 失效时使用）">🔑 获取 Token</button>
-          <button id="btn-open-config" class="btn btn-sm" title="打开画师名单配置文件所在文件夹（编辑：每行一个画师名字或 id，空=全部）">📂 画师名单文件</button>
-          <button id="btn-settings" class="btn btn-sm" title="并发下载数 / 单次上限 / 请求速率 / 代理 / 下载目录">⚙ 设置</button>
+          <button id="btn-oauth" class="btn btn-sm" title="通过浏览器登录 Pixiv 重新获取 refresh_token（token 失效时使用）"><svg class="obx-icon"><use href="#key-round"></use></svg> 获取 Token</button>
+          <button id="btn-open-config" class="btn btn-sm" title="打开画师名单配置文件所在文件夹（编辑：每行一个画师名字或 id，空=全部）"><svg class="obx-icon"><use href="#folder-open"></use></svg> 画师名单文件</button>
+          <button id="btn-settings" class="btn btn-sm" title="并发下载数 / 单次上限 / 请求速率 / 代理 / 下载目录"><svg class="obx-icon"><use href="#settings-2"></use></svg> 设置</button>
         </div>
       </div>
       <div class="psync-tip">
@@ -157,7 +157,7 @@
   <!-- OAuth 引导弹窗：壳的 .modal / .modal-box + active 类控制显隐（base.css） -->
   <div id="oauth-modal" class="modal">
     <div class="modal-box psync-oauth-box">
-      <h3>🔑 获取 Pixiv Token</h3>
+      <h3><svg class="obx-icon"><use href="#key-round"></use></svg> 获取 Pixiv Token</h3>
       <div class="modal-body">
         <p class="psync-note psync-danger">⚠️ 下面步骤中<b>不要重新点</b>「获取 Token」按钮，否则验证码会失效，需重来。</p>
         <ol class="psync-oauth-steps">

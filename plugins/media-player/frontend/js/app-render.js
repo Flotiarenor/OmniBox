@@ -44,7 +44,7 @@ Object.assign(MediaPlayerApp.prototype, {
         const content = document.getElementById('media-content');
         if (!albums || !albums.length) {
             const isVideo = kind === 'video';
-            this._renderEmpty(isVideo ? '📀' : '💿', isVideo ? '暂无视频专辑' : '暂无音乐专辑', '点击右上角「扫描」建立媒体索引');
+            this._renderEmpty(isVideo ? 'icon:disc-3' : 'icon:disc', isVideo ? '暂无视频专辑' : '暂无音乐专辑', '点击右上角「扫描」建立媒体索引');
             return;
         }
 
@@ -58,10 +58,10 @@ Object.assign(MediaPlayerApp.prototype, {
             card.dataset.key = album.key;
             card.dataset.kind = album.kind;
             const cover = album.cover_item_id
-                ? MPUtils.coverImg(Bridge.thumbUrl(album.cover_item_id), kind === 'video' ? '🎬' : '💿',
+                ? MPUtils.coverImg(Bridge.thumbUrl(album.cover_item_id), kind === 'video' ? 'icon:clapperboard' : 'icon:disc',
                     kind === 'video' ? `data-mp-thumb-id="${album.cover_item_id}"` : '',
                     kind === 'video' ? album.cover_item_id : '')
-                : `<div class="cover-fallback">${kind === 'video' ? '🎬' : '💿'}</div>`;
+                : `<div class="cover-fallback">${kind === 'video' ? 'icon:clapperboard' : 'icon:disc'}</div>`;
             card.innerHTML = `
                 <div class="mp-card-cover">
                     ${cover}
@@ -85,7 +85,7 @@ Object.assign(MediaPlayerApp.prototype, {
         const target = container || document.getElementById('media-content');
         if (!items || !items.length) {
             target.innerHTML = '';
-            target.appendChild(this._buildEmpty('🎵', '暂无媒体', '点击右上角「扫描」建立媒体索引'));
+            target.appendChild(this._buildEmpty('icon:music', '暂无媒体', '点击右上角「扫描」建立媒体索引'));
             return;
         }
 
@@ -129,7 +129,7 @@ Object.assign(MediaPlayerApp.prototype, {
         } else {
             actions.push(`<button class="mp-row-action ${isFav ? 'fav-active' : ''}" data-mp-action="fav" data-idx="${index}" title="${isFav ? '取消喜欢' : '喜欢'}">${isFav ? '❤️' : '♡'}</button>`);
             actions.push(`<button class="mp-row-action" data-mp-action="queue" data-idx="${index}" title="添加到队列">＋</button>`);
-            actions.push(`<button class="mp-row-action" data-mp-action="playlist" data-idx="${index}" title="加入歌单">📋</button>`);
+            actions.push(`<button class="mp-row-action" data-mp-action="playlist" data-idx="${index}" title="加入歌单">${MPUtils.icon('icon:list-music')}</button>`);
         }
 
         return `
@@ -199,7 +199,7 @@ Object.assign(MediaPlayerApp.prototype, {
                 <div class="empty-state-text">已登录网易云音乐</div>
                 <div class="empty-state-hint">本地歌单是在线歌单的镜像：只收录本地媒体库里已有的曲目（按歌名 + 歌手匹配），可反复同步。</div>
                 <div style="margin-top:14px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
-                    <button class="btn btn-primary" id="ncm-sync-all-btn">🔄 全量同步所有歌单</button>
+                    <button class="btn btn-primary" id="ncm-sync-all-btn">${MPUtils.icon('icon:refresh-cw')} 全量同步所有歌单</button>
                     <button class="btn" id="ncm-import-liked-btn">❤ 导入「喜欢」到我的喜欢</button>
                 </div>
                 <label class="empty-state-hint" style="display:inline-flex;align-items:center;gap:6px;margin-top:14px;cursor:pointer;">
@@ -224,7 +224,7 @@ Object.assign(MediaPlayerApp.prototype, {
         } catch (e) { }
         content.innerHTML = `
             <div class="empty-state">
-                <div class="empty-state-icon">👤</div>
+                <div class="empty-state-icon"><svg class="obx-icon"><use href="#circle-user"></use></svg></div>
                 <div class="empty-state-text">未登录网易云音乐</div>
                 <div class="empty-state-hint">请先在终端执行：ncm-cli configure 和 ncm-cli login</div>
                 <button class="btn btn-primary" id="ncm-login-btn" style="margin-top:12px;">我已登录</button>
@@ -410,7 +410,7 @@ Object.assign(MediaPlayerApp.prototype, {
         } finally {
             if (btn) {
                 btn.disabled = false;
-                btn.textContent = '🔄 全量同步所有歌单';
+                btn.innerHTML = MPUtils.icon('icon:refresh-cw') + ' 全量同步所有歌单';
             }
         }
     },
@@ -535,7 +535,7 @@ Object.assign(MediaPlayerApp.prototype, {
     _renderNeteasePlaylists(playlists, emptyText = '暂无推荐歌单') {
         const content = document.getElementById('media-content');
         if (!playlists || !playlists.length) {
-            this._renderEmpty('📋', emptyText);
+            this._renderEmpty('icon:list-music', emptyText);
             return;
         }
         // 带 origin 的列表（我的歌单）按来源分段：创建在前、收藏在后，段头带数量。
@@ -558,7 +558,7 @@ Object.assign(MediaPlayerApp.prototype, {
             return head + `
             <div class="mp-row" data-idx="${i}">
                 <span class="mp-row-index">${i + 1}</span>
-                <div class="mp-row-cover">${p.cover_url ? `<img src="${MPUtils.escapeHtml(p.cover_url)}" onerror="this.outerHTML='📋'">` : '📋'}</div>
+                <div class="mp-row-cover">${p.cover_url ? `<img src="${MPUtils.escapeHtml(p.cover_url)}" onerror="this.outerHTML='${MPUtils.icon('icon:list-music')}'">` : '<span class="cover-fallback">' + MPUtils.icon('icon:list-music') + '</span>'}</div>
                 <div class="mp-row-info">
                     <div class="mp-row-title">${MPUtils.escapeHtml(p.name)}</div>
                     <div class="mp-row-sub">${p.track_count} 首 · 播放 ${p.play_count}</div>
@@ -692,9 +692,9 @@ Object.assign(MediaPlayerApp.prototype, {
         content.innerHTML = `
             <div class="mp-detail-hero" style="--hero-bg:${MPUtils.heroBg(coverSrc)}">
                 <button class="mp-ghost-btn mp-hero-back" data-hero-action="back" title="返回">← 返回</button>
-                <div class="mp-detail-cover">${coverSrc ? MPUtils.coverImg(coverSrc, header.kind === 'video' ? '🎬' : '💿',
+                <div class="mp-detail-cover">${coverSrc ? MPUtils.coverImg(coverSrc, header.kind === 'video' ? 'icon:clapperboard' : 'icon:disc',
                     (header.kind === 'video' && header.cover && header.cover.id) ? `data-mp-thumb-id="${header.cover.id}"` : '',
-                    (header.kind === 'video' && header.cover && header.cover.id) ? header.cover.id : '') : (header.kind === 'video' ? '🎬' : '💿')}</div>
+                    (header.kind === 'video' && header.cover && header.cover.id) ? header.cover.id : '') : (header.kind === 'video' ? MPUtils.icon('icon:clapperboard') : MPUtils.icon('icon:disc'))}</div>
                 <div class="mp-detail-info">
                     <div class="mp-detail-label">${MPUtils.escapeHtml(header.label)}</div>
                     <div class="mp-detail-title">${MPUtils.escapeHtml(header.title)}</div>
@@ -709,7 +709,7 @@ Object.assign(MediaPlayerApp.prototype, {
                     ` : ''}
                     ${header.playlistId ? `
                         <button class="btn" data-hero-action="rename-pl">✎ 重命名</button>
-                        <button class="btn btn-danger" data-hero-action="delete-pl">🗑 删除</button>
+                        <button class="btn btn-danger" data-hero-action="delete-pl">${MPUtils.icon('icon:trash-2')} 删除</button>
                     ` : ''}
                 </div>
             </div>

@@ -47,7 +47,7 @@ Object.assign(ImageViewer.prototype, {
             grid.innerHTML = '';
             this.filteredSeqIndexes = null;
             if (!this.currentItems.length) {
-                grid.innerHTML = this._emptyHtml('🖼️', '此相册暂无图片');
+                grid.innerHTML = this._emptyHtml('icon:images', '此相册暂无图片');
                 grid.style.height = 'auto';
                 return;
             }
@@ -115,14 +115,14 @@ Object.assign(ImageViewer.prototype, {
                             u.searchParams.set('r', Date.now());
                             this.src = u.toString();
                         } else {
-                            this.outerHTML = '<div class="iv-cover-fallback">🖼️</div>';
+                            this.outerHTML = '<div class="iv-cover-fallback">' + Icons.html('icon:image-off') + '</div>';
                         }
                     };
                     card.appendChild(img);
                 } else {
                     const fb = document.createElement('div');
                     fb.className = 'iv-cover-fallback';
-                    fb.textContent = '🖼️';
+                    fb.innerHTML = Icons.html('icon:image-off');
                     card.appendChild(fb);
                 }
                 if (item.use_time_name) {
@@ -197,7 +197,7 @@ Object.assign(ImageViewer.prototype, {
         grid.innerHTML = '';
         grid.style.height = 'auto';
         if (!filtered.length) {
-            grid.innerHTML = this._emptyHtml('🔍', '没有匹配的图片', '换个关键词试试');
+            grid.innerHTML = this._emptyHtml('icon:search-x', '没有匹配的图片', '换个关键词试试');
             return;
         }
         this.renderJustifiedLayout(filtered);

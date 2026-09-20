@@ -70,26 +70,26 @@ Object.assign(ImageViewer.prototype, {
         if (album.depth === 1 && album.has_children) {
             const isCollapsed = this._isCollapsed(album);
             items.push({
-                label: isCollapsed ? '📂 展开子相册' : '📦 收纳子相册',
+                label: isCollapsed ? '展开子相册' : '收纳子相册',
                 action: isCollapsed ? 'expand' : 'collapse'
             });
         }
         if (album.depth > 1) {
             items.push({
-                label: promoted.includes(path) ? '↩ 收回父相册' : '📌 提升到全部相册',
+                label: promoted.includes(path) ? '收回父相册' : '提升到全部相册',
                 action: promoted.includes(path) ? 'unpromote' : 'promote'
             });
         }
         // 「新建相册」建出来的空目录：可从视图中移除（目录本身保留）
         if (!album.readable && visibleEmpty.includes(path)) {
             items.push({
-                label: '🙈 不再显示此空相册',
+                label: '不再显示此空相册',
                 action: 'forget-empty',
                 danger: true
             });
         }
         items.push({
-            label: '🖼 重建此相册缩略图',
+            label: '重建此相册缩略图',
             action: 'rebuild'
         });
         if (!items.length) return;

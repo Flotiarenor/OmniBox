@@ -27,6 +27,7 @@ import argparse
 import json
 import re
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -50,7 +51,21 @@ def latest_version() -> str:
     return meta['dist-tags']['latest']
 
 
-def fetch_icon(name: str, version: str) -> dict:
+def fetch_icon(name: str, version: str, attempts: int = 3) -> dict:
+    """取一个图标并抽出图形本体。网络抖动重试若干次（unpkg 偶发超时/404 抖动）。"""
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return _fetch_icon_once(name, version)
+        except Exception as exc:                       # 网络异常种类多（超时/404 抖动），统一重试
+            last_error = exc
+            if attempt < attempts:
+                print(f'  {name}: 第 {attempt} 次失败（{type(exc).__name__}），重试…', file=sys.stderr)
+                time.sleep(1.5 * attempt)
+    raise SystemExit(f'{name}: 取回失败（{attempts} 次）：{last_error}')
+
+
+def _fetch_icon_once(name: str, version: str) -> dict:
     url = CDN.format(version=version, name=name)
     with urllib.request.urlopen(url, timeout=30) as resp:
         raw = resp.read().decode('utf-8')
@@ -109,17 +124,26 @@ def main() -> int:
 
     version = args.version or latest_version()
     print(f'lucide-static {version}')
-    for name in sorted(icons):
-        icons[name] = fetch_icon(name, version)
-        print(f'  fetched {name}')
-
     data['library'] = 'lucide'
     data['license'] = 'ISC'
     data['package'] = f'lucide-static@{version}'
-    DATA_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + '\n',
-        encoding='utf-8',
-    )
+
+    # 逐个落盘：一次抓几十个图标时，中途一次网络超时不该让整批白跑
+    # （实测踩到过：unpkg 偶发 read timeout，末尾统一写文件等于全部丢失）
+    skipped: list[str] = []
+    for name in sorted(icons):
+        if icons[name].get('inner'):
+            skipped.append(name)          # 已冻结且图形完好：不必重新下载
+            continue
+        icons[name] = fetch_icon(name, version)
+        DATA_FILE.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + '\n',
+            encoding='utf-8',
+        )
+        print(f'  fetched {name}')
+
+    if skipped:
+        print(f'跳过（已存在）{len(skipped)} 个')
     print(f'已写入 {DATA_FILE.relative_to(PROJECT_ROOT).as_posix()}（{len(icons)} 个图标）')
     print('下一步：venv/Scripts/python tools/build_icons.py')
     return 0

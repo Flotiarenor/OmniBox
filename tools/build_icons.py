@@ -78,7 +78,7 @@ HEADER = """<!--This product includes software developed by flotiarenor.Copyrigh
 # 注入函数：一份 IIFE（插件页 <script>）与一份 ES module（壳 Vue 导入）。
 # 两份内容同源，正文用占位符替换，避免"改了一份忘另一份"。
 _INJECTOR_TEMPLATE = """/**
- * 图标 sprite 的注入函数 —— 由 tools/build_icons.py 生成，请勿手工编辑。
+ * 图标 sprite 的注入与取名函数 —— 由 tools/build_icons.py 生成，请勿手工编辑。
  *
  * 为什么图标要内联进文档，而不是 <use href="/res/icons/icons.svg#名字"> 引用外部文件：
  * **外部文件的 <use> 在 pywebview 的 WebView2 里不渲染**。实机三层对照（包围盒宽度）：
@@ -93,10 +93,35 @@ _INJECTOR_TEMPLATE = """/**
  * 描边属性写在 <symbol> 自己身上（shadow tree，外部样式进不去），且必须是
  * currentColor，否则图标不跟随主题与用户自定义颜色。
  */
-
+%(names)s
 /** 内联 sprite。幂等：重复调用不会重复插入。返回是否成功插入。 */
 export function ensureIcons() {
 %(body)s
+}
+
+/**
+ * 图标名 → SVG 标记。给"必须拼字符串"的场景用（模板字符串、`innerHTML`）：
+ *
+ *     grid.innerHTML = Icons.html('icon:images', 'empty-state-icon')
+ *     badges.push(Icons.html('icon:pin') + ' 已提升')
+ *
+ * 名字未冻结时返回空串并 `console.warn` —— 静默返回空串会让"图标不显示"变成一个
+ * 毫无线索的现象（本项目已经因为这类"不报错、只是空白"的缺陷吃过一次亏）。
+ * 非 `icon:` 前缀的值（旧插件的 emoji）原样返回，保证旧插件不坏。
+ */
+export function iconHtml(name, className) {
+  if (typeof name !== 'string' || name.slice(0, 5) !== 'icon:') {
+    return name || '';
+  }
+  var id = name.slice(5);
+  if (!KNOWN[id]) {
+    if (typeof console !== 'undefined') {
+      console.warn('[icons] 未冻结的图标名：' + id + '（先跑 tools/fetch_lucide_icons.py --add ' + id + '）');
+    }
+    return '';
+  }
+  var cls = 'obx-icon' + (className ? ' ' + className : '');
+  return '<svg class="' + cls + '" aria-hidden="true"><use href="#' + id + '"></use></svg>';
 }
 """
 
@@ -120,15 +145,23 @@ def _render_ts(icons: dict, meta: dict) -> str:
         f"  document.body.appendChild(container);\n"
         f"  return true;\n"
     )
-    const = 'const SPRITE = ' + json.dumps(markup, ensure_ascii=False) + '\n\n'
-    return const + _INJECTOR_TEMPLATE % {'body': body}
+    # 名字表：iconHtml() 用它把"未冻结的名字"变成一条明确的 console.warn，
+    # 而不是静默返回空串（那正是本项目吃过一次亏的失效形态）
+    names = 'const KNOWN = {\n' + ''.join(
+        f"  '{name}': true,\n" for name in sorted(icons)
+    ) + '};\n\n'
+    const = 'const SPRITE = ' + json.dumps(markup, ensure_ascii=False) + ';\n\n'
+    return const + _INJECTOR_TEMPLATE % {'names': names, 'body': body}
 
 
 def _render_js_iife(icons: dict, meta: dict) -> str:
     """插件页用的 IIFE 版本：<script src="/shell/icons.generated.js"> 后直接生效。"""
-    ts = _render_ts(icons, meta)
-    body = ts  # 与 TS 版本同源，仅去掉 export 并包一层
-    return body.replace('export function ensureIcons()', 'function ensureIcons()') + """
+    body = _render_ts(icons, meta)
+    # 与 TS 版本同源：去掉 export 关键字，并把两个函数挂到 window 上供插件页面调用
+    body = body.replace('export function', 'function')
+    return body + """
+
+window.Icons = { ensure: ensureIcons, html: iconHtml };
 
 // 自动注入：插件页在 <head> 里同步加载本脚本，此时还没有 body，
 // 因此挂在 DOMContentLoaded 上（早于任何插件代码渲染图标）。

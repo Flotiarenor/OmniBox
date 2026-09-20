@@ -15,7 +15,7 @@ const MangaUtils = {
             .replace(/'/g, '&#39;');
     },
 
-    coverImg(url, fallback = '📚') {
+    coverImg(url, fallback = 'icon:library') {
         const icon = MangaUtils.escapeHtml(fallback);
         if (!url) return `<div class="ml-cover-fallback">${icon}</div>`;
         const iconJs = (window.Utils && window.Utils.jsString)

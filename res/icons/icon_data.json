@@ -1,7 +1,122 @@
 {
   "icons": {
+    "arrow-left": {
+      "inner": "<path d=\"m12 19-7-7 7-7\" /> <path d=\"M19 12H5\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "arrow-up": {
+      "inner": "<path d=\"m5 12 7-7 7 7\" /> <path d=\"M12 19V5\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "book": {
+      "inner": "<path d=\"M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
     "book-open": {
       "inner": "<path d=\"M12 5v16\" /> <path d=\"M20.001 19A2 2 0 0022 17V5a2 2 0 00-1.999-2L16 3.002A5 5 0 0012 5a5 5 0 00-4-2H4a2 2 0 00-2 2v12a2 2 0 001.999 2H8a5 5 0 014 2 5 5 0 014-2z\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "bookmark": {
+      "inner": "<path d=\"M17 3a2 2 0 0 1 2 2v15a1 1 0 0 1-1.496.868l-4.512-2.578a2 2 0 0 0-1.984 0l-4.512 2.578A1 1 0 0 1 5 20V5a2 2 0 0 1 2-2z\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "brush-cleaning": {
+      "inner": "<path d=\"m16 22-1-4\" /> <path d=\"M19 14a1 1 0 0 0 1-1v-1a2 2 0 0 0-2-2h-3a1 1 0 0 1-1-1V4a2 2 0 0 0-4 0v5a1 1 0 0 1-1 1H6a2 2 0 0 0-2 2v1a1 1 0 0 0 1 1\" /> <path d=\"M19 14H5l-1.973 6.767A1 1 0 0 0 4 22h16a1 1 0 0 0 .973-1.233z\" /> <path d=\"m8 22 1-4\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "calendar-clock": {
+      "inner": "<path d=\"M16 14v2.2l1.6 1\" /> <path d=\"M16 2v3\" /> <path d=\"M21 7.338V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2h2.338\" /> <path d=\"M3 9h5.859\" /> <path d=\"M8 2v3\" /> <circle cx=\"16\" cy=\"16\" r=\"6\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "check": {
+      "inner": "<path d=\"M20 6 9 17l-5-5\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "chevron-right": {
+      "inner": "<path d=\"m9 18 6-6-6-6\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "circle-user": {
+      "inner": "<circle cx=\"12\" cy=\"12\" r=\"10\" /> <circle cx=\"12\" cy=\"10\" r=\"3\" /> <path d=\"M7 20.662V19a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v1.662\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "circle-x": {
+      "inner": "<circle cx=\"12\" cy=\"12\" r=\"10\" /> <path d=\"m15 9-6 6\" /> <path d=\"m9 9 6 6\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "clapperboard": {
+      "inner": "<path d=\"m12.296 3.464 3.02 3.956\" /> <path d=\"M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3z\" /> <path d=\"M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\" /> <path d=\"m6.18 5.276 3.1 3.899\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "clock": {
+      "inner": "<circle cx=\"12\" cy=\"12\" r=\"10\" /> <path d=\"M12 6v6l4 2\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "compass": {
+      "inner": "<circle cx=\"12\" cy=\"12\" r=\"10\" /> <path d=\"m16.24 7.76-1.804 5.411a2 2 0 0 1-1.265 1.265L7.76 16.24l1.804-5.411a2 2 0 0 1 1.265-1.265z\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "disc": {
+      "inner": "<circle cx=\"12\" cy=\"12\" r=\"10\" /> <circle cx=\"12\" cy=\"12\" r=\"2\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "disc-3": {
+      "inner": "<circle cx=\"12\" cy=\"12\" r=\"10\" /> <path d=\"M6 12c0-1.7.7-3.2 1.8-4.2\" /> <circle cx=\"12\" cy=\"12\" r=\"2\" /> <path d=\"M18 12c0 1.7-.7 3.2-1.8 4.2\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "download": {
+      "inner": "<path d=\"M12 15V3\" /> <path d=\"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4\" /> <path d=\"m7 10 5 5 5-5\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "eye-off": {
+      "inner": "<path d=\"M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49\" /> <path d=\"M14.084 14.158a3 3 0 0 1-4.242-4.242\" /> <path d=\"M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143\" /> <path d=\"m2 2 20 20\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "file-text": {
+      "inner": "<path d=\"M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z\" /> <path d=\"M14 2v5a1 1 0 0 0 1 1h5\" /> <path d=\"M10 9H8\" /> <path d=\"M16 13H8\" /> <path d=\"M16 17H8\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "film": {
+      "inner": "<rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\" /> <path d=\"M7 3v18\" /> <path d=\"M3 7.5h4\" /> <path d=\"M3 12h18\" /> <path d=\"M3 16.5h4\" /> <path d=\"M17 3v18\" /> <path d=\"M17 7.5h4\" /> <path d=\"M17 16.5h4\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "folder": {
+      "inner": "<path d=\"M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "folder-open": {
+      "inner": "<path d=\"m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "globe": {
+      "inner": "<circle cx=\"12\" cy=\"12\" r=\"10\" /> <path d=\"M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20\" /> <path d=\"M2 12h20\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "grid-3x3": {
+      "inner": "<rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\" /> <path d=\"M3 9h18\" /> <path d=\"M3 15h18\" /> <path d=\"M9 3v18\" /> <path d=\"M15 3v18\" />",
       "source": "lucide-static v1.47.0 - ISC",
       "viewBox": "0 0 24 24"
     },
@@ -15,6 +130,21 @@
       "source": "lucide-static v1.47.0 - ISC",
       "viewBox": "0 0 24 24"
     },
+    "heart": {
+      "inner": "<path d=\"M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "history": {
+      "inner": "<path d=\"M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8\" /> <path d=\"M3 3v5h5\" /> <path d=\"M12 7v5l4 2\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "image-off": {
+      "inner": "<line x1=\"2\" x2=\"22\" y1=\"2\" y2=\"22\" /> <path d=\"M10.41 10.41a2 2 0 1 1-2.83-2.83\" /> <line x1=\"13.5\" x2=\"6\" y1=\"13.5\" y2=\"21\" /> <line x1=\"18\" x2=\"21\" y1=\"12\" y2=\"15\" /> <path d=\"M3.59 3.59A1.99 1.99 0 0 0 3 5v14a2 2 0 0 0 2 2h14c.55 0 1.052-.22 1.41-.59\" /> <path d=\"M21 15V5a2 2 0 0 0-2-2H9\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
     "images": {
       "inner": "<path d=\"m22 11-1.296-1.296a2.4 2.4 0 0 0-3.408 0L11 16\" /> <path d=\"M4 8a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2\" /> <circle cx=\"13\" cy=\"7\" r=\"1\" fill=\"currentColor\" /> <rect x=\"8\" y=\"2\" width=\"14\" height=\"14\" rx=\"2\" />",
       "source": "lucide-static v1.47.0 - ISC",
@@ -25,8 +155,48 @@
       "source": "lucide-static v1.47.0 - ISC",
       "viewBox": "0 0 24 24"
     },
+    "key-round": {
+      "inner": "<path d=\"M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z\" /> <circle cx=\"16.5\" cy=\"7.5\" r=\".5\" fill=\"currentColor\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "layout-grid": {
+      "inner": "<rect width=\"7\" height=\"7\" x=\"3\" y=\"3\" rx=\"1\" /> <rect width=\"7\" height=\"7\" x=\"14\" y=\"3\" rx=\"1\" /> <rect width=\"7\" height=\"7\" x=\"14\" y=\"14\" rx=\"1\" /> <rect width=\"7\" height=\"7\" x=\"3\" y=\"14\" rx=\"1\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
     "library": {
       "inner": "<path d=\"m16 6 4 14\" /> <path d=\"M12 6v14\" /> <path d=\"M8 8v12\" /> <path d=\"M4 4v16\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "list-checks": {
+      "inner": "<path d=\"M13 5h8\" /> <path d=\"M13 12h8\" /> <path d=\"M13 19h8\" /> <path d=\"m3 17 2 2 4-4\" /> <path d=\"m3 7 2 2 4-4\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "list-music": {
+      "inner": "<path d=\"M16 5H3\" /> <path d=\"M11 12H3\" /> <path d=\"M11 19H3\" /> <path d=\"M21 16V5\" /> <circle cx=\"18\" cy=\"16\" r=\"3\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "list-video": {
+      "inner": "<path d=\"M21 5H3\" /> <path d=\"M10 12H3\" /> <path d=\"M10 19H3\" /> <path d=\"M15 12.003a1 1 0 0 1 1.517-.859l4.997 2.997a1 1 0 0 1 0 1.718l-4.997 2.997a1 1 0 0 1-1.517-.86z\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "loader": {
+      "inner": "<path d=\"M12 2v4\" /> <path d=\"m16.2 7.8 2.9-2.9\" /> <path d=\"M18 12h4\" /> <path d=\"m16.2 16.2 2.9 2.9\" /> <path d=\"M12 18v4\" /> <path d=\"m4.9 19.1 2.9-2.9\" /> <path d=\"M2 12h4\" /> <path d=\"m4.9 4.9 2.9 2.9\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "mic": {
+      "inner": "<path d=\"M12 19v3\" /> <path d=\"M19 10v2a7 7 0 0 1-14 0v-2\" /> <rect x=\"9\" y=\"2\" width=\"6\" height=\"13\" rx=\"3\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "monitor": {
+      "inner": "<rect width=\"20\" height=\"14\" x=\"2\" y=\"3\" rx=\"2\" /> <line x1=\"8\" x2=\"16\" y1=\"21\" y2=\"21\" /> <line x1=\"12\" x2=\"12\" y1=\"17\" y2=\"21\" />",
       "source": "lucide-static v1.47.0 - ISC",
       "viewBox": "0 0 24 24"
     },
@@ -37,6 +207,11 @@
     },
     "music": {
       "inner": "<path d=\"M9 18V5l12-2v13\" /> <circle cx=\"6\" cy=\"18\" r=\"3\" /> <circle cx=\"18\" cy=\"16\" r=\"3\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "music-2": {
+      "inner": "<circle cx=\"8\" cy=\"18\" r=\"4\" /> <path d=\"M12 18V2l7 4\" />",
       "source": "lucide-static v1.47.0 - ISC",
       "viewBox": "0 0 24 24"
     },
@@ -60,8 +235,43 @@
       "source": "lucide-static v1.47.0 - ISC",
       "viewBox": "0 0 24 24"
     },
+    "pause": {
+      "inner": "<rect x=\"14\" y=\"3\" width=\"5\" height=\"18\" rx=\"1\" /> <rect x=\"5\" y=\"3\" width=\"5\" height=\"18\" rx=\"1\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "pin": {
+      "inner": "<path d=\"M12 17v5\" /> <path d=\"M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "play": {
+      "inner": "<path d=\"M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "plus": {
+      "inner": "<path d=\"M5 12h14\" /> <path d=\"M12 5v14\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
     "puzzle": {
       "inner": "<path d=\"M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "refresh-cw": {
+      "inner": "<path d=\"M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8\" /> <path d=\"M21 3v5h-5\" /> <path d=\"M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16\" /> <path d=\"M8 16H3v5\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "repeat": {
+      "inner": "<path d=\"m17 2 4 4-4 4\" /> <path d=\"M3 11v-1a4 4 0 0 1 4-4h14\" /> <path d=\"m7 22-4-4 4-4\" /> <path d=\"M21 13v1a4 4 0 0 1-4 4H3\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "repeat-1": {
+      "inner": "<path d=\"m17 2 4 4-4 4\" /> <path d=\"M3 11v-1a4 4 0 0 1 4-4h14\" /> <path d=\"m7 22-4-4 4-4\" /> <path d=\"M21 13v1a4 4 0 0 1-4 4H3\" /> <path d=\"M11 10h1v4\" />",
       "source": "lucide-static v1.47.0 - ISC",
       "viewBox": "0 0 24 24"
     },
@@ -70,8 +280,58 @@
       "source": "lucide-static v1.47.0 - ISC",
       "viewBox": "0 0 24 24"
     },
+    "rotate-cw": {
+      "inner": "<path d=\"M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8\" /> <path d=\"M21 3v5h-5\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "scan": {
+      "inner": "<path d=\"M3 7V5a2 2 0 0 1 2-2h2\" /> <path d=\"M17 3h2a2 2 0 0 1 2 2v2\" /> <path d=\"M21 17v2a2 2 0 0 1-2 2h-2\" /> <path d=\"M7 21H5a2 2 0 0 1-2-2v-2\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "search": {
+      "inner": "<path d=\"m21 21-4.34-4.34\" /> <circle cx=\"11\" cy=\"11\" r=\"8\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "search-x": {
+      "inner": "<path d=\"m13.5 8.5-5 5\" /> <path d=\"m8.5 8.5 5 5\" /> <circle cx=\"11\" cy=\"11\" r=\"8\" /> <path d=\"m21 21-4.3-4.3\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
     "settings": {
       "inner": "<path d=\"M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915\" /> <circle cx=\"12\" cy=\"12\" r=\"3\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "settings-2": {
+      "inner": "<path d=\"M14 17H5\" /> <path d=\"M19 7h-9\" /> <circle cx=\"17\" cy=\"17\" r=\"3\" /> <circle cx=\"7\" cy=\"7\" r=\"3\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "shuffle": {
+      "inner": "<path d=\"m18 14 4 4-4 4\" /> <path d=\"m18 2 4 4-4 4\" /> <path d=\"M2 18h1.973a4 4 0 0 0 3.3-1.7l5.454-8.6a4 4 0 0 1 3.3-1.7H22\" /> <path d=\"M2 6h1.972a4 4 0 0 1 3.6 2.2\" /> <path d=\"M22 18h-6.041a4 4 0 0 1-3.3-1.8l-.359-.45\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "skip-back": {
+      "inner": "<path d=\"M17.971 4.285A2 2 0 0 1 21 6v12a2 2 0 0 1-3.029 1.715l-9.997-5.998a2 2 0 0 1-.003-3.432z\" /> <path d=\"M3 20V4\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "skip-forward": {
+      "inner": "<path d=\"M21 4v16\" /> <path d=\"M6.029 4.285A2 2 0 0 0 3 6v12a2 2 0 0 0 3.029 1.715l9.997-5.998a2 2 0 0 0 .003-3.432z\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "sliders-horizontal": {
+      "inner": "<path d=\"M10 5H3\" /> <path d=\"M12 19H3\" /> <path d=\"M14 3v4\" /> <path d=\"M16 17v4\" /> <path d=\"M21 12h-9\" /> <path d=\"M21 19h-5\" /> <path d=\"M21 5h-7\" /> <path d=\"M8 10v4\" /> <path d=\"M8 12H3\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "star": {
+      "inner": "<path d=\"M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z\" />",
       "source": "lucide-static v1.47.0 - ISC",
       "viewBox": "0 0 24 24"
     },
@@ -82,6 +342,41 @@
     },
     "sun": {
       "inner": "<circle cx=\"12\" cy=\"12\" r=\"4\" /> <path d=\"M12 2v2\" /> <path d=\"M12 20v2\" /> <path d=\"m4.93 4.93 1.41 1.41\" /> <path d=\"m17.66 17.66 1.41 1.41\" /> <path d=\"M2 12h2\" /> <path d=\"M20 12h2\" /> <path d=\"m6.34 17.66-1.41 1.41\" /> <path d=\"m19.07 4.93-1.41 1.41\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "trash-2": {
+      "inner": "<path d=\"M10 11v6\" /> <path d=\"M14 11v6\" /> <path d=\"M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6\" /> <path d=\"M3 6h18\" /> <path d=\"M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "user": {
+      "inner": "<path d=\"M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2\" /> <circle cx=\"12\" cy=\"7\" r=\"4\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "users": {
+      "inner": "<path d=\"M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2\" /> <path d=\"M16 3.128a4 4 0 0 1 0 7.744\" /> <path d=\"M22 21v-2a4 4 0 0 0-3-3.87\" /> <circle cx=\"9\" cy=\"7\" r=\"4\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "volume-1": {
+      "inner": "<path d=\"M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z\" /> <path d=\"M16 9a5 5 0 0 1 0 6\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "volume-2": {
+      "inner": "<path d=\"M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z\" /> <path d=\"M16 9a5 5 0 0 1 0 6\" /> <path d=\"M19.364 18.364a9 9 0 0 0 0-12.728\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "volume-x": {
+      "inner": "<path d=\"M11 4.702a.7.7 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.7.7 0 0 0 11 19.298z\" /> <path d=\"m16.5 14.5 5-5\" /> <path d=\"m16.5 9.5 5 5\" />",
+      "source": "lucide-static v1.47.0 - ISC",
+      "viewBox": "0 0 24 24"
+    },
+    "webhook": {
+      "inner": "<path d=\"M18 16.98h-5.99c-1.1 0-1.95.94-2.48 1.9A4 4 0 0 1 2 17c.01-.7.2-1.4.57-2\" /> <path d=\"m6 17 3.13-5.78c.53-.97.1-2.18-.5-3.1a4 4 0 1 1 6.89-4.06\" /> <path d=\"m12 6 3.13 5.73C15.66 12.7 16.9 13 18 13a4 4 0 0 1 0 8\" />",
       "source": "lucide-static v1.47.0 - ISC",
       "viewBox": "0 0 24 24"
     },

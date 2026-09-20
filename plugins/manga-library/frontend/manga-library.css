@@ -76,7 +76,7 @@
 .ml-nav-item {
   gap: 9px;
 }
-.ml-nav-item span { width: 18px; text-align: center; }
+.ml-nav-item .obx-icon { width: 18px; height: 18px; text-align: center; }
 
 .ml-sidebar-footer {
   padding: 11px 14px;

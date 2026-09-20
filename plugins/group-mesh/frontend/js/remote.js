@@ -17,6 +17,21 @@
 window.GroupMeshRemote = (function () {
   'use strict';
 
+  /**
+   * 取一个壳图标的标记（图标集由壳的 /shell/icons.generated.js 内联进文档）。
+   *
+   * 图标名 → 标记的转换集中在壳的 Icons.html()，插件不自己拼 SVG。
+   * `Icons` 缺失时（本页脱离壳单独打开调试）返回空串 —— **不要在这里写 emoji 兜底**：
+   * 那会让 emoji 字面量留在源码里，`check_plugins` 的 emoji 门禁就永远清不掉。
+   * 壳是唯一的运行环境，独立打开只是调试用途。
+   */
+  function gmIcon(name) {
+    if (window.Icons && typeof window.Icons.html === 'function') {
+      return window.Icons.html('icon:' + name);
+    }
+    return '';
+  }
+
   var state = {
     peers: [],          // list_peers 的结果
     peersLoaded: false,
@@ -82,7 +97,7 @@ window.GroupMeshRemote = (function () {
           return '<div class="gm-remote-row' + (active ? ' gm-remote-item-active' : '') + '">' +
             '<button type="button" class="gm-remote-item" data-device="' + esc(peer.device_id) +
             '" data-share="' + esc(shareId) + '">' +
-            '<span>📁</span><span>' + esc(shareId) + '</span></button>' + badge +
+            '<span>' + gmIcon('folder') + '</span><span>' + esc(shareId) + '</span></button>' + badge +
             '<button type="button" class="btn btn-sm" data-materialize="' + esc(shareId) +
             '" data-device="' + esc(peer.device_id) + '" title="把目录结构缓存到本地，' +
             '之后读文件时按需取回">缓存</button>' +
@@ -162,7 +177,7 @@ window.GroupMeshRemote = (function () {
         : '<button type="button" class="btn btn-sm" data-download="' +
           esc(entry.name) + '">取回</button>';
       return '<tr>' +
-        '<td>' + (entry.dir ? '📁 ' : '📄 ') + esc(entry.name) + '</td>' +
+        '<td>' + gmIcon(entry.dir ? 'folder' : 'file-text') + ' ' + esc(entry.name) + '</td>' +
         '<td>' + (entry.dir ? '目录' : formatSize(entry.size)) + '</td>' +
         '<td>' + action + '</td>' +
         '</tr>';

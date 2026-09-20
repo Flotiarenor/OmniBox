@@ -211,7 +211,7 @@ Object.assign(MediaPlayerApp.prototype, {
                     MediaFrameExtractor.request(id, img, () => {
                         // 抽帧失败：允许下次滚动/重进视口时重试（不永久放弃）
                         this._thumbPrefetchSeen.delete(id);
-                        MPUtils.fallbackCover(img, '🎬');
+                        MPUtils.fallbackCover(img, 'icon:clapperboard');
                     });
                 }
             });

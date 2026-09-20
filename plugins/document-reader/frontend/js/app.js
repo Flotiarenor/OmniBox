@@ -503,7 +503,7 @@ class DocumentReader {
         } else {
             area.innerHTML = `
                 <div class="empty-state">
-                    <div class="empty-state-icon">📄</div>
+                    <div class="empty-state-icon"><svg class="obx-icon"><use href="#file-text"></use></svg></div>
                     <div class="empty-state-text">${Utils.escapeHtml(doc.title || doc.id)}</div>
                     <div class="empty-state-hint">该格式不在阅读器内渲染，可交给系统默认程序打开</div>
                     <button type="button" class="btn" id="document-open-external">↗ 用系统程序打开</button>

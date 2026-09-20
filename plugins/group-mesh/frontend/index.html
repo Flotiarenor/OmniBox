@@ -29,7 +29,7 @@
          主区只画 border-bottom（工具栏那一条横线）；两边都画会在交角处叠成 2px。 -->
     <aside class="gm-side view-sub-sidebar obx-glass">
       <div class="gm-brand">
-        <span class="gm-brand-icon">🕸️</span>
+        <span class="gm-brand-icon"><svg class="obx-icon"><use href="#webhook"></use></svg></span>
         <div class="gm-brand-text">
           <div class="gm-brand-title">团体组网</div>
           <div class="gm-brand-sub">无中心 · IPv6</div>
@@ -39,27 +39,27 @@
       <nav class="gm-nav obx-scroll" id="gm-nav">
         <div class="gm-nav-label">本机</div>
         <button type="button" class="obx-nav-item gm-nav-item" data-panel="machine">
-          <span class="gm-nav-icon">🖥️</span><span class="gm-nav-text">身份与节点</span>
+          <span class="gm-nav-icon"><svg class="obx-icon"><use href="#monitor"></use></svg></span><span class="gm-nav-text">身份与节点</span>
         </button>
 
         <div class="gm-nav-label">团体</div>
         <button type="button" class="obx-nav-item gm-nav-item" data-panel="group">
-          <span class="gm-nav-icon">👥</span><span class="gm-nav-text">名单与成员</span>
+          <span class="gm-nav-icon"><svg class="obx-icon"><use href="#users"></use></svg></span><span class="gm-nav-text">名单与成员</span>
         </button>
         <button type="button" class="obx-nav-item gm-nav-item" data-panel="shares">
-          <span class="gm-nav-icon">📁</span><span class="gm-nav-text">共享项</span>
+          <span class="gm-nav-icon"><svg class="obx-icon"><use href="#folder"></use></svg></span><span class="gm-nav-text">共享项</span>
           <span class="gm-nav-count" id="gm-count-shares"></span>
         </button>
 
         <div class="gm-nav-label">传输</div>
         <button type="button" class="obx-nav-item gm-nav-item" data-panel="remote">
-          <span class="gm-nav-icon">🌐</span><span class="gm-nav-text">远端共享</span>
+          <span class="gm-nav-icon"><svg class="obx-icon"><use href="#globe"></use></svg></span><span class="gm-nav-text">远端共享</span>
           <span class="gm-nav-count" id="gm-count-peers"></span>
         </button>
 
         <div class="gm-nav-label">关于</div>
         <button type="button" class="obx-nav-item gm-nav-item" data-panel="roadmap">
-          <span class="gm-nav-icon">🧭</span><span class="gm-nav-text">路线图</span>
+          <span class="gm-nav-icon"><svg class="obx-icon"><use href="#compass"></use></svg></span><span class="gm-nav-text">路线图</span>
         </button>
       </nav>
 
@@ -72,7 +72,7 @@
     <div class="view-body gm-main">
       <div class="view-toolbar gm-toolbar">
         <div class="toolbar-group gm-heading">
-          <span class="gm-icon">🕸️</span>
+          <span class="gm-icon"><svg class="obx-icon"><use href="#webhook"></use></svg></span>
           <div class="gm-heading-text">
             <div class="gm-title" id="gm-panel-title">团体组网</div>
             <div class="gm-sub" id="gm-panel-sub">无中心团体：身份、名单、共享节点与加密传输</div>
@@ -80,7 +80,7 @@
         </div>
         <div class="toolbar-group gm-toolbar-right">
           <button type="button" id="btn-refresh" class="btn btn-sm">刷新状态</button>
-          <button type="button" id="btn-settings" class="btn btn-sm">⚙ 设置</button>
+          <button type="button" id="btn-settings" class="btn btn-sm"><svg class="obx-icon"><use href="#settings-2"></use></svg> 设置</button>
         </div>
       </div>
 

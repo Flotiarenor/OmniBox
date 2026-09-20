@@ -40,7 +40,7 @@ Object.assign(DocumentReader.prototype, {
                 || String(chapter.title || '').includes(keyword)
                 || String(index + 1) === keyword);
         if (!rows.length) {
-            list.innerHTML = this._emptyHtml('🔍', '没有匹配的章节');
+            list.innerHTML = this._emptyHtml('icon:search', '没有匹配的章节');
             return;
         }
         list.innerHTML = rows.map(({ chapter, index }) => {

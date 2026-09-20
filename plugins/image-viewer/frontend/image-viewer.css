@@ -46,7 +46,7 @@
 .iv-nav-item {
   gap: 9px;
 }
-.iv-nav-item span { width: 18px; text-align: center; }
+.iv-nav-item .obx-icon { width: 18px; height: 18px; text-align: center; }
 /* 侧栏里的扩展入口（`.obx-extension.active`）不在这里覆写：选中态由壳的 base.css
    提供，本插件先前把它整块填成渐变，与上面刚统一的导航项不一致。 */
 .iv-sidebar-footer { padding: 11px 14px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-secondary); }

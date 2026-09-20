@@ -36,9 +36,11 @@ Object.assign(ImageViewer.prototype, {
     },
 
     _emptyHtml(icon, text, hint) {
-        // 结构走壳的 .empty-state（base.css），插件不再自带一套 .iv-empty 样式
+        // 结构走壳的 .empty-state（base.css），插件不再自带一套 .iv-empty 样式。
+        // 图标名 → 标记交给壳的 Icons（见 icons.generated.js）
+        const iconHtml = window.Icons ? window.Icons.html(icon, 'empty-state-icon') : icon;
         return `<div class="empty-state">
-            <div class="empty-state-icon">${icon}</div>
+            <div class="empty-state-icon">${iconHtml}</div>
             <div class="empty-state-text">${this._escapeHtml(text)}</div>
             ${hint ? `<div class="empty-state-hint">${this._escapeHtml(hint)}</div>` : ''}
         </div>`;

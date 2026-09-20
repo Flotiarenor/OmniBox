@@ -35,8 +35,9 @@ const MPUtils = {
             .replace(/'/g, '&#39;');
     },
 
+    // 返回图标名（`icon:` 前缀），由调用方交给 Icons.html() 渲染
     itemIcon(item) {
-        return item && item.kind === 'video' ? '🎬' : '🎵';
+        return item && item.kind === 'video' ? 'icon:clapperboard' : 'icon:music';
     },
 
     // 媒体文件以绝对路径存储（支持跨多个媒体根目录），
@@ -75,9 +76,9 @@ const MPUtils = {
     // 抽帧失败才降级。
     // url 与内联处理器参数都必须转义：封面 URL 可能来自远程数据（网易云歌单），
     // 未转义时一个引号就能逃出属性注入标记。
-    coverImg(url, fallbackIcon = '🎵', extra = '', itemId = '') {
+    coverImg(url, fallbackIcon = 'icon:music', extra = '', itemId = '') {
         if (!url) {
-            return `<div class="cover-fallback">${MPUtils.escapeHtml(fallbackIcon)}</div>`;
+            return `<div class="cover-fallback">${MPUtils.icon(fallbackIcon)}</div>`;
         }
         const onError = itemId
             ? `onerror="MPCoverFail(this,${MPUtils.jsString(itemId)},${MPUtils.jsString(fallbackIcon)})"`
@@ -129,13 +130,26 @@ const MPUtils = {
         return MPUtils.escapeHtml(safe);
     },
 
-    // 封面降级：标记 broken 并移除 img，由父容器 CSS 显示 emoji 占位
-    fallbackCover(img, fallbackIcon = '🎵') {
+    // 图标名 → 标记。壳的图标集在引导脚本里内联，缺失时返回空串
+    // （不写 emoji 兜底：那会让 emoji 字面量留在源码里，emoji 门禁永远清不掉）
+    icon(name) {
+        return (window.Icons && typeof window.Icons.html === 'function')
+            ? window.Icons.html(name)
+            : '';
+    },
+
+    // 封面降级：移除 img 并插入真实的占位元素。
+    // 以前写 `parent.dataset.fallback` 交给 CSS 的 ::after content 渲染 emoji ——
+    // 伪元素只能放文本，放不了 SVG 图标，所以改成插入元素（样式见 media-player.css）。
+    fallbackCover(img, fallbackIcon = 'icon:music') {
         const parent = img.parentElement;
         img.remove();
         if (parent) {
-            parent.dataset.fallback = fallbackIcon;
             parent.classList.add('img-broken');
+            const holder = document.createElement('div');
+            holder.className = 'cover-fallback';
+            holder.innerHTML = MPUtils.icon(fallbackIcon);
+            parent.appendChild(holder);
         }
     },
 
