@@ -640,6 +640,7 @@ background: var(--mp-glass, var(--bg-surface));
 | 浮层层级与遮罩 | 在 base.css 注释里写死层级约定（modal 1500 / toast 3000），并提供 `.obx-overlay` 使用 `--bg-overlay` |
 | 高度链 | 在 base.css 或文档里给一条明确写法（`#app { height: 100vh }` 或 `html,body{height:100%}`），避免第三个变体 |
 | token 关系说明 | 在 `variables.css` / `effects.css` 注释里写清 `--radius*` 与 `--obx-radius*` 的分工，以及"哪些 token 用户可调" |
+| 改壳侧共享资源后必须重新构建 | `npm --prefix shell/frontend run build`。`/shell/*` 的路由**优先发 `dist/shell/`**（`file_server.py:762-769`），不构建时 `public/shell/*` 的改动在界面上完全不生效 —— 曾因此把"新标记 + 旧样式"误判成 CSS 写错（搜索框胶囊外框消失） |
 
 ### 10.2 按分级改插件
 

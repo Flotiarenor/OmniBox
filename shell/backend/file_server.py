@@ -761,6 +761,9 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         return send_from_directory(thumb_dir, filepath)
     @app.route('/shell/<path:filename>')
     def serve_shell_assets(filename):
+        # 注意：**dist 优先**。改了 shell/frontend/public/shell/* 而不重新构建
+        # （npm --prefix shell/frontend run build）时，这里发的仍是 dist 里的旧副本，
+        # 表现为"源码改了、界面没变"（曾被误判成 CSS 写错：新标记 + 旧样式 = 胶囊外框消失）。
         dist_shell = _SHELL_DIR / 'frontend' / 'dist' / 'shell'
         if (dist_shell / filename).exists():
             return send_from_directory(dist_shell, filename)
