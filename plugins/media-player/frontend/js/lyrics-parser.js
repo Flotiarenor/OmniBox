@@ -39,6 +39,7 @@ class MediaLyrics {
         this._lines = [];
         this._currentIndex = -1;
         this._visible = false;
+        this._suspended = false;
         this._userScrolling = false;
         this._scrollTimer = null;
         this._raf = null;
@@ -305,8 +306,9 @@ class MediaLyrics {
         this._render();
         this._page.classList.add('active');
         // 不在这里重建 AudioGraph，避免网络流播放被 AudioContext 重连打断
-        // 只有已经存在音频分析图时才启动可视化
-        if (this.app.core && this.app.core._audioCtx && this.app.core._audioCtx.state === 'running') {
+        // 只有已经存在音频分析图时才启动可视化；插件被切到后台时不启动（见 suspend）
+        if (!this._suspended
+            && this.app.core && this.app.core._audioCtx && this.app.core._audioCtx.state === 'running') {
             this._startViz();
         }
         this.update(this.mediaElement ? this.mediaElement.currentTime || 0 : 0);
@@ -327,5 +329,19 @@ class MediaLyrics {
 
     isVisible() {
         return this._visible;
+    }
+
+    // ===== 插件可见性（壳的 onShow / onHide 调用，见 app.js 的 _bindPluginLifecycle） =====
+    // 只停"频谱绘制"这条常驻 rAF：音频播放与进度保存都不受影响（与 image-viewer 的
+    // 幻灯片定时器同类处理）。隐藏期间浏览器也会节流 iframe 的 rAF，但显式停下更干净，
+    // 回来时也能立刻恢复，而不是等下一帧调度。
+    suspend() {
+        this._suspended = true;
+        this._stopViz();
+    }
+
+    resume() {
+        this._suspended = false;
+        if (this._visible) this._startViz();
     }
 }

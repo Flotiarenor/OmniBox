@@ -66,6 +66,7 @@ class MediaPlayerApp {
         this._bindContentDelegation();
         this._bindKeyboard();
         this._bindThumbPrefetch();
+        this._bindPluginLifecycle();
         this.loadExtensions();
 
         try {
@@ -78,6 +79,27 @@ class MediaPlayerApp {
         await this._restorePlayback();
         this._updateStats();
         await this._loadCurrentView();
+    }
+
+    // ============================================================
+    // 插件生命周期（壳注入的 window.PluginLifecycle，见 docs/plugin-ui-guide.md §7）
+    // ============================================================
+    // 本插件声明了 `keepAlive`：切走时 iframe 只被 v-show 隐藏，播放与 2s 进度保存
+    // 必须继续（申请保活就是为了这个），所以 onHide 只停**纯视觉**的常驻工作 ——
+    // 歌词页的频谱 rAF。onShow 恢复它；onDispose 在页面卸载前落一次进度并停掉定时器。
+    _bindPluginLifecycle() {
+        if (typeof window === 'undefined' || !window.PluginLifecycle) return;
+        window.PluginLifecycle.onHide(() => {
+            if (this.lyrics) this.lyrics.suspend();
+        });
+        window.PluginLifecycle.onShow(() => {
+            if (this.lyrics) this.lyrics.resume();
+        });
+        window.PluginLifecycle.onDispose(() => {
+            if (!this.core) return;
+            try { this.core._saveProgress(); } catch (e) { /* 卸载路径不阻塞 */ }
+            this.core._stopProgressSaver();
+        });
     }
 
     // ============================================================
