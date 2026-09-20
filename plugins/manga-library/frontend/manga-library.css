@@ -93,26 +93,10 @@
 .ml-view-sub { font-size: 11px; color: var(--text-secondary); }
 .ml-toolbar-right { margin-left: auto; }
 
-.ml-search { position: relative; display: flex; align-items: center; }
-.ml-search-ico { position: absolute; left: 10px; font-size: 12px; opacity: 0.55; pointer-events: none; }
-.ml-search input {
-  width: 250px;
-  padding: 7px 30px 7px 30px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg-surface);
-  color: var(--text-primary);
-  font-size: 13px;
-  outline: none;
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), width 0.25s ease;
-}
-.ml-search input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ml-accent-soft); width: 300px; }
-.ml-search input::placeholder { color: var(--text-muted); }
-.ml-search-clear {
-  position: absolute; right: 8px; border: none; background: transparent;
-  color: var(--text-muted); cursor: pointer; font-size: 12px; padding: 2px 5px; border-radius: 50%;
-}
-.ml-search-clear:hover { color: var(--text-primary); background: var(--bg-hover); }
+/* 搜索框的结构、图标、清除按钮与聚焦效果走壳的 .search-field（base.css）；
+   这里只保留本插件的宽度差异 */
+.ml-search input { width: 250px; }
+.ml-search input:focus { width: 300px; }
 
 /* ===== 内容区 ===== */
 .ml-content { padding: 16px; background: transparent; }

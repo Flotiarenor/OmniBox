@@ -38,15 +38,8 @@
       font-size: 12px; color: var(--text-secondary); }
     .psync-current { padding: 0 16px 8px; font-size: 12px; color: var(--text-muted);
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .psync-settings { margin: 8px 16px; padding: 12px; border: 1px solid var(--border);
-      border-radius: var(--radius); display: flex; flex-direction: column; gap: 10px; }
-    .psync-settings h4 { margin: 0; font-size: 13px; }
-    .psync-settings label { font-size: 12px; color: var(--text-secondary); display: flex;
-      flex-direction: column; gap: 4px; }
-    .psync-settings input { padding: 6px 8px; border: 1px solid var(--border);
-      border-radius: var(--radius-sm); background: var(--bg-surface);
-      color: var(--text-primary); font-size: 13px; }
-    .psync-settings .save-row { display: flex; justify-content: flex-end; }
+    /* 设置表单由壳的 openSettingsModal 渲染（base.css 的 .settings-form / .field），
+       本页不再自带 .psync-settings 表单样式 */
     .psync-options { display: flex; flex-direction: column; gap: 8px;
       padding: 10px; border: 1px dashed var(--border); border-radius: var(--radius); }
     .psync-options h4 { margin: 0 0 2px; font-size: 12px; color: var(--text-secondary); }
@@ -133,55 +126,24 @@
       </div>
       <div class="psync-current" id="p-current"></div>
 
-      <!-- 设置 -->
-      <div class="psync-settings">
-        <h4>设置</h4>
-        <label>Refresh Token
-          <input id="set-token" type="password" placeholder="粘贴 refresh_token">
-        </label>
-        <label>HTTP 代理
-          <input id="set-proxy" type="text" placeholder="http://127.0.0.1:7890（留空=直连）">
-        </label>
-        <label>下载目录
-          <input id="set-dir" type="text" placeholder="留空=写入 image-viewer 相册根目录">
-        </label>
-        
-        <div class="psync-options">
-          <h4>下载行为（固定，无需配置）</h4>
-          <div class="psync-tip" style="margin:0;">
-            • 下载原图（original）：默认开启，未取到时回退 1200px 大图 — 固定行为
-            • 多图作品放入 {作品id}/ 子文件夹，单图直接平铺 — 固定行为
-            • 动图（ugoira）作品下载后自动转成动画 WebP 保存，缩略图显示首帧 — 固定行为
-            （如需调整，请直接修改插件 Python 代码的默认设定）
-          </div>
-          <label>并发下载数
-            <input id="set-workers" type="number" min="1" max="8" value="4">
-            <span class="field-help">机械盘建议 1-2，SSD 可 4-8</span>
-          </label>
-          <label>单次同步上限（条）
-            <input id="set-maxdl" type="number" min="0" max="10000" value="100">
-            <span class="field-help">每次同步最多下载条数；0=不限。分批下载可设小值，下完再点同步继续</span>
-          </label>
-          <label>单次全量扫描画师数上限
-            <input id="set-maxartists" type="number" min="0" max="500" value="30">
-            <span class="field-help">只约束「全量扫描」的新画师（拉全部历史）；增量更新画师不受限、一次扫完。实测约 30 个全量画师可能触发 429。0=不限（有风险）</span>
-          </label>
-          <label>API 请求速率（次/秒）
-            <input id="set-ratelimit" type="number" min="1" max="10" value="3">
-            <span class="field-help">间隔带随机抖动；pixiv 阈值约 3/s，调高有 429 风险</span>
-          </label>
-          <label>并行拉取画师数（滑动窗口）
-            <input id="set-scanworkers" type="number" min="1" max="8" value="4">
-            <span class="field-help">刷新名单时同时拉取的画师数；总速率仍受 rate_limit 限制</span>
-          </label>
+      <!-- 设置走壳的统一设置弹窗（openSettingsModal + 后端 settings_schema）：
+           字段、默认值、范围钳制、secret 掩码只有一份来源，这里不再手写表单。
+           下面保留的是"固定行为"说明 —— 它是文档，不是设置项。 -->
+      <div class="psync-options">
+        <h4>下载行为（固定，无需配置）</h4>
+        <div class="psync-tip" style="margin:0;padding:0;">
+          • 下载原图（original）：默认开启，未取到时回退 1200px 大图 — 固定行为<br>
+          • 多图作品放入 {作品id}/ 子文件夹，单图直接平铺 — 固定行为<br>
+          • 动图（ugoira）作品下载后自动转成动画 WebP 保存，缩略图显示首帧 — 固定行为<br>
+          （如需调整，请直接修改插件 Python 代码的默认设定）
         </div>
-        <div class="save-row" style="justify-content:space-between;align-items:center;">
-          <span class="field-help" id="st-selected">画师名单: 全部</span>
-          <div style="display:flex;gap:8px;">
-            <button id="btn-oauth" class="btn btn-sm" title="通过浏览器登录 Pixiv 重新获取 refresh_token（token 失效时使用）">🔑 获取 Token</button>
-            <button id="btn-open-config" class="btn btn-sm" title="打开画师名单配置文件所在文件夹（编辑：每行一个画师名字或 id，空=全部）">📂 画师名单文件</button>
-            <button id="btn-save" class="btn btn-sm">保存设置</button>
-          </div>
+      </div>
+      <div class="psync-status" style="padding-top:0;">
+        <span class="field-help" id="st-selected">画师名单: 全部</span>
+        <div style="margin-left:auto;display:flex;gap:8px;">
+          <button id="btn-oauth" class="btn btn-sm" title="通过浏览器登录 Pixiv 重新获取 refresh_token（token 失效时使用）">🔑 获取 Token</button>
+          <button id="btn-open-config" class="btn btn-sm" title="打开画师名单配置文件所在文件夹（编辑：每行一个画师名字或 id，空=全部）">📂 画师名单文件</button>
+          <button id="btn-settings" class="btn btn-sm" title="并发下载数 / 单次上限 / 请求速率 / 代理 / 下载目录">⚙ 设置</button>
         </div>
       </div>
       <div class="psync-tip">
@@ -344,51 +306,11 @@
       }
 
       // ---------- 设置 ----------
-      async function loadSettings() {
-        try {
-          const s = await Bridge.call('get_settings') || {};
-          $('set-token').value = s.refresh_token || '';
-          $('set-proxy').value = s.proxy || '';
-          $('set-dir').value = s.download_dir || '';
-
-          $('set-workers').value = s.workers != null ? s.workers : 4;
-          $('set-maxdl').value = s.max_download != null ? s.max_download : 100;
-          $('set-maxartists').value = s.max_artists != null ? s.max_artists : 30;
-          $('set-ratelimit').value = s.rate_limit != null ? s.rate_limit : 3;
-          $('set-scanworkers').value = s.scan_workers != null ? s.scan_workers : 4;
-        } catch (e) { /* 忽略 */ }
-      }
-
-      function intSetting(id, fallback, min, max) {
-        const raw = $(id).value.trim();
-        if (raw === '') return fallback;
-        const n = parseInt(raw, 10);
-        if (!Number.isFinite(n)) return fallback;
-        return Math.max(min, Math.min(max, n));
-      }
-
-      async function saveSettings() {
-        const values = {
-          refresh_token: $('set-token').value.trim(),
-          proxy: $('set-proxy').value.trim(),
-          download_dir: $('set-dir').value.trim(),
-          workers: intSetting('set-workers', 4, 1, 8),
-          max_download: intSetting('set-maxdl', 100, 0, 10000),
-          max_artists: intSetting('set-maxartists', 30, 0, 500),
-          rate_limit: intSetting('set-ratelimit', 3, 1, 10),
-          scan_workers: intSetting('set-scanworkers', 4, 1, 8),
-        };
-        try {
-          const r = await Bridge.call('save_settings', values);
-          if (r && r.success === false) {
-            Toast.error(r.error || '保存失败');
-          } else {
-            Toast.success('设置已保存');
-            await refreshStatus();
-          }
-        } catch (e) {
-          Toast.error('保存失败: ' + e.message);
-        }
+      // 表单由壳的 openSettingsModal 按后端 settings_schema 渲染：保存后壳会整页重载本页，
+      // 因此这里不需要读回设置，也不存在第二份字段清单可以漂移。refresh_token 声明了
+      // secret:True，壳负责掩码与"掩码原样回传 = 不改动"。
+      function openPluginSettings() {
+        openSettingsModal({ title: 'Pixiv 同步设置' });
       }
 
       // ---------- 生命周期 ----------
@@ -464,7 +386,6 @@
           if (r2 && r2.ok) {
             Toast.success('Token 获取成功，已自动保存');
             $('oauth-modal').classList.remove('active');
-            await loadSettings();
             await refreshStatus();
           } else {
             Toast.error('获取失败: ' + ((r2 && r2.error) || '未知错误'));
@@ -473,7 +394,7 @@
         $('btn-oauth-close').addEventListener('click', () => {
           $('oauth-modal').classList.remove('active');
         });
-        $('btn-save').addEventListener('click', saveSettings);
+        $('btn-settings').addEventListener('click', openPluginSettings);
         $('btn-refresh-following').addEventListener('click', () => startRefresh('refresh_following_lists'));
         $('btn-refresh-bookmarks').addEventListener('click', () => startRefresh('refresh_bookmarks_lists'));
         $('btn-refresh-dl').addEventListener('click', async () => {
@@ -508,7 +429,6 @@
             tick();
           } catch (e) { Toast.error('启动失败: ' + e.message); }
         });
-        await loadSettings();
         const s = await refreshStatus();
         if (s && s.running) { polling = true; tick(); }
         // 注册生命周期钩子；注册时 iframe 若已可见，壳会立刻补一次 onShow

@@ -524,7 +524,11 @@ Object.assign(MediaPlayerApp.prototype, {
                 kind: 'ncm-playlist',
             });
         } catch (e) {
-            content.innerHTML = '<div class="empty-state"><div class="empty-state-icon">⚠️</div><div class="empty-state-text">歌单加载失败</div></div>';
+            content.innerHTML = '<div class="empty-state empty-state--error">'
+                + '<div class="empty-state-icon">⚠️</div>'
+                + '<div class="empty-state-text">歌单加载失败</div>'
+                + '<div class="empty-state-hint">检查网络 / 代理设置，或到「⚙ 设置」重新登录后再试</div>'
+                + '</div>';
         }
     },
 

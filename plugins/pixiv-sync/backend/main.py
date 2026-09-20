@@ -59,7 +59,9 @@ class PixivSyncPlugin(PluginBase):
         {
             "key": "download_dir",
             "label": "下载目录",
-            "type": "text",
+            # directory 类型由壳的共享组件 folder-picker 渲染（单值字段取首行路径，
+            # 见 base.js 的 createSettingsForm）；原先声明成 text 时用户只能手打路径
+            "type": "directory",
             "placeholder": "默认: image-viewer 数据根目录",
             "help": "留空 = 写入 image-viewer 相册根目录，下载后自动出现在相册",
         },

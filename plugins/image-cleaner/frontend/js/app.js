@@ -19,7 +19,12 @@ class ImageCleaner {
   }
 
   _bind() {
-    document.getElementById('btn-rescan').addEventListener('click', () => this.runScan(true));
+        document.getElementById('btn-rescan').addEventListener('click', () => this.runScan(true));
+        // 设置弹窗由壳渲染（字段来自后端 settings_schema）；保存后壳会整页重载本页，
+        // 因此这里不需要读回设置，也不存在第二份字段清单可以漂移。
+        document.getElementById('btn-settings').addEventListener('click', () => {
+            openSettingsModal({ title: '相册清理设置' });
+        });
     document.getElementById('btn-keep-one-all').addEventListener('click', () => this.keepOneForAll());
     document.getElementById('btn-delete').addEventListener('click', () => this.deleteSelected());
     document.getElementById('tab-dupe').addEventListener('click', () => this.switchMode('dupe'));
@@ -51,7 +56,10 @@ class ImageCleaner {
 
   async runScan(force = false) {
     const box = document.getElementById('cleaner-results');
-    box.innerHTML = '<div class="empty-state">扫描中…请稍候</div>';
+    box.innerHTML = '<div class="empty-state">'
+      + '<div class="empty-state-text">正在扫描…</div>'
+      + '<div class="empty-state-hint">首次扫描要为每张图片算哈希，图库越大越久</div>'
+      + '</div>';
     document.getElementById('cleaner-scanned').textContent = '';
     document.getElementById('cleaner-selected').textContent = '已选 0 张';
     this.selected.clear();
@@ -80,7 +88,11 @@ class ImageCleaner {
       this.render();
     } catch (e) {
       console.error(e);
-      box.innerHTML = '<div class="empty-state">⚠️ 扫描失败，请确认 image-viewer 已加载且相册目录可访问</div>';
+      box.innerHTML = '<div class="empty-state empty-state--error">'
+        + '<div class="empty-state-icon">⚠️</div>'
+        + '<div class="empty-state-text">扫描失败</div>'
+        + '<div class="empty-state-hint">请确认「图片相册」已加载、相册目录可访问，然后点「重新扫描」</div>'
+        + '</div>';
     }
   }
 
@@ -88,7 +100,12 @@ class ImageCleaner {
     const box = document.getElementById('cleaner-results');
     const visibleGroups = this.groups.slice(0, this.visibleCount);
     if (!visibleGroups.length) {
-      box.innerHTML = '<div class="empty-state">✨ 未发现' + (this.mode === 'dupe' ? '完全重复' : '相似') + '图片</div>';
+      box.innerHTML = '<div class="empty-state">'
+        + '<div class="empty-state-icon">✨</div>'
+        + '<div class="empty-state-text">未发现' + (this.mode === 'dupe' ? '完全重复' : '相似') + '图片</div>'
+        + '<div class="empty-state-hint">可切到「' + (this.mode === 'dupe' ? '相似图片' : '完全重复')
+        + '」标签，或在「⚙ 设置」里调整相似判定阈值</div>'
+        + '</div>';
       return;
     }
 

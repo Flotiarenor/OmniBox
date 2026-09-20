@@ -268,53 +268,16 @@
   margin-left: auto;
 }
 
-.mp-search {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-
-.mp-search-ico {
-  position: absolute;
-  left: 10px;
-  font-size: 12px;
-  opacity: 0.55;
-  pointer-events: none;
-}
-
+/* 搜索框的结构、图标、清除按钮与聚焦效果走壳的 .search-field（base.css）；
+   这里只保留本插件的宽度与玻璃底 */
 .mp-search input {
   width: 270px;
-  padding: 7px 30px 7px 30px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
   background: var(--mp-glass);
-  color: var(--text-primary);
-  font-size: 13px;
-  outline: none;
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), width 0.25s ease;
 }
 
 .mp-search input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--mp-accent-soft);
   width: 320px;
 }
-
-.mp-search input::placeholder { color: var(--text-muted); }
-
-.mp-search-clear {
-  position: absolute;
-  right: 8px;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 12px;
-  padding: 2px 5px;
-  border-radius: 50%;
-}
-
-.mp-search-clear:hover { color: var(--text-primary); background: var(--bg-hover); }
 
 .mp-tool-btn {
   border-radius: 999px;

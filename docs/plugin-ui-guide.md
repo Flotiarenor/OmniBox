@@ -318,12 +318,12 @@ background: var(--mp-glass, var(--bg-surface));
 | --- | --- | --- | --- |
 | 按钮 | `base.css:13-36` `.btn` / `-primary` / `-danger` / `-danger-solid` / `-sm` / `.active` | 工具条 `.btn`/`.btn-sm`；主操作 `-primary`；破坏性 `-danger` 且二次确认 | 全部插件在用 |
 | 分组切换 | 无专用类 | `.btn.btn-sm.active`（image-cleaner 的 tab）或 `.obx-nav-item` | image-cleaner 用前者 |
-| 搜索框 | `base.css:38-50` `.search-input`（`max-width:400px`） | 用 `.search-input`；要更宽就加类，不要内联 style 反制 | image-viewer 自造 `.iv-search`；pixiv-sync 无搜索 |
+| 搜索框 | 两种：单输入框用 `.search-input`（`max-width:400px`）；带图标/清除按钮的搜索行用 `.search-field > .search-field-icon + input + .search-field-clear` | 结构、图标与清除按钮定位、聚焦效果都走壳；插件只保留宽度（以及 media-player 的玻璃底）差异 | 已统一：image-viewer / manga-library / media-player 三处各自的 15-40 行重复规则删除，改为只写宽度。例外：document-reader 的 `.nr-search` 是"外层胶囊容器 + 图标静态排列"的紧凑型，套壳类要写 5 条覆盖，登记为插件差异 |
 | 侧栏导航 | `base.css:290-347` `.obx-nav-item` + `--obx-nav-*` | 结构/选中态都靠壳；只保留图标栏宽度等差异 | 5 个插件已用；image-cleaner/pixiv-sync 无 |
 | 侧栏标题/底栏 | `.sub-sidebar-header` / `.sub-sidebar-footer` | 分组标题用大写小字；底栏放统计 | image-viewer 用 `.iv-sidebar-footer` |
 | 卡片/网格 | 无壳类（曾有 `createCardGrid`，因零采用且渲染的 `.manga-*` 无任何样式定义，已删除） | 卡片属插件自己的内容区布局：建议统一"封面 + 标题 + 副标题/徽标"，圆角走 `--radius-lg`，悬浮 `.obx-card-lift`，选中态 = 2px `--accent` 描边 | media-player `.mp-card-grid`、manga-library `.ml-grid`、image-viewer `.iv-image-grid` |
 | 弹窗 | `base.css:159-179` `.modal` / `.modal-box` / `.modal-body` / `.modal-footer` | 入场 `.obx-anim-scale`/`-pop`；遮罩关闭用 `pointerdown` 并判 `e.target === overlay`（`base.js:602`，`tests/debug_modal_backdrop_press.py` 守） | image-viewer/manga-library/document-reader 已用；pixiv-sync 自造 `.psync-modal` |
-| 设置弹窗 | `base.js:566-628` `openSettingsModal()` + `settings_schema` | 首选；schema 类型 `text`（默认）/ `number` / `range` / `checkbox` / `select` / `textarea` / `directory`；`secret: True` 标记敏感字段（壳负责掩码与"留空即不改"）；`directory` 自动接入 `folder-picker`，`local_only` 可关掉"网络位置"入口 | 5 个插件调用；document-reader / image-viewer 另有自建设置面板；pixiv-sync 完全旁路 |
+| 设置弹窗 | `base.js:566-628` `openSettingsModal()` + `settings_schema` | 首选；schema 类型 `text`（默认）/ `number` / `range` / `checkbox` / `select` / `textarea` / `directory`；`secret: True` 标记敏感字段（壳负责掩码与"留空即不改"）；`directory` 自动接入 `folder-picker`，`local_only` 可关掉"网络位置"入口 | 7 个插件调用（本轮把 pixiv-sync、image-cleaner 也接上）；仍自建面板的只有 image-viewer（文件夹/行高/排序，需要就地预览）与 document-reader（阅读设置弹窗 + 整页朗读设置） |
 | 表单控件 | `base.css:181-206` `.settings-form` / `.field*` / `.field-range*` | 自建设置面板也必须复用这些类 | image-viewer 自造 `.iv-field`/`.iv-setting-item` |
 | Toast | `base.js:362-393` `Toast.success/error/info/warning` | 全部反馈走它 | 采纳 134 处；**pixiv-sync 有 22 处 `alert()`** |
 | 确认框 | `base.js:394-418` `confirmDialog(msg, {danger})` | 破坏性操作一律用它 | 采纳 12 处，无 `window.confirm` |
@@ -334,7 +334,7 @@ background: var(--mp-glass, var(--bg-surface));
 | 滚动条 | `effects.css:140-183` `.obx-scroll` | 每个滚动容器都要加；**只有沉浸态**（阅读正文、舞台）可以整块隐藏滚动条 | 多数已加；media-player 的**主内容区** `#media-content` 漏加（`index.html:154`，同文件其它 5 个滚动容器都加了）；document-reader 正文区按沉浸语义隐藏（css:216、233-236）；pixiv-sync 只有外层容器 |
 | 降低动态效果 | `effects.css:186-201` 覆盖 `.obx-anim-*`、`.empty-state-icon` 与 `.obx-stagger > *` | 用壳的类；**直接引用关键帧名不会被白名单覆盖**，要自己补一条 reduced-motion 覆盖 | media-player 用 `*, *::before, *::after` + 3 处 `!important` 全量压，有效但代价是连壳组件一起压 |
 | 骨架屏 | `effects.css:118-131` `.obx-skeleton` | 首屏/长列表 | 采纳 0（都用文字"加载中…"），group-mesh 另有 `.gm-skeleton-line`；属"新增能力"而非缺陷（见 §10.5） |
-| 空态 | `base.css`「通用状态」的 `.empty-state` + `.empty-state-icon/-text/-hint`（+ `--obx-empty-min-h`、`.empty-state--inline`） | 空列表/无结果一律用它；**不要自造 `.xx-empty`** | 本轮统一：7 个插件约 57 处改用它，各插件的 `.iv-empty/.nr-empty/.ml-empty/.mp-empty-state/.nl-empty/.cleaner-empty/.empty/.psync-empty` 全部删除。保留的插件专属例外见下 |
+| 空态 | `base.css`「通用状态」的 `.empty-state` + `.empty-state-icon/-text/-hint`（+ `--obx-empty-min-h`、`.empty-state--inline`、`.empty-state--error`） | 空列表/无结果一律用它；**不要自造 `.xx-empty`**。出错态（加载失败等）加 `.empty-state--error`，但仍要给出"下一步"提示 | 本轮统一：7 个插件约 57 处改用它，各插件的 `.iv-empty/.nr-empty/.ml-empty/.mp-empty-state/.nl-empty/.cleaner-empty/.empty/.psync-empty` 全部删除；`.empty-state--error` 用于 image-cleaner 扫描失败与 media-player 歌单加载失败。保留的插件专属例外见下 |
 | 浮层层级 | `base.css` `.modal` 1500 / `base.js` `.toast-container` 3000 | 自绘浮层的 `z-index` 必须 ≥ 1500 且低于 3000，否则会被壳的弹窗/Toast 盖住 | media-player `.mp-modal` 500 / `.mp-context-menu` 520、pixiv-sync 自绘弹窗 999（`index.html:46`）都会被盖住；manga-library 自研阅读器 2000 反过来盖住壳弹窗 |
 | 键盘可达性 | 壳的灯箱已支持 Esc / ←→ / 滚轮 / 拖拽 | 至少有：`Esc` 关闭最上层浮层、沉浸态 `←/→` 切换、搜索框 `Esc` 清空 | image-viewer 全插件无键盘处理；自绘右键菜单（`app-nav.js:96-134`）不监听 Esc 与 scroll 重定位 |
 
@@ -352,8 +352,8 @@ background: var(--mp-glass, var(--bg-surface));
   `status()`。壳目前没有进度条类，pixiv-sync 自造了 `.psync-bar`、media-player 自造了
   播放/加载进度条——建议提取一个壳级进度类，让"同步""扫描""下载"这类长任务长得一样。
 - **后端有设置项、前端必须有入口**：image-cleaner 的 `threshold`（`backend/main.py:23-27`，
-  `type: range`）在前端没有任何入口（该插件 0 处 `openSettingsModal`），用户只能手改配置。
-  设了 schema 就把它接上，否则等于没有这个设置。
+  `type: range`）此前在前端没有任何入口，用户只能手改配置 —— 已补上工具栏的「⚙ 设置」。
+  设了 schema 就要把它接上，否则等于没有这个设置。
 - **图标**：导航/按钮统一 Emoji 前缀（现状 8 个插件都这样，无需改）。
 - **标题行**：主标题 + 小字副标题两行结构（image-viewer 的 `.iv-view-title`/`.iv-view-sub`、
   group-mesh 的 `data-title`/`data-sub`）；面板切换时标题必须跟着变
@@ -506,14 +506,17 @@ background: var(--mp-glass, var(--bg-surface));
    `.obx-scroll`，另有 `.mp-modal`（z-index 500）对 `.modal`、`.mp-context-menu` 对
    `createContextMenu`、`.mp-empty-state` 对 `.empty-state`。
    同时它的主内容区 `#media-content` 反而漏了 `.obx-scroll`。
-7. 设置入口四套并存：`openSettingsModal`（5 个插件）、自建设置弹窗（image-viewer
-   `#settings-modal`）、自绘阅读设置弹窗 + 整页朗读设置（document-reader，同一插件三套）、
-   内联设置表单（pixiv-sync）；表单控件类也各不相同（`.field` vs `.iv-field` vs `.iv-setting-item`）。
-   其中 pixiv-sync 的双轨代价最大：字段清单与范围钳制各写一遍，`download_dir`
-   本该是 `type: "directory"`（壳的 folder-picker）却声明成 `text`，用户只能手打路径。
+7. 设置入口四套并存：`openSettingsModal`（7 个插件，本轮把 pixiv-sync、image-cleaner 接上）、
+   自建设置弹窗（image-viewer `#settings-modal`）、自绘阅读设置弹窗 + 整页朗读设置
+   （document-reader，同一插件两套）；表单控件类也各不相同（`.field` vs `.iv-field`
+   vs `.iv-setting-item`）。pixiv-sync 的双轨已消除：字段清单与范围钳制现在只有
+   `backend/main.py` 的 `settings_schema` 一份，`download_dir` 也改成了 `type: "directory"`
+   （由壳的 folder-picker 渲染，单值取首行路径）。
 8. 空态已统一到壳的 `.empty-state`（本轮，见 §9.6）；骨架屏 `.obx-skeleton` 采纳数仍为 **0**
    —— 它是"新增能力"而非契约违背，已降级到 §10.5。
-9. 搜索框：壳有 `.search-input`，image-viewer 自造 `.iv-search`。
+9. 搜索框已统一：image-viewer / manga-library / media-player 三处 `-search` 的重复规则
+   （各 15-40 行）删除，改用壳的 `.search-field`，插件只保留宽度（mp 另保留玻璃底）。
+   document-reader 的 `.nr-search` 是另一种构造（外层胶囊 + 图标静态排列），登记为差异。
 10. 内嵌页 image-cleaner / pixiv-sync 自带工具栏与标题，与宿主 header 重复（双层横条）。
     `network-location.html` **不属于这一类**：它没有工具栏，是"内嵌提供方页"的正面样例
     （见 §3.4）；它的问题是另一处 —— 曾经的 `var(--bg, #17181c)` 未定义 token（P0-4 已修）
@@ -523,8 +526,8 @@ background: var(--mp-glass, var(--bg-surface));
 12. 键盘可达性缺失：image-viewer 全插件无键盘处理；自绘右键菜单不响应 Esc、
     不随 scroll/resize 重定位；image-viewer 内还有两套右键菜单（图片走壳的
     `createContextMenu`，相册走自绘 `.iv-context-menu`）。
-13. `image-cleaner` 的后端设置项 `threshold` 在前端**没有入口**（0 处 `openSettingsModal`），
-    用户无法设置。
+13. `image-cleaner` 的后端设置项 `threshold` 已接上工具栏「⚙ 设置」（本轮）；设置项有 schema
+    就必须有前端入口，门禁暂未自动校验这一点。
 
 **P2（细节与规范）**
 
@@ -605,6 +608,7 @@ background: var(--mp-glass, var(--bg-surface));
 | 2 | **7 个插件迁移**到壳类并删除各自实现：`.iv-empty*`、`.nr-empty*`、`.ml-empty*`、`.mp-empty-state*`、`.cleaner-empty`、`.empty`（netease）、`.nl-empty`、`.psync-empty`（死类） | 全仓 `class="empty-state"` 约 57 处；`grep '(iv\|nr\|ml\|mp\|cleaner\|psync\|nl)-empty'` 只剩注释与 `.nr-empty-span` |
 | 3 | **内嵌页信号**：image-viewer 的扩展面板与 `folder-picker.js` 的提供方 iframe 在 URL 上追加 `?embed=1`；image-cleaner / pixiv-sync 在 `<head>` 里据此打上 `html.is-embedded`，把工具栏降级为普通操作行并隐藏与宿主重复的标题 | `app.js` 的 `_embedUrl()`、`folder-picker.js:207-215`、两个页面的 `<head>` 与 CSS（0,2,1 选择器） |
 | 4 | **静态门禁落地**：`tools/check_plugins.py` 新增前端 UI 契约检查（未定义变量与原生 `alert`/`confirm` 为 error，`!important` 与重复/越权关键帧为 warning），并在 `tests/test_plugin_spec.py` 补 `FrontendUiContractTests`（8 例） | 全仓运行：0 error、46 warning（40 基线 + 6 处 `!important`）；实装当天抓到 image-viewer 的 `obxRebuildSlide` 越权前缀，已改名 `iv-rebuild-slide` |
+| 5 | **设置入口与搜索框收敛**：pixiv-sync 删除手写设置表单（字段/默认值/范围钳制/保存逻辑），改走 `openSettingsModal`，后端 `download_dir` 由 `text` 改为 `directory`；image-cleaner 补上工具栏「⚙ 设置」（此前 `threshold` 无入口）；壳新增 `.search-field`（图标+输入+清除），image-viewer / manga-library / media-player 删除各自重复的搜索样式；壳新增 `.empty-state--error`，用于扫描失败与歌单加载失败 | pixiv-sync 前端 521 → 441 行；三处搜索共删约 74 行重复规则；`grep` 确认无 `loadSettings/saveSettings/intSetting/set-token/btn-save` 残留；检查器 0 error |
 
 **保留的插件专属"空态"（不是漏改）**：
 
@@ -645,8 +649,11 @@ background: var(--mp-glass, var(--bg-surface));
      reduced-motion 白名单补上 `.empty-state-icon`。
    - 已完成（第三批）：内嵌页 `?embed=1` 信号（宿主两处追加参数 + image-cleaner /
      pixiv-sync 把工具栏降级为普通行）。
-   - 待做：`pixiv-sync` 的设置改走 `openSettingsModal`（并把 `download_dir` 改成
-     `type: "directory"`）；统一搜索框类；补 `image-cleaner` 的设置入口；`.error-state`。
+   - 已完成（第五批）：pixiv-sync 设置改走 `openSettingsModal`（`download_dir` 改为
+     `type: "directory"`）、image-cleaner 补设置入口、搜索框统一到 `.search-field`、
+     新增 `.empty-state--error`。
+   - 待做：document-reader 的两套自建设置面板是否收敛（需要就地预览，暂缓）；
+     image-viewer 的 `.iv-field`/`.iv-setting-item` 是否改用壳的 `.field`。
 3. **P2**：批量操作向固定底栏收敛；工具栏右侧用类；清理死变量；
    决定其余共享组件（`createSettingsForm` / `createPagination`）的去留（`createCardGrid` 已删除）；
    骨架屏试点；media-player 的 modal / 右键菜单结构替换（风险最高，建议单独立项）。
