@@ -16,7 +16,7 @@
 | 测试文件可运行性 | `python tools/check_tests.py` | **exit 0**（硬门禁；`tests/test_*.py` 必须能被 unittest 收集到用例，手工脚本按约定命名 `tests/debug_*.py`） |
 | 类型检查（内核） | `python -m pyright main.py shell tools` | **0 错误**（硬门禁） |
 | 类型检查（插件+测试） | `python -m pyright plugins tests` | 基线（暂不拦截，见 §6） |
-| 单元测试 | `python -m unittest discover -s tests` | **290 passed**（硬门禁；Windows 专属用例在 Linux 上自动 skip，见 §2） |
+| 单元测试 | `python -m unittest discover -s tests` | **774 passed**（硬门禁；Windows 专属与浏览器 e2e 用例在缺依赖时自动 skip，见 §2） |
 | 运行时禁止 print | `python -m unittest tests.test_no_print_in_runtime` | 通过（硬门禁） |
 | 前端转义一致性 | `node tools/check_frontend_escape.cjs` | **OK**（硬门禁） |
 | 前端依赖漏洞 | `python tools/check_npm_audit.py` | **OK**（硬门禁；脚本内固定官方 registry，见下） |
@@ -28,6 +28,11 @@
 > `tests/js/*.mjs`（无 node 时自动 skip），覆盖 `image_viewer_app_split` /
 > `media_player_app_split` / `plugin_asset_contract`（7 个插件前端的资源契约）/
 > `shell_folder_picker` / `image_viewer_roots_list`。
+>
+> 本机 Linux 实测 `skipped=70`，都属"环境不具备时条件跳过"，不是门禁失效：
+> 浏览器 e2e（需 selenium + Chrome/Edge，见 `requirements-e2e.txt`，刻意不进 CI）、
+> Windows 专属（DPAPI、NTFS 大小写、`\\?\` 扩展前缀、netease-music 的 `.cmd` shim）、
+> 无系统离线音色时的 TTS 用例。
 
 本地一次性跑全部（PowerShell）：
 
@@ -62,7 +67,7 @@ node tools/check_frontend_escape.cjs
 
 | job | runner | 内容 |
 | --- | --- | --- |
-| `lint` | ubuntu | ruff + 插件规范 + 打包规则 + 版本一致性 + 测试文件可运行性 |
+| `lint` | ubuntu | ruff + 插件规范 + 打包规则 + 版本一致性 + 图标 sprite + 测试文件可运行性 |
 | `typecheck` | windows | pyright 内核（硬门禁）+ 插件/测试（基线，不拦截） |
 | `test` | windows + ubuntu，py3.10 + 3.12 | unittest 全量（netease-music 的 4 项仅 Windows 运行） |
 | `frontend` | ubuntu | 转义门禁 + `npm ci` + `vue-tsc --noEmit` + `vite build` |
@@ -121,9 +126,9 @@ node tools/check_frontend_escape.cjs
 - **触发**：`push: tags: ['v*']`。打 tag 就是"我决定发这个版本"的声明；
   `workflow_dispatch` 保留作手动兜底（重跑某次发布、或只跑 `dry_run` 取产物）。
 - **自动做完**：版本一致性校验（tag ↔ pyproject ↔ package.json）、ruff / 插件规范 /
-  打包规则 / 测试文件可运行性 / 全量单测 / 前端转义门禁、双平台 PyInstaller 构建、
-  `check_build_tree.py` 产物校验、打 zip / tar.gz、生成 `.sha256`、建**草稿** Release
-  并挂上产物。
+  打包规则 / 图标 sprite 一致性 / 测试文件可运行性 / 全量单测 / 前端转义门禁、
+  双平台 PyInstaller 构建、`check_build_tree.py` 产物校验、打 zip / tar.gz、
+  生成 `.sha256`、建**草稿** Release 并挂上产物。
 - **留给人**：只有"公开"这一下。草稿不进 Releases 列表、不产生 `latest`、不发通知，
   只有对仓库有写权限的人能看到。核对后点 **Publish release**
   即可（或 `gh release edit <tag> --draft=false`）。
@@ -295,14 +300,30 @@ RUF100（未使用的 noqa）会把这些标注判为冗余并删除——它们
 
 ## 6. 收紧路线（下一步）
 
-当前唯一"报告但不拦截"的是**插件与测试的 pyright 基线**。收敛顺序建议：
+`typecheck` job 的第二步（`pyright plugins tests`）是**报告但不拦截**的基线：
+本机 pyright 1.1.411 实测 **794 条错误**（plugins 552 / tests 242），远多于早期
+记录的规模，因此不能直接把 `continue-on-error` 去掉。按错误码分布：
 
-1. `tests/`（约 60 条）：主要是 `importlib.util.spec_from_file_location` 返回
-   `ModuleSpec | None`、以及手工构造的假对象缺属性。修法统一为给返回值加断言。
-2. `plugins/media-player/backend/metadata.py`（约 14 条）：`try: import mutagen`
-   之后的名字在 `except ImportError` 分支未定义 → pyright 报 "possibly unbound"。
-   修法是显式初始化为 `None` 并加类型注解。
-3. 其余插件按文件逐个清零。
+| 错误码 | 条数 | 主要成因 |
+| --- | --- | --- |
+| `reportAttributeAccessIssue` | 622 | 插件后端按 mixin 拆文件，mixin 方法访问宿主类在 `main.py` 里初始化的属性，pyright 在 mixin 自身上看不到声明 |
+| `reportOptionalMemberAccess` | 85 | 可选依赖 / 缓存条目缺失后仍取成员 |
+| `reportArgumentType` | 40 | 接口返回 `Unknown`，或 `dict` 值类型为 `str \| None` 传给要求 `str` 的参数 |
+| `reportIncompatibleMethodOverride` | 15 | 子类覆写签名比基类窄 |
+| `reportPossiblyUnboundVariable` | 10 | `try: import x` 失败分支里名字未初始化 |
+
+单文件错误数前五：`tests/test_document_reader_formats.py`（80）、
+`plugins/group-mesh/backend/sync.py`（53）、`plugins/image-viewer/backend/file_ops.py`
+（46）、`plugins/image-viewer/backend/listing.py`（44）、
+`plugins/group-mesh/backend/upload.py`（35）。
+
+收敛顺序建议：
+
+1. 先补 mixin 的属性声明（约占 622/794）：在 mixin 里显式注解
+   `_cache_path: Path` 一类属性，或放进 `TYPE_CHECKING` 块；
+2. 再处理 `reportOptionalMemberAccess` / `reportPossiblyUnboundVariable`；
+3. `tests/` 的 242 条单独一批（多为手工构造的假对象缺属性、
+   `spec_from_file_location` 返回 `ModuleSpec | None`）；
 4. 全清零后，把 `typecheck` job 的第二步改成不 `continue-on-error`，并让
    `pyright main.py shell plugins tools tests` 成为一条命令。
 
@@ -310,8 +331,10 @@ RUF100（未使用的 noqa）会把这些标注判为冗余并删除——它们
 
 - `ruff` 开启 `BLE001`/`S110`/`UP` 前，先做一次专项提交（每类一个 commit，
   便于 review 与回滚）。
-- `ruff format` 目前有 67 个文件未格式化；建议单独一个"纯格式化"提交，
-  避免与逻辑改动混在一个 diff 里。
+- `ruff format` 未纳入门禁（`ci.yml` 里那一步带 `continue-on-error`，只报告）：
+  本机实测 173 个文件会被重排，即使把 `quote-style` 改成仓库在用的单引号也仍有
+  166 个 —— 仓库从未按 ruff format 排版过。建议单独一个"纯格式化"提交，
+  避免与逻辑改动混在同一个 diff 里。
 - Actions 目前用 `@v4` / `@v5` 主版本标签。若要更强的供应链防护，可改为
   固定 commit SHA（Dependabot 可代为升级）。
 - `.gitattributes` 已固定"入库 LF、工作区按平台"，`.ps1` 检出为 CRLF。

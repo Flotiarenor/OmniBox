@@ -137,6 +137,9 @@ jobs:
       - name: 打包规则检查
         run: python tools/check_packaging.py
 
+      - name: 图标 sprite 一致性
+        run: python tools/build_icons.py --check
+
       - name: 测试文件可运行性
         run: python tools/check_tests.py
 
