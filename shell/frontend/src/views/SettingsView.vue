@@ -4,7 +4,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useBridge } from '../core/bridge'
 import { toastError, toastSuccess } from '../core/toast'
-import { applyStoredAppearance, persistCustomColors } from '../core/appearance'
+import { applyStoredAppearance, getStoredTheme, persistCustomColors, setStoredTheme } from '../core/appearance'
 import { getStartupPrefs, setStartupPrefs, type StartPage, type StartupPrefs } from '../core/preferences'
 
 interface PluginInfo {
@@ -33,15 +33,13 @@ type SectionId = (typeof SECTIONS)[number]['id']
 const active = ref<SectionId>('appearance')
 
 // ==================== 外观：主题 ====================
-const theme = ref<'light' | 'dark'>(
-  (localStorage.getItem('omni-theme') as 'light' | 'dark') ||
-  (document.documentElement.getAttribute('data-theme') as 'light' | 'dark') || 'dark'
-)
+// 主题的落盘与 data-theme 写入都归 appearance.ts（首屏脚本走同一份，
+// 这里不再自己 setAttribute + localStorage，避免两处写法漂移）。
+const theme = ref<'light' | 'dark'>(getStoredTheme())
 
 function setTheme(t: 'light' | 'dark') {
   theme.value = t
-  document.documentElement.setAttribute('data-theme', t)
-  localStorage.setItem('omni-theme', t)
+  setStoredTheme(t)
 }
 
 // ==================== 外观：可调 CSS 变量 ====================
@@ -307,7 +305,7 @@ watch(() => route.path, (path) => {
       <div class="settings-nav-title">设置</div>
       <button
         v-for="s in SECTIONS" :key="s.id"
-        class="settings-nav-item" :class="{ active: active === s.id }"
+        class="obx-nav-item settings-nav-item" :class="{ active: active === s.id }"
         @click="active = s.id"
       >
         <span class="icon">{{ s.icon }}</span>
