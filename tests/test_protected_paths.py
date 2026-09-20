@@ -1,4 +1,4 @@
-"""插件申报受保护路径的契约测试（`PluginBase.get_protected_paths`）。
+r"""插件申报受保护路径的契约测试（`PluginBase.get_protected_paths`）。
 
 背景：文件路由的放行依据是插件自己给出的根（`get_file_roots()` / `thumb_dir`），
 而根可以由插件设置改写。开发模式下 `<data_root>`（默认 ./data）与 `<config_dir>`

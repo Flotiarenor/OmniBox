@@ -13,6 +13,7 @@
 | 插件规范 | `python tools/check_plugins.py` | **exit 0**（硬门禁） |
 | 打包规则（spec/收集） | `python tools/check_packaging.py` | **exit 0**（硬门禁） |
 | 版本一致性 | `python tools/check_version.py` | **exit 0**（硬门禁） |
+| 测试文件可运行性 | `python tools/check_tests.py` | **exit 0**（硬门禁；`tests/test_*.py` 必须能被 unittest 收集到用例，手工脚本按约定命名 `tests/debug_*.py`） |
 | 类型检查（内核） | `python -m pyright main.py shell tools` | **0 错误**（硬门禁） |
 | 类型检查（插件+测试） | `python -m pyright plugins tests` | 基线（暂不拦截，见 §6） |
 | 单元测试 | `python -m unittest discover -s tests` | **290 passed**（硬门禁；Windows 专属用例在 Linux 上自动 skip，见 §2） |
@@ -37,6 +38,7 @@ $py = ".\venv\Scripts\python.exe"
 & $py tools/build_icons.py --check
 & $py tools/check_packaging.py
 & $py tools/check_version.py
+& $py tools/check_tests.py
 & $py tools/check_npm_audit.py
 & $py -m pyright main.py shell tools
 & $py -m unittest discover -s tests
@@ -60,7 +62,7 @@ node tools/check_frontend_escape.cjs
 
 | job | runner | 内容 |
 | --- | --- | --- |
-| `lint` | ubuntu | ruff + 插件规范 + 打包规则 + 版本一致性 |
+| `lint` | ubuntu | ruff + 插件规范 + 打包规则 + 版本一致性 + 测试文件可运行性 |
 | `typecheck` | windows | pyright 内核（硬门禁）+ 插件/测试（基线，不拦截） |
 | `test` | windows + ubuntu，py3.10 + 3.12 | unittest 全量（netease-music 的 4 项仅 Windows 运行） |
 | `frontend` | ubuntu | 转义门禁 + `npm ci` + `vue-tsc --noEmit` + `vite build` |
@@ -119,8 +121,9 @@ node tools/check_frontend_escape.cjs
 - **触发**：`push: tags: ['v*']`。打 tag 就是"我决定发这个版本"的声明；
   `workflow_dispatch` 保留作手动兜底（重跑某次发布、或只跑 `dry_run` 取产物）。
 - **自动做完**：版本一致性校验（tag ↔ pyproject ↔ package.json）、ruff / 插件规范 /
-  打包规则 / 全量单测 / 前端转义门禁、双平台 PyInstaller 构建、`check_build_tree.py`
-  产物校验、打 zip / tar.gz、生成 `.sha256`、建**草稿** Release 并挂上产物。
+  打包规则 / 测试文件可运行性 / 全量单测 / 前端转义门禁、双平台 PyInstaller 构建、
+  `check_build_tree.py` 产物校验、打 zip / tar.gz、生成 `.sha256`、建**草稿** Release
+  并挂上产物。
 - **留给人**：只有"公开"这一下。草稿不进 Releases 列表、不产生 `latest`、不发通知，
   只有对仓库有写权限的人能看到。核对后点 **Publish release**
   即可（或 `gh release edit <tag> --draft=false`）。

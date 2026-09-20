@@ -1,7 +1,7 @@
 name: ci
 
 # 门禁总览（每一条都在本地实测过，见 docs/ci-and-release.md）：
-#   lint        —— ruff 全量 + 插件规范 + 打包规则 + 版本一致性
+#   lint        —— ruff 全量 + 插件规范 + 打包规则 + 版本一致性 + 测试文件可运行性
 #   typecheck   —— pyright（内核零错误硬门禁；插件/测试先输出基线不拦截）
 #   test        —— unittest 全量，Windows + Linux 双平台
 #   frontend    —— 转义一致性门禁 + vue-tsc 类型检查 + vite 构建
@@ -53,7 +53,7 @@ env:
 
 jobs:
   lint:
-    name: lint（ruff + 规范 + 版本）
+    name: lint（ruff + 规范 + 版本 + 测试文件）
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -87,6 +87,9 @@ jobs:
 
       - name: 版本一致性（pyproject / package.json）
         run: python tools/check_version.py
+
+      - name: 测试文件可运行性（tests/test_*.py 必须真的有用例）
+        run: python tools/check_tests.py
 
   typecheck:
     name: typecheck（pyright，内核硬门禁）

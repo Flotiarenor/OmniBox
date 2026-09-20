@@ -63,16 +63,10 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
 
-      # Windows 走 setup-python；Linux 用发行版 python3 + venv，与下面 build job 同一套
-      # （原因见 build job 里那段注释：setup-python 的 libpython 与打包产物不兼容）。
-      - uses: actions/setup-python@v5
-        if: runner.os == 'Windows'
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
+      # verify 固定在 ubuntu-latest：这里只用发行版 python3 + venv，与下面 build job
+      # 的 Linux 分支同一套（原因见 build job 里那段注释：setup-python 的 libpython
+      # 与打包产物不兼容）。原先这里还留着一个 `if: runner.os == 'Windows'` 的
+      # setup-python 步骤 —— 该条件在 ubuntu-only 的 job 里永远不成立，已删除。
 
       # Linux 构建必须用发行版 Python：setup-python 那份 libpython 与本 spec 不兼容，
       # 产物启动即失败（Failed to load Python shared library .../libpython3.12.so.1.0）。
@@ -142,6 +136,9 @@ jobs:
 
       - name: 打包规则检查
         run: python tools/check_packaging.py
+
+      - name: 测试文件可运行性
+        run: python tools/check_tests.py
 
       - name: 单元测试
         run: python -m unittest discover -s tests

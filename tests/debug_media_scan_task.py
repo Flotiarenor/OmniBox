@@ -1,6 +1,9 @@
 """media-player 后台扫描任务冒烟测试：启动 → 进度 → 完成 → 断点恢复 → 封面。
 
-运行：venv\\Scripts\\python.exe tests\\test_media_scan_task.py
+手工脚本（不是 unittest；`unittest discover` 不会执行它）。命名按仓库约定放在
+`tests/debug_*.py`，见 docs/group-mesh-design.md。
+
+运行：venv\\Scripts\\python.exe tests\\debug_media_scan_task.py
 """
 
 import shutil

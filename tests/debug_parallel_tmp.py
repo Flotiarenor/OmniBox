@@ -1,4 +1,4 @@
-"""pixiv-sync 手工联调脚本（不是 unittest；仅 `python tests/test_parallel_tmp.py` 时执行）。
+"""pixiv-sync 手工联调脚本（不是 unittest；仅 `python tests/debug_parallel_tmp.py` 时执行）。
 
 需要环境变量 PIXIV_REFRESH_TOKEN。v0.3 起不再有 download_original /
 multi_page_subfolder 开关。
