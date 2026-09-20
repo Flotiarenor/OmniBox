@@ -255,17 +255,17 @@
 
 - **设置入口**：工具栏 `.btn#btn-settings` → `_openSettings()`（`app-ui-events.js:25` →
   `app-views.js:74-84`），传 `title: '媒体播放器设置'`、`successMessage: '设置已保存'`、
-  `onSave: Bridge.call('save_settings', values)`；歌词页工具栏 ⚙ 打开同一个壳弹窗但换标题
+  `onSave: Bridge.call('save_settings', values)`；歌词页工具栏设置入口（`<svg class="obx-icon"><use href="#settings"></use></svg>`）打开同一个壳弹窗但换标题
   （`app-ui-events.js:94-96`，`'歌词与播放设置'`）。**保存后的反馈**完全交给壳：
   `Toast.success` + `setTimeout(() => location.href = ... + '?_t=' + Date.now(), 400)` 整页重载
   （`base.js:621-622`），插件没有自定义保存后行为。
 - **错误提示**：统一 `Toast.error` + `console.error`，无内联错误条/字段级报错。
   例：`app.js:122` `console.error('媒体索引初始化失败:', e)`、`app-views.js:63` `Toast.error('扫描失败')`、
   `player-core.js:699/743` 解码/加载失败、`app-render.js:527` 在内容区渲染
-  `.mp-empty-state` + `⚠️ 歌单加载失败`。
+  `.mp-empty-state` + `icon:triangle-alert` + 「歌单加载失败」。
 - **选择模型**：**单选**（点击专辑卡/行即播放或进详情，`app-render.js:136`）；
   无多选、无框选、无长按；无 `selectionMode` / `selectedIds`（grep 0 命中）。
-  唯一的状态切换是收藏：`♡/❤️` 按钮（`index.html:121`）→ `media_toggle_favorite`
+  唯一的状态切换是收藏：`icon:heart` 按钮（`index.html:121`，两种状态由 `fav-active` 类区分）→ `media_toggle_favorite`
   （`app-playback.js:212`、`app-render.js:629`）。
 - **右键菜单**：仅歌单条目。`app-playback.js:378-408` 动态建 `.mp-context-menu`，
   两项 `data-menu-act="rename" | "delete"`（删除带 `danger` 样式并走 `confirmDialog`，
@@ -286,7 +286,7 @@
 - **空/加载/错误三态**：加载 = `.mp-loading`+`.mp-spinner`（`app-render.js:17-28`，
   文案 `正在准备媒体库…` / `首次使用，正在扫描媒体库…` / `继续上次未完成的扫描…` 见
   `app.js:99/106/110`）；空 = `.mp-empty-state` + 图标/标题/提示（`app-render.js:30-38`，
-  调用点 6 处）；错误 = 同款空态 + `⚠️`（`app-render.js:527`、`app-views.js:182-183`）。
+  调用点 6 处）；错误 = 同款空态 + `icon:triangle-alert`（`app-render.js:527`、`app-views.js:182-183`）。
   无骨架屏。
 
 ---

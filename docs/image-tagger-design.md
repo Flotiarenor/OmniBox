@@ -69,7 +69,7 @@ plugins/
   "name": "image-tagger",
   "version": "0.1.0",
   "displayName": "图像打标",
-  "icon": "🏷️",
+  "icon": "icon:palette",
   "dependencies": ["image-viewer"],
   "permissions": ["filesystem:read", "filesystem:write", "runtime:subprocess"],
   "backend": { "entry": "backend/main.py", "class": "ImageTaggerPlugin" },
@@ -92,14 +92,14 @@ plugins/
 
 | 字段 | 必填 | 说明 |
 |------|------|------|
-| `dependencies` | ✅ | 声明宿主；PluginManager 保证 image-viewer 先加载 |
-| `kind` | ✅ | `local-adapter`：声明本插件管理独立运行环境 |
-| `runtime.kind` | ✅ | 首版固定 `stdio-worker` |
-| `runtime.venv` | ✅ | 相对插件目录的独立 venv |
-| `runtime.requirements` | ✅ | 部署脚本据此创建 venv |
-| `runtime.modelDir` | ❌ | 模型目录；插件设置里可覆盖 |
-| `runtime.startup` | ✅ | `lazy`：应用启动不拉起 Worker，首次任务时拉起 |
-| `runtime.maxMemoryGB` | ❌ | 部署/设置页提示用途 |
+| `dependencies` | 是 | 声明宿主；PluginManager 保证 image-viewer 先加载 |
+| `kind` | 是 | `local-adapter`：声明本插件管理独立运行环境 |
+| `runtime.kind` | 是 | 首版固定 `stdio-worker` |
+| `runtime.venv` | 是 | 相对插件目录的独立 venv |
+| `runtime.requirements` | 是 | 部署脚本据此创建 venv |
+| `runtime.modelDir` | 否 | 模型目录；插件设置里可覆盖 |
+| `runtime.startup` | 是 | `lazy`：应用启动不拉起 Worker，首次任务时拉起 |
+| `runtime.maxMemoryGB` | 否 | 部署/设置页提示用途 |
 
 ---
 
@@ -144,8 +144,8 @@ renderExtensions(document.getElementById('extensions'), 'image-viewer', 'sidebar
 {
   "host": "image-viewer",
   "id": "tag-selected",
-  "label": "🏷️ 打标",
-  "icon": "🏷️",
+  "label": "打标",
+  "icon": "icon:palette",
   "section": "打标",              # 侧边栏分组标题
   "placement": "sidebar",
   "scope": "album",

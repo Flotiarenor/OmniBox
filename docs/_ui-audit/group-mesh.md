@@ -93,7 +93,7 @@
 
 | 能力 | Shell 提供 | 插件实现 | 差异 |
 | --- | --- | --- | --- |
-| Toast | `.toast*`（`base.css:208-234`）+ `Toast.*` | `.gm-toast`(`:811-829`) | 仅作脱离壳的兜底（`app.js:31-39`）。位置相反：壳 `top:16px;right:16px`，插件 `right:20px;bottom:20px`；插件用 `border:1px solid var(--success)` 表语义，壳用 `.toast-success::before{content:'✓ '}` 前缀 |
+| Toast | `.toast*`（`base.css:208-234`）+ `Toast.*` | `.gm-toast`(`:811-829`) | 仅作脱离壳的兜底（`app.js:31-39`）。位置相反：壳 `top:16px;right:16px`，插件 `right:20px;bottom:20px`；插件用 `border:1px solid var(--success)` 表语义，壳用 `.toast-icon` 里的 `Utils.iconHtml('icon:circle-check')`（`base.js:390-400`） |
 | 空状态 | `.empty-state`（`base.css:428-431`，`min-height:300px` 居中 16px） | `.gm-empty`(`:495-503`，`13px` 左对齐多行 + `<strong>`) | 语义化更强（可带标题+说明），但视觉与壳不一处 |
 | 骨架屏 | `.obx-skeleton`（`effects.css:118-131`） | `.gm-skeleton-line`(`:511-520`) 再叠一层 | 壳只管配色与 shimmer，插件补 `height:12px` / `margin:6px 0` / 圆角 6px；即壳的骨架尺寸仍需插件给 |
 | 表单控件 | `.field input/select/textarea`（`base.css:187-206`，含 `:focus` 强调色、`min-height:120px` textarea） | `.gm-form/.gm-address/.modal-body` 三组选择器(`:375-426`) | 视觉接近（6px 10px、`--radius-sm`），但选择器是**元素级**且覆盖 `.modal-body`（见 §7）；textarea 无 `min-height`，只 `resize:vertical` |

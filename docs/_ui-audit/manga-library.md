@@ -239,7 +239,7 @@ ml-brand* / ml-toolbar* / ml-content / ml-view-* / ml-search*`；
   `location.href + '?_t='` 重载（`base.js:621-622`）。插件没有自定义设置面板或保存后逻辑。
 - **错误提示**：三级并用——`Toast.error`（`app.js:254` 收藏失败、`app.js:507` 添加任务失败、
   `app.js:528` 详情失败）、`Toast.warning`（`app.js:495` 空输入）、
-  `console.error`（`app.js:181/275/401`）、内容区 `.ml-empty` + `⚠️`（`app.js:182` 「加载失败」、
+  `console.error`（`app.js:181/275/401`）、内容区空态 + `icon:triangle-alert`（`app.js:182` 「加载失败」、
   `app.js:366` 图片加载失败、`app.js:525` 详情里用内联 `style="color:var(--danger)"` 显示错误字段）。
 - **选择模型**：**单选**。点击卡片即进详情/阅读（`app.js:217-222`），章节卡进图片页
   （`app.js:315-321`），图片卡打开阅读器（`app.js:362-364`）；
@@ -268,7 +268,7 @@ ml-brand* / ml-toolbar* / ml-content / ml-view-* / ml-search*`；
   - 加载态：仅图片页有（`app.js:350`，内联 spinner + 「图片加载中…」）；
     书架/下载中心**没有加载态**——首帧先渲染空态，等 `Bridge.call` 返回后替换
     （下载中心首个 2s 轮询到来前也是空态）。
-  - 错误态：复用空态样式 + `⚠️`（`app.js:182/366`），无重试按钮；轮询失败只 `console.error`
+  - 错误态：复用空态样式 + `icon:triangle-alert`（`app.js:182/366`），无重试按钮；轮询失败只 `console.error`
     （`app.js:401`），界面上不会出现错误（任务行会保留上一次成功快照）。
 
 ---
@@ -346,11 +346,10 @@ ml-brand* / ml-toolbar* / ml-content / ml-view-* / ml-search*`；
    （`app.js:170` + `app.js:202`），下载中心每次变化整段重建（`app.js:431`）；
    `obx-skeleton` 0 命中。影响：大漫画库（数千文件夹）与长任务列表的渲染成本全部落在
    一次同步 `innerHTML` 上；统一列表/分页组件时这里是最主要的接入点。
-9. **空态 HTML 中 icon 参数未走转义，与文件内其它转义口径不一致。**
-   证据：`app.js:188` `<div class="ml-empty-icon">${icon}</div>` 直接插入（text/hint 都经
-   `MangaUtils.escapeHtml`，`app.js:189-190`）。影响面：5 个调用点当前全部传字面量 emoji
-   （`app.js:182/197/354/366/427`），暂无注入路径；但作为函数契约，它是本文件唯一
-   未转义的插值点，统一空态组件时需要决定是"由组件转义"还是"只收 emoji 常量"。
+9. **空态图标的插值口径已收敛**（本条为审计时的差异，现已消除）。
+   现状：`_emptyHtml(icon, text, hint)` 把图标名交给壳的 `Icons.html('icon:名字')` 生成标记
+   （`app.js:186-193`），text/hint 仍经 `MangaUtils.escapeHtml`；5 个调用点全部传
+   `icon:` 常量（`app.js:182/198/355/367/428`），不存在外部数据进入图标插值的路径。
 10. **主界面零键盘交互，与同批插件的习惯不一致。**
     证据：键盘只在阅读器内注册（`reader.js:64-74`），书架/下载中心无 `keydown` 监听；
     搜索框也没有 Esc 清空/Enter 提交（`app.js:67-78` 只绑 `input` 与清除按钮点击）。

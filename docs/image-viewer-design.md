@@ -91,13 +91,13 @@ plugins/image-viewer/
 
 ```
 打开相册页 ──► list_albums ──► _list_album_dirs(全部根目录的目录枚举)
-                                  └─► _build_albums(增量扫描变化目录 + 自底向上聚合)
-                                       └─► albums_index.json(version 3) 持久化 + 30s TTL 内存缓存
+                             └─► _build_albums(增量扫描变化目录 + 自底向上聚合)
+                             │  └─► albums_index.json(version 3) 持久化 + 30s TTL 内存缓存
 
 进入文件夹 ──► list_folder_items ──► 直接图片 scandir + 尺寸并行读取
-                                      ├─► _scan_album_items(子目录级并行: 封面 p0 + 计数)
-                                      └─► items 排序(按生效设置) + all_images 连续序列
-                                           └─► _list_cache(目录mtime + 排序键) 内存缓存
+                                   ├─► _scan_album_items(子目录级并行: 封面 p0 + 计数)
+                                   └─► items 排序(按生效设置) + all_images 连续序列
+                                   │    └─► _list_cache(目录mtime + 排序键) 内存缓存
 
 渲染瓦片 ──► <img src="/thumbs/..."> ──► get_thumb_data ──► SQLite 命中 / Pillow 生成回写
 ```
@@ -141,7 +141,7 @@ media-player / manga-library / novel-reader 也要同一套「多位置文件夹
 已整体搬到 Shell，本插件改为 `FolderPicker.createList()` 引用回来（类名与样式
 `.iv-root-*` / `.iv-dirbrowser-*` 原样跟着搬走，视觉无变化）。选择器可一键回到
 「我的电脑」层重选盘符。
-「主要」是**位置**属性而非每行自带标记，所以每行都有 ✕、行高一致；删掉第一行
+「主要」是**位置**属性而非每行自带标记，所以每行都有 `x` 移除按钮、行高一致；删掉第一行
 后下一行自动顶上成为主目录；列表被清空时显式写空 `root_dir`，后端回退到默认
 数据目录（`./data`），与界面提示一致。
 
@@ -266,7 +266,7 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
   `visible_empty_dirs` 里的路径保留可见——「新建相册」会把新建的那层记进该标记
   （`_mark_visible`），目录被删除或换根时由 `_prune_visible_marks()` 清理。
   标记同时**向上生效**：只标记深层目录时，它的上级也一并显示，否则那层永远点不进去。
-  空相册卡片带「📁 空相册」标签，右键菜单提供「不再显示此空相册」。
+  空相册卡片带「空相册」标签（`Icons.html('icon:folder')`），右键菜单提供「不再显示此空相册」。
 
 
 ## 5. 视图模式与前端设计

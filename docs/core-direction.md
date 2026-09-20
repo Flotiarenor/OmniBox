@@ -36,7 +36,7 @@
 
 ## 3. 主程序需要做的最小改造
 
-> ⚠️ **本节记录的是当初的改造草案，这些改造后来全部已实装**（见 §2 的状态表）。
+> **本节记录的是当初的改造草案，这些改造后来全部已实装**（见 §2 的状态表）。
 > 下面的代码片段保持历史原样，**不是待办**；真实实现以代码为准：
 > `PluginBase.get_dependency`（`shell/backend/plugin_base.py`）、
 > `Bridge.callPlugin`（`shell/frontend/public/shell/base.js`）、
@@ -85,7 +85,7 @@ class PluginBase:
 {
   "host": "image-viewer",
   "id": "tag-selected",
-  "label": "🏷️ 打标",
+  "label": "打标",
   "method": "tag_album",
   "scope": "album"
 }

@@ -42,7 +42,7 @@ plugins/
 "version": "1.0.0",
 "displayName": "图片浏览",
 "description": "浏览本地图片，支持缩略图和灯箱",
-"icon": "🖼️",
+"icon": "icon:images",
 "dependencies": [],
 "permissions": ["filesystem:read", "filesystem:write"],
 "backend": {
@@ -68,7 +68,7 @@ plugins/
 | ------------------- | ---- | ------------------------------------------------------------------------------- |
 | `version`         | 必填 | 语义化版本号（`x.y.z`，`tools/check_plugins.py` 会强制校验；运行时只记录不判断兼容性） |
 | `displayName`     | 必填 | 在导航栏显示的名称                                                              |
-| `icon`            | 必填 | 导航栏图标（Emoji 或文字）                                                      |
+| `icon`            | 必填 | 导航栏图标，写壳图标集的 `icon:<名字>`（名字见 `res/icons/icon_data.json`；`tools/check_plugins.py` 拒绝非 `icon:` 前缀的值） |
 | `frontend.entry`  | 必填 | 前端入口 HTML 路径。**壳目前固定加载 `frontend/index.html`**，此字段只被 `tools/check_plugins.py` 用于校验入口及其引用资源存在；写别的值不会改变壳实际加载的文件 |
 | `name`            | 默认 | 插件唯一标识，缺省为文件夹名；与文件夹名不一致告警                              |
 | `backend.entry`   | 默认 | 后端入口文件路径，默认`backend/main.py`，相对于插件根目录                     |
@@ -144,7 +144,7 @@ class ImageCleanerPlugin(PluginBase):
             'host': 'image-viewer',                            # 挂到哪个宿主
             'id': 'image-cleaner',
             'label': '相册清理',
-            'icon': '🧹',
+            'icon': 'icon:brush-cleaning',
             'description': '扫描全部相册中的重复 / 相似图片',
             'section': '相册清理',                              # 侧边栏分组标题
             'embedUrl': '/plugins/image-cleaner/frontend/index.html',
@@ -640,7 +640,7 @@ class AudioCoverCache(ThumbCache):
   <div class="view-body">
     <div class="view-toolbar">
       <div class="toolbar-group">...</div>
-      <div class="toolbar-group" style="margin-left:auto;">⚙ 设置</div>
+      <div class="toolbar-group" style="margin-left:auto;"><svg class="obx-icon"><use href="#settings"></use></svg> 设置</div>
     </div>
     <div class="view-content">
       <!-- 主内容区 -->
@@ -971,7 +971,7 @@ def browse_dir(self, path: str = ''):
 
 #### 7.2.1 「网络位置」：把远端共享项变成一个本地目录（供方契约）
 
-目录列表里的「🌐 网络位置」按钮按 **placement = `network-location`** 发现提供方，因此
+目录列表里的「网络位置」按钮按 **placement = `network-location`** 发现提供方，因此
 **壳不认识任何具体插件、提供方与宿主互不声明依赖**（没有 `dependencies`）：
 
 | 环节 | 约定 |
@@ -1107,7 +1107,7 @@ class MyPlugin(PluginBase):
 | `options`                  | 可选 | select 类型的选项列表                                                                     |
 | `multi`                    | 可选 | 仅 `directory`：多值字段，列表可增删多行，第 2 行起标「额外」                          |
 | `placeholder` / `emptyText` | 可选 | 仅 `directory`：输入框占位符 / 列表为空时的提示文字                                      |
-| `local_only`               | 可选 | 仅 `directory`：`True` 时**不显示「🌐 网络位置」入口**（该目录只接受本机路径，见下）   |
+| `local_only`               | 可选 | 仅 `directory`：`True` 时**不显示「网络位置」入口**（该目录只接受本机路径，见下）   |
 | `secret`                   | 可选 | `True` 表示**凭据类**设置项：Shell 拒绝把该插件的设置文件当媒体资源返回（见下）        |
 
 #### 凭据类设置项：`"secret": True`
@@ -1194,7 +1194,7 @@ def get_protected_paths(self):
 `type: "directory"` 的字段在插件设置弹窗里渲染成**与图片相册完全相同的目录列表** ——
 不是"样子像"，而是同一个实现（`window.FolderPicker`，见 §7.2；`base.js` 直接调它）：
 
-- 每行是「主要 / 额外」标签 + 路径 + 方形 ✕；第一行是**位置**属性而不是固定标记，
+- 每行是「主要 / 额外」标签 + 路径 + 方形 `icon:x` 删除按钮；第一行是**位置**属性而不是固定标记，
   所以每行都能删 —— 删掉第一行后下一行自动顶上成为主要目录；
 - 下面是「输入框 + 浏览… + 添加」：可以手输绝对路径、回车添加，或点「浏览…」
   弹出宿主目录选择器（`system_browse_dir` → 共享基建
@@ -1214,7 +1214,7 @@ def get_protected_paths(self):
 
 #### `local_only`：该目录只接受本机路径
 
-默认情况下目录列表带一个「🌐 网络位置」入口：让用户把某个远端共享项取回本地一个
+默认情况下目录列表带一个「网络位置」入口：让用户把某个远端共享项取回本地一个
 目录，再把**那个本地目录**加进列表（详见 §7.2.1）。这对"媒体根目录"是正确的 ——
 取回来的就是本地文件。
 
@@ -1224,7 +1224,7 @@ def get_protected_paths(self):
 
 ```python
 {"key": "download_dir", "label": "远端下载目录", "type": "directory",
- "local_only": True,          # 不渲染「🌐 网络位置」入口
+ "local_only": True,          # 不渲染「网络位置」入口
  "default": "", "placeholder": "默认：数据根/group-mesh/downloads"},
 ```
 

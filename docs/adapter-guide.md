@@ -163,7 +163,7 @@ CREATE TABLE player_teams (
 
 ## 7. 插件设计（可选，按需拆）
 
-> ⚠️ **下表全部是规划中的插件名，一个都还不存在**：`plugins/` 当前只有 7 个真实插件
+> **下表全部是规划中的插件名，一个都还不存在**：`plugins/` 当前只有 7 个真实插件
 > （`image-viewer`、`media-player`、`manga-library`、`document-reader`、`image-cleaner`、
 > `pixiv-sync`、`netease-music`）。本表用于描述未来形态，不要当作可用的插件清单。
 
@@ -197,7 +197,7 @@ CREATE TABLE player_teams (
 
 ## 9. 验收与联调顺序
 
-> ⚠️ 本节第 2~3 步涉及 `alas-manager` / `battle-report-manager`，它们**尚未实装**
+> 本节第 2~3 步涉及 `alas-manager` / `battle-report-manager`，它们**尚未实装**
 > （见 §7 的说明）。当前可执行的只有第 1 步的通用规范部分与第 4 步的回归检查
 > （`tools/check_plugins.py` + `python -m unittest discover -s tests`）。
 

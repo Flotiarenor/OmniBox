@@ -114,7 +114,7 @@ plugins/
 
 ### 画师名单（selected_artists.txt：只同步指定画师）
 
-- 配置文件位置：`<root>/.cache/pixiv-sync/selected_artists.txt`（前端设置区「📂 画师名单文件」按钮一键打开所在文件夹）。
+- 配置文件位置：`<root>/.cache/pixiv-sync/selected_artists.txt`；前端设置区「画师名单文件」按钮（`Icons.html('icon:folder-open')`）可一键打开所在文件夹。
 - 格式：每行一个画师，填**画师名字或 Pixiv 用户 id**；`#` 开头为注释、空行忽略。
 - 语义：文件**存在且非空**时，同步画师只处理名单中匹配到的画师（按名字或 id 匹配；全部匹配不到则任务报错提示）；文件**不存在或为空** = 同步全部关注画师。
 - 前端不做名单编辑 UI（避免复杂表单），直接编辑文本文件即可。
@@ -139,7 +139,7 @@ plugins/
 
 ### 内置 OAuth 向导（refresh_token 失效时重新获取）
 
-前端设置区「🔑 获取 Token」按钮，内置 Pixiv OAuth PKCE 授权码流程（RFC 7636，无需 gppt/selenium）。`start_oauth()` 生成 code_verifier（存插件内存）并返回完整登录 URL（含 code_challenge），流程：
+前端设置区「获取 Token」按钮（`Icons.html('icon:key-round')`），内置 Pixiv OAuth PKCE 授权码流程（RFC 7636，无需 gppt/selenium）。`start_oauth()` 生成 code_verifier（存插件内存）并返回完整登录 URL（含 code_challenge），流程：
 
 1. 点按钮 → `webbrowser.open` 打开登录页，弹窗显示完整登录 URL（可复制）；
 2. 在**已登录**的浏览器新标签页打开该 URL（Google 登录等跳转异常时手动粘贴地址栏）；
@@ -239,7 +239,7 @@ pixiv app-api 有滑动窗口限流（约 30 req/10s，超出后 429）：
 `/plugins/pixiv-sync/frontend/index.html` 作为内嵌页面，通过 `get_extensions()` 在 image-viewer 左侧栏挂载「Pixiv 同步」入口；点击后由 image-viewer 用 iframe 加载。页面包含：
 
 - 状态栏：Token 是否配置 / 下载根目录 / 已下载总数 / 关注·喜欢·其他清单统计 / 失败跳过数 / 上次任务结果
-- 操作：⬇️ 同步画师、❤️ 同步喜欢（**一步完成：自动先刷新清单再下载**）；🔄 刷新关注名单 / 🔄 刷新喜欢名单（仅更新清单不下载，备用）；📋 刷新记录、🔍 校验内容、🗑 重试失败作品
+- 操作：同步画师（`Icons.html('icon:download')`）、同步喜欢（`Icons.html('icon:heart')`），两者都**一步完成：自动先刷新清单再下载**；刷新关注名单 / 刷新喜欢名单（`Icons.html('icon:refresh-cw')`，仅更新清单不下载，备用）；刷新记录（`Icons.html('icon:list-checks')`）、校验内容（`Icons.html('icon:search')`）、重试失败作品（`Icons.html('icon:trash-2')`）
 - **进度条**：`done/total` 百分比（流式累加）+ 计数明细（下载/跳过/失败）+ 当前处理作品；每 1.5s 轮询 `get_status`
 - 设置表单：refresh_token（密码框）/ 代理 / 下载目录 / 并发数 / 单次上限 / 刷新上限 / 限速 / 并行画师数
 - **固定行为说明**：页面明确标注「下载原图」「多图子文件夹」「动图转动画 WebP」为固定默认行为、无开关，避免误触。

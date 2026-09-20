@@ -64,8 +64,8 @@ plugins/media-player/
 
 复用 Shell 共享基建 `shell/backend/tasks.py`（线程 + 进度 + 取消 + 原子持久化）：
 
-- `media_scan(force)` 启动后台任务；「🔄 扫描」为增量（默认，只处理新增/变更文件），
-  「⚡ 深度扫描」为全量（`force=True` 重读全部标签与时长）；已运行时返回 error；
+- `media_scan(force)` 启动后台任务；「扫描」按钮（`Icons.html('icon:refresh-cw')`）为增量（默认，只处理新增/变更文件），
+  「深度扫描」按钮（`Icons.html('icon:zap')`）为全量（`force=True` 重读全部标签与时长）；已运行时返回 error；
 - **断点续传**：worker 每完成一个根目录，将「部分索引 + `completed_roots`」落盘检查点；
   进程中断后重启任务恢复为 `paused`，再次增量扫描自动跳过已完成根目录；
 - 多根目录：设置项 `media_roots`（**媒体文件夹**列表，多行路径）逐根扫描，第一行

@@ -69,7 +69,7 @@ body
    └─ .view-body                            (index.html:61)  ← 插件重定义：position:relative (css:704-706)
       ├─ .view-toolbar.nr-toolbar           48px（壳）  (index.html:62)
       │  ├─ .toolbar-group.nr-heading       ← 返回 / 标题 / 副标题
-      │  └─ .toolbar-group.nr-toolbar-right  margin-left:auto（css:146-151）→ .nr-search + ⚙ 设置
+      │  └─ .toolbar-group.nr-toolbar-right  margin-left:auto（css:146-151）→ .nr-search + 设置入口（<svg class="obx-icon"><use href="#settings-2"></use></svg> 设置）
       ├─ .view-content.nr-content.obx-scroll#nr-shelf-view   padding 18px（css:194-196）
       │  └─ .nr-grid   grid auto-fill minmax(150px,1fr); gap 18px  (css:264-269)
       ├─ .nr-reader-view#nr-reader-view      flex:1; column; min-height:0  (css:199-204)
@@ -183,7 +183,7 @@ grep（限 `document-reader.css`）：
 - 空状态：`.nr-empty .nr-empty-icon .nr-empty-text .nr-empty-hint`（模板 `app-shelf.js:139-145`）
 - 骨架屏：**无**——加载态用 `#document-loading` 胶囊 + `<div class="spinner">`（`app.js:570-584`），
   而 `.spinner` 在本插件 CSS 里没有定义（`document-reader.css` 无 `.spinner` 规则）
-- 徽标：`.nr-badge`（格式）、`.nr-mark-count`（⭐ 数）、`.nr-nav-count`（导航计数，`css:120-133`）
+- 徽标：`.nr-badge`（格式）、`.nr-mark-count`（书签数，`nrShelfIcon('icon:star')`）、`.nr-nav-count`（导航计数，`css:120-133`）
 - 书签标记：`.nr-mark-layer .nr-mark-pin .nr-mark-group .nr-mark-head .nr-mark-book .nr-mark-item .nr-mark-text .nr-mark-meta`
 
 ### 4.2 「壳已提供但插件又实现一遍」
@@ -210,7 +210,7 @@ grep（限 `document-reader.css`）：
 
 三个互不相同的入口：
 
-1. 工具栏 `⚙ 设置`（`index.html:74`）→ 壳的 `openSettingsModal({title:'文档阅读设置'})`（`app.js:132-133`）：
+1. 工具栏设置入口（静态 HTML `<svg class="obx-icon"><use href="#settings-2"></use></svg> 设置`，`index.html:74`）→ 壳的 `openSettingsModal({title:'文档阅读设置'})`（`app.js:132-133`）：
    读后端 `get_settings_schema` 渲染，保存由壳接管 —— **成功后 400ms 整页刷新**（`base.js:622`），
    插件不感知，也没有 `onSave`。
 2. 左栏「阅读设置」→ 自绘 `.modal`（`index.html:189-239`）：滑杆 `input` 事件即时预览
@@ -238,7 +238,7 @@ grep（限 `document-reader.css`）：
 - **无框选、无长按**（grep `mousedown/mousemove/touchstart` 零命中）。
 - 文本选择：`user-select: text !important`（`css:225,238-240`），选区语义只用于朗读/加书签
   （`app-menu.js:8-17` 限制选区必须落在 `.document-content-area` 内）。
-- 书签视图无多选：逐条 `✕` 删除（`app-shelf.js:98-105`）或整本「清空」（`:106-117`，循环 `_removeMark` 后
+- 书签视图无多选：逐条点删除按钮（`nrShelfIcon('icon:x')`，`app-shelf.js:98-105`）或整本「清空」（`:106-117`，循环 `_removeMark` 后
   `Toast.success('已清空这本书的书签')`）。
 
 ### 5.4 右键菜单
@@ -265,7 +265,7 @@ grep（限 `document-reader.css`）：
 - 章节加载：`#document-loading` 胶囊（sticky 底部），`_showLoading(true/false)`（`app.js:570-584`）。
 - 阅读进度：顶部通栏 4px 进度条，`_updateProgressBar()` 按 `(章索引 + 章内比例)/总章数` 写宽度
   （`app.js:532-538`）。
-- 朗读进度：浮动卡三键（收起到侧边 ⤢ / 暂停 ⏸ / 停止 ⏹，`reader-tts.js:64-79`），
+- 朗读进度：浮动卡三键（收起到侧边 `nrIcon('icon:maximize-2')` / 暂停 `nrIcon('icon:pause')` / 停止 `nrIcon('icon:square')`，`reader-tts.js:64-79`），
   `data-state="loading"` 时切换键 `nrPulse` 呼吸（`css:679-681`）；无进度百分比，只有句级高亮。
 - 取消：朗读有停止；**章节加载无取消**（靠 `_token` 自增作废过期响应，`reader-engine.js:95-99`）。
 
@@ -273,14 +273,14 @@ grep（限 `document-reader.css`）：
 
 | 态 | 样式类 | 文案 |
 | --- | --- | --- |
-| 书架空 | `.nr-empty`（`app-shelf.js:29-36`） | `📚 这个分类还是空的` + `把 .txt / .md / .epub 放进文档目录` |
-| 搜索无果 | 同上 | `🔍 没有匹配的文档` + `换个关键词试试` |
-| 书签空 | 同上（`app-shelf.js:63-68`） | `⭐ 还没有书签` + `在正文里选中一句话 → 右键 → 添加书签` |
-| 目录筛选无果 | 同上（`app-toc.js:43`） | `🔍 没有匹配的章节`（无 hint） |
+| 书架空 | `.nr-empty`（`app-shelf.js:29-36`） | `icon:book-open` + 「这个分类还是空的」；提示行「把 .txt / .md / .epub 放进文档目录」 |
+| 搜索无果 | 同上 | `icon:search` + 「没有匹配的文档」；提示行「换个关键词试试」 |
+| 书签空 | 同上（`app-shelf.js:63-68`） | `icon:star` + 「还没有书签」；提示行「在正文里选中一句话 → 右键 → 添加书签」 |
+| 目录筛选无果 | 同上（`app-toc.js:43`） | `icon:search` + 「没有匹配的章节」（无 hint） |
 | 加载中 | `#document-loading` + `.spinner` | `加载中...`（`app.js:577`） |
 | 非渲染格式 | `.nr-empty` | `该格式不在阅读器内渲染，可交给系统默认程序打开`（`app.js:508`） |
 | 朗读引擎不可用 | `.nr-voice-hint` | `引擎状态不可用（后端 tts_status 调用失败）`（`reader-voice-page.js:250`） |
-| 音色兜底 | `.nr-voice-hint` | `⚠️ 读不到 edge 端点，下面是内置的常用音色（非完整列表）`（`:263`） |
+| 音色兜底 | `.nr-voice-hint` | `icon:triangle-alert` + 「读不到 edge 端点，下面是内置的常用音色（非完整列表）」（`:263`） |
 
 ---
 

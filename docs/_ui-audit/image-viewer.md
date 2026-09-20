@@ -67,7 +67,7 @@ body
    │  │  ├─ button.obx-nav-item.iv-nav-item ×3（全部相册/时间线/最近添加）  (index.html:21-23)
    │  │  └─ #iv-extensions      renderExtensions 容器  (index.html:24)
    │  ├─ .iv-nav-footer         padding 8px 10px; border-top  (css:209-210)
-   │  │  └─ button.obx-nav-item.iv-nav-item（＋新建相册，width:100%）  (index.html:27)
+   │  │  └─ button.obx-nav-item.iv-nav-item（新建相册入口 <svg class="obx-icon"><use href="#plus"></use></svg>新建相册，width:100%）  (index.html:27)
    │  └─ .iv-sidebar-footer#iv-stats   padding 11px 14px; 11px  (css:50)
    └─ .view-body                (index.html:32)  ← 插件重定义：position:relative (css:368-370)
       ├─ .view-toolbar.iv-toolbar      48px（壳）; gap:12px  (css:53)
@@ -206,7 +206,7 @@ grep（限 `image-viewer.css`）：
 
 ### 5.1 设置入口与保存反馈
 
-单入口：工具栏 `⚙ 设置`（`index.html:55`）→ 自绘弹窗（`app.js:202` → `app-settings.js:15`）。
+单入口：工具栏设置入口（静态 HTML `<svg class="obx-icon"><use href="#settings"></use></svg> 设置`，`index.html:55`）→ 自绘弹窗（`app.js:202` → `app-settings.js:15`）。
 保存按钮 `保存并刷新`（`index.html:168`）→ `saveSettings()`：
 
 - 作用域分支：勾选「仅应用于当前文件夹」时写 `Bridge.call('save_settings', this.currentPath, {...})`
@@ -272,10 +272,10 @@ grep（限 `image-viewer.css`）：
 
 | 态 | 样式类 | 文案 |
 | --- | --- | --- |
-| 无相册 | `.iv-empty`（`app-albums.js:93`） | `🖼️ 暂无相册` + `点击左侧「新建相册」开始整理` / `换个关键词试试` |
-| 相册无图片 | `.iv-empty`（`app-grid.js:50`） | `🖼️ 此相册暂无图片`（无 hint） |
-| 加载失败 | `.iv-empty`（`app-grid.js:62`） | `⚠️ 图片加载失败` |
-| 搜索无果 | `.iv-empty`（`app-grid.js:200`） | `🔍 没有匹配的图片` + `换个关键词试试` |
+| 无相册 | `.iv-empty`（`app-albums.js:93`） | `icon:images` + 「暂无相册」；提示行「点击左侧「新建相册」开始整理」/「换个关键词试试」 |
+| 相册无图片 | `.iv-empty`（`app-grid.js:50`） | `icon:images` + 「此相册暂无图片」（无 hint） |
+| 加载失败 | `.iv-empty`（`app-grid.js:62`） | `icon:triangle-alert` + 「图片加载失败」 |
+| 搜索无果 | `.iv-empty`（`app-grid.js:200`） | `icon:search-x` + 「没有匹配的图片」；提示行「换个关键词试试」 |
 | 加载中 | 壳 `.loading`（`app-grid.js:18`） | `图片加载中…` |
 | 重建中 | `.rebuild-progress-*` | `正在扫描并生成缩略图，请稍候…` / `正在处理：<文件名>`（`app-refresh.js:125`） |
 | 侧栏统计加载 | `.iv-sidebar-footer` | `正在读取…`（`index.html:29`），完成后 `N 个相册 · M 张图片`（`app-nav.js:147`） |
@@ -307,7 +307,7 @@ grep（限 `image-viewer.css`）：
    （`app.js:88-119`，`app-grid.js:206-238`）。解决的问题：常驻插件切到后台后页面不可见，
    继续 `setInterval` 换图纯属浪费；但用户切回来又希望接着看。
 6. **缩略图失败双重兜底**：先 `?r=<时间戳>` 重试一次（绕过浏览器缓存与后端负缓存），
-   再失败才换成 `🖼️` 占位（`app-albums.js:157`、`app-grid.js:111-120`），并配 `dataset.r` 防重入。
+   再失败才换成 `Icons.html('icon:image-off')` 占位（`app-albums.js:157`、`app-grid.js:111-120`），并配 `dataset.r` 防重入。
    解决的问题：下载中断/替换后残留的坏缩略图会让整块区域永久空白。
 7. **重建进度卡「隐藏 ≠ 取消」**：`—` 只隐藏卡片、任务继续；取消走独立按钮并要求确认
    （`app-refresh.js:42-52,147-159`）。解决的问题：长任务需要一个「先让开界面」的出口，

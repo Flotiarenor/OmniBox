@@ -15,7 +15,7 @@
 | `plugins/image-cleaner/frontend/js/app.js` | 265 | 单个 `class ImageCleaner`：扫描（带缓存）、分页显示、勾选、删除 |
 
 - **页面形态**：**内嵌 companion**，单视图、无侧栏、无路由。宿主 `image-viewer` 的左侧栏由 `renderExtensions` 渲染出扩展入口（`plugins/image-viewer/frontend/js/app.js:141-151`），点击走 `options.onEmbed`（`:143`）→ `openExtensionView(ext)`（`:157-165`）把 `ext.embedUrl` 塞进 `#extension-frame`。
-- **注册声明**（后端）：`plugins/image-cleaner/backend/main.py:77-89` —— `host: 'image-viewer'`、`embedUrl: '/plugins/image-cleaner/frontend/index.html'`、`placement: 'sidebar'`、`section: '相册清理'`、`icon: '🧹'`。宿主同时传了 `title: '相册清理'`（`image-viewer/frontend/js/app.js:142`），与 `section` 同名。
+- **注册声明**（后端）：`plugins/image-cleaner/backend/main.py:77-89` —— `host: 'image-viewer'`、`embedUrl: '/plugins/image-cleaner/frontend/index.html'`、`placement: 'sidebar'`、`section: '相册清理'`、`icon: 'icon:brush-cleaning'`。宿主同时传了 `title: '相册清理'`（`image-viewer/frontend/js/app.js:142`），与 `section` 同名。
 - **JS 模块划分**：无模块拆分，单文件单类；依赖壳全局 `Bridge` / `Toast` / `confirmDialog` / `createLightbox` / `Utils`（`app.js:14/33/218/221/253`）。
 - **是否使用 Shell 布局类**：**部分使用**——`.view-body`(`index.html:10`)、`.view-toolbar`(`:11`)、`.toolbar-group`(`:12/16`)、`.view-content`(`:21`)、`.btn/.btn-sm/.btn-danger`(`:17/23/24/32/33`)、`.active`(`:23`)、`.obx-scroll`(`:21`)。**未使用** `.view-sub-sidebar` / `.sub-sidebar-header` / `.sub-sidebar-footer` / `.pagination-bar` / `.modal` / `.empty-state` / `.obx-nav-item` / 任何 `.obx-anim-*`。
 - **与壳的注入顺序**：壳把 `variables.css / base.css / effects.css / base.js / motion.js` 注入到 `</head>` **之前**（`shell/backend/file_server.py:797-798`），插件自己的 `<link href="image-cleaner.css">`(`index.html:7`) 排在其后，同优先级规则由插件胜出。
@@ -99,7 +99,7 @@
 
 | 能力 | Shell 提供 | 插件实现 | 差异 |
 | --- | --- | --- | --- |
-| 空状态 | `.empty-state`（`base.css:428-431`：`display:flex; align-items:center; justify-content:center; height:100%; min-height:300px; font-size:16px`） | `.cleaner-empty`(`:141-145`) | 插件是 `text-align:center` 块 + `padding:48px 16px`，**不带 `min-height:300px`、不垂直居中、字号继承 13px**；文案带 emoji（`app.js:91/83`），壳的 `.empty-state` 无图标约定 |
+| 空状态 | `.empty-state`（`base.css:428-431`：`display:flex; align-items:center; justify-content:center; height:100%; min-height:300px; font-size:16px`） | `.cleaner-empty`(`:141-145`) | 插件是 `text-align:center` 块 + `padding:48px 16px`，**不带 `min-height:300px`、不垂直居中、字号继承 13px**；三处文案现已改用壳的 `.empty-state`，图标走 `.empty-state-icon` + 图标集（`app.js:92` 的 `#triangle-alert`、`:104` 的 `#sparkles`） |
 | tab / 选中态按钮 | `.btn.active`（`base.css:34`：`background:var(--accent); color:var(--text-on-accent); border-color:var(--accent)`） | `.cleaner-tabs .btn.active`(`:62-66`) | 视觉等价，唯一差异是 `border-color: transparent`（壳用 `--accent` 描边）——**同优先级下插件注入在后所以插件胜**，但只是为了改一根描边就整条重写 |
 | 底部统计条 | `.sub-sidebar-footer`（`base.css:270-276`：`padding:10px 16px; font-size:12px; color:var(--text-secondary); border-top:1px solid var(--border)`） | `.cleaner-footer`(`:74-86`) + `.cleaner-selected`(`:82`) | 数值高度重合（10px 16px / border-top / `--text-secondary` 但字号 13 而非 12），却是横条 + 右对齐按钮组，**语义不同不能直接换**；真实缺口是「壳没有主区底部操作条」这一类 |
 | 内容区滚动容器 | `.view-content`（`base.css:277-282`） | `.cleaner-content` 又写了一遍 `flex:1; min-height:0; overflow-y:auto; padding:16px`(`:50-55`) | 纯重复（值相同），风险是将来壳改 `.view-content` 的内边距时插件这一份会顶掉 |
@@ -114,7 +114,7 @@
 - **错误提示方式**：
   - 壳 `Toast.error`：`app.js:226`「部分删除失败: …」、`:246`「删除请求失败」
   - 壳 `Toast.warning`：`:218`「请先勾选要删除的图片」（**未选任何图时点删除**）
-  - 结果区内联错误：`:83`「⚠️ 扫描失败，请确认 image-viewer 已加载且相册目录可访问」，`:54` 扫描中改文案
+  - 结果区内联错误：`:83` `icon:triangle-alert` + 「扫描失败，请确认 image-viewer 已加载且相册目录可访问」，`:54` 扫描中改文案
   - `console.error(e)` 只记日志（`:82`）；`updateStatus()` 静默兜底（`:37-40`）
   - 注意 `:83` 的错误文案**只在 `runScan` 的 catch 里**；`get_cached_scan` 失败被 `try/catch` 吞掉后回退到真扫（`:63-71`），因此「image-viewer 未加载」时用户看到的是这条扫描失败文案
 - **选择模型**：**复选框多选**（`input[type=checkbox][data-file]`，`app.js:108-112/154-160`），三种批量操作：
@@ -126,8 +126,8 @@
 - **长任务进度与取消**：扫描是唯一长任务，**只有文本「扫描中…请稍候」(`app.js:54`)，无百分比、无取消按钮**；`#btn-rescan` 在扫描期间**不禁用**（`_bind()` 只挂 click，`:22`），连点会并发发请求。缩略图用 `loading="lazy"`(`:110`) 铺开，`onerror` 直接 `display:none` 隐藏破图。
 - **空态/加载态/错误态的文案与样式类**：
   - 加载：`.cleaner-empty` +「扫描中…请稍候」（`app.js:54`）；工具栏 `#cleaner-root` 初值「读取中…」(`index.html:14`)、失败后固定「默认相册目录」(`app.js:38/35`)
-  - 空态：`.cleaner-empty` +「✨ 未发现完全重复图片 / 未发现相似图片」（`app.js:91`）
-  - 错误态：`.cleaner-empty` +「⚠️ 扫描失败，…」（`app.js:83`）；**没有独立的错误配色**（沿用空态的 `--text-secondary` 灰）
+  - 空态：`.cleaner-empty` + `icon:sparkles` + 「未发现完全重复图片 / 未发现相似图片」（`app.js:91`）
+  - 错误态：`.cleaner-empty` + `icon:triangle-alert` + 「扫描失败，…」（`app.js:83`）；**没有独立的错误配色**（沿用空态的 `--text-secondary` 灰）
   - 计数：`#cleaner-scanned`「已扫描 N 张」(`:79`)、`#cleaner-selected`「已选 N 张」(`:212`)—— 每次重扫都重置为「已选 0 张」(`:56`)
 
 ## 6. 特色设计（值得吸收）
@@ -159,7 +159,7 @@
 | 1 | **后端有设置项、前端无入口**，`createSettingsForm` / `openSettingsModal` 完全未接入 | 后端 `plugins/image-cleaner/backend/main.py:23-27`（`threshold` range 0-16, 默认 8）；前端 grep `settings|threshold` 零命中；壳能力见 `base.js:419/566`、`base.css:181-206` | 1 个设置项 / 相似图片判定精度完全不可调；统一 UI 时这是「补入口」而不是「改样式」 |
 | 2 | **重复实现 `.view-content`**（同值覆盖，且带更窄的选择器） | `image-cleaner.css:50-55` vs `base.css:277-282` | 1 个容器 / 内容区内边距与滚动；壳改内边距时插件这份会顶掉 |
 | 3 | **重写 `.btn.active` 只为改描边** | `image-cleaner.css:62-66` vs `base.css:34` | 2 个 tab / 选中态；统一按钮体系时这 5 行必须一起删，否则 tab 选中态与其它插件不一致 |
-| 4 | **空状态自绘且语义/量级与壳不同** | `.cleaner-empty`(`:141-145`) vs `.empty-state`(`base.css:428-431`) | 3 处文案共用同一个类（加载/空/错误，`app.js:54/83/91`）；错误态**没有独立类**，红色语义只能靠 emoji |
+| 4 | **空状态已收敛到壳**（本条为审计时的差异，现已消除） | 壳 `.empty-state`（`base.css:428-431`）；插件原 `.cleaner-empty`(`:141-145`) 已删除 | 3 处文案改用壳结构（加载 `app.js:58-60`、空 `:102-108`、错误 `:90-94`）；错误态用 `.empty-state--error` + `#triangle-alert` 图标表达 |
 | 5 | **无骨架屏、无真进度、无取消**：扫描期间 UI 只有一行文字，`#btn-rescan` 不禁用、不防并发 | `app.js:22`（只挂 click，无 disabled 逻辑）、`:54`、壳 `.obx-skeleton`(`effects.css:118-131`)未使用 | 1 个长任务 / 大相册扫描期间：用户可在扫描中反复点「重新扫描」，且没有任何「还要多久」的信号 |
 | 6 | **分页能力未采用，改「显示更多」** | `app.js:7-8`（`pageSize=20`、`visibleCount=20`）、`:95-97/206-209` vs 壳 `.pagination-bar`(`base.css:81-101`)、`createPagination` | 1 处 / 结果集 >20 组时；`#cleaner-more` 按钮用 id 查询（`app.js:162`），重渲染后重复 id 由 `innerHTML` 整体替换保证唯一，但见下条 |
 | 7 | **「显示更多」按钮每次重渲染都会重新绑定，且查询方式依赖 id** | `app.js:95-97`（拼 `id="cleaner-more"`）与 `:162-163`（`box.querySelector('#cleaner-more')`） | 1 个按钮 / 无功能影响；但这是「模板字符串 + id 查询」的组合，与壳组件（返回实例、自带 render）风格不同 |

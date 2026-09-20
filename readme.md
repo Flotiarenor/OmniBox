@@ -4,7 +4,7 @@
 
 ---
 
-## ✨ 特性
+## 特性
 
 - **极简核心**：主程序仅提供窗口容器、插件管理与文件服务的路径安全，体积小巧。
 - **完全解耦**：插件与主程序独立开发、独立构建，技术栈自由（前端可用 Vue、React 或纯 HTML）。
@@ -19,16 +19,16 @@
 
 ---
 
-## 🏗️ 架构概览
+## 架构概览
 
 ```mermaid
 graph TB
-    subgraph Container["🖥️ PyWebView 桌面容器"]
+    subgraph Container["PyWebView 桌面容器"]
         subgraph Shell["前端壳 — Vue 3 应用壳 (Shell)"]
             Nav["导航栏"]
             Iframe["<iframe> 插件容器"]
         end
-        Bridge["🔗 PyWebView JS Bridge"]
+        Bridge["PyWebView JS Bridge"]
         subgraph Backend["后端壳 — Python 后端壳"]
             PM["PluginManager"]
             Flask["Flask 服务器"]
@@ -65,12 +65,12 @@ Shell 在 `base.css` 中统一注入以下布局类，**所有插件应直接使
 ### 设置页
 
 - 左侧分类 + 右侧面板：外观（主题/圆角/导航栏宽度/动效/13 项 CSS 变量颜色）、启动与窗口（首屏页面、启动全屏）、数据与缓存（数据目录、缩略图缓存占用与清空）、诊断（日志级别与日志目录、插件加载失败清单）、插件（已加载插件清单）、关于（版本/许可/项目主页）。
-- 插件设置项在插件页面里通过「⚙ 设置」打开：壳的 `openSettingsModal()` 按该插件的 `settings_schema` 渲染表单。
+- 插件设置项在插件页面里通过工具栏的「设置」按钮打开：壳的 `openSettingsModal()` 按该插件的 `settings_schema` 渲染表单。
 
 ### 外观主题
 
 - 通过 `document.documentElement` 上的 `data-theme="dark"` / `data-theme="light"` 属性切换主题。
-- 设置页的 🎨 **外观**段提供浅色/深色切换 + 13 项 CSS 变量颜色自定义（下拉框选择预设色）、界面圆角、导航栏宽度与动效开关。
+- 设置页的「外观」段（`icon:palette`）提供浅色/深色切换 + 13 项 CSS 变量颜色自定义（下拉框选择预设色）、界面圆角、导航栏宽度与动效开关。
 - 自定义颜色通过 `data-custom-colors` 属性 **自动同步到所有插件 iframe**，插件前端的 CSS 变量实时更新。
 
 ### 全屏联动
@@ -79,7 +79,7 @@ Shell 在 `base.css` 中统一注入以下布局类，**所有插件应直接使
 
 ---
 
-## 🚀 快速开始
+## 快速开始
 
 ### 环境要求
 
@@ -170,7 +170,7 @@ directories:
 
 插件设置自动保存到 `.config/plugins/` 目录，修改后无需重启应用即可生效。
 
-## 🧩 插件开发
+## 插件开发
 
 完整的插件开发指南请参阅 [插件开发文档](./docs/plugin-guide.md)。
 该文档包含插件结构、`manifest.json` 规范、后端与前端开发示例、调试技巧以及最佳实践。
@@ -185,7 +185,7 @@ Pixiv 同步插件设计见 [pixiv-sync 设计文档](./docs/pixiv-sync-design.m
 
 ---
 
-## 📦 打包发布
+## 打包发布
 
 ### Windows
 
@@ -212,7 +212,7 @@ bash docs/Releases/build-release.sh
 
 ---
 
-## ✅ 持续集成与发布
+## 持续集成与发布
 
 仓库已配置 GitHub Actions，推 tag 即可自动产出双平台安装包：
 
@@ -242,7 +242,7 @@ tag 必须写成 `v<version>`（不一致时发布流程会在第一步失败）
 
 ---
 
-## 📄 许可证
+## 许可证
 
 本项目基于 **Apache License 2.0** 开源。详见 [LICENSE](./LICENSE) 文件。
 
@@ -264,13 +264,13 @@ limitations under the License.
 
 ---
 
-## 🤝 贡献
+## 贡献
 
 欢迎提交 Issue 和 Pull Request！请确保遵循项目的代码规范，并通过现有测试。
 
 ---
 
-## 📧 联系方式
+## 联系方式
 
 - 项目主页：[https://github.com/Flotiarenor/OmniBox](https://github.com/Flotiarenor/OmniBox)
 - 问题反馈：[Issues](https://github.com/Flotiarenor/OmniBox/issues)

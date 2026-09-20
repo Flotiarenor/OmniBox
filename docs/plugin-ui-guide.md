@@ -62,7 +62,8 @@
     注入顺序；不用 `!important` 与 `*` 选择器。
 12. **图标只用壳的图标集**：`<svg class="obx-icon"><use href="#名字"></use></svg>` ——
     引用**必须是同文档的 `#名字`**（写外部文件路径在 WebView2 里不渲染），
-    且不用图形化 emoji（🖼🔄🗑🎧 这类）。跨平台字形与字重不一致正是"不像一个软件"的来源之一，
+    且不用图形化 emoji 与单独承担图标职能的符号字形（星、心、叉、齿轮、播放、暂停等，完整码位见 `UI_SYMBOL_GLYPH_RE`）：
+    它们由系统字体决定字形与字重，正是"不像一个软件"的来源之一，
     详见本节「补充约定」的第一条与 §9.7。
 
 ---
@@ -321,7 +322,7 @@ background: var(--mp-glass, var(--bg-surface));
 | 组件 | 壳提供的入口 | 规范用法 | 现状 |
 | --- | --- | --- | --- |
 | 按钮 | `base.css:13-36` `.btn` / `-primary` / `-danger` / `-danger-solid` / `-sm` / `.active` | 工具条 `.btn`/`.btn-sm`；主操作 `-primary`；破坏性 `-danger` 且二次确认 | 全部插件在用 |
-| 图标 | `base.css` 的 `.obx-icon`（+ `.obx-icon-lg`）、图标集 `res/icons/` | 只用图标集，不用图形化 emoji；尺寸走 `1em`、颜色走 `currentColor`，详见本节「补充约定」第一条 | 壳与 7 个插件均已迁移（含壳自带的 `base.js` / `folder-picker.js` / 状态页）；emoji 门禁已启用 |
+| 图标 | `base.css` 的 `.obx-icon`（+ `.obx-icon-lg`）、图标集 `res/icons/` | 只用图标集，不用图形化 emoji 与符号字形；尺寸走 `1em`、颜色走 `currentColor`，详见本节「补充约定」第一条 | 壳与 8 个插件的前后端均已迁移（含壳自带的 `base.js` / `folder-picker.js` / 状态页）；emoji 与符号字形门禁已启用 |
 | 分组切换 | 无专用类 | `.btn.btn-sm.active`（image-cleaner 的 tab）或 `.obx-nav-item` | image-cleaner 用前者 |
 | 搜索框 | 两种：单输入框用 `.search-input`（`max-width:400px`）；带图标/清除按钮的搜索框用 `.search-field > .search-field-icon + input + .search-field-clear` | 结构与外观**只有这一份实现**：胶囊外框 + 图标在流内 + 输入无边框，聚焦用 `:focus-within` 描边外框；宽度走 `--obx-search-width`（窄窗口由壳统一收窄）。插件不写搜索样式，**也不给容器再加插件类名** | 已统一：四个插件（document-reader / image-viewer / manga-library / media-player）现在标记完全同构，插件侧搜索样式删净（原先共 4 套类名、7 档宽度、1 处玻璃底、1 处边框重写）。形态取自 document-reader 的紧凑胶囊版本 |
 | 侧栏导航 | `base.css:290-347` `.obx-nav-item` + `--obx-nav-*` | 结构/选中态都靠壳；只保留图标栏宽度等差异 | 5 个插件已用；image-cleaner/pixiv-sync 无 |
@@ -380,10 +381,11 @@ background: var(--mp-glass, var(--bg-surface));
     （`tests/test_shell_icons.py` 会比对两份规则）。这两份是 `/shell/*` 资源，
     改完必须 `npm --prefix shell/frontend run build`。
 
-- **插件图标怎么声明**：`manifest.icon` 写 `icon:<名字>`（如 `"icon": "images"`，名字取自
+- **插件图标怎么声明**：`manifest.icon` 写 `icon:<名字>`（如 `"icon": "icon:images"`，名字取自
   Lucide 的 kebab-case 图标名），
-  壳的 `<Icon>` 组件据此渲染；写成 emoji 或任意文本时按文本渲染，
-  第三方/旧插件不改也不会坏。缺省值是 `icon:package`（`plugin_manager.py`）。
+  壳的 `<Icon>` 组件据此渲染；缺省值是 `icon:package`（`plugin_manager.py`）。
+  写成 emoji 或任意文本时 `<Icon>` 仍按文本渲染（第三方/旧插件不改也不会坏），
+  但 `tools/check_plugins.py` 已把 manifest 与后端扩展/位置声明里的非 `icon:` 值判为 error。
   壳侧栏与设置页见 `shell/frontend/src/components/Icon.vue`。
 
 - **新增一个图标**：
@@ -402,9 +404,12 @@ background: var(--mp-glass, var(--bg-surface));
   `venv/Scripts/python tests/debug_shell_icons_ui.py` 会断言每个图标的
   `getBBox()` 非零（外部引用会让它恒为 0），Chrome 下即可跑出结论。
 
-- **emoji 门禁（已启用）**：`tools/check_plugins.py` 检查插件前端不得出现图形化 emoji
-  （区段见 `UI_EMOJI_RE`，**不含** `★☆❤✓✕⚠❮❯` 这类跨平台稳定的符号写法与数据语义符号）。
-  存量 137 处已在图标迁移中清空，因此规则已接入。
+- **emoji 与符号字形门禁（已启用）**：`tools/check_plugins.py` 检查插件前端
+  （`UI_EMOJI_RE` 的 emoji 区段 + `UI_SYMBOL_GLYPH_RE` 的星、心、叉、齿轮、播放、暂停等，
+  完整码位见该正则的注释）
+  与插件后端源码（含扩展/位置声明的 `icon` 值）都不得出现这些字形；
+  句内作分隔符的箭头 `→ ← ↔`、乘号 `×` 与中文标点不在拦截范围。
+  存量（前端 137 处 emoji + 19 处符号字形、后端 9 处 icon 声明）已在图标迁移中清空。
 
 - **拼字符串时取图标**：模板字符串、`innerHTML` 这类没法直接写 `<svg>` 的场景，
   用壳暴露的 `Icons.html('icon:名字', 附加类名)`：
@@ -431,7 +436,7 @@ background: var(--mp-glass, var(--bg-surface));
   `status()`。壳目前没有进度条类，pixiv-sync 自造了 `.psync-bar`、media-player 自造了
   播放/加载进度条——建议提取一个壳级进度类，让"同步""扫描""下载"这类长任务长得一样。
 - **后端有设置项、前端必须有入口**：image-cleaner 的 `threshold`（`backend/main.py:23-27`，
-  `type: range`）此前在前端没有任何入口，用户只能手改配置 —— 已补上工具栏的「⚙ 设置」。
+  `type: range`）此前在前端没有任何入口，用户只能手改配置 —— 已补上工具栏的设置入口。
   设了 schema 就要把它接上，否则等于没有这个设置。
 - **图标**：导航/按钮统一 Emoji 前缀（现状 8 个插件都这样，无需改）。
 - **标题行**：主标题 + 小字副标题两行结构（image-viewer 的 `.iv-view-title`/`.iv-view-sub`、
@@ -546,14 +551,14 @@ background: var(--mp-glass, var(--bg-surface));
 
 | 插件 | 形态 | 骨架 | `var(--` | `#hex` | `rgba(` | `.obx-*` | alert() | 生命周期 | 共享组件（调用数） |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| media-player | A + 沉浸 + ncm 原生视图 | ✅ | 246 | 22 | 46 | 16 | 0 | 完整（仅视觉） | Toast 49 / confirm 2 / settings 1 |
-| document-reader | A + 沉浸（阅读/朗读页） | ✅ | 120 | 19 | 4 | 14 | 0 | 仅 onDispose（无定时器） | Toast 40 / confirm 1 / settings 1 / menu 3 / tree 1 |
-| group-mesh | A | ✅ | 116 | 5 | 1 | 39 | 0 | 完整 | Toast 3 / confirm 3 / settings 2 |
-| image-viewer | A + 内嵌扩展 | ✅ | 95 | 8 | 12 | 17 | 0 | 完整 | Toast 31 / confirm 4 / settings 2 / menu 1 / tree 1 / pager 1 |
-| manga-library | A | ✅ | 84 | 7 | 7 | 19 | 0 | 完整（范本） | Toast 5 / confirm 1 / settings 1 |
-| image-cleaner | B（内嵌宿主面板） | ✅ | 16 | 3 | 3 | 1 | 0 | 无（不保活） | Toast 4 / confirm 1 / lightbox 2 |
-| pixiv-sync | B（内嵌，单页） | ✅ 已用壳骨架与 `.modal` | 31 | **0** | **0** | 1 | **0** | 完整（本轮补） | Toast 22 |
-| netease-music | 独立页，`hidden` 不可达 | ⚠️ 无骨架 | 9（全是真 token） | 0 | 0 | 0 | 0 | 无（不保活） | Toast 2 |
+| media-player | A + 沉浸 + ncm 原生视图 | 是 | 246 | 22 | 46 | 16 | 0 | 完整（仅视觉） | Toast 49 / confirm 2 / settings 1 |
+| document-reader | A + 沉浸（阅读/朗读页） | 是 | 120 | 19 | 4 | 14 | 0 | 仅 onDispose（无定时器） | Toast 40 / confirm 1 / settings 1 / menu 3 / tree 1 |
+| group-mesh | A | 是 | 116 | 5 | 1 | 39 | 0 | 完整 | Toast 3 / confirm 3 / settings 2 |
+| image-viewer | A + 内嵌扩展 | 是 | 95 | 8 | 12 | 17 | 0 | 完整 | Toast 31 / confirm 4 / settings 2 / menu 1 / tree 1 / pager 1 |
+| manga-library | A | 是 | 84 | 7 | 7 | 19 | 0 | 完整（范本） | Toast 5 / confirm 1 / settings 1 |
+| image-cleaner | B（内嵌宿主面板） | 是 | 16 | 3 | 3 | 1 | 0 | 无（不保活） | Toast 4 / confirm 1 / lightbox 2 |
+| pixiv-sync | B（内嵌，单页） | 是（已用壳骨架与 `.modal`） | 31 | **0** | **0** | 1 | **0** | 完整（本轮补） | Toast 22 |
+| netease-music | 独立页，`hidden` 不可达 | 部分（无骨架） | 9（全是真 token） | 0 | 0 | 0 | 0 | 无（不保活） | Toast 2 |
 
 > 上表为**本轮修复后**的实测值；修复前 pixiv-sync 是 **34 hex / 2 rgba / 22 alert / 0 真 token**，
 > image-viewer 多 1 处 `--text-danger`、manga-library 多 1 处 `--mp-glass`（见 §9.5）。
@@ -610,7 +615,7 @@ background: var(--mp-glass, var(--bg-surface));
 12. 键盘可达性缺失：image-viewer 全插件无键盘处理；自绘右键菜单不响应 Esc、
     不随 scroll/resize 重定位；image-viewer 内还有两套右键菜单（图片走壳的
     `createContextMenu`，相册走自绘 `.iv-context-menu`）。
-13. `image-cleaner` 的后端设置项 `threshold` 已接上工具栏「⚙ 设置」（本轮）；设置项有 schema
+13. `image-cleaner` 的后端设置项 `threshold` 已接上工具栏设置入口（本轮）；设置项有 schema
     就必须有前端入口，门禁暂未自动校验这一点。
 
 **P2（细节与规范）**
@@ -693,7 +698,7 @@ background: var(--mp-glass, var(--bg-surface));
 | 2 | **7 个插件迁移**到壳类并删除各自实现：`.iv-empty*`、`.nr-empty*`、`.ml-empty*`、`.mp-empty-state*`、`.cleaner-empty`、`.empty`（netease）、`.nl-empty`、`.psync-empty`（死类） | 全仓 `class="empty-state"` 约 57 处；`grep '(iv\|nr\|ml\|mp\|cleaner\|psync\|nl)-empty'` 只剩注释与 `.nr-empty-span` |
 | 3 | **内嵌页信号**：image-viewer 的扩展面板与 `folder-picker.js` 的提供方 iframe 在 URL 上追加 `?embed=1`；image-cleaner / pixiv-sync 在 `<head>` 里据此打上 `html.is-embedded`，把工具栏降级为普通操作行并隐藏与宿主重复的标题 | `app.js` 的 `_embedUrl()`、`folder-picker.js:207-215`、两个页面的 `<head>` 与 CSS（0,2,1 选择器） |
 | 4 | **静态门禁落地**：`tools/check_plugins.py` 新增前端 UI 契约检查（未定义变量与原生 `alert`/`confirm` 为 error，`!important` 与重复/越权关键帧为 warning），并在 `tests/test_plugin_spec.py` 补 `FrontendUiContractTests`（8 例） | 全仓运行：0 error、46 warning（40 基线 + 6 处 `!important`）；实装当天抓到 image-viewer 的 `obxRebuildSlide` 越权前缀，已改名 `iv-rebuild-slide` |
-| 5 | **设置入口与搜索框收敛**：pixiv-sync 删除手写设置表单（字段/默认值/范围钳制/保存逻辑），改走 `openSettingsModal`，后端 `download_dir` 由 `text` 改为 `directory`；image-cleaner 补上工具栏「⚙ 设置」（此前 `threshold` 无入口）；搜索框按 document-reader 的构造（胶囊外框 + 图标在流内 + 无聚焦变宽）做成壳的 `.search-field` 唯一实现，四个插件标记同构、插件侧样式删净，宽度走 `--obx-search-width`、窄窗口在壳里统一收窄；壳新增 `.empty-state--error`，用于扫描失败与歌单加载失败 | pixiv-sync 前端 521 → 441 行；插件侧共删约 130 行搜索样式（4 套类名 / 7 档宽度）；`grep` 确认无 `loadSettings/saveSettings/intSetting/set-token/btn-save` 与 `*-search` 规则残留；检查器 0 error |
+| 5 | **设置入口与搜索框收敛**：pixiv-sync 删除手写设置表单（字段/默认值/范围钳制/保存逻辑），改走 `openSettingsModal`，后端 `download_dir` 由 `text` 改为 `directory`；image-cleaner 补上工具栏设置入口（此前 `threshold` 无入口）；搜索框按 document-reader 的构造（胶囊外框 + 图标在流内 + 无聚焦变宽）做成壳的 `.search-field` 唯一实现，四个插件标记同构、插件侧样式删净，宽度走 `--obx-search-width`、窄窗口在壳里统一收窄；壳新增 `.empty-state--error`，用于扫描失败与歌单加载失败 | pixiv-sync 前端 521 → 441 行；插件侧共删约 130 行搜索样式（4 套类名 / 7 档宽度）；`grep` 确认无 `loadSettings/saveSettings/intSetting/set-token/btn-save` 与 `*-search` 规则残留；检查器 0 error |
 
 **保留的插件专属"空态"（不是漏改）**：
 
@@ -703,7 +708,7 @@ background: var(--mp-glass, var(--bg-surface));
   后者是覆盖在封面上的舞台提示（配色跟封面走，用 `--text-secondary` 会失去对比度）。
 - `.nr-empty-span`（document-reader）：只负责网格里的 `grid-column: 1 / -1`。
 
-### 9.7 图标统一（阶段 0/1 已实施，阶段 2/3 待做）
+### 9.7 图标统一（阶段 0~3 已完成）
 
 背景：图标此前全部是 emoji。全仓实测 **217 处、56 个不同码点、分布在 28 个插件文件**，
 另有壳页面 7 处与 8 个 `manifest.icon`。emoji 的字形/字重/基线由系统字体决定，
@@ -714,25 +719,36 @@ background: var(--mp-glass, var(--bg-surface));
 | # | 改动 | 落点 |
 | --- | --- | --- |
 | 1 | 图标源冻结：`tools/fetch_lucide_icons.py` 从 `lucide-static@1.47.0` 取图形，存入 `res/icons/icon_data.json`（只留图形本体 + viewBox + ISC 授权标记）；**运行时不依赖网络、`package.json` 不加任何依赖** | `res/icons/icon_data.json` |
-| 2 | sprite 生成：`tools/build_icons.py` 产出 `res/icons/icons.svg`（18 个 `<symbol>`），并校验"引用了未冻结的图标名"；`--check` 供门禁/测试比对生成物与源数据 | `tools/build_icons.py`、`res/icons/icons.svg` |
+| 2 | sprite 生成：`tools/build_icons.py` 产出 `res/icons/icons.svg`（当前 89 个 `<symbol>`），并校验"引用了未冻结的图标名"；`--check` 供门禁/测试比对生成物与源数据 | `tools/build_icons.py`、`res/icons/icons.svg` |
 | 3 | 共享样式：`.obx-icon`（1em / currentColor / 显式宽高）+ `.obx-icon-lg`，在 `base.css` 与 `shell.css` **各一份且逐值一致** | `base.css`、`shell.css` |
-| 4 | 壳页面迁移：侧栏 8 个插件图标 + 「设置」、设置页 6 个分区图标（左栏 + 标题栏）、主题开关 ☀️🌙 | `App.vue`、`SettingsView.vue`、`components/Icon.vue` |
-| 5 | manifest 与后端：8 个插件 `icon` 改为 `icon:<名字>`；后端缺省值 `📦` → `icon:package`，并同步 `RUNTIME_FIELD_READERS` 登记表 | `plugins/*/manifest.json`、`plugin_manager.py` |
+| 4 | 壳页面迁移：侧栏 8 个插件图标 + 「设置」、设置页 6 个分区图标（左栏 + 标题栏）、主题开关 | `App.vue`、`SettingsView.vue`、`components/Icon.vue` |
+| 5 | manifest 与后端：8 个插件 `icon` 改为 `icon:<名字>`；后端缺省值改为 `icon:package`，并同步 `RUNTIME_FIELD_READERS` 登记表 | `plugins/*/manifest.json`、`plugin_manager.py` |
 | 6 | 兼容性：`Icon.vue` 对非 `icon:` 前缀的值仍按文本渲染，第三方/旧插件不改也不坏 | `components/Icon.vue` |
-| 7 | 可验证项：`tests/test_shell_icons.py`（16 例，静态）+ `tests/debug_shell_icons_ui.py`（真渲染：尺寸、`currentColor` 取色、sprite 可取、`<use>` 名均可解析） | `tests/` |
+| 7 | 可验证项：`tests/test_shell_icons.py`（静态，含图标门禁策略用例）+ `tests/debug_shell_icons_ui.py`（真渲染：尺寸、`currentColor` 取色、sprite 可取、`<use>` 名均可解析） | `tests/` |
 
 验收记录（`tests/debug_shell_icons_ui.py`）：侧栏 6 项 / 6 图标均为 18×18，选中项图标色
 `rgb(255,255,255)`、未选中 `rgb(184,196,208)`；设置页 6 个分区图标 + 标题栏 + 主题开关，
-选中项图标色与文字色同为 `rgb(47,129,247)`；sprite HTTP 200、18 个 symbol、含
+选中项图标色与文字色同为 `rgb(47,129,247)`；sprite HTTP 200、symbol 数 18（阶段 0/1 实测时；当前 89）、含
 `stroke="currentColor"`；控制台无报错。
 
-**待做（阶段 3）**
+**已实施（阶段 2 + 3）**
 
-- 插件侧 137 处图形化 emoji 已全部迁移（本阶段完成）。剩下的是**符号类**写法：
-  `★☆❤✓✕⚠❮❯` 与箭头 —— 它们跨平台字形稳定，且部分是数据语义（收藏星、评级心），
-  emoji 门禁刻意不拦。要不要换成图标是观感取舍，不是一致性缺陷。
-- `shell/frontend/public/shell/base.js` 里的 Toast 前缀（✓ / ✕ / ⚠）是 CSS
-  `content` 生成的符号，不是 emoji 字面量，同样不在门禁范围内。
+- **符号字形迁移**：插件前端与后端里单独承担图标职能的符号（星、心、叉、齿轮、播放、暂停、
+  停止、上一曲/下一曲、展开、闪电、铅笔、环形箭头、加号、下载）全部改为图标集：8 个插件的 `frontend/`（静态标记写 `<svg class="obx-icon"><use href="#名字">`，
+  拼字符串处走 `Icons.html('icon:名字')`）与 4 个插件后端的扩展/位置声明
+  （`group-mesh`= `icon:network`、`image-cleaner`= `icon:brush-cleaning`、
+  `netease-music`= `icon:music` / `icon:list-music` / `icon:heart` / `icon:library` / `icon:user`、
+  `pixiv-sync`= `icon:palette`）。
+- **壳侧**：`Icon.vue` 的缺省值改为 `icon:package`；`base.js` 的目录树折叠箭头与灯箱
+  左/右/关闭按钮、`folder-picker.js` 的「上级」与移除按钮改为图标；Toast 前缀
+  （原来由 CSS `content` 生成符号）改为图标元素并补 `.toast-icon` 配色规则；
+  `SettingsView.vue` 的分组箭头改用 `<Icon>`，`StatusView.vue` 的步骤序号改为纯文本。
+- **门禁**：`tools/check_plugins.py` 新增符号字形检查与后端 `icon` 声明检查（前后端同一套字形表）；
+  `tools/build_icons.py` 的引用扫描扩到插件前端/后端、`shell/frontend/public/shell/*.js` 与
+  `shell/frontend/src/**/*.ts`，因此"引用了未冻结的图标名"覆盖全部引用点
+  （实装当天抓到 `document-reader/frontend/index.html` 的 `#list` 未冻结）。
+- **兼容性保留**：`Icon.vue` 与 `base.js` 的 `Utils.iconHtml` 对非 `icon:` 的值仍按文本渲染，
+  第三方/旧插件不改也不会坏。
 - 新增图标后要在窗口里看一次（不是只看浏览器）：
   `venv/Scripts/python tests/debug_shell_icons_ui.py` 会断言 `getBBox()` 非零。
 

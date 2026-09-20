@@ -83,7 +83,7 @@
 | 2 | 弹窗 | `.modal/.modal-box/.modal-body/.modal-footer`（`base.css:159-179`），`z-index:1500`、`width:400px`、`radius:var(--radius)`=6px，遮罩 `pointerdown` 关闭（`base.js:602`） | `.psync-modal/.box`（`index.html:45-59`） | `z-index:999`（低于壳弹窗 1500、Toast 3000，`base.css:162/210`）、`width:min(560px,92vw)`、`radius:10px`、`max-height:86vh`、无遮罩点击关闭、无 Esc 关闭；显隐靠内联 `style.display`（`:388`、`:406`、`:414`） |
 | 3 | 空状态 | `.empty-state`（`base.css:428-431`：flex 居中、`min-height:300px`、16px） | `.psync-empty`（`index.html:42-43`：12px、`padding:20px 0`） | 插件类是**死代码**——grep `psync-empty` 只命中定义行 `:42`，JS 从未使用；页面「无数据」实际显示为 `已下载 0 张` / `画师名单: 全部` 之类的文本 |
 | 4 | Toast 通知 | `.toast*`（`base.css:208-234`）+ `Toast`（`base.js:362-391`，4 种类型、2.6s 自动消失） | 0 处使用；改用原生 `alert()` **22 处**（`:289,295,315,319,361,363,367,379,384,390,402,405,410,422,423,428,433,434,439,444,445,448`） | 原生弹窗阻塞、无类型区分、无自动消失、样式由 OS 决定、切走/最小化时提示丢失 |
-| 5 | 确认对话框 | `confirmDialog(message, options)`（`base.js:394-417`，可 `danger` 样式） | 0 处使用 | 破坏性操作 `#btn-retry-failed`（`:102`「🗑 重试失败作品」）点击即执行（`:441-449`），无二次确认 |
+| 5 | 确认对话框 | `confirmDialog(message, options)`（`base.js:394-417`，可 `danger` 样式） | 0 处使用 | 破坏性操作 `#btn-retry-failed`（`:102` `icon:trash-2` + 「重试失败作品」）点击即执行（`:441-449`），无二次确认 |
 | 6 | 进度条 | 无对应组件（`base.css`/`effects.css` 都没有） | `.psync-bar`（`:20-24`） | 自建属合理；但颜色/圆角未 token 化，也没有用 `.obx-skeleton`（`effects.css:118-131`）做加载骨架 |
 | 7 | 徽标/状态点 | 无 badge 组件 | `.dot`（`:14-17`） | 自建属合理；三色硬编码 |
 | 8 | 未使用的壳能力 | `createCardGrid`（`base.js:915`）、`createPagination`（`:845`）、`createContextMenu`（`:886`）、`createTree`（`:631`）、`createLightbox`（`:708`）、`Utils.escapeHtml/debounce/formatFileSize`（`base.js:321-359`）、`Motion`（`motion.js`） | — | 全部 0 次引用；`effects.css` 里只有 `.obx-scroll` 被用到，`.obx-anim-*`/`.obx-glass`/`.obx-card-lift`/`.obx-stagger` 全部未使用 |
@@ -91,9 +91,9 @@
 ## 5. 交互约定
 
 - **设置入口**：页面内嵌面板（`index.html:116-165`），不是弹窗、不是路由、不是壳的 `openSettingsModal`。保存按钮 `#btn-save`（`:162`）→ `saveSettings()`（`:347-369`）→ `Bridge.call('save_settings', values)`（`:359`）；失败 `alert(r.error || '保存失败')`（`:361`），成功 `alert('设置已保存')` + `refreshStatus()`（`:363-364`）。数字项统一走 `intSetting()` 夹取（`:339-345`）。
-- **其它设置入口**：`📂 画师名单文件`（`:161`）→ `Bridge.call('open_config')`（`:378-380`，后端 `backend/main.py:542` 打开系统文件管理器）；`🔑 获取 Token`（`:160`）→ `start_oauth`（`:383`）后自建 OAuth 引导弹窗（`:381-415`），完成走 `finish_oauth`（`:403`）。
+- **其它设置入口**：`icon:folder-open` + 「画师名单文件」（`:161`）→ `Bridge.call('open_config')`（`:378-380`，后端 `backend/main.py:542` 打开系统文件管理器）；`icon:key-round` + 「获取 Token」（`:160`）→ `start_oauth`（`:383`）后自建 OAuth 引导弹窗（`:381-415`），完成走 `finish_oauth`（`:403`）。
 - **保存后的反馈**：仅 `alert`（`:363`、`:405`），不重载、不 Toast。
-- **错误提示方式**：22 处 `alert`；桥不可用时把 `#st-last` 文本改成「Bridge 不可用」（`:245`），无错误样式类；任务错误 `$('st-last').textContent = '错误: ' + task.error`（`:273`）；限流冷却用 `#psync-cooldown`（`:170`，内联 `color:#d33`）+ `⏳ Pixiv 限流冷却参考：mm:ss`（`:213`）。
+- **错误提示方式**：22 处 `alert`；桥不可用时把 `#st-last` 文本改成「Bridge 不可用」（`:245`），无错误样式类；任务错误 `$('st-last').textContent = '错误: ' + task.error`（`:273`）；限流冷却用 `#psync-cooldown`（`:170`，内联 `color:#d33`）+ `Icons.html('icon:loader')` + 「Pixiv 限流冷却参考：mm:ss」（`:213`）。
 - **选择模型**：页面内没有任何多选/复选框（grep `type="checkbox"` = 0）；「要同步哪些画师」由外部文本文件决定（后端 `backend/main.py:495-541`），前端只显示 `画师名单: N 位/全部`（`:158`、`:240`）。
 - **右键菜单**：无（grep `contextmenu` = 0）。
 - **键盘快捷键**：**无**（grep `keydown` = 0）。OAuth 弹窗既不能 Esc 关闭，也不能回车提交 code（`:400-412` 只监听按钮 click）。

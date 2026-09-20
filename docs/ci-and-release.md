@@ -196,7 +196,7 @@ powershell -ExecutionPolicy Bypass -File docs/Releases/build-release.ps1
 bash docs/Releases/build-release.sh
 ```
 
-### ⚠️ 产物目录里绝不能有你自己的用户数据
+### 产物目录里绝不能有你自己的用户数据
 
 程序的可写数据（`.config`、`data`、`logs`）就放在**可执行文件旁边**（见
 `shell/backend/paths.py`：打包模式下 exe 目录可写就用它）。所以在产物目录里跑过
@@ -245,7 +245,7 @@ tar -tzf OmniBox-linux-x64.tar.gz | grep -E '^OmniBox/(\.config|data)'    # 应�
      "apt-get update && apt-get install -y python3 python3-venv python3-pip nodejs npm binutils && bash docs/Releases/build-release.sh"
    ```
 
-⚠️ **glibc 基线**：PyInstaller **不**打包 glibc，产物只对新版 glibc 前向兼容。
+**glibc 基线**：PyInstaller **不**打包 glibc，产物只对新版 glibc 前向兼容。
 因此要在"你想支持的最旧发行版"上构建（WSL/Docker 里优先选 `ubuntu:22.04`，
 而不是最新版），否则老系统用户会遇到动态链接错误。CI 的 `ubuntu-latest` 同理。
 
@@ -260,7 +260,7 @@ tar -tzf OmniBox-linux-x64.tar.gz | grep -E '^OmniBox/(\.config|data)'    # 应�
    `Import "flask"/"PIL"/"webview" could not be resolved`，把真实错误淹没。
 
 ruff 规则集只开"能抓到真问题"的：`E4/E7/E9/F`（语法、未定义名字、未使用导入）
-＋ `I`（导入顺序）＋ `B/SIM/RET/PIE/FURB/RUF` ＋ `PLW1510`。刻意未开启：
++ `I`（导入顺序）+ `B/SIM/RET/PIE/FURB/RUF` + `PLW1510`。刻意未开启：
 
 | 规则 | 处数 | 为什么先不开 |
 | --- | --- | --- |
