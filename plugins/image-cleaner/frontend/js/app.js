@@ -51,7 +51,7 @@ class ImageCleaner {
 
   async runScan(force = false) {
     const box = document.getElementById('cleaner-results');
-    box.innerHTML = '<div class="cleaner-empty">扫描中…请稍候</div>';
+    box.innerHTML = '<div class="empty-state">扫描中…请稍候</div>';
     document.getElementById('cleaner-scanned').textContent = '';
     document.getElementById('cleaner-selected').textContent = '已选 0 张';
     this.selected.clear();
@@ -80,7 +80,7 @@ class ImageCleaner {
       this.render();
     } catch (e) {
       console.error(e);
-      box.innerHTML = '<div class="cleaner-empty">⚠️ 扫描失败，请确认 image-viewer 已加载且相册目录可访问</div>';
+      box.innerHTML = '<div class="empty-state">⚠️ 扫描失败，请确认 image-viewer 已加载且相册目录可访问</div>';
     }
   }
 
@@ -88,7 +88,7 @@ class ImageCleaner {
     const box = document.getElementById('cleaner-results');
     const visibleGroups = this.groups.slice(0, this.visibleCount);
     if (!visibleGroups.length) {
-      box.innerHTML = '<div class="cleaner-empty">✨ 未发现' + (this.mode === 'dupe' ? '完全重复' : '相似') + '图片</div>';
+      box.innerHTML = '<div class="empty-state">✨ 未发现' + (this.mode === 'dupe' ? '完全重复' : '相似') + '图片</div>';
       return;
     }
 

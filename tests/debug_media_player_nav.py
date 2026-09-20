@@ -131,7 +131,7 @@ def main() -> int:
         _log(f'已进入插件 iframe：{frame.get_attribute("src")}')
         driver.switch_to.frame(frame)
         _wait(driver, "return !!window.mediaPlayerApp && !!mediaPlayerApp.core;", '插件未初始化')
-        _wait(driver, "return !!document.querySelector('#media-content .mp-row, #mp-detail-list .mp-row, .mp-empty-state');",
+        _wait(driver, "return !!document.querySelector('#media-content .mp-row, #mp-detail-list .mp-row, .empty-state');",
               '媒体列表未渲染')
 
         container = _pick_list(driver)

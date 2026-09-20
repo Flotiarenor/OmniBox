@@ -138,8 +138,4 @@
   height: 15px;
   flex-shrink: 0;
 }
-.cleaner-empty {
-  text-align: center;
-  padding: 48px 16px;
-  color: var(--text-secondary);
-}
+/* 结果区空态用壳的 .empty-state（base.css），不再自带 .cleaner-empty */

@@ -810,29 +810,9 @@
 }
 
 /* ---- 空状态与加载 ---- */
-.nr-empty {
+/* 空态外观统一由壳的 .empty-state 提供（base.css）；这里只保留本插件在网格里的占位差异 */
+.nr-empty-span {
     grid-column: 1 / -1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 8px;
-    padding: 60px 20px;
-    text-align: center;
-    color: var(--text-secondary);
-}
-
-.nr-empty-icon {
-    font-size: 40px;
-    animation: obxFloat 4s ease-in-out infinite;
-}
-
-.nr-empty-text {
-    font-size: 15px;
-    color: var(--text-primary);
-}
-
-.nr-empty-hint {
-    font-size: 12px;
 }
 
 #document-loading {
@@ -1033,8 +1013,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .nr-card,
-    .nr-empty-icon {
+    .nr-card {
         animation: none;
     }
 }

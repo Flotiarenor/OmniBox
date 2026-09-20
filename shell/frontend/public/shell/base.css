@@ -425,8 +425,21 @@ body {
 
 /* 通用状态 */
 .loading { text-align: center; padding: 50px; color: var(--text-secondary); font-size: 15px; }
+/* 空态：图标 + 主文案 + 可选提示（+ 可选按钮）。这是全仓唯一一份实现，插件不要再自建
+   `.xx-empty`（见 docs/plugin-ui-guide.md §5）。小容器（下拉、侧栏小列表）加
+   `.empty-state--inline`；需要更高/更矮时用 `--obx-empty-min-h`，不要另写一套。 */
 .empty-state {
-  display: flex; align-items: center; justify-content: center;
-  height: 100%; min-height: 300px; color: var(--text-secondary); font-size: 16px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; height: 100%; min-height: var(--obx-empty-min-h, 220px);
+  padding: 24px 20px; text-align: center; color: var(--text-secondary);
+  animation: obxFadeUp 0.4s ease both;
 }
+.empty-state-icon { font-size: 44px; line-height: 1; opacity: 0.55; animation: obxFloat 4s ease-in-out infinite; }
+.empty-state-text { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+.empty-state-hint { font-size: 12px; line-height: 1.6; color: var(--text-muted); max-width: 460px; }
+.empty-state .btn { margin-top: 6px; }
+.empty-state--inline {
+  height: auto; min-height: 0; padding: 12px 8px; gap: 4px;
+}
+.empty-state--inline .empty-state-icon { font-size: 24px; }
 .no-select { user-select: none; -webkit-user-select: none; }

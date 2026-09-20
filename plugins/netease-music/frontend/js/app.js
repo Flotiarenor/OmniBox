@@ -65,17 +65,17 @@ class NeteaseApp {
     try {
       const login = await this.call('check_login');
       if (login.success) {
-        content.innerHTML = '<div class="empty">✅ 已登录网易云音乐</div>';
+        content.innerHTML = '<div class="empty-state">✅ 已登录网易云音乐</div>';
         return;
       }
     } catch (e) {}
-    content.innerHTML = `<div class="empty">未登录<br><br>请在终端执行：<br><b>ncm-cli configure</b><br><b>ncm-cli login</b><br><br><button class="btn btn-primary" id="refresh">我已登录</button></div>`;
+    content.innerHTML = `<div class="empty-state">未登录<br><br>请在终端执行：<br><b>ncm-cli configure</b><br><b>ncm-cli login</b><br><br><button class="btn btn-primary" id="refresh">我已登录</button></div>`;
     document.getElementById('refresh').addEventListener('click', () => this.renderLogin());
   }
 
   renderSongs(songs) {
     const content = document.getElementById('content');
-    if (!songs.length) { content.innerHTML = '<div class="empty">暂无歌曲</div>'; return; }
+    if (!songs.length) { content.innerHTML = '<div class="empty-state">暂无歌曲</div>'; return; }
     content.innerHTML = songs.map((s, i) => `
       <div class="item" data-idx="${i}">
         <span>🎵</span>
@@ -110,7 +110,7 @@ class NeteaseApp {
 
   renderPlaylists(playlists) {
     const content = document.getElementById('content');
-    if (!playlists.length) { content.innerHTML = '<div class="empty">暂无歌单</div>'; return; }
+    if (!playlists.length) { content.innerHTML = '<div class="empty-state">暂无歌单</div>'; return; }
     content.innerHTML = playlists.map(p => `
       <div class="item">
         <span>📋</span>

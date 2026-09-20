@@ -184,10 +184,11 @@ class MangaLibraryApp {
     }
 
     _emptyHtml(icon, text, hint) {
-        return `<div class="ml-empty">
-            <div class="ml-empty-icon">${icon}</div>
-            <div class="ml-empty-text">${MangaUtils.escapeHtml(text)}</div>
-            ${hint ? `<div class="ml-empty-hint">${MangaUtils.escapeHtml(hint)}</div>` : ''}
+        // 结构走壳的 .empty-state（base.css），插件不再自带一套 .ml-empty 样式
+        return `<div class="empty-state">
+            <div class="empty-state-icon">${icon}</div>
+            <div class="empty-state-text">${MangaUtils.escapeHtml(text)}</div>
+            ${hint ? `<div class="empty-state-hint">${MangaUtils.escapeHtml(hint)}</div>` : ''}
         </div>`;
     }
 
@@ -347,7 +348,7 @@ class MangaLibraryApp {
         });
 
         const grid = document.getElementById('ml-pages');
-        grid.innerHTML = '<div class="ml-empty"><div class="obx-anim-spin" style="width:32px;height:32px;border-radius:50%;border:3px solid var(--ml-accent-soft);border-top-color:var(--accent);"></div><div>图片加载中…</div></div>';
+        grid.innerHTML = '<div class="empty-state"><div class="obx-anim-spin" style="width:32px;height:32px;border-radius:50%;border:3px solid var(--ml-accent-soft);border-top-color:var(--accent);"></div><div>图片加载中…</div></div>';
         try {
             const pages = await Bridge.call('manga_get_pages', this.currentFolderName, this._chapterPath || '');
             if (!pages.length) {

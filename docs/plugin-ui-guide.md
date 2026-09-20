@@ -98,13 +98,10 @@
 - 侧栏是 `#app` 的直接子元素、`y=0`、跑满全高；**工具栏在 `.view-body` 内**，
   不与侧栏同级（否则工具栏横跨整宽、侧栏从工具栏下方才开始，一眼就不一样）。
 - 工具栏高 = `--toolbar-height`(48)；侧栏宽 = `--sub-sidebar-width`(240)。
-  **现状是 5 个带侧栏的插件里 4 个把宽度写死了**：image-viewer 240px/窄屏 200px
-  （`image-viewer.css:24`、`:199`）、manga-library 248px（`manga-library.css:24`）、
-  media-player 252px（`media-player.css:38`）、group-mesh 236px 但靠
-  `.gm-side.view-sub-sidebar`(0,2,0) 压过壳（`group-mesh.css:135-145`）。
-  只有 document-reader 真读了 `var(--sub-sidebar-width)`。
-  要统一侧栏宽度，先决定：要么全部跟随 `--sub-sidebar-width`，要么把这个 token
-  做成用户可调（现在设置页只暴露了壳自己的 `--nav-width`）。
+  现状：5 个带侧栏的插件**全部跟随这个 token**（document-reader 一直如此，另外四个在本轮
+  收敛时删掉了写死值）。窄窗口的目标宽度要写 `.xx-sidebar.view-sub-sidebar`（0,2,0）才生效
+  —— 媒体查询不改变特异性，裸 `.xx-sidebar` 会被壳的 240px 覆盖（`group-mesh.css:135` 记录了
+  实测："设成 236 实际 240"）。
 - 分隔线分工：侧栏只画 `border-right`、主区只画 `border-bottom`，两边都画会在交角叠成 2px。
 - 工具栏左侧放"当前视图标题 + 副标题"，右侧放操作（容器固定
   `style="margin-left:auto;"`，各插件一致但没有类名——见 §10.1 的补件建议）。
@@ -314,9 +311,9 @@ background: var(--mp-glass, var(--bg-surface));
 | 目录树 | `base.js:631` `createTree` + `.tree-container` | 目录选择 | document-reader / image-viewer |
 | 灯箱 | `base.js:708` `createLightbox` | 图片预览 | image-cleaner 2 处、image-viewer 1 处 |
 | 滚动条 | `effects.css:140-183` `.obx-scroll` | 每个滚动容器都要加；**只有沉浸态**（阅读正文、舞台）可以整块隐藏滚动条 | 多数已加；media-player 的**主内容区** `#media-content` 漏加（`index.html:154`，同文件其它 5 个滚动容器都加了）；document-reader 正文区按沉浸语义隐藏（css:216、233-236）；pixiv-sync 只有外层容器 |
-| 降低动态效果 | `effects.css:186-201` 已覆盖 `.obx-anim-*` 与 `.obx-stagger > *` | 用壳的类，或给自己的动画补一条 `prefers-reduced-motion` 覆盖 | manga-library 直接引用 `obxFadeUp`/`obxFloat` 关键帧（css:139/189/229/268/270），命中不了白名单，`.ml-empty-icon` 的无限浮动在"减少动态"下仍在跑；media-player 用 `*, *::before, *::after` + 3 处 `!important` 全量压（css:2039-2047），有效但代价是连壳组件一起压 |
-| 骨架屏 | `effects.css:118-131` `.obx-skeleton` | 首屏/长列表 | 采纳 0（都用文字"加载中…"），group-mesh 另有 `.gm-skeleton-line` 叠在自己的实现上 |
-| 空态 | `base.css:428-431` `.empty-state` | 空列表/无结果；**不要自造 `.xx-empty` 文案 div** | 壳的 `.empty-state` **采纳数 0**：media-player 自建 `.mp-empty-state`（6 处）、group-mesh `.gm-empty`、pixiv-sync `.psync-empty`（仅定义、无引用的死类）、netease `.empty`（且渲染后不摘掉这个类，列表仍吃空态样式） |
+| 降低动态效果 | `effects.css:186-201` 覆盖 `.obx-anim-*`、`.empty-state-icon` 与 `.obx-stagger > *` | 用壳的类；**直接引用关键帧名不会被白名单覆盖**，要自己补一条 reduced-motion 覆盖 | media-player 用 `*, *::before, *::after` + 3 处 `!important` 全量压，有效但代价是连壳组件一起压 |
+| 骨架屏 | `effects.css:118-131` `.obx-skeleton` | 首屏/长列表 | 采纳 0（都用文字"加载中…"），group-mesh 另有 `.gm-skeleton-line`；属"新增能力"而非缺陷（见 §10.5） |
+| 空态 | `base.css`「通用状态」的 `.empty-state` + `.empty-state-icon/-text/-hint`（+ `--obx-empty-min-h`、`.empty-state--inline`） | 空列表/无结果一律用它；**不要自造 `.xx-empty`** | 本轮统一：7 个插件约 57 处改用它，各插件的 `.iv-empty/.nr-empty/.ml-empty/.mp-empty-state/.nl-empty/.cleaner-empty/.empty/.psync-empty` 全部删除。保留的插件专属例外见下 |
 | 浮层层级 | `base.css` `.modal` 1500 / `base.js` `.toast-container` 3000 | 自绘浮层的 `z-index` 必须 ≥ 1500 且低于 3000，否则会被壳的弹窗/Toast 盖住 | media-player `.mp-modal` 500 / `.mp-context-menu` 520、pixiv-sync 自绘弹窗 999（`index.html:46`）都会被盖住；manga-library 自研阅读器 2000 反过来盖住壳弹窗 |
 | 键盘可达性 | 壳的灯箱已支持 Esc / ←→ / 滚轮 / 拖拽 | 至少有：`Esc` 关闭最上层浮层、沉浸态 `←/→` 切换、搜索框 `Esc` 清空 | image-viewer 全插件无键盘处理；自绘右键菜单（`app-nav.js:96-134`）不监听 Esc 与 scroll 重定位 |
 
@@ -493,13 +490,15 @@ background: var(--mp-glass, var(--bg-surface));
    内联设置表单（pixiv-sync）；表单控件类也各不相同（`.field` vs `.iv-field` vs `.iv-setting-item`）。
    其中 pixiv-sync 的双轨代价最大：字段清单与范围钳制各写一遍，`download_dir`
    本该是 `type: "directory"`（壳的 folder-picker）却声明成 `text`，用户只能手打路径。
-8. 空态 / 骨架屏：壳的 `.empty-state` 采纳数 **0**，`.obx-skeleton` 采纳数 **0**，
-   各插件自建 `.mp-empty-state` / `.gm-empty` / `.psync-empty`（死类）/ `.empty`（不移除）。
+8. 空态已统一到壳的 `.empty-state`（本轮，见 §9.6）；骨架屏 `.obx-skeleton` 采纳数仍为 **0**
+   —— 它是"新增能力"而非契约违背，已降级到 §10.5。
 9. 搜索框：壳有 `.search-input`，image-viewer 自造 `.iv-search`。
-10. 内嵌页（image-cleaner / pixiv-sync / group-mesh `network-location.html`）自带工具栏与标题，
-    与宿主 header 重复（双层横条）；`network-location.html` 还是 token 孤岛
-    （21 处颜色字面量，且它内联重定义的 `.btn` 因为注入点在 `</head>` 之前实际被壳覆盖）。
-11. 侧栏宽度：240（写死）/ 248 / 252 / 236（靠 0,2,0 压壳），只有 document-reader 读 token。
+10. 内嵌页 image-cleaner / pixiv-sync 自带工具栏与标题，与宿主 header 重复（双层横条）。
+    `network-location.html` **不属于这一类**：它没有工具栏，是"内嵌提供方页"的正面样例
+    （见 §3.4）；它的问题是另一处 —— 曾经的 `var(--bg, #17181c)` 未定义 token（P0-4 已修）
+    与 19 处深色兜底字面量。
+11. 侧栏宽度已统一（本轮）：4 个插件的写死值与 group-mesh 的 236px 覆盖全部删除，
+    统一跟随 `--sub-sidebar-width`；≤860px 的窄屏覆写改为 0,2,0 后**首次真正生效**。
 12. 键盘可达性缺失：image-viewer 全插件无键盘处理；自绘右键菜单不响应 Esc、
     不随 scroll/resize 重定位；image-viewer 内还有两套右键菜单（图片走壳的
     `createContextMenu`，相册走自绘 `.iv-context-menu`）。
@@ -511,13 +510,14 @@ background: var(--mp-glass, var(--bg-surface));
 14. 批量操作位置：image-cleaner 固定底栏（好），image-viewer 塞工具栏（拥挤）。
 15. 工具栏右侧靠 `style="margin-left:auto;"` 而不是类。
 16. 遮罩黑度 4 档（0.45/0.55/0.62/0.65）未走 `--bg-overlay`。
-17. 死代码：`--nr-cover-*` 3 个变量（document-reader.css:23-25）、`.psync-empty`（pixiv-sync）。
+17. 死代码：`--nr-cover-*` 3 个变量（document-reader.css:23-25）；`.psync-empty` 已随本轮
+    空态统一删除。
 18. `createCardGrid` 已删除（零采用，且它渲染的 `.manga-*` 在壳与任何插件样式里都没有定义，
     谁用谁拿到无样式 DOM）；`createSettingsForm`（0 直接采用，仅被 `openSettingsModal`
     间接使用）、`createPagination`（1 处）、`.obx-skeleton`（0）仍需决定推广还是废弃。
 19. `netease-music` 的独立页（154 行）无人可达且与 media-player 的原生视图重复，
     其 `parent.mediaPlayerApp` 在壳直接加载时必然失败；`#content` 的 `class="empty"`
-    渲染后从不移除。
+    已随本轮空态统一移除（改为内容区里的 `.empty-state`）。
 
 ### 9.3 各插件值得吸收的做法
 
@@ -573,6 +573,25 @@ background: var(--mp-glass, var(--bg-surface));
 - 缺一条"主题一致性"的真实渲染用例（切父页 `data-theme=dark` 后断言插件页取色变化）。
 - `pixiv-sync` 的 `--color-*` 是整块重写的，视觉细节（间距/字号）建议在宿主面板里目视复核一次。
 
+### 9.6 本轮 P1 修复记录（第一批 / 第二批已实施，第三批待做）
+
+| 批 | 改动 | 落点与验证 |
+| --- | --- | --- |
+| 1 | **media-player 收敛**：`#media-content` 补 `.obx-scroll`、删除自带滚动条段、删除 8 段重复关键帧（保留插件专属的 `mpEq` / `mpAurora`）、13 处 `animation` 改指壳的关键帧名、7 个派生 token 改引 `--obx-*`；`effects.css` 新增 `--obx-glass-bg(-strong)` 作为 `.obx-glass` 的唯一来源 | `media-player.css` 2047 → 1940 行；`@keyframes mp` 只剩 2 个；grep 确认无 `mpShimmer` 之类残留 |
+| 1 | **侧栏宽度统一**：iv/ml/mp 删除无效的写死值，窄屏覆写改为 `.xx-sidebar.view-sub-sidebar`(0,2,0) 并统一 200px；gm 的 `--gm-side-width` 改引 `--sub-sidebar-width` | grep 只剩三处 0,2,0 窄屏覆写；**行为变化**：≤860px 下侧栏 200px 首次真正生效 |
+| 1 | **删除死组件 `createCardGrid`**：零采用，且它渲染的 `.manga-*` 在壳与任何插件样式里都没有定义 | `plugin-guide.md` §4.3 与本文件 §5/§9.2/§10 同步 |
+| 2 | **壳空态升级**：`.empty-state` 改为四段结构（+ `.empty-state--inline`、`--obx-empty-min-h`）；`effects.css` 的 reduced-motion 白名单补上 `.empty-state-icon` | `base.css`「通用状态」一节；壳内既有使用者（`base.js` 的设置弹窗）无需改动 |
+| 2 | **7 个插件迁移**到壳类并删除各自实现：`.iv-empty*`、`.nr-empty*`、`.ml-empty*`、`.mp-empty-state*`、`.cleaner-empty`、`.empty`（netease）、`.nl-empty`、`.psync-empty`（死类） | 全仓 `class="empty-state"` 约 57 处；`grep '(iv\|nr\|ml\|mp\|cleaner\|psync\|nl)-empty'` 只剩注释与 `.nr-empty-span` |
+| 3（待做） | 内嵌页 `?embed=1` 信号：宿主的扩展面板与 folder-picker 提供方 iframe 各追加参数，image-cleaner / pixiv-sync 据此把工具栏降级为普通操作行（不搬按钮） | 见 §3.4 的宿主 header 说明；验收方式是断言"宿主 header 存在时不再出现 48px 的 `.view-toolbar`" |
+
+**保留的插件专属"空态"（不是漏改）**：
+
+- `.gm-empty`（group-mesh，8 处）：卡片内的**说明段**，可能带 `<strong>` 与后续按钮，左对齐，
+  不是居中空态 —— 迁到 `.empty-state` 会把说明文字居中并改变卡片布局。
+- `.mp-playlist-empty` / `.mp-stage-empty`（media-player）：前者是侧栏里的 12px 小提示，
+  后者是覆盖在封面上的舞台提示（配色跟封面走，用 `--text-secondary` 会失去对比度）。
+- `.nr-empty-span`（document-reader）：只负责网格里的 `grid-column: 1 / -1`。
+
 ---
 
 ## 10 落地路径
@@ -584,8 +603,8 @@ background: var(--mp-glass, var(--bg-surface));
 | 工具栏右侧分组 | 加 `.toolbar-group.right { margin-left: auto; }`，插件去掉内联 `style` |
 | 进度条 | 提取 `.obx-progress` + `.obx-progress-bar`（现在只有 pixiv-sync 有，且是私有类） |
 | 卡片/网格 | 已定为"插件自建"（`createCardGrid` 删除，见 §9.5）；若以后要共享，先定义 `.obx-card*` 类与样式再推广 |
-| 空/加载/错误态 | `base.css` 已有 `.empty-state` / `.loading`：补 `.error-state` + 重试按钮样式，并在文档里点名"不要自造 `.xx-empty`" |
-| 侧栏宽度策略 | 决定：全部跟随 `--sub-sidebar-width`，或把它也做成用户可调（现在只暴露了 `--nav-width`） |
+| 空/加载/错误态 | 空态与加载态已落地（`.empty-state` 四段结构 + `.loading`，见 §9.6）；仍缺 `.error-state` + 重试按钮样式 |
+| 侧栏宽度策略 | 已定：全部跟随 `--sub-sidebar-width`（本轮完成）。是否把它也做成用户可调（现在只暴露 `--nav-width`）仍待决定 |
 | 浮层层级与遮罩 | 在 base.css 注释里写死层级约定（modal 1500 / toast 3000），并提供 `.obx-overlay` 使用 `--bg-overlay` |
 | 高度链 | 在 base.css 或文档里给一条明确写法（`#app { height: 100vh }` 或 `html,body{height:100%}`），避免第三个变体 |
 | token 关系说明 | 在 `variables.css` / `effects.css` 注释里写清 `--radius*` 与 `--obx-radius*` 的分工，以及"哪些 token 用户可调" |
@@ -597,12 +616,17 @@ background: var(--mp-glass, var(--bg-surface));
      `.psync-modal` → `.modal`、补生命周期钩子管住两个 `setInterval`。
    - `media-player`：补 `onHide`/`onShow`（停歌词频谱 rAF，保留播放与进度保存）。
    - `image-viewer` / `manga-library` / `group-mesh`：三个未定义 token 修正。
-2. **P1**：把 `--<prefix>-radius` / `-shadow` / `-glass` / 关键帧改为引用 `--obx-*` 与
-   `.obx-anim-*`；`pixiv-sync` 的设置改走 `openSettingsModal`（并把 `download_dir`
-   改成 `type: "directory"`）；统一空/加载态类与搜索框类；内嵌页去掉自带工具栏；
-   侧栏宽度统一跟随 token；补 `image-cleaner` 的设置入口。
-3. **P2**：批量操作向固定底栏收敛；工具栏右侧用类；清理死变量与死类；
-   决定其余共享组件（`createSettingsForm` / `createPagination`）的去留（`createCardGrid` 已删除）。
+2. **P1**
+   - 已完成（第一批）：`--<prefix>-radius` / `-shadow` / `-glass` / 重复关键帧收敛到
+     `--obx-*` 与壳的关键帧名（media-player）；侧栏宽度统一；删除死组件 `createCardGrid`。
+   - 已完成（第二批）：空态统一到 `.empty-state`（7 个插件 57 处），并给壳的
+     reduced-motion 白名单补上 `.empty-state-icon`。
+   - 待做：`pixiv-sync` 的设置改走 `openSettingsModal`（并把 `download_dir` 改成
+     `type: "directory"`）；统一搜索框类；内嵌页去掉自带工具栏（第三批）；
+     补 `image-cleaner` 的设置入口；`.error-state`。
+3. **P2**：批量操作向固定底栏收敛；工具栏右侧用类；清理死变量；
+   决定其余共享组件（`createSettingsForm` / `createPagination`）的去留（`createCardGrid` 已删除）；
+   骨架屏试点；media-player 的 modal / 右键菜单结构替换（风险最高，建议单独立项）。
 
 ### 10.3 加可验证项（否则一定会退回去）
 

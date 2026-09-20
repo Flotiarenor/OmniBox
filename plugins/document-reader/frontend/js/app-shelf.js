@@ -137,10 +137,11 @@ Object.assign(DocumentReader.prototype, {
     },
 
     _emptyHtml(icon, text, hint = '') {
-        return `<div class="nr-empty">
-            <div class="nr-empty-icon">${icon}</div>
-            <div class="nr-empty-text">${Utils.escapeHtml(text)}</div>
-            ${hint ? `<div class="nr-empty-hint">${Utils.escapeHtml(hint)}</div>` : ''}
+        // 结构走壳的 .empty-state（base.css）；`.nr-empty-span` 只负责网格里跨列占位
+        return `<div class="empty-state nr-empty-span">
+            <div class="empty-state-icon">${icon}</div>
+            <div class="empty-state-text">${Utils.escapeHtml(text)}</div>
+            ${hint ? `<div class="empty-state-hint">${Utils.escapeHtml(hint)}</div>` : ''}
         </div>`;
     },
 

@@ -197,6 +197,9 @@
   .obx-anim-spin,
   .obx-anim-pulse,
   .obx-anim-heart,
+  /* 空态图标用的是 obxFloat 关键帧（base.css 的 .empty-state-icon），
+     不在 .obx-anim-* 白名单里，必须一并列出，否则"减少动态"下仍在浮动 */
+  .empty-state-icon,
   .obx-stagger > * {
     animation-duration: 0.001s !important;
     animation-iteration-count: 1 !important;

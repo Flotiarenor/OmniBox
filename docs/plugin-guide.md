@@ -590,7 +590,11 @@ class AudioCoverCache(ThumbCache):
 | `.sub-sidebar-header` | 侧边栏标题行（大写标签，底部边框）                                    |
 | `.sub-sidebar-footer` | 侧边栏底部统计区（小字体，顶部边框）                                  |
 | `.view-content`       | 内容滚动区（`flex: 1; overflow-y: auto; padding: 16px`）            |
+| `.empty-state`        | 空态容器（图标 + 主文案 + 可选提示，居中）；子元素 `.empty-state-icon` / `.empty-state-text` / `.empty-state-hint`。小容器加 `.empty-state--inline`，需要更高/更矮用 `--obx-empty-min-h`；**不要自建 `.xx-empty`** |
 | `.obx-nav-item`       | 侧栏导航项（结构 + hover + 选中态；选中态标 `is-active` / `active` / `data-active="true"` 均可） |
+| `.obx-scroll`         | 现代窄滚动条（悬停渐显），**每个会滚动的容器都要加**；壳的 `.modal-body` 已自带 |
+| `.obx-anim-*` / `.obx-glass*` / `.obx-skeleton` / `.obx-card-lift` | 通用动效与玻璃/骨架/悬浮类（`effects.css`），已处理 `prefers-reduced-motion` |
+| `.obx-extension*` / `.obx-embed-frame` | Companion 扩展入口与内嵌 iframe 的通用样式 |
 
 `.obx-nav-item` 的视觉参数走 `--obx-nav-*`（`base.css` 的「导航项」一节）：
 

@@ -12,7 +12,6 @@
     .item { display:flex; align-items:center; gap:10px; padding:8px 10px; border:1px solid var(--border); border-radius:8px; margin-bottom:6px; background:var(--bg-surface); cursor:pointer; }
     .item .t { font-weight:600; }
     .item .s { font-size:12px; color:var(--text-secondary); }
-    .empty { padding:40px; text-align:center; color:var(--text-secondary); }
   </style>
 </head>
 <body>
@@ -22,7 +21,7 @@
       <input id="keyword" placeholder="搜索歌曲...">
       <button class="btn btn-primary" id="search-btn">搜索</button>
     </div>
-    <div id="content" class="empty">加载中...</div>
+    <div id="content"><div class="empty-state">加载中…</div></div>
   </div>
   <script src="js/app.js"></script>
   <script>window.neteaseApp = new NeteaseApp(); neteaseApp.init();</script>

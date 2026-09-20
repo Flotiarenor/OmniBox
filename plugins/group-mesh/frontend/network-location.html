@@ -40,7 +40,7 @@
     .nl-item:hover { background: var(--bg-hover, #26272d); }
     .nl-item.is-active { border-color: var(--accent, #4c8dff); }
     .nl-item .nl-sub { margin-left: auto; color: var(--text-muted, #7c7d86); font-size: 11px; }
-    .nl-empty { padding: 6px 2px; color: var(--text-muted, #7c7d86); font-size: 12px; }
+    /* 列表空态用壳的 .empty-state--inline（base.css），本页不再自带 .nl-empty */
     .nl-path {
       display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px;
       border: 1px dashed var(--border, #33343a); font-size: 12px; word-break: break-all;
@@ -66,11 +66,11 @@
 <body>
   <div class="nl-step">
     <h4>1. 选择设备</h4>
-    <div class="nl-list" id="nl-peers"><div class="nl-empty">正在读取设备…</div></div>
+    <div class="nl-list" id="nl-peers"><div class="empty-state empty-state--inline">正在读取设备…</div></div>
   </div>
   <div class="nl-step">
     <h4>2. 选择共享项</h4>
-    <div class="nl-list" id="nl-shares"><div class="nl-empty">请先选择设备</div></div>
+    <div class="nl-list" id="nl-shares"><div class="empty-state empty-state--inline">请先选择设备</div></div>
   </div>
   <div class="nl-step">
     <h4>3. 选择本地落地目录</h4>
@@ -115,7 +115,7 @@
         const peers = (result && result.peers) || [];
         if (!peers.length) {
           el('nl-peers').innerHTML =
-            '<div class="nl-empty">没有可用设备：先在「团体组网」的“对端”里登记一台设备的地址。</div>';
+            '<div class="empty-state empty-state--inline">没有可用设备：先在「团体组网」的“对端”里登记一台设备的地址。</div>';
           return;
         }
         el('nl-peers').innerHTML = peers.map((peer) => `
@@ -127,7 +127,7 @@
           item.addEventListener('click', () => selectPeer(item.dataset.device));
         });
       } catch (e) {
-        el('nl-peers').innerHTML = `<div class="nl-empty">读取设备失败：${esc(e)}</div>`;
+        el('nl-peers').innerHTML = `<div class="empty-state empty-state--inline">读取设备失败：${esc(e)}</div>`;
       }
     }
 
@@ -137,18 +137,18 @@
       el('nl-peers').querySelectorAll('.nl-item').forEach((item) => {
         item.classList.toggle('is-active', item.dataset.device === deviceId);
       });
-      el('nl-shares').innerHTML = '<div class="nl-empty">正在读取共享项…</div>';
+      el('nl-shares').innerHTML = '<div class="empty-state empty-state--inline">正在读取共享项…</div>';
       updateRunButton();
       try {
         const result = await call('list_remote', { device_id: deviceId });
         if (!result || !result.success) {
-          el('nl-shares').innerHTML = `<div class="nl-empty">${esc((result && result.error) || '读取失败')}</div>`;
+          el('nl-shares').innerHTML = `<div class="empty-state empty-state--inline">${esc((result && result.error) || '读取失败')}</div>`;
           return;
         }
         const shares = result.shares || [];
         if (!shares.length) {
           el('nl-shares').innerHTML =
-            '<div class="nl-empty">这台设备没有对你开放的共享项。</div>';
+            '<div class="empty-state empty-state--inline">这台设备没有对你开放的共享项。</div>';
           return;
         }
         el('nl-shares').innerHTML = shares.map((share) => `
@@ -160,7 +160,7 @@
           item.addEventListener('click', () => selectShare(item.dataset.share));
         });
       } catch (e) {
-        el('nl-shares').innerHTML = `<div class="nl-empty">读取共享项失败：${esc(e)}</div>`;
+        el('nl-shares').innerHTML = `<div class="empty-state empty-state--inline">读取共享项失败：${esc(e)}</div>`;
       }
     }
 

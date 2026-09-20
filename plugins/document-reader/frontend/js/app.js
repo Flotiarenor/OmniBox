@@ -502,10 +502,10 @@ class DocumentReader {
             `;
         } else {
             area.innerHTML = `
-                <div class="nr-empty">
-                    <div class="nr-empty-icon">📄</div>
-                    <div class="nr-empty-text">${Utils.escapeHtml(doc.title || doc.id)}</div>
-                    <div class="nr-empty-hint">该格式不在阅读器内渲染，可交给系统默认程序打开</div>
+                <div class="empty-state">
+                    <div class="empty-state-icon">📄</div>
+                    <div class="empty-state-text">${Utils.escapeHtml(doc.title || doc.id)}</div>
+                    <div class="empty-state-hint">该格式不在阅读器内渲染，可交给系统默认程序打开</div>
                     <button type="button" class="btn" id="document-open-external">↗ 用系统程序打开</button>
                 </div>`;
         }

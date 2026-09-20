@@ -231,7 +231,7 @@
 }
 /* 轮询驱动的原地刷新不重播入场动画：否则任务数据一变化，整张列表就闪一遍 */
 .ml-content.ml-no-anim .ml-task,
-.ml-content.ml-no-anim .ml-empty { animation: none; }
+.ml-content.ml-no-anim .empty-state { animation: none; }
 .ml-task-thumb { width: 54px; height: 72px; border-radius: 8px; object-fit: cover; background: var(--bg-hover); flex-shrink: 0; }
 .ml-task-main { flex: 1; min-width: 0; }
 .ml-task-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -264,13 +264,7 @@
 .ml-task-actions button.danger:hover { background: var(--danger-soft); color: var(--danger); }
 
 /* ===== 空状态 / 表单 ===== */
-.ml-empty {
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 8px; min-height: 260px; color: var(--text-secondary); animation: obxFadeUp 0.4s ease both;
-}
-.ml-empty .ml-empty-icon { font-size: 44px; opacity: 0.55; animation: obxFloat 4s ease-in-out infinite; }
-.ml-empty .ml-empty-text { font-size: 15px; font-weight: 600; }
-.ml-empty .ml-empty-hint { font-size: 12px; color: var(--text-muted); }
+/* 空态外观统一由壳的 .empty-state 提供（base.css），这里不再保留 .ml-empty* 副本。 */
 
 .ml-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
 .ml-field label { font-size: 13px; font-weight: 500; color: var(--text-primary); }

@@ -906,20 +906,8 @@
   animation: obxSpin 0.8s linear infinite;
 }
 
-.mp-empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 240px;
-  color: var(--text-secondary);
-  animation: obxFadeUp 0.4s ease both;
-}
-
-.mp-empty-state .empty-icon { font-size: 44px; opacity: 0.55; }
-.mp-empty-state .empty-text { font-size: 15px; font-weight: 600; }
-.mp-empty-state .empty-hint { font-size: 12px; color: var(--text-muted); }
+/* 列表空态改用壳的 .empty-state（base.css），不再自带 .mp-empty-state。
+   舞台上的 .mp-stage-empty 是覆盖在封面上的提示，配色跟图走，属插件专属，保留。 */
 
 /* ---- 卡片网格 ---- */
 .mp-card-grid {

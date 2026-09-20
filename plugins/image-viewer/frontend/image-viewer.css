@@ -189,14 +189,8 @@
    （见 shell/frontend/public/shell/folder-picker.js）：媒体播放器 / 漫画 /
    文档阅读用的是同一套 DOM 与样式，所以这里不再保留一份副本。*/
 
-.iv-empty {
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 8px; min-height: 260px; color: var(--text-secondary); animation: obxFadeUp 0.4s ease both;
-}
-.iv-empty .iv-empty-icon { font-size: 44px; opacity: 0.55; animation: obxFloat 4s ease-in-out infinite; }
-.iv-empty .iv-empty-text { font-size: 15px; font-weight: 600; }
-.iv-empty .iv-empty-hint { font-size: 12px; color: var(--text-muted); }
-
+/* 空态样式已统一到壳的 .empty-state（base.css 的「通用状态」一节），
+   这里不再保留 .iv-empty* 副本。 */
 @media (max-width: 860px) {
   /* 窄窗口要压过壳的宽度必须提高特异性：媒体查询不改变特异性 */
   .iv-sidebar.view-sub-sidebar { width: 200px; }

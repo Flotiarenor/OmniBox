@@ -36,10 +36,11 @@ Object.assign(ImageViewer.prototype, {
     },
 
     _emptyHtml(icon, text, hint) {
-        return `<div class="iv-empty">
-            <div class="iv-empty-icon">${icon}</div>
-            <div class="iv-empty-text">${this._escapeHtml(text)}</div>
-            ${hint ? `<div class="iv-empty-hint">${this._escapeHtml(hint)}</div>` : ''}
+        // 结构走壳的 .empty-state（base.css），插件不再自带一套 .iv-empty 样式
+        return `<div class="empty-state">
+            <div class="empty-state-icon">${icon}</div>
+            <div class="empty-state-text">${this._escapeHtml(text)}</div>
+            ${hint ? `<div class="empty-state-hint">${this._escapeHtml(hint)}</div>` : ''}
         </div>`;
     },
 

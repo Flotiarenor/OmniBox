@@ -30,10 +30,10 @@ Object.assign(MediaPlayerApp.prototype, {
     _renderEmpty(icon, text, hint) {
         const content = document.getElementById('media-content');
         content.innerHTML = `
-            <div class="mp-empty-state">
-                <div class="empty-icon">${icon}</div>
-                <div class="empty-text">${MPUtils.escapeHtml(text)}</div>
-                ${hint ? `<div class="empty-hint">${MPUtils.escapeHtml(hint)}</div>` : ''}
+            <div class="empty-state">
+                <div class="empty-state-icon">${icon}</div>
+                <div class="empty-state-text">${MPUtils.escapeHtml(text)}</div>
+                ${hint ? `<div class="empty-state-hint">${MPUtils.escapeHtml(hint)}</div>` : ''}
             </div>`;
     },
 
@@ -100,11 +100,11 @@ Object.assign(MediaPlayerApp.prototype, {
 
     _buildEmpty(icon, text, hint) {
         const div = document.createElement('div');
-        div.className = 'mp-empty-state';
+        div.className = 'empty-state';
         div.innerHTML = `
-            <div class="empty-icon">${icon}</div>
-            <div class="empty-text">${MPUtils.escapeHtml(text)}</div>
-            ${hint ? `<div class="empty-hint">${MPUtils.escapeHtml(hint)}</div>` : ''}`;
+            <div class="empty-state-icon">${icon}</div>
+            <div class="empty-state-text">${MPUtils.escapeHtml(text)}</div>
+            ${hint ? `<div class="empty-state-hint">${MPUtils.escapeHtml(hint)}</div>` : ''}`;
         return div;
     },
 
@@ -170,10 +170,10 @@ Object.assign(MediaPlayerApp.prototype, {
         const version = status.ncm_cli_version || '';
         const error = status.error || '';
         content.innerHTML = `
-            <div class="mp-empty-state">
-                <div class="empty-icon">⚠️</div>
-                <div class="empty-text">未检测到 ncm-cli</div>
-                <div class="empty-hint">网易云音乐插件需要 ncm-cli 才能登录和播放。</div>
+            <div class="empty-state">
+                <div class="empty-state-icon">⚠️</div>
+                <div class="empty-state-text">未检测到 ncm-cli</div>
+                <div class="empty-state-hint">网易云音乐插件需要 ncm-cli 才能登录和播放。</div>
                 <div style="margin-top:14px;text-align:left;max-width:520px;margin-left:auto;margin-right:auto;line-height:1.9;font-size:13px;">
                     <div>安装命令：</div>
                     <pre style="background:var(--bg-hover);padding:8px 10px;border-radius:8px;overflow-x:auto;">npm install -g @music163/ncm-cli</pre>
@@ -194,19 +194,19 @@ Object.assign(MediaPlayerApp.prototype, {
             if (login && login.success) {
                 // 同步能力只在登录完成后提供：未登录时这些接口必然失败
                 content.innerHTML = `
-            <div class="mp-empty-state">
-                <div class="empty-icon">✅</div>
-                <div class="empty-text">已登录网易云音乐</div>
-                <div class="empty-hint">本地歌单是在线歌单的镜像：只收录本地媒体库里已有的曲目（按歌名 + 歌手匹配），可反复同步。</div>
+            <div class="empty-state">
+                <div class="empty-state-icon">✅</div>
+                <div class="empty-state-text">已登录网易云音乐</div>
+                <div class="empty-state-hint">本地歌单是在线歌单的镜像：只收录本地媒体库里已有的曲目（按歌名 + 歌手匹配），可反复同步。</div>
                 <div style="margin-top:14px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
                     <button class="btn btn-primary" id="ncm-sync-all-btn">🔄 全量同步所有歌单</button>
                     <button class="btn" id="ncm-import-liked-btn">❤ 导入「喜欢」到我的喜欢</button>
                 </div>
-                <label class="empty-hint" style="display:inline-flex;align-items:center;gap:6px;margin-top:14px;cursor:pointer;">
+                <label class="empty-state-hint" style="display:inline-flex;align-items:center;gap:6px;margin-top:14px;cursor:pointer;">
                     <input type="checkbox" id="ncm-sync-collected"${this._syncCollectedEnabled() ? ' checked' : ''}>
                     全量同步也包含「收藏的歌单」（默认只同步自己创建的歌单）
                 </label>
-                <label class="empty-hint" style="display:inline-flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
+                <label class="empty-state-hint" style="display:inline-flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
                     <input type="checkbox" id="ncm-export-missing"${this._exportMissingEnabled() ? ' checked' : ''}>
                     同步时输出本地缺失曲目清单（写到媒体库根目录，便于补档）
                 </label>
@@ -223,10 +223,10 @@ Object.assign(MediaPlayerApp.prototype, {
             }
         } catch (e) { }
         content.innerHTML = `
-            <div class="mp-empty-state">
-                <div class="empty-icon">👤</div>
-                <div class="empty-text">未登录网易云音乐</div>
-                <div class="empty-hint">请先在终端执行：ncm-cli configure 和 ncm-cli login</div>
+            <div class="empty-state">
+                <div class="empty-state-icon">👤</div>
+                <div class="empty-state-text">未登录网易云音乐</div>
+                <div class="empty-state-hint">请先在终端执行：ncm-cli configure 和 ncm-cli login</div>
                 <button class="btn btn-primary" id="ncm-login-btn" style="margin-top:12px;">我已登录</button>
             </div>`;
         document.getElementById('ncm-login-btn').addEventListener('click', () => this._loadCurrentView());
@@ -524,7 +524,7 @@ Object.assign(MediaPlayerApp.prototype, {
                 kind: 'ncm-playlist',
             });
         } catch (e) {
-            content.innerHTML = '<div class="mp-empty-state"><div class="empty-icon">⚠️</div><div class="empty-text">歌单加载失败</div></div>';
+            content.innerHTML = '<div class="empty-state"><div class="empty-state-icon">⚠️</div><div class="empty-state-text">歌单加载失败</div></div>';
         }
     },
 
