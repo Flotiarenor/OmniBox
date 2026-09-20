@@ -162,10 +162,6 @@ def _toggle_fullscreen():
         windows[0].toggle_fullscreen()
 
 
-class ShellAPI:
-    """PyWebView 的 js_api 载体占位类：方法在 _run_app 里动态挂载。"""
-
-
 def _resolve_port(config) -> int:
     """本次启动真正监听的 HTTP 端口：`--port` 覆盖配置，值非法时回退配置值。
 
