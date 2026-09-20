@@ -22,17 +22,20 @@ const props = withDefaults(defineProps<{ name?: string; large?: boolean }>(), {
   large: false,
 })
 
-/** 非 `icon:` 的值按纯文本渲染时的兜底（manifest 的默认图标） */
-const TEXT_FALLBACK = '📦'
+/** 没有声明 `icon` 时的默认图标（manifest 的 `icon` 必填，这里只作兜底） */
+const DEFAULT_ICON = 'icon:package'
 
-const isSprite = computed(() => props.name.startsWith('icon:'))
+/** 实际参与渲染的值：`icon:` 前缀走 sprite，其它按纯文本渲染（旧插件传的 emoji） */
+const iconValue = computed(() => props.name || DEFAULT_ICON)
 
-const symbolId = computed(() => props.name.slice('icon:'.length))
+const isSprite = computed(() => iconValue.value.startsWith('icon:'))
+
+const symbolId = computed(() => iconValue.value.slice('icon:'.length))
 
 /** 同文档引用：`#名字`。外部文件引用在 WebView2 里不渲染，见文件头说明。 */
 const spriteHref = computed(() => `#${symbolId.value}`)
 
-const textValue = computed(() => (isSprite.value ? '' : props.name || TEXT_FALLBACK))
+const textValue = computed(() => (isSprite.value ? '' : iconValue.value))
 
 onMounted(ensureIcons)
 </script>

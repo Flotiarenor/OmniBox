@@ -363,7 +363,7 @@ watch(() => route.path, (path) => {
 
           <div v-for="group in colorGroups" :key="group.label" class="color-section">
             <div class="color-group-header" @click="group.expanded = !group.expanded">
-              <span class="color-group-arrow">{{ group.expanded ? '▼' : '▶' }}</span>
+              <span class="color-group-arrow"><Icon :name="group.expanded ? 'icon:chevron-down' : 'icon:chevron-right'" /></span>
               <span class="color-group-label">{{ group.label }}</span>
               <span class="color-group-count">{{ group.variables.length }}项</span>
             </div>

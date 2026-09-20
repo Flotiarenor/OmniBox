@@ -299,11 +299,14 @@ a.info-value:hover { text-decoration: underline; }
   pointer-events: auto;
 }
 .toast.show { opacity: 1; transform: translateX(0); }
+.toast-icon { margin-right: 6px; display: inline-flex; vertical-align: text-bottom; }
 .toast-success { border-color: var(--success); }
-.toast-success::before { content: '✓ '; color: var(--success); font-weight: 600; }
+.toast-success .toast-icon { color: var(--success); }
 .toast-error { border-color: var(--danger); }
-.toast-error::before { content: '✕ '; color: var(--danger); font-weight: 600; }
-.toast-info::before { content: 'ℹ '; color: var(--accent); font-weight: 600; }
+.toast-error .toast-icon { color: var(--danger); }
+.toast-warning { border-color: var(--warning); }
+.toast-warning .toast-icon { color: var(--warning); }
+.toast-info .toast-icon { color: var(--accent); }
 
 /* ===== 外观设置 ===== */
 .theme-toggle {

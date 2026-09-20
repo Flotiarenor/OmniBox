@@ -137,7 +137,7 @@ async function apiDemo(mode: 'none' | 'cookie' | 'bad') {
       </div>
 
       <div class="section">
-        <h2>1️⃣ 健康检查（200）</h2>
+        <h2>1. 健康检查（200）</h2>
         <div class="row">
           <button class="btn btn-sm" @click="runHealth">GET /health</button>
           <span class="desc">应返回 <code>200</code> JSON <code>{"status":"ok"}</code>；nginx / 探活依赖它。</span>
@@ -146,7 +146,7 @@ async function apiDemo(mode: 'none' | 'cookie' | 'bad') {
       </div>
 
       <div class="section">
-        <h2>2️⃣ API 鉴权（401 / 200）</h2>
+        <h2>2. API 鉴权（401 / 200）</h2>
         <div class="row">
           <button class="btn btn-sm" @click="apiDemo('none')">无令牌</button>
           <button class="btn btn-sm" @click="apiDemo('cookie')">带 Cookie</button>
@@ -158,7 +158,7 @@ async function apiDemo(mode: 'none' | 'cookie' | 'bad') {
       </div>
 
       <div class="section">
-        <h2>3️⃣ 错误跳转演示（标记页 → 壳内 /status）</h2>
+        <h2>3. 错误跳转演示（标记页 → 壳内 /status）</h2>
         <div class="row">
           <a class="btn btn-sm" target="_blank" href="/thumbs/x.png">401 未授权</a>
           <a class="btn btn-sm" target="_blank" href="/file?path=..%2Fsecret&plugin=image-viewer">403 越权</a>
@@ -173,7 +173,7 @@ async function apiDemo(mode: 'none' | 'cookie' | 'bad') {
       </div>
 
       <div class="section">
-        <h2>4️⃣ 壳内错误区域（iframe 404 → 自动跳转到本视图）</h2>
+        <h2>4. 壳内错误区域（iframe 404 → 自动跳转到本视图）</h2>
         <div class="row">
           <span class="desc">导航栏打开「调试坏插件」（调试服务器注入）→ 壳检测到 iframe 加载了
             404 标记页 → 自动跳转到 <code>/status?code=404&from=…</code>，显示上方错误卡片；点「重试」返回并强制重载。</span>
@@ -186,7 +186,7 @@ async function apiDemo(mode: 'none' | 'cookie' | 'bad') {
       </div>
 
       <div class="section">
-        <h2>5️⃣ 校验清单</h2>
+        <h2>5. 校验清单</h2>
         <div class="row">
           <span class="hint">
             <span class="tag ok">200</span> /health JSON &nbsp;·&nbsp;

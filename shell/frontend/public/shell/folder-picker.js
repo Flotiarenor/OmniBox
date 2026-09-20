@@ -35,7 +35,7 @@ window.FolderPicker = (function () {
           <div class="iv-dirbrowser">
             <div class="iv-dirbrowser-bar">
               <button class="btn btn-sm" data-act="drives"><svg class="obx-icon"><use href="#monitor"></use></svg> 我的电脑</button>
-              <button class="btn btn-sm" data-act="up">↑ 上级</button>
+              <button class="btn btn-sm" data-act="up">${Utils.iconHtml('icon:arrow-up')} 上级</button>
               <span class="iv-dirbrowser-path" data-act="path"></span>
             </div>
             <div class="iv-dirbrowser-list" data-act="list"></div>
@@ -299,7 +299,7 @@ window.FolderPicker = (function () {
             <span class="iv-root-tag${isPrimary ? '' : ' iv-root-tag-extra'}">${isPrimary ? '主要' : '额外'}</span>
             <span class="iv-root-path" title="${Utils.escapeHtml(path)}">${Utils.escapeHtml(path)}</span>
             ${note ? `<span class="iv-root-note">${Utils.escapeHtml(note)}</span>` : ''}
-            <button class="iv-root-remove" data-index="${index}" title="移除">✕</button>
+            <button class="iv-root-remove" data-index="${index}" title="移除">${Utils.iconHtml('icon:x')}</button>
         </div>`;
       }).join('');
       listBox.innerHTML = rows || `<div class="iv-roots-empty">${Utils.escapeHtml(options.emptyText || '未添加任何目录')}</div>`;

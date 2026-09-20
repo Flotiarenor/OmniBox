@@ -386,10 +386,18 @@ window.Toast = (function() {
     }
     return container;
   }
+  // 前缀图标走壳图标集：伪元素（CSS `content`）放不了 SVG，所以前缀由 JS 插入元素。
+  const TOAST_ICONS = {
+    success: 'icon:circle-check',
+    error: 'icon:circle-x',
+    warning: 'icon:triangle-alert',
+    info: 'icon:info'
+  };
   function show(message, type = 'info', duration = 2600) {
     const el = document.createElement('div');
     el.className = `toast toast-${type}`;
-    el.textContent = message;
+    const iconName = TOAST_ICONS[type] || TOAST_ICONS.info;
+    el.innerHTML = `<span class="toast-icon">${Utils.iconHtml(iconName)}</span>${Utils.escapeHtml(message)}`;
     ensureContainer().appendChild(el);
     requestAnimationFrame(() => el.classList.add('show'));
     setTimeout(() => {
@@ -659,11 +667,15 @@ function createTree(container, options = {}) {
 
     const arrow = document.createElement('span');
     arrow.className = 'tree-arrow collapsed';
-    arrow.textContent = '▼';
+    // 折叠态由 CSS 的 rotate(-90deg) 表现（base.css 的 .tree-arrow.collapsed），
+    // 这里只放图标本体；.tree-arrow 的字号决定图标尺寸。
+    arrow.innerHTML = Utils.iconHtml('icon:chevron-down');
 
     const iconSpan = document.createElement('span');
     iconSpan.className = 'tree-icon';
-    iconSpan.textContent = icon;
+    // icon 已经是 Utils.iconHtml 产出的安全标记（非 `icon:` 值在内部走 escapeHtml），
+    // 所以这里写 innerHTML：写 textContent 会把标记当纯文本显示出来。
+    iconSpan.innerHTML = icon;
 
     const nameSpan = document.createElement('span');
     nameSpan.className = 'tree-name';
@@ -728,10 +740,10 @@ function createLightbox(options = {}) {
   const overlay = document.createElement('div');
   overlay.className = 'lightbox';
   overlay.innerHTML = `
-    <div class="lightbox-arrow left">❮</div>
+    <div class="lightbox-arrow left">${Utils.iconHtml('icon:chevron-left')}</div>
     <img id="lightbox-img" src="" alt="原图查看" draggable="false">
-    <div class="lightbox-arrow right">❯</div>
-    <div class="lightbox-close">✕</div>
+    <div class="lightbox-arrow right">${Utils.iconHtml('icon:chevron-right')}</div>
+    <div class="lightbox-close">${Utils.iconHtml('icon:x')}</div>
     <div class="lightbox-info"></div>
   `;
   document.body.appendChild(overlay);
