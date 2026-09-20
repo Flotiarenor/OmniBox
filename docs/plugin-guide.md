@@ -583,6 +583,10 @@ class AudioCoverCache(ThumbCache):
 
 所有动画均遵循 `prefers-reduced-motion`，用户开启减少动态效果时自动降级。
 
+> 提交前 `python tools/check_plugins.py` 会校验这些契约：引用未声明的 CSS 变量、使用原生
+> `alert()`/`confirm()` 是 error；`!important`、与壳逐值相同的关键帧、用 `obx-` 前缀命名
+> 插件自有动画是 warning。逐条依据见 `docs/plugin-ui-guide.md`。
+
 #### 通用布局类（base.css 已提供，插件无需重复定义）
 
 以下 CSS 类已由 Shell 统一注入，插件 HTML 直接使用即可，**不应在自己 CSS 中重复定义**（否则将不兼容未来主题变更）：

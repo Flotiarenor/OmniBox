@@ -603,7 +603,8 @@ background: var(--mp-glass, var(--bg-surface));
 | 1 | **删除死组件 `createCardGrid`**：零采用，且它渲染的 `.manga-*` 在壳与任何插件样式里都没有定义 | `plugin-guide.md` §4.3 与本文件 §5/§9.2/§10 同步 |
 | 2 | **壳空态升级**：`.empty-state` 改为四段结构（+ `.empty-state--inline`、`--obx-empty-min-h`）；`effects.css` 的 reduced-motion 白名单补上 `.empty-state-icon` | `base.css`「通用状态」一节；壳内既有使用者（`base.js` 的设置弹窗）无需改动 |
 | 2 | **7 个插件迁移**到壳类并删除各自实现：`.iv-empty*`、`.nr-empty*`、`.ml-empty*`、`.mp-empty-state*`、`.cleaner-empty`、`.empty`（netease）、`.nl-empty`、`.psync-empty`（死类） | 全仓 `class="empty-state"` 约 57 处；`grep '(iv\|nr\|ml\|mp\|cleaner\|psync\|nl)-empty'` 只剩注释与 `.nr-empty-span` |
-| 3 | **内嵌页信号**：image-viewer 的扩展面板与 `folder-picker.js` 的提供方 iframe 在 URL 上追加 `?embed=1`；image-cleaner / pixiv-sync 在 `<head>` 里据此打上 `html.is-embedded`，把工具栏降级为普通操作行并隐藏与宿主重复的标题 | `app.js` 的 `_embedUrl()`、`folder-picker.js:207-215`、两个页面的 `<head>` 与 CSS（0,2,1 选择器）；`plugin-guide.md` §2.1 与本文件 §3.4 已写明约定 |
+| 3 | **内嵌页信号**：image-viewer 的扩展面板与 `folder-picker.js` 的提供方 iframe 在 URL 上追加 `?embed=1`；image-cleaner / pixiv-sync 在 `<head>` 里据此打上 `html.is-embedded`，把工具栏降级为普通操作行并隐藏与宿主重复的标题 | `app.js` 的 `_embedUrl()`、`folder-picker.js:207-215`、两个页面的 `<head>` 与 CSS（0,2,1 选择器） |
+| 4 | **静态门禁落地**：`tools/check_plugins.py` 新增前端 UI 契约检查（未定义变量与原生 `alert`/`confirm` 为 error，`!important` 与重复/越权关键帧为 warning），并在 `tests/test_plugin_spec.py` 补 `FrontendUiContractTests`（8 例） | 全仓运行：0 error、46 warning（40 基线 + 6 处 `!important`）；实装当天抓到 image-viewer 的 `obxRebuildSlide` 越权前缀，已改名 `iv-rebuild-slide` |
 
 **保留的插件专属"空态"（不是漏改）**：
 
@@ -652,12 +653,20 @@ background: var(--mp-glass, var(--bg-surface));
 
 ### 10.3 加可验证项（否则一定会退回去）
 
-- **静态**（扩 `tools/check_plugins.py`）：
-  - 插件 CSS/HTML 里出现 `alert(` / `confirm(` → error；
-  - 出现 `var(--<不存在的名字>` → error（对照 `variables.css` + `effects.css` 的 token 集合，
-    这一条能同时抓住 `--color-*`、`--text-danger`、`--mp-glass`）；
-  - 出现 `.obx-anim-*` 之外自造关键帧、或 `!important` → warning；
-  - `var(--xx, #hex)` 这类"带颜色兜底的未知 token" → warning。
+- **静态（已实装，见 `tools/check_plugins.py`）**：
+  - `var(--<不存在的名字>` → **error**。允许集合 = 壳样式里声明的变量（`variables.css` /
+    `base.css` / `effects.css` / `folder-picker.css` / `src/styles/shell.css`）+ 插件自己声明的
+    + 插件 JS `setProperty('--x', …)` 写入的 + `FRAMEWORK_SET_VARS`（壳脚本写入、插件只读，
+    目前只有 `--obx-i`）。**每加一个框架变量都要在登记表里写清"谁写的"**，否则等于把规则关掉。
+    同一文件里同一个名字只报一条，但会带上总处数（27 处 `--color-text` 不会刷屏）。
+  - `alert(` / `confirm(` → **error**（`Toast.*` / `confirmDialog()` 不受影响；注释里的示例代码
+    不算——检查前会剥掉块注释与 `//` 行注释）。
+  - `!important` → **warning**（当前 6 处：document-reader 3 处 `user-select`/`padding`，
+    media-player 3 处 reduced-motion 兜底）。
+  - 与壳逐值相同的 `@keyframes` → **warning**；插件用壳保留的 `obx-` 前缀命名自己的关键帧
+    也 → **warning**（这条实装当天就抓到 image-viewer 的 `obxRebuildSlide`，已改名
+    `iv-rebuild-slide`）。
+  - 用例：`tests/test_plugin_spec.py` 的 `FrontendUiContractTests`（拦住 + 不误报两侧都有）。
 - **渲染**：
   - 把 `tests/debug_nav_style_ui.py` 的 `TARGETS` 从 4 个插件扩到全部带侧栏的插件
     （目前缺 document-reader）；

@@ -10,6 +10,9 @@
 - dependencies 是字符串数组、引用存在且不依赖自身
 - minShellVersion 不超过当前 shell 版本
 - 插件目录内不得残留 settings.json 或旧版 _save_settings_to_file 代码
+- 前端 UI 契约（docs/plugin-ui-guide.md）：
+  引用了未定义的 CSS 变量、使用原生 alert/confirm 是 error；
+  !important、与壳逐值相同的关键帧、越权使用 `obx-` 前缀的关键帧是 warning
 - 后端类可导入、继承 PluginBase、settings_schema 结构合法
 - 已规划但未实装的 kind / runtime 只告警不阻断
 
@@ -155,6 +158,161 @@ def _check_frontend_assets(plugin_dir: Path, frontend_entry: str) -> List[str]:
             errors.append(f'frontend 资源路径无效: {match}')
     return errors
 
+
+
+# ===== 前端 UI 契约（docs/plugin-ui-guide.md）=====
+# 动机来自一次全仓取证：壳早已注入统一层（variables.css / base.css / effects.css / base.js），
+# 但插件各自抄了一份，而抄错有三种形态，都"不报错、只是静默失效"，读代码看不出来：
+#   1. var(--color-text, #666)     —— 壳里根本没有这个名字，永远退回字面量（整页不换肤）
+#   2. var(--text-danger, #e5484d) —— 猜了个相近名字（错误色不跟随主题）
+#   3. var(--mp-glass, …)          —— 引用了别的插件的私有 token（恒取兜底）
+# 原生 alert/confirm 另算一类：它们会打断宿主面板里的操作流，且不可被主题化。
+SHELL_STYLE_FILES = (
+    'shell/frontend/public/shell/variables.css',
+    'shell/frontend/public/shell/base.css',
+    'shell/frontend/public/shell/effects.css',
+    'shell/frontend/public/shell/folder-picker.css',
+    'shell/frontend/src/styles/shell.css',
+)
+# 壳脚本写入、插件只读的变量：它们不在任何 CSS 里声明，靠 JS setProperty 赋值。
+# 与 manifest 的读取方登记表同理 —— 每一条都要写清"谁写的"，否则等于把这条规则关掉。
+FRAMEWORK_SET_VARS: Dict[str, str] = {
+    '--obx-i': 'Motion.stagger() 给子元素写的交错序号（effects.css 只做 calc 取值）',
+}
+UI_TOKEN_DECL_RE = re.compile(r'(--[A-Za-z0-9-]+)\s*:')
+UI_TOKEN_USE_RE = re.compile(r'var\(\s*(--[A-Za-z0-9-]+)')
+UI_TOKEN_SET_RE = re.compile(r"""setProperty\(\s*['"](--[A-Za-z0-9-]+)['"]""")
+UI_NATIVE_DIALOG_RE = re.compile(r'(?<![A-Za-z0-9_.$])(alert|confirm)\s*\(')
+UI_IMPORTANT_RE = re.compile(r'!important')
+# 关键帧正文里还有一层 `{}`（每个百分比/from-to 都是规则块），所以不能用 [^{}]*
+UI_KEYFRAME_RE = re.compile(r'@keyframes\s+([A-Za-z0-9_-]+)\s*\{((?:[^{}]|\{[^{}]*\})*)\}')
+UI_BLOCK_COMMENT_RE = re.compile(r'/\*.*?\*/', re.DOTALL)
+UI_HTML_COMMENT_RE = re.compile(r'<!--.*?-->', re.DOTALL)
+
+
+def _normalize_css_body(body: str) -> str:
+    return re.sub(r'\s+', ' ', body).strip()
+
+
+def _shell_css_facts() -> Tuple[set, Dict[str, str]]:
+    """壳样式里声明的变量集合，以及关键帧正文 → 名称（用于识别逐值抄写）。"""
+    declared: set = set()
+    keyframes: Dict[str, str] = {}
+    for rel in SHELL_STYLE_FILES:
+        path = PROJECT_ROOT / rel
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding='utf-8')
+        except Exception:
+            continue
+        declared.update(UI_TOKEN_DECL_RE.findall(text))
+        for name, body in UI_KEYFRAME_RE.findall(text):
+            keyframes.setdefault(_normalize_css_body(body), name)
+    return declared, keyframes
+
+
+def _strip_js_comments(text: str) -> str:
+    """去掉 JS 的块注释与行注释。
+
+    行注释按"行内出现 // 就截断"处理：字符串里的 https:// 也会被截断，代价是**可能漏报**
+    同一行后半段的 alert —— 这条规则宁可漏报，也不要因为一句注释里的示例代码误报。
+    """
+    return '\n'.join(line.split('//', 1)[0] for line in UI_BLOCK_COMMENT_RE.sub(' ', text).split('\n'))
+
+
+def _frontend_files(plugin_dir: Path) -> Tuple[List[Path], List[Path], List[Path]]:
+    root = plugin_dir / 'frontend'
+    if not root.is_dir():
+        return [], [], []
+    css: List[Path] = []
+    html: List[Path] = []
+    js: List[Path] = []
+    for path in sorted(root.rglob('*')):
+        if not path.is_file() or '__pycache__' in path.parts:
+            continue
+        suffix = path.suffix.lower()
+        if suffix == '.css':
+            css.append(path)
+        elif suffix == '.html':
+            html.append(path)
+        elif suffix == '.js':
+            js.append(path)
+    return css, html, js
+
+
+def _check_frontend_ui(plugin_dir: Path) -> Tuple[List[str], List[str]]:
+    """插件前端的 UI 契约检查（返回 errors, warnings，消息不带 [插件名] 前缀）。"""
+    errors: List[str] = []
+    warnings: List[str] = []
+    css_files, html_files, js_files = _frontend_files(plugin_dir)
+    if not (css_files or html_files or js_files):
+        return errors, warnings
+
+    texts: Dict[Path, str] = {}
+    for path in css_files + html_files + js_files:
+        try:
+            texts[path] = path.read_text(encoding='utf-8')
+        except Exception:
+            continue
+
+    shell_vars, shell_keyframes = _shell_css_facts()
+    # 插件自己声明或运行时写入的变量都算"有来源"：声明可能在本文件、兄弟文件或 JS 里
+    own_vars: set = set()
+    for text in texts.values():
+        own_vars.update(UI_TOKEN_DECL_RE.findall(text))
+        own_vars.update(UI_TOKEN_SET_RE.findall(text))
+    known_vars = shell_vars | own_vars | set(FRAMEWORK_SET_VARS)
+
+    for path, text in texts.items():
+        rel = path.relative_to(plugin_dir).as_posix()
+        suffix = path.suffix.lower()
+
+        # 未定义变量：同一文件里同一个名字只报一条，带上首次出现的行号与总处数
+        unknown: Dict[str, List[int]] = {}
+        for match in UI_TOKEN_USE_RE.finditer(text):
+            name = match.group(1)
+            if name in known_vars:
+                continue
+            unknown.setdefault(name, []).append(text.count('\n', 0, match.start()) + 1)
+        for name, lines in unknown.items():
+            extra = f'（本文件共 {len(lines)} 处，首个在 {rel}:{lines[0]}）' if len(lines) > 1 else f'（{rel}:{lines[0]}）'
+            errors.append(
+                f'引用了未定义的 CSS 变量 {name} {extra}：壳的 token 见 variables.css / effects.css；'
+                f'插件私有变量请用 --<plugin>- 前缀并就地声明，JS 运行时写入的需有 setProperty 赋值'
+            )
+
+        # 原生 alert/confirm
+        if suffix in ('.js', '.html'):
+            scan = _strip_js_comments(text) if suffix == '.js' else UI_HTML_COMMENT_RE.sub(' ', text)
+            for match in UI_NATIVE_DIALOG_RE.finditer(scan):
+                line = scan.count('\n', 0, match.start()) + 1
+                errors.append(
+                    f'{rel}:{line} 用了原生 {match.group(1)}()：改用壳的 Toast.* / confirmDialog()'
+                    f'（docs/plugin-ui-guide.md §5）'
+                )
+
+        # 以下两类只告警：它们是"可以有意为之"的写法，但必须先看见
+        if suffix in ('.css', '.html'):
+            for match in UI_IMPORTANT_RE.finditer(text):
+                line = text.count('\n', 0, match.start()) + 1
+                warnings.append(
+                    f'{rel}:{line} 出现 !important：优先提高特异性（如 .xx-sidebar.view-sub-sidebar），'
+                    f'确有必要时保留并写明理由'
+                )
+            for name, body in UI_KEYFRAME_RE.findall(text):
+                if name.startswith('obx'):
+                    warnings.append(
+                        f'{rel} 声明了 @keyframes {name}：`obx-` 前缀属壳（effects.css），'
+                        f'插件自有动画请改用 <plugin>- 前缀'
+                    )
+                    continue
+                twin = shell_keyframes.get(_normalize_css_body(body))
+                if twin:
+                    warnings.append(
+                        f'{rel} 的 @keyframes {name} 与壳的 {twin} 逐值相同：直接用关键帧名 {twin}，不必抄一份'
+                    )
+    return errors, warnings
 
 
 def _check_schema(cls) -> List[str]:
@@ -446,6 +604,11 @@ def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -
             errors.append(f'{where} frontend.entry 不存在或越界: {frontend_entry}')
         else:
             errors.extend(f'[{folder_name}] {error}' for error in _check_frontend_assets(plugin_dir, frontend_entry))
+
+        # 前端 UI 契约：与入口是否存在无关，独立扫 frontend/ 下的 css/html/js
+        ui_errors, ui_warnings = _check_frontend_ui(plugin_dir)
+        errors.extend(f'[{folder_name}] {error}' for error in ui_errors)
+        warnings.extend(f'[{folder_name}] {warning}' for warning in ui_warnings)
 
 
         backend = data.get('backend')

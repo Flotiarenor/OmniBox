@@ -314,5 +314,133 @@ class PluginSpecCheckerTests(unittest.TestCase):
         self.assertTrue(any('登记表过期' in error for error in errors))
 
 
+class FrontendUiContractTests(unittest.TestCase):
+    """前端 UI 契约门禁（tools/check_plugins.py 的 _check_frontend_ui）。
+
+    这些缺陷的共性是"不报错、只是静默失效"：壳里没有的变量名会被 var() 的兜底吃掉，
+    原生 alert 会打断宿主面板里的操作流。用例固定住"能拦住"与"不误报"两侧。
+    """
+
+    def _plugin_with_frontend(self, root: Path, name: str, **files: str) -> Path:
+        plugin_dir = _make_plugin(root, name, _manifest(name, f'/{name}'))
+        for rel, content in files.items():
+            target = plugin_dir / 'frontend' / rel.replace('__', '/')
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding='utf-8')
+        return plugin_dir
+
+    def test_unknown_css_variable_is_an_error(self):
+        """var(--color-text, #666) 这类写法必须被拦住（pixiv-sync 曾整页因此不换肤）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._plugin_with_frontend(
+                root, 'ui-bad-var',
+                **{'bad.css': '.a { color: var(--color-text, #666); }'},
+            )
+            errors, _ = check_plugins(root, load_backends=False)
+            self.assertTrue(any('未定义的 CSS 变量 --color-text' in error for error in errors), errors)
+
+    def test_shell_and_plugin_own_variables_pass(self):
+        """壳的 token、插件自己声明的私有变量、JS setProperty 写入的变量都不算未定义。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._plugin_with_frontend(
+                root, 'ui-good-var',
+                **{
+                    'good.css': (
+                        ':root { --good-radius: 8px; }\n'
+                        '.a { color: var(--text-primary); border-radius: var(--good-radius); }\n'
+                        '.b { font-size: var(--good-runtime-size); }\n'
+                    ),
+                    'app.js': "el.style.setProperty('--good-runtime-size', '12px');\n",
+                },
+            )
+            errors, _ = check_plugins(root, load_backends=False)
+            self.assertFalse([e for e in errors if '未定义的 CSS 变量' in e], errors)
+
+    def test_framework_set_variable_is_allowed(self):
+        """--obx-i 由 Motion.stagger() 写入，不在任何 CSS 里声明，不能误报。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._plugin_with_frontend(
+                root, 'ui-obx-i',
+                **{'good.css': '.a { animation-delay: calc(var(--obx-i, 0) * 30ms); }'},
+            )
+            errors, _ = check_plugins(root, load_backends=False)
+            self.assertFalse([e for e in errors if '--obx-i' in e], errors)
+
+    def test_native_alert_and_confirm_are_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._plugin_with_frontend(
+                root, 'ui-native-dialog',
+                **{
+                    'app.js': "if (ok) { alert('保存失败'); }\nconst yes = confirm('确定？');\n",
+                },
+            )
+            errors, _ = check_plugins(root, load_backends=False)
+            self.assertTrue(any("原生 alert()" in error for error in errors), errors)
+            self.assertTrue(any("原生 confirm()" in error for error in errors), errors)
+
+    def test_toast_and_confirm_dialog_are_not_flagged(self):
+        """壳的 Toast / confirmDialog 不能因为名字里带 confirm 被误伤。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._plugin_with_frontend(
+                root, 'ui-shell-dialog',
+                **{'app.js': "Toast.error('x');\nconst ok = await confirmDialog('确定？', { danger: true });\n"},
+            )
+            errors, _ = check_plugins(root, load_backends=False)
+            self.assertFalse([e for e in errors if '原生' in e], errors)
+
+    def test_alert_inside_comment_is_not_flagged(self):
+        """说明历史的注释里出现 alert( 不应把门禁打红。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._plugin_with_frontend(
+                root, 'ui-comment',
+                **{'app.js': "// 以前这里写 alert('保存失败')，现在走 Toast\nToast.success('ok');\n"},
+            )
+            errors, _ = check_plugins(root, load_backends=False)
+            self.assertFalse([e for e in errors if '原生' in e], errors)
+
+    def test_important_and_duplicate_keyframes_warn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._plugin_with_frontend(
+                root, 'ui-warn',
+                **{
+                    'warn.css': (
+                        '.a { padding: 0 !important; }\n'
+                        '@keyframes cozyFadeUp {\n'
+                        '  from { opacity: 0; transform: translateY(10px); }\n'
+                        '  to { opacity: 1; transform: translateY(0); }\n'
+                        '}\n'
+                        '@keyframes obxMine { from { opacity: 0; } to { opacity: 1; } }\n'
+                    ),
+                },
+            )
+            errors, warnings = check_plugins(root, load_backends=False)
+            self.assertFalse([e for e in errors if 'CSS 变量' in e], errors)
+            self.assertTrue(any('!important' in warning for warning in warnings), warnings)
+            self.assertTrue(any('与壳的 obxFadeUp 逐值相同' in warning for warning in warnings), warnings)
+            self.assertTrue(any('obx-` 前缀属壳' in warning for warning in warnings), warnings)
+
+    def test_numbers_are_reported_once_per_file_and_variable(self):
+        """同一个未定义变量在一处文件里出现多次只报一条，但要看得出总处数。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._plugin_with_frontend(
+                root, 'ui-verbose',
+                **{'many.css': '.a { color: var(--color-text, #666); }\n'
+                                '.b { color: var(--color-text, #666); }\n'
+                                '.c { color: var(--color-text, #666); }\n'},
+            )
+            errors, _ = check_plugins(root, load_backends=False)
+            matched = [e for e in errors if '未定义的 CSS 变量 --color-text' in e]
+            self.assertEqual(len(matched), 1, matched)
+            self.assertIn('共 3 处', matched[0])
+
+
 if __name__ == '__main__':
     unittest.main()

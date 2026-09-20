@@ -335,9 +335,10 @@
   height: 100%;
   border-radius: inherit;
   background: var(--iv-gradient);
-  animation: obxRebuildSlide 1.2s ease-in-out infinite;
+  animation: iv-rebuild-slide 1.2s ease-in-out infinite;
 }
-@keyframes obxRebuildSlide {
+/* 插件自有动画用 `iv-` 前缀：`obx-` 是壳（effects.css）保留的命名空间 */
+@keyframes iv-rebuild-slide {
   0% { transform: translateX(-100%); }
   100% { transform: translateX(350%); }
 }
