@@ -217,13 +217,28 @@ class PluginManager:
         return self._instances.get(name)
 
     def get_protected_paths(self) -> List[Path]:
-        """汇总所有插件申请的受保护路径（PluginBase.get_protected_paths）。
+        """汇总受保护路径：插件申报的路径 + **所有已加载插件的设置文件**。
 
         实现放在模块级 `collect_protected_paths()`：它只依赖"实例表 + 配置目录"，
         因此测试里的桩管理器能用**同一份**实现，不会出现"桩放松了边界校验、
         用例却仍然全绿"。
+
+        设置文件默认受保护（不要求插件记得声明 `"secret": True`）：凭据经
+        `update_setting()` 就能写进这个文件，而"没声明 secret"不该等于"可读"
+        （审计项 P3-2 实测未申报的 `plugins/<名字>.json` 经 /file 返回 200）。
+        `secret` 标记仍然管另一件事 —— `get_settings()` 的掩码与"申报别的路径"。
+
+        只列**已加载插件**的设置文件（字符串拼接，无 I/O）：卸载插件的遗留 `.json`
+        不在其中，那属于"没人再认领的孤儿文件"，需要按目录扫描才能覆盖。
         """
-        return collect_protected_paths(self._instances, self._config_dir)
+        declared = collect_protected_paths(self._instances, self._config_dir)
+        settings_files: List[Path] = []
+        for name in list(self._instances):
+            try:
+                settings_files.append(self._settings_store.path_for(name))
+            except (TypeError, ValueError) as exc:
+                log.warning(f"[PluginManager] 解析 {name} 的设置文件路径失败: {exc}")
+        return [*declared, *settings_files]
 
     def get_plugin_dir(self, name: str) -> Path | None:
         return self._plugin_dirs.get(name)

@@ -362,6 +362,35 @@ class ThumbRouteContractTests(unittest.TestCase):
         resp = self._get(client, '/thumbs/ok.jpg?plugin=probe')
         self.assertEqual(resp.status_code, 404)
 
+    def test_thumb_traversal_is_403_before_plugin_bytes_branch(self):
+        """审计项 P3-1：`get_thumb_data` 返回字节的分支原先不做包含判定。
+
+        同一个 `../` 在散文件分支是 403、在字节分支是 200 —— 而"插件自己记得判越界"
+        不是 Shell 可以依赖的前提（`get_thumb_data` 是插件实现）。现在两条分支共用
+        `_checked_thumb_path`：越界在**调用插件之前**就拒绝，插件根本不该看到它。
+        """
+        seen = []
+
+        class _BytesShape(PluginBase):
+            def register_api(self):
+                return {}
+
+            def get_thumb_data(self, rel_path):
+                seen.append(rel_path)
+                return (b'FROM-DB', 'image/jpeg')
+
+        client = self._client(_BytesShape({'name': 'p'}, self.config))
+        payload = '..\\..\\secret.txt' if os.name == 'nt' else '../../secret.txt'
+        resp = self._get(client, f'/thumbs/{payload}?plugin=probe')
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(seen, [], '越界路径被交给了插件的 get_thumb_data')
+
+        # 根内路径仍然走插件的字节分支（修的是判定位置，不是把功能关掉）
+        ok = self._get(client, '/thumbs/ok.jpg?plugin=probe')
+        self.assertEqual(ok.status_code, 200)
+        self.assertEqual(ok.get_data(), b'FROM-DB')
+        self.assertEqual(seen, ['ok.jpg'])
+
     def test_thumb_traversal_still_403(self):
         client = self._client(_DefaultPlugin({'name': 'p'}, self.config))
         payload = '..\\..\\secret.txt' if os.name == 'nt' else '../../secret.txt'
@@ -460,6 +489,55 @@ class FileRouteResolveContractTests(unittest.TestCase):
         resp = self._get(self._plugin(lambda rel: self.extra_root / 'nope.jpg'),
                          '/file?path=nope.jpg&plugin=probe')
         self.assertEqual(resp.status_code, 404)
+
+    def test_raising_file_roots_falls_back_instead_of_500(self):
+        """审计项 P3-3：`get_file_roots()` 抛异常时 /file 曾是 500。
+
+        同一路由对 `resolve_file_path` / `is_content_placeholder` / `ensure_file` 都有
+        兜底，`/thumbs` 对 `thumb_dir` 也有（`_resolve_thumb_dir`），只有取根这两个调用
+        裸露在外 —— 一个插件的实现缺陷会让它全部 /file 请求变成 500（Flask 默认错误页）。
+        回退顺序：插件的根 → 插件数据根 → 全局数据根。
+        """
+        (self.data_root / 'plain.jpg').write_bytes(b'PLAIN')
+
+        class _BrokenRoots(PluginBase):
+            def register_api(self):
+                return {}
+
+            def get_file_roots(self):
+                raise RuntimeError('插件内部错误')
+
+            def get_data_root(self):
+                raise RuntimeError('插件内部错误2')
+
+        # 两个插件方法都抛错 → 回退到 config['directories']['data_root']，仍然服务该根内的文件
+        resp = self._get(_BrokenRoots({'name': 'broken'}, self.config),
+                         '/file?path=plain.jpg&plugin=probe')
+        self.assertEqual(resp.status_code, 200, '取根失败被当成了 500')
+        self.assertEqual(resp.get_data(), b'PLAIN')
+        # 根外路径照旧 403（回退不等于放开边界）
+        resp = self._get(_BrokenRoots({'name': 'broken'}, self.config),
+                         f'/file?path={self.outside}/leak.jpg&plugin=probe')
+        self.assertEqual(resp.status_code, 403)
+
+    def test_broken_data_root_falls_back_when_roots_are_empty(self):
+        """只坏一半：`get_file_roots()` 返回空、`get_data_root()` 抛错 → 仍走全局数据根。"""
+        (self.data_root / 'plain.jpg').write_bytes(b'PLAIN')
+
+        class _EmptyRoots(PluginBase):
+            def register_api(self):
+                return {}
+
+            def get_file_roots(self):
+                return []
+
+            def get_data_root(self):
+                raise RuntimeError('插件内部错误')
+
+        resp = self._get(_EmptyRoots({'name': 'empty'}, self.config),
+                         '/file?path=plain.jpg&plugin=probe')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_data(), b'PLAIN')
 
     def test_raising_resolver_falls_back_to_the_first_root(self):
         """插件实现抛错：回退默认解析，老行为不受影响，且不得 500。"""

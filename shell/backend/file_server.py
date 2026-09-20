@@ -219,6 +219,38 @@ def _resolve_thumb_dir(instance) -> Path | None:
     return None
 
 
+def _resolve_file_roots(instance, fallback: Path) -> List[Path]:
+    """插件允许访问的根目录；形状不对或抛异常时逐级回退，并记 warning。
+
+    `get_file_roots()` 与 `get_data_root()` 都是插件实现（自由代码）。原先这两个调用
+    不在任何 try 里：一个插件抛异常，它的**全部** `/file` 请求都变成 500（Flask 默认
+    错误页），而同一类调用在 `/thumbs` 早就有一套兜底（`_resolve_thumb_dir`）。
+    回退顺序：插件给出的根 → 插件数据根 → 全局数据根（`config['directories']['data_root']`）。
+    """
+    roots: List[Path] = []
+    if instance is not None:
+        try:
+            declared = instance.get_file_roots()
+        except Exception as exc:
+            log.warning(f'[File_Server] 读取插件文件根失败，改用插件数据根: {exc}')
+        else:
+            if isinstance(declared, Iterable) and not isinstance(declared, (str, bytes)):
+                roots = [root for root in declared if root]
+            else:
+                log.warning('[File_Server] get_file_roots() 必须返回路径列表，已忽略')
+        if not roots:
+            try:
+                data_root = instance.get_data_root()
+            except Exception as exc:
+                log.warning(f'[File_Server] 读取插件数据根失败，改用全局数据根: {exc}')
+            else:
+                if data_root:
+                    roots = [data_root]
+    if not roots:
+        roots = [fallback]
+    return roots
+
+
 def _local_ipv4_addresses() -> set:
     """枚举本机各网卡的 IPv4 地址（失败时返回空集合）。"""
     try:
@@ -629,14 +661,9 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             abort(404)
         # 确定允许访问的根目录（支持插件跨多个媒体目录）：get_file_roots() 是
         # PluginBase 的正式成员，默认 [get_data_root()]，不再做 getattr 探针。
-        if instance is not None:
-            result = instance.get_file_roots()
-            roots = list(result) if isinstance(result, Iterable) and not isinstance(result, (str, bytes)) else []
-            if not roots:
-                roots = [instance.get_data_root()]
-        else:
-            # 回退到全局根目录
-            roots = [normalize_path(config['directories']['data_root'])]
+        # 插件实现抛异常时逐级回退到全局数据根，而不是让整条路由 500（审计项 P3-3）。
+        roots = _resolve_file_roots(
+            instance, Path(config['directories']['data_root']))
         try:
             # 归一化两侧（剥 `\\?\` 前缀 + resolve）：根写扩展形式时，请求里的普通
             # 形式与它做包含判定会得出"越界"的错误结论；而受保护判定需要请求路径
@@ -741,6 +768,32 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         # 无插件上下文：回退到全局缩略图目录（通常不存在）
         return fallback
 
+    def _checked_thumb_path(thumb_dir: Path, filepath: str) -> Path:
+        """`thumb_dir` 下的目标路径；受保护路径与越界路径在这里就拒绝。
+
+        必须在调用插件的 `get_thumb_data()` / `ensure_thumb()` **之前**执行：那两个
+        方法是插件实现，Shell 管不了它们拿到 filepath 之后去读哪个文件。原实现只在
+        散文件分支判包含，于是"插件直接返回字节"那条路整条绕过了越界防护 —— 同一个
+        `../` 在散文件分支是 403、在字节分支是 200（审计项 P3-1）。两条分支现在共用
+        这一个函数，不会再出现"改了其中一条、另一条照旧"。
+
+        异常映射与越界语义：`abort()` 抛的 HTTPException 也是 Exception，不还原
+        `e.code` 的话越界会从 403 变成 400（语义错、也不利于排查）。
+        """
+        try:
+            full_path = normalize_path(thumb_dir / filepath)
+            # thumb_dir 本身可以由插件指定（PluginBase.thumb_dir）：它若落在 .config 上，
+            # "auth_token.txt" 就是一条合法相对路径
+            _reject_protected_file(full_path)
+            if not _is_safe_path(full_path, thumb_dir):
+                abort(403)
+        except Exception as e:
+            code = getattr(e, 'code', None)
+            if code in (400, 403, 404):
+                abort(code)
+            abort(400)
+        return full_path
+
     @app.route('/thumbs/<path:filepath>')
     def serve_thumb(filepath):
         plugin_name = request.args.get('plugin', '')
@@ -750,10 +803,8 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             abort(404)
 
         thumb_dir = _thumb_dir_for(plugin_name, instance)
-        # 受保护判定必须早于任何插件代码：get_thumb_data() / ensure_thumb() 都是插件
-        # 实现，Shell 管不了它们拿到 filepath 后去读哪个文件（原实现把这个判定放在
-        # 散文件分支里，于是"插件直接返回字节"那条路整条绕过了防护）。
-        _reject_protected_file(normalize_path(thumb_dir / filepath))
+        # 受保护判定与包含判定都必须早于任何插件代码（见 _checked_thumb_path）
+        full_path = _checked_thumb_path(thumb_dir, filepath)
 
         # 新路径：插件可直接返回 SQLite 缩略图字节，避免散文件随机 I/O。
         # get_thumb_data() 是 PluginBase 的正式成员，默认返回 None（= 本插件不提供字节）。
@@ -773,29 +824,16 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             except Exception:
                 pass
 
-        return _send_thumb_file(plugin_name, instance, filepath, thumb_dir)
+        return _send_thumb_file(plugin_name, instance, filepath, thumb_dir, full_path)
 
-    def _send_thumb_file(plugin_name: str, instance, filepath: str, thumb_dir: Path | None = None):
+    def _send_thumb_file(plugin_name: str, instance, filepath: str,
+                         thumb_dir: Path | None = None, full_path: Path | None = None):
         """thumb_dir 散文件布局：默认 数据根/.cache/thumbs，找不到时按需生成再读。"""
         if thumb_dir is None:
             thumb_dir = _thumb_dir_for(plugin_name, instance)
-
-        # 安全检查：先判定，再让插件按需生成 —— ensure_thumb() 会按这个路径写盘
-        try:
-            full_path = normalize_path(thumb_dir / filepath)
-            # thumb_dir 本身可以由插件指定（PluginBase.thumb_dir 可写）：
-            # 它若落在 .config 上，"auth_token.txt" 就是一条合法相对路径
-            _reject_protected_file(full_path)
-            if not _is_safe_path(full_path, thumb_dir):
-                abort(403)
-        except Exception as e:
-            # abort() 抛的 HTTPException 也是 Exception：不还原 e.code 的话，
-            # 越界访问会从 403 变成 400（语义错、也不利于排查）。
-            # 与下面 serve_media_file 的写法保持一致。
-            code = getattr(e, 'code', None)
-            if code in (400, 403, 404):
-                abort(code)
-            abort(400)
+        # 调用方已经判过就不重复（serve_thumb 两条分支共用同一份判定）
+        if full_path is None:
+            full_path = _checked_thumb_path(thumb_dir, filepath)
 
         # 按需生成缩略图：契约是"散文件不存在时现场生成并落盘"
         # （PluginBase.ensure_thumb 的说明）。散文件已存在时不再回调插件，

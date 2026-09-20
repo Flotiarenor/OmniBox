@@ -36,6 +36,7 @@ from shell.backend.paths import get_config_dir
 from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_manager import collect_protected_paths
 from shell.backend.protected_paths import (
+    collect,
     is_protected,
     matches,
     normalize,
@@ -254,6 +255,33 @@ class ProtectedPathNormalizationTests(unittest.TestCase):
         self.assertFalse(matches(sibling, protected))
         self.assertFalse(matches(sibling / 'photo.jpg', protected))
         self.assertFalse(matches(self.tmp / 'missing-dir', protected))
+
+    def test_shell_config_and_logs_are_protected(self):
+        """审计项 P3-2：`<config>` 下的壳配置文件与日志默认受保护。
+
+        它们不是凭据，但含绑定地址、可信主机、日志级别，日志里还有本机路径。插件根一旦
+        覆盖 `<config>`（开发模式下 `<config>` 与默认数据根是兄弟目录）就会被 `/file`
+        当普通媒体返回 —— 实测 app.yaml 与 logs/omnibox.log 都是 200。
+        """
+        config = self.tmp / '.config'
+        (config / 'logs').mkdir(parents=True)
+        (config / 'app.yaml').write_text('server: {}\n', encoding='utf-8')
+        (config / 'shell.json').write_text('{}', encoding='utf-8')
+        (config / 'logs' / 'omnibox.log').write_text('log\n', encoding='utf-8')
+        (config / 'principals.json').write_text('{}', encoding='utf-8')
+        # 对照：插件经 /file 正常播放的运行时产物**不能**被一起挡掉，
+        # 这是"不把整个 <config> 申报为受保护"的原因（见 collect 的说明）。
+        audio = config / 'plugins' / 'document-reader' / 'tts' / 'a.mp3'
+        audio.parent.mkdir(parents=True)
+        audio.write_bytes(b'ID3')
+
+        protected = collect(None, config)
+        for path in (config / 'app.yaml', config / 'shell.json',
+                     config / 'logs', config / 'logs' / 'omnibox.log'):
+            with self.subTest(path=path.name):
+                self.assertTrue(matches(path, protected), f'{path} 不在受保护清单里')
+        self.assertFalse(matches(audio, protected),
+                         '朗读音频被误挡 —— document-reader 要经 /file 播放它')
 
     def test_is_protected_defaults_to_shell_token_file(self):
         """不传插件管理器时，清单至少含壳自己的凭据。"""

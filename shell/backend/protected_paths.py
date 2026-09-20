@@ -36,10 +36,15 @@ from pathlib import Path
 from typing import List, Optional
 
 from shell.backend.auth import get_token_file
-from shell.backend.paths import get_config_dir
+from shell.backend.paths import get_config_dir, get_user_data_dir
 from shell.backend.principal import principals_file
 
 log = logging.getLogger(__name__)
+
+# 壳写在 `<config>` 下的文件与目录（见 collect 的说明）。不放整个 `<config>`：
+# 那里还有插件经 /file 正常播放的运行时产物（如朗读音频）。
+_SHELL_CONFIG_FILES = ('app.yaml', 'config.yaml', 'shell.json')
+_SHELL_CONFIG_DIRS = ('logs',)
 
 # Windows 扩展长度前缀：\\?\C:\x 与 \\?\UNC\server\share 两种形态都要还原
 _EXTENDED_PREFIX = '\\\\?\\'
@@ -102,7 +107,7 @@ def matches(target, protected: Iterable[Path]) -> bool:
 
 
 def collect(plugin_manager=None, config_dir: Optional[Path] = None) -> List[Path]:
-    """当前的受保护路径清单：壳自己的凭据（硬编码）+ 插件申报的路径。
+    """当前的受保护路径清单：壳自己的凭据与配置（硬编码）+ 插件申报的路径。
 
     每次都现算，不做缓存：插件支持运行期卸载与重新加载，快照会让新加载插件
     申报的路径静默失效 —— 静默失效的防护比没有防护更危险。
@@ -110,18 +115,45 @@ def collect(plugin_manager=None, config_dir: Optional[Path] = None) -> List[Path
     插件侧任何异常都只记 warning 并跳过：一个写坏的申报不该让文件路由整体 500。
     """
     paths: List[Path] = []
-    try:
-        paths.append(normalize(get_token_file(config_dir or get_config_dir())))
-    except (OSError, TypeError, ValueError) as exc:
-        log.warning(f'[ProtectedPaths] 解析访问令牌路径失败，壳凭据防护未生效: {exc}')
+    config_root = config_dir or get_config_dir()
+
+    def _add(raw, note: str) -> None:
+        """登记一条受保护路径；解析失败只记 warning（一条坏规则不该让路由整体 500）。"""
+        try:
+            protected = normalize(raw)
+        except (OSError, TypeError, ValueError) as exc:
+            log.warning(f'[ProtectedPaths] {note} 解析失败，该项防护未生效: {exc}')
+            return
+        if protected not in paths:
+            paths.append(protected)
+
+    # 访问令牌：读走它等于把一次前端注入或一次局域网泄露自举成持久令牌
+    _add(get_token_file(config_root), '解析访问令牌路径失败')
 
     # 主体凭据表（`<config>/principals.json`）：里面是各主体令牌的 SHA-256。
     # 虽然摘要不能直接当令牌用，但它是"哪些主体存在、各自什么角色"的完整清单，
     # 而离线爆破短令牌的入口正是它 —— 与 auth_token.txt 同级保护，不单独放行。
+    _add(principals_file(config_root), '解析主体凭据表路径失败')
+
+    # 壳自己的配置与日志：内容含绑定地址、可信主机列表、日志级别，日志里还有本机路径。
+    # 它们不是凭据，但同属"这台机器的事实"，而插件根一旦覆盖 `<config>`（开发模式下
+    # `<config>` 与默认数据根是兄弟目录）就会被 `/file` 当普通媒体返回 —— 审计项 P3-2
+    # 实测 app.yaml 与 logs/omnibox.log 都是 200。
+    #
+    # 为什么**不**把整个 `<config>` 申报为受保护：document-reader 的朗读音频落在
+    # `<config>/plugins/<插件名>/tts/`，那是插件经 /file 正常播放的内容，整目录挡掉
+    # 会让朗读功能 404。因此这里逐个列出壳自己写的东西。
+    for name in _SHELL_CONFIG_FILES:
+        _add(config_root / name, f'解析壳配置文件 {name} 失败')
+    for name in _SHELL_CONFIG_DIRS:
+        _add(config_root / name, f'解析壳配置目录 {name} 失败')
+
+    # 旧版配置的迁移来源：`main.load_config` 读的是 `<user_data>/config.yaml`（开发模式下
+    # 就是仓库根），内容与 app.yaml 同类。它不在 `<config>` 下，因此单独列一条。
     try:
-        paths.append(normalize(principals_file(config_dir or get_config_dir())))
+        _add(get_user_data_dir() / 'config.yaml', '解析旧版配置文件失败')
     except (OSError, TypeError, ValueError) as exc:
-        log.warning(f'[ProtectedPaths] 解析主体凭据表路径失败，该文件防护未生效: {exc}')
+        log.warning(f'[ProtectedPaths] 解析用户数据目录失败，旧版配置防护未生效: {exc}')
 
     if plugin_manager is not None:
         try:
@@ -130,13 +162,7 @@ def collect(plugin_manager=None, config_dir: Optional[Path] = None) -> List[Path
             log.warning(f'[ProtectedPaths] 读取插件申报的受保护路径失败: {exc}')
             declared = []
         for raw in declared or []:
-            try:
-                protected = normalize(raw)
-            except (OSError, TypeError, ValueError):
-                log.warning(f'[ProtectedPaths] 忽略无法解析的受保护路径申报: {raw!r}')
-                continue
-            if protected not in paths:
-                paths.append(protected)
+            _add(raw, f'忽略无法解析的受保护路径申报 {raw!r}')
     return paths
 
 

@@ -19,6 +19,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from unittest import mock
+
+from shell.backend.paths import get_plugins_config_dir
 from shell.backend.plugin_manager import PluginManager
 
 _OK_PLUGIN = '''
@@ -93,6 +96,37 @@ def _write_plugin(root: Path, name: str, source: str, deps=None, extra=None) -> 
     )
     (plugin_dir / 'backend' / 'main.py').write_text(source, encoding='utf-8')
     return plugin_dir
+
+
+# ===== 测试隔离：插件设置目录 =====
+#
+# `PluginManager.__init__` 在构造时解析"插件设置目录"（`_resolve_config_dir()` →
+# 进程级 `<仓库>/.config/plugins`）。本文件里的用例把插件建在临时目录，却**没有**
+# 覆盖这个设置目录，于是 `update_setting` / `save_settings` 会把 `alpha.json` 之类
+# 写进开发机真实的 `.config/plugins/`：`git status` 看不见（`.config/` 被忽略），
+# 但工作区里会持续留下用户数据；与真实插件同名时会直接覆盖开发者的设置。
+# 审计项 P3-22。补丁在**构造之前**生效即可 —— 路径在构造时定下，之后的写入自然跟着走。
+_MODULE_TMP: tempfile.TemporaryDirectory | None = None
+_CONFIG_DIR_PATCH = None
+
+
+def setUpModule():
+    global _MODULE_TMP, _CONFIG_DIR_PATCH
+    _MODULE_TMP = tempfile.TemporaryDirectory()
+    _CONFIG_DIR_PATCH = mock.patch(
+        'shell.backend.plugin_manager._resolve_config_dir',
+        return_value=Path(_MODULE_TMP.name) / 'plugins')
+    _CONFIG_DIR_PATCH.start()
+
+
+def tearDownModule():
+    global _MODULE_TMP, _CONFIG_DIR_PATCH
+    if _CONFIG_DIR_PATCH is not None:
+        _CONFIG_DIR_PATCH.stop()
+        _CONFIG_DIR_PATCH = None
+    if _MODULE_TMP is not None:
+        _MODULE_TMP.cleanup()
+        _MODULE_TMP = None
 
 
 class PluginUnloadTests(unittest.TestCase):
@@ -295,6 +329,51 @@ class Plugin(PluginBase):
     def on_load(self):
         (_DIR / "loaded.marker").write_text("ok", encoding="utf-8")
 '''
+
+    def test_settings_stay_inside_the_isolated_config_dir(self):
+        """审计项 P3-22：跑单测不得往真实 `<config>/plugins/` 写文件。
+
+        `git status` 看不到这种写入（`.config/` 被忽略），所以它不会被"提交前检查"
+        拦住，只会在开发机的工作区里长期堆积用户数据；用例与真实插件同名时还会直接
+        覆盖开发者的设置文件。断言写成"写入落在模块级临时目录"，而不是"真实目录里
+        没有该文件" —— 后者会被历史遗留文件弄成假失败。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'plugins'
+            data_root = Path(td) / 'data'
+            data_root.mkdir(exist_ok=True)
+            _write_plugin(root, 'alpha', self._PLUGIN)
+            manager = PluginManager([str(root)], config={'directories': {'data_root': str(data_root)}})
+            manager.load_all()
+
+            instance = manager.get_plugin_instance('alpha')
+            self.assertTrue(instance.update_setting('probe_key', 'probe-value'))
+
+            self.assertNotEqual(Path(manager._config_dir), get_plugins_config_dir(),
+                                '设置目录仍是开发机真实的 <config>/plugins')
+            isolated = Path(manager._config_dir) / 'alpha.json'
+            self.assertTrue(isolated.is_file(), f'设置没有落在隔离目录里: {isolated}')
+            self.assertIn('probe-value', isolated.read_text(encoding='utf-8'))
+
+    def test_settings_file_is_protected_without_secret_flag(self):
+        """审计项 P3-2：插件设置文件**默认**受保护，不再要求每个插件记得声明 secret。
+
+        凭据可以经 `update_setting()` 写进这个文件（pixiv-sync 的 refresh_token 就是
+        这么落的），而"没声明 secret"不该等于"可被 /file 返回"。`secret` 标记仍然管
+        另一件事：`get_settings()` 的掩码。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'plugins'
+            data_root = Path(td) / 'data'
+            data_root.mkdir(exist_ok=True)
+            _write_plugin(root, 'plain-plugin', self._PLUGIN)
+            manager = PluginManager([str(root)], config={'directories': {'data_root': str(data_root)}})
+            manager.load_all()
+
+            protected = [Path(p) for p in manager.get_protected_paths()]
+            settings = Path(manager._config_dir) / 'plain-plugin.json'
+            self.assertIn(settings, protected,
+                          f'未申报 secret 的插件设置文件不在受保护清单里: {protected}')
 
     def test_save_settings_keeps_runtime_state(self):
         with tempfile.TemporaryDirectory() as td:

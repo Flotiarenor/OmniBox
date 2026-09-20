@@ -27,14 +27,20 @@ import hmac
 import os
 import secrets
 from pathlib import Path
+from typing import Dict
 
 TOKEN_COOKIE = 'omnibox_token'
 TOKEN_HEADER = 'X-Omnibox-Token'
 TOKEN_FILE_NAME = 'auth_token.txt'
 
-# 进程内缓存：保证同一进程多次调用返回同一个令牌
-# （令牌文件写入失败时回退为本次启动的随机令牌，也依赖此缓存保持一致）
-_token_cache: str | None = None
+# 进程内缓存：{配置目录: 令牌}。保证同一进程、同一配置目录多次调用返回同一个令牌
+# （令牌文件写入失败时回退为本次启动的随机令牌，也依赖此缓存保持一致）。
+#
+# 必须**按配置目录分键**：它原先是一个进程级单值，而"同一进程里出现多个配置目录"在
+# 用例里是常态（`mock.patch('...get_config_dir')` 或 `OMNIBOX_HOME` 指向临时目录）。
+# 只存一个值时，先跑的临时目录会把令牌留在缓存里，后面使用真实配置目录的用例拿到的
+# 是那枚临时令牌 —— 表现是"单独跑绿、按某种顺序跑 401"，而 401 完全不指向真实原因。
+_token_cache: Dict[str, str] = {}
 
 
 def get_token_file(config_dir: Path) -> Path:
@@ -43,14 +49,14 @@ def get_token_file(config_dir: Path) -> Path:
 
 
 def get_or_create_token(config_dir: Path) -> str:
-    """返回本进程的访问令牌：优先从文件加载，缺失/损坏则生成并持久化。
+    """返回本进程该配置目录的访问令牌：优先从文件加载，缺失/损坏则生成并持久化。
 
     持久化令牌保证应用重启后令牌不变（nginx 反代配置、浏览器书签、
     外部脚本等无需随重启更新）。文件不可写时退化为本次启动随机令牌。
     """
-    global _token_cache
-    if _token_cache:
-        return _token_cache
+    cached = _token_cache.get(str(config_dir))
+    if cached:
+        return cached
 
     token: str | None = None
     token_file = get_token_file(config_dir)
@@ -74,7 +80,7 @@ def get_or_create_token(config_dir: Path) -> str:
         except OSError:
             pass  # 无法持久化：本次启动使用随机令牌
 
-    _token_cache = token
+    _token_cache[str(config_dir)] = token
     return token
 
 
