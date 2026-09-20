@@ -99,7 +99,7 @@
   padding: 7px 30px 7px 30px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: var(--mp-glass, var(--bg-surface));
+  background: var(--bg-surface);
   color: var(--text-primary);
   font-size: 13px;
   outline: none;

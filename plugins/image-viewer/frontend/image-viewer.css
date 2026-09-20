@@ -356,7 +356,7 @@
   max-height: 60px;
   overflow-y: auto;
   font-size: 11px;
-  color: var(--text-danger, #e5484d);
+  color: var(--danger);
   text-align: left;
   word-break: break-all;
 }

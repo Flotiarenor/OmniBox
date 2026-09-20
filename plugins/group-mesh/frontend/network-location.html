@@ -20,11 +20,14 @@
     **每个** HTML 页面都注入引导片段）——本页面正是需要这条注入的子页面。
   -->
   <style>
-    :root { color-scheme: light dark; }
+    /* color-scheme 跟壳的 data-theme 走：写死 "light dark" 会让浏览器按操作系统的
+       偏好决定滚动条/表单控件配色，与壳的主题可能相反 */
+    :root { color-scheme: light; }
+    [data-theme="dark"] { color-scheme: dark; }
     body {
       margin: 0; padding: 14px 16px; font-size: 13px;
       font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-      background: var(--bg, #17181c); color: var(--text-primary, #e8e8ea);
+      background: var(--bg-app); color: var(--text-primary);
     }
     h4 { margin: 0 0 8px; font-size: 13px; color: var(--text-secondary, #a0a0a8); font-weight: 600; }
     .nl-step { margin-bottom: 12px; }
