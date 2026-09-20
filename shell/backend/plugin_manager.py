@@ -240,7 +240,7 @@ class PluginManager:
             {
                 'name': m['name'],
                 'displayName': m.get('displayName', m['name']),
-                'icon': m.get('icon', '📦'),
+                'icon': m.get('icon', 'icon:package'),
                 'route': m['frontend']['route'],
                 'entryUrl': f"/plugins/{m['name']}/frontend/index.html",
                 'keepAlive': bool(m.get('keepAlive', False))

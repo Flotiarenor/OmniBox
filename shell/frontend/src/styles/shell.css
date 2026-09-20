@@ -73,6 +73,16 @@ html, body {
   background: var(--obx-nav-accent);
 }
 
+/* ===== 图标（与 base.css 的 .obx-icon 逐值一致）=====
+   壳页面不注入 base.css，所以这里必须有同一份；用法见 base.css 的注释。 */
+.obx-icon {
+  width: 1em;
+  height: 1em;
+  flex-shrink: 0;
+  vertical-align: -0.125em;
+}
+.obx-icon-lg { width: 1.15em; height: 1.15em; }
+
 /* 宽度取插件契约 token --nav-width（默认 200px）：集中设置页的「导航栏宽度」
    写的就是它，插件自己的导航也会跟着对齐。 */
 .nav-sidebar {
@@ -120,6 +130,9 @@ html, body {
 
 .icon { font-size: 18px; }
 .text { font-size: 14px; }
+/* manifest.icon 仍是 emoji（旧插件/第三方插件）时的文本渲染：宽度与矢量图标一致，
+   否则两种图标的导航项会参差。 */
+.obx-icon-text { font-size: 18px; line-height: 1; }
 
 .main-view {
   flex: 1;

@@ -4,6 +4,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useBridge } from '../core/bridge'
 import { toastError, toastSuccess } from '../core/toast'
+import Icon from '../components/Icon.vue'
 import { applyStoredAppearance, getStoredTheme, persistCustomColors, setStoredTheme } from '../core/appearance'
 import { getStartupPrefs, setStartupPrefs, type StartPage, type StartupPrefs } from '../core/preferences'
 
@@ -22,15 +23,18 @@ const route = useRoute()
 const router = useRouter()
 
 const SECTIONS = [
-  { id: 'appearance', icon: '🎨', label: '外观' },
-  { id: 'startup', icon: '🚀', label: '启动与窗口' },
-  { id: 'storage', icon: '💾', label: '数据与缓存' },
-  { id: 'diagnostics', icon: '🩺', label: '诊断' },
-  { id: 'plugins', icon: '🧩', label: '插件' },
-  { id: 'about', icon: 'ℹ️', label: '关于' },
+  { id: 'appearance', icon: 'palette', label: '外观' },
+  { id: 'startup', icon: 'rocket', label: '启动与窗口' },
+  { id: 'storage', icon: 'hard-drive', label: '数据与缓存' },
+  { id: 'diagnostics', icon: 'stethoscope', label: '诊断' },
+  { id: 'plugins', icon: 'puzzle', label: '插件' },
+  { id: 'about', icon: 'info', label: '关于' },
 ] as const
 type SectionId = (typeof SECTIONS)[number]['id']
 const active = ref<SectionId>('appearance')
+// 分区标题栏的图标与左栏导航同一个名字：模板里各处写 `icon:${短名}`，
+// 由 Icon.vue 统一解析 —— 名字只维护一份，改图标不会漏掉标题栏。
+
 
 // ==================== 外观：主题 ====================
 // 主题的落盘与 data-theme 写入都归 appearance.ts（首屏脚本走同一份，
@@ -308,7 +312,7 @@ watch(() => route.path, (path) => {
         class="obx-nav-item settings-nav-item" :class="{ active: active === s.id }"
         @click="active = s.id"
       >
-        <span class="icon">{{ s.icon }}</span>
+        <Icon :name="`icon:${s.icon}`" />
         <span class="text">{{ s.label }}</span>
       </button>
     </aside>
@@ -317,15 +321,19 @@ watch(() => route.path, (path) => {
       <!-- ==================== 外观 ==================== -->
       <section v-if="active === 'appearance'" class="settings-panel">
         <div class="settings-panel-header">
-          <span class="panel-icon">🎨</span>
+          <Icon class="panel-icon" :name="`icon:${SECTIONS[0].icon}`" />
           <span class="panel-title">外观</span>
         </div>
         <div class="settings-panel-body">
           <div class="field">
             <label class="field-label">主题模式</label>
             <div class="theme-toggle">
-              <button class="btn" :class="{ active: theme === 'light' }" @click="setTheme('light')">☀️ 浅色</button>
-              <button class="btn" :class="{ active: theme === 'dark' }" @click="setTheme('dark')">🌙 深色</button>
+              <button class="btn" :class="{ active: theme === 'light' }" @click="setTheme('light')">
+                <Icon name="icon:sun" /> 浅色
+              </button>
+              <button class="btn" :class="{ active: theme === 'dark' }" @click="setTheme('dark')">
+                <Icon name="icon:moon" /> 深色
+              </button>
             </div>
           </div>
 
@@ -389,7 +397,7 @@ watch(() => route.path, (path) => {
       <!-- ==================== 启动与窗口 ==================== -->
       <section v-if="active === 'startup'" class="settings-panel">
         <div class="settings-panel-header">
-          <span class="panel-icon">🚀</span>
+          <Icon class="panel-icon" :name="`icon:${SECTIONS[1].icon}`" />
           <span class="panel-title">启动与窗口</span>
         </div>
         <div class="settings-panel-body">
@@ -426,7 +434,7 @@ watch(() => route.path, (path) => {
       <!-- ==================== 数据与缓存 ==================== -->
       <section v-if="active === 'storage'" class="settings-panel">
         <div class="settings-panel-header">
-          <span class="panel-icon">💾</span>
+          <Icon class="panel-icon" :name="`icon:${SECTIONS[2].icon}`" />
           <span class="panel-title">数据与缓存</span>
         </div>
         <div class="settings-panel-body">
@@ -478,7 +486,7 @@ watch(() => route.path, (path) => {
       <!-- ==================== 诊断 ==================== -->
       <section v-if="active === 'diagnostics'" class="settings-panel">
         <div class="settings-panel-header">
-          <span class="panel-icon">🩺</span>
+          <Icon class="panel-icon" :name="`icon:${SECTIONS[3].icon}`" />
           <span class="panel-title">诊断</span>
         </div>
         <div class="settings-panel-body">
@@ -517,7 +525,7 @@ watch(() => route.path, (path) => {
       <!-- ==================== 插件 ==================== -->
       <section v-if="active === 'plugins'" class="settings-panel">
         <div class="settings-panel-header">
-          <span class="panel-icon">🧩</span>
+          <Icon class="panel-icon" :name="`icon:${SECTIONS[4].icon}`" />
           <span class="panel-title">插件</span>
         </div>
         <div class="settings-panel-body">
@@ -547,7 +555,7 @@ watch(() => route.path, (path) => {
       <!-- ==================== 关于 ==================== -->
       <section v-if="active === 'about'" class="settings-panel">
         <div class="settings-panel-header">
-          <span class="panel-icon">ℹ️</span>
+          <Icon class="panel-icon" :name="`icon:${SECTIONS[5].icon}`" />
           <span class="panel-title">关于</span>
         </div>
         <div class="settings-panel-body">

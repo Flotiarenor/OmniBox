@@ -453,6 +453,27 @@ body {
   background: var(--bg-surface);
 }
 
+/* ===== 图标（sprite 引用）=====
+   图标统一来自壳的 sprite：/shell/icons.svg（由 tools/build_icons.py 生成，
+   源数据 tools/icon_data.json）。用法只有一个：
+
+     <svg class="obx-icon"><use href="/shell/icons.svg#gear"></use></svg>
+
+   尺寸走 1em、颜色走 currentColor，所以图标自动跟随所在元素的字号与文字色
+   （含用户自定义的 --accent / --text-*），换图标时不需要重调排版 —— 这是替换
+   emoji 时不引入视觉回归的关键。宽度/高度必须显式给：sprite 里的 <symbol> 是
+   shadow tree，外面的尺寸进不去，只写 viewBox 的 <svg> 默认按 300×150 渲染。 */
+.obx-icon {
+  width: 1em;
+  height: 1em;
+  flex-shrink: 0;
+  vertical-align: -0.125em;
+  /* currentColor 由 sprite 的 <symbol> 自己声明，这里不重复设 fill/stroke，
+     否则会盖掉图标内部显式写了 fill="currentColor" 的实心小元素。 */
+}
+/* 需要图标比文字略大时（工具栏按钮、导航项）用 1.15em，而不是另写一套类 */
+.obx-icon-lg { width: 1.15em; height: 1.15em; }
+
 /* 通用状态 */
 .loading { text-align: center; padding: 50px; color: var(--text-secondary); font-size: 15px; }
 /* 空态：图标 + 主文案 + 可选提示（+ 可选按钮）。这是全仓唯一一份实现，插件不要再自建

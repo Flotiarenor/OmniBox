@@ -60,6 +60,9 @@
     错误就地提示 + 重试入口（不用 alert）。
 11. **覆盖壳的布局类必须提高特异性**（`.mp-side.view-sub-sidebar`，0,2,0），不能依赖
     注入顺序；不用 `!important` 与 `*` 选择器。
+12. **图标只用壳的 sprite**：`<svg class="obx-icon"><use href="/shell/icons.svg#名字"></use></svg>`，
+    不用图形化 emoji（🖼🔄🗑🎧 这类）。跨平台字形与字重不一致正是"不像一个软件"的来源之一，
+    详见本节「补充约定」的第一条与 §9.7。
 
 ---
 
@@ -317,6 +320,7 @@ background: var(--mp-glass, var(--bg-surface));
 | 组件 | 壳提供的入口 | 规范用法 | 现状 |
 | --- | --- | --- | --- |
 | 按钮 | `base.css:13-36` `.btn` / `-primary` / `-danger` / `-danger-solid` / `-sm` / `.active` | 工具条 `.btn`/`.btn-sm`；主操作 `-primary`；破坏性 `-danger` 且二次确认 | 全部插件在用 |
+| 图标 | `base.css` 的 `.obx-icon`（+ `.obx-icon-lg`）、sprite `/shell/icons.svg` | 只用 sprite，不用图形化 emoji；尺寸走 `1em`、颜色走 `currentColor`，详见本节「补充约定」第一条 | 壳侧栏与设置页已迁移；插件的 149 处 emoji 待迁移（见 §9.7） |
 | 分组切换 | 无专用类 | `.btn.btn-sm.active`（image-cleaner 的 tab）或 `.obx-nav-item` | image-cleaner 用前者 |
 | 搜索框 | 两种：单输入框用 `.search-input`（`max-width:400px`）；带图标/清除按钮的搜索框用 `.search-field > .search-field-icon + input + .search-field-clear` | 结构与外观**只有这一份实现**：胶囊外框 + 图标在流内 + 输入无边框，聚焦用 `:focus-within` 描边外框；宽度走 `--obx-search-width`（窄窗口由壳统一收窄）。插件不写搜索样式，**也不给容器再加插件类名** | 已统一：四个插件（document-reader / image-viewer / manga-library / media-player）现在标记完全同构，插件侧搜索样式删净（原先共 4 套类名、7 档宽度、1 处玻璃底、1 处边框重写）。形态取自 document-reader 的紧凑胶囊版本 |
 | 侧栏导航 | `base.css:290-347` `.obx-nav-item` + `--obx-nav-*` | 结构/选中态都靠壳；只保留图标栏宽度等差异 | 5 个插件已用；image-cleaner/pixiv-sync 无 |
@@ -339,6 +343,56 @@ background: var(--mp-glass, var(--bg-surface));
 | 键盘可达性 | 壳的灯箱已支持 Esc / ←→ / 滚轮 / 拖拽 | 至少有：`Esc` 关闭最上层浮层、沉浸态 `←/→` 切换、搜索框 `Esc` 清空 | image-viewer 全插件无键盘处理；自绘右键菜单（`app-nav.js:96-134`）不监听 Esc 与 scroll 重定位 |
 
 补充约定：
+
+- **图标源与运行方式**（§5.1）。所有图标来自**一个 sprite**：`/shell/icons.svg`，
+  由 `tools/build_icons.py` 从 `tools/icon_data.json` 生成；源图形取自
+  [Lucide](https://lucide.dev)（`lucide-static` @1.47.0，ISC 授权，可商用）。
+  选 sprite 而不是图标字体或逐处内联的三个理由：
+
+  1. `<use>` 走同源 URL，命中 `img-src 'self'`，**不需要改 CSP** ——
+     图标字体要先把 `font-src 'self' data:` 从 Report-Only 提进强执行档（`file_server.py:143`）；
+  2. 没有字体加载前的图标闪烁（FOUT）；
+  3. 同一份 sprite 被壳页面与全部插件 iframe 共享，浏览器只下载一次。
+
+  ```html
+  <!-- 唯一的写法；尺寸 1em、颜色 currentColor，自动跟随字号与主题 -->
+  <svg class="obx-icon"><use href="/shell/icons.svg#refresh-cw"></use></svg>
+  <svg class="obx-icon obx-icon-lg"><use href="/shell/icons.svg#settings"></use></svg>
+  ```
+
+  三个必须知道的约束：
+
+  - **宽高必须由 CSS 给**。sprite 里的 `<symbol>` 是 shadow tree，外部样式进不去；
+    只写 `viewBox` 的 `<svg>` 会按默认 300×150 渲染，把所在行撑开。
+  - **描边只能写在 sprite 自己身上**，且必须是 `currentColor`（`build_icons.py` 生成时统一写死）。
+    漏掉时图标恒为黑色，不跟主题、也不跟用户自定义的 `--accent`。
+  - **壳页面不注入 `base.css`**，所以 `.obx-icon` 在 `shell/frontend/public/shell/base.css`
+    与 `shell/frontend/src/styles/shell.css` 各有一份，**必须逐值一致**
+    （`tests/test_shell_icons.py` 会比对两份规则）。改壳侧共享样式后必须
+    `npm --prefix shell/frontend run build`，否则插件侧拿到的是旧副本。
+
+- **插件图标怎么声明**：`manifest.icon` 写 `icon:<名字>`（如 `"icon": "images"`，名字取自
+  Lucide 的 kebab-case 图标名），
+  壳的 `<Icon>` 组件据此渲染 sprite；写成 emoji 或任意文本时按文本渲染，
+  第三方/旧插件不改也不会坏。缺省值是 `icon:package`（`plugin_manager.py`）。
+  壳侧栏与设置页见 `shell/frontend/src/components/Icon.vue`。
+
+- **新增一个图标**（两步，都不参与常规构建）：
+
+  ```bash
+  venv/Scripts/python tools/fetch_lucide_icons.py --add refresh-cw   # 从 lucide-static 冻结进 tools/icon_data.json
+  venv/Scripts/python tools/build_icons.py                            # 生成 public/shell/icons.svg
+  npm --prefix shell/frontend run build                               # 共享资源改动必须重新构建
+  ```
+
+  图标名去 [lucide.dev/icons](https://lucide.dev/icons) 搜（kebab-case）。
+  引用了未冻结的名字时，`build_icons.py` 直接报错 —— 否则 `<use>` 指向不存在的 id，
+  界面是一片空白且没有任何提示。
+
+- **emoji 门禁**：`tools/check_plugins.py` 已实装"插件前端不得出现图形化 emoji"的规则
+  （区段见 `UI_EMOJI_RE`，**不含** `★☆❤✓✕⚠❮❯` 这类跨平台稳定的符号写法与数据语义符号）。
+  但**暂未接入**：存量 149 处未清完（见 §9.7），现在打开会让门禁长期红着。
+  阶段 2 清完后把该分支的 `if False and` 去掉即可启用，规则与用例已就位。
 
 - **设置优先走 schema，不要双轨。** 后端 `settings_schema` 声明了什么，前端就该用
   `openSettingsModal()` 渲染同一份；手写第二份字段列表必然漂移。pixiv-sync 就是双轨
@@ -623,6 +677,42 @@ background: var(--mp-glass, var(--bg-surface));
 - `.mp-playlist-empty` / `.mp-stage-empty`（media-player）：前者是侧栏里的 12px 小提示，
   后者是覆盖在封面上的舞台提示（配色跟封面走，用 `--text-secondary` 会失去对比度）。
 - `.nr-empty-span`（document-reader）：只负责网格里的 `grid-column: 1 / -1`。
+
+### 9.7 图标统一（阶段 0/1 已实施，阶段 2/3 待做）
+
+背景：图标此前全部是 emoji。全仓实测 **217 处、56 个不同码点、分布在 28 个插件文件**，
+另有壳页面 7 处与 8 个 `manifest.icon`。emoji 的字形/字重/基线由系统字体决定，
+同一句界面在不同机器上观感不同，是"不像一个软件"的一大来源。
+
+**已实施（阶段 0 + 1）**
+
+| # | 改动 | 落点 |
+| --- | --- | --- |
+| 1 | 图标源冻结：`tools/fetch_lucide_icons.py` 从 `lucide-static@1.47.0` 取图形，存入 `tools/icon_data.json`（只留图形本体 + viewBox + ISC 授权标记）；**运行时不依赖网络、`package.json` 不加任何依赖** | `tools/icon_data.json` |
+| 2 | sprite 生成：`tools/build_icons.py` 产出 `shell/frontend/public/shell/icons.svg`（18 个 `<symbol>`），并校验"引用了未冻结的图标名"；`--check` 供门禁/测试比对生成物与源数据 | `tools/build_icons.py`、`icons.svg` |
+| 3 | 共享样式：`.obx-icon`（1em / currentColor / 显式宽高）+ `.obx-icon-lg`，在 `base.css` 与 `shell.css` **各一份且逐值一致** | `base.css`、`shell.css` |
+| 4 | 壳页面迁移：侧栏 8 个插件图标 + 「设置」、设置页 6 个分区图标（左栏 + 标题栏）、主题开关 ☀️🌙 | `App.vue`、`SettingsView.vue`、`components/Icon.vue` |
+| 5 | manifest 与后端：8 个插件 `icon` 改为 `icon:<名字>`；后端缺省值 `📦` → `icon:package`，并同步 `RUNTIME_FIELD_READERS` 登记表 | `plugins/*/manifest.json`、`plugin_manager.py` |
+| 6 | 兼容性：`Icon.vue` 对非 `icon:` 前缀的值仍按文本渲染，第三方/旧插件不改也不坏 | `components/Icon.vue` |
+| 7 | 可验证项：`tests/test_shell_icons.py`（16 例，静态）+ `tests/debug_shell_icons_ui.py`（真渲染：尺寸、`currentColor` 取色、sprite 可取、`<use>` 名均可解析） | `tests/` |
+
+验收记录（`tests/debug_shell_icons_ui.py`）：侧栏 6 项 / 6 图标均为 18×18，选中项图标色
+`rgb(255,255,255)`、未选中 `rgb(184,196,208)`；设置页 6 个分区图标 + 标题栏 + 主题开关，
+选中项图标色与文字色同为 `rgb(47,129,247)`；sprite HTTP 200、18 个 symbol、含
+`stroke="currentColor"`；控制台无报错。
+
+**待做（阶段 2/3）**
+
+- 插件侧 149 处图形化 emoji 待迁移：media-player 最多（舞台/歌词/播放控制），
+  其次 document-reader、pixiv-sync、image-viewer、manga-library。分两批：
+  先工具栏按钮 + `.empty-state-icon`（`.empty-state-icon` 已统一，改传图标名即可一处收口），
+  再处理嵌在文案里的（`「⚙ 设置」`）与运行时切换的（`★/☆/❤`）。
+- 清完后启用 `check_plugins.py` 的 emoji 门禁（`UI_EMOJI_RE` 分支）。
+- 16 处测试断言写死了 emoji（`debug_status_pages.py` 的 `"icon": "💥"`、
+  `shell_folder_picker.mjs:274` 断言 `'🌐'` 等），迁移时要同步改。
+- `shell/frontend/public/shell/base.js` 与 `folder-picker.js` 里还有壳自带的 emoji
+  （`createContextMenu` / `createTree` / 灯箱箭头 / 文件夹选择器的 `📁💻🌐`），
+  属于壳侧第二批。
 
 ---
 

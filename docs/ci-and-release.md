@@ -19,6 +19,7 @@
 | 运行时禁止 print | `python -m unittest tests.test_no_print_in_runtime` | 通过（硬门禁） |
 | 前端转义一致性 | `node tools/check_frontend_escape.cjs` | **OK**（硬门禁） |
 | 前端类型+构建 | `npm --prefix shell/frontend run build` | 通过（硬门禁） |
+| 图标 sprite 一致性 | `python tools/build_icons.py --check` | **OK**（硬门禁；校验 `shell/frontend/public/shell/icons.svg` 与 `tools/icon_data.json` 同步，且模板/manifest 引用的图标全部已冻结） |
 | 打包冒烟 + 产物校验 | `python tools/check_build_tree.py <dist>/OmniBox --expect-exe OmniBox.exe` | 通过（硬门禁；CI 里只在 push main / 手动触发 / 打包路径变更时跑） |
 
 > `unittest` 这一行里包含插件前端的脚本契约用例：`tests/test_*_js.py` 包装器调用
@@ -32,6 +33,7 @@
 $py = ".\venv\Scripts\python.exe"
 & $py -m ruff check .
 & $py tools/check_plugins.py
+& $py tools/build_icons.py --check
 & $py tools/check_packaging.py
 & $py tools/check_version.py
 & $py -m pyright main.py shell tools

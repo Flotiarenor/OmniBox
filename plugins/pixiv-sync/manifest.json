@@ -2,7 +2,7 @@
   "name": "pixiv-sync",
   "version": "0.5.0",
   "displayName": "Pixiv 同步",
-  "icon": "🎨",
+  "icon": "icon:palette",
   "description": "image-viewer 的 Companion 插件：同步下载关注画师新作与收藏画作",
   "dependencies": [
     "image-viewer"

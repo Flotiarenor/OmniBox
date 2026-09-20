@@ -76,7 +76,7 @@ def looks_like_secret_key(key) -> bool:
 RUNTIME_FIELD_READERS: Dict[str, List[Tuple[str, str]]] = {
     'name': [('shell/backend/plugin_manager.py', "data.get('name')")],
     'displayName': [('shell/backend/plugin_manager.py', "'displayName', m['name']")],
-    'icon': [('shell/backend/plugin_manager.py', "'icon', '📦'")],
+    'icon': [('shell/backend/plugin_manager.py', "'icon', 'icon:package'")],
     'hidden': [('shell/backend/plugin_manager.py', "m.get('hidden')")],
     'keepAlive': [('shell/backend/plugin_manager.py', "'keepAlive'")],
     'dependencies': [('shell/backend/plugin_manager.py', "'dependencies'")],
@@ -188,6 +188,26 @@ UI_IMPORTANT_RE = re.compile(r'!important')
 UI_KEYFRAME_RE = re.compile(r'@keyframes\s+([A-Za-z0-9_-]+)\s*\{((?:[^{}]|\{[^{}]*\})*)\}')
 UI_BLOCK_COMMENT_RE = re.compile(r'/\*.*?\*/', re.DOTALL)
 UI_HTML_COMMENT_RE = re.compile(r'<!--.*?-->', re.DOTALL)
+# 图标统一走壳的 sprite（`/shell/icons.svg` + `.obx-icon`，见 docs/plugin-ui-guide.md §5）。
+# 这里只拦**图形化 emoji**：它们在不同平台的字形、字重、基线都不同，是"看起来不像一个
+# 软件"的主要来源，也正是 sprite 要替代的东西。
+#
+# 区段是逐个手写的，不能图省事写成 `[\U0001F000-\U0001FAFF\u2700-\u27BF]`：
+# 后两个区段含 dingbats（✦❮❯）与杂项符号（★☆❤✓✕⚠），那是跨平台字形稳定的纯符号写法，
+# 且部分承担数据层语义（收藏星、评级心、Toast 前缀），不该被这条规则一起拦下。
+UI_EMOJI_RE = re.compile(
+    '['
+    '\U0001F000-\U0001F0FF'   # 麻将/扑克
+    '\U0001F100-\U0001F1FF'   # 带圈字母数字补充
+    '\U0001F200-\U0001F2FF'   # 带圈表意文字补充
+    '\U0001F300-\U0001F5FF'   # 杂项符号与图形
+    '\U0001F600-\U0001F64F'   # 表情
+    '\U0001F680-\U0001F6FF'   # 交通与地图符号
+    '\U0001F700-\U0001F77F'   # 炼金术符号
+    '\U0001F900-\U0001F9FF'   # 补充符号与图形
+    '\U0001FA00-\U0001FAFF'   # 扩展 A
+    ']'
+)
 
 
 def _normalize_css_body(body: str) -> str:
@@ -289,6 +309,34 @@ def _check_frontend_ui(plugin_dir: Path) -> Tuple[List[str], List[str]]:
                 line = scan.count('\n', 0, match.start()) + 1
                 errors.append(
                     f'{rel}:{line} 用了原生 {match.group(1)}()：改用壳的 Toast.* / confirmDialog()'
+                    f'（docs/plugin-ui-guide.md §5）'
+                )
+
+        # 图形化 emoji 一律改为壳 sprite 里的图标（与未定义变量同为"静默不一致"类缺陷）。
+        #
+        # **暂未接入**：实测全仓存量 151 处（media-player 33、document-reader 19、pixiv-sync 15……），
+        # 清完是图标迁移的阶段 2/3。现在打开会让 check_plugins 从"0 error"变成"152 error"，
+        # 门禁红着就失去意义（既拦不住新问题，也让真实回归淹没在噪声里）。
+        # 阶段 2 清完最后一个插件时，把下面的 `if False` 去掉即可启用 —— 规则本身与
+        # 用例（tests/test_shell_icons.py）已就位，届时不需要再改这里。
+        if False and suffix in ('.css', '.html', '.js'):   # noqa: SIM223 - 见上方说明
+            scan = text
+            if suffix == '.js':
+                scan = _strip_js_comments(text)
+            elif suffix == '.html':
+                scan = UI_HTML_COMMENT_RE.sub(' ', text)
+            else:
+                scan = UI_BLOCK_COMMENT_RE.sub(' ', text)
+            seen_emoji: Dict[str, int] = {}
+            for match in UI_EMOJI_RE.finditer(scan):
+                char = match.group(0)
+                if char not in seen_emoji:
+                    seen_emoji[char] = scan.count('\n', 0, match.start()) + 1
+            for char, line in sorted(seen_emoji.items(), key=lambda item: item[1]):
+                errors.append(
+                    f'{rel}:{line} 出现图形化 emoji {char}（U+{ord(char):04X}）：图标改用壳的 sprite，'
+                    f'写法 `<svg class="obx-icon"><use href="/shell/icons.svg#名字"></use></svg>`；'
+                    f'图标名表与新增方式见 tools/icon_data.json / tools/fetch_lucide_icons.py'
                     f'（docs/plugin-ui-guide.md §5）'
                 )
 

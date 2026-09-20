@@ -13,6 +13,7 @@ import {
 } from './core/plugin-visibility'
 import SettingsView from './views/SettingsView.vue'
 import StatusView from './views/StatusView.vue'
+import Icon from './components/Icon.vue'
 import { toastError } from './core/toast'
 import { useBridge } from './core/bridge'
 import { getStartupPrefs, rememberLastRoute, resolveStartRoute } from './core/preferences'
@@ -272,7 +273,7 @@ watch(
             class="nav-item" :class="{ active: currentPlugin === p.name }"
             @click="router.push(p.route)"
           >
-            <span class="icon">{{ p.icon }}</span>
+            <Icon :name="p.icon" class="icon" />
             <span class="text">{{ p.displayName }}</span>
           </div>
         </template>
@@ -283,7 +284,7 @@ watch(
           class="nav-item" :class="{ active: isSettings }"
           @click="router.push('/settings')"
         >
-          <span class="icon">⚙️</span>
+          <Icon name="icon:settings" class="icon" />
           <span class="text">设置</span>
         </div>
       </nav>

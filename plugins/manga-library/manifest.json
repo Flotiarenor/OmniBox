@@ -2,7 +2,7 @@
   "name": "manga-library",
   "version": "2.1.0",
   "displayName": "漫画中心",
-  "icon": "📚",
+  "icon": "icon:library",
   "dependencies": [],
   "keepAlive": true,
   "backend": {
