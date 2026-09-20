@@ -188,13 +188,17 @@ UI_IMPORTANT_RE = re.compile(r'!important')
 UI_KEYFRAME_RE = re.compile(r'@keyframes\s+([A-Za-z0-9_-]+)\s*\{((?:[^{}]|\{[^{}]*\})*)\}')
 UI_BLOCK_COMMENT_RE = re.compile(r'/\*.*?\*/', re.DOTALL)
 UI_HTML_COMMENT_RE = re.compile(r'<!--.*?-->', re.DOTALL)
-# 图标统一走壳的 sprite（`/res/icons/icons.svg` + `.obx-icon`，见 docs/plugin-ui-guide.md §5）。
-# 这里只拦**图形化 emoji**：它们在不同平台的字形、字重、基线都不同，是"看起来不像一个
-# 软件"的主要来源，也正是 sprite 要替代的东西。
+# 图标统一走壳的 sprite（`res/icons/` + `.obx-icon`，见 docs/plugin-ui-guide.md §5）。
+# 拦截两类写法，它们都是"字形由系统字体决定"的来源：
+#   1. 图形化 emoji（带颜色的表情/图形符号）；
+#   2. 单独承担图标职能的符号字形（星、心、叉、齿轮、播放、暂停等，完整码位见下方正则）
+#      ——不带颜色，但同样随系统字体变字重与基线。
+# 刻意不拦（它们是文本标点，不是图标）：
+#   * 句内作分隔符的箭头（→ ← ↔）与乘号（×）；
+#   * 中文标点与排版符号（· — … 「」）。
 #
-# 区段是逐个手写的，不能图省事写成 `[\U0001F000-\U0001FAFF\u2700-\u27BF]`：
-# 后两个区段含 dingbats（✦❮❯）与杂项符号（★☆❤✓✕⚠），那是跨平台字形稳定的纯符号写法，
-# 且部分承担数据层语义（收藏星、评级心、Toast 前缀），不该被这条规则一起拦下。
+# 区段逐个手写，不能图省事写成 `[\U0001F000-\U0001FAFF\u2700-\u27BF]`：
+# 后两个区段含 dingbats 与杂项符号，其中箭头与 × 属于上面的"刻意不拦"。
 UI_EMOJI_RE = re.compile(
     '['
     '\U0001F000-\U0001F0FF'   # 麻将/扑克
@@ -208,6 +212,29 @@ UI_EMOJI_RE = re.compile(
     '\U0001FA00-\U0001FAFF'   # 扩展 A
     ']'
 )
+# 符号字形：逐个列举而不是按区段，避免把 × 与箭头一起拦下（见上）。
+# 注释里按码位标注用途，不写字形本身 —— 本文件被 emoji 门禁的理念约束，避免自己成为字形残留点。
+UI_SYMBOL_GLYPH_RE = re.compile(
+    '['
+    '\u2605\u2606'            # U+2605/U+2606 实心/空心星（收藏）
+    '\u2661\u2764'            # U+2661/U+2764 心形（喜欢）
+    '\u2715\u2713\u2714'      # U+2715/U+2713/U+2714 叉与勾
+    '\u2699\u26A0\u26D4'      # U+2699/U+26A0/U+26D4 齿轮、警告、禁止
+    '\u2705\u274C'            # U+2705/U+274C 对勾与叉（彩色 emoji 呈现）
+    '\u23F3\u23F8\u23F9'      # U+23F3/U+23F8/U+23F9 沙漏、暂停、停止
+    '\u23EE\u23ED\u23EA\u23E9'  # U+23EE/U+23ED/U+23EA/U+23E9 上一曲/下一曲/快退/快进
+    '\u2922\u2728\u2B50'      # U+2922/U+2728/U+2B50 展开、闪光、星
+    '\u2B06\u2B07'            # U+2B06/U+2B07 上下箭头（emoji 呈现）
+    '\u270E\u21BB\u26A1'      # U+270E/U+21BB/U+26A1 铅笔、环形箭头、闪电
+    '\u25BC\u25B2\u25C0\u25B6'  # U+25BC/U+25B2/U+25C0/U+25B6 三角方向标记
+    '\uFF0B\u2795'            # U+FF0B/U+2795 全角加号与粗加号
+    '\u276E\u276F'            # U+276E/U+276F 书名号形状的方向标记
+    ']'
+)
+# 前端与后端共用同一份策略：两处都要拦，否则"界面文案写在 Python 里"就成了后门。
+UI_GLYPH_RES = (UI_EMOJI_RE, UI_SYMBOL_GLYPH_RE)
+# 后端扩展/位置声明的图标值：必须是壳图标集的 `icon:<名字>`。
+ICON_DECL_RE = re.compile(r"""["']icon["']\s*:\s*["']([^"']*)["']""")
 
 
 def _normalize_css_body(body: str) -> str:
@@ -312,8 +339,9 @@ def _check_frontend_ui(plugin_dir: Path) -> Tuple[List[str], List[str]]:
                     f'（docs/plugin-ui-guide.md §5）'
                 )
 
-        # 图形化 emoji 一律改为壳图标集里的图标（与未定义变量同为"静默不一致"类缺陷）。
-        # 存量 137 处已在图标迁移中清空（7 个插件、28 个文件），因此这里已启用。
+        # 图形化 emoji 与符号字形一律改为壳图标集里的图标（与未定义变量同为"静默不一致"类缺陷）。
+        # 两轮存量已在图标迁移中清空（插件前端 137 处图形化 emoji、19 处符号字形），
+        # 因此这条规则保持启用。
         if suffix in ('.css', '.html', '.js'):
             scan = text
             if suffix == '.js':
@@ -322,14 +350,16 @@ def _check_frontend_ui(plugin_dir: Path) -> Tuple[List[str], List[str]]:
                 scan = UI_HTML_COMMENT_RE.sub(' ', text)
             else:
                 scan = UI_BLOCK_COMMENT_RE.sub(' ', text)
-            seen_emoji: Dict[str, int] = {}
-            for match in UI_EMOJI_RE.finditer(scan):
-                char = match.group(0)
-                if char not in seen_emoji:
-                    seen_emoji[char] = scan.count('\n', 0, match.start()) + 1
-            for char, line in sorted(seen_emoji.items(), key=lambda item: item[1]):
+            seen_glyph: Dict[str, int] = {}
+            for glyph_re in UI_GLYPH_RES:
+                for match in glyph_re.finditer(scan):
+                    char = match.group(0)
+                    if char not in seen_glyph:
+                        seen_glyph[char] = scan.count('\n', 0, match.start()) + 1
+            for char, line in sorted(seen_glyph.items(), key=lambda item: item[1]):
                 errors.append(
-                    f'{rel}:{line} 出现图形化 emoji {char}（U+{ord(char):04X}）：图标改用壳的图标集，'
+                    f'{rel}:{line} 出现图形化 emoji 或符号字形 {char}（U+{ord(char):04X}）：'
+                    f'图标改用壳的图标集，'
                     f'写法 `<svg class="obx-icon"><use href="#名字"></use></svg>`（引用必须是同文档的 '
                     f'`#名字`，写外部文件路径在 WebView2 里不渲染）；拼字符串的场景用 '
                     f'`Icons.html(\'icon:名字\', 附加类名)`；'
@@ -585,6 +615,48 @@ def _match_registered_ancestor(field: str) -> str | None:
     return None
 
 
+def _check_backend_glyphs(plugin_dir: Path) -> List[str]:
+    """插件后端源码的字形检查（返回 errors，消息不带 [插件名] 前缀）。
+
+    后端只有一处会产出界面字形：扩展/位置声明的 `icon` 字段。它必须是壳图标集的
+    `icon:<名字>`；写成 emoji 时壳按纯文本渲染，入口图标立刻与其余界面不一致。
+    注释与文案同样不再出现 emoji 或符号字形 —— 界面位置改用文字描述。
+    """
+    errors: List[str] = []
+    root = plugin_dir / 'backend'
+    if not root.is_dir():
+        return errors
+    for path in sorted(root.rglob('*.py')):
+        if '__pycache__' in path.parts:
+            continue
+        try:
+            text = path.read_text(encoding='utf-8')
+        except Exception:
+            continue
+        rel = path.relative_to(plugin_dir).as_posix()
+        for match in ICON_DECL_RE.finditer(text):
+            value = match.group(1)
+            if value.startswith('icon:'):
+                continue
+            line = text.count('\n', 0, match.start()) + 1
+            errors.append(
+                f'{rel}:{line} 后端声明的 icon={value!r} 不是壳图标集：'
+                f'写 `icon:<名字>`（名字见 res/icons/icon_data.json）'
+            )
+        seen_glyph: Dict[str, int] = {}
+        for glyph_re in UI_GLYPH_RES:
+            for match in glyph_re.finditer(text):
+                char = match.group(0)
+                if char not in seen_glyph:
+                    seen_glyph[char] = text.count('\n', 0, match.start()) + 1
+        for char, line in sorted(seen_glyph.items(), key=lambda item: item[1]):
+            errors.append(
+                f'{rel}:{line} 出现图形化 emoji 或符号字形 {char}（U+{ord(char):04X}）：'
+                f'界面图标走壳图标集（`icon:<名字>` / `Icons.html`），文案与注释用文字描述'
+            )
+    return errors
+
+
 def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -> Tuple[List[str], List[str]]:
     plugins_dir = Path(plugins_dir or DEFAULT_PLUGINS_DIR)
     errors: List[str] = []
@@ -627,6 +699,15 @@ def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -
             # 开发指南把它标为必填，这里就按必填校验（字段存在但不是字符串也算错）
             errors.append(f'{where} manifest.version 必填且必须是 x.y.z 字符串')
 
+        # manifest.icon 缺省时壳回落到 `icon:package`（RUNTIME_FIELD_READERS），
+        # 因此这里只拦"给了值但不是图标集名字"的写法。
+        icon_value = data.get('icon')
+        if isinstance(icon_value, str) and icon_value.strip() and not icon_value.strip().startswith('icon:'):
+            errors.append(
+                f'{where} manifest.icon={icon_value!r} 不是壳图标集：写 `icon:<名字>`'
+                f'（名字见 res/icons/icon_data.json）'
+            )
+
         frontend = data.get('frontend')
         if not isinstance(frontend, dict):
             errors.append(f'{where} frontend 缺失或不是对象')
@@ -654,6 +735,9 @@ def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -
         ui_errors, ui_warnings = _check_frontend_ui(plugin_dir)
         errors.extend(f'[{folder_name}] {error}' for error in ui_errors)
         warnings.extend(f'[{folder_name}] {warning}' for warning in ui_warnings)
+
+        # 后端字形与图标声明：扩展/位置入口的 icon 也必须走壳图标集
+        errors.extend(f'[{folder_name}] {error}' for error in _check_backend_glyphs(plugin_dir))
 
 
         backend = data.get('backend')

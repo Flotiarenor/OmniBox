@@ -325,6 +325,9 @@ checkInterpolationsRegistered('shell/frontend/public/shell/folder-picker.js', [
   // 提供方行的图标改走 Utils.iconHtml：`icon:` 名字由壳的图标集渲染，其余值转义后原样输出
   // （Utils.iconHtml 内部对非 icon: 的值走 escapeHtml，所以这里登记的是同一个安全出口）
   "Utils.iconHtml(ext.icon || 'icon:globe')",
+  // 工具栏与目录行的字形改走壳图标集（都是仓库内常量名，无外部输入）
+  "Utils.iconHtml('icon:arrow-up')",
+  "Utils.iconHtml('icon:x')",
   "Utils.escapeHtml(ext.label || ext.plugin || '网络位置')",
   "Utils.escapeHtml(provider.label || '网络位置')",
   // openNetworkPicker 把 embedUrl 与 `embed=1` 先拼成 src 再转义（161cdef 加的 embed 信号），
