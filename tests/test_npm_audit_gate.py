@@ -11,15 +11,18 @@
 """
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from tools.check_npm_audit import ACCEPTED, accepted_summary, collect, judge
+from tools.check_npm_audit import ACCEPTED, _run_audit, accepted_summary, collect, judge
 
 
 def audit_report(*entries) -> dict:
@@ -136,6 +139,42 @@ class AllowlistShapeTests(unittest.TestCase):
         summary = accepted_summary()
         self.assertIn('vite', summary)
         self.assertIn('esbuild', summary)
+
+
+class RunAuditCommandTests(unittest.TestCase):
+    """`_run_audit()` 真的把 `audit --json --registry=...` 传给了 npm。
+
+    回归背景：原先用 `subprocess.run(['npm', 'audit', ...], shell=True)`。POSIX 下
+    `shell=True` 会把列表拼成 `sh -c npm audit ...`，只有第一个元素是命令、其余变成
+    位置参数，于是只执行 `npm`（无参数）打印 usage，拿不到 JSON；CI 从门禁实装起
+    就一直是红的，而 `collect()` / `judge()` 的用例全绿。这里用 PATH 里的假 npm
+    记录真实 argv，绕开对 npm 与网络的依赖。
+    """
+
+    @unittest.skipIf(os.name == 'nt', '用 POSIX shell 伪造 npm；Windows 走 .cmd 分支')
+    def test_audit_arguments_reach_npm_through_the_shell(self):
+        with tempfile.TemporaryDirectory() as td:
+            bindir = Path(td)
+            args_file = bindir / 'args.txt'
+            fake_npm = bindir / 'npm'
+            fake_npm.write_text(
+                '#!/bin/sh\n'
+                f'printf \'%s\\n\' "$@" > "{args_file}"\n'
+                'printf \'{"vulnerabilities": {}}\'\n',
+                encoding='utf-8',
+            )
+            fake_npm.chmod(0o755)
+
+            env = dict(os.environ)
+            env['PATH'] = str(bindir) + os.pathsep + env.get('PATH', '')
+            with mock.patch.dict(os.environ, env, clear=True):
+                report = _run_audit()
+
+            self.assertEqual(report, {'vulnerabilities': {}}, '假 npm 的 JSON 应被解析')
+            argv = args_file.read_text(encoding='utf-8').splitlines()
+            self.assertIn('audit', argv, f'npm 未收到 audit 子命令：{argv}')
+            self.assertIn('--json', argv, f'npm 未收到 --json：{argv}')
+            self.assertIn('--registry=https://registry.npmjs.org', argv)
 
 
 if __name__ == '__main__':

@@ -54,8 +54,12 @@ ACCEPTED: dict = {
 def _run_audit() -> dict | None:
     """跑 npm audit，返回 JSON；registry 不可达时返回 None（跳过而不是判失败）。"""
     try:
+        # shell=True 时必须传字符串：POSIX 下 `[unix_shell, '-c'] + list` 只会把
+        # 列表第一个元素当命令，其余变成位置参数 —— 结果是执行 `npm`（无参数）打印
+        # usage、拿不到 JSON。写成字符串后，Linux 走 sh -c、Windows 走 cmd /c，
+        # 两边行为一致（npm 在 Windows 是 npm.cmd，不经 shell 起不来）。
         proc = subprocess.run(
-            ['npm', 'audit', '--json', f'--registry={REGISTRY}'],
+            f'npm audit --json --registry={REGISTRY}',
             cwd=str(FRONTEND_DIR),
             capture_output=True, text=True, encoding='utf-8', errors='replace',
             shell=True,
