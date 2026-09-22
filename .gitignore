@@ -11,8 +11,6 @@ __pycache__/
 opencode.json
 
 .dsh/
-AGENTS.md
-docs/commit-convention.md
 
 # 运行时代码与用户配置
 # .config/ 整体忽略：app.yaml 由 main.py 首次启动时生成（load_config 在文件缺失时写入
