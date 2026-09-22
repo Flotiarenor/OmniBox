@@ -238,6 +238,7 @@ Object.assign(MediaPlayerApp.prototype, {
         const popup = document.getElementById('queue-popup');
         if (popup.classList.contains('hidden')) {
             this._renderQueue();
+            this._positionPops();
             popup.classList.remove('hidden');
         } else {
             popup.classList.add('hidden');

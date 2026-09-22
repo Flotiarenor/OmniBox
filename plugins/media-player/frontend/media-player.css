@@ -1267,8 +1267,13 @@ img.mp-thumb-pending { opacity: 0.45; transition: opacity .3s; }
    弹出面板
    ============================================================ */
 .mp-pop {
+  /* 贴播放栏上沿定位。播放栏在舞台底部，而内容区在舞台下方，所以「播放栏到视口底边」
+     的距离随窗口高度与内容高度变化，CSS 里算不出来（--mp-stage-vh + 外边距 + 内容区）。
+     用 fixed 保持横向/纵向都按视口算，纵向偏移由 _positionPops() 在打开面板与窗口尺寸
+     变化时写入 --mp-pop-bottom；未写入时退回「按播放栏高度贴底」的近似值。 */
   position: fixed;
   z-index: 260;
+  bottom: var(--mp-pop-bottom, calc(var(--mp-pb-height) + 28px));
   background: var(--mp-glass-strong);
   backdrop-filter: blur(22px);
   -webkit-backdrop-filter: blur(22px);
@@ -1302,9 +1307,8 @@ img.mp-thumb-pending { opacity: 0.45; transition: opacity .3s; }
 
 .mp-queue-pop {
   right: 16px;
-  bottom: calc(var(--mp-pb-height) + 28px);
+  max-height: min(520px, calc(100% - var(--mp-pop-bottom, 104px) - 12px));
   width: 344px;
-  max-height: min(520px, 62vh);
 }
 
 .mp-queue-list {
@@ -1364,7 +1368,8 @@ img.mp-thumb-pending { opacity: 0.45; transition: opacity .3s; }
 /* ---- EQ ---- */
 .mp-eq-pop {
   right: 16px;
-  bottom: calc(var(--mp-pb-height) + 28px);
+  /* 与 .mp-queue-pop 同一套规则：纵向偏移由 _positionPops() 写入，max-height 扣掉该偏移 */
+  max-height: min(calc(100% - var(--mp-pop-bottom, 104px) - 12px), 72vh);
   width: 460px;
   max-width: calc(100vw - 32px);
 }

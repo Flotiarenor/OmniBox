@@ -14,8 +14,26 @@ Object.assign(MediaPlayerApp.prototype, {
     _toggleEQ() {
         const panel = document.getElementById('eq-panel');
         const willOpen = panel.classList.contains('hidden');
+        if (willOpen) this._positionPops();
         panel.classList.toggle('hidden', !willOpen);
         if (willOpen) this._buildEQBands();
+    },
+
+    // 弹出面板贴播放栏上沿定位。
+    // 面板是 fixed：横向按视口（与播放栏右侧 16px 内边距对齐），纵向偏移必须实测 ——
+    // 播放栏在舞台底部，内容区在舞台下方，且舞台高度随视频模式变化，CSS 里算不出
+    // 「播放栏顶边到视口底边」的距离。原实现写死 calc(--mp-pb-height + 28px)，等于假定
+    // 播放栏贴着视口底边：窗口变矮、舞台被压扁时面板会压到播放栏上，把播放栏按钮盖住
+    // （实测 1168×598 视口下压住 8 个控件，点按钮实际点在面板上）。
+    // 变量写在 #app 上：面板是 #app 的子元素（与 .mp-main 平级），写在内层 .mp-main 上
+    // 不会继承到面板，var() 会静默退回兜底值。
+    _positionPops() {
+        const bar = document.getElementById('player-bar');
+        const host = document.getElementById('app');
+        if (!bar || !host) return;
+        const gap = 28;
+        const offset = Math.round(window.innerHeight - bar.getBoundingClientRect().top + gap);
+        host.style.setProperty('--mp-pop-bottom', `${Math.max(gap, offset)}px`);
     },
 
     _hideEQ() {

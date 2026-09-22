@@ -140,6 +140,9 @@ Object.assign(MediaPlayerApp.prototype, {
         this.updatePlayModeUI();
         this.updateVolumeUI();
         this._loadEQPresets();
+        // 窗口尺寸变化会改变「播放栏顶边到视口底边」的距离，面板打开期间要跟着重算
+        this._positionPops();
+        window.addEventListener('resize', () => this._positionPops());
     },
 
     _onStageClick(e) {

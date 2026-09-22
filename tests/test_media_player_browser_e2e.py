@@ -703,5 +703,66 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
                    '点「重命名」的图标后未打开重命名弹窗')
 
 
+    def test_panels_do_not_cover_player_bar_controls(self):
+        """窗口变矮时弹出面板仍不能压住播放栏按钮：压住的话点「均衡器」第一次只是关面板。
+
+        缺陷背景：面板用 `bottom: calc(--mp-pb-height + 28px)` 贴底定位，等于假定播放栏贴
+        着视口底边。播放栏其实在舞台底部、内容区在舞台下方，窗口变矮时舞台被压扁，面板就
+        压到播放栏上（实测 1008×449 视口下均衡器面板盖住全部 10 个播放栏控件）。
+        这里把窗口调矮后逐控件核对命中元素，并核对面板底边不越过播放栏顶边。
+        """
+        self._open_playlist()
+        original = self.driver.get_window_size()
+        try:
+            for width, height in ((1024, 600), (960, 520), (1400, 900)):
+                self.driver.set_window_size(width, height)
+                time.sleep(0.4)
+                for button_id, panel_id in (('btn-eq', 'eq-panel'), ('btn-queue', 'queue-popup')):
+                    self.driver.execute_script(
+                        "document.querySelectorAll('.mp-pop').forEach(p => p.classList.add('hidden'));")
+                    self._click_center(f'#{button_id}')
+                    self.assertEqual(self._panel_state(panel_id), '打开',
+                                     f'{width}×{height}：#{button_id} 未打开 {panel_id}')
+                    covered = self.driver.execute_script("""
+                        const panel = document.getElementById(arguments[0]);
+                        const p = panel.getBoundingClientRect();
+                        const out = [];
+                        document.querySelectorAll('#player-bar button').forEach((btn) => {
+                            const r = btn.getBoundingClientRect();
+                            if (!r.width || !r.height) return;
+                            if (getComputedStyle(btn).display === 'none') return;
+                            const hit = document.elementFromPoint(r.left + r.width / 2,
+                                                                  r.top + r.height / 2);
+                            if (hit && hit !== btn && !btn.contains(hit)) {
+                                out.push(btn.id + '←' + hit.tagName
+                                    + (hit.id ? '#' + hit.id : ''));
+                            }
+                        });
+                        const bar = document.getElementById('player-bar').getBoundingClientRect();
+                        return { covered: out,
+                                 panelBottom: Math.round(p.bottom),
+                                 barTop: Math.round(bar.top),
+                                 panelTop: Math.round(p.top) };
+                    """, panel_id)
+                    self.assertEqual(
+                        covered['covered'], [],
+                        f'{width}×{height}：{panel_id} 盖住了播放栏控件 {covered["covered"]}')
+                    self.assertLessEqual(
+                        covered['panelBottom'], covered['barTop'] + 1,
+                        f'{width}×{height}：{panel_id} 底边 {covered["panelBottom"]} '
+                        f'越过播放栏顶边 {covered["barTop"]}')
+                    self.assertGreater(
+                        covered['panelTop'], -1,
+                        f'{width}×{height}：{panel_id} 顶边 {covered["panelTop"]} 被视口裁掉')
+
+                    # 面板开着时再点一次开关按钮：必须能关掉（按钮不能被自己打开的面板盖住）
+                    self._click_center(f'#{button_id}')
+                    self.assertEqual(self._panel_state(panel_id), '未打开',
+                                     f'{width}×{height}：{panel_id} 打开后点 #{button_id} 关不掉')
+        finally:
+            self.driver.set_window_size(original['width'], original['height'])
+            time.sleep(0.3)
+
+
 if __name__ == '__main__':   # pragma: no cover
     unittest.main()
