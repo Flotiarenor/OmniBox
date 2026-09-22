@@ -153,16 +153,27 @@ Object.assign(MediaPlayerApp.prototype, {
 
     _onDocumentClick(e) {
         const queue = document.getElementById('queue-popup');
-        if (queue && !queue.classList.contains('hidden') && !queue.contains(e.target)
-            && e.target !== document.getElementById('btn-queue')) {
+        const queueBtn = document.getElementById('btn-queue');
+        if (queue && !queue.classList.contains('hidden') && !this._isClickInside(e.target, queue, queueBtn)) {
             queue.classList.add('hidden');
         }
         const eq = document.getElementById('eq-panel');
-        if (eq && !eq.classList.contains('hidden') && !eq.contains(e.target)
-            && e.target !== document.getElementById('btn-eq')) {
+        const eqBtn = document.getElementById('btn-eq');
+        if (eq && !eq.classList.contains('hidden') && !this._isClickInside(e.target, eq, eqBtn)) {
             eq.classList.add('hidden');
         }
         this._closePlaylistMenu();
+    },
+
+    // 点击是否落在该面板内、或该面板的开关按钮内。
+    // 判定按钮必须用 contains 而不是比较 target === 按钮：按钮里的图标是 <svg> 与它内部的
+    // <use>，真实鼠标点在字形上时 target 是它们而不是按钮，比较相等会判成「点在面板外」，
+    // 刚打开的面板会被同一轮事件立即关掉 —— 表现为「点图标打不开、点按钮边缘能开」的
+    // 时好时坏（图标只占按钮中心约 15×15px，其余是内边距）。
+    // 判据必须锚在「这一个面板」上：用 target.closest('.mp-pop') 会让另一个面板的点击
+    // 也算「点在面板内」，点「播放队列」时就关不掉已打开的均衡器面板。
+    _isClickInside(target, panel, toggleBtn) {
+        return !!target && (panel.contains(target) || !!toggleBtn && toggleBtn.contains(target));
     },
 
     // ============================================================

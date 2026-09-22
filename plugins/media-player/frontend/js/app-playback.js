@@ -389,7 +389,11 @@ Object.assign(MediaPlayerApp.prototype, {
         this._contextMenuEl = menu;
 
         menu.addEventListener('click', async (ev) => {
-            const act = ev.target.dataset.menuAct;
+            // 必须用 closest 取动作：菜单项里有图标，点到图标字形时 ev.target 是 <svg>，
+            // 它没有 dataset.menuAct，直接读会得到 undefined —— 菜单只是关掉、什么都不做。
+            const actionEl = ev.target && ev.target.closest
+                ? ev.target.closest('[data-menu-act]') : null;
+            const act = actionEl ? actionEl.dataset.menuAct : '';
             this._closePlaylistMenu();
             const pl = this.playlists.playlists.find(p => p.id === playlistId);
             if (!pl) return;

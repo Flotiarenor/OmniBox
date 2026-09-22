@@ -67,6 +67,7 @@ TITLES = ('第一首', '第二首', '第三首', '第四首', '第五首')
 #   playback:item3    启动时按该条目恢复播放
 #   queue:1           恢复播放时带持久化队列（media_get_playback 返回 queue_ids）
 #   shuffle:1         启动时处于随机播放模式
+#   pls:2             侧栏提供两个歌单（第二个只有第 4、5 首），用于核对按行打开的是哪一份列表
 STUB_SCRIPT = r"""
 (function () {
   function makeWav(seconds, freq) {
@@ -97,6 +98,7 @@ STUB_SCRIPT = r"""
   var playbackItem = cfg('playback');
   var withQueue = cfg('queue') === '1';
   var shuffle = cfg('shuffle') === '1';
+  var twoPlaylists = cfg('pls') === '2';
 
   var good = makeWav(30, 440);                                     // 可播放：30s 单声道 WAV
   var bad = 'data:audio/x-ms-wma;base64,' + btoa('not a wma payload');  // 不可播放：伪造 wma
@@ -113,6 +115,15 @@ STUB_SCRIPT = r"""
     id: 'pl1', name: '测试歌单', created_at: '2026-01-01',
     item_ids: items.map(function (i) { return i.id; }), items: items
   };
+  // 第二个歌单只有第 4、5 首：点到它时列表行数必须变成 2，才能说明「按行打开」生效
+  var secondPlaylist = {
+    id: 'pl2', name: '第二个歌单', created_at: '2026-01-02',
+    item_ids: ['item3', 'item4'], items: items.slice(3, 5)
+  };
+  var playlists = twoPlaylists
+    ? [{ id: 'pl1', name: '测试歌单', created_at: '2026-01-01', item_ids: playlist.item_ids },
+       { id: 'pl2', name: '第二个歌单', created_at: '2026-01-02', item_ids: secondPlaylist.item_ids }]
+    : [{ id: 'pl1', name: '测试歌单', created_at: '2026-01-01', item_ids: playlist.item_ids }];
   var playback = {
     item_id: playbackItem, loop_mode: 'all', shuffle: shuffle, volume: 1, video_mode: 'video',
     queue_ids: withQueue ? items.map(function (i) { return i.id; }) : [],
@@ -127,18 +138,19 @@ STUB_SCRIPT = r"""
       return { favorites: [], recent: items, playlists: [] };
     },
     'media-player__media_stats': function () {
-      return { audio: 5, video: 0, total: 5, playlists: 1, favorites: 0, audio_albums: 1, video_albums: 0 };
+      return { audio: 5, video: 0, total: 5, playlists: playlists.length, favorites: 0,
+               audio_albums: 1, video_albums: 0 };
     },
     'media-player__media_scan_status': function () { return { state: 'done', processed: 5, total: 5 }; },
     'media-player__media_scan': function () { return { error: 'running' }; },
     'media-player__media_get_playback': function () { return playback; },
     'media-player__media_save_playback': function () { return { success: true }; },
     'media-player__media_update_recent': function () { return { success: true }; },
-    'media-player__media_playlist_list': function () {
-      return [{ id: 'pl1', name: '测试歌单', created_at: '2026-01-01',
-                item_ids: items.map(function (i) { return i.id; }) }];
+    'media-player__media_playlist_list': function () { return playlists; },
+    'media-player__media_playlist_get': function (id) {
+      if (id === 'pl2' && twoPlaylists) return secondPlaylist;
+      return playlist;
     },
-    'media-player__media_playlist_get': function () { return playlist; },
     'media-player__media_playlist_save': function () {
       return { success: true, playlist: { id: 'pl1', name: '测试歌单', item_ids: [] } };
     },
@@ -271,6 +283,9 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
         options.add_argument('--mute-audio')
         # 无头环境没有音频输出设备，自动播放策略也需显式放开，否则元素停在 paused
         options.add_argument('--autoplay-policy=no-user-gesture-required')
+        # 固定窗口尺寸：默认无头视口只有约 1080×427，弹出面板（宽 460px、贴底定位）会盖住
+        # 播放栏上的开关按钮，点按钮落在面板上，测的就不再是点击判定本身
+        options.add_argument('--window-size=1400,900')
         driver_path = _chromedriver_path()
         try:
             if driver_path:
@@ -347,6 +362,54 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
             "const el = document.querySelector(arguments[0]); if (el) { el.click(); return true; }"
             "return false;", selector)
         self.assertTrue(clicked, f'找不到可点击元素：{selector}')
+
+    def _current_playlist(self) -> str:
+        return self.driver.execute_script(
+            "return (mediaPlayerApp.currentPlaylist && mediaPlayerApp.currentPlaylist.name) || '';")
+
+    def _real_click_at(self, x: float, y: float) -> None:
+        """真实鼠标点击视口坐标：走浏览器命中测试，事件链与用户点击一致。
+
+        断言「点得开」必须用真实鼠标：`el.click()` 的 target 恒为元素本身，恰好绕开
+        「按钮里的 `<svg>` / `<use>` 才是 target」这一类缺陷（见 test_real_click_* 用例）。
+        """
+        from selenium.webdriver.common.actions.action_builder import ActionBuilder
+        from selenium.webdriver.common.actions.pointer_input import PointerInput
+        pointer = PointerInput('mouse', 'e2e')
+        builder = ActionBuilder(self.driver, mouse=pointer)
+        builder.pointer_action.move_to_location(int(x), int(y)).click()
+        builder.perform()
+
+    def _center_of(self, selector: str) -> tuple:
+        point = self.driver.execute_script(
+            "const r = document.querySelector(arguments[0]).getBoundingClientRect();"
+            "return [r.left + r.width / 2, r.top + r.height / 2];", selector)
+        self.assertIsNotNone(point, f'找不到元素：{selector}')
+        return float(point[0]), float(point[1])
+
+    def _click_center(self, selector: str) -> str:
+        """真实鼠标点元素中心，返回该点实际命中的元素描述（按钮里的图标是常态）。"""
+        x, y = self._center_of(selector)
+        hit = self.driver.execute_script(
+            "const el = document.elementFromPoint(arguments[0], arguments[1]);"
+            "return el ? el.tagName + (el.id ? '#' + el.id : '') : '（空）';", x, y)
+        self._real_click_at(x, y)
+        return hit
+
+    def _panel_state(self, panel_id: str) -> str:
+        return self.driver.execute_script(
+            "const el = document.getElementById(arguments[0]);"
+            "if (!el) return '不存在';"
+            "if (getComputedStyle(el).display === 'none') return '未打开';"
+            "const r = el.getBoundingClientRect();"
+            "return (r.width > 0 && r.height > 0) ? '打开' : '打开了但不可见';", panel_id)
+
+    def _modal_title(self, modal_id: str = 'modal-playlist') -> str:
+        return self.driver.execute_script(
+            "const modal = document.getElementById(arguments[0]);"
+            "if (!modal || !modal.classList.contains('active')) return '（未打开）';"
+            "return (document.getElementById('playlist-modal-title') || {}).textContent || '';",
+            modal_id)
 
     def _click_row(self, index: int) -> None:
         self._click(f'#mp-detail-list .mp-row[data-idx="{index}"]')
@@ -522,6 +585,122 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
         state = self._state()
         self.assertEqual(state['index'], 0, f'上一首越过当前条目向后跳：{state}')
         self.assertNotEqual(state['playing'], TITLES[3], f'上一首跳到了当前条目之后：{state}')
+
+
+    def test_real_click_on_icon_opens_eq_and_queue(self):
+        """真实鼠标点按钮中心（命中的是图标 `<svg>` / `<use>`）必须打开面板。
+
+        缺陷背景：文档级「点面板外面就关」按 `e.target !== document.getElementById('btn-eq')`
+        判定，而真实鼠标点在图标字形上时 target 是 `<svg>` / `<use>` 而不是按钮，刚打开的
+        面板被同一轮事件立即关掉。图标只占按钮中心约 15×15px，其余是内边距，因此表现成
+        「有时点得开、有时点不开」。修复前本用例必然失败，`el.click()` 写的用例则必然通过。
+        """
+        self._open_playlist()
+        for button_id, panel_id in (('btn-eq', 'eq-panel'), ('btn-queue', 'queue-popup')):
+            self.driver.execute_script(
+                "document.querySelectorAll('.mp-pop').forEach(p => p.classList.add('hidden'));")
+            hit = self._click_center(f'#{button_id}')
+            self.assertIn(hit.split('#')[0], ('svg', 'use'),
+                          f'#{button_id} 中心点应命中按钮内的图标（实际 {hit}），'
+                          f'否则本用例没有覆盖缺陷路径')
+            state = self._panel_state(panel_id)
+            self.assertEqual(state, '打开',
+                             f'真实鼠标点 #{button_id} 中心（命中 {hit}）后 {panel_id} 为「{state}」')
+            # 再点一次必须关掉：不能修成「只开不关」
+            self._click_center(f'#{button_id}')
+            self.assertEqual(self._panel_state(panel_id), '未打开',
+                             f'再点一次 #{button_id} 未关闭 {panel_id}')
+
+    def test_alternating_panel_clicks_keep_working(self):
+        """交替连点「均衡器 → 播放队列」各 10 轮：每一轮都要打开队列，并且关掉均衡器。
+
+        缺陷背景：文档级关闭处理必须在同一次点击里正确区分「点的是哪一个开关按钮」。
+        判据放宽成 `target.closest('.mp-pop')` 时，点队列会被当成「点在面板内」，
+        已打开的均衡器面板就关不掉（两个面板同时悬浮）。
+        """
+        self._open_playlist()
+        for attempt in range(10):
+            self.driver.execute_script(
+                "document.querySelectorAll('.mp-pop').forEach(p => p.classList.add('hidden'));")
+            self._click_center('#btn-eq')
+            self.assertEqual(self._panel_state('eq-panel'), '打开', f'第 {attempt + 1} 轮：均衡器未打开')
+            self._click_center('#btn-queue')
+            self.assertEqual(self._panel_state('queue-popup'), '打开',
+                             f'第 {attempt + 1} 轮：点队列未打开')
+            self.assertEqual(self._panel_state('eq-panel'), '未打开',
+                             f'第 {attempt + 1} 轮：点队列后均衡器面板仍开着')
+
+    def test_click_outside_still_closes_panels(self):
+        """点面板与开关按钮之外的区域仍要关掉面板（回归「修成关不掉」）。"""
+        self._open_playlist()
+        for button_id, panel_id in (('btn-eq', 'eq-panel'), ('btn-queue', 'queue-popup')):
+            self._click_center(f'#{button_id}')
+            self.assertEqual(self._panel_state(panel_id), '打开', f'前置条件失败：{panel_id} 未打开')
+            self._click('#mp-view-title')
+            self.assertEqual(self._panel_state(panel_id), '未打开',
+                             f'点面板外（#mp-view-title）后 {panel_id} 仍开着')
+
+    def test_eq_button_opens_after_view_and_mode_switching(self):
+        """切换左侧视图与播放模式后再点均衡器仍要打开（覆盖刷新与模式变更后的状态）。"""
+        self._open_playlist()
+        for view in ('recent', 'all-audio', 'audio-albums', 'favorites'):
+            self.driver.execute_script("mediaPlayerApp.switchView(arguments[0]);", view)
+            self._wait(lambda view=view: self.driver.execute_script(
+                "return mediaPlayerApp.currentView === arguments[0];", view),
+                f'未切到视图 {view}')
+            self.driver.execute_script(
+                "document.getElementById('eq-panel').classList.add('hidden');")
+            self._click_center('#btn-eq')
+            self.assertEqual(self._panel_state('eq-panel'), '打开', f'视图 {view} 下均衡器未打开')
+
+        for _ in range(3):                                  # 顺序 → 随机 → 单曲 → 顺序
+            self._click('#btn-play-mode')
+            self.driver.execute_script(
+                "document.getElementById('eq-panel').classList.add('hidden');")
+            mode = self.driver.execute_script("return mediaPlayerApp.core.playMode;")
+            self._click_center('#btn-eq')
+            self.assertEqual(self._panel_state('eq-panel'), '打开',
+                             f'播放模式 {mode} 下均衡器未打开')
+
+    def test_playlist_rows_open_their_own_items(self):
+        """侧栏两行歌单各自打开自己那份列表：点第 2 行要看到第 2 个歌单的 2 个条目。"""
+        self._open_playlist('pls:2')
+        self._wait(lambda: self.driver.execute_script(
+            "return document.querySelectorAll('.mp-playlist-item').length === 2;"),
+            '侧栏未渲染出两个歌单')
+
+        self._click('.mp-playlist-item[data-pl-id="pl1"] .pl-name')
+        self._wait(lambda: self._current_playlist() == '测试歌单',
+                   '点第 1 行未打开「测试歌单」')
+        self._wait(lambda: len(self._rows()) == len(TITLES), '第 1 个歌单条目数不符')
+
+        self._click('.mp-playlist-item[data-pl-id="pl2"] .pl-name')
+        self._wait(lambda: self._current_playlist() == '第二个歌单',
+                   '点第 2 行未打开「第二个歌单」')
+        self._wait(lambda: [r for r in self._rows()] == list(TITLES[3:]),
+                   '第 2 个歌单的条目与自己的 item_ids 不符')
+
+    def test_playlist_menu_rename_by_icon_opens_modal(self):
+        """歌单「⋯」菜单里点「重命名」的图标（真实鼠标落点）必须打开重命名弹窗。
+
+        缺陷背景：菜单项处理器读的是 `ev.target.dataset.menuAct`，而菜单项里有图标，
+        点到图标字形时 `ev.target` 是 `<svg>`（没有菜单项 data 属性），读到 undefined，
+        结果是菜单关掉、什么都不做 —— 表现为「重命名 / 删除点了没反应」。
+        """
+        self._open_playlist()
+        menu_opened = self.driver.execute_script("""
+            const more = document.querySelector('.mp-playlist-item .pl-more');
+            if (!more) return false;
+            const r = more.getBoundingClientRect();
+            mediaPlayerApp.showPlaylistMenu(more.dataset.plId, { clientX: r.left, clientY: r.top });
+            return !!document.getElementById('mp-context-menu');
+        """)
+        self.assertTrue(menu_opened, '歌单「⋯」菜单未生成')
+
+        hit = self._click_center('.mp-context-menu button[data-menu-act="rename"] svg')
+        self.assertIn('svg', hit.lower(), f'菜单项中心点应命中图标（实际 {hit}）')
+        self._wait(lambda: self._modal_title() == '重命名歌单',
+                   '点「重命名」的图标后未打开重命名弹窗')
 
 
 if __name__ == '__main__':   # pragma: no cover
