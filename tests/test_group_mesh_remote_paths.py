@@ -29,6 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from shell.groupmesh import client as mesh_client
+from tests.harness.support import same_path
 
 
 def _load(name: str):
@@ -77,7 +78,10 @@ class SafeRelTests(unittest.TestCase):
             outside = Path(tmp) / 'outside.txt'
             outside.write_text('x', encoding='utf-8')
 
-            self.assertEqual(_common.within_root(root, 'a/b.txt'), root / 'a' / 'b.txt')
+            # 比对指向同一位置而不是逐字比字符串：临时目录在 Windows 上可能是 8.3 短名
+            # （CI 的 C:\Users\RUNNER~1\…），而 within_root 走 resolve() 得到长名，
+            # 逐字比较会假失败。同款判定见 tests/harness/support.py::same_path。
+            self.assertTrue(same_path(_common.within_root(root, 'a/b.txt'), root / 'a' / 'b.txt'))
             self.assertIsNone(_common.within_root(root, '../outside.txt'))
 
             link = root / 'link.txt'

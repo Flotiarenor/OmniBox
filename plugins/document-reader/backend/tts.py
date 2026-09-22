@@ -301,7 +301,12 @@ class TtsMixin:
                         pass
                 return None
             meta = self._tts_read_json(os.path.join(cache_dir, prefix + '.json'))
-            return path, meta
+            # 路径统一过 _tts_cache_path：它 resolve 到长名，而这里的 cache_dir 可能还是
+            # 8.3 短名（Windows 临时目录常见）。不复原成同一种形态，同一份缓存两次朗读
+            # 会返回指向同一文件却逐字不同的 URL（首次合成走 _tts_cache_path 是长名，
+            # 命中走这里曾是短名）。
+            hit_path = self._tts_cache_path(cache_dir, name)
+            return (hit_path or path), meta
         return None
 
     def _tts_meta_marks(self, cache_dir: str, prefix: str) -> list:

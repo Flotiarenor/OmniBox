@@ -312,6 +312,9 @@ class PluginSpeakDirectTests(unittest.TestCase):
         # 同一段文本第二次必须命中缓存：不再打端点
         second = self.plugin.tts_speak('今天下雨了。', 'abc123', 0)
         self.assertTrue(second['cached'])
+        # 两次的 URL 必须逐字相同：首次合成与命中各走一条拼路径（_tts_cache_path / _tts_hit），
+        # 只把其中一条 resolve 成长名时，同一份缓存会给出两个写法不同、指向同一文件的 URL
+        # （Windows 上 8.3 短名尤其明显）。
         self.assertEqual(second['url'], first['url'])
         self.assertEqual(len(_OpenAIHandler.seen), 1)
 
