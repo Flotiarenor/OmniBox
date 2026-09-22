@@ -1,4 +1,4 @@
-"""ncm-cli 调用链的命令注入回归测试（docs/code-review.md §3.2）。
+"""ncm-cli 调用链的命令注入回归测试。
 
 netease-music 插件**只支持 Windows**（ncm-cli 通过 npm 的 .cmd shim 落地，
 假 mpv 方案也依赖 .cmd 与 mpv.exe），因此伪造 npm 全局布局的这一组断言只在

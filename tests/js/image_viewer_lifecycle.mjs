@@ -1,4 +1,4 @@
-// image-viewer 前端生命周期迁移的无头验证脚本（docs/core-contract-fixes.md §3.4.e）。
+// image-viewer 前端生命周期迁移的无头验证脚本。
 //
 // 背景：image-viewer 是更新频率最高、监听器最多的插件（实测 addEventListener 35 :
 // removeEventListener 0），其幻灯片用 setInterval 每 3 秒换图且从不随后台停止 ——

@@ -7,7 +7,7 @@ Windows 与 Linux 上可直接用同一个 Python 跑。它只实现设计文档
         → 注册记录（设备自签）→ Noise_XX 握手 → 加密会话 → 请求/应答
 
 **不在本包范围内的**：房间 / 语音 / 游戏面（由 Companion 子插件承担，见
-`docs/group-mesh-companions.md`）、Android 轻客户端、内容寻址分块传输。
+`docs/group-mesh-design.md`）、Android 轻客户端、内容寻址分块传输。
 壳侧主体上下文（见设计文档 §12）由 `shell/backend/principal.py` 提供，
 本包不依赖它，因此内核可以脱离壳单独跑。
 """

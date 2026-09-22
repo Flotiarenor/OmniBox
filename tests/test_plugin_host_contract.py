@@ -1,6 +1,6 @@
 """宿主↔附属插件契约（缩略图四成员）的回归测试。
 
-对应文档 docs/core-contract-fixes.md §2。这四个成员（get_file_roots /
+这四个成员（get_file_roots /
 get_thumb_data / thumb_dir / ensure_thumb）此前只由 shell/backend/file_server.py
 以 getattr 探针隐式定义：既不在 PluginBase 里，也没有测试固定形状。后果是
 

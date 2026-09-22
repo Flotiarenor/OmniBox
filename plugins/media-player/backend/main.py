@@ -225,8 +225,7 @@ class MediaPlayerPlugin(PluginBase):
         桥接/HTTP 线程会直接遍历 self._items（search / recent / all_audio …），
         而扫描 worker 在检查点之间会持续往工作字典里塞新条目。绝不能把工作
         字典本身赋给 self._items —— 那样读取方就会撞上 "dictionary changed
-        size during iteration"（前端扫描期间每 500ms 轮询会放大暴露，
-        docs/code-review.md §4.1-1）。
+        size during iteration"：前端扫描期间每 500ms 轮询会放大暴露。
         """
         self._items = items
 

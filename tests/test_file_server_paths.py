@@ -1,4 +1,4 @@
-"""文件/缩略图路由的越界与状态码语义测试（docs/code-review.md §4.3）。
+"""文件/缩略图路由的越界与状态码语义测试。
 
 两个历史问题：
   1. `/thumbs` 的 `except Exception: abort(400)` 会把 `abort(403)` 抛出的

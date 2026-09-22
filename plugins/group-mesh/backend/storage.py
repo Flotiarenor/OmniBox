@@ -73,8 +73,7 @@ class StorageMixin:
 
         为什么不用用户下载目录（改动前的做法）：那是"用户明确要回来的文件"，
         浏览一张图就顺手往里扔一份，既污染用户目录，又让 `os.replace` 依赖
-        "下载目录与数据根同卷"这个默认配置（跨卷会抛 OSError，见木已成舟的
-        `.dsh/group-mesh-materialize.md` §2.2）。暂存根与被替换目标同在 `.cache` 下，
+        "下载目录与数据根同卷"这个默认配置（跨卷会抛 OSError）。暂存根与被替换目标同在 `.cache` 下，
         同卷由构造保证。
         """
         return self.cache_dir / 'staging'

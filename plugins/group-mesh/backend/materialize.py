@@ -213,7 +213,7 @@ class MaterializeMixin:
         """本机这个物化条目是否已经持有**真字节**（而不是 0 字节占位）。
 
         判据只有"大小非 0"：0 字节的远端文件本来就永远停在占位状态（`ensure_file`
-        对 remote_size==0 直接返回，见 `.dsh/group-mesh-materialize.md` §2.2），
+        对 remote_size==0 直接返回），
         对它做"丢弃重取"没有任何意义。
         """
         try:

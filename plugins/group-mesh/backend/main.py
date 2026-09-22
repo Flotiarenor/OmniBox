@@ -34,7 +34,7 @@
 团体里的一个节点），访问控制只到"有效令牌"这一层。收尾时应在有副作用的方法
 （`add_member` / `add_share` / `start_node` / `stop_node` / `upload_remote` /
 `mirror_share` / `clear_remote_cache` 等）上调用 `require_principal()` 并按角色
-判定；背景与风险见 `docs/group-mesh-implementation-path.md` §4.9。
+判定；背景与风险见 `docs/group-mesh-design.md`。
 
 ## 代码布局
 

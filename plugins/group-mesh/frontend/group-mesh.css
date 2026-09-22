@@ -17,7 +17,7 @@
    这样才能跟随壳的深浅主题与「外观设置」里的自定义颜色。
 
    两条历史坑（务必保留，避免重犯）：
-   1. `docs/group-mesh-implementation-path.md` §5.7：曾经自绘 `.gm-modal{display:flex}`，
+   1. `docs/group-mesh-design.md`：曾经自绘 `.gm-modal{display:flex}`，
       作者样式盖掉了浏览器给 `[hidden]` 的 `display:none`（同优先级作者样式胜出），
       结果三个弹窗在打开页面时同时铺满整屏。现在弹窗一律用壳的
       `.modal` + `.modal.active`，本文件不再出现任何弹窗容器样式。

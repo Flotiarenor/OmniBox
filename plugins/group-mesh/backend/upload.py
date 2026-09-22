@@ -60,7 +60,7 @@ class UploadMixin:
         if not source.is_file():
             return {'success': False, 'error': f'本机文件不存在: {source}'}
         # 两类不许上传的来源：身份目录（明文私钥）与远端物化缓存（那是**其他成员**
-        # 的数据，传出去等于二次分发，见 .dsh/group-mesh-materialize.md §2.2）。
+        # 的数据，传出去等于二次分发）。
         resolved = source.resolve()
         for guarded in (self.identity_dir, self.remote_cache_dir, self.staging_dir):
             try:

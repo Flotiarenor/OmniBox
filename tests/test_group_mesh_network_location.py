@@ -29,7 +29,7 @@ class NetworkLocationTest(unittest.TestCase):
 
     这条区别是"网络位置"能不能用的关键：镜像目标是一个普通本地文件夹，消费方
     （image-viewer 等）按本地文件工作、**没有** `ensure_file` 钩子可依赖 ——
-    留 0 字节占位就是宽高 0×0 与整片 404 缩略图（`.dsh/group-mesh-materialize.md` §2.2）。
+    留 0 字节占位就是宽高 0×0 与整片 404 缩略图。
     """
 
     SHARE_ID = 'mirror'

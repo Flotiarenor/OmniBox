@@ -44,4 +44,4 @@
 
 ## 关联
 
-<!-- 例如：Refs #12、docs/core-contract-fixes.md §3 -->
+<!-- 例如：Refs #12、docs/plugin-guide.md §3 -->

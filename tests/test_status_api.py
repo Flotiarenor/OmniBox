@@ -1,4 +1,4 @@
-"""插件状态 API 的端到端测试（docs/code-review.md §4.2）。
+"""插件状态 API 的端到端测试。
 
 链路：PluginManager 收集加载失败 → /api/system_get_plugin_status 暴露 →
 壳内 /status 视图展示。这里把前两段串起来验证：用户（或前端）真的能问出

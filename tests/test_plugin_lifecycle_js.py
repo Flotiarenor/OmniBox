@@ -1,6 +1,6 @@
 """插件前端生命周期（onShow / onHide / onDispose）的无头回归（tests/js/plugin_lifecycle.mjs）。
 
-缺陷背景（docs/core-contract-fixes.md §3）：插件 iframe 默认常驻，切换后其定时器与
+缺陷背景：插件 iframe 默认常驻，切换后其定时器与
 rAF 自循环继续运行，插件前端也没有统一的销毁钩子 —— 实测 plugins/**/*.js 合计
 addEventListener 171 : removeEventListener 4。修复方向不是"离开即销毁"（readme.md
 写明常驻是有意设计：切换时媒体播放不中断），而是宿主在可见性变化时通知插件。

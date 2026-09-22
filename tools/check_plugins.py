@@ -69,7 +69,7 @@ def looks_like_secret_key(key) -> bool:
     normalized = re.sub(r'[^a-z0-9]', '', str(key).lower())
     return any(word in normalized for word in SECRET_KEY_WORDS)
 
-# ===== manifest 字段读取方登记表（docs/code-review.md §5 的机制化）=====
+# ===== manifest 字段读取方登记表 =====
 # 开发指南一度教了 4 个"代码根本不读"的字段：照文档写的第三方作者会遇到
 # "我按文档填了却没效果"，而作者只会默默放弃 —— 这类问题必须由机器发现。
 #

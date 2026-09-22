@@ -1,4 +1,4 @@
-"""SettingsStore 的并发与原子性回归测试（docs/code-review.md §4.1-2）。
+"""SettingsStore 的并发与原子性回归测试。
 
 历史问题：set() 用 open('w') 直接覆写（中断即损坏）、update() 读-改-写无锁
 （并发互相覆盖）、get() 把损坏文件静默当成"没有设置"（用户改动悄悄失效且

@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from shell.backend.plugin_base import PluginBase
 
-# kind: "local-adapter" 与 docs/adapter-spec.md 描述的外部程序接入能力尚未实装，
+# kind: "local-adapter" 对应的外部程序接入能力尚未实装，
 # 该字段目前只在规范检查器中作为“规划中”提示，不会影响加载行为。
 
 
@@ -123,7 +123,7 @@ class PluginManager:
         self._plugin_dirs: Dict[str, Path] = {}
         # 加载失败的插件：{名字: 原因}。以前只 print 一行，界面拿到的
         # get_frontend_manifests 只含成功的插件 —— 用户只会觉得"插件没了"，
-        # 现在由 /status 展示（docs/code-review.md §4.2）。
+        # 现在由 /status 展示。
         self._load_failures: Dict[str, str] = {}
         self._config_dir = _resolve_config_dir()
         self._settings_store = SettingsStore(str(self._config_dir))
@@ -268,8 +268,7 @@ class PluginManager:
         """插件加载状态：供 /status 回答"某个插件为什么不见了"。
 
         以前加载失败只有一行日志，而界面拿到的 get_frontend_manifests 只含
-        加载成功的插件 —— 用户看到的现象就是"插件消失了"，没有任何线索
-        （docs/code-review.md §4.2）。
+        加载成功的插件 —— 用户看到的现象就是"插件消失了"，没有任何线索。
         """
         return {
             'loaded': sorted(self._instances.keys()),
@@ -563,7 +562,7 @@ class PluginManager:
 
             # 方法表先在本地组装，on_load 成功后才一次性登记：on_load 抛错时
             # 若已经把方法写进 _api_methods，就会出现"幽灵 API"——/api/<插件>__<方法>
-            # 能打到从未进入 _instances 的半初始化实例（docs/code-review.md §4.1-3）。
+            # 能打到从未进入 _instances 的半初始化实例。
             pending_methods = {
                 f"{name}__{method_name}": self._exposed_method(instance, method_name, method_fn)
                 for method_name, method_fn in instance.register_api().items()

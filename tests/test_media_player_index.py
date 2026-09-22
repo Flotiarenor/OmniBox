@@ -1,4 +1,4 @@
-"""媒体库索引的并发可见性测试（docs/code-review.md §4.1-1）。
+"""媒体库索引的并发可见性测试。
 
 历史缺陷：扫描 worker 用 `merged = dict(self._items)` 做工作副本，却在每个
 检查点把 `self._items` **重新绑定到 worker 仍在写的那个对象**；桥接/HTTP

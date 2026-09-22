@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 #                           （PluginBase.get_protected_paths）。
 #                        见 docs/plugin-guide.md §8.2
 #
-# 注意：docs/adapter-spec.md 中描述的 adapter_* 方法目前处于规划阶段，
+# 注意：adapter_* 方法目前处于规划阶段，
 # 尚未在本基类实现；adapter_process.py 也不应提前引入。
 
 # 凭据类设置项对外返回时的掩码。选一个用户不会真的输入、且一眼能看出是占位符的

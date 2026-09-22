@@ -1,4 +1,4 @@
-"""统一日志的回归测试（docs/code-review.md §4.2）。
+"""统一日志的回归测试。
 
 发行版打包 console=False，此时 CPython 的 sys.stdout/sys.stderr 是 None，
 `print` 会静默丢弃一切诊断信息 —— 发布版等于闭眼运行。因此日志的**文件通道**

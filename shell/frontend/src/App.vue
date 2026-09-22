@@ -81,7 +81,7 @@ function pluginSrc(p: { name: string; entryUrl: string }): string {
   return p.entryUrl + (p.entryUrl.includes('?') ? '&' : '?') + '_r=' + n
 }
 
-// ===== 插件生命周期通知（docs/core-contract-fixes.md §3） =====
+// ===== 插件生命周期通知 =====
 // 声明了 `keepAlive: true` 的插件用 keep-alive（v-show 隐藏），切走以后其定时器 /
 // rAF 自循环 / 轮询仍在跑，插件前端也无从知道自己的 iframe 是否可见。宿主因此在三种
 // 情形下通知插件（不保活的插件切走即卸载，只会收到 dispose）：

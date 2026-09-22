@@ -808,7 +808,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
 
         # 新路径：插件可直接返回 SQLite 缩略图字节，避免散文件随机 I/O。
         # get_thumb_data() 是 PluginBase 的正式成员，默认返回 None（= 本插件不提供字节）。
-        # 优先级（docs/core-contract-fixes.md §2.4.c）：本方法命中优先，返回 None
+        # 优先级：本方法命中优先，返回 None
         # 或形状不对时才使用 thumb_dir 散文件布局 —— 否则默认实现会把所有插件的
         # /thumbs 变成 404。
         if instance is not None:

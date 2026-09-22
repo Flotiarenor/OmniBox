@@ -2,16 +2,16 @@
 
 > 文档性质：**当前实现说明**（与 `media-player-design.md`、`image-viewer-design.md`
 > 同一体例），只写"现在是什么样"，不写版本变更流水。
-> 实现进度、已知漏洞、易错项与测试工具见
-> [实现路径与现状](./group-mesh-implementation-path.md)。
+> 实现进度、已知漏洞、易错项与测试工具见 §19–§26（「实现路径与现状」）。
 > 定位：**核心插件**（供消费型 Companion 插件依赖）+ 壳侧配套改造。
 > 代码位置：协议内核 `shell/groupmesh/`，插件 `plugins/group-mesh/`。
-> 关联文档：[Companion 子插件（房间/语音/游戏面）](./group-mesh-companions.md)、
+> 关联文档：§29 Companion 子插件草案、
 > [插件开发指南](./plugin-guide.md)、[主程序方向](./core-direction.md)。
 >
 > **章节号约定**：`shell/groupmesh/**` 与 `plugins/group-mesh/backend/main.py`
 > 的注释直接引用本文的 §1.3 / §3.3 / §4.x / §5.x / §6.x / §7.x / §10 / §11.2 /
-> §12 / §13。整理文档时保持 §1–§17 的编号与语义不变，避免代码注释指错位置。
+> §12 / §13，以及 §21.x（偏离与风险）与 §22.x（实现踩坑）。整理文档时保持
+> §1–§17 与 §19–§29 的编号与语义不变，避免代码注释指错位置。
 
 ---
 
@@ -20,8 +20,8 @@
 ### 0.1 这份文档回答什么
 
 本文回答"group-mesh 现在由哪些部件组成、各自怎么工作、边界在哪"。它不回答
-"下一步先做什么"——那在[实现路径与现状](./group-mesh-implementation-path.md)；
-也不回答"踩过哪些坑"——同样在那份文档里按现象逐条列出。
+"下一步先做什么"——那在 §19–§26；
+也不回答"踩过哪些坑"——同样在 §22 里按现象逐条列出。
 
 一句话概括：**无中心的团体组网插件**。它给互相信任的一组使用者提供身份、
 团体名单、共享节点发现、共享项的读写与加密传输；房间、语音、老游戏联机
@@ -45,7 +45,7 @@
 | `minShellVersion` 运行时校验 | **[未实现 / 决定不做]** 当前只由 `tools/check_plugins.py` 门禁校验 | `tools/check_plugins.py` |
 | 内容寻址分块传输 / 做种 | **[未实现]** 现为 offset/length 分块 | `node.py` |
 | Android 轻客户端 / 本地网关 | **[未实现]** 仅保留设计位 | — |
-| 房间 / 语音 / 游戏面 | **不在本插件范围** | [Companion 草案](./group-mesh-companions.md) |
+| 房间 / 语音 / 游戏面 | **不在本插件范围** | §29 Companion 草案 |
 
 ### 0.3 分层
 
@@ -209,7 +209,7 @@ import `main.py`（后端入口由 PluginManager 用 importlib 直接加载，�
   `.modal` + `confirmDialog`、`FolderPicker`、以及 `PluginLifecycle`。
   插件前缀 token（`--gm-*`）只承接尺寸与软色，颜色一律走壳 token，
   用户在外观设置里改色与深浅主题都能跟随。级联优先级与两个前端用例坑见
-  [实现路径与现状](./group-mesh-implementation-path.md) §5.19。
+  §22.7（前端 UI 改造：面板形态、级联优先级与两个测试坑）。
 - `network-location.html` 通过 `get_extensions()` 注册为壳共享目录组件的
   `placement: network-location` 提供方，选中后 `postMessage` 回填一个**本地目录**
   （见 §15.3）。
@@ -329,7 +329,7 @@ AES-256-GCM）；设置 `OMNIBOX_SECRET_KEY` 时用 scrypt 口令派生的 AES-2
 - 数据使用 AEAD，密钥由握手结果经 HKDF 派生；
 - 握手结束后由响应方回一帧 `ok` / `deny:<原因>` 作为**授权确认**：
   XX 的第 3 条消息才把发起方的静态公钥与绑定负载交给响应方，不确认的话
-  被拒的发起方会以为连接成功（详见实现路径文档 §5.4）。
+  被拒的发起方会以为连接成功（详见 §22.4）。
 
 **实现来源（v0.2 已替换）**：
 
@@ -344,7 +344,7 @@ AES-256-GCM）；设置 `OMNIBOX_SECRET_KEY` 时用 scrypt 口令派生的 AES-2
    **CipherState**（同一套密钥、nonce 推进与 AEAD），不套它高层 API 的
    65535 字节单消息上限——本项目的应用帧是整条 JSON 请求/应答，目录列表可能
    超过该上限；这是有意的帧长选择，与只实现规范长度检查的实现对传大帧时会被
-   拒绝，已记录在实现路径文档。
+   拒绝，已记录在 §22.1–§22.3。
    `noiseprotocol` 自身是 Alpha 状态、未做独立安全审计，它相对手写实现的价值是
    "独立实现 + 官方向量可复核"，不是"已被审计"。
 
@@ -676,12 +676,12 @@ RFC 4941 临时地址。当前 `registry.local_addresses()` 做不到：Python �
 
 房间（联机、语音的临时集合）由未来的 Companion 子插件实现：核心插件只提供
 身份、名单、注册与加密传输通道。草案见
-[group-mesh 的 Companion 子插件](./group-mesh-companions.md) §1。
+§29 Companion 子插件 §1。
 
 ## 9. 游戏联机引擎（不在本插件范围内）
 
 老游戏的二层虚拟局域网同样由子插件承担（SoftEther 编排、虚拟网卡、实测项），
-草案见 [Companion 子插件](./group-mesh-companions.md) §2。
+草案见 §29 §2。
 
 ---
 
@@ -760,7 +760,7 @@ Flask 服务，不是"WebView → 127.0.0.1 网关 → 加密通道"这一层。
 `add_member` / `add_share` / `start_node` / `stop_node` / `upload_remote` /
 `clear_remote_cache` 等有明确副作用的方法**目前尚未这样判**：它们仍只受
 "有效令牌"保护，任何持令牌者都能调。这是 §3 主体上下文落地后剩下的插件层
-收尾项，已在实现路径文档中列为待办。
+收尾项，已在 §21.7 列为待办。
 
 第 1/2/5 项的验收用例见 `tests/test_shell_principal.py`，其中包含**插件层**的
 验收：真实壳加载真实插件、经 `/api/<插件>__<方法>` 调用，伪造 `principal`
@@ -813,7 +813,7 @@ Flask 服务，不是"WebView → 127.0.0.1 网关 → 加密通道"这一层。
 | 5 | 端点探测耗时与并行收益 | 决定显式刷新与后台同步一轮的耗时 | **已实测**：串行 21.1 s / 并行等待全部 6.0 s / 存在可达端点 0.05 s |
 
 SoftEther 相关实测项属于子插件，见
-[Companion 子插件](./group-mesh-companions.md) §4。
+§29 §4。
 
 ---
 
@@ -889,14 +889,14 @@ SoftEther 相关实测项属于子插件，见
   口令四种 protector 的往返、篡改拒绝、旧明文单向升级与"不降级重写"。
 
 完整清单与每条命令覆盖什么，见
-[实现路径与现状](./group-mesh-implementation-path.md) 的"测试工具"一节。
+§23 的"测试工具"一节。
 
 ---
 
 ## 16. 实施路线
 
 按**依赖顺序**排列，详细进度、验收与当前阻塞见
-[实现路径与现状](./group-mesh-implementation-path.md)。摘要：
+§19–§26。摘要：
 
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
@@ -911,10 +911,1102 @@ SoftEther 相关实测项属于子插件，见
 
 ## 17. 尚未回答的问题
 
-完整表与影响见[实现路径与现状](./group-mesh-implementation-path.md) 的"未回答问题"。
+完整表与影响见 §25 的"未回答问题"。
 当前最关键的四条：
 
 1. **跨公网**是否真的可达？同网段 IPv6 已实测，运营商是否放行入站高位端口未验证；
-2. Windows 上如何区分稳定地址与 RFC 4941 临时地址？（§4.6.1）
-3. 群主私钥丢失后团体永久不可管理，是否需要"名单备份 + 冷存储"操作指引？（§5.6）
-4. 取消/中断留下的 `<目标>.part` 是否需要属主端可见（列出未完成暂存与占用）？（§6.4）
+2. Windows 上如何区分稳定地址与 RFC 4941 临时地址？（§21.6.1）
+3. 群主私钥丢失后团体永久不可管理，是否需要"名单备份 + 冷存储"操作指引？（§22.6）
+4. 取消/中断留下的 `<目标>.part` 是否需要属主端可见（列出未完成暂存与占用）？（§22.11）
+
+---
+
+## 18. 章节索引
+
+本文由原三份文档合并而成，章节号分三片，**编号刻意保持稳定**，因为
+`shell/groupmesh/**` 与 `plugins/group-mesh/**` 的注释直接按号引用。
+
+| 章节 | 内容 | 来源 |
+| --- | --- | --- |
+| §0 | 阅读指引与实现概览 | 本文 |
+| §1–§13 | 设计：定位、术语、形态、身份、名单、共享项、发现、传输、客户端、壳侧改造、默认参数 | 本文 |
+| §14–§17 | 边界：待实测项、已落地能力、实施路线、尚未回答的问题 | 本文 |
+| §19–§26 | 实现路径与现状：进度、已知偏离与风险、**实现中踩到的坑**、测试工具、下一步、未决问题、结论摘要 | 原 `group-mesh-implementation-path.md` |
+| §28 | UI 现状取证（前端与壳契约对照） | 原逐插件 UI 审计 |
+| §29 | Companion 子插件（房间 / 语音 / 游戏面）设计草案 | 原 `group-mesh-companions.md` |
+
+**为什么有断号**：§18（本索引）与 §27 是合并时预留的空号 —— 把实现路径平移到
+`§19` 之后、把 UI 取证放到末尾 `§28`，就无需改动代码注释里已有的
+`§21.x` / `§22.x` 引用。**引用本文时请按上表，不要按顺序猜号。**
+
+### 18.1 按目的找章节
+
+- "这个插件现在是什么样" → §1–§13；
+- "做到哪了、还差什么" → §19、§20；
+- "哪里有风险、怎么收敛" → §21；
+- "踩过哪些坑（改代码前必读）" → §22；
+- "怎么验证" → §23；
+- "前端与壳契约的偏差" → §28；
+- "房间 / 语音 / 游戏面怎么规划" → §29。
+
+---
+
+## 19. 实现路径与现状（进度 / 漏洞 / 易错项 / 测试工具）
+
+> 本章与 §21–§26 原为独立文档 `docs/group-mesh-implementation-path.md`，已并入本文；
+> 日期 2026-09-17，事实基线 `feat/group-mesh` @ `7c2110e` + 本轮工作区改动。
+> 定位：**进度、漏洞、易错项、测试工具**。§0–§17 说明"现在是什么样"，
+> 本章起说明"做到哪了、哪里危险、怎么验证、下一步做什么"。
+>
+> **编号约定**：本章起的编号由原文档平移而来（`2`→`20`、`3`→`20.2`、
+> `4.x`→`21.x`、`5.x`→`22.x`），因为本文 §4 / §5 已分别用于「身份与密钥」
+> 「团体名单」。本章内出现的裸 `§4.x` / `§5.x` 一律指向平移后的 `21.x` / `22.x`。
+
+### 19.1 这份文档要解决什么
+
+设计文档定义"要做成什么样"。本文补三件事：
+
+1. **做到哪了**：按 P0–P4 列出已完成、部分完成、明确不做、未开始；
+2. **哪里有危险**：实现与设计之间的偏离、安全漏洞、稳健性缺口，逐条给等级与收敛路径；
+3. **怎么验证**：每条命令覆盖什么、需要什么前置条件、哪些是门禁哪些是演示。
+
+一句话概括：**协议内核（身份/名单/共享/注册/Noise/传输/节点）已可运行并在
+Windows↔Linux 跨机验证；插件层已接通双向传输、物化与网络位置；主体上下文
+壳侧已落地。本轮已收敛"私钥明文落盘"、"Noise 自写且无官方向量"、"手动刷新设备
+（改为定时轮询 + 变更时 push）"三项。按当前决定，下一步暂不做 HTTP / 插件层的
+按主体限权（§21.8、§21.9），优先处理 Rekey、连接上限、解散/设备授权/稳定地址等
+剩余项。**
+
+---
+
+## 20. 分层与阶段
+
+### 20.1 分层与边界
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ shell/backend/        壳：Flask 路由、令牌/主体、设置、文件服务 │
+│   principal.py        凭据 → 主体；ContextVar 受信注入           │
+└───────────────────────────┬──────────────────────────────────┘
+                            │ PluginBase / register_api
+┌───────────────────────────▼──────────────────────────────────┐
+│ plugins/group-mesh/   插件层：API、数据目录、节点线程、前端      │
+└───────────────────────────┬──────────────────────────────────┘
+                            │ import shell.groupmesh（普通包导入）
+┌───────────────────────────▼──────────────────────────────────┐
+│ shell/groupmesh/      协议内核：不 import Flask / pywebview     │
+│   crypto_prims records identity roster shares registry         │
+│   noise transport node client cli selftest roster_history      │
+└──────────────────────────────────────────────────────────────┘
+```
+
+内核归属壳层、不归插件私有，理由见设计文档 §0.3：它要被多个 Companion 复用，
+且必须能脱离 GUI 独立跑。插件层只做三件事：解析数据目录、把内核能力转成 API、
+管理监听/上传线程。打包由 `docs/Releases/spec_common.py` 的 `HIDDEN_IMPORTS`
+保证内核随包分发，缺失会在 `check_packaging` 门禁暴露。
+
+---
+
+### 20.2 阶段划分与当前进度
+
+每个阶段以**可复核的命令**收尾，不用"看起来能跑"作为完成标准。
+
+#### P0 —— 协议内核与跨机验证（已完成）
+
+| # | 内容 | 位置 |
+| --- | --- | --- |
+| 1 | 密码学原语封装（X25519 / Ed25519 / ChaCha20-Poly1305 / BLAKE2s / HKDF） | `crypto_prims.py` |
+| 2 | 规范化序列化与签名（跨平台字节一致） | `records.py` |
+| 3 | 主体/设备身份、设备凭据、落盘与权限 | `identity.py` |
+| 4 | 团体名单：规则 1–6、并发收敛、宽限提示 | `roster.py` |
+| 5 | 共享项声明与 ACL 判定 | `shares.py` |
+| 6 | 注册记录与注册表（seq 单调、防重放） | `registry.py` |
+| 7 | Noise_XX 握手与传输态 | `noise.py` |
+| 8 | 协商、授权、帧协议、请求/应答 | `transport.py` |
+| 9 | 节点服务端（路径安全、分块读写、暂存提交） | `node.py` |
+| 10 | 命令行入口与自检 | `cli.py`、`selftest.py` |
+| 11 | 插件骨架（API + 状态页） | `plugins/group-mesh/` |
+
+已实测：密码学 fixture 跨平台一致；纯 IPv6 端到端取 700 KB 文件两侧 sha256 一致；
+越权上传与路径越界被拒；名单 v1→v2 通过且运行中的节点无需重启即认新成员。
+
+#### P1 —— 壳侧主体上下文与权限档位（大部分完成）
+
+| # | 项 | 状态 |
+| --- | --- | --- |
+| 1 | 凭据到主体的映射（`principals.json`，只存 SHA-256） | **已完成** |
+| 2 | `ContextVar` 注入 + `PluginBase.current_principal()` / `require_principal()` | **已完成**（含插件层验收） |
+| 3 | `/file`、`/thumbs` 主体级检查点 | **待做**（见 §21.8） |
+| 4 | 权限档位落地（只保留 `read` / `write` + 上传） | **已完成** |
+| 5 | 设置写入限权（`system_*` 限 owner/admin） | **已完成** |
+| 6 | `minShellVersion` 运行时校验 | **决定不做**（当前只支持与最新壳配套；门禁仍校验格式，见 §21.12） |
+
+向后兼容：凭据表为空时，壳把既有 `auth_token.txt` 自举成 owner，老部署升级后
+令牌继续可用。验收用例见 `tests/test_shell_principal.py`，其中
+`PluginPrincipalInjectionTest` 走真实 `/api/<插件>__<方法>` 通路，断言请求体里的
+`principal` / `principal_id` / `role` 字段影响不了 `current_principal()`。
+
+#### P2 —— 把偏离收敛掉（上生产前必须）
+
+| 优先级 | 项 | 状态 |
+| --- | --- | --- |
+| 高 | 私钥改 DPAPI / keyring / 口令 AES-GCM（设计 §4.1） | **已完成**（`secret_store.py`；三者都不可用时如实回落明文并标红，见 §21.1） |
+| 高 | Noise 换 vetted 实现 + 官方握手向量 | **已完成**（`noiseprotocol` + cacophony 向量，见 §21.2） |
+| 中 | 长连接 Rekey（设计 §4.4） | **待做**（§21.3；库已提供 CipherState.rekey，缺应用层协商） |
+| 中 | 设备授权（配对/二维码）与凭据进名单（设计 §4.2） | **待做** |
+| 中 | 解散通告（设计 §5.5） | **待做** |
+| 低 | 注册表 `since` 游标 | **待做**（当前整表快照 + seq 合并） |
+| 低 | 稳定地址判定（设计 §7.4） | **待做**（§21.6.1） |
+| 低 | 群主转移/任免管理员进界面 + 使用说明 | **待做** |
+| — | ~~名单自动分发~~ | **已完成**（`op=roster` + 名单历史） |
+| — | ~~主动 push 新名单~~ | **已完成**：变更时 push + 后台定时轮询（间隔见设置 `sync_interval_seconds`） |
+| — | ~~容量上限进设置面板~~ | **不做**：判定挡不住并发，做成设置项只会让人以为有防线（§21.11） |
+
+#### P2.5 —— 共享面收尾
+
+| 项 | 状态 |
+| --- | --- |
+| 上传入口 `upload_remote` + 界面 | **已完成** |
+| 上传进度 / 取消 / 断点续传 | **已完成** |
+| 上传任务表落盘、重载标记 interrupted | **已完成** |
+| 遗留 `<目标>.part` 的可见性 | **待做**：取消/中断留下的暂存会一直占属主磁盘，协议里没有远程删除 |
+| `add_device()` 暴露（多设备） | **待做**：内核已实现，CLI/插件都没有调用方 |
+
+#### P3 —— 用途插件（房间 / 语音 / 游戏面）
+
+不在本插件路线里，由 Companion 子插件承担；前置实测项见
+§29 §4。
+
+#### P4 —— Android 轻客户端
+
+按设计 §11.2 只预留角色与能力字段，不预留接口；当前未开始。
+
+#### 本轮基线验证（可复核，2026-09-17 实跑）
+
+```bash
+# 内核自检：6/6 通过
+venv/Scripts/python.exe -m shell.groupmesh.cli selftest
+
+# 内核 + 插件 + 物化 + 网络位置 + 多实例夹具 + 壳主体 + Noise 向量 + 私钥保护：
+# 268 例通过，1 例跳过
+venv/Scripts/python.exe -m unittest -q tests.test_group_mesh_mvp tests.test_group_mesh_plugin \
+    tests.test_group_mesh_materialize tests.test_group_mesh_network_location \
+    tests.test_multi_instance_fixture tests.test_shell_principal \
+    tests.test_group_mesh_noise_vectors tests.test_group_mesh_secrets
+
+# 前端两层（需要本机有可用的无头浏览器）：39 例通过
+venv/Scripts/python.exe -m unittest -q tests.test_group_mesh_frontend_e2e tests.test_group_mesh_shell_e2e
+
+# 全量门禁：617 例通过，1 例跳过；lint / 类型 / 插件 / 打包检查全绿
+venv/Scripts/python.exe -m unittest discover -s tests -q
+venv/Scripts/python.exe -m ruff check .
+venv/Scripts/python.exe -m pyright main.py shell tools
+venv/Scripts/python.exe tools/check_version.py
+venv/Scripts/python.exe tools/check_plugins.py
+venv/Scripts/python.exe tools/check_packaging.py
+```
+
+跨机联调（主路径纯 IPv6 / 兜底同网段 IPv4）需要 `~/.ssh/config` 的
+`omnibox-linux` 别名：
+
+```bash
+pwsh -File shell/groupmesh/tools/ipv6-test.ps1
+pwsh -File shell/groupmesh/tools/lan-test.ps1
+```
+
+---
+
+## 21. 已知偏离、漏洞与风险清单
+
+**这一节是本文最重要的部分。** 先给等级汇总，再逐条展开。等级按"当前部署形态
+（单机单使用者）下的实际影响"与"多使用者/公网部署下的影响"综合判断。
+
+| # | 项 | 等级 | 一句话 | 收敛路径 |
+| --- | --- | --- | --- | --- |
+| 4.1 | 私钥保护 | **已收敛**（plain 回落为残余） | DPAPI / keyring / 口令 AES-GCM；旧明文单向升级 | headless 可设 `OMNIBOX_SECRET_KEY` |
+| 4.2 | Noise 实现 | **已收敛**（无 Rekey、帧长超规范为残余） | `noiseprotocol` + cacophony 官方向量逐字节校验 | Rekey 见 §21.3 |
+| 4.8 | `/file`、`/thumbs` 无主体级检查点 | **中高**（多使用者下高） | 物化缓存对任何持令牌者全开 | `authorize_file()` 钩子 |
+| 4.9 | 插件有副作用的方法未按主体限权 | **中高** | 任持令牌者可加成员、上传任意本机文件（含 `.config` 凭据）、向任意目录写远端内容 | 插件调 `require_principal()` + 收窄上传来源 |
+| 4.3 | 长连接无 Rekey | 中 | 单条连接的传输密钥泄露即可解全连接内容 | Noise §11.3 Rekey / 限时重握手 |
+| 4.10 | 节点自动监听 + 每连接一线程，无连接上限 | 中 | 暴露面大、可被半开连接占用线程 | 连接上限 / 超时收紧 / 显式开关 |
+| 4.6.1 | 临时地址也会进注册记录 | 中低 | 地址轮换后端点短暂失效 | `GetAdaptersAddresses(Temporary)` |
+| 4.11 | 容量上限挡不住并发 | 低（已默认关闭） | 显式设置也超限 | 保持"默认不限制 + 不暴露设置" |
+| 4.12 | `minShellVersion` 运行时不校验 | 低 | 门禁通过、运行时静默降级 | 已决定不做；靠版本纪律 |
+| 4.13 | 显式下载 / 镜像无总量上限 | 低 | 用户主动操作可写满磁盘 | 交互确认 / 总量预估 |
+| 4.7 | 解散、注册表游标、稳定地址等 | 功能缺口 | 见各条 | 按 P2 排期 |
+
+### 21.1 私钥保护（已收敛，仍有 plain 回落）
+
+- 设计 §4.1：设备私钥不导出，由操作系统密钥存储保存。
+- 现状（2026-09-17）：`shell/groupmesh/secret_store.py` 把 `principal.json` 与
+  `devices/<id>.json` 的**整个 JSON 内容**先保护再落盘，按可用性自动选择：
+  * Windows：**DPAPI**（`CryptProtectData` / `CryptUnprotectData`，ctypes 调用，
+    绑定当前用户）；
+  * 桌面 Linux / macOS：**OS keyring**（随机 32 字节密钥存 keyring，文件用
+    AES-256-GCM）；
+  * 设置 `OMNIBOX_SECRET_KEY`：**scrypt 口令派生的 AES-256-GCM**；
+  * 都不可用：明文回落，`describe()` / 插件状态页明确标红。
+- 迁移：旧版明文文件在首次读取时**单向升级**；已受保护的文件不会被降级重写；
+  keyring / 口令失效时抛 `SecretError` 并转成 `RecordError`，绝不把密文当明文解析。
+- 残余风险：`plain` 回落仍是明文（headless Linux 没有 keyring 且未设口令）；
+  keyring 后端依赖桌面会话（锁屏 / 未解锁时可能取不到）；`identity/` 的
+  "受保护路径"仍依赖壳的路径校验。
+- 验收：`tests/test_group_mesh_secrets.py` 覆盖 DPAPI（Windows）、keyring 替身、
+  口令、篡改拒绝、旧明文升级与"不降级重写"。
+
+### 21.2 Noise 实现（已收敛为 vetted 实现 + 官方向量）
+
+- 设计 §4.4：握手使用 Noise 框架的现成实现，不自行设计密码学组合。
+- 现状（2026-09-17）：`noise.py` 包装 **`noiseprotocol==0.3.1`** 的
+  `Noise_XX_25519_ChaChaPoly_BLAKE2s`；传输态直接使用它的 CipherState
+  （同一套密钥、nonce 推进与 AEAD）。`noise.py` 只做角色 / 静态密钥 / prologue
+  翻译、异常统一与接口兼容。
+- 官方向量：`tests/test_group_mesh_noise_vectors.py` 驱动
+  `tests/fixtures/noise_XX_25519_ChaChaPoly_BLAKE2s.json`（cacophony 向量），
+  逐字节校验 3 条握手消息、`handshake_hash` 与双向传输消息，并覆盖"与原生
+  `noiseprotocol` 对端互通"。**替换前的手写状态机也通过同一组向量**（本轮实测
+  验证），因此这次替换不改变线格式，`PROTO_VERSION` 保持 2。
+- 残余风险：
+  * `noiseprotocol` 是 Alpha、未做独立安全审计；它相对手写实现的价值是
+    "独立实现 + 官方向量可复核"，不是"已被审计"；
+  * 传输帧直接走 CipherState 而非 `NoiseConnection.encrypt/decrypt`，
+    因此应用帧可以超过 Noise 规范的 65535 字节单消息上限（256 KiB 分块 /
+    目录列表都会超过）；与严格检查该上限的实现对传大帧时会被它们拒绝；
+    * 仍无 Rekey（§21.3）。
+- 验收：上述向量用例 + `selftest` 的"Noise_XX 握手与传输态" + 既有 `NoiseXXTest`。
+
+### 21.3 长连接没有密钥轮换（中）
+
+- 现状：握手有前向安全（临时密钥），但长连接的传输密钥在整条连接生命周期内不变，
+  也没有消息数上限（除 `2^64` nonce 上限；耗尽时 `noise.py` 直接报错终止，不是 Rekey）。
+- 影响：单条超长连接泄露一把传输密钥，该连接内全部内容可解。
+- 收敛：按消息数/字节数触发 Noise §11.3 的 `Rekey()`，或限制单连接时长后强制重握手。
+
+### 21.4 写入语义：暂存 + 提交（已按设计实现）
+
+这一条不是风险而是**已收敛的偏离**，留档说明曾经的危险写法：
+
+- 曾经：`_op_write` 直接 `open(target, 'wb')` 覆写，一次断线就把对端已有文件截断成
+  半份且无人报错。
+- 现在：`part` / `eof` / `overwrite` 三字段；`client.push_file()` 一个文件走一条连接、
+  一次基线计量；目标已存在默认拒绝，覆盖需显式 `overwrite`。
+- 顺带修掉：配额每分块 `os.walk`（1 GiB / 256 KiB = 4096 次全树遍历，上传慢到不可用）；
+  基线把正在写的 `.part` 重复计入。
+
+### 21.5 身份签名与 Noise 静态密钥是两把密钥（必要的措辞修订）
+
+- 设计 §4.3：同一把设备密钥同时用于握手与注册。
+- 现状：设备持有 Ed25519 签名密钥 + 由同一份种子确定性派生的 X25519 握手密钥，
+  握手时用**设备绑定证明**把两者绑在一起。从"账号数量"看仍是一套身份材料，
+  但不满足"同一把密钥"的字面表述。
+- 原因：Ed25519 私钥是种子经 SHA-512 派生的标量，不是合法 X25519 标量；
+  直接当 DH 用会让双方算出不同共享密钥且都不报错（§22.2）。
+
+### 21.6 IPv4 是可达性兜底，主路径仍是 IPv6（已实测）
+
+- 实测条件：两端都有全局 IPv6。`ipv6-test.ps1` 完成纯 IPv6 联调：Linux 绑全局
+  IPv6，Windows 用 `[2409:…]:port` 连接，700 KB 文件 sha256 两侧一致，越权与越界
+  被拒，注册记录里写入的是该全局 IPv6 端点。
+- IPv4 只是同一可达网段内的地址族兜底，不引入 NAT 穿透或中继，与设计 §1.3 的非目标
+  不冲突。
+- 仍然成立的边界：**跨公网**能否直连取决于运营商是否放行入站高位端口（§8 问题 1）。
+  已验证的是"同网段、IPv6 地址族"，不等于"公网可达"。
+
+### 21.6.1 自动地址选择会把临时地址也当成端点（待修）
+
+设计 §7.4 要求监听与注册使用稳定地址，不使用 Windows 默认的 RFC 4941 临时地址。
+`registry.local_addresses()` 做不到：Python 标准库拿不到"是否为临时地址"。
+实测 Windows 同时存在稳定地址与临时地址，因此不显式 `--bind` 时两者都会写进
+注册记录；临时地址轮换后该端点失效。`_refresh_own_registration()` 会在地址集合
+变化时递增 `seq` 重发，代价是旧端点期间白试一次。
+
+补充实测：本机由 RA 下发两个全局 IPv6，另有私有 v4 与一张 Radmin VPN 网卡
+（地址对同为该 VPN 成员的设备可用）。因此**不能按网段筛端点**，可达性只能靠
+连接侧逐个尝试。收敛路径：显式 `--bind`（当前规避手段）；Windows 用
+`GetAdaptersAddresses` 的 `Temporary` 标志识别；或改用 RFC 7217 地址并只发布它。
+
+### 21.7 未实现的次要项
+
+| 项 | 设计 | 现状 |
+| --- | --- | --- |
+| 解散通告 | §5.5 | 未实现 |
+| 内容寻址分块传输 / 做种 | §10 | 未实现（当前 offset/length 分块） |
+| 注册表增量同步 | §7.3 | 只有整表 `list`/`push`，无 `since` |
+| 稳定地址判定 | §7.4 | 见 §21.6.1 |
+| 主动 push 新名单 | §5.7 | **已实现**：名单变更时 push + 后台定时轮询（`sync_interval_seconds`，默认 60 秒） |
+| 群主转移/任免管理员进界面 | §5.6 | 只有 CLI |
+| 设备配对/二维码、凭据进名单 | §4.2 | 未实现 |
+| Android 轻客户端 / 本地网关 | §11.2 / §11.3 | 未实现 |
+
+### 21.8 数据路由没有主体级检查点（中高；多使用者部署下为高）
+
+- 现状：`/file`、`/thumbs` 只做令牌 + 路径安全 + 受保护判定
+  （`shell/backend/file_server.py` 的 `serve_media_file` / `serve_thumb`），
+  没有按主体判权。
+- 为什么现在必须做：group-mesh 的**物化缓存**（`.cache/remote/<设备>/<共享>/…`）
+  会经 `/file` 端给界面。远端共享内容进入本机 HTTP 之后，任何持令牌者都能按路径
+  读走，而"谁能看哪个共享项"的 ACL 判定在协议侧，HTTP 侧完全不知道。
+- 影响范围：单机单使用者部署下，"持令牌者"就是本机用户，影响有限；一旦通过
+  反向代理/局域网多使用者共用同一个壳进程，就是跨主体读。
+- 收敛：新增 `PluginBase.authorize_file(principal, path) -> bool` 钩子（默认放行，
+  只收紧不放松）；group-mesh 覆写为"物化缓存只有属主与共享项 ACL 允许的主体可读"；
+  壳在路径安全之后、返回文件之前调用。
+
+### 21.9 插件有副作用的方法未按主体限权（中高）
+
+- 现状：壳侧只有 `_ADMIN_ONLY_API` 守**壳自己的**端点；插件方法
+  （`/api/group-mesh__<方法>`）仍只受"有效令牌"保护。group-mesh 也没有调用
+  `require_principal()`，因此主体上下文对它等于不存在。
+- 具体危险（任一持令牌者即可触发，动作以**本机主体**身份执行）：
+  - `add_member`：把任意主体/设备公钥写进名单（当本机主体是 owner/admin 时）；
+  - `upload_remote`：把本机任意文件读取并发送到对端共享项，只排除 `identity/`、
+    远端缓存与 staging——**没有排除 `.config/`（`auth_token.txt`、`principals.json`、
+    插件设置）**。持令牌者因此可以把壳自身的凭据外带出去，这是本文分析中除
+    "私钥明文"外最直接的提权链。收敛时除了限权，还应把上传来源收窄到用户显式
+    选择的目录（或在 `PluginBase` 层提供"受保护路径不可读"的统一排除）；
+  - `mirror_share`：把远端共享项内容写到**任意**本地目录（仅排除插件数据根与身份
+    目录），等于任人投放文件；
+  - `start_node` / `stop_node` / `add_share` / `remove_share` / `clear_remote_cache`：
+    改变节点的对外行为或删除缓存。
+- 收敛：group-mesh 在涉及主体/副作用的方法上调用 `self.require_principal()`，
+  并按下述规则判断：改设置/节点开关/成员管理要求 `is_admin`；读取只要求主体存在。
+  拒绝返回 403（插件侧返回 `{'success': False, 'error': ...}` 或抛
+  `PermissionError`，由壳统一转错误响应）。**注意后台线程天然没有主体**，
+  上传线程等后台任务需要显式携带发起主体（`use_principal`），否则无法判权。
+
+### 21.10 节点自动监听 + 每连接一线程，无连接上限（中）
+
+- 现状：身份与团体都存在时，插件在 `get_status()` 里自动启动节点，默认绑 `::`；
+  服务端每条连接一个 daemon 线程（`_spawn_handler`），`listen(16)`，没有并发上限；
+  半开连接可占用线程最多 30 s（`CONNECTION_TIMEOUT_SECONDS`）。
+- 影响：暴露面大（公网 IPv6 上任何能到达该端口的主机都可发起 Noise 握手）；
+  大量半开连接可耗尽线程/文件描述符。防火墙默认会挡，但用户加过放行规则后就敞开。
+- 收敛方向（未定）：引入可配置的连接数上限与握手超时收紧；提供"不自动启动节点"
+  的显式开关；或要求用户显式确认监听地址。当前文档只如实标注，不假装已有防线。
+
+### 21.11 共享项容量上限挡不住并发（已处置为默认不限制）
+
+- 旧状：默认 1 GiB，前端还硬编码发送 `max_bytes: 1 GiB`，而设置面板没有该项。
+- 实测：`node.py` 的判定是"**每条连接**量一次基线，之后按基线推算"。8 条并发连接在
+  "上限 1000 字节"的共享项上各写 400 字节，全部成功，落盘 3200 字节。另有事后估算、
+  别的进程写入、先探询再分块三处天然缺口。
+- 处置：`DEFAULT_MAX_BYTES = None`；插件 `add_share()` 不再带 `max_bytes`
+  （不传 / 0 / null = 不限制），界面不再发送硬编码值；判定逻辑保留，显式设置上限时
+  仍生效。**不做界面设置项**：给不出可信保证的旋钮比没有旋钮更糟。
+- 代价：被授予 `write` 的人可以写满属主磁盘。因此"不要给不信任的人 write 权限"是
+  唯一有效边界（写权限是可加的，设计 §6.2）。
+
+### 21.12 `minShellVersion` 运行时不校验（已决定不做）
+
+- 现状：`tools/check_plugins.py` 校验格式，`manifest.json` 声明 `1.2.0`，壳加载时
+  不比较版本。它是唯一"门禁通过、运行时静默降级"的项。
+- 决定：当前只支持与最新壳配套发布，不引入运行时拒绝逻辑；版本纪律保留在
+  `PROTO_VERSION`（协议主版本）上。若将来插件需要向后兼容旧壳，再引入运行时校验。
+
+### 21.13 其它缺口与观察
+
+- **显式下载 / 镜像无总量上限**：`download_remote` 与 `mirror_share` 由用户主动触发，
+  但可以写满磁盘；`max_fetch_mb` 只约束"浏览时的按需取字节"，不约束这两个入口。
+- **`download_dir` 与物化缓存的 HTTP 可见性**：默认下载目录经
+  `/file?plugin=group-mesh` 可读，受 §21.8 的同一问题影响。
+- **无审计**：不记录"谁在何时写了什么"；设计上靠小团体相互约定，写权限与
+  `created_by` 无关。
+- **身份目录保护是路径级的**：`_reject_protected_file` 依赖路径字符串与
+  `protected_paths` 的一致性；不是加密保护。
+- **崩溃/断电后的 `.part` 与暂存**：上传取消会留下 `<目标>.part`；取字节失败会留下
+  `.cache/staging` 下的 `.part`（`_discard_staging` 会清自己那一次，但进程被杀时
+  可能残留）。
+- **旧 pyc**：`tests/__pycache__/test_multi_instance_mesh.cpython-312.pyc` 存在，
+  但对应的 `tests/test_multi_instance_mesh.py` 已不存在（现名
+  `tests/test_multi_instance_fixture.py`）。`unittest discover` 不受影响，
+  但会误导读仓库的人，建议清理。
+
+### 21.14 本轮分析发现并已处理/待清理的文档不一致
+
+| 位置 | 原不一致 | 处理 |
+| --- | --- | --- |
+| `plugins/group-mesh/backend/main.py` 文件头 | 仍写"壳目前没有主体能力"，并称"当前状态（v0.1，骨架）" | **已改**：说明壳侧已落地、本插件尚未接入，指向本文 §21.9 |
+| `shell/groupmesh/__init__.py` 文件头 | 把"壳侧主体上下文"列为不在本包范围，容易被误读成"壳还没有" | **已改**：说明它由 `shell/backend/principal.py` 提供，内核不依赖它 |
+| `shell/groupmesh/registry.py` 注释 | 引用"设计文档 §4.6.1：IPv4 是可达性兜底"，旧设计文档根本没有 §4.6 | **已改**：引用 §4.6；§4.6.1 留给临时/稳定地址识别 |
+| `docs/group-mesh-p1-review.md` | 内容已被本文收编，且"待做/已完成"与最新 HEAD 不一致 | **已改**：本轮已把该文档整体并入本文（§19–§26），独立文件删除 |
+| `tests/__pycache__/test_multi_instance_mesh.cpython-312.pyc` | 无对应 `.py`（现名 `test_multi_instance_fixture.py`） | **待清理**：不影响 `unittest discover`，但会误导读仓库的人 |
+| `plugins/group-mesh/backend/main.py` 的 `get_status()['unsupported']` | 只列"内容寻址 / Android" | 与事实一致；如要更完整可补"本地网关 / 轻客户端" |
+
+---
+
+## 22. 实现中踩到的坑（务必保留，避免重犯）
+
+这些是真实调试中定位到的问题。共同特征：现象常是"AEAD 校验失败 / MAC check failed"，
+根因却各不相同。握手失败时不要只看"密钥对不对"，按下面清单逐项排查。
+
+### 22.1 Noise_XX 的 token 顺序与 nonce 延续（三处错误）
+
+按规范 §22.3 的 `WriteMessage` 规则：**先顺序处理消息的所有 token，最后才追加一次
+负载**。由此推出的三条约束，本实现最初全部搞错：
+
+| # | 规则 | 错误写法 | 正确写法 |
+| --- | --- | --- | --- |
+| 1 | `es` 的第一个字母指**发起方**的密钥类型 | 发起方用 `DH(e, re)` | 发起方 `DH(e, rs)`；响应方 `DH(s, re)`，且在收到消息 3 时才结算 |
+| 2 | 负载用最后一个 token 派生的 `k` | 把负载放在 `es`/`se` 之前 | `es`/`se` 的 `MixKey` 之后才加密负载 |
+| 3 | 同一个 `k` 的 nonce 不因新消息重置 | 消息 3 的 `s` 从 nonce 0 开始 | 响应方消息 2 已用掉 nonce 0，消息 3 的 `s` 用 nonce 1 |
+
+补充：`CipherState` 在 `k` 为空时 `EncryptWithAd` 原样返回明文并只做 `MixHash`
+（XX 的消息 1），因此 `MixHash` 必须由 `HandshakeState` 负责，不能让
+`CipherState` 去持有握手哈希。
+
+### 22.2 Ed25519 密钥不能直接当 X25519 用（最危险的一个）
+
+- 现象：双方各自算出的 `DH(e_i, s_r)` 与 `DH(s_r, e_i)` 不相等，两边都不报错，
+  直到后面的 AEAD 才以 `MAC check failed` 暴露。
+- 根因：Ed25519 私钥是种子经 SHA-512 派生的标量，不是 X25519 标量；原样喂给
+  X25519 点乘得到的是一把无关的标量。
+- 修正：由同一份身份种子确定性派生 X25519 密钥对
+  （`X25519 私钥 = clamp(BLAKE2s(seed || label))`），并在握手中用设备绑定证明
+  把 Ed25519 设备公钥与 X25519 握手公钥绑定，否则 `authorize_peer` 会拿 DH 公钥
+  去名单里查，永远查不到。
+
+### 22.3 pycryptodome 的两处编码陷阱
+
+| 陷阱 | 表现 | 正确做法 |
+| --- | --- | --- |
+| `pointQ.x`、`export_key(format='raw')` 与 RFC 7748 三者互不相同 | 用 raw 导出公钥、按 `pointQ.x` 大端当线格式，会与外部实现不互通（本项目 v0.1 的实际缺陷） | 线格式一律取 RFC 7748 §5 的 32 字节小端；`EccXPoint` 要的整数按小端解读 |
+| X25519 私钥不能手工转成整数做标量乘 | 普通 int 点乘与库自己的结果不同，两边都不报错 | 私钥一律经 `_dh_private_key()`（内部 `ECC.construct(curve='Curve25519', seed=...)`）还原 |
+| Ed25519 的 `int(key.d)` 是派生标量不是种子 | 存 `d` 再重建会得到另一把密钥 | 持久化用 `key.seed`；重建用 `ECC.construct(curve='Ed25519', seed=...)` |
+
+另有两处 API 事实：`ECC.import_key` 不接受 32 字节裸 Ed25519 公钥（需补固定 SPKI
+头），也不接受裸种子；`EccXPoint(None, curve)` 是无穷远点而不是基点。
+
+### 22.4 授权必须在握手之后单独确认
+
+XX 的三条消息只完成"互相认证静态公钥"。响应方判定对端资格所需的最后一个输入
+（发起方静态公钥与绑定负载）在**消息 3** 才到达，而发起方在收到消息 2 后就已经把
+消息 3 发出去了。不加确认帧时，被拒的发起方会认为 `connect()` **成功**（实测现象），
+直到后续请求失败或超时才发现。修正：会话建立后的第一帧由响应方回 `ok` 或
+`deny:<原因>`，发起方据此决定是否返回连接。
+
+### 22.5 跨机联调的环境坑（与协议无关，但会浪费大量时间）
+
+| 现象 | 根因 | 做法 |
+| --- | --- | --- |
+| `bash: $'\r': command not found` | PowerShell 管道喂 bash 时行尾是 CRLF | 喂之前 `-replace "\`r\`n","\`n"` |
+| `ssh` 卡满 120 秒超时，服务其实已启动 | `nohup ... &` 仍继承 ssh 的 stdout 管道 | 用 `systemd-run --unit=...` 起临时 unit |
+| `ssh $alias "a" + "b"` | ssh 是原生命令，参数被拆开，远端收到孤立的 `+` | 先把整条命令拼进一个变量 |
+| 控制台中文乱码导致断言假命中 | 代码页不是 UTF-8 | 断言用**退出码**，不用输出文本 |
+| IPv6 地址直接拼进 `host:port` | 地址自带冒号，`rpartition(':')` 会切错 | 写成 `[2409:…]:port`，解析时去掉方括号 |
+| "没有 IPv6"的错误结论 | 引号嵌套失败，把报错当成了探测结果 | 探测类命令**必须看退出码**，别只看输出 |
+
+最后一条值得单独强调：本次就因为一条引号写坏的 `ip -6 addr`，得出了"目标机没有
+全局 IPv6"的错误结论，并据此写进了文档。**探测结果与预期不符时，先确认那条探测
+命令真的跑成功了。**
+
+### 22.6 长驻节点的名单必须在每次建连时重读
+
+- 现象：先起 `serve`，再在另一处 `roster add`，新成员连接时被判
+  "对端设备 … 不在团体名单里，拒绝连接"。
+- 根因：`Node` 只在构造时拿到一份名单快照，而它是长驻进程；名单会变。
+- 修正：`Node.current_roster()` 在每条连接上调用 `roster_loader` 重新读取；
+  CLI 与插件分别传入"读 roster.json"与"读插件身份目录"的 loader。
+  读盘失败退回内存副本，不让一次 IO 错误导致全部连接被拒。
+- 附带结论：这让 `tools/ipv6-test.ps1` 的"先起节点、后加成员"顺序成为有效的
+  回归用例。
+
+### 22.7 CSS 级联废掉了 `hidden`（前端"一打开就弹添加成员"）
+
+- 现象：打开插件，三个弹窗同时铺满整屏，DOM 里最后的"添加成员"盖在最上面。
+- 根因：浏览器给 `[hidden]` 的 `display: none` 来自 UA 样式表，而
+  `.gm-modal { display: flex }` 是作者样式，优先级相同时作者样式胜出。
+- 修正：改成属性选择器驱动默认态：
+
+  ```css
+  .gm-modal { display: none; }                    /* 默认态没有任何规则命中 */
+  .gm-modal[data-open="true"] { display: flex; }  /* 显式打开 */
+  ```
+
+- 教训：**前端"接上了"不等于"看得到"，也不等于"点得动"**。此前只做后端 API 测试
+  （全过），前端一行没验；而后端全对、界面全错完全可能。
+
+### 22.8 状态载荷缺键，导致按钮"点了没反应"
+
+- 现象：「创建团体」点击后毫无反馈。
+- 根因：`get_status` 的 `settings` 没给 `group_name`，前端读
+  `status.settings.group_name`；缺失时 `undefined !== ''` 恒真，走进
+  `window.confirm()`，而内嵌 WebView 里原生对话框可能被禁用。
+- 修正：①「创建团体」改成应用内弹窗；②状态载荷补齐前端会读的键，且只给真正读的键。
+- 教训：桩测试容易掩盖这类问题——用例对 `get_status` 回的是手写理想载荷，键当然是齐的。
+  因此又加了 `tests/test_group_mesh_shell_e2e.py`：起真实壳服务、经导航进入插件
+  iframe，用真实后端返回值验证渲染与调用。
+
+### 22.9 前端验证的三个层次（缺一层就会漏）
+
+| 层次 | 用例 | 能抓到什么 | 抓不到什么 |
+| --- | --- | --- | --- |
+| 纯渲染 | `test_group_mesh_frontend_e2e.py`（桩 Bridge + 无头浏览器） | 弹窗可见性、按钮是否开弹窗/调后端、布局 | 真实鉴权、`Bridge` 来源、`<插件>__<方法>` 前缀 |
+| 真实壳 | `test_group_mesh_shell_e2e.py`（起服务 + 导航 + iframe） | 上面三项，以及"插件在壳里到底能不能用" | 需要本机有浏览器（CI 上跳过） |
+| 后端 | `test_group_mesh_plugin.py` | API 语义、契约（受保护路径）、共享根约束 | 界面 |
+
+易踩前提：打开首页时壳会自己种下 HttpOnly 令牌 Cookie
+（`file_server._attach_token_cookie`），因此 e2e 不需要手动准备令牌；反过来，**直接**
+打开 `/plugins/<name>/frontend/index.html` 既没有 Cookie 上下文，也没有壳注入的
+`window.pywebview.api` 垫片，`Bridge` 会一直报"PyWebView API 不可用"。
+排查"插件一片空白"时先确认走的是壳的 URL。
+
+### 22.10 名单只做了"第一次加入"，没做"分发更新"（成员停在旧名单）
+
+- 现象：群主在 A 机把自己与 B 都加进名单（v2），B 机界面里却始终只有 v1、看不到
+  自己、也连不上任何人。
+- 排查结论：**不是"进不了名单"，是名单没送到**。A 的 `prev` 正好等于 B 的名单哈希，
+  B 只要拿到 v2 就能接上。
+- 根因：名单是带外分发（规则 6 的信任锚），而实现里只有"首次加入"一个入口。
+- 修正：①"加入"与"更新"合并为同一路径；②界面入口改名「加入 / 更新团体」；
+  ③给旧邀请串时错误信息带版本号；④**（2026-09-17）自动分发 `op=roster`**：
+  成员直接从对端拉名单，不再依赖手工贴串；未入名单者只放行 `roster`；准入按
+  "本机认得这一份"（含 `roster-history.json`，保留 12 版）。
+- 验证：`RosterDistributionTest`（内核 + 插件两侧）覆盖 v1→v2、旧邀请串被拒、
+  跳版被规则 2 拒绝、陌生设备拿不到名单、有旧名单的待入成员能拿到新名单。
+- 遗留：**已实现"变更时 push + 定时轮询"**（间隔见插件设置 `sync_interval_seconds`，
+  默认 60 秒）；界面仍未展示双方版本对照。
+
+### 22.11 上传的进度 / 取消 / 续传（五个坑）
+
+| 坑 | 现象 | 处置 |
+| --- | --- | --- |
+| 复用连接被两个线程同时用 | 上传线程与界面线程共用复用池连接，两次 send 交错把帧拼坏（`MAC check failed` 或卡住） | 上传用**专用连接**（`open_connection`，用完即关），复用池只服务界面 |
+| 同步请求挡住进度 | `/api` 是同步请求-应答，一次上传几分钟，占着请求既报不了进度也取消不了 | 后台线程 + `task_id`，界面轮询 `upload_status` |
+| 重载让上传"凭空消失" | 任务表只在内存，改设置/升级/重启后界面什么都不剩，而对方 `.part` 还在 | 任务表落盘 `upload-tasks.json`，启动时把未结束任务标为 interrupted |
+| 取消没有分块边界 | 在 `request()` 阻塞时才判取消，用户要等一整个分块甚至超时 | `push_file` 在每个分块前检查取消回调；socket 超时 30 秒兜底 |
+| 续传起点不可信 | 只按"对端 `.part` 有多大"续传，会在内容已变的本地文件上拼出垃圾且无人报错 | 起点必须同时满足：本机有记录、记录与当前文件 (大小, mtime) 一致、对端暂存数等于记录值；每块带 `offset`，对端核不上回 `offset_mismatch` |
+
+两条附带约束：进度回写要节流（每 4 MiB 落一次盘）；空文件与"整个文件已在对方
+暂存里"是同一类，都要补一次提交（`push_file` 里用 `pushed` 标志判断）。
+
+### 22.12 陈旧的 `dh_public` 让老身份目录升级即失败（已修）
+
+- 现象：X25519 编码改成 RFC 7748 后，`Device.from_dict()` 把"落盘 `dh_public`
+  与派生值不符"判为文件被改动并抛 `RecordError`，磁盘上所有旧身份都读不出来。
+  实测表现：插件加载正常、节点永远起不来、界面停在"正在读取设备"。
+- 更麻烦的一点：仓库 `data/group-mesh` 里那份 `dh_public` 既不是现行编码，也不是
+  大端遗留（实测与 `pointQ.x` 大端互不相同），"加一条大端兼容分支"不够。
+- 修正：该字段只是派生结果的冗余副本、不参与任何密码学计算，**派生值才是权威**；
+  不符时记 warning 并采用派生值；只有长度不是 32 字节才按结构性错误拒绝。
+  完整性由 Ed25519 私钥↔公钥一致性检查负责。
+
+### 22.13 改了不兼容的线格式却没递增 `PROTO_VERSION`（已修）
+
+- 现象：DH 编码改为 RFC 7748 时忘了递增协议主版本，新旧节点都自报"版本 1"。
+  协商层本来会给出"协议主版本不一致（本地 X，对端 Y），请升级后再连"，
+  版本号没变就轮不到它，用户看到的只是一句 MAC 校验失败。
+- 修正：`PROTO_VERSION = 2`；新增"本机 hello 必须报出 `PROTO_VERSION` 本身"的用例。
+
+### 22.14 测试复制被测常量，版本号漂移仍全绿（已修）
+
+- 现象：`NegotiationTest` 把 `proto: 1` 写死在三处，因此版本号与实现可以在测试
+  全绿的情况下漂移（§22.13 的温床）。
+- 修正：协商用例的 `proto` 改为引用 `PROTO_VERSION` 常量；注释写明这类
+  "测试复制被测常量"的写法是同一个坑。教训：**测试里的期望值如果来自被测实现，
+  就只能验证自洽，验证不了正确性**；X25519 官方向量的期望值因此逐字节抄自 RFC，
+  不来自本实现输出。
+
+### 22.15 前端脚本顺序是硬约束（remote.js → app.js）
+
+- `index.html` 先引 `js/remote.js`、后引 `js/app.js`。`remote.js` 只定义
+  `GroupMeshRemote` 与内部函数、装载期不碰 DOM；`app.js` 在 `DOMContentLoaded`
+  后调用 `GroupMeshRemote.init()`。顺序颠倒或漏挂会在装载期报
+  `GroupMeshRemote is not defined`。
+- `tests/js/plugin_asset_contract.mjs` 把关：`js/` 下不得有未被 `index.html`
+  引用的脚本、装载期不得触碰 DOM。这与 media-player 的分片契约是同一类问题
+  （见 `docs/media-player-design.md`）。
+
+### 22.16 `noiseprotocol` 的三个反直觉点
+
+- `NoiseConnection.from_name()` 的 `name` 参数虽然标了 `Union[str, bytes]`，
+  但传 `str` 会在 `NoiseProtocol` 里抛 `NoiseProtocolNameError`；必须传 bytes。
+- `HandshakeState.read_message()` 在完成握手时先 `self.rs = None` 再删 handshake
+  state，而 `NoiseProtocol.keypairs['rs']` 自始至终没被赋值。因此对端静态公钥
+  必须在 `handshake_done()` 之前抄下来（`noise.py` 的 `_capture_remote_static()`），
+  否则 `transport.authorize_peer()` 拿不到设备公钥，全部连接会被判"不在名单里"。
+- 握手期的 AEAD 失败由底层 `cryptography` 直接抛 `InvalidTag`，库没有包装；
+  必须把它和库自己的异常一起映射，否则 prologue 不一致、握手密文被篡改都会漏成
+  `InvalidTag`。
+- 另外，`NoiseConnection.encrypt/decrypt` 强制 65535 字节单消息上限；本项目的
+  256 KiB 分块 / 目录列表会超过它，因此传输态直接用其 `CipherState`（见 §21.2 的
+  残余风险），而不是 `NoiseConnection.encrypt`。
+
+### 22.17 私钥保护的两个坑
+
+- **DPAPI 的 `DATA_BLOB` 必须设 argtypes/restype**：64 位下不设会把指针截断，
+  `CryptProtectData` 可能失败或写出错乱结果；输出 blob 的 `LocalFree` 也必须调，
+  否则每次读写泄漏一块系统内存。
+- **keyring 必须做一次 set/get 往返探测**：没有桌面会话时
+  `keyring.get_keyring()` 返回 fail backend，直接写会得到一个"看似成功、
+  实际读不回"的密钥；探测失败就选下一个 protector，并缓存结果，避免每个文件
+  都访问 keyring。
+- **迁移只能单向**：已受保护的文件在 keyring 临时不可用时要报错，不能"回落到
+  明文重写"——那等于一次 keyring 故障就把私钥降级；`migrate_file()` 只升级不降级。
+
+### 22.18 后台同步踩到的共享连接坑（已修）
+
+- 现象：加后台同步后，`test_placeholder_mtime_comes_from_peer` 失败，报
+  `收到的帧过大（3987843650 > 4194304）`——一个正常的目录遍历请求被解析成垃圾帧。
+- 根因：后台同步线程用 `_connect()` 从 **UI 复用连接池**里取了一条正在被
+  `materialize_remote()` 使用的 Noise 连接；一条连接上的请求严格串行，两个线程
+  同时 `send` 把字节流交错，对端读到的帧头就是垃圾。这与 §22.11 上传的第一个坑同源。
+- 修正：后台同步、显式探测、注册表/名单 push 全部走 `_open_dedicated()`（每次新开
+  一条连接，用完即关）；只有 UI 的浏览/取文件继续使用复用池。
+- 教训：**连接复用池的并发语义必须显式**。只要出现第二个后台线程访问对端，就必须
+  问"它是否和 UI 共用连接"；共用就得加锁或改用专用连接，不能假设调用是串行的。
+
+### 22.19 前端 UI 改造：面板形态、级联优先级与两个测试坑
+
+界面从"一张 6 卡片栅格"改成**常驻侧栏 + 五个纯显隐面板**（形态与 manga-library /
+media-player / image-cleaner 一致，见设计文档 §1.4）。改造中踩到三件事，都属于
+"看代码看不出来、只有真跑才发现"：
+
+| # | 现象 | 根因 | 修正 |
+| --- | --- | --- | --- |
+| 0 | 布局与其它插件**一眼不同**：工具栏横跨整宽、侧栏从工具栏下方才开始 | 把 `.view-toolbar` 放在 `#app` 下当兄弟节点，而 image-viewer / manga-library / media-player 的结构是 `#app > (侧栏 + .view-body > 工具栏 + 内容区)` —— 侧栏是 `#app` 的直接子元素、跑满全高，工具栏属于右侧主区 | 按同一结构重排；分隔线跟着分工：侧栏只画 `border-right`、主区只画 `border-bottom`（两边都画会在交角叠成 2px）。`tests/debug_group_mesh_ui.py` 增了三条结构断言守着 |
+| 1 | 侧栏宽度设 236px 实际是 240px；窄窗口下侧栏不横向折叠（仍是竖排） | 壳的 `base.css` 用**同一个类** `.view-sub-sidebar`（0,1,0）写死 `width: var(--sub-sidebar-width)` 与 `flex-direction: column`，与本插件规则**同优先级**；两者都是作者样式，后注入的壳样式胜出 | 改选择器为 `.gm-side.view-sub-sidebar`（0,2,0），并在 CSS 里写清"不能靠改顺序，注入顺序由壳决定" |
+| 2 | 工具栏标题永远停在"团体组网" | `setPanel()` 读 `section[data-panel]` 的 `data-title` / `data-sub`，而 `index.html` 里这两个属性**当时忘了写** | 五个面板补齐 `data-title` / `data-sub`（它们是标题的单一来源） |
+| 3 | 窄窗口下卡片仍是两列 | 媒体查询顺序：`max-width: 1040px` 与 `max-width: 720px` 里都写了 `.gm-grid` 单列，两者同优先级时**后者胜出**，顺序不能对调 | 两条规则相邻并加注释说明顺序是硬约束 |
+
+测试侧两个坑（都会把排查引向错误方向）：
+
+- **Selenium 的 `.text` 会间歇性返回空串**。本插件新加的卡片/按钮带入场动画
+  （`effects.css` 的 `obxFadeUp` + `--obx-i` 交错延迟），实测同一个已渲染、已可见的
+  按钮连续取三次：`['', ''] / innerText=['创建团体','加入 / 更新团体'] / ['', '']`。
+  失败信息是"按钮文本为空"，看着像"没渲染"。两份浏览器用例因此改用
+  `text_of()` / `text_for()`（走 JS `innerText`），点击也改走 JS `.click()`
+  （Selenium 的"可交互"判定同样会在动画期间间歇失败）。
+- **等待条件必须是"渲染完成"而不是"元素存在"**。原用例轮询 `.gm-card` —— 那是静态
+  骨架，第一次检查就命中，于是"等待"等于没等，`get_status` 的桩 Promise 只要晚一个
+  微任务就读到空字符串（表现为整份用例随机红）。现在等**容器文本**出现期望内容。
+- 面板是纯显隐切换，隐藏面板里的按钮 `.text` 取不到、点不动；用例新增
+  `show_panel(driver, name)`（切面板并**校验切换生效**），任何 `.text`/点击之前先切。
+
+界面本身的几何自检（不截图，直接断言布局与配色）见 §6.2 的
+`tests/debug_group_mesh_ui.py`：24 项覆盖**结构归属**（侧栏是 `#app` 直接子元素、
+工具栏在主区内、侧栏与主区等高）、并排/堆叠、面板互斥、卡片底色与圆角来自 token、
+深浅主题对比、交错延迟是否真的写在卡片上。
+
+---
+
+## 23. 验证与测试工具一览
+
+> 下文命令里的 `python` 指仓库虚拟环境：Windows `venv/Scripts/python.exe`，
+> Linux `venv/bin/python`（在仓库根目录执行）。
+
+#### 1 门禁（提交前必跑）
+
+| 命令 | 覆盖 | 本机实测 |
+| --- | --- | --- |
+| `venv/Scripts/python.exe -m ruff check .` | 风格与静态错误 | 通过 |
+| `venv/Scripts/python.exe -m pyright main.py shell tools` | 类型（内核零错误是 CI 硬门禁） | 0 errors |
+| `venv/Scripts/python.exe tools/check_version.py` | `pyproject.toml` 与前端 `package.json` 版本一致 | OK（1.2.0） |
+| `venv/Scripts/python.exe tools/check_plugins.py` | manifest 规范、`minShellVersion` 格式 | OK（37 个警告，均为"字段运行时无效果"类） |
+| `venv/Scripts/python.exe tools/check_packaging.py` | spec / HIDDEN_IMPORTS 覆盖 | OK |
+| `venv/Scripts/python.exe -m unittest discover -s tests -q` | 全量单测 | **617 例通过，1 例跳过**，约 2–3 分钟（实测 113–157 s） |
+
+改到打包相关文件（`docs/Releases/**`、`requirements*.txt`、`pyproject.toml`、
+`tools/check_packaging.py`、`tools/check_build_tree.py`）时，再加真实构建与
+`tools/check_build_tree.py`。
+
+#### 2 内核与插件测试
+
+| 层次 | 命令 | 覆盖 | 前置 |
+| --- | --- | --- | --- |
+| 内核自检 | `python -m shell.groupmesh.cli selftest` | 原语、Noise 握手、名单规则 1–6、ACL、注册表、真实 TCP 端到端（含上传、越界拒绝），6/6 | 无 |
+| 内核单测 | `python -m unittest tests.test_group_mesh_mvp` | 上述各模块的边界与拒绝路径；含 RFC 7748 官方向量、名单分发、上传 | 无 |
+| Noise 官方向量 | `python -m unittest tests.test_group_mesh_noise_vectors` | 用 cacophony 夹具逐字节校验 3 条握手消息、`handshake_hash`、双向传输；另覆盖与原生 `noiseprotocol` 对端互通 | 已装 `noiseprotocol` |
+| 私钥保护 | `python -m unittest tests.test_group_mesh_secrets` | DPAPI（仅 Windows）、keyring 替身、口令 AES-GCM 的往返/篡改拒绝；旧明文单向升级与"不降级重写" | 无 |
+| 插件单测 | `python -m unittest tests.test_group_mesh_plugin` | manifest、契约（受保护路径）、API 形态、共享根约束、上传参数校验、节点启停、名单分发、自动发现、**后台同步状态/变更标记/push** | 无 |
+| 物化与占位 | `python -m unittest tests.test_group_mesh_materialize` | 物化目录树、占位/真字节切换、与 image-viewer 的占位兼容 | 无 |
+| 网络位置 | `python -m unittest tests.test_group_mesh_network_location` | `placement: network-location` 契约、`mirror_share` 落真字节 | 无 |
+| 多实例端到端 | `python -m unittest tests.test_multi_instance_fixture` | 一个进程内两台真实实例：互相发现、物化/取字节、上传（含进度/取消/续传）、ACL 与覆盖策略、**后台同步变更传播（新增共享项无需手动刷新）** | 无 |
+| 壳主体上下文 | `python -m unittest tests.test_shell_principal` | 凭据→主体、伪造参数被忽略、后台线程无主体、管理员端点 403、**插件层**受信注入 | 无 |
+| 前端（纯渲染） | `python -m unittest tests.test_group_mesh_frontend_e2e` | 桩 Bridge + 无头浏览器：侧栏面板切换（含"切了必须生效"的校验）、弹窗默认不可见、全新安装入口正确、按钮点击有反馈、**不再有"刷新设备"按钮、前端只读后端同步好的状态** | 本机浏览器 |
+| 前端（真实壳） | `python -m unittest tests.test_group_mesh_shell_e2e` | 起真实壳服务 + 导航 + iframe：令牌链路、真实 Bridge、`<插件>__<方法>` 前缀 | 本机浏览器 |
+| 前端脚本契约 | `python -m unittest tests.test_plugin_frontend_assets_js`（内部调 `node tests/js/plugin_asset_contract.mjs`） | 所有插件前端：`index.html` 与 `js/` 一致、按序装载、装载期不报错 | Node |
+| 前端几何/配色自检 | `python tests/debug_group_mesh_ui.py` | 20 项断言取代"看截图"：宽窗口并排 / 窄窗口堆叠、面板互斥、卡片底色与圆角来自壳 token、深浅主题对比、交错延迟写到卡片上；失败时非零退出 | 本机浏览器 |
+
+两条前端用例的排查经验（`.text` 空串、等待条件要看"渲染完成"）见 §22.7。
+
+#### 3 跨平台与跨机联调
+
+| 工具 | 命令 | 覆盖 | 前置 |
+| --- | --- | --- | --- |
+| 跨平台确定性 | `python shell/groupmesh/tools/interop_fixture.py --out fixture.json`，另一端 `--check fixture.json` | 同一种子在两平台必须算出相同密钥与签名（11 个字段） | 两端都能跑内核 |
+| 纯 IPv6 主路径 | `pwsh -File shell/groupmesh/tools/ipv6-test.ps1` | Linux 绑全局 IPv6、Windows 用 `[2409:…]:port` 连接；700 KB sha256 一致；越权/越界被拒；注册记录写入全局 IPv6；节点热认名单 | `~/.ssh/config` 的 `omnibox-linux` 别名 |
+| IPv4 兜底 | `pwsh -File shell/groupmesh/tools/lan-test.ps1` | 同网段 IPv4 完整链路与负向验证 | 同上 |
+| Linux 侧准备 | `shell/groupmesh/tools/lan-test-linux-prep.sh`、`lan-test-linux-add-member.sh` | 建团体、共享项、加成员、起服务 | Linux 主机 |
+| 非无头演示 | `python tests/debug_connection.py`、`debug_materialized_gallery.py`、`debug_network_location.py` | 逐步截图回答"肉眼才能回答"的问题；`debug_connection.py` 专做连接与共享访问（程序化登记地址、sha256 对比） | 桌面环境 |
+
+#### 4 怎么选
+
+- 改协议内核：先 `selftest`，再 `test_group_mesh_mvp`，最后跨平台 fixture；
+- 改插件 API / 数据布局：`test_group_mesh_plugin` + 相关物化/网络位置用例；
+- 改前端：`test_group_mesh_frontend_e2e`（快）→ `test_group_mesh_shell_e2e`（真）；
+- 改名单/注册/上传的端到端行为：`test_multi_instance_fixture`；
+- 改壳鉴权/主体：`test_shell_principal`；
+- 对外联调或发布前：两个 PowerShell 脚本至少跑 `ipv6-test.ps1`。
+
+---
+
+## 24. 下一步建议顺序
+
+按依赖关系排列，每一步都应有可复核的验收命令。本轮已完成私钥保护（§21.1）与
+Noise vetted 实现 + 官方向量（§21.2）。
+
+1. **P2：Rekey 与连接上限**（§21.3、§21.10）——`noiseprotocol` 已提供
+   `CipherState.rekey()`，需要应用层协商"何时轮换"（消息数/字节数/时长）；
+   同时给节点加连接上限与"不自动监听"开关，收敛 DoS 面。
+2. **P2：解散通告、设备配对/多设备、稳定地址判定**（§21.7、§21.6.1）——
+   解散记录类型与处理路径；`add_device()` 的配对入口；Windows
+   `GetAdaptersAddresses(Temporary)` 识别临时地址。
+3. **P2.5：遗留 `.part` 的属主端可见性**（§21.7）——列出未完成暂存与占用，
+   让属主能清理。
+4. **P1 主体限权（暂缓）**：本轮按决定不做 §21.8、§21.9；方案与验收已写在
+   §21.8 / §21.9，恢复时按原条目推进（壳侧 `authorize_file()` 钩子 + 插件
+   `require_principal()` + 收窄 `upload_remote` 的来源）。
+5. **P3：房间/语音/游戏面 Companion 子插件**——不在本插件路线，前置实测见
+   §29 §4。
+6. **P4：Android 轻客户端 / 本地网关**（仅保留设计位）。
+
+---
+
+## 25. 仍然没有答案的问题
+
+| # | 问题 | 影响 |
+| --- | --- | --- |
+| 1 | **跨公网**是否真的可达？同网段 IPv6 直连已实测，运营商是否放行入站高位端口未验证 | 决定设计 §1.1 的"公网 IPv6"前提能否成立 |
+| 2 | Windows 上如何区分稳定地址与 RFC 4941 临时地址？ | 决定注册记录写入哪个地址（§21.6.1） |
+| 3 | 群主私钥一旦丢失，团体永久不可管理；是否需要"名单备份 + 冷存储"的操作指引？ | 决定是否需要额外用户引导（设计 §5.6） |
+| 4 | 插件前端是否需要在没有全局 IPv6 时给出明确的"仅局域网可用"提示？ | 决定设计 §1.3 的边界在界面上如何表达 |
+| 5 | 取消/中断留下的 `<目标>.part` 是否需要属主端可见（列出未完成暂存与占用）？ | 决定 §21.7 的遗留暂存由谁、怎么清理 |
+| 6 | 多使用者部署下，物化缓存与下载目录的"主体级授权"用什么模型？ | 决定 §21.8 的 `authorize_file()` 接口形态与 group-mesh 的 ACL 映射 |
+
+---
+
+## 26. 本轮分析结论摘要
+
+**做得好的地方**：协议级授权（ACL 按握手验证过的主体判定）、名单规则链与准入
+（"本机认得这一份"而非"对端自证"）、上传的暂存/提交/续传语义、物化与网络位置
+对消费型插件的兼容，是本项目最扎实的部分；内核与插件的分层使协议可以脱离 GUI
+验证，跨机脚本与多层测试把关键拒绝路径都覆盖了。
+
+**本轮已收敛三项**：
+
+1. 私钥保护（§21.1）：DPAPI / keyring / 口令 AES-GCM；旧明文首次读取即单向升级，
+   已受保护的文件不降级；插件状态页显示当前保护级别。
+2. Noise 换 vetted 实现（§21.2）：`noiseprotocol` + cacophony 官方向量逐字节校验；
+   替换前的手写状态机也通过同一组向量，因此线格式不变、`PROTO_VERSION` 保持 2。
+3. 后台同步（§21.7、设计 §5.7 / §7.3）：移除"刷新设备"手动入口，改为可配置间隔
+   （`sync_interval_seconds`，默认 60 秒）的定时轮询 + 名单/注册变更时 push；
+   同步线程用专用连接，避免与 UI 复用连接池并发（§22.18）。
+
+**仍需优先处理**：
+
+1. 主体限权（§21.8、§21.9，**本轮按决定暂缓**）：多使用者部署下仍是跨主体
+   读/写/外带面，`upload_remote` 还能带出 `.config` 凭据；
+2. 节点自动监听 + 每连接一线程、无连接上限（§21.10）；
+3. 长连接 Rekey（§21.3）；
+4. `plain` 回落（§21.1）：headless Linux 没有 keyring 且未设 `OMNIBOX_SECRET_KEY`
+   时私钥仍是明文，状态页会标红——这是残余风险，不是"已静默忽略"。
+
+**可以晚一点但必须记录**：解散、设备配对、稳定地址、内容寻址、Android 轻客户端；
+`minShellVersion` 已决定不做运行时校验。
+
+**文档卫生**：§21.14 列出的过期文件头与错误交叉引用已在本轮一并修正，p1-review
+已改为存档指针；剩下无源 pyc 等仓库卫生项建议顺手清理。
+
+---
+
+---
+
+## 28. UI 现状取证（前端与壳契约对照）
+
+> 只读审计。契约基准：`shell/frontend/public/shell/{variables.css, base.css, effects.css, base.js}`
+> 与 `docs/plugin-guide.md` §4.1 / §4.3 / §4.4。所有结论附 `文件路径:行号`。
+
+### 28.1 概览
+
+**前端文件清单**
+
+| 文件 | 行数 | 职责 |
+| --- | --- | --- |
+| `plugins/group-mesh/frontend/index.html` | 338 | 唯一页面入口（`manifest.json:20` `frontend.entry`），5 个面板 + 6 个弹窗的静态骨架 |
+| `plugins/group-mesh/frontend/group-mesh.css` | 905 | 全部插件样式（无第二份 CSS） |
+| `plugins/group-mesh/frontend/js/app.js` | 603 | 状态读取、面板切换、身份/名单/共享项/节点/路线图渲染、弹窗开合、`Toast`/`confirmDialog` 封装 |
+| `plugins/group-mesh/frontend/js/remote.js` | 755 | 「远端共享」分片：设备 → 共享项 → 目录 → 取回/上传，含上传轮询与生命周期绑定 |
+| `plugins/group-mesh/frontend/network-location.html` | 290 | **第二个 HTML 页面**：被壳共享目录组件 FolderPicker 嵌进 iframe 的「网络位置」提供方（`network-location.html:8-17`） |
+
+- **页面形态**：单页多视图。`#app` 下 5 个 `section.gm-panel`（`index.html:102/124/137/158/203`）靠 `data-active` 纯显隐切换（`group-mesh.css:281-287`、`app.js:116-140`），不销毁 DOM。
+- **iframe 常驻**：`manifest.json:8` `"keepAlive": true`，因此 `remote.js:726-736` 必须靠壳的 `onShow`/`onHide` 停/起 15s 轮询（`remote.js:702` `VIEW_POLL_MS = 15000`），只把 `visibilitychange` 当壳缺失时的退路。
+- **脚本顺序契约**：`index.html:335-336` `remote.js` 在 `app.js` 之前；`app.js:582-595` 用依赖注入把 `call/toast/escapeHtml/openModal/closeModal` 交给分片，两者装载期都不碰 DOM（`app.js:599-602`）。
+- **是否用 Shell 布局类**：是，且是本仓库最完整的一个——`.view-sub-sidebar`、`.view-body`、`.view-toolbar`、`.toolbar-group`、`.view-content`、`.obx-nav-item`、`.modal/.modal-box/.modal-body/.modal-footer`、`.btn/.btn-sm/.btn-primary/.btn-danger`、`.obx-glass`、`.obx-scroll`、`.obx-card-lift`、`.obx-stagger`、`.obx-anim-scale`、`.obx-skeleton`、`.obx-ease` 全部来自壳。
+- **壳注入顺序（影响后面所有「谁赢」的判断）**：`shell/backend/file_server.py:797-798` 把 `variables.css / base.css / effects.css / base.js / motion.js` 注入到 `</head>` **之前**，所以插件自己的 `<link href="group-mesh.css">`（`index.html:7`）实际排在壳样式**之后**，插件同优先级规则天然胜出。
+
+### 28.2 布局骨架
+
+顶层容器结构树（`index.html:22-222`）：
+
+- `div#app`（`group-mesh.css:53-59`）
+  - `aside.gm-side.view-sub-sidebar.obx-glass`（`index.html:30`）
+    - `div.gm-brand` → `.gm-brand-icon` / `.gm-brand-text`（`index.html:31-37`）
+    - `nav.gm-nav.obx-scroll#gm-nav`（`index.html:39`）：4 个 `.gm-nav-label` 分组标题 + 5 个 `button.obx-nav-item.gm-nav-item[data-panel]`（`index.html:41/46/49/55/61`），其中两项带 `.gm-nav-count` 角标（`index.html:51/57`）
+    - `div.gm-side-foot.sub-sidebar-footer#gm-side-summary`（`index.html:66`）：`.gm-foot-dot[data-state]` + `.gm-foot-text`（`app.js:395-426` 写）
+  - `div.view-body.gm-main`（`index.html:72`）
+    - `div.view-toolbar.gm-toolbar`（`index.html:73`）：`.toolbar-group.gm-heading`（图标 + `#gm-panel-title` 15px/700 + `#gm-panel-sub` 11px）+ `.toolbar-group.gm-toolbar-right`（`margin-left:auto`，`group-mesh.css:100-102`）内两个 `.btn.btn-sm`
+    - `div#kernel-missing.gm-banner.gm-banner-error[hidden]`（`index.html:90`，`app.js:148` 控制）
+    - `div.view-content.gm-content.obx-scroll#gm-content`（`index.html:96`）
+      - `div.gm-panels.obx-stagger#gm-panels`（`index.html:97`）
+        - `section.gm-panel[data-panel][data-title][data-sub]` ×5
+          - `div.gm-grid`（两列，`group-mesh.css:290-294`）→ `section.gm-card.obx-card-lift` ×2（仅 machine 面板）/ 单卡 ×1（其余面板）
+  - `div.modal` ×6（`index.html:228/242/256/275/291/316`）挂在 `body` 下，与 `#app` 平级
+
+**尺寸与滚动来源**
+
+| 部位 | 数值 | 来源 |
+| --- | --- | --- |
+| 侧栏宽度 | `236px` | 插件自定义 `--gm-side-width`（`group-mesh.css:35`）→ `.gm-side.view-sub-sidebar{width:var(--gm-side-width)}`（`:141-145`），覆盖壳的 `240px`（`base.css:251-259`） |
+| 侧栏方向 | `flex-direction: row`（≤720px 时折成横向导航） | 插件（`group-mesh.css:840-850`） |
+| 工具栏高度 | `48px` | 壳 `.view-toolbar`（`base.css:239-248`），插件只改 `gap`（`group-mesh.css:67-69` `gap:12px`） |
+| 主内容滚动 | `.view-content{overflow-y:auto}` | 壳（`base.css:277-282`）；插件补 `padding:16px / background:transparent`（`group-mesh.css:271-277`） |
+| 高度链 | `html,body{height:100%}` + `#app{display:flex;height:100%;overflow:hidden}` | **插件自定义**（`group-mesh.css:47-59`），因为壳 `base.css:6-11` 只给 `body` 设了 `overflow:hidden` |
+| 卡片栅格 | `repeat(2,minmax(0,1fr))`、`gap:16px`（≤1040px 单列） | 插件（`group-mesh.css:290-294`、`:901-905`） |
+| 卡圆角 / 内边距 | `--gm-radius`=12px、`padding:16px` | 插件（`group-mesh.css:296-305`） |
+| 远端两栏 | 设备栏 `272px` + 文件栏 `flex:1`，各自 `overflow-y:auto` | 插件（`--gm-peers-width`，`group-mesh.css:36/633-645`） |
+| 弹窗宽度 | `480 / 560 / 560 / 520 / 560 / 520 px` 内联 | 插件（`index.html:229/243/257/276/292/317`），壳 `.modal-box` 默认 `400px`（`base.css:165-169`）被内联宽度覆盖 |
+
+`network-location.html` 是**独立文档**，不复用任何布局类：`body{padding:14px 16px}`（`:25`）+ 三步 `.nl-step`（`:64-79`），列表 `.nl-list{max-height:150px;overflow-y:auto}`（`:31`）——**没有加 `.obx-scroll`**。
+
+### 28.3 设计 token 使用
+
+**实际用到的壳变量（`group-mesh.css` 内计数，112 处 `var(--…)`）**
+
+- 背景：`--bg-app`(58/535/574/740/765/782) `--bg-surface`(301/383/818) `--bg-hover`(122/229/449/705)
+- 文本：`--text-primary`(88/115/171/321/334/384/506/595/697/769/784/797/819) `--text-secondary`(94/177/230/245/346/454/486/500/527/543/587/655/742) `--text-muted`(199/253/260/403/680/747) `--text-on-accent`(710)
+- 边框/强调/语义：`--border`(152/297/381/440/533/549/572/636/739/764/783/849/888) `--accent`(31/395/477/709/804) `--success`(32/257/308/478/479/726/727/817) `--warning`(33/258/309/476) `--danger`(34/113/259/310/773/774/828) `--danger-soft`(34)
+- 尺寸/动效：`--radius`(30) `--radius-lg`(29) `--radius-sm`(121/382) `--transition-fast`(387/701) `--shadow-md`(820)
+- effects.css / motion.js：`--obx-ease`(303/444/824) `--obx-i`(304/445；`app.js:236/296/389` 内联写入) `--obx-shadow-2`(820)
+
+**插件自定义变量**：`:root` 下 8 个（`group-mesh.css:28-37`）`--gm-radius`、`--gm-radius-sm`、`--gm-accent-soft`、`--gm-success-soft`、`--gm-warn-soft`、`--gm-danger-soft`、`--gm-side-width`、`--gm-peers-width`。其中 `--gm-success-soft`(32) 与 `--gm-warn-soft`(33) 定义后**零引用**（死 token）。插件**没有**覆盖 `:root` 里任何一个壳 token，只做「壳 token → `--gm-*` 派生」。`.gm-card-wide`(`:313-315`) 同样零引用。
+
+**硬编码颜色字面量**
+
+- `group-mesh.css` 的正则 `#[0-9a-fA-F]{3,8}\b|rgba?\(` 命中 **3 行**，其中 2 行在注释里（`:16` 记录旧版写死的 `#f59e0b / #8b5cf6`、`:463` 同一记录），**唯一的生效字面量**是 `:820` `box-shadow: var(--shadow-md, var(--obx-shadow-2, 0 10px 30px rgba(0,0,0,0.2)));` —— 三级回退链的最末兜底。
+- 对比 `network-location.html`：同一正则命中 **15 行**，全是「变量 + 字面量回退」写法，典型 4 条：`:27` `var(--bg, #17181c)`、`:38` `var(--accent, #4c8dff)`、`:60` `color: #fff`（`.btn-primary` 的纯字面量）、`:214` `'var(--danger, #e5484d)'`。根因是 `:23` `:root { color-scheme: light dark; }` 明确按「可能脱离壳单独打开」设计。
+
+**data-theme 处理**：三个文件全部**没有** `data-theme` 代码（grep `data-theme|color-scheme` 只命中 `network-location.html:23` 的 `color-scheme`）。深色完全靠壳注入脚本（`file_server.py:71-76` 同步 `data-theme`）+ token 生效；`network-location.html:24-28` 甚至给 body 写了「深色优先」的回退底色。
+
+### 28.4 组件与命名约定
+
+**前缀**：`gm-`（group-mesh）。按类别清单：
+
+- 按钮：**无自有按钮类**，全靠壳 `.btn/.btn-sm/.btn-primary/.btn-danger`；只覆写一个尺寸 `.gm-table .btn-danger{padding:3px 10px;font-size:12px}`（`:559-562`）
+- 卡片：`.gm-card`(`:296`)、状态边 `.gm-card-ok/warn/error/muted`(`:308-311`)、`.gm-card-wide`(`:313`，未用)
+- 弹窗：**零自有弹窗类**，用壳 `.modal`（`index.html:228` 等 6 处），仅给 `.modal-body input/textarea` 加尺寸（`:414-426`）
+- 菜单/分页/树/灯箱/卡片网格：`createContextMenu` / `createPagination` / `createTree` / `createLightbox` / `createCardGrid` 一个都没调用；表格是手写 `<table class="gm-table">`（`app.js:258/306`、`remote.js:178`）
+- 进度：`.gm-remote-progress`(`:760`)、错误态 `.gm-remote-progress-error`(`:772`)、弹窗内 `.gm-upload-progress`(`:778`)——**纯文本进度，无 `<progress>`/百分比条**，百分比只出现在文案里（`remote.js:527-528`）
+- toast：`.gm-toast` / `.gm-toast-error`(`:811-829`)，只在壳 `Toast` 缺失时启用（`app.js:29-40`）
+- 空状态：`.gm-empty`(`:495-508`)，shell 的 `.empty-state` 未使用
+- 骨架屏：`.gm-skeleton-line`(`:511-520`) + 壳 `.obx-skeleton`（`app.js:433-434`）
+- 徽标：`.gm-badge` + `-owner/-admin/-member/-ok/-warn`(`:466-480`)、`.gm-remote-badge`(`:721`)、`.gm-nav-count`(`:225`)、`.gm-foot-dot[data-state]`(`:249-260`)
+- 其他：`.gm-kv`(`:339` 定义列表)、`.gm-hint`(`:484`)、`.gm-details`(`:532`)、`.gm-list`(`:522`)、`.gm-check`(`:789`)、`.gm-address*`(`:566-607`)、`.gm-remote-*`(`:611-775`)、`.gm-banner-error`(`:112`)、`.gm-brand*`(`:147-179`)、`.gm-nav*`(`:181-233`)
+
+**「Shell 已提供但插件又实现一遍」的能力**
+
+| 能力 | Shell 提供 | 插件实现 | 差异 |
+| --- | --- | --- | --- |
+| Toast | `.toast*`（`base.css:208-234`）+ `Toast.*` | `.gm-toast`(`:811-829`) | 仅作脱离壳的兜底（`app.js:31-39`）。位置相反：壳 `top:16px;right:16px`，插件 `right:20px;bottom:20px`；插件用 `border:1px solid var(--success)` 表语义，壳用 `.toast-icon` 里的 `Utils.iconHtml('icon:circle-check')`（`base.js:390-400`） |
+| 空状态 | `.empty-state`（`base.css:428-431`，`min-height:300px` 居中 16px） | `.gm-empty`(`:495-503`，`13px` 左对齐多行 + `<strong>`) | 语义化更强（可带标题+说明），但视觉与壳不一处 |
+| 骨架屏 | `.obx-skeleton`（`effects.css:118-131`） | `.gm-skeleton-line`(`:511-520`) 再叠一层 | 壳只管配色与 shimmer，插件补 `height:12px` / `margin:6px 0` / 圆角 6px；即壳的骨架尺寸仍需插件给 |
+| 表单控件 | `.field input/select/textarea`（`base.css:187-206`，含 `:focus` 强调色、`min-height:120px` textarea） | `.gm-form/.gm-address/.modal-body` 三组选择器(`:375-426`) | 视觉接近（6px 10px、`--radius-sm`），但选择器是**元素级**且覆盖 `.modal-body`（见 §28.7）；textarea 无 `min-height`，只 `resize:vertical` |
+| 表格 / 卡片 / 徽标 / 定义列表 | **壳无对应类** | `.gm-table`(`:430-460`)、`.gm-card`(`:296-322`)、`.gm-badge`(`:466`)、`.gm-kv`(`:339`) | 真实缺口，不是重复实现 |
+| 弹窗 | `.modal` 全家桶 | 无自有弹窗类（`:20-23` 注释记录曾自绘 `.gm-modal` 已删除） | **已对齐**，是本仓库的迁移范例 |
+
+### 28.5 交互约定
+
+- **设置入口**：工具栏 `#btn-settings`（`index.html:83`）→ `openSettingsModal({ title: '团体组网设置' })`（`app.js:486-492`），**不传 `schema`/`values`/`onSave`**，完全依赖壳去 `Bridge.call('get_settings_schema'|'get_settings')`（`base.js:572-577`）；缺失壳时只弹一条错误 toast（`app.js:488`）。保存反馈由壳给：`Toast.success('设置已保存')` + 400ms 后 `location.href = …?_t=` 整页重载（`base.js:621-622`）。
+- **错误提示**：统一 `window.Toast.error`（`app.js:29-40`、`remote.js:43`）；两类「非 toast」错误——首屏 `get_status` 失败写侧栏 `#gm-foot-text = '读取状态失败'` + `data-state="error"`（`app.js:465-471`），内核缺失走常驻横幅 `.gm-banner-error`（`app.js:148`）。弹窗内错误留在弹窗里（`remote.js:612`）。
+- **选择模型**：**单选**（远端设备/共享项点击 `remote.js:105-109`；目录项「进入/取回」逐行按钮 `remote.js:159-168`）。**无多选、无框选、无长按、无拖拽**，`app.js:504` 的 `read: 'group'` 是硬编码 ACL。
+- **右键菜单**：**无**（无 `contextmenu` 监听，未调用 `createContextMenu`）。
+- **键盘快捷键**：**无**（全前端 grep `keydown|keyup` 零命中）；只有程序化 `focus()`（`app.js:227/228`、`remote.js:479/659`）。
+- **长任务进度与取消**：文本行 `.gm-remote-progress`，六种状态全覆盖——「正在物化 X…」(`remote.js:389`)、「正在读取对端目录…」(`:410`)、「正在取回 X…」(`:432`)、上传百分比「续传中/正在上传 1.2 MB / 8.0 MB（15%）」(`:523-529`)、「已取消，已传 …（再点「上传」会从这里续传）」(`:570-571`)、「上传被中断，已传 …」(`:574-580`)。轮询间隔 `300ms`(`:584`)；传输中 `#btn-do-upload` 置灰并改名「上传中…」、`#btn-close-upload` 锁死、`#btn-cancel-upload` 显形（`remote.js:497-513` ← `index.html:310`），取消后文案变「正在取消…」(`:630`)。
+- **空态/加载态/错误态文案与类**：
+  - 加载：内容区骨架两行 `.gm-skeleton-line.obx-skeleton`（`app.js:433-434`）+ 侧栏「正在读取状态…」（`index.html:68`）；远端「正在读取设备…」（`remote.js:52/304`）
+  - 空态：`<p class="gm-empty">`，文案如「本机还没有身份。」（`app.js:179`）、「本机还没有团体名单。」（`:218`）、「**本机还没有共享项。**」(`:283`)、「还没有可用的对端设备。」(`remote.js:57`)、「这个目录是空的。」(`:154`)
+  - 错误态：`.gm-badge.gm-badge-warn` 内联在提示里（`app.js:339/366`）、`.gm-remote-progress-error`(`remote.js:393/437`)、`.gm-banner-error`(`app.js:148`)、`network-location.html` 用 `.nl-empty` 写「读取设备失败：…」(`:127`)
+
+### 28.6 特色设计（值得吸收）
+
+1. **面板标题/副标题只写在 HTML 的 `data-title`/`data-sub` 上，工具栏标题是渲染产物**（`index.html:102-104` → `app.js:131-137`）。解决：新增面板不再需要在 JS 里再维护一份标题表，两处文案永不漂移。
+2. **卡片顶边 2px 表达后端状态，而不是让用户逐行读文字**（`group-mesh.css:296-311`；`app.js:191/249/351-356`）。解决：`身份/名单/节点` 三张卡「一眼看健康度」；`gm-card-warn` 还刻意区分「名单过期只是提示，不阻断通信」（`app.js:248`）。
+3. **文本进度区把结论留下（含落地路径、字节数、断点位置），而不是进度条走完就消失**（`remote.js:397-401/446-447/570-571`）。解决：跨进程/跨弹窗的长任务失败后用户仍能知道「传到哪了、能不能续传」。
+4. **上传状态机把 `interrupted` / `cancelled` 当一等状态并明说「再点上传会续传」**（`remote.js:482-492/566-581`；后端任务表见 `index.html:302-306`）。解决：插件重载/进程被杀后用户不会误以为白传了。
+5. **侧栏底部常驻「节点运行 + 是否已发布 + 团体/名单版本」三件事**，并用 `data-state` 圆点编码 OK/warn/error/idle（`group-mesh.css:249-260`、`app.js:395-426`）。解决：本插件的核心问题「我到底能不能被别人连上」有了唯一常驻答案。
+6. **壳缺失时的降级是显式设计的**：`Toast` 缺失走 `.gm-toast`（`app.js:31-39`）、`confirmDialog` 缺失走原生 `confirm`（`app.js:315-318`）、`Bridge` 缺失返回带说明的 reject（`app.js:44-46`）、`Motion` 缺失安静跳过（`app.js:58-62`）。解决：页面可脱离壳直接打开调试，且降级路径不静默失败（`network-location.html:104-107` 的 `postMessage` try/catch 同思路）。
+7. **`network-location.html` 对「输入框回写」的取舍被写成注释留档**（`:192-203`）：`input` 事件里只同步 `state`、**绝不回写输入框**，只在 `blur` 时回写规范化结果（`:281-284`），并在 `run()` 里以输入框当前值为准（`:236`）。解决：逐字符输入时反斜杠被规范化吃掉导致 `C:UsersADMINI~1...` 的难查 bug。
+
+### 28.7 与 Shell 契约的偏差
+
+| # | 偏差 | 证据 | 影响面 |
+| --- | --- | --- | --- |
+| 1 | **侧栏宽度必须靠提高优先级才能覆盖壳**：壳用 `.view-sub-sidebar`(0,1,0) 写死 `--sub-sidebar-width`(240px)，插件改 236px 只能写成 `.gm-side.view-sub-sidebar`(0,2,0) | `group-mesh.css:135-145`（注释自陈「同优先级时后注入的壳样式胜出…实测：设成 236 实际 240」）；壳侧 `base.css:251-259` | 1 处规则 / 侧栏整条布局；窄窗口 ≤720px 的横向折叠同规则内（`:840-850`）。任何「统一侧栏宽度」的动作会立刻把这里的选择器策略打回 240px |
+| 2 | **元素级表单样式覆盖壳的弹窗正文**：`.modal-body input, .modal-body textarea`（两组共 10 个选择器）不受插件前缀约束 | `group-mesh.css:375-404/414-426`；壳侧 `.field input…`(`base.css:187-200`)、`.modal-body`(`base.css:174`) | 6 个弹窗的全部输入框 / 1 处宽选择器；将来壳给 `.modal-body input` 加统一类时会被这 13px/6px 10px 的规则顶掉（同优先级下插件在壳之后注入，插件赢，见 `file_server.py:797-798`） |
+| 3 | **`[hidden]` 不可用，改用内联 `style.display`**（作者样式的 `display` 会盖掉 UA 给 `[hidden]` 的 `display:none`） | `remote.js:501-502` 与 `:508/519`；`index.html:301/310` 初始就是 `style="display:none"` | 上传弹窗 3 个按钮 / 1 处历史事故（见 §22.7）。统一 UI 若给 `.btn` 加 `display` 声明，会重演同类问题 |
+| 4 | **高度链仍需插件自己给全**：壳只给 `body{overflow:hidden}`，`html,body{height:100%}` 由插件写 | `group-mesh.css:39-59`；壳侧 `base.css:6-11` | 1 个插件 / 全部内容的滚动；若统一布局把 `#app` 换成壳提供的容器类，`html,body` 这两行必须一起搬走，否则 `.view-content` 的 `overflow-y` 静默失效（内容被裁） |
+| 5 | **响应式断点顺序与常规相反**：`@media (max-width:720px)` 写在 `@media (max-width:1040px)` **之前**，两条都改 `.gm-grid`，靠源码顺序让宽的那条兜底 | `group-mesh.css:834` 与 `:901`（`:898-900` 注释自陈「顺序不能对调」） | 2 条媒体查询 / 卡片栅格与远端两栏；统一断点体系时极易被格式化或合并工具重排而反向生效 |
+| 6 | **自有 toast / 空态 / 骨架三件套与壳并存** | `.gm-toast`(`:811-829`)、`.gm-empty`(`:495`)、`.gm-skeleton-line`(`:511`) vs 壳 `.toast*`/`.empty-state`/`.obx-skeleton` | 3 组类 / 全站空态与提示观感：同一屏里「壳的 toast 在右上、插件的 toast 在右下」是可见差异（`base.css:209-213` vs `:811-815`） |
+| 7 | **`--gm-success-soft` / `--gm-warn-soft` / `.gm-card-wide` 定义未用** | `group-mesh.css:32-33`、`:313-315`（grep `--gm-success-soft` 仅命中定义行） | 3 个符号 / 无功能影响；但会让「统一 token 表」误以为它们仍在被消费 |
+| 8 | **`network-location.html` 完全绕开壳的类体系**：内联 `<style>` 里重定义 `.btn`/`.btn-primary`，并把 `.view-*` 布局类一并弃用 | `network-location.html:54-60`（`.btn{padding:4px 10px;font-size:12px;border-radius:6px}`）；注入点在 `</head>` 前（`file_server.py:798`）意味着**壳的 `.btn`(`base.css:14-24`, 6px 14px/13px/4px) 在本页会覆盖插件这份**，实际渲染是壳的尺寸 | 1 个页面 / 三步选择器全部按钮；该页是「网络位置」提供方契约（`docs/plugin-guide.md` §7.2.1）的实现，改壳的 `.btn` 会**直接改变这个页面的按钮尺寸**，而页面作者以为自己在用自定义样式 |
+| 9 | **进度只用文本，不消费壳的任何进度组件** | `remote.js:214-225` 只写 `textContent`；百分比仅文案（`:527-528`） | 4 类长任务（物化/列目录/取回/上传）；统一进度组件时必须同时改前端 4 条链路的后端返回（`result.fetched/unchanged/error_count/truncated`，`network-location.html:260-263`） |
+| 10 | **设置弹窗依赖壳的「保存后整页重载」隐式行为** | `app.js:491` 不传 `onSave`；壳 `base.js:621-622` 重载带 `?_t=` | 1 个入口；若统一 UI 去掉重载语义，group-mesh 的设置项（后端 `get_settings_schema`）将不会在界面上生效 |
+| 11 | **`visibilitychange` 兜底与壳生命周期并存** | `remote.js:726-736`：有 `onShow/onHide` 用壳的，否则监听 `document.visibilitychange` | 1 处 / 15s 轮询；`keepAlive` 下 `document.hidden` 恒 false（`:720-724` 注释），统一生命周期时这段兜底是必须一起收编的死角 |
+
+---
+
+## 29. Companion 子插件（房间 / 语音 / 游戏面）设计草案
+
+> 版本：草案 v0.1。状态：**尚未开始**。本节只定目标形态与前置实测项，编码前先补待实测项。
+> 归属：这些能力由**未来的 Companion 子插件**实现，不属于核心插件 group-mesh。
+> 依赖：`manifest.dependencies: ["group-mesh"]`，复用内核 `shell/groupmesh/` 的
+> 身份、团体名单、注册发现与加密传输。原为独立文档 `docs/group-mesh-companions.md`，已并入本文。
+>
+> **编号约定**：下面的 `### 0.`–`### 5.` 沿用原草案编号。
+
+### 0. 定位与依赖契约
+
+核心插件 group-mesh 提供身份、名单、注册、发现与加密通道；子插件在此之上做具体用途：
+
+| 子插件 | 提供 | 复用内核的什么 |
+| --- | --- | --- |
+| 房间/语音 | 房间声明、成员集合、语音与文字通道 | 身份与名单（谁是谁）、注册表（谁在哪）、加密传输（点对点会话） |
+| 游戏面 | 老游戏的二层虚拟局域网 | 同上 + 房间成员集合 |
+
+契约要点：
+
+- 子插件**不重复实现**身份与信任：成员资格一律来自内核的团体名单，不引入第二套账号；
+- 房间是**独立于团体**的临时集合：团体是身份与授权边界，房间是一次具体活动；
+- 内核侧不假设每个参与者都承担存储与转发（见核心插件设计 §11.2 的角色预留）。
+
+---
+
+### 1. 房间
+
+#### 1.1 房间对象
+
+```json
+{
+  "room":    "<房间标识>",
+  "group":   "<所属团体>",
+  "owner":   "<房主主体公钥>",
+  "mode":    "mesh",
+  "relays":  [{"device": "<设备公钥>", "endpoint": ["240e:xxxx::1", 18443]}],
+  "members": ["<主体公钥>"],
+  "expires": 1767225600,
+  "sig":     "<房主签名>"
+}
+```
+
+房间是一次具体活动的集合，独立于团体：团体是身份与授权边界，房间是联机或语音的临时 L2 域，拥有自己的虚拟 IPv4 网段。
+
+#### 1.2 模式
+
+| 模式 | 拓扑 | 适用 |
+| --- | --- | --- |
+| `mesh` | 成员之间直连 | 语音建议 6 人以内；游戏 10 人以内 |
+| `relay` | 经由一个或多个中继节点转发 | 人数超过上述范围，或直连失败时 |
+
+中继节点可以由任一成员承担，包括在机房租用高带宽机器的成员。
+
+#### 1.3 语音
+
+- 采用 WebRTC + Opus；
+- 网状模式每人上行 = (N−1) × 约 40 kbps：5 人约 160 kbps，10 人约 360 kbps，50 人约 1.96 Mbps；
+- 移动网络上行通常为 1～5 Mbps，因此人数较多时需要中继；
+- 中继模式下每人只发一路给中继，中继上行约 N × 40 kbps（50 人约 2 Mbps）；
+- **不设硬上限**；界面按当前模式标出可承载范围，并在超过 6 人时提示可以切换中继模式。该提示仅为建议，不阻断加入。
+
+#### 1.4 游戏
+
+- 二层虚拟局域网中每条广播与组播帧必须复制给房间内其他每个节点，复制量由本项目承担，与游戏自身的服务端负载无关；
+- 网状模式下发送方复制 N−1 份；改为星形中继后为发送方发 1 份、中继复制 N−1 份，上行压力从各节点集中到中继；
+- 10 人房间每条广播复制 9 份，为实际支撑目标；**不设硬上限**；
+- 整个团体不得置于同一 L2 广播域，房间必须独立划分。
+
+#### 1.5 知情同意
+
+加入房间即接受房间声明（含模式与中继），不需要投票机制。两点必须如实标注：
+
+- 中继可见通信元数据（谁与谁通信、流量大小）；
+- 语音中继需要解密音频，因此**可见内容**；需要端到端加密的语音只能使用网状模式。
+
+---
+
+### 2. 游戏联机引擎
+
+#### 2.1 选型
+
+选用 **SoftEther VPN**（虚拟 Hub 提供二层能力）。
+
+| 项 | 说明 |
+| --- | --- |
+| 许可 | Apache License 2.0（[官方手册 1.3](https://www.softether.org/4-docs/1-manual/1/1.3_SoftEther_VPN_is_Open_Source)），与本仓库许可一致 |
+| 分发 | **不随包分发**，由用户自行从官方渠道下载安装 |
+| 插件职责 | 只做编排：生成配置、启停、状态探测 |
+
+许可义务在用户自行下载的前提下不触发；界面仍标注来源与许可，便于用户知情。若将来改为随包分发，需履行 Apache-2.0 的四项义务：附许可证副本、保留版权与署名声明、标注修改过的文件、不使用其商标作背书，并核对 `src/THIRD_PARTY.TXT` 中第三方组件的许可。
+
+#### 2.2 外部依赖的编排方式
+
+参照 `netease-music` 的既有范式（`plugins/netease-music/backend/netease_music_api.py`）：外部程序由用户安装，插件负责定位、探测与调用。
+
+| 项 | 设计 |
+| --- | --- |
+| 定位 | 优先取设置项中的用户指定目录（`settings_schema` 的 `directory` 类型，由 Shell 的 `FolderPicker` 渲染），其次探测系统 PATH |
+| 探测 | 调用 `vpncmd` 获取版本；状态区显示「未安装 / 已安装 版本 X」 |
+| 调用 | 参数一律以数组形式传入，**不使用 `shell=True`**（Windows 上 `.cmd` 会被 `cmd.exe` 二次解析） |
+| 版本要求 | 设置最低版本，低于则提示 |
+| 权限 | 虚拟网卡驱动安装需要管理员权限，属一次性操作，插件只提示，不代替提权 |
+
+#### 2.3 待实测项
+
+编码前必须先拿到这四项数据：
+
+- 虚拟 Hub 对广播与组播帧的转发行为；
+- 虚拟网卡驱动的安装流程与静默安装可行性；
+- IPv6 下节点与虚拟 Hub 的连通性；
+- 实际吞吐。
+
+---
+
+### 3. 默认参数
+
+| # | 参数 | 取值 |
+| --- | --- | --- |
+| 1 | 语音切换中继的提示阈值 | 6 人；仅作提示，不阻断加入 |
+| 2 | 游戏房间的实际支撑目标 | 10 人（每条广播复制 9 份） |
+| 3 | 语音编码 | WebRTC + Opus |
+
+---
+
+### 4. 待实测项
+
+| # | 事项 | 影响 |
+| --- | --- | --- |
+| 1 | SoftEther 虚拟 Hub 的广播与组播转发表现 | 决定游戏联机是否可用 |
+| 2 | 虚拟网卡驱动的安装流程 | 决定首次使用的操作步骤 |
+| 3 | IPv6 下节点与虚拟 Hub 的连通性 | 决定是否需要在同一网段内使用 |
+| 4 | 实际吞吐 | 决定房间人数的实际上限 |
+
+---
+
+### 5. 落地时要带上的清单
+
+子插件与主程序同进程运行，因此新增的每个 `shell.backend.*` 与第三方模块都必须登记：
+
+- `docs/Releases/spec_common.py` 的 `HIDDEN_IMPORTS`（漏了会被静默跳过，表现为运行时
+  `ImportError`）；
+- 第三方包写进 `requirements.txt`；
+- `manifest.json` 声明 `dependencies: ["group-mesh"]` 与 `minShellVersion`；
+- 前端脚本按 `docs/plugin-guide.md` 的装载契约组织，并让
+  `tools/check_frontend_escape.cjs` 的转义登记表覆盖新增插值。

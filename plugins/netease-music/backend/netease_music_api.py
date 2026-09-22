@@ -132,7 +132,7 @@ class NeteaseMusicAPI:
 
         绝不使用 shell=True：keyword 直接来自前端搜索框，而 Windows 上
         ncm-cli 只是 npm 生成的 .cmd shim，cmd.exe 会二次解析参数，一个引号
-        就能逃出引号让 `&` 变成命令分隔符。见 docs/code-review.md §3.2。
+        就能逃出引号让 `&` 变成命令分隔符。
         """
         args = shlex.split(cmd) if isinstance(cmd, str) else [str(item) for item in cmd]
         argv = _ncm_argv_prefix()

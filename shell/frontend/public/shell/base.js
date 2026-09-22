@@ -120,7 +120,7 @@ window.onDispose = window.PluginLifecycle.onDispose;
 
 // ===== 内核 → 插件的消息接收 =====
 // 消息必须校验来源：只接受"父窗口直接发来"的消息。仅校验 event.origin 不足以防
-// 伪造 —— 宿主再内嵌一层 frame 时 origin 完全相同（docs/core-contract-fixes.md §3.4.c）。
+// 伪造 —— 宿主再内嵌一层 frame 时 origin 完全相同。
 function isMessageFromShell(event) {
   if (!event) return false;
   var parentWindow;
@@ -336,7 +336,7 @@ window.Utils = {
   // HTML 转义：**同时转义引号**，因此可以直接用在属性值里（"..." / '...'）。
   // 只转 &<> 的写法（textContent → innerHTML）看着"够用"，一旦插进
   // data-x="${...}"，值里的一个引号就能逃出属性并注入 —— 而调用方无从知道
-  // 哪个 helper 适合属性、哪个只适合文本（docs/code-review.md §4.3）。
+  // 哪个 helper 适合属性、哪个只适合文本。
   escapeHtml(str) {
     if (str == null) return '';
     return String(str)

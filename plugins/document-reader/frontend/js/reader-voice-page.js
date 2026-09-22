@@ -3,7 +3,7 @@
 //
 // 为什么不塞进阅读设置弹窗：这里要放引擎、端点、Key、模型、音色、语速与试听，
 // 是个"配置一次就不动"的页面；而字号主题是随时要调的。两者混在一个弹窗里，
-// 高频项会被低频项淹没（见 docs/document-reader-redesign.md §2）。
+// 高频项会被低频项淹没（见 docs/document-reader-design.md §2）。
 //
 // 保存一律走插件的 `save_settings`（同一个 settings_schema），
 // 因此这里改的就是插件设置面板里那几项，不存在两份配置。

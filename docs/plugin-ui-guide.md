@@ -13,9 +13,14 @@
 
 - 取证对象：`plugins/` 下 8 个插件前端（不含壳自身的 Vue 页面 `App.vue` /
   `views/SettingsView.vue` / `views/StatusView.vue`——它们是宿主 chrome，不是插件）。
-- 逐插件原始记录：`docs/_ui-audit/<plugin>.md`；量化统计与命令见各文件与本文 §9。
+- 逐插件原始记录已并入各插件设计文档：`docs/group-mesh-design.md` §28、
+  `docs/image-viewer-design.md` §12、`docs/media-player-design.md`
+  「UI 现状取证（前端与壳契约对照）」、`docs/pixiv-sync-design.md` §8、
+  `docs/image-cleaner-design.md` §5、`docs/document-reader-design.md` §13、
+  `docs/manga-library-design.md` §5、`docs/netease-music-design.md` §5；
+  量化统计与命令见各文件与本文 §9；原先单独存放这些记录的审计目录已删除。
 - 相关既有文档：`docs/plugin-guide.md` §4（前端契约）、§5（主题同步）；
-  `docs/group-mesh-implementation-path.md` §5.19（UI 改造踩坑记录）。
+  `docs/group-mesh-design.md` §22.7（UI 改造踩坑记录）。
 
 ---
 
@@ -549,21 +554,18 @@ background: var(--mp-glass, var(--bg-surface));
 
 ### 9.1 一览（量化口径：`var(--` 次数 / 颜色字面量次数 / 共享组件调用数）
 
-| 插件 | 形态 | 骨架 | `var(--` | `#hex` | `rgba(` | `.obx-*` | alert() | 生命周期 | 共享组件（调用数） |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| media-player | A + 沉浸 + ncm 原生视图 | 是 | 246 | 22 | 46 | 16 | 0 | 完整（仅视觉） | Toast 49 / confirm 2 / settings 1 |
-| document-reader | A + 沉浸（阅读/朗读页） | 是 | 120 | 19 | 4 | 14 | 0 | 仅 onDispose（无定时器） | Toast 40 / confirm 1 / settings 1 / menu 3 / tree 1 |
-| group-mesh | A | 是 | 116 | 5 | 1 | 39 | 0 | 完整 | Toast 3 / confirm 3 / settings 2 |
-| image-viewer | A + 内嵌扩展 | 是 | 95 | 8 | 12 | 17 | 0 | 完整 | Toast 31 / confirm 4 / settings 2 / menu 1 / tree 1 / pager 1 |
-| manga-library | A | 是 | 84 | 7 | 7 | 19 | 0 | 完整（范本） | Toast 5 / confirm 1 / settings 1 |
-| image-cleaner | B（内嵌宿主面板） | 是 | 16 | 3 | 3 | 1 | 0 | 无（不保活） | Toast 4 / confirm 1 / lightbox 2 |
-| pixiv-sync | B（内嵌，单页） | 是（已用壳骨架与 `.modal`） | 31 | **0** | **0** | 1 | **0** | 完整（本轮补） | Toast 22 |
-| netease-music | 独立页，`hidden` 不可达 | 部分（无骨架） | 9（全是真 token） | 0 | 0 | 0 | 0 | 无（不保活） | Toast 2 |
+本轮修复后，8 个插件的 `alert()` 全部归零、颜色字面量与 `rgba(` 只剩少量兜底，骨架均已用壳的
+`.obx-*` 组件（例外是 netease-music 的独立页无骨架，见 §9.2 P2-19）；逐插件的量化数字与计数
+命令已并入各插件设计文档（清单见本文开头的「逐插件原始记录」条目）。修复前的偏差集中在
+pixiv-sync —— **34 hex / 2 rgba / 22 alert / 0 真 token** —— 以及两处不存在的 token
+（image-viewer 多 1 处 `--text-danger`、manga-library 多 1 处 `--mp-glass`，见 §9.5）。
+计数口径：`var(--` 含壳 token 与插件私有 token；`#hex`/`rgba(` 含 `<style>` 块与内联样式。
 
-> 上表为**本轮修复后**的实测值；修复前 pixiv-sync 是 **34 hex / 2 rgba / 22 alert / 0 真 token**，
+> 本文引用的数字为**本轮修复后**的实测值；修复前 pixiv-sync 是 **34 hex / 2 rgba / 22 alert / 0 真 token**，
 > image-viewer 多 1 处 `--text-danger`、manga-library 多 1 处 `--mp-glass`（见 §9.5）。
 > `var(--` 含壳 token 与插件私有 token；`#hex`/`rgba(` 含 `<style>` 与内联样式。
-> 计数命令与逐文件明细见 `docs/_ui-audit/*.md`。
+> 计数命令与逐文件明细见各插件设计文档的「UI 现状取证」一节（清单见本文开头的
+> 「逐插件原始记录」条目）。
 
 ### 9.2 偏差分级
 
@@ -634,7 +636,8 @@ background: var(--mp-glass, var(--bg-surface));
 
 ### 9.3 各插件值得吸收的做法
 
-> 逐插件详表见 `docs/_ui-audit/*.md` 第 6 节。以下是跨插件复用的候选：
+> 逐插件详表见各插件设计文档「UI 现状取证」一节的「特色设计（值得吸收）」
+> （清单见本文开头的「逐插件原始记录」条目）。以下是跨插件复用的候选：
 
 | 做法 | 出处 | 解决的问题 |
 | --- | --- | --- |

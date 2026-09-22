@@ -1,6 +1,6 @@
 // 插件前端生命周期（onShow / onHide / onDispose）与宿主可见性状态机的无头验证脚本。
 //
-// 背景（docs/core-contract-fixes.md §3）：插件 iframe 默认常驻（v-show 隐藏），切走后
+// 背景：插件 iframe 默认常驻（v-show 隐藏），切走后
 // 定时器 / rAF 自循环 / 轮询继续跑；插件前端也没有统一的销毁钩子，监听器只增不减
 // （实测 plugins/**/*.js 合计 add 171 : remove 4）。宿主因此在可见性变化时 postMessage
 // 通知，base.js 把它转成三个注册钩子。

@@ -96,7 +96,7 @@ class CipherState:
     同一套密钥、同一套 nonce 推进、同一套 AEAD，只是不套那层长度检查。
     代价是应用帧可能超过规范的 65535 字节上限，与只实现规范长度检查的
     实现对传大帧时会被它们拒绝；这是本协议有意的帧长选择，记录在
-    docs/group-mesh-implementation-path.md。
+    docs/group-mesh-design.md。
     """
 
     def __init__(self, cipher, key: bytes, direction: str) -> None:

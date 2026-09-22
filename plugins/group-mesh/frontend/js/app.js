@@ -74,7 +74,7 @@
   // 弹窗用壳的 `.modal` + `.modal.active`（base.css）。
   // 不再自绘 `.gm-modal[data-open]`：壳的默认态没有任何 display 声明，因此不存在
   // "作者样式的 display:flex 盖掉浏览器给 [hidden] 的 display:none"那个级联陷阱
-  // （事故记录见 docs/group-mesh-implementation-path.md §5.7，以及本插件 CSS 顶部注释）。
+  // （事故记录见 docs/group-mesh-design.md，以及本插件 CSS 顶部注释）。
   function openModal(id) {
     var node = el(id);
     if (node) { node.classList.add('active'); }

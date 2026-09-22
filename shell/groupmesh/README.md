@@ -8,7 +8,7 @@
 Windows 与 Linux 上可以直接跑，用来把协议先跑通、把接口试出来。
 
 实现路径、与设计文档的偏离、以及调试中踩到的坑，见
-[`docs/group-mesh-implementation-path.md`](../../docs/group-mesh-implementation-path.md)。
+[`docs/group-mesh-design.md`](../../docs/group-mesh-design.md)。
 
 ## 跑起来
 
@@ -49,7 +49,7 @@ python -m shell.groupmesh.cli get   --dir ./b --target '[2409:…]:19443' \
 ```
 
 `serve` 默认绑 `::`（同时接受 IPv6 与 IPv4）。要只监听某个地址就 `--bind <地址>`；
-**建议显式指定稳定地址**，原因见实现路径文档 §4.6.1。
+**建议显式指定稳定地址**，原因见 `docs/group-mesh-design.md` §21.6.1。
 
 ## Windows ↔ Linux 跨机联调
 
@@ -100,12 +100,12 @@ python shell/groupmesh/tools/interop_fixture.py --check fixture.json   # 另一�
 
 插件加载后每 `sync_interval_seconds`（设置项，默认 60 秒）拉一次注册表与名单；
 名单/注册变更时立即 push 给已知对端。同步用专用连接，不复用 UI 连接池
-（原因见实现路径文档 §5.18）。
+（原因见 `docs/group-mesh-design.md` §22.18）。
 
 ## 明确的未实现项
 
 内容寻址分块传输、Android 轻客户端、插件层按主体限权（当前按"本地使用者可信"模型）。
-逐项的状态与收敛路径见[设计文档](../../docs/group-mesh-design.md) §0、§16 与实现路径文档 §3、§4。
+逐项的状态与收敛路径见[设计文档](../../docs/group-mesh-design.md) §0、§16 与 §20、§21。
 
 房间 / 语音 / 游戏面**不属于本插件**，由未来的 Companion 子插件承担，
-草案见 [group-mesh 的 Companion 子插件](../../docs/group-mesh-companions.md)。
+草案见 [group-mesh 设计文档](../../docs/group-mesh-design.md) 的 Companion 子插件一节。

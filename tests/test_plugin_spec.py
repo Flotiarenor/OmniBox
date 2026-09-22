@@ -209,7 +209,7 @@ class PluginSpecCheckerTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertFalse(looks_like_secret_key(key))
 
-    # ===== manifest 字段必须有读取方（docs/code-review.md §5） =====
+    # ===== manifest 字段必须有读取方 =====
 
     def test_unregistered_manifest_field_is_an_error(self):
         """指南教了"代码不读"的字段 → 作者填了没效果，必须由检查器拦住。"""
@@ -242,7 +242,7 @@ class PluginSpecCheckerTests(unittest.TestCase):
         from tools.check_plugins import _check_reader_registry
         self.assertEqual(_check_reader_registry(), [])
 
-    # ===== runtime 块与父键回退（docs/core-contract-fixes.md §1） =====
+    # ===== runtime 块与父键回退 =====
 
     def test_runtime_block_produces_no_errors(self):
         """按 docs/plugin-guide.md §2.2 书写的 runtime 块曾拿到 6 条 error。

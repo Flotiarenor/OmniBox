@@ -15,7 +15,7 @@ limitations under the License.
 
 统一日志配置：文件（滚动）+ 控制台双通道。
 
-为什么必须有文件通道（docs/code-review.md §4.2）：发行版打包为 console=False，
+为什么必须有文件通道：发行版打包为 console=False，
 此时 CPython 的 sys.stdout / sys.stderr 是 None，`print` 会**静默丢弃**所有
 诊断信息 —— 发布版等于闭眼运行。日志落盘后，插件加载失败、扫描异常这类
 问题才有据可查。

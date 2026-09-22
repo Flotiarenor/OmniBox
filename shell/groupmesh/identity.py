@@ -114,7 +114,7 @@ class Device:
 
         设计文档 §4.2 的理想路径是"通过已有设备授权（局域网配对或二维码）由该主体
         确认"。当调用方就是主体本人（主体私钥在手）时，直接由主体签发等价，
-        省掉一次配对；跨设备配对属于后续工作（见实现路径文档的 P2 阶段）。
+        省掉一次配对；跨设备配对属于后续工作（见 `docs/group-mesh-design.md` §21.7）。
         """
         private_key, public_key = cp.generate_sign_keypair()
         dh_private, dh_public = cp.dh_keypair_from_sign_seed(private_key)

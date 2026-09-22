@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 class SettingsStore:
     """统一的插件设置存储，每个插件一个 JSON 文件，位于 <config_dir>/<plugin>.json
 
-    两个写入要点（历史问题见 docs/code-review.md §4.1-2）：
+    两个写入要点：
 
     - **原子落盘**：tempfile + fsync + os.replace。以前是 open(w) 直接覆写，
       写到一半被杀就会留下损坏文件；而 get() 又把损坏文件静默当成"没有设置"，

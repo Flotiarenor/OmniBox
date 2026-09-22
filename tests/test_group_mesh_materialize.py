@@ -2,8 +2,7 @@
 
 这些行为单进程桩测不了 —— 它们全都要求"对端真的改了文件"，那正是多实例夹具存在的
 意义。`PlaceholderAgainstImageViewerTest` 是同一件事的另一面：把物化目录挂成
-image-viewer 的额外图片目录之后，界面到底会怎样（结论见
-`.dsh/group-mesh-materialize.md` §2.2）。
+image-viewer 的额外图片目录之后，界面到底会怎样。
 
 运行：
     venv/Scripts/python -m unittest tests.test_group_mesh_materialize -v
@@ -195,7 +194,7 @@ class PlaceholderAgainstImageViewerTest(unittest.TestCase):
     * 真字节到位 → 宽高正确、`/thumbs` 返回真缩略图。
 
     没有后半段，前半段的"0 字节"可能只是环境问题；没有前半段，后半段证明不了任何事。
-    实测同时纠正了两处读码推断，见 `.dsh/group-mesh-materialize.md` §2.2。
+    实测同时纠正了两处读码推断。
     """
 
     SHARE_ID = 'album'

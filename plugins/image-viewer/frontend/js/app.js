@@ -85,7 +85,7 @@ class ImageViewer {
         this._bindPluginLifecycle();
     }
 
-    // 宿主可见性通知（docs/core-contract-fixes.md §3）：
+    // 宿主可见性通知：
     // 常驻插件切到后台后，页面不可见期间没有任何理由继续换图；定时器必须停。
     // 语义是"停视觉与轮询类工作"，不是"停止播放"——相册没有播放，但同样的
     // 原则适用于 media-player：它在 onHide 里只停 rAF 自循环，进度保存继续。

@@ -2,7 +2,7 @@
 
 本指南将带你从零开始创建一个完整的 OmniBox 插件，并说明如何将现有的 `image-viewer` 插件迁移到新架构。
 
-插件分为两类：**常规内嵌插件**（本指南主体）与**独立运行环境插件 / Companion 插件**（见 §2.1、§2.2 及 `docs/adapter-spec.md`）。
+插件分为两类：**常规内嵌插件**（本指南主体）与**独立运行环境插件 / Companion 插件**（见 §2.1、§2.2 及 `docs/core-direction.md` §9 的「外部程序接入规范」）。
 
 ---
 
@@ -95,7 +95,7 @@ plugins/
 > | `DOC_ONLY_FIELDS` | 纯文档字段，连检查器都不读（如 `description` / `author` / `permissions` / 未实装的 `runtime`） | warning |
 >
 > 登记必须"表里如一"：把检查器自己填进 `RUNTIME_FIELD_READERS` 会让这条规则空转满足
-> （`minShellVersion` 曾长期如此，见 `docs/core-contract-fixes.md` §1）。整块字段（如 `runtime`）
+> （`minShellVersion` 曾长期如此）。整块字段（如 `runtime`）
 > 登记一次即可，其子字段由父键回退匹配；未登记的字段（含层级更深的 `a.b.c`）仍按 error 处理。
 
 ---
@@ -989,7 +989,7 @@ def browse_dir(self, path: str = ''):
    宿主是谁，也不需要跨插件后端调用。
 2. **取回必须是"完整取回"而不是占位**。镜像目标是普通本地目录，消费方按本地文件工作、
    **没有** `ensure_file` 钩子可依赖：留 0 字节占位就是宽高 0×0 与整片 404 缩略图
-   （见 `plugins/group-mesh` 的 `mirror_share` 与 `.dsh/group-mesh-materialize.md` §2.2）。
+   （见 `plugins/group-mesh` 的 `mirror_share` 实现）。
 
 参考实现：`plugins/group-mesh`（`get_extensions()` + `frontend/network-location.html` +
 后端 `mirror_share`）。

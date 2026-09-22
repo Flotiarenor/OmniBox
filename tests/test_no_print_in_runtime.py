@@ -1,4 +1,4 @@
-"""运行时禁止 print 的门禁（docs/code-review.md §4.2）。
+"""运行时禁止 print 的门禁。
 
 发行版打包 console=False，`sys.stdout` 是 None，`print` 会被静默丢弃 —— 所以
 "运行时代码里每多一处 print，就多一处发布后看不见的诊断信息"。这条门禁把
