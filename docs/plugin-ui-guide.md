@@ -207,8 +207,52 @@
 | 方向 | 消息 | 用途 |
 | --- | --- | --- |
 | 子 → 上 | `omnibox:host-probe` / `omnibox:host-request` | 探测上层是否接得住 / 提交申请（设置弹窗等） |
+| 子 → 上 | `omnibox:host-mount` | **把按钮挂到上层的工具栏/头部**（见下） |
 | 上 → 子 | `omnibox:host-reply` | 回信 `{exchange, ok, data}` |
+| 上 → 子 | `omnibox:host-run` | 上层点了挂上去的按钮，回发 `{id}` |
 | 上 → 子 | `omnibox:host-callback` / `…-callback-reply` | 多回合：把值交回子插件，由它自己落盘 |
+
+**两件事分开看**：`requestSettings` 解决"弹窗谁来画"，`mountToolbar` 解决"按钮放在哪"。
+只做前者的话，操作仍然留在内嵌页正文里（用户看到的是"设置在子页里、顶栏是宿主的"），
+与其它插件"设置/刷新在顶栏"的形态不一致 —— 那是半成品。
+
+#### 把按钮挂到上层工具栏（`mountToolbar`）
+
+子插件只声明按钮，宿主用**它自己的**样式渲染在**它自己的**工具栏里；点击由宿主回发
+`host-run`，本模块再点回子页里那个源按钮 —— 处理逻辑始终只有一份，就在子页里。
+
+```js
+// 子插件（写在"按钮的监听已经挂好"之后）
+HostChannel.mountToolbar([
+  { id: 'btn-settings', label: '设置', icon: 'icon:settings-2', title: '并发下载数 / 请求速率 / 代理' },
+], {
+  container: 'host-toolbar',          // 宿主在 serve() 里给的容器标签（或元素 id）
+  selector: '#psync-global-actions',  // 挂上后把内嵌页里的源节点藏起来，避免两处重复
+});
+```
+
+```js
+// 宿主（image-viewer）
+HostChannel.serve({
+  isOwnFrame: HostChannel.ownFrame(() => [document.getElementById('extension-frame')]),
+  containers: { 'host-toolbar': document.getElementById('extension-view-actions') },
+});
+```
+
+三条约定：
+
+- **挂载失败必须能退回去**：宿主没表态、容器不存在（`no-container:<名字>`）、或认不出是哪个
+  iframe（`no-frame`）一律回 `ok:false`，子插件据此外显源按钮，宁可留在本页也不能点不到。
+- **认来源不用插件名**：宿主拿子页给的 `url` 与每个 iframe 的 `src` 比路径末三段
+  （`plugins/<插件>/frontend/index.html`）——只比文件名不行，各插件的内嵌页都叫 index.html。
+- **重挂载是常态**：内嵌页整页重载后会再发一次，宿主先清掉上一批 `.obx-host-action` 再渲染，
+  且注入的按钮排在宿主自己的按钮（如"返回相册"）之前，不把它顶走。
+
+**要搬就把这一视图的操作搬全**：只把「设置」搬上去、把「重新扫描」留在内嵌页正文里，
+用户看到的仍是"一半在顶栏、一半在下面"——比不搬更像坏掉。image-cleaner 的做法是把两个
+按钮包进 `#cleaner-actions`，整组声明、整组收起。
+**按钮定义要一次给全**：`{id, label, icon, title}` 四个都写。icon 缺了，宿主渲染出来就是
+一个没有图标的孤零零文字按钮，与同一行里其它按钮不是一套。
 
 子插件侧（完整例子见 `plugins/image-cleaner/frontend/js/app.js` 的 `openSettings`）：
 
@@ -234,11 +278,15 @@ HostChannel.onCallback('ui', async (values) => {
 
 ```js
 // image-viewer/frontend/js/app.js 的 _serveHostChannel()
-HostChannel.serve({ isOwnFrame: HostChannel.ownFrame(() => [document.getElementById('extension-frame')]) });
+HostChannel.serve({
+  isOwnFrame: HostChannel.ownFrame(() => [document.getElementById('extension-frame')]),
+  containers: { 'host-toolbar': document.getElementById('extension-view-actions') },
+});
 ```
 
 `serve()` 不传 `handlers` 时用默认的 `ui` 处理器，支持 `settings`（宿主弹窗 + 表单，
 schema/values 都由对面给）与 `confirm`；未知 kind 显式失败回 `ok:false`，子插件据此回落。
+`containers` 只有需要"子插件往我这儿挂按钮"时才给（见上面 `mountToolbar`）。
 
 **两条边界**，别扩大：上层只读 `action`，`data` 原样透传（所以它不需要理解内容）；
 消息不跨层转发（孙窗口要发申请，得让中间那层自己 `serve()`）。

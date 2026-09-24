@@ -710,6 +710,7 @@ function openModal(options = {}) {
  * 三条消息，全部只在 **直接父子** 之间走（不跨层转发）：
  *   request / reply            子 → 上；`{exchange, action, data}` / `{exchange, ok, data}`
  *   probe / ready              子 → 上；探测上层是否 `serve()` 过，探测不到就不发请求
+ *   mount / run                子 → 上 / 上 → 子；把按钮挂到上层工具栏，点击回发 {id}
  *   callback / callback-reply  上 → 子；用于"设置了但值给谁保存"这类**由子插件做主**的回合
  *                              （上层把值交回子插件，子插件自己调 Bridge 落盘）
  *
@@ -720,10 +721,12 @@ window.HostChannel = (function() {
   var REQUEST = 'omnibox:host-request';
   var REPLY = 'omnibox:host-reply';
   var PROBE = 'omnibox:host-probe';
+  var MOUNT = 'omnibox:host-mount';
   var RUN = 'omnibox:host-run';
   var CALLBACK = 'omnibox:host-callback';
   var CALLBACK_REPLY = 'omnibox:host-callback-reply';
   var PROBE_TIMEOUT = 500;
+  var MOUNT_TIMEOUT = 2000;    // 挂载是渲染请求，不通就立刻把源按钮放回来，别拖
   var DEFAULT_TIMEOUT = 30000;
 
   var seq = 0;
@@ -836,6 +839,46 @@ window.HostChannel = (function() {
   });
 
   /**
+   * 子插件用：把**自己的**操作按钮挂到上层的工具栏/头部去。
+   *
+   * 为什么需要：内嵌页是独立文档，宿主头部的"标题 + 返回"它碰不到。只让弹窗由宿主
+   * 渲染还不够 —— 按钮本身留在内嵌页正文里，用户看到的还是"操作在子页里、顶栏是宿主的"，
+   * 与其它插件（设置/刷新在顶栏）不一致。这里把按钮**搬上去**：子插件只声明
+   * `{id, label, icon}`，上层用它的样式渲染在它的工具栏里。
+   *
+   * 按钮定义留在子插件（宿主的代码里一个按钮名都不出现）；上层匹配"哪个 iframe 发的"
+   * 用 `iframe.src` 与子页 `location.href` 比对，不靠插件名。点击时上层回发
+   * `{type:'omnibox:host-run', id}`，本模块在子页里点那个源按钮 —— 所以处理逻辑
+   * 仍然只有一份，就在子页里。
+   *
+   * `selector` 传了的话，挂载成功后把内嵌页里那个源节点藏起来，避免两处重复；
+   * 挂载失败（宿主不表态 / 没有对应容器）则保持原样。
+   */
+  function mountToolbar(buttons, options) {
+    var opts = options || {};
+    var toHide = null;
+    if (opts.selector) {
+      toHide = document.querySelector(opts.selector);
+      if (toHide) {
+        toHide.__obxDisplay = toHide.style.display;
+        toHide.style.display = 'none';
+      }
+    }
+    if (!self()) return;
+    // 类型必须是 MOUNT：上层按 `msg.type === MOUNT` 分派（它**不查 handlers**，
+    // 因为挂载点属于"宿主自己的界面"，不该由插件注册一个叫这个名字的处理器）。
+    waitReply(
+      { type: MOUNT, exchange: ++seq, data: { buttons: buttons, container: opts.container || '', url: window.location.href } },
+      seq,
+      MOUNT_TIMEOUT
+    ).then(function(res) {
+      if (res.ok) return;
+      if (toHide) toHide.style.display = toHide.__obxDisplay || '';
+      console.warn('[OmniBox] 上层没有可挂载的工具栏，按钮留在本页:', res.data && res.data.error);
+    });
+  }
+
+  /**
    * 上层用：把值交给子插件处理（返回子插件回调的结果）。 */
   function invoke(source, action, data, timeout) {
     var step = ++callbackSeq;
@@ -846,6 +889,87 @@ window.HostChannel = (function() {
       };
       post(source, { type: CALLBACK, step: step, action: action, data: data });
     });
+  }
+
+  /**
+   * 上层用：把子插件声明的按钮渲染进**本页**的容器里。
+   *
+   * 定位顺序：`data.container` 先在 `containers` 映射里查（`serve({containers})` 给的自定义
+   * 标签），找不到就当元素 id 查；都没给或元素不存在时抛错，子插件据此把按钮留在自己页里
+   * （宁可留在原地，也不要"按钮点不到"）。
+   *
+   * "哪个 iframe 发的"不用插件名：拿 `data.url`（子页的 location.href）与页面上每个 iframe
+   * 的 `src` 比路径末三段后比对 —— 只比文件名不行，各插件的内嵌页都叫 index.html。
+   */
+  function mountButtons(source, data, containers) {
+    var label = data.container || 'host-toolbar';
+    var box = containers[label] || document.getElementById(label);
+    if (!box) throw new Error('no-container:' + label);
+
+    var buttons = Array.isArray(data.buttons) ? data.buttons : [];
+    var frame = null;
+    var frames = document.querySelectorAll('iframe');
+    for (var i = 0; i < frames.length; i++) {
+      var src = frames[i].getAttribute('src') || '';
+      if (src && frameKey(src) === frameKey(data.url || '')) { frame = frames[i]; break; }
+    }
+    if (!frame) throw new Error('no-frame');
+
+    // 重挂载（页面重载后子插件会再发一次）时先清掉上一批，位置固定在最左：宿主自己的
+    // 按钮（如"返回相册"）永远在最右，注入的按钮不会把它顶走。
+    var previous = [].slice.call(box.querySelectorAll('.obx-host-action'));
+    previous.forEach(function(el) { el.remove(); });
+    // 倒着插到容器最前面：insertBefore 的结果正是声明的正序
+    for (var k = buttons.length - 1; k >= 0; k--) {
+      var spec = buttons[k] || {};
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-sm obx-host-action';
+      var icon = spec.icon ? iconHtml(spec.icon) + ' ' : '';
+      var text = spec.label || spec.id || '';
+      btn.innerHTML = icon + escapeHtml(text);
+      if (spec.title) btn.title = spec.title;
+      // 闭包要按次捕获 id，否则所有按钮都回发最后一个
+      btn.addEventListener('click', (function(id) {
+        return function() { post(source, { type: RUN, id: id, action: 'click' }); };
+      })(spec.id || ''));
+      // 记下归属：重挂载时能精确摘掉本模块插进去的那批（不误伤宿主自己的按钮）
+      btn.__obxOwner = box;
+      box.insertBefore(btn, box.firstChild);
+    }
+  }
+
+  /**
+   * 由一个 URL 得出"哪个插件的哪个页面"：取路径最后三段
+   * （`/plugins/<插件>/frontend/index.html`）。
+   */
+  function frameKey(url) {
+    var clean = String(url || '').split('?')[0].split('#')[0].replace(/\/+$/, '');
+    var parts = clean.split('/').filter(Boolean);
+    return parts.slice(-3).join('/');
+  }
+
+  /**
+   * 本模块自己的转义与图标渲染。
+   *
+   * **不能用外层的 `Utils`**：`Utils` 在 base.js 里定义在 HostChannel **之后**，
+   * IIFE 求值时它还不在作用域里（实测报 "Utils is not defined" 并被 post 的
+   * try/catch 吞掉，表现为"宿主回了 ok:false 但看不出为什么"）。这里只依赖
+   * `window.Icons`（由 icons.generated.js 先注入）。
+   */
+  function escapeHtml(value) {
+    if (value == null) return '';
+    return String(value).replace(/[&<>"']/g, function(c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function iconHtml(value) {
+    if (typeof value === 'string' && value.slice(0, 5) === 'icon:') {
+      if (window.Icons && typeof window.Icons.html === 'function') return window.Icons.html(value);
+      return '';
+    }
+    return escapeHtml(value || '');
   }
 
   /**
@@ -906,6 +1030,8 @@ window.HostChannel = (function() {
     var opts = options || {};
     var isOwnFrame = typeof opts.isOwnFrame === 'function' ? opts.isOwnFrame : function() { return false; };
     var handlers = opts.handlers || { ui: defaultUiHandler };
+    // 子插件可以把按钮挂到这些容器里（见 mountButtons）：key 是容器 id 或自定义标签
+    var containers = opts.containers || {};
 
     window.addEventListener('message', function(event) {
       var msg = event.data;
@@ -914,6 +1040,15 @@ window.HostChannel = (function() {
 
       if (msg.type === PROBE) {
         post(event.source, { type: REPLY, exchange: 'probe', ok: true });
+        return;
+      }
+      if (msg.type === MOUNT) {
+        try {
+          mountButtons(event.source, msg.data || {}, containers);
+          post(event.source, { type: REPLY, exchange: msg.exchange, ok: true, data: null });
+        } catch (e) {
+          post(event.source, { type: REPLY, exchange: msg.exchange, ok: false, data: { error: String((e && e.message) || e) } });
+        }
         return;
       }
       if (msg.type !== REQUEST) return;
@@ -977,6 +1112,7 @@ window.HostChannel = (function() {
   return {
     request: request,
     requestSettings: requestSettings,
+    mountToolbar: mountToolbar,
     probe: probe,
     onCallback: onCallback,
     serve: serve,

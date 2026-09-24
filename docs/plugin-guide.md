@@ -691,6 +691,7 @@ Shell 还注入了以下可复用的 UI 组件函数（无需引入，直接使�
 | `renderExtensions(container, host, placement, options?)`          | 渲染注册到宿主侧边栏/工具栏的扩展插件入口 |
 | `openSettingsModal(options)`                                      | 打开统一设置弹窗                          |
 | `HostChannel.requestSettings(title)` / `HostChannel.request(action, data)` | 内嵌页请**上层**用它的文档渲染 UI（设置/确认），详见 plugin-ui-guide §3.5 |
+| `HostChannel.mountToolbar(buttons, {container, selector})` | 内嵌页把按钮挂到上层的工具栏/头部；宿主不表态时按钮留在本页 |
 | `confirmDialog(message, options)`                                 | 替代原生 confirm                          |
 | `Toast.success(msg)` / `Toast.error(msg)` / `Toast.info(msg)` | 显示 Toast 通知                           |
 | `Utils.formatFileSize(bytes)`                                     | 格式化文件大小                            |

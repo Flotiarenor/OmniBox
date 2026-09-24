@@ -18,6 +18,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 HARNESSES = [
     PROJECT_ROOT / 'tests' / 'js' / 'host_channel.mjs',        # 子插件侧（真实插件页 + stub 宿主）
+    PROJECT_ROOT / 'tests' / 'js' / 'host_channel_host.mjs',   # 宿主侧（stub DOM）
 ]
 
 
@@ -25,6 +26,9 @@ HARNESSES = [
 class HostChannelJsTest(unittest.TestCase):
     def test_child_side_request_and_callback_protocol(self):
         self._run(HARNESSES[0])
+
+    def test_host_side_toolbar_mount_and_settings_multiround(self):
+        self._run(HARNESSES[1])
 
     def _run(self, harness):
         proc = subprocess.run(

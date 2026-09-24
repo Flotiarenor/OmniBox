@@ -86,9 +86,9 @@ plugins/
 
 - `body`（`base.css:6-11`：`background:var(--bg-app)`、`overflow:hidden`、字体栈 `-apple-system, …`）
   - `div#app.view-body`（`index.html:10`；壳类给 `flex:1; display:flex; flex-direction:column; overflow:hidden`，`base.css:237`；插件补 `display:flex; height:100vh; overflow:hidden`，`image-cleaner.css:1-5`）
-    - `div.view-toolbar.cleaner-toolbar`（`index.html:11`；高度 `var(--toolbar-height,48px)` 来自 `base.css:239-248`，插件只改 `gap:12px`，`:7-11`）
-      - `div.toolbar-group.cleaner-meta`（`index.html:12`）→ `span.cleaner-scope`「全部相册」+ `span.cleaner-root#cleaner-root`（`:13-14`）
-      - `div.toolbar-group[style="margin-left:auto"]`（`index.html:16`）→ `button#btn-rescan.btn.btn-sm`（`:17`）
+    - `div.view-toolbar.cleaner-toolbar`（`index.html:18`；高度 `var(--toolbar-height,48px)` 来自 `base.css:239-248`，插件只改 `gap:12px`，`:7-11`）
+      - `div.toolbar-group.cleaner-meta`（`index.html:19`）→ `span.cleaner-scope`「全部相册」+ `span.cleaner-root#cleaner-root`（`:20-21`）
+      - `div.toolbar-group[style="margin-left:auto"]`（`index.html:23`）→ `span#cleaner-actions`（`:27`）包 `button#btn-rescan.btn.btn-sm` + `button#btn-settings.btn.btn-sm`。**内嵌进宿主时这一整组会被 `#cleaner-actions` 收起**，两个按钮同时挂到宿主扩展面板头部（见 §5.5「设置入口」与 `plugin-ui-guide.md` §3.5 的 `mountToolbar`）；脱离宿主打开本页时留在原位
     - `div.view-content.cleaner-content.obx-scroll`（`index.html:21`；壳给 `overflow-y:auto; padding:16px`，`base.css:277-282`；插件重复声明 `flex:1; min-height:0; overflow-y:auto; padding:16px`，`:50-55`）
       - `div.cleaner-tabs`（`index.html:22`）→ `button#tab-dupe.btn.btn-sm.active`、`button#tab-similar.btn.btn-sm`、`span#cleaner-scanned.cleaner-scanned`（`:23-25`）
       - `div#cleaner-results.cleaner-results`（`index.html:27`）→ 动态 `.cleaner-group` ×n（`app.js:99-114`）
@@ -165,11 +165,11 @@ plugins/
 | 内容区滚动容器 | `.view-content`（`base.css:277-282`） | `.cleaner-content` 又写了一遍 `flex:1; min-height:0; overflow-y:auto; padding:16px`(`:50-55`) | 纯重复（值相同），风险是将来壳改 `.view-content` 的内边距时插件这一份会顶掉 |
 | 灯箱 | `createLightbox`（契约 `plugin-guide.md` §4.3） | 调用了，但**优先用宿主的**：`parent.imageViewer.lightbox.show(...)` | 见 §5.5「交互」——这是刻意的宿主协作，不是重复实现 |
 | 分页 | `createPagination`（`base.css:81-101`） | 「显示更多（还有 N 组）」按钮(`app.js:95-97/206-209`) | 行为更简单（只增不减、不显示页码）；与壳分页的视觉/语义都不同，属**未采用**而非重复 |
-| 设置表单 | `createSettingsForm` + `openSettingsModal`（`base.css:181-206`、`base.js:419/566`） | **完全没有接入** | 后端声明了设置项却没入口，见 §5.5 与 §5.7.3 |
+| 设置表单 | `createSettingsForm` + `openSettingsModal`（`base.css:181-206`）+ `HostChannel.requestSettings`（`base.js`，契约见 `plugin-ui-guide.md` §3.5） | 已接入（`app.js` 的 `openSettings`，工具栏 `#btn-settings`）；**优先请宿主 image-viewer 渲染**，宿主不表态时回落本地 `openSettingsModal` | 弹窗由宿主文档渲染才有整页遮罩：本页嵌在 `#extension-frame` 里，`.modal{position:fixed}` 只相对该 iframe。schema/values/保存仍全归本插件 |
 
 ### 5.5 交互约定
 
-- **设置入口**：**不存在**。后端 `settings_schema` 声明了 `threshold`（「相似判定阈值」，`range 0-16`，默认 8，`plugins/image-cleaner/backend/main.py:23-27`），但前端 grep `settings|threshold` **零命中**：没有 `#btn-settings`、没有 `openSettingsModal`、没有 `createSettingsForm`、也不调 `Bridge.call('get_settings')`。相似判定的阈值当前只能靠 `get_cached_scan` 的缓存与后端默认值。
+- **设置入口**：内嵌时挂在宿主扩展面板头部（`#btn-settings` 声明给 `HostChannel.mountToolbar`，宿主用它的样式渲染）→ `ImageCleaner.openSettings()`（`app.js`）→ `HostChannel.requestSettings('相册清理设置')`；脱离宿主时按钮留在本页工具栏。后端 `settings_schema` 声明 `threshold`（「相似判定阈值」，`range 0-16`，默认 8，`plugins/image-cleaner/backend/main.py:23-27`）。两条路径的差别只在**谁来画**：宿主 image-viewer `_serveHostChannel()` 表态后用宿主文档渲染（`HostChannel.serve` 的默认 `ui` 处理器），否则回落本页 `openSettingsModal`；保存一律由本页 `Bridge.call('save_settings')` 落盘（宿主替它存会写错插件）。**「重新扫描」与「设置」一起挂**（`#cleaner-actions` 整组收起）：只搬一个的话，用户看到的仍是"一半在顶栏、一半在下面"。
 - **保存后的反馈方式**：无保存动作；唯一的「状态写回」是删除后本地过滤 `this.groups` 并重渲染（`app.js:233-244`），**不自动重扫**（`:231-232` 注释明说由用户点「重新扫描」）。
 - **错误提示方式**：
   - 壳 `Toast.error`：`app.js:226`「部分删除失败: …」、`:246`「删除请求失败」
@@ -205,7 +205,7 @@ plugins/
 
 | # | 偏差 | 证据 | 影响面 |
 | --- | --- | --- | --- |
-| A | **内嵌态是「宿主的扩展头 + 插件自己的工具栏」双层横条**，两者高度与配色不同 | 宿主 `plugins/image-viewer/frontend/image-viewer.css:382-390`（`padding:8px 14px`、标题 `14px/600`、按钮 `.btn.btn-sm`）与 `:399-404`（iframe `height:100%;border:none;background:var(--bg-app)`）；插件 `index.html:11` 的 `.view-toolbar`（`48px`、`border-bottom`） | 1 个内嵌视图 / 全部 cleaner 界面；两层的 `border-bottom` 会形成「双横线 + 双标题（宿主头写 `ext.label`「相册清理」，插件工具栏左侧写作用域+根目录）」的观感。统一 UI 时要么让宿主去掉自己的头、要么让插件在内嵌态收起工具栏 |
+| A | **内嵌态是「宿主的扩展头 + 插件自己的工具栏」双层横条**（已收敛一半：两个操作按钮已挂到宿主头部的 `#extension-view-actions`，本页工具栏只剩作用域信息；宿主头已按插件工具栏的常态对齐字号/按钮高度 —— 标题 15px/700、按钮 13px/28px） | 宿主 `plugins/image-viewer/frontend/image-viewer.css`（`.extension-view-header` 与 `.extension-view-header .btn`）与 `.extension-view-body > iframe`；插件 `index.html:18` 的 `.view-toolbar`（`48px`、`border-bottom`） | 1 个内嵌视图 / 全部 cleaner 界面；内嵌态仍保留两条横条（宿主头 + 内嵌页降级后的操作行），但控件与字号已一致，`border-bottom` 只有内嵌页那条在 `html.is-embedded` 下被去掉 |
 | B | **宿主侧本可使用壳的通用内嵌容器类，实际未用**：`renderExtensions` 在无 `onEmbed` 时会给 iframe 加 `.obx-embed-frame`（`base.js:283-286`，`border-radius:12px;background:var(--bg-surface)`），image-viewer 传了 `onEmbed`（`image-viewer/frontend/js/app.js:143`）因此走自己的 `#extension-frame` | `base.js:278-289`；`image-viewer/frontend/js/app.js:157-173`；`image-viewer/frontend/image-viewer.css:399-404` | 1 个宿主渲染点 / image-cleaner 的容器外观（无圆角、`--bg-app` 底 vs 壳的 12px 圆角 + `--bg-surface` 底） |
 | C | **宿主分组的 `title` 参数成了死代码**：扩展带 `section` 时，渲染器用 `ext.section` 当分组标题（`base.js:254`），image-viewer 又传了同名的 `title: '相册清理'` | `image-cleaner/backend/main.py:85`、`image-viewer/frontend/js/app.js:142`、`base.js:243-259` | 1 处参数 / 无功能影响；但「分组标题的唯一来源」在契约里没有写清（`plugin-guide.md:169` 的签名只说 `options?`） |
 | D | **跨 iframe 读宿主内部对象**：`parent.imageViewer.lightbox`（`app.js:144-147`）是约定外的耦合面——宿主前端没有把它导出成扩展 API | `app.js:144`；宿主 `image-viewer/frontend/js/app.js:1-280` 无 `window.imageViewer` 之外的分支判断；`plugin-guide.md` §2.1 只规定 `Bridge.callPlugin` 这类**后端**跨插件调用 | 1 处调用 / 全屏查看功能；宿主一旦把实例改名或改用 `onEmbed({lightbox})` 传参，这里静默退回自建灯箱（`app.js:148`），**失效无报错** |
@@ -216,7 +216,7 @@ plugins/
 
 | # | 偏差 | 证据 | 影响面 |
 | --- | --- | --- | --- |
-| 1 | **后端有设置项、前端无入口**，`createSettingsForm` / `openSettingsModal` 完全未接入 | 后端 `plugins/image-cleaner/backend/main.py:23-27`（`threshold` range 0-16, 默认 8）；前端 grep `settings|threshold` 零命中；壳能力见 `base.js:419/566`、`base.css:181-206` | 1 个设置项 / 相似图片判定精度完全不可调；统一 UI 时这是「补入口」而不是「改样式」 |
+| 1 | **后端有设置项、前端无入口**（已修：工具栏 `#btn-settings` → `openSettings()` → 优先 `HostChannel.requestSettings`，回落 `openSettingsModal`） | 后端 `plugins/image-cleaner/backend/main.py:23-27`（`threshold` range 0-16, 默认 8）；壳能力见 `base.css:181-206` 与 `base.js` 的 `HostChannel`；契约见 `plugin-ui-guide.md` §3.5 | 1 个设置项 / 相似图片判定精度可调；弹窗由宿主 image-viewer 的文档渲染（内嵌 iframe 里自绘没有整页遮罩） |
 | 2 | **重复实现 `.view-content`**（同值覆盖，且带更窄的选择器） | `image-cleaner.css:50-55` vs `base.css:277-282` | 1 个容器 / 内容区内边距与滚动；壳改内边距时插件这份会顶掉 |
 | 3 | **重写 `.btn.active` 只为改描边** | `image-cleaner.css:62-66` vs `base.css:34` | 2 个 tab / 选中态；统一按钮体系时这 5 行必须一起删，否则 tab 选中态与其它插件不一致 |
 | 4 | **空状态已收敛到壳**（本条为审计时的差异，现已消除） | 壳 `.empty-state`（`base.css:428-431`）；插件原 `.cleaner-empty`(`:141-145`) 已删除 | 3 处文案改用壳结构（加载 `app.js:58-60`、空 `:102-108`、错误 `:90-94`）；错误态用 `.empty-state--error` + `#triangle-alert` 图标表达 |

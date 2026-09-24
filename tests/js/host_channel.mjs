@@ -43,6 +43,15 @@ function loadPluginRuntime() {
   };
   win.parent = parentWin;
 
+  // 极简元素：只够 `mountToolbar` 用来"藏起源按钮 / 挂载失败再放回来"。
+  // 真实按钮是 `#btn-settings`（工具栏里那个），这里用同一套 style 语义。
+  const sourceButton = {
+    id: 'btn-settings',
+    style: { display: '' },
+    click() { this.clicked = (this.clicked || 0) + 1; },
+  };
+  const nodes = { '#btn-settings': sourceButton };
+
   const sandbox = {
     window: win,
     parent: parentWin,
@@ -50,13 +59,14 @@ function loadPluginRuntime() {
       location,
       body,
       addEventListener() { },
+      getElementById: (id) => (sourceButton.id === id ? sourceButton : null),
       createElement: () => ({
         style: {}, classList: { add() { }, remove() { } }, appendChild() { },
         remove() { }, setAttribute() { }, addEventListener() { },
         // 只有 querySelectorAll 的元素是宿主侧的活，这里给空表即可
         querySelectorAll: () => [],
       }),
-      querySelector: () => null,
+      querySelector: (sel) => nodes[sel] || null,
       querySelectorAll: () => [],
       documentElement: { getAttribute: () => null, setAttribute() { }, style: { setProperty() { } } },
     },
@@ -71,6 +81,7 @@ function loadPluginRuntime() {
   vm.runInContext(fs.readFileSync(BASE_JS, 'utf8'), sandbox, { filename: 'shell/base.js' });
   return {
     hc: win.HostChannel,
+    sourceButton,
     /** 模拟宿主/壳给本窗口派发一条消息 */
     emit(data, source = parentWin) {
       (listeners.message || []).slice().forEach((fn) => fn({ data, source, origin: ORIGIN }));
@@ -157,5 +168,54 @@ await check('处理器抛错时回传 ok:false 与原因（上层得以保住弹
   assert.match(String(reply.data && reply.data.error), /保存失败/);
 });
 
-console.log(failed ? `\n${failed} 例失败` : '\nHostChannel 子插件侧 8 例通过');
+// ---------- 场景 E：把按钮挂到上层工具栏 ----------
+await check('mountToolbar 发出 host-mount（含按钮定义、容器、本页 URL）', () => {
+  const before = SENT.length;
+  rt.hc.mountToolbar(
+    [{ id: 'btn-settings', label: '设置', icon: 'icon:settings' }],
+    { container: 'host-toolbar', selector: '#btn-settings' },
+  );
+  const mount = SENT.slice(before).find((m) => m.type === 'omnibox:host-mount');
+  assert.ok(mount, '没有发出 host-mount');
+  assert.deepEqual(mount.data.buttons, [{ id: 'btn-settings', label: '设置', icon: 'icon:settings' }]);
+  assert.equal(mount.data.container, 'host-toolbar');
+  assert.match(String(mount.data.url), /\/plugins\/probe\/frontend\/index\.html$/);
+});
+
+await check('发起挂载时先藏起内嵌页里的源按钮（避免两处重复）', () => {
+  assert.equal(rt.sourceButton.style.display, 'none');
+});
+
+await check('上层接住后按钮留在上层（源按钮保持隐藏）', async () => {
+  const pending = SENT[SENT.length - 1];
+  const mountPromise = Promise.resolve();
+  void mountPromise;
+  rt.emit({ type: 'omnibox:host-reply', exchange: pending.exchange, ok: true, data: null });
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(rt.sourceButton.style.display, 'none');
+});
+
+await check('上层没接住时把源按钮放回来（宁可留在本页，也不能点不到）', async () => {
+  const button = rt.sourceButton;
+  button.style.display = '';
+  rt.hc.mountToolbar([{ id: 'btn-settings', label: '设置' }], { selector: '#btn-settings' });
+  assert.equal(button.style.display, 'none', '先隐藏');
+  const mount = SENT.filter((m) => m.type === 'omnibox:host-mount').pop();
+  rt.emit({ type: 'omnibox:host-reply', exchange: mount.exchange, ok: false, data: { error: 'no-container:host-toolbar' } });
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(button.style.display, '', '挂载失败必须放回来');
+});
+
+await check('上层点按钮回发 host-run 时，点的是本页那个源按钮（处理逻辑只留一份）', () => {
+  const before = rt.sourceButton.clicked || 0;
+  rt.emit({ type: 'omnibox:host-run', id: 'btn-settings', action: 'click' });
+  assert.equal(rt.sourceButton.clicked, before + 1);
+});
+
+await check('host-run 点名了不存在的按钮时静默忽略（不抛错、不误点）', () => {
+  assert.doesNotThrow(() => rt.emit({ type: 'omnibox:host-run', id: 'nope', action: 'click' }));
+});
+
+console.log(failed ? `\n${failed} 例失败` : '\nHostChannel 子插件侧 14 例通过');
 process.exit(failed ? 1 : 0);
+

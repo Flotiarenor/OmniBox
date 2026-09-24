@@ -140,7 +140,9 @@
       </div>
       <div class="psync-status" style="padding-top:0;">
         <span class="field-help" id="st-selected">画师名单: 全部</span>
-        <div style="margin-left:auto;display:flex;gap:8px;">
+        <!-- 全局操作（设置 / Token / 名单文件）单独一层：#psync-global-actions 是"往宿主顶栏
+             挂按钮"时要整体收起的源节点（见下面的 HostChannel.mountToolbar 调用）。 -->
+        <div id="psync-global-actions" style="margin-left:auto;display:flex;gap:8px;">
           <button id="btn-oauth" class="btn btn-sm" title="通过浏览器登录 Pixiv 重新获取 refresh_token（token 失效时使用）"><svg class="obx-icon"><use href="#key-round"></use></svg> 获取 Token</button>
           <button id="btn-open-config" class="btn btn-sm" title="打开画师名单配置文件所在文件夹（编辑：每行一个画师名字或 id，空=全部）"><svg class="obx-icon"><use href="#folder-open"></use></svg> 画师名单文件</button>
           <button id="btn-settings" class="btn btn-sm" title="并发下载数 / 单次上限 / 请求速率 / 代理 / 下载目录"><svg class="obx-icon"><use href="#settings-2"></use></svg> 设置</button>
@@ -315,10 +317,25 @@
       }
 
       // ---------- 设置 ----------
-      // 表单由壳的 openSettingsModal 按后端 settings_schema 渲染：保存后壳会整页重载本页，
+      // 默认由壳的 openSettingsModal 按后端 settings_schema 渲染，保存后整页重载本页，
       // 因此这里不需要读回设置，也不存在第二份字段清单可以漂移。refresh_token 声明了
       // secret:True，壳负责掩码与"掩码原样回传 = 不改动"。
-      function openPluginSettings() {
+      //
+      // 但本插件通常是嵌在「图片相册」里的：那时弹窗只相对 iframe 定位，没有整页遮罩，
+      // 所以先请宿主用它的文档渲染（HostChannel）。宿主不表态时照旧走本地弹窗。
+      async function openPluginSettings() {
+        if (window.HostChannel && typeof HostChannel.requestSettings === 'function') {
+          HostChannel.onCallback('ui', async (newValues) => {
+            const result = await Bridge.call('save_settings', newValues);
+            if (result && result.success === false) throw new Error(result.error || '保存失败');
+            setTimeout(() => {
+              window.location.href = window.location.href.split('?')[0] + '?_t=' + Date.now();
+            }, 300);
+            return result;
+          });
+          const res = await HostChannel.requestSettings('Pixiv 同步设置');
+          if (res.handled) return;
+        }
         openSettingsModal({ title: 'Pixiv 同步设置' });
       }
 
@@ -404,6 +421,21 @@
           $('oauth-modal').classList.remove('active');
         });
         $('btn-settings').addEventListener('click', openPluginSettings);
+
+        // 三个"全局操作"挂到宿主（图片相册）扩展面板的头部去：内嵌页碰不到宿主头部，
+        // 而"设置在顶栏"是其它插件的统一形态（本页它们散在正文里，要滚到底才看得到）。
+        // 只声明按钮，宿主用它的样式渲染并回发 host-run —— 点击仍走上面这几行监听。
+        // 宿主不表态（单独打开本页）时按钮留在正文，mountToolbar 会取消隐藏。
+        if (window.HostChannel && typeof HostChannel.mountToolbar === 'function') {
+          HostChannel.mountToolbar([
+            { id: 'btn-settings', label: '设置', icon: 'icon:settings-2', title: '并发下载数 / 单次上限 / 请求速率 / 代理 / 下载目录' },
+            { id: 'btn-oauth', label: '获取 Token', icon: 'icon:key-round', title: '通过浏览器登录 Pixiv 重新获取 refresh_token（token 失效时使用）' },
+            { id: 'btn-open-config', label: '画师名单文件', icon: 'icon:folder-open', title: '打开画师名单配置文件所在文件夹（每行一个画师名字或 id，空=全部）' },
+          ], {
+            container: 'host-toolbar',
+            selector: '#psync-global-actions',
+          });
+        }
         $('btn-refresh-following').addEventListener('click', () => startRefresh('refresh_following_lists'));
         $('btn-refresh-bookmarks').addEventListener('click', () => startRefresh('refresh_bookmarks_lists'));
         $('btn-refresh-dl').addEventListener('click', async () => {

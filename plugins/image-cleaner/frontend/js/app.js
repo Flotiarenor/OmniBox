@@ -11,6 +11,7 @@ class ImageCleaner {
 
   async init() {
     this._bind();
+    this._mountHostToolbar();
     if (typeof createLightbox === 'function') {
       this.lightbox = createLightbox({ getImageUrl: (item) => item.url || item });
     }
@@ -18,13 +19,60 @@ class ImageCleaner {
     await this.runScan();
   }
 
+  /**
+   * 把两个操作按钮挂到宿主（image-viewer 扩展面板）的头部去：内嵌页碰不到宿主头部，
+   * 而"操作在顶栏"是其它插件的统一形态。只声明按钮，宿主用它的样式渲染；宿主不表态
+   * 时整组留在本页工具栏（`mountToolbar` 会自动取消隐藏）。
+   *
+   * 挂两个而不是只挂设置：只搬一个的话，用户看到的是"设置上去了、重新扫描还在下面"，
+   * 仍然是半成品。两个都挂，`#cleaner-actions` 整组收起，本页工具栏就只剩作用域信息。
+   */
+  _mountHostToolbar() {
+    if (!window.HostChannel || typeof HostChannel.mountToolbar !== 'function') return;
+    HostChannel.mountToolbar(
+      [
+        { id: 'btn-rescan', label: '重新扫描', icon: 'icon:refresh-cw', title: '忽略缓存，重新计算哈希' },
+        { id: 'btn-settings', label: '设置', icon: 'icon:settings', title: '相似判定阈值等设置' },
+      ],
+      { container: 'host-toolbar', selector: '#cleaner-actions' }
+    );
+  }
+
+  /**
+   * 打开设置：优先请宿主渲染弹窗，宿主不在或不认这条请求时回落到本页的壳弹窗。
+   *
+   * 保存这件事必须留在本页：`Bridge` 是从当前 frame 往上找第一个带 pywebview.api 的
+   * 窗口，本页嵌在 image-viewer 里时那仍然是壳，所以 `save_settings` 落的是**本插件**
+   * 的设置。宿主那侧只拿到 values，且只负责回传，不碰存储。
+   */
+  async openSettings() {
+    const fallback = () => openSettingsModal({ title: '相册清理设置' });
+    if (!window.HostChannel || typeof HostChannel.requestSettings !== 'function') {
+      fallback();
+      return;
+    }
+
+    // 保存由宿主弹窗回传到这里执行：保存后整页重载本页（与本地弹窗一致的行为）。
+    HostChannel.onCallback('ui', async (newValues) => {
+      const result = await Bridge.call('save_settings', newValues);
+      if (result && result.success === false) throw new Error(result.error || '保存失败');
+      setTimeout(() => {
+        window.location.href = window.location.href.split('?')[0] + '?_t=' + Date.now();
+      }, 300);
+      return result;
+    });
+
+    const res = await HostChannel.requestSettings('相册清理设置');
+    if (!res.handled) fallback();
+  }
+
   _bind() {
         document.getElementById('btn-rescan').addEventListener('click', () => this.runScan(true));
-        // 设置弹窗由壳渲染（字段来自后端 settings_schema）；保存后壳会整页重载本页，
-        // 因此这里不需要读回设置，也不存在第二份字段清单可以漂移。
-        document.getElementById('btn-settings').addEventListener('click', () => {
-            openSettingsModal({ title: '相册清理设置' });
-        });
+        // 设置弹窗交给宿主渲染（image-viewer 的 `_serveHostChannel`）：本页是嵌进它的
+        // iframe，`.modal{position:fixed}` 只相对本 iframe，弹窗没有整页遮罩、也贴不到
+        // 宿主窗口中央。schema/values/保存仍然全归本插件 —— 宿主只负责画。
+        // 宿主不表态（单独打开本页、或老版本壳）时回落到壳的统一设置弹窗。
+        document.getElementById('btn-settings').addEventListener('click', () => this.openSettings());
     document.getElementById('btn-keep-one-all').addEventListener('click', () => this.keepOneForAll());
     document.getElementById('btn-delete').addEventListener('click', () => this.deleteSelected());
     document.getElementById('tab-dupe').addEventListener('click', () => this.switchMode('dupe'));
