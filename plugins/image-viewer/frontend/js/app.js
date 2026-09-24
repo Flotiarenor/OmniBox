@@ -47,6 +47,18 @@ class ImageViewer {
         this._initialized = false;
     }
 
+    // 表态"我接得住内嵌插件的请求"：`#extension-frame` 里的页面（image-cleaner /
+    // pixiv-sync）可以用 `HostChannel.requestSettings(...)` 让**本页**渲染设置弹窗
+    // （有整页遮罩、不会被 iframe 边界裁掉）。
+    //
+    // 宿主不需要知道对面是谁：校验只认"这个 window 是我嵌的那个 iframe"（`event.source`）。
+    // 保存也归对面：本页的 Bridge 指向本插件，替它保存会写错插件。
+    _serveHostChannel() {
+        if (!window.HostChannel || typeof HostChannel.serve !== 'function') return;
+        const frames = () => [document.getElementById('extension-frame')];
+        HostChannel.serve({ isOwnFrame: HostChannel.ownFrame(frames) });
+    }
+
     async init() {
         if (this._initialized) return;
         this._initialized = true;
@@ -66,6 +78,7 @@ class ImageViewer {
         });
 
         this._bindUI();
+        this._serveHostChannel();
         await this.loadSettings();
         await this.loadAlbums();
         this.loadExtensions();

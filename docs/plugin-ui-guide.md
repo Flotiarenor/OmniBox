@@ -184,7 +184,8 @@
 - 视觉上必须与宿主同族（同一个 token 体系、同一套按钮/卡片），因为用户看到的是
   宿主面板里的一块，不是另一个应用。
 - `hidden: true` 的插件（image-cleaner / netease-music / pixiv-sync）不出现在壳导航，
-  入口只能来自宿主扩展或 URL——不要把"设置""刷新"这类全局操作塞进内嵌页。
+  入口只能来自宿主扩展或 URL——不要把"设置""刷新"这类全局操作**自己画**在内嵌页里
+  （要画的话用下面 §3.5 的 HostChannel 请宿主画）。
 - **`view` 型扩展的 UI 代码属于宿主**：netease-music 自己那份
   `frontend/index.html` + `js/app.js`（154 行）就是重复实现——它 `hidden: true`
   不可达，且全仓库没有任何地方构造 `?view=ncm-*` 的 URL 交给它加载；
@@ -192,6 +193,55 @@
   media-player 自己的 iframe 里存在（`media-player/frontend/index.html:273`），
   一旦这份页面被壳直接加载，父窗口是壳 ⇒ 点歌 100% 落到错误分支。
   声明 `view:` 的插件，前端只应保留状态/说明页，或者干脆没有前端页面。
+
+### 3.5 向上层申请 UI：HostChannel（内嵌页的"设置/确认"正确做法）
+
+**问题**：内嵌页是独立文档，`.modal { position: fixed }` 只相对**它自己那个 iframe**
+（`image-viewer.css:356-389` 的 `.extension-view` 就是整块 iframe 区域）。子插件自绘
+设置弹窗的后果是：没有整页遮罩、弹窗被 iframe 边界约束、视觉层级与宿主的弹窗不是一回事。
+
+**做法**：子插件不画，只**申请**；上层用**自己的文档**渲染。协议实现在
+`shell/frontend/public/shell/base.js` 的 `window.HostChannel`（注入每个插件页，顶层与内嵌
+都有），只在**直接父子**之间走：
+
+| 方向 | 消息 | 用途 |
+| --- | --- | --- |
+| 子 → 上 | `omnibox:host-probe` / `omnibox:host-request` | 探测上层是否接得住 / 提交申请（设置弹窗等） |
+| 上 → 子 | `omnibox:host-reply` | 回信 `{exchange, ok, data}` |
+| 上 → 子 | `omnibox:host-callback` / `…-callback-reply` | 多回合：把值交回子插件，由它自己落盘 |
+
+子插件侧（完整例子见 `plugins/image-cleaner/frontend/js/app.js` 的 `openSettings`）：
+
+```js
+const res = await HostChannel.requestSettings('相册清理设置');
+if (!res.handled) openSettingsModal({ title: '相册清理设置' });   // 没人接就回落本地
+```
+
+`requestSettings(title)` 已经把"探测 → 取本插件的 schema/values → 发申请"包好；
+保存由子插件自己处理（**必须**如此：子插件的 `Bridge` 指向自己的后端，宿主替它存会写错插件）：
+
+```js
+HostChannel.onCallback('ui', async (values) => {
+  const r = await Bridge.call('save_settings', values);
+  if (r && r.success === false) throw new Error(r.error || '保存失败');   // 抛出 = 宿主保住弹窗
+  location.reload();
+  return r;
+});
+```
+
+**上层侧**：谁想接就表态，不表态等于没这个能力（子插件自动回落）。校验只认"这个窗口
+是我嵌的那个"，**不需要知道对方是谁**：
+
+```js
+// image-viewer/frontend/js/app.js 的 _serveHostChannel()
+HostChannel.serve({ isOwnFrame: HostChannel.ownFrame(() => [document.getElementById('extension-frame')]) });
+```
+
+`serve()` 不传 `handlers` 时用默认的 `ui` 处理器，支持 `settings`（宿主弹窗 + 表单，
+schema/values 都由对面给）与 `confirm`；未知 kind 显式失败回 `ok:false`，子插件据此回落。
+
+**两条边界**，别扩大：上层只读 `action`，`data` 原样透传（所以它不需要理解内容）；
+消息不跨层转发（孙窗口要发申请，得让中间那层自己 `serve()`）。
 
 ---
 
@@ -547,6 +597,8 @@ background: var(--mp-glass, var(--bg-surface));
   静默退回自建灯箱，属于"契约之外"的耦合。跨插件能力请走
   `Bridge.callPlugin()` 或扩展注册表。
 - 被内嵌页遵守 §3.4 的"不再画骨架"约定；视觉与宿主同族。
+- 宿主与内嵌页之间**另有一条数据通道**：宿主 `HostChannel.serve()` 表态后，内嵌页可以
+  请它渲染设置/确认弹窗（§3.5）。它只搬运数据、不搬 DOM，也不要求宿主认识对面是谁。
 
 ---
 

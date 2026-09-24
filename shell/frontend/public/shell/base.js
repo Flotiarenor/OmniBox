@@ -588,69 +588,402 @@ function createSettingsForm(container, schema, values = {}) {
 }
 
 // ==================== 统一设置弹窗（插件按需调用） ====================
-async function openSettingsModal(options = {}) {
+function openSettingsModal(options = {}) {
   const title = options.title || '设置';
-  let schema = options.schema;
-  let values = options.values;
   const onSave = options.onSave;
-
-  if (!schema) {
-    try { schema = await Bridge.call('get_settings_schema'); } catch (e) { schema = []; }
-  }
-  if (values === undefined) {
-    try { values = await Bridge.call('get_settings'); } catch (e) { values = {}; }
-  }
-
-  const overlay = document.createElement('div');
-  overlay.className = 'modal active';
-  overlay.innerHTML = `
-    <div class="modal-box">
-      <h3>${Utils.escapeHtml(title)}</h3>
-      <div class="modal-body settings-form"></div>
-      <div class="modal-footer">
-        <button class="btn" data-act="cancel">取消</button>
-        <button class="btn btn-primary" data-act="save">保存</button>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-
-  const body = overlay.querySelector('.modal-body');
-  let form = null;
-  if (!schema || schema.length === 0) {
-    body.innerHTML = '<div class="empty-state" style="min-height:120px;">该插件暂无设置项</div>';
-  } else {
-    form = createSettingsForm(body, schema, values || {});
-  }
-
-  const close = () => overlay.remove();
-  // pointerdown：按在遮罩上就关，按在弹窗内（哪怕拖到遮罩上松开）不关
-  overlay.addEventListener('pointerdown', (e) => { if (e.target === overlay) close(); });
-  overlay.querySelector('[data-act="cancel"]').addEventListener('click', close);
-
-  overlay.querySelector('[data-act="save"]').addEventListener('click', async () => {
-    const saveBtn = overlay.querySelector('[data-act="save"]');
-    const cancelBtn = overlay.querySelector('[data-act="cancel"]');
-    saveBtn.disabled = true;
-    try {
-      const newValues = form ? form.getValues() : {};
-      let result = newValues;
-      if (onSave) {
-        result = await onSave(newValues);
-      } else {
-        result = await Bridge.call('save_settings', newValues);
-      }
-      if (result && result.success === false) {
-        throw new Error(result.error || '保存失败');
-      }
-      close();
-      Toast.success((options.successMessage) || (result && result.message) || '设置已保存');
-      setTimeout(() => { window.location.href = window.location.href.split('?')[0] + '?_t=' + Date.now(); }, 400);
-    } catch (e) {
-      saveBtn.disabled = false;
-      Toast.error(e.message || '保存失败');
-    }
+  return openModal({
+    title: title,
+    // 省略 schema/values 时在内部按当前插件后端拉取：这是"插件自己的设置弹窗"的默认用法
+    schema: options.schema,
+    values: options.values,
+    emptyText: '该插件暂无设置项',
+    onSave: onSave || (async (values) => {
+      const result = await Bridge.call('save_settings', values);
+      return { result: result };
+    }),
+  }).then(res => {
+    if (!res || !res.saved) return null;
+    return (res.result && res.result.values) || res.values;
   });
 }
+
+/**
+ * 通用弹窗：Promise 化，`resolve(null)` = 取消，`resolve({saved: true, values, result})` = 已保存。
+ *
+ * 存在两个入口是有原因的：`openSettingsModal` 是"本页插件自己的设置"，省略 schema 时
+ * 用本页的 `Bridge` 拉取与保存；而**上层替内嵌页渲染**设置时，schema/values/保存都归
+ * 内嵌页自己（本页的 Bridge 指向的是这台宿主，直接存会写错插件）—— 那条路走
+ * `HostChannel`，由 `defaultUiHandler` 调用本函数。
+ *
+ * `onSave` 抛异常 = 保存失败：弹窗保持打开、按钮恢复可点、错误以 toast 呈现。这个
+ * 语义是刻意的，子插件回传失败时用户不会看到"弹窗关了但其实没存上"。
+ */
+function openModal(options = {}) {
+  const title = options.title || '设置';
+  const onSave = options.onSave;
+  let form = null;
+
+  return new Promise((resolve) => {
+    (async () => {
+      let schema = options.schema;
+      let values = options.values;
+      if (!schema) {
+        try { schema = await Bridge.call('get_settings_schema'); } catch (e) { schema = []; }
+      }
+      if (values === undefined) {
+        try { values = await Bridge.call('get_settings'); } catch (e) { values = {}; }
+      }
+
+      const overlay = document.createElement('div');
+      overlay.className = 'modal active';
+      overlay.innerHTML = `
+        <div class="modal-box">
+          <h3>${Utils.escapeHtml(title)}</h3>
+          <div class="modal-body settings-form"></div>
+          <div class="modal-footer">
+            <button class="btn" data-act="cancel">取消</button>
+            <button class="btn btn-primary" data-act="save">保存</button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+
+      const body = overlay.querySelector('.modal-body');
+      if (!schema || schema.length === 0) {
+        body.innerHTML = '';
+        const empty = document.createElement('div');
+        empty.className = 'empty-state';
+        empty.style.minHeight = '120px';
+        empty.textContent = options.emptyText || '该插件暂无设置项';
+        body.appendChild(empty);
+      } else {
+        form = createSettingsForm(body, schema, values || {});
+      }
+
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        overlay.remove();
+        resolve(result);
+      };
+
+      // pointerdown：按在遮罩上就关，按在弹窗内（哪怕拖到遮罩上松开）不关
+      overlay.addEventListener('pointerdown', (e) => { if (e.target === overlay) finish(null); });
+      overlay.querySelector('[data-act="cancel"]').addEventListener('click', () => finish(null));
+
+      overlay.querySelector('[data-act="save"]').addEventListener('click', async () => {
+        const saveBtn = overlay.querySelector('[data-act="save"]');
+        saveBtn.disabled = true;
+        try {
+          const newValues = form ? form.getValues() : {};
+          let result = null;
+          if (onSave) result = await onSave(newValues);
+          if (result && result.result && result.result.success === false) {
+            throw new Error(result.result.error || '保存失败');
+          }
+          if (result && result.success === false) {
+            throw new Error(result.error || '保存失败');
+          }
+          Toast.success((options.successMessage) || '设置已保存');
+          finish({ saved: true, values: newValues, result: (result && result.result) || result });
+        } catch (e) {
+          saveBtn.disabled = false;
+          Toast.error(e.message || '保存失败');
+        }
+      });
+    })();
+  });
+}
+
+// ==================== 宿主通道（子插件 → 上层） ====================
+/**
+ * 被内嵌的插件页向上层要一件事，而不是自己造一套 UI 或伸手去读上层的对象。
+ *
+ * 为什么需要：内嵌 iframe 是独立文档，`.modal { position: fixed }` 只相对**自己那个
+ * iframe**，弹窗既不会盖住宿主侧栏、也没有整页遮罩；所以"设置/确认/提示"这类
+ * chrome 必须由上层用自己的文档渲染。这里只搬运**数据**，不搬运 DOM。
+ *
+ * 一条刻意的边界：上层只读 `action`，`data` 原样透传。上层因此不需要知道是谁发的、
+ * 内容是什么意思 —— 身份是 `event.source`（那个 iframe 的 window），不是插件名。
+ * 子插件侧只有 `HostChannel.request()` 一个入口，不知道对面是壳还是别的插件。
+ *
+ * 三条消息，全部只在 **直接父子** 之间走（不跨层转发）：
+ *   request / reply            子 → 上；`{exchange, action, data}` / `{exchange, ok, data}`
+ *   probe / ready              子 → 上；探测上层是否 `serve()` 过，探测不到就不发请求
+ *   callback / callback-reply  上 → 子；用于"设置了但值给谁保存"这类**由子插件做主**的回合
+ *                              （上层把值交回子插件，子插件自己调 Bridge 落盘）
+ *
+ * 校验与 `isMessageFromShell` 分开写是有意的：那条要求 `event.source === window.parent`，
+ * 而壳是直投顶层 iframe 的 —— 内嵌页的 parent 是宿主而不是壳，套那条会全部被拒。
+ */
+window.HostChannel = (function() {
+  var REQUEST = 'omnibox:host-request';
+  var REPLY = 'omnibox:host-reply';
+  var PROBE = 'omnibox:host-probe';
+  var RUN = 'omnibox:host-run';
+  var CALLBACK = 'omnibox:host-callback';
+  var CALLBACK_REPLY = 'omnibox:host-callback-reply';
+  var PROBE_TIMEOUT = 500;
+  var DEFAULT_TIMEOUT = 30000;
+
+  var seq = 0;
+  var pending = {};     // exchange -> {resolve, timer}
+  var callbackSeq = 0;
+  var callbacks = {};   // step -> {resolve, timer}
+  var callbackHandlers = {};   // action -> fn(values, data)
+  var probed = null;    // 探测结果的缓存：每次 request 都重探一次太吵
+
+  function self() {
+    try { return window.parent && window.parent !== window ? window.parent : null; }
+    catch (e) { return null; }
+  }
+
+  function post(target, payload) {
+    try { target.postMessage(payload, '*'); } catch (e) { /* 跨域/已销毁，交给超时 */ }
+  }
+
+  /**
+   * 发一条消息并等一条回信。
+   *
+   * 超时/没有父窗口时**一定要把 resolve 掉**：pending 里挂着一个永不 settle 的 Promise
+   * 会让调用方的回退分支永远不执行，界面看起来就是"点了没反应"。
+   */
+  function waitReply(listener, key, timeout) {
+    return new Promise(function(resolve) {
+      var target = self();
+      if (!target) { resolve({ ok: false, data: null }); return; }
+      pending[key] = {
+        resolve: function(reply) { resolve(reply); },
+        timer: setTimeout(function() {
+          if (!pending[key]) return;
+          delete pending[key];
+          resolve({ ok: false, data: null });
+        }, timeout)
+      };
+      post(target, listener);
+    });
+  }
+
+  /** 上层是否在听（`serve()` 过）。false 时调用方应当回落到自己的实现。 */
+  function probe(timeout) {
+    if (probed) return Promise.resolve(probed === 'ready');
+    return waitReply({ type: PROBE }, 'probe', timeout || PROBE_TIMEOUT).then(function(reply) {
+      probed = reply.ok ? 'ready' : 'absent';
+      return reply.ok;
+    });
+  }
+
+  /** 向上层要一件事。上层没 `serve()`、没实现该 action、或超时，一律 `{ok: false}`。 */
+  function request(action, data, timeout) {
+    var exchange = ++seq;
+    return waitReply(
+      { type: REQUEST, exchange: exchange, action: action, data: data },
+      exchange,
+      timeout || DEFAULT_TIMEOUT
+    );
+  }
+
+  /** 注册上层回调（供 `ui` 弹窗保存时把值交回来；见 defaultUiHandler）。 */
+  function onCallback(action, fn) {
+    if (typeof fn === 'function') callbackHandlers[action] = fn;
+  }
+
+  window.addEventListener('message', function(event) {
+    var data = event.data;
+    if (!data || typeof data.type !== 'string') return;
+    var host = self();
+    if (!host || event.source !== host) return;
+
+    if (data.type === REPLY && data.exchange === 'probe') {
+      if (pending['probe']) { clearTimeout(pending['probe'].timer); pending['probe'].resolve(!!data.ok); delete pending['probe']; }
+      return;
+    }
+    if (data.type === REPLY && pending[data.exchange]) {
+      var p = pending[data.exchange];
+      clearTimeout(p.timer);
+      delete pending[data.exchange];
+      p.resolve({ ok: !!data.ok, data: data.data });
+      return;
+    }
+    if (data.type === RUN) {
+      // 上层工具栏里点了本插件挂上去的按钮：点回子页里那个源按钮，处理逻辑只留一份
+      var el = data.id ? document.getElementById(data.id) : null;
+      if (!el && data.id) {
+        try { el = document.querySelector(data.id); } catch (e) { el = null; }
+      }
+      if (el) el.click();
+      else console.warn('[OmniBox] 上层点了按钮但本页找不到它:', data.id);
+      return;
+    }
+    if (data.type === CALLBACK) {
+      var fn = callbackHandlers[data.action];
+      if (typeof fn !== 'function') return;
+      var step = data.step;
+      Promise.resolve()
+        .then(function() { return fn(data.data); })
+        .then(function(res) { post(host, { type: CALLBACK_REPLY, step: step, ok: true, data: res === undefined ? null : res }); })
+        .catch(function(err) {
+          post(host, { type: CALLBACK_REPLY, step: step, ok: false, data: { error: String((err && err.message) || err) } });
+        });
+      return;
+    }
+    if (data.type === CALLBACK_REPLY && callbacks[data.step]) {
+      var c = callbacks[data.step];
+      clearTimeout(c.timer);
+      delete callbacks[data.step];
+      c.resolve({ ok: !!data.ok, data: data.data });
+    }
+  });
+
+  /**
+   * 上层用：把值交给子插件处理（返回子插件回调的结果）。 */
+  function invoke(source, action, data, timeout) {
+    var step = ++callbackSeq;
+    return new Promise(function(resolve, reject) {
+      callbacks[step] = {
+        resolve: function(res) { res.ok ? resolve(res.data) : reject(new Error((res.data && res.data.error) || '子插件回调失败')); },
+        timer: setTimeout(function() { delete callbacks[step]; reject(new Error('子插件回调超时')); }, timeout || 15000)
+      };
+      post(source, { type: CALLBACK, step: step, action: action, data: data });
+    });
+  }
+
+  /**
+   * 子插件用：请上层用**它的文档**渲染本插件的设置弹窗。
+   *
+   * schema 与 values 由本页自己的 `Bridge` 取（本页的 Bridge 指向本插件），保存由调用方
+   * 在 `HostChannel.onCallback('ui', fn)` 里自己做 —— 上层只画弹窗、只回传值。
+   *
+   * 回信只表示"上层接下了"，**不等用户在弹窗里点保存**：等下去的话用户把弹窗开着不动，
+   * 请求就会先超时，调用方以为没人接、再弹一个本地弹窗 —— 变成两个弹窗叠着。
+   * 保存走 callback（见 defaultUiHandler）。
+   */
+  async function requestSettings(title) {
+    if (!self()) return { handled: false };
+    if (!(await probe())) return { handled: false };
+    var schema = [];
+    var values = {};
+    try {
+      schema = await Bridge.call('get_settings_schema');
+      values = await Bridge.call('get_settings');
+    } catch (e) {
+      // 取不到字段清单就让上层弹"暂无设置项"：比在本页弹一个字段不对的强
+      console.error('[OmniBox] 读取设置字段失败:', e);
+    }
+    var res = await request('ui', {
+      kind: 'settings',
+      title: title || '设置',
+      schema: schema,
+      values: values,
+    });
+    return { handled: !!res.ok };
+  }
+
+  /**
+   * 上层用：校验"这个窗口就是我嵌的" —— 只认 window 引用，不认插件名。
+   *
+   * 每次调用都现问 `frames()` 而不是吃一份快照：内嵌的 iframe 可能在 `serve()`
+   * 之后才挂载（image-viewer 的 `#extension-frame` 就是），吃快照会永远认不出它。
+   */
+  function ownFrame(frames) {
+    return function(w) {
+      var list;
+      try { list = (typeof frames === 'function' ? frames() : frames) || []; }
+      catch (e) { return false; }
+      for (var i = 0; i < list.length; i++) {
+        var frame = list[i];
+        if (!frame) continue;
+        try {
+          if (frame.contentWindow === w) return true;
+        } catch (e) { /* 跨域读 contentWindow 不抛，但保险起见不影响判断 */ }
+      }
+      return false;
+    };
+  }
+
+  /** 上层用：表态"我接得住子插件的请求"。不调用就等于没有这个能力。 */
+  function serve(options) {
+    var opts = options || {};
+    var isOwnFrame = typeof opts.isOwnFrame === 'function' ? opts.isOwnFrame : function() { return false; };
+    var handlers = opts.handlers || { ui: defaultUiHandler };
+
+    window.addEventListener('message', function(event) {
+      var msg = event.data;
+      if (!msg || typeof msg.type !== 'string') return;
+      if (!isOwnFrame(event.source)) return;
+
+      if (msg.type === PROBE) {
+        post(event.source, { type: REPLY, exchange: 'probe', ok: true });
+        return;
+      }
+      if (msg.type !== REQUEST) return;
+
+      var exchange = msg.exchange;
+      var handler = handlers[msg.action];
+      if (typeof handler !== 'function') {
+        post(event.source, { type: REPLY, exchange: exchange, ok: false, data: { error: 'unsupported:' + msg.action } });
+        return;
+      }
+      Promise.resolve()
+        .then(function() { return handler(msg.data || {}, event.source); })
+        .then(function(result) {
+          // 处理器返回函数 = "这次请求要多个回合，值交给子插件自己处理"。
+          // 弹窗必须等子插件回调结束后再关，否则保存失败时用户看不到原因。
+          if (typeof result === 'function') {
+            return result(function(values) { return invoke(event.source, msg.action, values); });
+          }
+          return result;
+        })
+        .then(function(result) {
+          post(event.source, { type: REPLY, exchange: exchange, ok: true, data: result === undefined ? null : result });
+        })
+        .catch(function(err) {
+          post(event.source, { type: REPLY, exchange: exchange, ok: false, data: { error: String((err && err.message) || err) } });
+        });
+    });
+  }
+
+  /** 默认 `ui` 处理器：弹窗由**上层文档**渲染，但 schema 与保存都归子插件。 */
+  function defaultUiHandler(data, source) {
+    var kind = data && data.kind;
+    if (kind === 'settings') {
+      var schema = Array.isArray(data.schema) ? data.schema : [];
+      // 返一个"先回信、再开弹窗"的处理器：回信必须在弹窗之前（见 requestSettings 的注释），
+      // 而回信要等处理器的 promise 结算 —— 所以这里不能直接返回弹窗的 promise。
+      return function(commit) {
+        setTimeout(function() {
+          openModal({
+            title: data.title || '设置',
+            schema: schema,
+            values: data.values || {},
+            emptyText: '该插件暂无设置项',
+            // 保存的成败由子插件回传；抛错时 openModal 会保住弹窗并提示原因
+            onSave: function(values) { return commit(values); },
+          }).catch(function(err) {
+            console.error('[OmniBox] 宿主弹窗渲染失败:', err);
+            if (window.Toast) Toast.error('设置弹窗打开失败');
+          });
+        }, 0);
+        return true;
+      };
+    }
+    if (kind === 'confirm') {
+      return confirmDialog(data.message || '', { danger: !!data.danger });
+    }
+    // 未知 kind 一律显式失败，调用方据此回落 —— 静默当成功会让子插件以为操作生效了
+    return Promise.reject(new Error('unsupported-kind:' + kind));
+  }
+
+  return {
+    request: request,
+    requestSettings: requestSettings,
+    probe: probe,
+    onCallback: onCallback,
+    serve: serve,
+    ownFrame: ownFrame,
+    invoke: invoke,
+  };
+})();
 
 // ==================== 树组件 ====================
 function createTree(container, options = {}) {
@@ -945,3 +1278,4 @@ function createContextMenu(options = {}) {
 // 它是某个插件旧实现的视觉词汇被搬进"共享"组件，谁用谁拿到无样式 DOM，已删除。
 // 卡片网格属各插件的内容区布局（image-viewer 用瀑布流、manga-library / media-player
 // 用自适应栅格），由插件自建；见 docs/plugin-ui-guide.md §5。
+
