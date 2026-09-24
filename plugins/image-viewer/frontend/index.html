@@ -65,7 +65,17 @@
       <div id="extension-view" class="extension-view hidden">
         <div class="extension-view-header">
           <span id="extension-view-title">扩展</span>
-          <button class="btn btn-sm" id="extension-view-close">返回相册</button>
+          <!-- 内嵌插件（image-cleaner / pixiv-sync）把「设置」这类操作挂到 #extension-view-actions：
+               它们只声明 {id,label,icon}，宿主用 .btn.btn-sm 渲染，点击回发 host-run。
+               宿主不出现任何具体按钮名，也不需要在代码里改。见 plugin-ui-guide §3.5
+
+               挂载点与「返回相册」包在同一个 flex 组里：头部的 space-between 只分两端，
+               若把挂载点单列成一项，它会落在"标题与返回之间"的正中（实测差 555px）。
+               外层整体靠右，内部 8px 间距，与主工具栏同一排的观感一致。 -->
+          <div class="extension-view-actions">
+            <div id="extension-view-actions"></div>
+            <button class="btn btn-sm" id="extension-view-close">返回相册</button>
+          </div>
         </div>
         <div class="extension-view-body">
           <iframe id="extension-frame" title="扩展插件"></iframe>

@@ -368,14 +368,42 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* 与主工具栏（.view-toolbar，48px）相差一档、但不是薄薄一条：内嵌页自己的工具栏在
+     `html.is-embedded` 下已降级为无底边操作行，这一条就是用户眼里的"这个视图的工具栏"。
+     8px 上下留白 + 28px 按钮 = 44px，视觉上与主工具栏同族。 */
   padding: 8px 14px;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 .extension-view-header span {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+/* 头部按钮：默认 .btn-sm 是 12px/3px 内边距，比插件工具栏里的按钮小一档，挂上来会显得
+   又小又挤（"字号不一样"的观感来源）。按插件工具栏的常态给 13px + 28px 高。 */
+.extension-view-header .btn {
+  font-size: 13px;
+  padding: 4px 12px;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+/* 头部右端的一组：内嵌插件挂上来的按钮（HostChannel.mountToolbar）与「返回相册」。
+   **必须与返回按钮同处一个 flex 组**：头部是 `justify-content: space-between`，
+   挂载点若单列成一项，它会落在"标题与返回之间"的正中（实测 1280px 窗口下差 555px）；
+   给它加 `margin-left:auto` 也不行 —— 那会与 space-between 平分剩余空间，
+   同样是偏的（实测差 92px）。 */
+.extension-view-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* 挂载点自身可能是空的（没有插件挂按钮）：不要因此多出 8px 缝 */
+.extension-view-actions > div:empty {
+  display: none;
 }
 .extension-view-body {
   flex: 1;

@@ -508,7 +508,9 @@ body
       │  └─ #image-grid.iv-image-grid   position:relative; 子元素全 absolute  (css:119)
       ├─ #pagination.pagination-bar  壳组件，高 48px（base.css:81-86）
       └─ #extension-view.extension-view     absolute; inset:0; z-index:20  (css:371-381)
-         ├─ .extension-view-header   padding 8px 14px; border-bottom
+         ├─ .extension-view-header   padding 8px 14px; border-bottom；标题 15px/700、
+         │                           按钮 13px/28px；内含 #extension-view-actions ——
+         │                           内嵌插件挂按钮的容器（HostChannel.serve 的 containers）
          └─ .extension-view-body → iframe 100%×100%
 
    （.modal ×3 与 .rebuild-progress-card 挂在 #app 内、.view-body 外）  (index.html:76-186)
