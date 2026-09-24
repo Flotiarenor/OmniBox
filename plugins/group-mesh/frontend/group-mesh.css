@@ -78,11 +78,9 @@ body {
   min-width: 0;
 }
 
-.gm-icon {
-  font-size: 22px;
-  line-height: 1;
-}
-
+/* 工具栏左侧与其它插件的 `.xx-view-heading` 同形：只有标题 + 副标题两块文字。
+   本插件试过把图标放进标题组（`.gm-icon`→大小 22px），结果同一个插件图标在
+   工具栏与侧栏牌头各出现一次、且两处尺寸不同；图标只留在牌头（`#network`）。 */
 .gm-title {
   font-size: 15px;
   font-weight: 700;

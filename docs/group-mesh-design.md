@@ -1754,7 +1754,7 @@ Noise vetted 实现 + 官方向量（§21.2）。
     - `nav.gm-nav.obx-scroll#gm-nav`（`index.html:39`）：4 个 `.gm-nav-label` 分组标题 + 5 个 `button.obx-nav-item.gm-nav-item[data-panel]`（`index.html:41/46/49/55/61`），其中两项带 `.gm-nav-count` 角标（`index.html:51/57`）
     - `div.gm-side-foot.sub-sidebar-footer#gm-side-summary`（`index.html:66`）：`.gm-foot-dot[data-state]` + `.gm-foot-text`（`app.js:395-426` 写）
   - `div.view-body.gm-main`（`index.html:72`）
-    - `div.view-toolbar.gm-toolbar`（`index.html:73`）：`.toolbar-group.gm-heading`（图标 + `#gm-panel-title` 15px/700 + `#gm-panel-sub` 11px）+ `.toolbar-group.gm-toolbar-right`（`margin-left:auto`，`group-mesh.css:100-102`）内两个 `.btn.btn-sm`
+    - `div.view-toolbar.gm-toolbar`（`index.html:73`）：`.toolbar-group.gm-heading`（`#gm-panel-title` 15px/700 + `#gm-panel-sub` 11px，无图标 —— 与其它插件的 `.xx-view-heading` 同形，插件图标只留在侧栏牌头 `#network`）+ `.toolbar-group.gm-toolbar-right`（`margin-left:auto`，`group-mesh.css:99-101`）内两个 `.btn.btn-sm`
     - `div#kernel-missing.gm-banner.gm-banner-error[hidden]`（`index.html:90`，`app.js:148` 控制）
     - `div.view-content.gm-content.obx-scroll#gm-content`（`index.html:96`）
       - `div.gm-panels.obx-stagger#gm-panels`（`index.html:97`）
