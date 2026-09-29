@@ -56,8 +56,8 @@ plugins/image-viewer/
 （共享检查器见 `tests/js/script_load_contract.mjs`）：它按 `index.html` 的声明顺序装载全部
 脚本，断言无孤立脚本、无重复定义、67 个成员仍在。
 
-另外三个 image-viewer 前端用例（`image_viewer_lifecycle` / `image_viewer_album_visibility` /
-`image_viewer_roots_list`）都改成**按 `index.html` 顺序装载或扫描全部脚本**，不在文件里写死
+另外四个 image-viewer 前端用例（`image_viewer_lifecycle` / `image_viewer_album_visibility` /
+`image_viewer_roots_list` / `image_viewer_extension_view`）都改成**按 `index.html` 顺序装载或扫描全部脚本**，不在文件里写死
 `app.js` —— 所以再往下拆分片时它们不需要跟着改。
 
 **职责边界**：
@@ -423,7 +423,8 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
   `python -m unittest tests.test_image_viewer_pixiv_cover`（画师封面 + 作者视图二次排序 11 项）、
   `python -m unittest tests.test_image_viewer_pixiv_fuzzy`（模糊匹配 + 配置点 11 项）、
   `python -m unittest tests.test_image_viewer_multi_root`（多根目录 / 空目录 / 折叠 17 项）、
-  `python -m unittest tests.test_image_viewer_album_visibility_js`（前端可见性与图片文件夹列表无头用例）
+  `python -m unittest tests.test_image_viewer_album_visibility_js`（前端可见性、图片文件夹列表与扩展面板头部无头用例）
+- 几何取证：`python tests/debug_extension_header_ui.py`（无头 Chrome 读扩展头与主工具栏的计算高度/字号，13 项；本机无 Chrome 时跳过）
 - 状态调试：`python tests/debug_status_pages.py`（一键起 `--status-debug` 服务器 + 11 个 HTTP 场景触发表 + 壳内 `/status` 调试面板；含坏插件演示 iframe 404 → 壳内错误卡片链路）
 - 常用验证：`refresh` API 强制重扫、`rebuild_status` 轮询查看重建进度、`G:\图库` 等大目录做性能基准
 
@@ -507,11 +508,15 @@ body
       │  ├─ #iv-albums             相册网格容器（.iv-grid 由 JS 包一层，css:72-76）
       │  └─ #image-grid.iv-image-grid   position:relative; 子元素全 absolute  (css:119)
       ├─ #pagination.pagination-bar  壳组件，高 48px（base.css:81-86）
-      └─ #extension-view.extension-view     absolute; inset:0; z-index:20  (css:371-381)
-         ├─ .extension-view-header   padding 8px 14px; border-bottom；标题 15px/700、
-         │                           按钮 13px/28px；内含 #extension-view-actions ——
-         │                           内嵌插件挂按钮的容器（HostChannel.serve 的 containers）
-         └─ .extension-view-body → iframe 100%×100%
+      └─ #extension-view.extension-view     absolute; inset:0; z-index:20  (css:356-366)
+         ├─ .extension-view-header   与主工具栏同高（var(--toolbar-height)=48px）、padding 0 16px；
+         │                           border-bottom；按钮 13px/28px (css:367-408)
+         │  ├─ .extension-view-heading  标题行，与 .iv-view-heading 同形：15px/700 标题 +
+         │  │                            11px 说明两行（说明取扩展声明的 description）
+         │  │                            (index.html:70-73)
+         │  └─ .extension-view-actions  #extension-view-actions —— 内嵌插件挂按钮的容器
+         │                              （HostChannel.serve 的 containers）+「返回相册」(css:410-418)
+         └─ .extension-view-body → iframe 100%×100%  (css:419-428)
 
    （.modal ×3 与 .rebuild-progress-card 挂在 #app 内、.view-body 外）  (index.html:76-186)
 ```
@@ -527,7 +532,7 @@ body
 | 相册卡 | `aspect-ratio:1` 封面（`css:94`）；radius `var(--iv-radius)`=14px；`contain-intrinsic-size:260px` | 插件 |
 | 图片瓦片 | 绝对定位，尺寸由 `JustifiedLayout.compute` 算出：目标行高默认 `200px`（`app.js:27`，设置项 100–400），gap 固定 `5`（`app-grid.js:72`） | 插件 |
 | 重建进度卡 | `position:fixed; right:16px; bottom:16px; width:320px`；进度条高 `6px`（`css:284-297,330-335`） | 插件 |
-| 扩展视图头 | `padding:8px 14px`（`css:382-390`） | 插件 |
+| 扩展视图头 | 高 `var(--toolbar-height)`=48px（与主工具栏同高）、`padding:0 16px`（`css:367-395`）；标题 15px/700 + 说明 11px（复用 `.iv-view-title`/`.iv-view-sub`） | 插件 |
 
 #### 12.2.3 滚动方式
 
@@ -599,7 +604,7 @@ grep（限 `image-viewer.css`）：
 
 #### 12.4.1 自有类名前缀清单
 
-主前缀 `iv-`，另有 4 个 `extension-view*`、6 个不再带前缀的 `rebuild-progress*`：
+主前缀 `iv-`，另有 5 个 `extension-view*`、6 个不再带前缀的 `rebuild-progress*`：
 
 - 侧栏/品牌：`.iv-sidebar .iv-brand .iv-brand-icon .iv-brand-text .iv-brand-title .iv-brand-sub .iv-nav .iv-nav-label .iv-nav-item .iv-nav-footer .iv-sidebar-footer`
 - 工具栏：`.iv-toolbar .iv-view-heading .iv-view-title .iv-view-sub .iv-search .iv-search-ico .iv-search-clear .iv-selection-count`
@@ -609,7 +614,7 @@ grep（限 `image-viewer.css`）：
 - 设置：`.iv-setting-item .iv-setting-section .iv-setting-section-first .iv-setting-note .iv-setting-note-after-input .iv-settings-body .iv-check .iv-field .iv-range`
 - 空态：`.iv-empty .iv-empty-icon .iv-empty-text .iv-empty-hint`
 - 进度：`.rebuild-progress-card .rebuild-progress-header .rebuild-progress-hide .rebuild-progress-body .rebuild-progress-text .rebuild-progress .rebuild-progress-bar .rebuild-progress-current .rebuild-progress-speed .rebuild-errors` + 关键帧 `obxRebuildSlide`（`css:343-346`，**借用壳 `obx` 命名空间**）
-- 扩展视图：`.extension-view .extension-view-header .extension-view-body`
+- 扩展视图：`.extension-view .extension-view-header .extension-view-heading .extension-view-actions .extension-view-body`
 - 徽标：`.iv-album-badge`（张数）、`.iv-count-badge`（圆圈数字）、`.iv-album-tag(-hot)`（已收纳/已提升/空相册）、`.iv-time-badge`、`.iv-album-star`
 - Toast **无自有实现**，全量用壳 `Toast.*`；骨架屏**无**（`.obx-skeleton` 未用）
 

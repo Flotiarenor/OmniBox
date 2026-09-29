@@ -27,7 +27,7 @@
 > `unittest` 这一行里包含插件前端的脚本契约用例：`tests/test_*_js.py` 包装器调用
 > `tests/js/*.mjs`（无 node 时自动 skip），覆盖 `image_viewer_app_split` /
 > `media_player_app_split` / `plugin_asset_contract`（7 个插件前端的资源契约）/
-> `shell_folder_picker` / `image_viewer_roots_list`。
+> `shell_folder_picker` / `image_viewer_roots_list` / `image_viewer_extension_view`。
 >
 > 本机 Linux 实测 `skipped=70`，都属"环境不具备时条件跳过"，不是门禁失效：
 > 浏览器 e2e（需 selenium + Chrome/Edge，见 `requirements-e2e.txt`，刻意不进 CI）、

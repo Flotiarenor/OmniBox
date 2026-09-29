@@ -1,12 +1,14 @@
 """image-viewer 前端纯逻辑的无头回归（`tests/js/*.mjs`）。
 
-锁住两组新行为：
+锁住三组新行为：
 
 - **相册可见性**（`image_viewer_album_visibility.mjs`）：子相册默认折叠
   （只有显式「展开」过的目录才显示下级）；递归都没有可读图片的目录不显示，
   但「新建相册」保留可见、其上级也跟着显示。
 - **图片文件夹列表**（`image_viewer_roots_list.mjs`）：主目录行与额外目录行
   一样带移除按钮（`icon:x`，行高一致），删掉主行后下一行顶上，清空列表时提示回退默认目录。
+- **扩展面板头部**（`image_viewer_extension_view.mjs`）：主标题取扩展声明的 `label`、
+  第二行说明取 `description`（宿主不写插件专有文案），内嵌 URL 带 `?embed=1`。
 
 用例直接执行插件前端的真实实现（app.js），不在测试里重写一遍判断逻辑。
 """
@@ -20,6 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 HARNESSES = [
     PROJECT_ROOT / 'tests' / 'js' / 'image_viewer_album_visibility.mjs',
     PROJECT_ROOT / 'tests' / 'js' / 'image_viewer_roots_list.mjs',
+    PROJECT_ROOT / 'tests' / 'js' / 'image_viewer_extension_view.mjs',
 ]
 
 
@@ -40,6 +43,9 @@ class ImageViewerFrontendLogicJsTest(unittest.TestCase):
 
     def test_roots_list_rows(self):
         self._run(HARNESSES[1])
+
+    def test_extension_view_header_lines(self):
+        self._run(HARNESSES[2])
 
 
 if __name__ == '__main__':   # pragma: no cover

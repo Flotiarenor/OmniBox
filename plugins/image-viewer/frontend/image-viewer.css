@@ -368,18 +368,29 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  /* 与主工具栏（.view-toolbar，48px）相差一档、但不是薄薄一条：内嵌页自己的工具栏在
-     `html.is-embedded` 下已降级为无底边操作行，这一条就是用户眼里的"这个视图的工具栏"。
-     8px 上下留白 + 28px 按钮 = 44px，视觉上与主工具栏同族。 */
-  padding: 8px 14px;
+  /* 与主工具栏（.view-toolbar，`var(--toolbar-height)`=48px）逐像素同高：内嵌页自己的工具栏
+     在 `html.is-embedded` 下已降级为无底边操作行，这一条就是用户眼里的"这个视图的工具栏"，
+     进出扩展视图时它不该比主工具栏矮一档（原先只有一行标题，实测 45px 对 48px）。 */
+  height: var(--toolbar-height, 48px);
+  padding: 0 16px;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-.extension-view-header span {
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--text-primary);
+/* 左侧标题行：结构与主工具栏的 `.iv-view-heading` 相同（两行，字号走 .iv-view-title /
+   .iv-view-sub），只是容器从横向 flex 改为纵向。`min-width:0` + `overflow:hidden` 是给
+   窄窗口兜底：固定高度下，说明文字过长不能把标题行撑出容器。 */
+.extension-view-heading {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  overflow: hidden;
+}
+.extension-view-heading .iv-view-sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* 头部按钮：默认 .btn-sm 是 12px/3px 内边距，比插件工具栏里的按钮小一档，挂上来会显得
    又小又挤（"字号不一样"的观感来源）。按插件工具栏的常态给 13px + 28px 高。 */

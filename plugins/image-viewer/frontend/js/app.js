@@ -176,8 +176,13 @@ class ImageViewer {
         const view = document.getElementById('extension-view');
         const frame = document.getElementById('extension-frame');
         const title = document.getElementById('extension-view-title');
+        const sub = document.getElementById('extension-view-sub');
         if (!view || !frame) return;
         if (title) title.textContent = ext.label || '扩展';
+        // 副标题取扩展自己声明的 description（`get_extensions()` 的字段，侧栏同样用它做 tooltip）：
+        // 与主工具栏的「标题 + 一行说明」同形，宿主不出现任何插件专有文案
+        // （同 plugin-ui-guide §3.5 的"按钮定义留在子插件"）。缺字段时留空，头部高度不变。
+        if (sub) sub.textContent = ext.description || '';
         frame.src = this._embedUrl(ext.embedUrl);
         view.classList.remove('hidden');
     }

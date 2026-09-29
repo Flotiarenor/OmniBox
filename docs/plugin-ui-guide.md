@@ -153,7 +153,7 @@
 | 方式 | 宿主渲染点 | 现状 |
 | --- | --- | --- |
 | 侧栏入口 `embedUrl` | `renderExtensions(container, host, placement)` | image-cleaner、pixiv-sync 挂 image-viewer；group-mesh 的 network-location 挂"网络位置" |
-| 面板内嵌 | `.extension-view > .extension-view-header(title+返回) + .extension-view-body > iframe` | image-viewer `index.html:65-73` |
+| 面板内嵌 | `.extension-view > .extension-view-header(标题+说明两行 / 操作+返回) + .extension-view-body > iframe` | image-viewer `index.html:65-87` |
 | 原生视图 `view` | 宿主自己渲染（无 iframe） | netease-music 的 5 个 `ncm-*` 视图由 **media-player** 渲染（`app-views.js:152-201`、`app-render.js:190-233`） |
 
 **被内嵌页的附加契约**：
@@ -181,6 +181,10 @@
 - 页面级操作（"重新扫描""取消任务"）可以留在工具栏里：内嵌时工具栏只是被降级为普通
   操作行，按钮仍然可见可点；但**不要把自己的标题、说明文字或侧栏塞进工具栏**，
   那些与宿主 header 重复的部分才是要收掉的。
+- 宿主头部是**标题 + 一行说明两行结构**（image-viewer 的 `.extension-view-heading` 复用
+  `.iv-view-title`/`.iv-view-sub`，与主工具栏同高 48px）：说明文字取扩展自己声明的
+  `description`（`get_extensions()` 的字段，侧栏入口 tooltip 用的也是它）。内嵌页不必
+  再在正文里重复这行说明，宿主也不为任何插件写专有文案。
 - 视觉上必须与宿主同族（同一个 token 体系、同一套按钮/卡片），因为用户看到的是
   宿主面板里的一块，不是另一个应用。
 - `hidden: true` 的插件（image-cleaner / netease-music / pixiv-sync）不出现在壳导航，
@@ -197,7 +201,7 @@
 ### 3.5 向上层申请 UI：HostChannel（内嵌页的"设置/确认"正确做法）
 
 **问题**：内嵌页是独立文档，`.modal { position: fixed }` 只相对**它自己那个 iframe**
-（`image-viewer.css:356-389` 的 `.extension-view` 就是整块 iframe 区域）。子插件自绘
+（`image-viewer.css:356-366` 的 `.extension-view` 就是整块 iframe 区域）。子插件自绘
 设置弹窗的后果是：没有整页遮罩、弹窗被 iframe 边界约束、视觉层级与宿主的弹窗不是一回事。
 
 **做法**：子插件不画，只**申请**；上层用**自己的文档**渲染。协议实现在
@@ -544,10 +548,12 @@ background: var(--mp-glass, var(--bg-surface));
 - **图标**：导航/按钮统一 Emoji 前缀（现状 8 个插件都这样，无需改）。
 - **标题行**：主标题 + 小字副标题两行结构（image-viewer 的 `.iv-view-title`/`.iv-view-sub`、
   group-mesh 的 `data-title`/`data-sub`）；面板切换时标题必须跟着变
-  （这是 group-mesh 踩过的坑：`data-title` 忘写导致标题永远不变）。
+  （这是 group-mesh 踩过的坑：`data-title` 忘写导致标题永远不变）。宿主给内嵌视图的
+  `.extension-view-header` 也是这两行、同样 48px —— 只有一行标题时它比主工具栏矮一档
+  （实测 45px 对 48px），进出扩展视图上边栏会跳。
 - **文案**：空态一句话 + 一个下一步动作；错误提示说"发生了什么 + 能做什么"，不贴堆栈。
 - **内嵌页不得重复宿主 chrome**：image-cleaner 内嵌进 image-viewer 后，宿主的
-  `.extension-view-header`（`image-viewer.css:382-390`）与插件自己的 48px
+  `.extension-view-header`（`image-viewer.css:367-379`）与插件自己的 48px
   `.view-toolbar` 叠成两层横条、两个标题。
 
 ---

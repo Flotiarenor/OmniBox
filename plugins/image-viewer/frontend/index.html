@@ -64,7 +64,13 @@
 
       <div id="extension-view" class="extension-view hidden">
         <div class="extension-view-header">
-          <span id="extension-view-title">扩展</span>
+          <!-- 标题行与主工具栏同形：主标题 + 一行说明两行结构（.iv-view-title / .iv-view-sub）。
+               只有一行标题时扩展头实测 45px、主工具栏 48px，进出扩展视图上边栏会矮一档。
+               说明文字用扩展自己声明的 description（app.js:openExtensionView），宿主不写插件专有文案。 -->
+          <div class="extension-view-heading">
+            <div class="iv-view-title" id="extension-view-title">扩展</div>
+            <div class="iv-view-sub" id="extension-view-sub"></div>
+          </div>
           <!-- 内嵌插件（image-cleaner / pixiv-sync）把「设置」这类操作挂到 #extension-view-actions：
                它们只声明 {id,label,icon}，宿主用 .btn.btn-sm 渲染，点击回发 host-run。
                宿主不出现任何具体按钮名，也不需要在代码里改。见 plugin-ui-guide §3.5
