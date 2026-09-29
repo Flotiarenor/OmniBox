@@ -63,12 +63,20 @@ class ImageCleanerPlugin(PluginBase):
         return self._get_host().get_thumb_data(rel_path)
 
     def register_api(self) -> dict:
+        # `get_settings` / `save_settings` **必须登记**：壳的设置弹窗（宿主渲染那条与
+        # 本页回落那条）走的都是 `Bridge.call('get_settings')` / `Bridge.call('save_settings')`
+        # → `POST /api/image-cleaner__<方法>`，而 `PluginManager` 只会额外登记
+        # `<插件>__get_settings_schema`（plugin_manager.py:566-572）。此前两个都漏了，
+        # 表现是"弹窗打得开、root_dir 信息行空白、阈值恒为默认 8、保存必然失败"，
+        # 且前端全程无报错。回归守卫见 tests/test_image_cleaner_settings.py。
         return {
             'duplicate_scan': self.duplicate_scan,
             'similar_scan': self.similar_scan,
             'get_cached_scan': self.get_cached_scan,
             'delete_files': self.delete_files,
             'get_status': self.get_status,
+            'get_settings': self.get_settings,
+            'save_settings': self.save_settings,
         }
 
     def get_status(self) -> Dict:
