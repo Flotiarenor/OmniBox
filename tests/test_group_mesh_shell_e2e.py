@@ -18,6 +18,9 @@
 本地运行（需要 `requirements-e2e.txt`，且本机有 Chrome/Edge）
 --------------------------------------------------------------
     venv/Scripts/python -m unittest tests.test_group_mesh_shell_e2e -v
+
+数据根是一次性的（`main.py --data-root <临时目录>`）：本文件不依赖开发机上是否
+注册过身份与团体，需要前提的用例自己用 `init_identity` / `create_group` 建。
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ import json
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 import urllib.request
@@ -98,8 +102,14 @@ class GroupMeshInShellTest(unittest.TestCase):
 
         cls.port = _free_port()
         cls.base_url = f'http://127.0.0.1:{cls.port}'
+        # 一次性数据根：原来直接吃仓库的 `data/`，于是"本机已注册过身份与团体"变成了
+        # 隐式前提 —— 全新 checkout（或清过 data/）上 `my_endpoint` 返回「尚未创建身份」、
+        # `list_peers` 返回「需要先创建身份与团体」，用例必红。改用临时根后前提由用例
+        # 自己建（见 `_ensure_identity()`），也不会往开发机的 data/ 里写东西。
+        cls._data_tmp = tempfile.TemporaryDirectory()
         cls.server = subprocess.Popen(
-            [sys.executable, 'main.py', '--web-only', '--port', str(cls.port)],
+            [sys.executable, 'main.py', '--web-only', '--port', str(cls.port),
+             '--data-root', cls._data_tmp.name],
             cwd=str(PROJECT_ROOT), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if not _wait_health(cls.base_url):
             cls.server.terminate()
@@ -143,6 +153,9 @@ class GroupMeshInShellTest(unittest.TestCase):
             except subprocess.TimeoutExpired:
                 cls.server.kill()
             cls.server = None
+        if getattr(cls, '_data_tmp', None) is not None:
+            cls._data_tmp.cleanup()
+            cls._data_tmp = None
 
     @classmethod
     def _wait_for(cls, predicate, timeout: float = 20.0) -> bool:
@@ -179,6 +192,66 @@ class GroupMeshInShellTest(unittest.TestCase):
             By.CSS_SELECTOR, '#identity-actions .btn, #roster-actions .btn')) > 0),
             '插件应当渲染出动作按钮（说明 Bridge 与后端调用都是通的）')
         return frame
+
+    def _api_call(self, method: str, payload: dict) -> dict:
+        """从**壳页面**同源调插件后端（令牌 Cookie 由壳种下，fetch 自动携带）。
+
+        刻意不经过插件 iframe 里的 Bridge：前提必须在 iframe 第一次加载**之前**
+        建好 —— `remote.js` 只在 init 里调一次 `refreshMyEndpoint()`，之后再切面板
+        只是显隐切换、不会重新取数，身份后建的话 `#my-endpoint` 会一直停在
+        「尚未创建身份」。插件后端在壳启动时就已加载（`manager.load_all()`），
+        因此不点导航也能调它。
+        """
+        self.driver.switch_to.default_content()
+        raw = self.driver.execute_async_script(
+            "var done = arguments[arguments.length - 1];"
+            # 壳的 /api 约定（file_server.py 的 api 处理器）：请求体是 `{args, kwargs}`，
+            # 响应体是 `{result: 插件返回值}`，失败时是 `{error: ...}` + 500。
+            "fetch('/api/group-mesh__' + arguments[0], {method: 'POST',"
+            "  headers: {'Content-Type': 'application/json'},"
+            "  body: JSON.stringify({kwargs: arguments[1] || {}})})"
+            ".then(function (r) { return r.text(); })"
+            ".then(done, function (e) { done(JSON.stringify({threw: String(e)})); });",
+            method, payload)
+        envelope = json.loads(raw)
+        self.assertNotIn('threw', envelope, f'{method} 调用抛出异常：{envelope}')
+        self.assertNotIn('error', envelope, f'{method} 返回错误：{envelope}')
+        return envelope.get('result') or {}
+
+    def _ensure_identity(self) -> None:
+        """建出「已创建身份」这个前提：一次性数据根里原本是空的。"""
+        if (self._api_call('get_status', {}).get('identity') or {}):
+            return
+        result = self._api_call('init_identity', {'name': 'shell-e2e'})
+        self.assertTrue(result.get('success'), f'创建身份失败：{result}')
+        self._reload_shell()
+
+    def _reload_shell(self) -> None:
+        """重新载入壳页面，丢弃已经常驻的插件 iframe。
+
+        插件 iframe 一旦建出来就不再走 init，而 `remote.js` 只在 init 里调一次
+        `refreshMyEndpoint()`。按字母序排在 `test_my_endpoint_...` 之前的
+        `test_create_or_join_entries_are_reachable` 已经把 iframe 加载过一次，
+        那时身份还不存在 —— 不重载的话 `#my-endpoint` 会一直停在「尚未创建身份」。
+        """
+        from selenium.webdriver.common.by import By
+
+        self.driver.get(self.base_url)
+        self.assertTrue(self._wait_for(
+            lambda: len(self.driver.find_elements(By.CSS_SELECTOR, '.nav-item')) > 0),
+            '壳页面重新载入后导航未出现')
+
+    def _ensure_group(self) -> None:
+        """建出「身份 + 团体」这个前提。
+
+        `list_peers` 的门槛是 `identity is None or roster is None`（peers.py），
+        只有身份还不够，必须同时有名单。
+        """
+        if (self._api_call('get_status', {}).get('roster') or {}):
+            return
+        self._ensure_identity()
+        result = self._api_call('create_group', {'group': 'shell-e2e'})
+        self.assertTrue(result.get('success'), f'创建团体失败：{result}')
 
     def tearDown(self):
         try:
@@ -239,35 +312,41 @@ class GroupMeshInShellTest(unittest.TestCase):
     def test_peers_refresh_returns_quickly_with_real_endpoints(self):
         """真实壳 + 真实网络下调用 list_peers，必须在几秒内返回。
 
-        诚实说明它的判别力：这个测试壳用的是仓库数据根，里面**只有本机自己**的
-        注册记录，而本机不作为"对端"被探测 —— 因此候选端点为 0，这条断言在
-        "退化实现"下也可能通过（我把探测改回串行 20 秒超时跑过一次，它照样绿）。
-        它真正守的是"接口在真实壳里不会异常/不返回"这类问题。
+        诚实说明它的判别力：这条用例先自建身份与团体（一次性数据根里本来没有），
+        注册表里**只有本机自己**的记录，而本机不作为"对端"被探测 —— 因此候选端点为
+        0，这条断言在"退化实现"下也可能通过（我把探测改回串行 20 秒超时跑过一次，
+        它照样绿）。它真正守的是"接口在真实壳里不会异常/不返回"这类问题。
 
         对"不可达端点会不会把刷新拖到几十秒"的确定性守卫在插件层：
         `tests/test_group_mesh_plugin.py::RemoteApiTest.test_probe_with_dead_endpoint_
         respects_overall_budget`，那里会真的放一条一定连不上的端点并卡时间。
         """
+        self._ensure_group()
         self._enter_plugin()
         script = (
             "var t0 = Date.now();"
             "return window.Bridge.call('list_peers', {refresh: true})"
             ".then(function (r) { return JSON.stringify({ms: Date.now() - t0,"
-            " ok: !!(r && r.success), peers: (r && r.peers || []).length}); })"
-            ".catch(function (e) { return JSON.stringify({ms: Date.now() - t0, error: String(e)}); });"
+            " ok: !!(r && r.success), peers: (r && r.peers || []).length,"
+            # 后端给的失败原因必须带进断言消息：只留 ok/peers 的话，失败信息长成
+            # `{'ms': 5, 'ok': False, 'peers': 0}`，看着像"接口挂了/太慢"，
+            # 真正的原因（没有身份、没有团体）反而被丢掉。
+            " error: (r && r.error) || ''}); })"
+            ".catch(function (e) { return JSON.stringify({ms: Date.now() - t0, threw: String(e)}); });"
         )
         raw = self.driver.execute_async_script(
             "var done = arguments[arguments.length - 1];"
             "Promise.resolve().then(function () { return (function () {" + script +
-            "})(); }).then(done, function (e) { done(JSON.stringify({error: String(e)})); });")
+            "})(); }).then(done, function (e) { done(JSON.stringify({threw: String(e)})); });")
         payload = json.loads(raw)
-        self.assertNotIn('error', payload, f'list_peers 调用失败: {payload}')
+        self.assertNotIn('threw', payload, f'list_peers 调用抛出异常: {payload}')
         self.assertTrue(payload.get('ok'), payload)
         self.assertLess(payload['ms'], 15000,
                         f"list_peers 耗时 {payload['ms']}ms，界面会一直停在「正在读取设备」")
 
     def test_my_endpoint_is_rendered_in_the_shell(self):
         """「我的地址」在真实壳里必须能渲染出来（它是地址交换的入口）。"""
+        self._ensure_identity()
         self._enter_plugin()
         # 「我的地址」在「远端共享」面板里：面板是纯显隐切换，先切过去再读
         self.driver.execute_script(
@@ -276,7 +355,8 @@ class GroupMeshInShellTest(unittest.TestCase):
             lambda: '节点未运行' in text_for(self.driver, 'my-endpoint')
             or ':' in text_for(self.driver, 'my-endpoint')
             or '尚未发布' in text_for(self.driver, 'my-endpoint')),
-            '「我的地址」应当渲染出地址或明确的未运行提示')
+            '「我的地址」应当渲染出地址或明确的未运行提示，实际：'
+            f'{text_for(self.driver, "my-endpoint")!r}')
 
 
 if __name__ == '__main__':
