@@ -153,7 +153,7 @@
 | 方式 | 宿主渲染点 | 现状 |
 | --- | --- | --- |
 | 侧栏入口 `embedUrl` | `renderExtensions(container, host, placement)` | image-cleaner、pixiv-sync 挂 image-viewer；group-mesh 的 network-location 挂"网络位置" |
-| 面板内嵌 | `.extension-view > .extension-view-header(标题+说明两行 / 操作+返回) + .extension-view-body > iframe` | image-viewer `index.html:65-87` |
+| 面板内嵌 | `.extension-view > .extension-view-header(标题+说明两行 / 右端是插件挂载点) + .extension-view-body > iframe` | image-viewer `index.html:65-88` |
 | 原生视图 `view` | 宿主自己渲染（无 iframe） | netease-music 的 5 个 `ncm-*` 视图由 **media-player** 渲染（`app-views.js:152-201`、`app-render.js:190-233`） |
 
 **被内嵌页的附加契约**：
@@ -185,6 +185,10 @@
   `.iv-view-title`/`.iv-view-sub`，与主工具栏同高 48px）：说明文字取扩展自己声明的
   `description`（`get_extensions()` 的字段，侧栏入口 tooltip 用的也是它）。内嵌页不必
   再在正文里重复这行说明，宿主也不为任何插件写专有文案。
+- 宿主头部**不必自带「返回相册」这类退出按钮**（image-viewer 原先有一个，已去掉）：这是
+  二级视图而不是沉浸态，只要宿主的侧栏导航还看得见，点回自己的视图即是退出（image-viewer
+  的 `_bindUI` 里每个导航项都先调 `closeExtensionView()`）。头部右端只放插件挂上来的
+  操作，且按钮尺寸/间距与宿主主工具栏同一套（`.btn` 的字号、内边距、8px 间隙）。
 - 视觉上必须与宿主同族（同一个 token 体系、同一套按钮/卡片），因为用户看到的是
   宿主面板里的一块，不是另一个应用。
 - `hidden: true` 的插件（image-cleaner / netease-music / pixiv-sync）不出现在壳导航，
@@ -250,7 +254,8 @@ HostChannel.serve({
 - **认来源不用插件名**：宿主拿子页给的 `url` 与每个 iframe 的 `src` 比路径末三段
   （`plugins/<插件>/frontend/index.html`）——只比文件名不行，各插件的内嵌页都叫 index.html。
 - **重挂载是常态**：内嵌页整页重载后会再发一次，宿主先清掉上一批 `.obx-host-action` 再渲染，
-  且注入的按钮排在宿主自己的按钮（如"返回相册"）之前，不把它顶走。
+  且注入的按钮排在宿主自己的按钮之前，不把它顶走（image-viewer 的头部现在没有自带按钮，
+  这条仍然成立：宿主将来加了自己的按钮，位置在注入的那批之后）。
 
 **要搬就把这一视图的操作搬全**：只把「设置」搬上去、把「重新扫描」留在内嵌页正文里，
 用户看到的仍是"一半在顶栏、一半在下面"——比不搬更像坏掉。image-cleaner 的做法是把两个
@@ -644,8 +649,8 @@ background: var(--mp-glass, var(--bg-surface));
 - 扩展条目的四种键（`view` / `embedUrl` / `route` / `method`）决定点击行为，
   宿主不要假设只有 `embedUrl`。
 - 内嵌 iframe 用壳的渲染器或 `.obx-embed-frame`；宿主提供"返回"路径
-  （image-viewer 自建 `#extension-frame` + `#extension-view-close`，没有用壳的
-  `renderExtensions` 内嵌分支与 `.obx-embed-frame`）。
+  （image-viewer 自建 `#extension-frame`，没有用壳的 `renderExtensions` 内嵌分支与
+  `.obx-embed-frame`；它的二级视图不带自己的返回按钮，靠侧栏导航项退出——见 §3.4）。
 - **内嵌页不得跨 iframe 读宿主内部对象**：image-cleaner 直接读
   `parent.imageViewer.lightbox`（`app.js:144-147`）来复用宿主的灯箱——宿主一改名就
   静默退回自建灯箱，属于"契约之外"的耦合。跨插件能力请走

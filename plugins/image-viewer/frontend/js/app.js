@@ -187,13 +187,15 @@ class ImageViewer {
         view.classList.remove('hidden');
     }
 
-    // 内嵌进本面板的插件页要收起自己的工具栏（宿主已给标题与「返回相册」）：
+    // 内嵌进本面板的插件页要收起自己的工具栏（宿主已给标题与一行说明）：
     // 用 `?embed=1` 通知它，页面对应 html.is-embedded（见 docs/plugin-ui-guide.md §3.4）。
     _embedUrl(url) {
         if (!url) return 'about:blank';
         return url + (url.includes('?') ? '&' : '?') + 'embed=1';
     }
 
+    // 关掉扩展视图并销毁内嵌文档。头部不再自带「返回相册」按钮：出口是侧栏导航项
+    // （`_bindUI` 里几项都先调本方法，再切自己的视图），所以这里保持"谁调用都行"。
     closeExtensionView() {
         const view = document.getElementById('extension-view');
         const frame = document.getElementById('extension-frame');
@@ -237,7 +239,8 @@ class ImageViewer {
         document.getElementById('iv-new-album').addEventListener('click', () => this.openNewAlbumModal());
         document.getElementById('iv-new-album-cancel').addEventListener('click', () => this.closeNewAlbumModal());
         document.getElementById('iv-new-album-confirm').addEventListener('click', () => this.createAlbum());
-        document.getElementById('extension-view-close').addEventListener('click', () => this.closeExtensionView());
+        // 头部没有「返回相册」按钮（它对一个二级视图没有意义）：退出走侧栏导航项，
+        // 那几项的处理器里已经先调了 closeExtensionView()。
 
         const search = document.getElementById('iv-search');
         search.addEventListener('input', Utils.debounce(() => {

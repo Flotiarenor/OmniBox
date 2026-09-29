@@ -82,10 +82,12 @@ function createHost({ withContainer = true, withFrame = true, frameSrc = '/plugi
 
   const container = makeEl('div');
   container.id = 'extension-view-actions';
-  const closeBtn = makeEl('button');
-  closeBtn.id = 'extension-view-close';
-  closeBtn.className = 'btn btn-sm';
-  container.appendChild(closeBtn);
+  // 宿主自己的按钮（image-viewer 的头部现在只有插件挂上来的按钮，这里保留一个"宿主自带按钮"
+  // 来锁住插入顺序的契约：注入的按钮必须排在它前面，不能把它顶走）
+  const ownBtn = makeEl('button');
+  ownBtn.id = 'host-own-action';
+  ownBtn.className = 'btn';
+  container.appendChild(ownBtn);
 
   const iframe = {
     getAttribute: (name) => (name === 'src' ? frameSrc : null),
@@ -126,7 +128,7 @@ function createHost({ withContainer = true, withFrame = true, frameSrc = '/plugi
   });
 
   return {
-    hc, posted, container, closeBtn, childWin, made,
+    hc, posted, container, ownBtn, childWin, made,
     emit(data, source = childWin) {
       (listeners.message || []).slice().forEach((fn) => fn({ data, source, origin: ORIGIN }));
     },
@@ -137,7 +139,7 @@ function createHost({ withContainer = true, withFrame = true, frameSrc = '/plugi
 
 const MOUNT_DATA = {
   buttons: [
-    { id: 'btn-settings', label: '设置', icon: 'icon:settings-2', title: '相似判定阈值等设置' },
+    { id: 'btn-settings', label: '设置', icon: 'icon:settings', title: '相似判定阈值等设置' },
     { id: 'btn-rescan', label: '重新扫描' },
   ],
   container: 'host-toolbar',
@@ -160,11 +162,11 @@ check('host-mount 把子插件的按钮渲染进宿主容器，并回 host-reply
   assert.deepEqual({ exchange: reply.exchange, ok: reply.ok }, { exchange: 11, ok: true });
 });
 
-check('挂载的按钮排在宿主自己的按钮之前（不顶走「返回相册」）', () => {
+check('挂载的按钮排在宿主自己的按钮之前（不顶走宿主自带的操作）', () => {
   const h = createHost();
   h.emit({ type: 'omnibox:host-mount', exchange: 12, data: MOUNT_DATA });
   const ids = h.container.children.map((c) => c.id || c.innerHTML.trim());
-  assert.equal(ids[ids.length - 1], 'extension-view-close', `宿主按钮必须留在最后（实际: ${ids.join(',')}）`);
+  assert.equal(ids[ids.length - 1], 'host-own-action', `宿主按钮必须留在最后（实际: ${ids.join(',')}）`);
 });
 
 check('重挂载先清掉上一批（页面重载后子插件会再发一次）', () => {

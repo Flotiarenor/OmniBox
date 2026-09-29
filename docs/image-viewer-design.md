@@ -510,13 +510,15 @@ body
       ├─ #pagination.pagination-bar  壳组件，高 48px（base.css:81-86）
       └─ #extension-view.extension-view     absolute; inset:0; z-index:20  (css:356-366)
          ├─ .extension-view-header   与主工具栏同高（var(--toolbar-height)=48px）、padding 0 16px；
-         │                           border-bottom；按钮 13px/28px (css:367-408)
+         │                           border-bottom（css:367-379）
          │  ├─ .extension-view-heading  标题行，与 .iv-view-heading 同形：15px/700 标题 +
          │  │                            11px 说明两行（说明取扩展声明的 description）
-         │  │                            (index.html:70-73)
-         │  └─ .extension-view-actions  #extension-view-actions —— 内嵌插件挂按钮的容器
-         │                              （HostChannel.serve 的 containers）+「返回相册」(css:410-418)
-         └─ .extension-view-body → iframe 100%×100%  (css:419-428)
+         │  │                            (index.html:70-73, css:380-394)
+         │  └─ .extension-view-actions  头部右端 = 内嵌插件的挂载点本身（同一元素上挂了
+         │                              `#extension-view-actions` 这个 id，也是 HostChannel.serve
+         │                              的 containers 里的那个元素）：flex 行、gap 8px；
+         │                              头部不自带按钮，「返回相册」已去掉 (css:395-411)
+         └─ .extension-view-body → iframe 100%×100%  (css:412-421)
 
    （.modal ×3 与 .rebuild-progress-card 挂在 #app 内、.view-body 外）  (index.html:76-186)
 ```
@@ -532,7 +534,7 @@ body
 | 相册卡 | `aspect-ratio:1` 封面（`css:94`）；radius `var(--iv-radius)`=14px；`contain-intrinsic-size:260px` | 插件 |
 | 图片瓦片 | 绝对定位，尺寸由 `JustifiedLayout.compute` 算出：目标行高默认 `200px`（`app.js:27`，设置项 100–400），gap 固定 `5`（`app-grid.js:72`） | 插件 |
 | 重建进度卡 | `position:fixed; right:16px; bottom:16px; width:320px`；进度条高 `6px`（`css:284-297,330-335`） | 插件 |
-| 扩展视图头 | 高 `var(--toolbar-height)`=48px（与主工具栏同高）、`padding:0 16px`（`css:367-395`）；标题 15px/700 + 说明 11px（复用 `.iv-view-title`/`.iv-view-sub`） | 插件 |
+| 扩展视图头 | 高 `var(--toolbar-height)`=48px（与主工具栏同高）、`padding:0 16px`（`css:367-379`）；标题 15px/700 + 说明 11px（复用 `.iv-view-title`/`.iv-view-sub`，`css:380-394`）；右侧挂载点的按钮按主工具栏的 `.btn` 取 13px / 6px 14px、间距 8px（`css:395-411`） | 插件 |
 
 #### 12.2.3 滚动方式
 

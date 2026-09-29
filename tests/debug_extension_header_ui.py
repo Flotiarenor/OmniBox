@@ -1,13 +1,16 @@
 """检查 image-viewer 扩展面板头部与主工具栏、以及「内嵌插件挂上来的按钮」的视觉参数。
 
-背景（两轮，都是用户实测反馈）：
+背景（三轮，都是用户实测反馈）：
 1. "渲染的上边栏宽度/字体大小不一样"——宿主扩展头原来是给 `14px/600` 标题 + 一个
    `.btn.btn-sm`（12px/3px）设计的薄条，把插件工具栏的按钮（13px）挂上来之后两者不同族。
 2. "两个附属插件的上边栏比图片浏览器略低"——扩展头只有一行标题（实测 45px），
    主工具栏的标题行是「15px 主标题 + 11px 说明」两行（48px），进出扩展视图会矮一档。
+3. "按钮部分也是不一样的 css，包括间隙、高度"——挂上来的是 `.btn.btn-sm`（12px/3px，
+   28px 高），主工具栏那一排是 `.btn`（13px/6px 14px），同一个面板里两套按钮。
 
-本脚本用无头浏览器读真实计算值，避免又靠肉眼估：扩展头高度必须与主工具栏相等，
-标题行结构与字号与主工具栏一致。
+本脚本用无头浏览器读真实计算值，逐项与主工具栏的 `.btn` 比对：头部高度、标题行字号、
+按钮的字号 / 内边距 / 高度 / 渲染方式 / 图标尺寸 / 图标与文字间距 / 按钮间隙。
+头部不再自带「返回相册」，因此头部里的按钮必须全部是插件挂上来的（`.obx-host-action`）。
 
 用法：venv/Scripts/python.exe tests/debug_extension_header_ui.py
 缺少 selenium 或 Chrome 时跳过（退出码 0）；Chrome 定位统一走
@@ -22,7 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# 主工具栏与扩展头并存的最小页面：扩展头的对照组就是上面那条 `.view-toolbar`
+# 主工具栏与扩展头并存的最小页面：扩展头各项的对照组就是上面那条 `.view-toolbar`
 PAGE = """<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="UTF-8">
 <link rel="stylesheet" href="/shell/variables.css">
@@ -38,9 +41,10 @@ PAGE = """<!DOCTYPE html>
           <div class="iv-view-sub" id="iv-view-sub">最新更新的相册排在最前</div>
         </div>
       </div>
-      <div class="toolbar-group" style="margin-left:auto;">
-        <button class="btn" id="iv-refresh">刷新</button>
-        <button class="btn" id="iv-settings">设置</button>
+      <div class="toolbar-group" id="main-actions" style="margin-left:auto;">
+        <button class="btn" id="main-refresh"><svg class="obx-icon"><use href="#refresh-cw"></use></svg> 刷新</button>
+        <button class="btn" id="main-rebuild"><svg class="obx-icon"><use href="#brush-cleaning"></use></svg> 全量重建</button>
+        <button class="btn" id="main-settings"><svg class="obx-icon"><use href="#settings"></use></svg> 设置</button>
       </div>
     </div>
     <div class="view-content iv-content" id="iv-content"></div>
@@ -50,33 +54,72 @@ PAGE = """<!DOCTYPE html>
           <div class="iv-view-title" id="extension-view-title">相册清理</div>
           <div class="iv-view-sub" id="extension-view-sub">扫描全部相册中的重复 / 相似图片</div>
         </div>
-        <div class="extension-view-actions">
-          <div id="extension-view-actions"></div>
-          <button class="btn btn-sm" id="extension-view-close">返回相册</button>
-        </div>
+        <div class="extension-view-actions" id="extension-view-actions"></div>
       </div>
       <div class="extension-view-body"></div>
     </div>
   </div>
 </div>
 <script>
-// 模拟 HostChannel 挂上来的两个按钮（与 image-cleaner 声明的一致）
+// 模拟 HostChannel 挂上来的两个按钮：类名与 innerHTML 与 base.js 的 mountButtons 一致，
+// 按钮定义与 image-cleaner 声明的一致（icon:refresh-cw / icon:settings）
 setTimeout(function () {
+  function iconTextGap(el, svg) {
+    // 图标右缘到标签文字左缘的距离：主工具栏那种 inline 写法靠一个空格，
+    // 挂上来的按钮若另写 flex + gap，这里就会对不上
+    if (!svg) return null;
+    var node = null;
+    for (var i = 0; i < el.childNodes.length; i++) {
+      var n = el.childNodes[i];
+      if (n.nodeType === 3 && n.textContent.trim()) { node = n; break; }
+    }
+    if (!node) return null;
+    // 从第一个非空白字符量起：inline 写法里图标后面那个空格也在文本节点里，
+    // 直接量整个节点会把空格算进间距（两种写法都变成 0，看不出差别）
+    var start = node.textContent.search(/\\S/);
+    var range = document.createRange();
+    range.setStart(node, start < 0 ? 0 : start);
+    range.setEnd(node, start < 0 ? node.textContent.length : start + 1);
+    return Math.round((range.getBoundingClientRect().left - svg.getBoundingClientRect().right) * 10) / 10;
+  }
+  function cs(el) {
+    var s = getComputedStyle(el);
+    var svg = el.querySelector('svg');
+    var ir = svg ? svg.getBoundingClientRect() : null;
+    return {
+      fontSize: s.fontSize,
+      display: s.display,
+      height: Math.round(el.getBoundingClientRect().height * 10) / 10,
+      padding: s.paddingTop + ' ' + s.paddingRight,
+      icon: ir ? [Math.round(ir.width * 10) / 10, Math.round(ir.height * 10) / 10] : null,
+      iconTextGap: iconTextGap(el, svg),
+    };
+  }
+  function boxGap(container) {
+    var kids = container.querySelectorAll('.btn');
+    if (kids.length < 2) return null;
+    return Math.round((kids[1].getBoundingClientRect().left
+      - kids[0].getBoundingClientRect().right) * 10) / 10;
+  }
+  function boxHeight(container) {
+    var kids = container.querySelectorAll('.btn');
+    return kids.length ? Math.round(kids[0].getBoundingClientRect().height * 10) / 10 : null;
+  }
+
   var box = document.getElementById('extension-view-actions');
-  ['重新扫描', '设置'].forEach(function (text) {
+  [['refresh-cw', '重新扫描'], ['settings', '设置']].forEach(function (spec) {
     var b = document.createElement('button');
     b.type = 'button';
     b.className = 'btn btn-sm obx-host-action';
-    b.innerHTML = '<svg class="obx-icon"><use href="#refresh-cw"></use></svg> ' + text;
+    b.innerHTML = '<svg class="obx-icon" aria-hidden="true"><use href="#' + spec[0] + '"></use></svg> '
+      + spec[1];
     box.appendChild(b);
   });
+
   var header = document.getElementById('extension-header');
   var toolbar = document.getElementById('main-toolbar');
-  var close = document.getElementById('extension-view-close');
-  var first = box.querySelector('button');
-  var cs = function (el) { var s = getComputedStyle(el); return {
-    fontSize: s.fontSize, height: Math.round(el.getBoundingClientRect().height),
-    padding: s.paddingTop + ' ' + s.paddingRight }};
+  var mainActions = document.getElementById('main-actions');
+  var mounted = box.querySelectorAll('button');
   window.__m = {
     toolbarH: Math.round(toolbar.getBoundingClientRect().height),
     headerH: Math.round(header.getBoundingClientRect().height),
@@ -87,9 +130,15 @@ setTimeout(function () {
     subText: document.getElementById('extension-view-sub').textContent.trim(),
     mainTitle: cs(document.getElementById('iv-view-title')),
     mainSub: cs(document.getElementById('iv-view-sub')),
-    close: cs(close), mounted: cs(first),
-    // 挂载组与「返回相册」的间距：这两个在真实 UI 里是相邻的一排
-    gapToClose: Math.round(close.getBoundingClientRect().left - box.getBoundingClientRect().right),
+    // 对照组：主工具栏里带图标的「刷新」，以及同组相邻两个按钮的实际间隙
+    mainBtn: cs(document.getElementById('main-refresh')),
+    mainGap: boxGap(mainActions),
+    mainBtnH: boxHeight(mainActions),
+    mountedBtn: cs(mounted[0]),
+    mountedGap: boxGap(box),
+    mountedBtnH: boxHeight(box),
+    mountedCount: mounted.length,
+    hostOwnButtons: document.querySelectorAll('.extension-view-header .btn:not(.obx-host-action)').length,
     wrapRight: Math.round(header.getBoundingClientRect().right - header.lastElementChild.getBoundingClientRect().right),
     headerWrapped: header.getBoundingClientRect().height > 60,
   };
@@ -148,12 +197,21 @@ def main() -> int:
             if not ok:
                 failures.append(name)
 
+        # ---- 头部整体 ----
         check('扩展头与主工具栏逐像素同高',
               m['headerH'] == m['toolbarH'], f"header={m['headerH']} toolbar={m['toolbarH']}")
         check('两者都是壳的工具栏高度 48px',
               m['headerH'] == 48 and m['toolbarH'] == 48, f"{m['headerH']} / {m['toolbarH']}")
         check('扩展头上边缘与主工具栏上边缘齐平',
               m['headerTop'] == 0, str(m['headerTop']))
+        check('头部没有换行（高度未被撑到两行）',
+              not m['headerWrapped'], str(m['headerH']))
+        check('右侧整组贴边（与头部右内边距齐平）',
+              0 <= m['wrapRight'] <= 20, str(m['wrapRight']))
+        check('头部里没有宿主自带的按钮（「返回相册」已去掉）',
+              m['hostOwnButtons'] == 0, f"hostOwn={m['hostOwnButtons']}")
+
+        # ---- 标题行 ----
         check('扩展头主标题字号与主工具栏一致（15px）',
               m['title']['fontSize'] == m['mainTitle']['fontSize'] == '15px',
               f"header={m['title']['fontSize']} toolbar={m['mainTitle']['fontSize']}")
@@ -163,22 +221,31 @@ def main() -> int:
         check('扩展头副标题有内容且占位（不是零高空行）',
               bool(m['subText']) and m['sub']['height'] > 0,
               f"text={m['subText']!r} height={m['sub']['height']}")
-        check('挂上来的按钮与「返回相册」字号一致',
-              m['mounted']['fontSize'] == m['close']['fontSize'],
-              f"mounted={m['mounted']['fontSize']} close={m['close']['fontSize']}")
-        check('挂上来的按钮与「返回相册」高度一致',
-              m['mounted']['height'] == m['close']['height'],
-              f"mounted={m['mounted']['height']} close={m['close']['height']}")
-        check('扩展头里的按钮字号是 13px（与插件工具栏常态一致）',
-              m['mounted']['fontSize'] == '13px', m['mounted']['fontSize'])
-        check('扩展头按钮高度 ≥ 28px（不是被压扁的 12px 小按钮）',
-              m['mounted']['height'] >= 28, str(m['mounted']['height']))
-        check('挂载组与「返回相册」相邻（间距 ≤ 16px，不是被 space-between 摊到中间）',
-              0 <= m['gapToClose'] <= 16, str(m['gapToClose']))
-        check('右侧整组贴边（与头部右内边距齐平）',
-              0 <= m['wrapRight'] <= 20, str(m['wrapRight']))
-        check('头部没有换行（高度未被撑到两行）',
-              not m['headerWrapped'], str(m['headerH']))
+
+        # ---- 挂上来的按钮 vs 主工具栏的 .btn ----
+        check('挂上来的按钮与主工具栏按钮同字号',
+              m['mountedBtn']['fontSize'] == m['mainBtn']['fontSize'],
+              f"mounted={m['mountedBtn']['fontSize']} toolbar={m['mainBtn']['fontSize']}")
+        check('挂上来的按钮与主工具栏按钮同高',
+              m['mountedBtnH'] == m['mainBtnH'],
+              f"mounted={m['mountedBtnH']} toolbar={m['mainBtnH']}")
+        check('挂上来的按钮与主工具栏按钮同内边距',
+              m['mountedBtn']['padding'] == m['mainBtn']['padding'],
+              f"mounted={m['mountedBtn']['padding']} toolbar={m['mainBtn']['padding']}")
+        check('挂上来的按钮与主工具栏按钮同渲染方式（不是另一套 flex）',
+              m['mountedBtn']['display'] == m['mainBtn']['display'],
+              f"mounted={m['mountedBtn']['display']} toolbar={m['mainBtn']['display']}")
+        check('图标尺寸一致（都走 .obx-icon 的 1em）',
+              m['mountedBtn']['icon'] == m['mainBtn']['icon'],
+              f"mounted={m['mountedBtn']['icon']} toolbar={m['mainBtn']['icon']}")
+        check('图标与文字的间距一致',
+              m['mountedBtn']['iconTextGap'] == m['mainBtn']['iconTextGap'],
+              f"mounted={m['mountedBtn']['iconTextGap']} toolbar={m['mainBtn']['iconTextGap']}")
+        check('按钮之间的间隙一致（挂载组 vs 主工具栏操作组）',
+              m['mountedGap'] == m['mainGap'],
+              f"mounted={m['mountedGap']} toolbar={m['mainGap']}")
+        check('两个按钮都挂上来了（image-cleaner 声明的重新扫描 / 设置）',
+              m['mountedCount'] == 2, str(m['mountedCount']))
     finally:
         driver.quit()
     return 1 if failures else 0

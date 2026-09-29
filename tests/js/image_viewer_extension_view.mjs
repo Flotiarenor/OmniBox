@@ -1,14 +1,17 @@
 // image-viewer 扩展面板头部的纯逻辑用例（不经浏览器）：
 //   - 主标题取扩展声明的 label，说明取扩展声明的 description（宿主不写插件专有文案）
 //   - iframe 加 ?embed=1，面板去掉 hidden；换一个扩展时两行文字都要被覆盖
+//   - 头部只有「标题行 + 插件挂载点」两个子项，不自带按钮（「返回相册」已去掉）
 // 说明是头部两行结构里的第二行（`.iv-view-sub`）：缺了它扩展头只有一行标题，
-// 比主工具栏矮一档（几何实测在 tests/debug_extension_header_ui.py）。
+// 比主工具栏矮一档；按钮的字号/内边距/高度/间隙是否与主工具栏一致，几何实测在
+// tests/debug_extension_header_ui.py。
 //
 // 装载顺序取自 index.html（见 script_load_contract.mjs）：app.js 拆成分片后本用例
 // 自动跟着走，不需要在这里维护文件名清单。
 //
 // 用法：node tests/js/image_viewer_extension_view.mjs
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -92,6 +95,21 @@ function makeViewer() {
   const { viewer, nodes } = makeViewer();
   viewer.openExtensionView({});
   assert.equal(nodes['extension-view-title'].textContent, '扩展', '没有 label 时退回占位标题');
+}
+
+// ---------- 头部结构：宿主不自带按钮，挂载点就是右端 ----------
+
+{
+  // 头部按字符切片：index.html 里 `extension-view-header` 到 `extension-view-body` 之间
+  // 就是整条头部，够用来锁"头部里没有宿主自己的按钮"这条约定
+  const html = readFileSync(join(FRONTEND, 'index.html'), 'utf8');
+  const from = html.indexOf('extension-view-header');
+  const to = html.indexOf('extension-view-body');
+  assert.ok(from > 0 && to > from, 'index.html 里应当有扩展面板头部与 body');
+  const header = html.slice(from, to);
+  assert.ok(!/<button/.test(header), '头部不自带按钮：操作全部由内嵌插件挂上来');
+  assert.match(header, /id="extension-view-actions"/, '头部保留插件按钮的挂载点');
+  assert.match(header, /extension-view-heading/, '头部保留标题行（两行结构）');
 }
 
 console.log('image_viewer_extension_view.mjs: OK');

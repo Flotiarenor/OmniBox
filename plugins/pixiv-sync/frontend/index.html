@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Pixiv 同步</title>
   <script>
-    // 宿主（图片相册的扩展面板）在 embedUrl 上追加 ?embed=1：此时宿主已经给了标题/一行说明与
-    // 「返回相册」（说明取本插件 get_extensions() 的 description），本页把工具栏降级成普通
-    // 操作行，避免两层横条（见 docs/plugin-ui-guide.md §3.4）。
+    // 宿主（图片相册的扩展面板）在 embedUrl 上追加 ?embed=1：此时宿主已经给了标题/一行说明
+    // （说明取本插件 get_extensions() 的 description），本页把工具栏降级成普通操作行，
+    // 避免两层横条（见 docs/plugin-ui-guide.md §3.4）。
     if (new URLSearchParams(location.search).has('embed')) {
       document.documentElement.classList.add('is-embedded');
     }
@@ -65,7 +65,7 @@
     .psync-modal-row { display: flex; gap: 8px; justify-content: flex-end; }
 
     /* 内嵌进宿主面板时（宿主在 embedUrl 上加了 ?embed=1，见 <head> 里的脚本）：
-       宿主已经给了标题与「返回相册」，这里把工具栏降级为普通操作行，避免两层横条。
+       宿主已经给了标题与一行说明，这里把工具栏降级为普通操作行，避免两层横条。
        `html.is-embedded` 是 0,1,1，压得过 base.css 的 `.view-toolbar`(0,1,0)，
        与本文件注入在壳样式之前无关。 */
     html.is-embedded .view-toolbar {
@@ -146,7 +146,7 @@
         <div id="psync-global-actions" style="margin-left:auto;display:flex;gap:8px;">
           <button id="btn-oauth" class="btn btn-sm" title="通过浏览器登录 Pixiv 重新获取 refresh_token（token 失效时使用）"><svg class="obx-icon"><use href="#key-round"></use></svg> 获取 Token</button>
           <button id="btn-open-config" class="btn btn-sm" title="打开画师名单配置文件所在文件夹（编辑：每行一个画师名字或 id，空=全部）"><svg class="obx-icon"><use href="#folder-open"></use></svg> 画师名单文件</button>
-          <button id="btn-settings" class="btn btn-sm" title="并发下载数 / 单次上限 / 请求速率 / 代理 / 下载目录"><svg class="obx-icon"><use href="#settings-2"></use></svg> 设置</button>
+          <button id="btn-settings" class="btn btn-sm" title="并发下载数 / 单次上限 / 请求速率 / 代理 / 下载目录"><svg class="obx-icon"><use href="#settings"></use></svg> 设置</button>
         </div>
       </div>
       <div class="psync-tip">
@@ -429,7 +429,7 @@
         // 宿主不表态（单独打开本页）时按钮留在正文，mountToolbar 会取消隐藏。
         if (window.HostChannel && typeof HostChannel.mountToolbar === 'function') {
           HostChannel.mountToolbar([
-            { id: 'btn-settings', label: '设置', icon: 'icon:settings-2', title: '并发下载数 / 单次上限 / 请求速率 / 代理 / 下载目录' },
+            { id: 'btn-settings', label: '设置', icon: 'icon:settings', title: '并发下载数 / 单次上限 / 请求速率 / 代理 / 下载目录' },
             { id: 'btn-oauth', label: '获取 Token', icon: 'icon:key-round', title: '通过浏览器登录 Pixiv 重新获取 refresh_token（token 失效时使用）' },
             { id: 'btn-open-config', label: '画师名单文件', icon: 'icon:folder-open', title: '打开画师名单配置文件所在文件夹（每行一个画师名字或 id，空=全部）' },
           ], {
