@@ -488,7 +488,11 @@
         toast('设置面板需要从 OmniBox 壳内打开', true);
         return;
       }
-      window.openSettingsModal({ title: '团体组网设置' });
+      // 保存后自己 refresh()：壳在保存后**不会**通知插件页（`omnibox:settings-changed`
+      // 只有接收方，仓库里没有发送方），不刷新的话端口/绑定这些值会停在旧画面上。
+      window.openSettingsModal({ title: '团体组网设置' }).then(function (saved) {
+        if (saved) { refresh(); }
+      });
     });
 
     Array.prototype.forEach.call(document.querySelectorAll('#gm-nav .gm-nav-item'), function (item) {

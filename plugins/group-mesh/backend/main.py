@@ -295,4 +295,12 @@ class GroupMeshPlugin(
             'start_node': self.start_node,
             'stop_node': self.stop_node,
             'get_node_status': self.get_node_status,
+            # 前端的「设置」按钮走壳的统一设置弹窗（`frontend/js/app.js` 的
+            # openSettingsModal），它内部用 `Bridge.call('get_settings')` 取值、
+            # `Bridge.call('save_settings')` 落盘，即 `POST /api/group-mesh__<方法>`；
+            # 而 PluginManager 只会额外登记 `<插件>__get_settings_schema`。此前两个都没
+            # 登记，于是弹窗里全是 schema 默认值、点保存必然"保存失败"（与 image-cleaner
+            # 同一类缺陷，守卫见 tools/check_plugins.py 的设置 API 登记检查）。
+            'get_settings': self.get_settings,
+            'save_settings': self.save_settings,
         }

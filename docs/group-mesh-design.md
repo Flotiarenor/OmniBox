@@ -171,7 +171,7 @@ import `main.py`（后端入口由 PluginManager 用 importlib 直接加载，�
 | `.cache/staging/` | 按需取字节的暂存（`os.replace` 前） | 不对外 |
 | `.cache/peers.json` | 手工登记的对端地址 | 本机 |
 
-插件 API（`register_api()`，25 个方法）按用途分组：
+插件 API（`register_api()`，27 个方法）按用途分组：
 
 | 分组 | 方法 |
 | --- | --- |
@@ -182,6 +182,7 @@ import `main.py`（后端入口由 PluginManager 用 importlib 直接加载，�
 | 远端读写 | `list_remote`、`download_remote`、`upload_remote`、`upload_status`、`cancel_upload` |
 | 物化/镜像/缓存 | `materialize_remote`、`mirror_share`、`remote_cache`、`clear_remote_cache` |
 | 节点 | `start_node`、`stop_node` |
+| 设置 | `get_settings`、`save_settings`（本插件 schema 的可写项：`port` / `bind` / `ttl_days` / `download_dir` 等；壳的设置弹窗按方法名直呼，漏登记时弹窗打得开但保存必然失败） |
 
 前端要点：
 
@@ -1825,7 +1826,7 @@ Noise vetted 实现 + 官方向量（§21.2）。
 
 ### 28.5 交互约定
 
-- **设置入口**：工具栏 `#btn-settings`（`index.html:83`）→ `openSettingsModal({ title: '团体组网设置' })`（`app.js:486-492`），**不传 `schema`/`values`/`onSave`**，完全依赖壳去 `Bridge.call('get_settings_schema'|'get_settings')`（`base.js:572-577`）；缺失壳时只弹一条错误 toast（`app.js:488`）。保存反馈由壳给：`Toast.success('设置已保存')` + 400ms 后 `location.href = …?_t=` 整页重载（`base.js:621-622`）。
+- **设置入口**：工具栏 `#btn-settings`（`index.html:83`）→ `openSettingsModal({ title: '团体组网设置' })`（`app.js:486-496`），**不传 `schema`/`values`/`onSave`**，取值与保存完全依赖壳（`base.js` 的 `openModal` → `Bridge.call('get_settings_schema'|'get_settings'|'save_settings')`，对应后端 `register_api()` 的 `get_settings` / `save_settings`）；缺失壳时只弹一条错误 toast（`app.js:488`）。保存成功由壳弹 `Toast.success('设置已保存')`，**壳不会在保存后重载或通知插件页**（`base.js` 里只有 `omnibox:settings-changed` 的接收分支，仓库内没有发送方），所以本页在弹窗 resolve 出 `saved` 后自己调 `refresh()`（`app.js:493-495`）重新拉 `get_status` —— 不刷新的话端口/绑定这些值会停在旧画面上。
 - **错误提示**：统一 `window.Toast.error`（`app.js:29-40`、`remote.js:43`）；两类「非 toast」错误——首屏 `get_status` 失败写侧栏 `#gm-foot-text = '读取状态失败'` + `data-state="error"`（`app.js:465-471`），内核缺失走常驻横幅 `.gm-banner-error`（`app.js:148`）。弹窗内错误留在弹窗里（`remote.js:612`）。
 - **选择模型**：**单选**（远端设备/共享项点击 `remote.js:105-109`；目录项「进入/取回」逐行按钮 `remote.js:159-168`）。**无多选、无框选、无长按、无拖拽**，`app.js:504` 的 `read: 'group'` 是硬编码 ACL。
 - **右键菜单**：**无**（无 `contextmenu` 监听，未调用 `createContextMenu`）。
@@ -1859,7 +1860,7 @@ Noise vetted 实现 + 官方向量（§21.2）。
 | 7 | **`--gm-success-soft` / `--gm-warn-soft` / `.gm-card-wide` 定义未用** | `group-mesh.css:32-33`、`:313-315`（grep `--gm-success-soft` 仅命中定义行） | 3 个符号 / 无功能影响；但会让「统一 token 表」误以为它们仍在被消费 |
 | 8 | **`network-location.html` 完全绕开壳的类体系**：内联 `<style>` 里重定义 `.btn`/`.btn-primary`，并把 `.view-*` 布局类一并弃用 | `network-location.html:54-60`（`.btn{padding:4px 10px;font-size:12px;border-radius:6px}`）；注入点在 `</head>` 前（`file_server.py:798`）意味着**壳的 `.btn`(`base.css:14-24`, 6px 14px/13px/4px) 在本页会覆盖插件这份**，实际渲染是壳的尺寸 | 1 个页面 / 三步选择器全部按钮；该页是「网络位置」提供方契约（`docs/plugin-guide.md` §7.2.1）的实现，改壳的 `.btn` 会**直接改变这个页面的按钮尺寸**，而页面作者以为自己在用自定义样式 |
 | 9 | **进度只用文本，不消费壳的任何进度组件** | `remote.js:214-225` 只写 `textContent`；百分比仅文案（`:527-528`） | 4 类长任务（物化/列目录/取回/上传）；统一进度组件时必须同时改前端 4 条链路的后端返回（`result.fetched/unchanged/error_count/truncated`，`network-location.html:260-263`） |
-| 10 | **设置弹窗依赖壳的「保存后整页重载」隐式行为** | `app.js:491` 不传 `onSave`；壳 `base.js:621-622` 重载带 `?_t=` | 1 个入口；若统一 UI 去掉重载语义，group-mesh 的设置项（后端 `get_settings_schema`）将不会在界面上生效 |
+| 10 | **设置弹窗的"保存后生效"要插件自己收尾**：壳不重载、也不通知插件页（`omnibox:settings-changed` 只有接收方 `base.js`，仓库内无发送方） | `app.js:493-495` 在弹窗 resolve 出 `saved` 后调 `refresh()`；`app.js:486-490` 不传 `onSave`，保存仍由壳的默认实现走 `Bridge.call('save_settings')` | 1 个入口；漏掉这一步时端口/绑定等值会停在旧画面（保存本身已经成功落盘）—— 新增设置项或改用 `onSave` 时别忘了同样刷新 |
 | 11 | **`visibilitychange` 兜底与壳生命周期并存** | `remote.js:726-736`：有 `onShow/onHide` 用壳的，否则监听 `document.visibilitychange` | 1 处 / 15s 轮询；`keepAlive` 下 `document.hidden` 恒 false（`:720-724` 注释），统一生命周期时这段兜底是必须一起收编的死角 |
 
 ---

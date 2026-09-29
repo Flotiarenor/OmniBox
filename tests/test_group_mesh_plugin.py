@@ -87,6 +87,19 @@ class PluginContractTest(unittest.TestCase):
                     'start_node', 'stop_node', 'get_node_status'}
         self.assertTrue(expected <= set(self.plugin.register_api()))
 
+    def test_settings_api_surface(self):
+        """设置 API 必须登记：前端的「设置」按钮走壳的统一设置弹窗。
+
+        `openSettingsModal()`（plugins/group-mesh/frontend/js/app.js）内部用
+        `Bridge.call('get_settings')` 取值、`Bridge.call('save_settings')` 落盘，即
+        `POST /api/group-mesh__<方法>`；而 PluginManager 只额外登记
+        `<插件>__get_settings_schema`。此前两个都没登记，于是弹窗里全是 schema 默认值
+        （port / bind / ttl_days 都改不了），点保存必然"保存失败"且无报错。
+        """
+        api = set(self.plugin.register_api())
+        self.assertIn('get_settings', api)
+        self.assertIn('save_settings', api)
+
     def test_remote_api_surface(self):
         """远端浏览/取回必须真的挂在 register_api 上。
 
