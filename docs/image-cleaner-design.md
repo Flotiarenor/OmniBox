@@ -12,19 +12,27 @@
 - 使用 `manifest.dependencies: ["image-viewer"]` 声明依赖，由 `PluginManager` 保证宿主先加载。
 - 后端通过 `PluginBase.get_dependency('image-viewer')` 获取宿主实例，复用：
   - `get_data_root()` / `get_file_roots()`：定位相册根目录与文件服务安全根目录
+  - `list_roots()`：全部根目录 + 各自的**虚拟路径前缀**（`{path, prefix, ...}`，主目录前缀为空、
+    额外图片目录是 `__<命名空间>`）—— 见 §1.2
   - `thumb_dir` / `ensure_thumb()`：让本插件前端也能直接使用 `/thumbs`
-  - `delete_files()`：复用宿主的路径安全校验与缓存清理
+  - `delete_files()`：复用宿主的路径安全校验与缓存清理（额外图库的删除同样按虚拟路径走）
 - `image-viewer` 不再包含 `duplicate_scan` / `similar_scan` / 清理 UI。
 - `image-cleaner` 通过 `get_extensions()` 注册到 Shell，`image-viewer` 左侧栏使用通用 `renderExtensions()` 渲染入口。
 - `image-cleaner` 在 manifest 中声明 `hidden: true`，不会出现在外部 Shell 主导航；点击 image-viewer 左侧栏入口后，以 iframe 内嵌方式在 image-viewer 内部打开。
 
 ### 1.2 扫描范围
 
-扫描范围为**全部相册**，即递归扫描宿主数据根目录下的所有图片文件：
+扫描范围为**全部相册**，即宿主的**每一个根目录**（主目录 + 设置里的额外图片目录）：
 
 - 跳过隐藏目录和 `.cache`
-- 跨目录检测重复 / 相似图片
+- 跨目录、**跨根**检测重复 / 相似图片（"主目录一份 + 额外图库一份"是最该抓的一类重复）
 - 支持嵌套相册，不限于当前打开的一个目录
+
+额外图片目录在图片相册里是 `__<目录名>` 命名空间节点，其图片的**虚拟路径**必须带这个前缀
+（`__额外图库/作者B/1.jpg`）—— 宿主的 `/thumbs`、`/file`、`delete_files()` 都按虚拟路径解释，
+不带前缀会落到主目录下不存在的路径上。前缀只有一个来源：宿主的 `list_roots()`；
+本插件按 `(根, 前缀)` 遍历（`_scan_roots()`），不去复刻命名空间的取名规则。列表里显示路径时
+去掉 `__` 记号（`_displayPath()`），值本身仍是完整虚拟路径。
 
 ## 2. 目录结构
 
@@ -86,9 +94,9 @@ plugins/
 
 - `body`（`base.css:6-11`：`background:var(--bg-app)`、`overflow:hidden`、字体栈 `-apple-system, …`）
   - `div#app.view-body`（`index.html:10`；壳类给 `flex:1; display:flex; flex-direction:column; overflow:hidden`，`base.css:237`；插件补 `display:flex; height:100vh; overflow:hidden`，`image-cleaner.css:1-5`）
-    - `div.view-toolbar.cleaner-toolbar`（`index.html:18`；高度 `var(--toolbar-height,48px)` 来自 `base.css:239-248`，插件只改 `gap:12px`，`:7-11`）
-      - `div.toolbar-group.cleaner-meta`（`index.html:19`）→ `span.cleaner-scope`「全部相册」+ `span.cleaner-root#cleaner-root`（`:20-21`）
-      - `div.toolbar-group[style="margin-left:auto"]`（`index.html:23`）→ `span#cleaner-actions`（`:27`）包 `button#btn-rescan.btn.btn-sm` + `button#btn-settings.btn.btn-sm`。**内嵌进宿主时这一整组会被 `#cleaner-actions` 收起**，两个按钮同时挂到宿主扩展面板头部（见 §5.5「设置入口」与 `plugin-ui-guide.md` §3.5 的 `mountToolbar`）；脱离宿主打开本页时留在原位
+    - `div.view-toolbar.cleaner-toolbar#cleaner-toolbar`（`index.html:19`；高度 `var(--toolbar-height,48px)` 来自 `base.css:239-248`，插件只改 `gap:12px`，`:7-11`。**内嵌态整条 `display:none`**，见 `image-cleaner.css:143-152`）
+      - `div.toolbar-group.cleaner-meta`（`index.html:20`）→ `span.cleaner-scope`「全部相册」+ `span.cleaner-root#cleaner-root`（`:21-22`）。内嵌态看不到：根目录改在设置弹窗里以只读信息行显示（后端 `settings_schema` 的 `root_dir`），这一行只在单独打开本页时可见
+      - `div.toolbar-group#cleaner-actions[style="margin-left:auto"]`（`index.html:24`）包 `button#btn-rescan.btn.btn-sm` + `button#btn-settings.btn.btn-sm`（`:25-26`）。**挂载成功后这一整组被 `#cleaner-actions` 收起**（内嵌态本来也整条不显示），两个按钮挂到宿主扩展面板头部（见 §5.5「设置入口」与 `plugin-ui-guide.md` §3.5 的 `mountToolbar`）；脱离宿主打开本页时留在原位
     - `div.view-content.cleaner-content.obx-scroll`（`index.html:21`；壳给 `overflow-y:auto; padding:16px`，`base.css:277-282`；插件重复声明 `flex:1; min-height:0; overflow-y:auto; padding:16px`，`:50-55`）
       - `div.cleaner-tabs`（`index.html:22`）→ `button#tab-dupe.btn.btn-sm.active`、`button#tab-similar.btn.btn-sm`、`span#cleaner-scanned.cleaner-scanned`（`:23-25`）
       - `div#cleaner-results.cleaner-results`（`index.html:27`）→ 动态 `.cleaner-group` ×n（`app.js:99-114`）

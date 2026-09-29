@@ -81,6 +81,12 @@ class ImageCleaner {
     document.getElementById('tab-similar').addEventListener('click', () => this.switchMode('similar'));
   }
 
+  // 额外图库的虚拟路径带 `__<命名空间>/` 前缀（宿主的路由、缩略图与删除都按它走），
+  // 显示时去掉这个标记，否则用户看到的是 `__额外图库/作者B/1.jpg` 这种"乱码"。
+  _displayPath(rel) {
+    return String(rel || '').replace(/^__/, '');
+  }
+
   // 单独打开本页时把根目录填进工具栏；内嵌态这条工具栏整条不显示（根目录改在设置弹窗里，
   // 见后端 settings_schema 的 root_dir），没必要为一个隐藏节点再打一次后端。
   async updateStatus() {
@@ -88,9 +94,11 @@ class ImageCleaner {
     if (!rootEl || document.documentElement.classList.contains('is-embedded')) return;
     try {
       const status = await Bridge.call('get_status');
-      const root = status && status.root_dir;
-      rootEl.textContent = root || '默认相册目录';
-      rootEl.title = root || '默认相册目录';
+      const roots = (status && status.roots) || [];
+      const root = (status && status.root_dir) || '';
+      const extra = roots.length > 1 ? `（+${roots.length - 1} 个额外目录）` : '';
+      rootEl.textContent = (root || '默认相册目录') + extra;
+      rootEl.title = roots.length ? roots.join('\n') : (root || '默认相册目录');
     } catch (e) {
       rootEl.textContent = '默认相册目录';
       rootEl.title = '';
@@ -177,7 +185,7 @@ class ImageCleaner {
             <label class="cleaner-file">
               <input type="checkbox" data-file="${this._escapeAttr(f)}">
               <img src="${Bridge.thumbUrl(f)}" loading="lazy" alt="" data-view-file="${this._escapeAttr(f)}" data-group-index="${gi}" onerror="this.style.display='none'">
-              <span title="${this._escapeAttr(f)}">${this._escapeHtml(f.split('/').pop())}</span>
+              <span title="${this._escapeAttr(this._displayPath(f))}">${this._escapeHtml(f.split('/').pop())}</span>
             </label>`).join('')}
         </div>
       </div>`).join('') + moreHtml;

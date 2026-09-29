@@ -163,7 +163,13 @@ class ImageViewerPlugin(
         return str(self.root_dir)
 
     def list_roots(self) -> List[Dict]:
-        """全部根目录（第一根在前），供设置页管理多文件夹。"""
+        """全部根目录（第一根在前），供设置页管理多文件夹，也供附属插件按根遍历。
+
+        `namespace` 是额外根的命名空间 token（第一根为空串）；`prefix` 是拼虚拟路径时
+        直接用的前缀（第一根为空串，额外根形如 `__额外图库`）。**附属插件用 `prefix`**：
+        把 `<prefix>/<根内相对路径>` 交给 Shell 的 /file、/thumbs 与 `delete_files()` 即可，
+        不必自己认 `__` 记号，也不必复刻命名空间的取名规则（重名加序号，见 namespace.py）。
+        """
         roots = []
         for index, root in enumerate(self._roots()):
             roots.append({
@@ -172,6 +178,7 @@ class ImageViewerPlugin(
                 'is_primary': index == 0,
                 'exists': root.is_dir(),
                 'namespace': '' if index == 0 else self._namespace(root),
+                'prefix': self._virtual_path(root, ''),
             })
         return roots
 

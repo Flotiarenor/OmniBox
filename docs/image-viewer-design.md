@@ -309,7 +309,7 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
 | `get_album_config` | 无 | `{collapsed, promoted, expanded, visible_empty_dirs}` | 相册收纳/提升配置与空目录标记 |
 | `set_album_config` | `rel_path, action` | `{success, config}` | `action ∈ collapse/expand/promote/unpromote`；expand/collapse 落进 `expanded` / `collapsed`（默认折叠）；变更后失效相册 TTL 缓存 |
 | `delete_folder` | `rel_path` | `{success \| error}` | 删除**空**目录（递归无图片）并清掉其可见标记；有图片则拒绝，命名空间节点不可删 |
-| `list_roots` | 无 | `[{path, label, is_primary, exists, namespace}]` | 全部根目录（第一根在前），设置页「图片文件夹」列表用 |
+| `list_roots` | 无 | `[{path, label, is_primary, exists, namespace, prefix}]` | 全部根目录（第一根在前），设置页「图片文件夹」列表用；`prefix` 是拼虚拟路径的前缀（第一根 `''`、额外根 `__<命名空间>`），**附属插件按根遍历时用它**（image-cleaner 的相册清理扫描范围，见 `image-cleaner-design.md` §5.2） |
 | `browse_dir` | `path=''` | `{path, parent, entries:[{name, path, kinds, is_image_dir}], error?}` | 目录选择器；委托共享基建 `media_catalog.list_subdirectories()`：空路径/`DRIVES_SENTINEL` 是「我的电脑」层（列盘符），`kinds` 标出含图片/视频/音乐（见 `docs/plugin-guide.md` §7.2） |
 
 ### 6.3 文件操作

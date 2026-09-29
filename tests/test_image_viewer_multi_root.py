@@ -632,6 +632,12 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
         self.assertEqual(roots[0]['namespace'], '')
         self.assertEqual(roots[1]['namespace'], self.extra.name)
         self.assertFalse(roots[1]['is_primary'])
+        # prefix 是给附属插件直接拼虚拟路径用的（见 image-cleaner 的相册清理扫描范围）：
+        # 第一根为空串，额外根带 `__` 标记 —— 与 _virtual_path 的结果一致
+        self.assertEqual(roots[0]['prefix'], '')
+        self.assertEqual(roots[1]['prefix'], f'__{self.extra.name}')
+        self.assertEqual(roots[2]['prefix'], f'__{self.extra2.name} (2)')
+        self.assertEqual(plugin._virtual_path(self.extra, ''), roots[1]['prefix'])
 
 
 if __name__ == '__main__':   # pragma: no cover

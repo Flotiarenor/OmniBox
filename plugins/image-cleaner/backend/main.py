@@ -73,25 +73,48 @@ class ImageCleanerPlugin(PluginBase):
 
     def get_status(self) -> Dict:
         host = self._get_host()
+        roots = [str(root) for root, _prefix in self._scan_roots()]
         return {
             'host': host.name,
-            'root_dir': str(host.get_data_root()),
+            'root_dir': roots[0] if roots else str(host.get_data_root()),
+            'roots': roots,
             'scope': 'all',
         }
 
     def get_settings(self) -> Dict:
         """统一设置 + 只读信息行「相册根目录」。
 
-        根目录不落在本插件的设置里 —— 它就是宿主 image-viewer 的数据根目录，所以每次
-        现取：用户在图片相册里换了根目录，设置弹窗里这一行跟着变。宿主不可用时留空字符串
-        （信息行空着，但不能因此让整个设置弹窗打不开）。
+        根目录不落在本插件的设置里 —— 它就是宿主 image-viewer 的根目录（主目录 + 额外
+        图片目录），所以每次现取：用户在图片相册里改了根，设置弹窗里这一行跟着变。
+        多根时逐行列出（`.field-info` 允许换行）。宿主不可用时留空字符串（信息行空着，
+        但不能因此让整个设置弹窗打不开）。
         """
         settings = super().get_settings()
         try:
-            settings['root_dir'] = str(self.get_data_root())
+            settings['root_dir'] = '\n'.join(str(root) for root, _prefix in self._scan_roots())
         except RuntimeError:
             settings['root_dir'] = ''
         return settings
+
+    def _scan_roots(self) -> List[tuple]:
+        """扫描范围：宿主的全部根目录 + 各自的虚拟路径前缀（主目录在前）。
+
+        结果是 `(物理根目录, 前缀)`：前缀取自宿主的 `list_roots()`（第一根为空串，额外根是
+        `__<命名空间>`），扫描出的相对路径必须带上它，否则缩略图 / 原图 / 删除三条路由都会
+        按**主目录**去解释，落到不存在的路径上。宿主没提供 `list_roots()`（旧版本）时退回
+        单根，行为与加额外图库支持之前完全一致。
+        """
+        host = self._get_host()
+        lister = getattr(host, 'list_roots', None)
+        if not callable(lister):
+            return [(host.get_data_root(), '')]
+        roots = []
+        for item in lister() or []:
+            path = str((item or {}).get('path') or '')
+            if not path:
+                continue
+            roots.append((Path(path), str((item or {}).get('prefix') or '')))
+        return roots or [(host.get_data_root(), '')]
 
     def get_extensions(self) -> List[dict]:
         """注册到 image-viewer 左侧栏的通用扩展入口。"""
@@ -159,40 +182,45 @@ class ImageCleanerPlugin(PluginBase):
     # ---------- 全相册文件收集 ----------
 
     def _all_album_files(self) -> list:
-        """递归扫描全部相册（跳过隐藏目录和 .cache），返回所有图片文件信息。"""
-        root = self._get_host().get_data_root()
+        """递归扫描全部相册（宿主的主目录 + 额外图片目录），跳过隐藏目录和 .cache。
+
+        每个根的相对路径都要带上宿主的虚拟前缀（见 `_scan_roots`）：图片相册把额外图库
+        当相册展示，清理必须扫到它，否则额外图库里的重复、以及"主目录一份 + 额外图库
+        一份"这种跨根重复永远找不出来。
+        """
         files = []
-        try:
-            if not root.exists() or not root.is_dir():
-                return files
-            for current, dir_names, filenames in os.walk(root):
-                dir_names[:] = [d for d in dir_names
-                                if not d.startswith('.') and d != '.cache']
-                current_path = Path(current)
-                try:
-                    rel_dir = current_path.relative_to(root).as_posix()
-                except ValueError:
+        for root, prefix in self._scan_roots():
+            try:
+                if not root.exists() or not root.is_dir():
                     continue
-                for name in filenames:
-                    if name.startswith('.'):
-                        continue
-                    if Path(name).suffix.lower() not in ALLOWED_EXTENSIONS:
-                        continue
-                    abs_path = current_path / name
+                for current, dir_names, filenames in os.walk(root):
+                    dir_names[:] = [d for d in dir_names
+                                    if not d.startswith('.') and d != '.cache']
+                    current_path = Path(current)
                     try:
-                        stat = abs_path.stat()
-                    except OSError:
+                        rel_dir = current_path.relative_to(root).as_posix()
+                    except ValueError:
                         continue
-                    rel = (Path(rel_dir) / name).as_posix() if rel_dir else name
-                    files.append({
-                        'rel': rel,
-                        'abs': str(abs_path),
-                        'size': stat.st_size,
-                        'mtime': stat.st_mtime,
-                        'album': rel_dir or '',
-                    })
-        except OSError:
-            pass
+                    for name in filenames:
+                        if name.startswith('.'):
+                            continue
+                        if Path(name).suffix.lower() not in ALLOWED_EXTENSIONS:
+                            continue
+                        abs_path = current_path / name
+                        try:
+                            stat = abs_path.stat()
+                        except OSError:
+                            continue
+                        rel_in_root = (Path(rel_dir) / name).as_posix() if rel_dir else name
+                        files.append({
+                            'rel': f'{prefix}/{rel_in_root}' if prefix else rel_in_root,
+                            'abs': str(abs_path),
+                            'size': stat.st_size,
+                            'mtime': stat.st_mtime,
+                            'album': rel_dir or '',
+                        })
+            except OSError:
+                continue
         return files
 
     # ---------- 完全重复 ----------
