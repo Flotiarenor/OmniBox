@@ -59,7 +59,9 @@ class ImageCleanerSettingsTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        self.tmp = Path(self._tmp.name)
+        # 先规范化一次：信息行的值来自宿主 resolve() 过的根目录，而 Windows runner 的
+        # `%TEMP%` 是 8.3 短名（`C:\Users\RUNNER~1\…`）。不规范化会拿短名比长名。
+        self.tmp = Path(self._tmp.name).resolve()
         self.root = self.tmp / 'data'
         self.extra = self.tmp / '外部' / '额外图库'
         self._settings_tmp = tempfile.TemporaryDirectory()

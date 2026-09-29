@@ -59,7 +59,11 @@ class ExtraRootScanTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        self.tmp = Path(self._tmp.name)
+        # 先规范化一次：插件把根目录统统 `resolve()`（image-viewer/main.py 的 root_dir、
+        # namespace.py 的额外根），而 Windows runner 的 `%TEMP%` 是 8.3 短名
+        # （`C:\Users\RUNNER~1\…`）。不规范化的话，本用例拿短名去比插件的长名，
+        # 在 CI 上必红、在关掉 8.3 的开发机上必绿。
+        self.tmp = Path(self._tmp.name).resolve()
         self.root = self.tmp / 'data'
         self.extra = self.tmp / '外部' / '额外图库'
         self.extra2 = self.tmp / '另一个' / '额外图库'
