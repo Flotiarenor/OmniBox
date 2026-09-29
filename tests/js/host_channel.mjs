@@ -4,16 +4,17 @@
 // HostChannel：子页 postMessage 一个 request，上层收到后用 `event.source` 回信，
 // 需要保存时由上层把值 callback 回子页、子页自己落盘。
 //
-// 这个脚本只跑**一个窗口**（子插件页），验证它在四种上层姿态下的行为：
+// 这个脚本只跑**一个窗口**（子插件页），验证它在几种上层姿态下的行为：
 //   · 没人应答      → probe=false / request={ok:false}，调用方得以回落到本地实现；
-//   · 上层应答      → request 拿到 data，且 payload 形状符合契约；
+//   · 上层应答      → probe=true、requestSettings={handled:true}，request 拿到 data，
+//                     且 payload 形状符合契约；
 //   · 来源不对      → 非父窗口发来的 reply / callback 一律忽略（防伪造）；
 //   · 回调          → 上层 callback 的值能交给注册的处理器，处理器抛错回传 ok:false。
 //
 // 为什么不用两个 vm 上下文模拟父子窗口：Node 的 vm 在"函数放进 contextified sandbox
 // 再由另一个上下文调用"时，闭包里的 `window` 会解析到调用者所在上下文的全局（实测：
 // 子窗口调 probe，postMessage 却落在宿主窗口上）。那是宿主侧测试框架的坑，不是协议
-// 行为；两侧之间的真实投递由 tests/js/host_channel_wiring.mjs 的宿主用例覆盖。
+// 行为；两侧之间的真实投递由 tests/js/host_channel_host.mjs 的宿主用例覆盖。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -121,6 +122,34 @@ await check('没人应答时 request 解析为 {ok:false}（调用方据此回�
   assert.equal(res.data, null);
 });
 
+// ---------- 上层应答时的 probe / requestSettings ----------
+// 回归：probe 分支曾把 `!!data.ok`（布尔）当成回信对象 resolve，而 probe() 读的是
+// `reply.ok` —— 于是"上层答应了"也判成 false，requestSettings 恒为 handled:false，
+// 内嵌插件的设置弹窗全部回落到 iframe 内部那份。用一个**新的**子页运行时跑：probe 的
+// 结果带缓存（上面那条已经把'无人应答'缓存成 absent），复用同一个运行体会掩盖这条。
+const rt2 = loadPluginRuntime();
+
+await check('上层应答 probe 时判为可用（回信对象里读 ok）', async () => {
+  const pending = rt2.hc.probe(200);
+  const sent = SENT[SENT.length - 1];
+  assert.equal(sent.type, 'omnibox:host-probe');
+  rt2.emit({ type: 'omnibox:host-reply', exchange: 'probe', ok: true });
+  assert.equal(await pending, true, '上层回了 ok:true，probe 必须为 true');
+});
+
+await check('上层应答后 requestSettings 拿到 handled:true（设置弹窗交给上层渲染）', async () => {
+  // 本 stub 里没有 pywebview，requestSettings 里取 schema/values 的 Bridge 调用会抛并被
+  // 它自己 catch —— 那正是"取不到字段也要把弹窗交出去"的路径，这里顺带覆盖。
+  const pending = rt2.hc.requestSettings('相册清理设置');
+  await new Promise((r) => setTimeout(r, 5));
+  const req = SENT.filter((m) => m.type === 'omnibox:host-request').pop();
+  assert.equal(req.action, 'ui');
+  assert.equal(req.data.kind, 'settings');
+  rt2.emit({ type: 'omnibox:host-reply', exchange: req.exchange, ok: true, data: null });
+  const res = await pending;
+  assert.equal(res.handled, true, '上层接下了就得是 handled:true，否则调用方会再弹一个本地弹窗');
+});
+
 await check('发出的 request 形状符合契约（type/exchange/action/data）', () => {
   const req = SENT.find((m) => m.type === 'omnibox:host-request');
   assert.ok(req, '没有发出 host-request');
@@ -216,6 +245,6 @@ await check('host-run 点名了不存在的按钮时静默忽略（不抛错、�
   assert.doesNotThrow(() => rt.emit({ type: 'omnibox:host-run', id: 'nope', action: 'click' }));
 });
 
-console.log(failed ? `\n${failed} 例失败` : '\nHostChannel 子插件侧 14 例通过');
+console.log(failed ? `\n${failed} 例失败` : '\nHostChannel 子插件侧 16 例通过');
 process.exit(failed ? 1 : 0);
 

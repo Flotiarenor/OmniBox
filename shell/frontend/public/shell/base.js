@@ -819,7 +819,15 @@ window.HostChannel = (function() {
     if (!host || event.source !== host) return;
 
     if (data.type === REPLY && data.exchange === 'probe') {
-      if (pending['probe']) { clearTimeout(pending['probe'].timer); pending['probe'].resolve(!!data.ok); delete pending['probe']; }
+      // 这里必须按**回信对象**回填，与下面那条通用分支同一形状：probe() 读的是
+      // `reply.ok`。曾经这里传的是 `!!data.ok`（布尔），于是"上层明明答应了"也被读成
+      // undefined → probe 恒为 false → 内嵌插件的设置/确认弹窗永远回落进 iframe 自己
+      // 画的那一份（没有整页遮罩、被 iframe 边框裁掉）。
+      if (pending['probe']) {
+        clearTimeout(pending['probe'].timer);
+        pending['probe'].resolve({ ok: !!data.ok, data: null });
+        delete pending['probe'];
+      }
       return;
     }
     if (data.type === REPLY && pending[data.exchange]) {
