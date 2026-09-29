@@ -22,7 +22,6 @@
 """
 
 import json
-import shutil
 import sys
 import threading
 import time
@@ -53,16 +52,12 @@ def _have_selenium() -> bool:
 
 
 def _have_browser() -> bool:
-    for exe in ('chrome', 'chrome.exe', 'msedge', 'msedge.exe', 'chromium', 'chromium-browser'):
-        if shutil.which(exe):
-            return True
-    for path in (r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
-                 r'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
-                 r'C:\Program Files\Google\Chrome\Application\chrome.exe',
-                 r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'):
-        if Path(path).is_file():
-            return True
-    return False
+    """有没有**能驱动 ChromeDriver**的浏览器（不算 Edge：`webdriver.Chrome` 配不上它，
+    只有 Edge 的机器会因此把环境问题表现成用例失败，判定见
+    `tests/harness/browser_binary.py`）。"""
+    from tests.harness.browser_binary import browser_binary
+
+    return browser_binary() is not None
 
 
 STUB_BRIDGE = """
@@ -190,11 +185,18 @@ class DocumentReaderBrowserTests(unittest.TestCase):
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
 
+        from tests.harness.browser_binary import browser_binary
+
         cls.server = ThreadingHTTPServer(('127.0.0.1', 0), _Handler)
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
         cls.base = f'http://127.0.0.1:{cls.server.server_address[1]}'
 
         options = Options()
+        # 只判"有没有浏览器"会漏掉：本机可能只有 Edge，而 webdriver.Chrome 只会配
+        # ChromeDriver。这里显式指到 Chrome，本仓库 .build/cft 里那份也能被用上。
+        binary = browser_binary()
+        if binary:
+            options.binary_location = binary
         options.add_argument('--headless=new')
         options.add_argument('--no-sandbox')
         cls.driver = webdriver.Chrome(options=options)

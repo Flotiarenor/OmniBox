@@ -60,19 +60,11 @@ def _have_selenium() -> bool:
 
 
 def _have_browser() -> bool:
-    import shutil
-    for exe in ('chrome', 'chrome.exe', 'msedge', 'msedge.exe', 'chromium'):
-        if shutil.which(exe):
-            return True
-    for candidate in (
-        Path(r'C:\Program Files\Google\Chrome\Application\chrome.exe'),
-        Path(r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'),
-        Path(r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'),
-        Path(r'C:\Program Files\Microsoft\Edge\Application\msedge.exe'),
-    ):
-        if candidate.is_file():
-            return True
-    return False
+    """有没有**能驱动 ChromeDriver**的浏览器（不算 Edge，理由见
+    `tests/harness/browser_binary.py`）。"""
+    from tests.harness.browser_binary import browser_binary
+
+    return browser_binary() is not None
 
 
 def _free_port() -> int:
@@ -102,6 +94,8 @@ class GroupMeshInShellTest(unittest.TestCase):
     def setUpClass(cls):
         from selenium import webdriver
 
+        from tests.harness.browser_binary import browser_binary
+
         cls.port = _free_port()
         cls.base_url = f'http://127.0.0.1:{cls.port}'
         cls.server = subprocess.Popen(
@@ -112,6 +106,11 @@ class GroupMeshInShellTest(unittest.TestCase):
             raise unittest.SkipTest('服务未在超时内就绪')
 
         options = webdriver.ChromeOptions()
+        # 显式指到 Chrome：本机只有 Edge 时，webdriver.Chrome 会因为配不到 ChromeDriver
+        # 而失败（`unrecognized Chrome version: Edg/...`），那样用例就永远起不来。
+        binary = browser_binary()
+        if binary:
+            options.binary_location = binary
         options.add_argument('--headless=new')
         options.add_argument('--disable-gpu')
         options.add_argument('--no-sandbox')

@@ -198,20 +198,35 @@ def _have_selenium() -> bool:
     return True
 
 
+def _local_chrome() -> str | None:
+    """本仓库内已就位的 Chrome（本机没装 Chrome 时的现成选择）。
+
+    优先 `.build/cft/chrome-win64/chrome.exe`：那是
+    `https://googlechromelabs.github.io/chrome-for-testing/` 的免安装包，与项目在 Linux CI
+    里用的东西同源（见本模块文档）。找不到再回落到系统探测（Chrome → Edge）。
+    放在 `_chrome_binary()` 之前判断，是为了让"本机只装了 Edge"的机器不必手工配环境变量。
+    """
+    local = PROJECT_ROOT / '.build' / 'cft' / 'chrome-win64' / 'chrome.exe'
+    return str(local) if local.is_file() else _chrome_binary()
+
+
 def _chrome_binary() -> str | None:
-    """Chrome / Edge 可执行文件路径（selenium 4.6+ 会自行下载匹配的 driver）。"""
+    """系统里的 Chrome 可执行文件路径（selenium 4.6+ 会自行下载匹配的 driver）。
+
+    **刻意不认 Edge**：本模块用 `webdriver.Chrome`，它只配 ChromeDriver，喂 Edge 必然以
+    `unrecognized Chrome version: Edg/...` 失败。把 Edge 当候选只会让"环境不具备"伪装成
+    "用例失败"。仓库内那份 chrome-for-testing 由 `_local_chrome()` 负责先找。
+    """
     override = (os.environ.get('OMNIBOX_CHROME_BINARY') or '').strip()
     if override and Path(override).is_file():
         return override
-    for exe in ('chrome', 'chrome.exe', 'msedge', 'msedge.exe', 'chromium', 'chromium-browser'):
+    for exe in ('chrome', 'chrome.exe', 'chromium', 'chromium-browser'):
         found = shutil.which(exe)
         if found:
             return found
     for candidate in (
         Path(r'C:\Program Files\Google\Chrome\Application\chrome.exe'),
         Path(r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'),
-        Path(r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'),
-        Path(r'C:\Program Files\Microsoft\Edge\Application\msedge.exe'),
     ):
         if candidate.is_file():
             return str(candidate)
@@ -245,7 +260,7 @@ def _wait_health(base_url: str, timeout: float = STARTUP_TIMEOUT) -> bool:
     _have_selenium(),
     '未安装 selenium（本地端到端用例）：pip install -r requirements-e2e.txt',
 )
-@unittest.skipUnless(_chrome_binary(), '未检测到 Chrome/Edge，跳过媒体播放器浏览器用例')
+@unittest.skipUnless(_local_chrome(), '未检测到 Chrome/Edge，跳过媒体播放器浏览器用例')
 class MediaPlayerBrowserE2ETests(unittest.TestCase):
     """真实 Chrome + 真实插件页面，核对下一首/上一首的落点。"""
 
@@ -274,7 +289,7 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
             raise unittest.SkipTest('服务未在超时内就绪，跳过媒体播放器浏览器用例')
 
         options = Options()
-        binary = _chrome_binary()
+        binary = _local_chrome()
         if binary:
             options.binary_location = binary
         options.add_argument('--headless=new')

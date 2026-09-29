@@ -56,6 +56,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# 把仓库 venv 的 Scripts 前置进 PATH：这个脚本会现场起应用实例，得让子进程解析到
+# 同一个解释器，而不是系统 Python。
+_VENV_SCRIPTS = PROJECT_ROOT / 'venv' / 'Scripts'
+if _VENV_SCRIPTS.is_dir():
+    os.environ['PATH'] = str(_VENV_SCRIPTS) + os.pathsep + os.environ.get('PATH', '')
+
 from tests.debug_materialized_gallery import (
     HOLD,
     _force_utf8_stdout,
@@ -79,6 +85,18 @@ SHARED_FILES = {
 DOWNLOAD_NAME = '交接说明.txt'
 UPLOAD_NAME = '回执 2026.bin'
 UPLOAD_BYTES = 1200 * 1024                # 1.2 MB：大到足以在弹窗里看到进度
+
+
+def _local_chrome() -> str | None:
+    """本仓库内已就位的 Chrome（本机没装 Chrome 时用它，免得每次配环境变量）。
+
+    优先用 `.build/cft/chrome-win64/chrome.exe`：那是
+    `https://googlechromelabs.github.io/chrome-for-testing/` 的免安装包，与项目在 Linux CI
+    里用的东西同源（见 `tests/test_media_player_browser_e2e.py` 的模块文档）。
+    找不到就回落到 `_chrome_binary()` 的系统探测（Chrome / Edge）。
+    """
+    local = PROJECT_ROOT / '.build' / 'cft' / 'chrome-win64' / 'chrome.exe'
+    return str(local) if local.is_file() else _chrome_binary()
 
 
 def _random_bytes(size: int) -> bytes:
@@ -151,13 +169,63 @@ def watch_upload(driver, seconds: float) -> str:
     return seen[-1] if seen else ''
 
 
+def active_panel(driver) -> str:
+    """当前激活的 group-mesh 面板名（没有则空串）。"""
+    return str(driver.execute_script(
+        "var p = document.querySelector('#gm-panels > .gm-panel[data-active=\"true\"]');"
+        "return p ? p.getAttribute('data-panel') : '';") or '')
+
+
+def text_of(driver, element_id: str) -> str:
+    """通过 JS 读 `#<id>` 的 textContent。
+
+    为什么不用 Selenium 的 `.text`：group-mesh 的面板是**纯显隐**切换（改 `data-active`，
+    不销毁 DOM，见 `plugins/group-mesh/frontend/js/app.js:116`），未激活面板是
+    `display:none`；而 `.text` 对隐藏元素按规范返回空串。同一面板内的元素加 `wait_for`
+    就够了，跨面板/存疑的读数用 textContent 才拿得到值（`test_group_mesh_frontend_e2e.py`
+    的 `_panel` 文档里写的是同一条）。
+    """
+    return str(driver.execute_script(
+        "var e = document.getElementById(arguments[0]);"
+        "return e ? (e.textContent || '') : '';", element_id) or '')
+
+
+def select_panel(driver, name: str) -> None:
+    """切到指定面板，并等它真正激活且内容渲染完。
+
+    切面板是**必需**的，不是保险：不切就点 `display:none` 里的按钮会超时、读 `.text`
+    只会拿到空串 —— 那样脚本表现成"卡住"，而页面其实停在另一个面板上。
+    等内容非空是因为 `enter_plugin()` 的等待条件（`.nav-item` 数量 > 0，见
+    `debug_materialized_gallery.py`）命中的是**壳首页**的元素，插件首屏此时可能还是空的。
+    """
+    from selenium.webdriver.common.by import By
+
+    if not wait_for(driver, lambda: len(driver.find_elements(
+            By.CSS_SELECTOR, f'#gm-nav .gm-nav-item[data-panel="{name}"]')) > 0):
+        raise SystemExit(f'插件侧栏里没有 data-panel="{name}" 的入口（iframe 还没就绪？）')
+    if active_panel(driver) != name:
+        nav = driver.find_element(By.CSS_SELECTOR, f'#gm-nav .gm-nav-item[data-panel="{name}"]')
+        # 导航项的 text 含角标数字与换行，压平后再进日志
+        click(driver, nav, f'切到「{" ".join(nav.text.split())}」面板')
+    if not wait_for(driver, lambda: active_panel(driver) == name):
+        raise SystemExit(f'切到面板 {name} 失败（当前 {active_panel(driver)}）')
+
+    if name == 'remote':
+        wait_for(driver, lambda: '(' in text_of(driver, 'my-endpoint'))
+    else:
+        body = {'group': 'roster-body', 'shares': 'shares-body',
+                'machine': 'node-body'}.get(name)
+        if body:
+            wait_for(driver, lambda: text_of(driver, body).strip() != '')
+
+
 def main() -> int:
     _force_utf8_stdout()
     ok, reason = boot_prerequisites()
     if not ok:
         print(f'无法启动应用实例：{reason}')
         return 2
-    binary = _chrome_binary()
+    binary = _local_chrome()
     if binary is None:
         print('未检测到 Chrome / Edge（可用 OMNIBOX_CHROME_BINARY 指定）')
         return 2
@@ -201,7 +269,12 @@ def main() -> int:
     from selenium.webdriver.chrome.service import Service
     from selenium.webdriver.common.by import By
 
+    # 驱动优先用本仓库内配好的那份：都留给 Selenium Manager 的话，它要联网解析/下载，
+    # 在国内网络下实测会长时间没有输出（看起来像卡死），而脚本此时一个字符都还没打。
     driver_path = _chromedriver_path()
+    if not driver_path:
+        local_driver = PROJECT_ROOT / '.build' / 'cft' / 'chromedriver-win64' / 'chromedriver.exe'
+        driver_path = str(local_driver) if local_driver.is_file() else None
 
     def make_driver(position: str):
         options = Options()
@@ -229,53 +302,55 @@ def main() -> int:
         for drv, instance in ((owner_driver, owner), (member_driver, member)):
             drv.get(instance.base_url)
             wait_for(drv, lambda d=drv: len(d.find_elements(By.CSS_SELECTOR, '.nav-item')) > 0)
-        pause('两个窗口都打开了壳的首页（导航在左边）')
+        pause('两个窗口都打开了壳的首页')
 
         # ── 3. owner 窗口：本机状态（谁在名单里、节点在听、共享了什么）────────
         enter_plugin(owner_driver, '团体组网', 'group-mesh')
         wait_for(owner_driver, lambda: len(owner_driver.find_elements(By.ID, 'btn-refresh')) > 0)
         click(owner_driver, owner_driver.find_element(By.ID, 'btn-refresh'),
               '（右窗口）点「刷新状态」')
-        pause('右窗口：本机身份 / 团体与名单 / 共享节点 / 共享项都在这一屏')
-        shoot(owner_driver, out_dir, '01-owner-status')
 
-        roster_text = owner_driver.find_element(By.ID, 'roster-body').text
-        node_text = owner_driver.find_element(By.ID, 'node-body').text
-        shares_text = owner_driver.find_element(By.ID, 'shares-body').text
-        say(f'  名单：{roster_text.replace(chr(10), " | ")}')
-        say(f'  节点：{node_text.replace(chr(10), " | ")}')
-        say(f'  共享项：{shares_text.replace(chr(10), " | ")}')
+        # 名单 / 节点 / 共享项分属三个面板，每项都先切过去再读（见 select_panel 的文档）
+        panels = {}
+        for panel, body, label in (('machine', 'node-body', '节点'),
+                                   ('group', 'roster-body', '名单'),
+                                   ('shares', 'shares-body', '共享项')):
+            select_panel(owner_driver, panel)
+            panels[body] = (panel, text_of(owner_driver, body))
+            say(f'  {label}：{panels[body][1].replace(chr(10), " | ")}')
+        shoot(owner_driver, out_dir, '01-owner-status')
 
         # owner 侧不需要点"刷新设备"：后台同步按 `sync_interval_seconds`（脚本设为 5 秒）
         # 自动拉注册表/名单。判据是 `#peers-body` 的**文本**而不是 `.gm-remote-item`：
         # 后者只在"该设备有共享项"时才有——member 没有共享项，它的条目里只有名字与说明。
-        wait_for(owner_driver, lambda: 'member' in owner_driver.find_element(
-            By.ID, 'peers-body').text, 30.0)
-        pause('右窗口的设备列表：member 在这里（说明连接是双向的）')
-        shoot(owner_driver, out_dir, '02-owner-sees-member')
-        owner_peers = owner_driver.find_element(By.ID, 'peers-body').text
+        select_panel(owner_driver, 'remote')
+        seen_both_ways = wait_for(owner_driver, lambda: 'member' in text_of(
+            owner_driver, 'peers-body'), 30.0)
+        owner_peers = text_of(owner_driver, 'peers-body')
         say(f'  owner 的设备页：{owner_peers.replace(chr(10), " | ")}')
-        seen_both_ways = 'member' in owner_peers
+        shoot(owner_driver, out_dir, '02-owner-sees-member')
 
         # ── 4. member 窗口：等后台同步发现 owner → 列共享项 → 取回 ────────────
+        # 「远端共享」是独立面板：不切过去，下面的 `.gm-remote-item` 与进度行都点不到。
         enter_plugin(member_driver, '团体组网', 'group-mesh')
+        select_panel(member_driver, 'remote')
         if not wait_for(member_driver, lambda: len(member_driver.find_elements(
                 By.CSS_SELECTOR, '.gm-remote-item')) > 0, 30.0):
             say('左窗口没有列出任何设备/共享项 —— 看截图与实例日志')
             shoot(member_driver, out_dir, '03-member-no-peer')
         else:
-            pause('左窗口：owner 的设备及其共享项出现了')
+            pause('左窗口：owner 的设备及其共享项出现')
             shoot(member_driver, out_dir, '03-member-sees-owner')
             share_item = next((e for e in member_driver.find_elements(
                 By.CSS_SELECTOR, '.gm-remote-item')
                 if e.get_attribute('data-share') == SHARE_ID), None)
             if share_item is None:
-                say(f'没找到共享项 {SHARE_ID}，后面的取回/上传演示跳过')
+                say(f'没有找到共享项 {SHARE_ID}，取回/上传演示跳过')
             else:
                 click(member_driver, share_item, f'（左窗口）点共享项 {SHARE_ID}：列它的目录')
                 wait_for(member_driver, lambda: len(member_driver.find_elements(
                     By.CSS_SELECTOR, '[data-download]')) > 0, 30.0)
-                pause('左窗口：目录列出来了（连接可用的第一层证据）')
+                pause('左窗口：目录已列出（连接可用的第一层证据）')
                 shoot(member_driver, out_dir, '04-member-lists-files')
 
                 # 取回一份文件：落点在下载目录，界面会显示出来
@@ -283,7 +358,7 @@ def main() -> int:
                     By.CSS_SELECTOR, '[data-download]')
                     if b.get_attribute('data-download') == DOWNLOAD_NAME), None)
                 if target is None:
-                    say(f'列表里没有 {DOWNLOAD_NAME}，取回演示跳过')
+                    say(f'列表里无 {DOWNLOAD_NAME}，取回演示跳过')
                 else:
                     click(member_driver, target, f'（左窗口）点「取回」{DOWNLOAD_NAME}')
                     wait_for(member_driver, lambda: '已取回' in member_driver.find_element(
@@ -316,7 +391,7 @@ def main() -> int:
                     name_input = member_driver.find_element(By.ID, 'upload-name')
                     name_input.clear()
                     name_input.send_keys(UPLOAD_NAME)
-                    pause('弹窗里填好了本机文件与目标文件名')
+                    pause('弹窗里已填好本机文件与目标文件名')
                     shoot(member_driver, out_dir, '06-upload-form')
                     click(member_driver, member_driver.find_element(By.ID, 'btn-do-upload'),
                           '点「上传」：观察进度行')
@@ -329,7 +404,7 @@ def main() -> int:
                         same = sha256(landed) == sha256(upload_source)
                         verdict['upload'] = same
                         say(f'  owner 侧落盘：{landed}')
-                        say(f'  sha256 一致 = {same}（对端已收下并在目录里刷新出来）')
+                        say(f'  sha256 一致 = {same}（对端已收下并在目录中刷新）')
                     else:
                         verdict['upload'] = False
                         say(f'  owner 侧没有这个文件：{landed}')
@@ -358,7 +433,7 @@ def main() -> int:
         say(f'上传字节一致             : {show(verdict["upload"])}')
         say(f'截图在 {out_dir}')
         if HOLD > 0:
-            say(f'浏览器保持打开 {HOLD:.0f} 秒，你可以自己点点看（Ctrl+C 可提前结束）')
+            say(f'浏览器将保持打开 {HOLD:.0f} 秒（Ctrl+C 可提前结束）')
             time.sleep(HOLD)
     except KeyboardInterrupt:
         say('手动中断')

@@ -29,7 +29,6 @@ Python 单测与 Node 桩都测不到一类缺陷：**界面在真实浏览器�
 
 from __future__ import annotations
 
-import shutil
 import socket
 import subprocess
 import sys
@@ -56,19 +55,15 @@ def _have_selenium() -> bool:
 
 
 def _have_browser() -> bool:
-    """Chrome / Edge 是否存在（selenium 4.6+ 会自己下载匹配的 driver）。"""
-    for exe in ('chrome', 'chrome.exe', 'msedge', 'msedge.exe', 'chromium', 'chromium-browser'):
-        if shutil.which(exe):
-            return True
-    for candidate in (
-        Path(r'C:\Program Files\Google\Chrome\Application\chrome.exe'),
-        Path(r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'),
-        Path(r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'),
-        Path(r'C:\Program Files\Microsoft\Edge\Application\msedge.exe'),
-    ):
-        if candidate.is_file():
-            return True
-    return False
+    """有没有**能驱动 ChromeDriver**的浏览器。
+
+    注意不能把 Edge 算进来：Windows 自带 Edge，`webdriver.Chrome` 却只配 ChromeDriver，
+    喂 Edge 会以 `unrecognized Chrome version: Edg/...` 失败 —— 于是"有浏览器"的判据
+    会把环境问题变成用例失败。判定统一交给 `tests/harness/browser_binary.py`。
+    """
+    from tests.harness.browser_binary import browser_binary
+
+    return browser_binary() is not None
 
 
 def _free_port() -> int:
@@ -107,6 +102,8 @@ class ShellBrowserE2ETests(unittest.TestCase):
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
 
+        from tests.harness.browser_binary import browser_binary
+
         cls.port = _free_port()
         cls.base_url = f'http://127.0.0.1:{cls.port}'
         cls.server = subprocess.Popen(
@@ -121,6 +118,11 @@ class ShellBrowserE2ETests(unittest.TestCase):
             raise unittest.SkipTest('服务未在超时内就绪，跳过浏览器端到端用例')
 
         options = Options()
+        # 显式指到 Chrome：本机只有 Edge 时，webdriver.Chrome 配不到 ChromeDriver 会失败
+        # （`unrecognized Chrome version: Edg/...`），而 setUpClass 里失败的后果是**静默跳过**。
+        binary = browser_binary()
+        if binary:
+            options.binary_location = binary
         options.add_argument('--headless=new')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-gpu')
