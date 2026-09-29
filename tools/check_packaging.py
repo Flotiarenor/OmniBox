@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import re
 import sys
 import tempfile
@@ -237,7 +238,12 @@ def _declared_distributions() -> set:
 
 
 def _plugin_imports() -> dict:
-    """返回 {被 import 的模块全名: 出现位置}，已滤掉标准库与插件自己的本地模块。"""
+    """返回 {被 import 的模块全名: 出现位置}，已滤掉插件自己的本地模块。
+
+    标准库**不**在这里滤掉：插件源码是作为数据文件随包分发的，PyInstaller 的静态
+    分析看不到它们，因此"插件用到的标准库子模块到底进没进包"必须单独判
+    （见 check_hidden_imports 的第三条规则）。
+    """
     found: dict = {}
     plugins_dir = PROJECT_ROOT / 'plugins'
     if not plugins_dir.is_dir():
@@ -259,10 +265,25 @@ def _plugin_imports() -> dict:
                     names = [node.module]
                 for full in names:
                     top = full.split('.')[0]
-                    if top in _STDLIB or top in local or top in _NON_THIRD_PARTY_TOP:
+                    if top in local or top in _NON_THIRD_PARTY_TOP:
                         continue
                     found.setdefault(full, rel)
     return found
+
+
+def _always_importable(mod: str) -> bool:
+    """模块是否由解释器自身提供（内建 / frozen）：这类恒可 import，无需收集。
+
+    判据用 find_spec 的 origin：`sys`/`errno` 是 built-in，`os`/`io`/`importlib.util`
+    在冻结产物里是 frozen —— 都会以 'built-in' / 'frozen' 作为 origin，而不是 .py 路径。
+    """
+    if mod.split('.')[0] in sys.builtin_module_names:
+        return True
+    try:
+        spec = importlib.util.find_spec(mod)
+    except (ImportError, ValueError):
+        return False
+    return spec is not None and spec.origin in ('built-in', 'frozen')
 
 
 def check_hidden_imports(errors: list) -> None:
@@ -283,9 +304,30 @@ def check_hidden_imports(errors: list) -> None:
     for mod, where in sorted(imports.items()):
         if mod.startswith('shell.'):
             continue
+        if mod.split('.')[0] in _STDLIB:
+            continue
         if mod.split('.')[0] not in hidden_top:
             _fail(errors, f'{where} 导入了第三方模块 {mod}，但 HIDDEN_IMPORTS 里没有它'
                           f'（插件是动态加载的，静态分析看不到，冻结后 import 会失败）')
+
+    # 标准库子模块：父包进了包 ≠ 子模块进了包。真实事故（v1.3.0 前）：
+    # document-reader 的 documents.py 里 `from html.parser import HTMLParser`，
+    # HIDDEN_IMPORTS 没有这条，冻结产物里该插件整个不加载
+    # （No module named 'html.parser'）—— 而 ruff / 单测 / 构建 / check_build_tree
+    # 全部通过，因为主程序的 import 图里根本没有 html.parser。
+    # 只判"带点的标准库模块"：顶层标准库模块（os / re / json…）由主程序图带入，
+    # 且数量大、逐个声明没有意义。**顶层标准库与第三方子模块这一层仍未覆盖**：
+    # 它们同样只靠"恰好被主程序图带进来"活着，要真正兜住需要按产物判定
+    # （解析产物 PYZ + base_library.zip + 落地的 C 扩展，逐模块核对插件用到的
+    # import 是否都在里面），属独立的后续改动。
+    for mod, where in sorted(imports.items()):
+        if mod.split('.')[0] not in _STDLIB or '.' not in mod:
+            continue
+        if _always_importable(mod):
+            continue
+        if mod not in hidden:
+            _fail(errors, f'{where} 导入了标准库子模块 {mod}，但 spec_common.HIDDEN_IMPORTS '
+                          f'里没有它（冻结后该插件会 ModuleNotFoundError，整个插件不加载）')
 
     declared = _declared_distributions()
     provided = packages_distributions()
