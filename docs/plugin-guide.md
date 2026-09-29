@@ -700,16 +700,15 @@ Shell 还注入了以下可复用的 UI 组件函数（无需引入，直接使�
 **示例**：
 
 ```javascript
-// 打开设置弹窗
+// 打开设置弹窗。省略 onSave 时壳的默认实现走 `Bridge.call('save_settings', values)`。
+// **保存后必须自己收尾**：壳只弹一条 Toast，既不重载页面也不通知插件页（壳里只有
+// `omnibox:settings-changed` 的接收分支，仓库内没有发送方）。收尾二选一：整页重载
+// （image-cleaner 的 `_t=` 重载）或就地重渲染（group-mesh 的 `refresh()`）。
+// 不收尾时设置已经落盘，但界面上仍是旧值。
 openSettingsModal({
   title: '媒体库设置',
   successMessage: '设置已保存',
-  onSave: async (values) => {
-    return await Bridge.call('save_settings', values);
-  },
-});
-// 注意：保存成功后框架会自动刷新页面以应用新设置（无需手动处理）
-// 若插件需要自定义保存后行为，使用 onSave 回调并在其中完成刷新
+}).then((saved) => { if (saved) location.reload(); });
 
 // 确认对话框
 const ok = await confirmDialog('删除后不可恢复，确定？', { danger: true });
@@ -1267,6 +1266,15 @@ def get_settings(self):
 （两层都不认；只声明 `info` 字段的插件，一次手写 API 调用也写不进任何键）。
 需要"能改的目录"就用 `directory`，两者别混。
 
+> **覆写了 `get_settings()` 就必须把它登记进 `register_api()`**（连同 `save_settings`）：
+> 壳的设置弹窗走 `Bridge.call('get_settings')` / `Bridge.call('save_settings')`，即
+> `POST /api/<插件>__<方法>`，而 `PluginManager` 只会额外登记 `<插件>__get_settings_schema`。
+> 漏登记的表现**完全是静默的**：弹窗打得开、每个字段显示 schema 默认值（`info` 行空白）、
+> 点保存提示"保存失败" —— image-cleaner 与 group-mesh 都这样漏过。可写 schema 的登记
+> 形态见 §3.2 的 `register_api()` 示例；`tools/check_plugins.py` 会拦住"前端会开设置弹窗
+> 却没登记"的插件，`tests/test_plugin_fresh_install.py` 会在真机上验 `get_settings` /
+> `save_settings` 确实可达。
+
 #### `local_only`：该目录只接受本机路径
 
 默认情况下目录列表带一个「网络位置」入口：让用户把某个远端共享项取回本地一个
@@ -1387,7 +1395,7 @@ image-viewer 需要在不同文件夹应用不同设置（如行高、排序）�
 - **错误处理**：后端方法应捕获异常并返回有意义的错误信息，避免前端收到 Python 堆栈。
 - **设置持久化**：使用 `settings_schema` 声明式配置，设置自动存储在 `.config/plugins/<name>.json`。读取用 `setting()`，保存用 `save_settings()`，响应变更用 `on_settings_changed()`。**不要**覆写 `save_settings()`，**不要**在插件目录创建 `settings.json`。
 - **运行时状态**：播放进度、收藏、缓存等数据派生状态放在数据目录（如 `data/.cache/`），跟随数据走。
-- **共享基建**：需要后台长任务或缩略图缓存时，优先复用 `shell/backend/tasks.py`（`BackgroundTask`）与 `shell/backend/thumb_cache.py`（`ThumbCache`，见 §3.4），**不要各自重复实现**；DB / 任务状态文件放各自数据根目录 `.cache/` 下。
+- **共享基建**：需要后台长任务或缩略图缓存时，优先复用 `shell/backend/tasks.py`（`BackgroundTask`）与 `shell/backend/thumb_cache.py`（`ThumbCache`，见 §3.4），**不要各自重复实现**；DB / 任务状态文件放各自数据根目录 `.cache/` 下。现成的用法：image-viewer 的缩略图重建（`rebuild_all/status/cancel`）、pixiv-sync 的下载扫描、image-cleaner 的全库扫描（`scan_start/status/cancel`）—— 三者都是「起任务 → 轮询进度 → 可取消」，结果各自落自己的缓存文件。
 - **性能优化**：使用内存缓存（如目录列表缓存、聚合元数据缓存）减少 I/O，提升响应速度；大目录首次扫描可参考 image-viewer 的并行尺寸读取（`ThreadPoolExecutor`）。
 
 ---

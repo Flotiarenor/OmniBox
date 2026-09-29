@@ -9,6 +9,12 @@
 
 单个实例就够：插件加载与团体无关，不必付两个实例的启动成本。
 
+同时守住第二条（同一个实例，不多付一次启动）：**声明了可写设置项的插件，设置 API 必须
+真的可达**。`get_settings` / `save_settings` 需要各自登记进 `register_api()`（PluginManager
+只自动补 `get_settings_schema`），漏登记时设置弹窗打得开、字段全是默认值、保存必然失败，
+全程无报错 —— image-cleaner 与 group-mesh 都这样漏过。静态的同一条门禁见
+`tools/check_plugins.py`。
+
 运行：
     venv/Scripts/python -m unittest tests.test_plugin_fresh_install -v
 """
@@ -32,17 +38,57 @@ _BOOT_OK, _BOOT_REASON = boot_prerequisites()
 
 @unittest.skipUnless(_BOOT_OK, f'本机无法启动应用实例（{_BOOT_REASON}）')
 class FreshInstallPluginLoadTest(unittest.TestCase):
+    """一次启动，两条守卫：插件都加载起来 + 设置链路真的可达。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = Path(tempfile.mkdtemp(prefix='omnibox-fresh-'))
+        cls.instance = AppInstance('fresh', cls.root).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            cls.instance.stop()
+        finally:
+            cleanup_tree(cls.root)
+
     def test_blank_instance_loads_every_bundled_plugin(self):
-        root = Path(tempfile.mkdtemp(prefix='omnibox-fresh-'))
-        self.addClassCleanup(cleanup_tree, root)
-        with AppInstance('fresh', root) as instance:
-            status = instance.system('system_get_plugin_status')
+        status = self.instance.system('system_get_plugin_status')
         self.assertEqual(status.get('failures'), [],
                          f"空白实例里有插件加载失败: {status.get('failures')}")
         loaded = status.get('loaded') or []
         self.assertIn('image-viewer', loaded)
         self.assertIn('pixiv-sync', loaded,
                       'pixiv-sync 声明依赖 image-viewer，两者必须一起起来')
+
+    def test_every_plugin_with_settings_exposes_settings_api(self):
+        """声明了可写设置项的插件，`get_settings` / `save_settings` 必须真的可达。
+
+        背景：壳的设置弹窗（插件自己的 `openSettingsModal`、内嵌页的
+        `HostChannel.requestSettings`）走 `Bridge.call('get_settings')` 与
+        `Bridge.call('save_settings')`，即 `POST /api/<插件>__<方法>`；而
+        `PluginManager` 只会额外登记 `<插件>__get_settings_schema`
+        （plugin_manager.py:566-572）。漏登记的表现完全是静默的：弹窗打得开、每个字段
+        显示 schema 默认值、点保存必然"保存失败" —— image-cleaner 与 group-mesh 都这样
+        漏过（实测这两个端点 404）。静态的同一条门禁见 tools/check_plugins.py。
+        """
+        status = self.instance.system('system_get_plugin_status')
+        checked = []
+        for plugin in sorted(status.get('loaded') or []):
+            schema = self.instance.call(plugin, 'get_settings_schema') or []
+            writable = [item for item in schema
+                        if isinstance(item, dict) and item.get('key')
+                        and item.get('type') != 'info']
+            if not writable:
+                continue                      # 没有可写设置项，不会弹设置窗
+            values = self.instance.call(plugin, 'get_settings')
+            self.assertIsInstance(values, dict, f'{plugin} 的 get_settings 必须返回字典')
+            saved = self.instance.call(plugin, 'save_settings', values)
+            self.assertNotEqual(saved.get('success'), False,
+                                f'{plugin} 保存自身当前设置失败: {saved}')
+            checked.append(plugin)
+        self.assertIn('image-cleaner', checked,
+                      'image-cleaner 声明了 threshold，必须被这条守卫覆盖')
 
 
 if __name__ == '__main__':

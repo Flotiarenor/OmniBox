@@ -131,7 +131,8 @@ class PluginSpecCheckerTests(unittest.TestCase):
     # pixiv-sync 当前靠 test_bundled_plugins_pass_full_spec 覆盖：它的
     # refresh_token 一旦去掉 "secret": True，上面那条用例立刻报错。
 
-    def _plugin_with_schema(self, root: Path, name: str, schema: str):
+    def _plugin_with_schema(self, root: Path, name: str, schema: str,
+                            register_api_body: str = 'return {}'):
         """写一个真的继承 PluginBase 的最小后端（检查器会校验这一继承关系）。"""
         class_name = f"{name.title().replace('-', '')}Plugin"
         code = (
@@ -142,7 +143,7 @@ class PluginSpecCheckerTests(unittest.TestCase):
             f"    settings_schema = {schema}\n"
             "\n"
             "    def register_api(self):\n"
-            "        return {}\n"
+            f"        {register_api_body}\n"
         )
         _make_plugin(root, name, _manifest(name, f'/{name}'), backend_code=code)
 
@@ -312,6 +313,89 @@ class PluginSpecCheckerTests(unittest.TestCase):
         ):
             errors = checker._check_reader_registry()
         self.assertTrue(any('登记表过期' in error for error in errors))
+
+    # ===== 设置 API 必须登记进 register_api() =====
+    #
+    # 这条规则的动机是一次真实事故：image-cleaner 的 settings_schema 声明了
+    # `root_dir`(info) 与 `threshold`，前端既请宿主渲染设置弹窗、保存也走
+    # Bridge.call('save_settings')，而 register_api() 里两个都没登记 ——
+    # PluginManager 只额外登记 `<插件>__get_settings_schema`，于是弹窗打得开、
+    # 字段全是 schema 默认值（信息行空白）、点保存必然"保存失败"，全程没有报错。
+    # group-mesh 的「设置」按钮（openSettingsModal）同样受影响。
+    #
+    # 严重度按"用户会不会真的撞上失效"分两档：前端会开设置弹窗 = error；
+    # 只声明了可写 schema（可能是有意的"只由运行期写入"）= warning。
+
+    def test_frontend_settings_modal_requires_registered_api(self):
+        """前端会开设置弹窗却没登记：弹窗打得开、保存必然失败 → 必须拦成 error。"""
+        callers = {
+            'hook-open': "openSettingsModal({ title: '设置' });\n",
+            'hook-request': "await HostChannel.requestSettings('设置');\n",
+            'hook-direct': "await Bridge.call('save_settings', values);\n",
+        }
+        for name, code in callers.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self._plugin_with_schema(root, name, '[]')
+                (root / name / 'frontend' / 'app.js').write_text(code, encoding='utf-8')
+                errors, _ = check_plugins(root, load_backends=True)
+                for key in ('get_settings', 'save_settings'):
+                    self.assertTrue(
+                        any('未登记' in error and key in error for error in errors),
+                        f'{name} 应被设置 API 门禁拦住（缺 {key}），实际 errors={errors}')
+
+    def test_frontend_settings_modal_with_registered_api_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._plugin_with_schema(
+                root, 'hook-ok', '[]',
+                register_api_body=("return {'get_settings': self.get_settings, "
+                                   "'save_settings': self.save_settings}"))
+            (root / 'hook-ok' / 'frontend' / 'app.js').write_text(
+                "openSettingsModal({ title: '设置' });\n", encoding='utf-8')
+            errors, warnings = check_plugins(root, load_backends=True)
+            self.assertEqual(errors, [])
+            self.assertEqual([w for w in warnings if '未登记' in w], [])
+
+    def test_settings_api_named_only_in_comments_is_not_flagged(self):
+        """注释里提到 openSettingsModal / Bridge.call 不算"会打开设置弹窗"。
+
+        真实例：`image-viewer/frontend/js/app.js` 的注释里写着"内嵌插件可以用
+        `HostChannel.requestSettings(...)`"，`document-reader` 的注释里引用了
+        `Bridge.call('get_settings', '')` 的旧写法 —— 按裸文本匹配会误报。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._plugin_with_schema(root, 'comment-only', '[]')
+            (root / 'comment-only' / 'frontend' / 'app.js').write_text(
+                "// 以前这里用 openSettingsModal({ title: 'x' }) 和 "
+                "Bridge.call('save_settings', values)\nToast.success('ok');\n",
+                encoding='utf-8')
+            errors, warnings = check_plugins(root, load_backends=True)
+            self.assertEqual(errors, [])
+            self.assertEqual([w for w in warnings if '未登记' in w], [])
+
+    def test_writable_schema_without_registered_api_warns(self):
+        """只声明了可写设置项（前端不弹设置窗）：告警，不阻断。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._plugin_with_schema(root, 'no-api',
+                                     '[{"key": "threshold", "type": "range", "default": 8}]')
+            errors, warnings = check_plugins(root, load_backends=True)
+            self.assertEqual(errors, [])
+            self.assertTrue(
+                any('未登记' in warning and 'save_settings' in warning for warning in warnings),
+                f'应告警"声明了可写设置项但没登记设置 API"，实际 warnings={warnings}')
+
+    def test_info_only_schema_without_settings_ui_passes(self):
+        """只声明 info 字段、前端也不弹设置窗：没有可写键，不该被这条门禁误伤。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._plugin_with_schema(root, 'info-only',
+                                     '[{"key": "root_dir", "type": "info"}]')
+            errors, warnings = check_plugins(root, load_backends=True)
+            self.assertEqual(errors, [])
+            self.assertEqual([w for w in warnings if '未登记' in w], [])
 
 
 class FrontendUiContractTests(unittest.TestCase):

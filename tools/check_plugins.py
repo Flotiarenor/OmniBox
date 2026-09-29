@@ -14,6 +14,8 @@
   引用了未定义的 CSS 变量、使用原生 alert/confirm 是 error；
   !important、与壳逐值相同的关键帧、越权使用 `obx-` 前缀的关键帧是 warning
 - 后端类可导入、继承 PluginBase、settings_schema 结构合法
+- 会用到设置弹窗的插件必须把 get_settings / save_settings 登记进 register_api()
+  （漏登记表现为"弹窗打得开、字段全是默认值、保存必然失败"，静默无报错）
 - 已规划但未实装的 kind / runtime 只告警不阻断
 
 用法：
@@ -43,6 +45,25 @@ RESERVED_ROUTES = {'/', '/settings'}
 # PluginBase.save_settings 也把它排除在可写键外）
 ALLOWED_SCHEMA_TYPES = {'text', 'number', 'range', 'select', 'checkbox', 'textarea',
                         'directory', 'folder', 'info'}
+
+# ===== 设置 API 登记（"设置弹窗静默失效"的守卫）=====
+# 壳的设置弹窗（插件自己的 openSettingsModal、内嵌页请宿主渲染的
+# HostChannel.requestSettings）最终都走两条 `Bridge.call`：`get_settings` 取当前值、
+# `save_settings` 落盘，即 `POST /api/<插件>__<方法>`；而 `PluginManager` 只会为每个
+# 插件额外登记 `<插件>__get_settings_schema`（plugin_manager.py:566-572），其余全看
+# `register_api()`。漏登记的表现是**静默**的：弹窗打得开、每个字段显示 schema 默认值、
+# 点保存必然"保存失败"，前端没有堆栈、读代码也看不出来（image-cleaner 与 group-mesh
+# 都这样漏过，见 docs/plugin-guide.md §8.2）。
+SETTINGS_API_KEYS = ('get_settings', 'save_settings')
+# 后端登记形态：`'get_settings': self.get_settings`（image-viewer 把 save 映射到
+# `save_folder_settings`，键名仍是 save_settings，所以按**键名**判定而不是方法名）
+SETTINGS_API_KEY_DECL_RE = re.compile(r"""['"](get_settings|save_settings)['"]\s*:""")
+# 前端"会打开设置弹窗"的三种写法
+FRONTEND_SETTINGS_MODAL_RES = (
+    re.compile(r'openSettingsModal\s*\('),
+    re.compile(r'requestSettings\s*\('),
+    re.compile(r"""Bridge\.call\(\s*['"](?:get_settings|save_settings)['"]"""),
+)
 # 设置项上的可选标记（除 type/default/min/max/options/help 之外）：
 #   "secret": True —— 申请 Shell 文件防护：该插件设置文件不得被文件路由返回，
 #   见 PluginBase.get_protected_paths() 与 docs/plugin-guide.md §8.2
@@ -482,6 +503,79 @@ def _check_schema(cls) -> List[str]:
     return errors
 
 
+def _plugin_source_files(plugin_dir: Path, sub: str, suffixes: Tuple[str, ...]) -> List[Path]:
+    root = plugin_dir / sub
+    if not root.is_dir():
+        return []
+    return [path for path in sorted(root.rglob('*'))
+            if path.is_file() and '__pycache__' not in path.parts
+            and path.suffix.lower() in suffixes]
+
+
+def _settings_api_trigger(schema, plugin_dir: Path) -> Tuple[str, str]:
+    """这个插件为什么需要设置 API。返回 `(触发原因, 严重度)`，不需要时是 `('', '')`。
+
+    两个触发条件，严重度不同 —— 判据是"用户会不会真的撞上失效"：
+
+    - `error`：前端会出现设置弹窗（`openSettingsModal()` /
+      `HostChannel.requestSettings()` / 直接 `Bridge.call('get_settings'|'save_settings')`）。
+      弹窗会按 schema 画出控件、点保存必然失败，是确定的用户可见失效；
+    - `warning`：只是后端声明了**可写**设置项（`type` 不是 `info`）。这可能是"设置只由
+      外部/运行期写入，schema 仅用来声明默认值"的有意写法，但它也让"这些设置其实改不动"
+      这件事浮出来（壳的设置弹窗是 `settings_schema` 唯一的界面消费方）。
+    """
+    for path in _plugin_source_files(plugin_dir, 'frontend', ('.js', '.html')):
+        try:
+            text = path.read_text(encoding='utf-8')
+        except Exception:
+            continue
+        # 先去注释再匹配：说明"以前用过 openSettingsModal"这类注释不算会打开弹窗
+        # （与 _check_frontend_ui 查 alert/confirm 用的是同一套手法）。
+        if path.suffix.lower() == '.js':
+            scan = _strip_js_comments(text)
+        else:
+            scan = UI_HTML_COMMENT_RE.sub(' ', text)
+        if any(pattern.search(scan) for pattern in FRONTEND_SETTINGS_MODAL_RES):
+            return f'前端 {path.relative_to(plugin_dir).as_posix()} 会打开壳的设置弹窗', 'error'
+    if isinstance(schema, list):
+        for item in schema:
+            if isinstance(item, dict) and item.get('key') and item.get('type') != 'info':
+                return 'settings_schema 里声明了可写设置项', 'warning'
+    return '', ''
+
+
+def _check_settings_api(plugin_dir: Path, schema) -> Tuple[List[str], List[str]]:
+    """会用到设置弹窗的插件，必须在 `register_api()` 里登记设置 API（返回 errors, warnings）。
+
+    为什么必须由门禁拦：漏登记不报错，只表现为"设置面板打开后每个字段都是默认值、
+    点保存提示保存失败"，而 schema、掩码、变更回调这些代码看起来全对 —— 2026-09 的
+    image-cleaner 与 group-mesh 就这样漏了（`/api/<插件>__get_settings` 实测 HTTP 404），
+    连续三个提交的验证都没发现。判定按后端**键名**做静态检查（与其他登记表检查同一
+    手法）：`register_api()` 需要实例才能调用，而检查器只加载类。
+    """
+    trigger, severity = _settings_api_trigger(schema, plugin_dir)
+    if not trigger:
+        return [], []
+    declared: set = set()
+    for path in _plugin_source_files(plugin_dir, 'backend', ('.py',)):
+        try:
+            text = path.read_text(encoding='utf-8')
+        except Exception:
+            continue
+        declared.update(SETTINGS_API_KEY_DECL_RE.findall(text))
+    missing = [key for key in SETTINGS_API_KEYS if key not in declared]
+    if not missing:
+        return [], []
+    message = (
+        f'register_api() 未登记 {"、".join(missing)}（{trigger}）：壳的设置弹窗走 '
+        f'`Bridge.call(\'get_settings\')` / `Bridge.call(\'save_settings\')`，'
+        f'即 POST /api/<插件>__<方法>，而 PluginManager 只额外登记 get_settings_schema；'
+        f'漏登记时弹窗打得开、字段全是默认值、保存必然失败且无报错'
+        f'（见 docs/plugin-guide.md §8.2 与 §3.2 的 register_api 示例）'
+    )
+    return ([message], []) if severity == 'error' else ([], [message])
+
+
 def _load_backend_class(plugin_dir: Path, entry: str, class_name: str, lib_dirs=None):
     module_path = (plugin_dir / entry).resolve()
     module_name = f"omnibox_spec_{re.sub(r'[^0-9A-Za-z_]', '_', plugin_dir.name)}"
@@ -832,6 +926,10 @@ def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -
                 continue
             for error in _check_schema(cls):
                 errors.append(f'{where} {error}')
+            api_errors, api_warnings = _check_settings_api(
+                plugin_dir, getattr(cls, 'settings_schema', None))
+            errors.extend(f'{where} {error}' for error in api_errors)
+            warnings.extend(f'{where} {warning}' for warning in api_warnings)
             if not callable(getattr(cls, 'register_api', None)):
                 errors.append(f'{where} 后端类缺少 register_api 方法')
 
