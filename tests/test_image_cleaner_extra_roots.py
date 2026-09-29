@@ -12,13 +12,18 @@
   1. 扫描结果同时包含主目录与额外根的图，额外根的相对路径带正确前缀；
   2. 跨根重复被分到同一组；
   3. 设置弹窗那一行列出全部根；
-  4. 宿主没有 `list_roots()`（旧版本）时退回单根，行为不变。
+  4. 宿主没有 `list_roots()`（旧版本）时退回单根，行为不变；
+  5. 宿主有 `list_roots()` 但项里没有 `prefix`（早于该字段的版本）时同样退回单根 ——
+     把"前缀缺失"当空串会让额外根的文件按主根解释，`delete_files()` 可能删错文件；
+  6. 额外根落在主根之内（宿主只排除完全相同的路径，不排除嵌套）时，同一个物理文件
+     只收一条：否则它会被判成"自己是自己的重复"，删除会对同一文件 unlink 两次。
 
 运行：
     python -m unittest tests.test_image_cleaner_extra_roots -v
 """
 
 import importlib.util
+import shutil
 import sys
 import tempfile
 import unittest
@@ -143,6 +148,48 @@ class ExtraRootScanTests(unittest.TestCase):
         rels = [f['rel'] for f in cleaner._all_album_files()]
         self.assertEqual(rels, ['a.jpg'], '旧宿主上只扫主目录，行为与改动前一致')
         self.assertEqual(cleaner.get_settings()['root_dir'], str(self.root))
+
+    def test_falls_back_when_host_lacks_prefix(self):
+        """宿主有 `list_roots()` 但项里没有 `prefix`（早于该字段的版本）：退回单根。
+
+        不能把"前缀缺失"当成空串 —— 那会把额外根的文件按**主根**去解释：缩略图与原图
+        404，`delete_files()` 更会删掉主根下的另一个同名文件。
+        """
+        _make_image(self.root / '作者A' / 'a.jpg')
+        _make_image(self.extra / '作者A' / 'a.jpg')
+        host = self._viewer(str(self.extra))
+        real = host.list_roots
+        host.list_roots = lambda: [
+            {k: v for k, v in item.items() if k != 'prefix'} for item in real()
+        ]
+        cleaner = self._cleaner(host)
+
+        rels = [f['rel'] for f in cleaner._all_album_files()]
+        self.assertEqual(rels, ['作者A/a.jpg'], '没有前缀就只扫主目录，不能带错前缀去删')
+        self.assertEqual(cleaner.get_settings()['root_dir'], str(self.root))
+
+    # ---------- 5. 根目录嵌套：同一物理文件只算一条 ----------
+
+    def test_overlapping_roots_count_each_file_once(self):
+        """额外根落在主根之内时，同一个文件会有两条虚拟路径，只能收一条。
+
+        宿主 `_extra_roots()` 只排除完全相同的路径、不排除嵌套，而 `os.walk(root)`
+        本来就会走到 `root/备份`。不去重的话这一个文件会被判成"两张完全重复的图片"，
+        "只留一张"之后的删除会对它 unlink 两次，"全选组"删除会删掉唯一副本。
+        """
+        nested = self.root / '备份'
+        _make_image(self.root / 'a.jpg', (7, 7, 7))
+        nested.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(self.root / 'a.jpg', nested / 'a.jpg')   # 逐字节相同
+        cleaner = self._cleaner(self._viewer(str(nested)))
+
+        rels = sorted(f['rel'] for f in cleaner._all_album_files())
+        self.assertEqual(rels, ['a.jpg', '备份/a.jpg'],
+                         '主根那次扫描已经收过它，命名空间那次要丢掉')
+
+        groups = [sorted(g['files']) for g in cleaner.duplicate_scan()['groups']]
+        self.assertEqual(groups, [['a.jpg', '备份/a.jpg']],
+                         f'跨根重复照常抓到，但不该出现同一物理文件的两条路径：{groups}')
 
 
 if __name__ == '__main__':   # pragma: no cover

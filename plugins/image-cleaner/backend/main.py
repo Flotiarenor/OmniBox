@@ -104,24 +104,32 @@ class ImageCleanerPlugin(PluginBase):
             settings['root_dir'] = ''
         return settings
 
-    def _scan_roots(self) -> List[tuple]:
+    def _scan_roots(self) -> list[tuple[Path, str]]:
         """扫描范围：宿主的全部根目录 + 各自的虚拟路径前缀（主目录在前）。
 
         结果是 `(物理根目录, 前缀)`：前缀取自宿主的 `list_roots()`（第一根为空串，额外根是
         `__<命名空间>`），扫描出的相对路径必须带上它，否则缩略图 / 原图 / 删除三条路由都会
-        按**主目录**去解释，落到不存在的路径上。宿主没提供 `list_roots()`（旧版本）时退回
-        单根，行为与加额外图库支持之前完全一致。
+        按**主目录**去解释，落到不存在的路径上。
+
+        宿主没提供 `list_roots()`（旧版本），或**提供了但项里没有前缀**（早于 `prefix`
+        字段的版本）时一律退回单根：后一种情况不能"前缀缺失就当空串"——那会把额外根里的
+        文件按主根解释，除了 404，`delete_files()` 还会落到主根下的**另一个同名文件**上。
+        退回单根的行为与加额外图库支持之前完全一致。
         """
         host = self._get_host()
         lister = getattr(host, 'list_roots', None)
         if not callable(lister):
             return [(host.get_data_root(), '')]
-        roots = []
-        for item in lister() or []:
-            path = str((item or {}).get('path') or '')
+        roots: list[tuple[Path, str]] = []
+        for index, item in enumerate(lister() or []):
+            item = item or {}
+            path = str(item.get('path') or '')
             if not path:
                 continue
-            roots.append((Path(path), str((item or {}).get('prefix') or '')))
+            prefix = str(item.get('prefix') or '')
+            if index and not prefix:
+                return [(host.get_data_root(), '')]
+            roots.append((Path(path), prefix))
         return roots or [(host.get_data_root(), '')]
 
     def get_extensions(self) -> List[dict]:
@@ -195,8 +203,15 @@ class ImageCleanerPlugin(PluginBase):
         每个根的相对路径都要带上宿主的虚拟前缀（见 `_scan_roots`）：图片相册把额外图库
         当相册展示，清理必须扫到它，否则额外图库里的重复、以及"主目录一份 + 额外图库
         一份"这种跨根重复永远找不出来。
+
+        **同一个物理文件只收一条**：额外根可以落在主根之内（宿主的 `_extra_roots()`
+        只排除完全相同的路径，不排除嵌套），那样一个文件会有两条虚拟路径
+        （`备份/a.jpg` 与 `__备份 (2)/a.jpg`）。不收手的话它们会被判成"两张完全重复的
+        图片"——"只留一张"之后的删除会对同一个文件 unlink 两次（第二次报"部分删除失败"），
+        "全选组"删除更会把唯一副本一起删掉。保留先出现的条目，即主根的虚拟路径。
         """
         files = []
+        seen: set[str] = set()
         for root, prefix in self._scan_roots():
             try:
                 if not root.exists() or not root.is_dir():
@@ -215,17 +230,23 @@ class ImageCleanerPlugin(PluginBase):
                         if Path(name).suffix.lower() not in ALLOWED_EXTENSIONS:
                             continue
                         abs_path = current_path / name
+                        # 去重键：规范化大小写与 . / .. 之后的绝对路径。两个根在宿主侧
+                        # 都已 resolve()（root_dir 与 _extra_roots），嵌套时两种走法得到
+                        # 同一字符串，因此这里不需要再碰一次文件系统。
+                        key = os.path.normcase(os.path.abspath(str(abs_path)))
+                        if key in seen:
+                            continue
                         try:
                             stat = abs_path.stat()
                         except OSError:
                             continue
+                        seen.add(key)
                         rel_in_root = (Path(rel_dir) / name).as_posix() if rel_dir else name
                         files.append({
                             'rel': f'{prefix}/{rel_in_root}' if prefix else rel_in_root,
                             'abs': str(abs_path),
                             'size': stat.st_size,
                             'mtime': stat.st_mtime,
-                            'album': rel_dir or '',
                         })
             except OSError:
                 continue
