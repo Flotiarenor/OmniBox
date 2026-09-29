@@ -377,28 +377,38 @@ class ImageCleanerPlugin(PluginBase):
         except Exception as e:
             log.error(f"[{self.name}] 保存 dHash 缓存失败: {e}")
 
-    def _image_dhash(self, abs_path: str, mtime: float) -> int:
-        """64-bit 差异哈希（dHash），结果写入 image-cleaner 自己的缓存。"""
+    def _image_dhash(self, abs_path: str, mtime: float) -> Optional[int]:
+        """64-bit 差异哈希（dHash），结果写入 image-cleaner 自己的缓存。
+
+        **读图失败返回 `None`，与"哈希值恰好是 0"分开**：纯色/近纯色图的 dHash 本来
+        就是 0，而旧实现让失败也返回 0、调用方又用 `if h:` 过滤 —— 两种含义混在一起，
+        纯色图（以及任何 dHash 为 0 的图）永远进不了相似分组。失败同样**不写缓存**，
+        否则一次读失败会被缓存钉住（mtime 不变就永远不再重算）。
+
+        缓存条目带 `'v': 2`：旧版把"读图失败"也作为 hash 0 存进缓存，缺版本号的条目
+        一律重算，避免那些 0 被当成合法哈希继续参与分组。
+        """
         key = 'dhash:' + hashlib.md5(abs_path.encode()).hexdigest()
         self._load_dhash_cache()
         cached = self._dhash_cache.get(key)
-        if cached and cached.get('mtime') == mtime:
+        if cached and cached.get('v') == 2 and cached.get('mtime') == mtime:
             return int(cached.get('hash', 0))
 
-        value = 0
         try:
             from PIL import Image
             with Image.open(abs_path) as img:
                 small = img.convert('L').resize((9, 8))
             pixels = list(small.getdata())
-            for row in range(8):
-                for col in range(8):
-                    value <<= 1
-                    if pixels[row * 9 + col] > pixels[row * 9 + col + 1]:
-                        value |= 1
         except Exception:
-            value = 0
-        self._dhash_cache[key] = {'mtime': mtime, 'hash': value}
+            return None
+
+        value = 0
+        for row in range(8):
+            for col in range(8):
+                value <<= 1
+                if pixels[row * 9 + col] > pixels[row * 9 + col + 1]:
+                    value |= 1
+        self._dhash_cache[key] = {'v': 2, 'mtime': mtime, 'hash': value}
         return value
 
     def similar_scan(self, threshold: int | None = None) -> Dict:
@@ -414,9 +424,10 @@ class ImageCleanerPlugin(PluginBase):
         valid = []
         for f in files:
             h = self._image_dhash(f['abs'], f['mtime'])
-            if h:
-                hashes.append(h)
-                valid.append(f)
+            if h is None:
+                continue          # 读不了的不参与相似判定（0 是合法哈希，不能兼表失败）
+            hashes.append(h)
+            valid.append(f)
 
         n = len(valid)
         parent = list(range(n))

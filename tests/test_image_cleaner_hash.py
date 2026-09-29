@@ -121,6 +121,83 @@ class FullHashTests(unittest.TestCase):
             self.assertIsNone(self.module.ImageCleanerPlugin._file_quick_hash(str(a), 1024))
 
 
+class DHashTests(unittest.TestCase):
+    """dHash 的"读图失败"与"哈希值恰好是 0"必须分开。
+
+    历史缺陷：`_image_dhash` 读图失败时返回 0，调用方又用 `if h:` 过滤 —— 于是
+    纯色/近纯色图（dHash 本来就是 0）永远进不了相似分组，而失败也返回 0 让两种
+    含义混在一起。失败还会被写进缓存，mtime 不变就永远不再重算。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+        self.module = _load_plugin_module()
+
+    def _plugin(self) -> object:
+        plugin = self.module.ImageCleanerPlugin.__new__(self.module.ImageCleanerPlugin)
+        plugin._dhash_cache = {}
+        plugin._dhash_cache_file = self.dir / 'dhash.json'
+        plugin._save_scan_result = lambda *a, **k: None
+        return plugin
+
+    def _write_images(self):
+        from PIL import Image
+        Image.new('RGB', (24, 24), (10, 120, 200)).save(self.dir / 'a.jpg')
+        (self.dir / 'broken.jpg').write_bytes(b'not an image at all')
+        return {'a.jpg': 'a.jpg', 'broken.jpg': 'broken.jpg'}
+
+    def _entry(self, name: str) -> dict:
+        path = self.dir / name
+        return {'rel': name, 'abs': str(path), 'size': path.stat().st_size,
+                'mtime': path.stat().st_mtime}
+
+    def test_uniform_image_hash_is_zero_and_valid(self):
+        """纯色图的 dHash 就是 0 —— 它是合法值，不是"读图失败"。"""
+        self._write_images()
+        plugin = self._plugin()
+        self.assertEqual(plugin._image_dhash(str(self.dir / 'a.jpg'), 0), 0)
+
+    def test_unreadable_image_returns_none_and_is_not_cached(self):
+        self._write_images()
+        plugin = self._plugin()
+        broken = str(self.dir / 'broken.jpg')
+        self.assertIsNone(plugin._image_dhash(broken, 0), '读图失败必须返回 None')
+        self.assertEqual(plugin._dhash_cache, {}, '失败不能写进缓存（否则 mtime 不变就不再重算）')
+
+    def test_legacy_cache_entry_without_version_is_recomputed(self):
+        """旧版把失败写成 hash 0 存进缓存：缺 'v' 的条目一律重算。"""
+        self._write_images()
+        plugin = self._plugin()
+        import hashlib
+        key = 'dhash:' + hashlib.md5(str(self.dir / 'a.jpg').encode()).hexdigest()
+        plugin._dhash_cache[key] = {'mtime': 0.0, 'hash': 12345}   # 旧格式（无 'v'）
+        self.assertEqual(plugin._image_dhash(str(self.dir / 'a.jpg'), 0.0), 0,
+                         '旧的 0 不能被当成合法哈希沿用')
+        self.assertEqual(plugin._dhash_cache[key]['v'], 2, '重算后写成新格式')
+
+    def test_uniform_images_are_grouped_as_similar(self):
+        """端到端：两张纯色图必须进相似组（旧实现里它们永远被丢掉）。"""
+        from PIL import Image
+        for name in ('a.jpg', 'b.jpg'):
+            Image.new('RGB', (24, 24), (10, 120, 200)).save(self.dir / name)
+        plugin = self._plugin()
+        plugin._all_album_files = lambda: [self._entry('a.jpg'), self._entry('b.jpg')]
+
+        result = plugin.similar_scan(threshold=0)
+        self.assertEqual([sorted(g['files']) for g in result['groups']],
+                         [['a.jpg', 'b.jpg']], result)
+
+    def test_unreadable_image_is_not_grouped_as_similar(self):
+        self._write_images()
+        plugin = self._plugin()
+        plugin._all_album_files = lambda: [self._entry('a.jpg'), self._entry('broken.jpg')]
+
+        result = plugin.similar_scan(threshold=16)
+        self.assertEqual(result['groups'], [], '读不了的图不能进相似分组（下一步可能是删除）')
+
+
 class DuplicateScanGroupingTests(unittest.TestCase):
     """不可信摘要不得进入分组结果。"""
 
