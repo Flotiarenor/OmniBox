@@ -424,7 +424,7 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
   `python -m unittest tests.test_image_viewer_pixiv_fuzzy`（模糊匹配 + 配置点 11 项）、
   `python -m unittest tests.test_image_viewer_multi_root`（多根目录 / 空目录 / 折叠 17 项）、
   `python -m unittest tests.test_image_viewer_album_visibility_js`（前端可见性、图片文件夹列表与扩展面板头部无头用例）
-- 几何取证：`python tests/debug_extension_header_ui.py`（无头 Chrome 读扩展头与主工具栏的计算高度/字号，13 项；本机无 Chrome 时跳过）
+- 几何取证：`python tests/debug_extension_header_ui.py`（无头 Chrome 读扩展头与主工具栏的计算高度/字号，17 项；本机无 Chrome 时跳过）
 - 状态调试：`python tests/debug_status_pages.py`（一键起 `--status-debug` 服务器 + 11 个 HTTP 场景触发表 + 壳内 `/status` 调试面板；含坏插件演示 iframe 404 → 壳内错误卡片链路）
 - 常用验证：`refresh` API 强制重扫、`rebuild_status` 轮询查看重建进度、`G:\图库` 等大目录做性能基准
 

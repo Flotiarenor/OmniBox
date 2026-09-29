@@ -16,7 +16,7 @@
 | 测试文件可运行性 | `python tools/check_tests.py` | **exit 0**（硬门禁；`tests/test_*.py` 必须能被 unittest 收集到用例，手工脚本按约定命名 `tests/debug_*.py`） |
 | 类型检查（内核） | `python -m pyright main.py shell tools` | **0 错误**（硬门禁） |
 | 类型检查（插件+测试） | `python -m pyright plugins tests` | 基线（暂不拦截，见 §6） |
-| 单元测试 | `python -m unittest discover -s tests` | **774 passed**（硬门禁；Windows 专属与浏览器 e2e 用例在缺依赖时自动 skip，见 §2） |
+| 单元测试 | `python -m unittest discover -s tests` | **failures=0 / errors=0**（硬门禁；Windows 专属与浏览器 e2e 用例在缺依赖时自动 skip，见 §2。本机 Windows 实测 818 例：811 passed、3 例环境失败） |
 | 运行时禁止 print | `python -m unittest tests.test_no_print_in_runtime` | 通过（硬门禁） |
 | 前端转义一致性 | `node tools/check_frontend_escape.cjs` | **OK**（硬门禁） |
 | 前端依赖漏洞 | `python tools/check_npm_audit.py` | **OK**（硬门禁；脚本内固定官方 registry，见下） |
@@ -28,7 +28,7 @@
 > `tests/js/*.mjs`（无 node 时自动 skip），覆盖 `image_viewer_app_split` /
 > `media_player_app_split` / `plugin_asset_contract`（7 个插件前端的资源契约）/
 > `shell_folder_picker` / `image_viewer_roots_list` / `image_viewer_extension_view` /
-> `shell_settings_form`。
+> `shell_settings_form` / `image_cleaner_scan`。
 >
 > 本机 Linux 实测 `skipped=70`，都属"环境不具备时条件跳过"，不是门禁失效：
 > 浏览器 e2e（需 selenium + Chrome/Edge，见 `requirements-e2e.txt`，刻意不进 CI）、
