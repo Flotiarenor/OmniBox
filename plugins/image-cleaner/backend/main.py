@@ -13,10 +13,15 @@ from typing import Any, ClassVar, Dict, List, Optional
 
 from shell.backend.media_catalog import IMAGE_EXTENSIONS
 from shell.backend.plugin_base import PluginBase
+from shell.backend.tasks import BackgroundTask
 
 log = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = IMAGE_EXTENSIONS
+
+
+class _ScanCancelled(Exception):
+    """扫描被取消（后台 worker 的取消点抛出，由 `_scan_worker` 吞掉并放弃写结果）。"""
 
 
 class ImageCleanerPlugin(PluginBase):
@@ -36,6 +41,8 @@ class ImageCleanerPlugin(PluginBase):
         self._host = None
         self._dhash_cache = {}
         self._dhash_cache_file = None
+        # 后台扫描任务（共享基建 BackgroundTask）；同时只允许一个在跑
+        self._scan_task: Optional[BackgroundTask] = None
 
     # ---------- 宿主访问与文件路由复用 ----------
 
@@ -72,6 +79,9 @@ class ImageCleanerPlugin(PluginBase):
         return {
             'duplicate_scan': self.duplicate_scan,
             'similar_scan': self.similar_scan,
+            'scan_start': self.scan_start,
+            'scan_status': self.scan_status,
+            'scan_cancel': self.scan_cancel,
             'get_cached_scan': self.get_cached_scan,
             'delete_files': self.delete_files,
             'get_status': self.get_status,
@@ -308,32 +318,68 @@ class ImageCleanerPlugin(PluginBase):
         return h.hexdigest()
 
     def duplicate_scan(self) -> Dict:
-        """扫描全部相册，返回跨相册的完全重复图片分组。"""
+        """扫描全部相册，返回跨相册的完全重复图片分组（同步入口：后台任务与用例共用分组逻辑）。"""
         files = self._all_album_files()
         if not files:
             return {'groups': [], 'scanned': 0}
 
         scanned = len(files)
-        by_size = {}
+        groups = self._duplicate_groups(files)
+        self._save_scan_result('dupe', groups, scanned)
+        return {'groups': groups, 'scanned': scanned}
+
+    # ---------- 分组计算（同步入口与后台 worker 共用同一份实现） ----------
+
+    @staticmethod
+    def _check_cancel(task: Optional['BackgroundTask']) -> None:
+        """后台任务的取消点：取消时抛出 `_ScanCancelled`，由 worker 吞掉并放弃写结果。"""
+        if task is not None and task.cancelled:
+            raise _ScanCancelled()
+
+    def _duplicate_groups(self, files: list,
+                          task: Optional['BackgroundTask'] = None) -> List[dict]:
+        """完全重复分组（`task` 非空时上报进度并响应取消）。
+
+        进度以**文件**为单位：`total` = 本次扫描的文件数，`processed` = 已定论的文件数
+        （尺寸唯一或快速指纹不一致的在早期阶段就定论，指纹一致的必须算完完整摘要才定论），
+        因此进度单调、结束时正好走到 `total`。
+        """
+        by_size: Dict[int, list] = {}
         for f in files:
             by_size.setdefault(f['size'], []).append(f)
+
+        progressed = 0
+        if task is not None:
+            task.update(total=len(files), processed=0, current='')
 
         groups = []
         for size, batch in by_size.items():
             if len(batch) < 2:
+                progressed += len(batch)
+                if task is not None:
+                    task.update(processed=progressed)
                 continue
-            by_quick = {}
+            by_quick: Dict[str, list] = {}
             for f in batch:
+                self._check_cancel(task)
                 key = self._file_quick_hash(f['abs'], f['size'])
                 if key is None:
-                    continue  # 读不到的文件不参与比较，更不能参与删除
+                    progressed += 1  # 读不到的文件不参与比较，更不能参与删除
+                    continue
                 by_quick.setdefault(key, []).append(f)
             for candidates in by_quick.values():
                 if len(candidates) < 2:
+                    progressed += len(candidates)   # 快速指纹已足以定论
+                    if task is not None:
+                        task.update(processed=progressed)
                     continue
-                by_full = {}
+                by_full: Dict[str, list] = {}
                 for f in candidates:
+                    self._check_cancel(task)
                     digest = self._file_full_hash(f['abs'])
+                    progressed += 1
+                    if task is not None:
+                        task.update(processed=progressed, current=Path(f['rel']).name)
                     if digest is None:
                         continue  # 同上：摘要不可信就退出候选集
                     by_full.setdefault(digest, []).append(f)
@@ -345,8 +391,7 @@ class ImageCleanerPlugin(PluginBase):
                             'files': [d['rel'] for d in dups],
                         })
         groups.sort(key=lambda g: -len(g['files']))
-        self._save_scan_result('dupe', groups, scanned)
-        return {'groups': groups, 'scanned': scanned}
+        return groups
 
     # ---------- 视觉相似 ----------
 
@@ -412,24 +457,56 @@ class ImageCleanerPlugin(PluginBase):
         return value
 
     def similar_scan(self, threshold: int | None = None) -> Dict:
-        """扫描全部相册，返回跨相册的视觉相似图片分组。"""
+        """扫描全部相册，返回跨相册的视觉相似图片分组（同步入口：后台任务与用例共用分组逻辑）。"""
         files = self._all_album_files()
         if len(files) < 2:
             return {'groups': [], 'scanned': len(files)}
 
+        hashes, valid = self._dhash_all(files)
+        groups = self._similar_groups(hashes, valid, threshold)
+        self._save_dhash_cache()
+        self._save_scan_result('similar', groups, len(valid))
+        return {'groups': groups, 'scanned': len(valid)}
+
+    def _resolve_threshold(self, threshold: Optional[int]) -> int:
         if threshold is None:
             threshold = self.setting('threshold', 8)
-        threshold = max(0, min(16, int(threshold)))
-        hashes = []
-        valid = []
-        for f in files:
-            h = self._image_dhash(f['abs'], f['mtime'])
-            if h is None:
-                continue          # 读不了的不参与相似判定（0 是合法哈希，不能兼表失败）
-            hashes.append(h)
-            valid.append(f)
+        return max(0, min(16, int(threshold)))
 
+    def _dhash_all(self, files: list, task: Optional['BackgroundTask'] = None) -> tuple:
+        """算出每张图的 dHash，返回 `(hashes, valid)`；读不了的图不进 `valid`。
+
+        `task` 非空时上报第一段进度：`total` = 本次扫描的文件数、`processed` = 已算完的
+        文件数。第二段（两两比较）由 `_similar_groups` 另开分母与阶段文案。
+        """
+        if task is not None:
+            task.update(total=max(1, len(files)), processed=0, current='计算相似指纹')
+        hashes: List[int] = []
+        valid: List[dict] = []
+        for index, item in enumerate(files):
+            self._check_cancel(task)
+            digest = self._image_dhash(item['abs'], item['mtime'])
+            if task is not None:
+                task.update(processed=index + 1, current=Path(item['rel']).name)
+            if digest is None:
+                continue          # 读不了的不参与相似判定（0 是合法哈希，不能兼表失败）
+            hashes.append(digest)
+            valid.append(item)
+        return hashes, valid
+
+    def _similar_groups(self, hashes: List[int], valid: list,
+                        threshold: Optional[int],
+                        task: Optional['BackgroundTask'] = None) -> List[dict]:
+        """dHash 并查集聚类（`task` 非空时上报进度并响应取消）。
+
+        两两比较是 O(n²)，进度按**外层下标**推进。这是扫描的第二段，分母是有效图片数
+        （与第一段"文件数"不同），前端按 `current` 里的阶段文字区分，不需要把两段
+        凑成一个百分比。
+        """
+        threshold = self._resolve_threshold(threshold)
         n = len(valid)
+        if task is not None:
+            task.update(total=max(1, n), processed=0, current='比较相似度')
         parent = list(range(n))
 
         def find(x):
@@ -444,6 +521,7 @@ class ImageCleanerPlugin(PluginBase):
                 parent[rb] = ra
 
         for i in range(n):
+            self._check_cancel(task)
             hi = hashes[i]
             for j in range(i + 1, n):
                 # 尺寸差异过大不可能是相似图
@@ -451,18 +529,87 @@ class ImageCleanerPlugin(PluginBase):
                     continue
                 if (hi ^ hashes[j]).bit_count() <= threshold:
                     union(i, j)
+            if task is not None:
+                task.update(processed=i + 1)
 
-        clusters = {}
+        clusters: Dict[int, List[str]] = {}
         for i in range(n):
             clusters.setdefault(find(i), []).append(valid[i]['rel'])
-        groups = [{'files': sorted(files)} for files in clusters.values() if len(files) >= 2]
+        groups = [{'files': sorted(paths)} for paths in clusters.values() if len(paths) >= 2]
         groups.sort(key=lambda g: -len(g['files']))
-        self._save_dhash_cache()
-        self._save_scan_result('similar', groups, n)
-        return {'groups': groups, 'scanned': n}
+        return groups
 
     # ---------- 删除 ----------
 
     def delete_files(self, rel_paths: List[str]) -> Dict:
         """复用 image-viewer 的删除接口，保持路径安全与宿主缓存清理一致。"""
         return self._get_host().delete_files(rel_paths)
+
+    # ---------- 后台扫描任务（共享基建 shell.backend.tasks） ----------
+
+    def scan_start(self, mode: str = 'dupe', threshold: Optional[int] = None) -> Dict:
+        """把整库扫描放进后台任务（共享基建 `BackgroundTask`）。
+
+        为什么需要：全库扫描要为每张图算指纹（相似模式还要两两比较），大图库上是分钟级
+        的；放在同步 API 里既没有进度也不能取消，用户只能看着"正在扫描…"。image-viewer
+        的缩略图重建（`rebuild_all` / `rebuild_status` / `rebuild_cancel`）用的是同一套骨架。
+
+        结果仍写进既有的扫描缓存（`_save_scan_result`），前端在任务结束后用
+        `get_cached_scan(mode)` 取 —— 与"重进页面直接读缓存"是同一条路径，不额外搬运数据。
+        任务状态**不落盘**：本插件没有"断点续跑"语义，重启后重新扫描即可（结果缓存仍在）。
+        """
+        mode = 'similar' if str(mode) == 'similar' else 'dupe'
+        if self._scan_task is not None and self._scan_task.state == 'running':
+            return {'started': False, 'running': True, **self.scan_status()}
+        task = BackgroundTask(kind='image-cleaner-scan', extra={'mode': mode, 'groups': 0})
+        task.start(self._scan_worker, args=(mode, threshold))
+        self._scan_task = task
+        return {'started': True, 'running': True, 'mode': mode}
+
+    def _scan_worker(self, task: 'BackgroundTask', mode: str, threshold: Optional[int]) -> None:
+        """后台扫描 worker：算分组 → 写扫描缓存；取消时不写任何结果。"""
+        try:
+            files = self._all_album_files()
+            self._check_cancel(task)
+            if mode == 'similar':
+                hashes, valid = self._dhash_all(files, task)
+                groups = self._similar_groups(hashes, valid, threshold, task)
+                scanned = len(valid)
+            else:
+                groups = self._duplicate_groups(files, task)
+                scanned = len(files)
+        except _ScanCancelled:
+            return
+        self._save_scan_result(mode, groups, scanned)
+        task.update(current='', extra={'groups': len(groups), 'scanned': scanned})
+
+    def scan_status(self) -> Dict:
+        """后台扫描任务的进度（`BackgroundTask.status()` 的投影）。"""
+        task = self._scan_task
+        if task is None:
+            return {'running': False, 'done': False, 'success': False, 'cancelled': False,
+                    'mode': '', 'total': 0, 'processed': 0, 'current': '', 'groups': 0}
+        status = task.status()
+        return {
+            'running': status['running'],
+            'done': status['done'],
+            'success': status['success'],
+            'cancelled': status['cancelled'],
+            'mode': status['extra'].get('mode', ''),
+            'total': status['total'],
+            'processed': status['processed'],
+            'current': status['current'],
+            'groups': int(status['extra'].get('groups', 0) or 0),
+        }
+
+    def scan_cancel(self) -> Dict:
+        """请求取消当前扫描；取消的任务不写结果缓存（没有"半份结果"）。"""
+        if self._scan_task is not None and self._scan_task.state == 'running':
+            self._scan_task.cancel()
+            return {'success': True}
+        return {'success': False, 'error': '没有正在运行的扫描任务'}
+
+    def on_unload(self) -> None:
+        """进程退出收尾：取消正在跑的扫描任务（已写出的结果缓存保留）。"""
+        if self._scan_task is not None and self._scan_task.state == 'running':
+            self._scan_task.cancel()

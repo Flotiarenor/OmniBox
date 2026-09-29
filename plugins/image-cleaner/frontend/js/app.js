@@ -114,18 +114,21 @@ class ImageCleaner {
     this.runScan();
   }
 
+  /**
+   * 扫描：扫描本身跑在后端的后台任务里（壳的共享基建 BackgroundTask，与 image-viewer 的
+   * 缩略图重建同一套骨架）—— 大图库上要算几万个指纹、相似模式还要两两比较，同步接口
+   * 既没有进度也不能取消。这里负责：读缓存 → 起任务 → 轮询进度（可取消）→ 取结果。
+   *
+   * 结果仍是后端的扫描缓存（`get_cached_scan`），与"重进页面直接读缓存"同一条路径。
+   */
   async runScan(force = false) {
     const box = document.getElementById('cleaner-results');
-    box.innerHTML = '<div class="empty-state">'
-      + '<div class="empty-state-text">正在扫描…</div>'
-      + '<div class="empty-state-hint">首次扫描要为每张图片算哈希，图库越大越久</div>'
-      + '</div>';
     document.getElementById('cleaner-scanned').textContent = '';
     document.getElementById('cleaner-selected').textContent = '已选 0 张';
     this.selected.clear();
+    this._showScanProgress('正在扫描…', '首次扫描要为每张图片算哈希，图库越大越久');
     try {
-      const method = this.mode === 'dupe' ? 'duplicate_scan' : 'similar_scan';
-      let result;
+      let result = null;
 
       // 非强制扫描时优先读取上次缓存，避免退出重进后全部重扫。
       if (!force) {
@@ -134,15 +137,23 @@ class ImageCleaner {
         } catch (e) {
           result = null;
         }
-        if (!result || !result.cached) {
-          result = await Bridge.call(method);
-        }
-      } else {
-        result = await Bridge.call(method);
       }
 
-      this.groups = result.groups || [];
-      const scanned = result.scanned || 0;
+      if (!result || !result.cached) {
+        await Bridge.call('scan_start', this.mode);
+        const status = await this._waitForScan();
+        if (!status || status.cancelled) {
+          this._showScanNotice('已取消扫描', '点「重新扫描」可以重新开始');
+          return;
+        }
+        if (!status.success) {
+          throw new Error('扫描任务失败');
+        }
+        result = await Bridge.call('get_cached_scan', this.mode);
+      }
+
+      this.groups = (result && result.groups) || [];
+      const scanned = (result && result.scanned) || 0;
       this.visibleCount = this.pageSize;
       document.getElementById('cleaner-scanned').textContent = `已扫描 ${scanned} 张`;
       this.render();
@@ -154,6 +165,58 @@ class ImageCleaner {
         + '<div class="empty-state-hint">请确认「图片相册」已加载、相册目录可访问，然后点「重新扫描」</div>'
         + '</div>';
     }
+  }
+
+  /**
+   * 扫描进度骨架只建一次（轮询每 400ms 只改文本）：整块 innerHTML 重建会把「取消扫描」
+   * 按钮换成新节点，用户按下的那一下正好落在被换掉的节点上就点不中。
+   */
+  _showScanProgress(text, hint) {
+    const box = document.getElementById('cleaner-results');
+    if (!box) return;
+    let textEl = document.getElementById('cleaner-scan-text');
+    if (!textEl) {
+      box.innerHTML = '<div class="empty-state">'
+        + '<div class="empty-state-text" id="cleaner-scan-text"></div>'
+        + '<div class="empty-state-hint" id="cleaner-scan-hint"></div>'
+        + '<button class="btn btn-sm" id="cleaner-cancel">取消扫描</button>'
+        + '</div>';
+      const cancel = document.getElementById('cleaner-cancel');
+      // 取消只发请求：任务收尾后由轮询看到 cancelled，再换掉这块 UI
+      if (cancel) cancel.addEventListener('click', () => { Bridge.call('scan_cancel'); });
+      textEl = document.getElementById('cleaner-scan-text');
+    }
+    const hintEl = document.getElementById('cleaner-scan-hint');
+    if (textEl) textEl.textContent = text;
+    if (hintEl) hintEl.textContent = hint;
+  }
+
+  /** 扫描的结束态（已取消等）：整块换掉，不留下一个点不动的「取消扫描」。 */
+  _showScanNotice(text, hint) {
+    const box = document.getElementById('cleaner-results');
+    if (!box) return;
+    box.innerHTML = '<div class="empty-state">'
+      + `<div class="empty-state-text">${this._escapeHtml(text)}</div>`
+      + `<div class="empty-state-hint">${this._escapeHtml(hint)}</div>`
+      + '</div>';
+  }
+
+  /** 轮询扫描进度直到任务收尾；返回最后一次 `scan_status`。 */
+  async _waitForScan() {
+    for (;;) {
+      const status = await Bridge.call('scan_status');
+      if (!status || !status.running) return status;
+      this._renderScanStatus(status);
+      await new Promise(resolve => setTimeout(resolve, 400));
+    }
+  }
+
+  _renderScanStatus(status) {
+    const phase = status.mode === 'similar' ? '相似图片' : '重复图片';
+    const total = status.total || 0;
+    const counts = total ? `${status.processed}/${total}` : `${status.processed || 0}`;
+    const current = status.current ? ` · ${this._displayPath(status.current)}` : '';
+    this._showScanProgress(`正在扫描${phase} ${counts}${current}`, '可以随时取消，已算好的指纹会留下');
   }
 
   render() {

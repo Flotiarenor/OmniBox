@@ -14,6 +14,8 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
+import { createDom } from './dom_stub.mjs';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const BASE_JS = path.join(ROOT, 'shell', 'frontend', 'public', 'shell', 'base.js');
 
@@ -28,70 +30,9 @@ function check(name, fn) {
   }
 }
 
-/** 极简 DOM：够 createSettingsForm 走完渲染与取值（与 host_channel_host.mjs 同一手法）。 */
-function makeDom() {
-  function matches(el, sel) {
-    if (sel.startsWith('.')) return String(el.className).split(/\s+/).includes(sel.slice(1));
-    return el.tagName === sel;
-  }
-  function find(el, sel) {
-    for (const child of el.children) {
-      if (matches(child, sel)) return child;
-      const deep = find(child, sel);
-      if (deep) return deep;
-    }
-    return null;
-  }
-  function findAll(el, sel, out = []) {
-    for (const child of el.children) {
-      if (matches(child, sel)) out.push(child);
-      findAll(child, sel, out);
-    }
-    return out;
-  }
-  function makeEl(tag) {
-    const el = {
-      tagName: tag, id: '', className: '', textContent: '', value: '', type: '', htmlFor: '',
-      style: {}, dataset: {}, children: [], handlers: {}, parentElement: null,
-      classList: {
-        add(c) { if (!String(el.className).split(/\s+/).includes(c)) el.className = `${el.className} ${c}`.trim(); },
-        remove(c) { el.className = String(el.className).split(/\s+/).filter((x) => x && x !== c).join(' '); },
-        toggle() { },
-        contains: (c) => String(el.className).split(/\s+/).includes(c),
-      },
-      append(...nodes) { nodes.forEach((n) => el.appendChild(n)); },
-      appendChild(child) {
-        if (child.__owner) child.__owner.children = child.__owner.children.filter((c) => c !== child);
-        child.__owner = el;
-        child.parentElement = el;
-        el.children.push(child);
-        return child;
-      },
-      addEventListener(type, fn) { (el.handlers[type] = el.handlers[type] || []).push(fn); },
-      querySelector: (sel) => find(el, sel),
-      querySelectorAll: (sel) => findAll(el, sel),
-    };
-    return el;
-  }
-  const document = {
-    readyState: 'complete',
-    body: makeEl('body'),
-    createElement: makeEl,
-    addEventListener() { }, removeEventListener() { },
-    getElementById: () => null,
-    querySelector: () => null,
-    querySelectorAll: () => [],
-    documentElement: {
-      getAttribute: () => null, setAttribute() { }, style: { setProperty() { } },
-      classList: { add() { }, remove() { }, contains: () => false },
-    },
-  };
-  return { document, makeEl };
-}
-
 /** 把真实 base.js 装进 vm，取回 createSettingsForm（顶层函数声明即上下文的全局）。 */
 function loadShell() {
-  const { document, makeEl } = makeDom();
+  const { document, makeEl } = createDom();
   const win = {
     label: 'plugin',
     location: { origin: 'http://127.0.0.1:1', href: 'http://127.0.0.1:1/plugins/x/frontend/index.html' },
