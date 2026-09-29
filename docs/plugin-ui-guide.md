@@ -181,6 +181,10 @@
 - 页面级操作（"重新扫描""取消任务"）可以留在工具栏里：内嵌时工具栏只是被降级为普通
   操作行，按钮仍然可见可点；但**不要把自己的标题、说明文字或侧栏塞进工具栏**，
   那些与宿主 header 重复的部分才是要收掉的。
+- **工具栏里已经没有任何该留的东西时，整条收掉**，不要为了"看起来像降级过"而留一行空的
+  或只剩信息的横条。image-cleaner 现在就是 `html.is-embedded .cleaner-toolbar{display:none}`
+  （操作已挂到宿主头部、根目录进了设置弹窗）—— 按钮源节点留在 DOM 里即可，宿主点按钮
+  回发的 `host-run` 靠它工作。
 - 宿主头部是**标题 + 一行说明两行结构**（image-viewer 的 `.extension-view-heading` 复用
   `.iv-view-title`/`.iv-view-sub`，与主工具栏同高 48px）：说明文字取扩展自己声明的
   `description`（`get_extensions()` 的字段，侧栏入口 tooltip 用的也是它）。内嵌页不必
@@ -441,7 +445,7 @@ background: var(--mp-glass, var(--bg-surface));
 | 侧栏标题/底栏 | `.sub-sidebar-header` / `.sub-sidebar-footer` | 分组标题用大写小字；底栏放统计 | image-viewer 用 `.iv-sidebar-footer` |
 | 卡片/网格 | 无壳类（曾有 `createCardGrid`，因零采用且渲染的 `.manga-*` 无任何样式定义，已删除） | 卡片属插件自己的内容区布局：建议统一"封面 + 标题 + 副标题/徽标"，圆角走 `--radius-lg`，悬浮 `.obx-card-lift`，选中态 = 2px `--accent` 描边 | media-player `.mp-card-grid`、manga-library `.ml-grid`、image-viewer `.iv-image-grid` |
 | 弹窗 | `base.css:159-179` `.modal` / `.modal-box` / `.modal-body` / `.modal-footer` | 入场 `.obx-anim-scale`/`-pop`；遮罩关闭用 `pointerdown` 并判 `e.target === overlay`（`base.js:602`，`tests/debug_modal_backdrop_press.py` 守） | image-viewer/manga-library/document-reader 已用；pixiv-sync 自造 `.psync-modal` |
-| 设置弹窗 | `base.js:566-628` `openSettingsModal()` + `settings_schema` | 首选；schema 类型 `text`（默认）/ `number` / `range` / `checkbox` / `select` / `textarea` / `directory`；`secret: True` 标记敏感字段（壳负责掩码与"留空即不改"）；`directory` 自动接入 `folder-picker`，`local_only` 可关掉"网络位置"入口 | 7 个插件调用（本轮把 pixiv-sync、image-cleaner 也接上）；仍自建面板的只有 image-viewer（文件夹/行高/排序，需要就地预览）与 document-reader（阅读设置弹窗 + 整页朗读设置） |
+| 设置弹窗 | `base.js:566-628` `openSettingsModal()` + `settings_schema` | 首选；schema 类型 `text`（默认）/ `number` / `range` / `checkbox` / `select` / `textarea` / `directory` / `info`（只读信息行，值由后端 `get_settings()` 给、不参与保存）；`secret: True` 标记敏感字段（壳负责掩码与"留空即不改"）；`directory` 自动接入 `folder-picker`，`local_only` 可关掉"网络位置"入口 | 7 个插件调用（本轮把 pixiv-sync、image-cleaner 也接上）；仍自建面板的只有 image-viewer（文件夹/行高/排序，需要就地预览）与 document-reader（阅读设置弹窗 + 整页朗读设置） |
 | 表单控件 | `base.css:181-206` `.settings-form` / `.field*` / `.field-range*` | 自建设置面板也必须复用这些类 | image-viewer 自造 `.iv-field`/`.iv-setting-item` |
 | Toast | `base.js:362-393` `Toast.success/error/info/warning` | 全部反馈走它 | 采纳 134 处；**pixiv-sync 有 22 处 `alert()`** |
 | 确认框 | `base.js:394-418` `confirmDialog(msg, {danger})` | 破坏性操作一律用它 | 采纳 12 处，无 `window.confirm` |

@@ -429,9 +429,14 @@ class PluginBase(ABC):
         # 变更检测必须用未脱敏的值：拿掩码与真值比较会把凭据每次都判成"已变更"，
         # 于是每次保存都触发 on_settings_changed（pixiv-sync 会据此重建客户端）。
         old = self._raw_settings()
-        allowed = {item['key'] for item in self.settings_schema if item.get('key')}
+        declared = [item for item in self.settings_schema if item.get('key')]
+        # `type: "info"` 是只读信息行（值由 get_settings() 算出来给前端展示），不是可写设置：
+        # 前端不会提交它，这里也不接受它 —— 否则一次手写的 /api 调用就能把展示用的键
+        # （例如 image-cleaner 的根目录）写进设置文件。判据用 declared 而不是 allowed：
+        # 只声明 info 字段的插件 allowed 为空，不能因此退回"什么键都收"。
+        allowed = {item['key'] for item in declared if item.get('type') != 'info'}
         # 一律复制：不要与调用方传入的对象共享引用（下面会 pop）
-        clean = {k: v for k, v in settings.items() if k in allowed} if allowed else dict(settings)
+        clean = {k: v for k, v in settings.items() if k in allowed} if declared else dict(settings)
 
         # 掩码原样回传 = "不改动"。前端会把 get_settings() 的值回填进输入框再整体
         # 提交，若把掩码当新值写入，凭据就被静默覆盖成一串星号（用户下次同步时

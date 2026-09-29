@@ -485,6 +485,27 @@ function createSettingsForm(container, schema, values = {}) {
       return;
     }
 
+    // 只读信息行：值是后端算出来的（如"扫描的是哪个目录"），这里只展示、不可编辑。
+    // 它**不登记进 fieldEls**，getValues() 因此取不到它 —— 展示用的一行不该被当成设置
+    // 提交回后端（后端也把 info 字段排除在可写键之外，见 plugin_base.save_settings）。
+    // 值优先取 values[key]（后端 get_settings()），其次取 schema 里的 value（静态说明）。
+    if (field.type === 'info') {
+      const shown = values[field.key] !== undefined ? values[field.key]
+        : (field.value !== undefined ? field.value : field.default);
+      const value = document.createElement('div');
+      value.className = 'field-info';
+      value.textContent = shown == null ? '' : String(shown);
+      wrap.append(label, value);
+      if (field.help) {
+        const help = document.createElement('p');
+        help.className = 'field-help';
+        help.textContent = field.help;
+        wrap.appendChild(help);
+      }
+      container.appendChild(wrap);
+      return;
+    }
+
     if (field.type === 'checkbox') {
       input = document.createElement('input');
       input.type = 'checkbox';

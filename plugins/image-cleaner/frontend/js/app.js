@@ -24,8 +24,10 @@ class ImageCleaner {
    * 而"操作在顶栏"是其它插件的统一形态。只声明按钮，宿主用它的样式渲染；宿主不表态
    * 时整组留在本页工具栏（`mountToolbar` 会自动取消隐藏）。
    *
-   * 挂两个而不是只挂设置：只搬一个的话，用户看到的是"设置上去了、重新扫描还在下面"，
-   * 仍然是半成品。两个都挂，`#cleaner-actions` 整组收起，本页工具栏就只剩作用域信息。
+   * 两个都挂，`#cleaner-actions` 整组收起。内嵌态下本页这条工具栏整条不显示
+   * （image-cleaner.css 的 `html.is-embedded .cleaner-toolbar`）：留在本页的只有
+   * 按钮源节点（点了宿主头部的按钮，host-run 会点回这里）。单独打开本页时它照旧是
+   * 本插件自己的工具栏（作用域 + 根目录 + 两个按钮）。
    */
   _mountHostToolbar() {
     if (!window.HostChannel || typeof HostChannel.mountToolbar !== 'function') return;
@@ -79,9 +81,11 @@ class ImageCleaner {
     document.getElementById('tab-similar').addEventListener('click', () => this.switchMode('similar'));
   }
 
+  // 单独打开本页时把根目录填进工具栏；内嵌态这条工具栏整条不显示（根目录改在设置弹窗里，
+  // 见后端 settings_schema 的 root_dir），没必要为一个隐藏节点再打一次后端。
   async updateStatus() {
     const rootEl = document.getElementById('cleaner-root');
-    if (!rootEl) return;
+    if (!rootEl || document.documentElement.classList.contains('is-embedded')) return;
     try {
       const status = await Bridge.call('get_status');
       const root = status && status.root_dir;

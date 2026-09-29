@@ -214,6 +214,20 @@ body {
 .field-label { font-size: 13px; font-weight: 500; color: var(--text-primary); }
 .field-label.required::after { content: ' *'; color: var(--danger); }
 .field-help { font-size: 12px; color: var(--text-secondary); }
+/* 只读信息行（schema 的 `type: "info"`）：展示后端算出来的值（如数据根目录），不可编辑。
+   形态与输入框同宽同圆角但底色更弱，一眼能看出"这不是能改的东西"；路径往往很长，
+   允许任意位置折行并支持整段选中复制。 */
+.field-info {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+  user-select: all;
+}
 .field input[type="text"],
 .field input[type="number"],
 .field select,

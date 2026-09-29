@@ -5,9 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>相册清理</title>
   <script>
-    // 宿主（图片相册的扩展面板）在 embedUrl 上追加 ?embed=1：此时宿主已经给了标题/一行说明
-    // （说明取本插件 get_extensions() 的 description），本页把工具栏降级成普通操作行，
-    // 避免两层横条（见 docs/plugin-ui-guide.md §3.4）。
+    // 宿主（图片相册的扩展面板）在 embedUrl 上追加 ?embed=1：此时宿主头部已经给了标题、
+    // 一行说明与两个操作按钮（本插件用 HostChannel.mountToolbar 挂上去的），本页整条工具栏
+    // 都不再显示（见 CSS 的 html.is-embedded）—— 作用域与根目录改在设置弹窗里说明
+    // （后端 settings_schema 的 root_dir 信息行）。见 docs/plugin-ui-guide.md §3.4。
     if (new URLSearchParams(location.search).has('embed')) {
       document.documentElement.classList.add('is-embedded');
     }
@@ -16,12 +17,15 @@
 </head>
 <body>
   <div id="app" class="view-body">
-    <div class="view-toolbar cleaner-toolbar">
+    <!-- 这一排只在"单独打开本页"时可见（内嵌态整条隐藏，见 image-cleaner.css）。
+         `#cleaner-actions` 是挂载成功后要被收起的源节点：宿主头部上那两个按钮点击后
+         回发的 host-run 会点回这里，处理逻辑始终只有一份（app.js 的 _mountHostToolbar）。 -->
+    <div id="cleaner-toolbar" class="view-toolbar cleaner-toolbar">
       <div class="toolbar-group cleaner-meta">
         <span class="cleaner-scope">全部相册</span>
         <span class="cleaner-root" id="cleaner-root" title="相册根目录">读取中…</span>
       </div>
-      <div class="toolbar-group" style="margin-left:auto;">
+      <div class="toolbar-group" id="cleaner-actions" style="margin-left:auto;">
         <button id="btn-rescan" class="btn btn-sm">重新扫描</button>
         <button id="btn-settings" class="btn btn-sm" title="相似判定阈值等设置（由后端 settings_schema 声明）"><svg class="obx-icon"><use href="#settings"></use></svg> 设置</button>
       </div>

@@ -38,9 +38,11 @@ DEFAULT_PLUGINS_DIR = PROJECT_ROOT / 'plugins'
 RESERVED_ROUTES = {'/', '/settings'}
 # 目录列表类型是 directory：base.js 的 type:"directory" 分支调用共享组件
 # window.FolderPicker.createList（实现在 shell/frontend/public/shell/folder-picker.js）；
-# folder 是文档里曾出现过但从未实装的旧名，保留在允许列表里避免老插件被误判为错误
+# folder 是文档里曾出现过但从未实装的旧名，保留在允许列表里避免老插件被误判为错误；
+# info 是只读信息行（base.js 渲染成 .field-info，值由 get_settings() 给、不参与保存，
+# PluginBase.save_settings 也把它排除在可写键外）
 ALLOWED_SCHEMA_TYPES = {'text', 'number', 'range', 'select', 'checkbox', 'textarea',
-                        'directory', 'folder'}
+                        'directory', 'folder', 'info'}
 # 设置项上的可选标记（除 type/default/min/max/options/help 之外）：
 #   "secret": True —— 申请 Shell 文件防护：该插件设置文件不得被文件路由返回，
 #   见 PluginBase.get_protected_paths() 与 docs/plugin-guide.md §8.2

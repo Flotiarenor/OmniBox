@@ -21,6 +21,11 @@ ALLOWED_EXTENSIONS = IMAGE_EXTENSIONS
 
 class ImageCleanerPlugin(PluginBase):
     settings_schema: ClassVar[List[Dict[str, Any]]] = [
+        # 只读信息行（`type: "info"`）：扫描的就是宿主「图片相册」的数据根目录，
+        # 值由 get_settings() 现取，前端只展示、不提交（见 plugin_base.save_settings）。
+        # 原先这一行显示在内嵌页自己的工具栏上，那一排已整条去掉。
+        {"key": "root_dir", "label": "相册根目录", "type": "info",
+         "help": "扫描范围取自「图片相册」的根目录；要换目录请到图片相册的设置里改"},
         {"key": "threshold", "label": "相似判定阈值", "type": "range",
          "min": 0, "max": 16, "default": 8,
          "help": "汉明距离越小越严格，0 表示只有完全一致的 dHash 才判为相似"},
@@ -73,6 +78,20 @@ class ImageCleanerPlugin(PluginBase):
             'root_dir': str(host.get_data_root()),
             'scope': 'all',
         }
+
+    def get_settings(self) -> Dict:
+        """统一设置 + 只读信息行「相册根目录」。
+
+        根目录不落在本插件的设置里 —— 它就是宿主 image-viewer 的数据根目录，所以每次
+        现取：用户在图片相册里换了根目录，设置弹窗里这一行跟着变。宿主不可用时留空字符串
+        （信息行空着，但不能因此让整个设置弹窗打不开）。
+        """
+        settings = super().get_settings()
+        try:
+            settings['root_dir'] = str(self.get_data_root())
+        except RuntimeError:
+            settings['root_dir'] = ''
+        return settings
 
     def get_extensions(self) -> List[dict]:
         """注册到 image-viewer 左侧栏的通用扩展入口。"""

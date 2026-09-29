@@ -1102,7 +1102,8 @@ class MyPlugin(PluginBase):
 | ---------------------------- | ---- | ----------------------------------------------------------------------------------------- |
 | `key`                      | 必填 | 设置键名                                                                                  |
 | `label`                    | 必填 | 设置面板显示名                                                                            |
-| `type`                     | 必填 | `text` / `number` / `range` / `select` / `checkbox` / `textarea` / `directory` |
+| `type`                     | 必填 | `text` / `number` / `range` / `select` / `checkbox` / `textarea` / `directory` / `info` |
+| `value`                    | 可选 | 仅 `info`：只读信息行的值（后端也可以改从 `get_settings()` 给，见下）                     |
 | `default`                  | 可选 | 默认值（未保存过时使用）                                                                  |
 | `help`                     | 可选 | 悬浮`?` 提示文本（鼠标悬停显示）                                                        |
 | `min` / `max` / `step` | 可选 | number/range 类型约束                                                                     |
@@ -1236,14 +1237,35 @@ def get_protected_paths(self):
 - 重复目录（含只差尾斜杠的写法）与空路径会被拒绝并提示。
 
 **插件侧不需要写任何代码**，值仍是普通字符串：单值字段存一行路径（`str`），
-`multi: true` 的字段存换行分隔的多行（与改造前的 `text` / `textarea` 格式完全一致），
-保存走原来的 `save_settings()` 链路。
+`multi: true` 的字段存换行分隔的多行（与改造前的 `text` / `textarea` 格式完全一致），保存走原来的 `save_settings()` 链路。
 
 > `directory` 只是**渲染方式**，不影响值本身：字段从 `text` / `textarea` 改成
 > `directory` 前后，`self.setting('root_dir')` 拿到的都是同一份字符串。反过来说，
 > 把多行文本字段合并成一个多值 `directory` 字段时，**记得让后端兼容旧键**，
 > 否则老用户配置里的值会看起来"丢了"（media-player 的
 > `_configured_roots()` 就是这种兼容：新键优先，没有才回退旧键）。
+
+#### `type: "info"`：只读信息行
+
+有些设置项**只该被看见，不该被改**：典型是"这个插件实际在处理哪个目录/哪个端点"，
+它由宿主的设置决定（image-cleaner 的相册根目录就是图片相册的数据根）。这类声明成
+`info`，渲染成一行只读文本（`.field-info`），没有输入控件：
+
+```python
+{"key": "root_dir", "label": "相册根目录", "type": "info",
+ "help": "扫描范围取自「图片相册」的根目录；要换目录请到图片相册的设置里改"},
+
+def get_settings(self):
+    settings = super().get_settings()
+    settings['root_dir'] = str(self.get_data_root())   # 每次现取，跟着宿主变
+    return settings
+```
+
+值是每行的一条文本：优先取 `get_settings()` 里的同名键（后端算出来的实时值），
+其次取 schema 自带的 `value`（静态说明）。它是**展示**，不是设置：前端
+`getValues()` 不会提交它，`PluginBase.save_settings()` 也把它排除在可写键之外
+（两层都不认；只声明 `info` 字段的插件，一次手写 API 调用也写不进任何键）。
+需要"能改的目录"就用 `directory`，两者别混。
 
 #### `local_only`：该目录只接受本机路径
 

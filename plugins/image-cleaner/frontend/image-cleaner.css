@@ -141,12 +141,11 @@
 /* 结果区空态用壳的 .empty-state（base.css），不再自带 .cleaner-empty */
 
 /* 内嵌进宿主面板时（宿主在 embedUrl 上加了 ?embed=1，见 index.html <head> 里的脚本）：
-   宿主已经给了标题与一行说明，这里把工具栏降级为普通操作行，避免两层横条。
+   整条工具栏都不显示 —— 宿主头部已经是"这个视图的工具栏"（标题 + 一行说明 + 本插件挂上去的
+   两个按钮），本页再留一排就是第三条横条。原先只把它降级成操作行，作用域与根目录仍占一行；
+   现在根目录进了设置弹窗（后端 settings_schema 的 root_dir 信息行），这一排没有内容了。
    `html.is-embedded` 是 0,1,1，压得过 base.css 的 `.view-toolbar`(0,1,0)，
    与本文件注入在壳样式之前无关。 */
-html.is-embedded .view-toolbar {
-  height: auto;
-  padding: 2px 16px 0;
-  border-bottom: none;
-  background: transparent;
+html.is-embedded .cleaner-toolbar {
+  display: none;
 }
