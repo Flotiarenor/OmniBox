@@ -818,19 +818,13 @@ window.HostChannel = (function() {
     var host = self();
     if (!host || event.source !== host) return;
 
-    if (data.type === REPLY && data.exchange === 'probe') {
-      // 这里必须按**回信对象**回填，与下面那条通用分支同一形状：probe() 读的是
-      // `reply.ok`。曾经这里传的是 `!!data.ok`（布尔），于是"上层明明答应了"也被读成
-      // undefined → probe 恒为 false → 内嵌插件的设置/确认弹窗永远回落进 iframe 自己
-      // 画的那一份（没有整页遮罩、被 iframe 边框裁掉）。
-      if (pending['probe']) {
-        clearTimeout(pending['probe'].timer);
-        pending['probe'].resolve({ ok: !!data.ok, data: null });
-        delete pending['probe'];
-      }
-      return;
-    }
     if (data.type === REPLY && pending[data.exchange]) {
+      // `probe` 的回信也走这里，**不要**为它单开分支：`waitReply({type: PROBE}, 'probe', …)`
+      // 把 pending 挂在键 'probe' 上，上层回的 `exchange` 也是 'probe'，两边天然对上、
+      // 回填的就是下面这个 `{ok, data}` 对象（`probe()` 读的正是 `reply.ok`）。
+      // 曾有一条专为 probe 写的分支把 `!!data.ok`（布尔）当回信对象 resolve，于是
+      // "上层明明答应了"也被读成 undefined → probe 恒为 false → 内嵌插件的设置/确认弹窗
+      // 永远回落进 iframe 自己画的那一份（没有整页遮罩、被 iframe 边框裁掉）。
       var p = pending[data.exchange];
       clearTimeout(p.timer);
       delete pending[data.exchange];
