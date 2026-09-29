@@ -28,7 +28,6 @@ Python 单测与静态检查都发现不了（属性确实写对了，是级联�
 from __future__ import annotations
 
 import json
-import shutil
 import sys
 import tempfile
 import time
@@ -168,18 +167,17 @@ def _have_selenium() -> bool:
 
 
 def _have_browser() -> bool:
-    for exe in ('chrome', 'chrome.exe', 'msedge', 'msedge.exe', 'chromium', 'chromium-browser'):
-        if shutil.which(exe):
-            return True
-    for candidate in (
-        Path(r'C:\Program Files\Google\Chrome\Application\chrome.exe'),
-        Path(r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'),
-        Path(r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'),
-        Path(r'C:\Program Files\Microsoft\Edge\Application\msedge.exe'),
-    ):
-        if candidate.is_file():
-            return True
-    return False
+    """有没有**能驱动 ChromeDriver**的浏览器。
+
+    原来的实现自己列 PATH 与安装目录，会把 Windows 自带的 Edge 也算作"有浏览器"；
+    而 `webdriver.Chrome` 驱动不了 Edge —— 守卫放行、`setUpClass` 里再拿不到 driver，
+    结果是本文件 34 个用例在只有 Edge 的机器上**静默全跳过**（实机报
+    `Unable to obtain driver for chrome`）。与 `test_group_mesh_shell_e2e.py` 一致，
+    统一收敛到 `browser_binary()`。
+    """
+    from tests.harness.browser_binary import browser_binary
+
+    return browser_binary() is not None
 
 
 # 全新安装时的后端状态（与 GroupMeshPlugin.get_status() 的真实返回同形）
@@ -247,7 +245,15 @@ class FrontendRenderTest(unittest.TestCase):
     def setUpClass(cls):
         from selenium import webdriver
 
+        from tests.harness.browser_binary import browser_binary
+
         options = webdriver.ChromeOptions()
+        # 显式指到 Chrome：本机可能只在仓库里带了一份 chrome-for-testing
+        # （`.build/cft/chrome-win64/chrome.exe`），不指路时 Selenium Manager 找不到
+        # 浏览器，`webdriver.Chrome` 直接失败 → 用例静默跳过（见 `_have_browser()`）。
+        binary = browser_binary()
+        if binary:
+            options.binary_location = binary
         options.add_argument('--headless=new')
         options.add_argument('--disable-gpu')
         options.add_argument('--no-sandbox')
@@ -657,7 +663,15 @@ class RemotePageRenderTest(unittest.TestCase):
     def setUpClass(cls):
         from selenium import webdriver
 
+        from tests.harness.browser_binary import browser_binary
+
         options = webdriver.ChromeOptions()
+        # 显式指到 Chrome：本机可能只在仓库里带了一份 chrome-for-testing
+        # （`.build/cft/chrome-win64/chrome.exe`），不指路时 Selenium Manager 找不到
+        # 浏览器，`webdriver.Chrome` 直接失败 → 用例静默跳过（见 `_have_browser()`）。
+        binary = browser_binary()
+        if binary:
+            options.binary_location = binary
         options.add_argument('--headless=new')
         options.add_argument('--disable-gpu')
         options.add_argument('--no-sandbox')
