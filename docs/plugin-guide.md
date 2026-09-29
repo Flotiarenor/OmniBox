@@ -596,6 +596,7 @@ class AudioCoverCache(ThumbCache):
 | `.view-body`          | 主内容区容器（`flex: 1; flex-direction: column; overflow: hidden`） |
 | `.view-toolbar`       | 顶部工具栏（高 48px，`var(--bg-surface)` 背景，底部边框）           |
 | `.toolbar-group`      | 工具栏内的按钮组（`flex; align-items: center; gap: 8px`）           |
+| `.obx-toolbar-btn`    | **工具栏动作按钮**：高度 `var(--control-h)`(31px) / 13px / 内边距 `0 14px` / 图标与文字间距 6px，一处定义、全仓可调。`.view-toolbar` 内的 `.btn` 自动命中；工具栏**之外**（扩展视图头部、宿主挂载点、页面内的动作行）必须显式加这个类，否则尺寸会与主工具栏那一排分家 |
 | `.view-sub-sidebar`   | 左侧子侧边栏（宽`var(--sub-sidebar-width)`，默认 240px）            |
 | `.sub-sidebar-header` | 侧边栏标题行（大写标签，底部边框）                                    |
 | `.sub-sidebar-footer` | 侧边栏底部统计区（小字体，顶部边框）                                  |

@@ -260,6 +260,10 @@ HostChannel.serve({
 - **重挂载是常态**：内嵌页整页重载后会再发一次，宿主先清掉上一批 `.obx-host-action` 再渲染，
   且注入的按钮排在宿主自己的按钮之前，不把它顶走（image-viewer 的头部现在没有自带按钮，
   这条仍然成立：宿主将来加了自己的按钮，位置在注入的那批之后）。
+- **挂上来的按钮自带 `.obx-toolbar-btn`**：壳按这个组件渲染，尺寸与宿主主工具栏同源
+  （高度 `--control-h` / 13px / 内边距 `0 14px` / 图标间距 6px）。宿主**不要**再写
+  `.xx-extension-header .btn { font-size / padding }` 一类校正 —— 那是壳还没有这个组件时
+  的逐插件补丁，留着就会与壳分家（image-viewer 原有的那段已删除）。
 
 **要搬就把这一视图的操作搬全**：只把「设置」搬上去、把「重新扫描」留在内嵌页正文里，
 用户看到的仍是"一半在顶栏、一半在下面"——比不搬更像坏掉。image-cleaner 的做法是把两个
@@ -437,7 +441,8 @@ background: var(--mp-glass, var(--bg-surface));
 
 | 组件 | 壳提供的入口 | 规范用法 | 现状 |
 | --- | --- | --- | --- |
-| 按钮 | `base.css:13-36` `.btn` / `-primary` / `-danger` / `-danger-solid` / `-sm` / `.active` | 工具条 `.btn`/`.btn-sm`；主操作 `-primary`；破坏性 `-danger` 且二次确认。**工具条内的高度与字号由壳统一**（`.view-toolbar .btn` 取 `--control-h`，`-sm` 只压横向内边距），插件不要用 padding/字号把按钮撑成另一档 | 全部插件在用 |
+| 按钮 | `base.css:13-36` `.btn` / `-primary` / `-danger` / `-danger-solid` / `-sm` / `.active` | 工具条 `.btn`/`.btn-sm`；主操作 `-primary`；破坏性 `-danger` 且二次确认。工具条内 `.btn` 与 `.btn-sm` 的度量相同（见下一行），插件不要用 padding/字号把按钮撑成另一档 | 全部插件在用 |
+| 工具栏动作按钮 | `base.css` 的 `.obx-toolbar-btn`（`.view-toolbar .btn` 自动命中同一个规则） | **一排操作按钮的唯一实现**：高度 `--control-h`、13px、内边距 `0 14px`、图标与文字间距 6px。工具栏之外（扩展视图头部、宿主挂载点、页面动作行）显式加这个类；调尺寸只改这一处，不要再去每个插件里校正 | 主工具栏 7 个插件、宿主挂载（`base.js` 的 mountToolbar）、pixiv-sync 的动作行均已在用 |
 | 设置入口 | `#btn-settings` | 图标固定用 `#settings`，与其余插件同形；图标名必须在 `res/icons/icon_data.json` 里 | 7 个插件有该入口（netease-music 无）；图标名存在性由 `tools/build_icons.py --check` 覆盖，**图标选哪一个是本表的约定，不设门禁** |
 | 图标 | `base.css` 的 `.obx-icon`（+ `.obx-icon-lg`）、图标集 `res/icons/` | 只用图标集，不用图形化 emoji 与符号字形；尺寸走 `1em`、颜色走 `currentColor`，详见本节「补充约定」第一条 | 壳与 8 个插件的前后端均已迁移（含壳自带的 `base.js` / `folder-picker.js` / 状态页）；emoji 与符号字形门禁已启用 |
 | 分组切换 | 无专用类 | `.btn.btn-sm.active`（image-cleaner 的 tab）或 `.obx-nav-item` | image-cleaner 用前者 |

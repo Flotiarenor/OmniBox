@@ -297,13 +297,20 @@ body {
 }
 .toolbar-group { display: flex; align-items: center; gap: 8px; }
 
-/* 工具栏里的按钮高度与字号由壳统一：插件写 `.btn` 还是 `.btn-sm` 都不再改变这两项，
-   只有横向内边距仍按档位走（紧凑档更窄）。规格见 docs/plugin-ui-guide.md §5。
-   必须配 `inline-flex` + 居中：`height` 收到 border-box 后，靠 padding 撑开的
-   行盒会被压掉，只写 height 会让 13px 的文字被裁。 */
+/* 工具栏动作按钮 —— 壳里"一排操作按钮"的**唯一实现**：高度、字号、内边距、图标与
+   文字的间距、垂直居中都在这里，改这一处就是改所有插件。
+   两条命中路径：
+     1. `.view-toolbar .btn` —— 主工具栏里的按钮默认命中，插件不必改标记；工具栏内
+        `.btn` 与 `.btn-sm` 的度量完全相同（`-sm` 只剩"语义上的紧凑"，不再改尺寸），
+        因此插件写哪个类都不会让按钮变成另一档，宽度也不会因为类不同而不齐；
+     2. `.obx-toolbar-btn` —— 工具栏**之外**的同类按钮显式声明：扩展视图头部、
+        宿主挂载点（`base.js` 的 mountToolbar 生成）、页面内的动作行。
+   必须配 `inline-flex` + 居中：`height` 收到 border-box 后，靠 padding 撑开的行盒
+   会被压掉，只写 height 会让 13px 的文字被裁。规格见 docs/plugin-ui-guide.md §5。 */
+.obx-toolbar-btn,
 .view-toolbar .btn {
   height: var(--control-h, 31px);
-  padding-block: 0;
+  padding: 0 14px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
