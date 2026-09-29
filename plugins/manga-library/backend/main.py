@@ -18,6 +18,7 @@ list_pages = _scanner.list_pages
 natural_sorted = _scanner.natural_sorted
 resolve_safe_path = _scanner.resolve_safe_path
 scan_manga = _scanner.scan_manga
+visible_subdirs = _scanner.visible_subdirs
 
 _dmodels = load_sibling(__file__, 'download_models', 'manga_library_download')
 _dstate = load_sibling(__file__, 'download_state', 'manga_library_download')
@@ -212,8 +213,7 @@ class MangaLibraryPlugin(PluginBase):
             except Exception:
                 pass
 
-        sub_dirs = [d for d in folder_path.iterdir()
-                    if d.is_dir() and not d.name.startswith('.') and d.name != 'ai']
+        sub_dirs = visible_subdirs(folder_path)
         is_multi_chapter = len(sub_dirs) > 0
 
         chapters = []

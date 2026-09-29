@@ -8,7 +8,7 @@
 
 `manga-library`（显示名「漫画中心」）是 OmniBox 的本地漫画库与下载中心**合并插件**：把磁盘上的漫画目录组织成书架，提供章节/图片浏览、沉浸式单页阅读、收藏与最近阅读，并内置基于 `jmcomic` 的下载任务管理。`manifest.json` 的 `description` 即此意：「漫画库与下载中心合并插件：书架浏览、章节阅读、收藏、最近阅读与 jmcomic 下载任务管理。」
 
-- **漫画库**：数据根目录 = 设置项 `root_dir`；未配置时回落 `PluginBase.get_data_root()`（全局配置 `directories.data_root`）。根目录下**每个一级子目录即一部漫画**，跳过隐藏目录与名为 `ai` 的目录；标题/作者/标签/总页数/专辑号取自该目录的 `album_info.json`，缺失时用目录名与「未知」兜底。
+- **漫画库**：数据根目录 = 设置项 `root_dir`；未配置时回落 `PluginBase.get_data_root()`（全局配置 `directories.data_root`）。根目录下**每个含可读图片的一级子目录即一部漫画**：跳过隐藏目录与名为 `ai` 的目录，再按 `scanner.has_images` 跳过**没有图片**的目录（漫画目录里直接有图片，或一级章节子目录里有图片；更深的层级 `find_cover` / `list_pages` 都读不到，因此不算）。漫画根未配置时它常常就是全局数据根，那里放着插件自己的数据目录（如 `<数据根>/group-mesh`，group-mesh 插件 `on_load` 无条件创建、可以是空的），这道判定避免它们变成一部 0 页、无封面的空白漫画 —— 与图片相册按 `readable == 0` 隐藏空相册同一口径。标题/作者/标签/总页数/专辑号取自该目录的 `album_info.json`，缺失时用目录名与「未知」兜底。
 - **浏览层级**：一级视图 `all` / `favorites` / `recent` / `downloads`，详情二级页 `chapters` → `images`；前端用 `viewLevel`（`home` / `chapters` / `images`）驱动，入口只有一个 `loadView()`。
 - **阅读**：图片页点击任意缩略图打开全屏阅读器 `MangaReader`（`frontend/js/reader.js`），支持点击翻页、左右箭头与键盘（`←/→/↑/↓/a/w/d/s`、空格、Esc）；进入图片页即调用 `manga_update_recent` 记录最近阅读。
 - **下载中心**：与漫画库合并在同一插件、同一数据根目录——`download_*` 系列 API 管理 jmcomic 下载任务（提交/暂停/继续/重试/删除/全部开始/全部暂停/清除已完成/详情），任务状态因此可无缝继承旧 `download-center` 的落盘文件。
@@ -34,7 +34,7 @@ plugins/manga-library/
 ├── manifest.json                  # name/displayName/icon/keepAlive/permissions，backend.entry=backend/main.py，route=/manga-library
 ├── backend/
 │   ├── main.py                    # MangaLibraryPlugin（PluginBase 子类）：settings_schema、API 注册、扫描与状态、下载任务管理
-│   ├── scanner.py                 # 无实例状态纯函数：scan_manga / find_cover / list_pages / resolve_safe_path / natural_sorted
+│   ├── scanner.py                 # 无实例状态纯函数：scan_manga / find_cover / has_images / visible_subdirs / direct_images / list_pages / resolve_safe_path / natural_sorted
 │   ├── download_models.py         # DownloadTask 数据类 + to_api_dict / to_state_dict / from_state_dict
 │   ├── download_state.py          # 任务状态 JSON 读写：save_tasks / load_tasks
 │   └── downloader.py              # execute_download：jmcomic 下载执行、进度回调、album_info 组装
@@ -95,9 +95,9 @@ plugins/manga-library/
 
 ### 3.2 对象与语义
 
-- **漫画对象**（`scanner.scan_manga`）：`comic_id`（`album_info.album_id`，缺失时用目录名）、`title`、`author`（默认「未知」）、`tags`、`page_count`（`total_page_count`，默认 `0`）、`cover_url`（相对漫画根的 posix 路径，可能为 `''`）、`folder_name`、`is_fav`。
-- **封面选择**（`scanner.find_cover`）：多章漫画先进入自然序第一个子章节目录；在每个候选目录内按「文件名含 `cover` 或 `封面`」→「纯数字命名的第一页」→「自然序第一张」依次取第一张图片，返回相对漫画根的 posix 路径。
-- **章节判定**（`manga_get_detail`）：`is_multi_chapter = 存在非隐藏且名字不为 ai 的一级子目录`；多章时 `chapters` 为自然序子目录列表，每项 `{name, cover_url, path}`（`path` 即子目录名，供 `manga_get_pages` 的 `chapter_path` 使用）。
+- **漫画对象**（`scanner.scan_manga`）：`comic_id`（`album_info.album_id`，缺失时用目录名）、`title`、`author`（默认「未知」）、`tags`、`page_count`（`total_page_count`，默认 `0`）、`cover_url`（相对漫画根的 posix 路径，可能为 `''`）、`folder_name`、`is_fav`。入架门槛是 `scanner.has_images`（见 §1）：没有可读图片的目录不进列表，收藏/最近阅读里指向这类目录的条目也因此不显示。
+- **封面选择**（`scanner.find_cover`）：多章漫画先进入自然序第一个子章节目录；在每个候选目录内按「文件名含 `cover` 或 `封面`」→「纯数字命名的第一页」→「自然序第一张」依次取第一张图片，返回相对漫画根的 posix 路径。只看第一个章节，因此「首章为空、后续章节有图」时 `cover_url` 为 `''`（卡片显示占位块），但该目录仍会入架 —— `has_images` 检查的是全部章节。
+- **章节判定**（`manga_get_detail`）：`is_multi_chapter = 存在非隐藏且名字不为 ai 的一级子目录`（与 `scanner.visible_subdirs` 同一份实现，两处不会漂移）；多章时 `chapters` 为自然序子目录列表，每项 `{name, cover_url, path}`（`path` 即子目录名，供 `manga_get_pages` 的 `chapter_path` 使用）。
 - **详情 `info`**：直接读 `<漫画目录>/album_info.json` 原文（读取失败或缺失时为 `{}`），前端据此渲染 ID/原名/作者/下载时间/演员/标签。
 - **页面列表**（`scanner.list_pages`）：只收 `*.jpg` / `*.jpeg` / `*.png` / `*.webp`，自然序（`natsort`，缺库时用等宽数字填充的退化实现），返回相对漫画根的 posix 路径。
 - **路径安全**（`scanner.resolve_safe_path`）：`Path.resolve()` 后要求目标落在漫画根目录内，指定 `chapter_path` 时还要求落在该漫画目录内，否则返回 `None`；`manga_get_detail` / `manga_get_pages` 因此返回空结果而不是抛错。
