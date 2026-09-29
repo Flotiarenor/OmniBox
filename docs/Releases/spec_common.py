@@ -66,6 +66,16 @@ HIDDEN_IMPORTS = [
     'chardet',
     # document-reader 的 Markdown 渲染（requirements.txt 里随 rich 一起声明）
     'markdown_it',
+    # document-reader 的正文抽取（documents.py：from html.parser import HTMLParser）
+    # 与元数据解析（urllib.parse / xml.etree.ElementTree）。
+    # 标准库子模块也要声明：插件源码是作为数据文件随包分发的，PyInstaller 的静态分析
+    # 完全看不到它；而"父包 html 进了包"不等于"子模块 html.parser 进了包"。
+    # 后两条眼下虽被主程序图顺带带入，但那是**偶然**（requests 用了 urllib.parse），
+    # 依赖一旦变化就会静默失效 —— html.parser 正是这么漏的（漏掉的表现是
+    # document-reader 整个不加载：No module named 'html.parser'）。
+    'html.parser',
+    'urllib.parse',
+    'xml.etree.ElementTree',
     # document-reader 的朗读引擎：插件后端 importlib 动态加载，静态分析看不到；
     # 漏在这里的表现是"冻结后点朗读报没有可用引擎"（tts_engine 里是函数内 import）
     'edge_tts',

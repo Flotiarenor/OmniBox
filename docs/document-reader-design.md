@@ -45,7 +45,7 @@ Selenium 非无头），不是读源码推断的；下文标注"实测""踩过"�
 ```
 
 （左侧栏四个入口的图标：`library` 全部文档、`history` 最近阅读、`star` 书签、
-`volume-2` 朗读设置；工具栏右侧是搜索输入框与 `settings-2` 设置按钮。）
+`volume-2` 朗读设置；工具栏右侧是搜索输入框与 `settings` 设置按钮。）
 
 - 封面卡元素：封面（纵深比 140%）+ 格式角标（EPUB/TXT/MD/PDF）+ 进度条 + 书名 + 作者或章节数。
 - 网格：`repeat(auto-fill, minmax(150px, 1fr))`，间距 16px，逐项 `--obx-i` 入场。
@@ -146,7 +146,7 @@ Selenium 非无头），不是读源码推断的；下文标注"实测""踩过"�
 | 阅读设置 | 同一种弹窗；**入口按钮在左侧栏** |
 | 朗读设置 | **主区的内容切换**（与书架网格同一位置），引擎 / base_url / API Key / 音色 / 试听全在里面；入口在左侧栏的"浏览"组 |
 | 左侧栏定位 | 浏览组（全部文档 / 最近阅读 / 书签 / 朗读设置）+ 阅读时才出现的"当前文档"组（目录 / 阅读设置），**不放任何滑杆与下拉框** |
-| 工具栏 | 左：`← 返回` + 书名；右：搜索输入框 + 设置按钮（`Icons.html('icon:settings-2')`，`margin-left:auto` 靠右） |
+| 工具栏 | 左：`← 返回` + 书名；右：搜索输入框 + 设置按钮（`Icons.html('icon:settings')`，`margin-left:auto` 靠右） |
 | 封面卡点击 | 直接进入阅读态，回到上次那一章的**开头** |
 | 阅读进度 | **只记到章**；朗读时也保存（朗读本身不写任何状态文件） |
 | 阅读偏好 | 存后端设置（非 localStorage）；旧数据按 version 迁移一次 |
@@ -297,7 +297,7 @@ body
    └─ .view-body                            (index.html:61)  ← 插件重定义：position:relative (css:704-706)
       ├─ .view-toolbar.nr-toolbar           48px（壳）  (index.html:62)
       │  ├─ .toolbar-group.nr-heading       ← 返回 / 标题 / 副标题
-      │  └─ .toolbar-group.nr-toolbar-right  margin-left:auto（css:146-151）→ .nr-search + 设置入口（<svg class="obx-icon"><use href="#settings-2"></use></svg> 设置）
+      │  └─ .toolbar-group.nr-toolbar-right  margin-left:auto（css:146-151）→ .nr-search + 设置入口（<svg class="obx-icon"><use href="#settings"></use></svg> 设置）
       ├─ .view-content.nr-content.obx-scroll#nr-shelf-view   padding 18px（css:194-196）
       │  └─ .nr-grid   grid auto-fill minmax(150px,1fr); gap 18px  (css:264-269)
       ├─ .nr-reader-view#nr-reader-view      flex:1; column; min-height:0  (css:199-204)
@@ -438,7 +438,7 @@ grep（限 `document-reader.css`）：
 
 三个互不相同的入口：
 
-1. 工具栏设置入口（静态 HTML `<svg class="obx-icon"><use href="#settings-2"></use></svg> 设置`，`index.html:74`）→ 壳的 `openSettingsModal({title:'文档阅读设置'})`（`app.js:132-133`）：
+1. 工具栏设置入口（静态 HTML `<svg class="obx-icon"><use href="#settings"></use></svg> 设置`，`index.html:74`）→ 壳的 `openSettingsModal({title:'文档阅读设置'})`（`app.js:132-133`）：
    读后端 `get_settings_schema` 渲染，保存由壳接管 —— **成功后 400ms 整页刷新**（`base.js:622`），
    插件不感知，也没有 `onSave`。
 2. 左栏「阅读设置」→ 自绘 `.modal`（`index.html:189-239`）：滑杆 `input` 事件即时预览

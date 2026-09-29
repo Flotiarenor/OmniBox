@@ -149,7 +149,7 @@ plugins/
 | 缩略图 | `42px × 42px`、`border-radius:6px`、`object-fit:cover` | 插件（`image-cleaner.css:119-126`） |
 | tab 徽标 / 根目录徽标 | `border-radius:999px`、`padding:2px 8px`；根目录 `max-width:240px` + 省略号 + 等宽字体 | 插件（`image-cleaner.css:18-42`） |
 
-**内嵌进宿主后的几何（宿主侧，非本插件 CSS）**：`#extension-view` 是 `position:absolute; inset:0; z-index:20`（`plugins/image-viewer/frontend/image-viewer.css:356-366`），其 `.extension-view-header` 高 48px（`var(--toolbar-height)`，与宿主主工具栏同）、`padding:0 16px`（`:367-379`），左侧是「15px/700 标题 + 11px 说明」两行（`:380-394`；说明取本插件 `get_extensions()` 声明的 `description`），右侧是**本插件挂上来的两个按钮**（重新扫描 / 设置，壳渲染成 `.btn.obx-host-action`，按主工具栏的 `.btn` 取 13px / 6px 14px、间距 8px，`:395-411`）——宿主头部不自带按钮（原来的「返回相册」已去掉，退出走宿主侧栏导航项）；iframe 本身 `width:100%;height:100%;border:none;background:var(--bg-app)`（`:416-421`）。
+**内嵌进宿主后的几何（宿主侧，非本插件 CSS）**：`#extension-view` 是 `position:absolute; inset:0; z-index:20`（`plugins/image-viewer/frontend/image-viewer.css:356-366`），其 `.extension-view-header` 高 48px（`var(--toolbar-height)`，与宿主主工具栏同）、`padding:0 16px`（`:367-379`），左侧是「15px/700 标题 + 11px 说明」两行（`:380-394`；说明取本插件 `get_extensions()` 声明的 `description`），右侧是**本插件挂上来的两个按钮**（重新扫描 / 设置，壳渲染成 `.btn.obx-toolbar-btn.obx-host-action`（壳的工具栏按钮组件：31px / 13px / `0 14px`）、间距 8px，`:395-409`）——宿主头部不自带按钮（原来的「返回相册」已去掉，退出走宿主侧栏导航项）；iframe 本身 `width:100%;height:100%;border:none;background:var(--bg-app)`（`:414-419`）。
 
 **因此内嵌态纵向只有宿主那一条 48px 横条**：本页自己的 `.cleaner-toolbar` 在
 `html.is-embedded` 下整条 `display:none`（`image-cleaner.css:143-151`），留在 DOM 里的只有

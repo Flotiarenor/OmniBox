@@ -32,6 +32,9 @@ body {
 .btn-danger-solid { background: var(--danger); color: var(--text-on-accent); border-color: var(--danger); }
 .btn-danger-solid:hover { background: var(--danger-hover); }
 .btn.active { background: var(--accent); color: var(--text-on-accent); border-color: var(--accent); }
+/* 紧凑档只压横向尺寸与字号；**高度不在这里决定** —— 工具栏里的按钮高度统一到
+   `--control-h`（见下方 `.view-toolbar .btn`）。否则 `.btn`(31px) 与 `.btn-sm`(24px)
+   会把"插件选了哪个类"变成按钮高度，同一条工具栏里出现两三档高度。 */
 .btn-sm { padding: 3px 10px; font-size: 12px; }
 .hidden { display: none !important; }
 
@@ -293,6 +296,27 @@ body {
   flex-shrink: 0;
 }
 .toolbar-group { display: flex; align-items: center; gap: 8px; }
+
+/* 工具栏动作按钮 —— 壳里"一排操作按钮"的**唯一实现**：高度、字号、内边距、图标与
+   文字的间距、垂直居中都在这里，改这一处就是改所有插件。
+   两条命中路径：
+     1. `.view-toolbar .btn` —— 主工具栏里的按钮默认命中，插件不必改标记；工具栏内
+        `.btn` 与 `.btn-sm` 的度量完全相同（`-sm` 只剩"语义上的紧凑"，不再改尺寸），
+        因此插件写哪个类都不会让按钮变成另一档，宽度也不会因为类不同而不齐；
+     2. `.obx-toolbar-btn` —— 工具栏**之外**的同类按钮显式声明：扩展视图头部、
+        宿主挂载点（`base.js` 的 mountToolbar 生成）、页面内的动作行。
+   必须配 `inline-flex` + 居中：`height` 收到 border-box 后，靠 padding 撑开的行盒
+   会被压掉，只写 height 会让 13px 的文字被裁。规格见 docs/plugin-ui-guide.md §5。 */
+.obx-toolbar-btn,
+.view-toolbar .btn {
+  height: var(--control-h, 31px);
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 13px;
+}
 
 .view-sub-sidebar {
   width: var(--sub-sidebar-width, 240px);

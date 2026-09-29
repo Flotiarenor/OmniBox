@@ -947,7 +947,9 @@ window.HostChannel = (function() {
       var spec = buttons[k] || {};
       var btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'btn btn-sm obx-host-action';
+      // `obx-toolbar-btn` 是壳的"工具栏动作按钮"组件：宿主头部不是 `.view-toolbar`，
+      // 挂上来的按钮必须显式带上这个类，度量才与主工具栏那一排同源（base.css）。
+      btn.className = 'btn obx-toolbar-btn obx-host-action';
       var icon = spec.icon ? iconHtml(spec.icon) + ' ' : '';
       var text = spec.label || spec.id || '';
       btn.innerHTML = icon + escapeHtml(text);

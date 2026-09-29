@@ -157,7 +157,9 @@ check('host-mount 把子插件的按钮渲染进宿主容器，并回 host-reply
     [{ id: 'btn-settings', text: '设置' }, { id: 'btn-rescan', text: '重新扫描' }],
     '两个按钮按声明顺序挂上，文本不转义错位');
   assert.equal(buttons[0].title, '相似判定阈值等设置');
-  assert.match(String(buttons[0].className), /btn btn-sm obx-host-action/);
+  // 宿主头部不是 `.view-toolbar`，命中不到壳那条默认规则，所以挂载按钮必须显式带上
+  // `obx-toolbar-btn`，尺寸才与宿主主工具栏同源（base.css 的工具栏按钮组件）。
+  assert.match(String(buttons[0].className), /btn obx-toolbar-btn obx-host-action/);
   const reply = h.lastReply();
   assert.deepEqual({ exchange: reply.exchange, ok: reply.ok }, { exchange: 11, ok: true });
 });

@@ -73,7 +73,8 @@
           </div>
           <!-- 内嵌插件（image-cleaner / pixiv-sync）把「设置」这类操作挂到 #extension-view-actions：
                它们只声明 {id,label,icon,title}，壳的 HostChannel.mountToolbar 渲染成
-               `.btn.btn-sm.obx-host-action`，点击回发 host-run。宿主不出现任何具体按钮名，
+               `.btn.obx-toolbar-btn.obx-host-action`（工具栏按钮组件，度量与主工具栏同源），
+               点击回发 host-run。宿主不出现任何具体按钮名，
                也不需要在代码里改。见 plugin-ui-guide §3.5
 
                这个挂载点就是头部的右端，不再另包一层、也不自带「返回相册」：头部只有

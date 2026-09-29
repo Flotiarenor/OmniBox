@@ -110,7 +110,7 @@ setTimeout(function () {
   [['refresh-cw', '重新扫描'], ['settings', '设置']].forEach(function (spec) {
     var b = document.createElement('button');
     b.type = 'button';
-    b.className = 'btn btn-sm obx-host-action';
+    b.className = 'btn obx-toolbar-btn obx-host-action';
     b.innerHTML = '<svg class="obx-icon" aria-hidden="true"><use href="#' + spec[0] + '"></use></svg> '
       + spec[1];
     box.appendChild(b);

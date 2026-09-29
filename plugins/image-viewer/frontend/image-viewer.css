@@ -393,15 +393,12 @@
   text-overflow: ellipsis;
 }
 /* 头部按钮：唯一来源是内嵌插件挂上来的（壳的 HostChannel.mountToolbar 渲染成
-   `.btn.btn-sm.obx-host-action`）。这里只把 `.btn-sm` 的紧凑档还原成插件工具栏的常态
-   （`.btn`：13px / 6px 14px）—— 同一个面板里不该有两套按钮：字号、内边距、高度、
-   图标与文字间距都要与主工具栏那一排一致（实测两边同为 31px 高）。
-   **不要在这里另写 display / flex / gap**：那会把挂上来的按钮换成另一种排版方式，
-   与主工具栏的 `.btn` 又分家。 */
-.extension-view-header .btn {
-  font-size: 13px;
-  padding: 6px 14px;
-}
+   `.btn.obx-toolbar-btn.obx-host-action`）。它们的尺寸由壳的工具栏按钮组件提供，
+   本文件**不再**校正 `.btn-sm`：那段 `font-size: 13px; padding: 6px 14px` 的补丁曾经
+   是唯一让宿主头部与主工具栏同高的办法，现在壳的 `.obx-toolbar-btn` 一处即可，留着
+   反而会与壳的组件分家（宿主头部不是 `.view-toolbar`，命中不到那条默认规则，所以
+   挂载按钮必须带类 —— 这一步由 `base.js` 的 mountButtons 完成）。
+   同样**不要在这里另写 display / flex / gap**：那会把挂上来的按钮换成另一种排版方式。 */
 /* 头部右端就是内嵌插件的挂载点本身（`index.html` 的 `#extension-view-actions`，也是
    `HostChannel.serve({containers})` 里给出去的那个元素）。间距按主工具栏的 `.toolbar-group`
    取 8px：挂载点上没有 gap 时，相邻两个按钮会紧贴在一起（两个 inline 盒子之间没有空白）。 */

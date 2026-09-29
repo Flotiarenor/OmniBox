@@ -142,11 +142,13 @@
       <div class="psync-status" style="padding-top:0;">
         <span class="field-help" id="st-selected">画师名单: 全部</span>
         <!-- 全局操作（设置 / Token / 名单文件）单独一层：#psync-global-actions 是"往宿主顶栏
-             挂按钮"时要整体收起的源节点（见下面的 HostChannel.mountToolbar 调用）。 -->
+             挂按钮"时要整体收起的源节点（见下面的 HostChannel.mountToolbar 调用）。
+             加 `obx-toolbar-btn`：这一行不是 `.view-toolbar`，不写类就拿不到壳的工具栏
+             按钮度量；带上之后单独打开本页与内嵌进宿主（宿主按同一个类渲染）尺寸一致。 -->
         <div id="psync-global-actions" style="margin-left:auto;display:flex;gap:8px;">
-          <button id="btn-oauth" class="btn btn-sm" title="通过浏览器登录 Pixiv 重新获取 refresh_token（token 失效时使用）"><svg class="obx-icon"><use href="#key-round"></use></svg> 获取 Token</button>
-          <button id="btn-open-config" class="btn btn-sm" title="打开画师名单配置文件所在文件夹（编辑：每行一个画师名字或 id，空=全部）"><svg class="obx-icon"><use href="#folder-open"></use></svg> 画师名单文件</button>
-          <button id="btn-settings" class="btn btn-sm" title="并发下载数 / 单次上限 / 请求速率 / 代理 / 下载目录"><svg class="obx-icon"><use href="#settings"></use></svg> 设置</button>
+          <button id="btn-oauth" class="btn btn-sm obx-toolbar-btn" title="通过浏览器登录 Pixiv 重新获取 refresh_token（token 失效时使用）"><svg class="obx-icon"><use href="#key-round"></use></svg> 获取 Token</button>
+          <button id="btn-open-config" class="btn btn-sm obx-toolbar-btn" title="打开画师名单配置文件所在文件夹（编辑：每行一个画师名字或 id，空=全部）"><svg class="obx-icon"><use href="#folder-open"></use></svg> 画师名单文件</button>
+          <button id="btn-settings" class="btn btn-sm obx-toolbar-btn" title="并发下载数 / 单次上限 / 请求速率 / 代理 / 下载目录"><svg class="obx-icon"><use href="#settings"></use></svg> 设置</button>
         </div>
       </div>
       <div class="psync-tip">
