@@ -37,6 +37,10 @@
   --nav-width: 200px;
   --sub-sidebar-width: 240px;
   --toolbar-height: 48px;
+  /* 工具栏内控件的统一高度（`.view-toolbar .btn`，见 base.css）。取值对齐
+     image-viewer / manga-library / media-player 既有的按钮高度，插件不要再自己
+     用 padding/字号把按钮撑成另一档。 */
+  --control-h: 31px;
   --radius: 6px;
   --radius-sm: 4px;
   --radius-lg: 10px;
