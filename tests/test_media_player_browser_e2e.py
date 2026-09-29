@@ -411,6 +411,24 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
         self._real_click_at(x, y)
         return hit
 
+    def _set_viewport(self, width: int, height: int) -> None:
+        """按**视口**尺寸设定，而不是 `set_window_size` 的窗口尺寸。
+
+        headless=new 的窗口外框比视口高一截：本机实测固定多 200px（窗口 1024×600 →
+        视口 1008×400、窗口 960×520 → 视口 944×320、窗口 1400×900 → 视口 1384×700）。
+        本用例的判别力写在视口语义上（见 `test_panels_do_not_cover_player_bar_controls`
+        的 docstring：1008×449 视口），用窗口尺寸会实际测到矮 200px 的视口 —— 960×520
+        那档播放栏按钮的中心点（y=322）落到 320px 的视口之外，`elementFromPoint` 返回
+        空，Selenium 拒绝把指针移到视口外，直接抛 MoveTargetOutOfBounds，报出来却像是
+        播放栏的布局缺陷。
+        """
+        self.driver.execute_cdp_cmd('Emulation.setDeviceMetricsOverride', {
+            'width': width,
+            'height': height,
+            'deviceScaleFactor': 0,
+            'mobile': False,
+        })
+
     def _panel_state(self, panel_id: str) -> str:
         return self.driver.execute_script(
             "const el = document.getElementById(arguments[0]);"
@@ -727,11 +745,14 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
         这里把窗口调矮后逐控件核对命中元素，并核对面板底边不越过播放栏顶边。
         """
         self._open_playlist()
-        original = self.driver.get_window_size()
         try:
             for width, height in ((1024, 600), (960, 520), (1400, 900)):
-                self.driver.set_window_size(width, height)
+                self._set_viewport(width, height)
                 time.sleep(0.4)
+                actual = self.driver.execute_script('return window.innerHeight;')
+                self.assertEqual(actual, height,
+                                 f'视口高度未被设成 {height}（实际 {actual}）：'
+                                 f'下面测的就不是预期尺寸')
                 for button_id, panel_id in (('btn-eq', 'eq-panel'), ('btn-queue', 'queue-popup')):
                     self.driver.execute_script(
                         "document.querySelectorAll('.mp-pop').forEach(p => p.classList.add('hidden'));")
@@ -775,7 +796,7 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
                     self.assertEqual(self._panel_state(panel_id), '未打开',
                                      f'{width}×{height}：{panel_id} 打开后点 #{button_id} 关不掉')
         finally:
-            self.driver.set_window_size(original['width'], original['height'])
+            self.driver.execute_cdp_cmd('Emulation.clearDeviceMetricsOverride', {})
             time.sleep(0.3)
 
 
