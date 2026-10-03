@@ -31,6 +31,9 @@ class ReaderTts {
         this.audio = this._createAudio();   // 挂进 DOM，见 _createAudio 的说明
         this._seq = 0;             // 每次开播自增：过期的响应一律丢弃
         this._prefetched = new Map();
+        // 音频元素当前挂的是哪一句。`ended` 事件不带身份，只靠序号推进会让迟到的
+        // ended 多跳一句（听感就是跳读或重念），所以挂 src 时把身份记下来。
+        this._audioIndex = undefined;
         this._state = 'idle';      // idle | loading | playing | paused
         this._collapsed = false;
         this._markedRange = null;
@@ -187,6 +190,7 @@ class ReaderTts {
         this.index = resumeIndex === null ? 0 : Math.max(0, Math.min(resumeIndex, this.pieces.length - 1));
         this._seq += 1;
         this._prefetched.clear();
+        this._audioIndex = undefined;
         // 卡片立即出现并进入"加载中"：首次合成要 1~3 秒（联网引擎更久），
         // 这段时间界面必须动起来，否则用户点了"开始朗读"看到的是一片静止，
         // 会以为功能坏了接着去点第二次（于是上一段被 stop 掉，永远听不到声）。
@@ -229,26 +233,44 @@ class ReaderTts {
         return kept;
     }
 
-    async _requestSegment(piece) {
-        let cacheKey = '';
-        try {
-            cacheKey = await this._hash(piece.text);
-        } catch (e) {
-            cacheKey = '';
-        }
-        return Bridge.call('tts_speak', piece.text, cacheKey, this.index);
+    /**
+     * 取一句的音频：**指纹随请求一起返回**。
+     *
+     * 返回指纹而不是只返回结果，是为了让调用方核对"拿到的音频是不是这一句的"：
+     * 合成要几秒（实测慢端点单句 7 秒），这段时间里序号会前进，只按序号认结果
+     * 会把上一句的音频当成下一句的（用户听到的就是"这一段念了上一段"）。
+     */
+    /**
+     * 取一句的音频：**指纹随请求一起返回**。
+     *
+     * `segmentIndex` 由调用方给（不是读 `this.index`）：预取下一句时 `this.index`
+     * 指向的还是上一句，读它会把回执参数写错一位。
+     */
+    async _requestSegment(piece, segmentIndex) {
+        const cacheKey = await this._cacheKey(piece.text);
+        const result = await Bridge.call('tts_speak', piece.text, cacheKey,
+            segmentIndex === undefined ? this.index : segmentIndex);
+        return { cacheKey, result };
     }
 
-    /** 文本指纹：缓存键必须由内容决定，且在前端算能省一次往返。 */
-    async _hash(text) {
+    /**
+     * 内容指纹，同时充当缓存键：**必须由内容决定**（后端按它命名缓存文件）。
+     *
+     * 与后端 `_CACHE_KEY_RE` 的契约一致：算不出摘要时退回 `f<hex>`，后端认这种形状。
+     * 取用预取结果时也用同一把钥匙比对"这是不是这一句的音频"（见 `_playCurrent`）。
+     */
+    async _cacheKey(text) {
         if (window.crypto && window.crypto.subtle && window.TextEncoder) {
-            const data = new TextEncoder().encode(text);
-            const digest = await window.crypto.subtle.digest('SHA-1', data);
-            return Array.from(new Uint8Array(digest))
-                .map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 32);
+            try {
+                const data = new TextEncoder().encode(text);
+                const digest = await window.crypto.subtle.digest('SHA-1', data);
+                return Array.from(new Uint8Array(digest))
+                    .map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 32);
+            } catch (e) { /* 落到下面的短指纹 */ }
         }
         let hash = 0;
-        for (let i = 0; i < text.length; i += 1) hash = (hash * 31 + text.charCodeAt(i)) | 0;
+        const source = String(text || '');
+        for (let i = 0; i < source.length; i += 1) hash = (hash * 31 + source.charCodeAt(i)) | 0;
         return `f${(hash >>> 0).toString(16)}`;
     }
 
@@ -258,24 +280,34 @@ class ReaderTts {
             return;
         }
         const seq = this._seq;
-        const piece = this.pieces[this.index];
+        const index = this.index;
+        const piece = this.pieces[index];
         this._state = 'loading';
         this._syncCard();
-        // 优先用预取结果：合成有 1.5~2.2 秒的固定网络开销，不等它才能连得上。
-        // （之前只把预取结果塞进 _prefetched 却从没读过，等于每句都现等。）
-        let result = this._prefetched.get(this.index) || null;
-        this._prefetched.delete(this.index);
-        if (result && (!result.url || result.error)) result = null;
+        const wantKey = await this._cacheKey(piece.text);
+        // 优先用预取结果：合成有数秒的固定开销，不等它才能连得上。
+        // 取用前用同一把内容指纹核对 —— 预取是在上一句播完之前发出的，那段时间里
+        // 序号会前进，只按序号取用就会把别的句子的音频拿来播。指纹一致时不必再请求。
+        const taken = this._prefetched.get(index) || null;
+        this._prefetched.delete(index);
+        let result = (taken && taken.cacheKey === wantKey
+            && taken.result && taken.result.url && !taken.result.error) ? taken.result : null;
+        if (taken && !result) this._trace(`丢弃不匹配的预取结果（第 ${index + 1} 句）`);
         if (!result) {
             try {
-                result = await this._requestSegment(piece);
+                const asked = await this._requestSegment(piece);
+                result = asked.result;
+                if (asked.cacheKey !== wantKey) {
+                    this._trace(`请求指纹 ${asked.cacheKey} 与本句 ${wantKey} 不符，丢弃`);
+                    result = null;
+                }
             } catch (e) {
                 result = { error: String(e) };
             }
         }
         if (seq !== this._seq) return;                 // 用户已经停/跳了
         if (!result || result.error) {
-            Toast.error(`朗读失败：${(result && result.error) || '未知错误'}`);
+            Toast.error(`朗读失败：${(result && result.error) || '音频与当前句子对不上，已跳过'}`);
             this.stop();
             return;
         }
@@ -283,9 +315,12 @@ class ReaderTts {
             this.lastEngine = result.engine;
             if (this.app && this.app._updateStatus) this.app._updateStatus();
         }
+        // 挂音频前记下"现在念的是哪一句"：`ended` 事件不带身份，语句被换掉之后
+        // 迟到的 ended 会让播放位置多跳一句（听感就是跳读或重念）。
+        this._audioIndex = index;
         this.audio.src = result.url;
+        this._trace(`第 ${index + 1} 句 → ${result.url}（${result.engine || '?'}）`);
         this._highlight(piece);
-        this._prefetchNext();
         try {
             await this.audio.play();
             this._state = 'playing';
@@ -294,6 +329,8 @@ class ReaderTts {
             this._state = 'paused';
             Toast.info('浏览器拦下了自动播放，点浮动卡的播放键继续');
         }
+        // 开播之后再预取：此时这一句的序号已经稳定，预取不会张冠李戴
+        this._prefetchNext();
         this._syncCard();
     }
 
@@ -302,22 +339,41 @@ class ReaderTts {
      *
      * 用 `fetch` 把音频取进 HTTP 缓存，而不是只建一个 Image 对象 —— 后者根本不请求
      * mp3（image 解不了音频），等于没预热。真正命中缓存的是 `<audio>` 那次请求。
+     *
+     * 结果**带指纹**存下来：回调跑到时 `this.index` 可能已经变了，只按序号存会把
+     * 别的句子顶到这一格上（取用时还会再核对一次，见 `_playCurrent`）。
      */
     _prefetchNext() {
         const next = this.pieces[this.index + 1];
         if (!next || this._prefetched.has(this.index + 1)) return;
+        const index = this.index + 1;
         const seq = this._seq;
-        this._requestSegment(next).then((result) => {
-            if (seq !== this._seq || !result || !result.url || result.error) return;
-            this._prefetched.set(this.index + 1, result);
+        this._requestSegment(next, index).then((asked) => {
+            if (seq !== this._seq || !asked.result || !asked.result.url || asked.result.error) return;
+            this._prefetched.set(index, { cacheKey: asked.cacheKey, result: asked.result });
+            this._trace(`预取第 ${index + 1} 句 → ${asked.result.url}`);
             try {
-                fetch(result.url).catch(() => {});      // 灌进浏览器缓存
+                fetch(asked.result.url).catch(() => {});      // 灌进浏览器缓存
             } catch (e) { /* 忽略：预取失败不影响正常播放 */ }
         }).catch(() => {});
     }
 
+    /** 诊断日志：只有控制台开着才有开销，定位"读错句子"这类问题靠它。 */
+    _trace(message) {
+        try {
+            if (this.app && this.app.debug && this.app.debug.status_debug && console.debug) {
+                console.debug('[reader-tts]', message);
+            }
+        } catch (e) { /* 忽略：诊断不影响播放 */ }
+    }
+
     _onEnded() {
         if (this._state !== 'playing' && this._state !== 'paused') return;
+        // 迟到的 ended（音频元素已经换到别的句子）不推进位置
+        if (this._audioIndex !== undefined && this._audioIndex !== this.index) {
+            this._trace(`忽略迟到的 ended（音频是第 ${this._audioIndex + 1} 句，当前第 ${this.index + 1} 句）`);
+            return;
+        }
         this.index += 1;
         this._playCurrent();
     }
@@ -354,6 +410,7 @@ class ReaderTts {
         this.pieces = this._split(context.text, 0);
         this.index = 0;
         this._prefetched.clear();
+        this._audioIndex = undefined;      // 换了章：旧音频的身份不再有效
         this._playCurrent();
     }
 
@@ -393,6 +450,7 @@ class ReaderTts {
             this.audio.load();
         } catch (e) { /* 忽略 */ }
         this._prefetched.clear();
+        this._audioIndex = undefined;
         this._pieces = [];
         this.pieces = [];
         this._clearHighlight();
