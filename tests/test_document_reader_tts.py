@@ -76,14 +76,34 @@ class SplitTextTests(unittest.TestCase):
 
 
 class _OpenAIHandler(BaseHTTPRequestHandler):
-    """假的 OpenAI 兼容端点：只实现 /v1/audio/speech，记录收到的请求。"""
+    """假的 OpenAI 兼容端点：实现 /v1/audio/speech 与 /v1/voices，记录收到的请求。"""
 
     # 类级共享：handler 实例每个请求新建一个，跨请求的状态只能挂类上
     seen: ClassVar[list] = []
     auth_required: ClassVar[str] = ''
+    # /v1/voices 的回应；改成 None 表示这个服务没有该路由（回 404）
+    voice_list: ClassVar[object] = {'voices': ['vivian', 'serena', 'uncle_fu'], 'model': '1.7B'}
 
     def log_message(self, *args):
         pass
+
+    def do_GET(self):
+        if self.path.split('?')[0] != '/v1/voices':
+            self.send_response(404)
+            self.end_headers()
+            return
+        if type(self).voice_list is None:
+            self.send_response(404)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(b'{"detail":"Not Found"}')
+            return
+        body = json.dumps(type(self).voice_list).encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self):
         length = int(self.headers.get('Content-Length') or 0)
@@ -117,6 +137,7 @@ class _FakeEndpoint:
     def __init__(self):
         _OpenAIHandler.seen = []
         _OpenAIHandler.auth_required = ''
+        _OpenAIHandler.voice_list = {'voices': ['vivian', 'serena', 'uncle_fu'], 'model': '1.7B'}
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), _OpenAIHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -129,6 +150,149 @@ class _FakeEndpoint:
     def close(self):
         self.server.shutdown()
         self.server.server_close()
+
+
+class VoiceTableTests(unittest.TestCase):
+    """音色候选表：跟着引擎走，而不是永远问 edge。
+
+    真实事故：插件配的是 OpenAI 兼容端点，面板里却只有 edge 的中文音色名；
+    把 `zh-CN-YunxiNeural` 填进端点，端点静默换成它自己的说话人（Qwen3-TTS 就是
+    退回第一个音色），用户听到的是别人且毫无提示。
+    """
+
+    def setUp(self):
+        self.endpoint = _FakeEndpoint()
+        self.addCleanup(self.endpoint.close)
+        # 音色清单有 TTL 缓存：不清掉，上一个用例问到的名字会漏进下一个
+        tts.clear_voice_cache()
+
+    def _plugin(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('document_reader_voices_test',
+                                                      PLUGIN_BACKEND / 'main.py')
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        plugin = module.DocumentReaderPlugin(
+            {'name': 'document-reader'}, {'directories': {'data_root': tempfile.mkdtemp()}})
+        from shell.backend.settings_store import SettingsStore
+        plugin._settings_store = SettingsStore(str(Path(tempfile.mkdtemp()) / 'settings'))
+        return plugin
+
+    def test_openai_mode_lists_only_the_endpoint_table(self):
+        """选定 OpenAI 兼容端点：只给端点那张表（edge 的名字填进去也不会生效）。"""
+        plugin = self._plugin()
+        plugin.update_setting('tts_engine', 'openai')
+        plugin.update_setting('tts_base_url', self.endpoint.base_url)
+        data = plugin.tts_voices()
+        self.assertEqual(data['mode'], 'openai')
+        self.assertEqual([t['source'] for t in data['tables']], ['endpoint'])
+        self.assertEqual([v['name'] for v in data['tables'][0]['voices']],
+                         ['vivian', 'serena', 'uncle_fu'])
+        self.assertFalse(data['tables'][0]['unavailable'])
+
+    def test_auto_mode_lists_both_sources(self):
+        plugin = self._plugin()
+        plugin.update_setting('tts_engine', 'auto')
+        plugin.update_setting('tts_base_url', self.endpoint.base_url)
+        data = plugin.tts_voices()
+        self.assertEqual(data['mode'], 'auto')
+        sources = [t['source'] for t in data['tables']]
+        self.assertEqual(sources, ['edge', 'endpoint'])
+        self.assertEqual(len(set(sources)), len(sources), '两张表不能来自同一档引擎')
+        self.assertEqual([v['name'] for v in data['tables'][1]['voices']],
+                         ['vivian', 'serena', 'uncle_fu'])
+
+    def test_system_mode_lists_nothing(self):
+        """系统离线音色不靠名字挑 —— 它不出表。"""
+        plugin = self._plugin()
+        plugin.update_setting('tts_engine', 'system')
+        self.assertEqual(plugin.tts_voices()['tables'], [])
+
+    def test_endpoint_without_voice_route_reports_unavailable(self):
+        """端点没有 /v1/voices 是常态（不是 OpenAI 规范），此时返回 None 而不是报错。
+
+        前端据此把这一档标成"问不到候选，直接填名字也能用"。
+        """
+        _OpenAIHandler.voice_list = None
+        tts.clear_voice_cache()
+        self.assertIsNone(tts.endpoint_voices(self.endpoint.base_url))
+        # 走的是真实 HTTP：这条路由回 404 时不能抛异常，也不能被当成"一个音色都没有"
+        plugin = self._plugin()
+        plugin.update_setting('tts_engine', 'openai')
+        plugin.update_setting('tts_base_url', self.endpoint.base_url)
+        table = plugin.tts_voices()['tables'][0]
+        self.assertEqual(table['source'], 'endpoint')
+        self.assertTrue(table['unavailable'])
+        self.assertEqual(table['voices'], [])
+
+    def test_endpoint_accepts_openai_style_list(self):
+        _OpenAIHandler.voice_list = {'data': [{'id': 'alloy'}, {'id': 'echo'}]}
+        tts.clear_voice_cache()
+        self.assertEqual(tts.endpoint_voices(self.endpoint.base_url), ['alloy', 'echo'])
+
+    def test_model_name_is_sent_as_query_and_5xx_falls_back(self):
+        """模型名写错时端点可能 5xx（Qwen3-TTS 是 KeyError → 500），要摘掉模型名再问一次。"""
+        calls = []
+
+        class _Responder:
+            status_code = 200
+
+            def json(self):
+                return {'voices': ['vivian']}
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            calls.append(params or {})
+            if params:
+                response = _Responder()
+                response.status_code = 500
+                return response
+            return _Responder()
+
+        tts.clear_voice_cache()
+        with mock.patch('requests.get', fake_get):
+            self.assertEqual(tts.endpoint_voices('http://127.0.0.1:9', '', '写着玩的模型名'),
+                             ['vivian'])
+        self.assertEqual(calls, [{'model': '写着玩的模型名'}, {}])
+
+    def test_auto_mode_skips_engine_that_lacks_the_voice(self):
+        """自动模式下按音色归属选引擎：端点音色不该让 edge 先念一遍再降级。
+
+        旧行为是"顺序里第一个能出声的引擎就用它" —— 用户选了端点的 `vivian`，
+        听到的却是 edge 的晓晓，而且合成结果被缓存下来，之后一直听错人。
+        """
+        plugin = self._plugin()
+        plugin.update_setting('tts_engine', 'auto')
+        plugin.update_setting('tts_order', 'edge,openai,system')
+        plugin.update_setting('tts_base_url', self.endpoint.base_url)
+        plugin.update_setting('tts_voice', 'vivian')
+        tts.clear_voice_cache()
+        calls = []
+
+        def edge_spy(text, params):
+            calls.append(1)
+            raise RuntimeError('不该轮到 edge')
+
+        with mock.patch.dict(tts._RUNNERS, {'edge': edge_spy}), \
+                mock.patch.object(tts, 'RETRY_DELAY_SECONDS', 0):
+            result = tts.synthesize('今天下雨了。', plugin._tts_params())
+        self.assertEqual(calls, [], 'edge 没有这个音色，不该去试')
+        self.assertEqual(result['engine'], 'openai')
+
+    def test_auto_mode_keeps_trying_when_voice_list_is_unknown(self):
+        """问不到音色清单时不许据此判定"没这个音色"：照旧按顺序尝试。
+
+        端点没实现 `/v1/voices`、或 edge 断网时都属此类 —— 判错会让人彻底读不出声。
+        这里把两档的清单都变成"问不到"，顺序里的第一个就应当被尝试。
+        """
+        tts.clear_voice_cache()
+        with mock.patch.object(tts, 'engine_voice_names', lambda engine, params: None), \
+                mock.patch.dict(tts._RUNNERS, {'edge': _fake_audio_runner}):
+            result = tts.synthesize('今天下雨了。',
+                                    {'mode': 'auto', 'order': ['edge', 'openai', 'system'],
+                                     'voice': 'vivian', 'base_url': self.endpoint.base_url,
+                                     'api_key': '', 'model': '', 'rate': 0})
+        self.assertEqual(result['engine'], 'edge')
 
 
 class EngineDispatchTests(unittest.TestCase):
@@ -229,7 +393,11 @@ class EngineDispatchTests(unittest.TestCase):
         self.assertEqual(len(calls), 2, '应当在同一引擎上重试一次再成功')
 
     def test_engine_gives_up_after_all_attempts_then_falls_back(self):
-        """重试次数用尽才降级：`auto` 下最终落到下一个可用引擎。"""
+        """重试次数用尽才降级：`auto` 下最终落到下一个可用引擎。
+
+        音色留空：本例只验证重试与降级本身；带 edge 音色时端点确实没有它，
+        会被"按音色归属剔除"直接跳过（那条规则见 VoiceTableTests）。
+        """
         calls = []
 
         def always_fail(text, params):
@@ -237,7 +405,7 @@ class EngineDispatchTests(unittest.TestCase):
             raise RuntimeError('一直失败')
 
         params = {**self.base_params, 'mode': 'auto', 'order': ['edge', 'openai'],
-                  'base_url': self.endpoint.base_url}
+                  'base_url': self.endpoint.base_url, 'voice': ''}
         with mock.patch.dict(tts._RUNNERS, {'edge': always_fail}), \
                 mock.patch.object(tts, 'ENGINE_ATTEMPTS', 3), \
                 mock.patch.object(tts, 'RETRY_DELAY_SECONDS', 0):
@@ -258,6 +426,11 @@ class EngineDispatchTests(unittest.TestCase):
 
 def _boom(text, params):
     raise RuntimeError('boom（测试用的必失败引擎）')
+
+
+def _fake_audio_runner(text, params):
+    """永远成功的引擎，用来观察"自动模式到底挑了谁"。"""
+    return _fake_audio()
 
 
 def _fake_audio():
@@ -287,6 +460,7 @@ class PluginSpeakDirectTests(unittest.TestCase):
         )
         from shell.backend.settings_store import SettingsStore
         self.plugin._settings_store = SettingsStore(str(Path(self.tmp.name) / 'settings'))
+        tts.clear_voice_cache()
         self.plugin.update_setting('tts_engine', 'openai')
         self.plugin.update_setting('tts_base_url', self.endpoint.base_url)
         self.plugin.update_setting('tts_voice', 'alloy')
@@ -474,18 +648,35 @@ class PluginSpeakDirectTests(unittest.TestCase):
         self.assertEqual(len(data['engines']), 3)
 
     def test_voices_api_shape(self):
-        """音色列表接口：能问到端点就给真实列表，问不到就标 fallback（前端有兜底表）。"""
+        """音色接口按引擎给表：`mode` 报当前档，`tables` 只含这一档（或自动模式两张）。
+
+        旧契约返回的是 `{voices, source}` 且**永远问 edge** —— 选了 OpenAI 兼容端点的人
+        拿到的仍是 edge 的音色名，填进去会被端点静默换成别人。
+        """
         result = self.plugin.tts_voices()
-        self.assertIn('source', result)
-        self.assertIn('voices', result)
-        self.assertIn(result['source'], ('edge', 'fallback'))
-        if result['source'] == 'edge':
-            self.assertTrue(result['voices'], '标了 edge 就必须有音色')
-            for voice in result['voices']:
-                self.assertTrue(voice['name'].lower().startswith('zh'), voice)
-                self.assertIn('locale', voice)
-        else:
-            self.assertEqual(result['voices'], [])
+        self.assertIn('tables', result)
+        self.assertEqual(result['mode'], 'openai')
+        sources = [table['source'] for table in result['tables']]
+        self.assertEqual(sources, ['endpoint'])
+        for table in result['tables']:
+            self.assertIn(table['source'], ('edge', 'endpoint'))
+            self.assertIn('title', table)
+            self.assertIn('unavailable', table)
+            for voice in table['voices']:
+                self.assertTrue(voice['name'])
+
+    def test_openai_voice_name_not_replaced(self):
+        """端点自己的音色名要原样发出去（`alloy` 只替换掉 edge 那一套名字）。"""
+        self.plugin.update_setting('tts_voice', 'vivian')
+        self.assertEqual(self.plugin._tts_params()['voice'], 'vivian')
+        # 自定义端点自己的名字：带 zh- 前缀但不是 edge 的 ShortName，不许动
+        self.plugin.update_setting('tts_voice', 'zh-female-01')
+        self.assertEqual(self.plugin._tts_params()['voice'], 'zh-female-01')
+        # edge 的 ShortName 对端点没有意义：换成 OpenAI 的通用名字，由端点自己映射
+        self.plugin.update_setting('tts_voice', 'zh-CN-XiaoyiNeural')
+        self.assertEqual(self.plugin._tts_params()['voice'], 'alloy')
+        self.plugin.update_setting('tts_voice', '')
+        self.assertEqual(self.plugin._tts_params()['voice'], 'alloy')
 
     def test_reader_preferences_are_declared_and_persist(self):
         """阅读偏好改走后端设置：键必须声明，且能写入读回（跨设备持久化的基础）。"""

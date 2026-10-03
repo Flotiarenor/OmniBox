@@ -41,7 +41,7 @@ export function createDom() {
     return out;
   }
 
-  /** innerHTML 里 `id="x"` 的元素做成子节点并登记（标签与 class 一并带上，够选择器用）。 */
+  /** innerHTML 里 `id="x"` 的元素做成子节点并登记（标签、class 与 data-* 一并带上，够选择器与 dataset 用）。 */
   function adoptIds(parent, html) {
     const tagRe = /<([a-zA-Z][a-zA-Z0-9-]*)([^>]*?)(?:\/>|>)/g;
     let match;
@@ -52,6 +52,14 @@ export function createDom() {
       const el = makeEl(match[1].toLowerCase());
       const classMatch = /\bclass="([^"]*)"/.exec(attrs);
       if (classMatch) el.className = classMatch[1];
+      // `data-*` 按 dataset 的驼峰规则填进 dataset：`data-voice` → `dataset.voice`，
+      // `data-source-name` → `dataset.sourceName`（真实 DOM 的语义）。
+      const dataRe = /\bdata-([a-z0-9-]+)="([^"]*)"/g;
+      let data;
+      while ((data = dataRe.exec(attrs)) !== null) {
+        const key = data[1].replace(/-([a-z0-9])/g, (_, ch) => ch.toUpperCase());
+        el.dataset[key] = data[2];
+      }
       el.id = idMatch[1];
       parent.appendChild(el);
     }

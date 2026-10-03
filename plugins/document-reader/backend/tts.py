@@ -25,7 +25,7 @@ import re
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from shell.backend.paths import get_plugins_config_dir
 from shell.backend.plugin_utils import load_sibling
@@ -131,14 +131,16 @@ class TtsMixin:
         """把设置项整理成引擎参数。语音名交给引擎自己解释（各家音色命名不同）。"""
         order = [item.strip() for item in str(self.setting('tts_order') or '').split(',')]
         mode = str(self.setting('tts_engine') or 'auto')
-        voice = str(self.setting('tts_voice') or '').strip()
-        if mode == 'openai' and voice in ('', _tts.DEFAULT_VOICE):
-            # 默认音色是 edge 的名字，直接丢给第三方端点会被拒；让它用自己的默认
+        voice = str(self.setting('tts_voice') or '').strip() or _tts.DEFAULT_VOICE
+        if mode == 'openai' and _tts.is_edge_voice(voice):
+            # edge 的 ShortName（默认的晓晓、用户先前选的晓伊…）对端点没有意义，
+            # 端点只会静默换成它自己的第一个说话人；改成 OpenAI 的通用名字，
+            # 让端点自己去映射（Qwen3-TTS 把 alloy 映射成 vivian）。
             voice = 'alloy'
         return {
             'mode': mode,
             'order': [item for item in order if item] or list(_tts.ENGINES),
-            'voice': voice or _tts.DEFAULT_VOICE,
+            'voice': voice,
             'rate': int(self.setting('tts_rate') or 0),
             'base_url': str(self.setting('tts_base_url') or ''),
             # 凭据要读未脱敏的设置：get_settings() 返回的是掩码
@@ -156,14 +158,53 @@ class TtsMixin:
         return data
 
     def tts_voices(self) -> Dict[str, Any]:
-        """edge 端点上**真实可用**的中文音色列表。
+        """当前引擎可选的音色表：自动模式给两张（edge + 端点），指定引擎只给一张。
 
-        `source` 告诉前端这份列表的来路：`edge` 表示问过端点（权威），`fallback`
-        表示端点不可达（前端用内置的常用音色兜底）。写死列表的问题是微软会下线音色，
-        用户点一下只会得到"找不到音色"。
+        音色名跨引擎不通用：`zh-CN-YunxiNeural` 是 edge 的名字，发给第三方端点会被它
+        静默换成自己的默认说话人。因此这张表必须跟着 `tts_engine` 走，而不是永远问 edge
+        （旧实现就是永远问 edge，于是选了 OpenAI 兼容端点的人拿不到一个能用的音色名）。
+
+        `tables[].source` 的取值：
+          * `edge`     —— edge 端点上真实可见的音色（问不到时 `unavailable`，前端用内置常用表）；
+          * `endpoint` —— OpenAI 兼容端点自报的音色（`GET /v1/voices`，不是 OpenAI 规范的一部分，
+                          普通服务没有这个路由，因此问不到是常态，不算错误）；
+          * `system`   —— 系统离线音色不出表（它是兜底，SAPI 的音色名与设置里那个不同域）。
         """
+        params = self._tts_params()
+        return {'mode': params['mode'], 'tables': self._voice_tables(params)}
+
+    def _voice_tables(self, params: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """按引擎拼音色表：`auto` 两张，指定引擎一张，`system` 零张。"""
+        mode = params['mode']
+        if mode == 'system':
+            return []
+        if mode == 'edge':
+            return [self._edge_table()]
+        if mode == 'openai':
+            return [self._endpoint_table(params)]
+
+        # auto：边缘一张、端点一张，点哪张的哪个音色由 synthesize 按归属决定谁去念
+        tables = []
+        if 'edge' in params['order']:
+            tables.append(self._edge_table())
+        if 'openai' in params['order']:
+            tables.append(self._endpoint_table(params))
+        return tables
+
+    @staticmethod
+    def _edge_table() -> Dict[str, Any]:
         voices = _tts.edge_voices()
-        return {'voices': voices, 'source': 'edge' if voices else 'fallback'}
+        return {'source': 'edge', 'title': 'edge-tts 音色', 'voices': voices,
+                'unavailable': not voices, 'note': 'zh-CN-XiaoxiaoNeural'}
+
+    @staticmethod
+    def _endpoint_table(params: Dict[str, Any]) -> Dict[str, Any]:
+        base_url = str(params.get('base_url') or '').strip()
+        names = (_tts.endpoint_voices(base_url, params.get('api_key') or '', params.get('model') or '')
+                 if base_url else None)
+        return {'source': 'endpoint', 'title': 'OpenAI 兼容端点音色',
+                'voices': [{'name': name, 'note': ''} for name in (names or [])],
+                'unavailable': not names, 'note': ''}
 
     # ===== 切句与合成 =====
 

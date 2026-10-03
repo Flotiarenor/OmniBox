@@ -48,8 +48,9 @@ class DocumentReaderPlugin(
              {"label": "OpenAI 兼容端点（本地模型/云服务）", "value": "openai"},
              {"label": "系统离线音色（SAPI5，兜底）", "value": "system"},
          ]},
-        {"key": "tts_order", "label": "自动模式顺序", "type": "text", "default": "edge,openai,system",
-         "help": "逗号分隔，留空用默认顺序。例如只想要本地：openai,system"},
+        {"key": "tts_order", "label": "自动模式顺序", "type": "text", "default": "openai,edge,system",
+         "help": "逗号分隔，留空用默认顺序。音色属于哪一档就用哪一档念，其余档跳过；"
+                 "想省钱只用微软音色：edge,system"},
         # 端点是"进程会带着 Authorization: Bearer <tts_api_key> 去请求的地址"：
         # 允许任意主体改写它，等于把 owner 配置的凭据交给任意主机（并让本进程成为
         # 可读回内网响应的 SSRF 跳板）。两个键都声明 admin_only，由 PluginBase 统一判定。
@@ -66,7 +67,8 @@ class DocumentReaderPlugin(
          "placeholder": "留空则不发送 model 字段"},
         {"key": "tts_voice", "label": "朗读音色", "type": "text", "default": "zh-CN-XiaoxiaoNeural",
          "help": "edge-tts 用 ShortName（如 zh-CN-XiaoxiaoNeural / zh-CN-YunxiNeural），"
-                 "OpenAI 兼容端点用自己的音色名（如 alloy、zf_xiaoxiao）"},
+                 "OpenAI 兼容端点用端点自己的音色名（如 vivian、alloy）；"
+                 "两边的候选表在朗读设置页里按引擎列出"},
         {"key": "tts_rate", "label": "朗读语速", "type": "range", "min": -50, "max": 100,
          "step": 5, "default": 100,
          "help": "百分比：100 是端点允许的倍速上限（约两倍速），听书默认拉满；"

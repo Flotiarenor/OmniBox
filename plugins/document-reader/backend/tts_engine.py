@@ -53,6 +53,20 @@ ENGINE_LABELS = {
 # edge 的默认音色：晓晓，通用最自然，也是 Edge 朗读本身的默认
 DEFAULT_VOICE = 'zh-CN-XiaoxiaoNeural'
 
+
+def is_edge_voice(name: str) -> bool:
+    """这个音色名像不像 edge 的 ShortName（`zh-CN-XiaoxiaoNeural`、`zh-HK-HiuGaaiNeural`…）。
+
+    判据是 `zh-` 前缀 **加** `Neural` 后缀两条都要：只看前缀会把 `zh-female-01`
+    这种自定义端点的音色名当成 edge 的，从而被替换掉（用户选的音色被悄悄改掉）。
+
+    用来挡住"把 edge 的名字填进 OpenAI 兼容端点"这一种误配：端点上没有这个名字时
+    不会报错，只会静默换成它自己的说话人（实测 Qwen3-TTS 就是退回第一个音色），
+    用户听到的是别人，且完全没有提示。
+    """
+    text = str(name or '').strip().lower()
+    return text.startswith('zh-') and text.endswith('neural')
+
 _SENTENCE_END = '。！？；…!?;\n'
 
 # 句末标点后至少攒够这么多字符才切一刀：中文短句常只有 6~8 字（"明天会晴吗？"），
@@ -201,6 +215,129 @@ def openai_synthesize(text: str, params: Dict[str, Any]) -> Tuple[bytes, str, Li
         raise RuntimeError('端点返回了空音频')
     # 第三方端点不给时间戳，逐字跟随这一档就只能退化成"整句高亮"
     return response.content, ext, []
+
+
+# ===== 音色清单（面板要显示"这个引擎到底有哪些音色"）=====
+
+# 取音色的网络超时：设置页一打开就要它，端点挂着不能转圈十秒。
+VOICE_LIST_TIMEOUT = 5.0
+# 成功结果的缓存寿命：自动模式下每段音频都要问一次"这个音色归谁"，
+# 不缓存就是每个句子都去问一遍 edge 端点与朗读端点。
+VOICE_CACHE_TTL = 300.0
+_VOICE_CACHE: Dict[tuple, Tuple[float, Any]] = {}
+
+def _cached(key: tuple, produce: Callable[[], Any]) -> Any:
+    """按 key 缓存 `produce()` 的**成功**结果 `VOICE_CACHE_TTL` 秒。
+
+    失败（返回 None/空）不写缓存：端点没起来时缓存一次失败，用户修好之后还要再等
+    一个 TTL 才看得到音色。代价是失败时会反复重试，但每次都由用户动作触发。
+    """
+    now = time.time()
+    hit = _VOICE_CACHE.get(key)
+    if hit and now - hit[0] < VOICE_CACHE_TTL:
+        return hit[1]
+    value = produce()
+    if value:
+        _VOICE_CACHE[key] = (now, value)
+    return value
+
+
+def clear_voice_cache() -> None:
+    """丢掉缓存的音色清单（设置改了就重新问；测试用它隔离用例）。"""
+    _VOICE_CACHE.clear()
+
+
+def _parse_voice_names(data: Any) -> Optional[List[str]]:
+    """从端点回应里取出音色名；形状不认识时返回 None。
+
+    认两种形状：`{"voices": ["vivian", …]}`（Qwen3-TTS / Kokoro 一类）与
+    `{"data": [{"id": …}, …]}`（OpenAI 列表风格）。字符串项与 `{"id"/"name": …}`
+    两种写法都收，其余的忽略。
+    """
+    if not isinstance(data, dict):
+        return None
+    items: List[Any] = []
+    for key in ('voices', 'data'):
+        if isinstance(data.get(key), list):
+            items = data[key]
+            break
+    names: List[str] = []
+    for item in items:
+        if isinstance(item, str):
+            names.append(item)
+        elif isinstance(item, dict):
+            name = item.get('id') or item.get('name')
+            if isinstance(name, str) and name:
+                names.append(name)
+    return list(dict.fromkeys(names)) or None
+
+
+def _endpoint_voice_names(base: str, api_key: str, model: str,
+                          timeout: float) -> Optional[List[str]]:
+    """问一次 OpenAI 兼容端点的 `/v1/voices`。
+
+    返回 None 表示"问不到"（404/网络错误/形状不认识）。这个路由是部分服务的扩展，
+    不是 OpenAI 规范的一部分，普通 TTS 服务没有它很正常，调用方据此决定跳过还是照旧尝试。
+
+    先带 `?model=` 问（把音色钉在当前模型上）；模型名写错时这类服务可能直接 5xx
+    （Qwen3-TTS 就是 `KeyError` 未接住 → 500），此时摘掉模型名再问一次：
+    列不出精确清单，也好过一个音色都看不到。
+    """
+    import requests
+
+    headers = {'Authorization': f'Bearer {api_key}'} if api_key else {}
+    url = f'{base}/v1/voices'
+
+    def ask(query: Dict[str, str]) -> Optional[List[str]]:
+        try:
+            response = requests.get(url, headers=headers, params=query, timeout=timeout)
+        except Exception as e:  # 连不上就是问不到，不该让调用方炸
+            log.warning(f'[document-reader] 取朗读端点音色失败（{url}）: {e}')
+            return None
+        if response.status_code in (401, 403):
+            log.warning(f'[document-reader] 朗读端点拒绝列出音色（{response.status_code}），检查 API Key')
+            return None
+        if response.status_code >= 400:
+            return None
+        try:
+            return _parse_voice_names(response.json())
+        except ValueError:
+            return None
+
+    names = ask({'model': model} if model else {})
+    if names is None and model:
+        names = ask({})
+    return names
+
+
+def endpoint_voices(base_url: str, api_key: str = '', model: str = '') -> Optional[List[str]]:
+    """OpenAI 兼容端点上的音色名清单；问不到时返回 None（不是空列表）。
+
+    None 与 `[]` 的区分是必要的：None 表示"这个服务不提供音色清单"，
+    调用方应当照旧把音色名发给它；空列表则表示"端点在，但一个音色都没有"。
+    """
+    base = str(base_url or '').strip().rstrip('/')
+    if not base:
+        return None
+    base = _validated_endpoint_base(base)
+    key = ('endpoint', base, str(model or '').strip())
+    return _cached(key, lambda: _endpoint_voice_names(
+        base, str(api_key or '').strip(), str(model or '').strip(), VOICE_LIST_TIMEOUT))
+
+
+def engine_voice_names(engine: str, params: Dict[str, Any]) -> Optional[List[str]]:
+    """某个引擎当前可用的音色名；None = 问不到（别据此判定音色不存在）。
+
+    `system` 返回 None：SAPI 的音色名是"本机装了哪些"（Huihui/Yaoyao/Kangkang…），
+    与设置里那个音色名不同域，无法做归属判定，只能照旧尝试。
+    """
+    if engine == 'edge':
+        return _cached(('edge',), lambda: [item['name'] for item in edge_voices()] or None)
+    if engine == 'openai':
+        return endpoint_voices(str(params.get('base_url') or ''),
+                               str(params.get('api_key') or ''),
+                               str(params.get('model') or ''))
+    return None
 
 
 # ===== Windows 自带语音（SAPI5，完全离线）=====
@@ -355,12 +492,37 @@ def _attempt_engine(engine: str, text: str, params: Dict[str, Any], errors: List
     return None, False
 
 
+def engine_has_voice(engine: str, voice: str, params: Dict[str, Any]) -> bool:
+    """这个引擎有没有 `voice` 这个音色；问不到音色清单时一律返回 True。
+
+    用途是自动模式下的**归属判定**：用户在自动模式里选了 `vivian`（端点的音色），
+    顺序里的 edge 没有它 —— 从前会拿 edge 念一遍"晓晓"再降级，现在是直接跳过 edge，
+    由真正拥有这个音色的引擎来念（都不拥有就落到 system 兜底）。
+
+    两种情况下返回 True、照旧尝试，而不是判它"没有"：
+      * 音色清单问不到（端点没实现 /v1/voices、断网）—— 没有依据说它不支持；
+      * 音色名是空的（用引擎自己的默认音色），或该引擎的音色名的确包含它。
+
+    `system` 与设置里的音色名不同域，一律返回 True（见 `engine_voice_names`）。
+    """
+    want = str(voice or '').strip()
+    if not want:
+        return True
+    names = engine_voice_names(engine, params)
+    if names is None:
+        return True
+    return want in names
+
+
 def synthesize(text: str, params: Dict[str, Any]) -> Dict[str, Any]:
     """合成一段文本，返回 `{audio, ext, marks, engine}`。
 
     `mode` 为具体引擎名时只用它（失败直接抛，不偷偷换音色）；为 `auto` 时按
     `order`（默认 ENGINES）逐个尝试，**每个引擎先重试 `ENGINE_ATTEMPTS` 次**，
     都失败才降级到下一个。全部失败则抛出最后一个异常。
+
+    自动模式还会先按音色归属筛一遍顺序：**只剔除"确实没有这个音色"的引擎**
+    （音色属于哪一档就用哪一档），问不到清单的引擎留在顺序里照旧尝试。
     """
     text = (text or '').strip()
     if not text:
@@ -373,6 +535,13 @@ def synthesize(text: str, params: Dict[str, Any]) -> Dict[str, Any]:
         order = [mode]
     else:
         order = [name for name in (params.get('order') or ENGINES) if name in _RUNNERS]
+        voice = str(params.get('voice') or '').strip()
+        if voice:
+            owned = [name for name in order if engine_has_voice(name, voice, params)]
+            if owned and len(owned) < len(order):
+                skipped = [name for name in order if name not in owned]
+                log.info(f'[document-reader] 音色 {voice} 属于 {owned}，自动模式跳过 {skipped}')
+                order = owned
 
     errors: List[str] = []
     for engine in order:

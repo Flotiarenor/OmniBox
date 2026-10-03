@@ -113,9 +113,24 @@ Selenium 非无头），不是读源码推断的；下文标注"实测""踩过"�
 - 它是**主区的内容切换**（与书架网格、正文同一个位置），不是遮挡页：左栏"朗读设置"
   按钮保持高亮，随时能切回书架或正文。
 - 定位参照给在 `.view-body`（`position: relative`）上 —— 给在 `#app` 上会让面板盖住左栏。
-- **音色列表问端点**（`tts_voices`）：端点不可达时才退回内置的常用表，并在界面上说明
-  "这不是完整列表"。写死列表的问题是微软会下线音色，点一下就报找不到。
+- **音色列表跟着引擎走，且两档各占一张卡片**（`tts_voices` → `{mode, tables}`）：
+  `#nr-voice-card-edge`（edge-tts 音色）与 `#nr-voice-card-endpoint`（OpenAI 兼容端点音色），
+  自动模式两张都在，选定某一档只留那一张、另一张整张隐藏并清空，`system` 档一张都不出
+  （系统离线音色不靠名字挑）。
+  * 端点那一档问的是 `GET /v1/voices`（携带 `?model=`；模型名写错导致 5xx 时摘掉模型名再问一次）。
+    这个路由不是 OpenAI 规范的一部分，问不到是常态 —— 此时该档标成 `unavailable`，
+    卡片留着并提示"直接填名字也能用"，而不是显示一张空表或报错。
+  * edge 那一档问不到时给一份内置常用表：整块空掉比不完整更糟。
+  * 音色名跨引擎不通用（`zh-CN-YunxiNeural` 发给端点会被静默换成它自己的说话人），
+    所以自动模式合成前会按**音色归属**筛一遍顺序：只剔除"问到了清单且确实没有这个音色"
+    的引擎，问不到清单的照旧尝试。全部都没有就落到 system 兜底。
+  * 音色清单按引擎缓存 5 分钟（`VOICE_CACHE_TTL`），失败不缓存：自动模式每段音频都要
+    判一次归属，不缓存就是每句都去打网络。
+  * 回归用例：`tests/js/reader_voice_cards.mjs`（经 `tests/test_reader_voice_cards_js.py` 跑），
+    守"两张卡片的内容不混、隐藏时清空、点击立刻落盘"。
 - 语速默认 **+100%**（端点允许的倍速上限），滑杆范围 -50 ~ +100。
+- 自建模型服务要满足的接口要求（路由、请求字段、回应与超时）见
+  [朗读端点契约（OpenAI 兼容）](./document-reader-tts-endpoint.md)。
 
 ## 6. 朗读时的自动跟随
 
@@ -154,7 +169,7 @@ Selenium 非无头），不是读源码推断的；下文标注"实测""踩过"�
 | 朗读位置标记 | 正在念的**整句**加深加粗 + 下划线（不铺底色，见 §11 的说明） |
 | 朗读起点 | 右键菜单触发：有选中 → 选中第一个字所在句的开头；无选中 → 视口顶部那一句 |
 | 朗读跟随 | 念出视口就自动滚；念完一章自动接下一章（§6） |
-| 音色列表 | 问端点（`tts_voices`），端点不可达才退回内置表并显式提示 |
+| 音色列表 | 跟着引擎走（`tts_voices` → `{mode, tables}`），**两档各占一张卡片**：自动模式两张（edge + 端点），选定引擎一张，`system` 一张都不出；端点问的是 `GET /v1/voices`，问不到时卡片留着并标 `unavailable` |
 | 语速默认 | **+100%**（端点倍速上限），滑杆 -50 ~ +100 |
 | 正文点击 | **沿用现有翻页逻辑，朗读不参与**（左/右 25% 翻页） |
 | 右键菜单 | 复用壳的 `createContextMenu`（§9） |
@@ -246,7 +261,7 @@ Selenium 非无头），不是读源码推断的；下文标注"实测""踩过"�
 | `js/reader-engine.js` | 489 | `DocumentReaderEngine`：翻页/连续滚动双模式、3 章窗口裁剪、字符偏移坐标系（朗读与书签共用） |
 | `js/settings.js` | 151 | `ReaderSettingsStore`：阅读偏好后端持久化 + 旧 localStorage 迁移（`settings.js:57-90`） |
 | `js/reader-tts.js` | 445 | `ReaderTts`：切句、合成请求、预取、播放、CSS Custom Highlight 高亮、浮动卡 |
-| `js/reader-voice-page.js` | 313 | `ReaderVoicePage`：朗读设置独立页（引擎/端点/Key/音色/缓存） |
+| `js/reader-voice-page.js` | 371 | `ReaderVoicePage`：朗读设置独立页（引擎/端点/Key/音色表/缓存） |
 | `js/app.js` | 608 | `DocumentReader` 类骨架 + 生命周期 + DOM 缓存 + 事件绑定；另有 `openModal/closeModal`（`app.js:600-608`） |
 | `js/app-shelf.js` | 169 | `prototype` 分片：封面网格、书签视图、空态模板（`app-shelf.js:139-145`） |
 | `js/app-toc.js` | 70 | `prototype` 分片：目录弹窗渲染与筛选 |
@@ -444,11 +459,11 @@ grep（限 `document-reader.css`）：
 2. 左栏「阅读设置」→ 自绘 `.modal`（`index.html:189-239`）：滑杆 `input` 事件即时预览
    （`app.js:175-208`），落盘走 `ReaderSettingsStore.save()` 的 **400ms 防抖**
    （`settings.js:127-150`），**无任何 Toast 反馈**，失败只 `console.error`（`settings.js:142`）。
-3. 左栏「朗读设置」→ 覆盖主区的页面（`reader-voice-page.js:49-66`）：离散控件 `change` 立刻落盘
-   （`reader-voice-page.js:96-99`，`immediate=true`），语速滑杆 300ms 防抖（`_save` 的 `setTimeout(write,300)`，
-   `reader-voice-page.js:242`）。保存失败弹 `Toast.error('保存朗读设置失败')`（`:238`），成功**不提示**
-   （个别动作另外提示，如选音色 `Toast.info(\`已选择 ${...}\`)`，`:278`）。
-   设计依据写在 `:220-229`（「防抖会让试听读到旧音色」）。
+3. 左栏「朗读设置」→ 覆盖主区的页面（`reader-voice-page.js:91-127`）：离散控件 `change` 立刻落盘
+   （`reader-voice-page.js:118-127`，`immediate=true`），语速滑杆 300ms 防抖（`_save` 的 `setTimeout(write,300)`，
+   `reader-voice-page.js:314`）。保存失败弹 `Toast.error('保存朗读设置失败')`（`:310`），成功**不提示**
+   （个别动作另外提示，如选音色 `Toast.info(\`已选择 ${...}\`)`，`:371`）。
+   设计依据写在 `:293-301`（「防抖会让试听读到旧音色」）。
 
 #### 13.5.2 错误提示方式
 
@@ -507,8 +522,8 @@ grep（限 `document-reader.css`）：
 | 目录筛选无果 | 同上（`app-toc.js:43`） | `icon:search` + 「没有匹配的章节」（无 hint） |
 | 加载中 | `#document-loading` + `.spinner` | `加载中...`（`app.js:577`） |
 | 非渲染格式 | `.nr-empty` | `该格式不在阅读器内渲染，可交给系统默认程序打开`（`app.js:508`） |
-| 朗读引擎不可用 | `.nr-voice-hint` | `引擎状态不可用（后端 tts_status 调用失败）`（`reader-voice-page.js:250`） |
-| 音色兜底 | `.nr-voice-hint` | `icon:triangle-alert` + 「读不到 edge 端点，下面是内置的常用音色（非完整列表）」（`:263`） |
+| 朗读引擎不可用 | `.nr-voice-hint` | `引擎状态不可用（后端 tts_status 调用失败）`（`reader-voice-page.js:321`） |
+| 音色表为空 | `.nr-voice-hint` | 端点那一档问不到候选：「问不到这一档的候选音色，直接填名字也能用。」（`:362`）；`system` 档：「系统离线音色不靠名字挑，直接朗读即可。」（`:347`） |
 
 ---
 

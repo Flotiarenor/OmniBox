@@ -16,16 +16,17 @@ const nrVoiceIcon = (name) => (window.Icons && typeof window.Icons.html === 'fun
     : '';
 
 // edge 端点上可见的中文音色（2026-09 实测；音色池由微软维护，会变）。
-// 写成静态表是为了不依赖网络：列表本身不该因为断网就空掉。
-const TTS_VOICE_SUGGESTIONS = [
-    ['zh-CN-XiaoxiaoNeural', '晓晓 · 女 · 通用最自然'],
-    ['zh-CN-XiaoyiNeural', '晓伊 · 女 · 年轻活泼'],
-    ['zh-CN-YunxiNeural', '云希 · 男 · 叙述节奏快'],
-    ['zh-CN-YunyangNeural', '云扬 · 男 · 播报腔最稳'],
-    ['zh-CN-YunjianNeural', '云健 · 男 · 解说腔'],
-    ['zh-CN-YunxiaNeural', '云夏 · 男童'],
-    ['zh-CN-liaoning-XiaobeiNeural', '晓北 · 东北话'],
-    ['zh-CN-shaanxi-XiaoniNeural', '晓妮 · 陕西话'],
+// 只在"问了后端也问不到 edge 音色"时给个能点的兜底：列表本身不该因为断网就整块空掉。
+// 端点那一档没有兜底表 —— 名字由端点自己定，写死一份只会给出不存在的音色。
+const EDGE_VOICE_FALLBACK = [
+    { name: 'zh-CN-XiaoxiaoNeural', note: '晓晓 · 女 · 通用最自然' },
+    { name: 'zh-CN-XiaoyiNeural', note: '晓伊 · 女 · 年轻活泼' },
+    { name: 'zh-CN-YunxiNeural', note: '云希 · 男 · 叙述节奏快' },
+    { name: 'zh-CN-YunyangNeural', note: '云扬 · 男 · 播报腔最稳' },
+    { name: 'zh-CN-YunjianNeural', note: '云健 · 男 · 解说腔' },
+    { name: 'zh-CN-YunxiaNeural', note: '云夏 · 男童' },
+    { name: 'zh-CN-liaoning-XiaobeiNeural', note: '晓北 · 东北话' },
+    { name: 'zh-CN-shaanxi-XiaoniNeural', note: '晓妮 · 陕西话' },
 ];
 
 class ReaderVoicePage {
@@ -33,6 +34,9 @@ class ReaderVoicePage {
         this.app = app;
         this._bound = false;
         this._saving = null;
+        // 两张音色表各自的缓存：切引擎时不必再打一次网络（端点那次要几秒）
+        this._edgeVoices = null;
+        this._endpointVoices = null;
     }
 
     _dom() {
@@ -46,7 +50,11 @@ class ReaderVoicePage {
             rate: document.getElementById('nr-voice-rate'),
             rateValue: document.getElementById('nr-voice-rate-value'),
             status: document.getElementById('nr-voice-status'),
-            list: document.getElementById('nr-voice-list'),
+            // 两档音色各占一张卡片：不出的那一档整张隐藏（见 _renderVoices）
+            edgeList: document.getElementById('nr-voice-list-edge'),
+            endpointList: document.getElementById('nr-voice-list-endpoint'),
+            edgeCard: document.getElementById('nr-voice-card-edge'),
+            endpointCard: document.getElementById('nr-voice-card-endpoint'),
             test: document.getElementById('nr-voice-test'),
             testResult: document.getElementById('nr-voice-test-result'),
         };
@@ -102,6 +110,12 @@ class ReaderVoicePage {
         [dom.engine, dom.base, dom.model, dom.voice].forEach((input) => {
             input.addEventListener('change', () => this._save(this._collect(), true));
         });
+        // 引擎与端点决定"有哪两档音色"，改完立刻按缓存重画（不等网络）
+        [dom.engine, dom.base, dom.model].forEach((input) => {
+            input.addEventListener('change', () => this._renderVoices(this._buildTables()));
+        });
+        // 手工改音色名（不点列表）时，选中态跟着走
+        dom.voice.addEventListener('change', () => this._markActiveVoice());
         dom.key.addEventListener('change', () => this._save({ tts_api_key: dom.key.value }, true));
         document.getElementById('nr-voice-cache-clear')
             .addEventListener('click', () => this._clearCache());
@@ -187,30 +201,80 @@ class ReaderVoicePage {
         dom.rate.value = settings.tts_rate === undefined || settings.tts_rate === null ? 100 : settings.tts_rate;
         dom.rateValue.textContent = `${dom.rate.value}%`;
         this._renderStatus();
-        this._loadVoicesFromEndpoint();
+        // 先把"按当前引擎该显示哪些表"画出来（不依赖网络，切引擎也走这里），
+        // 再拉一次后端的权威清单把名字换成端点上真实的那批。
+        this._renderVoices(this._buildTables());
+        this._loadVoices();
     }
 
-    /** 音色列表问后端（端点上的真实音色），失败才退回内置常用表。 */
-    async _loadVoicesFromEndpoint() {
-        const dom = this._dom();
-        if (dom.list) dom.list.innerHTML = '<div class="nr-voice-hint">正在读取端点音色…</div>';
+    /** 后端清单：按当前引擎给表（自动模式给 edge + 端点两张，system 一张都不给）。 */
+    async _loadVoices() {
         let result = null;
         try {
             result = await Bridge.call('tts_voices');
         } catch (e) {
             result = null;
         }
-        const voices = (result && result.voices) || [];
-        if (voices.length) {
-            this._renderVoices(voices.map((item) => ({
-                name: item.name,
-                note: item.note || `${item.gender} · ${item.locale}`,
-            })), result.source);
+        const tables = (result && result.tables) || [];
+        // 把两份音色名缓存下来：之后用户切引擎时不必再等网络
+        tables.forEach((table) => this._cacheTable(table));
+        // 后端回答的是"保存那一刻的引擎"；用户可能已经改了下拉框，那种情况以本地算的为准
+        const expected = (result && result.mode) || 'auto';
+        if (this._dom().engine.value !== expected) {
+            this._renderVoices(this._buildTables());
             return;
         }
-        // 端点不可达：用内置的常用音色兜底，并说明这不是完整列表
-        this._renderVoices(TTS_VOICE_SUGGESTIONS.map(([name, note]) => ({ name, note })),
-            'fallback');
+        this._renderVoices(this._buildTables());
+    }
+
+    _cacheTable(table) {
+        if (table.source === 'edge' && table.voices && table.voices.length) {
+            this._edgeVoices = table.voices;
+        }
+        if (table.source === 'endpoint' && table.voices && table.voices.length) {
+            // 连端点一起记：换了端点就不能再显示上一个端点的音色（它们是两套名字）
+            this._endpointVoices = { base: this._dom().base.value.trim(), voices: table.voices };
+        }
+    }
+
+    /**
+     * 按**当前下拉框里的引擎**算音色表。
+     *
+     * 用本地缓存的音色名而不是再问一次后端：切一下引擎就等几秒网络（端点那次尤其慢）
+     * 是不可接受的；名字的权威来源仍然是后端的 `tts_voices`，这里只是把它换一种组合方式。
+     */
+    _buildTables() {
+        const dom = this._dom();
+        const mode = dom.engine.value || 'auto';
+        if (mode === 'system') return [];
+        const base = dom.base.value.trim();
+        const tables = [];
+        if (mode === 'edge' || mode === 'auto') tables.push(this._edgeTable());
+        if (mode === 'openai' || mode === 'auto') tables.push(this._endpointTable(base));
+        return tables;
+    }
+
+    _edgeTable() {
+        const voices = this._edgeVoices;
+        return {
+            source: 'edge',
+            title: 'edge-tts 音色',
+            // 问不到 edge 端点时给一份"能点的"常用表：整块空掉比不完整更糟
+            voices: voices && voices.length ? voices : EDGE_VOICE_FALLBACK,
+            unavailable: !(voices && voices.length),
+        };
+    }
+
+    _endpointTable(base) {
+        // 缓存按端点分开存：换端点后不能继续显示上一个端点的音色
+        const cached = this._endpointVoices;
+        const voices = cached && cached.base === base ? cached.voices : null;
+        return {
+            source: 'endpoint',
+            title: 'OpenAI 兼容端点音色',
+            voices: voices || [],
+            unavailable: !voices,
+        };
     }
 
     _collect() {
@@ -267,31 +331,54 @@ class ReaderVoicePage {
         });
     }
 
-    _renderVoices(items = null, source = '') {
+    /**
+     * 画音色表。`tables` 每一项是一档引擎的候选音色（见后端 `tts_voices`）。
+     *
+     * 两档各占一张卡片（edge 一张、端点一张），不出的那一档整张隐藏 ——
+     * 自动模式两张都在，选定引擎只留对应的那张，系统离线音色一张都不出。
+     * 卡片里的"问不到"要说清原因：端点没实现 `/v1/voices` 这种路由是常态，
+     * 那时不该显示一张空表，而要说明照旧可以手填名字。
+     */
+    _renderVoices(tables) {
         const dom = this._dom();
-        if (!dom.list) return;
-        const list = items || TTS_VOICE_SUGGESTIONS.map(([name, note]) => ({ name, note }));
-        const hint = source === 'fallback'
-            ? `<div class="nr-voice-hint">${nrVoiceIcon('icon:triangle-alert')} 读不到 edge 端点，下面是内置的常用音色（非完整列表）</div>`
-            : '';
-        dom.list.innerHTML = hint + list.map((item) => `
-            <button type="button" class="nr-voice-item" data-voice="${item.name}">
-                <span class="nr-voice-name">${item.note || item.name}</span>
-                <span class="nr-voice-id">${item.name}</span>
-            </button>`).join('');
-        dom.list.querySelectorAll('.nr-voice-item').forEach((btn) => {
-            btn.addEventListener('click', () => {
-                dom.voice.value = btn.dataset.voice;
-                // 立刻落盘：紧接着的"试听"要读到这个音色
-                this._save({ tts_voice: btn.dataset.voice }, true);
-                dom.list.querySelectorAll('.nr-voice-item').forEach((other) => {
-                    other.classList.toggle('active', other === btn);
+        const targets = { edge: [dom.edgeCard, dom.edgeList], endpoint: [dom.endpointCard, dom.endpointList] };
+        for (const [source, [card, list]] of Object.entries(targets)) {
+            if (!card || !list) continue;
+            const table = (tables || []).find((item) => item.source === source);
+            card.classList.toggle('hidden', !table);
+            list.innerHTML = !table ? '' : (table.voices.length
+                ? table.voices.map((voice) => `
+                    <button type="button" class="nr-voice-item" data-voice="${voice.name}">
+                        <span class="nr-voice-name">${voice.note || voice.name}</span>
+                        <span class="nr-voice-id">${voice.name}</span>
+                    </button>`).join('')
+                : '<p class="nr-voice-hint">问不到这一档的候选音色，直接填名字也能用。</p>');
+        }
+        for (const list of [dom.edgeList, dom.endpointList]) {
+            if (!list) continue;
+            list.querySelectorAll('.nr-voice-item').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    dom.voice.value = btn.dataset.voice;
+                    // 立刻落盘：紧接着的"试听"要读到这个音色
+                    this._save({ tts_voice: btn.dataset.voice }, true);
+                    this._markActiveVoice();
+                    Toast.info(`已选择 ${btn.dataset.voice}`);
                 });
-                Toast.info(`已选择 ${btn.dataset.voice}`);
             });
-        });
-        const current = dom.list.querySelector(`.nr-voice-item[data-voice="${dom.voice.value}"]`);
-        if (current) current.classList.add('active');
+        }
+        this._markActiveVoice();
+    }
+
+    /** 标出当前音色在**哪一张卡片**里 —— 也就是自动模式下真正会去念它的那一档。 */
+    _markActiveVoice() {
+        const dom = this._dom();
+        const want = (dom.voice.value || '').trim();
+        for (const list of [dom.edgeList, dom.endpointList]) {
+            if (!list) continue;
+            list.querySelectorAll('.nr-voice-item').forEach((btn) => {
+                btn.classList.toggle('active', btn.dataset.voice === want);
+            });
+        }
     }
 
     async _test() {

@@ -159,13 +159,18 @@
             </div>
           </section>
 
-          <section class="nr-voice-card">
-            <h4>可用的 edge-tts 音色</h4>
-            <p class="nr-voice-hint">
-              下面是本机 edge-tts 端点可见的中文音色，点一下填进上面的音色框；
-              晓晓（zh-CN-XiaoxiaoNeural）最通用。
-            </p>
-            <div class="nr-voice-list" id="nr-voice-list"></div>
+          <!-- 两档音色各占一张卡片；不出的那一档整张隐藏（自动模式两张都在，
+               选定引擎只留对应的那张，系统离线音色一张都不出）。 -->
+          <section class="nr-voice-card hidden" id="nr-voice-card-edge">
+            <h4>edge-tts 音色</h4>
+            <p class="nr-voice-hint">点一下填进上面的音色框，自动模式下就用 edge 念。</p>
+            <div class="nr-voice-list" id="nr-voice-list-edge"></div>
+          </section>
+
+          <section class="nr-voice-card hidden" id="nr-voice-card-endpoint">
+            <h4>OpenAI 兼容端点音色</h4>
+            <p class="nr-voice-hint">点一下填进上面的音色框，自动模式下就用端点念。</p>
+            <div class="nr-voice-list" id="nr-voice-list-endpoint"></div>
           </section>
         </div>
       </div>

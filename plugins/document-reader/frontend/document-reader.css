@@ -791,6 +791,13 @@
     font-family: ui-monospace, Consolas, monospace;
 }
 
+/* ---- 音色选中态：哪张卡片里的条目被选中，就是哪一档去念 ---- */
+
+.nr-voice-item.active {
+    border-color: var(--accent);
+    background: var(--bg-hover);
+}
+
 /* ---- 空状态与加载 ---- */
 /* 空态外观统一由壳的 .empty-state 提供（base.css）；这里只保留本插件在网格里的占位差异 */
 .nr-empty-span {
