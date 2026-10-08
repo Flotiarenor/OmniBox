@@ -388,7 +388,7 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
   └─► Shell serve_media_file：以 get_data_root() 为根做路径安全检查
 ```
 
-> 鉴权：`/api`、`/file`、`/thumbs` 均为 Shell 令牌保护路由（见 `docs/plugin-guide.md` §7 与 readme 访问令牌说明）。插件 iframe 内同源请求自动携带 Cookie，无需额外处理。
+> 鉴权：`/api`、`/file`、`/thumbs` 均为 Shell 令牌保护路由（见 `docs/plugin-guide.md` §7 与 `docs/development.md` 访问令牌说明）。插件 iframe 内同源请求自动携带 Cookie，无需额外处理。
 
 ## 9. 性能设计要点
 
