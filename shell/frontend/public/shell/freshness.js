@@ -112,6 +112,11 @@ window.Freshness = (function () {
     let hideTimer = null;
     let disposed = false;
     let supported = true;
+    //: 卡片是否处于"已完成、正在自动隐藏"的状态（此时没有任务在跑，但不该立刻收掉）
+    let cardSettled = false;
+    //: 上次"替用户自动起校验"的时间：预算型 partial 可能每次进视图都出现，得限流
+    let lastAutoVerifyAt = 0;
+    const AUTO_VERIFY_COOLDOWN_MS = 3 * 60 * 1000;
 
     // ----- 渲染 -----
 
@@ -152,7 +157,10 @@ window.Freshness = (function () {
       const task = s.task || {};
       const running = !!s.busy && !task.done;
       if (!running) {
+        // 没有任务在跑就**不要留着上一次的数字**：卡片里的「0 / 0」是静态占位符，
+        // 早期实现在这里直接 return，于是"弹了卡片但没起任务"时它会一直挂着。
         el.cancel.disabled = true;
+        if (!cardSettled) hideCard();
         return;
       }
       el.cancel.disabled = false;
@@ -169,8 +177,20 @@ window.Freshness = (function () {
 
     function showCard(title) {
       if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      cardSettled = false;
       el['card-title'].textContent = title || '正在校验';
       el.card.classList.remove('hidden');
+    }
+
+    /** 收掉卡片（含"弹了但没起任务"的情况），不留下任何陈旧数字。 */
+    function hideCard() {
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      cardSettled = false;
+      el.card.classList.add('hidden');
+      el.count.textContent = '0 / 0';
+      el.bar.style.width = '0%';
+      el.current.textContent = '';
+      el.errors.textContent = '';
     }
 
     function finishCard(summary) {
@@ -179,6 +199,7 @@ window.Freshness = (function () {
       el.count.textContent = '';
       el.current.textContent = '';
       el.cancel.disabled = true;
+      cardSettled = true;
       hideTimer = setTimeout(() => el.card.classList.add('hidden'), CARD_HIDE_MS);
     }
 
@@ -232,19 +253,22 @@ window.Freshness = (function () {
 
     // ----- 对外动作 -----
 
-    async function verify() {
+    async function verify(opts2) {
       if (!supported) return;
+      const auto = !!(opts2 && opts2.auto);
       try {
         const res = await call('system_freshness_verify', plugin);
         if (res && res.error === 'unsupported') { supported = false; renderStatus(); return; }
         if (res && res.started === false && !res.running) {
-          toast('error', (res && res.error) || '校验启动失败');
+          if (!auto) toast('error', (res && res.error) || '校验启动失败');
+          hideCard();
           return;
         }
-        showCard('正在校验');
+        showCard(auto ? '正在校验（同步未覆盖全部目录）' : '正在校验');
         if (!timer) poll();
       } catch (e) {
-        toast('error', '校验启动失败：' + ((e && e.message) || e));
+        hideCard();
+        if (!auto) toast('error', '校验启动失败：' + ((e && e.message) || e));
       }
     }
 
@@ -254,7 +278,15 @@ window.Freshness = (function () {
       } catch (e) { /* 忽略：任务可能刚好结束 */ }
     }
 
-    /** 被动同步：进视图 / 切目录时调用；本地去抖，壳侧还有最小间隔。 */
+    /**
+     * 被动同步：进视图 / 切目录时调用；本地去抖，壳侧还有最小间隔。
+     *
+     * `partial` 且原因是 `budget`（预算用尽、还有目录要处理）时**真的起一次后台
+     * 校验**把剩下的活干完：原先只把卡片弹出来轮询，没有任何任务在跑，卡片就停在
+     * 静态占位符「0 / 0」上永不消失（`renderCard` 在"没有任务"时直接 return，
+     * `onSettled` 也不会触发）。`dir_cap`（只是没走完，不代表还有活）不起校验，
+     * 否则每次进视图都要跑一趟全量。
+     */
     function autoSync(nextScope, opts2) {
       if (!supported) return;
       if (nextScope != null) scope = nextScope;
@@ -266,10 +298,11 @@ window.Freshness = (function () {
         try {
           const report = await call('system_freshness_sync', plugin, scope);
           if (!report) return;
-          if (report.action === 'partial') {
-            // 预算用尽：被动路径降级成一次后台全量校验（用户不必自己点）
-            if (!quiet) showCard('正在校验（同步未覆盖全部目录）');
-            if (!timer) poll();
+          if (report.action === 'partial' && report.reason === 'budget') {
+            if (quiet || (state && state.busy)) return;
+            if (Date.now() - lastAutoVerifyAt < AUTO_VERIFY_COOLDOWN_MS) return;
+            lastAutoVerifyAt = Date.now();
+            verify({ auto: true });
           } else if (report.action === 'sync'
                      && (report.added || report.changed || report.removed)) {
             if (typeof o.onChange === 'function') o.onChange(report);
