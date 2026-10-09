@@ -314,6 +314,36 @@ class FreshnessEngineTests(unittest.TestCase):
         engine.verify()
         self.assertEqual(calls[-1], (2, True))
 
+    def test_renamed_directory_is_reported_as_removed_by_sync(self):
+        """回归：目录改名/整目录删除时，"旧条目消失"必须在同步里就能报出来。
+
+        条目在旧目录下、新目录的条目算"新增"，如果只有校验做目录级清理，
+        被动同步就会报"新增 3 个"而把旧的 3 个永远留在库里。
+        """
+        self._write('sub/a.jpg')
+        self._write('sub/b.jpg')
+        self._sync()
+        self.plugin.pruned.clear()
+
+        (self.root / 'sub').rename(self.root / 'renamed')
+        report = self._sync()
+
+        self.assertEqual(report['added'], 2)
+        self.assertEqual(report['removed'], 2, '旧目录的条目必须一起清掉')
+        self.assertEqual(sorted(self.plugin.pruned), ['sub/a.jpg', 'sub/b.jpg'])
+
+    def test_partial_pass_never_drops_unseen_directories(self):
+        """部分遍历（预算用尽）不得清理：没见到不等于没了。"""
+        self._write('d1/a.jpg')
+        self._write('d2/b.jpg')
+        self.engine.spec.max_dirs_per_sync = 1
+
+        report = self._sync()
+
+        self.assertTrue(report['partial'])
+        self.assertEqual(report['removed'], 0)
+        self.assertEqual(self.plugin.pruned, [])
+
     def test_multi_root_prefixes_map_to_virtual_keys(self):
         extra = Path(self._tmp.name) / 'extra'
         extra.mkdir()

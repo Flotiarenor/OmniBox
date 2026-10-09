@@ -759,10 +759,20 @@ class FreshnessEngine:
                             total=report['dirs'] + len(queue),
                             current=dir_key or '/')
 
-        # 目录消失：整趟走完才做（部分遍历不知道"没见到"是不是"没走到"）
-        if audit and not report['partial'] and start_dir is None:
-            for dir_key in [k for k in known if k not in seen]:
-                removed_keys.extend(self.store.drop_dir(conn, dir_key))
+        # 目录消失：全部根、整趟走完、无读取错误才做。
+        # 为什么同步也要做（不只是校验）：目录改名/整目录删除时，新目录的条目是
+        # "新增"，旧目录的条目只会在这一步被清掉 —— 少了它，被动同步会报"新增了 3 个"
+        # 却把旧的 3 个永远留在库里。部分遍历（预算用尽）与子目录作用域都不能做：
+        # "没见到"不等于"没了"。
+        if start_dir is None and not report['partial'] and not report['errors']:
+            vanished = [k for k in known if k not in seen]
+            dropped_entries = 0
+            for dir_key in vanished:
+                keys = self.store.drop_dir(conn, dir_key)
+                removed_keys.extend(keys)
+                dropped_entries += len(keys)
+            report['removed'] += dropped_entries
+            report['vanished_dirs'] = len(vanished)
 
         report['pruned'] = self._call_prune(removed_keys)
         report['derived'] = self._call_derive(changed_entries, task)
