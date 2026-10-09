@@ -17,11 +17,10 @@ Object.assign(MediaPlayerApp.prototype, {
             btn.addEventListener('click', () => this.switchView(btn.dataset.view));
         });
 
-        // 工具栏
+        // 工具栏：媒体库的扫描入口已换成交互组件（`#mp-freshness`，见 _mountFreshness），
+        // 这里只剩网易云视图的「刷新」（视图级重新拉取，不是库扫描）
         const scanBtn = document.getElementById('btn-scan');
-        const deepScanBtn = document.getElementById('btn-deep-scan');
-        scanBtn.addEventListener('click', () => this._doScan(false));    // 增量扫描
-        deepScanBtn.addEventListener('click', () => this._doScan(true)); // 深度全量扫描
+        scanBtn.addEventListener('click', () => this._doScan(false));
         document.getElementById('btn-settings').addEventListener('click', () => this._openSettings());
         const search = document.getElementById('media-search');
         this._searchDebounced = MPUtils.debounce(() => this._loadCurrentView(), 300);

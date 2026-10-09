@@ -69,8 +69,11 @@
           <input type="text" id="media-search" placeholder="搜索媒体、专辑、艺术家…" autocomplete="off">
           <button id="btn-search-clear" class="search-field-clear hidden" title="清除"><svg class="obx-icon"><use href="#x"></use></svg></button>
         </div>
-          <button id="btn-scan" class="btn mp-tool-btn" title="增量扫描：只处理新增或变更的文件，秒级完成"><svg class="obx-icon"><use href="#refresh-cw"></use></svg> 扫描</button>
-          <button id="btn-deep-scan" class="btn mp-tool-btn" title="深度扫描：重新读取全部文件的标签与时长，耗时较长"><svg class="obx-icon"><use href="#zap"></use></svg> 深度扫描</button>
+          <!-- 媒体库的「同步（被动）/ 校验（手动）」由共享组件 shell/freshness.js 填充；
+               原先的「扫描」「深度扫描」两个按钮已下线（语义统一，见 docs/plugin-guide §3.4）。
+               下面这个按钮只剩一个职责：网易云视图里重新拉取在线数据（视图级刷新）。 -->
+          <button id="btn-scan" class="btn mp-tool-btn hidden" title="重新拉取网易云数据"><svg class="obx-icon"><use href="#refresh-cw"></use></svg> 刷新</button>
+          <div id="mp-freshness"></div>
           <button id="btn-settings" class="btn mp-tool-btn"><svg class="obx-icon"><use href="#settings"></use></svg> 设置</button>
         </div>
       </div>

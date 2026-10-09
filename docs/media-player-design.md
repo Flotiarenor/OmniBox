@@ -35,9 +35,9 @@ plugins/media-player/
         ├── progress-store.js   # 播放进度记忆（localStorage，兼容旧键迁移）
         ├── player-core.js      # 音频/视频播放核心 + EQ + 状态保存
         ├── playlist-manager.js # 歌单管理
-        ├── app.js              # 类骨架：构造函数、初始化、扫描轮询
+        ├── app.js              # 类骨架：构造函数、初始化、统一刷新挂载
         ├── app-ui-events.js    # MediaPlayerApp 分片：UI 事件绑定、视频封面预取
-        ├── app-views.js        # MediaPlayerApp 分片：扫描 / 设置 / 视图切换与加载
+        ├── app-views.js        # MediaPlayerApp 分片：视图切换、设置、网易云刷新
         ├── app-render.js       # MediaPlayerApp 分片：空状态、专辑、媒体列表与详情
         ├── app-playback.js     # MediaPlayerApp 分片：播放状态反馈、队列、歌单交互
         └── app-stage.js        # MediaPlayerApp 分片：均衡器、歌词 / 视频、全屏、快捷键
@@ -56,25 +56,37 @@ plugins/media-player/
 
 - `MediaItem` 为统一条目（`kind: audio | video`），id 为绝对路径的 md5 前 16 位；
 - 索引缓存 `root_dir/.cache/media_index.json`，带 `INDEX_VERSION`（当前 v4），结构升级时自动
-  重建；增量扫描以 mtime/size 未变复用缓存条目；
-- 状态文件 `media_state.json`：`favorites / recent / playlists / playback` 四段（见「状态持久化」）；
-- 任务文件 `scan_task.json`：后台扫描任务的断点持久化（见下）。
+  重建；**"哪些条目要重算"由统一刷新基建托管**（`root_dir/.cache/<插件>/freshness.db`
+  里存目录与条目指纹，见「扫描与刷新」）；
+- 状态文件 `media_state.json`：`favorites / recent / playlists / playback` 四段（见「状态持久化」）。
 
-### 扫描任务（BackgroundTask）
+### 扫描与刷新（统一刷新基建）
 
-复用 Shell 共享基建 `shell/backend/tasks.py`（线程 + 进度 + 取消 + 原子持久化）：
+本插件不自己判定"哪个文件变了"，接入 Shell 的统一刷新基建
+（`shell/backend/freshness.py`，契约见 `docs/plugin-guide.md` §3.4），插件只声明
+管哪些文件、怎么算键、哪些条目要重活（实现在 `backend/freshness.py`）：
 
-- `media_scan(force)` 启动后台任务；「扫描」按钮（`Icons.html('icon:refresh-cw')`）为增量（默认，只处理新增/变更文件），
-  「深度扫描」按钮（`Icons.html('icon:zap')`）为全量（`force=True` 重读全部标签与时长）；已运行时返回 error；
-- **断点续传**：worker 每完成一个根目录，将「部分索引 + `completed_roots`」落盘检查点；
-  进程中断后重启任务恢复为 `paused`，再次增量扫描自动跳过已完成根目录；
-- 多根目录：设置项 `media_roots`（**媒体文件夹**列表，多行路径）逐根扫描，第一行
+- `media_scan(force)` 保留为兼容入口：`force=False` → **同步**（被动增量，
+  目录 mtime 与纳入索引的名字个数未变则整目录跳过，稳态零 `stat`）；
+  `force=True` → **校验**（全量逐项比对 + 幽灵清理），界面上的按钮是共享组件
+  `shell/frontend/public/shell/freshness.js` 渲染的「校验」；
+- 条目键 = `item_id`（`key_of` 钩子），因此指纹库、索引、缩略图库共用同一个键，
+  不需要映射表；
+- 目录封面图（`folder.jpg` 等）通过 `include_names` 纳入指纹：它们不改索引条目，
+  却决定 `has_cover` / 专辑封面，"后补一张封面"必须能被发现；
+- 多根目录：设置项 `media_roots`（**媒体文件夹**列表）就是受管根集合，第一行
   既是数据根（缓存 / 索引 / 缩略图库落点）又是扫描根，其余只作额外扫描根，各根以
   目录名作 `namespace` 前缀聚合；旧配置的 `root_dir` + `media_dirs` 仍读得出来
-  （`_configured_roots()`：新键优先，为空才回退旧键）；
-- 增量语义：mtime/size 未变直接复用；目录封面图比媒体文件新时强制重建条目（刷新 `has_cover`）；
-  索引文件丢失而任务文件残留时，断点信息失效、降级全扫；
-- 深度扫描完成后清理孤儿封面条目（`ThumbCache.prune`，仅删除已从索引消失的文件对应缓存）。
+  （`_configured_roots()`：新键优先，为空才回退旧键）。根增删后清一次去抖，
+  被移除的根留下的条目由下一次校验的差集删除清理；
+- 解析规则版本 = `INDEX_VERSION`：升级后由基建整体作废派生数据，不再依赖"手动重扫"；
+- `on_pass_end` 钩子在整趟结束时落盘一次索引（索引是单文件，不能每处理一个目录
+  就整体重写），并回报 `audio / video / total` 计数供前端显示；
+- **已删除的行为**：根级断点（`scan_task.json` + `completed_roots` + paused 恢复）。
+  指纹精确到目录，续跑由目录短路天然完成，那套状态机是多余的；残留文件在启动时清理；
+- **修掉的缺陷**：旧增量扫描只做 `merged[id] = item`，从磁盘删除的媒体永久留在索引里
+  （只有「深度扫描」能清）。现在 `on_verified` 按有效键集合做差集删除，
+  跑过一次校验索引就与磁盘一致（`tests/test_media_player_index.py` 守这条）。
 
 ### 专辑聚合
 
@@ -370,7 +382,8 @@ plugins/media-player/
 └─ .view-body                            index.html:60
    ├─ .view-toolbar.mp-toolbar           index.html:61-76
    │  ├─ .toolbar-group.mp-view-heading   （#mp-view-title / #mp-view-sub）
-   │  └─ .toolbar-group.mp-toolbar-right  （.mp-search / 扫描 / 深度扫描 / 设置）
+   │  └─ .toolbar-group.mp-toolbar-right  （.mp-search / 同步状态+校验（共享组件）/ 设置；
+   │                                        网易云视图里换成「刷新」= 重拉在线数据）
    └─ .mp-main                            css:325-330（flex:1; flex-direction:column）
       ├─ section.mp-stage#mp-stage        css:332-345（height: calc(224px + 76px)）
       │  ├─ .mp-stage-backdrop / .mp-stage-scrim
@@ -560,13 +573,12 @@ plugins/media-player/
   `m/M` 静音、`l/L` 歌词页、`f/F` 全屏、`Esc` 逐级退出（全屏 → 歌词 → 关队列/均衡器/弹窗/菜单，
   353-363）。弹窗输入框内另有 `Enter` 提交：`app-ui-events.js:107-108`、`122-123`；
   搜索框 `Esc` 清空（`app-ui-events.js:33-36`）。
-- **长任务进度与取消**：扫描是唯一长任务。`media_scan(deep)` 启动后 500ms 轮询
-  `media_scan_status`，上限 1200 轮（≈10 分钟，`app.js:87-96`）；进度文案
-  `` `正在扫描媒体库… ${s.processed}/${s.total}${s.current ? ' · ' + s.current : ''}` ``
-  （`app-views.js:53`）走 `.mp-loading` 转义 + `white-space: pre-line`（`css:962-965`）；
-  扫描期间两个按钮 `disabled`（`app-views.js:65-69`）。**前端没有取消入口**，
-  只在轮询发现后端 `state === 'cancelled'` 时提示"扫描已取消，已完成部分已保留"
-  （`app-views.js:57`）。断点续扫在 `init` 阶段自动触发（`app.js:104-113`）。
+- **长任务进度与取消**：全量校验是唯一长任务，走共享组件
+  （`shell/frontend/public/shell/freshness.js`）：它自己按 500ms 轮询
+  `system_freshness_state`，进度卡显示 `processed/total + current` 并提供「取消」；
+  插件侧不再有轮询、文案与禁用逻辑（原先散在 `app-views.js:19-71` 与
+  `app.js:87-96` 的那一套已删）。冷启动（索引为空）由被动同步触发，
+  目录多时自动降级成后台校验（`app.js:_ensureIndex`）。
 - **空/加载/错误三态**：加载 = `.mp-loading`+`.mp-spinner`（`app-render.js:17-28`，
   文案 `正在准备媒体库…` / `首次使用，正在扫描媒体库…` / `继续上次未完成的扫描…` 见
   `app.js:99/106/110`）；空 = `.mp-empty-state` + 图标/标题/提示（`app-render.js:30-38`，

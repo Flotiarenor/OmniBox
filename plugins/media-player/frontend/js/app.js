@@ -67,6 +67,7 @@ class MediaPlayerApp {
         this._bindKeyboard();
         this._bindThumbPrefetch();
         this._bindPluginLifecycle();
+        this._mountFreshness();
         this.loadExtensions();
 
         try {
@@ -105,44 +106,50 @@ class MediaPlayerApp {
     // ============================================================
     // 初始化数据
     // ============================================================
-    // 轮询扫描任务直至 done/cancelled/none；onProgress 每轮回调刷新进度文案
-    async _waitScanDone(onProgress) {
-        for (let i = 0; i < 1200; i++) {   // 上限约 10 分钟
-            let st = null;
-            try { st = await Bridge.call('media_scan_status'); } catch (e) { st = null; }
-            if (!st || st.state === 'none' || st.state === 'done' || st.state === 'cancelled') return st;
-            if (onProgress) onProgress(st);
-            await new Promise(r => setTimeout(r, 500));
-        }
-        return null;
-    }
-
     async _ensureIndex() {
         this._setLoading('正在准备媒体库…');
         try {
             const stats = await Bridge.call('media_stats');
-            const st0 = await Bridge.call('media_scan_status');
-            let needWait = false;
-            if (st0 && st0.state === 'paused') {
-                // 上次扫描被中断：断点续扫（已完成根目录自动跳过）
-                this._setLoading('继续上次未完成的扫描…\n已完成部分自动跳过');
-                const started = await Bridge.call('media_scan', false);
-                needWait = !(started && started.error);
-            } else if (!stats || stats.total === 0) {
-                this._setLoading('首次使用，正在扫描媒体库…\n大媒体库可能需要一点时间');
-                const started = await Bridge.call('media_scan', false);
-                needWait = true; // 已在运行（如另一标签页触发）同样等待其完成
-            }
-            if (needWait) {
-                const st = await this._waitScanDone();
-                if (st && st.state === 'done') {
-                    const ex = st.extra || {};
-                    Toast.success(`扫描完成：音乐 ${ex.audio ?? '?'} · 视频 ${ex.video ?? '?'}`);
-                }
-            }
+            if (stats && stats.total > 0) { this._setLoading(''); return; }
+            // 首次使用（索引为空）：被动同步会走一遍全库；目录多时它自己降级成
+            // 后台校验（进度卡显示在右下角），这里只负责起始文案与收尾提示。
+            this._setLoading('首次使用，正在扫描媒体库…\n大媒体库可能需要一点时间');
+            this._firstScanPending = true;
+            this._autoSyncFreshness();
         } catch (e) {
             console.error('媒体索引初始化失败:', e);
+            this._setLoading('');
         }
+    }
+
+    /** 挂载共享的「同步状态 + 校验」控件（shell/freshness.js，见 plugin-guide §3.4）。 */
+    _mountFreshness() {
+        const host = document.getElementById('mp-freshness');
+        if (!host || typeof Freshness === 'undefined') return;
+        this.freshness = Freshness.mount({
+            plugin: 'media-player',
+            container: host,
+            unit: '首',
+            onChange: () => this._onFreshnessChanged(),
+        });
+    }
+
+    /** 被动同步的触发点（切视图 / 首次进入）。组件去抖，壳侧还有最小间隔。 */
+    _autoSyncFreshness() {
+        if (this.freshness && typeof this.freshness.autoSync === 'function') {
+            this.freshness.autoSync('');
+        }
+    }
+
+    /** 同步发现变化 / 校验完成：清掉起始遮罩、刷新统计与当前视图。 */
+    async _onFreshnessChanged(state) {
+        if (this._firstScanPending && !(state && state.busy)) {
+            this._firstScanPending = false;
+            this._setLoading('');
+            Toast.success(`媒体库已就绪：${state && state.entries ? state.entries : 0} 首`);
+        }
+        await this._updateStats();
+        await this._loadCurrentView();
     }
 
     async _restorePlayback() {

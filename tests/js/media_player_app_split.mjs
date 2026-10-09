@@ -27,7 +27,7 @@ const REQUIRED_METHODS = [
     '_showControls', '_stopAutoHide', '_toggleCurrentFavorite', '_toggleEQ',
     '_toggleLyrics', '_toggleQueue', '_toggleVideoMode', '_toggleWideMode',
     '_updateFavButton', '_updateMiniEq', '_updatePlayerCover', '_updateStageBackdrop',
-    '_updateStageCover', '_updateStats', '_waitScanDone',
+    '_updateStageCover', '_updateStats',
     'init', 'loadExtensions', 'onPlayStateChange', 'onTimeUpdate',
     'onTrackChange', 'openAlbum', 'openNeteasePlaylist', 'openNeteaseView',
     'openPlaylist', 'showPlaylistMenu', 'switchView', 'toggleFullscreen',
