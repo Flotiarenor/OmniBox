@@ -398,6 +398,57 @@ class PluginSpecCheckerTests(unittest.TestCase):
             self.assertEqual([w for w in warnings if '未登记' in w], [])
 
 
+class FreshnessContractTests(unittest.TestCase):
+    """统一刷新基建的接线门禁（tools/check_plugins.py 的 _check_freshness_contract）。
+
+    拦的是三个"三处各自看都对、合起来不工作"的组合：后端漏声明、前端漏挂载、
+    mount 里的插件名与 manifest 不一致。三者都不报错，只表现为"没有刷新功能"
+    或"点了没反应"。
+    """
+
+    SPEC_BACKEND = (
+        'class Plugin:\n'
+        '    def freshness_spec(self):\n'
+        "        return {'roots': lambda: ['.']}\n"
+    )
+    MOUNT_OK = "Freshness.mount({ plugin: 'fr-good', container: el });\n"
+
+    def _fixture(self, root: Path, name: str, *, backend: str, frontend: str) -> None:
+        plugin_dir = _make_plugin(root, name, _manifest(name, f'/{name}'), backend_code=backend)
+        (plugin_dir / 'frontend' / 'app.js').write_text(frontend, encoding='utf-8')
+
+    def test_spec_without_mount_is_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._fixture(root, 'fr-good', backend=self.SPEC_BACKEND, frontend='// 没有挂组件\n')
+            errors, _ = check_plugins(root, load_backends=False)
+            self.assertTrue(any('前端没有 Freshness.mount' in e for e in errors), errors)
+
+    def test_mount_without_spec_is_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._fixture(root, 'fr-mount-only', backend='class Plugin:\n    pass\n',
+                          frontend="Freshness.mount({ plugin: 'fr-mount-only' });\n")
+            errors, _ = check_plugins(root, load_backends=False)
+            self.assertTrue(any('没有 freshness_spec' in e for e in errors), errors)
+
+    def test_mismatched_plugin_name_is_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._fixture(root, 'fr-typo', backend=self.SPEC_BACKEND,
+                          frontend="Freshness.mount({ plugin: 'image-viewer', container: el });\n")
+            errors, _ = check_plugins(root, load_backends=False)
+            self.assertTrue(any('与插件名' in e for e in errors), errors)
+
+    def test_matched_spec_and_mount_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._fixture(root, 'fr-good', backend=self.SPEC_BACKEND,
+                          frontend="const ctl = Freshness.mount({ plugin: 'fr-good' });\n")
+            errors, _ = check_plugins(root, load_backends=False)
+            self.assertFalse([e for e in errors if 'Freshness' in e or 'freshness_spec' in e], errors)
+
+
 class FrontendUiContractTests(unittest.TestCase):
     """前端 UI 契约门禁（tools/check_plugins.py 的 _check_frontend_ui）。
 

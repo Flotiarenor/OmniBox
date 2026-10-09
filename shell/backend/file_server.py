@@ -65,9 +65,11 @@ _PLUGIN_BOOTSTRAP_SCRIPT = (
     '<link rel="stylesheet" href="/shell/variables.css">'
     '<link rel="stylesheet" href="/shell/base.css">'
     '<link rel="stylesheet" href="/shell/folder-picker.css">'
+    '<link rel="stylesheet" href="/shell/freshness.css">'
     '<link rel="stylesheet" href="/shell/effects.css">'
     '<script src="/shell/base.js"></script>'
     '<script src="/shell/folder-picker.js"></script>'
+    '<script src="/shell/freshness.js"></script>'
     '<script src="/shell/motion.js"></script>'
     # 图标 sprite：必须**内联进文档**，不能靠 <use href="外部.svg#名字"> 引用。
     # 实测（pywebview / WebView2 / Edge 153）：外部文件的 <use> 一律不渲染，包围盒恒为 0，
@@ -402,6 +404,12 @@ _ADMIN_ONLY_API = frozenset({
     'system_set_log_level',
     'system_clear_thumb_caches',
     'system_open_log_dir',
+    # 统一刷新基建：校验只读盘、可被本插件的工具栏按钮触发，因此不设限；
+    # **重建**是"丢弃派生缓存"的破坏性操作（与 system_clear_thumb_caches 同类），
+    # 且能指定任意插件 —— 不设限就等于让一个插件 iframe 有权清掉别的插件的缓存。
+    'system_freshness_rebuild',
+    # 全插件状态快照（含各插件条目数）：与 system_get_plugin_status 同属"壳级事实"
+    'system_freshness_overview',
 })
 
 
@@ -602,6 +610,9 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             'system_clear_thumb_caches': shell_info.clear_thumb_caches,
             'system_open_log_dir': shell_info.open_log_dir,
         })
+        # 统一刷新基建（同步 / 校验）：方法表来自 plugin_manager 一处定义，
+        # 桌面模式的 ShellAPI 更新同一张表（见 freshness_api_methods 的说明）
+        api_methods.update(plugin_manager.freshness_api_methods())
         # 管理员判定包在方法本身上：HTTP 与桌面 js_api 共用同一份（见 guard_admin_methods）
         api_methods = guard_admin_methods(api_methods)
 

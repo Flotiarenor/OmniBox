@@ -1,0 +1,122 @@
+/* ===== 统一「同步 / 校验」组件（Shell 共享样式） =====
+ *
+ * 配套 shell/frontend/public/shell/freshness.js。只允许使用 variables.css 的
+ * 统一 token —— 插件不该为"刷新"再造一套颜色/圆角，这是换肤一致性的前提。
+ *
+ * 类名统一 `obx-fresh-*` 前缀：插件既有样式里的 `.rebuild-progress*` / `.mp-scan-*`
+ * 各自一份，迁过来的插件删掉自己的即可，不会与新组件互相覆盖。
+ */
+
+.obx-fresh {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+}
+
+.obx-fresh-status {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.obx-fresh-compact .obx-fresh-status {
+  font-size: 11px;
+}
+
+.obx-fresh .obx-fresh-verify {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.obx-fresh .obx-fresh-verify:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* 进度卡：固定在右下角，不参与工具栏布局（工具栏里放不下进度） */
+.obx-fresh-card {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 60;
+  width: 280px;
+  padding: 12px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.obx-fresh-card.hidden {
+  display: none;
+}
+
+.obx-fresh-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.obx-fresh-hide {
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.obx-fresh-hide:hover {
+  color: var(--text-primary);
+}
+
+.obx-fresh-count {
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.obx-fresh-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-hover);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.obx-fresh-bar-inner {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width var(--transition-fast);
+}
+
+.obx-fresh-current {
+  color: var(--text-secondary);
+  min-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.obx-fresh-errors {
+  color: var(--danger);
+  margin-top: 4px;
+}
+
+.obx-fresh-errors:empty {
+  display: none;
+}
+
+.obx-fresh-card-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}

@@ -39,6 +39,10 @@ HIDDEN_IMPORTS = [
     # 插件共享基建：只有 image-viewer / media-player 会 import
     'shell.backend.tasks',
     'shell.backend.thumb_cache',
+    # 统一刷新基建（同步 / 校验）：插件声明 freshness_spec() 由壳侧驱动，
+    # 但插件自己的兼容入口会 import 它取引擎（image-viewer 的 refresh()），
+    # 将来插件直接声明 FsSource 也要能 import
+    'shell.backend.freshness',
     'shell.backend.file_server',
     # ── group-mesh 协议内核（shell/groupmesh）──
     'shell.groupmesh',

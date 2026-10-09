@@ -228,6 +228,7 @@ def _run_app(config, manager):
         'system_clear_thumb_caches': shell_info.clear_thumb_caches,
         'system_open_log_dir': shell_info.open_log_dir,
     }
+    shell_methods.update(manager.freshness_api_methods())
     shell_methods.update(manager.get_api_methods())
     # 桌面模式**不**套 `guard_admin_methods`，理由必须写在代码里，否则下一个人会
     # 把它当成"漏了一处"补上、然后所有管理员端点在桌面模式全部拒绝：

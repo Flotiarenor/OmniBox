@@ -25,6 +25,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Dict, List
 
+from shell.backend import freshness
 from shell.backend.paths import get_plugins_config_dir
 from shell.backend.plugin_base import PluginBase, mask_secrets
 from shell.backend.protected_paths import normalize as normalize_path
@@ -276,6 +277,83 @@ class PluginManager:
                 {'name': name, 'reason': reason}
                 for name, reason in sorted(self._load_failures.items())
             ],
+        }
+
+    # ===== 统一刷新基建（同步 / 校验）：壳级端点，插件不注册自己的刷新 API =====
+    #
+    # 为什么放在壳里：判据与编排（去抖、单飞、增量短路、幽灵清理、进度）只有一份，
+    # 插件只声明"管哪些文件 / 怎么算指纹 / 哪些条目要重活"。名字与语义统一后，
+    # 前端也不必为每个插件写一套按钮与轮询。实现见 shell/backend/freshness.py。
+
+    def _freshness_engine(self, plugin_name: str):
+        """取插件的引擎；未加载或未声明 freshness_spec() 时返回 None。"""
+        instance = self._instances.get(str(plugin_name or ''))
+        if instance is None:
+            return None
+        return freshness.engine_for(instance)
+
+    def freshness_state(self, plugin: str = '') -> dict:
+        """同步/校验的当前状态（不扫盘）。"""
+        engine = self._freshness_engine(plugin)
+        if engine is None:
+            return {'plugin': plugin, 'available': False,
+                    'error': '插件未参与统一刷新（未加载或未声明 freshness_spec）'}
+        return engine.state()
+
+    def freshness_sync(self, plugin: str = '', scope: str = '') -> dict:
+        """被动增量同步：便宜、可被前端在进视图/切目录时调用（壳侧去抖 + 单飞）。"""
+        engine = self._freshness_engine(plugin)
+        if engine is None:
+            return {'action': 'skip', 'reason': 'unsupported', 'plugin': plugin}
+        return engine.sync(scope)
+
+    def freshness_verify(self, plugin: str = '') -> dict:
+        """手动全量校验：起后台任务，立即返回（前端轮询 freshness_state 看进度）。"""
+        engine = self._freshness_engine(plugin)
+        if engine is None:
+            return {'started': False, 'error': 'unsupported', 'plugin': plugin}
+        return engine.start_verify()
+
+    def freshness_cancel(self, plugin: str = '') -> dict:
+        """请求取消正在跑的校验。"""
+        engine = self._freshness_engine(plugin)
+        if engine is None:
+            return {'success': False, 'error': 'unsupported'}
+        return {'success': engine.request_cancel()}
+
+    def freshness_rebuild(self, plugin: str = '', kind: str = 'derived') -> dict:
+        """逃生门：丢弃派生缓存后重跑全量校验（指纹不可信时用）。"""
+        engine = self._freshness_engine(plugin)
+        if engine is None:
+            return {'started': False, 'error': 'unsupported', 'plugin': plugin}
+        return engine.rebuild(kind)
+
+    def freshness_overview(self) -> List[dict]:
+        """所有参与统一刷新的插件的状态快照（壳级「数据与缓存」页用）。"""
+        # 快照后再遍历：unload_all() 可能与请求线程并发改动 _instances
+        out = []
+        for _name, instance in list(self._instances.items()):
+            engine = freshness.engine_for(instance)
+            if engine is None:
+                continue
+            out.append(engine.state())
+        return sorted(out, key=lambda item: item['plugin'])
+
+    def freshness_api_methods(self) -> Dict[str, Callable]:
+        """统一刷新对外的方法表。
+
+        单独一张表是必要的：**两条通道各有一份 system_* 清单**（HTTP 的
+        `file_server.api_proxy` 与桌面模式的 `main.ShellAPI`），逐处手抄 6 个名字
+        迟早会漏一处 —— 漏了不会报错，只表现为"桌面模式点校验没反应"。
+        两边都 `update(manager.freshness_api_methods())`，名字只有这一处。
+        """
+        return {
+            'system_freshness_state': self.freshness_state,
+            'system_freshness_sync': self.freshness_sync,
+            'system_freshness_verify': self.freshness_verify,
+            'system_freshness_cancel': self.freshness_cancel,
+            'system_freshness_rebuild': self.freshness_rebuild,
+            'system_freshness_overview': self.freshness_overview,
         }
 
     def get_plugin_extensions(self, host: str|None = None, placement: str|None = None) -> List[dict]:

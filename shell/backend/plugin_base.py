@@ -144,6 +144,18 @@ class PluginBase(ABC):
         """
         return [self.get_data_root()]
 
+    def get_cache_dir(self) -> Path:
+        """本插件的缓存目录（默认 `数据根/.cache/<插件名>`）。
+
+        统一落点，理由与 `thumb_dir` 相同：由壳给出唯一的派生路径，插件不再各拼
+        一份（现状里 image-cleaner 用 `<宿主根>/.cache/image-cleaner`、media-player
+        用 `<根>/.cache`、pixiv-sync 用 `<根>/.cache/pixiv-sync`，还出现过
+        "换根后两类缓存写向不同目录"）。需要把缓存并进自己的既有目录的插件可覆写。
+
+        **不要**把凭据类文件放这里：`get_protected_paths()` 若要保护它，必须显式申报。
+        """
+        return self.get_data_root() / '.cache' / (self.name or 'plugin')
+
     def resolve_file_path(self, rel_path: str) -> Path | None:
         """把 `/file?plugin=X&path=<相对路径>` 的相对路径解释成本机物理路径。
 
@@ -536,6 +548,17 @@ class PluginBase(ABC):
         if self._settings_store:
             self._settings_store.clear(self.name)
         return {"success": True}
+
+    def freshness_spec(self) -> Optional[Dict[str, Any]]:
+        """声明本插件的新鲜度规格（不声明 = 不参与统一的「同步 / 校验」）。
+
+        返回 `None`（默认）以外的 dict 即接入壳的刷新基建：壳负责去抖、单飞、
+        增量短路、幽灵清理、进度与状态展示，插件只回答三个问题——管哪些文件、
+        怎么算指纹、哪些条目需要重活。字段与语义见 `shell/backend/freshness.py`
+        与 `docs/plugin-guide.md` §3.4「统一刷新（同步 / 校验）」；规格里的
+        `roots` 建议传可调用对象，这样设置变更后不用重建插件。
+        """
+        return None
 
     # on_load / on_unload 是**可选**钩子，因此刻意不加 @abstractmethod：
     # 插件只实现自己需要的那一个（只读插件没有收尾需求），强制实现反而会
