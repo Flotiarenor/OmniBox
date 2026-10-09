@@ -24,6 +24,12 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 log = logging.getLogger(__name__)
 
 
+def _base_document_key(key: str) -> str:
+    """去掉 `_iter_documents` 给同相对路径加的 `#N` 后缀。"""
+    head, sep, tail = key.rpartition('#')
+    return head if sep and tail.isdigit() else key
+
+
 class LibraryMixin:
     """书架：文件扫描、缓存、进度读写。"""
 
@@ -262,7 +268,127 @@ class LibraryMixin:
                 'progress': overall,
                 'encoding': encoding,
             })
+            # 书架条目（含进度与"最近阅读"排序）也要落盘：只写 `.document_progress.json`
+            # 的话，重启后 `list_documents` 会命中早返回分支，把旧进度当现状返回，
+            # 直到文件本身变化触发一次全量重扫为止。
+            self._save_cache()
         return {'success': True}
+
+    # ===== 统一刷新基建（同步 / 校验）=====
+    #
+    # 本插件的失效判据（逐文件 mtime + size + id 集合）本来就是全仓最合理的一份，
+    # 接入基建换来的是：目录级短路（不再每次进书架都全树 stat 一遍）、统一的手动
+    # 校验入口（此前**没有任何重扫按钮**）、以及解析规则版本的整体失效
+    # （`content_version` = CACHE_VERSION，取代"记得手动丢缓存"）。
+
+    def freshness_spec(self) -> Dict[str, Any]:
+        return {
+            'roots': lambda: [Path(root) for root in self._roots],
+            'include': tuple(sorted(self.KIND_BY_EXT)),
+            'key_of': lambda abs_path: self._document_key_for(abs_path),
+            'derive': self._freshness_derive,
+            'prune': self._freshness_prune,
+            'on_verified': self._freshness_audit,
+            'on_pass_end': self._freshness_pass_end,
+            'rebuild': self._freshness_rebuild,
+            'content_version': self.CACHE_VERSION,
+            'unit': '本',
+            'min_sync_interval': 5.0,
+            # 文档是几十到几百本量级：逐条 stat 换"文件被替换立刻反映"很划算
+            'stat_entries': True,
+        }
+
+    def _document_key_for(self, abs_path: str) -> str:
+        """条目键 = 相对根的 posix 路径（与缓存键、进度键同形）。
+
+        多根目录下相对路径撞车时，本插件自己的 `_iter_documents` 会给第二个加
+        `#2` 后缀（按遍历先后编号）。指纹库里不复制这套编号 —— 编号依赖遍历顺序，
+        两套遍历不可能保证同序。代价是撞车的那一对共用一个指纹键：基建只驱动其中
+        一份的缓存失效，另一份仍由插件自己的 mtime/size 判定兜住（见
+        `_freshness_audit` 对 `#N` 变体的保留规则）。
+        """
+        target = Path(abs_path)
+        for root in self._roots:
+            try:
+                return target.relative_to(root).as_posix()
+            except ValueError:
+                continue
+        return target.name
+
+    def _freshness_derive(self, items) -> Dict[str, Any]:
+        """新增/指纹变化：丢掉这本书的派生缓存，让它按需重解析。
+
+        文档的派生数据（章节表、偏移、全文、EPUB 解包图）都是按需重算的，所以
+        "重活"就是"丢旧结果"；`_document_cache` 里的元信息由下一趟
+        `list_documents` 重建（它按 mtime/size 判定，不需要在这里重解析）。
+        """
+        dropped = 0
+        for it in items:
+            key = str(it.get('key') or '')
+            if not key:
+                continue
+            cached = self._document_cache.get(key)
+            if cached:
+                cached['chapter_count'] = 0     # 章节表已作废：书架暂时按体积显示
+            self._drop_book_cache(key)
+            dropped += 1
+        if dropped:
+            self._cache_dirty = True
+        return {'count': dropped}
+
+    def _freshness_prune(self, keys) -> int:
+        """条目消失：移出书架并清掉它的全部缓存。"""
+        dropped = 0
+        for key in keys:
+            key = str(key)
+            if self._document_cache.pop(key, None) is not None:
+                dropped += 1
+            self._drop_book_cache(key)
+            progress = self._progress_cache
+            if isinstance(progress, dict):
+                progress.pop(key, None)
+        if dropped:
+            self._cache_dirty = True
+            self._save_progress(self._progress_cache or {})
+        return dropped
+
+    def _freshness_audit(self, keys) -> Dict[str, Any]:
+        """全量校验后的对账：书架条目与磁盘一致（幽灵条目与孤儿缓存一次清干净）。
+
+        `#N` 变体要保留：同相对路径出现在多个根时，插件按遍历顺序给第二份加
+        `#2`，而指纹键只有"相对路径"这一个（见 `_document_key_for`）。只按
+        `key in valid` 判断会把第二份当成幽灵，每跑一次校验就删一次。
+        """
+        valid = {str(k) for k in keys}
+        stale = sorted(
+            key for key in self._document_cache
+            if key not in valid and _base_document_key(key) not in valid
+        )
+        for key in stale:
+            self._document_cache.pop(key, None)
+            self._drop_book_cache(key)
+        if stale:
+            self._cache_dirty = True
+        return {'dropped_books': len(stale), 'valid_books': len(valid)}
+
+    def _freshness_pass_end(self, report, verified: bool) -> Dict[str, Any]:
+        """整趟结束：缓存与进度有改动才落盘（缓存是单文件，不能每目录重写）。"""
+        if getattr(self, '_cache_dirty', False):
+            self._save_cache()
+            self._cache_dirty = False
+        return {'books': len(self._document_cache), 'verified': bool(verified)}
+
+    def _freshness_rebuild(self, kind: str = 'derived') -> Dict[str, Any]:
+        """逃生门：丢弃派生缓存（章节表/偏移/全文/解包图 + 书架元信息）。
+
+        **不动**阅读进度与书签（`.document_progress.json` / 书签文件）。
+        """
+        for cache in (self._chapter_cache, self._offset_cache,
+                      self._full_content_cache, self._doc_cache):
+            cache.clear()
+        self._document_cache.clear()
+        self._cache_dirty = True
+        return {'kind': kind, 'cleared': True}
 
     # ===== 内部工具 =====
 

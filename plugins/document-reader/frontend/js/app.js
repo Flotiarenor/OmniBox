@@ -47,6 +47,7 @@ class DocumentReader {
         this.settings = new ReaderSettingsStore(this);
         this._bindEvents();
         this._bindModalDismiss();
+        this._mountFreshness();
         await this._loadDocuments();
         await this._loadMarks();
         // 阅读偏好从后端设置读（跨设备持久化），读到之后再渲染书架与正文
@@ -336,6 +337,34 @@ class DocumentReader {
         });
     }
 
+    // ===== 统一刷新（同步 / 校验）=====
+
+    /** 挂载共享组件（shell/freshness.js，见 docs/plugin-guide §3.4）。 */
+    _mountFreshness() {
+        const host = document.getElementById('nr-freshness');
+        if (!host || typeof Freshness === 'undefined') return;
+        this.freshness = Freshness.mount({
+            plugin: 'document-reader',
+            container: host,
+            unit: '本',
+            onChange: () => this._onFreshnessChanged(),
+        });
+    }
+
+    /** 被动同步：进书架 / 切回书架时触发（组件去抖，壳侧还有最小间隔）。 */
+    _autoSyncFreshness() {
+        if (this.freshness && typeof this.freshness.autoSync === 'function') {
+            this.freshness.autoSync('');
+        }
+    }
+
+    /** 同步发现变化 / 校验完成：重读书架与书签，再渲染。 */
+    async _onFreshnessChanged() {
+        await this._loadDocuments();
+        await this._loadMarks();
+        this._renderShelf();
+    }
+
     // ===== 书架 =====
 
     async _loadDocuments() {
@@ -346,6 +375,7 @@ class DocumentReader {
             console.error('加载文档列表失败:', e);
             this.documents = [];
         }
+        this._autoSyncFreshness();
     }
 
     async _loadMarks() {

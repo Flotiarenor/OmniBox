@@ -564,6 +564,51 @@ class DocumentReaderFormatTests(unittest.TestCase):
 
     # ===== 章节数缓存 =====
 
+    def test_chapter_count_survives_restart(self):
+        """回归：章节数与进度必须落盘。
+
+        `get_chapters` 曾把 `chapter_count` 写在 `_save_cache()` **之后**，
+        `update_progress` 只落 `.document_progress.json` 不落书架缓存 —— 两者都
+        表现为"重启后书架那一行退回文件大小 / 进度条停在上次全量重扫时的值"，
+        而文件没变时 `list_documents` 会一直命中早返回分支，再也修不回来。
+        """
+        (self.docs / 'a.txt').write_text('第一章\n正文\n第二章\n正文\n第三章\n正文\n',
+                                        encoding='utf-8')
+        self.plugin.list_documents()
+        chapters = self.plugin.get_chapters('a.txt')['chapters']
+        self.plugin.update_progress('a.txt', 2, 0.1)
+        self.plugin.on_unload()
+
+        reopened = self._new_plugin()
+        self.addCleanup(reopened.on_unload)
+        item = reopened.list_documents()['documents'][0]
+
+        self.assertEqual(item['chapter_count'], len(chapters))
+        self.assertEqual(item['last_read_chapter'], 2)
+        self.assertAlmostEqual(item['progress'], 0.7, places=3)
+
+    # ===== 统一刷新基建 =====
+
+    def test_freshness_sync_and_verify_drop_vanished_books(self):
+        """接入统一刷新基建：同步建指纹，校验按磁盘差集清掉已删除的书。"""
+        from shell.backend.freshness import engine_for
+
+        (self.docs / 'a.txt').write_text('第一章\n正文\n', encoding='utf-8')
+        (self.docs / 'b.md').write_text('# 标题\n正文\n', encoding='utf-8')
+        engine = engine_for(self.plugin)
+        self.assertIsNotNone(engine, 'document-reader 必须声明 freshness_spec()')
+
+        synced = engine.sync('', force=True)
+        self.assertEqual(synced['added'], 2)
+
+        (self.docs / 'b.md').unlink()
+        report = engine.verify()
+
+        self.assertEqual(report['removed'], 1)
+        self.assertEqual([d['id'] for d in self.plugin.list_documents()['documents']],
+                         ['a.txt'])
+
+
     def test_chapter_count_survives_rescan(self):
         """列表里那一行不该永远是 "?"：解析过一次的章节数要活过重新扫描。"""
         (self.docs / 'a.txt').write_text('第一章\n正文\n第二章\n正文\n', encoding='utf-8')

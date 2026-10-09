@@ -141,6 +141,7 @@ class DocumentReaderPlugin(
         self._set_roots(self._parse_roots(self.setting('root_dir')))
 
         self._document_cache: Dict[str, dict] = {}
+        self._cache_dirty = False        # 缓存有未落盘的改动（整趟结束/访问后写一次）
         self._chapter_cache: Dict[str, List[dict]] = {}
         self._offset_cache: Dict[str, List] = {}
         self._full_content_cache: Dict[str, str] = {}
@@ -265,10 +266,12 @@ class DocumentReaderPlugin(
                 chapters = self._document(document_id, encoding).chapters()
 
             self._chapter_cache[key] = chapters
-            self._save_cache()
-
+            # 章节数必须**先**写回 `_document_cache` 再落盘：反过来的话磁盘上永远是
+            # 旧值（0 或上一次的），重启后 `list_documents` 命中早返回分支就再也
+            # 修不回来 —— 书架那一行"N 章"会退化成文件大小。
             if document_id in self._document_cache:
                 self._document_cache[document_id]['chapter_count'] = len(chapters)
+            self._save_cache()
 
             return {'chapters': chapters}
         except Exception as e:
