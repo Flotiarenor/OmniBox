@@ -3,7 +3,9 @@
 import hashlib
 import json
 import logging
+import os
 import re
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -96,10 +98,11 @@ class MediaPlayerPlugin(_freshness.FreshnessMixin, PluginBase):
         self.root_dir = self._scan_roots[0]
         self._cache_dir = self.root_dir / '.cache'
         self._cache_file = self._cache_dir / 'media_index.json'
-        self._state_file = self._cache_dir / 'media_state.json'
+        self._state_file = self._state_dir() / 'media_state.json'
         self._task_file = self._cache_dir / 'scan_task.json'
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._items: Dict[str, MediaItem] = {}
+        self._adopt_orphan_state()
         self._state = self._load_state()
         self._load_index()
         self._index_dirty = False        # 索引有未落盘的改动（整趟结束/退出时写一次）
@@ -162,6 +165,65 @@ class MediaPlayerPlugin(_freshness.FreshnessMixin, PluginBase):
 
     def get_data_root(self) -> Path:
         return self.root_dir
+
+    # ---------- 用户数据的落点（歌单 / 喜欢 / 播放进度） ----------
+
+    def _state_dir(self) -> Path:
+        """用户数据的目录：**壳数据根**下，而不是媒体文件夹里。
+
+        背景：`media_state.json` 原先落在「媒体文件夹」第一行的 `.cache` 下，而那一行
+        同时是数据根。用户在设置里换一个文件夹（或调整顺序）就等于把整个状态文件换到
+        别处：插件在**新位置写一份空状态**，旧的那份留在原地再也没人读 —— 用户视角
+        是"我的歌单被删了"。实际发生过一次：旧媒体根下的 `media_state.json` 里整份
+        播放记录（几十个歌单、上百个喜欢）完好无损，而插件已经在新媒体根下用一份空
+        状态跑了一整天。因此用户数据的落点改到壳数据根下（与指纹库同级），媒体文件夹
+        怎么改都不再影响它；老位置的旧文件由 `_adopt_orphan_state()` 收养回来。
+
+        索引与封面库**仍然跟着媒体根**：它们描述的就是那些文件，换根重建才对。
+        """
+        try:
+            base = Path(PluginBase.get_data_root(self))
+        except (KeyError, TypeError, OSError):
+            # 壳没给 `directories.data_root`（脚本/用例直接构造插件）时退回媒体根，
+            # 保证插件仍可用，只是失去"换文件夹不丢用户数据"的保护
+            base = self._cache_dir.parent
+        return base / '.cache' / 'media-player'
+
+    def _adopt_orphan_state(self) -> None:
+        """新落点还没有状态文件时，从各媒体根的旧位置挑最完整的一份收养。
+
+        评分只数**用户自己攒出来的东西**（歌单 + 喜欢）：`recent` 谁都是满的（上限
+        50 条），拿它当权重会把"刚换过根、什么都没有"的那份也算得一样高。
+        复制而不是移动：旧文件留在原地可回溯，收养来的这份此后是唯一写入方。
+        """
+        try:
+            if self._state_file.exists():
+                return
+        except OSError:
+            return
+        best: Optional[Path] = None
+        best_score = 0
+        candidates = list(self._scan_roots)
+        for root in candidates:
+            candidate = Path(root) / '.cache' / 'media_state.json'
+            try:
+                if not candidate.exists():
+                    continue
+                data = json.loads(candidate.read_text(encoding='utf-8'))
+            except Exception:
+                continue
+            score = len(data.get('playlists') or []) + len(data.get('favorites') or [])
+            if score > best_score:
+                best, best_score = candidate, score
+        if best is None or best_score <= 0:
+            return
+        try:
+            self._state_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(best, self._state_file)
+            log.info(f'[MediaPlayer] 已收养旧的播放记录 {best} → {self._state_file}'
+                     f'（歌单+喜欢 {best_score} 条）')
+        except OSError as e:
+            log.error(f'[MediaPlayer] 收养旧播放记录失败 {best}: {e}')
 
     def get_file_roots(self) -> List[Path]:
         """跨主目录与额外媒体目录提供文件访问。"""
@@ -256,15 +318,33 @@ class MediaPlayerPlugin(_freshness.FreshnessMixin, PluginBase):
             try:
                 with open(self._state_file, 'r', encoding='utf-8') as f:
                     return {**defaults, **json.load(f)}
-            except Exception:
-                pass
+            except Exception as e:
+                # 解析失败**先备份**再退默认值：旧实现直接返回默认值，而下一次
+                # `_save_state()`（播放中每 2 秒一次）会把默认值写回去 —— 一次瞬时
+                # 读取失败（例如读到写入尚未完成的截断文件）就等于永久丢数据。
+                self._backup_broken_state(e)
         return defaults
+
+    def _backup_broken_state(self, error: Exception) -> None:
+        stamp = time.strftime('%Y%m%d-%H%M%S')
+        backup = self._state_file.with_name(f'media_state.corrupt-{stamp}.json')
+        try:
+            shutil.copy2(self._state_file, backup)
+            log.error(f'[MediaPlayer] 播放记录解析失败（{error}），已备份到 {backup}')
+        except OSError as e:
+            log.error(f'[MediaPlayer] 播放记录解析失败（{error}），备份也失败: {e}')
 
     def _save_state(self):
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
+        # 原子写：先落临时文件再 `os.replace`。直接 `open(..., 'w')` 会先把文件截断，
+        # 并发的读取方（或崩溃）可能拿到半份 JSON —— 那正是上一条"退默认值"的触发条件。
+        tmp = self._state_file.with_name('media_state.tmp')
         try:
-            with open(self._state_file, 'w', encoding='utf-8') as f:
+            with open(tmp, 'w', encoding='utf-8') as f:
                 json.dump(self._state, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self._state_file)
         except Exception as e:
             log.error(f"[MediaPlayer] 保存状态失败: {e}")
 
@@ -701,13 +781,15 @@ class MediaPlayerPlugin(_freshness.FreshnessMixin, PluginBase):
                 if old_roots != new_roots:
                     log.info(f'[MediaPlayer] 扫描根变更：{len(old_roots)} → {len(new_roots)} 个')
                 return
-            # 数据根变更：终止进行中的校验，缓存与索引整体换落点
+            # 数据根变更：终止进行中的校验，索引与封面库跟着换落点。
+            # **用户数据（歌单/喜欢/播放进度）不跟着走** —— 它落在壳数据根下
+            # （`_state_dir()`），换文件夹不该把用户攒的东西一起换掉。
             if engine is not None:
                 engine.request_cancel()
             self.root_dir = new_dir
             self._cache_dir = self.root_dir / '.cache'
             self._cache_file = self._cache_dir / 'media_index.json'
-            self._state_file = self._cache_dir / 'media_state.json'
+            self._state_file = self._state_dir() / 'media_state.json'
             self._task_file = self._cache_dir / 'scan_task.json'
             self._cache_dir.mkdir(parents=True, exist_ok=True)
             self._publish_items({})
