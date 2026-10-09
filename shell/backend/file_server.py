@@ -410,6 +410,8 @@ _ADMIN_ONLY_API = frozenset({
     'system_freshness_rebuild',
     # 全插件状态快照（含各插件条目数）：与 system_get_plugin_status 同属"壳级事实"
     'system_freshness_overview',
+    # 插件诊断钩子：能读任意插件的内部状态（缓存规模、配置路径等），属运维端点
+    'system_plugin_diagnose',
 })
 
 

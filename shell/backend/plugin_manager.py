@@ -19,7 +19,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import os
 import sys
+import time
 from collections import deque
 from collections.abc import Iterable
 from pathlib import Path
@@ -339,6 +341,27 @@ class PluginManager:
             out.append(engine.state())
         return sorted(out, key=lambda item: item['plugin'])
 
+    def plugin_diagnose(self, plugin: str = '', method: str = '') -> dict:
+        """按需调用插件的诊断钩子（`diagnose(method)`），用于线上定位性能问题。
+
+        为什么要有通用入口：插件的慢常常取决于**运行进程里的状态**（哪个缓存被作废、
+        哪次走盘被触发），离线复现不出来。插件声明 `diagnose()` 即可通过
+        `POST /api/system_plugin_diagnose` 问它当前状态，不必为每个插件写一个端点。
+
+        未声明钩子、插件未加载、钩子抛异常都返回 `{'error': ...}`，绝不 500：
+        这是排查工具，不是功能路径。
+        """
+        instance = self._instances.get(str(plugin or ''))
+        if instance is None:
+            return {'error': f'插件未加载: {plugin}'}
+        hook = getattr(instance, 'diagnose', None)
+        if not callable(hook):
+            return {'error': f'{plugin} 未提供 diagnose() 钩子'}
+        try:
+            return {'result': hook(str(method or ''))}
+        except Exception as e:
+            return {'error': f'{type(e).__name__}: {e}'}
+
     def freshness_api_methods(self) -> Dict[str, Callable]:
         """统一刷新对外的方法表。
 
@@ -354,6 +377,7 @@ class PluginManager:
             'system_freshness_cancel': self.freshness_cancel,
             'system_freshness_rebuild': self.freshness_rebuild,
             'system_freshness_overview': self.freshness_overview,
+            'system_plugin_diagnose': self.plugin_diagnose,
         }
 
     def get_plugin_extensions(self, host: str|None = None, placement: str|None = None) -> List[dict]:
@@ -670,17 +694,40 @@ class PluginManager:
     def _exposed_method(instance: PluginBase, method_name: str, method_fn: Callable) -> Callable:
         """包一层出口处理：插件注册的方法在返回前要过的 Shell 侧约束。
 
-        目前只有一条 —— `get_settings` 的凭据脱敏。**必须由 Shell 做**：插件可以
-        覆写 `get_settings()`（image-viewer / manga-library 都覆写了），基类里的
-        掩码于是整个不执行；而该方法经 register_api() 直接变成
-        `POST /api/<插件>__get_settings`，与壳同源 —— 覆写一下就能把长期凭据交给
-        任何一段同源脚本。返回非字典（插件自定义形状）时原样放行。
+        目前只有两条：
+
+        - `get_settings` 的凭据脱敏。**必须由 Shell 做**：插件可以覆写
+          `get_settings()`（image-viewer / manga-library 都覆写了），基类里的
+          掩码于是整个不执行；而该方法经 register_api() 直接变成
+          `POST /api/<插件>__get_settings`，与壳同源 —— 覆写一下就能把长期凭据交给
+          任何一段同源脚本。返回非字典（插件自定义形状）时原样放行。
+        - `DSH_PLUGIN_TRACE=1` 时的调用计时（默认关闭，零开销）。性能问题几乎都
+          出在"哪个 API 被调了多少次、每次多久"，而这段是**所有**插件 API 的唯一
+          出口，在这里记一笔比让每个插件自己埋点可靠：用户报"卡 25 秒"时，把开关
+          打开复现一次，日志里就是完整的调用序列与耗时分布。
         """
+        wrapped = PluginManager._traced_method(instance, method_name, method_fn)
         if method_name != 'get_settings':
-            return method_fn
+            return wrapped
 
         def masked(*args, **kwargs):
             return mask_secrets(getattr(instance, 'settings_schema', None) or [],
-                                method_fn(*args, **kwargs))
+                                wrapped(*args, **kwargs))
 
         return masked
+
+    @staticmethod
+    def _traced_method(instance: PluginBase, method_name: str, method_fn: Callable) -> Callable:
+        """按需给插件 API 计时（`DSH_PLUGIN_TRACE=1`，见 `_exposed_method`）。"""
+        if os.environ.get('DSH_PLUGIN_TRACE') != '1':
+            return method_fn
+
+        def traced(*args, **kwargs):
+            start = time.perf_counter()
+            try:
+                return method_fn(*args, **kwargs)
+            finally:
+                elapsed = time.perf_counter() - start
+                log.info(f"[plugin-trace] {instance.name}.{method_name} {elapsed * 1000:.1f}ms")
+
+        return traced
