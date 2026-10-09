@@ -2,6 +2,7 @@
 
 表：works（待下载作品）/ tags / work_tags / meta（扫描断点）。
 跨线程共享连接，写操作统一由外部传入的锁保护。
+另提供「本地页数 vs 清单 page_count」的完整性判据（incomplete_ids / importable_ids）。
 """
 
 import json
@@ -9,7 +10,9 @@ import logging
 import sqlite3
 from pathlib import Path
 from threading import RLock
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from .store import expected_pages
 
 log = logging.getLogger(__name__)
 
@@ -264,3 +267,43 @@ class WorksDB:
                 conn.rollback()
                 log.error(f"[pixiv-sync] 重置清单 done 失败: {e}")
                 return 0
+
+    # ---------- 完整性（本地页数 vs 清单 page_count） ----------
+
+    def work_page_counts(self) -> List[Tuple[int, str, int]]:
+        """清单中所有作品的 (id, type, page_count)，供完整性校验用。"""
+        try:
+            conn = self.conn()
+            with self._lock:
+                rows = conn.execute("SELECT id, type, page_count FROM works").fetchall()
+            return [(int(r[0]), r[1] or "", int(r[2] or 1)) for r in rows]
+        except Exception as e:
+            log.error(f"[pixiv-sync] 读取清单页数失败: {e}")
+            return []
+
+    def incomplete_ids(self, pages_by_id: Dict[int, Set[int]]) -> List[int]:
+        """本地页数少于清单 page_count 的作品 id（清单没记录的作品不参与判断）。
+
+        命中条件：清单里有该作品、本地至少有一个有效文件、本地页数不足。用于
+        「校验内容」把半截下载移出去重集合重新入队，补齐缺的页。
+        """
+        out: List[int] = []
+        for iid, wtype, page_count in self.work_page_counts():
+            local = pages_by_id.get(iid)
+            if not local:
+                continue
+            if len(local) < expected_pages(wtype, page_count):
+                out.append(iid)
+        return sorted(out)
+
+    def importable_ids(self, pages_by_id: Dict[int, Set[int]]) -> Set[int]:
+        """本地文件里可以并入去重集合的 id。
+
+        清单已记录且本地页数不足的作品不并入 —— 否则半截下载会被重新认成
+        「已下载」，缺的页再也补不回来（同步开始前的旧图导入与「刷新记录」共用本判据）。
+        清单里没有的作品（取关、手动放入的旧图等）无从判断页数，照旧并入。
+        页号集合为空的 id（本地一个有效文件都没有）同样不并入：把「什么都没下到」
+        记成已下载，等价于把作品永久跳过。
+        """
+        local = {iid for iid, pages in pages_by_id.items() if pages}
+        return local - set(self.incomplete_ids(pages_by_id))

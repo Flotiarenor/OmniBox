@@ -99,8 +99,11 @@ class _FakeDownloadClient:
             raise PixivError(f"download HTTP 404: {url}")
         if isinstance(action, Exception):
             raise action
+        target = Path(path) / name
+        if target.exists() and target.stat().st_size > 0:
+            return False  # 与真实客户端一致：文件已存在则不覆盖，返回 False
         Path(path).mkdir(parents=True, exist_ok=True)
-        (Path(path) / name).write_bytes(b"x")
+        target.write_bytes(b"x")
         return True
 
 
@@ -290,6 +293,89 @@ class PixivSyncCoreTests(unittest.TestCase):
             self.assertEqual(task["downloaded"], 1)
             self.assertTrue((tmp / "pixiv" / "A" / "124.jpg").exists())
 
+    def test_requeued_incomplete_work_refetches_only_missing_pages(self):
+        """「校验内容」把缺页作品移出去重集合后，同步只补缺的页。"""
+        with _fake_env() as (tmp, p):
+            item = _work_item(301)
+            item["page_count"] = 3
+            item["urls"] = ["u0", "u1", "u2"]
+            p._db_wrapper.save_pending("following", [item], {"complete": True})
+            work_dir = tmp / "pixiv" / "A1" / "301"
+            work_dir.mkdir(parents=True)
+            (work_dir / "301_p0.jpg").write_bytes(b"x")
+
+            _, _, pages = store.scan_local(tmp / "pixiv")
+            self.assertEqual(p._db_wrapper.incomplete_ids(pages), [301])
+            ids = {301}  # 旧记录：半截下载被本地扫描认成「已下载」
+            for iid in p._db_wrapper.incomplete_ids(pages):
+                ids.discard(iid)
+
+            p.client = _FakeDownloadClient()
+            task = _new_task()
+            download.download_pending(p, task, ids, set(), "following")
+            self.assertEqual(ids, {301})  # 全部页就位后重新记入去重集合
+            self.assertEqual(
+                sorted(f.name for f in work_dir.iterdir()),
+                ["301_p0.jpg", "301_p1.jpg", "301_p2.jpg"],
+            )
+            self.assertEqual(task["failed"], 0)
+            self.assertEqual(task["downloaded"], 1)
+
+    def test_scan_local_reports_page_numbers(self):
+        """scan_local 一次遍历同时给出 id 与页号：`{id}_p3.jpg` → 3，裸名/动图 WebP → 0。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "pixiv" / "A"
+            root.mkdir(parents=True)
+            for name in ("1.jpg", "2_p0.jpg", "2_p1.png", "2p2.png", "3.webp", "note.txt"):
+                (root / name).write_bytes(b"x")
+            ids, zero, pages = store.scan_local(root)
+            self.assertEqual(ids, {1, 2, 3})
+            self.assertEqual(zero, 0)
+            self.assertEqual(pages[1], {0})  # 单图 = 第 0 页
+            self.assertEqual(pages[2], {0, 1, 2})  # 无下划线的 2p2.png 也算
+            self.assertEqual(pages[3], {0})  # 动图 WebP
+
+    def test_scan_local_removes_zero_byte_files_only_when_asked(self):
+        """0 字节残片不算有效图片；只有刷新记录/校验内容（remove_zero=True）才删。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "pixiv"
+            root.mkdir()
+            empty = root / "9_p0.jpg"
+            empty.write_bytes(b"")
+
+            self.assertEqual(store.scan_local(root), (set(), 0, {}))
+            self.assertTrue(empty.exists())
+
+            ids, zero, pages = store.scan_local(root, remove_zero=True)
+            self.assertEqual((ids, zero, pages), (set(), 1, {}))
+            self.assertFalse(empty.exists())
+
+    def test_expected_pages_uses_one_for_ugoira_and_bad_values(self):
+        self.assertEqual(store.expected_pages("ugoira", 12), 1)
+        self.assertEqual(store.expected_pages("UGOIRA", None), 1)
+        self.assertEqual(store.expected_pages("illust", 5), 5)
+        self.assertEqual(store.expected_pages("manga", "3"), 3)
+        self.assertEqual(store.expected_pages("illust", 0), 1)
+        self.assertEqual(store.expected_pages("illust", None), 1)
+        self.assertEqual(store.expected_pages(None, "x"), 1)
+
+    def test_incomplete_ids_flags_missing_pages(self):
+        """清单 page_count 比本地页数多 → 半截下载；本地无文件与清单外的作品不参与判断。"""
+        with _fake_env() as (_, p):
+            db = p._db_wrapper
+            items = []
+            for iid, page_count in ((101, 3), (102, 2), (103, 1)):
+                item = _work_item(iid)
+                item["page_count"] = page_count
+                items.append(item)
+            db.save_pending("following", items, {"complete": True})
+
+            local = {101: {0, 1}, 102: {0, 1}, 103: set(), 999: {0}}
+            self.assertEqual(db.incomplete_ids(local), [101])
+            self.assertNotIn(103, db.incomplete_ids(local))  # 本地无文件交给失效 id 逻辑
+            # 同步前的旧图导入与「刷新记录」共用本判据：缺页/无文件的不并入，其余照旧
+            self.assertEqual(db.importable_ids(local), {102, 999})
+
     def test_bookmark_cursor_uses_max_bookmark_id(self):
         with _fake_env() as (_, p):
             p.client = _FakeBookmarkClient(
@@ -433,7 +519,7 @@ class PixivSyncCoreTests(unittest.TestCase):
             empty = root / "999_p0.jpg"
             empty.write_bytes(b"")
 
-            self.assertEqual(store.collect_existing_ids(root), set())
+            self.assertEqual(store.scan_local(root)[0], set())
 
             class _FakeResp:
                 status_code = 200
@@ -495,7 +581,7 @@ class PixivSyncCoreTests(unittest.TestCase):
             root.mkdir()
             (root / "123456p0.png").write_bytes(b"x")
             (root / "123456_p1.png").write_bytes(b"x")
-            self.assertEqual(store.collect_existing_ids(root), {123456})
+            self.assertEqual(store.scan_local(root)[0], {123456})
 
     def test_artist_collision_new_artist_uses_uid_suffix(self):
         with tempfile.TemporaryDirectory() as td:

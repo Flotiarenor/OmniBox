@@ -128,8 +128,8 @@ plugins/
 | `sync_bookmarks`                   | -        | `{ok, data\|error}`                                                                                        | 启动「同步喜欢」任务（**一步完成**：内部先自动刷新收藏清单，再按清单下载，与画师共用去重）                                                     |
 | `refresh_following_lists`          | -        | `{ok, data\|error}`                                                                                        | **仅刷新关注清单（不下载）**：铺底/断点补扫 + 增量；「同步画师」已内置自动刷新，此入口用于只想更新清单看统计或手动控制首次大批量铺底时机       |
 | `refresh_bookmarks_lists`          | -        | `{ok, data\|error}`                                                                                        | **仅刷新喜欢清单（不下载）**：首次/未完成全量、完成后增量翻页；「同步喜欢」已内置自动刷新                                                      |
-| `refresh_downloaded`               | -        | `{ok, total, zero_removed, stale_removed, failed_cleared}`                                                | **刷新已下载记录**：扫描本地重建 ids（手动删的移除、手动加的导入、0 字节清理），重置消失作品的 done 快照，并清除本地已有文件对应的失败跳过记录 |
-| `verify_downloaded`                | -        | `{ok, stale_removed, zero_removed, failed_cleared, total}`                                                | **校验已下载内容**：移除记录中本地无有效文件的失效 id 并重置清单 done 快照（下次同步重下），不导入新增                                         |
+| `refresh_downloaded`               | -        | `{ok, total, zero_removed, stale_removed, failed_cleared, incomplete_skipped}`                           | **刷新已下载记录**：扫描本地重建 ids（手动删的移除、手动加的导入、0 字节清理），重置消失作品的 done 快照，并清除本地已有文件对应的失败跳过记录；清单里页数不足的作品不并入（见 5.2「完整性判据」） |
+| `verify_downloaded`                | -        | `{ok, stale_removed, zero_removed, failed_cleared, total, incomplete}`                                    | **校验已下载内容**：移除记录中本地无有效文件的失效 id 并重置清单 done 快照（下次同步重下）；另按清单 page_count 找出缺页/半截下载的作品（`incomplete`）一并移出去重集合并重置 done，下次同步只补缺的页；不导入新增 |
 | `retry_failed`                     | -        | `{ok, cleared, kind}`                                                                                     | **一键重试失败作品**：清除 failed_ids.json（404 永久跳过记录）并立即按最近任务来源重新同步一次                                                 |
 | `cancel_task`                      | -        | `{ok}`                                                                                                    | 请求取消当前任务（下个检查点生效）                                                                                                                   |
 | `open_config`                      | -        | `{ok, file}`                                                                                              | 打开画师名单配置文件所在文件夹（不存在则创建带说明的空文件）                                                                                         |
@@ -226,6 +226,11 @@ pixiv app-api 有滑动窗口限流（约 30 req/10s，超出后 429）：
   - 注意：v0.3 及更早版本曾把 ugoira 的 `.zip` 下载成坏 `.jpg` 并记入去重，存量坏文件不会自动修复；
     可删除对应文件后点「校验内容」/用 `pixiv_unmark_recent.py --missing` 重置记录，之后同步会重下为动图 WebP。
 - **旧图导入**：每次同步开始前自动扫描 `<root>/pixiv/` 下已有图片，按命名规则（`{id}.jpg` / `{id}_p0.jpg` / `{id}p0.png` / `{id}.webp` / 子文件夹 `{id}/`）提取作品 id 并入去重集合——**用户手动放入的旧图会被识别，全量更新直接跳过，不会重复下载/检查**；文件名不符合规则的图片无法自动识别（可手动改名或删文件重下）。
+- **完整性判据（v0.5.1）**：按命名规则提取 id 只能判断「这件作品本地有没有文件」，分不出「整件下完」和「只下到一半」。因此本地扫描（`store.scan_local`）一次遍历同时记录每个作品的**已有页号集合**（`{id}_p3.jpg` → 第 3 页，`{id}.jpg` / `{id}.webp` → 第 0 页），再与清单的 `page_count` 比对（`db.WorksDB.incomplete_ids`；ugoira 转成单个动画 WebP，固定按 1 页算）：
+  - **本地页数 < `page_count` → 不算已下载**：同步前的旧图导入与「刷新记录」都不把它并入去重集合，否则半截下载一旦被记成「已下载」，下载阶段就再也不会碰它（`download.py` 的待下过滤只看 ids/failed），缺的页永远补不回来。
+  - **「校验内容」（`verify_downloaded`）**把这类作品一并移出去重集合、重置 done，返回 `incomplete` 计数；下次同步只补缺的页（已存在的文件由 `pixiv_mini.download` 按「已存在不覆盖」跳过），补齐后作品 id 重新入去重集合、清单 done 置 1。
+  - `page_count` 是**扫描快照**：画师给旧作品加页不会自动反映（已有作品的清单行在增量扫描里原样保留，不重建），这类缺口只有该画师被全量重扫后才会出现在清单里；没列进清单的作品（取关、手动放置）无从判断页数，照旧并入。
+  - 缺失页在上游确实已被删除时，重下会命中全 404 → 作品进 `failed_ids.json`（状态栏「失败跳过」+1），此时清单 done 仍为 0，「待下」会保留这一件。
 - 注意：已下载的旧图（历史 1200px 版）不会自动升级，需删除对应文件、并从 `downloaded_ids.json` 移出 id（可用伴侣工具 `pixiv_purge_non_original.py` 或 `pixiv_unmark_recent.py` 处理），之后同步会按固定默认行为重下原图。
 
 ### 5.3 依赖
@@ -239,7 +244,7 @@ pixiv app-api 有滑动窗口限流（约 30 req/10s，超出后 429）：
 `/plugins/pixiv-sync/frontend/index.html` 作为内嵌页面，通过 `get_extensions()` 在 image-viewer 左侧栏挂载「Pixiv 同步」入口；点击后由 image-viewer 用 iframe 加载。页面包含：
 
 - 状态栏：Token 是否配置 / 下载根目录 / 已下载总数 / 关注·喜欢·其他清单统计 / 失败跳过数 / 上次任务结果
-- 操作：同步画师（`Icons.html('icon:download')`）、同步喜欢（`Icons.html('icon:heart')`），两者都**一步完成：自动先刷新清单再下载**；刷新关注名单 / 刷新喜欢名单（`Icons.html('icon:refresh-cw')`，仅更新清单不下载，备用）；刷新记录（`Icons.html('icon:list-checks')`）、校验内容（`Icons.html('icon:search')`）、重试失败作品（`Icons.html('icon:trash-2')`）
+- 操作：同步画师（`Icons.html('icon:download')`）、同步喜欢（`Icons.html('icon:heart')`），两者都**一步完成：自动先刷新清单再下载**；刷新关注名单 / 刷新喜欢名单（`Icons.html('icon:refresh-cw')`，仅更新清单不下载，备用）；刷新记录（`Icons.html('icon:list-checks')`，重建去重记录，不并入缺页作品并在提示里报数）、校验内容（`Icons.html('icon:search')`，移除失效 id + 缺页作品重新入队，提示「缺页重新入队 N 件」）、重试失败作品（`Icons.html('icon:trash-2')`）
 - **进度条**：`done/total` 百分比（流式累加）+ 计数明细（下载/跳过/失败）+ 当前处理作品；每 1.5s 轮询 `get_status`
 - 设置表单：refresh_token（密码框）/ 代理 / 下载目录 / 并发数 / 单次上限 / 刷新上限 / 限速 / 并行画师数
 - **固定行为说明**：页面明确标注「下载原图」「多图子文件夹」「动图转动画 WebP」为固定默认行为、无开关，避免误触。
@@ -264,7 +269,7 @@ pixiv app-api 有滑动窗口限流（约 30 req/10s，超出后 429）：
 - 适用：手动删除了本地图片后，想让插件按清单重新下载。
 - 两种目标判定：
   - `--hours N` 时间窗口：按文件修改时间筛出最近作品（图片还在时用）；
-  - `--missing`：对照 works.db 清单与本地文件，凡是 `done=1` 但本地文件已不存在的作品 → 改回未下载（图片已删时最准）。
+  - `--missing`：对照 works.db 清单与本地文件，凡是 `done=1` 但本地文件已不存在的作品 → 改回未下载（图片已删时最准）。**整件无文件才算命中**：一页都没删、只缺若干页的作品请改用界面上的「校验内容」（v0.5.1 起按 page_count 判定缺页并重新入队）。
 - 操作（不动任何本地文件）：`downloaded_ids.json` / `failed_ids.json` 移出 id，`works.db` 的 `done` 改回 0。
 - 执行后直接点「同步画师/同步喜欢」即可重下（无需先刷新名单）。
 ## 8. UI 现状取证（前端与壳契约对照）

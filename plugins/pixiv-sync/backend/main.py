@@ -25,7 +25,7 @@ from pixiv_mini import PixivClient, PixivError
 from pixiv_sync import download, oauth, scan, store, tasks
 from pixiv_sync.db import WorksDB
 from pixiv_sync.limiter import RateLimiter, RateLimitError
-from pixiv_sync.store import collect_existing_ids, rebuild_existing
+from pixiv_sync.store import scan_local
 
 from shell.backend.plugin_base import PluginBase
 
@@ -297,11 +297,16 @@ class PixivSyncPlugin(PluginBase):
 
         用于识别用户手动放入的旧图：文件名符合 `{id}.jpg` / `{id}_p0.jpg` 规则即可被识别，
         之后全量更新会直接跳过，不会重复检查/下载。
+
+        清单已记录、但本地页数少于清单 page_count 的作品**不并入**：半截下载若在这里
+        被认成「已下载」，下载阶段就再也不会碰它，「校验内容」刚移出的作品也会被重新
+        认回去，缺的页永远补不回来（判据见 db.WorksDB.importable_ids）。
         """
         root = self._root() / "pixiv"
+        _, _, pages = store.scan_local(root)
         ids = self._load_ids()
         before = len(ids)
-        ids |= collect_existing_ids(root)
+        ids |= self._db().importable_ids(pages)
         found = len(ids) - before
         if found:
             with self._task_lock:
@@ -609,6 +614,8 @@ class PixivSyncPlugin(PluginBase):
     def refresh_downloaded(self) -> Dict:
         """刷新已下载记录：扫描本地重建 ids（手动删过的移除、手动加的导入、0 字节清理）。
 
+        清单已记录、本地页数不足的作品不并入（与同步前的旧图导入同一判据）：
+        半截下载不算「已下载」，要补齐请点「校验内容」把它重新入队。
         同时把 works.db 中“已从 ids 消失”的作品 done 重置为 0；下载过滤已改为以
         ids/failed 为准，但这里仍重置快照，让前端待下载统计保持准确。
         """
@@ -616,14 +623,15 @@ class PixivSyncPlugin(PluginBase):
             if self._thread and self._thread.is_alive():
                 return {"ok": False, "error": "已有任务在运行，请先等待任务结束"}
         try:
-            existing, zero = rebuild_existing(self._root() / "pixiv")
+            existing, zero, pages = scan_local(self._root() / "pixiv", remove_zero=True)
+            recorded = self._db().importable_ids(pages)
             ids = self._load_ids()
-            stale = [iid for iid in ids if iid not in existing]
+            stale = [iid for iid in ids if iid not in recorded]
             failed = self._load_failed_ids()
             failed_cleared = [iid for iid in failed if iid in existing]
             with self._task_lock:
-                self._downloaded_ids = set(existing)
-                store.save_ids(self._ids_file(), existing)
+                self._downloaded_ids = set(recorded)
+                store.save_ids(self._ids_file(), recorded)
                 if failed_cleared:
                     for iid in failed_cleared:
                         failed.discard(iid)
@@ -632,21 +640,29 @@ class PixivSyncPlugin(PluginBase):
                 self._db().reset_done_ids(stale)
             return {
                 "ok": True,
-                "total": len(existing),
+                "total": len(recorded),
                 "zero_removed": zero,
                 "stale_removed": len(stale),
                 "failed_cleared": len(failed_cleared),
+                "incomplete_skipped": len(existing) - len(recorded),
             }
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
     def verify_downloaded(self) -> Dict:
-        """校验已下载内容：移除记录中本地无有效文件的失效 id，并重置清单 done 快照。"""
+        """校验已下载内容：让记录与本地文件一致，并把缺页作品重新入队。
+
+        - 本地无有效文件的失效 id → 移出去重集合（下次同步重下）；
+        - 清单 page_count 比本地页数多的作品（半截下载、漏页）→ 一并移出去重集合、
+          重置 done，下次同步只补缺的页（已存在的文件照旧跳过，不会重下已有页）；
+        - 不导入新增（手动放入的旧图请用「刷新记录」）。
+        """
         with self._lock:
             if self._thread and self._thread.is_alive():
                 return {"ok": False, "error": "已有任务在运行，请先等待任务结束"}
         try:
-            existing, zero = rebuild_existing(self._root() / "pixiv")
+            existing, zero, pages = scan_local(self._root() / "pixiv", remove_zero=True)
+            incomplete = self._db().incomplete_ids(pages)
             ids = self._load_ids()
             stale = [iid for iid in ids if iid not in existing]
             failed = self._load_failed_ids()
@@ -654,19 +670,28 @@ class PixivSyncPlugin(PluginBase):
             with self._task_lock:
                 for iid in stale:
                     ids.discard(iid)
+                for iid in incomplete:
+                    ids.discard(iid)
                 store.save_ids(self._ids_file(), ids)
                 if failed_cleared:
                     for iid in failed_cleared:
                         failed.discard(iid)
                     store.save_failed_ids(self._failed_file(), failed)
-            if stale:
-                self._db().reset_done_ids(stale)
+            reset = sorted(set(stale) | set(incomplete))
+            if reset:
+                self._db().reset_done_ids(reset)
+            if incomplete:
+                log.info(
+                    f"[pixiv-sync] 校验内容：{len(incomplete)} 件本地页数不足，已重新入队 "
+                    f"{incomplete[:20]}"
+                )
             return {
                 "ok": True,
                 "stale_removed": len(stale),
                 "zero_removed": zero,
                 "failed_cleared": len(failed_cleared),
                 "total": len(ids),
+                "incomplete": len(incomplete),
             }
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
