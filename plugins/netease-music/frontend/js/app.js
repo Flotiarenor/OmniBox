@@ -17,6 +17,7 @@ class NeteaseApp {
     document.getElementById('title').textContent = {
       daily: '每日推荐', playlists: '推荐歌单', liked: '我的喜欢', login: '登录'
     }[this.view] || '网易云音乐';
+    this._mountFreshness();
 
     if (this.view === 'playlists') {
       document.getElementById('search-row').style.display = 'block';
@@ -37,6 +38,34 @@ class NeteaseApp {
 
   async call(method, ...args) {
     return await Bridge.call(method, ...args);
+  }
+
+  /**
+   * 挂载共享的「同步状态 + 校验」控件（shell/freshness.js，见 plugin-guide §3.4）。
+   *
+   * 本插件是**远端来源**：没有本地文件树，本地只有一份短期播放地址缓存。
+   * 状态行显示缓存新鲜期，「校验」立即丢弃缓存（下次取地址重新解析）。
+   */
+  _mountFreshness() {
+    const host = document.getElementById('ncm-freshness');
+    if (!host || typeof Freshness === 'undefined') return;
+    this.freshness = Freshness.mount({
+      plugin: 'netease-music',
+      container: host,
+      unit: '首',
+      onChange: () => this._reloadView(),
+    });
+    if (this.freshness && typeof this.freshness.autoSync === 'function') {
+      this.freshness.autoSync('');
+    }
+  }
+
+  /** 校验完成 / 缓存被丢弃后，重新拉一次当前视图的数据。 */
+  _reloadView() {
+    if (this.view === 'playlists') this.loadPlaylists('推荐');
+    else if (this.view === 'liked') this.loadLiked();
+    else if (this.view === 'login') this.renderLogin();
+    else this.loadDaily();
   }
 
   async loadDaily() {
@@ -91,7 +120,10 @@ class NeteaseApp {
     content.querySelectorAll('.item').forEach(el => {
       el.addEventListener('click', async () => {
         const song = songs[parseInt(el.dataset.idx, 10)];
-        const urlData = await this.call('get_song_url', song.original_id);
+        // 两个 id 都要传：后端 `get_song_url(song_id, original_id)` 只有在拿到
+        // original_id 时才能拼公共外链，少传一个就恒返回 None（点歌必报"获取播放
+        // 地址失败"）。此前这里只传了 `song.original_id`。
+        const urlData = await this.call('get_song_url', song.id, song.original_id);
         if (!urlData || !urlData.url) { Toast.error('获取播放地址失败'); return; }
         const media = parent && parent.mediaPlayerApp;
         const item = {

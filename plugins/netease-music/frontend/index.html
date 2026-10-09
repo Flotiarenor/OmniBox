@@ -17,6 +17,9 @@
 <body>
   <div class="wrap">
     <h3 id="title">网易云音乐</h3>
+    <!-- 播放地址缓存是"短期 + 无 TTL"的，统一刷新基建把它当远端来源：
+         状态行显示缓存新鲜期，手动「校验」立刻丢弃（下次取地址重新解析）。 -->
+    <div id="ncm-freshness" style="margin-bottom:10px;"></div>
     <div id="search-row" style="display:none;margin-bottom:10px;">
       <input id="keyword" placeholder="搜索歌曲...">
       <button class="btn btn-primary" id="search-btn">搜索</button>

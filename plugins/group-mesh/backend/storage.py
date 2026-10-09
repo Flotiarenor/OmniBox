@@ -110,6 +110,10 @@ class StorageMixin:
 
         返回 `(字节数, 是否被上限截断)`：截断表示这个数字是下界而不是精确值，
         界面必须据此显示"≥"，否则用户会以为配额算错了。
+
+        **两个提前返回都算截断**：命中 `limit` 时停下同样没走完整棵树，数字只是
+        下界 —— 原先这里返回 `False`，与上面这段约定自相矛盾，界面会把"扫到配额
+        就停了"显示成精确用量。
         """
         total = 0
         seen = 0
@@ -123,7 +127,7 @@ class StorageMixin:
                 except OSError:
                     continue
                 if limit is not None and total >= limit:
-                    return total, False
+                    return total, True
         return total, False
 
     def get_protected_paths(self) -> List[Path]:

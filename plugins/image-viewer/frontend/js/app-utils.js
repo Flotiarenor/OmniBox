@@ -67,4 +67,23 @@ Object.assign(ImageViewer.prototype, {
     _escapeAttr(str) {
         return this._escapeHtml(str);
     },
+
+    /**
+     * 缩略图 URL（带版本号）。
+     *
+     * 壳的 `/thumbs` 响应带 `Cache-Control: private, max-age=86400`，URL 不变浏览
+     * 器就一天不回源 —— 于是"更新了缩略图/重建了缓存，界面却还是旧的"。版本号取
+     * 源文件的 mtime：图片被替换 → mtime 变 → URL 变 → 立刻重新请求。
+     * 组件缺失时（本页脱离壳单独打开）退化成不带版本号的 URL，不影响显示。
+     */
+    _thumbUrl(item) {
+        const path = (item && (item.url || item.cover)) || '';
+        if (!path) return '';
+        const version = item && item.mtime ? Math.round(item.mtime) : '';
+        if (window.Freshness && typeof Freshness.assetUrl === 'function') {
+            return Freshness.assetUrl(path, version);
+        }
+        const base = Bridge.thumbUrl(path);
+        return version ? `${base}&v=${version}` : base;
+    },
 });

@@ -193,6 +193,30 @@ exts.forEach(ext => {
 > Shell **没有** `addToolbarButton(...)` 这个函数（历史文档里出现过，属于笔误），
 > 通用渲染请用 `renderExtensions`，自定义渲染请照上面的分支自己实现。
 
+**扩展入口的高亮由 `renderExtensions` 统一维护**（"同一时刻只有一个当前项"这条不变量
+不再由宿主各自实现）：
+
+```javascript
+const exts = await renderExtensions(container, 'media-player', 'sidebar', {
+  title: '网易云音乐',
+  navSelector: '.mp-nav-item',                  // 宿主侧栏项：点扩展时一并取消它们的选中
+  onOpen: (ext, btn) => this.openNeteaseView(ext, btn),
+});
+// 宿主切换自己的视图时清一次扩展高亮：
+exts.clearActive();
+```
+
+- 返回值是控制器 `{ buttons, activate(btn), clearActive() }`；容器为空或列表为空也照样
+  返回（宿主不必判空）。
+- 组件在点击时自己完成：清掉 `navSelector` 命中的侧栏项 → 高亮被点的入口 → 再调
+  `onOpen` / `onEmbed`。**只有"会打开视图"的扩展参与高亮**（`ext.view` + `onOpen`，或
+  `ext.embedUrl`）；纯动作型（`route` / `method`）不点亮，否则等于谎报"当前视图"。
+- 为什么要有这一层：宿主通常有两套入口（侧栏项 + 扩展入口），互斥逻辑分散在两边就会
+  漏一个方向。实测 media-player 只清了侧栏项、扩展点击只清扩展项，先点「网易云登录」
+  再点「全部音乐」两个同时高亮（image-viewer 两个方向都写了才没暴露）。
+- 回归守卫：`tests/js/shell_extensions_active.mjs`（组件侧 6 例）+ 各宿主的侧栏用例
+  （如 `tests/js/media_player_nav_active.mjs`）。
+
 > 目前已落地的 Companion 插件示例：`image-cleaner`（全相册重复/相似清理），设计见 `docs/image-cleaner-design.md`。
 
 ## 2.2 重型依赖与独立运行环境（runtime）
@@ -394,12 +418,13 @@ from pyradios import RadioBrowser
 - 跨平台二进制库
 - 大型重依赖（建议走独立 runtime）
 
-### 3.4 共享基建：后台任务与缩略图缓存
+### 3.4 共享基建：后台任务、缩略图缓存与统一刷新
 
-媒体类插件经常需要两类通用能力，Shell 已抽出共享模块（`shell/backend/`），**不要各自重复实现**：
+媒体类插件经常需要三类通用能力，Shell 已抽出共享模块（`shell/backend/`），**不要各自重复实现**：
 
 - **`tasks.py` → `BackgroundTask`**（控制面）：后台线程 + 状态机 + 取消 + 进度 + 可选断点持久化。适用于任何长任务：全量重建、同步、批量下载、导入扫描。
 - **`thumb_cache.py` → `ThumbCache`**（数据面）：SQLite 缩略图缓存（WAL + mtime/size 失效校验 + 并行批量生成）。适用于任何「本地媒体 → 缩略图」：图片、视频封面抽帧、音频内嵌封面。
+- **`freshness.py` → `FreshnessEngine`**（决策面）：什么时候扫、哪些算变化、什么算幽灵。适用于任何"本地资源 → 派生数据"的插件。**接入方式见 §3.6**。
 
 #### 后台任务 BackgroundTask
 
@@ -519,6 +544,146 @@ class AudioCoverCache(ThumbCache):
 > 生成器返回的 MIME 由生成器自行决定（视频帧 `image/jpeg`、内嵌封面按实际格式）；
 > `mime_map` 仅用于默认 Pillow 路径的扩展名推断。
 
+#### 统一刷新（同步 / 校验）
+
+**任何「本地资源 → 派生数据」的插件都不该自己写刷新逻辑。** 判据与编排——去抖、单飞、
+增量短路、幽灵清理、进度、状态——收在 `shell/backend/freshness.py`，界面与轮询收在
+共享组件 `shell/frontend/public/shell/freshness.js`。全壳只有两个动作、两个词：
+
+| 动作 | 触发 | 成本 | 谁负责 |
+| --- | --- | --- | --- |
+| **同步**（sync） | 被动：进视图 / 切目录 | 目录级短路，稳态每目录一次 `os.scandir`、零 `stat` | 壳（`system_freshness_sync`） |
+| **校验**（verify） | 手动：工具栏唯一按钮 | 全量遍历 + 逐项指纹校验 + 幽灵清理 + 派生缓存对账 | 壳（后台任务，有进度可取消） |
+
+改动前的实际状况是同一件事被各写了一遍、判据互不相同：目录 mtime、30 秒 TTL、
+"永不失效"、"只增不减"（删除的文件永久留在索引里）、"每次全盘对比"。名字也散成
+刷新 / 全量重建 / 重新扫描 / 扫描 / 深度扫描 / 刷新记录 / 校验内容。另外壳的 `/thumbs`
+带 `Cache-Control: max-age=86400` 而 URL 没有版本号 —— 重建了缩略图，浏览器一天不回源
+（media-player 曾单独在 URL 上打 `&v=<mtime>` 绕开）。这些现在都由基建统一处理。
+
+**插件只回答三个问题**（`PluginBase.freshness_spec()`；不声明 = 不参与，行为不变）：
+
+```python
+# plugins/my-plugin/backend/freshness.py（分片，与 main.py 同目录，与 §3.1 的类骨架同形）
+class FreshnessMixin:
+    def get_cache_dir(self):          # 可选：默认 <数据根>/.cache/<插件名>
+        return self.cache_dir         # 指纹库放这里：freshness.db
+
+    def freshness_spec(self):
+        return {
+            'roots': lambda: self._roots(),   # ① 管哪些文件（可调用 = 跟着设置走）
+            'prefixes': lambda: (...),        #    多根时的虚拟前缀（默认第一根 ''、其余 __<目录名>）
+            'include': ('.jpg', '.png'),      #    关心的后缀（空 = 全部常规文件）
+            'content_version': 4,             # ② 解析规则版本：变了就整体作废派生数据
+            'derive': self._on_changed,       # ③ 条目新增/变化时做什么（只对变化项调用）
+            'prune': self._on_removed,        #    条目消失时清派生缓存
+            'on_verified': self._on_verified, #    全量校验后按"有效键集合"对账孤儿
+            'rebuild': self._clear_derived,   #    逃生门：丢弃派生缓存（设置页入口，管理员）
+            'stat_entries': True,             #    目录不大且"替换要立刻反映"时开（见下）
+            'unit': '张',
+        }
+```
+
+条目键 = `前缀/根内相对路径`，与插件对外用的路径同形 —— 派生缓存的键（缩略图键、
+索引键）可以直接复用，不需要额外映射表。三个钩子都**只做缓存失效/清理，不做重活**：
+
+```python
+def _on_changed(self, items):     # items: [{key, path, mtime, size, dir}, ...]
+    self._list_cache.clear()      # 派生数据按需重算才是最快路径
+def _on_removed(self, keys):
+    for rel in keys:
+        self.thumb_cache.delete(rel)
+def _on_verified(self, keys):     # keys: 当前全部有效条目键（整趟无错时才调用）
+    return {'rows': self.thumb_cache.prune(keys)}
+```
+
+前端挂载共享组件（**不要**自己写按钮与轮询）：
+
+```html
+<div id="mp-freshness"></div>
+```
+```javascript
+const ctl = Freshness.mount({
+    plugin: 'my-plugin',              // 必须与 manifest.name 一致（门禁会拦）
+    container: document.getElementById('mp-freshness'),
+    unit: '首',
+    onChange: () => this.reload(),    // 同步发现变化 / 校验完成后重载自己的视图
+});
+ctl.autoSync('');                     // 进视图 / 切目录时调用（组件去抖，壳侧再节流）
+```
+
+两条硬约束：
+
+1. 派生资源（缩略图等）的 URL **必须带版本号**，否则壳的 `/thumbs` 一天不回源：
+   `Freshness.assetUrl(path, Math.round(item.mtime))`。版本号取源文件 mtime 即可
+   （文件被替换 → mtime 变 → URL 变）；指纹没变的强制重建请传单调递增值。
+2. 三种静默失败由 `tools/check_plugins.py` 静态拦下：只声明 `freshness_spec()` 而没挂
+   组件（界面上没有入口）、挂了组件却没声明 spec（点了没反应）、`plugin` 名字与
+   manifest 不一致（壳按名字找不到实例，同样"点了没反应"）。
+
+内部设计要点（写插件时用得上的部分）：
+
+- **同步**：每个目录一次 `os.scandir`，目录 mtime 与"纳入索引的名字个数"都没变就整目录
+  跳过（零 `stat`）；变了才逐条比对指纹，只把新增/变化的条目交给 `derive`。
+- **边界**：原地写入（同名、新内容）不改目录 mtime 也不改名字个数，被动同步**看不见**它。
+  派生缓存自己按 mtime/size 失效兜住多数场景，权威结论由校验给出。目录不大、
+  且"文件被替换必须立刻反映"的插件（如 image-viewer 的一个相册几十张）开
+  `stat_entries: True` 换准确度；十几万条目的大媒体库保持默认 `False`。
+- **校验**：全量遍历（**不做目录短路**，否则原地写入永远查不出来）+ 逐项 stat；
+  消失的条目与目录 → `prune`；整趟走完且**没有读取错误**时 → `on_verified(有效键集合)`，
+  用于清理"插件没运行时就被删掉的文件"留下的历史孤儿（缩略图库防膨胀）。
+- **`content_version` 收敛**：把散落的 `INDEX_VERSION` / `_ALBUM_CACHE_VERSION` /
+  `parser_version` 传进来，改解析规则时改它，基建负责整体失效 —— 不再依赖"记得手动 +1"。
+- **并发与开销**：单飞（同一插件同时只有一个同步/校验）、去抖（`min_sync_interval`，
+  默认 5 秒；设置变更后调 `engine.reset_throttle()` 让下次同步立刻真扫）、预算
+  （单次被动同步最多 `max_dirs_per_sync` 个目录，超出返回 `partial`，前端会转成一次
+  后台校验续完，用户不必自己点）。
+- **`partial` 的两种原因**：被动同步有预算（`max_dirs_per_sync`）。预算按
+  **真正干了活的目录**算，走过的短路目录不算 —— 按走过的算会让"目录数 > 预算"的库
+  每次进视图都报 `partial`，界面每次都提示"同步未覆盖全部目录"，而稳态下一个目录都
+  没变。报告里的 `reason` 区分两种收尾：`budget`（还有目录要处理，值得替用户起一次
+  校验续跑）与 `dir_cap`（硬上限 8×预算，只是没走完，不代表还有活 —— 不该反复起任务）。
+- **进度必须对每个走过的目录推进**：只在"条目有增删改"的分支里更新任务计数，会让
+  稳态下的校验整趟停在 `0 / 0`（进度条不动，看起来像卡死）。
+- **状态查询不建库**：指纹库不存在时 `system_freshness_state` 直接返回零值，
+  "看一眼状态"不会凭空造出数据库（同 `ThumbCache.stats` 的理由）。
+- **完成 = 立即可读**：钩子把派生数据"标记为过期"是惰性的，过期后的第一次读取
+  才是真正花钱的地方。它若留在任务外，用户看到的就是"进度条已经满了、界面还要
+  卡几秒再出内容"（image-viewer 实测：6000 张 / 1400 目录上，校验结束后第一帧
+  重建相册索引 2.7s）。因此**手动校验的收尾重活必须在 `on_pass_end(report,
+  verified=True)` 里做完**：宁可让"校验中"多显示这几秒，也不要让"完成"之后再卡。
+  钩子里拿不到任务对象，需要提示当前阶段时调 `engine.progress('重建相册索引')`。
+  被动**同步**没有任务可挂（它是一次同步请求），那边的要求相反：同步路径必须便宜，
+  重活留给校验或按需重算。
+- **`stat_entries` 只在小目录树打开**：它把"目录级短路"降级成"每个文件 stat 一次"，
+  也就是把"进一次页面"变成"给整库每个文件 stat 一次"。实测 6000 个文件的整树同步
+  0.11s → 0.29s（真实磁盘冷缓存下差距更大）。它换来的是"原地改写文件也能被同步
+  发现"，而这件事本来就该由校验负责（audit 逐项比对指纹）。只有"文件数是几十到
+  几百量级"的插件（如 document-reader 的书库）才值得打开。
+- **远端来源**（`mode: 'remote'`）：数据不在本地文件系统里（netease-music 的歌曲 /
+  歌单就是这一类），**没有指纹可用，判据只能是时间**。此时声明 `ttl_seconds` 与
+  `invalidate`（丢弃插件自己的本地缓存，例如短期播放地址），不需要 `roots`：
+  「同步」= 新鲜期内跳过、过期才 `invalidate`；「校验」= 忽略 TTL 立刻 `invalidate`；
+  状态行按"新鲜期剩余"显示而不是"已索引 N 项"。注意语义边界：`sync` 是"到时重取"，
+  不是"发现变化" —— 远端有没有变，只有真去请求才知道，而取数仍由插件在用户进入
+  相应视图时按需发起，`invalidate` 只负责让那次取数不再命中旧缓存。
+
+壳级端点（插件**不注册**自己的刷新 API）：
+
+| 端点 | 语义 | 权限 |
+| --- | --- | --- |
+| `system_freshness_state(plugin)` | 状态投影（不扫盘） | 普通 |
+| `system_freshness_sync(plugin, scope)` | 被动增量（去抖 + 单飞） | 普通 |
+| `system_freshness_verify(plugin)` | 起后台全量校验 | 普通 |
+| `system_freshness_cancel(plugin)` | 取消校验 | 普通 |
+| `system_freshness_rebuild(plugin, kind)` | 丢弃派生缓存后重算（逃生门） | 管理员 |
+| `system_freshness_overview()` | 全部参与插件的状态快照 | 管理员 |
+
+`scope` 来自前端，按不可信输入处理：`..`、绝对路径、未知命名空间一律拒绝，解析结果
+还要再确认落在该根之内。方法表只有一处定义（`plugin_manager.freshness_api_methods()`），
+HTTP 与桌面 `js_api` 两条通道共用。已接入的实现参考：image-viewer
+（`plugins/image-viewer/backend/freshness.py`，见 `docs/image-viewer-design.md` §3.5）。
+
 ### 3.5 完整 API 列表
 
 （以 image-viewer 为例，完整版见 `docs/image-viewer-design.md` §6）
@@ -533,7 +698,7 @@ class AudioCoverCache(ThumbCache):
 | `set_album_config`      | `rel_path, action`                              | `{success, config}`                                                                        | `action ∈ collapse/expand/promote/unpromote`；变更后失效相册 TTL 缓存                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `get_image_info`        | `rel_path`                                      | `{success, rel_path, size, width, height \| error}`                                        | 单图存储大小与分辨率（全屏查看器右侧信息面板）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `regenerate_thumbs`     | `[rel_paths]`                                   | `{regenerated, errors}`                                                                   | 重新生成选中图片的缩略图（删除缓存并重建，修复坏缩略图）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `refresh`               | 无                                                | `{success}`                                                                               | 清空内存缓存并作废旧相册索引，新增/替换图片立即生效                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `refresh`               | 无                                                | `{success, ...report}`                                                                    | **兼容入口**：转发到壳统一刷新的「同步」（重新扫描目录，新增/替换图片立即生效）；新代码用 `system_freshness_sync` / `system_freshness_verify` |
 | `list_dir`              | `rel_path`                                      | `[{name, path}]`                                                                          | 列出子目录                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `delete_files`          | `[rel_paths]`                                   | `{deleted, errors}`                                                                       | 批量删除文件（同步清理缩略图缓存与尺寸元数据）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `move_files`            | `[rel_paths], dest_rel`                         | `{moved, errors}`                                                                         | 批量移动文件（重名自动递增后缀）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -547,8 +712,6 @@ class AudioCoverCache(ThumbCache):
 | `clear_folder_settings` | `rel_path`                                      | `{success}`                                                                               | 清除文件夹独立设置，回退到全局                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 > 说明：所有 API 的 `rel_path` 均经过 `is_safe_path` 校验；`per_page` 后端封顶 200；`list_folder_items` 的 `all_images` 截断上限 5000。
-
----
 
 ## 4. 前端开发
 
@@ -580,6 +743,12 @@ class AudioCoverCache(ThumbCache):
   - `Motion.stagger(container, selector?)` 为子元素写入交错延迟
   - `Motion.retrigger(el, className?)` 重新触发动画（默认 `obx-anim-heart`）
   - `Motion.show(el, className?)` 淡入上移显示
+
+另外两个共享**组件**（不只是资源，见 §4.3）：
+
+- `/shell/folder-picker.js|css` — `window.FolderPicker`：多位置文件夹列表与目录选择弹窗；
+- `/shell/freshness.js|css` — `window.Freshness`：统一的「同步 / 校验」控件（状态行 +
+  校验按钮 + 进度卡），接入方式见 §3.4「统一刷新（同步 / 校验）」。
 
 所有动画均遵循 `prefers-reduced-motion`，用户开启减少动态效果时自动降级。
 
@@ -689,6 +858,8 @@ Shell 还注入了以下可复用的 UI 组件函数（无需引入，直接使�
 | `createPagination(container, options)`                            | 创建分页组件                              |
 | `createContextMenu(options)`                                      | 创建右键菜单组件                          |
 | `createSettingsForm(container, schema, values)`                   | 按 schema 渲染设置表单                    |
+| `Freshness.mount({plugin, container, unit, onChange})`             | 挂载统一的「同步 / 校验」控件（见 §3.4）；`autoSync(scope)` / `verify()` / `cancel()` |
+| `Freshness.assetUrl(path, version)`                               | 派生资源 URL + 版本号（绕开 `/thumbs` 的一天强缓存） |
 | `renderExtensions(container, host, placement, options?)`          | 渲染注册到宿主侧边栏/工具栏的扩展插件入口 |
 | `openSettingsModal(options)`                                      | 打开统一设置弹窗                          |
 | `HostChannel.requestSettings(title)` / `HostChannel.request(action, data)` | 内嵌页请**上层**用它的文档渲染 UI（设置/确认），详见 plugin-ui-guide §3.5 |
@@ -726,6 +897,15 @@ const lightbox = createLightbox({
   getImageUrl: (item) => item.url
 });
 lightbox.show(images, 0);
+
+// 统一「同步 / 校验」：空容器 + 一处挂载，轮询/进度/取消都由组件负责（见 §3.4）
+const ctl = Freshness.mount({
+  plugin: 'my-plugin',                    // 必须与 manifest.name 一致
+  container: document.getElementById('my-freshness'),
+  unit: '首',
+  onChange: () => reloadMyView(),
+});
+ctl.autoSync('');                         // 进视图 / 切目录时调用
 ```
 
 ### 4.4 前端生命周期（onShow / onHide / onDispose）
@@ -864,7 +1044,7 @@ Shell 提供两个文件服务路由：
 
 ```javascript
 // 绝对路径（media-player 跨根场景）
-const src = Bridge.originalUrl(encodeURIComponent('G:/音乐/cover.jpg'));
+const src = Bridge.originalUrl(encodeURIComponent('D:/音乐/cover.jpg'));
 // 相对路径（普通单根插件）
 const src = Bridge.originalUrl('subdir/photo.jpg');
 ```
@@ -1396,7 +1576,7 @@ image-viewer 需要在不同文件夹应用不同设置（如行高、排序）�
 - **错误处理**：后端方法应捕获异常并返回有意义的错误信息，避免前端收到 Python 堆栈。
 - **设置持久化**：使用 `settings_schema` 声明式配置，设置自动存储在 `.config/plugins/<name>.json`。读取用 `setting()`，保存用 `save_settings()`，响应变更用 `on_settings_changed()`。**不要**覆写 `save_settings()`，**不要**在插件目录创建 `settings.json`。
 - **运行时状态**：播放进度、收藏、缓存等数据派生状态放在数据目录（如 `data/.cache/`），跟随数据走。
-- **共享基建**：需要后台长任务或缩略图缓存时，优先复用 `shell/backend/tasks.py`（`BackgroundTask`）与 `shell/backend/thumb_cache.py`（`ThumbCache`，见 §3.4），**不要各自重复实现**；DB / 任务状态文件放各自数据根目录 `.cache/` 下。现成的用法：image-viewer 的缩略图重建（`rebuild_all/status/cancel`）、pixiv-sync 的下载扫描、image-cleaner 的全库扫描（`scan_start/status/cancel`）—— 三者都是「起任务 → 轮询进度 → 可取消」，结果各自落自己的缓存文件。
+- **共享基建**：需要后台长任务、缩略图缓存或"刷新"时，优先复用 `shell/backend/tasks.py`（`BackgroundTask`）、`shell/backend/thumb_cache.py`（`ThumbCache`）与 `shell/backend/freshness.py`（统一刷新，见 §3.4），**不要各自重复实现**；DB / 任务状态文件放各自数据根目录 `.cache/` 下（用 `get_cache_dir()` 取）。现成的用法：image-viewer 的缩略图重建（`rebuild_all/status/cancel`）与统一刷新接入、pixiv-sync 的下载扫描、image-cleaner 的全库扫描（`scan_start/status/cancel`）—— 三者都是「起任务 → 轮询进度 → 可取消」，结果各自落自己的缓存文件。
 - **性能优化**：使用内存缓存（如目录列表缓存、聚合元数据缓存）减少 I/O，提升响应速度；大目录首次扫描可参考 image-viewer 的并行尺寸读取（`ThreadPoolExecutor`）。
 
 ---

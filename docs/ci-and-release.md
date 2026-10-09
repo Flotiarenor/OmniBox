@@ -14,6 +14,7 @@
 | 打包规则（spec/收集） | `python tools/check_packaging.py` | **exit 0**（硬门禁） |
 | 版本一致性 | `python tools/check_version.py` | **exit 0**（硬门禁） |
 | 测试文件可运行性 | `python tools/check_tests.py` | **exit 0**（硬门禁；`tests/test_*.py` 必须能被 unittest 收集到用例，手工脚本按约定命名 `tests/debug_*.py`） |
+| 本地隐私门禁 | `python tools/check_private_paths.py` | **OK**（开发机硬门禁；CI 上无本地配置时 SKIP。见 §1.1） |
 | 类型检查（内核） | `python -m pyright main.py shell tools` | **0 错误**（硬门禁） |
 | 类型检查（插件+测试） | `python -m pyright plugins tests` | 基线（暂不拦截，见 §6） |
 | 单元测试 | `python -m unittest discover -s tests` | **failures=0 / errors=0**（硬门禁；Windows 专属与浏览器 e2e 用例在缺依赖时自动 skip，见 §2。本机 Windows 实测 818 例：811 passed、3 例环境失败） |
@@ -46,10 +47,33 @@ $py = ".\venv\Scripts\python.exe"
 & $py tools/check_version.py
 & $py tools/check_tests.py
 & $py tools/check_npm_audit.py
+& $py tools/check_private_paths.py
 & $py -m pyright main.py shell tools
 & $py -m unittest discover -s tests
 node tools/check_frontend_escape.cjs
 ```
+
+### 1.1 本地隐私门禁（`tools/check_private_paths.py`）
+
+拦的是"把开发机上的东西提交上去"：本地运行期配置（`.config/plugins/*.json`、`.config/app.yaml`、
+`.config/auth_token.txt`、`data/group-mesh/identity/*.json`）**不在 git 里**（`.gitignore` 覆盖），
+但里面的真实路径与令牌很容易在写文档、注释、用例时被顺手复制进去，而这类改动其它门禁完全
+看不见（ruff 不扫字符串，`check_plugins` 只看插件契约，打包规则只查数据收集）。
+
+判定：从本机配置提取三类词条，再逐个在 `git ls-files` 的文本文件里找 ——
+
+1. **绝对路径**（含各级父目录与后缀），比较前统一 `\`→`/`、去掉分隔符、小写化，
+   因此 `D:\图库`、`D:/图库`、`D:\\图库` 命中同一条词条；回环地址/主机名这类通用值不算词条；
+2. **密钥值**：键名匹配 `token|secret|password|api_key` 且长度 ≥ 6 的字符串值，以及
+   `auth_token.txt` 的整份内容（按原文匹配）；占位符形状（`SECRET-TOKEN`、`<your-key>`）不算；
+3. **用户名**：`%USERPROFILE%` 最后一段，只在路径上下文（`users/<名字>`）里算命中。
+
+实测价值：实装当天用它扫出 8 处真机路径（`docs/ci-and-release.md`、`docs/image-viewer-design.md`、
+`plugins/group-mesh/backend/shares.py` 的注释、以及 3 个用例文件），全部改成 `D:\…` 占位。
+已知边界：按**行文本**比对，把路径拆成多段字符串拼接后检测不到（用例把这条边界固化了）。
+
+> 它在 CI 上也跑，但 runner 没有本地配置 → 打印 `SKIP` 并以 0 退出。放在 CI 里的意义是
+> 让这一步不被忘记、也让脚本每次都被真实执行一遍（语法/导入错误当场暴露）。
 
 > `check_npm_audit.py` 为什么不能用一句 `npm audit` 代替：本机 `npm config get registry`
 > 指向 npmmirror，而它**不实现 audit 端点**，直接跑得到的是
@@ -211,7 +235,7 @@ bash docs/Releases/build-release.sh
 `shell/backend/paths.py`：打包模式下 exe 目录可写就用它）。所以在产物目录里跑过
 一次程序做测试之后，那个目录里就是**你本机的状态**：
 
-- `.config/plugins/*.json`：各插件设置，含媒体目录路径（`G:\图库`、`G:\音频\音乐`…）
+- `.config/plugins/*.json`：各插件设置，含媒体目录路径（`D:\图库`、`D:\音频\音乐`…）
   和 `pixiv-sync` 的 `refresh_token`、代理地址
 - `.config/auth_token.txt`：本机访问令牌
 - `data/`：缩略图缓存、下载状态等（体积还不小）

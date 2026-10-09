@@ -11,12 +11,27 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Any, List, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple
 
 log = logging.getLogger(__name__)
 
-# 图片文件名 → 作品 id：123456.jpg / 123456_p0.jpg / 123456p0.png ...
-ID_NAME_RE = re.compile(r"^(\d+)(?:_?p\d+)?\.(?:jpe?g|png|gif|webp)$", re.IGNORECASE)
+# 图片文件名 → 作品 id + 页号：123456.jpg / 123456_p0.jpg / 123456p0.png ...
+# 第 2 组是页号（无 _p 后缀时不存在）；单图与动图 WebP 都算第 0 页。
+ID_NAME_RE = re.compile(r"^(\d+)(?:_?p(\d+))?\.(?:jpe?g|png|gif|webp)$", re.IGNORECASE)
+
+
+def expected_pages(work_type: Any, page_count: Any) -> int:
+    """清单里一个作品应有的本地文件页数。
+
+    ugoira（动图）转成单个动画 WebP 保存，固定按 1 页算；其余取 page_count，
+    缺失/非法时按 1 页兜底。注意 page_count 是扫描快照，画师后续加页不会反映。
+    """
+    if str(work_type or "").lower() == "ugoira":
+        return 1
+    try:
+        return max(1, int(page_count))
+    except (TypeError, ValueError):
+        return 1
 
 
 def _raw_ids(data: Any) -> List[Any]:
@@ -91,15 +106,23 @@ def save_failed_ids(path: Path, failed: Set[int]) -> bool:
         return False
 
 
-def collect_existing_ids(root: Path, on_image=None) -> Set[int]:
-    """扫描 <root>/pixiv/ 下按规则命名的图片，提取作品 id。
+def scan_local(
+    root: Path, remove_zero: bool = False
+) -> Tuple[Set[int], int, Dict[int, Set[int]]]:
+    """扫描 <root>/pixiv/ 下按规则命名的图片，一次遍历同时得到 id 集合与每个作品的页号集合。
 
-    用于识别用户手动放入的旧图：文件名符合 `{id}.jpg` / `{id}_p0.jpg` 规则即可被识别，
-    之后全量更新会直接跳过该作品。0 字节文件不视为有效图片。
+    返回 (有效 id 集合, 删除的 0 字节文件数, {作品 id: {页号}})。页号：`{id}_p3.jpg`
+    记为 3，`{id}.jpg` / `{id}.webp`（单图、动图 WebP）记为 0。0 字节残片一律不算有效图片；
+    remove_zero=True 时顺手删除（刷新记录/校验内容用），False 时只跳过不删。
+
+    「本地页数 < 清单 page_count」是半截下载的判据：按命名规则提取的 id 无法区分
+    「整件下完」和「只下到一半」，页号集合才能区分。
     """
     ids: Set[int] = set()
+    pages: Dict[int, Set[int]] = {}
+    zero = 0
     if not root.exists():
-        return ids
+        return ids, zero, pages
     try:
         for current, dir_names, filenames in os.walk(root):
             dir_names[:] = [d for d in dir_names if not d.startswith(".")]
@@ -110,44 +133,19 @@ def collect_existing_ids(root: Path, on_image=None) -> Set[int]:
                 iid = int(m.group(1))
                 p = Path(current) / name
                 try:
-                    if p.stat().st_size <= 0:
-                        continue
+                    size = p.stat().st_size
                 except OSError:
                     continue
-                ids.add(iid)
-                if on_image:
-                    on_image(iid, p)
-    except OSError:
-        pass
-    return ids
-
-
-def rebuild_existing(root: Path) -> Tuple[Set[int], int]:
-    """扫描本地重建有效文件 id 集合（同时删除 0 字节文件）。
-
-    返回 (有效 id 集合, 清理的 0 字节文件数)。
-    """
-    existing: Set[int] = set()
-    zero = 0
-    if root.exists():
-        try:
-            walker = os.walk(root)
-            for current, dir_names, filenames in walker:
-                dir_names[:] = [d for d in dir_names if not d.startswith(".")]
-                for name in filenames:
-                    m = ID_NAME_RE.match(name)
-                    if not m:
-                        continue
-                    iid = int(m.group(1))
-                    p = Path(current) / name
-                    try:
-                        if p.stat().st_size == 0:
+                if size <= 0:
+                    if remove_zero:
+                        try:
                             p.unlink()
                             zero += 1
-                            continue
-                    except OSError:
-                        continue
-                    existing.add(iid)
-        except OSError:
-            pass
-    return existing, zero
+                        except OSError:
+                            pass
+                    continue
+                ids.add(iid)
+                pages.setdefault(iid, set()).add(int(m.group(2)) if m.group(2) else 0)
+    except OSError:
+        pass
+    return ids, zero, pages

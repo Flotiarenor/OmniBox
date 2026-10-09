@@ -17,7 +17,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import importlib.util
 
-from shell.backend.tasks import BackgroundTask
+from shell.backend.freshness import engine_for
 
 # 测试数据放工作区内（沙箱/CI 下系统临时目录可能不可写）
 _TMP_BASE = PROJECT_ROOT / '.build' / 'mp-scan-test'
@@ -66,7 +66,7 @@ def main():
     try:
         root = tmp / 'root'
         root.mkdir()
-        d1 = make_media_dir(root, 'album-a', 3, cover=True)   # 有文件夹封面
+        make_media_dir(root, 'album-a', 3, cover=True)        # 有文件夹封面
         d2 = make_media_dir(root, 'album-b', 2)               # 无封面
         manifest = {'name': 'media-player'}
         config = {'directories': {'data_root': str(root)}}
@@ -137,58 +137,57 @@ def main():
         assert all(i['has_cover'] for i in b_items2), '后补封面后增量扫描应刷新 has_cover'
         print('[3] 后补封面增量刷新 OK')
 
-        # 4. 任务文件已落盘（done 态，重启时会被清理）
+        # 4. 旧版根级断点文件已被清理（目录指纹取代，见 docs/plugin-guide §3.4）
         task_file = root / '.cache' / 'scan_task.json'
-        assert task_file.exists(), '任务文件未生成'
-        p2 = MediaPlayerPlugin(manifest, config)
-        assert p2._scan_task is None, 'done 态任务应被清理'
-        assert not task_file.exists(), 'done 态任务文件应被删除'
-        print('[4] done 态任务清理 OK')
+        assert not task_file.exists(), '旧版任务文件应被清理'
+        print('[4] 旧版断点文件清理 OK')
 
-        # 5. 断点续传：手工构造 paused 任务（两个根目录已完成），新实例应跳过它们
-        task = BackgroundTask(kind='scan', persist_path=task_file,
-                              extra={'force': False, 'completed_roots': [str(d1), str(d2)]})
-        task.update(processed=2, total=2, extra={'completed_roots': [str(d1), str(d2)]})
-        task.persist()  # queued → 落盘为 paused
+        # 5. 二次扫描：目录指纹未变 → 整目录短路（零 stat），不重算任何条目
         p3 = MediaPlayerPlugin(manifest, config)
-        assert p3._scan_task is not None and p3._scan_task.state == 'paused', 'paused 任务未恢复'
-        r3 = p3.scan(False)
-        assert r3.get('started'), f'续扫未启动: {r3}'
-        st3 = wait_done(p3)
-        assert st3['state'] == 'done'
-        assert st3['extra']['audio'] == 5
+        engine3 = engine_for(p3)
+        engine3.spec.min_sync_interval = 0.0
+        rep3 = engine3.sync('', force=True)
+        assert rep3['skipped_dirs'] >= 2, f'未变化目录应短路: {rep3}'
+        assert rep3['derived']['count'] == 0, f'稳态不该重算派生数据: {rep3}'
         assert p3.stats()['total'] == 5
-        print('[5] 断点续传 OK（paused 恢复 → 续扫完成）')
+        print(f'[5] 目录指纹短路 OK（跳过 {rep3["skipped_dirs"]} 个目录，重算 0 条）')
 
-        # 6. 深度扫描（force）丢弃断点全量重扫
+        # 6. 校验：全量逐项比对，并清掉磁盘上已消失的条目
         p4 = MediaPlayerPlugin(manifest, config)
         r4 = p4.scan(True)
-        assert r4.get('started'), f'深度扫描未启动: {r4}'
+        assert r4.get('started'), f'校验未启动: {r4}'
         st4 = wait_done(p4)
-        assert st4['state'] == 'done'
+        assert st4['state'] == 'done', f'校验状态异常: {st4}'
         assert st4['extra']['audio'] == 5
-        print('[6] 深度扫描 OK')
+        (d2 / 'track01.mp3').unlink()          # 从磁盘删掉一首
+        p4.scan(True)
+        st4b = wait_done(p4)
+        assert st4b['state'] == 'done'
+        assert p4.stats()['total'] == 4, f'校验应删掉幽灵条目: {p4.stats()}'
+        print('[6] 校验 OK（幽灵条目已按磁盘差集删除）')
 
-        # 7. 运行中重复调用应报错
+        # 7. 单飞：校验进行中重复调用不得再起一个
         p5 = MediaPlayerPlugin(manifest, config)
-        r5 = p5.scan(False)
-        assert r5.get('started')
-        r5b = p5.scan(False)
-        assert r5b.get('error') == '扫描正在进行中', f'重复启动未拦截: {r5b}'
+        slow = p5._freshness_derive
+        p5._freshness_derive = lambda items: (time.sleep(1.5), slow(items))[1]
+        r5 = p5.scan(True)
+        assert r5.get('started'), f'校验未启动: {r5}'
+        r5b = p5.scan(True)
+        assert r5b.get('started') is False, f'重复启动未拦截: {r5b}'
         st5 = wait_done(p5)
         assert st5['state'] == 'done'
-        print('[7] 重复启动拦截 OK')
+        print('[7] 单飞拦截 OK')
 
-        # 8. 取消
+        # 8. 取消：已写入的指纹与索引保留（没有"断点文件"要留）
         p6 = MediaPlayerPlugin(manifest, config)
-        r6 = p6.scan(False)
+        p6._freshness_derive = lambda items: (time.sleep(1.5), None)[1]
+        r6 = p6.scan(True)
         assert r6.get('started')
         assert p6.scan_cancel()['success'] is True
         st6 = wait_done(p6)
         assert st6['state'] == 'cancelled', f'取消后状态异常: {st6}'
-        # 取消后任务文件应为 paused（下次可续跑）
-        assert task_file.exists()
-        print('[8] 取消 OK（检查点保留，可续跑）')
+        assert not task_file.exists(), '新版不应再产生断点文件'
+        print('[8] 取消 OK（指纹与索引保留，无断点文件）')
 
         print('\n全部通过 (PASS)')
     finally:

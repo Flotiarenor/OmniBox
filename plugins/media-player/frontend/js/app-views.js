@@ -11,63 +11,36 @@ Object.assign(MediaPlayerApp.prototype, {
     // ============================================================
     // 扫描 / 设置
     // ============================================================
+    /**
+     * 兼容入口：网易云视图的「刷新」= 丢弃在线数据缓存后重新拉取。
+     *
+     * 媒体库本地的刷新（原先的「扫描」「深度扫描」）已交给共享组件
+     * `shell/freshness.js`（同步 / 校验），这里只保留视图级刷新 —— 两者语义
+     * 不同：一个重拉远端数据，一个核对本地磁盘。
+     */
     async _doScan(deep = false) {
         if (this._scanning) return;
-        this._scanning = true;
-        const btn = document.getElementById('btn-scan');
-        const deepBtn = document.getElementById('btn-deep-scan');
-        btn.disabled = true;
-        if (deepBtn) deepBtn.disabled = true;
-        btn.innerHTML = MPUtils.icon('icon:loader') + (this.currentView.startsWith('ncm-') ? ' 刷新中…' : ' 扫描中…');
-        if (this.currentView.startsWith('ncm-')) {
-            this._clearNeteaseCache();
-            try {
-                await this._loadCurrentView();
-                Toast.success('网易云数据已刷新');
-            } catch (e) {
-                Toast.error('刷新失败');
-            } finally {
-                this._scanning = false;
-                if (btn) {
-                    btn.disabled = false;
-                    btn.innerHTML = MPUtils.icon('icon:refresh-cw') + (this.currentView.startsWith('ncm-') ? ' 刷新' : ' 扫描');
-                }
-            }
+        if (!this.currentView.startsWith('ncm-')) {
+            // 本地视图里没有"刷新在线数据"这回事：转交给统一校验
+            if (this.freshness) this.freshness.verify();
             return;
         }
-        this._setLoading(deep
-            ? '正在深度扫描媒体库…<br>将重新读取所有媒体元数据，耗时较长'
-            : '正在扫描媒体库…');
+        this._scanning = true;
+        const btn = document.getElementById('btn-scan');
+        if (btn) btn.disabled = true;
+        this._setLoading('正在刷新网易云数据…');
+        this._clearNeteaseCache();
         try {
-            const started = await Bridge.call('media_scan', !!deep);
-            if (started && started.error) {
-                // 扫描已在运行（如另一标签页）：改为等待其完成
-                const st = await this._waitScanDone();
-                if (st && st.state === 'done') {
-                    const ex = st.extra || {};
-                    Toast.success(`扫描完成：音乐 ${ex.audio ?? '?'} · 视频 ${ex.video ?? '?'}`);
-                }
-            } else if (started) {
-                const st = await this._waitScanDone((s) => {
-                    if (s.state === 'running') {
-                        this._setLoading(`正在扫描媒体库… ${s.processed}/${s.total}${s.current ? ' · ' + s.current : ''}`);
-                    }
-                });
-                const ex = (st && st.extra) || {};
-                if (st && st.state === 'cancelled') Toast.info('扫描已取消，已完成部分已保留');
-                else if (st && st.state === 'done') Toast.success(`扫描完成：音乐 ${ex.audio ?? '?'} · 视频 ${ex.video ?? '?'}`);
-                else if (!st) Toast.error('扫描超时，请稍后重试');
-            }
-            await this._updateStats();
+            await this._loadCurrentView();
+            Toast.success('网易云数据已刷新');
         } catch (e) {
-            Toast.error('扫描失败');
+            Toast.error('刷新失败');
         } finally {
             this._scanning = false;
-            btn.disabled = false;
-            btn.innerHTML = MPUtils.icon('icon:refresh-cw') + ' 扫描';
-            const deepBtn = document.getElementById('btn-deep-scan');
-            if (deepBtn) deepBtn.disabled = false;
-            await this._loadCurrentView();
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = MPUtils.icon('icon:refresh-cw') + ' 刷新';
+            }
         }
     },
 
@@ -86,12 +59,28 @@ Object.assign(MediaPlayerApp.prototype, {
     // ============================================================
     // 视图切换与加载
     // ============================================================
+    /**
+     * 侧栏**作用域项**的高亮入口；扩展入口的高亮归共享组件管（见 app.js 的 loadExtensions）。
+     *
+     * 回归对象：`switchView` 原先只清 `.mp-nav-item`，扩展入口点击只清扩展项 —— 先点
+     * 「网易云登录」再点「全部音乐」两个同时高亮。现在扩展那半由 `renderExtensions`
+     * 统一维护（点击时它自己清侧栏项），这里只负责清掉扩展的选中。
+     * 传 `{ view }` 亮某个作用域、传空对象表示二级页（专辑详情 / 歌单详情，全不亮）。
+     */
+    _setNavActive(target) {
+        const wantView = (target && target.view) || '';
+        document.querySelectorAll('.mp-nav-item').forEach(btn => {
+            btn.classList.toggle('active', !!wantView && btn.dataset.view === wantView);
+        });
+        if (this.extensions) this.extensions.clearActive();
+    },
+
     async switchView(view) {
         this.currentView = view;
         this.currentAlbum = null;
         this.currentPlaylist = null;
         this.playlists.currentId = '';
-        document.querySelectorAll('.mp-nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+        this._setNavActive({ view });
         this.playlists.renderSidebar();
         document.getElementById('media-search').value = '';
         document.getElementById('btn-search-clear').classList.add('hidden');
@@ -103,7 +92,7 @@ Object.assign(MediaPlayerApp.prototype, {
         this.currentPlaylist = null;
         this.playlists.currentId = '';
         this.currentAlbum = { key, kind };
-        document.querySelectorAll('.mp-nav-item').forEach(b => b.classList.remove('active'));
+        this._setNavActive({});
         this.playlists.renderSidebar();
         await this._loadCurrentView();
     },
@@ -118,7 +107,7 @@ Object.assign(MediaPlayerApp.prototype, {
         this.currentAlbum = null;
         this.currentPlaylist = pl;
         this.playlists.currentId = playlistId;
-        document.querySelectorAll('.mp-nav-item').forEach(b => b.classList.remove('active'));
+        this._setNavActive({});
         this.playlists.renderSidebar();
         await this._loadCurrentView();
     },
@@ -183,10 +172,14 @@ Object.assign(MediaPlayerApp.prototype, {
         const keyword = (document.getElementById('media-search').value || '').trim();
         const titleEl = document.getElementById('mp-view-title');
         const subEl = document.getElementById('mp-view-sub');
+        const ncm = this.currentView.startsWith('ncm-');
+        // 工具栏按视图分工：网易云视图给「刷新」（重拉在线数据），本地视图给统一
+        // 组件（同步 / 校验）。两者不是同一件事，不能共用一个按钮。
         const scanBtn = document.getElementById('btn-scan');
-        if (scanBtn) scanBtn.innerHTML = MPUtils.icon('icon:refresh-cw') + (this.currentView.startsWith('ncm-') ? ' 刷新' : ' 扫描');
-        const deepScanBtn = document.getElementById('btn-deep-scan');
-        if (deepScanBtn) deepScanBtn.classList.toggle('hidden', this.currentView.startsWith('ncm-'));
+        if (scanBtn) scanBtn.classList.toggle('hidden', !ncm);
+        const freshEl = document.getElementById('mp-freshness');
+        if (freshEl) freshEl.classList.toggle('hidden', ncm);
+        if (!ncm) this._autoSyncFreshness();
         const viewsTitle = {
             'recent': ['最近播放', '最近听过的媒体'],
             'audio-albums': ['音乐专辑', '按专辑标签聚合'],

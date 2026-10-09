@@ -1,23 +1,23 @@
-"""媒体库增量扫描器：音频 + 视频统一索引。
+"""媒体条目构造：音频 / 视频 → `MediaItem`（目录遍历已交给统一刷新基建）。
 
-- 音频专辑按 ID3/Flac/MP4 标签中的「专辑 + 专辑艺术家」聚合（与旧
-  music-player 行为一致）；has_cover 只做检测，封面字节由 ThumbCache
-  懒生成（见 cover_generator），不再在扫描期抽取落盘。
-- 视频专辑按目录聚合，支持嵌套目录；has_cover 恒为 True（目录封面图
-  优先，否则由前端 canvas 抽帧后经 media_put_thumb 回写缓存）。
-- 文件 mtime/size 未变化时直接复用缓存，实现增量扫描。
+- 音频专辑按 ID3/Flac/MP4 标签中的「专辑 + 专辑艺术家」聚合；
+  `has_cover` 只做检测，封面字节由 ThumbCache 懒生成（见 cover_generator）。
+- 视频专辑按目录聚合；`has_cover` 恒为 True（目录封面图优先，否则由前端
+  canvas 抽帧后经 `media_put_thumb` 回写缓存）。
+- **遍历与"哪些文件要重算"不在这里**：统一刷新基建（`shell/backend/freshness.py`）
+  负责目录级短路、指纹比对、幽灵清理，只把新增/变化的文件交给本模块构造。
+  上一版在这里做 `os.walk` + mtime/size 缓存，"删除的文件永久留在索引里"
+  与"深度扫描要重读全库标签"都源自那份自己实现的判定。
 """
 
 import hashlib
-import os
-import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 from shell.backend.plugin_utils import load_sibling
 
-_models = load_sibling(__file__, 'models', 'media_player')
 _metadata = load_sibling(__file__, 'metadata', 'media_player')
+_models = load_sibling(__file__, 'models', 'media_player')
 _video_meta = load_sibling(__file__, 'video_meta', 'media_player')
 _ffmpeg = load_sibling(__file__, 'video_ffmpeg', 'media_player')
 
@@ -35,6 +35,7 @@ COVER_NAMES = {
     'poster.jpg', 'poster.png', 'fanart.jpg', 'fanart.png',
     'thumb.jpg', 'thumb.png', 'backdrop.jpg', 'backdrop.png',
 }
+MEDIA_EXTS = AUDIO_EXTS | VIDEO_EXTS
 
 
 def cover_generator(src_path: Path) -> Optional[tuple]:
@@ -63,11 +64,13 @@ def cover_generator(src_path: Path) -> Optional[tuple]:
     return None
 
 
-def _item_id(path: str) -> str:
+def item_id(path: str) -> str:
+    """条目 id：绝对路径的 md5 前 16 位（索引、缩略图库、前端都以此为键）。"""
     return hashlib.md5(path.encode('utf-8')).hexdigest()[:16]
 
 
-def _find_cover(directory: Path) -> Optional[Path]:
+def find_cover(directory: Path) -> Optional[Path]:
+    """目录封面图（与 `cover_generator` 同一组文件名）。"""
     try:
         for name in COVER_NAMES:
             candidate = directory / name
@@ -96,132 +99,66 @@ def _video_album_key(namespace: str, rel_dir: str) -> str:
     return namespace or '__root__'
 
 
-def scan_media(root: Path, cache: Optional[Dict[str, MediaItem]] = None,
-               namespace: str = '') -> Dict:
-    """递归扫描单个媒体根目录，mtime/size 未变时复用缓存。
+def build_item(full_path: Path, root: Path, namespace: str, rel_dir: str,
+               stat, folder_cover: Optional[Path]) -> Optional[MediaItem]:
+    """把一个媒体文件构造成 `MediaItem`；不是媒体文件时返回 None。
 
-    封面不再在扫描期生成/落盘：仅记录 has_cover，实际字节由
-    ThumbCache + cover_generator 按需生成（/thumbs 路由触发）。
+    这是本插件唯一"昂贵"的操作（音频读标签、视频探测时长），因此调用点只有
+    统一刷新基建的 `derive` 钩子 —— 它只对新增/指纹变化的文件调用。
     """
-    root = Path(root).resolve()
-    cache = cache or {}
-    items: Dict[str, MediaItem] = {}
+    suffix = full_path.suffix.lower()
+    if suffix in AUDIO_EXTS:
+        kind = 'audio'
+    elif suffix in VIDEO_EXTS:
+        kind = 'video'
+    else:
+        return None
 
-    for current_dir, dir_names, file_names in os.walk(root):
-        current = Path(current_dir)
-        if current.name.startswith('.') or current.name == '.cache':
-            dir_names[:] = []
-            continue
-        dir_names[:] = [d for d in dir_names if not d.startswith('.') and d != '.cache']
-
-        rel_dir = current.relative_to(root).as_posix() if current != root else ''
-        folder_cover = _find_cover(current)
-
-        for file_name in sorted(file_names):
-            suffix = Path(file_name).suffix.lower()
-            if suffix in AUDIO_EXTS:
-                kind = 'audio'
-            elif suffix in VIDEO_EXTS:
-                kind = 'video'
-            else:
-                continue
-
-            full_path = current / file_name
+    iid = item_id(str(full_path))
+    if kind == 'audio':
+        meta = MetadataReader.read(full_path)
+        directory = full_path.parent
+        album = _text(meta.get('album'), directory.name if directory != root else (namespace or '未分类'))
+        album_artist = _text(meta.get('album_artist'), meta.get('artist') or '未知艺术家')
+        # 封面检测：目录封面图或内嵌封面（不落盘，字节懒生成）
+        has_cover = bool(folder_cover)
+        if not has_cover:
             try:
-                stat = full_path.stat()
-            except OSError:
-                continue
+                has_cover = MetadataReader.has_embedded_cover(full_path)
+            except Exception:
+                has_cover = False
+        return MediaItem(
+            id=iid,
+            path=str(full_path),
+            kind=kind,
+            title=_text(meta.get('title'), full_path.stem),
+            artist=_text(meta.get('artist'), '未知艺术家'),
+            album=album,
+            album_key=_audio_album_key(namespace, album, album_artist),
+            duration=float(meta.get('duration') or 0),
+            size=stat.st_size,
+            mtime=stat.st_mtime,
+            cover_path='',
+            has_cover=has_cover,
+            album_artist=album_artist,
+            track=int(meta.get('track') or 0),
+        )
 
-            item_id = _item_id(str(full_path))
-            cached = cache.get(item_id)
-
-            # 目录封面图比媒体文件新（后添加/更新）时强制重建条目，刷新 has_cover
-            try:
-                cover_fresh = folder_cover is None or (
-                    cached is not None and cached.mtime >= folder_cover.stat().st_mtime)
-            except OSError:
-                cover_fresh = True
-            if cached and cached.path == str(full_path) \
-                    and cached.size == stat.st_size and cached.mtime == stat.st_mtime \
-                    and cover_fresh:
-                item = cached
-            else:
-                if kind == 'audio':
-                    meta = MetadataReader.read(full_path)
-                    album = _text(meta.get('album'), current.name if current != root else (namespace or '未分类'))
-                    album_artist = _text(meta.get('album_artist'), meta.get('artist') or '未知艺术家')
-                    album_key = _audio_album_key(namespace, album, album_artist)
-                    album_name = album
-                    duration = float(meta.get('duration') or 0)
-                    track = int(meta.get('track') or 0)
-
-                    # 封面检测：目录封面图或内嵌封面（不落盘，字节懒生成）
-                    has_cover = bool(folder_cover)
-                    if not has_cover:
-                        try:
-                            has_cover = MetadataReader.has_embedded_cover(full_path)
-                        except Exception:
-                            has_cover = False
-
-                    item = MediaItem(
-                        id=item_id,
-                        path=str(full_path),
-                        kind=kind,
-                        title=_text(meta.get('title'), full_path.stem),
-                        artist=_text(meta.get('artist'), '未知艺术家'),
-                        album=album_name,
-                        album_key=album_key,
-                        duration=duration,
-                        size=stat.st_size,
-                        mtime=stat.st_mtime,
-                        cover_path='',
-                        has_cover=has_cover,
-                        album_artist=album_artist,
-                        track=track,
-                    )
-                else:
-                    album_key = _video_album_key(namespace, rel_dir)
-                    album_name = current.name if current != root else (namespace or '未分类')
-                    duration = probe_duration(str(full_path)) or 0.0
-
-                    # 视频始终可生成封面帧（目录封面图优先，否则按需抽帧）
-                    item = MediaItem(
-                        id=item_id,
-                        path=str(full_path),
-                        kind=kind,
-                        title=full_path.stem,
-                        artist=album_name,
-                        album=album_name,
-                        album_key=album_key,
-                        duration=duration,
-                        size=stat.st_size,
-                        mtime=stat.st_mtime,
-                        cover_path='',
-                        has_cover=True,
-                        album_artist=album_name,
-                        track=0,
-                    )
-            items[item_id] = item
-
-    return {
-        'items': [item.to_dict() for item in items.values()],
-        'updated': time.time(),
-        'version': INDEX_VERSION,
-    }
-
-
-def scan_directories(dirs, cache: Optional[Dict[str, MediaItem]] = None) -> Dict:
-    """扫描多个媒体根目录并合并为一个统一索引。"""
-    items: Dict[str, MediaItem] = {}
-    for raw_dir in dirs:
-        root = Path(raw_dir).resolve()
-        namespace = root.name or str(root)
-        result = scan_media(root, cache, namespace=namespace)
-        for raw in result['items']:
-            item = MediaItem.from_cache(raw)
-            items[item.id] = item
-    return {
-        'items': [item.to_dict() for item in items.values()],
-        'updated': time.time(),
-        'version': INDEX_VERSION,
-    }
+    album_name = full_path.parent.name if full_path.parent != root else (namespace or '未分类')
+    return MediaItem(
+        id=iid,
+        path=str(full_path),
+        kind=kind,
+        title=full_path.stem,
+        artist=album_name,
+        album=album_name,
+        album_key=_video_album_key(namespace, rel_dir),
+        duration=probe_duration(str(full_path)) or 0.0,
+        size=stat.st_size,
+        mtime=stat.st_mtime,
+        cover_path='',
+        # 视频始终可生成封面帧（目录封面图优先，否则按需抽帧）
+        has_cover=True,
+        album_artist=album_name,
+        track=0,
+    )

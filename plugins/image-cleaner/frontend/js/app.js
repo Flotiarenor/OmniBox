@@ -12,28 +12,45 @@ class ImageCleaner {
   async init() {
     this._bind();
     this._mountHostToolbar();
+    this._mountFreshness();
     if (typeof createLightbox === 'function') {
       this.lightbox = createLightbox({ getImageUrl: (item) => item.url || item });
     }
     this.updateStatus();
-    await this.runScan();
+    await this._loadResults();
   }
 
   /**
-   * 把两个操作按钮挂到宿主（image-viewer 扩展面板）的头部去：内嵌页碰不到宿主头部，
-   * 而"操作在顶栏"是其它插件的统一形态。只声明按钮，宿主用它的样式渲染；宿主不表态
-   * 时整组留在本页工具栏（`mountToolbar` 会自动取消隐藏）。
+   * 挂载共享的「同步状态 + 校验」控件（shell/freshness.js，见 plugin-guide §3.4）。
    *
-   * 两个都挂，`#cleaner-actions` 整组收起。内嵌态下本页这条工具栏整条不显示
-   * （image-cleaner.css 的 `html.is-embedded .cleaner-toolbar`）：留在本页的只有
-   * 按钮源节点（点了宿主头部的按钮，host-run 会点回这里）。单独打开本页时它照旧是
-   * 本插件自己的工具栏（作用域 + 根目录 + 两个按钮）。
+   * 挂在内嵌态也可见的标签行，而不是那条 `html.is-embedded` 下整条隐藏的工具栏：
+   * 本插件的主用法是嵌在图片相册的扩展面板里，工具栏那时看不到。
+   * 原先的「重新扫描」按钮与它那一整套进度/轮询/取消（runScan / _waitForScan /
+   * _showScanProgress）随之删除 —— 进度与取消由组件统一负责。
+   */
+  _mountFreshness() {
+    const host = document.getElementById('cleaner-freshness');
+    if (!host || typeof Freshness === 'undefined') return;
+    this.freshness = Freshness.mount({
+      plugin: 'image-cleaner',
+      container: host,
+      unit: '张',
+      onChange: () => this._loadResults(),
+    });
+  }
+
+  /**
+   * 把「设置」挂到宿主（image-viewer 扩展面板）的头部去：内嵌页碰不到宿主头部，
+   * 而"操作在顶栏"是其它插件的统一形态。宿主不表态时留在本页工具栏。
+   *
+   * 只声明「设置」：本插件的扫描入口是共享组件（`#cleaner-freshness`），它的 DOM
+   * 归组件自己渲染，没法当按钮挂到宿主头部 —— 挂上去就会出现"头部一个校验、
+   * 页内还有一个"的重复入口。
    */
   _mountHostToolbar() {
     if (!window.HostChannel || typeof HostChannel.mountToolbar !== 'function') return;
     HostChannel.mountToolbar(
       [
-        { id: 'btn-rescan', label: '重新扫描', icon: 'icon:refresh-cw', title: '忽略缓存，重新计算哈希' },
         { id: 'btn-settings', label: '设置', icon: 'icon:settings', title: '相似判定阈值等设置' },
       ],
       { container: 'host-toolbar', selector: '#cleaner-actions' }
@@ -69,7 +86,7 @@ class ImageCleaner {
   }
 
   _bind() {
-        document.getElementById('btn-rescan').addEventListener('click', () => this.runScan(true));
+        // 扫描入口是共享组件（`_mountFreshness`），这里只剩设置与列表操作
         // 设置弹窗交给宿主渲染（image-viewer 的 `_serveHostChannel`）：本页是嵌进它的
         // iframe，`.modal{position:fixed}` 只相对本 iframe，弹窗没有整页遮罩、也贴不到
         // 宿主窗口中央。schema/values/保存仍然全归本插件 —— 宿主只负责画。
@@ -111,112 +128,50 @@ class ImageCleaner {
     document.getElementById('tab-similar').classList.toggle('active', mode === 'similar');
     this.selected.clear();
     this.updateSelected();
-    this.runScan();
+    // 返回 Promise 便于调用方（与用例）await；点击处理器忽略返回值即可
+    return this._loadResults();
   }
 
   /**
-   * 扫描：扫描本身跑在后端的后台任务里（壳的共享基建 BackgroundTask，与 image-viewer 的
-   * 缩略图重建同一套骨架）—— 大图库上要算几万个指纹、相似模式还要两两比较，同步接口
-   * 既没有进度也不能取消。这里负责：读缓存 → 起任务 → 轮询进度（可取消）→ 取结果。
+   * 读结果缓存并渲染（不再自己起扫描任务）。
    *
-   * 结果仍是后端的扫描缓存（`get_cached_scan`），与"重进页面直接读缓存"同一条路径。
+   * 扫描/校验由共享组件负责：它调 `system_freshness_verify` → 后端在整趟结束时
+   * 重新分组写进缓存 → `onChange` 回调到这里重读。所以本方法只做两件事：
+   * 读缓存、按 `stale` 提示用户该去校验。
    */
-  async runScan(force = false) {
+  async _loadResults() {
     const box = document.getElementById('cleaner-results');
-    document.getElementById('cleaner-scanned').textContent = '';
     document.getElementById('cleaner-selected').textContent = '已选 0 张';
     this.selected.clear();
-    this._showScanProgress('正在扫描…', '首次扫描要为每张图片算哈希，图库越大越久');
     try {
-      let result = null;
-
-      // 非强制扫描时优先读取上次缓存，避免退出重进后全部重扫。
-      if (!force) {
-        try {
-          result = await Bridge.call('get_cached_scan', this.mode);
-        } catch (e) {
-          result = null;
-        }
-      }
-
-      if (!result || !result.cached) {
-        await Bridge.call('scan_start', this.mode);
-        const status = await this._waitForScan();
-        if (!status || status.cancelled) {
-          this._showScanNotice('已取消扫描', '点「重新扫描」可以重新开始');
-          return;
-        }
-        if (!status.success) {
-          throw new Error('扫描任务失败');
-        }
-        result = await Bridge.call('get_cached_scan', this.mode);
-      }
-
+      const result = await Bridge.call('get_cached_scan', this.mode);
       this.groups = (result && result.groups) || [];
       const scanned = (result && result.scanned) || 0;
       this.visibleCount = this.pageSize;
-      document.getElementById('cleaner-scanned').textContent = `已扫描 ${scanned} 张`;
+      const stale = !!(result && result.stale);
+      const scannedEl = document.getElementById('cleaner-scanned');
+      if (!result || !result.cached) {
+        scannedEl.textContent = '尚未校验';
+        // 没结果就是"还没校验过"，不要说成"未发现重复图片" —— 那会让人以为
+        // 图库是干净的。指向共享组件上的「校验」。
+        box.innerHTML = '<div class="empty-state">'
+          + '<div class="empty-state-icon"><svg class="obx-icon"><use href="#sparkles"></use></svg></div>'
+          + '<div class="empty-state-text">尚未校验</div>'
+          + '<div class="empty-state-hint">点「校验」开始比对（首次会为每张图算指纹，图库越大越久）</div>'
+          + '</div>';
+        this.groups = [];
+        return;
+      }
+      scannedEl.textContent = `已扫描 ${scanned} 张` + (stale ? ' · 磁盘有变化，建议重新校验' : '');
       this.render();
     } catch (e) {
       console.error(e);
       box.innerHTML = '<div class="empty-state empty-state--error">'
         + '<div class="empty-state-icon"><svg class="obx-icon"><use href="#triangle-alert"></use></svg></div>'
-        + '<div class="empty-state-text">扫描失败</div>'
-        + '<div class="empty-state-hint">请确认「图片相册」已加载、相册目录可访问，然后点「重新扫描」</div>'
+        + '<div class="empty-state-text">读取结果失败</div>'
+        + '<div class="empty-state-hint">请确认「图片相册」已加载、相册目录可访问，然后点「校验」</div>'
         + '</div>';
     }
-  }
-
-  /**
-   * 扫描进度骨架只建一次（轮询每 400ms 只改文本）：整块 innerHTML 重建会把「取消扫描」
-   * 按钮换成新节点，用户按下的那一下正好落在被换掉的节点上就点不中。
-   */
-  _showScanProgress(text, hint) {
-    const box = document.getElementById('cleaner-results');
-    if (!box) return;
-    let textEl = document.getElementById('cleaner-scan-text');
-    if (!textEl) {
-      box.innerHTML = '<div class="empty-state">'
-        + '<div class="empty-state-text" id="cleaner-scan-text"></div>'
-        + '<div class="empty-state-hint" id="cleaner-scan-hint"></div>'
-        + '<button class="btn btn-sm" id="cleaner-cancel">取消扫描</button>'
-        + '</div>';
-      const cancel = document.getElementById('cleaner-cancel');
-      // 取消只发请求：任务收尾后由轮询看到 cancelled，再换掉这块 UI
-      if (cancel) cancel.addEventListener('click', () => { Bridge.call('scan_cancel'); });
-      textEl = document.getElementById('cleaner-scan-text');
-    }
-    const hintEl = document.getElementById('cleaner-scan-hint');
-    if (textEl) textEl.textContent = text;
-    if (hintEl) hintEl.textContent = hint;
-  }
-
-  /** 扫描的结束态（已取消等）：整块换掉，不留下一个点不动的「取消扫描」。 */
-  _showScanNotice(text, hint) {
-    const box = document.getElementById('cleaner-results');
-    if (!box) return;
-    box.innerHTML = '<div class="empty-state">'
-      + `<div class="empty-state-text">${this._escapeHtml(text)}</div>`
-      + `<div class="empty-state-hint">${this._escapeHtml(hint)}</div>`
-      + '</div>';
-  }
-
-  /** 轮询扫描进度直到任务收尾；返回最后一次 `scan_status`。 */
-  async _waitForScan() {
-    for (;;) {
-      const status = await Bridge.call('scan_status');
-      if (!status || !status.running) return status;
-      this._renderScanStatus(status);
-      await new Promise(resolve => setTimeout(resolve, 400));
-    }
-  }
-
-  _renderScanStatus(status) {
-    const phase = status.mode === 'similar' ? '相似图片' : '重复图片';
-    const total = status.total || 0;
-    const counts = total ? `${status.processed}/${total}` : `${status.processed || 0}`;
-    const current = status.current ? ` · ${this._displayPath(status.current)}` : '';
-    this._showScanProgress(`正在扫描${phase} ${counts}${current}`, '可以随时取消，已算好的指纹会留下');
   }
 
   render() {
@@ -368,8 +323,11 @@ class ImageCleaner {
         Toast.success(`已删除 ${files.length} 张图片`);
       }
 
-      // 删除后不自动重新扫描，只从当前结果中移除已删除项；
-      // 需要更新结果时由用户点击“重新扫描”触发。
+      // 删除后不自动重新分组，只从当前结果中移除已删除项；同时让后端的被动同步
+      // 立刻看到这次删除（指纹与结果缓存随之作废，状态行会提示"建议重新校验"）。
+      if (this.freshness && typeof this.freshness.autoSync === 'function') {
+        this.freshness.autoSync('');
+      }
       const deleted = new Set(result.deleted || []);
       if (deleted.size) {
         this.groups = this.groups

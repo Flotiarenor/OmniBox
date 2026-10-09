@@ -198,6 +198,7 @@ SHELL_STYLE_FILES = (
     'shell/frontend/public/shell/base.css',
     'shell/frontend/public/shell/effects.css',
     'shell/frontend/public/shell/folder-picker.css',
+    'shell/frontend/public/shell/freshness.css',
     'shell/frontend/src/styles/shell.css',
 )
 # 壳脚本写入、插件只读的变量：它们不在任何 CSS 里声明，靠 JS setProperty 赋值。
@@ -576,6 +577,71 @@ def _check_settings_api(plugin_dir: Path, schema) -> Tuple[List[str], List[str]]
     return ([message], []) if severity == 'error' else ([], [message])
 
 
+# `def freshness_spec(` 的声明（后端参与统一刷新的唯一标志）
+FRESHNESS_SPEC_DEF_RE = re.compile(r'def\s+freshness_spec\s*\(')
+# 前端挂载统一「同步 / 校验」组件
+FRESHNESS_MOUNT_RE = re.compile(r'\bFreshness\s*\.\s*mount\s*\(')
+# mount({ plugin: '名字' }) —— 名字必须等于插件名
+FRESHNESS_PLUGIN_ARG_RE = re.compile(r"""Freshness\s*\.\s*mount\s*\(\s*\{[^}]*?\bplugin\s*:\s*['"]([^'"]+)['"]""", re.DOTALL)
+
+
+def _check_freshness_contract(plugin_dir: Path, name: str) -> List[str]:
+    """统一刷新基建（同步 / 校验）的接线检查（返回 errors）。
+
+    三个静默失败，读代码都看不出来：
+
+    1. 后端声明了 `freshness_spec()`，前端却没有 `Freshness.mount(...)`：壳侧的引擎、
+       指纹库、`system_freshness_*` 端点全都在，用户界面上却没有入口 —— 现象是
+       "这个插件没有刷新功能"，而不是报错；
+    2. 前端挂了组件但后端没声明 spec：按钮点下去只得到 `unsupported`，表现为
+       "点了没反应"；
+    3. `Freshness.mount({plugin: '...'})` 的名字与 manifest 不一致（复制粘贴留下的）：
+       壳按名字找不到实例，同样是"点了没反应"。这条最值得拦，因为它跨后端/前端/清单
+       三处，而三处各自看都对。
+    """
+    errors: List[str] = []
+    backend_declared = False
+    for path in _plugin_source_files(plugin_dir, 'backend', ('.py',)):
+        try:
+            text = path.read_text(encoding='utf-8')
+        except Exception:
+            continue
+        if FRESHNESS_SPEC_DEF_RE.search(text):
+            backend_declared = True
+            break
+
+    mount_names: List[str] = []
+    mount_called = False
+    _css_files, html_files, js_files = _frontend_files(plugin_dir)
+    for path in html_files + js_files:
+        try:
+            text = path.read_text(encoding='utf-8')
+        except Exception:
+            continue
+        if FRESHNESS_MOUNT_RE.search(text):
+            mount_called = True
+        mount_names.extend(FRESHNESS_PLUGIN_ARG_RE.findall(text))
+
+    if backend_declared and not mount_called:
+        errors.append(
+            'freshness_spec() 已声明但前端没有 Freshness.mount(...)：壳侧引擎与 '
+            'system_freshness_* 端点都在，界面上却没有「校验」入口'
+            '（见 docs/plugin-guide.md §3.4「统一刷新（同步 / 校验）」）'
+        )
+    if mount_called and not backend_declared:
+        errors.append(
+            '前端挂了 Freshness.mount(...) 但后端没有 freshness_spec()：'
+            '按钮点下去只会拿到 unsupported'
+        )
+    for got in mount_names:
+        if got != name:
+            errors.append(
+                f'Freshness.mount 的 plugin={got!r} 与插件名 {name!r} 不一致：'
+                f'壳按名字取引擎，不一致时表现为"点了没反应"'
+            )
+    return errors
+
+
 def _load_backend_class(plugin_dir: Path, entry: str, class_name: str, lib_dirs=None):
     module_path = (plugin_dir / entry).resolve()
     module_name = f"omnibox_spec_{re.sub(r'[^0-9A-Za-z_]', '_', plugin_dir.name)}"
@@ -844,6 +910,10 @@ def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -
 
         # 后端字形与图标声明：扩展/位置入口的 icon 也必须走壳图标集
         errors.extend(f'[{folder_name}] {error}' for error in _check_backend_glyphs(plugin_dir))
+
+        # 统一刷新基建的接线：spec 与 Freshness.mount(...) 必须同时存在且插件名一致
+        errors.extend(f'[{folder_name}] {error}'
+                      for error in _check_freshness_contract(plugin_dir, folder_name))
 
 
         backend = data.get('backend')

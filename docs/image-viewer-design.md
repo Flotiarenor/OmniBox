@@ -1,6 +1,6 @@
 # 图片相册插件（image-viewer）设计文档
 
-> 版本：v2.4.3（当前实现）
+> 版本：v2.6.0（当前实现）
 > 形态：独立宿主插件；`image-cleaner`（相册清理）为其 Companion 插件
 > 适用范围：后端 `plugins/image-viewer/backend/`、前端 `plugins/image-viewer/frontend/`
 
@@ -32,6 +32,7 @@ plugins/image-viewer/
 │   ├── albums.py               # AlbumMixin：相册树、封面挑选与相册缓存
 │   ├── file_ops.py             # FileOpsMixin：目录 / 文件增删改与刷新
 │   ├── rebuild.py              # RebuildMixin：缩略图全量重建（BackgroundTask）
+│   ├── freshness.py            # FreshnessMixin：接入壳的统一刷新基建（同步 / 校验）
 │   ├── settings.py             # SettingsMixin：按目录的设置读写
 │   └── filesystem.py           # 底层纯函数工具：路径安全、排序、尺寸元数据（无实例状态）
 └── frontend/
@@ -42,7 +43,7 @@ plugins/image-viewer/
         ├── app-albums.js       # ImageViewer 分片：相册树浏览、渲染与排序
         ├── app-nav.js          # ImageViewer 分片：返回导航栈、相册右键菜单、统计与新建相册
         ├── app-grid.js         # ImageViewer 分片：图片网格、Justified 布局、幻灯与多选操作
-        ├── app-refresh.js      # ImageViewer 分片：刷新与缩略图重建
+        ├── app-refresh.js      # ImageViewer 分片：统一刷新（同步 / 校验）挂载与缩略图预生成
         ├── app-settings.js     # ImageViewer 分片：设置读写
         ├── app-utils.js        # ImageViewer 分片：格式化与转义工具（_escapeHtml / _escapeAttr）
         └── justified-layout.js # Justified 布局计算（纯函数）
@@ -89,15 +90,31 @@ plugins/image-viewer/
 
 ### 2.3 浏览数据流
 
-```
-打开相册页 ──► list_albums ──► _list_album_dirs(全部根目录的目录枚举)
-                             └─► _build_albums(增量扫描变化目录 + 自底向上聚合)
-                             │  └─► albums_index.json(version 3) 持久化 + 30s TTL 内存缓存
+浏览按**分级加载**组织：每一级只做"下一帧要用到的那点 I/O"，把"要读整棵子树"的
+工作推到真正需要它的那一刻。11 万张 / 9167 个目录的机械盘图库上，这条分级把
+"进根目录"从 6.0s 压到 0.21s（数字见 §9）。
 
-进入文件夹 ──► list_folder_items ──► 直接图片 scandir + 尺寸并行读取
-                                   ├─► _scan_album_items(子目录级并行: 封面 p0 + 计数)
-                                   └─► items 排序(按生效设置) + all_images 连续序列
-                                   │    └─► _list_cache(目录mtime + 排序键) 内存缓存
+```
+打开相册页 ──► list_albums ──► _list_album_dirs(全树目录枚举)
+                             │   └─► _DIRS_TTL(600s) 内存缓存；加载后由
+                             │       prewarm_album_dirs() 在后台线程先走一趟
+                             └─► _build_albums(增量扫描变化目录 + 自底向上聚合)
+                             │   └─► albums_index.json 持久化 + 30s TTL 内存缓存
+                             │   └─► 聚合结果回写 _album_cache['dirs'] 的
+                             │       total_count / total_cover / total_mtime
+
+进入文件夹 ──► list_folder_items（L1：只读当前目录一层）
+             ├─► 直接图片 scandir + 尺寸读取
+             ├─► _scan_album_items(子目录级并行: 封面 p0 + 直接计数)
+             └─► 容器的递归计数/封面：索引里有就查表，没有就标 pending 推迟
+             │    └─► _list_cache(目录mtime + 排序键) 内存缓存
+
+瓦片进视口 ──► load_album_tiles（L2：按批补齐 pending 瓦片）
+             └─► _children_total(整棵子树聚合；结果回写缓存，第二次列表即命中)
+
+点开瓦片  ──► lightbox.show(现有 all_images) 立刻显示
+             └─► list_album_images（L3：异步取完整连续序列）
+                 └─► lightbox.setItems(新序列, 当前这张) 就地换掉，不闪不跳
 
 渲染瓦片 ──► <img src="/thumbs/..."> ──► get_thumb_data ──► SQLite 命中 / Pillow 生成回写
 ```
@@ -165,23 +182,80 @@ media-player / manga-library / novel-reader 也要同一套「多位置文件夹
 - **按需生成**：`/thumbs` 请求未命中才生成回写（`thumb_cache.get()`）；全量重建走 `generate_bulk()`（并行批量，单连接写入）
 - **收缩**：`clear()` 先 `wal_checkpoint(TRUNCATE)` 再 `VACUUM`，进程级锁保护（VACUUM 需独占）
 
-### 3.3 相册索引 `albums_index.json`
+### 3.3 相册索引 `albums_index.json` + 目录快照 `dirs_index.json`
+
+**两份文件职责不同，不能合并**：相册索引按目录名索引（`{rel_path: 条目}`），它回答得了
+"某目录有多少图、封面是哪张"，**回答不了"有没有新增目录"** —— 那个答案只有一次全树
+枚举（`os.walk`，机械盘实测 6-23s）能给。所以目录快照单独存一份：
+
+| 文件 | 内容 | 谁读它 |
+|------|------|--------|
+| `albums_index.json` | `{version, dirs: {rel_path: {mtime, direct_count, direct_cover, direct_mtime, pixiv, has_children, children, total_count, total_cover, total_mtime, virtual}}}` | `list_albums` 复用目录级 mtime，只重扫变化目录 |
+| `dirs_index.json` | `{version, roots, dirs: {虚拟路径: mtime}}` | `_dirs_snapshot()`；`list_albums` 用它**跳过走盘** |
 
 - 版本号 `_ALBUM_CACHE_VERSION = 4`（封面挑选规则变更必须 +1，否则目录 mtime 未变时
   增量扫描会继续复用旧封面）：
   - v4：Pixiv 树封面 = **作品号最大**的那张（画师最近的作品），同作品内取 p0
   - v3：封面 = 文件名自然序第一张（p0）
   - v2：封面 = 最新 mtime 的那张
-- 内容：`{version, dirs: {rel_path: {mtime, direct_count, direct_cover, direct_mtime, pixiv, has_children, ...}}}`
 - **增量**：`list_albums` 全树枚举目录 mtime，仅扫描变化目录（0.5s 容差），自底向上聚合 `image_count / cover / newest`；
   缓存命中还需 `pixiv` 标记一致：封面规则由 Pixiv 排序决定，切换排序后必须重扫该目录
+- **与列表路径共用**：`dirs` 同时是 `_scan_dir_cached`（目录直扫结果，按 mtime 校验）
+  与 `_children_total`（子树聚合结果，按 `total_mtime` 校验）的落点。自底向上聚合
+  会把 `total_count / total_cover / total_mtime` 写回每个条目，于是"列一次目录要算
+  容器递归计数"变成一次查表；反过来列表路径按需算出的聚合也被索引重建复用。
+  两个函数各有一条路径会写这三个字段，**改动其中一处必须同时改另一处**
 - **TTL**：`list_albums` 结果 30 秒内存缓存（`_ALBUMS_TTL`），`refresh()` / `rebuild_all` / 相册配置 / 文件夹设置变更时失效（`_invalidate_albums_cache()`）
+- **目录快照复用条件**（`_dirs_snapshot()`，三条缺一不可）：根集合一致（含路径本身，
+  否则换库会被当成"没变"）、各根 mtime 未变（根内增删顶层条目会改它）、距上次走盘
+  不超过 `_DIRS_TTL = 600s`
+- **失效**：`_invalidate_albums_cache()` 清内存快照**并删除 `dirs_index.json`**。
+  调用点是"已知有变化"（被动同步、校验、删除/移动、改根目录），此后 `list_albums`
+  当场走一趟盘（这是唯一会等走盘的路径）。两条写入路径（`_list_album_dirs` 与
+  `_prewarm_worker`）都做"缓存目录已不在就别写"的判定，否则会把被删掉的 `.cache`
+  重新创建出来（测试清理时会报 `WinError 145`）
 
 ### 3.4 内存列表缓存 `_list_cache`
 
 - 键：`('items', rel_path, sort_by, sort_order)` 或 `(rel_path, sort_by, sort_order)`；值：`(目录mtime, items, [all_images])`
 - 目录 mtime 未变直接命中；上限 `_MAX_LIST_CACHE = 200` 条，超出淘汰最旧一半
 - 已知限制：缓存键不含子文件夹设置，子文件夹排序设置变更后 `all_images` 序列可能陈旧（直到父目录 mtime 变化）
+
+### 3.5 指纹库 `freshness.db`（共享基建 `FreshnessEngine`）
+
+本插件的缓存失效判据由 Shell 的统一刷新基建托管（`shell/backend/freshness.py`，
+契约见 `docs/plugin-guide.md` §3.4「统一刷新（同步 / 校验）」），接入代码在
+`backend/freshness.py`（`FreshnessMixin`）：
+
+- **落点**：`<数据根>/.cache/freshness.db`（覆写 `get_cache_dir()` 指向本插件既有的
+  `.cache`，缩略图库 / 尺寸元数据 / 相册索引都平铺在那里，不另开目录）；
+- **内容**：目录指纹（目录 mtime + 纳入索引的名字个数 + 大小和 + 最新 mtime）
+  与条目指纹（`前缀/根内相对路径` → mtime + size）。**只存指纹，不存业务数据**；
+- **同步**（被动，进视图/切目录触发）：目录指纹没变则整目录跳过；变了才逐条比对，
+  并调 `derive` **只作废受影响的相册节点 + 各级祖先**（合成根聚合整棵树，永远作废），
+  其余节点继续按 mtime 复用。整表作废的代价实测：6000 张 / 1400 目录上重建 2.74s，
+  精细作废后 1.40s —— 差的 1.34s 全在把没变的 1399 个目录重扫一遍（`_list_album_dirs`
+  的全树枚举 1.40s 是两者都要付的底价）。列表缓存（≤200 条）仍整表清空：它便宜，
+  且键在 `list_images` 与 `list_folder_items` 里形状不同，清子目录会留下父目录的
+  陈旧连续浏览序列；
+- **校验**（手动，工具栏唯一按钮）：全量逐项 stat + 清掉消失条目的缩略图行与尺寸
+  元数据 + 按有效键集合 `ThumbCache.prune` 对账孤儿行（旧实现缺的正是最后一环：
+  在资源管理器里删掉的图片会永久留在 `thumbs.db`）；**收尾时在任务里把相册索引重建
+  完**（`on_pass_end`，并 `engine.progress('重建相册索引')`）—— 索引重建是惰性的，
+  留在任务外就是"进度条满了、界面还要卡 2.7s"，完成态必须意味着"现在读就是最新的"；
+- `stat_entries: False`：整树被动同步不逐条 stat（同一实测：整树同步 0.29s → 0.11s，
+  真实磁盘冷缓存下差距更大）。代价是"原地改写文件"同步看不见 —— 由**校验**兜底
+  （audit 逐项比对指纹），插件读图时也按 mtime 校验尺寸元数据；
+- `content_version = _ALBUM_CACHE_VERSION`：封面规则变更时由基建整体失效，
+  不再依赖"记得手动 +1"；
+- **侧栏统计**（`app-nav.js` 的 `_updateStats`）：张数取**合成根**（`albums.py` 里
+  `path == ''` 的节点）的递归 `image_count`。原先把可见相册的 `direct_count` 相加，
+  只算到"直接摊在顶层目录里的图"；改成相加 `image_count` 又会在嵌套目录上重复计入
+  （父的 `image_count` 已含子）。实测同一棵树（根 1 + A 1 + A/sub 2 + B 1，真值 5）：
+  direct 相加 = 4、image_count 相加 = 6、合成根 = 5。相册数仍按可见卡片数（合成根
+  有直接图片时会渲染成「根目录 · 未分类」卡片，计入其中）；
+- 兼容入口 `refresh()`（`file_ops.py`）已转发到基建的「同步」，老前端与
+  "保存设置后刷新"继续可用。
 
 ## 4. 排序体系
 
@@ -282,7 +356,14 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
 关键交互：
 
 - **Justified 瀑布流**：`JustifiedLayout.compute()` 纯函数计算瓦片位置（行高 `row_height` 设置、gap 5px），`seqIndex` 映射瓦片 → 连续序列位置（分页对齐 `all_offset`）
-- **灯箱连续浏览**：`all_images` 为按瀑布流顺序展开的完整序列（子文件夹内部按**自己生效的设置**排序），点击任意瓦片从对应位置向右翻看；搜索过滤时用 `filteredSeqIndexes` 保持定位
+- **瓦片二级加载**：`item.pending` 的瓦片由 `IntersectionObserver`（root 为 `#iv-content`，
+  提前量 250px）观察，进入视口后攒批（`_TILE_BATCH_SIZE = 16`、合批 80ms）调
+  `load_album_tiles`；补到封面与计数后**只改这张卡**，不重算布局（重排会让滚动位置跳动）
+- **灯箱连续浏览**：`all_images` 为按瀑布流顺序展开的序列（子文件夹内部按**自己生效的设置**排序），
+  点击任意瓦片从对应位置向右翻看；搜索过滤时用 `filteredSeqIndexes` 保持定位。
+  序列里不含容器子目录的图片（后端不再为首屏展开子树），`sequence_pending` 为真时
+  点开瓦片会异步调 `list_album_images` 取全量，并用 `lightbox.setItems(序列, 当前这张)`
+  就地替换 —— 图片不闪、下标不乱跳
 - **连续序列截断**：后端 `_MAX_ALL_IMAGES = 5000` 截断并返回 `all_truncated`，前端 Toast 提示一次
 - **多选**：`selectedImages` Set + 右键菜单（查看原图/多选/移动/删除）+ 批量操作（`delete_files` / `move_files` / `regenerate_thumbs`）
 - **全量重建**：右下角非阻塞进度卡（处理数/总数/当前文件/速度/剩余时间/失败数），`rebuild_cancel` 可取消，取消后已生成保留；`rebuild_folder` 单相册增量补齐
@@ -297,9 +378,11 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
 | API | 参数 | 返回 | 说明 |
 |-----|------|------|------|
 | `list_images` | `rel_path='', page=1, per_page=40, sort_by='mtime', sort_order='desc'` | `{images, page, total, has_next, has_prev, settings}` | 单目录纯图片列表（尺寸缓存 + 列表缓存；`per_page` 后端封顶 200） |
-| `list_folder_items` | `rel_path='', page=1, per_page=40, sort_by='name', sort_order='asc'` | `{items, all_images, all_truncated, all_offset, page, total, image_total, has_next, has_prev, settings}` | 混合瀑布流列表（见 §2.3）；`items` 为「子相册卡片 + 单图」混合；`all_images` 连续浏览序列（截断上限 5000）；`all_offset` 分页对齐偏移 |
+| `list_folder_items` | `rel_path='', page=1, per_page=40, sort_by='name', sort_order='asc'` | `{items, all_images, all_capped, all_truncated, all_offset, page, total, image_total, pending_count, sequence_pending, has_next, has_prev, settings}` | 混合瀑布流列表（**分级加载第一级**，见 §2.3）；`items` 为「子相册卡片 + 单图」混合。容器子目录（无直接图片、只有子目录）在索引未命中时以 `pending: true` / `total_count: null` / 空封面占位，由前端按视口调 `load_album_tiles` 补齐。`all_images` 只含**已经扫过的**图片，容器不展开，因此可能不完整：`sequence_pending` 标记这一点，`all_capped` 单独标记是否真撞上 5000 条上限（前端只对后者提示"已截断"） |
+| `load_album_tiles` | `paths: list[str]` | `{tiles: {path: {path, cover, total_count, image_count, width, height, use_time_name, mtime}}}` | **分级加载第二级**：按批补齐容器瓦片的封面与递归图片数；结果回写相册索引缓存，再次列表即命中。非法路径 / 不存在目录不进结果 |
+| `list_album_images` | `rel_path=''` | `{images: [{url, width, height}], offset: {子目录路径: 起点}, capped: bool}` | **分级加载第三级**：该目录（含直接子目录）的连续浏览序列，供灯箱左右翻看；容器只锚一张代表封面当入口、不展开子树。`offset` 让"点到某张瓦片"能开在该子目录的第一张 |
 | `list_dir` | `rel_path=''` | `[{name, path, mtime}]` | 子目录列表（移动弹窗目录树用，仅目录） |
-| `list_albums` | 无 | `{albums, config, changed, cached?}` | 相册全量索引（增量扫描 + 30s TTL；`cached` 标记命中缓存）；`config` 为 `{collapsed, promoted, expanded, visible_empty_dirs}`；每条相册含 `readable`（递归可读图片数）与 `root_scope`（额外根命名空间节点 / 第一根合成根） |
+| `list_albums` | 无 | `{albums, config, changed, cached?}` | 相册全量索引（增量扫描 + 30s TTL；`cached` 标记命中缓存）；`config` 为 `{collapsed, promoted, expanded, visible_empty_dirs}`；每条相册含 `readable`（递归可读图片数）与 `root_scope`（额外根命名空间节点 / 第一根合成根）。全树目录枚举另有 600s 缓存 + 加载后台预热（见 §9） |
 
 ### 6.2 相册管理
 
@@ -392,22 +475,48 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
 
 ## 9. 性能设计要点
 
+定位：**慢不在"渲染了多少张图"，而在"列一次目录读了多少个目录"**。以下数字来自
+11.2 万张 / 9,167 个目录 / 4 层的机械盘图库（`D:\…` 形式的本地图库），用
+`tools/bench_gallery.py` 冷进程测量，改动前（HEAD）→ 改动后：
+
+| 场景 | 改动前 | 改动后 | 靠什么 |
+|------|--------|--------|--------|
+| **应用启动 → 进"全部相册"** | 11.8s | **0.117s** | 目录快照落盘复用（不走盘） |
+| TTL 过期后再进"全部相册" | 11.985s | 0.087s | 同上 |
+| 进根目录（15 个子目录，全是容器） | 5.772s | 0.168s | L1 不再递归聚合容器 |
+| 进 `其他分类`（17 个子目录，其中一个含 40978 张） | 3.221s | 0.016s | 同上 + 序列推迟到 L3 |
+| 进 `pixiv`（436 个作者目录） | 0.688s | 0.527s | 同上（容器计数走索引查询） |
+| 进 `本子`（39 个子目录 + 2 张单图） | 0.102s | 0.052s | 同上 |
+| 打开灯箱取完整序列 | 随列表一并付 | 0.30s | L3 按需 |
+| 唯一仍等走盘的路径：索引刚被作废那一帧 | 6.0s | 6.0s | 数据确实变了，这趟必须走 |
+
 | 机制 | 参数 | 说明 |
 |------|------|------|
 | 尺寸读取并行 | `_SCAN_WORKERS = 8`（ThreadPoolExecutor） | 首次扫描大文件夹 Pillow 读尺寸并行化（4.2 万文件 4.7s → 1.75s） |
 | 子目录扫描并行 | 同上（`_scan_album_items` 目录级） | 每个子目录独立线程 scandir + 尺寸 |
-| 相册列表 TTL | `_ALBUMS_TTL = 30s` | 避免每次进相册页全树 walk（10.7 万文件 3.5s → 0.05s） |
+| 目录扫描结果复用 | `_scan_dir_cached`（mtime + pixiv 标志校验） | 「相册索引重建」与「列一次目录」共用同一份条目，同一目录不再各扫一遍 |
+| 子树聚合复用 | `total_count` / `total_cover` / `total_mtime` | `_children_total` 与 `_build_albums` 互为缓存：任一条路径算过，另一条直接查表 |
+| 目录快照复用 | `dirs_index.json` + `_DIRS_TTL = 600s` | 全树目录枚举（9167 个目录实测 6-23s）**落盘**复用：启动读回来即可，"打开相册页"不再等走盘（实测 0.08-0.15s）。只有索引被作废那一帧才当场走一趟 |
+| 相册列表 TTL | `_ALBUMS_TTL = 30s` | 避免每次进相册页全树 walk |
+| 瓦片二级加载 | `_TILE_BATCH_SIZE = 16` / `_TILE_BATCH_DELAY = 80ms`（前端） | 只对进入视口的 pending 瓦片按批取，合批而不是一张一个请求 |
 | 列表缓存上限 | `_MAX_LIST_CACHE = 200` | FIFO 淘汰最旧一半，防长时间使用内存膨胀 |
-| 连续序列截断 | `_MAX_ALL_IMAGES = 5000` | 防超大相册全量下发 |
+| 连续序列截断 | `_MAX_ALL_IMAGES = 5000` | 防超大相册全量下发（`all_capped` 单独标记是否真撞上限） |
 | per_page 封顶 | 200 | 后端强制（前端 10–200） |
 | 元数据落盘 | 脏标记 + 原子写 | 仅新增条目时写盘 |
 | 缩略图批量 | `workers = min(8, cpu_count)`（ThumbCache 默认） | 全量重建并行生成（`generate_bulk`）；取消时已排队任务取消、运行中任务跑完（Pillow 无取消点） |
 
+> 回归基准：`venv/Scripts/python.exe tools/bench_gallery.py`（默认遍历根目录下全部
+> 直接子目录；`--repeat 3` 取中位；`--json` 存基线）。改这块逻辑前后各跑一次即可对比。
+
 ## 10. 已知限制与注意事项
 
-- **列表瀑布流仍只处理一层**：`_aggregate_children` 会递归统计出正确的图片总数
+- **列表瀑布流仍只处理一层**：`_children_total` 会递归统计出正确的图片总数
   （空目录判定与命名空间卡片依赖它），但 `list_folder_items` 的瓦片仍只展开一层；
   三层以上嵌套的卡片进入后内容与计数口径不同（`list_albums` 是全深度聚合）
+- **首次打开灯箱时连续序列可能不全**：`list_folder_items` 不再展开容器子目录的图片
+  （展开要读整棵子树），`all_images` 只含已扫过的图片；点开瓦片后由
+  `list_album_images` 异步补全并交给 `lightbox.setItems()` 换掉。补充期间左右翻
+  只到现有序列的边界，补上后即可翻到更多张
 - **命名空间前缀 `__` 是保留语义**：第一根里以 `__` 开头的目录名会被当成命名空间
   解析（token 不在列表里则视为未知路径，拒绝访问），不建议这样命名真实目录
 - **列表缓存陈旧**：子文件夹排序设置变更后 `all_images` 序列可能沿用旧顺序（见 §3.4）
@@ -426,7 +535,11 @@ Pixiv 排序下的作者卡片网格支持二次排序（更新时间 / 文件�
   `python -m unittest tests.test_image_viewer_album_visibility_js`（前端可见性、图片文件夹列表与扩展面板头部无头用例）
 - 几何取证：`python tests/debug_extension_header_ui.py`（无头 Chrome 读扩展头与主工具栏的计算高度/字号，17 项；本机无 Chrome 时跳过）
 - 状态调试：`python tests/debug_status_pages.py`（一键起 `--status-debug` 服务器 + 11 个 HTTP 场景触发表 + 壳内 `/status` 调试面板；含坏插件演示 iframe 404 → 壳内错误卡片链路）
-- 常用验证：`refresh` API 强制重扫、`rebuild_status` 轮询查看重建进度、`G:\图库` 等大目录做性能基准
+- 常用验证：`refresh` API 强制重扫、`rebuild_status` 轮询查看重建进度
+- **性能基准**：`venv/Scripts/python.exe tools/bench_gallery.py`（真实图库上量
+  `list_albums` / `list_folder_items` / `load_album_tiles` / `list_album_images`
+  各阶段冷进程耗时与响应体大小；默认遍历根目录下全部直接子目录，`--repeat 3` 取中位，
+  `--json` 存基线）。改动 §9 涉及的任何路径前后各跑一次，数字放进提交信息
 
 ## 12. UI 现状取证（前端与壳契约对照）
 
@@ -503,7 +616,9 @@ body
       ├─ .view-toolbar.iv-toolbar      48px（壳）; gap:12px  (css:53)
       │  ├─ .toolbar-group.iv-view-heading   ←返回 / 标题(15px/700) / 副标题(11px)
       │  └─ .toolbar-group[style=margin-left:auto]   行内样式  (index.html:41)
-      │     └─ .iv-search + #iv-selection-count + 7 个 .btn（幻灯片/多选/删除/移动/更新缩略图/刷新/全量重建/设置）
+      │     └─ .iv-search + #iv-selection-count + 6 个 .btn（幻灯片/多选/删除/移动/更新缩略图/设置）
+      │        + #iv-freshness（统一「同步状态 + 校验」控件，由 shell/freshness.js 填充；
+      │          原先的「刷新」「全量重建」两个按钮已下线，见 §3.5）
       ├─ .view-content.iv-content.obx-scroll#iv-content   padding 16px; background:transparent  (css:70)
       │  ├─ #iv-albums             相册网格容器（.iv-grid 由 JS 包一层，css:72-76）
       │  └─ #image-grid.iv-image-grid   position:relative; 子元素全 absolute  (css:119)
@@ -716,7 +831,7 @@ grep（限 `image-viewer.css`）：
 | 搜索无果 | `.iv-empty`（`app-grid.js:200`） | `icon:search-x` + 「没有匹配的图片」；提示行「换个关键词试试」 |
 | 加载中 | 壳 `.loading`（`app-grid.js:18`） | `图片加载中…` |
 | 重建中 | `.rebuild-progress-*` | `正在扫描并生成缩略图，请稍候…` / `正在处理：<文件名>`（`app-refresh.js:125`） |
-| 侧栏统计加载 | `.iv-sidebar-footer` | `正在读取…`（`index.html:29`），完成后 `N 个相册 · M 张图片`（`app-nav.js:147`） |
+| 侧栏统计加载 | `.iv-sidebar-footer` | `正在读取…`（`index.html:29`），完成后 `N 个相册 · M 张图片`（`app-nav.js:147`；M 取合成根的递归总数，见 §3.4） |
 | 序列截断警告 | 壳 Toast | `相册较大，连续浏览序列已截断（前 5000 张）`（`app-grid.js:38`） |
 
 ---

@@ -8,6 +8,8 @@ import hashlib
 import json
 import logging
 import os
+import threading
+import time
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional
 
@@ -36,13 +38,22 @@ class ImageCleanerPlugin(PluginBase):
          "help": "汉明距离越小越严格，0 表示只有完全一致的 dHash 才判为相似"},
     ]
 
+    #: dHash 缓存条目的版本标记（`_image_dhash` 的 `'v'`）。改哈希算法/归一化规则时 +1：
+    #: 旧条目一律重算，同时作为统一刷新的 `content_version` 整体作废指纹库。
+    DHASH_VERSION: ClassVar[int] = 2
+
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
         self._host = None
         self._dhash_cache = {}
         self._dhash_cache_file = None
-        # 后台扫描任务（共享基建 BackgroundTask）；同时只允许一个在跑
+        # 结果缓存里哪些 mode 已经过期（内存标记，落盘由 on_pass_end 统一做）
+        self._results_stale: set = set()
+        # 后台扫描任务（共享基建 BackgroundTask）；同时只允许一个在跑。
+        # `_scan_lock` 保护"查-建-赋值"：Flask 是 threaded=True，原先这段没有锁，
+        # 两个并发请求可以各起一个任务互相覆盖。
         self._scan_task: Optional[BackgroundTask] = None
+        self._scan_lock = threading.Lock()
 
     # ---------- 宿主访问与文件路由复用 ----------
 
@@ -156,6 +167,147 @@ class ImageCleanerPlugin(PluginBase):
             'scope': 'all',
         }]
 
+    # ---------- 统一刷新基建（同步 / 校验） ----------
+    #
+    # 本插件的派生数据有两层：**逐图指纹**（dHash）与**分组结果**（按 mode 缓存）。
+    # 旧实现里两者都只在前端点「重新扫描」时才动，而且后台路径从不落盘 dHash ——
+    # 重启后全部重算，扫描缓存也没有任何失效判据（key 只有 mode），新加的图片
+    # 看不到。接入基建后：
+    #
+    # - 被动同步只对"新增/指纹变化"的文件算 dHash（目录级短路，稳态零成本）；
+    # - 手动「校验」= 全量比对 + 幽灵清理（删掉磁盘上已消失文件的指纹与孤儿条目），
+    #   整趟结束时用刚维护好的指纹重新分组，直接把两个模式的结果写进缓存；
+    # - `get_cached_scan` 回报 `stale`，界面据此提示而不是拿旧分组当真。
+
+    def freshness_spec(self) -> Dict:
+        return {
+            'roots': lambda: [root for root, _prefix in self._scan_roots()],
+            # 前缀必须跟着宿主现算：命名空间 token 由 image-viewer 生成，
+            # 写死会与 `_all_album_files()` 的 rel 对不上（指纹库键就全错位）
+            'prefixes': lambda: [prefix for _root, prefix in self._scan_roots()],
+            'include': tuple(sorted(ALLOWED_EXTENSIONS)),
+            'derive': self._freshness_derive,
+            'prune': self._freshness_prune,
+            'on_verified': self._freshness_audit,
+            'on_pass_end': self._freshness_pass_end,
+            'rebuild': self._freshness_rebuild,
+            # 指纹算法版本 = dHash 缓存里的 `v` 标记（见 `_image_dhash`）：
+            # 规则变了由基建整体作废，不再指望"记得清缓存"
+            'content_version': self.DHASH_VERSION,
+            'unit': '张',
+            'min_sync_interval': 5.0,
+        }
+
+    def _freshness_derive(self, items) -> Dict:
+        """条目新增/指纹变化：只给这些文件算 dHash（这是全流程最贵的一步）。"""
+        errors = []
+        for item in items:
+            abs_path = str(item.get('path') or '')
+            if not abs_path:
+                continue
+            try:
+                self._image_dhash(abs_path, float(item.get('mtime') or 0))
+            except Exception as e:          # 单张失败不影响整趟
+                errors.append(f'{item.get("key")}: {e}')
+        self._mark_results_stale()
+        return {'count': len(items), 'errors': errors[:20]}
+
+    def _freshness_prune(self, keys) -> int:
+        """条目消失：删掉它的指纹，并作废分组结果。"""
+        removed = 0
+        for rel in keys:
+            abs_path = self._abs_for_rel(str(rel))
+            if not abs_path:
+                continue
+            if self._dhash_cache.pop(self._dhash_cache_key(abs_path), None) is not None:
+                removed += 1
+        if keys:
+            self._mark_results_stale()
+        return removed
+
+    def _freshness_audit(self, keys) -> Dict:
+        """全量校验后的对账：指纹缓存里只保留磁盘上仍然存在的图片。
+
+        旧实现的 `_dhash_cache` 没有上限也没有清理：在资源管理器里删掉的图片，
+        指纹会永久留着（`dhash.json` 只增不减）。
+        """
+        valid = set()
+        for rel in keys:
+            abs_path = self._abs_for_rel(str(rel))
+            if abs_path:
+                valid.add(self._dhash_cache_key(abs_path))
+        dropped = 0
+        for key in [k for k in self._dhash_cache if k not in valid]:
+            self._dhash_cache.pop(key, None)
+            dropped += 1
+        self._mark_results_stale()
+        return {'dropped_hashes': dropped, 'valid_entries': len(valid)}
+
+    def _freshness_pass_end(self, report, verified: bool) -> Dict:
+        """整趟结束：落盘指纹；校验这一趟顺便把两个模式的结果重新分组写盘。"""
+        self._save_dhash_cache()
+        if verified:
+            return self._regroup_all()
+        self._persist_stale_flags()
+        return {'hashes': len(self._dhash_cache), 'verified': False}
+
+    def _freshness_rebuild(self, kind: str = 'derived') -> Dict:
+        """逃生门：丢弃逐图指纹与分组结果（不动相册本身）。"""
+        self._dhash_cache = {}
+        try:
+            path = self._dhash_cache_path()
+            if path.exists():
+                path.unlink()
+        except OSError as e:
+            log.warning(f'[{self.name}] 删除 dhash 缓存失败: {e}')
+        self._save_scan_cache({})
+        self._results_stale.clear()
+        return {'kind': kind, 'cleared': True}
+
+    # ---------- 指纹与结果的内部工具 ----------
+
+    @staticmethod
+    def _dhash_cache_key(abs_path: str) -> str:
+        return 'dhash:' + hashlib.md5(abs_path.encode()).hexdigest()
+
+    def _abs_for_rel(self, rel: str) -> Optional[str]:
+        """虚拟相对路径 → 绝对路径（指纹缓存的键是绝对路径的摘要）。
+
+        命名空间前缀先匹配（额外根），再回落到第一根 —— 顺序反了会把
+        `__额外图库/a.jpg` 当成主根下的同名目录。
+        """
+        rel = str(rel or '').strip('/')
+        if not rel:
+            return None
+        roots = self._scan_roots()
+        for root, prefix in roots:
+            if prefix and (rel == prefix or rel.startswith(prefix + '/')):
+                inner = rel[len(prefix):].lstrip('/')
+                return str(root / inner) if inner else None
+        for root, _prefix in roots:
+            return str(root / rel)
+        return None
+
+    def _regroup_all(self) -> Dict:
+        """用当前指纹缓存重新分组，并写入两个 mode 的结果缓存。"""
+        files = self._all_album_files()
+        out: Dict = {'scanned': len(files)}
+        threshold = self._resolve_threshold(None)
+        for mode in ('dupe', 'similar'):
+            try:
+                if mode == 'dupe':
+                    groups = self._duplicate_groups(files)
+                else:
+                    hashes, valid = self._dhash_all(files)
+                    groups = self._similar_groups(hashes, valid, threshold)
+            except Exception as e:
+                log.error(f'[{self.name}] 重新分组失败（{mode}）: {e}')
+                out[mode] = {'error': str(e)}
+                continue
+            self._save_scan_result(mode, groups, len(files))
+            out[mode] = len(groups)
+        return out
+
     # ---------- 扫描结果缓存 ----------
 
     def _scan_cache_path(self) -> Path:
@@ -187,22 +339,53 @@ class ImageCleanerPlugin(PluginBase):
         cache[mode] = {
             'groups': groups,
             'scanned': scanned,
-            'saved_at': __import__('time').time(),
+            'saved_at': time.time(),
+            'stale': False,
         }
         self._save_scan_cache(cache)
+        self._results_stale.discard(mode)
+
+    def _mark_results_stale(self, *modes: str) -> None:
+        """结果缓存作废（磁盘变了、阈值变了、条目集合变了）。
+
+        只在内存里标记，落盘由 `on_pass_end` 钩子统一做 —— 索引/结果都是单文件，
+        不能每处理一个目录就整体重写一遍。
+        """
+        self._results_stale.update(modes or ('dupe', 'similar'))
+
+    def _persist_stale_flags(self) -> None:
+        if not self._results_stale:
+            return
+        cache = self._load_scan_cache()
+        changed = False
+        for mode in self._results_stale:
+            item = cache.get(mode)
+            if isinstance(item, dict) and not item.get('stale'):
+                item['stale'] = True
+                cache[mode] = item
+                changed = True
+        if changed:
+            self._save_scan_cache(cache)
+        self._results_stale.clear()
 
     def get_cached_scan(self, mode: str) -> Dict:
-        """返回上次扫描结果；没有缓存时返回空结果。"""
+        """返回上次扫描结果；没有缓存时返回空结果。
+
+        `stale` = "这份结果算出来之后，磁盘（或阈值）又变过"：界面据此提示
+        「点校验」，而不是把过期分组当成现状让人去删文件。
+        """
         if mode not in ('dupe', 'similar'):
-            return {'groups': [], 'scanned': 0, 'cached': False}
+            return {'groups': [], 'scanned': 0, 'cached': False, 'stale': False}
         cache = self._load_scan_cache()
         item = cache.get(mode)
         if not item or not isinstance(item, dict):
-            return {'groups': [], 'scanned': 0, 'cached': False}
+            return {'groups': [], 'scanned': 0, 'cached': False, 'stale': False}
         return {
             'groups': item.get('groups', []),
             'scanned': item.get('scanned', 0),
             'cached': True,
+            'stale': bool(item.get('stale')) or mode in self._results_stale,
+            'saved_at': item.get('saved_at') or 0,
         }
 
     # ---------- 全相册文件收集 ----------
@@ -433,10 +616,10 @@ class ImageCleanerPlugin(PluginBase):
         缓存条目带 `'v': 2`：旧版把"读图失败"也作为 hash 0 存进缓存，缺版本号的条目
         一律重算，避免那些 0 被当成合法哈希继续参与分组。
         """
-        key = 'dhash:' + hashlib.md5(abs_path.encode()).hexdigest()
+        key = self._dhash_cache_key(abs_path)
         self._load_dhash_cache()
         cached = self._dhash_cache.get(key)
-        if cached and cached.get('v') == 2 and cached.get('mtime') == mtime:
+        if cached and cached.get('v') == self.DHASH_VERSION and cached.get('mtime') == mtime:
             return int(cached.get('hash', 0))
 
         try:
@@ -453,7 +636,7 @@ class ImageCleanerPlugin(PluginBase):
                 value <<= 1
                 if pixels[row * 9 + col] > pixels[row * 9 + col + 1]:
                     value |= 1
-        self._dhash_cache[key] = {'v': 2, 'mtime': mtime, 'hash': value}
+        self._dhash_cache[key] = {'v': self.DHASH_VERSION, 'mtime': mtime, 'hash': value}
         return value
 
     def similar_scan(self, threshold: int | None = None) -> Dict:
@@ -548,22 +731,25 @@ class ImageCleanerPlugin(PluginBase):
     # ---------- 后台扫描任务（共享基建 shell.backend.tasks） ----------
 
     def scan_start(self, mode: str = 'dupe', threshold: Optional[int] = None) -> Dict:
-        """把整库扫描放进后台任务（共享基建 `BackgroundTask`）。
+        """把整库重新分组放进后台任务（兼容入口）。
 
-        为什么需要：全库扫描要为每张图算指纹（相似模式还要两两比较），大图库上是分钟级
-        的；放在同步 API 里既没有进度也不能取消，用户只能看着"正在扫描…"。image-viewer
-        的缩略图重建（`rebuild_all` / `rebuild_status` / `rebuild_cancel`）用的是同一套骨架。
+        接入统一刷新后，用户点的是共享组件上的「校验」（`system_freshness_verify`）：
+        它维护指纹缓存并在整趟结束时把两个模式都重新分组、写进结果缓存。这个方法
+        保留给"只想重算某一个 mode 的分组"的调用方（老前端、调试脚本），语义与
+        `_scan_worker` 一致：算分组 → 写缓存 → 取消时不写。
 
-        结果仍写进既有的扫描缓存（`_save_scan_result`），前端在任务结束后用
-        `get_cached_scan(mode)` 取 —— 与"重进页面直接读缓存"是同一条路径，不额外搬运数据。
-        任务状态**不落盘**：本插件没有"断点续跑"语义，重启后重新扫描即可（结果缓存仍在）。
+        任务状态**不落盘**：本插件没有"断点续跑"语义，重启后重新校验即可
+        （指纹与结果缓存都在）。
         """
         mode = 'similar' if str(mode) == 'similar' else 'dupe'
-        if self._scan_task is not None and self._scan_task.state == 'running':
-            return {'started': False, 'running': True, **self.scan_status()}
-        task = BackgroundTask(kind='image-cleaner-scan', extra={'mode': mode, 'groups': 0})
+        with self._scan_lock:
+            # 查-建-赋值必须在同一把锁里：Flask 是 threaded=True，两个并发请求
+            # 原先可以各起一个任务，后一个覆盖前一个的 `_scan_task`。
+            if self._scan_task is not None and self._scan_task.state in ('running', 'queued'):
+                return {'started': False, 'running': True, **self.scan_status()}
+            task = BackgroundTask(kind='image-cleaner-scan', extra={'mode': mode, 'groups': 0})
+            self._scan_task = task
         task.start(self._scan_worker, args=(mode, threshold))
-        self._scan_task = task
         return {'started': True, 'running': True, 'mode': mode}
 
     def _scan_worker(self, task: 'BackgroundTask', mode: str, threshold: Optional[int]) -> None:
@@ -604,12 +790,27 @@ class ImageCleanerPlugin(PluginBase):
 
     def scan_cancel(self) -> Dict:
         """请求取消当前扫描；取消的任务不写结果缓存（没有"半份结果"）。"""
-        if self._scan_task is not None and self._scan_task.state == 'running':
+        if self._scan_task is not None and self._scan_task.state in ('running', 'queued'):
             self._scan_task.cancel()
+            return {'success': True}
+        # 兼容：取消统一校验（用户点的是共享组件上的「取消」）
+        from shell.backend.freshness import engine_for
+        engine = engine_for(self)
+        if engine is not None and engine.request_cancel():
             return {'success': True}
         return {'success': False, 'error': '没有正在运行的扫描任务'}
 
+    def on_settings_changed(self, changed_keys) -> None:
+        """阈值变化 → 相似分组必须重算（旧实现没有这个钩子，改完阈值看的是旧分组）。"""
+        if 'threshold' in changed_keys:
+            self._mark_results_stale('similar')
+            self._persist_stale_flags()
+        from shell.backend.freshness import engine_for
+        engine = engine_for(self)
+        if engine is not None:
+            engine.reset_throttle()
+
     def on_unload(self) -> None:
         """进程退出收尾：取消正在跑的扫描任务（已写出的结果缓存保留）。"""
-        if self._scan_task is not None and self._scan_task.state == 'running':
+        if self._scan_task is not None and self._scan_task.state in ('running', 'queued'):
             self._scan_task.cancel()

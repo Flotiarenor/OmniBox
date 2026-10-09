@@ -19,12 +19,15 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import os
 import sys
+import time
 from collections import deque
 from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Dict, List
 
+from shell.backend import freshness
 from shell.backend.paths import get_plugins_config_dir
 from shell.backend.plugin_base import PluginBase, mask_secrets
 from shell.backend.protected_paths import normalize as normalize_path
@@ -276,6 +279,105 @@ class PluginManager:
                 {'name': name, 'reason': reason}
                 for name, reason in sorted(self._load_failures.items())
             ],
+        }
+
+    # ===== 统一刷新基建（同步 / 校验）：壳级端点，插件不注册自己的刷新 API =====
+    #
+    # 为什么放在壳里：判据与编排（去抖、单飞、增量短路、幽灵清理、进度）只有一份，
+    # 插件只声明"管哪些文件 / 怎么算指纹 / 哪些条目要重活"。名字与语义统一后，
+    # 前端也不必为每个插件写一套按钮与轮询。实现见 shell/backend/freshness.py。
+
+    def _freshness_engine(self, plugin_name: str):
+        """取插件的引擎；未加载或未声明 freshness_spec() 时返回 None。"""
+        instance = self._instances.get(str(plugin_name or ''))
+        if instance is None:
+            return None
+        return freshness.engine_for(instance)
+
+    def freshness_state(self, plugin: str = '') -> dict:
+        """同步/校验的当前状态（不扫盘）。"""
+        engine = self._freshness_engine(plugin)
+        if engine is None:
+            return {'plugin': plugin, 'available': False,
+                    'error': '插件未参与统一刷新（未加载或未声明 freshness_spec）'}
+        return engine.state()
+
+    def freshness_sync(self, plugin: str = '', scope: str = '') -> dict:
+        """被动增量同步：便宜、可被前端在进视图/切目录时调用（壳侧去抖 + 单飞）。"""
+        engine = self._freshness_engine(plugin)
+        if engine is None:
+            return {'action': 'skip', 'reason': 'unsupported', 'plugin': plugin}
+        return engine.sync(scope)
+
+    def freshness_verify(self, plugin: str = '') -> dict:
+        """手动全量校验：起后台任务，立即返回（前端轮询 freshness_state 看进度）。"""
+        engine = self._freshness_engine(plugin)
+        if engine is None:
+            return {'started': False, 'error': 'unsupported', 'plugin': plugin}
+        return engine.start_verify()
+
+    def freshness_cancel(self, plugin: str = '') -> dict:
+        """请求取消正在跑的校验。"""
+        engine = self._freshness_engine(plugin)
+        if engine is None:
+            return {'success': False, 'error': 'unsupported'}
+        return {'success': engine.request_cancel()}
+
+    def freshness_rebuild(self, plugin: str = '', kind: str = 'derived') -> dict:
+        """逃生门：丢弃派生缓存后重跑全量校验（指纹不可信时用）。"""
+        engine = self._freshness_engine(plugin)
+        if engine is None:
+            return {'started': False, 'error': 'unsupported', 'plugin': plugin}
+        return engine.rebuild(kind)
+
+    def freshness_overview(self) -> List[dict]:
+        """所有参与统一刷新的插件的状态快照（壳级「数据与缓存」页用）。"""
+        # 快照后再遍历：unload_all() 可能与请求线程并发改动 _instances
+        out = []
+        for _name, instance in list(self._instances.items()):
+            engine = freshness.engine_for(instance)
+            if engine is None:
+                continue
+            out.append(engine.state())
+        return sorted(out, key=lambda item: item['plugin'])
+
+    def plugin_diagnose(self, plugin: str = '', method: str = '') -> dict:
+        """按需调用插件的诊断钩子（`diagnose(method)`），用于线上定位性能问题。
+
+        为什么要有通用入口：插件的慢常常取决于**运行进程里的状态**（哪个缓存被作废、
+        哪次走盘被触发），离线复现不出来。插件声明 `diagnose()` 即可通过
+        `POST /api/system_plugin_diagnose` 问它当前状态，不必为每个插件写一个端点。
+
+        未声明钩子、插件未加载、钩子抛异常都返回 `{'error': ...}`，绝不 500：
+        这是排查工具，不是功能路径。
+        """
+        instance = self._instances.get(str(plugin or ''))
+        if instance is None:
+            return {'error': f'插件未加载: {plugin}'}
+        hook = getattr(instance, 'diagnose', None)
+        if not callable(hook):
+            return {'error': f'{plugin} 未提供 diagnose() 钩子'}
+        try:
+            return {'result': hook(str(method or ''))}
+        except Exception as e:
+            return {'error': f'{type(e).__name__}: {e}'}
+
+    def freshness_api_methods(self) -> Dict[str, Callable]:
+        """统一刷新对外的方法表。
+
+        单独一张表是必要的：**两条通道各有一份 system_* 清单**（HTTP 的
+        `file_server.api_proxy` 与桌面模式的 `main.ShellAPI`），逐处手抄 6 个名字
+        迟早会漏一处 —— 漏了不会报错，只表现为"桌面模式点校验没反应"。
+        两边都 `update(manager.freshness_api_methods())`，名字只有这一处。
+        """
+        return {
+            'system_freshness_state': self.freshness_state,
+            'system_freshness_sync': self.freshness_sync,
+            'system_freshness_verify': self.freshness_verify,
+            'system_freshness_cancel': self.freshness_cancel,
+            'system_freshness_rebuild': self.freshness_rebuild,
+            'system_freshness_overview': self.freshness_overview,
+            'system_plugin_diagnose': self.plugin_diagnose,
         }
 
     def get_plugin_extensions(self, host: str|None = None, placement: str|None = None) -> List[dict]:
@@ -592,17 +694,40 @@ class PluginManager:
     def _exposed_method(instance: PluginBase, method_name: str, method_fn: Callable) -> Callable:
         """包一层出口处理：插件注册的方法在返回前要过的 Shell 侧约束。
 
-        目前只有一条 —— `get_settings` 的凭据脱敏。**必须由 Shell 做**：插件可以
-        覆写 `get_settings()`（image-viewer / manga-library 都覆写了），基类里的
-        掩码于是整个不执行；而该方法经 register_api() 直接变成
-        `POST /api/<插件>__get_settings`，与壳同源 —— 覆写一下就能把长期凭据交给
-        任何一段同源脚本。返回非字典（插件自定义形状）时原样放行。
+        目前只有两条：
+
+        - `get_settings` 的凭据脱敏。**必须由 Shell 做**：插件可以覆写
+          `get_settings()`（image-viewer / manga-library 都覆写了），基类里的
+          掩码于是整个不执行；而该方法经 register_api() 直接变成
+          `POST /api/<插件>__get_settings`，与壳同源 —— 覆写一下就能把长期凭据交给
+          任何一段同源脚本。返回非字典（插件自定义形状）时原样放行。
+        - `DSH_PLUGIN_TRACE=1` 时的调用计时（默认关闭，零开销）。性能问题几乎都
+          出在"哪个 API 被调了多少次、每次多久"，而这段是**所有**插件 API 的唯一
+          出口，在这里记一笔比让每个插件自己埋点可靠：用户报"卡 25 秒"时，把开关
+          打开复现一次，日志里就是完整的调用序列与耗时分布。
         """
+        wrapped = PluginManager._traced_method(instance, method_name, method_fn)
         if method_name != 'get_settings':
-            return method_fn
+            return wrapped
 
         def masked(*args, **kwargs):
             return mask_secrets(getattr(instance, 'settings_schema', None) or [],
-                                method_fn(*args, **kwargs))
+                                wrapped(*args, **kwargs))
 
         return masked
+
+    @staticmethod
+    def _traced_method(instance: PluginBase, method_name: str, method_fn: Callable) -> Callable:
+        """按需给插件 API 计时（`DSH_PLUGIN_TRACE=1`，见 `_exposed_method`）。"""
+        if os.environ.get('DSH_PLUGIN_TRACE') != '1':
+            return method_fn
+
+        def traced(*args, **kwargs):
+            start = time.perf_counter()
+            try:
+                return method_fn(*args, **kwargs)
+            finally:
+                elapsed = time.perf_counter() - start
+                log.info(f"[plugin-trace] {instance.name}.{method_name} {elapsed * 1000:.1f}ms")
+
+        return traced

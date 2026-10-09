@@ -11,6 +11,11 @@
 
 class ImageViewer {
     constructor() {
+        // 相册瓦片二级加载：每批目录数 / 合批延迟。批量取是为了合并同一帧内进入
+        // 视口的多个占位瓦片，一次请求覆盖一批，而不是一张一个请求。
+        this._TILE_BATCH_SIZE = 16;
+        this._TILE_BATCH_DELAY = 80;
+
         this.mode = 'albums';            // albums | children | images
         this.currentView = 'albums';     // albums | timeline | latest
         this.childParentPath = '';
@@ -40,6 +45,10 @@ class ImageViewer {
         this._onResize = null;             // 具名 resize 处理器，dispose 时摘掉
         this.scrollStack = [];             // 从列表进入详情后返回时恢复滚动位置
         this._rebuildStartTime = null;
+        this._tileObserver = null;         // 相册瓦片视口观察器（二级加载）
+        this._tileQueue = [];              // 待补封面/计数的瓦片路径
+        this._tileByPath = new Map();      // 路径 → {item, card}
+        this._tileTimer = null;            // 合批定时器
 
         this.lightbox = null;
         this.pagination = null;
@@ -84,6 +93,7 @@ class ImageViewer {
 
         this._bindUI();
         this._serveHostChannel();
+        this._mountFreshness();
         await this.loadSettings();
         await this.loadAlbums();
         this.loadExtensions();
@@ -156,28 +166,26 @@ class ImageViewer {
         const container = document.getElementById('iv-extensions');
         if (!container || typeof renderExtensions !== 'function') return;
         try {
-            await renderExtensions(container, 'image-viewer', 'sidebar', {
+            // 高亮由共享组件维护（见 base.js 的 renderExtensions）：点扩展入口时它自己
+            // 取消侧栏项的选中；反向由 `_bindUI` 的侧栏点击与 `closeExtensionView` 调
+            // `clearActive()`。原先这两处各写一遍 className 查询，漏一个方向就不互斥。
+            this.extensions = await renderExtensions(container, 'image-viewer', 'sidebar', {
                 title: '相册清理',
-                onEmbed: (ext) => this.openExtensionView(ext)
-            });
-            container.querySelectorAll('.obx-extension').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    document.querySelectorAll('.iv-nav-item[data-view]').forEach(b => b.classList.remove('active'));
-                    container.querySelectorAll('.obx-extension').forEach(b => b.classList.remove('active'));
-                    btn.classList.add('active');
-                });
+                navSelector: '.iv-nav-item[data-view]',
+                onEmbed: (ext, btn) => this.openExtensionView(ext, btn)
             });
         } catch (e) {
             console.error('加载扩展入口失败:', e);
         }
     }
 
-    openExtensionView(ext) {
+    openExtensionView(ext, btn) {
         const view = document.getElementById('extension-view');
         const frame = document.getElementById('extension-frame');
         const title = document.getElementById('extension-view-title');
         const sub = document.getElementById('extension-view-sub');
         if (!view || !frame) return;
+        if (this.extensions) this.extensions.activate(btn || null);
         if (title) title.textContent = ext.label || '扩展';
         // 副标题取扩展自己声明的 description（`get_extensions()` 的字段，侧栏同样用它做 tooltip）：
         // 与主工具栏的「标题 + 一行说明」同形，宿主不出现任何插件专有文案
@@ -202,6 +210,8 @@ class ImageViewer {
         if (!view || !frame) return;
         view.classList.add('hidden');
         frame.src = 'about:blank';
+        // 扩展视图关掉了，侧栏就不该再留着它的高亮（高亮归共享组件管）
+        if (this.extensions) this.extensions.clearActive();
     }
 
     _bindUI() {
@@ -214,7 +224,7 @@ class ImageViewer {
                 this.fromChildren = false;
                 this.scrollStack = [];
                 document.querySelectorAll('.iv-nav-item[data-view]').forEach(b => b.classList.toggle('active', b === btn));
-                document.querySelectorAll('#iv-extensions .obx-extension').forEach(b => b.classList.remove('active'));
+                if (this.extensions) this.extensions.clearActive();
                 this.showAlbums();
             });
         });
@@ -224,8 +234,6 @@ class ImageViewer {
         document.getElementById('btn-delete-selected').addEventListener('click', () => this.deleteSelectedImages());
         document.getElementById('btn-move-selected').addEventListener('click', () => this.openMoveModal());
         document.getElementById('btn-refresh-thumbs').addEventListener('click', () => this.refreshSelectedThumbs());
-        document.getElementById('btn-refresh').addEventListener('click', () => this.refreshView());
-        document.getElementById('btn-rebuild').addEventListener('click', () => this.rebuildAll());
         const rebuildHide = document.getElementById('rebuild-progress-hide');
         if (rebuildHide) rebuildHide.addEventListener('click', () => this.hideRebuildProgress());
         const rebuildCancel = document.getElementById('rebuild-progress-cancel');

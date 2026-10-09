@@ -451,6 +451,23 @@
     };
   }
 
+  // ── 统一刷新（同步 / 校验）────────────────────────────────────────────
+  //
+  // 本机共享根的用量与条目数是**派生数据**：由共享组件触发的校验算出来写进后端
+  // 缓存，卡片再读它。旧实现把 `refresh_share_roots` 注册了却没有任何调用方，
+  // 于是 used_bytes / entries / scanned_at 三个字段从来没被算过。
+  function mountFreshness() {
+    var host = el('gm-freshness');
+    if (!host || typeof window.Freshness === 'undefined') { return; }
+    if (typeof Bridge.callSystem !== 'function') { return; }
+    state.freshness = window.Freshness.mount({
+      plugin: 'group-mesh',
+      container: host,
+      unit: '项',
+      onChange: function () { refresh(); }
+    });
+  }
+
   function refresh() {
     return call('get_status').then(function (status) {
       state.status = status;
@@ -578,6 +595,7 @@
 
   function init() {
     bind();
+    mountFreshness();
     setPanel(state.panel);
     renderLoading();
     // 远端分片（js/remote.js）：把本文件的能力注入进去，它自己不碰后端与提示。

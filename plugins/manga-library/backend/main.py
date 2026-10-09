@@ -5,8 +5,9 @@ import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List
+from typing import Any, ClassVar, Dict, List, Optional
 
+from shell.backend.freshness import engine_for
 from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_utils import load_sibling
 
@@ -43,15 +44,21 @@ class MangaLibraryPlugin(PluginBase):
          "default": 10, "min": 1, "max": 50, "help": "首页「最近阅读」展示的漫画数量"},
     ]
 
+    # 书架派生数据的规则版本：收录哪些顶层目录、封面怎么挑变了就 +1，
+    # 由统一刷新基建整体作废（不再依赖"记得手动清缓存"）
+    SHELF_VERSION: ClassVar[int] = 1
+
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
         root = self.setting('root_dir') or str(super().get_data_root())
         self.recent_count = int(self.setting('recent_count', 10))
         self.manga_dir = Path(root).resolve()
-        self.cover_dir = self.manga_dir / '.cache' / 'covers'
-        self.cover_dir.mkdir(parents=True, exist_ok=True)
         self.state_file = self.manga_dir / '.cache' / 'manga_state.json'
-        self._cache = None
+        # 书架列表缓存：由统一刷新基建驱动失效（见 freshness 一节）。
+        # 旧实现叫 `_cache`，但唯一调用点在它之前刚把它置 None —— 死缓存，
+        # 每次 `manga_list` 都全量重扫一遍。
+        self._shelf: Optional[List[Dict]] = None
+        self._shelf_dirty = True
         self._state = self._load_state()
 
         # 下载中心（与漫画库共用根目录）
@@ -92,18 +99,81 @@ class MangaLibraryPlugin(PluginBase):
 
     def _apply_root_dir(self, new_dir: Path):
         self.manga_dir = new_dir
-        self.cover_dir = self.manga_dir / '.cache' / 'covers'
-        self.cover_dir.mkdir(parents=True, exist_ok=True)
         self.state_file = self.manga_dir / '.cache' / 'manga_state.json'
         self._state = self._load_state()
-        self._cache = None
+        self._reset_shelf()
         self._download_state_dir = self._get_download_state_dir()
         self._download_state_file = os.path.join(self._download_state_dir, 'download_state.json')
         self.download_tasks = load_tasks(self._download_state_file, DownloadTask, logger)
         self._download_lock = threading.Lock()
-        self._download_state_dir = self._get_download_state_dir()
-        self._download_state_file = os.path.join(self._download_state_dir, 'download_state.json')
-        self.download_tasks: Dict[str, DownloadTask] = load_tasks(self._download_state_file, DownloadTask, logger)
+        engine = engine_for(self)
+        if engine is not None:
+            # 换根后清掉去抖，让下一次进书架的被动同步立刻按新根重扫
+            engine.reset_throttle()
+
+    def _reset_shelf(self):
+        """书架缓存作废（磁盘变化、收藏变更、换根时调用）。"""
+        self._shelf = None
+        self._shelf_dirty = True
+
+    # ===== 统一刷新基建（同步 / 校验）=====
+    #
+    # 书架卡片 = 顶层漫画目录的派生数据（含页数、封面、"里面有图片吗"的两次判断）。
+    # 旧实现没有可用缓存，`manga_get_state` + `manga_list` 各扫一遍全树，切一次视图
+    # 就是两遍。接入基建后：目录级短路判定"没变"时连 derive 都不会被调用，
+    # 列表只在磁盘真变时重建。
+
+    def freshness_spec(self) -> Dict[str, Any]:
+        return {
+            'roots': lambda: [self.manga_dir],
+            'include': tuple(sorted(_scanner.IMAGE_EXTS)),
+            'derive': self._freshness_derive,
+            'prune': self._freshness_prune,
+            'on_verified': self._freshness_audit,
+            'rebuild': self._freshness_rebuild,
+            # 扫描规则（收录哪些目录、封面怎么挑）变更时改它：整体作废书架缓存
+            'content_version': self.SHELF_VERSION,
+            'unit': '部',
+            'min_sync_interval': 5.0,
+            # 与 image-viewer 同一取舍：逐条 stat 会把"进一次书架"变成"给整库每页
+            # stat 一次"（实测 6000 张的整树同步从 0.11s 涨到 0.29s，真实磁盘冷缓存
+            # 下差距更大）。原地替换单页由**校验**负责（audit 逐项比对指纹），
+            # 目录 mtime + 纳入索引的名字个数足以发现新增/删除/改名。
+            'stat_entries': False,
+        }
+
+    def _freshness_derive(self, items) -> Dict[str, Any]:
+        """条目新增/指纹变化：作废受影响漫画的书架卡片。"""
+        folders = {str(it.get('key') or '').split('/', 1)[0] for it in items}
+        folders.discard('')
+        if not folders:
+            return {'count': 0}
+        self._reset_shelf()
+        return {'count': len(items), 'folders': len(folders)}
+
+    def _freshness_prune(self, keys) -> int:
+        """条目消失：整本漫画的图片都没了（或删了几页）→ 书架重建。"""
+        if not keys:
+            return 0
+        self._reset_shelf()
+        return len(keys)
+
+    def _freshness_audit(self, keys) -> Dict[str, Any]:
+        """全量校验后的对账：书架只保留磁盘上还有图片的漫画。"""
+        valid_folders = {str(k).split('/', 1)[0] for k in keys}
+        shelf = self._scan_manga()
+        stale = [m['folder_name'] for m in shelf if m['folder_name'] not in valid_folders]
+        if stale:
+            log.info(f'[MangaLibrary] 校验清理已消失的漫画 {len(stale)} 部')
+            self._shelf = [m for m in shelf if m['folder_name'] in valid_folders]
+            self._shelf_dirty = False
+        return {'dropped_books': len(stale), 'valid_folders': len(valid_folders)}
+
+    def _freshness_rebuild(self, kind: str = 'derived') -> Dict[str, Any]:
+        """逃生门：丢弃书架缓存并重建（不动收藏与最近阅读）。"""
+        self._reset_shelf()
+        self._scan_manga()
+        return {'kind': kind, 'books': len(self._shelf or [])}
 
     # ===== API 注册 =====
 
@@ -154,14 +224,18 @@ class MangaLibraryPlugin(PluginBase):
         with open(self.state_file, 'w', encoding='utf-8') as f:
             json.dump(self._state, f, ensure_ascii=False, indent=2)
 
-    def _scan_manga(self):
-        if self._cache is None:
-            self._cache = scan_manga(self.manga_dir, self._state['favorites'])
-        return self._cache
+    def _scan_manga(self) -> List[Dict]:
+        """书架列表（真正的缓存：只在"磁盘确实变了"时重建）。
 
+        失效由统一刷新基建驱动 —— 目录级短路判定"没变"时连 `derive` 都不会被调用，
+        所以切视图、切分栏、`manga_get_state` + `manga_list` 各调一次，全都只读内存。
+        """
+        if self._shelf is None or self._shelf_dirty:
+            self._shelf = scan_manga(self.manga_dir, self._state['favorites'])
+            self._shelf_dirty = False
+        return self._shelf
 
     def list_manga(self) -> List[Dict]:
-        self._cache = None
         return self._scan_manga()
 
     def search(self, keyword: str) -> List[Dict]:
@@ -180,6 +254,14 @@ class MangaLibraryPlugin(PluginBase):
         }
 
     def toggle_favorite(self, folder_name: str) -> bool:
+        """切换收藏。
+
+        `folder_name` 会被写进 `manga_state.json`，因此必须是**根内的单个目录名**：
+        它不参与路径拼接（危害限于脏数据），但放进来 `../` 或绝对路径只会让
+        "最近阅读/收藏"里出现永远匹配不到书架的条目。统一在入口挡掉。
+        """
+        if not self._is_valid_folder_name(folder_name):
+            return False
         favs = self._state['favorites']
         if folder_name in favs:
             favs.remove(folder_name)
@@ -188,10 +270,24 @@ class MangaLibraryPlugin(PluginBase):
             favs.append(folder_name)
             is_fav = True
         self._save_state()
-        self._cache = None
+        # 书架卡片带 is_fav：收藏变了必须重建列表（缓存由基建之外的因素失效）
+        self._reset_shelf()
         return is_fav
 
+    def _is_valid_folder_name(self, folder_name: str) -> bool:
+        """合法的漫画目录名：非空、不含路径分隔符、不是 `.` / `..`。"""
+        name = str(folder_name or '').strip()
+        if not name or name in ('.', '..'):
+            return False
+        return not any(sep in name for sep in ('/', '\\'))
+
     def update_recent(self, folder_name: str, page: int = 0) -> Dict:
+        if not self._is_valid_folder_name(folder_name):
+            return {"status": "error", "error": "非法目录名"}
+        try:
+            page = max(0, int(page))
+        except (TypeError, ValueError):
+            page = 0
         recent = self._state['recent']
         recent = [r for r in recent if r['id'] != folder_name]
         recent.insert(0, {"id": folder_name, "page": page, "time": datetime.now().isoformat()})

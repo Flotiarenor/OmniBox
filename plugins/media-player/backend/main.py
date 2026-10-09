@@ -3,15 +3,17 @@
 import hashlib
 import json
 import logging
+import os
 import re
+import shutil
 import time
 import uuid
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional
 
+from shell.backend.freshness import engine_for
 from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_utils import load_sibling
-from shell.backend.tasks import BackgroundTask
 from shell.backend.thumb_cache import ThumbCache
 
 log = logging.getLogger(__name__)
@@ -19,8 +21,8 @@ log = logging.getLogger(__name__)
 _scanner = load_sibling(__file__, 'scanner', 'media_player')
 _models = load_sibling(__file__, 'models', 'media_player')
 _ffmpeg = load_sibling(__file__, 'video_ffmpeg', 'media_player')
+_freshness = load_sibling(__file__, 'freshness', 'media_player')
 
-scan_media = _scanner.scan_media
 cover_generator = _scanner.cover_generator
 INDEX_VERSION = _scanner.INDEX_VERSION
 
@@ -31,7 +33,7 @@ MediaItem = _models.MediaItem
 MediaAlbum = _models.MediaAlbum
 
 
-class MediaPlayerPlugin(PluginBase):
+class MediaPlayerPlugin(_freshness.FreshnessMixin, PluginBase):
     settings_schema: ClassVar[List[Dict[str, Any]]] = [
         # 目录列表（type:"directory"）由 Shell 共享组件渲染，与图片相册的
         # 「图片文件夹」是同一套实现（shell/frontend/public/shell/folder-picker.js）
@@ -96,15 +98,16 @@ class MediaPlayerPlugin(PluginBase):
         self.root_dir = self._scan_roots[0]
         self._cache_dir = self.root_dir / '.cache'
         self._cache_file = self._cache_dir / 'media_index.json'
-        self._state_file = self._cache_dir / 'media_state.json'
+        self._state_file = self._state_dir() / 'media_state.json'
         self._task_file = self._cache_dir / 'scan_task.json'
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._items: Dict[str, MediaItem] = {}
+        self._adopt_orphan_state()
         self._state = self._load_state()
         self._load_index()
+        self._index_dirty = False        # 索引有未落盘的改动（整趟结束/退出时写一次）
         self._legacy_migrated = False
         self._migrate_legacy_state()
-        self._scan_task: Optional[BackgroundTask] = None
         self._restore_scan_task()
         # 封面统一走 ThumbCache（SQLite）：音频内嵌/文件夹封面由 cover_generator
         # 按需生成；视频封面由前端 canvas 抽帧后经 media_put_thumb 回写。
@@ -163,6 +166,65 @@ class MediaPlayerPlugin(PluginBase):
     def get_data_root(self) -> Path:
         return self.root_dir
 
+    # ---------- 用户数据的落点（歌单 / 喜欢 / 播放进度） ----------
+
+    def _state_dir(self) -> Path:
+        """用户数据的目录：**壳数据根**下，而不是媒体文件夹里。
+
+        背景：`media_state.json` 原先落在「媒体文件夹」第一行的 `.cache` 下，而那一行
+        同时是数据根。用户在设置里换一个文件夹（或调整顺序）就等于把整个状态文件换到
+        别处：插件在**新位置写一份空状态**，旧的那份留在原地再也没人读 —— 用户视角
+        是"我的歌单被删了"。实际发生过一次：旧媒体根下的 `media_state.json` 里整份
+        播放记录（几十个歌单、上百个喜欢）完好无损，而插件已经在新媒体根下用一份空
+        状态跑了一整天。因此用户数据的落点改到壳数据根下（与指纹库同级），媒体文件夹
+        怎么改都不再影响它；老位置的旧文件由 `_adopt_orphan_state()` 收养回来。
+
+        索引与封面库**仍然跟着媒体根**：它们描述的就是那些文件，换根重建才对。
+        """
+        try:
+            base = Path(PluginBase.get_data_root(self))
+        except (KeyError, TypeError, OSError):
+            # 壳没给 `directories.data_root`（脚本/用例直接构造插件）时退回媒体根，
+            # 保证插件仍可用，只是失去"换文件夹不丢用户数据"的保护
+            base = self._cache_dir.parent
+        return base / '.cache' / 'media-player'
+
+    def _adopt_orphan_state(self) -> None:
+        """新落点还没有状态文件时，从各媒体根的旧位置挑最完整的一份收养。
+
+        评分只数**用户自己攒出来的东西**（歌单 + 喜欢）：`recent` 谁都是满的（上限
+        50 条），拿它当权重会把"刚换过根、什么都没有"的那份也算得一样高。
+        复制而不是移动：旧文件留在原地可回溯，收养来的这份此后是唯一写入方。
+        """
+        try:
+            if self._state_file.exists():
+                return
+        except OSError:
+            return
+        best: Optional[Path] = None
+        best_score = 0
+        candidates = list(self._scan_roots)
+        for root in candidates:
+            candidate = Path(root) / '.cache' / 'media_state.json'
+            try:
+                if not candidate.exists():
+                    continue
+                data = json.loads(candidate.read_text(encoding='utf-8'))
+            except Exception:
+                continue
+            score = len(data.get('playlists') or []) + len(data.get('favorites') or [])
+            if score > best_score:
+                best, best_score = candidate, score
+        if best is None or best_score <= 0:
+            return
+        try:
+            self._state_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(best, self._state_file)
+            log.info(f'[MediaPlayer] 已收养旧的播放记录 {best} → {self._state_file}'
+                     f'（歌单+喜欢 {best_score} 条）')
+        except OSError as e:
+            log.error(f'[MediaPlayer] 收养旧播放记录失败 {best}: {e}')
+
     def get_file_roots(self) -> List[Path]:
         """跨主目录与额外媒体目录提供文件访问。"""
         return list(self._scan_roots) or [self.root_dir]
@@ -196,22 +258,19 @@ class MediaPlayerPlugin(PluginBase):
         """全部扫描根（字符串形式），扫描 worker 与设置变更后重建都用它。"""
         return [str(root) for root in self._scan_roots]
 
-    def _restore_scan_task(self):
-        """恢复上次中断的扫描任务：paused 状态保留（增量扫描时续跑）；
-        done/cancelled 的任务文件已无意义，清理掉。"""
+    def _restore_scan_task(self) -> None:
+        """旧版任务文件的清理钩子（已废弃）。
+
+        根级断点（`scan_task.json` + `completed_roots`）由统一刷新基建的目录
+        指纹取代，残留的任务文件不再有读取方，留着只会让"上次扫描被中断"
+        这类状态永远挂在界面上。这里只做一次清理。
+        """
         try:
-            task = BackgroundTask.load(self._task_file)
-        except Exception:
-            task = None
-        if task is None:
-            return
-        if task.state in ('done', 'cancelled'):
-            try:
-                self._task_file.unlink(missing_ok=True)
-            except OSError:
-                pass
-            return
-        self._scan_task = task
+            if self._task_file.exists():
+                self._task_file.unlink()
+                log.info('[MediaPlayer] 已清理旧版扫描断点文件 scan_task.json')
+        except OSError:
+            pass
 
     def _reload_index(self):
         self._load_index()
@@ -259,15 +318,33 @@ class MediaPlayerPlugin(PluginBase):
             try:
                 with open(self._state_file, 'r', encoding='utf-8') as f:
                     return {**defaults, **json.load(f)}
-            except Exception:
-                pass
+            except Exception as e:
+                # 解析失败**先备份**再退默认值：旧实现直接返回默认值，而下一次
+                # `_save_state()`（播放中每 2 秒一次）会把默认值写回去 —— 一次瞬时
+                # 读取失败（例如读到写入尚未完成的截断文件）就等于永久丢数据。
+                self._backup_broken_state(e)
         return defaults
+
+    def _backup_broken_state(self, error: Exception) -> None:
+        stamp = time.strftime('%Y%m%d-%H%M%S')
+        backup = self._state_file.with_name(f'media_state.corrupt-{stamp}.json')
+        try:
+            shutil.copy2(self._state_file, backup)
+            log.error(f'[MediaPlayer] 播放记录解析失败（{error}），已备份到 {backup}')
+        except OSError as e:
+            log.error(f'[MediaPlayer] 播放记录解析失败（{error}），备份也失败: {e}')
 
     def _save_state(self):
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
+        # 原子写：先落临时文件再 `os.replace`。直接 `open(..., 'w')` 会先把文件截断，
+        # 并发的读取方（或崩溃）可能拿到半份 JSON —— 那正是上一条"退默认值"的触发条件。
+        tmp = self._state_file.with_name('media_state.tmp')
         try:
-            with open(self._state_file, 'w', encoding='utf-8') as f:
+            with open(tmp, 'w', encoding='utf-8') as f:
                 json.dump(self._state, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self._state_file)
         except Exception as e:
             log.error(f"[MediaPlayer] 保存状态失败: {e}")
 
@@ -371,112 +448,76 @@ class MediaPlayerPlugin(PluginBase):
     # ---------- 扫描与浏览 ----------
 
     def scan(self, force: bool = False) -> Dict:
-        """启动后台扫描任务（增量默认；force=True 深度全量重扫）。
+        """启动媒体库刷新（兼容入口）。
 
-        断点续传：worker 每完成一个根目录就把「部分索引 + completed_roots」原子
-        落盘；进程中断后重启自动恢复为 paused，再次增量扫描时跳过已完成根目录。
+        实现已委托给壳的统一刷新基建：`force=False` 走「同步」（被动增量，
+        目录级短路），`force=True` 走「校验」（全量逐项比对 + 幽灵清理）。
+        旧实现的根级断点状态机（`scan_task.json` / `completed_roots` / paused
+        恢复）已删除 —— 指纹精确到目录，续跑不再需要单独的任务文件。
+        新代码请直接用 `system_freshness_sync` / `system_freshness_verify`。
         """
-        if self._scan_task and self._scan_task.state in ('running', 'queued'):
-            return {'success': False, 'error': '扫描正在进行中', **self._scan_task.status()}
+        engine = engine_for(self)
+        if engine is None:
+            return {'success': False, 'error': '刷新基建未接入'}
         if force:
-            # 深度扫描：丢弃旧任务（含 paused 断点信息），全量重扫
-            self._scan_task = None
-        task = self._scan_task
-        if task is None or task.state != 'paused':
-            task = BackgroundTask(kind='scan', persist_path=self._task_file,
-                                  extra={'force': bool(force), 'completed_roots': []})
-        self._scan_task = task
-        task.start(self._scan_worker, args=(bool(force),))
-        return {'success': True, 'started': True, **task.status()}
+            started = engine.start_verify()
+            return {'success': bool(started.get('started')), **started}
+        report = engine.sync('', force=True)
+        return {'success': True, 'started': True, 'report': report, **self.scan_status()}
 
     def scan_status(self) -> Dict:
-        """扫描任务状态（前端轮询）；无任务时返回 {'state': 'none'}。"""
-        if self._scan_task is None:
+        """扫描状态（前端轮询）。
+
+        契约与旧实现保持一致：`state` ∈ `none/done/cancelled/running`，
+        另带 `processed/total/current/extra`（audio/video）。
+
+        - 校验在跑（或刚跑完）→ 直接投影 `BackgroundTask.status()`；
+        - 没有任务时 → 若索引已经同步过，返回 `done` + 最近一趟的计数。
+          同步是**同步调用**（无任务），把"没有任务"报成 `none` 会让轮询方
+          以为"什么都没发生"，与旧的"扫描完成"契约不符。
+        """
+        engine = engine_for(self)
+        if engine is None:
             return {'state': 'none'}
-        return self._scan_task.status()
+        state = engine.state()
+        task = state.get('task')
+        if task:
+            return task
+        report = state.get('last_report') or {}
+        if not report:
+            return {'state': 'none'}
+        end = report.get('pass_end') or {}
+        return {
+            'state': 'done',
+            'processed': report.get('dirs', 0),
+            'total': report.get('dirs', 0),
+            'current': '',
+            'extra': {k: end.get(k) for k in ('audio', 'video', 'total') if k in end},
+        }
 
     def scan_cancel(self) -> Dict:
-        """请求取消扫描（已完成的根目录与索引检查点保留，可续扫）。"""
-        if self._scan_task and self._scan_task.state == 'running':
-            self._scan_task.cancel()
-            return {'success': True}
-        return {'success': False, 'error': '没有正在运行的扫描'}
+        """请求取消正在跑的全量校验（已写入的指纹与派生数据保留，可续跑）。"""
+        engine = engine_for(self)
+        if engine is None:
+            return {'success': False, 'error': '刷新基建未接入'}
+        return {'success': engine.request_cancel()}
 
     def on_unload(self) -> None:
-        """进程退出收尾：停掉正在跑的扫描并落盘检查点。
+        """进程退出收尾：取消在跑的校验并落盘索引。
 
-        running/queued 的任务会被落盘成 paused，下次启动由 _restore_scan_task
-        续扫；不这么做的话扫描线程会在进程退出时被打断，最后一个根目录的
-        进度虽然已有检查点，但任务状态会停在 running。
+        没有单独的任务文件要落盘：指纹库由基建按目录事务写入，索引由
+        `on_pass_end` 钩子落盘（见 freshness 分片）。
         """
-        task = self._scan_task
-        if task is not None and task.state in ('running', 'queued'):
-            task.cancel()
-            task.persist()
-
-    def _scan_worker(self, task: BackgroundTask, force: bool):
-        """扫描 worker：逐根目录推进，每个根目录完成后落盘检查点。
-
-        - 增量：缓存为当前内存索引（含上次扫描结果），mtime/size 未变直接复用；
-        - 断点：completed_roots 记录已完成根目录，中断后续扫直接跳过；
-        - 进度：processed/total 按根目录计数，错误进 task.errors（保留 200 条）。
-        """
-        dirs = self._media_dirs()
-        completed = set((task.status().get('extra') or {}).get('completed_roots') or [])
-        merged = {} if force else dict(self._items)
-        if completed and not merged and not force:
-            # 索引文件丢失但任务文件残留：断点信息失效，全部重扫
-            completed = set()
-        task.update(total=len(dirs), processed=0, current='准备扫描…',
-                    extra={'force': force, 'completed_roots': sorted(completed)})
-
-        for idx, raw_dir in enumerate(dirs):
-            if task.cancelled:
-                break
-            key = str(Path(raw_dir).resolve())
-            if not force and key in completed:
-                task.update(processed=idx + 1, current=f'跳过已完成: {key}')
-                continue
+        engine = engine_for(self)
+        if engine is not None:
+            engine.request_cancel()
+        if getattr(self, '_index_dirty', False):
             try:
-                result = scan_media(Path(key), merged, namespace=Path(key).name)
+                self._save_index({'items': [i.to_dict() for i in self._items.values()],
+                                  'updated': time.time()})
+                self._index_dirty = False
             except Exception as e:
-                task.add_error(f'扫描失败 {key}: {e}')
-                task.update(processed=idx + 1, current=key)
-                continue
-            for raw in result['items']:
-                item = MediaItem.from_cache(raw)
-                merged[item.id] = item
-            completed.add(key)
-            # 检查点 1：部分索引落盘（断点续传的数据基础）
-            # 注意发布的是 dict(merged) 快照：merged 是本 worker 的私有工作字典，
-            # 之后还会继续增删；直接把 merged 交给 self._items 会让并发的读取方
-            # 遍历到正在变化的字典。
-            self._publish_items(dict(merged))
-            self._save_index({'items': [i.to_dict() for i in merged.values()],
-                              'updated': time.time(), 'version': INDEX_VERSION})
-            # 检查点 2：任务状态落盘（completed_roots → paused，可续跑）
-            task.update(processed=idx + 1, current=key,
-                        extra={'completed_roots': sorted(completed)})
-            task.persist()
-
-        if task.cancelled:
-            return
-        self._publish_items(dict(merged))
-        self._save_index({'items': [i.to_dict() for i in merged.values()],
-                          'updated': time.time(), 'version': INDEX_VERSION})
-        self._migrate_legacy_state()
-        # 深度扫描：索引完整，清理已删除媒体文件的孤儿封面条目（DB 防膨胀）；
-        # 现有封面缓存一律保留（扫描只重读标签/时长，不重建、不删除封面）。
-        if force:
-            try:
-                pruned = self._thumb_cache.prune(set(merged.keys()))
-                if pruned:
-                    log.info(f'[MediaPlayer] 深度扫描清理孤儿封面 {pruned} 条')
-            except Exception:
-                pass
-        audio = sum(1 for i in merged.values() if i.kind == 'audio')
-        video = sum(1 for i in merged.values() if i.kind == 'video')
-        task.update(extra={'audio': audio, 'video': video, 'total': len(merged)})
+                log.error(f'[MediaPlayer] 退出前保存索引失败: {e}')
 
     def search(self, keyword: str = '') -> List[Dict]:
         kw = (keyword or '').strip().lower()
@@ -727,19 +768,28 @@ class MediaPlayerPlugin(PluginBase):
         if 'media_roots' in changed_keys:
             new_roots = self._configured_roots() or [super().get_data_root()]
             new_dir = new_roots[0]
+            old_roots = list(self._scan_roots)
             self._scan_roots = new_roots
+            engine = engine_for(self)
+            if engine is not None:
+                # 根集合变了：清掉去抖，让下一次进视图的被动同步立刻按新根重扫；
+                # 被移除的根留下的条目由校验的差集删除清理（不再是幽灵条目）
+                engine.reset_throttle()
             # 只有**数据根**（第一行）变了才需要搬缓存：额外的扫描根增删不影响
             # 索引/进度/缩略图库的落点，重建一遍反而会把已有索引丢掉。
             if new_dir == self.root_dir:
+                if old_roots != new_roots:
+                    log.info(f'[MediaPlayer] 扫描根变更：{len(old_roots)} → {len(new_roots)} 个')
                 return
-            # 数据根变更：终止进行中的扫描，丢弃旧任务（含断点信息）
-            if self._scan_task and self._scan_task.state == 'running':
-                self._scan_task.cancel()
-            self._scan_task = None
+            # 数据根变更：终止进行中的校验，索引与封面库跟着换落点。
+            # **用户数据（歌单/喜欢/播放进度）不跟着走** —— 它落在壳数据根下
+            # （`_state_dir()`），换文件夹不该把用户攒的东西一起换掉。
+            if engine is not None:
+                engine.request_cancel()
             self.root_dir = new_dir
             self._cache_dir = self.root_dir / '.cache'
             self._cache_file = self._cache_dir / 'media_index.json'
-            self._state_file = self._cache_dir / 'media_state.json'
+            self._state_file = self._state_dir() / 'media_state.json'
             self._task_file = self._cache_dir / 'scan_task.json'
             self._cache_dir.mkdir(parents=True, exist_ok=True)
             self._publish_items({})

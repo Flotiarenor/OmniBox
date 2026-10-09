@@ -70,8 +70,11 @@
           <div class="search-field">
             <span class="search-field-icon"><svg class="obx-icon"><use href="#search"></use></svg></span>
             <input type="text" id="nr-search" placeholder="搜索书名、作者…" autocomplete="off">
-            <button type="button" id="nr-search-clear" class="search-field-clear hidden" title="清除"><svg class="obx-icon"><use href="#x"></use></svg></button>
-          </div>
+          <button type="button" id="nr-search-clear" class="search-field-clear hidden" title="清除"><svg class="obx-icon"><use href="#x"></use></svg></button>
+        </div>
+          <!-- 书架的统一「同步（被动）/ 校验（手动）」控件，由共享组件
+               shell/freshness.js 填充（此前本插件没有任何重扫入口）。 -->
+          <div id="nr-freshness"></div>
           <button type="button" id="btn-settings" class="btn btn-sm"><svg class="obx-icon"><use href="#settings"></use></svg> 设置</button>
         </div>
       </div>

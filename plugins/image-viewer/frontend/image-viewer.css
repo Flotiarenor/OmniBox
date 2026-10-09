@@ -135,6 +135,10 @@
 }
 .iv-image-card:hover p { opacity: 1; }
 
+/* 待二级加载的相册瓦片：封面与递归计数还没取到，先给一个静态的占位观感
+   （不要动画/闪烁：一屏几十张同时闪会非常吵），取到后由脚本就地替换封面 */
+.iv-tile-pending .iv-cover-fallback { opacity: 0.45; }
+
 /* ===== 圆圈数量角标（仅「时间+文件名」排序模式下显示在 p0 瓦片右下角） ===== */
 .iv-count-badge {
   position: absolute; right: 8px; bottom: 8px; z-index: 4;

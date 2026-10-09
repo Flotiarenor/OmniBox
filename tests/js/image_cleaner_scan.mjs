@@ -1,13 +1,15 @@
-// image-cleaner 扫描流程的纯逻辑用例（真实 app.js + 共享 DOM 替身 + 假 Bridge）。
+// image-cleaner 结果加载与统一刷新挂载的纯逻辑用例（真实 app.js + 共享 DOM 替身 + 假 Bridge）。
 //
-// 扫描现在跑在后端的后台任务里（壳的共享基建 `shell/backend/tasks.py` 的 BackgroundTask，
-// 与 image-viewer 的缩略图重建同一套骨架）：前端不再直呼同步的
-// `duplicate_scan` / `similar_scan`，而是 `scan_start` → 轮询 `scan_status`（进度 + 取消）
-// → 任务结束后用 `get_cached_scan` 取结果。本用例锁这条链路：
-//   1) 缓存命中：直接渲染，不再起任务（退出重进不该重扫）；
-//   2) 缓存未命中：起任务 → 轮询 → 取缓存 → 渲染，且轮询期间的进度文本带 processed/total；
-//   3) 取消：任务收尾为 cancelled 时显示"已取消扫描"，不渲染任何分组；
-//   4) 「取消扫描」按钮真的会发 `scan_cancel`。
+// 本插件的扫描链路已并入壳的统一刷新基建（`system_freshness_*` + 共享组件
+// `shell/frontend/public/shell/freshness.js`）：前端不再自己起后台任务、轮询进度、
+// 画取消按钮，那些都由组件负责；页内只做「读结果缓存 + 按 stale 提示」。
+// 本用例锁这条新契约：
+//   1) 缓存命中：直接渲染分组，且**不**碰 scan_start / scan_status；
+//   2) 缓存未命中：显示"尚未校验"，空态文案指向「校验」，不自己起任务；
+//   3) `stale`：提示"磁盘有变化，建议重新校验"（旧实现没有这个信号）；
+//   4) 挂载：`Freshness.mount` 收到正确的 plugin / unit，onChange 能触发重读；
+//   5) 切换模式：按 mode 重读缓存（相似模式读 similar）；
+//   6) 删除后主动触发被动同步（让后端立刻看到这次删除）。
 //
 // 用法：node tests/js/image_cleaner_scan.mjs
 import assert from 'node:assert/strict';
@@ -34,53 +36,39 @@ async function check(name, fn) {
 }
 
 /**
- * 造一份干净环境：真实 app.js + DOM 替身 + 脚本化的 Bridge。
+ * 造一份干净环境：真实 app.js + DOM 替身 + 脚本化的 Bridge 与共享组件。
  *
- * `statuses` 是按序返回的 `scan_status` 结果（最后一条会重复返回）；`snapshots` 记录每次
- * 轮询时进度文本的当时值（第 2 次轮询拿到的就是第 1 次进度渲染的结果）。
+ * `cache` 按 mode 给 `get_cached_scan` 的返回值（也可以是函数）。
+ * `mounts` 记录 `Freshness.mount` 收到的参数，`syncs` 记录 `autoSync` 的调用。
  */
-function setup({ cache, statuses = [], after = null, clickCancelOnStatus = 0 } = {}) {
+function setup({ cache = {}, mountFreshness = true } = {}) {
   const { document, makeEl } = createDom();
-  for (const id of ['cleaner-results', 'cleaner-scanned', 'cleaner-selected']) {
+  for (const id of ['cleaner-results', 'cleaner-scanned', 'cleaner-selected',
+                    'cleaner-freshness', 'tab-dupe', 'tab-similar']) {
     document.body.appendChild(Object.assign(makeEl('div'), { id }));
   }
 
   const calls = [];
-  const snapshots = [];
-  const queue = statuses.slice();
-  let started = false;
-
-  function progressText() {
-    const el = document.getElementById('cleaner-scan-text');
-    return el ? el.textContent : null;
-  }
+  const mounts = [];
+  const syncs = [];
+  const control = {
+    autoSync: (scope) => syncs.push(scope),
+    verify: () => calls.push('verify'),
+  };
 
   const bridge = {
     // render() 会拼缩略图 URL：少了这两个，模板字符串求值抛错 → 结果区变成错误态，
-    // 而"已扫描 N 张"和 groups 已经赋值，断言会假绿。
+    // 而断言会假绿。
     thumbUrl: (rel) => `/thumbs/${rel}`,
     originalUrl: (rel) => `/file?path=${rel}`,
-    async call(method) {
+    async call(method, arg) {
       calls.push(method);
       if (method === 'get_cached_scan') {
-        return started && after ? after : (cache || { cached: false });
+        const entry = typeof cache === 'function' ? cache(arg) : cache[arg];
+        return entry || { cached: false, stale: false, groups: [], scanned: 0 };
       }
-      if (method === 'scan_start') {
-        started = true;
-        return { started: true, running: true };
-      }
-      if (method === 'scan_status') {
-        snapshots.push(progressText());
-        const status = queue.length > 1
-          ? queue.shift()
-          : (queue[0] || { running: false, success: true });
-        if (snapshots.length === clickCancelOnStatus) {
-          const cancel = document.getElementById('cleaner-cancel');
-          if (cancel) cancel.click();
-        }
-        return status;
-      }
-      if (method === 'scan_cancel') return { success: true };
+      if (method === 'get_status') return { root_dir: 'D:/album', roots: ['D:/album'] };
+      if (method === 'delete_files') return { deleted: ['a.jpg'], errors: [] };
       return null;
     },
   };
@@ -89,112 +77,112 @@ function setup({ cache, statuses = [], after = null, clickCancelOnStatus = 0 } =
   globalThis.window = {};
   globalThis.Bridge = bridge;
   globalThis.Toast = { warning() { }, error() { }, success() { }, info() { } };
+  if (mountFreshness) {
+    globalThis.Freshness = {
+      mount(opts) {
+        mounts.push(opts);
+        return control;
+      },
+    };
+  } else {
+    delete globalThis.Freshness;
+  }
   const ImageCleaner = new Function(`${readFileSync(APP_JS, 'utf8')}\nreturn ImageCleaner;`)();
-  return { cleaner: new ImageCleaner(), document, calls, snapshots };
+  return { cleaner: new ImageCleaner(), document, calls, mounts, syncs, control };
 }
 
-// ---------- 1. 缓存命中：不起任务 ----------
+// ---------- 1. 读缓存并渲染 ----------
 
-await check('缓存命中时直接渲染，不再起后台任务', async () => {
+await check('缓存命中时直接渲染分组，不碰任何扫描任务接口', async () => {
   const env = setup({
-    cache: { cached: true, scanned: 7, groups: [{ files: ['a.jpg', 'b.jpg'] }] },
+    cache: { dupe: { cached: true, scanned: 7, stale: false, groups: [{ files: ['a.jpg', 'b.jpg'] }] } },
   });
-  await env.cleaner.runScan();
-  assert.ok(!env.calls.includes('scan_start'), `缓存命中不该扫全库：${env.calls.join(',')}`);
+  await env.cleaner._loadResults();
+
   assert.equal(env.document.getElementById('cleaner-scanned').textContent, '已扫描 7 张');
   assert.equal(env.cleaner.groups.length, 1, '缓存里的分组要渲染出来');
   const html = env.document.getElementById('cleaner-results').innerHTML;
   assert.match(html, /cleaner-group/, `分组要真的画出来，实际: ${html.slice(0, 120)}`);
-  assert.ok(!/扫描失败/.test(html), '渲染过程不能报错');
+  assert.ok(!/读取结果失败/.test(html), '渲染过程不能报错');
+  assert.ok(!env.calls.includes('scan_start'), `不该再自己起任务：${env.calls.join(',')}`);
+  assert.ok(!env.calls.includes('scan_status'), `不该再轮询任务：${env.calls.join(',')}`);
 });
 
-// ---------- 2. 缓存未命中：scan_start → 轮询 → get_cached_scan ----------
+await check('缓存未命中时提示"尚未校验"，空态指向「校验」', async () => {
+  const env = setup({ cache: {} });
+  await env.cleaner._loadResults();
 
-await check('缓存未命中时起后台任务、轮询进度、结束后取缓存渲染', async () => {
-  const env = setup({
-    cache: { cached: false },
-    statuses: [
-      { running: true, success: false, mode: 'similar', processed: 5, total: 10, current: 'x/a.jpg' },
-      { running: false, success: true, mode: 'similar', processed: 10, total: 10, current: '' },
-    ],
-    after: { cached: true, scanned: 10, groups: [{ files: ['a.jpg', 'b.jpg'] }] },
-  });
-  env.cleaner.mode = 'similar';
-  await env.cleaner.runScan();
-
-  assert.deepEqual(env.calls[0], 'get_cached_scan', '先读缓存');
-  assert.deepEqual(env.calls[1], 'scan_start', '缓存没有才起任务');
-  assert.ok(env.calls.includes('scan_status'), '任务期间要轮询进度');
-  assert.equal(env.calls[env.calls.length - 1], 'get_cached_scan', '结束后从缓存取结果');
-  assert.equal(env.document.getElementById('cleaner-scanned').textContent, '已扫描 10 张');
-  assert.equal(env.cleaner.groups.length, 1);
-  assert.match(env.document.getElementById('cleaner-results').innerHTML, /cleaner-group/,
-               '任务结束后要渲染分组，而不是错误态');
-});
-
-await check('轮询期间进度文本带 processed/total、阶段与当前文件', async () => {
-  const env = setup({
-    cache: { cached: false },
-    statuses: [
-      { running: true, success: false, mode: 'similar', processed: 5, total: 10, current: '作者A/1.jpg' },
-      { running: false, success: true, mode: 'similar', processed: 10, total: 10 },
-    ],
-    after: { cached: true, scanned: 10, groups: [] },
-  });
-  env.cleaner.mode = 'similar';
-  await env.cleaner.runScan();
-  const during = env.snapshots[1] || '';
-  assert.match(during, /5\/10/, `进度文本要带 processed/total，实际: ${during}`);
-  assert.match(during, /相似图片/, `进度文本要写明阶段，实际: ${during}`);
-  assert.match(during, /作者A\/1\.jpg/, `进度文本要带当前文件，实际: ${during}`);
-});
-
-// ---------- 3. 取消 ----------
-
-await check('任务被取消时显示"已取消扫描"，不渲染分组', async () => {
-  const env = setup({
-    cache: { cached: false },
-    statuses: [
-      { running: true, success: false, mode: 'dupe', processed: 2, total: 100, current: '' },
-      { running: false, done: true, success: false, cancelled: true },
-    ],
-  });
-  await env.cleaner.runScan();
+  assert.equal(env.document.getElementById('cleaner-scanned').textContent, '尚未校验');
   const html = env.document.getElementById('cleaner-results').innerHTML;
-  assert.match(html, /已取消扫描/, `取消后要明确告知，实际: ${html}`);
-  assert.ok(!/正在扫描/.test(html), '取消后不该还留着"正在扫描"');
-  assert.equal(env.cleaner.groups.length, 0, '取消不产生分组');
-  assert.equal(env.document.getElementById('cleaner-scanned').textContent, '');
+  assert.match(html, /校验/, `空态要指向「校验」，实际: ${html.slice(0, 200)}`);
+  assert.ok(!env.calls.includes('scan_start'), '未命中也不该自动起任务');
 });
 
-await check('「取消扫描」按钮发 scan_cancel', async () => {
+await check('stale 时提示磁盘有变化、建议重新校验', async () => {
   const env = setup({
-    cache: { cached: false },
-    statuses: [
-      { running: true, success: false, mode: 'dupe', processed: 1, total: 100, current: '' },
-      { running: false, done: true, success: false, cancelled: true },
-    ],
-    clickCancelOnStatus: 1,
+    cache: { dupe: { cached: true, scanned: 5, stale: true, groups: [] } },
   });
-  await env.cleaner.runScan();
-  assert.ok(env.calls.includes('scan_cancel'), `按钮要真的发取消请求：${env.calls.join(',')}`);
+  await env.cleaner._loadResults();
+
+  const text = env.document.getElementById('cleaner-scanned').textContent;
+  assert.match(text, /已扫描 5 张/);
+  assert.match(text, /建议重新校验/, `要提示结果可能过期，实际: ${text}`);
 });
 
-// ---------- 4. 任务失败：错误态 ----------
+// ---------- 2. 统一刷新挂载 ----------
 
-await check('任务失败时显示错误态，不把空结果当成"没有重复"', async () => {
+await check('挂载共享组件：plugin/unit 正确，onChange 触发重读', async () => {
+  const env = setup({ cache: { dupe: { cached: true, scanned: 3, groups: [] } } });
+  env.cleaner._mountFreshness();
+
+  assert.equal(env.mounts.length, 1, '要挂一次组件');
+  assert.equal(env.mounts[0].plugin, 'image-cleaner');
+  assert.equal(env.mounts[0].unit, '张');
+  assert.equal(typeof env.mounts[0].onChange, 'function');
+
+  env.document.getElementById('cleaner-scanned').textContent = '';
+  await env.mounts[0].onChange();
+  assert.equal(env.document.getElementById('cleaner-scanned').textContent, '已扫描 3 张',
+               'onChange 要重新读缓存并渲染');
+});
+
+await check('组件缺失时不抛错（页面脱离壳单独打开）', async () => {
+  const env = setup({ mountFreshness: false });
+  env.cleaner._mountFreshness();
+  assert.equal(env.cleaner.freshness, undefined);
+});
+
+// ---------- 3. 模式切换 ----------
+
+await check('切换到相似模式时读 similar 的结果', async () => {
   const env = setup({
-    cache: { cached: false },
-    statuses: [
-      { running: true, success: false, mode: 'dupe', processed: 1, total: 10, current: '' },
-      { running: false, done: true, success: false, cancelled: false },
-    ],
+    cache: (mode) => ({
+      cached: true,
+      scanned: mode === 'similar' ? 42 : 7,
+      groups: [],
+    }),
   });
-  await env.cleaner.runScan();
-  const html = env.document.getElementById('cleaner-results').innerHTML;
-  assert.match(html, /扫描失败/, `失败要有错误态，实际: ${html}`);
-  assert.equal(env.cleaner.groups.length, 0);
+  await env.cleaner._loadResults();
+  await env.cleaner.switchMode('similar');
+
+  assert.equal(env.cleaner.mode, 'similar');
+  assert.equal(env.document.getElementById('cleaner-scanned').textContent, '已扫描 42 张');
 });
 
-console.log(failed ? `\n${failed} 例失败` : `\nimage-cleaner 扫描流程 ${total} 例通过`);
+// ---------- 4. 删除后触发被动同步 ----------
+
+await check('删除选中后触发被动同步，让后端立刻看到删除', async () => {
+  const env = setup({ cache: {} });
+  env.cleaner._mountFreshness();
+  env.cleaner.groups = [{ files: ['a.jpg', 'b.jpg'] }];
+  env.cleaner.selected = new Set(['a.jpg']);
+  globalThis.confirmDialog = async () => true;
+
+  await env.cleaner.deleteSelected();
+
+  assert.ok(env.calls.includes('delete_files'), `要真的发删除：${env.calls.join(',')}`);
+  assert.deepEqual(env.syncs, [''], `删除后要触发一次被动同步：${JSON.stringify(env.syncs)}`);
+});
+
+console.log(failed ? `\n${failed} 例失败` : `\nimage-cleaner 结果加载 ${total} 例通过`);
 process.exit(failed ? 1 : 0);

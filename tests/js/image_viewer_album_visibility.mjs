@@ -145,4 +145,33 @@ function album(path, opts = {}) {
   assert.deepEqual(viewer._filterVisibleAlbums(albums), [], '纯容器根目录不显示');
 }
 
+// ---------- 侧栏统计 ----------
+
+{
+  // 同一棵树：根直接 1 张、A 1 张、A/sub 2 张、B 1 张 → 真值 5 张。
+  // 把可见相册的 direct_count 相加只算到 2（漏掉嵌套与根），把 image_count 相加
+  // 会在嵌套上重复计入（A 的 3 已含 A/sub 的 2），因此张数取合成根的递归总数。
+  const albums = [
+    album('', { depth: 0, readable: 5, direct_count: 1 }),
+    album('A', { depth: 1, has_children: true, readable: 3, direct_count: 1 }),
+    album('A/sub', { depth: 2, readable: 2, direct_count: 2 }),
+    album('B', { depth: 1, readable: 1, direct_count: 1 }),
+  ];
+  const texts = [];
+  const realDocument = globalThis.document;
+  globalThis.document = {
+    getElementById: () => ({ set textContent(v) { texts.push(v); } }),
+  };
+  try {
+    const viewer = makeViewer();
+    viewer.albums = albums;
+    viewer._updateStats();
+  } finally {
+    globalThis.document = realDocument;
+  }
+  assert.equal(texts[texts.length - 1], '3 个相册 · 5 张图片',
+               `侧栏张数要取合成根的递归总数，实际: ${texts[texts.length - 1]}`);
+  // 3 个相册 = 合成根（有直接图片时渲染成「根目录 · 未分类」卡片）+ A + B
+}
+
 console.log('image_viewer_album_visibility: OK');

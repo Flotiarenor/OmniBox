@@ -32,6 +32,10 @@ class _StubPluginManager:
     def get_api_methods(self):
         return {}
 
+    def freshness_api_methods(self):
+        """统一刷新基建的壳级端点（请求期由 `api_proxy` 取用）：本桩不带插件。"""
+        return {}
+
     def get_frontend_manifests(self):
         return []
 

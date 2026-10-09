@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from shell.backend.freshness import engine_for
 from shell.backend.plugin_utils import load_sibling
 from shell.groupmesh.records import RecordError
 from shell.groupmesh.shares import Acl, new_share
@@ -27,7 +28,7 @@ class ShareMixin:
     def _root_state(self, entry: Dict[str, Any]) -> Dict[str, Any]:
         """一个共享根的可用性。只用 `is_dir()`，不遍历目录。
 
-        容量统计（`_tree_usage`）刻意不在这里做：`G:\\图库` 那种目录走一遍可能要
+        容量统计（`_tree_usage`）刻意不在这里做：`D:\\图库` 那种目录走一遍可能要
         几十秒，而 `get_status()` 是首屏调用。界面要精确用量时调 `refresh_share_roots`。
         """
         raw = str(entry.get('path') or '')
@@ -144,12 +145,27 @@ class ShareMixin:
         return {'success': True, 'share_id': share_id}
 
     def refresh_share_roots(self) -> Dict[str, Any]:
-        """重扫本机共享根：更新可用性，并给出条目数与用量。
+        """重扫本机共享根：更新可用性，并给出条目数与用量（兼容入口）。
 
-        只有用户点"刷新"时才走这里（目录树扫描可能几十秒），`get_status()` 永远
-        是轻量的。用量在超过容量上限时提前停止累加，并在 `truncated` 里说明这个
-        数字是下界还是精确值 —— 否则界面会把"扫到一半就够配额了"显示成精确用量。
+        实现已委托给壳的统一刷新基建（`system_freshness_verify` / 插件侧
+        `engine.sync`）：本机共享根是"本地文件树 → 用量与条目数"的派生数据，
+        判据（目录级短路、幽灵清理）统一由基建托管。新代码请用
+        `system_freshness_sync` / `system_freshness_verify`。
+
+        旧名字保留是因为它是**唯一**能拿到精确用量的入口（`get_status` 刻意不遍历
+        目录，见 `_root_state`），而用量要显示在共享项卡片上。
         """
+        engine = engine_for(self)
+        if engine is not None:
+            report = engine.sync('', force=True)
+            return {'success': True, 'roots': self._share_roots_report(),
+                    'scanned_at': int(time.time()),
+                    'action': report.get('action'), 'changed': report.get('added', 0)}
+        return {'success': True, 'roots': self._share_roots_report(),
+                'scanned_at': int(time.time())}
+
+    def _share_roots_report(self) -> List[Dict[str, Any]]:
+        """每个共享根的可用性 + 用量 + 条目数（用量走缓存，见下）。"""
         result: List[Dict[str, Any]] = []
         roots = self._load_share_roots()
         for share_id, share in self._load_shares().items():
@@ -157,25 +173,92 @@ class ShareMixin:
             state = self._root_state(entry)
             item = {'share_id': share_id, **state}
             if state['available']:
-                limit = state['max_bytes']
-                try:
-                    used, truncated = self._tree_usage(Path(state['path']).expanduser(),
-                                                       limit=limit)
-                except OSError as e:
-                    item['available'] = False
-                    item['reason'] = f'扫描失败: {e}'
-                    result.append(item)
-                    continue
-                item['used_bytes'] = used
-                item['truncated'] = truncated
-                item['entries'] = self._count_entries(Path(state['path']).expanduser())
+                cached = self._usage_cache.get(share_id)
+                if cached is None or cached.get('path') != state['path']:
+                    cached = self._scan_share_usage(share_id, state)
+                item.update(cached)
             result.append(item)
-        return {'success': True, 'roots': result,
-                'scanned_at': int(time.time())}
+        return result
+
+    def _scan_share_usage(self, share_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
+        """算一个共享根的用量与条目数，写进缓存（同一次刷新同一目录只走一遍）。"""
+        target = Path(state['path']).expanduser()
+        try:
+            used, truncated = self._tree_usage(target, limit=state['max_bytes'])
+        except OSError as e:
+            return {'available': False, 'reason': f'扫描失败: {e}'}
+        usage = {
+            'path': state['path'],
+            'used_bytes': used,
+            'truncated': truncated,
+            'entries': self._count_entries(target),
+        }
+        self._usage_cache[share_id] = usage
+        return usage
+
+    # ===== 统一刷新基建（同步 / 校验）=====
+    #
+    # 本机共享根是"本地文件树 → 用量与条目数"的派生数据。旧实现把入口
+    # `refresh_share_roots` 注册了却没有任何前端调用（实测全仓零引用），
+    # 于是那三个字段（used_bytes / entries / scanned_at）从来没有被算出来过。
+    # 接入基建后它由统一的「校验」驱动，结果进 `_usage_cache` 供共享项卡片读取。
+
+    def freshness_spec(self) -> Dict[str, Any]:
+        return {
+            'roots': lambda: [Path(str(s.path)) for s in self._load_shares().values()
+                              if str(s.path or '').strip()],
+            'include': (),                 # 用量统计关心全部文件，不筛后缀
+            'derive': self._freshness_derive,
+            'prune': self._freshness_prune,
+            'on_verified': self._freshness_audit,
+            'on_pass_end': self._freshness_pass_end,
+            'rebuild': self._freshness_rebuild,
+            'content_version': 1,
+            'unit': '项',
+            'min_sync_interval': 10.0,     # 共享根可能很大：被动同步间隔放宽
+            'max_dirs_per_sync': 200,
+        }
+
+    def _freshness_derive(self, items) -> Dict[str, Any]:
+        """条目变化：受影响共享根的用量缓存作废（下次显示时重算）。"""
+        for item in items:
+            key = str(item.get('key') or '')
+            for share_id, usage in list(self._usage_cache.items()):
+                prefix = str(usage.get('path') or '')
+                if prefix and key.startswith(prefix):
+                    self._usage_cache.pop(share_id, None)
+        return {'count': len(items)}
+
+    def _freshness_prune(self, keys) -> int:
+        if keys:
+            self._usage_cache.clear()
+        return len(keys)
+
+    def _freshness_audit(self, keys) -> Dict[str, Any]:
+        """全量校验后的对账：用量缓存整体重算（共享根集合可能已经变了）。"""
+        self._usage_cache.clear()
+        return {'valid_entries': len(keys)}
+
+    def _freshness_pass_end(self, report, verified: bool) -> Dict[str, Any]:
+        """整趟结束：校验这一趟就把用量算出来（旧入口没人调，等于从没算过）。"""
+        if verified:
+            roots = self._share_roots_report()
+            return {'shares': len(roots),
+                    'used_bytes': sum(int(r.get('used_bytes') or 0) for r in roots)}
+        return {'shares': len(self._usage_cache)}
+
+    def _freshness_rebuild(self, kind: str = 'derived') -> Dict[str, Any]:
+        """逃生门：丢弃用量缓存（不动共享清单与配额设置）。"""
+        self._usage_cache.clear()
+        return {'kind': kind, 'cleared': True}
 
     @staticmethod
     def _count_entries(root: Path, max_entries: int = 200_000) -> int:
-        """目录树里的条目数（文件 + 目录），用于"这个共享项有多大"的粗略提示。"""
+        """目录树里的条目数（文件 + 目录），用于"这个共享项有多大"的粗略提示。
+
+        到上限就返回上限值：这时它是下界，但**不设**独立标志 —— 用量那边已经有
+        `truncated`（同一次遍历的两个数字一起被截断，界面按同一个"≥"显示即可）。
+        """
         count = 0
         for _base, dirs, files in os.walk(root):
             count += len(dirs) + len(files)

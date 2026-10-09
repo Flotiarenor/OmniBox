@@ -293,7 +293,8 @@ def main() -> int:
 
     if use_missing:
         print("目标模式: 清单缺失（done=1 但本地文件已不存在）")
-        print("  （注意: 只有整件作品没有任何文件在本地时才会命中；部分页被删的作品不会。）")
+        print("  （注意: 只有整件作品没有任何文件在本地时才会命中；只缺若干页的作品请用")
+        print("    界面上的「校验内容」——它按清单 page_count 判定缺页并重新入队。）")
         target = collect_missing_ids(db_path, pixiv_root)
     else:
         scope_text = "全部（不限时间）"

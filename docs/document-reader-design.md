@@ -108,6 +108,31 @@ Selenium 非无头），不是读源码推断的；下文标注"实测""踩过"�
   跨设备一致，且不受浏览器隐私模式影响。旧 localStorage 里带 `version` 的偏好会迁移一次
   （没有 `version` 的旧文件里，主题/模式是当年自动落盘的旧默认值，按新默认走）。
 
+### 4.1 书架缓存与统一刷新基建
+
+书架元信息存 `.document_state/.document_cache.json`（`documents` / `chapters` / `offsets`
+三段 + `parser_version`），进度存 `.document_progress.json`。两处回写曾经都晚了一步，
+现已修正并有用例守着（`tests/test_document_reader_formats.py` 的
+`test_chapter_count_survives_restart`）：
+
+- `get_chapters` 必须**先**把 `chapter_count` 写回 `_document_cache` 再 `_save_cache()`：
+  反过来的话磁盘上永远是旧值，而文件没变时 `list_documents` 会命中早返回分支，
+  书架那一行"N 章"再也回不来（退化成文件大小）；
+- `update_progress` 除了写 `.document_progress.json`，还要 `_save_cache()` 落盘书架条目：
+  否则重启后进度条与"最近阅读"排序停在上次全量重扫时的值。
+
+失效判据本身（逐文件 mtime + size + id 集合）是全仓最合理的一份，接入统一刷新基建
+（`shell/backend/freshness.py`，契约见 `docs/plugin-guide.md` §3.4）后换来的三件事：
+
+- **目录级短路**：不再每次进书架都全树 `os.walk` + 逐文件 `stat`；
+- **手动校验入口**：此前本插件没有任何重扫按钮（书架只在 `init` 读一次），
+  现在工具栏有共享组件的「同步状态 + 校验」（`#nr-freshness`）；
+- **解析规则版本整体失效**：`content_version = CACHE_VERSION`，取代"记得手动丢缓存"。
+
+条目键 = 相对根目录的 posix 路径（与缓存键、进度键同形）。同相对路径出现在多个根时，
+插件自己按遍历顺序给第二份加 `#2`，而指纹键只有一份 —— `on_verified` 对账时保留
+`#N` 变体，免得每跑一次校验就删一次合法的第二份。
+
 ## 5. 朗读设置页
 
 - 它是**主区的内容切换**（与书架网格、正文同一个位置），不是遮挡页：左栏"朗读设置"

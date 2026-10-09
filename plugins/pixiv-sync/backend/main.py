@@ -25,8 +25,8 @@ from pixiv_mini import PixivClient, PixivError
 from pixiv_sync import download, oauth, scan, store, tasks
 from pixiv_sync.db import WorksDB
 from pixiv_sync.limiter import RateLimiter, RateLimitError
-from pixiv_sync.store import collect_existing_ids, rebuild_existing
 
+from shell.backend.freshness import engine_for
 from shell.backend.plugin_base import PluginBase
 
 log = logging.getLogger(__name__)
@@ -135,6 +135,8 @@ class PixivSyncPlugin(PluginBase):
         self._cancel_flag = False
         self._downloaded_ids: Optional[Set[int]] = None
         self._failed_ids: Optional[Set[int]] = None
+        # 统一刷新基建：本趟看到的本地变化数（0 = 无需按指纹库重算 ids）
+        self._local_changed = 0
         self._oauth_verifier: Optional[str] = None
         self._db_wrapper: Optional[WorksDB] = None
         self._active_root: Optional[Path] = None      # 任务运行期间固定根目录
@@ -239,7 +241,12 @@ class PixivSyncPlugin(PluginBase):
             self._downloaded_ids = None
             self._failed_ids = None
             self._selected_cache = None
+            self._local_changed = 0
         self._task = tasks.load_task(self._tasks_file())
+        engine = engine_for(self)
+        if engine is not None:
+            # 换根后清掉去抖，让下一次被动同步立刻按新根重扫
+            engine.reset_throttle()
 
     def _finish_task_runtime(self) -> None:
         """任务结束：解除根目录固定，并应用运行期间用户修改设置的延迟重置。"""
@@ -290,6 +297,147 @@ class PixivSyncPlugin(PluginBase):
         return max(0, int(self._rate_limited_until - time.time()))
 
 
+    # ---------- 统一刷新基建（同步 / 校验） ----------
+    #
+    # "本地图片树 → 已下载作品集合"是本插件唯一的文件系统派生数据。旧实现每次
+    # 刷新记录/校验内容都全盘 walk 一遍（`store.scan_local`），而它们并没有共同的
+    # 失效判据。接入基建后：目录级短路决定"要不要重算"，**判据（缺页才算未完成）
+    # 与语义（谁进/谁出 ids）完全不变** —— 只是不再每次都走一遍磁盘。
+    #
+    # 另一方面，刷新记录与校验内容还有各自的并发缺口（只挡下载线程、自己不占位），
+    # 现在两者都转发到引擎，由引擎的单飞与状态托管。
+
+    def get_cache_dir(self) -> Path:
+        """缓存目录 = 本插件自己的 `<下载根>/.cache/pixiv-sync`。
+
+        必须覆写：本插件不覆写 `get_data_root()`（根来自 `download_dir` 设置，
+        未配置时才回落到宿主数据根），基类默认实现会去读 `config['directories']`，
+        而本插件的测试与运行都可能不带 `data_root`。
+        """
+        return self._cache_dir()
+
+    def freshness_spec(self) -> Dict:
+        return {
+            'roots': lambda: [self._root() / "pixiv"],
+            # 与 store.ID_NAME_RE 认识的扩展名保持一致：键集合要能反推出作品页数
+            'include': ('.jpg', '.jpeg', '.png', '.gif', '.webp'),
+            'derive': self._freshness_derive,
+            'prune': self._freshness_prune,
+            'on_verified': self._freshness_audit,
+            'on_pass_end': self._freshness_pass_end,
+            'rebuild': self._freshness_rebuild,
+            'content_version': 1,
+            'unit': '张',
+            # 图片树可能上万文件：被动同步间隔放宽，避免每次进页面都走一遍
+            'min_sync_interval': 10.0,
+        }
+
+    def _freshness_derive(self, items) -> Dict:
+        self._local_changed += len(items)
+        return {'count': len(items)}
+
+    def _freshness_prune(self, keys) -> int:
+        self._local_changed += len(keys)
+        return len(keys)
+
+    def _freshness_audit(self, keys) -> Dict:
+        """全量校验：以指纹库的有效键集合重建记录（含清单 done 快照）。"""
+        return self._sync_ids_from_keys(keys, reset_done=True, remove_zero=True)
+
+    def _freshness_pass_end(self, report, verified: bool) -> Dict:
+        """整趟结束：集合完整时才据它重算 ids（部分遍历会把没走到的当成消失）。"""
+        if report.get('partial') or report.get('errors'):
+            return {'skipped': 'incomplete'}
+        if not (verified or self._local_changed):
+            return {'skipped': 'unchanged'}
+        self._local_changed = 0
+        return self._sync_ids_from_keys(self._engine_keys(), reset_done=bool(verified),
+                                        remove_zero=True)
+
+    def _engine_keys(self) -> Set[str]:
+        engine = engine_for(self)
+        return engine.valid_keys() if engine is not None else set()
+
+    def _freshness_rebuild(self, kind: str = "derived") -> Dict:
+        """逃生门：按磁盘重算记录（**不删除** downloaded_ids.json —— 那是用户数据，
+        删掉等于让整个库重下一遍）。"""
+        return self._sync_ids_from_keys(self._engine_keys(), reset_done=True,
+                                        remove_zero=True)
+
+    def _local_pages(self, keys, remove_zero: bool = False):
+        """有效键集合 → ({作品 id: {页号}}, 删除的 0 字节文件数)。
+
+        0 字节残片（下载中断留下的）**不算有效页**，并按旧行为顺手删掉：
+        让它算一页会把"半截下载"判成"下全了"，缺页的作品就再也补不回来
+        （判据与 `store.scan_local(remove_zero=True)` 一致）。
+        """
+        root = self._root() / "pixiv"
+        pages: Dict[int, set] = {}
+        zero = 0
+        for key in keys or ():
+            path = root / str(key)
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            if size <= 0:
+                if remove_zero:
+                    try:
+                        path.unlink()
+                        zero += 1
+                    except OSError:
+                        pass
+                continue
+            match = store.ID_NAME_RE.match(path.name)
+            if not match:
+                continue
+            iid = int(match.group(1))
+            page = int(match.group(2)) if match.group(2) else 0
+            pages.setdefault(iid, set()).add(page)
+        return pages, zero
+
+    def _sync_ids_from_keys(self, keys, reset_done: bool, remove_zero: bool) -> Dict:
+        """按有效键集合把"已下载作品"与磁盘对齐（刷新记录与校验内容共用的实现）。
+
+        `stale` 与 `incomplete` 必须是两类，不能合并：前者是"本地一个有效文件都没有"
+        （失效记录），后者是"本地有文件但页数不足"（半截下载）。界面按两个数字分开
+        说明（"移除失效记录 N 条，缺页重新入队 M 件"），合并后就只剩一个笼统的数字。
+        两者都会被移出去重集合，因此 `ids` 最终等于 `recorded`。
+        """
+        pages, zero = self._local_pages(keys, remove_zero=remove_zero)
+        local_ids = {iid for iid, pg in pages.items() if pg}
+        incomplete = self._db().incomplete_ids(pages)
+        recorded = set(self._db().importable_ids(pages))
+        before = set(self._load_ids())
+        stale = sorted(before - local_ids)
+        failed = self._load_failed_ids()
+        # 失败跳过里"本地已经有有效文件"的，应当被清掉（下次同步会重新检查）
+        failed_cleared = [iid for iid in failed if iid in local_ids]
+        with self._task_lock:
+            # **就地增删**：`_run_sync` 里的 `ids` 是同一个 set 对象，换成新对象会让
+            # 下载线程随后写回的记录全部丢失（`_save_ids` 读的是 self._downloaded_ids）。
+            ids = self._load_ids()
+            ids.intersection_update(recorded)
+            ids.update(recorded)
+            store.save_ids(self._ids_file(), ids)
+            if failed_cleared:
+                for iid in failed_cleared:
+                    failed.discard(iid)
+                store.save_failed_ids(self._failed_file(), failed)
+        reset = sorted(set(stale) | set(incomplete))
+        if reset_done and reset:
+            self._db().reset_done_ids(reset)
+        return {
+            'ok': True,
+            'total': len(recorded),
+            'imported': len(recorded - before),
+            'stale_removed': len(stale),
+            'incomplete': len(incomplete),
+            'incomplete_skipped': len(local_ids) - len(recorded),
+            'failed_cleared': len(failed_cleared),
+            'zero_removed': zero,
+        }
+
     # ---------- 已有图片扫描（手动放入的旧图并入去重） ----------
 
     def _scan_existing_ids(self) -> int:
@@ -297,11 +445,21 @@ class PixivSyncPlugin(PluginBase):
 
         用于识别用户手动放入的旧图：文件名符合 `{id}.jpg` / `{id}_p0.jpg` 规则即可被识别，
         之后全量更新会直接跳过，不会重复检查/下载。
+
+        清单已记录、但本地页数少于清单 page_count 的作品**不并入**：半截下载若在这里
+        被认成「已下载」，下载阶段就再也不会碰它，「校验内容」刚移出的作品也会被重新
+        认回去，缺的页永远补不回来（判据见 db.WorksDB.importable_ids）。
+
+        优先用指纹库的键集合（同步刚走过，等于白拿）；引擎不可用时退回全盘 walk。
         """
-        root = self._root() / "pixiv"
+        keys = self._engine_keys()
+        if keys:
+            pages, _zero = self._local_pages(keys)
+        else:
+            _ids, _zero, pages = store.scan_local(self._root() / "pixiv")
         ids = self._load_ids()
         before = len(ids)
-        ids |= collect_existing_ids(root)
+        ids |= self._db().importable_ids(pages)
         found = len(ids) - before
         if found:
             with self._task_lock:
@@ -607,69 +765,40 @@ class PixivSyncPlugin(PluginBase):
             return 4
 
     def refresh_downloaded(self) -> Dict:
-        """刷新已下载记录：扫描本地重建 ids（手动删过的移除、手动加的导入、0 字节清理）。
+        """刷新已下载记录（兼容入口，转发到统一刷新的「同步」）。
 
-        同时把 works.db 中“已从 ids 消失”的作品 done 重置为 0；下载过滤已改为以
-        ids/failed 为准，但这里仍重置快照，让前端待下载统计保持准确。
+        语义不变：以本地为准重建 ids（手动删过的移除、手动加的导入、0 字节清理），
+        清单已记录但本地页数不足的作品不并入（半截下载不算「已下载」，要补齐请点
+        「校验内容」把它重新入队）。差别只是"要不要真扫一遍"现在由指纹决定。
         """
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return {"ok": False, "error": "已有任务在运行，请先等待任务结束"}
-        try:
-            existing, zero = rebuild_existing(self._root() / "pixiv")
-            ids = self._load_ids()
-            stale = [iid for iid in ids if iid not in existing]
-            failed = self._load_failed_ids()
-            failed_cleared = [iid for iid in failed if iid in existing]
-            with self._task_lock:
-                self._downloaded_ids = set(existing)
-                store.save_ids(self._ids_file(), existing)
-                if failed_cleared:
-                    for iid in failed_cleared:
-                        failed.discard(iid)
-                    store.save_failed_ids(self._failed_file(), failed)
-            if stale:
-                self._db().reset_done_ids(stale)
-            return {
-                "ok": True,
-                "total": len(existing),
-                "zero_removed": zero,
-                "stale_removed": len(stale),
-                "failed_cleared": len(failed_cleared),
-            }
-        except Exception as e:
-            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        engine = engine_for(self)
+        if engine is None:
+            return {"ok": False, "error": "刷新基建未接入"}
+        engine.sync("", force=True)
+        last = (engine.state().get("last_report") or {}).get("pass_end") or {}
+        if not last or last.get("skipped"):
+            # 同步没有走到重算（集合不完整）：退回显式按指纹库重算一次
+            last = self._sync_ids_from_keys(self._engine_keys(), reset_done=False,
+                                            remove_zero=True)
+        return {"ok": True, **{k: last.get(k, 0) for k in
+                               ("total", "zero_removed", "stale_removed",
+                                "failed_cleared", "incomplete_skipped")}}
 
     def verify_downloaded(self) -> Dict:
-        """校验已下载内容：移除记录中本地无有效文件的失效 id，并重置清单 done 快照。"""
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return {"ok": False, "error": "已有任务在运行，请先等待任务结束"}
-        try:
-            existing, zero = rebuild_existing(self._root() / "pixiv")
-            ids = self._load_ids()
-            stale = [iid for iid in ids if iid not in existing]
-            failed = self._load_failed_ids()
-            failed_cleared = [iid for iid in failed if iid in existing]
-            with self._task_lock:
-                for iid in stale:
-                    ids.discard(iid)
-                store.save_ids(self._ids_file(), ids)
-                if failed_cleared:
-                    for iid in failed_cleared:
-                        failed.discard(iid)
-                    store.save_failed_ids(self._failed_file(), failed)
-            if stale:
-                self._db().reset_done_ids(stale)
-            return {
-                "ok": True,
-                "stale_removed": len(stale),
-                "zero_removed": zero,
-                "failed_cleared": len(failed_cleared),
-                "total": len(ids),
-            }
-        except Exception as e:
-            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        """校验已下载内容（兼容入口，转发到统一刷新的「校验」）。
+
+        语义不变：本地无有效文件的失效 id 移出记录；清单 page_count 比本地页数多的
+        作品（半截下载、漏页）一并移出并重置 done，下次同步只补缺的页；不导入新增
+        （手动放入的旧图用「刷新记录」—— 现在被动同步也会导入）。
+        """
+        engine = engine_for(self)
+        if engine is None:
+            return {"ok": False, "error": "刷新基建未接入"}
+        report = engine.verify()
+        audited = report.get("audited") or {}
+        return {"ok": True, **{k: audited.get(k, 0) for k in
+                               ("stale_removed", "zero_removed", "failed_cleared",
+                                "total", "incomplete")}}
 
     # ---------- 状态 / API ----------
 

@@ -21,6 +21,8 @@ Object.assign(ImageViewer.prototype, {
             this.albums = [];
         }
         this.showAlbums();
+        // 被动同步：进相册视图时校验根目录集合（组件去抖 + 壳侧节流）
+        this._autoSyncFreshness('');
     },
 
     showAlbums() {
@@ -153,7 +155,7 @@ Object.assign(ImageViewer.prototype, {
             return `
             <div class="iv-album" data-path="${this._escapeAttr(album.path)}">
                 <div class="iv-album-cover">
-                    ${album.cover ? `<img src="${Bridge.thumbUrl(album.cover)}" loading="lazy" alt=""
+                    ${album.cover ? `<img src="${this._thumbUrl({ url: album.cover, mtime: album.mtime })}" loading="lazy" alt=""
                         onerror="if(!this.dataset.r){this.dataset.r='1';const u=new URL(this.src,location.origin);u.searchParams.set('r',Date.now());this.src=u.toString();}else{this.outerHTML='<div class=\'iv-cover-fallback\'>' + Icons.html('icon:image-off') + '</div>';}">` : '<div class="iv-cover-fallback">' + Icons.html('icon:image-off') + '</div>'}
                     <span class="iv-album-badge">${countText}</span>
                     ${time}

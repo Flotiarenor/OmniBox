@@ -737,7 +737,7 @@ class RemotePageRenderTest(unittest.TestCase):
         self.assertNotIn('list_peers:refresh', calls)
 
     def test_share_root_unavailable_is_visible(self):
-        """共享根所在磁盘未接入时必须显示出来 —— 这正是 G:\\图库 拔盘后的表现。"""
+        """共享根所在磁盘未接入时必须显示出来 —— 这正是 D:\\图库 拔盘后的表现。"""
         self._load()
         wait_for_text(self.driver, 'shares-body', 'pub')
         shares = text_for(self.driver, 'shares-body')

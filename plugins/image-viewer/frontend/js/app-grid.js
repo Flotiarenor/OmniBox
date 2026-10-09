@@ -30,11 +30,19 @@ Object.assign(ImageViewer.prototype, {
             const sortOrder = this.currentSettings.sort_order || 'desc';
             const data = await Bridge.call('list_folder_items', path, page, perPage, sortBy, sortOrder);
             this.currentPage = page;
+            // 被动同步：只校验当前目录（组件去抖，壳侧还会按目录做 mtime 短路）
+            this._autoSyncFreshness(path);
             this.currentItems = data.items || [];
             this.currentImages = this.currentItems.filter(it => it.type !== 'album');
             this.currentAllImages = data.all_images || this.currentImages;
             this.currentAllOffset = data.all_offset || 0;
-            if (data.all_truncated) {
+            // 序列里少了容器子目录的图片（后端不再为首屏展开整棵子树）：
+            // 记住目录路径，等真正打开灯箱时再取完整序列补进来
+            this._sequencePath = data.sequence_pending ? path : null;
+            this._sequenceFull = null;
+            // 只在真撞上 5000 条上限时提示：序列不完整还有另一个原因——里面有待补的
+            // 容器瓦片（`sequence_pending`），那不是截断，不该弹「已截断」吓用户
+            if (data.all_capped) {
                 Toast.warning('相册较大，连续浏览序列已截断（前 5000 张）');
             }
             if (data.settings) {
@@ -66,6 +74,7 @@ Object.assign(ImageViewer.prototype, {
 
     renderJustifiedLayout(items) {
         const grid = document.getElementById('image-grid');
+        this._resetAlbumTiles();
         grid.innerHTML = '';
         const containerWidth = grid.clientWidth;
         if (containerWidth === 0 || !items.length) return;
@@ -103,9 +112,12 @@ Object.assign(ImageViewer.prototype, {
                 card.dataset.path = item.path;
                 const name = item.name;
                 const isContainer = item.image_count === 0 && item.has_children;
+                if (item.pending) card.classList.add('iv-tile-pending');
                 if (item.cover) {
                     const img = document.createElement('img');
-                    img.src = Bridge.thumbUrl(item.cover);
+                    img.className = 'iv-cover-img';
+                    // 带 mtime 版本号：缩略图被重建后 URL 才会变（壳的 /thumbs 有一天强缓存）
+                    img.src = this._thumbUrl({ url: item.cover, mtime: item.mtime });
                     img.loading = 'lazy';
                     img.alt = name;
                     img.onerror = function () {
@@ -125,10 +137,11 @@ Object.assign(ImageViewer.prototype, {
                     fb.innerHTML = Icons.html('icon:image-off');
                     card.appendChild(fb);
                 }
-                if (item.use_time_name) {
+                // 角标：补到计数之前不渲染，避免先亮一个 0（见 _applyAlbumTile）
+                if (item.use_time_name && item.total_count != null) {
                     const badge = document.createElement('span');
                     badge.className = 'iv-count-badge';
-                    badge.textContent = item.total_count != null ? item.total_count : item.image_count;
+                    badge.textContent = item.total_count;
                     card.appendChild(badge);
                 }
                 const p = document.createElement('p');
@@ -140,14 +153,14 @@ Object.assign(ImageViewer.prototype, {
                 } else {
                     // 作品文件夹：点击从 p0 打开灯箱，向右连续翻看该作品 p1 p2 … 及后续作品
                     card.addEventListener('click', () => {
-                        this.lightbox.show(this.currentAllImages, seqIndex.get(index));
+                        this._showFromCard(item, index, seqIndex);
                     });
                 }
             } else {
                 // 单图卡片
                 card.dataset.url = item.url;
                 const img = document.createElement('img');
-                img.src = Bridge.thumbUrl(item.url);
+                img.src = this._thumbUrl(item);
                 img.loading = 'lazy';
                 img.alt = item.url.split('/').pop();
                 const p = document.createElement('p');
@@ -157,7 +170,7 @@ Object.assign(ImageViewer.prototype, {
                     if (this.isMultiSelectMode) {
                         this.toggleSelectImage(item.url, card);
                     } else {
-                        this.lightbox.show(this.currentAllImages, seqIndex.get(index));
+                        this._showFromCard(item, index, seqIndex);
                     }
                 });
             }
@@ -165,7 +178,165 @@ Object.assign(ImageViewer.prototype, {
                 card.classList.add('selected');
             }
             grid.appendChild(card);
+            if (item.pending) this._watchAlbumTile(item, card);
         });
+        // 首批立即取：占位瓦片（首启等冷索引场景）不必等用户滚动才补
+        this._flushAlbumTiles();
+    },
+
+    // ============================================================
+    // 灯箱连续浏览序列（分级加载第三级）
+    //
+    // 后端列目录时不再展开容器子目录的图片（展开要读整棵子树，实测某个 4 万张的
+    // 容器目录单是列出外层就要 3.3s），所以 `currentAllImages` 可能不完整。点开
+    // 瓦片时先按现有序列**立刻**打开灯箱，再异步取完整序列交给
+    // `lightbox.setItems()` 换掉（它自己会停在正在看的那张）—— 用户不用等，
+    // 也不影响已经在看的那张图。
+    // ============================================================
+    _showFromCard(item, index, seqIndex) {
+        const startIndex = seqIndex.get(index) || 0;
+        this.lightbox.show(this.currentAllImages, startIndex);
+        if (this._sequencePath) this._upgradeSequence(startIndex, item.url || item.cover);
+    },
+
+    async _upgradeSequence(startIndex, clickedUrl) {
+        if (!this._sequencePath || this._sequenceFull) return;
+        const path = this._sequencePath;
+        let data = null;
+        try {
+            data = await Bridge.call('list_album_images', path);
+        } catch (e) {
+            return;                                  // 取不到就按现有序列用，不报错打断
+        }
+        // 期间用户已经换目录 / 换页 → 结果作废
+        if (!data || !data.images || this._sequencePath !== path
+                || this.currentPath !== path) {
+            return;
+        }
+        this._sequenceFull = data.images;
+        const lightbox = this.lightbox;
+        if (!lightbox || typeof lightbox.setItems !== 'function') return;
+        const shown = lightbox.items && lightbox.items.length
+            ? lightbox.items[lightbox.getIndex()] : null;
+        const focusUrl = (shown && shown.url) || clickedUrl || '';
+        // 交给灯箱自己换序列：items / currentIndex 是它的闭包状态，外部赋值不生效
+        lightbox.setItems(data.images, focusUrl, startIndex);
+    },
+
+    // ============================================================
+    // 相册瓦片的二级加载（分级加载第二级）
+    //
+    // 后端列目录时只读当前目录一层：容器子目录的封面与递归图片数若不在索引缓存
+    // 里，就以 `pending` 占位返回，不含封面、`total_count` 为 null。这里对**进入
+    // 视口**的占位瓦片分批调 `load_album_tiles` 补齐，每批十几个目录。
+    //
+    // 补到之后只改这张卡自己的封面与角标，**不重算瀑布流布局**：布局在首屏已经
+    // 定了，重排会让正在滚动的位置跳动。占位期用 1:1 的框（后端 width/height 给 1）
+    // 兜底，补到封面后按真实比例显示。
+    // ============================================================
+    _resetAlbumTiles() {
+        if (this._tileObserver) {
+            this._tileObserver.disconnect();
+            this._tileObserver = null;
+        }
+        if (this._tileTimer) {
+            clearTimeout(this._tileTimer);
+            this._tileTimer = null;
+        }
+        this._tileQueue = [];
+        this._tileByPath = new Map();
+        this._tileObserver = ('IntersectionObserver' in window)
+            ? new IntersectionObserver((entries) => {
+                let hit = false;
+                entries.forEach((entry) => {
+                    if (!entry.isIntersecting) return;
+                    const path = entry.target.dataset.pendingPath;
+                    if (path && this._tileByPath.has(path) && !this._tileQueue.includes(path)) {
+                        this._tileQueue.push(path);
+                        hit = true;
+                    }
+                });
+                if (hit) this._flushAlbumTiles();
+            }, { root: document.getElementById('iv-content'), rootMargin: '250px 0px' })
+            : null;
+    },
+
+    _watchAlbumTile(item, card) {
+        if (!this._tileByPath) this._resetAlbumTiles();
+        this._tileByPath.set(item.path, { item, card });
+        if (this._tileObserver) {
+            card.dataset.pendingPath = item.path;
+            this._tileObserver.observe(card);
+        }
+        // 没有 IntersectionObserver（或卡片尚未进入视口判定）时兜底：先排进队列，
+        // 由 _flushAlbumTiles 按批取
+        if (!this._tileObserver && !this._tileQueue.includes(item.path)) {
+            this._tileQueue.push(item.path);
+        }
+    },
+
+    _flushAlbumTiles() {
+        if (this._tileTimer || !this._tileQueue || !this._tileQueue.length) return;
+        // 合并同一帧内的多次入队：一次请求覆盖一批瓦片，而不是一张一个请求
+        this._tileTimer = setTimeout(() => {
+            this._tileTimer = null;
+            this._loadAlbumTileBatch();
+        }, this._TILE_BATCH_DELAY);
+    },
+
+    async _loadAlbumTileBatch() {
+        if (!this._tileQueue || !this._tileQueue.length) return;
+        const batch = this._tileQueue.splice(0, this._TILE_BATCH_SIZE);
+        let tiles = {};
+        try {
+            const data = await Bridge.call('load_album_tiles', batch);
+            tiles = (data && data.tiles) || {};
+        } catch (e) {
+            tiles = {};
+        }
+        batch.forEach((path) => {
+            const entry = this._tileByPath && this._tileByPath.get(path);
+            if (!entry) return;
+            this._applyAlbumTile(entry.item, entry.card, tiles[path] || null);
+            this._tileByPath.delete(path);
+            if (this._tileObserver) this._tileObserver.unobserve(entry.card);
+        });
+        // 队列里还有（用户滚得快 / 首屏瓦片多）就继续下一批
+        if (this._tileQueue.length) this._flushAlbumTiles();
+    },
+
+    _applyAlbumTile(item, card, tile) {
+        if (!tile) return;
+        item.pending = false;
+        item.cover = tile.cover || '';
+        item.total_count = tile.total_count;
+        item.use_time_name = !!tile.use_time_name;
+        if (tile.cover) {
+            const img = card.querySelector('img.iv-cover-img')
+                || card.querySelector('.iv-cover-fallback');
+            if (img) {
+                const real = document.createElement('img');
+                real.className = 'iv-cover-img';
+                real.alt = item.name || '';
+                real.loading = 'lazy';
+                real.onerror = function () {
+                    this.outerHTML = '<div class="iv-cover-fallback">'
+                        + Icons.html('icon:image-off') + '</div>';
+                };
+                real.src = this._thumbUrl({ url: tile.cover, mtime: tile.mtime });
+                img.replaceWith(real);
+            }
+        }
+        // 角标：Pixiv 排序下显示递归张数；补到之前不显示（避免先亮一个 0）
+        if (item.use_time_name && tile.total_count != null) {
+            let badge = card.querySelector('.iv-count-badge');
+            if (!badge) {
+                badge = document.createElement('span');
+                badge.className = 'iv-count-badge';
+                card.appendChild(badge);
+            }
+            badge.textContent = tile.total_count;
+        }
     },
 
     filterCurrentImages(keyword = '') {

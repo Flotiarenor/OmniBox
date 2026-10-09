@@ -419,14 +419,15 @@ def main() -> int:
             # ── 阶段 3：走 group-mesh 的根把字节取回本地 ─────────────────────
             pause('现在用 group-mesh 自己的根把这 6 张图取回本地（浏览器里同源 fetch）')
             say(f'取回结果: {fetch_all_through_group_mesh(driver, cache_root)}')
-            pause('字节已落本地，回「图片相册」点刷新')
+            pause('字节已落本地，回「图片相册」点校验')
 
             enter_plugin(driver, '图片相册', 'image-viewer')
+            # 「校验」来自壳的共享组件 shell/freshness.js（插件自己的「刷新」已下线）
             refresh = None
-            if wait_for(driver, lambda: len(driver.find_elements(By.ID, 'btn-refresh')) > 0):
-                refresh = driver.find_element(By.ID, 'btn-refresh')
+            if wait_for(driver, lambda: len(driver.find_elements(By.CSS_SELECTOR, '#iv-freshness [data-fr="verify"]')) > 0):
+                refresh = driver.find_element(By.CSS_SELECTOR, '#iv-freshness [data-fr="verify"]')
             if refresh is not None:
-                click(driver, refresh, '点击「刷新」（清掉列表/相册缓存，重新扫描）')
+                click(driver, refresh, '点击「校验」（清掉列表/相册缓存，重新扫描全库）')
             time.sleep(max(PAUSE, 2.0))
             # 刷新后若回到了相册树（而不是刚才那个目录），再点一次进去。
             if not driver.find_elements(By.CSS_SELECTOR, '.iv-image-card[data-url]'):
