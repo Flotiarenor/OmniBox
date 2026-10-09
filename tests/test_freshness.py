@@ -344,6 +344,20 @@ class FreshnessEngineTests(unittest.TestCase):
         self.assertEqual(report['removed'], 0)
         self.assertEqual(self.plugin.pruned, [])
 
+    def test_valid_keys_exposes_the_full_entry_set(self):
+        """派生数据不按条目算的插件靠它反推（pixiv-sync 的"已下载作品集合"）。"""
+        self._write('a.jpg')
+        self._write('sub/b.jpg')
+        self._sync()
+
+        self.assertEqual(self.engine.valid_keys(), {'a.jpg', 'sub/b.jpg'})
+
+        (self.root / 'sub' / 'b.jpg').unlink()
+        os.utime(self.root / 'sub', (time.time(), time.time()))
+        self._sync()
+
+        self.assertEqual(self.engine.valid_keys(), {'a.jpg'})
+
     def test_multi_root_prefixes_map_to_virtual_keys(self):
         extra = Path(self._tmp.name) / 'extra'
         extra.mkdir()

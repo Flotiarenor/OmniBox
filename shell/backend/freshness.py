@@ -500,6 +500,23 @@ class FreshnessEngine:
             return True
         return False
 
+    def valid_keys(self) -> Set[str]:
+        """当前指纹库里的全部有效条目键（一次查询）。
+
+        给"派生数据不是按条目算的"插件用：例如 pixiv-sync 的"已下载作品集合"要从
+        **整个**键集合反推（哪些作品下全了、哪些缺页），而不是逐个文件回调。
+        在 `on_pass_end` 里调用前先看报告：部分遍历（`partial`）或读取有错时集合
+        并不完整，据此重算会把没走到的部分当成"消失了"。
+        """
+        try:
+            conn = self.store.connect()
+        except sqlite3.Error:
+            return set()
+        try:
+            return self.store.entry_keys(conn)
+        finally:
+            conn.close()
+
     def reset_throttle(self) -> None:
         """清掉去抖时间戳，让下一次同步立即真扫。
 
