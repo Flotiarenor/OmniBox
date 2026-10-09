@@ -22,6 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from shell.backend.plugin_utils import load_sibling
 
 SCANNER_PATH = PROJECT_ROOT / 'plugins' / 'manga-library' / 'backend' / 'scanner.py'
+PLUGIN_DIR = PROJECT_ROOT / 'plugins' / 'manga-library'
 scanner = load_sibling(str(SCANNER_PATH), 'scanner', 'manga_library_scanner_test')
 
 # 测试数据放工作区内（沙箱/CI 下系统临时目录可能不可写，同 tests/debug_media_scan_task.py）。
@@ -134,6 +135,68 @@ class HasImagesUnitTest(_TempRootTestCase):
 
     def test_missing_folder_is_treated_as_empty(self):
         self.assertFalse(scanner.has_images(self.root / 'missing'))
+
+
+class ShelfCacheTest(_TempRootTestCase):
+    """书架列表缓存：只在"磁盘确实变了"时重建（统一刷新基建驱动失效）。
+
+    回归对象：旧实现的 `_cache` 是死缓存 —— 唯一调用点 `_scan_manga` 的判据是
+    `if self._cache is None`，而 `list_manga` 在调用它之前刚把 `_cache` 置 None，
+    于是每次 `manga_get_state` + `manga_list` 各全量重扫一遍，切一次视图两遍全树。
+    """
+
+    def _plugin(self):
+        from shell.backend.freshness import engine_for
+        from tools.check_plugins import _load_backend_class
+
+        cls = _load_backend_class(PLUGIN_DIR, 'backend/main.py', 'MangaLibraryPlugin')
+        cls._resolved_config = {'root_dir': str(self.root)}
+        plugin = cls({'name': 'manga-library'},
+                     {'directories': {'data_root': str(self.root)}})
+        self.addCleanup(plugin.on_unload)
+        return plugin, engine_for(plugin)
+
+    def test_shelf_is_served_from_cache_between_views(self):
+        _touch(self.root / 'A', '001.jpg')
+        plugin, engine = self._plugin()
+        engine.spec.min_sync_interval = 0.0
+
+        first = plugin.list_manga()
+        engine.sync('', force=True)                 # 被动同步：磁盘没变
+        plugin._shelf = None                        # 人为丢掉缓存，证明下面读的是缓存
+        engine.spec.content_version = plugin.SHELF_VERSION
+        shelf = plugin._scan_manga()
+
+        self.assertEqual([m['folder_name'] for m in shelf], ['A'])
+        self.assertEqual([m['folder_name'] for m in first], ['A'])
+        self.assertFalse(plugin._shelf_dirty, '稳态不该被标脏')
+
+    def test_new_folder_invalidates_shelf(self):
+        _touch(self.root / 'A', '001.jpg')
+        plugin, engine = self._plugin()
+        engine.spec.min_sync_interval = 0.0
+        self.assertEqual([m['folder_name'] for m in plugin.list_manga()], ['A'])
+
+        _touch(self.root / 'B', '001.jpg')
+        engine.sync('', force=True)
+
+        self.assertTrue(plugin._shelf_dirty, '新增漫画后书架缓存必须作废')
+        self.assertEqual([m['folder_name'] for m in plugin.list_manga()], ['A', 'B'])
+
+    def test_favorite_toggle_invalidates_shelf(self):
+        _touch(self.root / 'A', '001.jpg')
+        plugin, _engine = self._plugin()
+        self.assertFalse(plugin.list_manga()[0]['is_fav'])
+
+        self.assertTrue(plugin.toggle_favorite('A'))
+
+        self.assertTrue(plugin.list_manga()[0]['is_fav'])
+
+    def test_invalid_folder_name_is_rejected(self):
+        plugin, _engine = self._plugin()
+        for bad in ('../x', 'a/b', 'a\\b', '', '.', '..'):
+            self.assertFalse(plugin.toggle_favorite(bad), bad)
+            self.assertEqual(plugin.update_recent(bad, 1)['status'], 'error', bad)
 
 
 if __name__ == '__main__':

@@ -58,8 +58,7 @@ plugins/manga-library/
 │   ├── 00001.jpg …                # 单章漫画：图片直接平铺（jmcomic dir_rule = Bd / Aid）
 │   └── <章节标题>/                # 多章漫画：按章节分子目录（dir_rule 换成 Bd / Aid / Pindextitle）
 ├── .cache/
-│   ├── manga_state.json           # 收藏与最近阅读：{favorites: [folder_name…], recent: [{id, page, time}…]}
-│   └── covers/                    # 封面缓存目录（__init__ 中创建，当前实现未向其中写文件）
+│   └── manga_state.json           # 收藏与最近阅读：{favorites: [folder_name…], recent: [{id, page, time}…]}
 └── .jmcomic_state/                # 下载中心状态目录（与旧 download-center 完全一致，任务可继承）
     ├── download_state.json        # 任务表（DownloadTask.to_state_dict 的字典）
     └── progress_<task_id>.json    # 进度快照，每下载 5 张图片刷新一次
@@ -67,13 +66,30 @@ plugins/manga-library/
 
 `.jmcomic_state` 建不出来时（`PermissionError` / `OSError`）回落到 `~/.jmcomic_state`。`.cache/manga_state.json` 缺失或损坏时按 `{favorites: [], recent: []}` 处理；`download_state.json` 缺失或损坏时任务表为空，且恢复时把 `downloading` 任务统一降级为 `paused`。
 
+### 2.1 书架缓存与统一刷新
+
+书架列表（每部漫画的标题/作者/页数/封面）是**派生数据**，缓存在内存 `self._shelf`，
+失效判据交给 Shell 的统一刷新基建（`shell/backend/freshness.py`，契约见
+`docs/plugin-guide.md` §3.4）：
+
+- 条目 = 漫画根下的图片（含章节子目录），条目键 = 相对根的 posix 路径；
+- **目录级短路**：磁盘没变时连 `derive` 都不会被调用，于是
+  `manga_get_state` + `manga_list` 各调一次 `list_manga()` 也全部只读内存 ——
+  旧实现没有可用缓存（`_cache` 是死缓存：唯一调用点在它之前刚把它置 None），
+  切一次视图就是两遍全树；
+- `derive` / `prune` / `on_verified` 作废或裁剪缓存，`content_version = SHELF_VERSION`
+  在"收录规则/封面挑选"变更时整体作废；
+- 收藏切换（`is_fav` 写在卡片上）与换根也调 `_reset_shelf()`；
+- 工具栏有共享组件的「同步状态 + 校验」（`#ml-freshness`）；`toggle_favorite` /
+  `update_recent` 现在校验 `folder_name` 是单个目录名（它会被写进状态文件）。
+
 ## 3. 后端 API 契约
 
 ### 3.1 注册表（`register_api()`）
 
 | API | 参数 | 返回 | 说明 |
 | --- | --- | --- | --- |
-| `manga_list` | 无 | `List[dict]` | 强制重新扫描漫画根目录，返回全部漫画对象 |
+| `manga_list` | 无 | `List[dict]` | 返回全部漫画对象；**读缓存**（仅在磁盘变化/收藏变更/换根后重建，见 §「书架缓存与统一刷新」） |
 | `manga_search` | `keyword` | `List[dict]` | 在 `title` / `author` 上做小写子串匹配；空关键字等价 `manga_list` |
 | `manga_get_state` | 无 | `{recent, favorites}` | 按 state 里的 id 取回完整漫画对象；`recent` 截断到 `recent_count`，两者都按 `folder_name` 索引 |
 | `manga_toggle_favorite` | `folder_name` | `bool` | 切换收藏，返回切换后的状态；同时清空扫描缓存 |

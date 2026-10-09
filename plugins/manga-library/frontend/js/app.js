@@ -23,6 +23,7 @@ class MangaLibraryApp {
 
         this.reader = new MangaReader();
         this._bindUI();
+        this._mountFreshness();
         await this.loadView();
         await this.loadTasks();
         this._bindPluginLifecycle();
@@ -120,9 +121,34 @@ class MangaLibraryApp {
     }
 
     // ============================================================
+    // 统一刷新（同步 / 校验）
+    // ============================================================
+
+    /** 挂载共享组件（shell/freshness.js，见 docs/plugin-guide §3.4）。 */
+    _mountFreshness() {
+        const host = document.getElementById('ml-freshness');
+        if (!host || typeof Freshness === 'undefined') return;
+        this.freshness = Freshness.mount({
+            plugin: 'manga-library',
+            container: host,
+            unit: '部',
+            onChange: () => this.loadView(),
+        });
+    }
+
+    /** 被动同步：进书架视图时触发（组件去抖，壳侧还有最小间隔）。 */
+    _autoSyncFreshness() {
+        if (this.freshness && typeof this.freshness.autoSync === 'function') {
+            this.freshness.autoSync('');
+        }
+    }
+
+    // ============================================================
     // 视图渲染
     // ============================================================
     async loadView() {
+        // 书架的被动同步：只在看书架类视图时做（下载中心不关心磁盘漫画目录）
+        if (!['downloads'].includes(this.currentView)) this._autoSyncFreshness();
         const content = document.getElementById('ml-content');
         const title = document.getElementById('ml-view-title');
         const sub = document.getElementById('ml-view-sub');
