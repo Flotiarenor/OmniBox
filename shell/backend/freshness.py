@@ -525,6 +525,18 @@ class FreshnessEngine:
             return True
         return False
 
+    def progress(self, text: str = '') -> None:
+        """插件钩子里的进度文本：写进当前任务（没有任务时忽略）。
+
+        收尾类钩子（`on_pass_end`）跑在任务结束之前、却拿不到任务对象，而它们的
+        收尾工作（重建索引之类）可能耗时数秒。没有这句文本，界面会停在"进度满了"
+        却仍未结束的状态，看起来像卡住。
+        """
+        with self._lock:
+            task = self._task
+        if task is not None:
+            task.update(current=text or '')
+
     def valid_keys(self) -> Set[str]:
         """当前指纹库里的全部有效条目键（一次查询）。
 

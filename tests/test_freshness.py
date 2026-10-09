@@ -182,6 +182,38 @@ class FreshnessEngineTests(unittest.TestCase):
         self.assertEqual(report['action'], 'verify')
         self.assertEqual(sorted(self._derive_keys()), ['a.jpg'])
 
+    def test_pass_end_can_report_progress_inside_the_task(self):
+        """收尾钩子要能把"正在重建索引"写进任务进度。
+
+        否则界面停在"进度满了"却仍未结束的状态 —— 收尾重活（重建索引之类）可能
+        耗时数秒，看起来就是卡住。钩子拿不到任务对象，只能通过 `engine.progress()`。
+        """
+        seen = []
+        engine_holder = {}
+
+        def pass_end(report, verified):
+            engine_holder['engine'].progress('重建索引')
+            seen.append(engine_holder['engine'].state()['task']['current'])
+            return {'post': 'index'}
+
+        self._write('a.jpg')
+        self.plugin._spec = _spec(self.plugin, self.root, on_pass_end=pass_end)
+        self.plugin._freshness_engine = None
+        engine = engine_for(self.plugin)
+        engine_holder['engine'] = engine
+
+        engine.start_verify()
+        for _ in range(300):
+            if not engine.state()['busy']:
+                break
+            time.sleep(0.01)
+
+        self.assertEqual(seen, ['重建索引'], '钩子里的进度文本要落到当前任务上')
+        self.assertEqual(engine.state()['last_report']['pass_end'], {'post': 'index'})
+
+    def test_progress_without_a_task_is_a_no_op(self):
+        self.assertIsNone(self.engine.progress('无所谓'))       # 不抛错即可
+
     def test_stat_entries_opt_in_makes_sync_see_in_place_writes(self):
         """边界固化②：目录不大、且要求"替换立刻反映"的插件用 stat_entries 换准确度。"""
         self.plugin._spec = _spec(self.plugin, self.root, stat_entries=True)
