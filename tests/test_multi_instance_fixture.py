@@ -319,16 +319,28 @@ class MultiInstanceMeshTest(unittest.TestCase):
         不依赖时序断言"取消时正好传到一半"：取消在分块边界生效，落点是 [0, total]
         里的任意一点；这里断言的是**不变量**——任务报的 `sent` 必须与对端暂存文件
         的实际大小一致，然后从那个点续传到完成、内容完整。
+
+        **取消可能落在传输之后**：取消只对"还在跑"的任务有意义，慢 runner 上 512 KB
+        可能先传完（CI windows/py3.10 实测过：`cancel_upload` 返回
+        `任务已经结束（done）`）。那不是缺陷，此时退化为"首次即传完"分支并校验内容；
+        续传本身由 `test_resume_from_a_seeded_partial_upload` 确定性覆盖。
         """
-        payload = bytes(range(256)) * 2048        # 512 KB，跨多个分块
+        payload = bytes(range(256)) * 8192        # 2 MB，跨多个分块
         source = self._source('可续传.bin', payload)
         started = self._upload(source, 'resume-race.bin')
         self.assertTrue(started.get('success'), f'启动上传失败: {started}')
         task_id = started['task_id']
 
         cancelled = self.consumer.call('group-mesh', 'cancel_upload', {'task_id': task_id})
-        self.assertTrue(cancelled.get('success'), f'取消失败: {cancelled}')
         task = self._wait_upload(task_id)
+        if not cancelled.get('success'):
+            self.assertIn('任务已经结束', cancelled.get('error') or '', cancelled)
+            self.assertEqual(task['state'], 'done', task)
+            self.assertEqual((self.drop / 'resume-race.bin').read_bytes(), payload,
+                             '传输先完成时内容同样必须完整')
+            self.assertFalse((self.drop / 'resume-race.bin.part').exists())
+            return
+
         self.assertIn(task['state'], ('cancelled', 'done'), task)
 
         if task['state'] == 'cancelled':
