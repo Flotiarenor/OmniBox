@@ -112,8 +112,10 @@
         <button id="btn-refresh-bookmarks" class="btn btn-sm" title="仅更新收藏清单、不下载；同步喜欢已内置自动刷新"><svg class="obx-icon"><use href="#refresh-cw"></use></svg> 刷新喜欢名单</button>
       </div>
       <div class="psync-btns" style="padding-top:0;">
-        <button id="btn-refresh-dl" class="btn btn-sm" title="扫描本地文件重建已下载记录（手动删过的移除、手动加的导入、0字节清理）；清单里页数不足的半截作品不并入（用「校验内容」补齐）"><svg class="obx-icon"><use href="#list-checks"></use></svg> 刷新记录</button>
-        <button id="btn-verify" class="btn btn-sm" title="校验已下载内容：移除本地无有效文件的失效 id；按清单页数找出缺页/半截下载的作品并移出记录，下次同步只补缺的页"><svg class="obx-icon"><use href="#search"></use></svg> 校验内容</button>
+        <!-- 已下载记录的「同步状态 + 校验」由共享组件渲染（shell/freshness.js）：
+             原先的「刷新记录」「校验内容」两个按钮判据相同（本地页数 vs 清单
+             page_count），差别只在是否提交并集，现已合并成一个「校验」。 -->
+        <div id="psync-freshness"></div>
         <button id="btn-retry-failed" class="btn btn-sm btn-danger" title="清除失败的404（永久跳过）记录，并自动重新同步一次重试这些作品"><svg class="obx-icon"><use href="#trash-2"></use></svg> 重试失败作品</button>
       </div>
 
@@ -208,6 +210,25 @@
           el.style.display = 'none';
           el.textContent = '';
         }
+      }
+
+      // ---------- 统一刷新（同步 / 校验）----------
+      //
+      // 已下载记录是"本地图片树 → 作品集合"的派生数据，由共享组件驱动：
+      // 被动同步在进页面时检查磁盘，手动「校验」全量比对并把失效/缺页的记录移出
+      // （下次同步只补缺的页）。原先的「刷新记录」「校验内容」两个按钮判据相同，
+      // 只是"是否提交并集"不同，现已合并。
+      function mountFreshness() {
+        const host = $('psync-freshness');
+        if (!host || typeof window.Freshness === 'undefined') { return; }
+        try {
+          window.Freshness.mount({
+            plugin: 'pixiv-sync',
+            container: host,
+            unit: '张',
+            onChange: () => { refreshStatus(); },
+          });
+        } catch (e) { /* 组件不可用不影响其余按钮 */ }
       }
 
       // ---------- 状态 ----------
@@ -381,6 +402,7 @@
 
       // ---------- init ----------
       window.addEventListener('DOMContentLoaded', async () => {
+        mountFreshness();
         $('btn-following').addEventListener('click', () => startSync('following'));
         $('btn-bookmarks').addEventListener('click', () => startSync('bookmarks'));
         $('btn-cancel').addEventListener('click', async () => {
@@ -441,30 +463,9 @@
         }
         $('btn-refresh-following').addEventListener('click', () => startRefresh('refresh_following_lists'));
         $('btn-refresh-bookmarks').addEventListener('click', () => startRefresh('refresh_bookmarks_lists'));
-        $('btn-refresh-dl').addEventListener('click', async () => {
-          try {
-            const r = await Bridge.call('refresh_downloaded');
-            if (r && r.ok === false) { Toast.error(r.error); return; }
-            Toast.show('已刷新记录：本地 ' + r.total + ' 个作品'
-              + (r.zero_removed ? '，清理 0 字节 ' + r.zero_removed + ' 个' : '')
-              + (r.stale_removed ? '，移除失效记录 ' + r.stale_removed + ' 条' : '')
-              + (r.failed_cleared ? '，清除失败跳过 ' + r.failed_cleared + ' 条' : '')
-              + (r.incomplete_skipped ? '，未并入缺页作品 ' + r.incomplete_skipped + ' 件（点「校验内容」补齐）' : ''), 'info', 6000);
-            await refreshStatus();
-          } catch (e) { Toast.error('刷新失败: ' + e.message); }
-        });
-        $('btn-verify').addEventListener('click', async () => {
-          try {
-            const r = await Bridge.call('verify_downloaded');
-            if (r && r.ok === false) { Toast.error(r.error); return; }
-            Toast.show('校验完成：移除失效记录 ' + r.stale_removed + ' 条'
-              + (r.incomplete ? '，缺页重新入队 ' + r.incomplete + ' 件（下次同步补齐）' : '')
-              + (r.zero_removed ? '，清理 0 字节 ' + r.zero_removed + ' 个' : '')
-              + (r.failed_cleared ? '，清除失败跳过 ' + r.failed_cleared + ' 条' : '')
-              + '，当前记录 ' + r.total + ' 条', 'info', 8000);
-            await refreshStatus();
-          } catch (e) { Toast.error('校验失败: ' + e.message); }
-        });
+        // 「刷新记录」与「校验内容」已并入共享组件（#psync-freshness，见下方 mountFreshness）：
+        // 两者的判据完全相同（本地页数 vs 清单 page_count），差别只在"是否提交并集"，
+        // 统一成「校验」后由后端在整趟结束时一次算清（缺页仍会重新入队）。
         $('btn-retry-failed').addEventListener('click', async () => {
           try {
             const r = await Bridge.call('retry_failed');

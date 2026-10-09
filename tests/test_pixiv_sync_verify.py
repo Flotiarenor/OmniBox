@@ -24,6 +24,8 @@ for _p in (str(PROJECT_ROOT), str(PIXIV_BACKEND), str(PIXIV_BACKEND / "libs")):
 
 from pixiv_sync import download, store
 
+from shell.backend.freshness import engine_for
+
 
 def _load_plugin_class():
     main_path = PIXIV_BACKEND / "main.py"
@@ -147,6 +149,47 @@ class PixivSyncVerifyTests(unittest.TestCase):
         self.assertTrue(self._done())
         self.assertEqual(task["failed"], 0)
         self.assertEqual(task["downloaded"], 1)
+
+    # ===== 统一刷新基建（同步 / 校验）=====
+
+    def _engine(self):
+        engine = engine_for(self.plugin)
+        self.assertIsNotNone(engine, 'pixiv-sync 必须声明 freshness_spec()')
+        engine.spec.min_sync_interval = 0.0
+        return engine
+
+    def test_passive_sync_rebuilds_ids_from_disk(self):
+        """被动同步走指纹库：手动放入的完整作品会被并入，半截/失效的不算。"""
+        extra = self.root / "pixiv" / "B" / "8888"
+        extra.mkdir(parents=True)
+        (extra / "8888_p0.jpg").write_bytes(b"x")
+
+        self._engine().sync("", force=True)
+
+        ids = self.plugin._load_ids()
+        self.assertIn(8888, ids, "手动放入的完整作品要能识别（旧图导入）")
+        self.assertNotIn(self.WORK_ID, ids, "缺页作品仍不算已下载")
+        self.assertNotIn(self.DONE_ID, ids, "本地无文件的失效 id 要被移出")
+        self.assertEqual(store.load_ids(self.plugin._ids_file()), ids)
+
+    def test_ids_are_updated_in_place(self):
+        """ids 必须**就地**增删：`_run_sync` 持有同一个 set 对象，换对象会丢记录。"""
+        held = self.plugin._load_ids()
+
+        self._engine().sync("", force=True)
+
+        self.assertIs(held, self.plugin._load_ids(), "不能把 _downloaded_ids 换成新对象")
+        self.assertEqual(held, self.plugin._load_ids(), "持有方必须看到同一份内容")
+
+    def test_zero_byte_fragment_is_not_a_page(self):
+        """0 字节残片不算有效页（否则半截下载会被判成下全了），并按旧行为清掉。"""
+        fragment = self.work_dir / f"{self.WORK_ID}_p1.jpg"
+        fragment.write_bytes(b"")
+
+        self._engine().sync("", force=True)
+
+        self.assertFalse(fragment.exists(), "0 字节残片要顺手清掉")
+        self.assertNotIn(self.WORK_ID, self.plugin._load_ids())
 
 
 if __name__ == "__main__":
