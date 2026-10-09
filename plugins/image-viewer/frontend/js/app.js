@@ -151,6 +151,9 @@ class ImageViewer {
             this.currentSettings = await Bridge.call('get_settings', '');
             this.currentRowHeight = this.currentSettings.row_height || 200;
             this._applyAlbumSortSettings();
+            // 灯箱的解码位图池张数（全局偏好）：`this.lightbox` 在 init() 里先于本
+            // 方法创建，所以这里一定拿得到，开机即生效
+            this._applyLightboxCache();
         } catch (e) { }
     }
 
@@ -272,6 +275,9 @@ class ImageViewer {
 
         document.getElementById('setting-row-height').addEventListener('input', (e) => {
             document.getElementById('setting-row-height-val').textContent = e.target.value;
+        });
+        document.getElementById('setting-lightbox-cache').addEventListener('input', (e) => {
+            document.getElementById('setting-lightbox-cache-val').textContent = e.target.value;
         });
 
         // 模糊匹配只作用于「Pixiv 排序支持」：当场切到该排序时就显示出来，
