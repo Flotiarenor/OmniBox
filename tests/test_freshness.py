@@ -395,11 +395,27 @@ class FreshnessSpecTests(unittest.TestCase):
         plugin = _FakePlugin(Path('.'), None)
         self.assertIsNone(FreshnessSpec.normalize(plugin, None))
         self.assertIsNone(FreshnessSpec.normalize(plugin, {}))
-        self.assertIsNone(FreshnessSpec.normalize(plugin, {'roots': []}))
         with self.assertRaises(ValueError):
             FreshnessSpec.normalize(plugin, {'roots': ['.'], 'derive': 'not-callable'})
         with self.assertRaises(ValueError):
             FreshnessSpec.normalize(plugin, {'roots': ['.'], 'prefixes': ['a', 'b']})
+
+    def test_empty_roots_still_yield_an_engine(self):
+        """根为空 = "已接入、当前没有受管目录"，不是"不参与"。
+
+        根往往由运行时配置（group-mesh 默认没有任何共享目录）；把它当"不支持"，
+        界面就只能显示"本插件未参与统一刷新"，而正确状态是空索引。
+        """
+        plugin = _FakePlugin(Path('.'), None)
+        plugin._spec = _spec(plugin, Path('.'), roots=list)
+
+        engine = engine_for(plugin)
+
+        self.assertIsNotNone(engine)
+        report = engine.sync('', force=True)
+        self.assertEqual(report['dirs'], 0)
+        self.assertEqual(report['added'], 0)
+        self.assertTrue(engine.state()['available'])
 
     def test_engine_for_requires_a_spec(self):
         plugin = _FakePlugin(Path('.'), None)

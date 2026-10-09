@@ -282,8 +282,9 @@ class FreshnessSpec:
         roots_decl = raw.get('roots')
         roots = roots_decl() if callable(roots_decl) else roots_decl
         roots = tuple(Path(p).expanduser() for p in (roots or ()))
-        if not roots:
-            return None
+        # 根为空**不算"不参与"**：根往往是运行时配置出来的（group-mesh 的共享目录
+        # 默认一个都没有）。把它当"不支持"，界面就只能显示"本插件未参与统一刷新"，
+        # 而正确状态是"已接入、当前没有受管目录"。所以照样给引擎，走空遍历。
         prefixes_decl = raw.get('prefixes') or ()
         if not callable(prefixes_decl):
             prefixes_decl = tuple(str(p or '') for p in prefixes_decl)
