@@ -515,5 +515,82 @@ class ImageViewerMixedTestCase(unittest.TestCase):
             self.assertEqual(data['all_images'], [])
 
 
+class FreshnessTimingTestCase(unittest.TestCase):
+    """统一刷新接入后的两个时序契约（都是实测出来的用户可见卡顿）。
+
+    1. **校验结束 = 立刻可读**：相册索引重建（全树枚举 + 变化目录重扫）实测在
+       6000 张 / 1400 目录上要 1.4-2.7s。它原先留在任务外，用户看到的是"进度条满了、
+       界面还要卡几秒"；现在由 `on_pass_end` 在任务里做完，"完成"就意味着下一帧
+       命中缓存（`cached: True`、零重扫）。
+    2. **只作废受影响的相册节点**：整表作废会让 1400 个目录里没变的 1399 个一起
+       重扫（实测 2.74s vs 1.40s）。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        for name in ['111_p0.png', '111_p1.png']:
+            _make_image(self.root / 'workA' / name, 300, 200)
+        _make_image(self.root / 'workB' / '222_p0.png', 250, 250)
+        module = _load_plugin_module()
+        # 每次调用都是新模块对象（`_load_plugin_module` 重新 exec），直接赋值即可
+        module.ImageViewerPlugin._resolved_config = {'root_dir': str(self.root)}
+        self.plugin = module.ImageViewerPlugin(
+            {'name': 'image-viewer'},
+            {'directories': {'data_root': str(self.root)}},
+        )
+        from shell.backend.freshness import engine_for
+
+        self.engine = engine_for(self.plugin)
+        self.assertIsNotNone(self.engine, 'image-viewer 必须声明 freshness_spec()')
+        self.engine.spec.min_sync_interval = 0.0
+
+    def test_verify_leaves_a_warm_album_index(self):
+        report = self.engine.verify()
+
+        self.assertIn('albums', report['pass_end'], '校验要在任务里把索引重建完')
+        stamp = self.plugin._albums_cached_at
+        result = self.plugin.list_albums()
+        self.assertTrue(result.get('cached'), '校验结束后第一帧必须直接命中缓存')
+        self.assertEqual(self.plugin._albums_cached_at, stamp, '不该再重扫一遍目录树')
+
+    def test_sync_invalidates_only_touched_album_nodes(self):
+        self.engine.sync('', force=True)               # 先建指纹，之后的同步才是增量的
+        self.plugin.list_albums()                      # 再建索引
+        cache = self.plugin._album_cache['dirs']
+        self.assertIn('workA', cache)
+        self.assertIn('workB', cache)
+
+        _make_image(self.root / 'workA' / '111_p2.png', 300, 200)   # 只动 workA
+        self.engine.sync('', force=True)
+
+        cache = self.plugin._album_cache['dirs']
+        self.assertNotIn('workA', cache, '变化目录要作废')
+        self.assertNotIn('', cache, '合成根聚合整棵树，必须作废')
+        self.assertIn('workB', cache, '没变的目录要继续复用，否则整库重扫')
+
+    def test_stat_entries_stays_off_for_the_album_tree(self):
+        """整树被动同步不逐条 stat：进一次相册页不该把整库每个文件 stat 一遍。
+
+        边界由校验兜底（audit 逐项比对指纹），插件读图时也按 mtime 校验尺寸元数据。
+        """
+        self.assertFalse(self.engine.spec.stat_entries)
+        self.engine.sync('', force=True)               # 铺底
+
+        _make_image(self.root / 'workA' / '111_p2.png', 300, 200)
+        report = self.engine.sync('', force=True)
+        self.assertEqual(report['added'], 1, '新增文件仍要被同步发现')
+
+        # 原地改写：文件 mtime 变了，但**目录 mtime 不变**（改写文件不会动父目录）
+        target = self.root / 'workB' / '222_p0.png'
+        _make_image(target, 250, 250)
+        report = self.engine.sync('', force=True)
+        self.assertEqual(report['added'] + report['changed'], 0,
+                         '目录级短路按设计看不见原地改写（同步只看目录 mtime 与名字个数）')
+        report = self.engine.verify()
+        self.assertEqual(report['changed'], 1, '校验要逐项比对指纹，看见原地改写')
+
+
 if __name__ == '__main__':
     unittest.main()

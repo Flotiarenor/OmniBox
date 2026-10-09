@@ -143,7 +143,15 @@ Object.assign(ImageViewer.prototype, {
 
     _updateStats() {
         const visible = this._filterVisibleAlbums(this.albums);
-        const total = visible.reduce((sum, a) => sum + (a.direct_count || 0), 0);
+        // 张数取**合成根**（`albums.py` 里 path 为 '' 的那个节点）的递归总数：
+        // 把可见相册的 direct_count 相加只算到"直接摊在顶层目录里的图"，而把
+        // image_count 相加又会在嵌套目录上重复计入（父的 image_count 已含子）。
+        // 实测同一棵树（根 1 张 + A 1 张 + A/sub 2 张 + B 1 张，真值 5）：
+        // direct 相加 = 4，image_count 相加 = 6，合成根 = 5。
+        const root = (this.albums || []).find(a => a.path === '');
+        const total = root
+            ? (root.image_count || 0)
+            : visible.reduce((sum, a) => sum + (a.direct_count || 0), 0);
         document.getElementById('iv-stats').textContent = `${visible.length} 个相册 · ${total} 张图片`;
     },
 

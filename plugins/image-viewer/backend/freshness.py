@@ -54,13 +54,17 @@ class FreshnessMixin:
             'derive': self._freshness_derive,
             'prune': self._freshness_prune,
             'on_verified': self._freshness_audit,
+            'on_pass_end': self._freshness_pass_end,
             'rebuild': self._freshness_rebuild,
             # 封面挑选规则变更时的整体失效信号：替代原先"记得手动 +1"的
             # `_ALBUM_CACHE_VERSION`（忘记加就是静默用旧封面）
             'content_version': self._ALBUM_CACHE_VERSION,
-            # 目录不大（一个相册几十张）且"图片被替换"必须立刻反映到相册索引，
-            # 因此逐条 stat；大媒体库的插件应保持默认 False。
-            'stat_entries': True,
+            # 逐条 stat 会把"进一次相册页"变成"给整库每个文件 stat 一次"：实测
+            # 6000 张的整树被动同步从 0.11s 涨到 0.29s（真实磁盘冷缓存下差距更大），
+            # 而它换来的只是"原地改写文件也能被同步发现" —— 这件事由**校验**负责
+            # （audit 逐项比对指纹），插件自己在读图时也按 mtime 校验尺寸元数据。
+            # 目录 mtime + 纳入索引的名字个数足以发现新增/删除/改名。
+            'stat_entries': False,
             'unit': '张',
             'min_sync_interval': 5.0,
             'max_dirs_per_sync': 400,
@@ -69,39 +73,80 @@ class FreshnessMixin:
     # ===== 钩子（全部由壳在它自己的线程里调用，只做缓存失效，不做重活） =====
 
     def _freshness_derive(self, items) -> Dict[str, Any]:
-        """条目新增/变化：丢掉列表缓存与相册索引，让下一帧按需重算。
+        """条目新增/变化：作废受影响的相册节点，让下一帧按需重算。
 
         相册的派生数据（图片列表、封面、递归计数）本来就是**惰性**重算的，所以
-        这里不需要真的去算 —— 把旧结果丢掉，读盘时自然是最新的。这也让"同步"
-        在稳态下几乎零成本。
+        这里不需要真的去算 —— 把旧结果丢掉，读盘时自然是最新的。
 
-        不做"只丢受影响目录"的精细失效：父目录的 `all_images` 连续浏览序列里
-        嵌着子目录的图片，只清子目录会留下父目录的陈旧序列（`_list_cache` 的键
-        在 `list_images` 与 `list_folder_items` 里形状还不一样）。总量上限 200 条，
-        整表清空更简单也更不容易错。
+        **只丢"变化目录 + 各级父目录"**，其余节点继续按 mtime 复用：实测 6000 张 /
+        1400 目录上，整表作废后重建 2.74s，精细作废后 1.40s —— 差的 1.34s 全在把
+        1400 个目录重扫一遍，而其中 1399 个根本没变（`_list_album_dirs` 的全树枚举
+        1.40s 是两者都要付的底价）。
+
+        列表缓存（≤200 条）仍整表清空：它便宜，且键在 `list_images` 与
+        `list_folder_items` 里形状不同，清子目录会留下父目录的陈旧连续浏览序列。
         """
+        self._drop_album_nodes(self._album_cache.setdefault('dirs', {}), items)
         self._list_cache.clear()
-        # 目录集合变了会影响封面聚合：整个相册索引作废（它自己会逐目录按 mtime
-        # 复用，不作废反而会留着已消失目录的条目）
-        self._album_cache = {'version': self._ALBUM_CACHE_VERSION, 'dirs': {}}
         self._invalidate_albums_cache()
         return {'count': len(items)}
 
     def _freshness_prune(self, keys) -> int:
-        """条目消失：删缩略图行、丢尺寸元数据。返回处理条数。"""
+        """条目消失：删缩略图行、丢尺寸元数据、作废所属目录的相册节点。"""
         pruned = 0
+        dirs = []
         for rel in keys:
             try:
                 self.thumb_cache.delete(rel)
                 abs_path, _ = self._resolve_path(rel)
                 drop_image_meta(self._meta_cache, str(abs_path or (self.root_dir / rel)))
+                dirs.append({'dir': str(rel).rpartition('/')[0]})
                 pruned += 1
             except Exception as e:
                 log.warning(f'[ImageViewer] 清理失效条目失败 {rel}: {e}')
+        if dirs:
+            self._drop_album_nodes(self._album_cache.setdefault('dirs', {}), dirs)
+            self._invalidate_albums_cache()
         if pruned:
             self._meta_dirty = True
             self._flush_meta_if_dirty()
         return pruned
+
+    def _drop_album_nodes(self, cache: dict, items) -> None:
+        """丢掉这些条目所属目录与其**所有祖先**的相册索引条目。
+
+        祖先必须一起丢：`image_count` / 封面是自底向上聚合的，只丢子目录会让父目录
+        留着旧的计数与封面。合成根（`''`）聚合整棵树，任何变化都要丢。
+        """
+        cache.pop('', None)
+        for item in items:
+            rel = str(item.get('dir') or '').strip('/')
+            while rel:
+                cache.pop(rel, None)
+                rel = rel.rpartition('/')[0]
+
+    def _freshness_pass_end(self, report, verified: bool) -> Dict[str, Any]:
+        """整趟结束：**在任务里**把相册索引重建好，"完成"就等于下一帧直接可读。
+
+        为什么放在这里：索引重建（全树枚举 + 变化目录重扫）实测在 6000 张 / 1400
+        目录上要 1.4-2.7s，而它是惰性重算的 —— 放在任务外，用户看到的就是"进度条
+        已经满了、界面还要卡几秒再出内容"。宁可让"校验中"多显示这几秒：完成态必须
+        意味着"现在读就是最新的"，而不是"现在读会触发几秒的重算"。
+        """
+        if not verified or report.get('partial') or report.get('errors'):
+            return {}
+        from shell.backend.freshness import engine_for
+
+        engine = engine_for(self)
+        if engine is not None:
+            engine.progress('重建相册索引')
+        try:
+            result = self.list_albums()
+        except Exception as e:
+            log.error(f'[ImageViewer] 校验后重建相册索引失败: {e}')
+            return {'album_error': str(e)}
+        return {'albums': len(result.get('albums') or []),
+                'albums_rescanned': int(result.get('changed') or 0)}
 
     def _freshness_audit(self, keys) -> Dict[str, Any]:
         """全量校验后的对账：按"当前有效图片键集合"清缩略图库里的孤儿行。
