@@ -406,16 +406,18 @@ class FreshnessSpecTests(unittest.TestCase):
         根往往由运行时配置（group-mesh 默认没有任何共享目录）；把它当"不支持"，
         界面就只能显示"本插件未参与统一刷新"，而正确状态是空索引。
         """
-        plugin = _FakePlugin(Path('.'), None)
-        plugin._spec = _spec(plugin, Path('.'), roots=list)
+        with tempfile.TemporaryDirectory() as td:
+            # 缓存目录必须落在临时目录：给 `.` 会让指纹库写进当前工作目录
+            plugin = _FakePlugin(Path(td) / '.cache', None)
+            plugin._spec = _spec(plugin, Path(td), roots=list)
 
-        engine = engine_for(plugin)
+            engine = engine_for(plugin)
 
-        self.assertIsNotNone(engine)
-        report = engine.sync('', force=True)
-        self.assertEqual(report['dirs'], 0)
-        self.assertEqual(report['added'], 0)
-        self.assertTrue(engine.state()['available'])
+            self.assertIsNotNone(engine)
+            report = engine.sync('', force=True)
+            self.assertEqual(report['dirs'], 0)
+            self.assertEqual(report['added'], 0)
+            self.assertTrue(engine.state()['available'])
 
     def test_engine_for_requires_a_spec(self):
         plugin = _FakePlugin(Path('.'), None)
