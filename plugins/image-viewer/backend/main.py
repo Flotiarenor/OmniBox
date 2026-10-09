@@ -1,12 +1,12 @@
 """image-viewer 插件后端入口：类骨架、初始化与 API 注册。
 
-78 个方法按职责拆到 7 个 mixin 分片（namespace / thumbs / listing / albums /
-file_ops / rebuild / settings），共享的模块级常量与纯函数在 common.py。分片的
-方法体逐字未改，状态仍由本类的 __init__ 持有。
+78 个方法按职责拆到 8 个 mixin 分片（namespace / thumbs / listing / albums /
+file_ops / rebuild / freshness / settings），共享的模块级常量与纯函数在 common.py。
+分片的方法体逐字未改，状态仍由本类的 __init__ 持有。
 
 **mixin 必须排在 PluginBase 之前**：get_data_root / get_file_roots / ensure_thumb /
-get_thumb_data / get_settings / on_settings_changed / on_unload 都是对基类的覆写，
-排在基类后面会被基类实现盖掉。
+get_thumb_data / get_settings / on_settings_changed / on_unload / get_cache_dir /
+freshness_spec 都是对基类的覆写，排在基类后面会被基类实现盖掉。
 """
 
 import logging
@@ -31,6 +31,7 @@ _listing = load_sibling(__file__, 'listing', 'image_viewer')
 _albums = load_sibling(__file__, 'albums', 'image_viewer')
 _file_ops = load_sibling(__file__, 'file_ops', 'image_viewer')
 _rebuild = load_sibling(__file__, 'rebuild', 'image_viewer')
+_freshness = load_sibling(__file__, 'freshness', 'image_viewer')
 _settings = load_sibling(__file__, 'settings', 'image_viewer')
 
 
@@ -41,6 +42,7 @@ class ImageViewerPlugin(
     _albums.AlbumMixin,
     _file_ops.FileOpsMixin,
     _rebuild.RebuildMixin,
+    _freshness.FreshnessMixin,
     _settings.SettingsMixin,
     PluginBase,
 ):

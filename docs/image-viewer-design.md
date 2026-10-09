@@ -32,6 +32,7 @@ plugins/image-viewer/
 │   ├── albums.py               # AlbumMixin：相册树、封面挑选与相册缓存
 │   ├── file_ops.py             # FileOpsMixin：目录 / 文件增删改与刷新
 │   ├── rebuild.py              # RebuildMixin：缩略图全量重建（BackgroundTask）
+│   ├── freshness.py            # FreshnessMixin：接入壳的统一刷新基建（同步 / 校验）
 │   ├── settings.py             # SettingsMixin：按目录的设置读写
 │   └── filesystem.py           # 底层纯函数工具：路径安全、排序、尺寸元数据（无实例状态）
 └── frontend/
@@ -42,7 +43,7 @@ plugins/image-viewer/
         ├── app-albums.js       # ImageViewer 分片：相册树浏览、渲染与排序
         ├── app-nav.js          # ImageViewer 分片：返回导航栈、相册右键菜单、统计与新建相册
         ├── app-grid.js         # ImageViewer 分片：图片网格、Justified 布局、幻灯与多选操作
-        ├── app-refresh.js      # ImageViewer 分片：刷新与缩略图重建
+        ├── app-refresh.js      # ImageViewer 分片：统一刷新（同步 / 校验）挂载与缩略图预生成
         ├── app-settings.js     # ImageViewer 分片：设置读写
         ├── app-utils.js        # ImageViewer 分片：格式化与转义工具（_escapeHtml / _escapeAttr）
         └── justified-layout.js # Justified 布局计算（纯函数）
@@ -182,6 +183,28 @@ media-player / manga-library / novel-reader 也要同一套「多位置文件夹
 - 键：`('items', rel_path, sort_by, sort_order)` 或 `(rel_path, sort_by, sort_order)`；值：`(目录mtime, items, [all_images])`
 - 目录 mtime 未变直接命中；上限 `_MAX_LIST_CACHE = 200` 条，超出淘汰最旧一半
 - 已知限制：缓存键不含子文件夹设置，子文件夹排序设置变更后 `all_images` 序列可能陈旧（直到父目录 mtime 变化）
+
+### 3.5 指纹库 `freshness.db`（共享基建 `FreshnessEngine`）
+
+本插件的缓存失效判据由 Shell 的统一刷新基建托管（`shell/backend/freshness.py`，
+契约见 `docs/plugin-guide.md` §3.4「统一刷新（同步 / 校验）」），接入代码在
+`backend/freshness.py`（`FreshnessMixin`）：
+
+- **落点**：`<数据根>/.cache/freshness.db`（覆写 `get_cache_dir()` 指向本插件既有的
+  `.cache`，缩略图库 / 尺寸元数据 / 相册索引都平铺在那里，不另开目录）；
+- **内容**：目录指纹（目录 mtime + 纳入索引的名字个数 + 大小和 + 最新 mtime）
+  与条目指纹（`前缀/根内相对路径` → mtime + size）。**只存指纹，不存业务数据**；
+- **同步**（被动，进视图/切目录触发）：目录指纹没变则整目录跳过；变了才逐条比对，
+  并调 `derive` 丢掉受影响的 `_list_cache` 与相册索引（本插件的派生数据是惰性重算的，
+  "重活"就是"丢旧结果"）；
+- **校验**（手动，工具栏唯一按钮）：全量逐项 stat + 清掉消失条目的缩略图行与尺寸
+  元数据 + 按有效键集合 `ThumbCache.prune` 对账孤儿行（旧实现缺的正是最后一环：
+  在资源管理器里删掉的图片会永久留在 `thumbs.db`）；
+- `stat_entries: True`：一个相册只有几十张，逐条 stat 换"图片被替换立刻反映"；
+- `content_version = _ALBUM_CACHE_VERSION`：封面规则变更时由基建整体失效，
+  不再依赖"记得手动 +1"；
+- 兼容入口 `refresh()`（`file_ops.py`）已转发到基建的「同步」，老前端与
+  "保存设置后刷新"继续可用。
 
 ## 4. 排序体系
 
@@ -503,7 +526,9 @@ body
       ├─ .view-toolbar.iv-toolbar      48px（壳）; gap:12px  (css:53)
       │  ├─ .toolbar-group.iv-view-heading   ←返回 / 标题(15px/700) / 副标题(11px)
       │  └─ .toolbar-group[style=margin-left:auto]   行内样式  (index.html:41)
-      │     └─ .iv-search + #iv-selection-count + 7 个 .btn（幻灯片/多选/删除/移动/更新缩略图/刷新/全量重建/设置）
+      │     └─ .iv-search + #iv-selection-count + 6 个 .btn（幻灯片/多选/删除/移动/更新缩略图/设置）
+      │        + #iv-freshness（统一「同步状态 + 校验」控件，由 shell/freshness.js 填充；
+      │          原先的「刷新」「全量重建」两个按钮已下线，见 §3.5）
       ├─ .view-content.iv-content.obx-scroll#iv-content   padding 16px; background:transparent  (css:70)
       │  ├─ #iv-albums             相册网格容器（.iv-grid 由 JS 包一层，css:72-76）
       │  └─ #image-grid.iv-image-grid   position:relative; 子元素全 absolute  (css:119)

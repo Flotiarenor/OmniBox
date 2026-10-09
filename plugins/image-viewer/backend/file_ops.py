@@ -10,6 +10,7 @@ import shutil
 from pathlib import Path
 from typing import Dict, List
 
+from shell.backend.freshness import engine_for
 from shell.backend.plugin_utils import load_sibling
 
 log = logging.getLogger(__name__)
@@ -234,7 +235,19 @@ class FileOpsMixin:
         return {'regenerated': regenerated, 'errors': errors}
 
     def refresh(self) -> Dict:
-        """清空内存缓存并作废旧相册索引，让新增/替换的图片立即生效（无需重启）。"""
+        """重新扫描目录，让新增/替换的图片立即生效（不再需要重启）。
+
+        这是**兼容入口**：老前端与"保存设置后刷新"仍会调它。实现已转发到壳的统一
+        刷新基建（`shell/backend/freshness.py` 的「同步」），因此它顺带获得指纹
+        记录、去抖与幽灵清理 —— 以前这里只是清三个内存缓存，删掉的图片会一直留在
+        缩略图库里、也没有"目录集合变了"的信号。新代码请直接用
+        `system_freshness_sync` / `system_freshness_verify`。
+        """
+        report: Dict = {}
+        engine = engine_for(self)
+        if engine is not None:
+            report = engine.sync('', force=True)
+        # 引擎不可用（规格非法）时退化成原来的行为，不让刷新整个失灵
         self._list_cache.clear()
         self._album_cache = {'version': self._ALBUM_CACHE_VERSION, 'dirs': {}}
         self._invalidate_albums_cache()
@@ -243,4 +256,4 @@ class FileOpsMixin:
                 self.album_cache_file.unlink()
         except OSError:
             pass
-        return {'success': True}
+        return {'success': True, **report}

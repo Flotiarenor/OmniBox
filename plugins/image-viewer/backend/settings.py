@@ -137,6 +137,11 @@ class SettingsMixin:
                 'album_sort_by', 'album_sort_order'} & set(changed_keys):
             self._list_cache.clear()
             self._invalidate_albums_cache()
+        # 统一刷新基建：清了去抖时间戳，下一次进视图的被动同步会立刻真扫
+        # （否则刚改完根目录要等 min_sync_interval 秒才生效）
+        engine = getattr(self, '_freshness_engine', None)
+        if engine is not None:
+            engine.reset_throttle()
 
     def clear_folder_settings(self, rel_path: str) -> Dict:
         """删除指定文件夹的独立设置，使其回退到全局设置"""

@@ -50,8 +50,10 @@
           <button id="btn-delete-selected" class="btn btn-danger hidden">删除选中</button>
           <button id="btn-move-selected" class="btn hidden">移动选中</button>
           <button id="btn-refresh-thumbs" class="btn hidden"><svg class="obx-icon"><use href="#images"></use></svg> 更新缩略图</button>
-          <button id="btn-refresh" class="btn" title="重新扫描目录并刷新当前视图（无需重启）"><svg class="obx-icon"><use href="#refresh-cw"></use></svg> 刷新</button>
-          <button id="btn-rebuild" class="btn" title="清空缩略图/尺寸元数据/相册索引并重新扫描，缩略图按需重建"><svg class="obx-icon"><use href="#brush-cleaning"></use></svg> 全量重建</button>
+          <!-- 同步状态 + 「校验」由共享组件 shell/freshness.js 填充。
+               原先的「刷新」「全量重建」两个按钮已下线：语义统一为
+               「同步（被动增量，无按钮）/ 校验（手动全量）」，判据与进度由壳托管。 -->
+          <div id="iv-freshness"></div>
           <button id="btn-settings" class="btn"><svg class="obx-icon"><use href="#settings"></use></svg> 设置</button>
         </div>
       </div>

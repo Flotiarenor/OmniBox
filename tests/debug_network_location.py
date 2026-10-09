@@ -189,10 +189,12 @@ def main() -> int:
                   '关掉设置弹窗（本次刻意不保存，原因见脚本说明）')
 
         # ── 5. 相册树里那个目录：缩略图 / 布局 / 原图 ──────────────────────────
-        # 先点「刷新」：相册索引有 30 秒 TTL，刚由"网络位置"建出来的目录还没被扫到
-        # （这也是真实用户加完一个位置后会做的事）。
-        wait_for(driver, lambda: len(driver.find_elements(By.ID, 'btn-refresh')) > 0)
-        click(driver, driver.find_element(By.ID, 'btn-refresh'), '点「刷新」让相册树重新扫描')
+        # 先点「校验」：相册索引有 30 秒 TTL，刚由"网络位置"建出来的目录还没被扫到
+        # （这也是真实用户加完一个位置后会做的事）。按钮来自壳的共享组件
+        # shell/freshness.js（原先插件自己的「刷新」按钮已下线）。
+        wait_for(driver, lambda: len(driver.find_elements(By.CSS_SELECTOR, '#iv-freshness [data-fr="verify"]')) > 0)
+        click(driver, driver.find_element(By.CSS_SELECTOR, '#iv-freshness [data-fr="verify"]'),
+              '点「校验」让相册树重新扫描（全量）')
         time.sleep(max(PAUSE, 1.5))
         pause('回「全部相册」：镜像目录就是一个普通文件夹，出现在图库里')
         wait_for(driver, lambda: len(driver.find_elements(By.CSS_SELECTOR, '.iv-album')) > 0)

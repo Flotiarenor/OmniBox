@@ -30,6 +30,8 @@ Object.assign(ImageViewer.prototype, {
             const sortOrder = this.currentSettings.sort_order || 'desc';
             const data = await Bridge.call('list_folder_items', path, page, perPage, sortBy, sortOrder);
             this.currentPage = page;
+            // 被动同步：只校验当前目录（组件去抖，壳侧还会按目录做 mtime 短路）
+            this._autoSyncFreshness(path);
             this.currentItems = data.items || [];
             this.currentImages = this.currentItems.filter(it => it.type !== 'album');
             this.currentAllImages = data.all_images || this.currentImages;
@@ -105,7 +107,8 @@ Object.assign(ImageViewer.prototype, {
                 const isContainer = item.image_count === 0 && item.has_children;
                 if (item.cover) {
                     const img = document.createElement('img');
-                    img.src = Bridge.thumbUrl(item.cover);
+                    // 带 mtime 版本号：缩略图被重建后 URL 才会变（壳的 /thumbs 有一天强缓存）
+                    img.src = this._thumbUrl({ url: item.cover, mtime: item.mtime });
                     img.loading = 'lazy';
                     img.alt = name;
                     img.onerror = function () {
@@ -147,7 +150,7 @@ Object.assign(ImageViewer.prototype, {
                 // 单图卡片
                 card.dataset.url = item.url;
                 const img = document.createElement('img');
-                img.src = Bridge.thumbUrl(item.url);
+                img.src = this._thumbUrl(item);
                 img.loading = 'lazy';
                 img.alt = item.url.split('/').pop();
                 const p = document.createElement('p');

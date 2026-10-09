@@ -84,6 +84,7 @@ class ImageViewer {
 
         this._bindUI();
         this._serveHostChannel();
+        this._mountFreshness();
         await this.loadSettings();
         await this.loadAlbums();
         this.loadExtensions();
@@ -224,8 +225,6 @@ class ImageViewer {
         document.getElementById('btn-delete-selected').addEventListener('click', () => this.deleteSelectedImages());
         document.getElementById('btn-move-selected').addEventListener('click', () => this.openMoveModal());
         document.getElementById('btn-refresh-thumbs').addEventListener('click', () => this.refreshSelectedThumbs());
-        document.getElementById('btn-refresh').addEventListener('click', () => this.refreshView());
-        document.getElementById('btn-rebuild').addEventListener('click', () => this.rebuildAll());
         const rebuildHide = document.getElementById('rebuild-progress-hide');
         if (rebuildHide) rebuildHide.addEventListener('click', () => this.hideRebuildProgress());
         const rebuildCancel = document.getElementById('rebuild-progress-cancel');
