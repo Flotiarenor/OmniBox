@@ -189,10 +189,12 @@ class MediaPlayerApp {
         const container = document.getElementById('mp-extensions');
         if (!container || typeof renderExtensions !== 'function') return;
         try {
-            // 高亮统一交给 `_setNavActive`（把按钮本身传下去）：扩展入口与作用域项
-            // 互斥，两套高亮各清各的就会出现"全部音乐 + 网易云登录同时亮着"。
-            await renderExtensions(container, 'media-player', 'sidebar', {
+            // 高亮由共享组件维护（见 base.js 的 renderExtensions）：这里只声明宿主侧栏项的
+            // 选择器，让"点扩展入口"时自动取消侧栏项的选中；反向由 `_setNavActive` 调
+            // `clearActive()`。
+            this.extensions = await renderExtensions(container, 'media-player', 'sidebar', {
                 title: '网易云音乐',
+                navSelector: '.mp-nav-item',
                 onOpen: (ext, btn) => this.openNeteaseView(ext, btn)
             });
         } catch (e) {
@@ -205,7 +207,8 @@ class MediaPlayerApp {
         this.currentAlbum = null;
         this.currentPlaylist = null;
         this.playlists.currentId = '';
-        this._setNavActive(btn ? { ext: btn } : {});
+        this._setNavActive({});
+        if (this.extensions) this.extensions.activate(btn || null);
         this.playlists.renderSidebar();
         document.getElementById('media-search').value = '';
         document.getElementById('btn-search-clear').classList.add('hidden');

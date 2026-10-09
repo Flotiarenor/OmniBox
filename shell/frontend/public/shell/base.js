@@ -230,13 +230,45 @@ window.bridge = window.Bridge;
 // 宿主插件只需提供一个容器，并声明 host + placement：
 //   renderExtensions(document.getElementById('extensions'), 'image-viewer', 'sidebar');
 // 扩展插件通过 get_extensions() 注册到 Shell 后，会自动渲染到该容器。
+//
+// **高亮（同一时刻只有一个当前项）由本组件统一维护**，宿主不必自己写 click 监听、
+// 也不必自己查 className：
+//   - 点了"会打开视图"的扩展（`ext.view` + `onOpen`，或 `ext.embedUrl`）→ 高亮它，
+//     并按 `options.navSelector` 清掉宿主侧栏项的选中；
+//   - 宿主切换自己的视图时调一次 `controller.clearActive()`。
+//   为什么要有这一层：宿主通常有两套入口（侧栏项 + 扩展入口），"互斥"这条不变量
+//   分散在两边就会漏。实测 media-player 只清了侧栏项、扩展点击只清扩展项，先点
+//   「网易云登录」再点「全部音乐」两个同时高亮（image-viewer 两个方向都写了才没暴露）。
+//   返回值是控制器 `{ buttons, activate, clearActive }`；容器为空也照样返回，宿主无需判空。
 function renderExtensions(container, host, placement, options = {}) {
-  if (!container) return Promise.resolve();
+  const controller = {
+    buttons: [],
+    /** 高亮某个扩展入口（先清同组其它）；传空 = 全不亮。 */
+    activate(btn) {
+      if (!container) return;
+      // 逐个判断而不是用 `.obx-extension.active` 复合选择器：少一层选择器语义，
+      // 也便于用例里的极简 DOM 替身（它只按单个 class 匹配）
+      container.querySelectorAll('.obx-extension').forEach(node => {
+        if (node !== btn) node.classList.remove('active');
+      });
+      if (btn) btn.classList.add('active');
+    },
+    clearActive() {
+      controller.activate(null);
+    },
+  };
+  const clearNavActive = () => {
+    if (!container || !options.navSelector) return;
+    document.querySelectorAll(options.navSelector)
+      .forEach(node => node.classList.remove('active'));
+  };
+
+  if (!container) return Promise.resolve(controller);
   container.innerHTML = '';
 
   return Bridge.callSystem('system_get_plugin_extensions', host, placement)
     .then(list => {
-      if (!Array.isArray(list) || list.length === 0) return;
+      if (!Array.isArray(list) || list.length === 0) return controller;
 
       // 分组渲染：扩展可带 section 声明自己的区块标题（如「相册清理」/「Pixiv 同步」），
       // 没有 section 的扩展归入 options.title 区块（兼容旧宿主）。
@@ -269,6 +301,14 @@ function renderExtensions(container, host, placement, options = {}) {
             `<span class="obx-extension-label">${Utils.escapeHtml(ext.label || ext.id || '扩展')}</span>`;
 
           btn.addEventListener('click', () => {
+            // 会打开视图的扩展才高亮（纯动作型：跳路由 / 调后端方法，高亮它们等于
+            // 谎报"当前视图"）；同时清掉宿主侧栏项的选中，两个方向都不靠宿主记得。
+            const opensView = (ext.view && typeof options.onOpen === 'function')
+              || !!ext.embedUrl;
+            if (opensView) {
+              clearNavActive();
+              controller.activate(btn);
+            }
             // 0. 原生视图型扩展：由宿主直接渲染，复用宿主 UI/播放器
             if (ext.view && typeof options.onOpen === 'function') {
               options.onOpen(ext, btn);
@@ -306,14 +346,17 @@ function renderExtensions(container, host, placement, options = {}) {
             }
           });
 
+          controller.buttons.push(btn);
           section.appendChild(btn);
         });
 
         container.appendChild(section);
       }
+      return controller;
     })
     .catch(err => {
       console.error('加载扩展失败:', err);
+      return controller;
     });
 }
 

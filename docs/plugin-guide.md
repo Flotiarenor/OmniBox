@@ -193,6 +193,30 @@ exts.forEach(ext => {
 > Shell **没有** `addToolbarButton(...)` 这个函数（历史文档里出现过，属于笔误），
 > 通用渲染请用 `renderExtensions`，自定义渲染请照上面的分支自己实现。
 
+**扩展入口的高亮由 `renderExtensions` 统一维护**（"同一时刻只有一个当前项"这条不变量
+不再由宿主各自实现）：
+
+```javascript
+const exts = await renderExtensions(container, 'media-player', 'sidebar', {
+  title: '网易云音乐',
+  navSelector: '.mp-nav-item',                  // 宿主侧栏项：点扩展时一并取消它们的选中
+  onOpen: (ext, btn) => this.openNeteaseView(ext, btn),
+});
+// 宿主切换自己的视图时清一次扩展高亮：
+exts.clearActive();
+```
+
+- 返回值是控制器 `{ buttons, activate(btn), clearActive() }`；容器为空或列表为空也照样
+  返回（宿主不必判空）。
+- 组件在点击时自己完成：清掉 `navSelector` 命中的侧栏项 → 高亮被点的入口 → 再调
+  `onOpen` / `onEmbed`。**只有"会打开视图"的扩展参与高亮**（`ext.view` + `onOpen`，或
+  `ext.embedUrl`）；纯动作型（`route` / `method`）不点亮，否则等于谎报"当前视图"。
+- 为什么要有这一层：宿主通常有两套入口（侧栏项 + 扩展入口），互斥逻辑分散在两边就会
+  漏一个方向。实测 media-player 只清了侧栏项、扩展点击只清扩展项，先点「网易云登录」
+  再点「全部音乐」两个同时高亮（image-viewer 两个方向都写了才没暴露）。
+- 回归守卫：`tests/js/shell_extensions_active.mjs`（组件侧 6 例）+ 各宿主的侧栏用例
+  （如 `tests/js/media_player_nav_active.mjs`）。
+
 > 目前已落地的 Companion 插件示例：`image-cleaner`（全相册重复/相似清理），设计见 `docs/image-cleaner-design.md`。
 
 ## 2.2 重型依赖与独立运行环境（runtime）
