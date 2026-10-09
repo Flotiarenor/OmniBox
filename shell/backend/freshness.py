@@ -135,6 +135,11 @@ class FsSource:
     roots: Tuple[Path, ...]
     prefixes: Tuple[str, ...] = ()
     include: Tuple[str, ...] = ()
+    # 要**纳入指纹**的完整文件名（不区分大小写）：例如目录封面 `folder.jpg`。
+    # 为什么单独一项：它既不是插件索引里的"条目"，又确实会影响派生数据
+    # （media-player 的 `has_cover`、专辑封面都取决于同目录有没有封面图）。
+    # 不纳入时"后补一张 folder.jpg"不会改变任何指纹，派生数据永远不刷新。
+    include_names: Tuple[str, ...] = ()
     skip_dirs: Tuple[str, ...] = DEFAULT_SKIP_DIRS
 
     def __post_init__(self) -> None:
@@ -145,6 +150,8 @@ class FsSource:
                 self, 'prefixes',
                 tuple(_default_prefix(i, r) for i, r in enumerate(self.roots)))
         object.__setattr__(self, 'include', tuple(x.lower() for x in self.include))
+        object.__setattr__(self, 'include_names',
+                           frozenset(x.lower() for x in self.include_names))
 
     # ----- 键 -----
 
@@ -157,6 +164,8 @@ class FsSource:
         """该文件是否纳入索引（只看名字，不 stat —— 稳态零系统调用的前提）。"""
         if not name or name.startswith('.'):
             return False
+        if self.include_names and name.lower() in self.include_names:
+            return True
         return not self.include or Path(name).suffix.lower() in self.include
 
     def skips(self, name: str) -> bool:
@@ -212,11 +221,21 @@ class FreshnessSpec:
     roots_decl: Any = ()
     prefixes_decl: Tuple[str, ...] = ()
     include: Tuple[str, ...] = ()
+    include_names: Tuple[str, ...] = ()
     skip_dirs: Tuple[str, ...] = DEFAULT_SKIP_DIRS
     derive: Optional[Callable[..., Any]] = None
     prune: Optional[Callable[..., Any]] = None
     on_verified: Optional[Callable[..., Any]] = None
+    # 整趟结束（同步与校验都会调）：适合把"一次遍历攒下来的改动"落盘。
+    # 为什么要它：索引是**单文件**的插件（media-player 的媒体索引 JSON）不能每处理
+    # 一个目录就整体重写一遍，需要"这一趟结束了再写"的时机。
+    on_pass_end: Optional[Callable[..., Any]] = None
     rebuild: Optional[Callable[..., Any]] = None
+    # 条目键的算法：入参是**绝对物理路径**，返回插件自己用的条目键。
+    # 默认用虚拟路径（`前缀/根内相对路径`），适合"路径就是键"的插件；
+    # 用 md5(path) 之类做稳定 id 的插件（media-player 的 item id）在这里换算法，
+    # 这样派生缓存（缩略图库、索引）不需要再做一层映射表。
+    key_of: Optional[Callable[[str], str]] = None
     content_version: int = 1
     unit: str = '项'
     min_sync_interval: float = DEFAULT_MIN_SYNC_INTERVAL
@@ -241,10 +260,13 @@ class FreshnessSpec:
         prefixes = tuple(str(p or '') for p in (prefixes() if callable(prefixes) else prefixes))
         try:
             source = FsSource(roots=roots, prefixes=prefixes,
-                              include=tuple(self.include), skip_dirs=tuple(self.skip_dirs))
+                              include=tuple(self.include),
+                              include_names=tuple(self.include_names),
+                              skip_dirs=tuple(self.skip_dirs))
         except ValueError as e:
             log.error(f'freshness: roots/prefixes 声明不一致（{e}），退回默认前缀')
             source = FsSource(roots=roots, include=tuple(self.include),
+                              include_names=tuple(self.include_names),
                               skip_dirs=tuple(self.skip_dirs))
         self._last_source = source
         return source
@@ -281,12 +303,15 @@ class FreshnessSpec:
         return cls(
             roots_decl=roots_decl,
             prefixes_decl=prefixes_decl,
-            include=tuple(str(x).lower() for x in (raw.get('include') or ())),
-            skip_dirs=tuple(raw.get('skip_dirs') or DEFAULT_SKIP_DIRS),
+        include=tuple(str(x).lower() for x in (raw.get('include') or ())),
+        include_names=tuple(str(x) for x in (raw.get('include_names') or ())),
+        skip_dirs=tuple(raw.get('skip_dirs') or DEFAULT_SKIP_DIRS),
             derive=_hook('derive'),
             prune=_hook('prune'),
             on_verified=_hook('on_verified'),
+            on_pass_end=_hook('on_pass_end'),
             rebuild=_hook('rebuild'),
+            key_of=_hook('key_of'),
             content_version=int(raw.get('content_version') or 1),
             unit=str(raw.get('unit') or '项'),
             min_sync_interval=float(raw.get('min_sync_interval') or DEFAULT_MIN_SYNC_INTERVAL),
@@ -589,9 +614,13 @@ class FreshnessEngine:
         report['force_all'] = stale_version
         self._last_report = report
         if task is not None:
+            # 任务的 extra 带上整趟摘要：既有通用计数，也有插件 pass_end 钩子返回的
+            # 业务计数（media-player 的 audio/video —— 前端与调试脚本按它显示"完成"）
+            extra = {k: report[k] for k in ('added', 'changed', 'removed', 'pruned')}
+            end = report.get('pass_end') or {}
+            extra.update(end if isinstance(end, dict) else {})
             task.update(total=report['dirs'], processed=report['dirs'],
-                        current='', extra={k: report[k] for k in
-                                           ('added', 'changed', 'removed', 'pruned')})
+                        current='', extra=extra)
         return report
 
     # ----- 逃生门：重建派生缓存 -----
@@ -741,6 +770,7 @@ class FreshnessEngine:
         # 会把只是暂时读不到的目录下的有效派生缓存一起删掉。
         if audit and not report['partial'] and not report['errors']:
             report['audited'] = self._call_verified(conn)
+        report['pass_end'] = self._call_pass_end(report, audit)
         return report
 
     def _unchanged(self, dir_path: Path, stored: Tuple[float, int, int, float],
@@ -756,12 +786,23 @@ class FreshnessEngine:
             return False
         return abs(dir_mtime - stored[0]) < 0.5 and stored[1] == name_count
 
+    def _entry_key(self, abs_path: Path, virtual: str) -> str:
+        """条目键：插件的 `key_of(绝对路径)` 优先，默认用虚拟路径。"""
+        if self.spec.key_of is None:
+            return virtual
+        try:
+            return str(self.spec.key_of(str(abs_path)))
+        except Exception as e:
+            log.error(f'[{self.name}] freshness.key_of 失败，退回虚拟路径: {e}')
+            return virtual
+
     def _collect(self, dir_key: str, dir_path: Path, names: Sequence[str]
                  ) -> Tuple[Dict[str, Tuple[str, float, int]], Tuple[float, int, int, float], str]:
         """逐条 stat（只在目录短路失败后发生）。
 
-        键必须是**插件对外用的虚拟路径**（`目录键/文件名`）：派生缓存的键
-        （缩略图键、索引键）就是它，用裸文件名会让所有子目录的条目互相覆盖。
+        键是**插件对外用的条目键**（默认虚拟路径 `目录键/文件名`，或 `key_of()` 的
+        结果）：派生缓存的键（缩略图键、索引键）就是它，用裸文件名会让所有子目录的
+        条目互相覆盖。
 
         返回 ({键: (物理路径, mtime, size)}, 目录指纹, 最后一个错误)。
         """
@@ -776,8 +817,8 @@ class FreshnessEngine:
             except OSError as e:
                 error = str(e)
                 continue
-            key = f'{dir_key}/{name}' if dir_key else name
-            entries[key] = (str(path), st.st_mtime, st.st_size)
+            virtual = f'{dir_key}/{name}' if dir_key else name
+            entries[self._entry_key(path, virtual)] = (str(path), st.st_mtime, st.st_size)
             size_sum += st.st_size
             max_mtime = max(max_mtime, st.st_mtime)
         try:
@@ -828,6 +869,17 @@ class FreshnessEngine:
             out = self.spec.on_verified(keys)
         except Exception as e:
             log.error(f'[{self.name}] freshness.on_verified 失败: {e}')
+            return {'error': str(e)}
+        return out if isinstance(out, dict) else {}
+
+    def _call_pass_end(self, report: Dict[str, Any], audit: bool) -> Dict[str, Any]:
+        """整趟结束的收尾钩子（同步与校验都会调，含部分遍历）。"""
+        if self.spec.on_pass_end is None:
+            return {}
+        try:
+            out = self.spec.on_pass_end(report, audit)
+        except Exception as e:
+            log.error(f'[{self.name}] freshness.on_pass_end 失败: {e}')
             return {'error': str(e)}
         return out if isinstance(out, dict) else {}
 

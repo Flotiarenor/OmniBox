@@ -268,6 +268,52 @@ class FreshnessEngineTests(unittest.TestCase):
 
         self.assertEqual(seen[0]['reason'], 'busy', seen)
 
+    def test_key_of_lets_plugins_use_their_own_entry_keys(self):
+        """插件用自己的 id 做条目键（media-player 的 md5(path) 形态）。
+
+        这样派生缓存的键（缩略图库按 item id 存）不需要再维护一层映射表，
+        `prune` / `on_verified` 收到的也就是插件自己认的键。
+        """
+        def _id(abs_path: str) -> str:
+            return 'id-' + os.path.basename(abs_path)
+
+        self.plugin._spec = _spec(self.plugin, self.root, key_of=_id)
+        self.plugin._freshness_engine = None
+        engine = engine_for(self.plugin)
+        self._write('sub/a.jpg')
+        report = engine.sync('', force=True)
+
+        self.assertEqual(report['added'], 1)
+        self.assertEqual(self._derive_keys(), ['id-a.jpg'])
+
+        (self.root / 'sub' / 'a.jpg').unlink()
+        engine.spec.stat_entries = True
+        os.utime(self.root / 'sub', (time.time(), time.time()))
+        after = engine.verify()
+        self.assertEqual(after['removed'], 1)
+        self.assertEqual(self.plugin.pruned, ['id-a.jpg'])
+
+    def test_pass_end_hook_runs_once_per_pass(self):
+        """单文件索引的插件靠它落盘（不能每处理一个目录就整体重写一遍）。"""
+        calls = []
+
+        def _end(report, verified):
+            calls.append((report['dirs'], verified))
+            return {'saved': True}
+
+        self.plugin._spec = _spec(self.plugin, self.root, on_pass_end=_end)
+        self.plugin._freshness_engine = None
+        engine = engine_for(self.plugin)
+        self._write('a.jpg')
+        self._write('sub/b.jpg')
+
+        synced = engine.sync('', force=True)
+        self.assertEqual(calls, [(2, False)])
+        self.assertEqual(synced['pass_end'], {'saved': True})
+
+        engine.verify()
+        self.assertEqual(calls[-1], (2, True))
+
     def test_multi_root_prefixes_map_to_virtual_keys(self):
         extra = Path(self._tmp.name) / 'extra'
         extra.mkdir()
