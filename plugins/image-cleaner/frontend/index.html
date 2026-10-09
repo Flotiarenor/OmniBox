@@ -26,7 +26,6 @@
         <span class="cleaner-root" id="cleaner-root" title="相册根目录">读取中…</span>
       </div>
       <div class="toolbar-group" id="cleaner-actions" style="margin-left:auto;">
-        <button id="btn-rescan" class="btn btn-sm">重新扫描</button>
         <button id="btn-settings" class="btn btn-sm" title="相似判定阈值等设置（由后端 settings_schema 声明）"><svg class="obx-icon"><use href="#settings"></use></svg> 设置</button>
       </div>
     </div>
@@ -36,6 +35,9 @@
         <button id="tab-dupe" class="btn btn-sm active">完全重复</button>
         <button id="tab-similar" class="btn btn-sm">相似图片</button>
         <span id="cleaner-scanned" class="cleaner-scanned"></span>
+        <!-- 扫描入口：共享组件渲染的「同步状态 + 校验」。放在标签行而不是上面那条
+             工具栏 —— 内嵌进图片相册时整条工具栏是隐藏的，标签行两种形态都可见。 -->
+        <div id="cleaner-freshness" class="cleaner-freshness"></div>
       </div>
       <div id="cleaner-results" class="cleaner-results"></div>
     </div>

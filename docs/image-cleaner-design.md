@@ -67,7 +67,7 @@ plugins/
 | `similar_scan` | `threshold` | `{groups, scanned}` | 全相册视觉相似扫描（同步入口，同上） |
 | `scan_start` | `mode`（`dupe` / `similar`） | `{started, running, mode}` | 起后台扫描任务（共享基建 `BackgroundTask`）；已有任务在跑时返回 `started:false` 而不叠任务 |
 | `scan_status` | 无 | `{running, done, success, cancelled, mode, total, processed, current, groups}` | 任务进度；空转时 `running:false` 且各计数为 0 |
-| `scan_cancel` | 无 | `{success}` / `{success:false, error}` | 请求取消；取消的任务**不写**扫描缓存（没有"半份结果"） |
+| `scan_cancel` | 无 | `{success}` / `{success:false, error}` | 请求取消；取消的任务**不写**扫描缓存（没有"半份结果"）；没有插件任务时会转发到统一校验的取消 |
 | `get_cached_scan` | `mode`（`dupe` / `similar`） | `{groups, scanned, cached}` | 读上次扫描结果的缓存（后台任务结束后前端也走它取结果） |
 | `delete_files` | `rel_paths` | `{deleted, errors}` | 复用宿主的删除接口 |
 | `get_status` | 无 | `{host, root_dir, roots, scope}` | 查看当前清理范围（`roots` 是全部物理根目录）与宿主信息 |
@@ -86,6 +86,29 @@ plugins/
 > `get_settings_schema`。漏登记的表现是静默的（弹窗打得开、`root_dir` 行空白、`threshold`
 > 恒为默认 8、保存必然失败），此前就是这样漏的；回归守卫见
 > `tests/test_image_cleaner_settings.py` 与 `tools/check_plugins.py` 的设置 API 登记检查。
+
+### 2.1 统一刷新（同步 / 校验）与两层缓存
+
+本插件的派生数据分两层，失效判据都交给 Shell 的统一刷新基建
+（`shell/backend/freshness.py`，契约见 `docs/plugin-guide.md` §3.4）：
+
+| 层 | 落点 | 谁维护 |
+| --- | --- | --- |
+| 逐图指纹（dHash，`v` 标记见 `DHASH_VERSION`） | `.cache/image-cleaner/dhash.json` | `derive` 只给**新增/指纹变化**的图算；`prune` / `on_verified` 清掉磁盘上已消失文件的条目 |
+| 分组结果（每 mode 一份） | `.cache/image-cleaner/scan_cache.json` | 校验整趟结束时统一重新分组并写盘；`get_cached_scan` 回报 `stale` |
+
+- **同步**（被动，进页面时触发）：目录级短路，稳态零成本；只有真有变化才作废结果缓存。
+- **校验**（手动，标签行右端的共享组件）：全量逐项比对 → 补算指纹 → 清幽灵条目 →
+  用刚维护好的指纹重新分组，写进两个 mode 的结果缓存。用户看到的「校验」按钮
+  就是它，进度与取消由组件负责。
+- `on_settings_changed`：改阈值 → 相似分组标记过期（旧实现没有这个钩子，改完阈值
+  看到的还是旧分组）。
+- `scan_start` 保留为"只重算某一个 mode 的分组"的兼容入口，并修掉了原先
+  "查-建-赋值"无锁的问题（Flask 是 threaded=True，两个并发请求可以各起一个任务）。
+
+> 历史：后台路径原先**从不落盘** dHash（只有同步的 `similar_scan` 会存），重启即全量
+> 重算；`dhash.json` 也没有清理，删掉的图片指纹永久留着；扫描缓存则以 `mode` 为键、
+> 没有任何失效判据（新加的图片看不到）。三者都由上面的钩子接管。
 
 ## 4. 前端
 
@@ -149,7 +172,7 @@ plugins/
 | 缩略图 | `42px × 42px`、`border-radius:6px`、`object-fit:cover` | 插件（`image-cleaner.css:119-126`） |
 | tab 徽标 / 根目录徽标 | `border-radius:999px`、`padding:2px 8px`；根目录 `max-width:240px` + 省略号 + 等宽字体 | 插件（`image-cleaner.css:18-42`） |
 
-**内嵌进宿主后的几何（宿主侧，非本插件 CSS）**：`#extension-view` 是 `position:absolute; inset:0; z-index:20`（`plugins/image-viewer/frontend/image-viewer.css:356-366`），其 `.extension-view-header` 高 48px（`var(--toolbar-height)`，与宿主主工具栏同）、`padding:0 16px`（`:367-379`），左侧是「15px/700 标题 + 11px 说明」两行（`:380-394`；说明取本插件 `get_extensions()` 声明的 `description`），右侧是**本插件挂上来的两个按钮**（重新扫描 / 设置，壳渲染成 `.btn.obx-toolbar-btn.obx-host-action`（壳的工具栏按钮组件：31px / 13px / `0 14px`）、间距 8px，`:395-409`）——宿主头部不自带按钮（原来的「返回相册」已去掉，退出走宿主侧栏导航项）；iframe 本身 `width:100%;height:100%;border:none;background:var(--bg-app)`（`:414-419`）。
+**内嵌进宿主后的几何（宿主侧，非本插件 CSS）**：`#extension-view` 是 `position:absolute; inset:0; z-index:20`（`plugins/image-viewer/frontend/image-viewer.css:356-366`），其 `.extension-view-header` 高 48px（`var(--toolbar-height)`，与宿主主工具栏同）、`padding:0 16px`（`:367-379`），左侧是「15px/700 标题 + 11px 说明」两行（`:380-394`；说明取本插件 `get_extensions()` 声明的 `description`），右侧是**本插件挂上来的按钮**（只剩「设置」，壳渲染成 `.btn.obx-toolbar-btn.obx-host-action`（壳的工具栏按钮组件：31px / 13px / `0 14px`）、间距 8px，`:395-409`）——宿主头部不自带按钮（原来的「返回相册」已去掉，退出走宿主侧栏导航项）；iframe 本身 `width:100%;height:100%;border:none;background:var(--bg-app)`（`:414-419`）。扫描入口不在头部：它是共享组件（`#cleaner-freshness`，见 §2.1），DOM 归组件自己渲染，挂到宿主头部就会出现"头部一个校验、页内还有一个"的重复入口；组件因此挂在**内嵌态也可见**的标签行右端。
 
 **因此内嵌态纵向只有宿主那一条 48px 横条**：本页自己的 `.cleaner-toolbar` 在
 `html.is-embedded` 下整条 `display:none`（`image-cleaner.css:143-151`），留在 DOM 里的只有
@@ -218,8 +241,8 @@ plugins/
 
 ### 5.5 交互约定
 
-- **设置入口**：内嵌时挂在宿主扩展面板头部（`#btn-settings` 声明给 `HostChannel.mountToolbar`，宿主用它的样式渲染）→ `ImageCleaner.openSettings()`（`app.js`）→ `HostChannel.requestSettings('相册清理设置')`；脱离宿主时按钮留在本页工具栏。后端 `settings_schema` 声明 `root_dir`（「相册根目录」，`type:"info"` 只读信息行，值由 `get_settings()` 现取宿主根目录）与 `threshold`（「相似判定阈值」，`range 0-16`，默认 8，`plugins/image-cleaner/backend/main.py:23-32`）。两条路径的差别只在**谁来画**：宿主 image-viewer `_serveHostChannel()` 表态后用宿主文档渲染（`HostChannel.serve` 的默认 `ui` 处理器），否则回落本页 `openSettingsModal`；取值与保存一律走本页的 `Bridge.call('get_settings'|'save_settings')`（宿主替它存会写错插件），因此这两个方法必须登记进 `register_api()`（见 §3 的说明）。**「重新扫描」与「设置」一起挂**（`#cleaner-actions` 整组收起）：只搬一个的话，用户看到的仍是"一半在顶栏、一半在下面"。
-- **保存后的反馈方式**：无保存动作；唯一的「状态写回」是删除后本地过滤 `this.groups` 并重渲染（`app.js:355-384`），**不自动重扫**（`:378-379` 注释明说由用户点「重新扫描」）。
+- **设置入口**：内嵌时挂在宿主扩展面板头部（`#btn-settings` 声明给 `HostChannel.mountToolbar`，宿主用它的样式渲染）→ `ImageCleaner.openSettings()`（`app.js`）→ `HostChannel.requestSettings('相册清理设置')`；脱离宿主时按钮留在本页工具栏。后端 `settings_schema` 声明 `root_dir`（「相册根目录」，`type:"info"` 只读信息行，值由 `get_settings()` 现取宿主根目录）与 `threshold`（「相似判定阈值」，`range 0-16`，默认 8，`plugins/image-cleaner/backend/main.py:23-32`）。两条路径的差别只在**谁来画**：宿主 image-viewer `_serveHostChannel()` 表态后用宿主文档渲染（`HostChannel.serve` 的默认 `ui` 处理器），否则回落本页 `openSettingsModal`；取值与保存一律走本页的 `Bridge.call('get_settings'|'save_settings')`（宿主替它存会写错插件），因此这两个方法必须登记进 `register_api()`（见 §3 的说明）。**头部只挂「设置」**：扫描入口是共享组件（见 §2.1），它的 DOM 归组件渲染，挂到头部就会出现重复入口。
+- **保存后的反馈方式**：无保存动作；「状态写回」是删除后本地过滤 `this.groups` 并重渲染，同时触发一次被动同步（让后端立刻看到这次删除，结果缓存随之标记过期），**不自动重新分组** —— 需要更新结果时点共享组件上的「校验」。
 - **错误提示方式**：
   - 壳 `Toast.error`：`app.js:366`「部分删除失败: …」、`:386`「删除请求失败」
   - 壳 `Toast.warning`：`:358`「请先勾选要删除的图片」（**未选任何图时点删除**）

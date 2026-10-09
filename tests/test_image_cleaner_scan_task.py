@@ -197,6 +197,112 @@ class ScanTaskTests(unittest.TestCase):
             gate.set()
             task.cancel()
 
+    def test_scan_start_is_single_flight(self):
+        """并发请求不得各起一个任务：查-建-赋值必须在同一把锁里。
+
+        回归对象：`scan_start` 原先没有锁，Flask 是 threaded=True，两个并发请求
+        可以各起一个后台任务，后一个覆盖前一个的 `_scan_task`（前者仍在跑，取消
+        就再也够不着它）。
+        """
+        cleaner = self._cleaner()
+        gate = threading.Event()
+        task = BackgroundTask(kind='image-cleaner-scan', extra={'mode': 'dupe'})
+        task.start(lambda t: gate.wait(10))
+        cleaner._scan_task = task
+        try:
+            second = cleaner.scan_start('dupe')
+            self.assertFalse(second['started'], f'已有任务在跑时不该再起一个: {second}')
+            self.assertTrue(second['running'])
+        finally:
+            gate.set()
+            task.cancel()
+
+    # ---------- 5. 统一刷新基建 ----------
+
+    def test_freshness_verify_hashes_and_regroups(self):
+        """校验一趟 = 维护指纹 + 重新分组写盘（本插件的派生数据全在这一步里）。"""
+        from shell.backend.freshness import engine_for
+
+        _make_image(self.root / 'a.jpg', (200, 30, 30))
+        _make_image(self.root / 'b.jpg', (200, 30, 30))
+        _make_image(self.root / 'c.jpg', (10, 200, 10))
+        cleaner = self._cleaner()
+        engine = engine_for(cleaner)
+        self.assertIsNotNone(engine, 'image-cleaner 必须声明 freshness_spec()')
+        engine.spec.min_sync_interval = 0.0
+
+        report = engine.verify()
+
+        self.assertEqual(report['pass_end']['scanned'], 3)
+        dupe = cleaner.get_cached_scan('dupe')
+        self.assertTrue(dupe['cached'])
+        self.assertFalse(dupe['stale'], '校验完的结果不该还是过期的')
+        self.assertEqual([sorted(g['files']) for g in dupe['groups']],
+                         [['a.jpg', 'b.jpg']])
+        # 指纹落盘：旧后台路径从不保存 dhash.json，重启即全量重算
+        self.assertTrue(cleaner._dhash_cache_path().exists(), 'dHash 缓存必须落盘')
+
+    def test_deleted_file_invalidates_result_and_hash(self):
+        from shell.backend.freshness import engine_for
+
+        _make_image(self.root / 'a.jpg', (200, 30, 30))
+        _make_image(self.root / 'b.jpg', (200, 30, 30))
+        cleaner = self._cleaner()
+        engine = engine_for(cleaner)
+        engine.spec.min_sync_interval = 0.0
+        engine.verify()
+        self.assertEqual(len(cleaner.get_cached_scan('dupe')['groups']), 1)
+
+        (self.root / 'b.jpg').unlink()
+        engine.spec.min_sync_interval = 0.0
+        engine.sync('', force=True)
+
+        self.assertTrue(cleaner.get_cached_scan('dupe')['stale'],
+                        '磁盘变了之后结果缓存必须标记过期')
+        after = engine.verify()
+        self.assertEqual(after['audited']['valid_entries'], 1)
+        self.assertEqual(cleaner.get_cached_scan('dupe')['groups'], [],
+                         '重新分组后不该再报已删除文件的重复对')
+        dead = cleaner._dhash_cache_key(str(self.root / 'b.jpg'))
+        self.assertNotIn(dead, cleaner._dhash_cache, '已删除文件的指纹必须清掉')
+
+    def test_threshold_change_invalidates_similar_result(self):
+        from shell.backend.freshness import engine_for
+
+        _make_image(self.root / 'a.jpg', (200, 30, 30))
+        cleaner = self._cleaner()
+        engine = engine_for(cleaner)
+        engine.spec.min_sync_interval = 0.0
+        engine.verify()
+        self.assertFalse(cleaner.get_cached_scan('similar')['stale'])
+
+        cleaner.on_settings_changed({'threshold'})
+
+        self.assertTrue(cleaner.get_cached_scan('similar')['stale'],
+                        '改阈值后相似分组必须重算（旧实现看完还是旧分组）')
+
+    def test_abs_for_rel_handles_extra_root_prefix(self):
+        """虚拟路径 → 绝对路径：命名空间前缀先匹配，再回落第一根。"""
+        extra = self.tmp / 'extra'
+        _make_image(extra / 'a.jpg')
+        _make_image(self.root / 'b.jpg')
+        viewer = self._viewer()
+        viewer.setting = lambda key, default=None: (
+            str(extra) if key == 'extra_roots' else
+            (str(self.root) if key == 'root_dir' else default))
+        viewer._rebuild_paths()
+        cleaner = self.cleaner_module.ImageCleanerPlugin(
+            {'name': 'image-cleaner'}, {'directories': {'data_root': str(self.root)}})
+        cleaner._host = viewer
+
+        roots = cleaner._scan_roots()
+        prefix = next(p for _r, p in roots if p)
+        self.assertEqual(Path(cleaner._abs_for_rel(f'{prefix}/a.jpg')).resolve(),
+                         (extra / 'a.jpg').resolve())
+        self.assertEqual(Path(cleaner._abs_for_rel('b.jpg')).resolve(),
+                         (self.root / 'b.jpg').resolve())
+        self.assertIsNone(cleaner._abs_for_rel(''))
+
 
 if __name__ == '__main__':   # pragma: no cover
     unittest.main()
