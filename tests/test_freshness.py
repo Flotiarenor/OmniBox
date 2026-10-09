@@ -358,6 +358,39 @@ class FreshnessEngineTests(unittest.TestCase):
 
         self.assertEqual(self.engine.valid_keys(), {'a.jpg'})
 
+    def test_remote_mode_uses_ttl_and_invalidates(self):
+        """远端来源：新鲜期内跳过，过期或手动校验才让插件丢弃本地缓存。"""
+        cleared = []
+        plugin = _FakePlugin(Path(self._tmp.name) / '.cache' / 'remote', None)
+        plugin._spec = {
+            'mode': 'remote',
+            'ttl_seconds': 60.0,
+            'invalidate': lambda: cleared.append('x') or {'rows': 3},
+            'unit': '首',
+        }
+        engine = engine_for(plugin)
+        self.assertIsNotNone(engine)
+        self.assertEqual(engine.spec.mode, 'remote')
+
+        # 首次：没有时间戳 → 视为过期，丢一次缓存
+        first = engine.sync()
+        self.assertEqual(first['action'], 'sync')
+        self.assertEqual(len(cleared), 1)
+        state = engine.state()
+        self.assertEqual(state['mode'], 'remote')
+        self.assertGreater(state['ttl_remaining'], 0)
+
+        # TTL 内：跳过，不再丢缓存
+        second = engine.sync()
+        self.assertEqual(second['reason'], 'fresh')
+        self.assertEqual(len(cleared), 1)
+
+        # 手动校验：忽略 TTL
+        verified = engine.verify()
+        self.assertEqual(verified['action'], 'verify')
+        self.assertEqual(len(cleared), 2)
+        self.assertEqual(verified['cleared'], {'rows': 3})
+
     def test_multi_root_prefixes_map_to_virtual_keys(self):
         extra = Path(self._tmp.name) / 'extra'
         extra.mkdir()

@@ -236,6 +236,13 @@ class FreshnessSpec:
     # 用 md5(path) 之类做稳定 id 的插件（media-player 的 item id）在这里换算法，
     # 这样派生缓存（缩略图库、索引）不需要再做一层映射表。
     key_of: Optional[Callable[[str], str]] = None
+    # 来源类型：`fs`（默认，本地文件树）或 `remote`（远端 API）。
+    # 远端没有文件指纹可用，判据只能是**时间**：`ttl_seconds` 内视为新鲜，
+    # 过期才让插件丢弃本地缓存重取。手动「校验」一律忽略 TTL。
+    mode: str = 'fs'
+    ttl_seconds: float = 0.0
+    # remote：丢弃插件的本地派生缓存（URL 缓存之类）。远端数据本身由插件按需重取。
+    invalidate: Optional[Callable[..., Any]] = None
     content_version: int = 1
     unit: str = '项'
     min_sync_interval: float = DEFAULT_MIN_SYNC_INTERVAL
@@ -282,6 +289,12 @@ class FreshnessSpec:
         roots_decl = raw.get('roots')
         roots = roots_decl() if callable(roots_decl) else roots_decl
         roots = tuple(Path(p).expanduser() for p in (roots or ()))
+        mode = str(raw.get('mode') or 'fs').strip().lower()
+        if mode not in ('fs', 'remote'):
+            raise ValueError("freshness_spec() 的 mode 只能是 'fs' 或 'remote'")
+        if mode == 'remote':
+            # 远端来源没有文件树：roots 不参与，也不做"根为空"的判断
+            roots = ()
         # 根为空**不算"不参与"**：根往往是运行时配置出来的（group-mesh 的共享目录
         # 默认一个都没有）。把它当"不支持"，界面就只能显示"本插件未参与统一刷新"，
         # 而正确状态是"已接入、当前没有受管目录"。所以照样给引擎，走空遍历。
@@ -313,6 +326,9 @@ class FreshnessSpec:
             on_pass_end=_hook('on_pass_end'),
             rebuild=_hook('rebuild'),
             key_of=_hook('key_of'),
+            mode=mode,
+            ttl_seconds=float(raw.get('ttl_seconds') or 0.0),
+            invalidate=_hook('invalidate'),
             content_version=int(raw.get('content_version') or 1),
             unit=str(raw.get('unit') or '项'),
             min_sync_interval=float(raw.get('min_sync_interval') or DEFAULT_MIN_SYNC_INTERVAL),
@@ -454,6 +470,9 @@ class FreshnessEngine:
 
         指纹库还不存在时**不建库**：否则"看一眼状态"就会给每个声明了 spec 的插件
         凭空造出一个空数据库（与 ThumbCache.stats 同一条理由）。
+
+        远端来源没有条目与目录：额外给出 `mode` / `ttl_seconds` / `ttl_remaining`，
+        界面按"数据新鲜期"显示，而不是"已索引 N 项"。
         """
         with self._lock:
             task = self._task
@@ -470,6 +489,9 @@ class FreshnessEngine:
             'last_sync_at': 0.0,
             'last_verify_at': 0.0,
             'unit': self.spec.unit,
+            'mode': self.spec.mode,
+            'ttl_seconds': float(self.spec.ttl_seconds or 0.0),
+            'ttl_remaining': 0.0,
             'last_report': self._last_report,
         }
         if not self.store.db_path.exists():
@@ -481,13 +503,16 @@ class FreshnessEngine:
         try:
             counts = self.store.counts(conn)
             version = int(self.store.meta_get(conn, 'content_version', 0) or 0)
+            last_sync = float(self.store.meta_get(conn, 'last_sync_at', 0) or 0)
+            ttl = float(self.spec.ttl_seconds or 0.0)
             base.update({
                 'entries': counts['entries'],
                 'dirs': counts['dirs'],
                 'content_version': version,
                 'version_stale': version != self.spec.content_version,
-                'last_sync_at': float(self.store.meta_get(conn, 'last_sync_at', 0) or 0),
+                'last_sync_at': last_sync,
                 'last_verify_at': float(self.store.meta_get(conn, 'last_verify_at', 0) or 0),
+                'ttl_remaining': (max(0.0, ttl - (time.time() - last_sync)) if ttl > 0 else 0.0),
             })
         finally:
             conn.close()
@@ -533,7 +558,10 @@ class FreshnessEngine:
 
         返回动作报告：`action` ∈ `sync`（真扫了）/ `skip`（去抖或非法作用域）/
         `partial`（预算用尽，剩 `remaining` 个目录交给校验续完）。
+        远端来源（`mode='remote'`）没有文件可扫，走 TTL 判定，见 `_remote_pass`。
         """
+        if self.spec.mode == 'remote':
+            return self._remote_pass(force=force)
         now = time.time()
         with self._lock:
             if self._busy_locked():
@@ -603,7 +631,10 @@ class FreshnessEngine:
 
         也是 `BackgroundTask` 的 worker 本体（`start_verify` 就是把它丢进后台），
         因此可以直接调用做测试 —— 走的是同一条路径。
+        远端来源：忽略 TTL，直接丢弃插件的本地缓存（见 `_remote_pass`）。
         """
+        if self.spec.mode == 'remote':
+            return self._remote_pass(force=True, task=task)
         with self._lock:
             if task is None:
                 if self._busy_locked():
@@ -668,6 +699,43 @@ class FreshnessEngine:
         return {'started': True, 'cleared': cleared, **self.start_verify()}
 
     # ----- 内部 -----
+
+    def _remote_pass(self, *, force: bool, task: Optional[BackgroundTask] = None) -> Dict[str, Any]:
+        """远端来源的一趟：新鲜期内跳过；过期或 `force` 时让插件丢弃本地缓存。
+
+        语义必须在文档里说清：远端数据**发现不了"变化"**，判据只有时间 ——
+        `sync` 是"到时重取"，`verify` 是"立刻重取"（忽略 TTL）。二者都不联网：
+        真正取数由插件在用户进入相应视图时按需做，`invalidate` 只负责让那份取数
+        不再命中旧缓存。
+        """
+        conn = self.store.connect()
+        try:
+            last = float(self.store.meta_get(conn, 'last_sync_at', 0) or 0)
+            ttl = float(self.spec.ttl_seconds or 0.0)
+            left = max(0.0, ttl - (time.time() - last)) if ttl > 0 else 0.0
+            if not force and left > 0:
+                return {'action': 'skip', 'reason': 'fresh', 'ttl_remaining': round(left, 1)}
+            cleared: Any = None
+            if self.spec.invalidate is not None:
+                if task is not None:
+                    task.update(total=1, processed=0, current='丢弃本地缓存')
+                try:
+                    cleared = self.spec.invalidate()
+                except Exception as e:
+                    log.error(f'[{self.name}] freshness.invalidate 失败: {e}')
+                    return {'action': 'error', 'error': str(e)}
+            stamp = time.time()
+            self.store.meta_set(conn, 'last_sync_at', stamp)
+            if force:
+                self.store.meta_set(conn, 'last_verify_at', stamp)
+        finally:
+            conn.close()
+        report = {'action': 'verify' if force else 'sync', 'mode': 'remote',
+                  'invalidated': True, 'cleared': cleared, 'ttl_seconds': ttl}
+        if task is not None:
+            task.update(total=1, processed=1, current='', extra={'invalidated': True})
+        self._last_report = report
+        return report
 
     def _busy_locked(self) -> bool:
         """是否有同步或校验在跑（调用方必须已持有 self._lock）。"""
@@ -943,7 +1011,14 @@ def engine_for(plugin: Any) -> Optional[FreshnessEngine]:
         return None
     if spec is None:
         return None
-    store = FreshnessStore(Path(plugin.get_cache_dir()) / 'freshness.db')
+    try:
+        store = FreshnessStore(Path(plugin.get_cache_dir()) / 'freshness.db')
+    except Exception as e:
+        # 缓存目录取不到（例如插件的数据根来自自己的设置项、而配置里没有
+        # `directories.data_root`）：退化成"本插件不参与"，而不是把异常抛进壳的
+        # API 线程。日志留痕，插件作者照着 `get_cache_dir()` 覆写即可。
+        log.error(f'[{getattr(plugin, "name", "?")}] 无法确定缓存目录，跳过刷新基建: {e}')
+        return None
     engine = FreshnessEngine(plugin, spec, store)
     try:
         plugin._freshness_engine = engine
