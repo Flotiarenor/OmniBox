@@ -182,6 +182,50 @@ class FreshnessEngineTests(unittest.TestCase):
         self.assertEqual(report['action'], 'verify')
         self.assertEqual(sorted(self._derive_keys()), ['a.jpg'])
 
+    def test_steady_state_sync_is_not_partial_when_dirs_exceed_budget(self):
+        """目录数超过 `max_dirs` 时，稳态同步**不得**报 partial。
+
+        回归对象：预算原先按"走过的目录数"算，于是任何目录数 > max_dirs 的库
+        **每次**进视图都会报 partial，界面每次都弹"同步未覆盖全部目录"并轮询 ——
+        而稳态下一个目录都没变。预算要按"真正干了活的目录"算。
+        """
+        for i in range(5):
+            self._write(f'album{i}/a.jpg')
+        self.engine.spec.max_dirs_per_sync = 2
+
+        first = self._sync()
+        self.assertTrue(first['partial'])
+        self.assertEqual(first['reason'], 'budget', ' 还有目录要处理 → 预算型 partial')
+
+        self.engine.verify()                      # 全量走完，指纹齐了
+
+        report = self._sync()
+
+        self.assertEqual(report['action'], 'sync', f'稳态不该是 partial: {report}')
+        self.assertGreater(report['dirs'], 2, '这趟确实走过了超过预算的目录数')
+        self.assertEqual(report['skipped_dirs'], report['dirs'], '全部走的是短路快路')
+
+    def test_progress_advances_on_every_visited_dir(self):
+        """进度要对每个走过的目录推进：只在"条目有增删改"的分支更新，稳态校验会停在 0/0。"""
+        for i in range(4):
+            self._write(f'album{i}/a.jpg')
+        self.engine.verify()                      # 铺底（这一趟有新增）
+        seen = []
+
+        def audit(keys):
+            seen.append(self.engine.state()['task'])
+
+        self.engine.spec.on_verified = audit
+        self.engine.start_verify()
+        for _ in range(300):
+            if not self.engine.state()['busy']:
+                break
+            time.sleep(0.01)
+
+        self.assertEqual(len(seen), 1)
+        self.assertGreater(seen[0]['processed'], 0, '稳态校验期间进度必须前进')
+        self.assertEqual(seen[0]['total'], seen[0]['processed'])
+
     def test_pass_end_can_report_progress_inside_the_task(self):
         """收尾钩子要能把"正在重建索引"写进任务进度。
 

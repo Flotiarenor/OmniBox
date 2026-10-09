@@ -91,7 +91,8 @@ log = logging.getLogger(__name__)
 
 # ===== 调参：默认值一律"性能优先"，插件可在 spec 里覆盖 =====
 DEFAULT_MIN_SYNC_INTERVAL = 5.0   # 被动同步最小间隔（秒）：进视图/切目录都会触发，必须去抖
-DEFAULT_MAX_DIRS = 400            # 单次被动同步最多处理的目录数，超出转后台校验
+DEFAULT_MAX_DIRS = 400            # 单次被动同步最多**处理**的目录数，超出转后台校验
+_VISITED_DIR_FACTOR = 8           # 单次被动同步最多**走过**的目录数 = max_dirs × 该系数
 DEFAULT_SKIP_DIRS = ('.cache',)   # 缓存/数据目录一律不进索引
 _ERROR_CAP = 20                   # 报告里最多保留多少条错误（报告要走 HTTP，与 tasks.py 的 200 条同理）
 
@@ -619,6 +620,8 @@ class FreshnessEngine:
         report['action'] = 'partial' if report['partial'] else 'sync'
         report['scope'] = scope
         report['force_all'] = bool(stale_version)
+        # `report['reason']` 由 `_pass` 填：`budget`（还有活没干完，值得续跑）/
+        # `dir_cap`（只是没走完，不该反复起任务）/ `cancelled` / 空串
         self._last_report = report
         return report
 
@@ -767,7 +770,8 @@ class FreshnessEngine:
         source = self.spec.source
         report: Dict[str, Any] = {'added': 0, 'changed': 0, 'removed': 0, 'dirs': 0,
                                   'skipped_dirs': 0, 'pruned': 0, 'errors': [],
-                                  'partial': False, 'truncated_errors': 0}
+                                  'partial': False, 'reason': '',
+                                  'truncated_errors': 0}
         queue: deque = deque()
         if start_dir is not None:
             queue.append((start_key, start_dir))
@@ -777,19 +781,39 @@ class FreshnessEngine:
         seen: Set[str] = set()
         changed_entries: List[Dict[str, Any]] = []
         removed_keys: List[str] = []
+        # 预算按**干了活的目录**算，不按走过的目录算：短路目录只花一次 scandir，
+        # 而"还有活没干"才是 `partial` 要表达的意思。按走过的目录算会让"目录数 >
+        # max_dirs"的库**永远**报 partial（每次进视图都弹一次"未覆盖全部目录"），
+        # 而稳态下其实一个目录都没变。
+        work_dirs = 0
+        visited_cap = None if max_dirs is None else max_dirs * _VISITED_DIR_FACTOR
 
         while queue:
             if task is not None and task.cancelled:
                 report['partial'] = True
+                report['reason'] = 'cancelled'
                 break
-            if max_dirs is not None and report['dirs'] >= max_dirs:
+            if max_dirs is not None and work_dirs >= max_dirs:
                 report['partial'] = True
+                report['reason'] = 'budget'
+                break
+            if visited_cap is not None and report['dirs'] >= visited_cap:
+                # 硬上限：一次同步请求不能无限走。这里只是"没走完"，不代表还有活
+                # 在排队（走到的目录都校对过），因此前端不该为它自动起全量校验
+                report['partial'] = True
+                report['reason'] = 'dir_cap'
                 break
             dir_key, dir_path = queue.popleft()
             if dir_key in seen:
                 continue
             seen.add(dir_key)
             report['dirs'] += 1
+            # 进度对**每个走过的目录**推进：只在"条目有增删改"的分支里更新，
+            # 会让稳态下的校验整趟停在 0/0（用户看到进度条不动，以为卡死）
+            if task is not None:
+                task.update(processed=report['dirs'],
+                            total=report['dirs'] + len(queue),
+                            current=dir_key or '/')
 
             try:
                 with os.scandir(dir_path) as it:
@@ -821,6 +845,7 @@ class FreshnessEngine:
                 continue
 
             entries, fingerprint, error = self._collect(dir_key, dir_path, names)
+            work_dirs += 1        # 这一趟真花了钱：算进预算（短路目录不算）
             if error:
                 self._add_error(report, f'{dir_key}: {error}')
 
@@ -852,10 +877,6 @@ class FreshnessEngine:
                                             'dir': dir_key})
             self.store.replace_dir(conn, dir_key, fingerprint,
                                    [(k, v[1], v[2]) for k, v in entries.items()])
-            if task is not None:
-                task.update(processed=report['dirs'],
-                            total=report['dirs'] + len(queue),
-                            current=dir_key or '/')
 
         # 目录消失：全部根、整趟走完、无读取错误才做。
         # 为什么同步也要做（不只是校验）：目录改名/整目录删除时，新目录的条目是
