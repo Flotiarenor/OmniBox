@@ -183,6 +183,17 @@ class NeteaseMusicAPI:
             return bool(data.get("success", result["success"]))
         return result["success"] and "未登录" not in result["stdout"]
 
+    def clear_url_cache(self) -> int:
+        """丢弃播放地址缓存，返回丢弃条数。
+
+        地址是**短期**的（网易云外链带时效，`resolve_song_url` 也只是"截获当下那次"），
+        缓存没有 TTL，一次失败还会把公共外链兜底值一起钉住。统一刷新的「校验」
+        就调这里：把缓存丢掉，下次取地址重新解析。
+        """
+        count = len(self._url_cache)
+        self._url_cache.clear()
+        return count
+
     def login(self, background: bool = True) -> str:
         result = self._run_command("login --background") if background else self._run_command("login")
         if not result["success"]:

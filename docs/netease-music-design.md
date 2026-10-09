@@ -100,10 +100,26 @@ ncm-cli 缺失不阻塞插件加载：`_get_api()` 用 `NeteaseMusicAPI(check_in
 
 ### 4.3 播放与歌词的归属
 
-- 播放地址：media-player 侧三处调 `get_song_url`，都传 `(加密 id, original_id)`（`player-core.js:201`、`app-views.js:173`、`app-render.js:610`）；歌词由 `lyrics-parser.js:119` 调 `get_lyric(加密 id)`。
+- 播放地址：media-player 侧三处调 `get_song_url`，都传 `(加密 id, original_id)`（`player-core.js:201`、`app-views.js:173`、`app-render.js:610`）；歌词由 `lyrics-parser.js:119` 调 `get_lyric(加密 id)`。**本插件自己的页面也必须传两个**：后端只在拿到 `original_id` 时才拼公共外链，少传一个就恒返回 `None`（此前 `frontend/js/app.js` 只传了 `song.original_id`，表现是"点歌必报获取播放地址失败"）。
 - 解码、进度记忆、EQ、队列、歌词渲染全在 media-player（见 `docs/media-player-design.md`）；本插件不产出音频、不持有播放状态。
 - 「网易云 → 本地」的匹配与歌单镜像同样只走这几个 API，实现在 media-player 前端（`docs/media-player-design.md`「网易云 → 本地（可选能力）」）。
 - 不可达的那份插件前端另有第三条路径：点曲目时直接读 `parent.mediaPlayerApp`（`frontend/js/app.js:96`、`:109-113`），而该全局只定义在 media-player 自己的 iframe 里（`plugins/media-player/frontend/index.html:273-274`），壳窗口没有这个对象——这是 §5.7 第 2 条的成因。
+
+### 4.4 统一刷新（远端来源）
+
+本插件**没有本地文件树**：数据全部来自 ncm-cli 请求，本地只有一份短期播放地址缓存
+（`_url_cache`，无 TTL，容量 100 条）。因此它在统一刷新基建里声明 `mode: 'remote'`
+（`shell/backend/freshness.py`，契约见 `docs/plugin-guide.md` §3.4）：
+
+- 判据只能是**时间**：`ttl_seconds = 1800`（半小时）内视为新鲜；
+- 「同步」（被动，进页面时触发）= 新鲜期内跳过，过期才调 `invalidate`；
+- 「校验」（手动，共享组件渲染的按钮）= 忽略 TTL，立刻 `invalidate` → 下次取地址
+  重新解析；
+- `invalidate` = `NeteaseMusicAPI.clear_url_cache()`（丢弃地址缓存，返回丢弃条数）；
+- 状态行按"新鲜期剩余"显示，而不是"已索引 N 项"。
+
+语义边界要写清：远端数据**发现不了"变化"**，`sync` 是"到时重取"而不是"变化检测"；
+真正的取数仍由各视图按需发起，`invalidate` 只让那次取数不再命中旧缓存。
 
 ## 5. UI 现状取证（前端与壳契约对照）
 

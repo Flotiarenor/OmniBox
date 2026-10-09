@@ -1,5 +1,7 @@
 """网易云音乐 Companion 插件后端。"""
 
+from typing import ClassVar
+
 from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_utils import load_sibling
 
@@ -16,6 +18,31 @@ class NeteaseMusicPlugin(PluginBase):
         if self._api is None:
             self._api = NeteaseMusicAPI(check_install=False)
         return self._api
+
+    # ---------- 统一刷新基建（远端来源） ----------
+    #
+    # 本插件没有本地文件树：数据全部来自 ncm-cli 请求，本地只有一份**播放地址缓存**
+    # （短期地址 + 无 TTL）。因此它是 `mode: 'remote'` 的来源 —— 判据只能是时间，
+    # 「同步」= TTL 到期才丢弃本地缓存，「校验」= 立刻丢弃（忽略 TTL）。
+    # 真正取数仍由各视图按需发起，invalidate 只负责让那份取数不再命中旧缓存。
+
+    NETEASE_TTL_SECONDS: ClassVar[float] = 1800.0   # 地址缓存的新鲜期：半小时
+
+    def freshness_spec(self) -> dict:
+        return {
+            'mode': 'remote',
+            'ttl_seconds': self.NETEASE_TTL_SECONDS,
+            'invalidate': self._invalidate_caches,
+            'unit': '首',
+        }
+
+    def _invalidate_caches(self) -> dict:
+        """丢弃本地派生缓存（播放地址）。取不到 API 实例时也算成功：本来就没缓存。"""
+        try:
+            dropped = self._get_api().clear_url_cache()
+        except Exception as e:
+            return {'url_cache': 0, 'error': str(e)}
+        return {'url_cache': dropped}
 
     def get_extensions(self) -> list:
         return [

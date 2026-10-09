@@ -54,6 +54,78 @@ class ShellMetaRejectionTests(unittest.TestCase):
                 ncm._reject_shell_meta(bad)
 
 
+def _load_plugin_class():
+    path = PROJECT_ROOT / 'plugins' / 'netease-music' / 'backend' / 'main.py'
+    spec = importlib.util.spec_from_file_location('netease_music_main_under_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.NeteaseMusicPlugin
+
+
+class RemoteFreshnessTests(unittest.TestCase):
+    """远端来源形态：没有文件树，判据是时间（见 docs/plugin-guide.md §3.4）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.data_root = Path(self._tmp.name)
+
+    def _plugin(self):
+        cls = _load_plugin_class()
+        # 指纹库落在数据根下（真实运行时由壳提供），别写进工作区
+        return cls({'name': 'netease-music'},
+                   {'directories': {'data_root': str(self.data_root)}})
+
+    def test_spec_is_remote_and_invalidates_url_cache(self):
+        from shell.backend.freshness import engine_for
+
+        plugin = self._plugin()
+        engine = engine_for(plugin)
+        self.assertIsNotNone(engine)
+        self.assertEqual(engine.spec.mode, 'remote')
+
+        # 先用假 API 塞一条地址缓存，再让"同步"把它丢掉
+        class _FakeApi:
+            def __init__(self):
+                self.calls = 0
+
+            def clear_url_cache(self):
+                self.calls += 1
+                return 7
+
+        plugin._api = _FakeApi()
+        first = engine.sync()
+        self.assertEqual(first['cleared'], {'url_cache': 7})
+        state = engine.state()
+        self.assertEqual(state['mode'], 'remote')
+        self.assertGreater(state['ttl_remaining'], 0, '新鲜期内状态行要给出剩余时间')
+
+        # TTL 内再来一次：跳过，不再丢缓存
+        self.assertEqual(engine.sync()['reason'], 'fresh')
+        self.assertEqual(plugin._api.calls, 1)
+
+        # 手动校验：忽略 TTL
+        self.assertEqual(engine.verify()['action'], 'verify')
+        self.assertEqual(plugin._api.calls, 2)
+
+    def test_get_song_url_needs_both_ids(self):
+        """只传一个 id 时后端恒返回失败 —— 前端必须同时传 song_id 与 original_id。
+
+        回归对象：网易云页面点歌时只传了 `song.original_id`，被当成 song_id，
+        original_id 恒为 None → 直接 return None → 用户看到的永远是"获取播放地址失败"
+        （media-player 的调用点一直是对的，只有本页漏了第二个参数）。
+        """
+        plugin = self._plugin()
+
+        class _FakeApi:
+            def get_song_url(self, song_id, original_id=None):
+                return f'https://example/{original_id}' if original_id else None
+
+        plugin._api = _FakeApi()
+        self.assertEqual(plugin.get_song_url('enc', 'orig')['url'], 'https://example/orig')
+        self.assertFalse(plugin.get_song_url('orig')['success'])
+
+
 @unittest.skipUnless(
     os.name == 'nt',
     'netease-music 插件当前只支持 Windows（npm .cmd shim + 假 mpv .cmd）',
