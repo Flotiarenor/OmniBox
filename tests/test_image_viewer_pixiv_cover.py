@@ -136,12 +136,21 @@ class ImageViewerPixivCoverTestCase(unittest.TestCase):
             os.utime(path, (old_repost, old_repost))
         for path in (artist / '700_title').iterdir():
             os.utime(path, (older, older))
+
+        def covers(config):
+            # 新建目录后必须让派生缓存失效，索引才会重新走盘 —— 这就是运行时的真实
+            # 路径：统一刷新基建的被动同步发现变化 → `_invalidate_albums_cache()`。
+            # 不失效就复用索引（相册页因此不必每次等走盘，见 `list_albums`）。
+            plugin = self._plugin(config)
+            plugin._invalidate_albums_cache()
+            return {a['path']: a['cover'] for a in plugin.list_albums()['albums']}
+
         try:
             covered = {'root_dir': str(self.root), 'sort_by': 'time_name'}
-            self.assertEqual(self._covers(covered)['pixiv/artistC'],
+            self.assertEqual(covers(covered)['pixiv/artistC'],
                              'pixiv/artistC/700_title/700_p0.png')
             # 非 Pixiv 目录仍按 mtime 最新者取封面（保持原行为）
-            self.assertEqual(self._covers({'root_dir': str(self.root)})['pixiv/artistC'],
+            self.assertEqual(covers({'root_dir': str(self.root)})['pixiv/artistC'],
                              'pixiv/artistC/300_title/300_p0.png')
         finally:
             import shutil

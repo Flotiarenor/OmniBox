@@ -11,6 +11,11 @@
 
 class ImageViewer {
     constructor() {
+        // 相册瓦片二级加载：每批目录数 / 合批延迟。批量取是为了合并同一帧内进入
+        // 视口的多个占位瓦片，一次请求覆盖一批，而不是一张一个请求。
+        this._TILE_BATCH_SIZE = 16;
+        this._TILE_BATCH_DELAY = 80;
+
         this.mode = 'albums';            // albums | children | images
         this.currentView = 'albums';     // albums | timeline | latest
         this.childParentPath = '';
@@ -40,6 +45,10 @@ class ImageViewer {
         this._onResize = null;             // 具名 resize 处理器，dispose 时摘掉
         this.scrollStack = [];             // 从列表进入详情后返回时恢复滚动位置
         this._rebuildStartTime = null;
+        this._tileObserver = null;         // 相册瓦片视口观察器（二级加载）
+        this._tileQueue = [];              // 待补封面/计数的瓦片路径
+        this._tileByPath = new Map();      // 路径 → {item, card}
+        this._tileTimer = null;            // 合批定时器
 
         this.lightbox = null;
         this.pagination = null;

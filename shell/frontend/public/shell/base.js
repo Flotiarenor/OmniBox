@@ -1404,7 +1404,28 @@ function createLightbox(options = {}) {
   leftArrow.addEventListener('click', (e) => { e.stopPropagation(); navigate(-1); });
   rightArrow.addEventListener('click', (e) => { e.stopPropagation(); navigate(1); });
 
-  return { show, hide, navigate, getIndex: () => currentIndex };
+  /**
+   * 就地替换浏览序列（列表随后异步补齐了更完整的序列时用）。
+   *
+   * `items` 与 `currentIndex` 是本组件的闭包状态，外部改不了，所以必须由这里换：
+   * 插件拿到完整序列后调它，并给出 `focusUrl`（当前正在看的那张）—— 新序列里
+   * 找到同一张就停在原地，找不到才退回 `fallbackIndex`。这样"补齐序列"对用户
+   * 是透明的：图不闪、下标不乱跳，只是左右翻能翻到更多张。
+   */
+  function setItems(nextItems, focusUrl, fallbackIndex) {
+    items = Array.isArray(nextItems) ? nextItems : [];
+    let index = -1;
+    if (focusUrl) index = items.findIndex(item => getImageUrl(item) === focusUrl);
+    if (index < 0) index = Math.min(Math.max(Number(fallbackIndex) || 0, 0), items.length - 1);
+    currentIndex = Math.max(index, 0);
+    const item = items[currentIndex];
+    if (!overlay.classList.contains('active') || !item) return;
+    img.src = Bridge.originalUrl(getImageUrl(item));
+    resetTransform();
+    updateInfo();
+  }
+
+  return { show, hide, navigate, setItems, getIndex: () => currentIndex };
 }
 
 // ==================== 分页组件 ====================

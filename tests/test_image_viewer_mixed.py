@@ -508,11 +508,40 @@ class ImageViewerMixedTestCase(unittest.TestCase):
             self.assertEqual(card['path'], 'artist100')
             self.assertEqual(card['image_count'], 0)          # 无直接图片
             self.assertTrue(card['has_children'])
-            self.assertEqual(card['total_count'], 4)          # 递归总数 2 + 2
-            # pixiv 倒序第一个含图子目录（9000）的 p0 作为代表封面
-            self.assertEqual(card['cover'], 'artist100/9000/9000_p0.jpg')
-            # 容器不参与连续序列展开
+            self.assertTrue(card['pending'])                  # 索引未建 → 二级加载
+            self.assertIsNone(card['total_count'])            # 待补，0 是"确实是空相册"
+            self.assertEqual(card['cover'], '')
+            self.assertEqual(data['pending_count'], 1)
+            self.assertTrue(data['sequence_pending'])
+            # 容器（待补）不参与连续序列展开
             self.assertEqual(data['all_images'], [])
+
+            # 二级加载补齐：封面 = pixiv 倒序第一个含图子目录（9000）的 p0，
+            # 计数 = 递归总数 2 + 2
+            tiles = plugin.load_album_tiles(['artist100'])['tiles']
+            self.assertEqual(tiles['artist100']['total_count'], 4)
+            self.assertEqual(tiles['artist100']['cover'], 'artist100/9000/9000_p0.jpg')
+            # 补齐结果回写索引缓存：再列一次目录就直接拿得到，不必再走子树
+            again = plugin.list_folder_items('', 1, 40, 'time_name', 'desc')
+            card2 = again['items'][0]
+            self.assertFalse(card2['pending'])
+            self.assertEqual(card2['total_count'], 4)
+            self.assertEqual(card2['cover'], 'artist100/9000/9000_p0.jpg')
+            self.assertEqual(again['pending_count'], 0)
+            # 瓦片补好了，但连续序列仍然不含容器里的图片：序列要等打开灯箱时
+            # 由 `list_album_images` 取（展开容器要读整棵子树，不能放在列目录里）
+            self.assertTrue(again['sequence_pending'])
+            seq = plugin.list_album_images('')['images']
+            # artist100 是容器：序列里锚一张代表封面（9000 的 p0）当入口，不展开子树
+            self.assertEqual([im['url'] for im in seq], ['artist100/9000/9000_p0.jpg'])
+            self.assertEqual(plugin.list_album_images('')['offset']['artist100'], 0)
+            # 进到该容器内一层就能拿到作品级的完整序列（作品按文件名自然序）
+            inner_seq = plugin.list_album_images('artist100')['images']
+            self.assertEqual([im['url'] for im in inner_seq],
+                             ['artist100/500/500_p0.jpg', 'artist100/500/500_p1.jpg',
+                              'artist100/9000/9000_p0.jpg', 'artist100/9000/9000_p1.jpg'])
+            self.assertEqual(plugin.list_album_images('artist100')['offset']['artist100/500'], 0)
+            self.assertEqual(plugin.list_album_images('artist100')['offset']['artist100/9000'], 2)
 
 
 class FreshnessTimingTestCase(unittest.TestCase):

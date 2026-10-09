@@ -15,8 +15,109 @@ log = logging.getLogger(__name__)
 class SettingsMixin:
     """按目录的设置读写。"""
 
+    def _settings_source(self) -> dict:
+        """本插件的原始设置字典（带缓存）。
+
+        **必须缓存**：`SettingsStore.get()` 每次都 `open() + json.load()` 读盘（无任何
+        缓存），而 `get_settings()` 一条路径就要查它三次。`_build_albums` 会对全树
+        每个目录调一次 `_pixiv_mode()` → `get_settings()`：11 万张 / 9168 个目录的
+        库上实测 7.4 秒，其中大部分就是这 9168×3 次读盘。
+
+        失效由写入路径负责（`update_setting` / `save_settings` 覆写），因此缓存不会
+        看到过期值：本插件的设置只可能经这两处落盘。
+        """
+        cached = self._settings_source_cache
+        if cached is not None:
+            return cached
+        data: dict = {}
+        if isinstance(self._resolved_config, dict):
+            # 启动时的已解决设置先铺底 …
+            data.update(self._resolved_config)
+        if self._settings_store:
+            # … 再用**当前**设置文件覆盖：文件是权威来源。反过来（setdefault）会让
+            # 进程启动时的那份快照永久盖住磁盘上的新值 —— 表现为"改了全局排序，
+            # 界面和索引算出来的 Pixiv 标记对不上"。
+            raw = self._settings_store.get(self.name)
+            if isinstance(raw, dict):
+                data.update(raw)
+        self._settings_source_cache = data
+        return data
+
+    def _invalidate_settings_cache(self) -> None:
+        """设置变了 → 按路径缓存的 `get_settings` 结果与 Pixiv 标记整份作废。"""
+        self._settings_source_cache = None
+        self._settings_by_path = {}
+        self._pixiv_flags = None
+
+    def update_setting(self, key: str, value) -> bool:
+        ok = super().update_setting(key, value)
+        self._invalidate_settings_cache()
+        return ok
+
+    def save_settings(self, settings: Dict | None = None) -> Dict:
+        result = super().save_settings(settings)
+        self._invalidate_settings_cache()
+        return result
+
+    def _folders_snapshot(self) -> Dict:
+        """`folders` 设置（按目录的设置树）。与 `_settings_source` 同一份缓存来源。"""
+        folders = self._settings_source().get('folders') or {}
+        return folders if isinstance(folders, dict) else {}
+
+    def compute_pixiv_flags(self, paths) -> Dict[str, bool]:
+        """一次算出一批目录的"是否 Pixiv 树"，**不逐个查设置**。
+
+        同一份答案用 `_pixiv_mode()` 逐个问的话，每个目录都要走一遍 `get_settings`
+        的继承链与设置来源查询：9168 个目录实测 2.7-3.4 秒（设置来源缓存首次填充
+        时每次都要读设置文件）。这里改成自顶向下算一遍：
+
+        - 排序只由「当前目录 → 父目录 → … → 全局」里**最近一个显式设置了 sort_by
+          的层**决定（`get_settings` 的继承语义），因此按路径长度升序处理，父层算过
+          子层就能直接继承；
+        - 只对"自己设置了 sort_by"的目录取设置（本机配置里是 5 个），其余全是字典
+          查表。
+
+        结果同时写进 `_pixiv_flags`，后续 `_pixiv_mode()` 直接命中。
+        """
+        folders = self._folders_snapshot()
+        global_sort = self._global_sort_by()
+        # 有效排序字符串的传递表：**必须存字符串而不是布尔值** —— 拿布尔值当
+        # "有效排序"往下传，子层比较 `True == 'time_name'` 会恒为 False，于是
+        # 继承链在第二层就断掉（曾经写错过一次，表现为 9027 个目录里只认出 3 个）。
+        effective_sort: Dict[str, str] = {}
+        scope = set(str(p) for p in paths)
+        scope.update(str(rel) for rel in folders)
+        for rel in sorted(scope, key=lambda p: (p.count('/'), p)):
+            own = folders.get(rel)
+            if isinstance(own, dict) and own.get('sort_by'):
+                effective = str(own['sort_by'])
+            else:
+                effective = effective_sort.get(rel.rpartition('/')[0], global_sort)
+            effective_sort[rel] = effective
+        self._pixiv_flags = {rel: (value == 'time_name')
+                             for rel, value in effective_sort.items()}
+        return self._pixiv_flags
+
+    def _global_sort_by(self) -> str:
+        """全局生效的排序方式（`get_settings('')` 的 sort_by）。"""
+        stored = self._settings_source()
+        value = stored.get('sort_by')
+        if value:
+            return str(value)
+        legacy = self._folders_snapshot().get('__global__')
+        if isinstance(legacy, dict) and legacy.get('sort_by'):
+            return str(legacy['sort_by'])
+        for item in self.settings_schema:
+            if item.get('key') == 'sort_by':
+                return str(item.get('default') or 'mtime')
+        return 'mtime'
+
     def get_settings(self, rel_path: str = '') -> Dict:
         """获取文件夹生效设置（含全局回退与逐级继承）。
+
+        结果按 `rel_path` 缓存（见 `_settings_by_path`）：这条路径在"列一次目录"
+        与"重建全树索引"里都是每个目录调一次，未缓存时 9168 次纯 Python 字典合并
+        实测 3.4s。缓存随设置写入与索引变更一起失效（`_invalidate_settings_cache`）。
 
         文件夹设置按「当前文件夹 → 父文件夹 → … → 全局 → 硬默认」逐级
         向上继承：在父文件夹（如 pixiv）上启用 time_name 后，其下所有子文件夹
@@ -28,6 +129,15 @@ class SettingsMixin:
         作者网格，继承它的子层才显示瀑布流；所以对「作者/作品名/序号.jpg」
         这类非数字命名的目录，勾一次模糊匹配就够，不必每个子目录再配一遍。
         """
+        hit = self._settings_by_path.get(rel_path)
+        if hit is not None:
+            return dict(hit)          # 拷贝：调用方可能改返回值（如补 root_dir）
+        result = self._compute_settings(rel_path)
+        self._settings_by_path[rel_path] = result
+        return dict(result)
+
+    def _compute_settings(self, rel_path: str) -> Dict:
+        """`get_settings` 的计算本体（结果会被缓存，见上）。"""
         folders = self.setting('folders') or {}
         if not isinstance(folders, dict):
             folders = {}
@@ -39,14 +149,9 @@ class SettingsMixin:
         # 两者都读，但**以当前写入路径为准**：只把真正存过的插件级键（设置存储或
         # 启动时预设里有这个键）算进来，不能用 self.setting() 的 schema 默认值去
         # 覆盖 __global__，否则老配置里的全局值会被默认值悄悄顶掉。
-        stored = {}
-        if self._settings_store:
-            raw = self._settings_store.get(self.name)
-            if isinstance(raw, dict):
-                stored.update(raw)
-        if isinstance(self._resolved_config, dict):
-            for key, value in self._resolved_config.items():
-                stored.setdefault(key, value)
+        # 走带缓存的口取（见 `_settings_source`）：这条路径会被全树每个目录调用一次，
+        # 未缓存时每次都要读一遍设置文件。
+        stored = dict(self._settings_source())
         global_settings = {}
         legacy = folders.get('__global__')
         if isinstance(legacy, dict):

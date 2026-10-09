@@ -34,6 +34,9 @@ class NamespaceMixin:
         self.meta_file = self.cache_dir / 'image_meta.json'
         self.thumb_dir.mkdir(parents=True, exist_ok=True)
         self.album_cache_file = self.cache_dir / 'albums_index.json'
+        # 全树目录快照单独一份：相册索引按目录名索引，回答不了"有没有新增目录"，
+        # 而那份答案要靠 os.walk（机械盘 6s+）拿。详见 albums.py 的 _save_dirs_index。
+        self.dirs_cache_file = self.cache_dir / 'dirs_index.json'
         self.album_config_file = self.cache_dir / 'albums_config.json'
 
     def _extra_roots(self) -> List[Path]:
