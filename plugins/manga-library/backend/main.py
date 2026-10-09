@@ -135,8 +135,11 @@ class MangaLibraryPlugin(PluginBase):
             'content_version': self.SHELF_VERSION,
             'unit': '部',
             'min_sync_interval': 5.0,
-            # 顶层目录数是几十到几百：逐条 stat 换"加了一页立刻反映"很划算
-            'stat_entries': True,
+            # 与 image-viewer 同一取舍：逐条 stat 会把"进一次书架"变成"给整库每页
+            # stat 一次"（实测 6000 张的整树同步从 0.11s 涨到 0.29s，真实磁盘冷缓存
+            # 下差距更大）。原地替换单页由**校验**负责（audit 逐项比对指纹），
+            # 目录 mtime + 纳入索引的名字个数足以发现新增/删除/改名。
+            'stat_entries': False,
         }
 
     def _freshness_derive(self, items) -> Dict[str, Any]:

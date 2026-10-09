@@ -294,7 +294,9 @@ class LibraryMixin:
             'content_version': self.CACHE_VERSION,
             'unit': '本',
             'min_sync_interval': 5.0,
-            # 文档是几十到几百本量级：逐条 stat 换"文件被替换立刻反映"很划算
+            # 文档是几十到几百本量级：逐条 stat 换"文件被替换立刻反映"很划算。
+            # 上千文件量级的插件应保持默认 False —— 实测 6000 张图库的整树同步
+            # 从 0.11s 涨到 0.29s（真实磁盘冷缓存下差距更大），见 image-viewer。
             'stat_entries': True,
         }
 
