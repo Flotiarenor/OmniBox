@@ -18,8 +18,10 @@ import html
 import io
 import logging
 import mimetypes
+import os
 import socket
 import sys
+import time
 from collections.abc import Iterable
 from pathlib import Path
 from typing import List
@@ -540,6 +542,66 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             # reset 只能在**同一个** context 里做；跨 context 时无法恢复，
             # 但此时那个 context 已经结束，不会影响后续请求。
             pass
+
+    # ===== 按需请求 trace（原图 / 缩略图的缓存行为排查）=====
+    #
+    # `<img src="/file?…">` 不经过任何插件代码，客户端到底有没有命中缓存、有没有回源，
+    # 服务端这份记录是唯一能同时给出「这次带没带 If-None-Match」与「这次回源花了多久」
+    # 的地方。窗口模式没有 DevTools，尤其只能靠它：
+    # 原始现象是「同一张图有时瞬间打开、有时从上到下一行行刷」，而刷的那次日志里
+    # 必然有一条 304 —— 说明客户端有副本、只是每次都被要求回源验证。
+    #
+    # 开关：DSH_FILE_TRACE=1（默认关闭，零开销）。只记 /file 与 /thumbs，并用
+    # DSH_FILE_TRACE_MIN_KB（默认 64）滤掉占绝大多数的缩略图请求。
+    _TRACE = os.environ.get('DSH_FILE_TRACE') == '1'
+    try:
+        _TRACE_MIN_BYTES = int(os.environ.get('DSH_FILE_TRACE_MIN_KB', '64')) * 1024
+    except ValueError:
+        _TRACE_MIN_BYTES = 64 * 1024
+
+    @app.before_request
+    def _trace_start():
+        if not _TRACE:
+            return
+        path = request.path or ''
+        if not path.startswith(('/file', '/thumbs')):
+            return
+        g._trace = {
+            'started': time.perf_counter(),
+            'path': path,
+            'range': request.headers.get('Range') or '',
+            'inm': request.headers.get('If-None-Match') or '',
+            'ims': request.headers.get('If-Modified-Since') or '',
+            'ua': 'WebView2' if 'Edg/' in (request.headers.get('User-Agent') or '')
+                  else 'browser',
+        }
+
+    @app.after_request
+    def _trace_log(resp):
+        info = getattr(g, '_trace', None)
+        if not info:
+            return resp
+        try:
+            size = int(resp.headers.get('Content-Length') or 0)
+        except ValueError:
+            size = 0
+        if size < _TRACE_MIN_BYTES and resp.status_code != 304:
+            return resp
+        elapsed = (time.perf_counter() - info['started']) * 1000
+        # `条件请求` 那一列是判据：带了 If-None-Match = 客户端**存着**这份文件、
+        # 只是回来问一句（304 就够）；没带 = 客户端没有副本，这次必须重传整个响应体。
+        from urllib.parse import unquote
+        short = request.query_string.decode('utf-8', 'replace')
+        if 'path=' in short:
+            short = unquote(short.split('path=', 1)[1].split('&', 1)[0])
+            short = short.rsplit('/', 1)[-1]
+        log.info(
+            f"[file-trace] {resp.status_code} {size / 1024:9.1f}KB {elapsed:8.1f}ms "
+            f"条件请求={'有' if (info['inm'] or info['ims']) else '无'} "
+            f"cache-control={resp.headers.get('Cache-Control') or '-'} "
+            f"range={info['range'] or '-'} ua={info['ua']} {short}"
+        )
+        return resp
 
     @app.after_request
     def _attach_token_cookie(resp):
