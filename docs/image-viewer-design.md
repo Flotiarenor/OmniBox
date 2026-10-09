@@ -1,6 +1,6 @@
 # 图片相册插件（image-viewer）设计文档
 
-> 版本：v2.4.3（当前实现）
+> 版本：v2.6.0（当前实现）
 > 形态：独立宿主插件；`image-cleaner`（相册清理）为其 Companion 插件
 > 适用范围：后端 `plugins/image-viewer/backend/`、前端 `plugins/image-viewer/frontend/`
 
