@@ -29,8 +29,13 @@ agent 的完整工作约定；细则与判定依据见 [提交信息规范](./do
    venv/bin/python tools/check_packaging.py
    venv/bin/python tools/check_npm_audit.py
    venv/bin/python tools/check_private_paths.py
+   venv/bin/python -m pyright main.py shell tools
    venv/bin/python -m unittest discover -s tests
    ```
+
+   `pyright` 只扫 `main.py shell tools`（内核零错误硬门禁，与 CI 的 typecheck job 同范围）；
+   插件与测试目前是基线、不拦截。改动落在 `shell/`、`main.py`、`tools/` 时不要跳过它 ——
+   类型错误只会在 CI 上暴露。
 
    `check_private_paths.py` 是**开发机**门禁：读本地运行期配置（`.config/plugins/*.json`、
    `.config/app.yaml`、`.config/auth_token.txt`、`data/group-mesh/identity/*.json`，均未

@@ -215,12 +215,28 @@ class FsSource:
 # 声明：插件怎么描述自己的新鲜度
 # ============================================================================
 
+def _resolve_decl(value: Any) -> Any:
+    """声明项：值本身，或返回它的可调用对象（根/前缀允许在运行时变化）。"""
+    return value() if callable(value) else value
+
+
+def _as_sequence(value: Any) -> Tuple[Any, ...]:
+    """声明项 → 元组。单值（`str` / `Path`）算一项 —— 否则会被逐字符遍历。"""
+    if value is None:
+        return ()
+    if isinstance(value, (str, Path)):
+        return (value,)
+    return tuple(value)
+
+
 @dataclass
 class FreshnessSpec:
     """规范化后的插件声明（由 `freshness_spec()` 的 dict 归一而来）。"""
 
+    #: 受管根：**值或返回值的可调用对象**（设置能在运行时变，见 `source`）。
     roots_decl: Any = ()
-    prefixes_decl: Tuple[str, ...] = ()
+    #: 与根一一对应的虚拟路径前缀，同样是值或可调用对象。
+    prefixes_decl: Any = ()
     include: Tuple[str, ...] = ()
     include_names: Tuple[str, ...] = ()
     skip_dirs: Tuple[str, ...] = DEFAULT_SKIP_DIRS
@@ -262,10 +278,10 @@ class FreshnessSpec:
         对象 —— 定死会让"新加的根要重启才生效"。声明非法时退回上一次可用的来源，
         绝不让整趟遍历炸掉。
         """
-        roots = self.roots_decl() if callable(self.roots_decl) else self.roots_decl
-        roots = tuple(Path(p).expanduser() for p in (roots or ()))
-        prefixes = self.prefixes_decl
-        prefixes = tuple(str(p or '') for p in (prefixes() if callable(prefixes) else prefixes))
+        roots = _as_sequence(_resolve_decl(self.roots_decl))
+        roots = tuple(Path(p).expanduser() for p in roots)
+        prefixes = _as_sequence(_resolve_decl(self.prefixes_decl))
+        prefixes = tuple(str(p or '') for p in prefixes)
         try:
             source = FsSource(roots=roots, prefixes=prefixes,
                               include=tuple(self.include),
@@ -288,8 +304,8 @@ class FreshnessSpec:
             raise ValueError('freshness_spec() 必须返回 dict 或 None')
 
         roots_decl = raw.get('roots')
-        roots = roots_decl() if callable(roots_decl) else roots_decl
-        roots = tuple(Path(p).expanduser() for p in (roots or ()))
+        roots = tuple(Path(p).expanduser()
+                      for p in _as_sequence(_resolve_decl(roots_decl)))
         mode = str(raw.get('mode') or 'fs').strip().lower()
         if mode not in ('fs', 'remote'):
             raise ValueError("freshness_spec() 的 mode 只能是 'fs' 或 'remote'")
@@ -299,9 +315,9 @@ class FreshnessSpec:
         # 根为空**不算"不参与"**：根往往是运行时配置出来的（group-mesh 的共享目录
         # 默认一个都没有）。把它当"不支持"，界面就只能显示"本插件未参与统一刷新"，
         # 而正确状态是"已接入、当前没有受管目录"。所以照样给引擎，走空遍历。
-        prefixes_decl = raw.get('prefixes') or ()
+        prefixes_decl: Any = raw.get('prefixes') or ()
         if not callable(prefixes_decl):
-            prefixes_decl = tuple(str(p or '') for p in prefixes_decl)
+            prefixes_decl = tuple(str(p or '') for p in _as_sequence(prefixes_decl))
             # 静默声明错误在装载期就报出来（作者当场能看见）；运行期再不一致时
             # `source` 属性会退回默认前缀并记日志，不让整趟遍历炸掉。
             if prefixes_decl and len(prefixes_decl) != len(roots):
@@ -318,9 +334,9 @@ class FreshnessSpec:
         return cls(
             roots_decl=roots_decl,
             prefixes_decl=prefixes_decl,
-        include=tuple(str(x).lower() for x in (raw.get('include') or ())),
-        include_names=tuple(str(x) for x in (raw.get('include_names') or ())),
-        skip_dirs=tuple(raw.get('skip_dirs') or DEFAULT_SKIP_DIRS),
+            include=tuple(str(x).lower() for x in (raw.get('include') or ())),
+            include_names=tuple(str(x) for x in (raw.get('include_names') or ())),
+            skip_dirs=tuple(raw.get('skip_dirs') or DEFAULT_SKIP_DIRS),
             derive=_hook('derive'),
             prune=_hook('prune'),
             on_verified=_hook('on_verified'),
