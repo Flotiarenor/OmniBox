@@ -1020,7 +1020,7 @@ Shell 提供两个文件服务路由：
 
 ```javascript
 // 绝对路径（media-player 跨根场景）
-const src = Bridge.originalUrl(encodeURIComponent('G:/音乐/cover.jpg'));
+const src = Bridge.originalUrl(encodeURIComponent('D:/音乐/cover.jpg'));
 // 相对路径（普通单根插件）
 const src = Bridge.originalUrl('subdir/photo.jpg');
 ```

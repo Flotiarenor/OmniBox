@@ -28,7 +28,7 @@ class ShareMixin:
     def _root_state(self, entry: Dict[str, Any]) -> Dict[str, Any]:
         """一个共享根的可用性。只用 `is_dir()`，不遍历目录。
 
-        容量统计（`_tree_usage`）刻意不在这里做：`G:\\图库` 那种目录走一遍可能要
+        容量统计（`_tree_usage`）刻意不在这里做：`D:\\图库` 那种目录走一遍可能要
         几十秒，而 `get_status()` 是首屏调用。界面要精确用量时调 `refresh_share_roots`。
         """
         raw = str(entry.get('path') or '')

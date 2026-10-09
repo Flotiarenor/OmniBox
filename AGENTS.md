@@ -28,8 +28,14 @@ agent 的完整工作约定；细则与判定依据见 [提交信息规范](./do
    venv/bin/python tools/build_icons.py --check
    venv/bin/python tools/check_packaging.py
    venv/bin/python tools/check_npm_audit.py
+   venv/bin/python tools/check_private_paths.py
    venv/bin/python -m unittest discover -s tests
    ```
+
+   `check_private_paths.py` 是**开发机**门禁：读本地运行期配置（`.config/plugins/*.json`、
+   `.config/app.yaml`、`.config/auth_token.txt`、`data/group-mesh/identity/*.json`，均未
+   跟踪）提取真实路径与令牌，再扫被跟踪文件里有没有被复制进去 —— CI 上没有这些配置，
+   会打印 SKIP。注释、文档、用例里的示例路径一律写成 `D:\…` 占位，不要用开发机真实路径。
 
    改动涉及打包相关文件（`docs/Releases/**`、`requirements*.txt`、`pyproject.toml`、
    `tools/check_packaging.py`、`tools/check_build_tree.py`）时，需追加一次真实构建

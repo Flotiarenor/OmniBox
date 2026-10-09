@@ -2,6 +2,7 @@ name: ci
 
 # 门禁总览（每一条都在本地实测过，见 docs/ci-and-release.md）：
 #   lint        —— ruff 全量 + 插件规范 + 打包规则 + 版本一致性 + 图标 sprite + 测试文件可运行性
+#                  + 本地隐私门禁（开发机配置里的路径/密钥不得被复制进仓库；CI 上 SKIP）
 #   typecheck   —— pyright（内核零错误硬门禁；插件/测试先输出基线不拦截）
 #   test        —— unittest 全量，Windows + Linux 双平台
 #   frontend    —— 转义一致性门禁 + vue-tsc 类型检查 + vite 构建
@@ -93,6 +94,13 @@ jobs:
 
       - name: 测试文件可运行性（tests/test_*.py 必须真的有用例）
         run: python tools/check_tests.py
+
+      # 本地隐私门禁：读开发机配置（.config/plugins/*.json 等，均未跟踪）提取真实路径与
+      # 密钥，再扫被跟踪文件里有没有被复制进去。runner 上没有这些配置，因此这里走 SKIP
+      # 分支并以 0 退出 —— 它的价值在开发机（见 docs/ci-and-release.md「本地隐私门禁」）。
+      # 放在 CI 里是为了让这一步不被忘记、也让工具本身每次都被导入执行一遍。
+      - name: 本地隐私门禁（无本地配置时 SKIP）
+        run: python tools/check_private_paths.py
 
   typecheck:
     name: typecheck（pyright，内核硬门禁）

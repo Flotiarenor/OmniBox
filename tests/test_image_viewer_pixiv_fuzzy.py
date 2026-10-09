@@ -66,7 +66,7 @@ class ImageViewerPixivFuzzyTestCase(unittest.TestCase):
         cls.root = Path(cls._tmp.name) / 'data'
         cls.root.mkdir(parents=True)
 
-        # _artist：参考目录 G:\图库\pixiv类\卡伦 的形态
+        # _artist：参考目录 D:\图库\pixiv类\卡伦 的形态
         # （作品目录 = 「日期+标题」，作品内部 = 序号）。
         # mtime 刻意设成「老作品最新、新作品最旧」：非 Pixiv 目录的聚合封面取
         # mtime 最新者（2019-09-19），Pixiv/模糊匹配取作品号最大者

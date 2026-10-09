@@ -364,7 +364,7 @@ const LOCAL = [
     app.playlists = { playlists: [], load: async () => { } };
     h.state.api.media_all_audio = () => local;
     h.state.api.media_playlist_save = () => ({ success: true });
-    h.state.api.media_export_missing = (lines) => ({ success: true, path: 'G:\\音频\\音乐\\网易云缺失曲目.txt', count: lines.length });
+    h.state.api.media_export_missing = (lines) => ({ success: true, path: 'D:\\音频\\音乐\\网易云缺失曲目.txt', count: lines.length });
     h.state.plugin.get_created_playlists = () => ({
         success: true,
         results: [{ id: 'p1', name: '歌单一' }, { id: 'p2', name: '歌单二' }],
@@ -418,7 +418,7 @@ const LOCAL = [
             '【歌单一】1 首本地缺失', '  甲 - 缺A',
             '【歌单三】1 首本地缺失', '  乙 - 缺B',
         ]);
-        assert.match(h.state.toasts.at(-1).text, /缺失清单：G:\\音频\\音乐\\网易云缺失曲目\.txt/);
+        assert.match(h.state.toasts.at(-1).text, /缺失清单：D:\\音频\\音乐\\网易云缺失曲目\.txt/);
         assert.equal(h.storage.get('ncmExportMissing'), '1', '勾选状态应存成偏好');
         assert.equal(h.storage.get('ncmSyncCollected'), '1');
     });
@@ -464,7 +464,7 @@ const LOCAL = [
         sameJson(call.args[0], []);
         assert.equal(call.args[1], '网易云缺失曲目');
         assert.match(h.state.toasts.at(-1).text, /命中 1 首，本地缺失 0 首/);
-        assert.match(h.state.toasts.at(-1).text, /缺失清单：G:\\音频\\音乐\\网易云缺失曲目\.txt/);
+        assert.match(h.state.toasts.at(-1).text, /缺失清单：D:\\音频\\音乐\\网易云缺失曲目\.txt/);
     });
 
     await check('缺失清单开关：勾选框缺席时读存档偏好，默认开', () => {
