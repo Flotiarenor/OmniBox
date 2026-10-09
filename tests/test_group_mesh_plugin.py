@@ -783,6 +783,39 @@ class ShareLocationTest(unittest.TestCase):
         self.assertEqual(item['used_bytes'], 1000)
         self.assertEqual(item['entries'], 1)
 
+    def test_tree_usage_flags_lower_bound_when_stopped_early(self):
+        """命中配额就停下时数字只是下界，必须标截断（界面据此显示"≥"）。
+
+        回归对象：该分支原先返回 `truncated=False`，与"截断表示下界"的约定自相矛盾，
+        界面会把"扫到配额就停了"显示成精确用量。
+        """
+        (self.shared / 'a.bin').write_bytes(b'x' * 1000)
+
+        used, truncated = self.plugin._tree_usage(self.shared, limit=10)
+
+        self.assertGreaterEqual(used, 10)
+        self.assertTrue(truncated, '提前停下必须标截断')
+        full, truncated_full = self.plugin._tree_usage(self.shared)
+        self.assertEqual(full, 1000)
+        self.assertFalse(truncated_full)
+
+    def test_verify_populates_usage_cache(self):
+        """用量由统一刷新的「校验」算出来并缓存（旧入口没有任何调用方）。"""
+        from shell.backend.freshness import engine_for
+
+        self.plugin.init_identity({'name': 'usage-verify'})
+        (self.shared / 'b.bin').write_bytes(b'y' * 512)
+        self.assertTrue(self._add()['success'])
+        engine = engine_for(self.plugin)
+        self.assertIsNotNone(engine, 'group-mesh 必须声明 freshness_spec()')
+        engine.spec.min_sync_interval = 0.0
+
+        report = engine.verify()
+
+        self.assertEqual(report['pass_end'].get('shares'), 1)
+        self.assertEqual(report['pass_end'].get('used_bytes'), 512)
+        self.assertTrue(self.plugin._usage_cache)
+
 
 class RemoteApiTest(unittest.TestCase):
     """远端 API 的**离线**行为：参数校验、无注册表时的诚实回报。

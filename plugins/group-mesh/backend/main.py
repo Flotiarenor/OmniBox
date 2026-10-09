@@ -159,6 +159,10 @@ class GroupMeshPlugin(
     def __init__(self, manifest: dict, config: dict) -> None:
         super().__init__(manifest, config)
         self._lock = threading.Lock()
+        # 共享根用量缓存：{share_id: {path, used_bytes, truncated, entries}}。
+        # 由统一刷新基建的校验驱动（见 shares 分片的 freshness_spec），
+        # 共享项卡片读它，`get_status` 不遍历目录。
+        self._usage_cache: Dict[str, Dict[str, Any]] = {}
         self._node_thread: Optional[threading.Thread] = None
         self._node_stop = threading.Event()
         self._listener: Optional[socket.socket] = None

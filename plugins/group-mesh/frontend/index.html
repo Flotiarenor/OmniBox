@@ -79,6 +79,10 @@
         </div>
         <div class="toolbar-group gm-toolbar-right">
           <button type="button" id="btn-refresh" class="btn btn-sm">刷新状态</button>
+          <!-- 本机共享根的「同步（被动）/ 校验（手动）」：用量与条目数由共享组件
+               触发的校验算出来并缓存（此前 refresh_share_roots 没有任何调用方，
+               那三个字段从来没被算过）。 -->
+          <div id="gm-freshness"></div>
           <button type="button" id="btn-settings" class="btn btn-sm"><svg class="obx-icon"><use href="#settings"></use></svg> 设置</button>
         </div>
       </div>

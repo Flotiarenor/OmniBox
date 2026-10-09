@@ -177,7 +177,16 @@ import `main.py`（后端入口由 PluginManager 用 importlib 直接加载，�
 | --- | --- |
 | 状态 | `get_status`、`get_node_status` |
 | 身份与团体 | `init_identity`、`get_device_keys`、`create_group`、`join_group`、`get_invite`、`add_member` |
-| 共享项 | `add_share`、`remove_share`、`refresh_share_roots` |
+| 共享项 | `add_share`、`remove_share`、`refresh_share_roots`（兼容入口，现转发到统一刷新的同步；用量与条目数由「校验」计算并缓存） |
+
+**本机共享根的用量与条目数**走 Shell 的统一刷新基建（`shell/backend/freshness.py`，
+契约见 `docs/plugin-guide.md` §3.4）：受管根 = 全部本机共享目录，条目 = 目录下的文件；
+`derive` / `prune` 作废受影响共享根的用量缓存，校验结束（`on_pass_end`，`verified=True`）
+时统一重算并写进 `_usage_cache`。工具栏的 `#gm-freshness` 由共享组件渲染（状态行 +
+「校验」），`get_status` 依旧只做 `is_dir()` 判断、不遍历目录（首屏调用）。
+
+本机没有任何共享目录时**仍然算"已接入"**：`roots` 返回空列表 ⇒ 空索引，
+而不是"本插件未参与统一刷新" —— 根是运行时配置出来的，空是正常状态。
 | 对端与发现 | `peers`（list/add/update/remove）、`my_endpoint`、`list_peers` |
 | 远端读写 | `list_remote`、`download_remote`、`upload_remote`、`upload_status`、`cancel_upload` |
 | 物化/镜像/缓存 | `materialize_remote`、`mirror_share`、`remote_cache`、`clear_remote_cache` |
