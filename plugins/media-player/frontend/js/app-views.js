@@ -59,12 +59,34 @@ Object.assign(MediaPlayerApp.prototype, {
     // ============================================================
     // 视图切换与加载
     // ============================================================
+    /**
+     * 侧栏高亮的**唯一入口**：作用域项（`.mp-nav-item`）与扩展入口（`.obx-extension`）
+     * 互斥，两者只会亮一个。
+     *
+     * 回归对象：原先两套高亮各管各的 —— `switchView` 只清 `.mp-nav-item`，扩展点击只清
+     * 扩展项。点过「网易云登录」再点「全部音乐」，两个会同时高亮（`switchView` 没清扩展
+     * 项），侧栏看起来像进了两个视图。传 `{ view }` 亮某个作用域、`{ ext: btn }` 亮某个
+     * 扩展入口、传空对象表示全不亮（专辑详情 / 歌单详情这类二级页）。
+     */
+    _setNavActive(target) {
+        const wantView = (target && target.view) || '';
+        document.querySelectorAll('.mp-nav-item').forEach(btn => {
+            btn.classList.toggle('active', !!wantView && btn.dataset.view === wantView);
+        });
+        const wrap = document.getElementById('mp-extensions');
+        if (!wrap) return;
+        const wantExt = (target && target.ext) || null;
+        wrap.querySelectorAll('.obx-extension').forEach(btn => {
+            btn.classList.toggle('active', !!wantExt && btn === wantExt);
+        });
+    },
+
     async switchView(view) {
         this.currentView = view;
         this.currentAlbum = null;
         this.currentPlaylist = null;
         this.playlists.currentId = '';
-        document.querySelectorAll('.mp-nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+        this._setNavActive({ view });
         this.playlists.renderSidebar();
         document.getElementById('media-search').value = '';
         document.getElementById('btn-search-clear').classList.add('hidden');
@@ -76,7 +98,7 @@ Object.assign(MediaPlayerApp.prototype, {
         this.currentPlaylist = null;
         this.playlists.currentId = '';
         this.currentAlbum = { key, kind };
-        document.querySelectorAll('.mp-nav-item').forEach(b => b.classList.remove('active'));
+        this._setNavActive({});
         this.playlists.renderSidebar();
         await this._loadCurrentView();
     },
@@ -91,7 +113,7 @@ Object.assign(MediaPlayerApp.prototype, {
         this.currentAlbum = null;
         this.currentPlaylist = pl;
         this.playlists.currentId = playlistId;
-        document.querySelectorAll('.mp-nav-item').forEach(b => b.classList.remove('active'));
+        this._setNavActive({});
         this.playlists.renderSidebar();
         await this._loadCurrentView();
     },

@@ -189,26 +189,24 @@ class MediaPlayerApp {
         const container = document.getElementById('mp-extensions');
         if (!container || typeof renderExtensions !== 'function') return;
         try {
+            // 高亮统一交给 `_setNavActive`（把按钮本身传下去）：扩展入口与作用域项
+            // 互斥，两套高亮各清各的就会出现"全部音乐 + 网易云登录同时亮着"。
             await renderExtensions(container, 'media-player', 'sidebar', {
                 title: '网易云音乐',
-                onOpen: (ext) => this.openNeteaseView(ext)
-            });
-            container.querySelectorAll('.obx-extension').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    document.querySelectorAll('.mp-nav-item').forEach(b => b.classList.remove('active'));
-                    container.querySelectorAll('.obx-extension').forEach(b => b.classList.remove('active'));
-                    btn.classList.add('active');
-                });
+                onOpen: (ext, btn) => this.openNeteaseView(ext, btn)
             });
         } catch (e) {
             console.error('加载扩展入口失败:', e);
         }
     }
 
-    openNeteaseView(ext) {
+    openNeteaseView(ext, btn) {
         this.currentView = ext.view || 'ncm-daily';
         this.currentAlbum = null;
         this.currentPlaylist = null;
+        this.playlists.currentId = '';
+        this._setNavActive(btn ? { ext: btn } : {});
+        this.playlists.renderSidebar();
         document.getElementById('media-search').value = '';
         document.getElementById('btn-search-clear').classList.add('hidden');
         this._loadCurrentView();
