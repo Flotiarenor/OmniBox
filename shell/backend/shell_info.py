@@ -45,6 +45,17 @@ LOG_FILE_NAME = 'omnibox.log'
 # 只留四档：DEBUG 会为每张缩略图记一行，量级与 INFO 差一个数量级，够排查就停。
 LOG_LEVELS = ('DEBUG', 'INFO', 'WARNING', 'ERROR')
 
+# WebView2 高性能 GPU 模式：把 `--force_high_performance_gpu` 交给 WebView2 的 GPU 进程。
+# 按可执行文件走的图形首选项（Windows 设置的「高性能」、NvOptimusEnablement）落的是主进程，
+# 够不到 WebView2 的 GPU 进程，只能走浏览器参数。上游说明：
+# https://github.com/MicrosoftEdge/WebView2Feedback/issues/5072
+# 实际下发在 shell.backend.webview_gpu（必须走 pywebview 的 API）。
+WEBVIEW_HIGH_PERFORMANCE_SETTING = 'webview_high_performance'
+# 逃生口，优先级高于 shell.json：该参数失效时窗口可能无法创建，此时界面不可用，
+# 只有启动前就生效的来源能关掉它。
+WEBVIEW_HIGH_PERFORMANCE_ENV = 'OMNIBOX_WEBVIEW_HIGH_PERFORMANCE'
+_WEBVIEW_HIGH_PERFORMANCE_OFF = ('0', 'false', 'no', 'off')
+
 
 def _store(config_dir: Optional[str] = None) -> SettingsStore:
     return SettingsStore(str(config_dir or get_config_dir()))
@@ -56,6 +67,42 @@ def stored_log_level(config_dir: Optional[str] = None) -> int:
     if isinstance(name, str) and name.upper() in LOG_LEVELS:
         return getattr(logging, name.upper())
     return logging.INFO
+
+
+def stored_webview_high_performance(config_dir: Optional[str] = None) -> bool:
+    """已保存的高性能 GPU 模式；缺失或非布尔时回退**开启**（默认下发该浏览器参数）。
+
+    只认真正的布尔值：手改 shell.json 写成字符串 'false' 不该被 `bool()` 判成真。
+    """
+    value = _store(config_dir).get(SHELL_SETTINGS_NAME).get(WEBVIEW_HIGH_PERFORMANCE_SETTING)
+    if isinstance(value, bool):
+        return value
+    return True
+
+
+def webview_high_performance_enabled(config_dir: Optional[str] = None) -> bool:
+    """最终取值：环境变量优先于 shell.json。
+
+    环境变量只用于关闭，不作开启：只覆盖一个方向，两个来源不会互相翻转。
+    """
+    override = os.environ.get(WEBVIEW_HIGH_PERFORMANCE_ENV)
+    if isinstance(override, str) and override.strip().lower() in _WEBVIEW_HIGH_PERFORMANCE_OFF:
+        return False
+    return stored_webview_high_performance(config_dir)
+
+
+def configure_webview_environment(config_dir: Optional[str] = None) -> bool:
+    """按当前设置决定是否下发 GPU 适配器偏好，返回是否启用。
+
+    这里只管**决策与日志**；真正把参数交给 WebView2 的是
+    `shell.backend.webview_gpu.apply_gpu_preference`（必须走 pywebview 的 API，
+    环境变量在默认启动路径上会被忽略，理由见该模块的说明）。
+    """
+    if not webview_high_performance_enabled(config_dir):
+        log.info('[OmniBox] WebView2 高性能 GPU 模式已关闭'
+                 f'（{WEBVIEW_HIGH_PERFORMANCE_SETTING}=false 或 {WEBVIEW_HIGH_PERFORMANCE_ENV} 置 0）')
+        return False
+    return True
 
 
 class ShellInfo:
@@ -76,11 +123,29 @@ class ShellInfo:
             'log_dir': str(log_dir),
             'log_file': str(log_dir / LOG_FILE_NAME),
             'log_level': logging.getLevelName(logging.getLogger().level),
+            # 保存值与**生效值**分开返回：生效值可能被环境变量覆盖为关闭，只回一个
+            # 则界面会显示为已开启而实际未生效，且无依据说明原因。
+            'webview_high_performance': stored_webview_high_performance(str(self._config_dir)),
+            'webview_high_performance_effective': webview_high_performance_enabled(str(self._config_dir)),
+            'webview_high_performance_env': WEBVIEW_HIGH_PERFORMANCE_ENV,
             'caches': caches,
             'cache_total': {
                 'count': sum(item['count'] for item in caches),
                 'bytes': sum(item['bytes'] for item in caches),
             },
+        }
+
+    def set_webview_high_performance(self, enabled) -> dict:
+        """保存高性能 GPU 模式。**下次启动生效** —— 参数只在 WebView2 控件构造时注入。"""
+        if not isinstance(enabled, bool):
+            return {'success': False, 'error': f'取值必须是布尔值，实际是 {type(enabled).__name__}'}
+        self._store.update(SHELL_SETTINGS_NAME, {WEBVIEW_HIGH_PERFORMANCE_SETTING: enabled})
+        log.info(f'[ShellInfo] WebView2 高性能 GPU 模式已保存为 {enabled}，下次启动生效')
+        return {
+            'success': True,
+            'webview_high_performance': enabled,
+            'webview_high_performance_effective': webview_high_performance_enabled(str(self._config_dir)),
+            'restart_required': True,
         }
 
     def set_log_level(self, level) -> dict:

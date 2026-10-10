@@ -15,6 +15,8 @@ interface PluginInfo {
 interface CacheStat { path: string; count: number; bytes: number }
 interface ShellInfo {
   data_root: string; config_dir: string; log_dir: string; log_file: string; log_level: string
+  webview_high_performance: boolean; webview_high_performance_effective: boolean
+  webview_high_performance_env: string
   caches: CacheStat[]; cache_total: { count: number; bytes: number }
 }
 
@@ -227,6 +229,10 @@ const info = ref<ShellInfo | null>(null)
 const failures = ref<{ name: string; reason: string }[]>([])
 const loading = ref(false)
 const logLevel = ref('INFO')
+// 高性能 GPU 模式：改动只在下次启动生效，所以另存一份"已保存"的初值用于对比，
+const gpuHighPerf = ref(true)
+const gpuHighPerfSaved = ref(true)
+const gpuHighPerfForcedOff = ref(false)
 const appVersion = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev'
 
 async function refreshInfo() {
@@ -239,6 +245,18 @@ async function refreshInfo() {
     plugins.value = Array.isArray(list) ? list : []
     info.value = shellInfo || null
     if (info.value?.log_level) logLevel.value = info.value.log_level
+    // 存在未保存改动时不覆盖：SettingsView 以 v-show 常驻，`refreshInfo` 会在每次
+    // 路由切回设置页时重跑（见下方 route watch）。无条件覆盖会丢弃已勾选但未点
+    // 「应用」的改动，并使按钮回到禁用态，且不产生任何提示。
+    const serverValue = info.value?.webview_high_performance !== false
+    if (gpuHighPerf.value === gpuHighPerfSaved.value) {
+      gpuHighPerf.value = serverValue
+      gpuHighPerfSaved.value = serverValue
+    }
+    // 生效值为 false 而保存值为 true，说明被环境变量覆盖为关闭，界面需要给出依据。
+    gpuHighPerfForcedOff.value =
+      serverValue &&
+      info.value?.webview_high_performance_effective === false
   } catch (e: any) {
     toastError(e.message || '读取系统信息失败')
   }
@@ -259,6 +277,26 @@ async function applyLogLevel() {
     else toastSuccess(`日志级别已改为 ${logLevel.value}`)
   } catch (e: any) {
     toastError(e.message || '设置日志级别失败')
+  }
+}
+
+async function applyGpuHighPerf() {
+  try {
+    const result = await bridge.call('system_set_webview_high_performance', gpuHighPerf.value)
+    if (result && result.success === false) {
+      toastError(result.error || '设置高性能模式失败')
+      return
+    }
+    gpuHighPerfSaved.value = gpuHighPerf.value
+    // 是否需重启取自后端的 restart_required，不在前端写死：若后端改为即时生效，
+    // 固定文案会继续提示需重启，与实际行为不符。
+    const needsRestart = result?.restart_required !== false
+    toastSuccess(
+      (gpuHighPerf.value ? '已开启' : '已关闭') +
+      (needsRestart ? '，重启程序后生效' : '，已生效')
+    )
+  } catch (e: any) {
+    toastError(e.message || '设置高性能模式失败')
   }
 }
 
@@ -427,6 +465,23 @@ watch(() => route.path, (path) => {
 
           <div class="field">
             <button class="btn" @click="toggleFullscreen">切换窗口全屏</button>
+          </div>
+
+          <div class="field">
+            <div class="field-checkbox-row">
+              <input type="checkbox" id="gpu-high-performance" v-model="gpuHighPerf" />
+              <span class="field-label">WebView2 高性能 GPU 模式</span>
+            </div>
+            <div class="field-inline">
+              <button class="btn" :disabled="gpuHighPerf === gpuHighPerfSaved" @click="applyGpuHighPerf">应用</button>
+              <span v-if="gpuHighPerf !== gpuHighPerfSaved" class="field-help">改动需重启程序后生效</span>
+            </div>
+            <p v-if="gpuHighPerfForcedOff" class="field-help">
+              已被环境变量 {{ info?.webview_high_performance_env }} 强制关闭，此处的勾选不会生效。
+            </p>
+            <p class="field-help">
+              强制启动WebView2 高性能 GPU 模式以缓解某些情况下桌面窗口卡顿的问题
+            </p>
           </div>
         </div>
       </section>

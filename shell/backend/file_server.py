@@ -401,9 +401,11 @@ def _status_response(code: int, title: str, detail: str):
 _ADMIN_ONLY_API = frozenset({
     'system_get_config',
     'system_get_plugin_status',
-    # 壳自身的运维端点：磁盘路径 / 日志级别 / 清缓存 / 开目录，一律管理员专属
+    # 壳自身的运维端点：磁盘路径 / 日志级别 / WebView2 GPU 偏好 / 清缓存 / 开目录，
+    # 一律管理员专属
     'system_get_shell_info',
     'system_set_log_level',
+    'system_set_webview_high_performance',
     'system_clear_thumb_caches',
     'system_open_log_dir',
     # 统一刷新基建：校验只读盘、可被本插件的工具栏按钮触发，因此不设限；
@@ -671,6 +673,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             'system_browse_dir': lambda path='': list_subdirectories(path),
             'system_get_shell_info': shell_info.get_info,
             'system_set_log_level': shell_info.set_log_level,
+            'system_set_webview_high_performance': shell_info.set_webview_high_performance,
             'system_clear_thumb_caches': shell_info.clear_thumb_caches,
             'system_open_log_dir': shell_info.open_log_dir,
         })
