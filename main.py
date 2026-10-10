@@ -36,6 +36,7 @@ from shell.backend.paths import (
     get_config_dir,
     get_plugin_search_dirs,
     get_user_data_dir,
+    get_webview_storage_dir,
     resolve_data_root,
 )
 from shell.backend.plugin_manager import PluginManager
@@ -187,6 +188,33 @@ def _resolve_port(config) -> int:
         return port
 
 
+def _webview_storage_dir() -> str:
+    """WebView2 的持久化 UserDataFolder；不可用时返回空串（退回 pywebview 默认）。
+
+    背景：`pywebview.start()` 的 `private_mode` 默认为 True，此时 winforms 后端把
+    cache_dir 指向一个 `tempfile.TemporaryDirectory().name`，**退出即删** —— 浏览器
+    profile 与 HTTP 缓存都不落盘，图片每次启动都要重新取。传
+    `private_mode=False` + `storage_path` 才会得到磁盘缓存。
+
+    为什么要"试写"再决定：打包产物可能被放在只读位置（例如 Program Files），
+    而 WebView2 无法在只读目录里建 profile —— 直接传进去会让窗口起不来。
+    这里试不出可写目录时返回空串，交回 pywebview 的默认行为：宁可这一轮没有
+    持久缓存，也不能因为缓存目录而启动失败。
+    """
+    target = get_webview_storage_dir()
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        probe = target / '.write-probe'
+        probe.write_text('', encoding='utf-8')
+        probe.unlink()
+    except OSError as e:
+        log.warning(f'[OmniBox] WebView2 缓存目录不可用（{target}: {e}），'
+                    f'本次启动不启用持久缓存')
+        return ''
+    log.info(f'[OmniBox] WebView2 缓存目录: {target}')
+    return str(target)
+
+
 def _run_app(config, manager):
     """启动应用（Web-only 或桌面窗口），阻塞到用户退出。"""
     # Web-only 模式：不启动 PyWebView 桌面窗口，只运行 Flask 服务。
@@ -252,7 +280,8 @@ def _run_app(config, manager):
         return
 
     webview.create_window('OmniBox', f'http://{host}:{port}', js_api=api, width=1400, height=900, text_select=True)
-    webview.start(debug=not getattr(sys, 'frozen', False), http_server=True)
+    webview.start(debug=not getattr(sys, 'frozen', False), http_server=True,
+                  private_mode=False, storage_path=str(_webview_storage_dir()))
 
 
 def main():

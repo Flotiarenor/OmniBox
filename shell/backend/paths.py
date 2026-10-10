@@ -18,7 +18,12 @@ OmniBox 统一路径基准。
 - 开发模式：所有相对路径都锚定到项目根目录，不再依赖 os.getcwd()。
 - 打包模式：可写数据（.config、plugins、data）放在可执行文件旁边；
   只读资源（shell、内置插件）仍从 PyInstaller 的 _MEIPASS 读取。
-  如果可执行文件所在目录不可写，则回退到 %APPDATA%/OmniBox。'''
+  如果可执行文件所在目录不可写，则回退到 %APPDATA%/OmniBox。
+
+`.config/webview` 是 WebView2 的 UserDataFolder（浏览器 profile 与 HTTP 缓存）。
+它与 `.config` 下的其它内容同等对待：属于用户数据，必须落在
+`get_user_data_dir()` 之下，不能进发行产物（`tools/check_build_tree.py` 的
+`FORBIDDEN_RELATIVE` 已禁止产物出现首层 `.config`）。'''
 
 import os
 import sys
@@ -104,6 +109,27 @@ def get_config_dir() -> Path:
 def get_plugins_config_dir() -> Path:
     """插件设置目录：<user_data>/.config/plugins"""
     return get_config_dir() / 'plugins'
+
+
+def get_webview_storage_dir() -> Path:
+    """WebView2 的 UserDataFolder：<user_data>/.config/webview。
+
+    为什么必须有它：pywebview 的 `private_mode` 默认为 True（见
+    `venv/.../webview/__init__.py` 的 `private_mode: bool = True`），而 winforms
+    后端在该模式下把 cache_dir 设成 `tempfile.TemporaryDirectory().name` ——
+    **退出即删**。默认启动因此没有持久化的浏览器 profile：HTTP 缓存不落盘，
+    每次启动都要把用过的图片重新取一遍；实测那张 6000×3000 / 13.66 MB 的原图
+    在 WebView2 的任务管理器里显示为 `[InPrivate]`，即这一模式的表象。
+
+    锚在 `.config` 之下而不是用户数据根目录：根目录在打包模式下就是可执行文件
+    所在目录，新增一个几十 MB、含 Cookie 与缓存碎片的目录会让"运行过程序后不可
+    直接压缩发布"这件事多一处容易漏掉的入口；而 `.config` 已被
+    `tools/check_build_tree.py` 列入产物禁止项，放在它下面天然受同一条门禁约束。
+
+    开发模式与冻结产物走同一份解析（`get_user_data_dir()` 已按 `is_frozen()`
+    分派），因此两种启动方式都得到"进程可写、且不随退出消失"的目录。
+    """
+    return get_config_dir() / 'webview'
 
 
 def get_plugin_search_dirs() -> List[Path]:
