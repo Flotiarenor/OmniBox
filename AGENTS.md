@@ -66,6 +66,12 @@ agent 的完整工作约定；细则与判定依据见 [提交信息规范](./do
 
 格式：`<type>(<scope>): <subject>` + 空行 + 正文（可省）+ footer（可省）。
 
+机器可执行的规则在 [docs/commit-conventions.md](./docs/commit-conventions.md)：type 白名单、subject
+硬上限、措辞黑名单、中文主题等键值，由 [DSH 的 `git` / `git_commit` 工具](https://github.com/Flotiarenor/dsh-tool-git)
+在提交前逐条校验，不合规**直接拒绝**并给出改法；提交信息由结构化字段拼装，不经过 shell。键的写法与
+拒绝码见工具的[键值参考](https://github.com/Flotiarenor/dsh-tool-git/blob/main/README.zh.md#conventions-keys)。
+改规则时两个文件一起改：键值决定工具拦什么，[docs/commit-convention.md](./docs/commit-convention.md) 解释为什么。
+
 - `type` 取值：`feat` `fix` `refactor` `docs` `test` `ci` `build` `chore` `perf` `revert`。
 - `scope`：受影响的模块或插件名，小写、连字符分隔，如 `shell` `file-server`
   `media-player` `release` `packaging` `deps`；跨模块改动可省略。
