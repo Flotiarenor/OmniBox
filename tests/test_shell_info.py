@@ -210,6 +210,7 @@ class WebViewHighPerformanceTests(unittest.TestCase):
         install(edgechromium.EdgeChrome)
         self.assertIs(edgechromium.EdgeChrome.__init__, first)
 
+    @unittest.skipUnless(os.name == 'nt', '依赖 Windows 专属的 pywebview 后端')
     def test_wrapper_does_not_touch_props_when_disabled(self):
         """关闭态不得替换参数类 —— 否则"关闭"只改了登记值，没有真正关掉行为。"""
         import webview.platforms.edgechromium as ec
@@ -232,6 +233,7 @@ class WebViewHighPerformanceTests(unittest.TestCase):
         self.assertIs(ec.CoreWebView2CreationProperties, before,
                       '关闭态不得替换参数类')
 
+    @unittest.skipUnless(os.name == 'nt', '依赖 Windows 专属的 pywebview 后端')
     def test_wrapper_restores_props_class_after_failure(self):
         """原始 __init__ 抛异常时，finally 必须把被替换的类还原回去。"""
         import webview.platforms.edgechromium as ec
