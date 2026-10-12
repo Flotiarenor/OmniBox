@@ -1,0 +1,131 @@
+/* ============================================================
+   OmniBox Shell 通用可拖拽分隔条样式（配合 /shell/splitter.js）
+   注入所有插件 iframe；壳页面同样引入一份（壳不注入 base.css）。
+   契约见 docs/plugin-ui-guide.md。
+   ============================================================ */
+
+/* 尺寸过渡时长（唯一出处）：拖动期间由 splitter.js 挂的 .obx-splitter-live 停掉，
+   停的是"跟随"、不是"改成新值"—— 松手、双击复位、设置页改值、窗口变化都走这条
+   过渡滑到位，拖动本身始终即时跟随指针。选它而不是让每个插件各写一条，是因为
+   5 个插件 + 壳导航栏共用同一套拖动内核，各写一条就是同一份规则抄 6 遍。 */
+:root {
+  --obx-splitter-motion: 120ms;
+}
+
+/* 尺寸带 transition 的元素拖动时会滞后（拖了半秒才跟上），插件可用这条约定
+   在拖动期间停掉自己的过渡：
+     html[data-obx-dragging] .your-el { transition: none; }
+   media-player 的舞台就是这种情况（css 里的 height 过渡）。 */
+.obx-splitter {
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 4;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ============================================================
+   把手与"被拖元素"的关系（这 1px 不属于任何人）
+
+   `.obx-splitter-x` 宽 5px + 左右各 -3px 外边距 = 在 flex 行里**净占位 0**，热区
+   压在交界线上。被拖元素的背景画到自己的边框盒为止，下一个兄弟紧接着从交界处
+   开始，于是这一列不会露出最近祖先的背景 —— 壳里那是 `.app-shell` 的底色与背景图，
+   玻璃模式下就是那张未模糊的壁纸，插件里是 `#app` 的底色。净占 1px（早先的
+   `margin: 0 -2px`）时这一列谁都没上色，就是用户看到的那条"1px 竖缝"。
+
+   两种做法都能消掉它，这里取后者：
+     1. 让把手自己画一条底色（等于把缝涂掉，但底色得跟着主题与背景走）；
+     2. 让把手净占位 0，邻居在交界处直接相接。
+   取 2 的理由：缝是"布局上多出来的一列"，涂色只是掩盖。0 占位之后，悬停那条
+   指示线仍然压在交界处（`::before` 是绝对定位 + 负外边距，不参与布局），
+   拖动热区也仍是 5px。 */
+.obx-splitter-x {
+  width: 5px;
+  margin: 0 -3px;
+  cursor: col-resize;
+}
+
+/* 纵向把手同理：净占位 0，舞台与下方列表之间不再多出一条 1px 的横缝。 */
+.obx-splitter-y {
+  height: 5px;
+  margin: -3px 0;
+  cursor: row-resize;
+}
+
+/* 那条"看得见的线"：默认透明，悬停 / 键盘聚焦 / 拖动中才出现，
+   所以静止的界面上不会多出装饰线。 */
+.obx-splitter::before {
+  content: '';
+  position: absolute;
+  background: transparent;
+  transition: background var(--transition-fast, 0.15s ease);
+  pointer-events: none;
+}
+
+.obx-splitter-x::before {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  margin-left: -0.5px;
+}
+
+.obx-splitter-y::before {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  margin-top: -0.5px;
+}
+
+.obx-splitter:hover::before,
+.obx-splitter:focus-visible::before,
+.obx-splitter-active::before {
+  background: var(--accent, #2f81f7);
+}
+
+.obx-splitter-x:hover::before,
+.obx-splitter-x:focus-visible::before,
+.obx-splitter-x.obx-splitter-active::before {
+  width: 2px;
+  margin-left: -1px;
+}
+
+.obx-splitter-y:hover::before,
+.obx-splitter-y:focus-visible::before,
+.obx-splitter-y.obx-splitter-active::before {
+  height: 2px;
+  margin-top: -1px;
+}
+
+/* 焦点态由那条线表达，不再叠一层浏览器默认轮廓（键盘可达性不变：
+   把手可 Tab 聚焦，方向键微调，Shift+方向键 16px，回车 / 双击复位）。 */
+.obx-splitter:focus,
+.obx-splitter:focus-visible {
+  outline: none;
+}
+
+/* 拖动期间的全局态：指针已被捕获，光标与选中都必须跟着走，
+   否则鼠标划过的元素会逐个改光标、并把拖动变成文本选择。 */
+html[data-obx-dragging] {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+html[data-obx-dragging="x"],
+html[data-obx-dragging="x"] * {
+  cursor: col-resize !important;
+}
+
+html[data-obx-dragging="y"],
+html[data-obx-dragging="y"] * {
+  cursor: row-resize !important;
+}
+
+/* 拖动期间在被拖元素上挂的标记（由 splitter.js 加/remove）。
+   粒度比 `html[data-obx-dragging]` 细：只停**正在拖的那一个元素**的尺寸过渡，
+   同文档里其它侧栏的过渡不受影响。`!important` 是有意的 —— 插件给自己侧栏写的
+   `transition: width …` 与它同特异性，不加就压不住，拖动会落后指针半拍。 */
+.obx-splitter-live {
+  transition: none !important;
+}
