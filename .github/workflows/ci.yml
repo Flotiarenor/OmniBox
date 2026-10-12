@@ -4,7 +4,7 @@ name: ci
 #   lint        —— ruff 全量 + 插件规范 + 打包规则 + 版本一致性 + 图标 sprite + 测试文件可运行性
 #                  + 本地隐私门禁（开发机配置里的路径/密钥不得被复制进仓库；CI 上 SKIP）
 #   typecheck   —— pyright（内核零错误硬门禁；插件/测试先输出基线不拦截）
-#   test        —— unittest 全量，Windows + Linux 双平台
+#   test        —— 构建前端 + unittest 全量，Windows + Linux 双平台
 #   frontend    —— 转义一致性门禁 + vue-tsc 类型检查 + vite 构建
 #   package     —— 真实跑一次 PyInstaller 并校验产物内容
 #
@@ -152,11 +152,25 @@ jobs:
             requirements.txt
             requirements-dev.txt
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: shell/frontend/package-lock.json
+
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
           python -m pip install -r requirements-dev.txt
+
+      # 壳首页（/、/settings、插件路由）由 shell/frontend/dist/index.html 提供，
+      # serve_shell 在它缺失时直接 404；而 dist/ 在 .gitignore 里，CI 上不存在。
+      # 不构建就有 7 个用例（tests/test_file_server_shell_state.py）拿不到首页。
+      - name: 构建前端（壳首页的提供来源）
+        run: |
+          npm --prefix shell/frontend ci
+          npm --prefix shell/frontend run build
 
       - name: 单元测试（全量）
         run: python -m unittest discover -s tests -v

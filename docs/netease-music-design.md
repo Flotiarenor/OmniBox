@@ -145,7 +145,7 @@ ncm-cli 缺失不阻塞插件加载：`_get_api()` 用 `NeteaseMusicAPI(check_in
 - **真正的 4 个视图在宿主里**：netease 通过 `get_extensions()` 把 5 个入口注册到 media-player 侧栏（`backend/main.py:20-32`，`view` 字段为 `ncm-daily/ncm-playlists/ncm-liked/ncm-my-playlists/ncm-login`），media-player 用 `onOpen` **原生渲染**而不是 iframe（`plugins/media-player/frontend/js/app.js:159-186`，`openNeteaseView` 在 `:179-186`），四视图内容见 `plugins/media-player/frontend/js/app-views.js:190-194`、`:240-316`，登录视图见 `plugins/media-player/frontend/js/app-render.js:190-233`。→ 本插件的 `frontend/` 是同一功能的**第二份实现**。
 - **不是外部页面 / 不是 WebView**：后端是纯 CLI 包装——`backend/netease_music_api.py:2` 注释「基于 ncm-cli」，`:71-124` 配置 ncm-cli 的 `player=mpv`，`:329-401` 用假 mpv 脚本抓流地址，没有任何 HTML 或页面 URL 产出；模型上的 `url` 只是 `music.163.com/#/song?id=…` 网页链接（`:34-35`、`:48-49`），前端从未使用。音频播放由 media-player 的 core 承担（`plugins/media-player/frontend/js/player-core.js:201`）。
 - **是否使用 Shell 布局类**：**0 个布局类**。grep `view-body` / `view-toolbar` / `view-content` / `view-sub-sidebar` / `obx-nav-item` / `obx-scroll` / `empty-state` / `obx-` 均无命中；只用了 `.btn .btn-primary`（`index.html:23`）与自建的 `.wrap/.item/.empty`（`index.html:9/12/15`）。
-- **壳资源注入对它的影响**：`</head>` 前注入 `variables.css/base.css/folder-picker.css/effects.css/base.js`（`shell/backend/file_server.py:59-66`、`:797-798`），即插件的 `<style>`（`:7-16`）在壳样式**之前** → 同优先级规则壳胜（例如 `base.css:4` 的 `*{box-sizing:border-box;margin:0;padding:0}` 与 `base.css:6-11` 的 `body{overflow:hidden}` 都生效）。
+- **壳资源注入对它的影响**：`</head>` 前注入 `variables.css/shared.css/base.css/folder-picker.css/effects.css/base.js`（`shell/backend/file_server.py:59-66`、`:797-798`），即插件的 `<style>`（`:7-16`）在壳样式**之前** → 同优先级规则壳胜（例如 `base.css:4` 的 `*{box-sizing:border-box;margin:0;padding:0}` 与 `base.css:6-11` 的 `body{overflow:hidden}` 都生效）。
 
 ### 5.2 布局骨架
 

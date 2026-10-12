@@ -27,7 +27,11 @@
          侧栏从工具栏下方才开始 —— 与别的插件一眼就能看出不同。
          分隔线的归属也按这套结构分开：侧栏只画 border-right（右边缘那一竖条），
          主区只画 border-bottom（工具栏那一条横线）；两边都画会在交角处叠成 2px。 -->
-    <aside class="gm-side view-sub-sidebar obx-glass">
+    <aside class="gm-side view-sub-sidebar obx-glass"
+           data-obx-splitter="--sub-sidebar-width"
+           data-obx-splitter-min="180"
+           data-obx-splitter-reserve="320"
+           data-obx-splitter-default="240">
       <div class="gm-brand">
         <span class="gm-brand-icon"><svg class="obx-icon"><use href="#network"></use></svg></span>
         <div class="gm-brand-text">

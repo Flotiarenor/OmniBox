@@ -143,7 +143,7 @@ plugins/
 - **注册声明**（后端）：`plugins/image-cleaner/backend/main.py:135-145` —— `host: 'image-viewer'`、`embedUrl: '/plugins/image-cleaner/frontend/index.html'`、`placement: 'sidebar'`、`section: '相册清理'`、`icon: 'icon:brush-cleaning'`。宿主同时传了 `title: '相册清理'`（`image-viewer/frontend/js/app.js:142`），与 `section` 同名。
 - **JS 模块划分**：无模块拆分，单文件单类；依赖壳全局 `Bridge` / `Toast` / `confirmDialog` / `createLightbox` / `Utils`（`app.js:15/295/298/330`）。
 - **是否使用 Shell 布局类**：**部分使用**——`.view-body`(`index.html:19`)、`.view-toolbar`(`:23`)、`.toolbar-group`(`:24/28`)、`.view-content`(`:34`)、`.btn/.btn-sm/.btn-danger`(`:29/30/36/37/45/46`)、`.active`(`:36`)、`.obx-scroll`(`:34`)。**未使用** `.view-sub-sidebar` / `.sub-sidebar-header` / `.sub-sidebar-footer` / `.pagination-bar` / `.modal` / `.empty-state` / `.obx-nav-item` / 任何 `.obx-anim-*`。
-- **与壳的注入顺序**：壳把 `variables.css / base.css / effects.css / base.js / motion.js` 注入到 `</head>` **之前**（`shell/backend/file_server.py:797-798`），插件自己的 `<link href="image-cleaner.css">`(`index.html:16`) 排在其后，同优先级规则由插件胜出。
+- **与壳的注入顺序**：壳把 `variables.css / shared.css / base.css / effects.css / base.js / motion.js` 注入到 `</head>` **之前**（`shell/backend/file_server.py:797-798`），插件自己的 `<link href="image-cleaner.css">`(`index.html:16`) 排在其后，同优先级规则由插件胜出。
 
 ### 5.2 布局骨架
 

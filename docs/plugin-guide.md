@@ -720,7 +720,9 @@ HTTP 与桌面 `js_api` 两条通道共用。已接入的实现参考：image-vi
 插件前端运行在 iframe 中，Shell 会自动注入以下资源：
 
 - **CSS 变量**：`/shell/variables.css`（提供主题颜色、间距等）
-- **基础样式**：`/shell/base.css`（按钮、布局、滚动条等）
+- **共用组件样式**：`/shell/shared.css`（按钮、表单控件、Toast、导航项、图标 —— 壳页面与
+  插件页同一份，见 `docs/plugin-ui-guide.md` §5）
+- **基础样式**：`/shell/base.css`（插件 iframe 的骨架与插件侧独有的布局/组件）
 - **基础脚本**：`/shell/base.js`（提供全局 `Bridge` 对象和通用 UI 组件）
 
 **你无需在 HTML 中手动引入这些文件**，Shell 会在加载插件时自动注入到 `<head>` 中。
@@ -756,9 +758,9 @@ HTTP 与桌面 `js_api` 两条通道共用。已接入的实现参考：image-vi
 > `alert()`/`confirm()` 是 error；`!important`、与壳逐值相同的关键帧、用 `obx-` 前缀命名
 > 插件自有动画是 warning。逐条依据见 `docs/plugin-ui-guide.md`。
 
-#### 通用布局类（base.css 已提供，插件无需重复定义）
+#### 通用布局与组件类（Shell 已注入，插件无需重复定义）
 
-以下 CSS 类已由 Shell 统一注入，插件 HTML 直接使用即可，**不应在自己 CSS 中重复定义**（否则将不兼容未来主题变更）：
+以下 CSS 类已由 Shell 统一注入（`base.css` + `shared.css`），插件 HTML 直接使用即可，**不应在自己 CSS 中重复定义**（否则将不兼容未来主题变更）：
 
 | CSS 类                  | 用途                                                                  |
 | ----------------------- | --------------------------------------------------------------------- |
@@ -776,7 +778,7 @@ HTTP 与桌面 `js_api` 两条通道共用。已接入的实现参考：image-vi
 | `.obx-anim-*` / `.obx-glass*` / `.obx-skeleton` / `.obx-card-lift` | 通用动效与玻璃/骨架/悬浮类（`effects.css`），已处理 `prefers-reduced-motion` |
 | `.obx-extension*` / `.obx-embed-frame` | Companion 扩展入口与内嵌 iframe 的通用样式 |
 
-`.obx-nav-item` 的视觉参数走 `--obx-nav-*`（`base.css` 的「导航项」一节）：
+`.obx-nav-item` 的视觉参数走 `--obx-nav-*`（`shared.css` 的「导航项」一节）：
 
 | token | 默认 | 说明 |
 | --- | --- | --- |
@@ -1293,6 +1295,30 @@ class MyPlugin(PluginBase):
 | `local_only`               | 可选 | 仅 `directory`：`True` 时**不显示「网络位置」入口**（该目录只接受本机路径，见下）   |
 | `secret`                   | 可选 | `True` 表示**凭据类**设置项：Shell 拒绝把该插件的设置文件当媒体资源返回（见下）        |
 | `admin_only`               | 可选 | `True` 表示**改动该键需要管理员主体**（改媒体根、改对外端点一类，见下）              |
+| `hidden`                   | 可选 | `True` 表示**不在设置面板里显示**，但键仍可写（入口在插件自己的设置界面，见下）        |
+
+#### 键要能存但不想显示：`"hidden": True`
+
+`settings_schema` 同时是 `save_settings` 的**写入白名单**（见 `shell/backend/plugin_base.py`
+的 `allowed`）。插件把某项配置挪到自己的界面上（自绘弹窗、独立的设置页）之后，**不能**
+直接把键从 schema 里删掉 —— 删掉等于连保存也一起废掉，用户在新界面里的改动会被
+`save_settings` 静默丢弃、下次打开又回到旧值。
+
+正确做法是保留声明并标 `hidden`：
+
+```python
+{"key": "reader_font_size", "label": "正文字号(px)", "type": "number",
+ "default": 16, "hidden": True},
+```
+
+面板不渲染它（`createSettingsForm` 直接跳过），`get_settings()` / `save_settings()`
+照常收它。document-reader 的朗读项就是这么处理的：入口在插件左栏的「朗读设置」页，
+因此 `tts_engine` / `tts_base_url` / `tts_api_key` / `tts_model` / `tts_voice` /
+`tts_rate` 都标 `hidden`，而该插件的阅读偏好留在面板里。
+
+> 历史：这个标记替代的是早先 `settings_schema` 上的 `central: False`（"不显示在集中
+> 设置面板"，见 `1a4cb1d`）。`central` 随集中设置面板一起在 `2e8917d` 删除，之后
+> "显示在哪"只由 `hidden` 表达。
 
 #### 能力边界类设置项：`"admin_only": True`
 

@@ -15,77 +15,59 @@ html, body {
   display: flex;
   height: 100vh;
   width: 100vw;
-  background: var(--bg-app);
+  /* 背景图不画在这个元素上（见下面的 ::before）：显示方式要支持缩放与翻转，而
+     transform 会连子元素一起翻转，只有把背景放上独立一层才能只动图片。 */
+  background-color: var(--bg-app);
   color: var(--text-primary);
   /* 与 base.css 的 body 同一套字体（壳页面不注入 base.css，只能就地写一份）：
      插件页与壳页的中文回退字体必须一致，否则同一句中文在两处字重不同。 */
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  /* 背景图层的两个前提：position 让它锚在这个全屏容器上（而不是视口），
+     isolation 让它 `z-index: -1` 留在本元素内 —— 少了它，负 z-index 会跑到
+     html/body 的底色后面，整张背景图看不见。 */
+  position: relative;
+  isolation: isolate;
 }
 
-/* ===== 壳页面的二级导航（与 base.css 的 .obx-nav-item 同构）=====
-   契约见 docs/plugin-ui-guide.md §2.5：二级导航一律走 .obx-nav-item + --obx-nav-*，
-   插件侧不再自实现 hover / 选中态。壳页面（设置页左栏）不注入 base.css，只能就地给一份；
-   token 名与默认值必须与 base.css 逐值一致，否则"统一"就只剩名字统一。 */
-:root {
-  --obx-nav-gap: 10px;
-  --obx-nav-pad-y: 9px;
-  --obx-nav-pad-x: 12px;
-  --obx-nav-radius: 10px;
-  --obx-nav-font-size: 13px;
-  --obx-nav-accent: var(--accent);
-  /* 选中态是「左缘一道强调色竖线 + 极淡底色 + 强调色文字」：底色只表达"当前在哪一页"，
-     竖线提供位置感。不用实心 --accent 填充，因为用户可以把它设成任意颜色。 */
-  --obx-nav-active-bg: color-mix(in srgb, var(--obx-nav-accent) 9%, transparent);
-  --obx-nav-active-color: var(--obx-nav-accent);
-}
-.obx-nav-item {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: var(--obx-nav-gap);
-  padding: var(--obx-nav-pad-y) var(--obx-nav-pad-x);
-  border: none;
-  border-radius: var(--obx-nav-radius);
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: var(--obx-nav-font-size);
-  text-align: left;
-  cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast);
-}
-.obx-nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
-.obx-nav-item:active { transform: scale(0.98); }
-.obx-nav-item.active {
-  background: var(--obx-nav-active-bg);
-  color: var(--obx-nav-active-color);
-  font-weight: 600;
-}
-.obx-nav-item.active:hover { color: var(--obx-nav-active-color); }
-.obx-nav-item.active::before {
+/* ===== 自定义背景图 =====
+   变量由 src/core/background.ts 写在 html 内联上：--shell-bg-image 是 URL，
+   --shell-bg-size / --shell-bg-position / --shell-bg-transform 分别承载显示方式
+   （含缩放，见 background.ts 为何不给 transform 做缩放）、自由模式的位置与镜像。
+
+   `z-index: -1` 是 CSS 2.1 绘制顺序里的"负 z-index 后代"（第 2 步）：画在
+   .app-shell 自己的底色之上、导航栏与面板的底色之下。玻璃效果（data-shell-glass）
+   把面板改半透明后看到的就是这一层。 */
+.app-shell::before {
   content: '';
   position: absolute;
-  top: 50%;
-  left: 0;
-  width: 2px;
-  height: 62%;
-  transform: translateY(-50%);
-  border-radius: 0 2px 2px 0;
-  background: var(--obx-nav-accent);
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image: var(--shell-bg-image, none);
+  background-repeat: no-repeat;
+  background-size: var(--shell-bg-size, cover);
+  background-position: var(--shell-bg-position, center);
+  transform: var(--shell-bg-transform, none);
 }
 
-/* ===== 图标（与 base.css 的 .obx-icon 逐值一致）=====
-   壳页面不注入 base.css，所以这里必须有同一份；用法见 base.css 的注释。 */
-.obx-icon {
-  width: 1em;
-  height: 1em;
-  flex-shrink: 0;
-  vertical-align: -0.125em;
-}
-.obx-icon-lg { width: 1.15em; height: 1.15em; }
+/* 二级导航（`.obx-nav-item` + `--obx-nav-*`）与图标（`.obx-icon` / `.obx-icon-lg`）
+   走 /shell/shared.css —— 壳页面与插件页同一份，不再各写一遍。
+   契约见 docs/plugin-ui-guide.md §2.5 与 §5。 */
+
+/* 按钮（`.btn` 系列）与文本输入框（`.field-input`）走 /shell/shared.css —— 与插件页同一份。
+   缺了按钮那一份，设置页的按钮会落到浏览器默认样式上，同一个应用里出现两套按钮。 */
+
+/* 图片库网格：见下方「设置页：背景图库」 */
 
 /* 宽度取插件契约 token --nav-width（默认 200px）：集中设置页的「导航栏宽度」
-   写的就是它，插件自己的导航也会跟着对齐。 */
+   写的就是它，插件自己的导航也会跟着对齐。
+   `flex: 0 0 auto` 不能省：`.nav-sidebar` 与 `.main-view`（flex: 1）同处一条 flex 行，
+   默认 `flex: 0 1 auto` 会在窗口变窄时把侧栏压到变量值以下（渲染宽度与
+   `--nav-width` 不再相等，拖动分隔条就看不到自己拖出来的结果）；
+   `.settings-nav` 与插件的 `.view-sub-sidebar` 都写了不收缩，这里对齐它们。
+   宽度过渡来自 splitter.css 的 `--obx-splitter-motion`，拖动期间由 splitter 停掉。 */
 .nav-sidebar {
+  flex: 0 0 auto;
   width: var(--nav-width, 200px);
   background: var(--sidebar-bg);
   color: #ecf0f1;
@@ -94,6 +76,7 @@ html, body {
   overflow-y: auto;
   scrollbar-width: none;
   -ms-overflow-style: none;
+  transition: width var(--obx-splitter-motion, 120ms) ease;
 }
 .nav-sidebar::-webkit-scrollbar { display: none; }
 .nav-sidebar.nav-hidden { display: none; }
@@ -138,7 +121,115 @@ html, body {
   flex: 1;
   display: flex;
   overflow: hidden;
-  background: var(--bg-app);
+  background-color: var(--bg-app);
+}
+
+/* ===== 设置页：背景图库 =====
+   图片列表用缩略网格而不是文件名下拉：背景图是"看图选"的，
+   文件名（IMG_20240103.jpg）在这里提供不了任何判断依据。
+   库里是用户导入过的图片，因此每张都要能单独删掉。 */
+.bg-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 8px;
+  margin: 10px 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* 一张库内图片：整块是"切换为背景"的按钮，右上角是删除按钮 */
+.bg-item {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+
+.bg-thumb {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 4px;
+  border: 0;
+  background: none;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bg-thumb img {
+  width: 100%;
+  height: 62px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  display: block;
+  background: var(--bg-hover);
+}
+
+.bg-thumb span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bg-item.active {
+  border-color: var(--accent);
+}
+
+.bg-item.active .bg-thumb {
+  color: var(--accent);
+}
+
+.bg-remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0.75;
+  transition: opacity var(--transition-fast), background var(--transition-fast);
+}
+
+.bg-remove:hover {
+  opacity: 1;
+  background: var(--danger);
+}
+
+.bg-remove .obx-icon { font-size: 12px; }
+
+/* ===== 玻璃壳 =====
+   `html[data-shell-glass="on"]` 由 src/core/background.ts 写入（同一个属性也是插件页
+   的开关）。只在开启且已设置背景图时命中，所以默认外观与改动前逐值相同。 */
+html[data-shell-glass="on"] .main-view {
+  background-color: transparent;
+}
+
+html[data-shell-glass="on"] .nav-sidebar {
+  /* --sidebar-bg 表达的是"导航栏始终深色"，玻璃只让它半透明，不改它的值。
+     它的 backdrop 是 .app-shell::before 上的背景图，因此这里的 blur 生效。 */
+  background: color-mix(in srgb, var(--sidebar-bg) var(--glass-alpha), transparent);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+}
+
+html[data-shell-glass="on"] .settings-nav,
+html[data-shell-glass="on"] .settings-panel {
+  background: color-mix(in srgb, var(--bg-surface) var(--glass-alpha), transparent);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
 }
 
 .loading, .error, .hint {
@@ -173,8 +264,8 @@ html, body {
   font-weight: 600;
   color: var(--text-primary);
 }
-/* 结构与选中态全部继承上面的 .obx-nav-item（契约要求：二级导航不再自实现 hover/选中态），
-   这里只保留设置页自己的差异：占满侧栏宽度、条目之间不留大缝。 */
+/* 结构与选中态全部继承 /shell/shared.css 的 .obx-nav-item（契约要求：二级导航不再自实现
+   hover/选中态），这里只保留设置页自己的差异：占满侧栏宽度、条目之间不留大缝。 */
 .settings-nav-item {
   width: 100%;
   margin-bottom: 2px;
@@ -193,6 +284,10 @@ html, body {
 }
 .settings-panel {
   max-width: 820px;
+  /* 不许被父级（.settings-main 是 flex column）压缩。默认 flex-shrink: 1 会把面板压到
+     容器高度之内，溢出的内容随即被下面这条 overflow: hidden 裁掉 —— 结果是外层没有
+     溢出、永远不滚动，而内容看不见。保持自然高度，滚动才会发生在外层那个滚动容器上。 */
+  flex-shrink: 0;
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -251,62 +346,17 @@ a.info-value:hover { text-decoration: underline; }
 .fail-list li { margin-bottom: 4px; }
 .fail-list .mono { margin-left: 8px; color: var(--text-secondary); font-size: 12px; }
 
-/* ===== 设置表单（与 base.css 的 .field 系列同名同款） ===== */
-.field { display: flex; flex-direction: column; gap: 6px; }
-.field-label { font-size: 13px; font-weight: 500; color: var(--text-primary); }
-.field-help { font-size: 12px; color: var(--text-secondary); }
-.field input[type="text"],
-.field input[type="number"],
-.field select,
-.field textarea {
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  background: var(--bg-surface);
-  color: var(--text-primary);
-  outline: none;
-  transition: border-color var(--transition-fast);
-}
-.field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); }
-.field textarea { min-height: 120px; resize: vertical; font-family: inherit; }
-.field-range { display: flex; align-items: center; gap: 12px; }
-.field-range input[type="range"] { flex: 1; accent-color: var(--accent); }
-.field-range-value { min-width: 40px; text-align: right; font-size: 13px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+/* ===== 设置表单：`.field` 族（含 `.field-input`）走 /shell/shared.css（与插件页同一份）；
+   这里只留壳页面独有的几条 —— `.field-inline` / `.field-checkbox-row` 与 shared.css 的
+   `.field` / `.field-range` 同族同特异性，靠排在其后胜出，因此本文件必须排在
+   /shell/shared.css 之后加载。 ===== */
 .field-inline { display: flex; align-items: center; gap: 8px; }
 /* 纵向 flex 容器里的按钮默认会被拉成整行宽：设置页的按钮按内容宽度排 */
 .field > .btn { align-self: flex-start; }
 .field-checkbox-row { display: flex; align-items: center; gap: 8px; }
 .field-checkbox-row input { width: 16px; height: 16px; accent-color: var(--accent); }
 
-/* ===== Shell Toast ===== */
-.toast-container {
-  position: fixed; top: 16px; right: 16px; z-index: 3000;
-  display: flex; flex-direction: column; gap: 8px;
-  pointer-events: none;
-}
-.toast {
-  min-width: 200px; max-width: 320px;
-  padding: 10px 14px;
-  border-radius: var(--radius);
-  background: var(--bg-surface);
-  color: var(--text-primary);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-md);
-  font-size: 13px;
-  opacity: 0; transform: translateX(16px);
-  transition: opacity var(--transition-normal), transform var(--transition-normal);
-  pointer-events: auto;
-}
-.toast.show { opacity: 1; transform: translateX(0); }
-.toast-icon { margin-right: 6px; display: inline-flex; vertical-align: text-bottom; }
-.toast-success { border-color: var(--success); }
-.toast-success .toast-icon { color: var(--success); }
-.toast-error { border-color: var(--danger); }
-.toast-error .toast-icon { color: var(--danger); }
-.toast-warning { border-color: var(--warning); }
-.toast-warning .toast-icon { color: var(--warning); }
-.toast-info .toast-icon { color: var(--accent); }
+/* ===== Toast 通知：走 /shell/shared.css（与插件页同一份） ===== */
 
 /* ===== 外观设置 ===== */
 .theme-toggle {
@@ -386,3 +436,52 @@ a.info-value:hover { text-decoration: underline; }
   -ms-overflow-style: none;
 }
 *::-webkit-scrollbar { display: none; }
+
+.settings-main,
+.settings-nav,
+.settings-panel-body,
+.bg-grid,
+.obx-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-secondary) 38%, transparent) transparent;
+}
+
+.settings-main::-webkit-scrollbar,
+.settings-nav::-webkit-scrollbar,
+.settings-panel-body::-webkit-scrollbar,
+.bg-grid::-webkit-scrollbar,
+.obx-scroll::-webkit-scrollbar {
+  display: block;
+  width: 6px;
+  height: 6px;
+}
+
+.settings-main::-webkit-scrollbar-track,
+.settings-nav::-webkit-scrollbar-track,
+.settings-panel-body::-webkit-scrollbar-track,
+.bg-grid::-webkit-scrollbar-track,
+.obx-scroll::-webkit-scrollbar-track,
+.settings-main::-webkit-scrollbar-corner,
+.settings-nav::-webkit-scrollbar-corner,
+.settings-panel-body::-webkit-scrollbar-corner,
+.bg-grid::-webkit-scrollbar-corner,
+.obx-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.settings-main::-webkit-scrollbar-thumb,
+.settings-nav::-webkit-scrollbar-thumb,
+.settings-panel-body::-webkit-scrollbar-thumb,
+.bg-grid::-webkit-scrollbar-thumb,
+.obx-scroll::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--text-secondary) 38%, transparent);
+  border-radius: 999px;
+}
+
+.settings-main::-webkit-scrollbar-thumb:hover,
+.settings-nav::-webkit-scrollbar-thumb:hover,
+.settings-panel-body::-webkit-scrollbar-thumb:hover,
+.bg-grid::-webkit-scrollbar-thumb:hover,
+.obx-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--text-secondary) 62%, transparent);
+}

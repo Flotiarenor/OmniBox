@@ -1,4 +1,4 @@
-"""壳「导航项」共享基建（base.css 的 `.obx-nav-item`）的跨插件自检。
+"""壳「导航项」共享基建（shared.css 的 `.obx-nav-item`）的跨插件自检。
 
 背景：侧栏导航原本在 image-viewer / manga-library / media-player / group-mesh
 四处各写一遍（结构、hover、选中态逐字重复，只有类名前缀不同）。统一到壳之后，
@@ -6,8 +6,8 @@
 没画出来，静态检查都看不见。
 
 做法：起**真实壳服务**，用 `driver.get()` 直接打开插件的 `index.html`（同源 HTTP），
-再按壳的注入方式补上 `/shell/variables.css` `base.css` `effects.css` 三个 `<link>`，
-然后给导航项设上选中态、读计算样式。
+再按壳的注入方式补上 `/shell/variables.css` `shared.css` `base.css` `effects.css`
+四个 `<link>`，然后给导航项设上选中态、读计算样式。
 
 为什么不用 `file://` 打开插件页再内联 `<style>`：那条路走不通 —— `file://` 下外部
 CSS 会被 CORS 挡掉，只能把 CSS 内联进 `<style>`，而内联后样式是否生效**不稳定**
@@ -232,11 +232,11 @@ def main() -> int:
         for plugin, (plugin_class, marker) in TARGETS.items():
             url = f'{base_url}/plugins/{plugin}/frontend/index.html'
             driver.get(url)
-            # 按壳的注入方式补上样式（插件页由 serve_plugin_frontend 注入同样的三份）。
+            # 按壳的注入方式补上样式（插件页由 serve_plugin_frontend 注入同样的几份）。
             # 这里必须**等 link.sheet 存在**再验：只 sleep 会漏掉"某份样式没加载"，
             # 表现为 token 为空、选中态算成透明，看着像 CSS 写错了。
             driver.execute_script(
-                "window.__navLinks = ['variables.css', 'base.css', 'effects.css']"
+                "window.__navLinks = ['variables.css', 'shared.css', 'base.css', 'effects.css']"
                 ".map(function (name) {"
                 "  var link = document.createElement('link');"
                 "  link.rel = 'stylesheet';"

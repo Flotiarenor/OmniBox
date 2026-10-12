@@ -8,7 +8,11 @@
 </head>
 <body>
   <div id="app">
-    <aside class="iv-sidebar view-sub-sidebar obx-glass">
+    <aside class="iv-sidebar view-sub-sidebar obx-glass"
+           data-obx-splitter="--sub-sidebar-width"
+           data-obx-splitter-min="180"
+           data-obx-splitter-reserve="320"
+           data-obx-splitter-default="240">
       <div class="iv-brand">
         <div class="iv-brand-icon"><svg class="obx-icon"><use href="#images"></use></svg></div>
         <div class="iv-brand-text">
@@ -136,6 +140,13 @@
             <label>每页图片数</label>
             <input type="number" id="setting-per-page" min="10" max="200" step="10" value="40">
           </div>
+          <div class="iv-setting-item">
+            <label>图片缓存 <span id="setting-lightbox-cache-val">8</span> 张</label>
+            <input type="range" id="setting-lightbox-cache" min="0" max="64" value="8" class="iv-range">
+          </div>
+          <p class="iv-setting-note iv-setting-note-after-input">
+            缓存最近看过的图，再打开时直接显示，不用等它一行行刷出来。数值越大越流畅，占内存也越多；0 = 关闭。
+          </p>
           <div class="iv-setting-item">
             <label>排序方式</label>
             <select id="setting-sort-by">

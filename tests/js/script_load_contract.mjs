@@ -2,18 +2,62 @@
 //
 // 为什么需要它：插件前端没有构建步骤，index.html 里的 <script src> 顺序就是唯一的依赖
 // 声明；而 tools/check_plugins.py 的 _check_frontend_assets 只校验"文件存在且不越界"，
-// 既不校验顺序，也不校验磁盘上的某个脚本是否真的被引用。于是下面三类改动在门禁里完全
+// 既不校验顺序，也不校验磁盘上的某个脚本是否真的被引用。于是下面四类改动在门禁里完全
 // 看不见，只会在运行时表现成 `X is not defined` 或某个方法凭空消失：
 //
 //   1. 新增的分片没加进 index.html（分片里的方法全部不存在）；
 //   2. 分片顺序错（装载期 ReferenceError）；
-//   3. 方法搬走后原文件里的副本没删（静默覆盖，两个实现同时存在）。
+//   3. 方法搬走后原文件里的副本没删（静默覆盖，两个实现同时存在）；
+//   4. 顶层名字与壳注入的 /shell/*.js 撞名（壳的那个函数被替换，调用点拿到 undefined）。
 //
 // 它同时是"把上千行的 app.js 按分节注释拆成多个分片"这件事的护栏：拆分前后都应通过，
 // 而且**新增分片只要出现在 index.html 里就会被自动纳入检查**，不需要改这个文件。
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
+
+const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const SHELL_DIR = path.join(REPO_ROOT, 'shell', 'frontend', 'public', 'shell');
+const FILE_SERVER_PY = path.join(REPO_ROOT, 'shell', 'backend', 'file_server.py');
+
+// 顶格的 `function f` / `var|const|let x` / `window.x =`：只有这些会落进插件页的全局名字。
+// 缩进行是块内的，出不了它所在的函数；这里按源码行判断，与"插件前端没有构建步骤"一致。
+const TOP_LEVEL_DECL = /^(?:function\s+([A-Za-z_$][\w$]*)|(?:var|const|let)\s+([A-Za-z_$][\w$]*)|window\.([A-Za-z_$][\w$]*)\s*=)/;
+
+/** 返回 `名字 -> 行号`，只取顶层声明。 */
+function topLevelNames(source) {
+    const names = new Map();
+    source.split(/\r?\n/).forEach((line, index) => {
+        if (!line || /^\s/.test(line)) return;
+        const match = TOP_LEVEL_DECL.exec(line);
+        if (!match) return;
+        const name = match[1] || match[2] || match[3];
+        if (!names.has(name)) names.set(name, index + 1);
+    });
+    return names;
+}
+
+/**
+ * 壳注入插件页的 /shell/*.js 提供了哪些**全局名字**。
+ *
+ * 清单从 `file_server.py` 的 `_PLUGIN_BOOTSTRAP_SCRIPT` 里取：注入哪些文件只有那一处定义，
+ * 在检查器里再写一份就会随壳的改动过期（那时检查会静默地什么都不看）。
+ */
+export function shellInjectedGlobals() {
+    const bootstrap = fs.readFileSync(FILE_SERVER_PY, 'utf8');
+    const scripts = [...new Set([...bootstrap.matchAll(/src="\/shell\/([\w.-]+\.js)"/g)]
+        .map(match => match[1]))];
+    const names = new Map();
+    for (const rel of scripts) {
+        const file = path.join(SHELL_DIR, rel);
+        if (!fs.existsSync(file)) continue;
+        for (const [name, line] of topLevelNames(fs.readFileSync(file, 'utf8'))) {
+            if (!names.has(name)) names.set(name, `${rel}:${line}`);
+        }
+    }
+    return { scripts, names };
+}
 
 /**
  * 按 index.html 的声明顺序返回插件前端的本地脚本（相对 frontend 的路径）。
@@ -139,6 +183,28 @@ export function runAssetContract({ label, frontendDir }) {
     const orphans = onDisk.filter(rel => !declared.includes(rel));
     check('js/ 下没有未被 index.html 引用的孤立脚本', orphans.length === 0,
         `孤立: ${JSON.stringify(orphans)}（新分片必须加进 index.html）`);
+
+    // 插件脚本与壳注入的 /shell/*.js 在同一个文档、同一个全局对象里跑：插件顶层声明一个
+    // 同名函数/变量，就等于**把壳的那个替换掉**（`function openModal` 会盖住 base.js 的
+    // `openModal`，`const Utils` 则让壳的 `window.Utils` 对后续脚本不可见）。两边都是普通
+    // 脚本，谁也拦不住谁，只有在这里按源码查。
+    const shell = shellInjectedGlobals();
+    check('壳注入的 /shell/*.js 全局名清单可用',
+        shell.scripts.length > 0 && shell.names.size > 0,
+        `scripts=${JSON.stringify(shell.scripts)} names=${shell.names.size}`
+        + '（清单只从 file_server.py 的引导片段里取，取不到说明那段源码改了写法）');
+    const collisions = [];
+    for (const rel of declared) {
+        const file = path.join(frontendDir, rel);
+        if (!fs.existsSync(file)) continue;
+        for (const [name, line] of topLevelNames(fs.readFileSync(file, 'utf8'))) {
+            if (shell.names.has(name)) {
+                collisions.push(`${rel}:${line} 的 ${name}（壳已由 ${shell.names.get(name)} 定义）`);
+            }
+        }
+    }
+    check('插件脚本的顶层名字没有覆盖壳注入的全局名', collisions.length === 0,
+        `${collisions.join('; ')}（改成本插件自己的名字）`);
 
     const ctx = vm.createContext(makeSandbox());
     const errors = [];

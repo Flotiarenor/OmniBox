@@ -121,7 +121,17 @@ def main() -> int:
               and g['content']['y'] >= g['toolbar']['y'] + g['toolbar']['h'] - 1,
               f"side.x={g['side']['x']} content.x={g['content']['x']}"
               f" toolbar.y={g['toolbar']['y']} content.y={g['content']['y']}")
-        check('侧栏宽度 = --gm-side-width(236)', g['side']['w'] == 236, f"实际 {g['side']['w']}")
+        # 侧栏宽度来自壳的共享 token（本插件不再自取宽度）：断言的取值从 token 算，
+        # 不写死像素 —— 写死会在壳改默认值或用户拖过之后变成一条与分隔条无关的红灯。
+        expected_side = driver.execute_script(
+            "var d = document.createElement('div');"
+            "d.style.width = getComputedStyle(document.documentElement)"
+            "  .getPropertyValue('--sub-sidebar-width').trim();"
+            "document.body.appendChild(d);"
+            "var w = Math.round(d.getBoundingClientRect().width); d.remove(); return w;")
+        check(f'侧栏宽度 = 壳 token --sub-sidebar-width({expected_side}px)',
+              abs(g['side']['w'] - expected_side) <= 1,
+              f"预期 {expected_side} 实际 {g['side']['w']}")
         check('侧栏不占满窗口（内容是主区）', g['content']['w'] > g['side']['w'] * 2,
               f"content.w={g['content']['w']}")
         check('机器面板两列栅格（两个卡片在同一 y）',

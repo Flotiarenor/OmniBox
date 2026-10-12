@@ -27,6 +27,7 @@ limitations under the License.
     - 没有控制台时不注册 StreamHandler，更不会因为写 None 而报错。'''
 
 import logging
+import os
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -38,6 +39,62 @@ _MAX_BYTES = 2 * 1024 * 1024
 _BACKUP_COUNT = 3
 
 _configured = False
+
+
+class SafeRotatingFileHandler(RotatingFileHandler):
+    """滚动日志：**不重命名当前文件**，因此不会因文件被占用而报错。
+
+    标准库的 `RotatingFileHandler.doRollover()` 走的是
+    `os.rename(omnibox.log, omnibox.log.1)`。Windows 上这一步会因为"文件被别的
+    进程持有句柄"而抛 PermissionError（WinError 32）—— 本仓库里这是常态：应用在跑，
+    同时又开着 `--web-only` 实例、e2e 用例或某个正在读这份日志的编辑器/杀软实时扫描。
+    logging 把它当 handler 异常打到 stderr（就是用户看到的 "--- Logging error ---"
+    加一整段调用栈），而且**那条日志本身也丢了**：看起来像程序崩了，实际只是滚动没做成。
+
+    这里的做法是"先备份、再原子替换"：
+      1. 空文件写进 `<log>.tmp`；
+      2. 备份链整体后移（`.2` → `.3`、`.1` → `.2`）；
+      3. 当前文件 → `.1`，再把 `.tmp` 换到 `<log>`。
+    每一步都是 `os.replace`（同目录内原子）。当前文件只作为**源**被替换，不再被改名；
+    仍然被占用时只抛 OSError，这里吞掉 —— 表现为**滚动延后到下一次写满**，写入不断、
+    日志不丢、stderr 干净。
+
+    备份链与标准库同名同义（`.1` 起，`backupCount` 个）。"""
+
+    def doRollover(self) -> None:
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+        try:
+            self._rotate_via_replace()
+        except OSError:
+            # 文件被占着：这次不滚，继续写当前文件，下次写满再试
+            pass
+        if not self.delay:
+            self.stream = self._open()
+
+    def _rotate_via_replace(self) -> None:
+        for index in range(self.backupCount - 1, 0, -1):
+            source = Path(f'{self.baseFilename}.{index}')
+            if source.exists():
+                os.replace(source, f'{self.baseFilename}.{index + 1}')
+        current = Path(self.baseFilename)
+        if current.exists():
+            # 先把当前内容挪进 .1，再用空文件顶掉它。顺序不能反：先建空文件的话
+            # 旧内容会被这次替换直接丢掉（滚动是归档，不是清理）。
+            os.replace(current, f'{self.baseFilename}.1')
+        tmp = Path(f'{self.baseFilename}.tmp')
+        # 与当前文件同目录：os.replace 才是原子的（跨卷会退化成复制 + 删除）
+        tmp.touch()
+        os.replace(tmp, self.baseFilename)
+
+    def handleError(self, record: logging.LogRecord) -> None:
+        """滚动/写入出问题时不要把 traceback 打到控制台。
+
+        logging 默认走 `raiseExceptions` → stderr，用户看到的是整段
+        "--- Logging error ---"+ 调用栈，像是程序崩了，其实只是那一条日志没落盘。
+        这里连 stderr 都不写：启动路径上本来就有 `setup_logging` 的失败提示。
+        """
 
 
 def get_log_dir(config_dir) -> Path:
@@ -63,7 +120,7 @@ def setup_logging(config_dir, level: int = logging.INFO, console: bool = True) -
         log_dir = get_log_dir(config_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / 'omnibox.log'
-        file_handler = RotatingFileHandler(
+        file_handler = SafeRotatingFileHandler(
             log_file, maxBytes=_MAX_BYTES, backupCount=_BACKUP_COUNT, encoding='utf-8'
         )
         file_handler.setFormatter(formatter)

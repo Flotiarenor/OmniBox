@@ -1,6 +1,6 @@
 /* ============================================================
    漫画中心（漫画库 + 下载中心合并）— 现代风格
-   依赖 Shell 注入的 variables.css / base.css / effects.css
+   依赖 Shell 注入的 variables.css / shared.css / base.css / effects.css
    ============================================================ */
 
 :root {
@@ -71,7 +71,7 @@
   color: var(--text-muted);
 }
 
-/* 结构、hover、选中态都来自壳的 `.obx-nav-item`（base.css 的「导航项」一节），
+/* 结构、hover、选中态都来自壳的 `.obx-nav-item`（shared.css 的「导航项」一节），
    这里只留本插件自己的差异（图标栏宽度）。外观可覆写 `--obx-nav-*`。 */
 .ml-nav-item {
   gap: 9px;
@@ -286,7 +286,8 @@
 /* ===== 响应式 ===== */
 @media (max-width: 860px) {
   /* 窄窗口的侧栏宽度必须提高特异性：媒体查询不改变特异性 */
-  .ml-sidebar.view-sub-sidebar { width: 200px; }
+  /* 窄窗口最多 200px；min() 的理由见 image-viewer.css 同处注释。 */
+  .ml-sidebar.view-sub-sidebar { width: min(var(--sub-sidebar-width), 200px); }
   .ml-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
   .ml-task-progress { width: 100px; }
 }

@@ -33,6 +33,10 @@ class DocumentReader {
         // 用户手选任何一个编码都强，手选唯一能做到的额外效果是把能读的书解成乱码。
         this.encoding = 'auto';
         this.mode = 'scroll';
+        // 正文底色与主题正交：theme 跟随主题 / show 透出壳背景 / solid 指定色彩。
+        // 默认 show —— 壳默认就是玻璃背景图，正文让出底色才看得见它。
+        this.bgMode = 'show';
+        this.bodyColor = '#ffffff';
 
         this.engine = new DocumentReaderEngine(this);
         this.tts = new ReaderTts(this);
@@ -133,7 +137,7 @@ class DocumentReader {
         document.getElementById('nr-open-toc')
             .addEventListener('click', () => this.openToc());
         document.getElementById('nr-open-read-settings')
-            .addEventListener('click', () => openModal('nr-read-settings-modal'));
+            .addEventListener('click', () => openNrModal('nr-read-settings-modal'));
         document.getElementById('nr-open-voice')
             .addEventListener('click', () => this.voicePage.open());
         document.getElementById('btn-settings')
@@ -156,11 +160,11 @@ class DocumentReader {
     _bindModalDismiss() {
         document.querySelectorAll('.modal').forEach((modal) => {
             modal.addEventListener('pointerdown', (event) => {
-                if (event.target === modal) closeModal(modal.id);
+                if (event.target === modal) closeNrModal(modal.id);
             });
         });
         document.querySelectorAll('[data-nr-close]').forEach((btn) => {
-            btn.addEventListener('click', () => closeModal(btn.dataset.nrClose));
+            btn.addEventListener('click', () => closeNrModal(btn.dataset.nrClose));
         });
     }
 
@@ -178,6 +182,9 @@ class DocumentReader {
         dom.textColorInput = document.getElementById('document-text-color');
         dom.customColorRow = document.getElementById('custom-color-row');
         dom.customTextRow = document.getElementById('custom-text-row');
+        dom.bgModeSelect = document.getElementById('document-bg-mode');
+        dom.bodyColorInput = document.getElementById('document-body-color');
+        dom.bodyColorRow = document.getElementById('body-color-row');
 
         dom.fontSizeSlider.addEventListener('input', (event) => {
             this.fontSize = parseInt(event.target.value, 10);
@@ -207,6 +214,15 @@ class DocumentReader {
             this.textColor = event.target.value;
             this.settings.apply();
         });
+        dom.bgModeSelect.addEventListener('change', (event) => {
+            this.bgMode = event.target.value;
+            this._syncBodyColorRow();
+            this.settings.apply();
+        });
+        dom.bodyColorInput.addEventListener('change', (event) => {
+            this.bodyColor = event.target.value;
+            this.settings.apply();
+        });
         dom.modeSelect.addEventListener('change', (event) => {
             this.mode = event.target.value === 'page' ? 'page' : 'scroll';
             this.engine.setMode(this.mode);
@@ -221,6 +237,15 @@ class DocumentReader {
         const custom = this.theme === 'custom';
         if (dom.customColorRow) dom.customColorRow.style.display = custom ? 'flex' : 'none';
         if (dom.customTextRow) dom.customTextRow.style.display = custom ? 'flex' : 'none';
+        this._syncBodyColorRow();
+    }
+
+    /** 「正文底色 = 指定色彩」时才显示取色器。 */
+    _syncBodyColorRow() {
+        const dom = this._dom;
+        if (dom.bodyColorRow) {
+            dom.bodyColorRow.style.display = this.bgMode === 'solid' ? 'flex' : 'none';
+        }
     }
 
     _bindKeyboard() {
@@ -632,13 +657,18 @@ class DocumentReader {
 }
 
 // ===== 轻量弹窗开关（壳的模态样式 + .active 类） =====
+//
+// 名字必须带 `Nr` 前缀：插件脚本与壳注入的 /shell/base.js 共享同一个全局对象，
+// 顶层 `function openModal` 会把壳的 `openModal(options)`（返回 Promise 的设置弹窗工厂）
+// 整个替换掉，于是工具栏「设置」按钮里的 `openSettingsModal()` 拿到 undefined 再读 `.then`
+// —— 点下去只有一条 TypeError，弹窗不出现。`closeModal` 同理（壳后续如需同名入口也会被顶掉）。
 
-function openModal(id) {
+function openNrModal(id) {
     const el = document.getElementById(id);
     if (el) el.classList.add('active');
 }
 
-function closeModal(id) {
+function closeNrModal(id) {
     const el = document.getElementById(id);
     if (el) el.classList.remove('active');
 }

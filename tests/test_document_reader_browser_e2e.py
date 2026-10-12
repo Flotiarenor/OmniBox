@@ -93,6 +93,7 @@ try { localStorage.setItem('document-reader-tts', 'off'); } catch (e) {}
 """
 
 SHELL_STYLES = ('<link rel="stylesheet" href="/shell/variables.css">'
+                '<link rel="stylesheet" href="/shell/shared.css">'
                 '<link rel="stylesheet" href="/shell/base.css">'
                 '<link rel="stylesheet" href="/shell/effects.css">')
 
@@ -159,6 +160,10 @@ class _Handler(BaseHTTPRequestHandler):
             body = json.dumps({'success': True})
         elif method == 'get_settings':
             body = json.dumps(dict(self.state.get('settings') or {}))
+        elif method == 'get_settings_schema':
+            # 壳的 openSettingsModal 先拉 schema 再拉值；不桩它就拿到 {} → 弹窗只显示空态，
+            # 「设置弹窗里有字段」这条就永远测不出来
+            body = json.dumps(list(self.state.get('schema') or []))
         elif method == 'save_settings':
             # 阅读偏好存在后端设置里（跨设备持久化）：桩必须真的记住，
             # 否则"用户改过的选择要能记住"这条永远测不出来
@@ -424,6 +429,47 @@ class DocumentReaderBrowserTests(unittest.TestCase):
         self.open_app()
         self.driver.execute_script('window.documentReader.openDocument(arguments[0]);', book)
         self.wait('window.documentReader._isReaderMode')
+
+    def test_toolbar_settings_button_opens_shell_settings_modal(self):
+        """点工具栏「设置」必须真的弹出壳的设置弹窗（含字段与保存）。
+
+        缺陷背景：app.js 顶层曾定义 `function openModal(id)` —— 自绘弹窗（目录 / 阅读设置）
+        的开关。插件脚本与壳注入的 /shell/base.js 共享同一个全局对象，于是这个声明把壳的
+        `openModal(options)`（返回 Promise 的设置弹窗工厂）整个替换掉；`openSettingsModal()`
+        内部紧接着读返回值上的 `.then`，抛 TypeError，点「设置」只有控制台一行报错。
+
+        断言走完整通路：按钮 → 壳的弹窗 → schema 字段带上后端已有的值 → 保存后关闭。
+        """
+        self.set_state(
+            documents=[_document('book.txt', '书', count=1, kind='txt')],
+            chapters=[{'index': 0, 'title': '第1章', 'word_count': 3}],
+            bodies={'book.txt': {'0': '正文'}},
+            settings={'reader_font_size': 18},
+            schema=[{'key': 'reader_font_size', 'label': '正文字号(px)', 'type': 'number',
+                     'default': 16}])
+        self.open_app()
+        self.driver.execute_script("document.getElementById('btn-settings').click();")
+        self.wait("document.querySelector('.modal.active .settings-form"
+                  " .field[data-key=\"reader_font_size\"]')")
+        opened = self.driver.execute_script("""
+            const overlay = document.querySelector('.modal.active');
+            const field = overlay.querySelector('.field[data-key="reader_font_size"]');
+            return {
+                title: overlay.querySelector('h3').textContent,
+                hasSave: !!overlay.querySelector('[data-act="save"]'),
+                value: field.querySelector('input').value,
+            };""")
+        details = json.dumps(opened, ensure_ascii=False)
+        self.assertEqual(opened['title'], '文档阅读设置', f'弹出来的不是壳的设置弹窗 {details}')
+        self.assertTrue(opened['hasSave'], f'设置弹窗里没有保存按钮 {details}')
+        self.assertEqual(str(opened['value']), '18', f'字段没带上后端已有的值 {details}')
+
+        self.driver.execute_script(
+            "document.querySelector('.modal.active [data-act=\"save\"]').click();")
+        self.wait("!document.querySelector('.modal.active')")
+        self.assertIn('设置已保存', self.driver.execute_script(
+            "return [...document.querySelectorAll('.toast')].map(t => t.textContent).join('|');"),
+            '保存后没有给出成功提示（保存通路没走完）')
 
     def test_encoding_is_fully_automatic(self):
         """编码不再由用户选：界面上没有那个下拉框，重读也永远用 auto。

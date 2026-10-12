@@ -36,34 +36,64 @@ function createHttpApi(): PyWebViewAPI {
   }) as PyWebViewAPI
 }
 
-// 在没有 PyWebView 的环境下自动注入 HTTP API shim。
-function ensureBrowserApi() {
-  if (!window.pywebview) {
-    window.pywebview = { api: createHttpApi() }
-  }
-}
-
 let _api: PyWebViewAPI | null = null
 let _initPromise: Promise<void> | null = null
+
+/** 这台机器上是不是**桌面窗口**（WebView2 宿主）。
+ *
+ * pywebview 的 winforms/WebView2 后端总是注入 `window.chrome.webview`，普通浏览器
+ * 没有这个对象。用它区分"等一下 pywebview"与"这里永远不会有 pywebview"：
+ * 只有桌面模式才值得等，浏览器模式必须立刻回退到 HTTP 通道。
+ */
+function isDesktopHost(): boolean {
+  return typeof (window as any).chrome?.webview !== 'undefined'
+}
+
+/** 等待 pywebview 注入它的 api（超时返回 null）。
+ *
+ * 为什么必须等：pywebview 的 `window.pywebview` 是**页面加载之后**才注入的，而
+ * 模块脚本可能与它在同一批任务里跑。原先这里"检查一次，没有就立刻装 HTTP 替身"，
+ * 于是在桌面窗口里也会固化成 HTTP 通道 —— 壳的调用看似正常，但凡是"只有桌面窗口
+ * 才做得到"的接口（全屏）都会走到给浏览器准备的拒绝分支（报告 §6）。
+ */
+function waitForPyWebView(timeoutMs: number): Promise<PyWebViewAPI | null> {
+  return new Promise(resolve => {
+    let settled = false
+    const finish = (api: PyWebViewAPI | null) => {
+      if (settled) return
+      settled = true
+      window.removeEventListener('pywebviewready', onReady)
+      resolve(api)
+    }
+    const onReady = () => {
+      const api = window.pywebview?.api
+      if (api) finish(api)
+    }
+    // 先挂监听再查现值：反过来的话，事件正好在两步之间到达就永远等不到了
+    window.addEventListener('pywebviewready', onReady)
+    onReady()
+    setTimeout(() => finish(window.pywebview?.api || null), timeoutMs)
+  })
+}
 
 export function useBridge() {
   async function init(): Promise<void> {
     if (_api) return
     if (!_initPromise) {
-      _initPromise = new Promise<void>((resolve, reject) => {
-        const check = () => {
-          if (window.pywebview?.api) {
-            _api = window.pywebview.api
-            resolve()
-          } else {
-            setTimeout(check, 50)
-          }
+      _initPromise = (async () => {
+        if (!window.pywebview?.api) {
+          // 桌面窗口等注入；浏览器模式不等（这里永远不会有 pywebview）
+          const api = await waitForPyWebView(isDesktopHost() ? 8000 : 0)
+          if (api) _api = api
         }
-        // 如果不存在 PyWebView（普通浏览器），立即启用 HTTP API fallback
-        ensureBrowserApi()
-        check()
-        setTimeout(() => reject(new Error('PyWebView API 超时（5秒）')), 5000)
-      })
+        if (!_api && window.pywebview?.api) _api = window.pywebview.api
+        if (!_api) {
+          // 真的没有 PyWebView（普通浏览器 / 普通浏览器模式的反向代理部署）：
+          // 装上 HTTP 替身，页面照常可用
+          window.pywebview = { api: createHttpApi() }
+          _api = window.pywebview.api
+        }
+      })()
     }
     await _initPromise
   }

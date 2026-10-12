@@ -44,6 +44,10 @@ HIDDEN_IMPORTS = [
     # 将来插件直接声明 FsSource 也要能 import
     'shell.backend.freshness',
     'shell.backend.file_server',
+    # 壳自身的 WebView2 GPU 偏好注入：只被 main.py 导入，而 main.py 是静态入口、
+    # PyInstaller 能自行收集，因此本条并非必需；收进来只为让"壳模块"在清单里齐全，
+    # 避免日后有插件经 importlib 动态加载到它时出现构建产物缺模块。
+    'shell.backend.webview_gpu',
     # ── group-mesh 协议内核（shell/groupmesh）──
     'shell.groupmesh',
     'shell.groupmesh.crypto_prims',

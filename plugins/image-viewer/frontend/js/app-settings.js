@@ -12,6 +12,20 @@ Object.assign(ImageViewer.prototype, {
     // ============================================================
     // 设置
     // ============================================================
+
+    /**
+     * 把「灯箱内存缓存」张数交给壳的灯箱组件（`base.js` 的 `setDecodedLimit`）。
+     *
+     * 为什么由插件下发：保位图的那一小池离屏 `<img>` 属于灯箱组件，而"给多少张"
+     * 是用户偏好 —— 组件不该自己拍一个内存预算。组件缺失（页面脱离壳单独打开）或
+     * 旧版壳没有这个方法时静默跳过，不影响其他功能。
+     */
+    _applyLightboxCache() {
+        if (!this.lightbox || typeof this.lightbox.setDecodedLimit !== 'function') return;
+        const value = (this.currentSettings || {}).lightbox_cache;
+        this.lightbox.setDecodedLimit(value != null ? value : 8);
+    },
+
     async openSettingsModal() {
         document.getElementById('settings-modal').classList.add('active');
         // 图片文件夹列表由共享组件建立（这里补建是因为设置弹窗可能晚于 init 才打开）
@@ -52,6 +66,11 @@ Object.assign(ImageViewer.prototype, {
             const global = await Bridge.call('get_settings', '');
             document.getElementById('setting-album-sort-by').value = global.album_sort_by || 'mtime';
             document.getElementById('setting-album-sort-order').value = global.album_sort_order || 'desc';
+            // 灯箱缓存张数是全局偏好（内存占用跟着进程走，不跟目录），值也从全局读：
+            // 否则在子目录里打开设置会显示继承值、保存时又写错作用域。
+            const cacheCount = global.lightbox_cache != null ? global.lightbox_cache : 8;
+            document.getElementById('setting-lightbox-cache').value = cacheCount;
+            document.getElementById('setting-lightbox-cache-val').textContent = cacheCount;
             // 图片文件夹列表（列表即唯一入口：主目录 + 额外目录，保存时写回
             // root_dir / extra_roots），不再单列「数据根目录」输入框。
             // 列表控件由共享组件持有，这里只把后端读到的路径灌进去。
@@ -79,6 +98,11 @@ Object.assign(ImageViewer.prototype, {
             album_sort_by: document.getElementById('setting-album-sort-by').value,
             album_sort_order: document.getElementById('setting-album-sort-order').value
         } : null;
+        // 灯箱缓存张数是全局偏好（内存占用跟着进程走，不跟目录），与二次排序同样处理：
+        // 始终写全局，勾「仅当前文件夹」时也不落进文件夹级设置。
+        const lightboxCache = {
+            lightbox_cache: parseInt(document.getElementById('setting-lightbox-cache').value, 10)
+        };
         // 模糊匹配与排序方式同作用域；未选 Pixiv 排序时它是死设置，不写入，
         // 也让文件夹级设置回退到全局值（否则在别的文件夹取消勾选后会留下残留值）
         const fuzzy = (this._pixivFuzzyVisible && settings.sort_by === 'time_name')
@@ -98,16 +122,18 @@ Object.assign(ImageViewer.prototype, {
                 await Bridge.call('save_settings', this.currentPath,
                     { ...settings, ...(fuzzy || {}) });
                 if (albumSort) await Bridge.call('save_settings', '', albumSort);
+                await Bridge.call('save_settings', '', lightboxCache);
             } else {
                 await Bridge.call('save_settings', '',
-                    { ...settings, ...(albumSort || {}), ...(fuzzy || {}) });
+                    { ...settings, ...(albumSort || {}), ...(fuzzy || {}), ...lightboxCache });
                 if (this.currentPath) await Bridge.call('clear_folder_settings', this.currentPath);
             }
             this.currentSettings = {
                 ...(this.currentSettings || {}), ...settings,
-                ...(albumSort || {}), ...(fuzzy || {})
+                ...(albumSort || {}), ...(fuzzy || {}), ...lightboxCache
             };
             this.currentRowHeight = settings.row_height;
+            this._applyLightboxCache();
             this._applyAlbumSortSettings();
             this.closeSettingsModal();
             Toast.success('设置已保存');

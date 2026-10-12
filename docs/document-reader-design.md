@@ -1,6 +1,6 @@
 # 文档阅读器重构设计（三态布局 + 朗读）
 
-状态：**已实现**（插件版本 3.5.0）。数据来自真机量测（`main.py --web-only` 隔离实例 +
+状态：**已实现**（插件版本 3.6.0）。数据来自真机量测（`main.py --web-only` 隔离实例 +
 Selenium 非无头），不是读源码推断的；下文标注"实测""踩过"的地方都是验证过的结论，
 改动这一块之前值得先读。
 
@@ -104,9 +104,33 @@ Selenium 非无头），不是读源码推断的；下文标注"实测""踩过"�
   回到那一章开头。朗读**不写任何状态文件**，所以它与阅读进度不会互相污染。
 - **朗读时会保存进度**（早期版本的"朗读中不保存"已按需求撤销）：朗读会带着滚动走，
   而"上次读到哪"正是关掉应用后最想接着看的地方。
-- **阅读偏好（字号/行距/字间距/主题/配色/阅读模式）改存插件设置**，不再用 localStorage：
-  跨设备一致，且不受浏览器隐私模式影响。旧 localStorage 里带 `version` 的偏好会迁移一次
-  （没有 `version` 的旧文件里，主题/模式是当年自动落盘的旧默认值，按新默认走）。
+- **阅读偏好（字号/行距/字间距/主题/配色/正文底色/阅读模式）改存插件设置**，不再用
+  localStorage：跨设备一致，且不受浏览器隐私模式影响。旧 localStorage 里带 `version`
+  的偏好会迁移一次（没有 `version` 的旧文件里，主题/模式是当年自动落盘的旧默认值，
+  按新默认走）。
+- **朗读（`tts_*`）只在左栏「朗读设置」页改**（`frontend/js/reader-voice-page.js`）：
+  引擎三档、端点、Key、模型名、音色与语速、音色候选表与试听、缓存管理都在那一页，
+  音色候选还要按选中引擎动态列出。这几个键在 `settings_schema` 里标 `hidden: True`，
+  壳的插件设置弹窗不再重复列一遍 —— 同一批配置摆两处时，用户改了一处却看到另一处
+  还是旧值，无法判断哪一份生效。
+  这正是本仓库原来的 `central: False` 语义（`1a4cb1d`：朗读项与阅读偏好都标
+  `central: False`，"集中设置面板只剩 `root_dir`"）；`central` 标记随 `2e8917d`
+  一起删掉，现在的等价物就是 `hidden`。
+  `tts_order`（自动模式的降级顺序）不在这份名单里：朗读设置页没有这个字段，它是
+  "引擎档位怎么选"的一部分，仍然留在面板上。
+  `admin_only` / `secret` 语义不变：朗读设置页上的端点与 Key 仍然要求管理员主体、
+  仍然不回显明文（判定在 `PluginBase`，与面板显示与否无关）。
+- **阅读偏好（`reader_*`）留在壳的插件设置弹窗里**（工具栏「设置」）：它就是"文档阅读
+  维护的设置"，打开文档后正文怎么显示（字号 / 行距 / 字间距 / 主题 / 配色 / 正文底色 /
+  翻页方式）都从这里改。左栏的「阅读设置」弹窗是同一批值的快捷入口（能即时预览、
+  按主题显示/隐藏自定义配色行），两条路写的是同一份 `save_settings`。
+- 保留在 schema 里是必须的：schema 同时是 `save_settings` 的写入白名单
+  （`shell/backend/plugin_base.py` 的 `allowed`），删掉键会让对应的界面存不上。
+- **正文底色（`reader_bg_mode`）与阅读主题正交**：主题决定"用哪套配色"
+  （`--reader-bg-color`），底色只决定"实色还是透明"，取值 `theme`（跟随主题）/
+  `show`（透出壳背景）/ `solid`（用 `reader_body_color` 铺底），默认 `show`。
+  合在一起会变成六种主题各要一个透明变体。老版本没有这一项，迁移时按 `theme` 走 ——
+  那时正文一律是实色，按新默认 `show` 会让所有人的正文突然变透明，而他们没选过。
 
 ### 4.1 书架缓存与统一刷新基建
 
@@ -298,7 +322,7 @@ Selenium 非无头），不是读源码推断的；下文标注"实测""踩过"�
 | `js/settings.js` | 151 | `ReaderSettingsStore`：阅读偏好后端持久化 + 旧 localStorage 迁移（`settings.js:57-90`） |
 | `js/reader-tts.js` | 445 | `ReaderTts`：切句、合成请求、预取、播放、CSS Custom Highlight 高亮、浮动卡 |
 | `js/reader-voice-page.js` | 371 | `ReaderVoicePage`：朗读设置独立页（引擎/端点/Key/音色表/缓存） |
-| `js/app.js` | 608 | `DocumentReader` 类骨架 + 生命周期 + DOM 缓存 + 事件绑定；另有 `openModal/closeModal`（`app.js:600-608`） |
+| `js/app.js` | 649 | `DocumentReader` 类骨架 + 生命周期 + DOM 缓存 + 事件绑定；另有 `openNrModal/closeNrModal`（`app.js:641-649`，名字不能去掉 `Nr` 前缀，见 §13.5.1） |
 | `js/app-shelf.js` | 169 | `prototype` 分片：封面网格、书签视图、空态模板（`app-shelf.js:139-145`） |
 | `js/app-toc.js` | 70 | `prototype` 分片：目录弹窗渲染与筛选 |
 | `js/app-menu.js` | 254 | `prototype` 分片：正文右键菜单、书签增删、正文书签标记层 |
@@ -469,10 +493,10 @@ grep（限 `document-reader.css`）：
 
 | 能力 | 壳实现 | 插件实现 | 差异 |
 | --- | --- | --- | --- |
-| 弹窗开关 | `openSettingsModal/confirmDialog` 内部建 `.modal`；壳无公开 open/close | `openModal/closeModal`（`app.js:600-608`）只切 `active` 类，遮罩点击关闭自写（`app.js:149-158`，用 `pointerdown`） | 行为等价、命名重合易混；遮罩判定用 `pointerdown` 与壳 `base.js:601-602` 一致 |
+| 弹窗开关 | `openSettingsModal/confirmDialog` 内部建 `.modal`；壳无公开 open/close | `openNrModal/closeNrModal`（`app.js:641-649`）只切 `active` 类，遮罩点击关闭自写（`app.js:156-165`，用 `pointerdown`） | 行为等价；**名字必须带 `Nr` 前缀**：顶层 `function openModal` 会覆盖壳的 `openModal(options)`（同一个全局对象，见 §13.5.1）；遮罩判定用 `pointerdown` 与壳一致 |
 | 右键菜单 | `createContextMenu({items})` | 复用其定位/关闭，但每次右键 `menu.innerHTML=''` 重建列表（`app-menu.js:22-24,75-91`） | 壳的 items 构造时固定，插件需要「有无选区」两套菜单；分隔线额外加 `.nr-menu-sep`（`css:590-596`） |
 | 设置表单 | `createSettingsForm` + `.settings-form/.field*`（`base.js:419-563`） | 自写 `.nr-setting-row`（`css:599-636`：label 固定 72px、range flex:1、右对齐数值 42px） | 视觉更紧凑、无 schema 驱动 |
-| 统一设置弹窗 | `openSettingsModal({title,schema,values,onSave})` | 只传 `{title}`（`app.js:133`）→ 走壳的 `get_settings_schema` | 保存成功后壳会强制 `location.href+?_t=` 刷新（`base.js:622`）；插件另有自绘「阅读设置」「朗读设置」两条入口，同一插件三套设置 UI |
+| 统一设置弹窗 | `openSettingsModal({title,schema,values,onSave})` | 只传 `{title}`（`app.js:139-140`）→ 走壳的 `get_settings_schema` | 保存成功后壳弹「设置已保存」并关闭弹窗、不重载插件页；插件另有自绘「阅读设置」「朗读设置」两条入口，同一插件三套设置 UI |
 | 分页 | `createPagination` + `.pagination-bar` | 未用（阅读器无分页语义） | 无冲突 |
 | 目录树 | `createTree` + `.tree-*` | 未用（目录是章节列表 `.document-chapter-item`） | 章节列表即插件自有 |
 | 空状态 | `.empty-state`（`base.css:428-431`） | `.nr-empty`（`css:813-836`），三行式：icon+text+hint | 壳只有一个居中文本；插件多出 40px 浮动图标与提示行 |
@@ -489,9 +513,14 @@ grep（限 `document-reader.css`）：
 
 三个互不相同的入口：
 
-1. 工具栏设置入口（静态 HTML `<svg class="obx-icon"><use href="#settings"></use></svg> 设置`，`index.html:74`）→ 壳的 `openSettingsModal({title:'文档阅读设置'})`（`app.js:132-133`）：
-   读后端 `get_settings_schema` 渲染，保存由壳接管 —— **成功后 400ms 整页刷新**（`base.js:622`），
+1. 工具栏设置入口（静态 HTML `<svg class="obx-icon"><use href="#settings"></use></svg> 设置`，`index.html:82`）→ 壳的 `openSettingsModal({title:'文档阅读设置'})`（`app.js:139-140`）：
+   读后端 `get_settings_schema` 渲染，保存由壳 `Bridge.call('save_settings')` 接管（成功弹「设置已保存」并关闭弹窗），
    插件不感知，也没有 `onSave`。
+   **这条通路上插件的顶层名字不能与壳的全局名相同**：`app.js` 曾把自绘弹窗开关写成 `function openModal(id)`，
+   而插件脚本与壳注入的 `/shell/base.js` 共享同一个全局对象，于是壳的 `openModal(options)`
+   （返回 Promise 的设置弹窗工厂，`base.js:685`）被整个替换 —— 点「设置」只抛
+   `Cannot read properties of undefined (reading 'then')`，弹窗不出现。现名为 `openNrModal` / `closeNrModal`；
+   这类撞名由 `tests/js/plugin_asset_contract.mjs` 按两边的顶层名字比对拦截。
 2. 左栏「阅读设置」→ 自绘 `.modal`（`index.html:189-239`）：滑杆 `input` 事件即时预览
    （`app.js:175-208`），落盘走 `ReaderSettingsStore.save()` 的 **400ms 防抖**
    （`settings.js:127-150`），**无任何 Toast 反馈**，失败只 `console.error`（`settings.js:142`）。

@@ -137,20 +137,21 @@ def show_panel(driver, name: str) -> None:
 def shell_injection() -> str:
     """壳加载插件页面时注入到 </head> 之前的那几份资源。
 
-    为什么这个用例必须带上它：插件前端**依赖**壳注入的 variables.css / base.css /
-    effects.css（`docs/plugin-guide.md` §4.1 明确说"不要在 HTML 里手动引入"）。
+    为什么这个用例必须带上它：插件前端**依赖**壳注入的 variables.css / shared.css /
+    base.css / effects.css（`docs/plugin-guide.md` §4.1 明确说"不要在 HTML 里手动引入"）。
     而本用例是直接用 `file://` 打开插件页面的，一旦不补注入，测的就不是真实环境：
 
       - `.modal` 的 `display:none` 在 base.css 里。不注入时弹窗就是普通 div，
         默认**可见** —— 于是"弹窗不得在打开时自己显示"这条断言会以完全错误的方式失败；
-      - `.btn` / `.view-*` / `--bg-app` 等 token 同样来自壳。
+      - `.btn` / `.field*` / `.obx-icon` 在 shared.css 里，`.view-*` / `--bg-app` 等
+        token 同样来自壳。
 
     之前这条用例"能过"，只是因为当时弹窗靠 `hidden` 属性控制显隐 —— 属性不依赖
     任何样式表，于是测试在没有壳样式的情况下也碰巧成立。迁移到壳的 `.modal` 之后，
     缺失的注入暴露了出来。
     """
     parts = []
-    for name in ('variables.css', 'base.css', 'effects.css'):
+    for name in ('variables.css', 'shared.css', 'base.css', 'effects.css'):
         path = SHELL_PUBLIC / name
         if path.is_file():
             parts.append(f'<!-- {name} -->\n<style>\n{path.read_text(encoding="utf-8")}\n</style>')

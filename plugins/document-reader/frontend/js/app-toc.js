@@ -17,7 +17,7 @@ Object.assign(DocumentReader.prototype, {
         if (filter) filter.value = '';
         this._renderTocItems();
         this._updateTocSub();
-        openModal('nr-toc-modal');
+        openNrModal('nr-toc-modal');
         // 打开时把当前章滚进视野：目录是"偶尔翻一下"的东西，
         // 每次打开都从第一章开始找，用起来就是白开一次。
         requestAnimationFrame(() => {
@@ -65,7 +65,7 @@ Object.assign(DocumentReader.prototype, {
         list.querySelectorAll('.document-chapter-item').forEach((item) => {
             item.addEventListener('click', async () => {
                 const index = parseInt(item.dataset.index, 10);
-                closeModal('nr-toc-modal');
+                closeNrModal('nr-toc-modal');
                 this.tts.stop();
                 await this._saveCurrentProgress(true);
                 await this.engine.goToChapter(index, 0);

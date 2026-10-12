@@ -405,6 +405,17 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
     def _click_center(self, selector: str) -> str:
         """真实鼠标点元素中心，返回该点实际命中的元素描述（按钮里的图标是常态）。"""
         x, y = self._center_of(selector)
+        # 临时诊断（定位完删除）
+        import math
+        if not (math.isfinite(x) and math.isfinite(y)):
+            print('[DEBUG] 坐标非有限:', selector, x, y, '|', self.driver.execute_script(
+                "const el = document.querySelector(arguments[0]);"
+                "return JSON.stringify({found: !!el,"
+                " html: document.body ? document.body.innerHTML.length : -1,"
+                " vp: [window.innerWidth, window.innerHeight],"
+                " url: location.href,"
+                " root: (document.documentElement.getAttribute('style') || '').slice(0, 80)});",
+                selector), flush=True)
         hit = self.driver.execute_script(
             "const el = document.elementFromPoint(arguments[0], arguments[1]);"
             "return el ? el.tagName + (el.id ? '#' + el.id : '') : '（空）';", x, y)
@@ -735,6 +746,42 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
         self._wait(lambda: self._modal_title() == '重命名歌单',
                    '点「重命名」的图标后未打开重命名弹窗')
 
+
+    def test_video_stage_touches_toolbar_and_edges(self):
+        """视频模式的舞台与工具栏、主区左右两侧**直接相接**，圆角归零。
+
+        舞台原先保留 `margin: 12px 16px 0` 与 18px 圆角，玻璃壳下那圈空带与四个圆角
+        缺口透出的是壳的背景图，视频画面被一圈未遮挡的背景包着。这里量的是"工具栏
+        底边到舞台顶边""舞台左右边到主区左右边"的距离。
+        """
+        self._open_playlist()
+        self._wait(lambda: self.driver.execute_script(
+            "return !!document.getElementById('mp-stage');"), '舞台未渲染')
+        self.driver.execute_script(
+            "document.getElementById('mp-stage').classList.add('video-on');")
+        time.sleep(0.4)
+        geo = self.driver.execute_script("""
+            const stage = document.getElementById('mp-stage');
+            const bar = document.querySelector('.mp-toolbar');
+            const main = document.querySelector('.mp-main');
+            if (!stage || !bar || !main) return null;
+            const s = stage.getBoundingClientRect(), b = bar.getBoundingClientRect();
+            const m = main.getBoundingClientRect();
+            const cs = getComputedStyle(stage);
+            return {top: +(s.top - b.bottom).toFixed(1),
+                    left: +(s.left - m.left).toFixed(1),
+                    right: +(m.right - s.right).toFixed(1),
+                    radius: cs.borderTopLeftRadius,
+                    videoOn: stage.classList.contains('video-on')};
+        """)
+        self.assertIsNotNone(geo, '取不到舞台/工具栏/主区的矩形')
+        self.assertTrue(geo['videoOn'], '舞台没有进入视频模式')
+        self.assertEqual(geo['top'], 0.0,
+                         f"舞台与工具栏之间还留着 {geo['top']}px")
+        self.assertEqual(geo['left'], 0.0, f"舞台左边还留着 {geo['left']}px")
+        self.assertEqual(geo['right'], 0.0, f"舞台右边还留着 {geo['right']}px")
+        self.assertEqual(geo['radius'], '0px',
+                         f"视频模式仍带圆角：{geo['radius']}")
 
     def test_panels_do_not_cover_player_bar_controls(self):
         """窗口变矮时弹出面板仍不能压住播放栏按钮：压住的话点「均衡器」第一次只是关面板。

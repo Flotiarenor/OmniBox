@@ -489,6 +489,14 @@ function createSettingsForm(container, schema, values = {}) {
   const baseId = 'cfg-' + Math.random().toString(36).slice(2, 8);
 
   (schema || []).forEach((field) => {
+    // `hidden`：这个键**可写但不在面板里显示**。
+    //
+    // 为什么不能直接把键从 schema 里删掉：schema 同时是 `save_settings` 的写入白名单
+    // （见 backend/plugin_base.py 的 allowed），删掉键等于把"同一批配置"从面板挪走
+    // 的同时也让它存不进去。插件的自绘设置页（如 document-reader 的阅读设置）就是
+    // 这种情况：入口在插件自己那边，值仍要走 save_settings。
+    if (field.hidden === true) return;
+
     const wrap = document.createElement('div');
     wrap.className = 'field' + (field.type === 'checkbox' ? ' field-checkbox' : '');
     wrap.dataset.key = field.key;
@@ -1295,6 +1303,57 @@ function createLightbox(options = {}) {
   let isDragging = false, dragStart = { x: 0, y: 0 };
   let currentIndex = -1, items = [];
 
+  // ===== 解码位图内存缓存（"看过的图再打开瞬间整张出现"）=====
+  //
+  // 为什么需要它：客户端持有文件字节 ≠ 显示时不卡。实测同一张 10 MB / 数千像素的
+  // 原图，重复打开会出现两种表现 —— 有时整张瞬出，有时**从上到下一行行刷**。后者是
+  // 渲染进程把**解码后的位图**丢掉了，于是重新解码并渐进绘制。文件字节那层（HTTP
+  // 缓存 + 系统页缓存）是无辜的：请求可能只回一个 304，但位图仍要重建。
+  //
+  // 保住位图的唯一现实做法是**让持有它的 <img> 元素活着**：位图的寿命跟着元素走，
+  // 元素被回收位图就没了。灯箱本身只用一个 <img>，换 src 就等于丢掉上一张的位图，
+  // 所以这里额外养一小池离屏 <img>，只负责把最近看过的位图留在渲染进程里。
+  //
+  // 代价按**像素**算而不是文件大小：单张 ≈ 宽 × 高 × 4 字节（4000×4000 ≈ 64 MB，
+  // 6000×6000 ≈ 144 MB），且渲染进程往往还留一份 GPU 副本。因此上限必须可调，
+  // 0 = 关闭。
+  const decodedPool = new Map();     // url → { el, at }
+  const KEEP_RECENT_MS = 20000;      // 只留"刚看过"的，不按张数硬顶
+  let decodedMax = 8;
+
+  function itemUrl(item) {
+    return item ? Bridge.originalUrl(getImageUrl(item)) : '';
+  }
+
+  function trimDecodedPool() {
+    const now = Date.now();
+    decodedPool.forEach((entry, url) => {
+      if (decodedPool.size <= decodedMax && (now - entry.at) < KEEP_RECENT_MS) return;
+      decodedPool.delete(url);       // 丢掉引用 → 元素与其位图一起被回收
+    });
+  }
+
+  function setDecodedLimit(value) {
+    const parsed = Math.floor(Number(value));
+    decodedMax = Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+    if (decodedMax === 0) decodedPool.clear();
+    else trimDecodedPool();
+  }
+
+  /** 把当前这张的位图留在渲染进程里（池满时先淘汰最久未用的）。 */
+  function retainDecoded() {
+    if (decodedMax <= 0) return;
+    const url = img.currentSrc || img.src;
+    if (!url) return;
+    const hit = decodedPool.get(url);
+    if (hit) hit.at = Date.now();
+    else decodedPool.set(url, { el: img.cloneNode(false), at: Date.now() });
+    while (decodedPool.size > decodedMax) {
+      const oldest = decodedPool.keys().next().value;
+      decodedPool.delete(oldest);
+    }
+  }
+
   function resetTransform() { scale = 1; translate = { x: 0, y: 0 }; applyTransform(); }
   function applyTransform() {
     img.style.transform = `translate(${translate.x}px, ${translate.y}px) scale(${scale})`;
@@ -1343,6 +1402,7 @@ function createLightbox(options = {}) {
     overlay.classList.add('active');
     updateInfo();
     resetTransform();
+    retainDecoded();
     document.addEventListener('keydown', onKey);
     img.addEventListener('wheel', onWheel, { passive: false });
     img.addEventListener('mousedown', onDragStart);
@@ -1353,6 +1413,8 @@ function createLightbox(options = {}) {
   function hide() {
     overlay.classList.remove('active'); img.src = '';
     infoEl.innerHTML = '';
+    // 关灯箱就把池清掉：留着这些元素会一直占着渲染进程内存与 GPU 纹理
+    decodedPool.clear();
     document.removeEventListener('keydown', onKey);
     img.removeEventListener('wheel', onWheel);
     img.removeEventListener('mousedown', onDragStart);
@@ -1367,6 +1429,7 @@ function createLightbox(options = {}) {
     img.src = Bridge.originalUrl(getImageUrl(items[currentIndex]));
     updateInfo();
     resetTransform();
+    retainDecoded();
   }
 
   function onKey(e) {
@@ -1423,9 +1486,16 @@ function createLightbox(options = {}) {
     img.src = Bridge.originalUrl(getImageUrl(item));
     resetTransform();
     updateInfo();
+    retainDecoded();
   }
 
-  return { show, hide, navigate, setItems, getIndex: () => currentIndex };
+  return {
+    show, hide, navigate, setItems, setDecodedLimit,
+    // 只读：当前保留了几个解码位图。给用例一个可观测点 —— 池子是闭包状态，
+    // 没有它就只能靠"数 cloneNode 调用"这类脆弱手法去间接推断。
+    getDecodedCount: () => decodedPool.size,
+    getIndex: () => currentIndex,
+  };
 }
 
 // ==================== 分页组件 ====================

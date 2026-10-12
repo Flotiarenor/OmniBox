@@ -1,0 +1,240 @@
+{
+  "viewport": [1692, 946],
+  "library_contract": {
+    "为什么要写在这里": "截图脚本不生成素材，素材由你放进示例库。这张表记录脚本对目录与状态的依赖，换素材时按它对齐即可。",
+    "root": "示例库根（本机路径不写进仓库：它是你的真实目录，check_private_paths 会拦）",
+    "structure": {
+      "图片/": "普通图片，成「图片」相册；相册名取自文件夹名",
+      "pixiv/<画师名>/<作品目录>/": "两级结构：第一级是画师（子相册），用于 02 与 09；作品目录名建议用 8 位作品 ID，页文件名用 `<id>_p<页码>.jpg`",
+      "漫画/<作品名>/<页码>.jpg": "漫画根（示例库根下的 漫画/），一册一个文件夹，页按文件名排序"
+    },
+    "壁纸": "宽幅（建议 2560×1440）若干张，导入「设置 → 背景」的图片库，供 12/13 两张使用",
+    "pixiv合成状态": "11-pixiv-sync 不联网、不用真实凭据：先在库根跑 `python tools/seed_demo_state.py --root <库根>`（状态落在 <库根>/.cache/pixiv-sync/），实例侧再给一个占位 refresh_token 与 download_dir"
+  },
+  "scenes": [
+    {
+      "slot": "01-hero",
+      "title": "主界面 · 图片相册「全部相册」，含提升到首页的画师（深色）",
+      "note": "先进入 pixiv，把第一个画师「提升到全部相册」，再返回 —— 首页因此多一张带「已提升」角标的画师卡（提升动作由 tools/scenes/iv_promote_first_artist.js 完成，幂等）",
+      "route": "/image-viewer",
+      "shell_prefs": { "theme": "dark", "background": { "path": "" } },
+      "steps": [
+        { "frame": "image-viewer" },
+        { "wait": ".iv-nav" },
+        { "click": ".iv-nav-item[data-view=\"albums\"]" },
+        { "wait_text": "个相册" },
+        { "click": ".iv-album[data-path=\"pixiv\"]" },
+        { "wait_text": "个子相册" },
+        { "click": ".iv-album-menu" },
+        { "wait": ".iv-context-menu" },
+        { "js_file": "tools/scenes/iv_promote_first_artist.js" },
+        { "sleep": 1.2 },
+        { "click": "#iv-back" },
+        { "wait_text": "个相册" },
+        { "sleep": 1.2 }
+      ],
+      "expect": ["全部相册", "个相册", "校验", "已提升"]
+    },
+    {
+      "slot": "02-gallery",
+      "title": "图片相册 · pixiv 相册下的画师子相册（浅色）",
+      "route": "/image-viewer",
+      "shell_prefs": { "theme": "light", "background": { "path": "" } },
+      "steps": [
+        { "frame": "image-viewer" },
+        { "click": ".iv-nav-item[data-view=\"albums\"]" },
+        { "wait_text": "个相册" },
+        { "click": ".iv-album[data-path=\"pixiv\"]" },
+        { "wait_text": "个子相册" },
+        { "sleep": 1.2 }
+      ],
+      "expect": ["返回", "个子相册"]
+    },
+    {
+      "slot": "03-manga",
+      "title": "漫画中心 · 书架（浅色）",
+      "route": "/manga-library",
+      "shell_prefs": { "theme": "light", "background": { "path": "" } },
+      "steps": [
+        { "frame": "manga-library" },
+        { "wait": ".ml-nav" },
+        { "click": ".ml-nav-item[data-view=\"all\"]" },
+        { "wait_text": "全部漫画" },
+        { "sleep": 1.2 }
+      ],
+      "expect": ["全部漫画", "校验"]
+    },
+    {
+      "slot": "04-media",
+      "title": "媒体播放器 · 音乐专辑墙 + 播放条（浅色）",
+      "note": "需要媒体库里有音频；播放条内容靠点第一张专辑的「播放全部」产生",
+      "route": "/media-player",
+      "shell_prefs": { "theme": "light", "background": { "path": "" } },
+      "steps": [
+        { "frame": "media-player" },
+        { "wait": ".mp-nav" },
+        { "click": ".mp-nav-item[data-view=\"audio-albums\"]" },
+        { "wait": ".mp-card" },
+        { "click": ".mp-card-play" },
+        { "sleep": 2.5 }
+      ],
+      "expect": ["音乐专辑", "校验"]
+    },
+    {
+      "slot": "05-reading",
+      "title": "文档阅读 · 阅读态 + 章节目录弹窗（浅色）",
+      "note": "需要文档库里有 epub/txt；点第一本书进入阅读态，再点左栏「目录」开弹窗",
+      "route": "/document-reader",
+      "shell_prefs": { "theme": "light", "background": { "path": "" } },
+      "steps": [
+        { "frame": "document-reader" },
+        { "wait": ".nr-card" },
+        { "click": ".nr-card" },
+        { "wait_text": "目录" },
+        { "click_text": "目录", "in": ".nr-nav-item" },
+        { "sleep": 1.0 }
+      ],
+      "expect": ["目录", "字"]
+    },
+    {
+      "slot": "06-settings",
+      "title": "设置 · 外观（浅色，含「各插件内边栏宽度」）",
+      "route": "/settings",
+      "shell_prefs": { "theme": "light", "background": { "path": "" } },
+      "steps": [
+        { "wait": ".settings-panel" },
+        { "click_text": "强调色", "in": ".color-group-header" },
+        { "sleep": 0.6 }
+      ],
+      "expect": ["外观", "主题模式", "界面圆角", "导航栏宽度", "各插件内边栏宽度", "界面动效", "强调色"]
+    },
+    {
+      "slot": "07-dark",
+      "title": "深色主题 · 团体组网「共享项」",
+      "note": "需要先在配置窗口里：创建身份 → 建团/加入 → 挂一个共享目录并发布（否则这一屏是空的）",
+      "route": "/group-mesh",
+      "shell_prefs": { "theme": "dark", "background": { "path": "" } },
+      "steps": [
+        { "frame": "group-mesh" },
+        { "wait": ".gm-nav" },
+        { "click": ".gm-nav-item[data-panel=\"shares\"]" },
+        { "wait_text": "共享项" },
+        { "sleep": 1.0 }
+      ],
+      "expect": ["共享项", "我共享出去的目录", "可用", "校验"]
+    },
+    {
+      "slot": "08-cleaner",
+      "title": "图片相册内的「相册清理」相似图片分组（浅色）",
+      "note": "相似分组要先算出来：在配置台（tools/shoot_readme_setup.py）点一次「校验」，派生数据落在基线的 data/ 下，之后每次拍摄都带着它",
+      "route": "/image-viewer",
+      "shell_prefs": { "theme": "light", "background": { "path": "" } },
+      "steps": [
+        { "frame": "image-viewer" },
+        { "wait": ".iv-nav" },
+        { "click_text": "相册清理", "in": "#iv-extensions" },
+        { "frame_element": "#extension-frame" },
+        { "wait_text": "完全重复" },
+        { "click": "#tab-similar" },
+        { "wait_text": "相似组" },
+        { "sleep": 1.5 }
+      ],
+      "expect": ["完全重复", "相似图片", "相似组", "已选 0 张"]
+    },
+    {
+      "slot": "09-pixiv-sort",
+      "title": "图片相册 · 进入画师相册后的「显示与排序设置」弹窗（含「图片缓存」）",
+      "note": "两级都进：全部相册 → pixiv → 第一个画师，再开设置弹窗；这样弹窗里的「仅应用于当前文件夹」指向的是画师目录，而不是根目录",
+      "route": "/image-viewer",
+      "shell_prefs": { "theme": "light", "background": { "path": "" } },
+      "setup": [
+        { "method": "image-viewer__save_settings", "args": ["", { "sort_by": "time_name", "pixiv_fuzzy": true }] }
+      ],
+      "steps": [
+        { "frame": "image-viewer" },
+        { "click": ".iv-nav-item[data-view=\"albums\"]" },
+        { "wait_text": "个相册" },
+        { "click": ".iv-album[data-path=\"pixiv\"]" },
+        { "wait_text": "个子相册" },
+        { "click": ".iv-album" },
+        { "wait": "#image-grid img" },
+        { "sleep": 1.0 },
+        { "click": "#btn-settings" },
+        { "wait_text": "显示与排序设置" },
+        { "scroll_text": "图片缓存", "in": ".iv-setting-item" },
+        { "sleep": 0.8 }
+      ],
+      "expect": ["显示与排序设置", "图片缓存", "排序方式", "每页图片数", "仅应用于当前文件夹"]
+    },
+    {
+      "slot": "10-media-video",
+      "title": "媒体播放器 · 全部视频 + 宽屏播放（浅色）",
+      "note": "需要媒体库里有视频；「全部视频」渲染的是列表（.mp-row），不是专辑那种卡片网格；点第一行进入播放态",
+      "route": "/media-player",
+      "shell_prefs": { "theme": "light", "background": { "path": "" } },
+      "steps": [
+        { "frame": "media-player" },
+        { "wait": ".mp-nav" },
+        { "click": ".mp-nav-item[data-view=\"all-video\"]" },
+        { "wait": ".mp-row" },
+        { "click": ".mp-row" },
+        { "sleep": 3.0 }
+      ],
+      "expect": ["全部视频", "校验"]
+    },
+    {
+      "slot": "11-pixiv-sync",
+      "title": "图片相册里嵌的「Pixiv 同步」页（示例数据）",
+      "note": "数字是补上去的，不是应用的真实状态：场景先停掉页面的定时器，再用 tools/scenes/pixiv_status.js 改渲染好的 DOM，因此不联网、不需要账号。根目录由实例的 download_dir 设置渲染，不补。镜头不要点「同步」按钮。",
+      "route": "/image-viewer",
+      "shell_prefs": { "theme": "light", "background": { "path": "" } },
+      "steps": [
+        { "frame": "image-viewer" },
+        { "wait": ".iv-nav" },
+        { "click_text": "Pixiv 同步", "in": "#iv-extensions" },
+        { "frame_element": "#extension-frame" },
+        { "wait_text": "同步画师" },
+        { "sleep": 3.0 },
+        { "js": "for (let i = 1; i < 200000; i++) clearInterval(i);" },
+        { "js_file": "tools/scenes/pixiv_status.js" },
+        { "sleep": 0.4 }
+      ],
+      "expect": ["Token", "根目录", "已下载 1466 张", "共 1240", "待下 2", "共 186", "失败跳过: 7", "画师名单: 12 位"]
+    },
+    {
+      "slot": "12-background",
+      "title": "设置 · 背景（图片库 + 显示方式 + 玻璃效果）",
+      "note": "壁纸用基线里选好的那张（不覆盖 background.path）。显示方式用 free：只有这个模式才渲染「位置」两个滑块，其它模式下面板里没有这一项",
+      "route": "/settings",
+      "shell_prefs": {
+        "theme": "light",
+        "background": { "fit": "free" }
+      },
+      "steps": [
+        { "wait": ".settings-nav" },
+        { "click_text": "背景", "in": ".settings-nav-item" },
+        { "wait_text": "背景图片" },
+        { "sleep": 2.0 },
+        { "wait_gone": ".toast" },
+        { "sleep": 0.6 }
+      ],
+      "expect": ["背景图片", "显示方式", "位置", "缩放", "翻转", "玻璃效果"]
+    },
+    {
+      "slot": "13-glass",
+      "title": "自定义背景图 + 玻璃效果下的插件页（浅色）",
+      "note": "与 12 同一张壁纸（都取基线里选好的那张）。这里必须显式写 fit=cover：12 为了露出「位置」滑块把显示方式设成了「自由」，而**同一实例里场景是连续的**，不写就会让 13 也按原图尺寸摆放（壁纸只占窗口中央一小块，四周全是底色）",
+      "route": "/image-viewer",
+      "shell_prefs": { "theme": "light", "background": { "fit": "cover" } },
+      "steps": [
+        { "frame": "image-viewer" },
+        { "click": ".iv-nav-item[data-view=\"albums\"]" },
+        { "wait_text": "个相册" },
+        { "sleep": 2.0 },
+        { "wait_gone": ".toast" },
+        { "sleep": 1.2 }
+      ],
+      "expect": ["全部相册", "个相册"]
+    }
+  ]
+}

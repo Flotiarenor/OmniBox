@@ -47,7 +47,8 @@ agent 的完整工作约定；细则与判定依据见 [提交信息规范](./do
    与 `tools/check_build_tree.py`。
 
    改动涉及壳注入给插件的共享资源（`shell/frontend/public/shell/**`：`variables.css`、
-   `base.css`、`effects.css`、`base.js`、`folder-picker.*`、`motion.js`、`icons.svg`）时，
+   `shared.css`、`base.css`、`effects.css`、`folder-picker.*`、`freshness.*`、`splitter.*`、
+   `base.js`、`motion.js`、`icons.svg`）时，
    必须重新构建，否则改动不生效：
 
    ```bash
@@ -66,12 +67,20 @@ agent 的完整工作约定；细则与判定依据见 [提交信息规范](./do
 
 格式：`<type>(<scope>): <subject>` + 空行 + 正文（可省）+ footer（可省）。
 
+机器可执行的规则在 [docs/commit-conventions.md](./docs/commit-conventions.md)：type 白名单、subject
+硬上限、措辞黑名单、中文主题等键值，由 [DSH 的 `git` / `git_commit` 工具](https://github.com/Flotiarenor/dsh-tool-git)
+在提交前逐条校验，不合规**直接拒绝**并给出改法；提交信息由结构化字段拼装，不经过 shell。键的写法与
+拒绝码见工具的[键值参考](https://github.com/Flotiarenor/dsh-tool-git/blob/main/README.zh.md#conventions-keys)。
+改规则时两个文件一起改：键值决定工具拦什么，[docs/commit-convention.md](./docs/commit-convention.md) 解释为什么。
+
 - `type` 取值：`feat` `fix` `refactor` `docs` `test` `ci` `build` `chore` `perf` `revert`。
 - `scope`：受影响的模块或插件名，小写、连字符分隔，如 `shell` `file-server`
   `media-player` `release` `packaging` `deps`；跨模块改动可省略。
 - `subject`：中文，≤ 30 字（硬上限 40），陈述**本次改动的内容**，不加句号；
   不写现象、不写过程、不写自我评价（如"完善了一下"），不出现"我"。
-- 正文写**背景 / 改动 / 验证**，客观陈述可复核的事实（命令、文件、结果）；
+- 正文**默认从简**：只写 diff 无法体现的内容（原因、影响范围、验证方式），无内容则整段省略；
+  不要为格式补"背景"段，也不要复述改动本身（diff 已说明）。多数提交 3–5 行、100–300 字，
+  一目了然的改动可以只写 subject。用书面语陈述，不用口语动词与含糊名词（"搞""弄""压低""东西"）；
   过程记录（先试 A 再试 B）属于 PR 或 issue，不写入提交信息。
 - 破坏性变更用 footer `BREAKING CHANGE: <说明>`；关联 issue 用 `Refs #<编号>`。
 - 一条提交只做一件事；`git log --oneline` 中单独看一行也要能读懂。

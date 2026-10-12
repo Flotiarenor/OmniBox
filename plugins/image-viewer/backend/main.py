@@ -61,6 +61,10 @@ class ImageViewerPlugin(
          "min": 100, "max": 400, "default": 200, "help": "Justified 布局的每行目标高度"},
         {"key": "per_page", "label": "每页图片数", "type": "number",
          "min": 10, "max": 200, "default": 40},
+        {"key": "lightbox_cache", "label": "图片缓存", "type": "range",
+         "min": 0, "max": 64, "default": 8,
+         "help": "缓存最近看过的图，再打开时直接显示，不用等它一行行刷出来。"
+                 "数值越大越流畅，占内存也越多；0 = 关闭"},
         {"key": "sort_by", "label": "排序方式", "type": "select",
          "default": "mtime",
          "options": [{"label": "修改时间", "value": "mtime"},

@@ -11,7 +11,11 @@
     <!-- ============ 左侧栏：只放导航与按钮，不放任何滑杆 ============
          阅读器与目录/设置的关系见 docs/document-reader-design.md：
          目录、阅读设置是弹窗，朗读设置是覆盖主区的独立页，入口都在这里。 -->
-    <aside class="view-sub-sidebar nr-sidebar obx-glass">
+    <aside class="view-sub-sidebar nr-sidebar obx-glass"
+           data-obx-splitter="--sub-sidebar-width"
+           data-obx-splitter-min="180"
+           data-obx-splitter-reserve="320"
+           data-obx-splitter-default="240">
       <div class="nr-brand">
         <div class="nr-brand-icon"><svg class="obx-icon"><use href="#book-open"></use></svg></div>
         <div class="nr-brand-text">
@@ -232,6 +236,21 @@
           <div class="nr-setting-row" id="custom-text-row" style="display:none;">
             <label for="document-text-color">文字色</label>
             <input type="color" id="document-text-color" value="#1a1a1a">
+          </div>
+          <!-- 正文底色：透出壳背景 / 用指定色彩。与上面的"主题"是两件事 ——
+               主题改的是"用哪一套配色"，这一项改的是"底色是实色还是透明"。
+               默认"透出背景"，玻璃壳下正文背后就是那张壁纸。 -->
+          <div class="nr-setting-row">
+            <label for="document-bg-mode">正文底色</label>
+            <select id="document-bg-mode">
+              <option value="theme">跟随主题</option>
+              <option value="show">透出壳背景</option>
+              <option value="solid">指定色彩</option>
+            </select>
+          </div>
+          <div class="nr-setting-row" id="body-color-row" style="display:none;">
+            <label for="document-body-color">色彩</label>
+            <input type="color" id="document-body-color" value="#ffffff">
           </div>
           <div class="nr-setting-row">
             <label for="document-mode-select">阅读模式</label>

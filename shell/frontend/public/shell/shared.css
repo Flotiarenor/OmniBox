@@ -1,0 +1,226 @@
+/* ===== 壳与插件页共用的组件样式（壳注入资源）=====
+   这些规则原先在 `base.css` 与 `src/styles/shell.css` 各有一份 —— 壳页面拿不到
+   base.css（那是插件 iframe 的骨架），只能就地抄一份组件样式，两份随之漂移。
+   现在按"选择器 → 声明"逐值比对后合并到这里，两边只保留自己独有的部分。
+
+   **族内次序不能跨文件**：`.btn` / `.field` / `.toast` / `.obx-nav-item` / `.obx-icon`
+   这五个族根的成员都是单一复合选择器，特异性相同时谁赢只由出现次序决定，把一族拆到
+   两个文件里就会让加载顺序改写族内次序 —— `.btn.active` 与 `.btn-danger:hover` 曾因此
+   互换（强调色底压上危险色文字）。所以 base.css 侧的族内规则整体移到这里、按原次序排列；
+   `src/styles/shell.css` 只剩壳页面独有的 `.field-inline` / `.field-checkbox-row`
+   （它们与 `.field` / `.field-range` 同族同特异性，靠"排在后面"胜出，见下方加载顺序）。
+
+   加载顺序：
+     · 壳页面：`/shell/variables.css` → 本文件 → `/shell/splitter.css` → 构建产物（shell.css）；
+     · 插件 iframe：`/shell/variables.css` → 本文件 → `/shell/base.css` → folder-picker /
+       freshness / effects / splitter → 插件自己的 CSS。
+   本文件与 `base.css` 的先后已不影响结果（base.css 里不再有这五个族的规则）；但它必须排在
+   两侧的"站点样式"之前 —— 壳页面独有的 `.field-inline` / `.field-checkbox-row` 与
+   `.field` / `.field-checkbox` / `.field-range` 同族同特异性，只有排在后面才会赢。 */
+
+/* 按钮 */
+.btn {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+.btn:hover { background: var(--bg-hover); }
+.btn:active { transform: scale(0.97); }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn-primary { background: var(--accent); color: var(--text-on-accent); border-color: var(--accent); }
+.btn-primary:hover { background: var(--accent-hover); }
+/* 破坏性按钮：壳页面目前没有这个语义，但必须与 `.btn.active` 同文件同次序 —— 两者都是
+   0,2,0（`:hover` / `.active` 各算一个类），拆开就会互换。 */
+.btn-danger { color: var(--danger); border-color: var(--danger); }
+.btn-danger:hover { background: var(--danger); color: var(--text-on-accent); }
+.btn-danger-solid { background: var(--danger); color: var(--text-on-accent); border-color: var(--danger); }
+.btn-danger-solid:hover { background: var(--danger-hover); }
+.btn.active { background: var(--accent); color: var(--text-on-accent); border-color: var(--accent); }
+/* 紧凑档只压横向尺寸与字号；**高度不在这里决定** —— 工具栏里的按钮高度统一到
+   `--control-h`（见 base.css 的 `.view-toolbar .btn`）。否则 `.btn`(31px) 与 `.btn-sm`(24px)
+   会把"插件选了哪个类"变成按钮高度，同一条工具栏里出现两三档高度。 */
+.btn-sm { padding: 3px 10px; font-size: 12px; }
+
+/* ===== Toast 通知 ===== */
+.toast-container {
+  position: fixed; top: 16px; right: 16px; z-index: 3000;
+  display: flex; flex-direction: column; gap: 8px;
+  pointer-events: none;
+}
+.toast {
+  min-width: 200px; max-width: 320px;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
+  font-size: 13px;
+  opacity: 0; transform: translateX(16px);
+  transition: opacity var(--transition-normal), transform var(--transition-normal);
+  pointer-events: auto;
+}
+.toast.show { opacity: 1; transform: translateX(0); }
+.toast-icon { margin-right: 6px; display: inline-flex; vertical-align: text-bottom; }
+.toast-success { border-color: var(--success); }
+.toast-success .toast-icon { color: var(--success); }
+.toast-error { border-color: var(--danger); }
+.toast-error .toast-icon { color: var(--danger); }
+.toast-warning { border-color: var(--warning); }
+.toast-warning .toast-icon { color: var(--warning); }
+.toast-info .toast-icon { color: var(--accent); }
+
+/* ===== 设置表单（createSettingsForm 使用 + 壳设置页） ===== */
+/* 文本输入框：壳设置页只有"背景图目录"需要手填绝对路径（浏览器访问模式没有系统文件
+   对话框，那是唯一的输入方式），所以只定义这一处；插件也可直接复用这个类。 */
+.field-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  outline: none;
+}
+.field-input:focus { border-color: var(--accent); }
+
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field-label { font-size: 13px; font-weight: 500; color: var(--text-primary); }
+.field-label.required::after { content: ' *'; color: var(--danger); }
+.field-help { font-size: 12px; color: var(--text-secondary); }
+/* 只读信息行（schema 的 `type: "info"`）：展示后端算出来的值（如数据根目录），不可编辑。
+   形态与输入框同宽同圆角但底色更弱，一眼能看出"这不是能改的东西"；路径往往很长，
+   允许任意位置折行并支持整段选中复制；值里带换行时按多行显示（如"主目录 + 额外目录"）。 */
+.field-info {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-line;
+  word-break: break-all;
+  user-select: all;
+}
+.field input[type="text"],
+.field input[type="number"],
+.field select,
+.field textarea {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+.field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); }
+.field textarea { min-height: 120px; resize: vertical; font-family: inherit; }
+.field-checkbox { flex-direction: row; align-items: center; gap: 8px; }
+.field-checkbox input { width: 16px; height: 16px; accent-color: var(--accent); }
+.field-range { display: flex; align-items: center; gap: 12px; }
+.field-range input[type="range"] { flex: 1; accent-color: var(--accent); }
+.field-range-value { min-width: 40px; text-align: right; font-size: 13px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+
+/* ===== 导航项（侧栏内的页面/分类入口） =====
+   侧栏导航在 image-viewer / manga-library / media-player / group-mesh 四处各写过一遍
+   （结构、hover、选中态逐字重复，只有类名前缀不同）。这里定义一次，插件直接引用：
+   结构属性（flex / radius / cursor / 过渡）由 `.obx-nav-item` 给，视觉参数走
+   `--obx-nav-*`，插件**只保留自己的差异**（图标栏宽度、字号、是否 position:relative…）。
+   新增侧栏请不要再复制一份 hover / 选中态。
+
+   壳页面（设置页左栏）同样引用这一份，不再另抄。 */
+:root {
+  --obx-nav-gap: 10px;
+  --obx-nav-pad-y: 9px;
+  --obx-nav-pad-x: 12px;
+  --obx-nav-radius: 10px;
+  --obx-nav-font-size: 13px;
+  --obx-nav-accent: var(--accent);
+  /* 选中态用"左缘一道强调色竖线 + 极淡底色 + 强调色文字"：底色只表达"当前在哪一页"，
+     靠竖线提供位置感，比整块实心填充更轻，也不必担心用户的 `--accent` 是浅色时
+     实心底色压不住白色文字（自定义颜色由壳写入，插件无法预知）。 */
+  --obx-nav-active-bar: 2px solid var(--obx-nav-accent);
+  --obx-nav-active-bg: color-mix(in srgb, var(--obx-nav-accent) 9%, transparent);
+  --obx-nav-active-color: var(--obx-nav-accent);
+}
+
+.obx-nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--obx-nav-gap);
+  padding: var(--obx-nav-pad-y) var(--obx-nav-pad-x);
+  border: none;
+  border-radius: var(--obx-nav-radius);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--obx-nav-font-size);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.obx-nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.obx-nav-item:active { transform: scale(0.98); }
+/* 三种选中态标记都认：`.is-active`（仓库既有写法）、`.active`（image-viewer /
+   media-player / 壳设置页既有写法）、`[data-active="true"]`（group-mesh 用属性而不是类，
+   属性还能被测试与调试直接读）。 */
+.obx-nav-item.is-active,
+.obx-nav-item.active,
+.obx-nav-item[data-active="true"] {
+  background: var(--obx-nav-active-bg);
+  color: var(--obx-nav-active-color);
+  font-weight: 600;
+}
+.obx-nav-item.is-active:hover,
+.obx-nav-item.active:hover,
+.obx-nav-item[data-active="true"]:hover { color: var(--obx-nav-active-color); }
+.obx-nav-item.is-active::before,
+.obx-nav-item.active::before,
+.obx-nav-item[data-active="true"]::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 2px;
+  height: 62%;
+  transform: translateY(-50%);
+  border-radius: 0 2px 2px 0;
+  background: var(--obx-nav-accent);
+}
+
+/* ===== 图标（同文档 sprite 引用）=====
+   图标统一来自壳的图标集（源数据 res/icons/icon_data.json，由 tools/build_icons.py
+   生成）。用法只有一个：
+
+     <svg class="obx-icon"><use href="#gear"></use></svg>
+
+   **引用必须是同文档的 `#名字`，不能写外部文件路径。** 外部文件的 <use>
+   （`href="/res/icons/icons.svg#gear"`）在 pywebview 的 WebView2 里不渲染，
+   而 Chrome 会渲染 —— 于是"浏览器里正常、窗口里全空"。sprite 由
+   /shell/icons.generated.js（插件页）或 icons.generated.ts（壳）内联进文档。
+
+   尺寸走 1em、颜色走 currentColor，所以图标自动跟随所在元素的字号与文字色
+   （含用户自定义的 --accent / --text-*），换图标时不需要重调排版 —— 这是替换
+   emoji 时不引入视觉回归的关键。宽度/高度必须显式给：sprite 里的 <symbol> 是
+   shadow tree，外面的尺寸进不去，只写 viewBox 的 <svg> 默认按 300×150 渲染。 */
+.obx-icon {
+  width: 1em;
+  height: 1em;
+  flex-shrink: 0;
+  vertical-align: -0.125em;
+  /* currentColor 由 sprite 的 <symbol> 自己声明，这里不重复设 fill/stroke，
+     否则会盖掉图标内部显式写了 fill="currentColor" 的实心小元素。 */
+}
+/* 需要图标比文字略大时（工具栏按钮、导航项）用 1.15em，而不是另写一套类 */
+.obx-icon-lg { width: 1.15em; height: 1.15em; }
