@@ -99,7 +99,7 @@
   function button(label, handler, secondary) {
     var node = document.createElement('button');
     node.type = 'button';
-    // 壳的 .btn 系列（base.css）：主操作用默认态，次要操作用 .btn-sm。
+    // 壳的 .btn 系列（shared.css）：主操作用默认态，次要操作用 .btn-sm。
     node.className = secondary ? 'btn btn-sm' : 'btn';
     node.textContent = label;
     node.addEventListener('click', handler);

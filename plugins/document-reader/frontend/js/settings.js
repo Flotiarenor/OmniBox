@@ -14,7 +14,18 @@ const READER_PREF_KEYS = {
     bgColor: 'reader_bg_color',
     textColor: 'reader_text_color',
     mode: 'reader_mode',
+    bgMode: 'reader_bg_mode',
+    bodyColor: 'reader_body_color',
 };
+
+//: 正文底色的三种取法。
+//:   theme —— 跟随上面选的主题（护眼纸/夜间/… 各自的配色）
+//:   show  —— 让出底色，透出壳的背景图（玻璃壳下就是那张壁纸）
+//:   solid —— 用下面那个颜色铺底
+//: 与"主题"分开是有意的：主题决定"用哪套配色"，这一项只决定"底色是实色还是透明"，
+//: 合在一起会变成六种主题各要一个透明变体。
+const BODY_BG_MODES = ['theme', 'show', 'solid'];
+const DEFAULT_BODY_BG_MODE = 'show';
 
 // 旧版本存在 localStorage 的偏好：读一次搬进后端设置，搬完丢掉。
 const LEGACY_SETTINGS_KEY = 'document-reader-settings';
@@ -49,6 +60,9 @@ class ReaderSettingsStore {
         app.bgColor = settings.reader_bg_color || '#ffffff';
         app.textColor = settings.reader_text_color || '#1a1a1a';
         app.mode = settings.reader_mode === 'page' ? 'page' : 'scroll';
+        app.bgMode = BODY_BG_MODES.includes(settings.reader_bg_mode)
+            ? settings.reader_bg_mode : DEFAULT_BODY_BG_MODE;
+        app.bodyColor = settings.reader_body_color || '#ffffff';
         this._migrateLegacy(settings);
         this.apply(true);
     }
@@ -76,6 +90,11 @@ class ReaderSettingsStore {
             if (legacy.bgColor) app.bgColor = legacy.bgColor;
             if (legacy.textColor) app.textColor = legacy.textColor;
             app.mode = oldDefaults ? READER_DEFAULT_MODE : (legacy.mode || READER_DEFAULT_MODE);
+            // 老版本没有"正文底色"这一项：那时正文一律是实色（--reader-bg-color）。
+            // 按旧默认走"跟随主题"而不是新的"透出背景"，否则升级后所有人的正文
+            // 突然变透明，而他们从没选过这个效果。
+            app.bgMode = legacy.bgMode && BODY_BG_MODES.includes(legacy.bgMode)
+                ? legacy.bgMode : 'theme';
             // 后端已经有值时以它为准（说明之前迁移过），避免每次启动都覆盖用户新选择
             this.save(!backendSettings.reader_theme);
         } catch (e) {
@@ -107,6 +126,7 @@ class ReaderSettingsStore {
                 contentArea.style.removeProperty('--reader-bg-color');
                 contentArea.style.removeProperty('--reader-text-color');
             }
+            this._applyBodyBackground(contentArea);
         }
         const dom = app._dom;
         if (dom.fontSizeSlider) dom.fontSizeSlider.value = app.fontSize;
@@ -119,8 +139,27 @@ class ReaderSettingsStore {
         if (dom.modeSelect) dom.modeSelect.value = app.mode;
         if (dom.bgColorInput) dom.bgColorInput.value = app.bgColor;
         if (dom.textColorInput) dom.textColorInput.value = app.textColor;
+        if (dom.bgModeSelect) dom.bgModeSelect.value = app.bgMode;
+        if (dom.bodyColorInput) dom.bodyColorInput.value = app.bodyColor;
         if (app._syncCustomColorRows) app._syncCustomColorRows();
         if (!skipSave) this.save();
+    }
+
+    /** 正文底色：三条分支各自只改一件事，配色仍由上面的主题类提供。
+     *
+     * 用类而不是内联样式表达"透出背景"：`background: transparent` 写在内联上会
+     * 盖住主题类里的 `--reader-bg-color`，切回"跟随主题"时要记得再删掉它；
+     * 交给 CSS 的三条规则（见 document-reader.css 的 .body-bg-*）就没有这个顺序问题。
+     */
+    _applyBodyBackground(contentArea) {
+        const app = this.app;
+        contentArea.classList.remove('body-bg-theme', 'body-bg-show', 'body-bg-solid');
+        contentArea.classList.add(`body-bg-${app.bgMode}`);
+        if (app.bgMode === 'solid') {
+            contentArea.style.setProperty('--reader-body-bg', app.bodyColor);
+        } else {
+            contentArea.style.removeProperty('--reader-body-bg');
+        }
     }
 
     /** 落盘（防抖）。`immediate` 用于迁移这种"必须马上写"的场景。 */
@@ -136,6 +175,8 @@ class ReaderSettingsStore {
             payload[READER_PREF_KEYS.bgColor] = app.bgColor;
             payload[READER_PREF_KEYS.textColor] = app.textColor;
             payload[READER_PREF_KEYS.mode] = app.mode;
+            payload[READER_PREF_KEYS.bgMode] = app.bgMode;
+            payload[READER_PREF_KEYS.bodyColor] = app.bodyColor;
             try {
                 await Bridge.call('save_settings', payload);
             } catch (e) {

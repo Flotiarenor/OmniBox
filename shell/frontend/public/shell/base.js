@@ -489,6 +489,14 @@ function createSettingsForm(container, schema, values = {}) {
   const baseId = 'cfg-' + Math.random().toString(36).slice(2, 8);
 
   (schema || []).forEach((field) => {
+    // `hidden`：这个键**可写但不在面板里显示**。
+    //
+    // 为什么不能直接把键从 schema 里删掉：schema 同时是 `save_settings` 的写入白名单
+    // （见 backend/plugin_base.py 的 allowed），删掉键等于把"同一批配置"从面板挪走
+    // 的同时也让它存不进去。插件的自绘设置页（如 document-reader 的阅读设置）就是
+    // 这种情况：入口在插件自己那边，值仍要走 save_settings。
+    if (field.hidden === true) return;
+
     const wrap = document.createElement('div');
     wrap.className = 'field' + (field.type === 'checkbox' ? ' field-checkbox' : '');
     wrap.dataset.key = field.key;

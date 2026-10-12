@@ -21,7 +21,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 log = logging.getLogger(__name__)
 
@@ -139,6 +139,27 @@ class SettingsStore:
         file = self._file(plugin_name)
         with self._lock_for(plugin_name):
             self._atomic_write(file, values)
+
+    def transform(self, plugin_name: str, mutate: Callable[[Dict], Dict]) -> Dict:
+        """在**同一把锁内**读-改-写，由调用方给出整份新内容，返回写入后的内容。
+
+        与 `update()` 的区别是合并逻辑由调用方决定：`update()` 只做顶层浅合并，
+        而壳偏好（`shell/backend/shell_prefs.py`）需要在写回前把读到的内容按键
+        归一化，并且要能"拒绝这次写入"（`kind='import'` 在后端已有数据时原样返回）。
+        两者共用同一把插件名锁，因此并发写不会互相丢更新。
+
+        `mutate` 必须返回 dict：它拿到的是 `get()` 的结果，返回别的形状会写出一份
+        非法设置文件 —— 这里显式拒绝，而不是让它落盘后再由下一次读去隔离。
+        """
+        if not callable(mutate):
+            raise TypeError('mutate 必须是可调用对象')
+        with self._lock_for(plugin_name):
+            mutated = mutate(self.get(plugin_name))
+            if not isinstance(mutated, dict):
+                raise ValueError(
+                    f'mutate 必须返回 dict，实际是 {type(mutated).__name__}')
+            self.set(plugin_name, mutated)
+            return mutated
 
     def clear(self, plugin_name: str):
         file = self._file(plugin_name)

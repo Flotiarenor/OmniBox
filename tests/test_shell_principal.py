@@ -574,7 +574,11 @@ class AdminOnlyEndpointsTest(unittest.TestCase):
 
     def test_member_is_forbidden_on_admin_endpoints(self):
         self.store.add('alice', 'alice-token', role=ROLE_MEMBER, name='Alice')
-        for method in ('system_get_config', 'system_get_plugin_status'):
+        # 背景图库的导入 / 删除会往壳的配置目录写文件，而那个目录随后由 `/file`
+        # 发布；系统文件对话框会在服务端桌面上弹窗（与 system_open_log_dir 同类）。
+        for method in ('system_get_config', 'system_get_plugin_status',
+                       'system_import_background_image', 'system_delete_background_image',
+                       'system_list_background_images', 'system_pick_path'):
             with self.subTest(method=method):
                 self.assertEqual(self._post(method, 'alice-token').status_code, 403)
 

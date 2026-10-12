@@ -986,13 +986,33 @@
     --reader-highlight: color-mix(in srgb, var(--reader-text-color, #1a1a1a) 70%, #000);
 }
 
+/* ---- 5. 正文底色（阅读设置 → 正文底色）----
+   三条分支与"主题"正交：主题决定配色（`--reader-bg-color`），这里只决定底色是
+   实色还是透明。默认 `body-bg-show` 让出底色，玻璃壳下透出来的就是壳的背景图
+   （`base.css` 的 `html[data-shell-glass="on"] body` 已经把页面底色让掉了，
+   这里再把正文这一层让掉才是真的透）。
+   `body-bg-theme` 用主题给的那一支；`body-bg-solid` 用用户选的颜色。 */
+.document-content-area.body-bg-theme {
+    background: var(--reader-bg-color, var(--bg-surface));
+}
+
+.document-content-area.body-bg-show {
+    background: transparent;
+}
+
+.document-content-area.body-bg-solid {
+    background: var(--reader-body-bg, var(--bg-surface));
+}
+
 @media (max-width: 860px) {
     /* 窄窗口收窄侧栏：媒体查询不改变特异性，裸 .nr-sidebar（0,1,0）会被壳的
        .view-sub-sidebar（0,1,0，注入在插件样式之后）按 240px 盖回去，
        必须写成 0,2,0 —— 与 iv/ml/mp/gm 四个插件同一写法（见 plugin-ui-guide.md §3.1）。
        此前本插件是唯一在窄窗口不收窄侧栏的。 */
+    /* 窄窗口最多 200px。min() 而不是写死 200px：写死会让拖动分隔条在小窗口下失效
+       （媒体查询压过变量），min() 只压上限、保留用户拖得更窄的结果。 */
     .nr-sidebar.view-sub-sidebar {
-        width: 200px;
+        width: min(var(--sub-sidebar-width), 200px);
     }
     .nr-grid {
         grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));

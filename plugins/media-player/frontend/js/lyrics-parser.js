@@ -90,12 +90,7 @@ class MediaLyrics {
     applyBg(item) {
         if (!this._bg) return;
         const s = this.settings;
-        if (s.lyrics_bg_image) {
-            const url = /^(https?:|\/files)/.test(s.lyrics_bg_image)
-                ? s.lyrics_bg_image
-                : Bridge.originalUrl(s.lyrics_bg_image);
-            this._bg.style.background = `url("${url}") center / cover no-repeat`;
-        } else if (item && item.cover_path) {
+        if (item && item.cover_path) {
             this._bg.style.background = `url("${MPUtils.coverUrl(item)}") center / cover no-repeat`;
         } else {
             this._bg.style.background = s.lyrics_bg_color || 'linear-gradient(145deg, #10101c, #1a1030)';

@@ -682,7 +682,8 @@ class PluginSpeakDirectTests(unittest.TestCase):
         """阅读偏好改走后端设置：键必须声明，且能写入读回（跨设备持久化的基础）。"""
         keys = {item['key'] for item in self.plugin.settings_schema}
         for key in ('reader_font_size', 'reader_line_height', 'reader_letter_spacing',
-                    'reader_theme', 'reader_bg_color', 'reader_text_color', 'reader_mode'):
+                    'reader_theme', 'reader_bg_color', 'reader_text_color', 'reader_mode',
+                    'reader_bg_mode', 'reader_body_color'):
             self.assertIn(key, keys, f'{key} 没有在 settings_schema 里声明')
 
         saved = self.plugin.save_settings({'reader_font_size': 22, 'reader_theme': 'sepia'})
@@ -690,6 +691,56 @@ class PluginSpeakDirectTests(unittest.TestCase):
         settings = self.plugin.get_settings()
         self.assertEqual(settings['reader_font_size'], 22)
         self.assertEqual(settings['reader_theme'], 'sepia')
+
+    def test_schema_split_between_panel_and_voice_page(self):
+        """朗读项归朗读设置页、阅读偏好归设置弹窗，两组不重叠也不留空档。
+
+        这是本仓库原有的 `central: False` 语义（`1a4cb1d`：朗读项与阅读偏好都标
+        `central: False`，"集中设置面板只剩 root_dir"），标记随集中面板一起在
+        `2e8917d` 被删，现在的等价物是 `hidden`。
+
+        两个方向都要守：
+          · 朗读项**必须**标 `hidden`，否则又会出现"同一批配置两处入口"；
+          · 阅读偏好**不能**标 `hidden`，它就是用户要在设置弹窗里改的那一组。
+        另外 `hidden` 只影响渲染 —— 朗读设置页走的是同一个 `save_settings`，
+        因此这些键仍然必须能写进去（下面按朗读设置页的真实字段验一遍）。
+        """
+        schema = {item['key']: item for item in self.plugin.settings_schema}
+
+        # 朗读设置页上的字段（见 frontend/js/reader-voice-page.js 的 dom 表）
+        voice_page_keys = ('tts_engine', 'tts_base_url', 'tts_api_key',
+                           'tts_model', 'tts_voice', 'tts_rate')
+        for key in voice_page_keys:
+            self.assertIn(key, schema, f'{key} 没有声明')
+            self.assertTrue(schema[key].get('hidden') is True,
+                            f'{key} 已迁到朗读设置页，不应再显示在设置弹窗里')
+
+        # 阅读偏好留在弹窗里
+        for key in ('reader_font_size', 'reader_line_height', 'reader_letter_spacing',
+                    'reader_theme', 'reader_bg_color', 'reader_text_color',
+                    'reader_mode', 'reader_bg_mode', 'reader_body_color'):
+            self.assertIn(key, schema, f'{key} 没有声明')
+            self.assertFalse(schema[key].get('hidden') is True,
+                             f'{key} 属于阅读偏好，应当显示在设置弹窗里')
+
+        # `hidden` 只是渲染开关：朗读设置页仍要能存（它走同一个 save_settings）
+        payload = {'tts_engine': 'edge', 'tts_voice': 'zh-CN-YunxiNeural'}
+        saved = self.plugin.save_settings(payload)
+        self.assertTrue(saved.get('success'), saved)
+        settings = self.plugin.get_settings()
+        self.assertEqual(settings['tts_engine'], 'edge')
+        self.assertEqual(settings['tts_voice'], 'zh-CN-YunxiNeural')
+
+    def test_tts_order_stays_in_the_panel(self):
+        """`tts_order` 不进 `hidden` 名单：朗读设置页没有这个字段，它是引擎档位怎么选。
+
+        与上面那条是一对：朗读项搬走了，`tts_order` 没有对应入口就留下面板，
+        否则用户再也改不到自动模式的降级顺序。
+        """
+        schema = {item['key']: item for item in self.plugin.settings_schema}
+        self.assertIn('tts_order', schema)
+        self.assertFalse(schema['tts_order'].get('hidden') is True,
+                         'tts_order 在朗读设置页里没有字段，隐藏它等于改不到')
 
     # ===== 前端调用形态（transport 层回归） =====
     #

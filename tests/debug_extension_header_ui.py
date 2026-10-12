@@ -29,6 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
 PAGE = """<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="UTF-8">
 <link rel="stylesheet" href="/shell/variables.css">
+<link rel="stylesheet" href="/shell/shared.css">
 <link rel="stylesheet" href="/shell/base.css">
 <link rel="stylesheet" href="__IV_CSS__">
 </head><body>
@@ -169,6 +170,8 @@ def main() -> int:
     # 用 file:// 打开时 /shell/* 与 /plugins/* 取不到，改成注入绝对路径的 file URL
     html = PAGE.replace('href="/shell/variables.css"',
                         f'href="{(PROJECT_ROOT / "shell/frontend/public/shell/variables.css").as_uri()}"')
+    html = html.replace('href="/shell/shared.css"',
+                        f'href="{(PROJECT_ROOT / "shell/frontend/public/shell/shared.css").as_uri()}"')
     html = html.replace('href="/shell/base.css"',
                         f'href="{(PROJECT_ROOT / "shell/frontend/public/shell/base.css").as_uri()}"')
     html = html.replace('href="__IV_CSS__"',

@@ -47,7 +47,8 @@ agent 的完整工作约定；细则与判定依据见 [提交信息规范](./do
    与 `tools/check_build_tree.py`。
 
    改动涉及壳注入给插件的共享资源（`shell/frontend/public/shell/**`：`variables.css`、
-   `base.css`、`effects.css`、`base.js`、`folder-picker.*`、`motion.js`、`icons.svg`）时，
+   `shared.css`、`base.css`、`effects.css`、`folder-picker.*`、`freshness.*`、`splitter.*`、
+   `base.js`、`motion.js`、`icons.svg`）时，
    必须重新构建，否则改动不生效：
 
    ```bash
@@ -77,7 +78,9 @@ agent 的完整工作约定；细则与判定依据见 [提交信息规范](./do
   `media-player` `release` `packaging` `deps`；跨模块改动可省略。
 - `subject`：中文，≤ 30 字（硬上限 40），陈述**本次改动的内容**，不加句号；
   不写现象、不写过程、不写自我评价（如"完善了一下"），不出现"我"。
-- 正文写**背景 / 改动 / 验证**，客观陈述可复核的事实（命令、文件、结果）；
+- 正文**默认从简**：只写 diff 无法体现的内容（原因、影响范围、验证方式），无内容则整段省略；
+  不要为格式补"背景"段，也不要复述改动本身（diff 已说明）。多数提交 3–5 行、100–300 字，
+  一目了然的改动可以只写 subject。用书面语陈述，不用口语动词与含糊名词（"搞""弄""压低""东西"）；
   过程记录（先试 A 再试 B）属于 PR 或 issue，不写入提交信息。
 - 破坏性变更用 footer `BREAKING CHANGE: <说明>`；关联 issue 用 `Refs #<编号>`。
 - 一条提交只做一件事；`git log --oneline` 中单独看一行也要能读懂。

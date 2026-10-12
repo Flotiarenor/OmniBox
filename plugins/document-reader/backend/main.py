@@ -41,7 +41,23 @@ class DocumentReaderPlugin(
          "help": "可添加多个目录（每行一个，第一行为主目录，缓存与阅读进度存在它下面）；"
                  "每个目录都会递归扫描子目录。改动需管理员（它决定 /file 的允许根）"},
         # ===== 朗读（见 backend/tts_engine.py）=====
+        # 这一组已迁到左栏的「朗读设置」页（`frontend/js/reader-voice-page.js`）：
+        # 引擎三档、端点、Key、模型名、音色与语速、音色候选表与试听、缓存管理都在
+        # 那一页。它们在 schema 里标 `hidden: True`，壳的插件设置弹窗不再重复列一遍 ——
+        # 同一批配置摆两处时，用户改了一处却看到另一处还是旧值，无法判断哪一份生效。
+        #
+        # 这正是本仓库原来的 `central: False` 语义（见 1a4cb1d：朗读项与阅读偏好都标
+        # `central: False`，"集中设置面板只剩 root_dir"）。`central` 标记随
+        # 2e8917d 一起删掉了，现在的等价物就是 `hidden`。
+        #
+        # 保留在 schema 里是**必须**的：schema 同时是 `save_settings` 的写入白名单
+        # （见 shell/backend/plugin_base.py 的 allowed），删掉这些键会让朗读设置页
+        # 保存不上（它走的就是 save_settings）。
+        #
+        # `admin_only` 与 `secret` 语义不受影响：朗读设置页上的端点与 Key 仍然要求
+        # 管理员主体、仍然不回显明文 —— 判定在 PluginBase 里，与面板显示与否无关。
         {"key": "tts_engine", "label": "朗读引擎", "type": "select", "default": "auto",
+         "hidden": True,
          "options": [
              {"label": "自动（按下面的顺序降级）", "value": "auto"},
              {"label": "edge-tts（神经音色，联网，支持逐字跟随）", "value": "edge"},
@@ -55,25 +71,31 @@ class DocumentReaderPlugin(
         # 允许任意主体改写它，等于把 owner 配置的凭据交给任意主机（并让本进程成为
         # 可读回内网响应的 SSRF 跳板）。两个键都声明 admin_only，由 PluginBase 统一判定。
         {"key": "tts_base_url", "label": "OpenAI 兼容端点", "type": "text", "default": "",
-         "admin_only": True,
+         "admin_only": True, "hidden": True,
          "placeholder": "http://127.0.0.1:8880",
          "help": "只填根地址，程序会请求 <它>/v1/audio/speech。插件不含模型，"
                  "模型由你自己的服务提供（Kokoro-FastAPI / GPT-SoVITS / 云 API 均可）；"
                  "该地址会收到 Authorization 头，改动需管理员"},
         {"key": "tts_api_key", "label": "端点 API Key", "type": "text", "default": "",
-         "secret": True, "admin_only": True,
+         "secret": True, "admin_only": True, "hidden": True,
          "help": "本地服务通常不需要；云服务填这里（保存后不明文回显，改动需管理员）"},
         {"key": "tts_model", "label": "端点模型名", "type": "text", "default": "",
+         "hidden": True,
          "placeholder": "留空则不发送 model 字段"},
         {"key": "tts_voice", "label": "朗读音色", "type": "text", "default": "zh-CN-XiaoxiaoNeural",
+         "hidden": True,
          "help": "edge-tts 用 ShortName（如 zh-CN-XiaoxiaoNeural / zh-CN-YunxiNeural），"
                  "OpenAI 兼容端点用端点自己的音色名（如 vivian、alloy）；"
                  "两边的候选表在朗读设置页里按引擎列出"},
         {"key": "tts_rate", "label": "朗读语速", "type": "range", "min": -50, "max": 100,
-         "step": 5, "default": 100,
+         "step": 5, "default": 100, "hidden": True,
          "help": "百分比：100 是端点允许的倍速上限（约两倍速），听书默认拉满；"
                  "-50 最慢。再往上端点会开始吞字，所以上限就到这里"},
-        # ===== 阅读偏好（原先存 localStorage，改成跨设备持久化）=====
+        # ===== 阅读偏好 =====
+        # 这一组**显示在设置面板里**：它就是"文档阅读维护的设置"，打开文档后正文怎么
+        # 显示（字号 / 行距 / 字间距 / 主题 / 配色 / 正文底色 / 翻页方式）都从这里改。
+        # 与朗读设置的分工是"正文怎么显示" vs "怎么念出来"，两组互不重叠。
+        # 左栏的「阅读设置」弹窗是同一批值的快捷入口，两条路写同一份 save_settings。
         {"key": "reader_font_size", "label": "正文字号(px)", "type": "number", "default": 16},
         {"key": "reader_line_height", "label": "行距", "type": "number", "default": 1.8},
         {"key": "reader_letter_spacing", "label": "字间距(px)", "type": "number", "default": 0},
@@ -93,6 +115,17 @@ class DocumentReaderPlugin(
              {"label": "连续滚动", "value": "scroll"},
              {"label": "翻页（章内滚动）", "value": "page"},
          ]},
+        # 正文底色：theme 跟随主题 / show 透出壳背景 / solid 指定色彩。
+        # 与上面的"阅读主题"正交 —— 主题决定配色，这一项只决定底色是否透明。
+        {"key": "reader_bg_mode", "label": "正文底色", "type": "select",
+         "default": "show",
+         "options": [
+             {"label": "跟随主题", "value": "theme"},
+             {"label": "透出壳背景", "value": "show"},
+             {"label": "指定色彩", "value": "solid"},
+         ]},
+        {"key": "reader_body_color", "label": "正文底色色彩", "type": "text",
+         "default": "#ffffff"},
     ]
 
     CACHE_FILE = '.document_cache.json'

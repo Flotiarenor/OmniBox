@@ -292,7 +292,7 @@ pixiv app-api 有滑动窗口限流（约 30 req/10s，超出后 429）：
 - **页面形态**：单页单视图。页面只有一个「状态栏 + 按钮组 + 进度条 + 设置面板」的控制面板，没有视图切换、没有作品列表、没有分页（`index.html:63-172` 是全部结构）。
 - **嵌入形态（二级 iframe）**：插件通过 `get_extensions()` 的 `embedUrl` 挂到 image-viewer 侧栏（`plugins/pixiv-sync/backend/main.py:736-750`，`embedUrl` 在 `:746`，`host: image-viewer` 在 `:740`）；宿主把 `ext.embedUrl` 塞进自己的 `#extension-frame`（`plugins/image-viewer/frontend/js/app.js:175-190`，标题与说明取扩展声明的 `label`/`description`），该 iframe 满尺寸（`plugins/image-viewer/frontend/image-viewer.css:412-421`，`.extension-view-body{flex:1;min-height:0}` + iframe `width/height:100%`），切回相册视图时 `frame.src='about:blank'` 销毁文档（`image-viewer/frontend/js/app.js:199-204`）。
 - **manifest 事实**：`plugins/pixiv-sync/manifest.json:27` `"hidden": true`、`:23-26` `frontend.entry/route`、**未声明 `keepAlive`**（无该键）。
-- **Shell 资源注入**：壳把 `variables.css + base.css + folder-picker.css + effects.css + base.js + folder-picker.js + motion.js` 注入到 `</head>` 之前（`shell/backend/file_server.py:59-66`、`:771-798`）。因此本插件的 `<style>`（7-60）**排在壳样式之前**，同优先级规则壳胜；插件要覆盖只能靠更高的选择器特异性（它确实这么做了，见 §8.2）。
+- **Shell 资源注入**：壳把 `variables.css + shared.css + base.css + folder-picker.css + effects.css + base.js + folder-picker.js + motion.js` 注入到 `</head>` 之前（`shell/backend/file_server.py:59-66`、`:771-798`）。因此本插件的 `<style>`（7-60）**排在壳样式之前**，同优先级规则壳胜；插件要覆盖只能靠更高的选择器特异性（它确实这么做了，见 §8.2）。
 - **是否使用 Shell 布局类**：用了 `.view-body`（63）、`.view-toolbar`（66、73）、`.toolbar-group`（67、70）、`.view-content`（75）、`.obx-scroll`（75）、`.btn/.btn-sm/.btn-danger`（71、92-102、160-162、184、192-193）；未用 `.view-sub-sidebar` / `.sub-sidebar-header` / `.sub-sidebar-footer` / `.obx-nav-item` / `.modal` / `.toast` / `.empty-state` / `.pagination-bar` / `.settings-form`。
 
 ### 8.2 布局骨架

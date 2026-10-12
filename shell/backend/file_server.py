@@ -16,9 +16,11 @@ limitations under the License.
 
 import html
 import io
+import json
 import logging
 import mimetypes
 import os
+import re
 import socket
 import sys
 import time
@@ -26,14 +28,15 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import List
 
-from flask import Flask, abort, g, request, send_file, send_from_directory
+from flask import Flask, abort, g, make_response, request, send_file, send_from_directory
 
 from shell.backend.auth import (
     TOKEN_COOKIE,
     TOKEN_HEADER,
     get_or_create_token,
 )
-from shell.backend.media_catalog import list_subdirectories
+from shell.backend.file_dialog import pick_path
+from shell.backend.media_catalog import classify_file, list_subdirectories
 from shell.backend.paths import get_config_dir
 from shell.backend.plugin_manager import PluginManager
 from shell.backend.principal import (
@@ -45,7 +48,17 @@ from shell.backend.principal import (
 from shell.backend.protected_paths import collect as collect_protected_files
 from shell.backend.protected_paths import matches as is_protected_path
 from shell.backend.protected_paths import normalize as normalize_path
-from shell.backend.shell_info import ShellInfo
+from shell.backend.shell_info import ShellInfo, background_library_dir
+from shell.backend.shell_prefs import ShellPrefs
+from shell.backend.window_state import (
+    get_state as window_get_fullscreen,
+)
+from shell.backend.window_state import (
+    set_fullscreen as window_set_fullscreen,
+)
+from shell.backend.window_state import (
+    toggle_fullscreen as window_toggle_fullscreen,
+)
 
 log = logging.getLogger(__name__)
 
@@ -65,14 +78,20 @@ mimetypes.add_type('image/webp', '.webp')
 # `PLACEHOLDER_NAME` 会被替换成路由里的插件名。
 _PLUGIN_BOOTSTRAP_SCRIPT = (
     '<link rel="stylesheet" href="/shell/variables.css">'
+    # shared.css 是壳页面与插件页共用的组件层，与 variables.css 一起放最前。
+    # 它与 base.css 的先后不再影响结果：base.css 里已没有 .btn / .field / .toast /
+    # .obx-nav-item / .obx-icon 这五个族的规则，族内次序只在 shared.css 内部决定。
+    '<link rel="stylesheet" href="/shell/shared.css">'
     '<link rel="stylesheet" href="/shell/base.css">'
     '<link rel="stylesheet" href="/shell/folder-picker.css">'
     '<link rel="stylesheet" href="/shell/freshness.css">'
     '<link rel="stylesheet" href="/shell/effects.css">'
+    '<link rel="stylesheet" href="/shell/splitter.css">'
     '<script src="/shell/base.js"></script>'
     '<script src="/shell/folder-picker.js"></script>'
     '<script src="/shell/freshness.js"></script>'
     '<script src="/shell/motion.js"></script>'
+    '<script src="/shell/splitter.js"></script>'
     # 图标 sprite：必须**内联进文档**，不能靠 <use href="外部.svg#名字"> 引用。
     # 实测（pywebview / WebView2 / Edge 153）：外部文件的 <use> 一律不渲染，包围盒恒为 0，
     # 而同文档的 # 引用正常 —— 而 Chrome 会渲染外部引用，所以这个缺陷在浏览器里测不出来。
@@ -88,23 +107,76 @@ _PLUGIN_BOOTSTRAP_SCRIPT = (
     "var nt = pd.getAttribute('data-theme') || 'light';"
     "document.documentElement.setAttribute('data-theme', nt);"
     '}).observe(pd, {attributes:true,attributeFilter:["data-theme"]});'
-    'var cc = pd.getAttribute("data-custom-colors");'
-    'if (cc) { try {'
-    'var map = JSON.parse(cc);'
-    'Object.keys(map).forEach(function(k){'
-    "document.documentElement.style.setProperty(k, map[k]); });"
-    '} catch(e) {} }'
+    # 玻璃壳开关：与主题同一条通路（观察父文档属性 → 写到自己根元素），
+    # 插件侧不写代码；据此让出底色的规则在 base.css。
+    'var sg = pd.getAttribute("data-shell-glass") || "off";'
+    'document.documentElement.setAttribute("data-shell-glass", sg);'
     'new MutationObserver(function(){'
-    'var ncc = pd.getAttribute("data-custom-colors");'
-    'if (ncc) { try {'
-    'var nmap = JSON.parse(ncc);'
-    'Object.keys(nmap).forEach(function(k){'
-    "document.documentElement.style.setProperty(k, nmap[k]); });"
-    '} catch(e) {} }'
+    'var nsg = pd.getAttribute("data-shell-glass") || "off";'
+    'document.documentElement.setAttribute("data-shell-glass", nsg);'
+    '}).observe(pd, {attributes:true,attributeFilter:["data-shell-glass"]});'
+    # 壳的外观变量：写进本页根元素，并**记住写下过哪些键**。
+    # 记住是为了能在下一次广播里清掉不再出现的键 —— 只写不清的话，设置页"恢复默认"
+    # 清掉的变量会一直挂在插件页根元素上，压住 variables.css 的默认值。
+    'var APPLIED = {};'
+    'var applyVars = function (json) {'
+    'if (!json) return;'
+    'try {'
+    'var map = JSON.parse(json);'
+    'Object.keys(APPLIED).forEach(function (k) {'
+    'if (!(k in map)) { document.documentElement.style.removeProperty(k); delete APPLIED[k]; }'
+    '});'
+    'Object.keys(map).forEach(function (k) {'
+    'document.documentElement.style.setProperty(k, map[k]); APPLIED[k] = 1; });'
+    '} catch (e) {}'
+    '};'
+    'applyVars(pd.getAttribute("data-custom-colors"));'
+    'new MutationObserver(function () {'
+    'applyVars(pd.getAttribute("data-custom-colors"));'
     '}).observe(pd, {attributes:true,attributeFilter:["data-custom-colors"]});'
     '})();'
     '</script>'
 )
+
+
+def _inject_appearance_vars(html: str, prefs: dict) -> str:
+    """把用户的外观变量写进插件页的 `<html style="...">`。
+
+    为什么必须在**服务端**写、而不是等插件页加载后的广播：广播是异步的（脚本注入 →
+    MutationObserver 首次回调），第一帧一定先按 `variables.css` 的默认值画一遍，
+    之后才跳到用户值。侧栏宽度上还叠了一条 120ms 的过渡，于是每次打开插件都能看见
+    "先是默认宽度、再滑到用户设置的值"—— 切换插件时反复出现，看着像闪屏。
+    写进 HTML 里就没有这一段：文档首帧拿到的就是最终值。
+
+    只写 `settings_schema` 管不到的那几支（颜色/尺寸变量），值仍然由壳偏好表给出，
+    与运行时广播的是同一份数据。
+    """
+    colors = prefs.get('colors')
+    if not isinstance(colors, dict) or not colors:
+        return html
+    from shell.backend.shell_prefs import is_valid_var_name, is_valid_var_value
+
+    pairs = [
+        f'{name}:{value}'
+        for name, value in colors.items()
+        if is_valid_var_name(name) and is_valid_var_value(value)
+    ]
+    if not pairs:
+        return html
+    style = ';'.join(pairs)
+    # 只动开标签：`<html lang="zh">` → `<html lang="zh" style="…">`
+    marker = re.search(r'<html\b[^>]*>', html, re.IGNORECASE)
+    if marker is None:
+        return html
+    tag = marker.group(0)
+    # 插件页自己写了 style 时**并到它前面**：合并成一条属性，避免出现两个 style
+    existing = re.search(r'\sstyle="([^"]*)"', tag)
+    if existing:
+        merged = f'{style};{existing.group(1)}' if existing.group(1).strip() else style
+        patched = tag[:existing.start()] + f' style="{merged}"' + tag[existing.end():]
+    else:
+        patched = tag[:-1] + f' style="{style}">'
+    return html[:marker.start()] + patched + html[marker.end():]
 
 
 def _get_shell_dir() -> Path:
@@ -141,6 +213,28 @@ def _is_safe_path(full_path: Path, root: Path) -> bool:
         return full_path.is_relative_to(root)
     except ValueError:
         return False
+
+
+def _match_file_root(full_path: Path, roots: List[Path],
+                     image_only_roots: Iterable[Path]) -> bool:
+    """请求路径是否落在**某个**允许根之内。
+
+    `image_only_roots` 是背景图库（`<config>/backgrounds`，见 shell_info 的
+    `background_library_dir`）。导入端点只接受图片，这里再挡一道：少了这条限制，
+    库目录里出现一个非图片文件（手工放进去的），就等于把它按原路径开放给**所有**
+    持令牌主体（含局域网成员）—— `/file` 本身不校验扩展名。
+
+    命中图片根但类型不是图片时用 `continue` 而不是 `return False`：该文件可能
+    同时落在另一个普通根之内（例如 data_root），那种情况下它本来就被放行。
+    """
+    for root in roots:
+        if not _is_safe_path(full_path, root):
+            continue
+        if root in image_only_roots and classify_file(full_path.name) != 'image':
+            log.warning(f'[File_Server] 背景图目录只提供图片，已拒绝 {full_path}')
+            continue
+        return True
+    return False
 
 
 # ===== 安全响应头 =====
@@ -300,24 +394,16 @@ _OPEN_ENDPOINTS = {'health', 'serve_shell', 'serve_shell_assets', 'serve_res_ass
 # ===== 状态标记页 =====
 # 401/403/404 等错误在浏览器中返回可读的标记页（/api 前缀返回 JSON，
 # 便于前端 fetch 解析）；避免 SPA fallback 把错误路径吞成空白 index.html。
-# 页面直接复用 OmniBox 本体样式（/shell/variables.css + base.css），
-# 并读取主应用 localStorage 的主题/自定义颜色，视觉与本体完全一致。
+# 页面直接复用 OmniBox 本体样式（/shell/variables.css + shared.css + base.css），
+# 主题与自定义颜色的取值由**服务端**从壳偏好注入 —— 偏好已经不在 localStorage 里。
 _STATUS_PAGE_TPL = '''<!DOCTYPE html>
-<html lang="zh" data-theme="light" data-status-page="{code}">
+<html lang="zh" data-theme="{theme}" data-status-page="{code}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{code} {title} - OmniBox</title>
+{shell_style}
 <script>
-try {{
-  var t = localStorage.getItem('omni-theme');
-  if (t === 'dark') {{ document.documentElement.setAttribute('data-theme', 'dark'); }}
-  var cc = localStorage.getItem('omni-custom-colors');
-  if (cc) {{
-    var m = JSON.parse(cc);
-    Object.keys(m).forEach(function (k) {{ document.documentElement.style.setProperty(k, m[k]); }});
-  }}
-}} catch (e) {{}}
 try {{
   // 顶层打开（浏览器直接访问）时跳转到壳内 /status 视图统一展示错误；
   // 嵌套在插件 iframe 内时不跳转（由 Vue 壳检测 data-status-page 后接管）。
@@ -332,6 +418,7 @@ try {{
 }} catch (e) {{}}
 </script>
 <link rel="stylesheet" href="/shell/variables.css">
+<link rel="stylesheet" href="/shell/shared.css">
 <link rel="stylesheet" href="/shell/base.css">
 <style>
   html, body {{ height: 100%; }}
@@ -370,20 +457,50 @@ try {{
 </html>'''
 
 
-def _status_page(code: int, title: str, detail: str) -> str:
+def _status_theme(prefs: dict) -> str:
+    """状态标记页的主题：只认 light / dark，其余（含缺省）都按 dark。"""
+    return 'light' if prefs.get('theme') == 'light' else 'dark'
+
+
+def _status_style_block(prefs: dict) -> str:
+    """把壳的自定义外观变量写进状态标记页的内联样式。
+
+    标记页与本体共用 `variables.css`，因此把用户改过的变量写回 `:root` 即可得到
+    与本体一致的外观。取值逐条转义并限定字符集：颜色值是用户输入，而这里拼的是
+    HTML 而不是 JSON 字符串，宁可少写一条也不能让 `</style>` 进到文档里。
+    """
+    from shell.backend.shell_prefs import _MAX_VARS as _STATUS_MAX_VARS
+    from shell.backend.shell_prefs import is_valid_var_name, is_valid_var_value
+
+    colors = prefs.get('colors')
+    if not isinstance(colors, dict):
+        return ''
+    declarations = []
+    for name, value in list(colors.items())[:_STATUS_MAX_VARS]:
+        if not is_valid_var_name(name) or not is_valid_var_value(value):
+            continue
+        declarations.append(f'{name}:{html.escape(value, quote=True)}')
+    if not declarations:
+        return ''
+    return '<style>:root{' + ';'.join(declarations) + '}</style>'
+
+
+def _status_page(code: int, title: str, detail: str, prefs: dict | None = None) -> str:
     """渲染状态标记页 HTML（所有文案先转义，杜绝注入）。"""
     return _STATUS_PAGE_TPL.format(
         code=code,
         title=html.escape(title),
         detail=html.escape(detail),
+        theme=_status_theme(prefs or {}),
+        shell_style=_status_style_block(prefs or {}),
     )
 
 
-def _status_response(code: int, title: str, detail: str):
+def _status_response(code: int, title: str, detail: str, prefs: dict | None = None):
     """统一错误响应：/api 命名空间返回 JSON，浏览器路径返回 HTML 标记页。"""
     if request.path == '/api' or request.path.startswith('/api/'):
         return {'error': title, 'detail': detail}, code
-    return _status_page(code, title, detail), code
+    return _status_page(code, title, detail, prefs), code
 
 
 # 只有管理员（owner / admin）能调用的 API 方法。
@@ -404,8 +521,25 @@ _ADMIN_ONLY_API = frozenset({
     # 壳自身的运维端点：磁盘路径 / 日志级别 / WebView2 GPU 偏好 / 清缓存 / 开目录，
     # 一律管理员专属
     'system_get_shell_info',
+    # 背景图库：导入会把**任意绝对路径**的图片复制进 `<config>/backgrounds`，而该
+    # 目录随后由 `/file` 对外发布 —— 不限权等于给每个持令牌者一条"把本机文件搬进
+    # 服务范围"的通路；删除同理（在壳自己的配置目录里写与删）。
+    'system_import_background_image',
+    'system_delete_background_image',
+    # 读取侧只返回图片库里的文件名，与 `system_get_shell_info` 同属"壳级事实"的展示面。
+    # 图片本身不走这些端点，普通成员页面里的背景图仍由 `/file` 直接取。
+    'system_list_background_images',
+    # 系统文件对话框会在**服务端桌面**上弹窗并阻塞到用户作答：与 system_open_log_dir
+    # 同类（都是"对这台机器的桌面动手"），因此同样只给管理员。任意持令牌者能调它，
+    # 就等于能远程往宿主桌面叠模态窗口，并拿到用户选中的绝对路径。
+    'system_pick_path',
     'system_set_log_level',
     'system_set_webview_high_performance',
+    # 壳偏好（启动页 / 主题 / 背景 / 全屏）：与 system_get_shell_info 同属"描述这台
+    # 机器、并决定它下次怎么启动"的壳级事实，写入还会直接写壳自己的配置文件。
+    # 读路径是 serve_shell 注入为首屏状态，因此非管理员页面照常拿到生效值。
+    'system_get_shell_prefs',
+    'system_set_shell_prefs',
     'system_clear_thumb_caches',
     'system_open_log_dir',
     # 统一刷新基建：校验只读盘、可被本插件的工具栏按钮触发，因此不设限；
@@ -442,6 +576,10 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
     _principals.ensure_bootstrap()
     # 壳自身信息 / 运维端点（集中设置页的「数据与缓存 / 诊断 / 关于」段）
     shell_info = ShellInfo(config, str(get_config_dir()))
+    # 壳偏好（启动与窗口 / 外观 / 背景 / 玻璃）：读路径由 serve_shell 注入，
+    # 写路径走 system_set_shell_prefs（见 shell/backend/shell_prefs.py）。
+    # 桌面模式在 main.py 建**同一个配置目录**的实例，两边共用同一份落盘与同一把锁。
+    shell_prefs = ShellPrefs(str(get_config_dir()))
 
     def _protected_paths() -> List[Path]:
         r"""当前必须拒绝返回的路径：壳自己的凭据 + 插件申报的受保护路径。
@@ -623,6 +761,14 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             resp.headers.setdefault(name, value)
         return resp
 
+    def _page_prefs() -> dict:
+        """状态标记页要用的外观取值（主题 + 自定义变量）。读失败一律回默认外观。"""
+        try:
+            return shell_prefs.read()
+        except Exception as e:
+            log.warning(f'[File_Server] 读取壳偏好失败，标记页按默认外观渲染: {e}')
+            return {}
+
     @app.errorhandler(400)
     def _err_400(e):
         # Host 校验失败（werkzeug SecurityError）走这里；不注册的话会掉到
@@ -630,24 +776,28 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         return _status_response(400, '请求无效',
                                 '请求的 Host 不在允许列表中，或请求格式不正确。'
                                 '若通过局域网 / 反向代理访问，请在 app.yaml 的 '
-                                'server.trusted_hosts 中补充你的访问地址。')
+                                'server.trusted_hosts 中补充你的访问地址。',
+                                _page_prefs())
 
     @app.errorhandler(401)
     def _err_401(e):
         return _status_response(401, '未授权',
                                 '访问该资源需要访问令牌（页面 Cookie 或 '
-                                'X-Omnibox-Token 请求头）。请通过首页进入应用。')
+                                'X-Omnibox-Token 请求头）。请通过首页进入应用。',
+                                _page_prefs())
 
     @app.errorhandler(403)
     def _err_403(e):
         return _status_response(403, '禁止访问',
                                 '请求的路径超出了允许访问的目录范围，'
-                                '或当前使用者没有执行该操作的权限。')
+                                '或当前使用者没有执行该操作的权限。',
+                                _page_prefs())
 
     @app.errorhandler(404)
     def _err_404(e):
         return _status_response(404, '页面不存在',
-                                '请求的资源不存在或已被移动。')
+                                '请求的资源不存在或已被移动。',
+                                _page_prefs())
 
     @app.route('/health')
     def health():
@@ -663,19 +813,36 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             'system_get_plugin_extensions': plugin_manager.get_plugin_extensions,
             'system_get_plugin_status': plugin_manager.get_plugin_status,
             'system_get_config': lambda: config,
-            # 浏览器模式没有桌面窗口可全屏：显式回失败，免得设置页报「已切换」
-            # 却什么都没发生（插件侧调用点都忽略返回值，不受影响）
-            'system_toggle_fullscreen': lambda: {
-                'success': False, 'error': '浏览器访问模式没有桌面窗口可全屏'},
+            # 桌面窗口的窗口态：与桌面 js_api 注册的是**同一份实现**
+            # （shell/backend/window_state.py）。原先这里是一个恒返回失败的桩，但桥在
+            # pywebview 注入之前会先装上 HTTP 替身，桌面窗口里的调用长期走这条 HTTP
+            # 路径，只拿到"没有桌面窗口"的错误 —— 表现是「启动后进入全屏」与
+            # 「切换窗口全屏」都无效（见 .dsh/shell-prefs-report.md §6）。
+            'system_toggle_fullscreen': window_toggle_fullscreen,
+            'system_set_window_fullscreen': window_set_fullscreen,
+            'system_get_window_fullscreen': window_get_fullscreen,
             # 插件设置弹窗里 type:"directory" 字段的浏览入口（shell/folder-picker.js）：
             # 浏览本机绝对路径，走共享基建（与 image-viewer 的 browse_dir 同一套实现；
             # 空路径/哨兵 = 盘符层）。
             'system_browse_dir': lambda path='': list_subdirectories(path),
+            # 系统文件对话框：与桌面 js_api 注册的是**同一个实现**（见 file_dialog 的
+            # 模块说明）。桌面模式下 Flask 就在 pywebview 那个进程里，因此这条 HTTP
+            # 路径同样能弹对话框 —— 能不能弹取决于"有没有桌面窗口"，与请求走哪条路无关。
+            'system_pick_path': pick_path,
             'system_get_shell_info': shell_info.get_info,
+            # 背景图库：导入 / 删除 / 枚举。图片本身不经过 API，走 /file 无 plugin
+            # 那条壳级路径（允许根见 serve_media_file 的追加逻辑）。
+            'system_import_background_image': shell_info.import_background_image,
+            'system_delete_background_image': shell_info.delete_background_image,
+            'system_list_background_images': shell_info.list_background_images,
             'system_set_log_level': shell_info.set_log_level,
             'system_set_webview_high_performance': shell_info.set_webview_high_performance,
             'system_clear_thumb_caches': shell_info.clear_thumb_caches,
             'system_open_log_dir': shell_info.open_log_dir,
+            # 壳偏好（启动与窗口 / 外观 / 背景 / 玻璃）：写路径唯一入口，
+            # 读路径是 serve_shell 注入的 __OMNIBOX_SHELL_STATE__（零往返）。
+            'system_get_shell_prefs': shell_prefs.read,
+            'system_set_shell_prefs': shell_prefs.apply_patch,
         })
         # 统一刷新基建（同步 / 校验）：方法表来自 plugin_manager 一处定义，
         # 桌面模式的 ShellAPI 更新同一张表（见 freshness_api_methods 的说明）
@@ -701,6 +868,54 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         except Exception as e:
             return {'error': str(e)}, 500
 
+    def _shell_index_html() -> str:
+        """读壳的 index.html 并注入首屏状态。
+
+        壳偏好不再放 localStorage，而是由这里在**首帧之前**写好：前端同步读
+        `window.__OMNIBOX_SHELL_STATE__`，因此主题与自定义色不会闪一下默认色。
+        """
+        dist_index = frontend_dist / 'index.html'
+        if not dist_index.exists():
+            # 前端未构建：退回落盘目录，让 /shell/* 的 dist→public 回退行为保持一致
+            abort(404)
+        try:
+            source = dist_index.read_text(encoding='utf-8')
+        except OSError as e:
+            log.error(f'[File_Server] 读取 {dist_index} 失败: {e}')
+            abort(404)
+        state = {
+            'prefs': _page_prefs(),
+            # 盘上是否已有偏好段：前端据此决定要不要做旧 localStorage 的一次性迁移。
+            # 不能用"注入值里有没有某个键"来猜 —— 注入的默认值与"读不到"完全同形。
+            'stored': shell_prefs.has_stored(),
+        }
+        # 转义 `<` 与 `&`：颜色值是用户输入，出现 `</script>` 会直接闭合脚本块
+        # （`json.dumps` 本身不转义它们，`\u003c` 才是 HTML 里安全的写法）。
+        payload = (json.dumps(state, ensure_ascii=False)
+                   .replace('<', '\\u003c')
+                   .replace('&', '\\u0026'))
+        script = f'<script>window.__OMNIBOX_SHELL_STATE__={payload};</script>'
+        # 插在 <head> 的第一个子节点位置：内联脚本必须早于 /src/main.ts 执行
+        # （模块脚本是延后执行的，但同文档里"越早写越好"仍是唯一稳妥的写法），
+        # 而它不能被后面的任何东西挤掉 —— 找不到 <head> 就整段前置。
+        marker = '<head>'
+        index = source.find(marker)
+        if index >= 0:
+            at = index + len(marker)
+            return source[:at] + script + source[at:]
+        return script + source
+
+    def _shell_index_response():
+        """index.html 的响应：动态内容，因此显式禁缓存。
+
+        一份被缓存的 index.html 会把用户刚改的主题与启动页按旧值发出来，而且这种
+        "改了但重启后回到旧值"的现象与缓存外的缺陷长得一样，只能靠响应头区分。
+        """
+        resp = app.response_class(_shell_index_html(), mimetype='text/html')
+        resp.headers['Cache-Control'] = 'no-store, must-revalidate'
+        resp.headers['Pragma'] = 'no-cache'
+        return resp
+
     @app.route('/')
     @app.route('/<path:filename>')
     def serve_shell(filename='index.html'):
@@ -708,9 +923,18 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         # 明确的 404，而不是被 fallback 吞成空白 index.html。
         if filename.startswith('api/'):
             abort(404)
-        if not (frontend_dist / filename).exists() and not filename.startswith('assets'):
-            return send_from_directory(frontend_dist, 'index.html')
-        return send_from_directory(frontend_dist, filename)
+        # 未构建的前端：沿用 /shell/* 的两层回退思路，给一句能照着做的日志，
+        # 而不是让每个请求都撞一个 404（原来的实现会返回一个空的 index.html）。
+        if not (frontend_dist / 'index.html').exists():
+            log.error(f'[File_Server] 壳前端未构建，index.html 不存在: {frontend_dist}'
+                      f'（请运行 npm --prefix shell/frontend run build）')
+            abort(404)
+        if filename in ('', 'index.html'):
+            return _shell_index_response()
+        if (frontend_dist / filename).exists() or filename.startswith('assets'):
+            return send_from_directory(frontend_dist, filename)
+        # 其余路径是 SPA 前端路由（/settings、/status、插件路由）：交给前端
+        return _shell_index_response()
     def _needs_content(instance, full_path: Path) -> bool:
         """该路径是否"存在但内容还没真正取到本地"（决定要不要回调 `ensure_file`）。
 
@@ -742,11 +966,27 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         # 插件实现抛异常时逐级回退到全局数据根，而不是让整条路由 500（审计项 P3-3）。
         roots = _resolve_file_roots(
             instance, Path(config['directories']['data_root']))
+        # 壳级请求（无 plugin 参数）：把背景图库（`<config>/backgrounds`）并入允许根。
+        #
+        # 只在 instance is None 时追加：插件请求的放行范围必须继续由插件自己的
+        # get_file_roots() 单独决定，否则"壳的壁纸库"会变成所有插件都能读的根。
+        background_dirs: List[str] = []
+        if instance is None:
+            background_dirs = [str(background_library_dir(get_config_dir()))]
         try:
             # 归一化两侧（剥 `\\?\` 前缀 + resolve）：根写扩展形式时，请求里的普通
             # 形式与它做包含判定会得出"越界"的错误结论；而受保护判定需要请求路径
             # 与受保护路径处在同一坐标系里才拦得住。
             roots = [normalize_path(root) for root in roots if root]
+            # 背景图库另算一类根（只放行图片，见 _match_file_root）。归一化后的形式
+            # 才与 roots 里的元素相等，因此这行必须与上一行同时完成。
+            background_roots = [normalize_path(item) for item in background_dirs if item]
+            # 与基础根重合的目录不算图片根：它本来就是全类型放行的根（无 plugin
+            # 参数时以 data_root 为根），把 data_root 一并当图片库不该让既有路径
+            # 突然 403。嵌套的情形由 roots 的顺序解决 —— 基础根先匹配，基础根里的
+            # 文件仍按基础根放行。
+            image_only_roots = {root for root in background_roots if root not in roots}
+            roots = roots + background_roots
         except Exception:
             abort(400)
 
@@ -758,7 +998,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
                 full_path = normalize_path(decoded_path)
                 # 凭据文件优先于「是否在根内」判定：插件可以把根设成包含 .config 的目录
                 _reject_protected_file(full_path)
-                if not any(_is_safe_path(full_path, root) for root in roots):
+                if not _match_file_root(full_path, roots, image_only_roots):
                     abort(403)
                 # 按需把内容取到本地（如 group-mesh 的远端共享项）：必须放在"文件
                 # 是否存在"判定之前，且**在根校验之后** —— 插件实现会按这个路径写盘，
@@ -792,7 +1032,9 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             if resolved is not None:
                 full_path = normalize_path(resolved)
                 _reject_protected_file(full_path)
-                if not any(_is_safe_path(full_path, root) for root in roots):
+                # 与绝对路径分支共用同一个包含判定（这条分支只在有插件时进入，
+                # image_only_roots 为空，因此语义不变）。
+                if not _match_file_root(full_path, roots, image_only_roots):
                     abort(403)
                 if instance is not None and _needs_content(instance, full_path):
                     try:
@@ -977,7 +1219,13 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
                 with open(html_path, 'r', encoding='utf-8') as f:
                     html = f.read()
                 inject = _PLUGIN_BOOTSTRAP_SCRIPT.replace('PLACEHOLDER_NAME', plugin_name)
-                return html.replace('</head>', inject + '</head>')
+                html = html.replace('</head>', inject + '</head>')
+                resp = make_response(_inject_appearance_vars(html, shell_prefs.read()))
+                resp.mimetype = 'text/html'
+                # 这份 HTML 里带着**当前**的外观变量（见 _inject_appearance_vars）：
+                # 让浏览器缓存它，用户改了侧栏宽度或主题后要等到缓存过期才会生效。
+                resp.headers['Cache-Control'] = 'no-store, must-revalidate'
+                return resp
         return send_from_directory(plugin_dir, filename)
 
     return app

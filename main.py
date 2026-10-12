@@ -29,6 +29,7 @@ import yaml
 
 from shell.backend.app_logging import setup_logging
 from shell.backend.auth import get_or_create_token, get_token_file
+from shell.backend.file_dialog import pick_path
 from shell.backend.file_server import create_app
 from shell.backend.media_catalog import list_subdirectories
 from shell.backend.paths import (
@@ -41,8 +42,21 @@ from shell.backend.paths import (
 )
 from shell.backend.plugin_manager import PluginManager
 from shell.backend.shell_info import ShellInfo, configure_webview_environment, stored_log_level
+from shell.backend.shell_prefs import ShellPrefs
 from shell.backend.webview_gpu import apply_gpu_preference
 from shell.backend.webview_gpu import install as install_gpu_preference
+from shell.backend.window_state import (
+    get_state as window_fullscreen_state,
+)
+from shell.backend.window_state import (
+    register_window as register_desktop_window,
+)
+from shell.backend.window_state import (
+    set_fullscreen as set_window_fullscreen,
+)
+from shell.backend.window_state import (
+    toggle_fullscreen as toggle_window_fullscreen,
+)
 
 log = logging.getLogger(__name__)
 
@@ -154,6 +168,25 @@ def wait_for_server(host, port, timeout=5):
         time.sleep(0.1)
     return False
 
+def _commit_last_route():
+    """把内存里待提交的壳偏好（`last_route`）落盘：安全退出的统一切口。
+
+    调用点只有三处，且都在"用户主动结束"的路径上：
+
+    - 桌面窗口：`webview.start()` **正常返回**之后（关窗退出）。刻意不放在 `finally`：
+      异常展开、崩溃与被强杀都不算安全退出，那时应当保留上一次安全退出的值；
+    - 浏览器 / `--web-only`：`app.run()` 返回之后（Ctrl+C 或服务被要求退出），
+      由 `finally` 兜住。浏览器模式没有"关窗"事件，只能以服务进程的结束为准；
+    - `atexit` 兜底（覆盖 `main()` 提前返回等路径）。
+
+    幂等：没有待提交值时不写盘（见 `ShellPrefs.commit_last_route`）。
+    """
+    try:
+        ShellPrefs(str(get_config_dir())).commit_last_route()
+    except Exception as e:
+        log.error(f"[OmniBox] 提交上次页面失败: {e}")
+
+
 def _unload_plugins(manager):
     """进程退出前卸载插件：回调每个插件的 on_unload。
 
@@ -167,10 +200,8 @@ def _unload_plugins(manager):
 
 
 def _toggle_fullscreen():
-    """切换桌面窗口全屏。窗口可能在调用时已关闭，取不到就静默忽略。"""
-    windows = getattr(webview, 'windows', None) or []
-    if windows:
-        windows[0].toggle_fullscreen()
+    """切换桌面窗口全屏（实现见 shell/backend/window_state.py）。"""
+    return toggle_window_fullscreen()
 
 
 def _resolve_port(config) -> int:
@@ -226,15 +257,24 @@ def _run_app(config, manager):
         host = config['server']['host']
         port = _resolve_port(config)
         log.info(f"[OmniBox] Web-only 模式启动: http://{host}:{port}")
-        # threaded=True：单线程下大文件媒体流会阻塞所有请求（无法跳转/元数据读取/API），
-        # 流媒体（Range 请求）与后台扫描任务都需要并发处理。
-        app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
+        try:
+            # threaded=True：单线程下大文件媒体流会阻塞所有请求（无法跳转/元数据读取/API），
+            # 流媒体（Range 请求）与后台扫描任务都需要并发处理。
+            app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
+        finally:
+            # 浏览器访问模式没有"关窗"事件：调用方停掉这个服务（Ctrl+C）就是安全退出。
+            # 放在 `finally` 是因为 `app.run()` 在收到停止信号时是抛异常退出的 ——
+            # 这一条与桌面模式的取舍不同，理由见 `_commit_last_route` 的说明。
+            _commit_last_route()
         return
 
     class ShellAPI:
         """PyWebView 的 js_api 载体：属性即暴露给前端的 system_* 方法。"""
 
     shell_info = ShellInfo(config, str(get_config_dir()))
+    # 壳偏好：与 file_server 里那个实例指向同一份 `<config>/shell.json`，
+    # 共用 SettingsStore 的同一把锁（见 shell/backend/shell_prefs.py）。
+    shell_prefs = ShellPrefs(str(get_config_dir()))
 
     # PyWebView 的 js_api 载体：属性名即暴露给前端的方法名。
     # 这里刻意用 setattr 动态挂载（而不是逐个 `api.xxx = ...`）：方法集合包含
@@ -249,15 +289,29 @@ def _run_app(config, manager):
         'system_get_plugin_status': manager.get_plugin_status,
         'system_get_config': lambda: config,
         'system_toggle_fullscreen': _toggle_fullscreen,
+        # 显式设置 / 读取全屏态：前端不再用"切换"来实现「启动后进入全屏」
+        # （切换是相对量，窗口已经是全屏时会把用户切出去）
+        'system_set_window_fullscreen': set_window_fullscreen,
+        'system_get_window_fullscreen': window_fullscreen_state,
         # 插件设置弹窗的目录选择器（shell/base.js 的 type:"directory"）用它列盘符/子目录；
         # 桌面模式下 js_api 只拿到这张表，所以必须在这里也注册一次（web 模式在 file_server）
         'system_browse_dir': lambda path='': list_subdirectories(path),
+        # 系统文件对话框（背景图选图 / 选目录）：与 HTTP 路径注册同一个实现
+        'system_pick_path': pick_path,
         # 集中设置页「数据与缓存 / 诊断 / 关于」段（web 模式在 file_server 同一份实现）
         'system_get_shell_info': shell_info.get_info,
+        # 背景图库：导入 / 删除 / 枚举（web 模式在 file_server 是同一份实现；图片本身
+        # 走 /file 无 plugin 的壳级路径，不经过 js_api）
+        'system_import_background_image': shell_info.import_background_image,
+        'system_delete_background_image': shell_info.delete_background_image,
+        'system_list_background_images': shell_info.list_background_images,
         'system_set_log_level': shell_info.set_log_level,
         'system_set_webview_high_performance': shell_info.set_webview_high_performance,
         'system_clear_thumb_caches': shell_info.clear_thumb_caches,
         'system_open_log_dir': shell_info.open_log_dir,
+        # 壳偏好（启动与窗口 / 外观 / 背景 / 玻璃）：与 file_server 同一份实现
+        'system_get_shell_prefs': shell_prefs.read,
+        'system_set_shell_prefs': shell_prefs.apply_patch,
     }
     shell_methods.update(manager.freshness_api_methods())
     shell_methods.update(manager.get_api_methods())
@@ -274,13 +328,25 @@ def _run_app(config, manager):
     for method_name, method_fn in shell_methods.items():
         setattr(api, method_name, method_fn)
 
-    app = create_app(config, manager)
     host, port = config['server']['host'], _resolve_port(config)
+    _run_desktop_window(config, manager, api, host, port)
+
+
+def _run_desktop_window(config, manager, api, host, port):
+    """起本地 Flask + 桌面窗口，阻塞到用户关窗。
+
+    单独成函数是为了让"关窗退出"这条路径可测：`tests/test_main_startup.py` 把
+    `webview` 的建窗与消息循环替身掉，断言「上次离开的页面」的提交发生在
+    `webview.start()` **返回之后**，而不是异常路径上。
+    """
+    app = create_app(config, manager)
     # threaded=True：媒体流/Range 请求与后台扫描任务需要并发，见 --web-only 分支注释
     threading.Thread(target=lambda: app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True), daemon=True).start()
     if not wait_for_server(host, port):
         log.warning("[OmniBox] Flask 启动超时")
         return
+
+    # GPU 适配器偏好：这里只登记开关状态，真正的注入发生在 WebView2 控件构造期间
 
     # GPU 适配器偏好：这里只登记开关状态，真正的注入发生在 WebView2 控件构造期间
     # （理由见 shell/backend/webview_gpu.py 的模块说明）。放这里而不是 main() 开头，
@@ -297,8 +363,16 @@ def _run_app(config, manager):
         install_gpu_preference(edgechromium.EdgeChrome)
         apply_gpu_preference(configure_webview_environment(str(get_config_dir())))
     webview.create_window('OmniBox', f'http://{host}:{port}', js_api=api, width=1400, height=900, text_select=True)
+    # 窗口已建：此后 system_*_window_fullscreen 才有对象可操作（--web-only 不会走到这里，
+    # 那条通道因此继续给出"没有桌面窗口"的明确拒绝）
+    register_desktop_window()
     webview.start(debug=not getattr(sys, 'frozen', False), http_server=True,
                   private_mode=False, storage_path=str(_webview_storage_dir()))
+    # 这一行必须留在 `webview.start()` **之后**：它返回即"用户正常关窗退出"。
+    # 异常展开（启动失败 / 崩溃）会跳过这里，进程被强杀同样不会执行 —— 「上次离开的
+    # 页面」只记安全退出的值，正是要靠这个位置来保证（报告 §7.5）。浏览器与
+    # `--web-only` 没有关窗事件，由 `app.run()` 返回处与空闲兜底提交覆盖。
+    _commit_last_route()
 
 
 def main():
@@ -349,6 +423,8 @@ def main():
     # KeyboardInterrupt（Ctrl+C 打断启动）会穿透 load_all，此时若还没注册钩子，
     # 已加载插件就永远不会收到 on_unload —— SQLite/WAL 句柄与后台线程全部泄漏。
     atexit.register(_unload_plugins, manager)
+    # 「上次离开的页面」的退出兜底（浏览器访问与 --web-only 没有关窗事件）
+    atexit.register(_commit_last_route)
     manager.load_all()
     # 退出时必须回调 on_unload（关 SQLite/WAL、停插件线程、落盘最后一次状态）：
     # atexit 兜底 + finally 覆盖所有退出路径（正常关窗、Ctrl+C、异常）。

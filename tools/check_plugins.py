@@ -187,7 +187,8 @@ def _check_frontend_assets(plugin_dir: Path, frontend_entry: str) -> List[str]:
 
 
 # ===== 前端 UI 契约（docs/plugin-ui-guide.md）=====
-# 动机来自一次全仓取证：壳早已注入统一层（variables.css / base.css / effects.css / base.js），
+# 动机来自一次全仓取证：壳早已注入统一层（variables.css / shared.css / base.css /
+# effects.css / base.js），
 # 但插件各自抄了一份，而抄错有三种形态，都"不报错、只是静默失效"，读代码看不出来：
 #   1. var(--color-text, #666)     —— 壳里根本没有这个名字，永远退回字面量（整页不换肤）
 #   2. var(--text-danger, #e5484d) —— 猜了个相近名字（错误色不跟随主题）
@@ -195,6 +196,7 @@ def _check_frontend_assets(plugin_dir: Path, frontend_entry: str) -> List[str]:
 # 原生 alert/confirm 另算一类：它们会打断宿主面板里的操作流，且不可被主题化。
 SHELL_STYLE_FILES = (
     'shell/frontend/public/shell/variables.css',
+    'shell/frontend/public/shell/shared.css',
     'shell/frontend/public/shell/base.css',
     'shell/frontend/public/shell/effects.css',
     'shell/frontend/public/shell/folder-picker.css',

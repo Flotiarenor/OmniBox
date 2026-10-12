@@ -1,29 +1,24 @@
 <!DOCTYPE html>
 <html lang="zh" data-theme="dark">
 <head>
+  <!-- 壳偏好（主题 / 自定义颜色 / 背景 / 启动页）由后端在返回本文件时注入
+       `window.__OMNIBOX_SHELL_STATE__`（见 shell/backend/file_server.py 的
+       `_shell_index_html`）。这里刻意**不再**用内联脚本读 localStorage：
+       桌面窗口的 localStorage 会在 LevelDB 日志被强杀截断后整段失效，
+       偏好已改存 `<config_dir>/shell.json`（见 .dsh/shell-prefs-report.md）。 -->
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <script>
-    // 首屏前恢复持久化的主题/自定义颜色，避免闪烁；完整逻辑见 src/core/appearance.ts。
-    (function () {
-      try {
-        var theme = localStorage.getItem('omni-theme');
-        if (theme === 'light' || theme === 'dark') {
-          document.documentElement.setAttribute('data-theme', theme);
-        }
-        var colors = localStorage.getItem('omni-custom-colors');
-        if (colors) {
-          var map = JSON.parse(colors);
-          Object.keys(map).forEach(function (key) {
-            document.documentElement.style.setProperty(key, map[key]);
-          });
-          document.documentElement.setAttribute('data-custom-colors', colors);
-        }
-      } catch (e) {}
-    })();
-  </script>
   <title>OmniBox</title>
   <link rel="stylesheet" href="/shell/variables.css">
+  <!-- 壳页面与插件页共用的组件样式（.btn / .field* / .toast* / .obx-nav-item / .obx-icon）：
+       壳页面拿不到注入给插件 iframe 的 base.css，这份就是两边唯一的一份。
+       必须排在构建产物 shell.css 之前 —— 壳页面独有的 .field-inline / .field-checkbox-row
+       与 .field / .field-range 同族同特异性，靠"后出现"胜出。 -->
+  <link rel="stylesheet" href="/shell/shared.css">
+  <!-- 分隔条内核：壳页面不注入 base.css 那套，必须自己引一份（与插件 iframe 同一实现，
+       否则拖动逻辑在壳与插件里会各写一套）。 -->
+  <link rel="stylesheet" href="/shell/splitter.css">
+  <script src="/shell/splitter.js"></script>
   <style>html, body {margin: 0;padding: 0}</style>
 </head>
 <body>

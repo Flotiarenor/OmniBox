@@ -89,7 +89,7 @@
   padding: 6px 10px;
 }
 
-/* 结构、hover、选中态都来自壳的 `.obx-nav-item`（base.css 的「导航项」一节），
+/* 结构、hover、选中态都来自壳的 `.obx-nav-item`（shared.css 的「导航项」一节），
    这里只留本插件自己的差异：图标栏宽度 20px、图标字号 15px、文字 13px。
    外观参数可覆写 `--obx-nav-*`（例如 --obx-nav-gap / --obx-nav-active-bg）。 */
 .mp-nav-item {
@@ -291,7 +291,9 @@
   height: calc(var(--mp-stage-vh) + var(--mp-pb-height));
   flex-shrink: 0;
   margin: 12px 16px 0;
-  border-radius: 18px;
+  /* 圆角走壳的形状 token（`--radius-lg`，默认 10px）：此前写死 18px，用户选"直角"
+     或"小圆角"时这里纹丝不动（docs/plugin-ui-guide.md §5 要求插件级微调也赋值 token）。 */
+  border-radius: var(--radius-lg, 10px);
   overflow: hidden;
   background: #0b0b12;
   box-shadow: var(--mp-shadow-1);
@@ -299,8 +301,31 @@
   transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1), border-radius 0.3s ease, margin 0.3s ease;
 }
 
+/* 视频模式：舞台贴到工具栏下沿，并且**按窗口高度收**。
+   两件事：
+   1. 贴边 —— 原来保留 `margin: 12px 16px 0` 与 18px 圆角，玻璃壳下那圈空带与四个
+      圆角缺口透出的是壳的背景图，视频画面被一圈未遮挡的背景包着。
+   2. 收高度 —— 写死 `--mp-stage-vh: 300px` 时，矮窗口（如 1024×600）下舞台加播放栏
+      会把播放栏挤出视口：按钮既看不见也点不到（实测按钮中心落到 y=612，视口高 600）。
+      `min()` 只压上限，窗口够高时仍是 300px；用户拖过之后值在元素内联上，内联优先，
+      拖动结果不受这条影响。留的余量 = 工具栏 48 + 顶部 0 + 播放栏 76 + 一点间隙。 */
 .mp-stage.video-on {
   --mp-stage-vh: 300px;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  height: min(calc(var(--mp-stage-vh) + var(--mp-pb-height)),
+              calc(100vh - var(--toolbar-height, 48px) - 8px));
+}
+
+/* 拖动分隔条期间禁掉高度过渡：--mp-stage-vh 每帧都在变，0.3s 的过渡会让舞台
+   始终落后指针半拍。用户拖过之后值写在元素内联上，内联优先于上面这条
+   `.video-on` 的类声明，所以视频模式的默认高度不会把用户的值压回去。
+   `.mp-stage-viewport` 也有 height 过渡，必须一起停 —— 只停舞台的话，视口会在
+   拖动中与舞台不同步，向上拖时被 `.mp-stage` 的 overflow 裁掉播放条。 */
+html[data-obx-dragging] .mp-stage,
+html[data-obx-dragging] .mp-stage-viewport {
+  transition: none;
 }
 
 .mp-stage-backdrop {
@@ -1817,6 +1842,13 @@ img.mp-thumb-pending { opacity: 0.45; transition: opacity .3s; }
   display: none;
 }
 
+/* 宽屏模式下舞台高度由下面的 flex 决定（height: auto），--mp-stage-vh 不参与计算，
+   拖动已无意义：隐藏把手，否则它会作为铺满主区的 flex 成员多占一行。
+   这里用属性选择器选中注入的把手，不依赖壳的类名。 */
+#app.wide-mode [data-obx-splitter-handle] {
+  display: none;
+}
+
 #app.wide-mode .mp-stage {
   flex: 1 1 auto;
   height: auto;
@@ -1869,7 +1901,8 @@ img.mp-thumb-pending { opacity: 0.45; transition: opacity .3s; }
 
 @media (max-width: 860px) {
   /* 窄窗口要压过壳的宽度必须提高特异性：媒体查询不改变特异性 */
-  .mp-sidebar.view-sub-sidebar { width: 200px; }
+  /* 窄窗口最多 200px；min() 的理由见 image-viewer.css 同处注释。 */
+  .mp-sidebar.view-sub-sidebar { width: min(var(--sub-sidebar-width), 200px); }
   .mp-pb-right .mp-volume { display: none; }
   #btn-stop { display: none; }
   .mp-card-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }

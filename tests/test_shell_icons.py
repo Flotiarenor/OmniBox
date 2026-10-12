@@ -11,7 +11,7 @@
    有人改了源数据没重新生成，界面照旧是旧图形。
 3. 模板里引用了没冻结的图标名时，`<use>` 指向不存在的 id，结果是**一片空白且无报错**。
 
-所以这里钉住三件事：源数据与 sprite 同步、引用全部有源、两个样式表里的 `.obx-icon` 逐值一致。
+所以这里钉住两件事：源数据与 sprite 同步、引用全部有源。
 （真实浏览器里的渲染验证见 tests/debug_shell_icons_ui.py。）
 """
 from __future__ import annotations
@@ -38,8 +38,7 @@ from tools.build_icons import _render_js_iife as js_iife_source
 from tools.build_icons import _render_ts as ts_module_source
 from tools.check_plugins import UI_EMOJI_RE, UI_SYMBOL_GLYPH_RE
 
-SHELL_CSS = PROJECT_ROOT / 'shell' / 'frontend' / 'src' / 'styles' / 'shell.css'
-BASE_CSS = PROJECT_ROOT / 'shell' / 'frontend' / 'public' / 'shell' / 'base.css'
+SHARED_CSS = PROJECT_ROOT / 'shell' / 'frontend' / 'public' / 'shell' / 'shared.css'
 ICON_COMPONENT = PROJECT_ROOT / 'shell' / 'frontend' / 'src' / 'components' / 'Icon.vue'
 
 SYMBOL_RE = re.compile(r'<symbol\s+id="([a-z0-9-]+)"([^>]*)>(.*?)</symbol>', re.DOTALL)
@@ -142,7 +141,7 @@ class IconReferenceTests(unittest.TestCase):
 
 
 class IconStyleTests(unittest.TestCase):
-    """共享样式与引用路径：壳页面与插件页必须拿到同一份视觉。"""
+    """图标样式与组件引用路径。"""
 
     def _icon_block(self, path: Path) -> str:
         text = CSS_COMMENT_RE.sub('', path.read_text(encoding='utf-8'))
@@ -150,16 +149,9 @@ class IconStyleTests(unittest.TestCase):
         self.assertIsNotNone(match, f'{path.name} 里没有 .obx-icon 规则')
         return WHITESPACE_RE.sub(' ', match.group(1)).strip()
 
-    def test_obx_icon_rule_is_identical_in_both_stylesheets(self):
-        """壳页面不注入 base.css，两份 .obx-icon 必须逐值一致，否则壳页与插件页图标大小不同。"""
-        self.assertEqual(
-            self._icon_block(BASE_CSS), self._icon_block(SHELL_CSS),
-            '.obx-icon 在 base.css 与 shell.css 里已经不一致，两份要同步改',
-        )
-
     def test_obx_icon_has_explicit_size(self):
         """只写 viewBox 的 <svg> 会按 300×150 渲染，尺寸必须显式给。"""
-        block = self._icon_block(BASE_CSS)
+        block = self._icon_block(SHARED_CSS)
         self.assertIn('width: 1em', block)
         self.assertIn('height: 1em', block)
 

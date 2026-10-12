@@ -53,6 +53,13 @@
   /* 动效 */
   --transition-fast: 0.15s ease;
   --transition-normal: 0.25s ease;
+
+  /* 壳层外观：自定义背景图与玻璃（值由 shell/frontend/src/core/background.ts 写到
+     html 内联上，因此这里只是"未设置时"的兜底）。--glass-blur 的默认值与
+     effects.css 的 --obx-glass-blur 一致，插件侧两者视觉同源。 */
+  --shell-bg-image: none;
+  --glass-blur: 18px;
+  --glass-alpha: 84%;
 }
 
 /* ===== 暗色主题（GitHub 暗色调） ===== */
