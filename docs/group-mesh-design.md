@@ -1752,7 +1752,7 @@ Noise vetted 实现 + 官方向量（§21.2）。
 - **iframe 常驻**：`manifest.json:8` `"keepAlive": true`，因此 `remote.js:726-736` 必须靠壳的 `onShow`/`onHide` 停/起 15s 轮询（`remote.js:702` `VIEW_POLL_MS = 15000`），只把 `visibilitychange` 当壳缺失时的退路。
 - **脚本顺序契约**：`index.html:335-336` `remote.js` 在 `app.js` 之前；`app.js:582-595` 用依赖注入把 `call/toast/escapeHtml/openModal/closeModal` 交给分片，两者装载期都不碰 DOM（`app.js:599-602`）。
 - **是否用 Shell 布局类**：是，且是本仓库最完整的一个——`.view-sub-sidebar`、`.view-body`、`.view-toolbar`、`.toolbar-group`、`.view-content`、`.obx-nav-item`、`.modal/.modal-box/.modal-body/.modal-footer`、`.btn/.btn-sm/.btn-primary/.btn-danger`、`.obx-glass`、`.obx-scroll`、`.obx-card-lift`、`.obx-stagger`、`.obx-anim-scale`、`.obx-skeleton`、`.obx-ease` 全部来自壳。
-- **壳注入顺序（影响后面所有「谁赢」的判断）**：`shell/backend/file_server.py:797-798` 把 `variables.css / base.css / effects.css / base.js / motion.js` 注入到 `</head>` **之前**，所以插件自己的 `<link href="group-mesh.css">`（`index.html:7`）实际排在壳样式**之后**，插件同优先级规则天然胜出。
+- **壳注入顺序（影响后面所有「谁赢」的判断）**：`shell/backend/file_server.py:797-798` 把 `variables.css / shared.css / base.css / effects.css / base.js / motion.js` 注入到 `</head>` **之前**，所以插件自己的 `<link href="group-mesh.css">`（`index.html:7`）实际排在壳样式**之后**，插件同优先级规则天然胜出。
 
 ### 28.2 布局骨架
 
@@ -1776,7 +1776,7 @@ Noise vetted 实现 + 官方向量（§21.2）。
 
 | 部位 | 数值 | 来源 |
 | --- | --- | --- |
-| 侧栏宽度 | `236px` | 插件自定义 `--gm-side-width`（`group-mesh.css:35`）→ `.gm-side.view-sub-sidebar{width:var(--gm-side-width)}`（`:141-145`），覆盖壳的 `240px`（`base.css:251-259`） |
+| 侧栏宽度 | `240px`（设置页可调 180–480） | 壳的 `.view-sub-sidebar{width:var(--sub-sidebar-width,240px)}`（`base.css:256-282`）。插件**不再声明宽度**：曾经写成 `:root{--gm-side-width:var(--sub-sidebar-width)}` + `.gm-side{width:var(--gm-side-width)}`，而 `var()` 在 `:root` 上就替换完了，分隔条写在侧栏内联上的用户值读不到 —— 表现为拖动全程宽度不动、松手才跳一下 |
 | 侧栏方向 | `flex-direction: row`（≤720px 时折成横向导航） | 插件（`group-mesh.css:840-850`） |
 | 工具栏高度 | `48px` | 壳 `.view-toolbar`（`base.css:239-248`），插件只改 `gap`（`group-mesh.css:67-69` `gap:12px`） |
 | 主内容滚动 | `.view-content{overflow-y:auto}` | 壳（`base.css:277-282`）；插件补 `padding:16px / background:transparent`（`group-mesh.css:271-277`） |
@@ -1798,7 +1798,7 @@ Noise vetted 实现 + 官方向量（§21.2）。
 - 尺寸/动效：`--radius`(30) `--radius-lg`(29) `--radius-sm`(121/382) `--transition-fast`(387/701) `--shadow-md`(820)
 - effects.css / motion.js：`--obx-ease`(303/444/824) `--obx-i`(304/445；`app.js:236/296/389` 内联写入) `--obx-shadow-2`(820)
 
-**插件自定义变量**：`:root` 下 8 个（`group-mesh.css:28-37`）`--gm-radius`、`--gm-radius-sm`、`--gm-accent-soft`、`--gm-success-soft`、`--gm-warn-soft`、`--gm-danger-soft`、`--gm-side-width`、`--gm-peers-width`。其中 `--gm-success-soft`(32) 与 `--gm-warn-soft`(33) 定义后**零引用**（死 token）。插件**没有**覆盖 `:root` 里任何一个壳 token，只做「壳 token → `--gm-*` 派生」。`.gm-card-wide`(`:313-315`) 同样零引用。
+**插件自定义变量**：`:root` 下 7 个（`group-mesh.css:28-38`）`--gm-radius`、`--gm-radius-sm`、`--gm-accent-soft`、`--gm-success-soft`、`--gm-warn-soft`、`--gm-danger-soft`、`--gm-peers-width`。其中 `--gm-success-soft`(32) 与 `--gm-warn-soft`(33) 定义后**零引用**（死 token）。`--gm-side-width` 已删除（侧栏宽度改由壳的 `.view-sub-sidebar` 提供，理由见上表）。插件**没有**覆盖 `:root` 里任何一个壳 token，只做「壳 token → `--gm-*` 派生」。`.gm-card-wide`(`:313-315`) 同样零引用。
 
 **硬编码颜色字面量**
 

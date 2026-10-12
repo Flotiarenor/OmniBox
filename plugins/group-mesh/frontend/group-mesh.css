@@ -4,7 +4,9 @@
    依赖壳注入的 resources（plugin-guide §4.1，**不在 HTML 里手动引入**）：
      · variables.css —— 主题 token：--bg-* / --text-* / --border / --accent /
        --success / --danger / --warning / --radius* / --shadow* / --transition-*
-     · base.css      —— 通用类：.btn 系列 / .view-body / .view-toolbar /
+     · shared.css    —— 壳页面与插件页共用的组件：.btn 系列 / .field* / .toast* /
+       .obx-nav-item（+ --obx-nav-*）/ .obx-icon
+     · base.css      —— 插件 iframe 骨架：.view-body / .view-toolbar /
        .toolbar-group / .view-sub-sidebar / .view-content / .modal / .obx-scroll…
      · effects.css   —— 动效：.obx-glass / .obx-scroll / .obx-card-lift /
        .obx-anim-* / .obx-stagger + --obx-radius / --obx-ease / --obx-shadow-*
@@ -32,8 +34,11 @@
   --gm-success-soft: color-mix(in srgb, var(--success) 15%, transparent);
   --gm-warn-soft: color-mix(in srgb, var(--warning) 18%, transparent);
   --gm-danger-soft: var(--danger-soft, color-mix(in srgb, var(--danger) 15%, transparent));
-  /* 与其它插件同宽：直接跟随壳的 --sub-sidebar-width（默认 240px） */
-  --gm-side-width: var(--sub-sidebar-width);
+  /* 侧栏宽度**不在这里**取别名：写成 `--gm-side-width: var(--sub-sidebar-width)` 时，
+     var() 是在 `:root` 上替换的，替换完再继承给 `.gm-side`，于是分隔条写在
+     `.gm-side` 内联上的用户值永远读不到 —— 表现就是拖动全程宽度不动、松手才跳一下
+     （松手时壳写的是 `:root`，那一条才会被替换）。宽度现在完全由壳的
+     `.view-sub-sidebar` 给出（`var(--sub-sidebar-width)`），本插件不再声明。 */
   --gm-peers-width: 272px;
 }
 
@@ -138,7 +143,11 @@ body {
    不能靠改顺序 —— 注入顺序由壳决定（实测：裸 `.gm-side` 时窄窗口侧栏仍是竖排）。 */
 
 .gm-side.view-sub-sidebar {
-  width: var(--gm-side-width);
+  /* 宽度由壳的 `.view-sub-sidebar` 给出（`var(--sub-sidebar-width)`），这里不再声明：
+     本插件曾经写成 `width: var(--gm-side-width)`，而 `--gm-side-width` 在 `:root`
+     上取 `var(--sub-sidebar-width)` 的值 —— var() 在 `:root` 上就替换完了，分隔条
+     写在侧栏内联上的用户值读不到，表现是拖动全程宽度不动、松手才跳一下。
+     别名必须留在取值来源那一层；这里索性不留别名。 */
   flex-shrink: 0;
   gap: 0;
 }
@@ -198,7 +207,7 @@ body {
   color: var(--text-muted);
 }
 
-/* 导航项的结构 / hover / 选中态全部来自壳的 `.obx-nav-item`（base.css 的「导航项」
+/* 导航项的结构 / hover / 选中态全部来自壳的 `.obx-nav-item`（shared.css 的「导航项」
    一节，含 `[data-active="true"]` 这一档）；这里只留本插件自己的差异：
    撑满侧栏宽度 + 图标栏 18px。选中态的视觉参数可覆写
    `--obx-nav-active-bg` / `--obx-nav-accent` 等 token。 */
@@ -834,6 +843,12 @@ body {
   /* 两栏变上下：`#app` 是行容器，折成列即可（`.gm-main` 会自动占满剩余高度） */
   #app {
     flex-direction: column;
+  }
+
+  /* 折成上下布局后侧栏宽度由 100% 决定，横向拖动已无意义：隐藏分隔条把手，
+     否则它会作为 #app 的列成员多占一行。 */
+  #app > [data-obx-splitter-handle] {
+    display: none;
   }
 
   .gm-side.view-sub-sidebar {

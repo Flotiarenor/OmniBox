@@ -1,7 +1,8 @@
 # OmniBox 插件 UI 统一设计参考
 
 本文不是新提案，而是一次取证的结论：**统一层早就存在**——壳通过 `shell/backend/file_server.py`
-把 `variables.css`、`base.css`、`effects.css`、`base.js`、`folder-picker.*`、`motion.js` 注入
+把 `variables.css`、`shared.css`、`base.css`、`effects.css`、`base.js`、`folder-picker.*`、
+`motion.js` 注入
 每个插件 iframe。8 个插件各自采纳了不同比例，于是"看起来不像一个软件"。
 
 要统一的是**骨架、词汇与交互契约**；页面里长什么样（相册栅格、漫画墙、播放舞台、阅读器排版）
@@ -29,15 +30,15 @@
 | 层 | 载体 | 谁维护 | 插件的可动性 |
 | --- | --- | --- | --- |
 | 壳 chrome | `shell/frontend/src/styles/shell.css` 的 `.nav-sidebar` / `.nav-item` / `.logo` | 壳 | 插件在 iframe 里，看不见也不该管 |
-| 注入契约 | `variables.css`（token）、`base.css`（骨架 + 组件）、`effects.css`（动效）、`base.js`（`Bridge`/`Toast`/组件）、`folder-picker.*`、`motion.js` | 壳 | **只引用，不重定义** |
+| 注入契约 | `variables.css`（token）、`shared.css`（壳页面与插件页共用的组件）、`base.css`（插件 iframe 骨架）、`effects.css`（动效）、`base.js`（`Bridge`/`Toast`/组件）、`folder-picker.*`、`motion.js` | 壳 | **只引用，不重定义** |
 | 插件自有 | `plugins/<name>/frontend/<name>.css`、`js/*.js` | 插件 | 只写"与别人的差异" |
 
 注入点与内容：`shell/backend/file_server.py:59-93`（`_PLUGIN_BOOTSTRAP_SCRIPT`）。
 它同时做三件事：注入样式脚本、`Bridge.setPrefix('<name>')`、把父窗口的
 `data-theme` 与 `data-custom-colors` 用 `MutationObserver` 同步到插件 `<html>`。
 
-**结论**：插件里出现主题同步代码、出现 `--color-*` 这类自造主题变量、出现 base.css 已有的类
-被重新定义，都属于越层。
+**结论**：插件里出现主题同步代码、出现 `--color-*` 这类自造主题变量、出现 `shared.css` /
+`base.css` 已有的类被重新定义，都属于越层。
 
 ---
 
@@ -46,7 +47,7 @@
 1. **样式里不写颜色字面量**。`color: #333`、`background: #fff`、`border: 1px solid #e0e0e0`
    一律改为 `var(--text-primary)` / `var(--bg-surface)` / `var(--border)`。
 2. **透明派生用 `color-mix()`**，不要另算 `rgba()` 常量：
-   `color-mix(in srgb, var(--accent) 9%, transparent)`（先例：`base.css:301`）。
+   `color-mix(in srgb, var(--accent) 9%, transparent)`（先例：`shared.css` 的 `--obx-nav-active-bg`）。
 3. **只引用真实存在的 token，且不跨插件引用私有 token**：`var(--color-text, #666)`、
    `var(--text-danger, #e5484d)`、`var(--mp-glass, …)` 这类写法不会报错、只是静默失效，
    是最难发现的一类缺陷（见 §4.6）。
@@ -107,7 +108,8 @@
 
 - 侧栏是 `#app` 的直接子元素、`y=0`、跑满全高；**工具栏在 `.view-body` 内**，
   不与侧栏同级（否则工具栏横跨整宽、侧栏从工具栏下方才开始，一眼就不一样）。
-- 工具栏高 = `--toolbar-height`(48)；侧栏宽 = `--sub-sidebar-width`(240)。
+- 工具栏高 = `--toolbar-height`(48)；侧栏宽 = `--sub-sidebar-width`(240，设置页可调 180–480，
+  也可直接拖动侧栏右缘)。
   现状：5 个带侧栏的插件**全部跟随这个 token**（document-reader 一直如此，另外四个在本轮
   收敛时删掉了写死值）。窄窗口的目标宽度要写 `.xx-sidebar.view-sub-sidebar`（0,2,0）才生效
   —— 媒体查询不改变特异性，裸 `.xx-sidebar` 会被壳的 240px 覆盖（`group-mesh.css:135` 记录了
@@ -308,6 +310,95 @@ schema/values 都由对面给）与 `confirm`；未知 kind 显式失败回 `ok:
 **两条边界**，别扩大：上层只读 `action`，`data` 原样透传（所以它不需要理解内容）；
 消息不跨层转发（孙窗口要发申请，得让中间那层自己 `serve()`）。
 
+### 3.6 可拖拽分隔条（声明式接入）
+
+用户可以直接拖动侧栏或舞台的下缘改变尺寸，不必进设置页。能力由壳注入的
+`/shell/splitter.js` + `/shell/splitter.css` 提供，插件只加属性、不写拖动代码：
+
+```html
+<aside class="view-sub-sidebar" data-obx-splitter="--sub-sidebar-width"
+       data-obx-splitter-min="180" data-obx-splitter-reserve="320"
+       data-obx-splitter-default="240">
+```
+
+| 属性 | 必填 | 说明 |
+| --- | --- | --- |
+| `data-obx-splitter` | 是 | 目标 CSS 变量名，形状必须是 `--<小写字母/数字/连字符>` |
+| `-axis` | 否 | `x`（默认，拖宽度）或 `y`（拖高度） |
+| `-offset` | 否 | 变量值与元素实际尺寸的差值，默认 0；元素尺寸不由变量直接给出时必须写 |
+| `-min` / `-max` | 否 | 上下限；`-max` 默认 `auto`，按父容器可用空间算 |
+| `-reserve` | 否 | `auto` 上限时为同容器其它内容保留的空间 |
+| `-default` | 否 | 双击 / 回车复位的值；不写则禁用复位 |
+
+三条约束 —— 写错不会报错，只是拖动无效或布局变形：
+
+1. **元素的尺寸必须由该变量决定**。CSS 里写死宽度会让拖动完全失效；窄窗口的收窄
+   也要写成 `width: min(var(--sub-sidebar-width), 200px)` 而不是写死 `200px`
+   （`base.css` 的 `.view-sub-sidebar` 用的正是这个变量）。注意 `min()` 在收窄的
+   同时也压住了拖动上限：断点触发时侧栏最多 200px，拖动只能把它改得更窄。
+   保留收窄是有意的（窄窗口下侧栏不该占满），要放弃它就改回纯
+   `var(--sub-sidebar-width)`，由 `-reserve` 保证内容区不被压没。
+2. **变量值要能换算成元素尺寸**。面板高度由 `calc(变量 + 固定高度)` 得出时必须给
+   `-offset`（媒体播放器舞台的 76px 播放条就是这一种）。
+3. **布局换向时要自己隐藏把手**。在 `@media` 里把侧栏折成上下布局（`width: 100%`）、
+   或让舞台高度改由 flex 接管（`height: auto`）之后，横向 / 纵向拖动已无意义，
+   加一条 `#app > [data-obx-splitter-handle] { display: none; }`。把手带
+   `data-obx-splitter-handle` 属性，用属性选择器选中它，不要去认壳的类名。
+
+值存到哪里：内核把用户值交壳持久化（壳页面走 `window.__obxVarCommit`，
+插件 iframe 走 `postMessage`，壳侧校验变量名与尺寸值形状），渲染值写在
+**目标元素自己的内联样式**上并按当期窗口 clamp。于是窗口变小只压低渲染值、
+用户值不受损，窗口恢复后自动回到用户拖出来的大小。用户值能压过元素上的
+类选择器默认值（如 `.mp-stage.video-on` 的 300px），因为内联优先级更高；
+插件不需要为"用户拖过 / 没拖过"写任何分支。
+
+拖动期间 `<html>` 上会带 `data-obx-dragging="x|y"`。尺寸带 `transition` 的元素
+应加一条 `html[data-obx-dragging] .your-el { transition: none; }`，
+否则拖动时元素会始终落后指针半拍。
+
+**别名不要声明在 `:root` 上。** 想给变量起个插件前缀的名字时，写
+`asider { width: var(--sub-sidebar-width) }`（用在哪写在哪），不要写
+`:root { --gm-side-width: var(--sub-sidebar-width) }` 再让元素读 `--gm-side-width`：
+`var()` 在 `:root` 上就替换完了，替换结果继承给元素，分隔条写在**元素内联**上的
+用户值永远读不到 —— 表现是**拖动全程尺寸不动、松手才跳一下**（松手时壳写的是
+`:root`，那一条才会被替换）。group-mesh 的侧栏踩过这个坑。
+
+把手本身不占布局空间：`.obx-splitter-x` 是 5px 热区 + 左右各 -3px 外边距（净占位 0），
+悬停时那条指示线是绝对定位的 `::before`。被拖元素与它的下一个兄弟在交界处直接相接，
+静止时交界上不会多出一条露出祖先背景的缝。
+
+内边栏宽度这一项由壳统一给：`.view-sub-sidebar` 读 `--sub-sidebar-width`，
+设置页「外观 → 各插件内边栏宽度」写的也是它，**插件不要再声明侧栏宽度**
+（否则同一个插件里出现两个宽度来源，改了一处另一处还在）。
+
+### 3.7 玻璃壳与自定义背景图
+
+用户可以在设置页「外观」里指定若干本机图片目录、从中选一张作为整个界面的背景，并开启
+玻璃效果。**插件侧不需要写任何代码**，两件事都由壳驱动：
+
+| 壳写下的东西 | 插件侧随之发生的行为 |
+| --- | --- |
+| `<html data-shell-glass="on">` | `base.css` 让 `body` 与 `#app` 让出底色，背景图透出来；工具栏、内容区、侧栏、弹窗、搜索框改为半透明 |
+| html 上的 `--glass-blur` / `--glass-alpha` | 可直接引用，得到与壳一致的不透明度与模糊半径 |
+
+三条边界：
+
+1. **插件页只能"透"，不能"糊"**。iframe 是独立文档、构成独立的 backdrop root，
+   iframe 内的 `backdrop-filter` 看不到父文档的背景图。所以插件页的背景是清晰透出的，
+   不会有壳自身界面那种模糊。要模糊只能由壳把图片铺进每个 iframe（位图 × 存活 frame 数），
+   当前未实现。
+2. **插件自己写死的面板底色不会被自动改透**。`html[data-shell-glass="on"]` 只覆盖
+   `base.css` 提供的元素；插件自己的容器要按自身意愿加 `effects.css` 的
+   `.obx-glass` / `.obx-glass-strong`（现成的"半透明 + 模糊"类）。
+3. **不要引用背景图 URL**：它是用户的本地路径，壳没有把它广播给插件。要透出背景，
+   让容器透明即可。
+
+取图范围由壳的「图片目录」配置决定（存在 `<config_dir>/shell.json`，读取与改动都
+需要管理员）：这些目录会并入 `/file` 在**无 `plugin` 参数**时的允许根，且只放行图片
+（`classify_file` 判为 image 的扩展名）—— 目录里的文档、密钥一类文件仍然 403，
+因为它们与"取一张壁纸"无关。插件自己的 `/file` 请求仍然只认自己的 `get_file_roots()`，
+不受影响。
+
 ---
 
 ## 4 设计 token 与主题
@@ -328,7 +419,8 @@ schema/values 都由对面给）与 `confirm`；未知 kind 显式失败回 `ok:
 | --- | --- | --- |
 | `--radius` / `--radius-sm` / `--radius-lg` | 「外观 → 形状」预设：直角 / 小圆角 / 默认 / 大圆角（`SettingsView.vue:164-169`） | 用户选"直角"，写死 12px/14px/999px 的插件纹丝不动 |
 | `--transition-fast` / `--transition-normal` | 「外观 → 动效」预设：正常 / 精简 / 关闭（`:170-174`） | 用户选"关闭"，自造 `transition: .22s` 的插件照旧有动画 |
-| `--nav-width` | 「导航栏宽度」滑杆（`:192-195`） | 只影响壳自己的侧栏；插件内层侧栏走 `--sub-sidebar-width`，**不在可调列表里**（见 §3.1） |
+| `--nav-width` | 「导航栏宽度」滑杆 + 拖动壳侧栏右缘 | 只影响壳自己的侧栏 |
+| `--sub-sidebar-width` | 「各插件内边栏宽度」滑杆 + 拖动任意插件侧栏右缘，附「恢复默认宽度」 | 只影响插件内边栏；插件再自己声明一个宽度就会出现两个来源（见 §3.1、§3.6） |
 
 这就是"看起来不像一个软件"的根因：**同一个用户设置，有的插件跟随、有的插件不跟随**。
 现状里圆角在 5 个插件里各自定义或写死、`--transition-*` 只在壳组件与少数插件里生效、
@@ -441,18 +533,18 @@ background: var(--mp-glass, var(--bg-surface));
 
 | 组件 | 壳提供的入口 | 规范用法 | 现状 |
 | --- | --- | --- | --- |
-| 按钮 | `base.css:13-36` `.btn` / `-primary` / `-danger` / `-danger-solid` / `-sm` / `.active` | 工具条 `.btn`/`.btn-sm`；主操作 `-primary`；破坏性 `-danger` 且二次确认。工具条内 `.btn` 与 `.btn-sm` 的度量相同（见下一行），插件不要用 padding/字号把按钮撑成另一档 | 全部插件在用 |
+| 按钮 | `shared.css` 的 `.btn` / `-primary` / `-danger` / `-danger-solid` / `-sm` / `.active`（同族一整份：族内次序决定 `.btn.active` 与 `.btn-danger:hover` 谁赢，拆开就会随加载顺序互换） | 工具条 `.btn`/`.btn-sm`；主操作 `-primary`；破坏性 `-danger` 且二次确认。工具条内 `.btn` 与 `.btn-sm` 的度量相同（见下一行），插件不要用 padding/字号把按钮撑成另一档 | 全部插件在用 |
 | 工具栏动作按钮 | `base.css` 的 `.obx-toolbar-btn`（`.view-toolbar .btn` 自动命中同一个规则） | **一排操作按钮的唯一实现**：高度 `--control-h`、13px、内边距 `0 14px`、图标与文字间距 6px。工具栏之外（扩展视图头部、宿主挂载点、页面动作行）显式加这个类；调尺寸只改这一处，不要再去每个插件里校正 | 主工具栏 7 个插件、宿主挂载（`base.js` 的 mountToolbar）、pixiv-sync 的动作行均已在用 |
 | 设置入口 | `#btn-settings` | 图标固定用 `#settings`，与其余插件同形；图标名必须在 `res/icons/icon_data.json` 里 | 7 个插件有该入口（netease-music 无）；图标名存在性由 `tools/build_icons.py --check` 覆盖，**图标选哪一个是本表的约定，不设门禁** |
-| 图标 | `base.css` 的 `.obx-icon`（+ `.obx-icon-lg`）、图标集 `res/icons/` | 只用图标集，不用图形化 emoji 与符号字形；尺寸走 `1em`、颜色走 `currentColor`，详见本节「补充约定」第一条 | 壳与 8 个插件的前后端均已迁移（含壳自带的 `base.js` / `folder-picker.js` / 状态页）；emoji 与符号字形门禁已启用 |
+| 图标 | `shared.css` 的 `.obx-icon`（+ `.obx-icon-lg`）、图标集 `res/icons/` | 只用图标集，不用图形化 emoji 与符号字形；尺寸走 `1em`、颜色走 `currentColor`，详见本节「补充约定」第一条 | 壳与 8 个插件的前后端均已迁移（含壳自带的 `base.js` / `folder-picker.js` / 状态页）；emoji 与符号字形门禁已启用 |
 | 分组切换 | 无专用类 | `.btn.btn-sm.active`（image-cleaner 的 tab）或 `.obx-nav-item` | image-cleaner 用前者 |
 | 搜索框 | 两种：单输入框用 `.search-input`（`max-width:400px`）；带图标/清除按钮的搜索框用 `.search-field > .search-field-icon + input + .search-field-clear` | 结构与外观**只有这一份实现**：胶囊外框 + 图标在流内 + 输入无边框，聚焦用 `:focus-within` 描边外框；宽度走 `--obx-search-width`（窄窗口由壳统一收窄）。插件不写搜索样式，**也不给容器再加插件类名** | 已统一：四个插件（document-reader / image-viewer / manga-library / media-player）现在标记完全同构，插件侧搜索样式删净（原先共 4 套类名、7 档宽度、1 处玻璃底、1 处边框重写）。形态取自 document-reader 的紧凑胶囊版本 |
-| 侧栏导航 | `base.css:290-347` `.obx-nav-item` + `--obx-nav-*` | 结构/选中态都靠壳；只保留图标栏宽度等差异 | 5 个插件已用；image-cleaner/pixiv-sync 无 |
+| 侧栏导航 | `shared.css` 的 `.obx-nav-item` + `--obx-nav-*` | 结构/选中态都靠壳；只保留图标栏宽度等差异 | 5 个插件已用；image-cleaner/pixiv-sync 无 |
 | 侧栏标题/底栏 | `.sub-sidebar-header` / `.sub-sidebar-footer` | 分组标题用大写小字；底栏放统计 | image-viewer 用 `.iv-sidebar-footer` |
 | 卡片/网格 | 无壳类（曾有 `createCardGrid`，因零采用且渲染的 `.manga-*` 无任何样式定义，已删除） | 卡片属插件自己的内容区布局：建议统一"封面 + 标题 + 副标题/徽标"，圆角走 `--radius-lg`，悬浮 `.obx-card-lift`，选中态 = 2px `--accent` 描边 | media-player `.mp-card-grid`、manga-library `.ml-grid`、image-viewer `.iv-image-grid` |
 | 弹窗 | `base.css:159-179` `.modal` / `.modal-box` / `.modal-body` / `.modal-footer` | 入场 `.obx-anim-scale`/`-pop`；遮罩关闭用 `pointerdown` 并判 `e.target === overlay`（`base.js:602`，`tests/debug_modal_backdrop_press.py` 守） | image-viewer/manga-library/document-reader 已用；pixiv-sync 自造 `.psync-modal` |
 | 设置弹窗 | `base.js:566-628` `openSettingsModal()` + `settings_schema` | 首选；schema 类型 `text`（默认）/ `number` / `range` / `checkbox` / `select` / `textarea` / `directory` / `info`（只读信息行，值由后端 `get_settings()` 给、不参与保存）；`secret: True` 标记敏感字段（壳负责掩码与"留空即不改"）；`directory` 自动接入 `folder-picker`，`local_only` 可关掉"网络位置"入口 | 7 个插件调用（本轮把 pixiv-sync、image-cleaner 也接上）；仍自建面板的只有 image-viewer（文件夹/行高/排序，需要就地预览）与 document-reader（阅读设置弹窗 + 整页朗读设置） |
-| 表单控件 | `base.css:181-206` `.settings-form` / `.field*` / `.field-range*` | 自建设置面板也必须复用这些类 | image-viewer 自造 `.iv-field`/`.iv-setting-item` |
+| 表单控件 | `base.css` 的 `.settings-form` + `shared.css` 的 `.field*` / `.field-range*` | 自建设置面板也必须复用这些类 | image-viewer 自造 `.iv-field`/`.iv-setting-item` |
 | Toast | `base.js:362-393` `Toast.success/error/info/warning` | 全部反馈走它 | 采纳 134 处；**pixiv-sync 有 22 处 `alert()`** |
 | 确认框 | `base.js:394-418` `confirmDialog(msg, {danger})` | 破坏性操作一律用它 | 采纳 12 处，无 `window.confirm` |
 | 右键菜单 | `base.js:886` `createContextMenu` | 网格/列表的批量入口 | document-reader 3 处、image-viewer 1 处 |
@@ -463,7 +555,7 @@ background: var(--mp-glass, var(--bg-surface));
 | 降低动态效果 | `effects.css:186-201` 覆盖 `.obx-anim-*`、`.empty-state-icon` 与 `.obx-stagger > *` | 用壳的类；**直接引用关键帧名不会被白名单覆盖**，要自己补一条 reduced-motion 覆盖 | media-player 用 `*, *::before, *::after` + 3 处 `!important` 全量压，有效但代价是连壳组件一起压 |
 | 骨架屏 | `effects.css:118-131` `.obx-skeleton` | 首屏/长列表 | 采纳 0（都用文字"加载中…"），group-mesh 另有 `.gm-skeleton-line`；属"新增能力"而非缺陷（见 §10.5） |
 | 空态 | `base.css`「通用状态」的 `.empty-state` + `.empty-state-icon/-text/-hint`（+ `--obx-empty-min-h`、`.empty-state--inline`、`.empty-state--error`） | 空列表/无结果一律用它；**不要自造 `.xx-empty`**。出错态（加载失败等）加 `.empty-state--error`，但仍要给出"下一步"提示 | 本轮统一：7 个插件约 57 处改用它，各插件的 `.iv-empty/.nr-empty/.ml-empty/.mp-empty-state/.nl-empty/.cleaner-empty/.empty/.psync-empty` 全部删除；`.empty-state--error` 用于 image-cleaner 扫描失败与 media-player 歌单加载失败。保留的插件专属例外见下 |
-| 浮层层级 | `base.css` `.modal` 1500 / `base.js` `.toast-container` 3000 | 自绘浮层的 `z-index` 必须 ≥ 1500 且低于 3000，否则会被壳的弹窗/Toast 盖住 | media-player `.mp-modal` 500 / `.mp-context-menu` 520、pixiv-sync 自绘弹窗 999（`index.html:46`）都会被盖住；manga-library 自研阅读器 2000 反过来盖住壳弹窗 |
+| 浮层层级 | `base.css` 的 `.modal` 1500 / `shared.css` 的 `.toast-container` 3000 | 自绘浮层的 `z-index` 必须 ≥ 1500 且低于 3000，否则会被壳的弹窗/Toast 盖住 | media-player `.mp-modal` 500 / `.mp-context-menu` 520、pixiv-sync 自绘弹窗 999（`index.html:46`）都会被盖住；manga-library 自研阅读器 2000 反过来盖住壳弹窗 |
 | 键盘可达性 | 壳的灯箱已支持 Esc / ←→ / 滚轮 / 拖拽 | 至少有：`Esc` 关闭最上层浮层、沉浸态 `←/→` 切换、搜索框 `Esc` 清空 | image-viewer 全插件无键盘处理；自绘右键菜单（`app-nav.js:96-134`）不监听 Esc 与 scroll 重定位 |
 
 补充约定：
@@ -498,9 +590,9 @@ background: var(--mp-glass, var(--bg-surface));
     真正判断图形在不在要看 `getBBox()`。）
   - **描边只能写在 sprite 自己身上**，且必须是 `currentColor`（`build_icons.py` 生成时统一写死）。
     漏掉时图标恒为黑色，不跟主题、也不跟用户自定义的 `--accent`。
-  - **壳页面不注入 `base.css`**，所以 `.obx-icon` 在 `shell/frontend/public/shell/base.css`
-    与 `shell/frontend/src/styles/shell.css` 各有一份，**必须逐值一致**
-    （`tests/test_shell_icons.py` 会比对两份规则）。这两份是 `/shell/*` 资源，
+  - **壳页面不注入 `base.css`**，所以共用组件样式（`.obx-icon` 等）只放在
+    `shell/frontend/public/shell/shared.css` 一份：壳页面、插件 iframe、状态标记页三处
+    引用同一个文件，不再各留一份。这是 `/shell/*` 资源，
     改完必须 `npm --prefix shell/frontend run build`。
 
 - **插件图标怎么声明**：`manifest.icon` 写 `icon:<名字>`（如 `"icon": "icon:images"`，名字取自
@@ -578,7 +670,8 @@ background: var(--mp-glass, var(--bg-surface));
 1. **类名前缀**：`<plugin>-`。现有短前缀：`iv-` `ml-` `mp-` `gm-` `nr-` `cleaner-`
    `psync-`，netease 的原生视图由 media-player 渲染故沿用 `mp-`/`ncm-`。
    反例：manga-library 的 `.manga-reader` / `.reader-*`（与 document-reader 的
-   `.reader-*` 撞名且都不是自己的前缀）、manga-library 的 `.btn-icon`（`base.css` 里没有）。
+   `.reader-*` 撞名且都不是自己的前缀）、manga-library 的 `.btn-icon`（`base.css` 与
+   `shared.css` 里都没有）。
 2. **壳类不重定义**，只补差异。需要覆盖壳规则时提高特异性而不是改顺序——
    顺序由壳的注入决定：`.gm-side.view-sub-sidebar`（0,2,0）才能压过 `base.css` 的
    `.view-sub-sidebar`（0,1,0）。
@@ -589,9 +682,15 @@ background: var(--mp-glass, var(--bg-surface));
 3. **不要用元素级选择器穿透壳组件**：group-mesh 用 13 个 `.modal-body input/textarea` 之类
    的规则改壳弹窗里的控件外观（`group-mesh.css:375-426`），壳一改结构就失效；
    要改就改自己的类，或者提出新的壳 token。
-4. **不要和壳注入的全局函数同名**：image-viewer 的 `app-settings.js:15` 有方法名
-   `openSettingsModal`，与壳的全局 `openSettingsModal()`（`base.js:566`）同名——
-   限定作用域时容易误调，读代码时更难分辨。
+4. **不要和壳注入的全局名同名**：插件脚本与壳注入的 `/shell/*.js` 在同一个文档里跑，
+   顶层的 `function` / `var` / `const` / `let` 与 `window.X =` 落进**同一个全局对象**，
+   同名即覆盖（`const` 则是遮蔽），不是各管各的作用域。实例：document-reader 的
+   `app.js` 顶层写了 `function openModal(id)`（自绘弹窗的开关），把壳的
+   `openModal(options)`（返回 Promise 的设置弹窗工厂）换掉，工具栏「设置」点下去只抛
+   `Cannot read properties of undefined (reading 'then')`、弹窗不出现；改成 `openNrModal`
+   后恢复。门禁：`tests/js/plugin_asset_contract.mjs`（每个插件前端都跑）按源码比对两边的顶层名字。
+   与之相邻的另一种问题是**类方法**与壳的全局函数同名（image-viewer 的
+   `app-settings.js:15` 有方法 `openSettingsModal`）：不覆盖，但读代码时容易误调，尽量避免。
 5. **媒体查询**：同断点规则相邻、降序排列，并写注释说明顺序是硬约束
    （`max-width:1040px` 与 `max-width:720px` 都写单列时，后者胜出）。
 6. **内联 `style=`**：只允许一次性数值（`style="width:360px;"`、`style="margin-left:auto;"`）；
@@ -735,6 +834,9 @@ pixiv-sync —— **34 hex / 2 rgba / 22 alert / 0 真 token** —— 以及两�
     与 19 处深色兜底字面量。
 11. 侧栏宽度已统一（本轮）：4 个插件的写死值与 group-mesh 的 236px 覆盖全部删除，
     统一跟随 `--sub-sidebar-width`；≤860px 的窄屏覆写改为 0,2,0 后**首次真正生效**。
+    续（本轮）：group-mesh 的 `--gm-side-width` 别名整个删掉 —— 它声明在 `:root` 上，
+    `var()` 在那里就替换完了，分隔条写在侧栏内联上的用户值读不到（拖动全程宽度不动、
+    松手才跳一下，回归用例 `tests/test_splitter_browser_e2e.py`）。
 12. 键盘可达性缺失：image-viewer 全插件无键盘处理；自绘右键菜单不响应 Esc、
     不随 scroll/resize 重定位；image-viewer 内还有两套右键菜单（图片走壳的
     `createContextMenu`，相册走自绘 `.iv-context-menu`）。
@@ -766,7 +868,7 @@ pixiv-sync —— **34 hex / 2 rgba / 22 alert / 0 真 token** —— 以及两�
 | 固定底栏承载批量操作与选中计数 | image-cleaner `index.html:30-34` | 批量操作不随内容滚走 |
 | 扩展面板内嵌范式（header 标题 + 返回 / body iframe） | image-viewer `index.html:65-73` | 宿主与 Companion 插件解耦 |
 | 幂等的轮询托管 | manga-library `app.js:34-40` | `onHide` 停 / `onShow` 起 / `onDispose` 兜底，不会重复起定时器 |
-| 导航项"差异只在 token" | `base.css:290-347` 的落地方式 | 四个插件的选中态可逐像素一致（`tests/debug_nav_style_ui.py`） |
+| 导航项"差异只在 token" | `shared.css` 的落地方式 | 四个插件的选中态可逐像素一致（`tests/debug_nav_style_ui.py`） |
 | 几何自检代替截图 | `tests/debug_group_mesh_ui.py`（24 条断言） | 结构归属、并排/堆叠、token 取色、深浅主题、交错延迟都能断言 |
 | 高亮用 `::highlight()` 不铺底色 | document-reader `css:498-509` | 朗读高亮不破坏正文排版 |
 | 短文档主动补满视口 | document-reader `reader-engine.js:175-189` | 内容不足一屏时滚动区不空荡 |
@@ -844,7 +946,7 @@ pixiv-sync —— **34 hex / 2 rgba / 22 alert / 0 真 token** —— 以及两�
 | --- | --- | --- |
 | 1 | 图标源冻结：`tools/fetch_lucide_icons.py` 从 `lucide-static@1.47.0` 取图形，存入 `res/icons/icon_data.json`（只留图形本体 + viewBox + ISC 授权标记）；**运行时不依赖网络、`package.json` 不加任何依赖** | `res/icons/icon_data.json` |
 | 2 | sprite 生成：`tools/build_icons.py` 产出 `res/icons/icons.svg`（当前 89 个 `<symbol>`），并校验"引用了未冻结的图标名"；`--check` 供门禁/测试比对生成物与源数据 | `tools/build_icons.py`、`res/icons/icons.svg` |
-| 3 | 共享样式：`.obx-icon`（1em / currentColor / 显式宽高）+ `.obx-icon-lg`，在 `base.css` 与 `shell.css` **各一份且逐值一致** | `base.css`、`shell.css` |
+| 3 | 共享样式：`.obx-icon`（1em / currentColor / 显式宽高）+ `.obx-icon-lg`，壳页面与插件页共用一份 | `shared.css` |
 | 4 | 壳页面迁移：侧栏 8 个插件图标 + 「设置」、设置页 6 个分区图标（左栏 + 标题栏）、主题开关 | `App.vue`、`SettingsView.vue`、`components/Icon.vue` |
 | 5 | manifest 与后端：8 个插件 `icon` 改为 `icon:<名字>`；后端缺省值改为 `icon:package`，并同步 `RUNTIME_FIELD_READERS` 登记表 | `plugins/*/manifest.json`、`plugin_manager.py` |
 | 6 | 兼容性：`Icon.vue` 对非 `icon:` 前缀的值仍按文本渲染，第三方/旧插件不改也不坏 | `components/Icon.vue` |
@@ -889,7 +991,7 @@ pixiv-sync —— **34 hex / 2 rgba / 22 alert / 0 真 token** —— 以及两�
 | 卡片/网格 | 已定为"插件自建"（`createCardGrid` 删除，见 §9.5）；若以后要共享，先定义 `.obx-card*` 类与样式再推广 |
 | 空/加载/错误态 | 空态与加载态已落地（`.empty-state` 四段结构 + `.loading`，见 §9.6）；仍缺 `.error-state` + 重试按钮样式 |
 | 侧栏宽度策略 | 已定：全部跟随 `--sub-sidebar-width`（本轮完成）。是否把它也做成用户可调（现在只暴露 `--nav-width`）仍待决定 |
-| 浮层层级与遮罩 | 在 base.css 注释里写死层级约定（modal 1500 / toast 3000），并提供 `.obx-overlay` 使用 `--bg-overlay` |
+| 浮层层级与遮罩 | 在 base.css / shared.css 注释里写死层级约定（modal 1500 / toast 3000），并提供 `.obx-overlay` 使用 `--bg-overlay` |
 | 高度链 | 在 base.css 或文档里给一条明确写法（`#app { height: 100vh }` 或 `html,body{height:100%}`），避免第三个变体 |
 | token 关系说明 | 在 `variables.css` / `effects.css` 注释里写清 `--radius*` 与 `--obx-radius*` 的分工，以及"哪些 token 用户可调" |
 | 改壳侧共享资源后必须重新构建 | `npm --prefix shell/frontend run build`。`/shell/*` 的路由**优先发 `dist/shell/`**（`file_server.py:762-769`），不构建时 `public/shell/*` 的改动在界面上完全不生效 —— 曾因此把"新标记 + 旧样式"误判成 CSS 写错（搜索框胶囊外框消失） |
@@ -921,7 +1023,8 @@ pixiv-sync —— **34 hex / 2 rgba / 22 alert / 0 真 token** —— 以及两�
 
 - **静态（已实装，见 `tools/check_plugins.py`）**：
   - `var(--<不存在的名字>` → **error**。允许集合 = 壳样式里声明的变量（`variables.css` /
-    `base.css` / `effects.css` / `folder-picker.css` / `src/styles/shell.css`）+ 插件自己声明的
+    `shared.css` / `base.css` / `effects.css` / `folder-picker.css` / `src/styles/shell.css`）
+    + 插件自己声明的
     + 插件 JS `setProperty('--x', …)` 写入的 + `FRAMEWORK_SET_VARS`（壳脚本写入、插件只读，
     目前只有 `--obx-i`）。**每加一个框架变量都要在登记表里写清"谁写的"**，否则等于把规则关掉。
     同一文件里同一个名字只报一条，但会带上总处数（27 处 `--color-text` 不会刷屏）。

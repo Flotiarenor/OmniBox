@@ -16,7 +16,9 @@ import StatusView from './views/StatusView.vue'
 import Icon from './components/Icon.vue'
 import { toastError } from './core/toast'
 import { useBridge } from './core/bridge'
-import { getStartupPrefs, rememberLastRoute, resolveStartRoute } from './core/preferences'
+import { rememberLastRoute, resolveStartRoute } from './core/preferences'
+import { isValidVarName, isValidVarValue, setAppearanceVar } from './core/appearance'
+import { flushShellPrefs, setShellPrefsNotifier, shellPrefs } from './core/shell-prefs'
 
 const router = useRouter()
 const route = useRoute()
@@ -176,7 +178,38 @@ function onApiError(ev: Event) {
   else if (d.status >= 500) toastError(`后端错误（${d.status}）: ${method}`)
 }
 
+// ===== 分隔条：插件 iframe 拖出来的用户值回到壳持久化 =====
+// 插件 iframe 里的拖动只改它自己文档的渲染值，用户值必须经这里写进壳偏好，
+// 否则切走再回来就丢了。两个入口（壳页面直接拖 / 插件 iframe 发消息）共用同一份校验。
+function commitAppearanceVar(key: unknown, value: unknown): void {
+  if (!isValidVarName(key) || !isValidVarValue(value)) {
+    console.warn('[Shell] 忽略非法的外观变量写入:', key, value)
+    return
+  }
+  setAppearanceVar(key, value)
+}
+
+function isRegisteredFrameSource(source: unknown): boolean {
+  if (!source) return false
+  for (const frame of frameRefs.values()) {
+    if (frame.contentWindow === source) return true
+  }
+  return false
+}
+
+function onSetVarMessage(event: MessageEvent) {
+  if (event.origin !== window.location.origin) return
+  const data = event.data
+  if (!data || data.type !== 'omnibox:set-var') return
+  // 只接受本壳已挂载的 iframe：同源页面之间本来就能互相访问，这里是为了让
+  // "谁写的"有答案，出问题时能定位到来源文档而不是一个匿名窗口。
+  if (!isRegisteredFrameSource(event.source)) return
+  commitAppearanceVar(data.key, data.value)
+}
+
 onMounted(async () => {
+  // 壳偏好的写失败必须能看见：403（非管理员）与 5xx 都不能静默
+  setShellPrefsNotifier(toastError)
   try {
     await loadPlugins()
     const plugins = getPlugins()
@@ -197,9 +230,10 @@ onMounted(async () => {
 
     isReady.value = true
 
-    if (getStartupPrefs().fullscreen) {
-      // 桌面窗口：让 pywebview 进全屏；浏览器模式下后端是空实现，忽略即可
-      try { await bridge.call('system_toggle_fullscreen') } catch { /* 非桌面模式 */ }
+    if (shellPrefs().startup.fullscreen) {
+      // 桌面窗口：把窗口切到全屏。用"设为全屏"而不是"切换全屏" —— 切换是相对量，
+      // 窗口已经是全屏时会把它切出去。浏览器访问时后端明确拒绝，忽略即可。
+      try { await bridge.call('system_set_window_fullscreen', true) } catch { /* 非桌面模式 */ }
     }
   } catch (e: any) {
     error.value = e.message || '未知错误'
@@ -212,16 +246,21 @@ onMounted(async () => {
   fsObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-video-fullscreen'] })
 
   window.addEventListener('omnibox:api-error', onApiError)
+  window.addEventListener('message', onSetVarMessage)
   window.addEventListener('visibilitychange', onVisibilityChange)
   window.addEventListener('beforeunload', onPageHide)
   window.addEventListener('pagehide', onPageHide)
+  // 壳页面自己拖分隔条时（导航栏），splitter.js 走这个回调而不是 postMessage
+  ;(window as any).__obxVarCommit = commitAppearanceVar
 })
 
 onUnmounted(() => {
   window.removeEventListener('omnibox:api-error', onApiError)
+  window.removeEventListener('message', onSetVarMessage)
   window.removeEventListener('visibilitychange', onVisibilityChange)
   window.removeEventListener('beforeunload', onPageHide)
   window.removeEventListener('pagehide', onPageHide)
+  delete (window as any).__obxVarCommit
 })
 
 watch(
@@ -241,8 +280,12 @@ watch(
     } else if (route.path === '/status') {
       activePlugin.value = null
     }
-    // 记下当前页面：下次启动若选「上次离开的页面」就回到这里
+    // 记下当前页面：下次启动若选「上次离开的页面」就回到这里。后端只把它放内存，
+    // 安全退出（关窗 / 空闲兜底）时才写进 shell.json —— 强杀不算安全退出。
     if (name || route.path === '/settings') rememberLastRoute(route.path)
+    // 切路由时把待写入的偏好一起落盘：去抖窗口正好被"用户切走了"截断时，
+    // 上一处改动不该跟着页面一起留在内存里。
+    void flushShellPrefs()
     // 路由切换后的可见性收敛：keep-alive 的 iframe 已存在（这里同步发通知），
     // 不保活的 iframe 由本次渲染挂载/卸载，交给 setFrameRef 与下面的
     // nextTick 兜底，保证两种形态都恰好收到一次 shown / hidden / dispose。
@@ -264,7 +307,15 @@ watch(
 
 <template>
   <div class="app-shell">
-    <aside class="nav-sidebar" :class="{ 'nav-hidden': navHidden }">
+    <!-- 拖动分隔条：目标变量与设置页「导航栏宽度」是同一支 token，两者天然同源。
+         min/max 与设置页滑块的 160-320 保持一致。 -->
+    <aside
+      class="nav-sidebar" :class="{ 'nav-hidden': navHidden }"
+      data-obx-splitter="--nav-width"
+      data-obx-splitter-min="160"
+      data-obx-splitter-max="320"
+      data-obx-splitter-default="200"
+    >
       <div class="logo">OmniBox</div>
       <nav v-if="isReady">
         <template v-if="plugins.length > 0">
