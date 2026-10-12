@@ -124,9 +124,13 @@ curl -H "X-Omnibox-Token: $(cat .config/auth_token.txt)" \
 目前只发布 Windows 与 Linux 产物。Web 模式可以用手机浏览器打开，但界面是按桌面尺寸设计的。
 
 **界面能改成什么样？**
-「设置 → 外观」提供浅色/深色、界面圆角、导航栏宽度、动效开关，以及 13 项 CSS 变量级颜色自定义；改动会自动同步到所有插件页面。
+「设置 → 外观」提供浅色/深色、界面圆角、导航栏宽度、**各插件内边栏宽度**、动效开关，以及 13 项 CSS 变量级颜色自定义；改动会自动同步到所有插件页面。「设置 → 背景」是独立的一节：从图片库里选一张壁纸，调显示方式（cover / contain / 平铺 / 自由）、位置、缩放与镜像，再用玻璃效果决定面板透出多少。
 
 ![设置 - 外观](./docs/images/readme/06-settings.webp)
+
+![设置 - 背景](./docs/images/readme/12-background.webp)
+
+![自定义背景图 + 半透明壳](./docs/images/readme/13-glass.webp)
 
 ![深色主题](./docs/images/readme/07-dark.webp)
 
@@ -144,3 +148,5 @@ curl -H "X-Omnibox-Token: $(cat .config/auth_token.txt)" \
 本项目基于 **Apache License 2.0** 开源，详见 [LICENSE](./LICENSE)。
 
 问题与建议请提 [Issue](https://github.com/Flotiarenor/OmniBox/issues)，欢迎 PR。
+
+文档截图里出现的作品和缩略图版权归各原作者所有，仅作界面演示之用。作者本人或权利人如不希望作品出现在本文档中，提 Issue 说明是哪一张，维护者会立即撤下并重拍；出处登记与移除通道见 [docs/images/README.md](./docs/images/README.md)。
