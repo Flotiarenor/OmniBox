@@ -866,6 +866,11 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         except AdminRequired:
             abort(403)
         except Exception as e:
+            # 必须留日志：这一支是"接口抛了意料之外的异常"的唯一出口，而它只把
+            # `str(e)` 回给调用方。不记录的话，服务端只剩 werkzeug 的一行
+            # `"POST /api/xxx HTTP/1.1" 500 -`，异常类型与栈全都查不到 —— 实测定位
+            # 一次"壳偏好偶发写失败"就卡在这里，只能临时插桩复现才拿到原因。
+            log.exception(f'[api] {method} 抛出未预期异常：{type(e).__name__}: {e}')
             return {'error': str(e)}, 500
 
     def _shell_index_html() -> str:

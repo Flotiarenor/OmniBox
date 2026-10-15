@@ -25,6 +25,13 @@ from typing import Any, Callable, Dict
 
 log = logging.getLogger(__name__)
 
+#: `os.replace` 的重试次数与单次等待。取值针对"外部扫描器短暂占用临时文件"这个已知成因：
+#: Windows 上 mkstemp 出来的 `.tmp` 可能被实时扫描/索引在改名的那一瞬间抓住，此时
+#: `os.replace` 报 WinError 5（拒绝访问）；实测该占用是瞬时的，等几十毫秒再试即可成功。
+#: 等待总计 `RETRY_DELAY * (1+2+…)` ≈ 150ms（3 次重试），代价远低于"用户改动没落盘"。
+_REPLACE_ATTEMPTS = 3
+_REPLACE_DELAY = 0.05
+
 
 class SettingsStore:
     """统一的插件设置存储，每个插件一个 JSON 文件，位于 <config_dir>/<plugin>.json
@@ -114,6 +121,40 @@ class SettingsStore:
                 return {}
             return data
 
+    def _replace_with_retry(self, tmp_path: Path, file: Path) -> None:
+        """`os.replace(tmp, file)`，对**瞬时**拒绝访问重试若干次。
+
+        为什么需要：这一步是原子写的成败点，而它在 Windows 上会**偶发**失败 ——
+        实测（全量测试期间）同一个临时目录下 `.shell.json.<随机>.tmp` 改名报
+        `PermissionError: [WinError 5] 拒绝访问`，约 13 秒内连续出现 6 次，随后同样的
+        请求立刻成功。成因是外部实时扫描/索引在改名瞬间持有该临时文件；本进程这边
+        既没有别的写者（每文件一把锁），目标文件内容也完好。
+
+        为什么只重试这一处：`mkstemp` / `json.dump` / `fsync` 的失败都是真实错误，
+        重试只会把它们拖成"改了没生效、也没报错"。只有改名这一步的失败是"换个时间
+        点就能成"的，因此重试范围收在这里。
+
+        只对 `PermissionError` 重试：`FileNotFoundError`（临时目录被删）与
+        `OSError` 的其它分支重试也不会变好，立刻抛出反而让调用方看到真实原因。
+
+        次数用尽后仍抛原始异常：宁可让这次写入失败（前端会重试整次调用），也不要把
+        文件留在一个被静默吞掉的状态里。
+        """
+        for attempt in range(_REPLACE_ATTEMPTS + 1):
+            try:
+                os.replace(tmp_path, file)
+                if attempt:
+                    log.warning(f'[SettingsStore] 改名 {file.name} 第 {attempt + 1} 次成功'
+                                f'（前 {attempt} 次被占用）')
+                return
+            except PermissionError:
+                # 最后一次不再等待：重试循环之外没有别的补救手段
+                if attempt == _REPLACE_ATTEMPTS:
+                    log.error(f'[SettingsStore] 改名 {file.name} 连续 '
+                              f'{_REPLACE_ATTEMPTS + 1} 次被拒绝访问，放弃本次写入')
+                    raise
+                time.sleep(_REPLACE_DELAY * (attempt + 1))
+
     def _atomic_write(self, file: Path, values: Dict) -> None:
         file.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(
@@ -125,7 +166,7 @@ class SettingsStore:
                 json.dump(values, f, indent=2, ensure_ascii=False)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(tmp_path, file)
+            self._replace_with_retry(tmp_path, file)
         except Exception:
             try:
                 tmp_path.unlink(missing_ok=True)

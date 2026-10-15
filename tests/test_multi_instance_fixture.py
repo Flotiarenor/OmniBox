@@ -10,7 +10,10 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import shutil
 import sys
 import tempfile
 import time
@@ -36,6 +39,60 @@ from tests.harness.support import (
 )
 
 _BOOT_OK, _BOOT_REASON = boot_prerequisites()
+
+
+class BackendErrorReportTest(unittest.TestCase):
+    """实例日志里的后端错误必须能被取出来（否则临时目录一删就没有证据了）。
+
+    缺陷背景：`AppInstance` 把子进程输出写进 `<临时根>/<name>.boot.log`，而用例收尾的
+    `TemporaryDirectory.cleanup()` 会连它一起删。定位一次 `/api/system_set_shell_prefs`
+    偶发 500 时，服务端只有 werkzeug 的一行 `500 -`，事后完全取不到异常与请求行，
+    只能临时插桩复现。这里锁住"命中即报、不命中安静"这条行为。
+    """
+
+    def _instance_with_log(self, text: str) -> tuple[AppInstance, Path]:
+        root = Path(tempfile.mkdtemp(prefix='omnibox-bootlog-'))
+        self.addCleanup(shutil.rmtree, root, True)
+        instance = AppInstance('probe', root)
+        log = root / 'probe.boot.log'
+        log.write_text(text, encoding='utf-8')
+        return instance, log
+
+    def test_reports_traceback_and_api_500_lines(self):
+        instance, log = self._instance_with_log(
+            'INFO    [werkzeug] "POST /api/system_set_shell_prefs HTTP/1.1" 500 -\n'
+            'ERROR   [shell.backend.file_server] boom\n'
+            'Traceback (most recent call last):\n'
+            'PermissionError: [WinError 5] 拒绝访问。\n'
+        )
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            hit = instance.report_backend_errors()
+        self.assertTrue(hit, '日志里有后端错误却没被报出来')
+        output = stderr.getvalue()
+        # 报的是**尾部上下文**，异常那句必须在里面
+        self.assertIn('PermissionError', output)
+        self.assertIn('500 -', output)
+        self.assertIn(str(log), output, '应带上日志路径，便于事后取整份')
+
+    def test_stays_quiet_without_backend_errors(self):
+        instance, _ = self._instance_with_log(
+            'INFO    [werkzeug] "GET /shell/base.css HTTP/1.1" 200 -\n'
+            'INFO    [ShellPrefs] 偏好已写入 1 个键（方式 update）\n'
+        )
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            hit = instance.report_backend_errors()
+        self.assertFalse(hit)
+        self.assertEqual(stderr.getvalue(), '')
+
+    def test_missing_log_is_not_an_error(self):
+        """没有日志文件（实例没起来 / 已被清掉）时返回 False，不能把收尾流程带下水。"""
+        root = Path(tempfile.mkdtemp(prefix='omnibox-bootlog-'))
+        self.addCleanup(shutil.rmtree, root, True)
+        self.assertFalse(AppInstance('probe', root).report_backend_errors())
+
+
 @unittest.skipUnless(_BOOT_OK, f'本机无法启动应用实例（{_BOOT_REASON}）')
 class InstanceShutdownTest(unittest.TestCase):
     """停掉实例之后**不能留下孤儿进程**（端口释放、目录可删）。

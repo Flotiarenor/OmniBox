@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -509,10 +510,18 @@ class WhoAmIPlugin(PluginBase):
 
         壳只把 `args` / `kwargs` 展开成调用参数，而插件方法没有 `principal` 形参，
         因此壳会回一个错误 —— 关键是它**绝不能**因此让插件拿到 'bob'。
+
+        顺带锁住这条 500 分支的**可诊断性**：它只把 `str(e)` 回给调用方，服务端若不
+        记录就只剩 werkzeug 的一行 `500 -`，异常类型与栈都查不到。
         """
-        response = self._call('whoami', {'args': [], 'kwargs': {'principal': 'bob'}})
+        with self.assertLogs('shell.backend.file_server', level=logging.ERROR) as captured:
+            response = self._call('whoami', {'args': [], 'kwargs': {'principal': 'bob'}})
         self.assertEqual(response.status_code, 500)
         self.assertNotIn('bob', json.dumps(response.get_json(), ensure_ascii=False))
+        records = '\n'.join(captured.output)
+        self.assertIn('whoami__whoami', records, '日志里应带上出错的接口名')
+        self.assertIn('TypeError', records, '日志里应带上异常类型')
+        self.assertIn('Traceback', records, '日志里应带上调用栈')
 
     def test_require_principal_succeeds_for_a_known_caller(self):
         response = self._call('require')
