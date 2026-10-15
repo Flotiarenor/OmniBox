@@ -290,30 +290,28 @@
   flex-direction: column;
   height: calc(var(--mp-stage-vh) + var(--mp-pb-height));
   flex-shrink: 0;
-  margin: 12px 16px 0;
-  /* 圆角走壳的形状 token（`--radius-lg`，默认 10px）：此前写死 18px，用户选"直角"
-     或"小圆角"时这里纹丝不动（docs/plugin-ui-guide.md §5 要求插件级微调也赋值 token）。 */
-  border-radius: var(--radius-lg, 10px);
-  overflow: hidden;
-  background: #0b0b12;
-  box-shadow: var(--mp-shadow-1);
-  border: 1px solid var(--border);
-  transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1), border-radius 0.3s ease, margin 0.3s ease;
-}
-
-/* 视频模式：舞台贴到工具栏下沿，并且**按窗口高度收**。
-   两件事：
-   1. 贴边 —— 原来保留 `margin: 12px 16px 0` 与 18px 圆角，玻璃壳下那圈空带与四个
-      圆角缺口透出的是壳的背景图，视频画面被一圈未遮挡的背景包着。
-   2. 收高度 —— 写死 `--mp-stage-vh: 300px` 时，矮窗口（如 1024×600）下舞台加播放栏
-      会把播放栏挤出视口：按钮既看不见也点不到（实测按钮中心落到 y=612，视口高 600）。
-      `min()` 只压上限，窗口够高时仍是 300px；用户拖过之后值在元素内联上，内联优先，
-      拖动结果不受这条影响。留的余量 = 工具栏 48 + 顶部 0 + 播放栏 76 + 一点间隙。 */
-.mp-stage.video-on {
-  --mp-stage-vh: 300px;
+  /* 贴边：舞台与工具栏、内边栏、下方内容区**直接相接**，四周不留空带也不用圆角缺口。
+     原来这里是 `margin: 12px 16px 0` + `border-radius: var(--radius-lg)` + 1px 边框，
+     那圈空带与四个圆角缺口透出的是壳的背景图。同一个舞台却按模式分成两种外观，是
+     音乐模式与视频模式各写一份的后果；现在两份取值都落在这一条上：
+     实测音乐模式由「工具栏 12px、侧栏 15px、左右各 16px」变为全 0（见
+     tests/test_media_player_browser_e2e.py 的贴边用例，两种模式同口径核对）。 */
   margin: 0;
   border: none;
   border-radius: 0;
+  overflow: hidden;
+  background: #0b0b12;
+  box-shadow: var(--mp-shadow-1);
+  transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 视频模式：只改高度，并且**按窗口高度收**。
+   写死 `--mp-stage-vh: 300px` 时，矮窗口（如 1024×600）下舞台加播放栏会把播放栏挤出
+   视口：按钮既看不见也点不到（实测按钮中心落到 y=612，视口高 600）。`min()` 只压上限，
+   窗口够高时仍是 300px；用户拖过之后值在元素内联上，内联优先，拖动结果不受这条影响。
+   留的余量 = 工具栏 48 + 顶部 0 + 播放栏 76 + 一点间隙。 */
+.mp-stage.video-on {
+  --mp-stage-vh: 300px;
   height: min(calc(var(--mp-stage-vh) + var(--mp-pb-height)),
               calc(100vh - var(--toolbar-height, 48px) - 8px));
 }

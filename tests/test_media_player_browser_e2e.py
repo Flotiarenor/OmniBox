@@ -747,20 +747,9 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
                    '点「重命名」的图标后未打开重命名弹窗')
 
 
-    def test_video_stage_touches_toolbar_and_edges(self):
-        """视频模式的舞台与工具栏、主区左右两侧**直接相接**，圆角归零。
-
-        舞台原先保留 `margin: 12px 16px 0` 与 18px 圆角，玻璃壳下那圈空带与四个圆角
-        缺口透出的是壳的背景图，视频画面被一圈未遮挡的背景包着。这里量的是"工具栏
-        底边到舞台顶边""舞台左右边到主区左右边"的距离。
-        """
-        self._open_playlist()
-        self._wait(lambda: self.driver.execute_script(
-            "return !!document.getElementById('mp-stage');"), '舞台未渲染')
-        self.driver.execute_script(
-            "document.getElementById('mp-stage').classList.add('video-on');")
-        time.sleep(0.4)
-        geo = self.driver.execute_script("""
+    def _stage_gap_geometry(self) -> dict:
+        """舞台四周的间隔：工具栏底边到舞台顶边、舞台左右边到主区左右边，加圆角。"""
+        return self.driver.execute_script("""
             const stage = document.getElementById('mp-stage');
             const bar = document.querySelector('.mp-toolbar');
             const main = document.querySelector('.mp-main');
@@ -774,14 +763,37 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
                     radius: cs.borderTopLeftRadius,
                     videoOn: stage.classList.contains('video-on')};
         """)
+
+    def _assert_stage_touches_edges(self, geo: dict, label: str) -> None:
+        """舞台与工具栏、主区左右两侧**直接相接**，圆角归零。"""
         self.assertIsNotNone(geo, '取不到舞台/工具栏/主区的矩形')
-        self.assertTrue(geo['videoOn'], '舞台没有进入视频模式')
         self.assertEqual(geo['top'], 0.0,
-                         f"舞台与工具栏之间还留着 {geo['top']}px")
-        self.assertEqual(geo['left'], 0.0, f"舞台左边还留着 {geo['left']}px")
-        self.assertEqual(geo['right'], 0.0, f"舞台右边还留着 {geo['right']}px")
-        self.assertEqual(geo['radius'], '0px',
-                         f"视频模式仍带圆角：{geo['radius']}")
+                         f"{label}：舞台与工具栏之间还留着 {geo['top']}px")
+        self.assertEqual(geo['left'], 0.0, f"{label}：舞台左边还留着 {geo['left']}px")
+        self.assertEqual(geo['right'], 0.0, f"{label}：舞台右边还留着 {geo['right']}px")
+        self.assertEqual(geo['radius'], '0px', f"{label}：舞台仍带圆角：{geo['radius']}")
+
+    def _open_stage(self) -> None:
+        self._open_playlist()
+        self._wait(lambda: self.driver.execute_script(
+            "return !!document.getElementById('mp-stage');"), '舞台未渲染')
+
+    def test_music_stage_touches_toolbar_and_edges(self):
+        """音乐模式的舞台与视频模式同口径贴边。"""
+        self._open_stage()
+        geo = self._stage_gap_geometry()
+        self.assertFalse(geo['videoOn'], '舞台不应处于视频模式')
+        self._assert_stage_touches_edges(geo, '音乐模式')
+
+    def test_video_stage_touches_toolbar_and_edges(self):
+        """视频模式的舞台与工具栏、主区左右两侧直接相接（高度收窄另见 .video-on）。"""
+        self._open_stage()
+        self.driver.execute_script(
+            "document.getElementById('mp-stage').classList.add('video-on');")
+        time.sleep(0.4)
+        geo = self._stage_gap_geometry()
+        self.assertTrue(geo['videoOn'], '舞台没有进入视频模式')
+        self._assert_stage_touches_edges(geo, '视频模式')
 
     def test_panels_do_not_cover_player_bar_controls(self):
         """窗口变矮时弹出面板仍不能压住播放栏按钮：压住的话点「均衡器」第一次只是关面板。
