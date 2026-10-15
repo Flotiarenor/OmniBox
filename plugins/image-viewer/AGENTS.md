@@ -12,8 +12,8 @@
 | --- | --- | --- |
 | `plugins/image-viewer/manifest.json` | 插件声明与入口指向 | `ImageViewerPlugin`、`backend.entry`、`frontend.route` |
 | `plugins/image-viewer/backend/main.py` | 类骨架、设置 schema、常量、API 注册、诊断 | `ImageViewerPlugin`、`register_api`、`settings_schema`、`diagnose`、`get_root_dir`、`list_roots`、`browse_dir`、`_pixiv_mode` |
-| `plugins/image-viewer/backend/common.py` | 无状态共享常量与纯函数 | `NAMESPACE_MARKER`、`pixiv_sort`、`pick_cover`、`cover_rank`、`same_path` |
-| `plugins/image-viewer/backend/filesystem.py` | 路径安全、自然序、尺寸元数据等纯工具 | `ALLOWED_EXTENSIONS`、`natural_sort_key`、`pixiv_number`、`get_image_size`、`drop_image_meta`、`ensure_thumbnail`、`stat_mtime` |
+| `plugins/image-viewer/backend/common.py` | 无状态共享常量与纯函数 | `NAMESPACE_MARKER`、`pixiv_sort`、`is_pixiv_work_dir`、`pick_cover`、`cover_rank`、`same_path` |
+| `plugins/image-viewer/backend/filesystem.py` | 路径安全、自然序、尺寸元数据等纯工具 | `ALLOWED_EXTENSIONS`、`natural_sort_key`、`pixiv_number`、`pixiv_page_index`、`get_image_size`、`drop_image_meta`、`ensure_thumbnail`、`stat_mtime` |
 | `plugins/image-viewer/backend/namespace.py` | 多根目录与虚拟命名空间路径 | `NamespaceMixin`、`_split_virtual`、`_virtual_path`、`_namespace_map`、`_roots`、`get_file_roots`、`resolve_file_path`、`_is_namespace_node`、`_is_safe` |
 | `plugins/image-viewer/backend/thumbs.py` | 元数据缓存、缩略图字节、尺寸填充 | `ThumbMixin`、`get_data_root`、`get_thumb_data`、`ensure_thumb`、`get_image_info`、`_fill_image_sizes`、`_cache_list`、`_limit_all_images`、`_get_thumb` |
 | `plugins/image-viewer/backend/listing.py` | 目录 / 图片列表与子目录聚合扫描 | `ListingMixin`、`list_images`、`list_folder_items`、`list_album_images`、`load_album_tiles`、`list_dir`、`_scan_one_subdir`、`_children_total`、`_all_images_offset` |

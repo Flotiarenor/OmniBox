@@ -39,6 +39,19 @@ def pixiv_number(name: Any) -> int | None:
     return int(m.group(1)) if m else None
 
 
+_PAGE_RE = re.compile(r'^(\d+)_p(\d+)')
+
+
+def pixiv_page_index(name: Any) -> int | None:
+    """提取「作品号_p页号」命名里的页号（`800_p0.png` → 0）；不是该命名返回 None。
+
+    pixiv-sync 的多图作品落盘规则是 `<作品id>_p<页号><扩展名>`，页序与排序方向
+    无关；`800.jpg`、`2024-05-10 京都` 这类名字返回 None，由调用方按整名比较。
+    """
+    m = _PAGE_RE.match(str(name))
+    return int(m.group(2)) if m else None
+
+
 def drop_image_meta(meta_cache: dict, abs_path: str):
     """删除某张图片的尺寸元数据缓存（文件被替换/重新生成缩略图时调用）。"""
     key = hashlib.md5(abs_path.encode()).hexdigest()
