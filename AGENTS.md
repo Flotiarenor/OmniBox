@@ -33,7 +33,7 @@ venv/bin/python -m unittest discover -s tests
 | --- | --- |
 | `shell/backend/**` | [shell/backend/AGENTS.md](shell/backend/AGENTS.md) |
 | `shell/frontend/**`（含 `public/shell/**`） | [shell/frontend/AGENTS.md](shell/frontend/AGENTS.md) —— 改共享资源后必须 `npm --prefix shell/frontend run build`，否则改动不生效 |
-| `plugins/**` | [plugins/AGENTS.md](plugins/AGENTS.md) |
+| `plugins/**` | [plugins/AGENTS.md](plugins/AGENTS.md)；单个插件内部另有 `plugins/<name>/AGENTS.md`（按 [docs/plugin-doc-spec.md](docs/plugin-doc-spec.md) 写） |
 | `docs/Releases/**`、`requirements*.txt`、`pyproject.toml`、`tools/check_packaging.py`、`tools/check_build_tree.py` | [docs/Releases/AGENTS.md](docs/Releases/AGENTS.md) —— 追加一次真实构建与 `check_build_tree.py` |
 | `tools/**` | [tools/AGENTS.md](tools/AGENTS.md) |
 | `tests/**` | [tests/AGENTS.md](tests/AGENTS.md) |
