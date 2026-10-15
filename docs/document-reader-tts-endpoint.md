@@ -15,7 +15,7 @@
 POST <tts_base_url>/v1/audio/speech
 ```
 
-`tts_base_url` 是**根地址**，插件无条件在其后拼 `/v1/audio/speech`（`tts_engine.py:199`）。
+`tts_base_url` 是**根地址**，插件无条件在其后拼 `/v1/audio/speech`。
 因此 `/v1` 或完整接口路径都不能填进这一项：前者得到 `/v1/v1/audio/speech`，
 后者得到重复路径，两者都只会收到 404。
 

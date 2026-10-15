@@ -704,14 +704,19 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument('--scenes', default=str(SCENES_FILE), help='场景表路径')
     parser.add_argument('--home', default='', help=f'已配置好的用户数据目录（默认 {PREPARED_HOME}）')
     parser.add_argument('--blank', action='store_true', help='不用基线，现场生成最小配置')
-    parser.add_argument('--library', default='', help='--blank 时的图片根目录')
+    parser.add_argument('--library', default='', help='--blank 必填：现场生成的最小配置要用的图片根目录')
     parser.add_argument('--only', default='', help='只跑这些槽位（逗号分隔）')
     parser.add_argument('--list', action='store_true', help='列出场景后退出')
     parser.add_argument('--check', action='store_true', help='只断言文案，不出图')
     parser.add_argument('--out', default=str(IMAGES_DIR), help='WebP 输出目录')
     parser.add_argument('--port', type=int, default=0, help='实例端口（默认取空闲端口）')
     parser.add_argument('--keep', action='store_true', help='结束后保留临时目录，便于排查')
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    # 不给默认图库：默认值只能是某台开发机的真实路径，写进仓库就是隐私门禁的漏点，
+    # 而且那台机器上才存在的目录会让别人跑出"配好了但图库是空的"这种假成功。
+    if args.blank and not args.library:
+        parser.error('--blank 必须同时提供 --library：现场生成最小配置需要一个真实存在的图片根目录')
+    return args
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -734,7 +739,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         temporary = tempfile.mkdtemp(prefix='omnibox-shoot-')
         home = Path(temporary) / 'home'
         if args.blank:
-            write_minimal_home(home, args.library or r'G:\图片')
+            write_minimal_home(home, args.library)
         else:
             source = Path(args.home) if args.home else PREPARED_HOME
             if not source.is_dir():

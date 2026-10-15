@@ -432,7 +432,7 @@ RUF100（未使用的 noqa）会把这些标注判为冗余并删除——它们
    该路径当前是死代码。
 7. 插件设置文件未 `chmod 0600`（Linux 上权限取决于 umask），而令牌文件是显式
    `0600`；密钥类设置应统一收紧。
-8. `docs/plugin-guide.md:863` 建议 `Bridge.originalUrl(encodeURIComponent(path))`，
+8. `docs/plugin-guide.md` 建议 `Bridge.originalUrl(encodeURIComponent(path))`，
    与 `base.js` 内部已编码的实现冲突（双重编码）。
 9. **前端工具链落后一个大版本以上，且 Vite 5 已停止接收安全补丁。** 核实结论：
    - Vite 的支持政策是"当前 minor 常规修复 / 前两个 major 只发安全补丁"（映射

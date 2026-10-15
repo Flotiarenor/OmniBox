@@ -33,7 +33,7 @@
 | 注入契约 | `variables.css`（token）、`shared.css`（壳页面与插件页共用的组件）、`base.css`（插件 iframe 骨架）、`effects.css`（动效）、`base.js`（`Bridge`/`Toast`/组件）、`folder-picker.*`、`motion.js` | 壳 | **只引用，不重定义** |
 | 插件自有 | `plugins/<name>/frontend/<name>.css`、`js/*.js` | 插件 | 只写"与别人的差异" |
 
-注入点与内容：`shell/backend/file_server.py:59-93`（`_PLUGIN_BOOTSTRAP_SCRIPT`）。
+注入点与内容：`shell/backend/file_server.py`（`_PLUGIN_BOOTSTRAP_SCRIPT`）。
 它同时做三件事：注入样式脚本、`Bridge.setPrefix('<name>')`、把父窗口的
 `data-theme` 与 `data-custom-colors` 用 `MutationObserver` 同步到插件 `<html>`。
 
@@ -78,7 +78,7 @@
 
 ### 3.1 范式 A：侧栏型（image-viewer / manga-library / media-player / group-mesh / document-reader）
 
-规范结构（现状范本：`plugins/image-viewer/frontend/index.html:10-63`）：
+规范结构（现状范本：`plugins/image-viewer/frontend/index.html`）：
 
 ```html
 <div id="app">                                    <!-- 横向 flex -->
@@ -112,7 +112,7 @@
   也可直接拖动侧栏右缘)。
   现状：5 个带侧栏的插件**全部跟随这个 token**（document-reader 一直如此，另外四个在本轮
   收敛时删掉了写死值）。窄窗口的目标宽度要写 `.xx-sidebar.view-sub-sidebar`（0,2,0）才生效
-  —— 媒体查询不改变特异性，裸 `.xx-sidebar` 会被壳的 240px 覆盖（`group-mesh.css:135` 记录了
+  —— 媒体查询不改变特异性，裸 `.xx-sidebar` 会被壳的 240px 覆盖（`group-mesh.css` 记录了
   实测："设成 236 实际 240"）。
 - 分隔线分工：侧栏只画 `border-right`、主区只画 `border-bottom`，两边都画会在交角叠成 2px。
 - 工具栏左侧放"当前视图标题 + 副标题"，右侧放操作（容器固定
@@ -130,7 +130,7 @@
 </div>
 ```
 
-范本：`plugins/image-cleaner/frontend/index.html:10-35`。它的**固定底栏放批量操作**
+范本：`plugins/image-cleaner/frontend/index.html`。它的**固定底栏放批量操作**
 （"已选 N 张" + "每组只留一张" + "删除选中"）值得推广：批量操作不随内容滚走，
 也不必挤进工具栏。
 
@@ -155,8 +155,8 @@
 | 方式 | 宿主渲染点 | 现状 |
 | --- | --- | --- |
 | 侧栏入口 `embedUrl` | `renderExtensions(container, host, placement)` | image-cleaner、pixiv-sync 挂 image-viewer；group-mesh 的 network-location 挂"网络位置" |
-| 面板内嵌 | `.extension-view > .extension-view-header(标题+说明两行 / 右端是插件挂载点) + .extension-view-body > iframe` | image-viewer `index.html:65-88` |
-| 原生视图 `view` | 宿主自己渲染（无 iframe） | netease-music 的 5 个 `ncm-*` 视图由 **media-player** 渲染（`app-views.js:152-201`、`app-render.js:190-233`） |
+| 面板内嵌 | `.extension-view > .extension-view-header(标题+说明两行 / 右端是插件挂载点) + .extension-view-body > iframe` | image-viewer `index.html` |
+| 原生视图 `view` | 宿主自己渲染（无 iframe） | netease-music 的 5 个 `ncm-*` 视图由 **media-player** 渲染（`app-views.js`、`app-render.js`） |
 
 **被内嵌页的附加契约**：
 
@@ -203,15 +203,15 @@
 - **`view` 型扩展的 UI 代码属于宿主**：netease-music 自己那份
   `frontend/index.html` + `js/app.js`（154 行）就是重复实现——它 `hidden: true`
   不可达，且全仓库没有任何地方构造 `?view=ncm-*` 的 URL 交给它加载；
-  它还用 `parent.mediaPlayerApp`（`app.js:89`）去拿宿主的全局对象，而那个全局只在
-  media-player 自己的 iframe 里存在（`media-player/frontend/index.html:273`），
+  它还用 `parent.mediaPlayerApp`去拿宿主的全局对象，而那个全局只在
+  media-player 自己的 iframe 里存在（`media-player/frontend/index.html`），
   一旦这份页面被壳直接加载，父窗口是壳 ⇒ 点歌 100% 落到错误分支。
   声明 `view:` 的插件，前端只应保留状态/说明页，或者干脆没有前端页面。
 
 ### 3.5 向上层申请 UI：HostChannel（内嵌页的"设置/确认"正确做法）
 
 **问题**：内嵌页是独立文档，`.modal { position: fixed }` 只相对**它自己那个 iframe**
-（`image-viewer.css:356-366` 的 `.extension-view` 就是整块 iframe 区域）。子插件自绘
+（`image-viewer.css` 的 `.extension-view` 就是整块 iframe 区域）。子插件自绘
 设置弹窗的后果是：没有整页遮罩、弹窗被 iframe 边界约束、视觉层级与宿主的弹窗不是一回事。
 
 **做法**：子插件不画，只**申请**；上层用**自己的文档**渲染。协议实现在
@@ -406,7 +406,7 @@ schema/values 都由对面给）与 `confirm`；未知 kind 显式失败回 `ok:
 ### 4.1 主题与自定义色由壳负责
 
 - 插件**不写**任何主题同步代码；`data-theme` 与 `data-custom-colors` 由注入脚本同步
-  （`file_server.py:67-91`、`docs/plugin-guide.md` §5.1-5.2）。
+  （`file_server.py`、`docs/plugin-guide.md` §5.1-5.2）。
 - 用户可以在壳设置页把任意 token 改成任意颜色，所以**不能假设某个 token 是深色或浅色**；
   选中态不要用实心强调色填充 + 白字（用户可能把 `--accent` 设成浅黄）。
 
@@ -417,8 +417,8 @@ schema/values 都由对面给）与 `confirm`；未知 kind 显式失败回 `ok:
 
 | 用户可调 | 设置页控件 | 插件写死数值的后果 |
 | --- | --- | --- |
-| `--radius` / `--radius-sm` / `--radius-lg` | 「外观 → 形状」预设：直角 / 小圆角 / 默认 / 大圆角（`SettingsView.vue:164-169`） | 用户选"直角"，写死 12px/14px/999px 的插件纹丝不动 |
-| `--transition-fast` / `--transition-normal` | 「外观 → 动效」预设：正常 / 精简 / 关闭（`:170-174`） | 用户选"关闭"，自造 `transition: .22s` 的插件照旧有动画 |
+| `--radius` / `--radius-sm` / `--radius-lg` | 「外观 → 形状」预设：直角 / 小圆角 / 默认 / 大圆角（`SettingsView.vue`） | 用户选"直角"，写死 12px/14px/999px 的插件纹丝不动 |
+| `--transition-fast` / `--transition-normal` | 「外观 → 动效」预设：正常 / 精简 / 关闭 | 用户选"关闭"，自造 `transition: .22s` 的插件照旧有动画 |
 | `--nav-width` | 「导航栏宽度」滑杆 + 拖动壳侧栏右缘 | 只影响壳自己的侧栏 |
 | `--sub-sidebar-width` | 「各插件内边栏宽度」滑杆 + 拖动任意插件侧栏右缘，附「恢复默认宽度」 | 只影响插件内边栏；插件再自己声明一个宽度就会出现两个来源（见 §3.1、§3.6） |
 
@@ -443,27 +443,27 @@ schema/values 都由对面给）与 `confirm`；未知 kind 显式失败回 `ok:
 | 阴影 | `--shadow-sm` / `--shadow-md` / `--shadow-lg` | | |
 | 动效 | `--transition-fast` .15s / `--transition-normal` .25s | | |
 
-动效层另有 `effects.css:13-22` 的 `--obx-*`：`--obx-radius` 14 / `--obx-radius-sm` 10 /
+动效层另有 `effects.css` 的 `--obx-*`：`--obx-radius` 14 / `--obx-radius-sm` 10 /
 `--obx-ease` / `--obx-ease-spring` / `--obx-glass-blur` 18 / `--obx-shadow-1` /
 `--obx-shadow-2` / `--obx-accent-soft`。**现状是插件几乎不用它们**
 （采纳计数：group-mesh 7 处、image-viewer 3 处、manga-library 1 处，其余为 0），
 各自另写了一套阴影/玻璃/缓动值。最直接的证据是 media-player 把 `effects.css` 的值
-原样抄成了自己的名字（`media-player.css:9-23`）：
+原样抄成了自己的名字（`media-player.css`）：
 
 | media-player 私有 token | 值 | 等价物（已存在） |
 | --- | --- | --- |
-| `--mp-glass` | `color-mix(in srgb, var(--bg-surface) 84%, transparent)` | `.obx-glass`（`effects.css:94-98`） |
-| `--mp-glass-strong` | 92% 版本 | `.obx-glass-strong`（`:100-104`） |
-| `--mp-shadow-1` | `0 6px 24px rgba(0,0,0,0.10)` | `--obx-shadow-1`（`:19`） |
-| `--mp-shadow-2` | `0 14px 44px rgba(0,0,0,0.18)` | `--obx-shadow-2`（`:20`） |
-| `--mp-scroll-thumb` / `-hover` | `color-mix(… --text-secondary 38% / 62% …)` | `.obx-scroll` 的滚动条规则（`:176-182`） |
+| `--mp-glass` | `color-mix(in srgb, var(--bg-surface) 84%, transparent)` | `.obx-glass` |
+| `--mp-glass-strong` | 92% 版本 | `.obx-glass-strong` |
+| `--mp-shadow-1` | `0 6px 24px rgba(0,0,0,0.10)` | `--obx-shadow-1` |
+| `--mp-shadow-2` | `0 14px 44px rgba(0,0,0,0.18)` | `--obx-shadow-2` |
+| `--mp-scroll-thumb` / `-hover` | `color-mix(… --text-secondary 38% / 62% …)` | `.obx-scroll` 的滚动条规则 |
 
 **规范**：这些值一律改为引用 `--obx-*` / 壳类；插件私有 token 只用于真正的插件差异。
 
 ### 4.4 已存在的跨插件视觉母题（应当固化，而不是各自重写）
 
-4 个插件的样式表开头是同一段"母题"（image-viewer.css:6-18、manga-library.css:6-18、
-media-player.css:9-29、document-reader.css:18-36）；group-mesh（`group-mesh.css:28-59`）
+4 个插件的样式表开头是同一段"母题"（image-viewer.css、manga-library.css、
+media-player.css、document-reader.css）；group-mesh（`group-mesh.css`）
 只共享了 token 块与 `#app` 的 flex 行骨架，背景是平涂的 `--bg-app`：
 
 ```css
@@ -487,7 +487,7 @@ media-player.css:9-29、document-reader.css:18-36）；group-mesh（`group-mesh.
   可以保留，但必须走 `color-mix` 派生而不是整条写死。
 - **圆角**：已有 4 套数值（`--radius` 4/6/10、`--obx-radius` 10/14、各插件的 12/14、
   以及零散 5/8/9/12/18px）。规范：默认用壳的 `--radius*`；插件级微调**必须赋值壳 token**。
-- 反例：`group-mesh.css:29-30` 写的是 `--gm-radius: var(--radius-lg, 12px)`，
+- 反例：`group-mesh.css` 写的是 `--gm-radius: var(--radius-lg, 12px)`，
   而壳的 `--radius-lg` 实际是 **10px**——兜底值与真值不一致，token 一旦取不到就静默偏大。
   正确写法是 `var(--radius-lg)`，或直接使用 `--radius-lg`。
 
@@ -497,7 +497,7 @@ media-player.css:9-29、document-reader.css:18-36）；group-mesh（`group-mesh.
   `--mp-*`、`--cleaner-*`、`--psync-*`。
 - 现状里 `document-reader` 有 3 个无前缀变量（`--reader-bg-color` / `--reader-text-color` /
   `--reader-highlight`）——它们由 JS 在运行时写入，命名破坏了前缀约定，需要改名。
-  另有 3 个死变量 `--nr-cover-*`（`document-reader.css:23-25`，定义后无任何引用）。
+  另有 3 个死变量 `--nr-cover-*`（`document-reader.css`，定义后无任何引用）。
 - 4 个插件重复实现 `--<prefix>-accent-soft` 这类派生色 → 直接用 `--obx-accent-soft`
   或就地 `color-mix()`。
 - 定义位置现状不一：image-viewer / manga-library / media-player / group-mesh 放 `:root`，
@@ -519,11 +519,11 @@ background: var(--mp-glass, var(--bg-surface));
 ```
 
 - `--color-text` / `--color-border` / `--color-bg` / `--color-bg-input` 在仓库里**没有任何定义**，
-  只有 `plugins/pixiv-sync/frontend/index.html:7-60` 在使用它们——该插件对真实主题 token
+  只有 `plugins/pixiv-sync/frontend/index.html` 在使用它们——该插件对真实主题 token
   的使用数为 **0**，整页不跟随主题（详见 §9）。
-- `--text-danger`（`image-viewer.css:359`）同样是猜的名字，实际永远取 `#e5484d`，
+- `--text-danger`（`image-viewer.css`）同样是猜的名字，实际永远取 `#e5484d`，
   暗色主题下不跟随。
-- `--mp-glass`（`manga-library.css:102`）是 media-player 的私有 token，跨插件引用必然失效。
+- `--mp-glass`是 media-player 的私有 token，跨插件引用必然失效。
 - 结论：**"看起来生效"和"真的生效"必须能分辨**。凡是 `var(--x, <字面量>)` 里带了颜色兜底，
   就应该先确认 `--x` 真实存在；加兜底色只是把错误藏起来。
 
@@ -542,21 +542,21 @@ background: var(--mp-glass, var(--bg-surface));
 | 侧栏导航 | `shared.css` 的 `.obx-nav-item` + `--obx-nav-*` | 结构/选中态都靠壳；只保留图标栏宽度等差异 | 5 个插件已用；image-cleaner/pixiv-sync 无 |
 | 侧栏标题/底栏 | `.sub-sidebar-header` / `.sub-sidebar-footer` | 分组标题用大写小字；底栏放统计 | image-viewer 用 `.iv-sidebar-footer` |
 | 卡片/网格 | 无壳类（曾有 `createCardGrid`，因零采用且渲染的 `.manga-*` 无任何样式定义，已删除） | 卡片属插件自己的内容区布局：建议统一"封面 + 标题 + 副标题/徽标"，圆角走 `--radius-lg`，悬浮 `.obx-card-lift`，选中态 = 2px `--accent` 描边 | media-player `.mp-card-grid`、manga-library `.ml-grid`、image-viewer `.iv-image-grid` |
-| 弹窗 | `base.css:159-179` `.modal` / `.modal-box` / `.modal-body` / `.modal-footer` | 入场 `.obx-anim-scale`/`-pop`；遮罩关闭用 `pointerdown` 并判 `e.target === overlay`（`base.js:602`，`tests/debug_modal_backdrop_press.py` 守） | image-viewer/manga-library/document-reader 已用；pixiv-sync 自造 `.psync-modal` |
-| 设置弹窗 | `base.js:566-628` `openSettingsModal()` + `settings_schema` | 首选；schema 类型 `text`（默认）/ `number` / `range` / `checkbox` / `select` / `textarea` / `directory` / `info`（只读信息行，值由后端 `get_settings()` 给、不参与保存）；`secret: True` 标记敏感字段（壳负责掩码与"留空即不改"）；`directory` 自动接入 `folder-picker`，`local_only` 可关掉"网络位置"入口 | 7 个插件调用（本轮把 pixiv-sync、image-cleaner 也接上）；仍自建面板的只有 image-viewer（文件夹/行高/排序，需要就地预览）与 document-reader（阅读设置弹窗 + 整页朗读设置） |
+| 弹窗 | `base.css` `.modal` / `.modal-box` / `.modal-body` / `.modal-footer` | 入场 `.obx-anim-scale`/`-pop`；遮罩关闭用 `pointerdown` 并判 `e.target === overlay`（`base.js`，`tests/debug_modal_backdrop_press.py` 守） | image-viewer/manga-library/document-reader 已用；pixiv-sync 自造 `.psync-modal` |
+| 设置弹窗 | `base.js` `openSettingsModal()` + `settings_schema` | 首选；schema 类型 `text`（默认）/ `number` / `range` / `checkbox` / `select` / `textarea` / `directory` / `info`（只读信息行，值由后端 `get_settings()` 给、不参与保存）；`secret: True` 标记敏感字段（壳负责掩码与"留空即不改"）；`directory` 自动接入 `folder-picker`，`local_only` 可关掉"网络位置"入口 | 7 个插件调用（本轮把 pixiv-sync、image-cleaner 也接上）；仍自建面板的只有 image-viewer（文件夹/行高/排序，需要就地预览）与 document-reader（阅读设置弹窗 + 整页朗读设置） |
 | 表单控件 | `base.css` 的 `.settings-form` + `shared.css` 的 `.field*` / `.field-range*` | 自建设置面板也必须复用这些类 | image-viewer 自造 `.iv-field`/`.iv-setting-item` |
-| Toast | `base.js:362-393` `Toast.success/error/info/warning` | 全部反馈走它 | 采纳 134 处；**pixiv-sync 有 22 处 `alert()`** |
-| 确认框 | `base.js:394-418` `confirmDialog(msg, {danger})` | 破坏性操作一律用它 | 采纳 12 处，无 `window.confirm` |
-| 右键菜单 | `base.js:886` `createContextMenu` | 网格/列表的批量入口 | document-reader 3 处、image-viewer 1 处 |
-| 分页 | `base.js:845` `createPagination` + `.pagination-bar` | 服务端分页的列表 | image-viewer 1 处 |
-| 目录树 | `base.js:631` `createTree` + `.tree-container` | 目录选择 | document-reader / image-viewer |
-| 灯箱 | `base.js:708` `createLightbox` | 图片预览 | image-cleaner 2 处、image-viewer 1 处 |
-| 滚动条 | `effects.css:140-183` `.obx-scroll` | 每个滚动容器都要加；**只有沉浸态**（阅读正文、舞台）可以整块隐藏滚动条 | 多数已加；media-player 的**主内容区** `#media-content` 漏加（`index.html:154`，同文件其它 5 个滚动容器都加了）；document-reader 正文区按沉浸语义隐藏（css:216、233-236）；pixiv-sync 只有外层容器 |
-| 降低动态效果 | `effects.css:186-201` 覆盖 `.obx-anim-*`、`.empty-state-icon` 与 `.obx-stagger > *` | 用壳的类；**直接引用关键帧名不会被白名单覆盖**，要自己补一条 reduced-motion 覆盖 | media-player 用 `*, *::before, *::after` + 3 处 `!important` 全量压，有效但代价是连壳组件一起压 |
-| 骨架屏 | `effects.css:118-131` `.obx-skeleton` | 首屏/长列表 | 采纳 0（都用文字"加载中…"），group-mesh 另有 `.gm-skeleton-line`；属"新增能力"而非缺陷（见 §10.5） |
+| Toast | `base.js` `Toast.success/error/info/warning` | 全部反馈走它 | 采纳 134 处；**pixiv-sync 有 22 处 `alert()`** |
+| 确认框 | `base.js` `confirmDialog(msg, {danger})` | 破坏性操作一律用它 | 采纳 12 处，无 `window.confirm` |
+| 右键菜单 | `base.js` `createContextMenu` | 网格/列表的批量入口 | document-reader 3 处、image-viewer 1 处 |
+| 分页 | `base.js` `createPagination` + `.pagination-bar` | 服务端分页的列表 | image-viewer 1 处 |
+| 目录树 | `base.js` `createTree` + `.tree-container` | 目录选择 | document-reader / image-viewer |
+| 灯箱 | `base.js` `createLightbox` | 图片预览 | image-cleaner 2 处、image-viewer 1 处 |
+| 滚动条 | `effects.css` `.obx-scroll` | 每个滚动容器都要加；**只有沉浸态**（阅读正文、舞台）可以整块隐藏滚动条 | 多数已加；media-player 的**主内容区** `#media-content` 漏加（`index.html`，同文件其它 5 个滚动容器都加了）；document-reader 正文区按沉浸语义隐藏；pixiv-sync 只有外层容器 |
+| 降低动态效果 | `effects.css` 覆盖 `.obx-anim-*`、`.empty-state-icon` 与 `.obx-stagger > *` | 用壳的类；**直接引用关键帧名不会被白名单覆盖**，要自己补一条 reduced-motion 覆盖 | media-player 用 `*, *::before, *::after` + 3 处 `!important` 全量压，有效但代价是连壳组件一起压 |
+| 骨架屏 | `effects.css` `.obx-skeleton` | 首屏/长列表 | 采纳 0（都用文字"加载中…"），group-mesh 另有 `.gm-skeleton-line`；属"新增能力"而非缺陷（见 §10.5） |
 | 空态 | `base.css`「通用状态」的 `.empty-state` + `.empty-state-icon/-text/-hint`（+ `--obx-empty-min-h`、`.empty-state--inline`、`.empty-state--error`） | 空列表/无结果一律用它；**不要自造 `.xx-empty`**。出错态（加载失败等）加 `.empty-state--error`，但仍要给出"下一步"提示 | 本轮统一：7 个插件约 57 处改用它，各插件的 `.iv-empty/.nr-empty/.ml-empty/.mp-empty-state/.nl-empty/.cleaner-empty/.empty/.psync-empty` 全部删除；`.empty-state--error` 用于 image-cleaner 扫描失败与 media-player 歌单加载失败。保留的插件专属例外见下 |
-| 浮层层级 | `base.css` 的 `.modal` 1500 / `shared.css` 的 `.toast-container` 3000 | 自绘浮层的 `z-index` 必须 ≥ 1500 且低于 3000，否则会被壳的弹窗/Toast 盖住 | media-player `.mp-modal` 500 / `.mp-context-menu` 520、pixiv-sync 自绘弹窗 999（`index.html:46`）都会被盖住；manga-library 自研阅读器 2000 反过来盖住壳弹窗 |
-| 键盘可达性 | 壳的灯箱已支持 Esc / ←→ / 滚轮 / 拖拽 | 至少有：`Esc` 关闭最上层浮层、沉浸态 `←/→` 切换、搜索框 `Esc` 清空 | image-viewer 全插件无键盘处理；自绘右键菜单（`app-nav.js:96-134`）不监听 Esc 与 scroll 重定位 |
+| 浮层层级 | `base.css` 的 `.modal` 1500 / `shared.css` 的 `.toast-container` 3000 | 自绘浮层的 `z-index` 必须 ≥ 1500 且低于 3000，否则会被壳的弹窗/Toast 盖住 | media-player `.mp-modal` 500 / `.mp-context-menu` 520、pixiv-sync 自绘弹窗 999都会被盖住；manga-library 自研阅读器 2000 反过来盖住壳弹窗 |
+| 键盘可达性 | 壳的灯箱已支持 Esc / ←→ / 滚轮 / 拖拽 | 至少有：`Esc` 关闭最上层浮层、沉浸态 `←/→` 切换、搜索框 `Esc` 清空 | image-viewer 全插件无键盘处理；自绘右键菜单不监听 Esc 与 scroll 重定位 |
 
 补充约定：
 
@@ -640,16 +640,16 @@ background: var(--mp-glass, var(--bg-surface));
 
 - **设置优先走 schema，不要双轨。** 后端 `settings_schema` 声明了什么，前端就该用
   `openSettingsModal()` 渲染同一份；手写第二份字段列表必然漂移。pixiv-sync 就是双轨
-  （`backend/main.py:38-114` vs `index.html:116-165`）：字段清单、默认值、范围钳制
+  （`backend/main.py` vs `index.html`）：字段清单、默认值、范围钳制
   （`intSetting()`）各写一遍，提示文案硬编码成内联 style，而且**旁路了壳的目录选择器**
   —— `download_dir` 在 schema 里声明成 `type: "text"`，用户在插件里只能手打路径。
   （凭据不会因此泄露或被覆盖：壳的 `save_settings` 对掩码回传做了保护，
-  见 `shell/backend/plugin_base.py:392-397`——"掩码原样回传 = 不改动"。）
+  见 `shell/backend/plugin_base.py`——"掩码原样回传 = 不改动"。）
 - **长任务进度四件套**：进度条 + "已完成/总数" + "当前项" + 取消按钮。后端统一用
   `shell/backend/tasks.py` 的 `BackgroundTask`（`plugin-guide.md` §3.4），前端轮询
   `status()`。壳目前没有进度条类，pixiv-sync 自造了 `.psync-bar`、media-player 自造了
   播放/加载进度条——建议提取一个壳级进度类，让"同步""扫描""下载"这类长任务长得一样。
-- **后端有设置项、前端必须有入口**：image-cleaner 的 `threshold`（`backend/main.py:23-27`，
+- **后端有设置项、前端必须有入口**：image-cleaner 的 `threshold`（`backend/main.py`，
   `type: range`）此前在前端没有任何入口，用户只能手改配置 —— 已补上工具栏的设置入口。
   设了 schema 就要把它接上，否则等于没有这个设置。
 - **图标**：导航/按钮统一 Emoji 前缀（现状 8 个插件都这样，无需改）。
@@ -660,7 +660,7 @@ background: var(--mp-glass, var(--bg-surface));
   （实测 45px 对 48px），进出扩展视图上边栏会跳。
 - **文案**：空态一句话 + 一个下一步动作；错误提示说"发生了什么 + 能做什么"，不贴堆栈。
 - **内嵌页不得重复宿主 chrome**：image-cleaner 内嵌进 image-viewer 后，宿主的
-  `.extension-view-header`（`image-viewer.css:367-379`）与插件自己的 48px
+  `.extension-view-header`与插件自己的 48px
   `.view-toolbar` 叠成两层横条、两个标题。
 
 ---
@@ -680,7 +680,7 @@ background: var(--mp-glass, var(--bg-surface));
    `.iv-search input { width: 220px }` 这种"壳类 + 插件类 + 选择器"是反例：四个插件四套类名、
    七档宽度，看起来就是四个搜索框 —— 本轮已全部删除。
 3. **不要用元素级选择器穿透壳组件**：group-mesh 用 13 个 `.modal-body input/textarea` 之类
-   的规则改壳弹窗里的控件外观（`group-mesh.css:375-426`），壳一改结构就失效；
+   的规则改壳弹窗里的控件外观，壳一改结构就失效；
    要改就改自己的类，或者提出新的壳 token。
 4. **不要和壳注入的全局名同名**：插件脚本与壳注入的 `/shell/*.js` 在同一个文档里跑，
    顶层的 `function` / `var` / `const` / `let` 与 `window.X =` 落进**同一个全局对象**，
@@ -690,7 +690,7 @@ background: var(--mp-glass, var(--bg-surface));
    `Cannot read properties of undefined (reading 'then')`、弹窗不出现；改成 `openNrModal`
    后恢复。门禁：`tests/js/plugin_asset_contract.mjs`（每个插件前端都跑）按源码比对两边的顶层名字。
    与之相邻的另一种问题是**类方法**与壳的全局函数同名（image-viewer 的
-   `app-settings.js:15` 有方法 `openSettingsModal`）：不覆盖，但读代码时容易误调，尽量避免。
+   `app-settings.js` 有方法 `openSettingsModal`）：不覆盖，但读代码时容易误调，尽量避免。
 5. **媒体查询**：同断点规则相邻、降序排列，并写注释说明顺序是硬约束
    （`max-width:1040px` 与 `max-width:720px` 都写单列时，后者胜出）。
 6. **内联 `style=`**：只允许一次性数值（`style="width:360px;"`、`style="margin-left:auto;"`）；
@@ -703,7 +703,7 @@ background: var(--mp-glass, var(--bg-surface));
 8. **高度链**：现状两种写法并存——5 个插件用 `#app { height: 100vh }`
    （image-viewer/manga-library/media-player/document-reader/image-cleaner），
    group-mesh 与 pixiv-sync 用 `html, body { height: 100% }` 的链式高度。
-   两者在 iframe 里都能用，但**必须显式写一条**：`base.css:11` 给 `body` 设了
+   两者在 iframe 里都能用，但**必须显式写一条**：`base.css` 给 `body` 设了
    `overflow: hidden`，没有高度链时内层 `.view-content` 的 `overflow-y` 不生效，
    长列表直接不可达（netease-music 的独立页就是这个状态）。
 9. **浮层的颜色**：遮罩/黑底只用 `--bg-overlay` / `--bg-overlay-strong`。
@@ -732,19 +732,19 @@ background: var(--mp-glass, var(--bg-surface));
 
   | 插件 | 生命周期钩子 | 常驻定时源 | 结论 |
   | --- | --- | --- | --- |
-  | media-player | 完整（本轮补，`app.js:69/90`） | `lyrics-parser` 频谱 rAF（`onHide` 停、`onShow` 恢复）、2s 进度保存（有意保留） | 只停视觉类工作，播放与进度保存不受影响 |
+  | media-player | 完整（本轮补，`app.js`） | `lyrics-parser` 频谱 rAF（`onHide` 停、`onShow` 恢复）、2s 进度保存（有意保留） | 只停视觉类工作，播放与进度保存不受影响 |
   | pixiv-sync | 完整（本轮补，`index.html` 的 `bindLifecycle()`） | 两个 `setInterval`（10s 状态 / 1s 冷却）+ `tick()` 自续轮询 | `onHide` 停定时器并置 `polling=false`，`onShow` 恢复并接着显示长任务 |
-  | document-reader | 只有 `onDispose`（`app.js:256-257`） | **无持久定时器**（仅 3 处一次性 `setTimeout`：防抖写入与翻页） | 刻意不绑 `onHide`（`app.js:247-258` 有注释：切走时朗读应当继续）——这是正确做法，不是缺陷 |
-  | manga-library | 完整且幂等（`app.js:34-40`） | 2s 任务轮询 | **范本**：`onHide` 停、`onShow` 起、`onDispose` 兜底 |
-  | image-viewer | 完整（`app.js:92-114`） | 幻灯片定时器 | 范本：`onHide` 记住位置，`onShow` 原位继续 |
-  | group-mesh | 完整（`remote.js:727-730`） | 远端共享读回轮询 | 范本 |
+  | document-reader | 只有 `onDispose`（`app.js`） | **无持久定时器**（仅 3 处一次性 `setTimeout`：防抖写入与翻页） | 刻意不绑 `onHide`（`app.js` 有注释：切走时朗读应当继续）——这是正确做法，不是缺陷 |
+  | manga-library | 完整且幂等 | 2s 任务轮询 | **范本**：`onHide` 停、`onShow` 起、`onDispose` 兜底 |
+  | image-viewer | 完整 | 幻灯片定时器 | 范本：`onHide` 记住位置，`onShow` 原位继续 |
+  | group-mesh | 完整 | 远端共享读回轮询 | 范本 |
   | image-cleaner / netease-music | 无（不需要，均不保活） | — | — |
 
-- **`onHide` 的语义是"停止视觉与轮询类工作"，不是"停止播放"**（`plugin-guide.md:762`）：
-  document-reader 刻意不在 `onHide` 里暂停朗读（`app.js:250-252` 注释说明"一切走朗读就断"
+- **`onHide` 的语义是"停止视觉与轮询类工作"，不是"停止播放"**（`plugin-guide.md`）：
+  document-reader 刻意不在 `onHide` 里暂停朗读（`app.js` 注释说明"一切走朗读就断"
   是曾经的缺陷）是正确做法；media-player 应当只停歌词 rAF、保留进度保存，
   两个插件要停的是各自的"状态刷新"部分。
-- 设置保存后**壳会整页重载插件**（`base.js:622`）：不要假设本地状态能保留；
+- 设置保存后**壳会整页重载插件**：不要假设本地状态能保留；
   需要保留的视图状态（当前目录、滚动位置、选中项）自己落 `localStorage`。
 - `settings_schema` 的 `directory` 字段默认允许"网络位置"来源；语义上不接受远端来源的
   字段（如"远端下载目录"）要声明 `local_only: True`（`tests/debug_settings_local_only_ui.py`）。
@@ -761,7 +761,7 @@ background: var(--mp-glass, var(--bg-surface));
   （image-viewer 自建 `#extension-frame`，没有用壳的 `renderExtensions` 内嵌分支与
   `.obx-embed-frame`；它的二级视图不带自己的返回按钮，靠侧栏导航项退出——见 §3.4）。
 - **内嵌页不得跨 iframe 读宿主内部对象**：image-cleaner 直接读
-  `parent.imageViewer.lightbox`（`app.js:144-147`）来复用宿主的灯箱——宿主一改名就
+  `parent.imageViewer.lightbox`来复用宿主的灯箱——宿主一改名就
   静默退回自建灯箱，属于"契约之外"的耦合。跨插件能力请走
   `Bridge.callPlugin()` 或扩展注册表。
 - 被内嵌页遵守 §3.4 的"不再画骨架"约定；视觉与宿主同族。
@@ -798,21 +798,21 @@ pixiv-sync —— **34 hex / 2 rgba / 22 alert / 0 真 token** —— 以及两�
    叠加 22 处 `alert()`、18 处内联样式、自造 `.psync-modal`（z-index 999）。
 2. `pixiv-sync` 的生命周期完全没接：0 处 `onShow`/`onHide`/`onDispose`，却有
    `setInterval(refreshStatus, 10000)`（每 10s 打一次后端 `get_status`）与
-   `setInterval(renderCooldown, 1000)`（`index.html:453-454`）。它的宿主 image-viewer
+   `setInterval(renderCooldown, 1000)`。它的宿主 image-viewer
    是 `keepAlive`，用户切走后这两个定时器继续跑。
-3. `media-player` 声明 `keepAlive` 却同样 0 处钩子，而 `plugin-guide.md:763-764` 已经把
+3. `media-player` 声明 `keepAlive` 却同样 0 处钩子，而 `plugin-guide.md` 已经把
    "media-player 在 onHide 里停 lyrics-parser 的 rAF" 写成了事实——**文档与实现不一致**。
    实际代价有限（rAF 在隐藏 iframe 里会被浏览器节流；2s 进度保存是有意保留的），
    但缺钩子会让后续任何"只在可见时做的工作"没有落点。
-4. `image-viewer.css:359` 用不存在的 `--text-danger`，永远取 `#e5484d`；
-   `manga-library.css:102` 引用 media-player 的私有 `--mp-glass`，永远取兜底值。
+4. `image-viewer.css` 用不存在的 `--text-danger`，永远取 `#e5484d`；
+   `manga-library.css` 引用 media-player 的私有 `--mp-glass`，永远取兜底值。
 
 **P1（口径不一，用户能感觉到）**
 
 5. 用户可调的 `--radius*` / `--transition-*` 被大量写死数值绕过（§4.2）：5 个插件各自
    定义 `--<prefix>-radius`（12/14px 等），反而只有 group-mesh 去引用壳 token（且兜底值写错）。
-6. `media-player` 大规模重复造壳：8 个关键帧逐值复制成 `mpSpin`/`mpFadeUp`/…（css:1965-2015）、
-   `--mp-shadow-*`/`--mp-glass*` 与 `--obx-*` 数值逐字相同、整段滚动条规则（css:879-947）重复
+6. `media-player` 大规模重复造壳：8 个关键帧逐值复制成 `mpSpin`/`mpFadeUp`/…、
+   `--mp-shadow-*`/`--mp-glass*` 与 `--obx-*` 数值逐字相同、整段滚动条规则重复
    `.obx-scroll`，另有 `.mp-modal`（z-index 500）对 `.modal`、`.mp-context-menu` 对
    `createContextMenu`、`.mp-empty-state` 对 `.empty-state`。
    同时它的主内容区 `#media-content` 反而漏了 `.obx-scroll`。
@@ -848,7 +848,7 @@ pixiv-sync —— **34 hex / 2 rgba / 22 alert / 0 真 token** —— 以及两�
 14. 批量操作位置：image-cleaner 固定底栏（好），image-viewer 塞工具栏（拥挤）。
 15. 工具栏右侧靠 `style="margin-left:auto;"` 而不是类。
 16. 遮罩黑度 4 档（0.45/0.55/0.62/0.65）未走 `--bg-overlay`。
-17. 死代码：`--nr-cover-*` 3 个变量（document-reader.css:23-25）；`.psync-empty` 已随本轮
+17. 死代码：`--nr-cover-*` 3 个变量；`.psync-empty` 已随本轮
     空态统一删除。
 18. `createCardGrid` 已删除（零采用，且它渲染的 `.manga-*` 在壳与任何插件样式里都没有定义，
     谁用谁拿到无样式 DOM）；`createSettingsForm`（0 直接采用，仅被 `openSettingsModal`
@@ -865,13 +865,13 @@ pixiv-sync —— **34 hex / 2 rgba / 22 alert / 0 真 token** —— 以及两�
 | 做法 | 出处 | 解决的问题 |
 | --- | --- | --- |
 | 搜索框：胶囊外框 + 图标在流内 + 输入无边框，聚焦用 `:focus-within` | document-reader 的原 `.nr-search` | 不需要 30px 内边距给绝对定位的图标让位，也没有"聚焦变宽"导致的工具栏抖动；已成为壳的 `.search-field`，另外三个插件向它收敛 |
-| 固定底栏承载批量操作与选中计数 | image-cleaner `index.html:30-34` | 批量操作不随内容滚走 |
-| 扩展面板内嵌范式（header 标题 + 返回 / body iframe） | image-viewer `index.html:65-73` | 宿主与 Companion 插件解耦 |
-| 幂等的轮询托管 | manga-library `app.js:34-40` | `onHide` 停 / `onShow` 起 / `onDispose` 兜底，不会重复起定时器 |
+| 固定底栏承载批量操作与选中计数 | image-cleaner `index.html` | 批量操作不随内容滚走 |
+| 扩展面板内嵌范式（header 标题 + 返回 / body iframe） | image-viewer `index.html` | 宿主与 Companion 插件解耦 |
+| 幂等的轮询托管 | manga-library `app.js` | `onHide` 停 / `onShow` 起 / `onDispose` 兜底，不会重复起定时器 |
 | 导航项"差异只在 token" | `shared.css` 的落地方式 | 四个插件的选中态可逐像素一致（`tests/debug_nav_style_ui.py`） |
 | 几何自检代替截图 | `tests/debug_group_mesh_ui.py`（24 条断言） | 结构归属、并排/堆叠、token 取色、深浅主题、交错延迟都能断言 |
-| 高亮用 `::highlight()` 不铺底色 | document-reader `css:498-509` | 朗读高亮不破坏正文排版 |
-| 短文档主动补满视口 | document-reader `reader-engine.js:175-189` | 内容不足一屏时滚动区不空荡 |
+| 高亮用 `::highlight()` 不铺底色 | document-reader | 朗读高亮不破坏正文排版 |
+| 短文档主动补满视口 | document-reader `reader-engine.js` | 内容不足一屏时滚动区不空荡 |
 | 沉浸态走 `data-video-fullscreen` | media-player | 全屏联动比插件自己隐藏壳导航可靠 |
 | 设置项全部走 schema | manga-library（`openSettingsModal({title})` 最薄调用） | 不写第二份字段列表，不产生双轨漂移 |
 | token 用法正面样例 | netease-music 独立页（9 处 `var()` 全为真 token、0 hex） | 说明"只写 token"并不需要复杂工程 |
@@ -881,19 +881,19 @@ pixiv-sync —— **34 hex / 2 rgba / 22 alert / 0 真 token** —— 以及两�
 - `.view-sub-sidebar` 的 `width` / `flex-direction` 写在壳样式里，与插件规则同优先级，
   后注入的壳胜出 ⇒ 必须用 `.gm-side.view-sub-sidebar` 这种 0,2,0 选择器。
 - 侧栏与主区分隔线两边都画 = 交角 2px。
-- `.view-body` 上的 `position: relative` 是插件自己加的（document-reader.css:704-706，
+- `.view-body` 上的 `position: relative` 是插件自己加的（document-reader.css，
   注释说明给在 `#app` 上会让面板盖住左栏），多个插件各写一遍；改动前先确认没有第二个插件依赖。
 - `[hidden]` 在作者样式存在时可能不生效（group-mesh 因此改用内联 `display`，
-  `remote.js:501-508`）。
+  `remote.js`）。
 - 元素级选择器（`.modal-body input`）会连壳渲染的控件一起改，壳改结构即失效。
 - 面板纯显隐切换时，隐藏面板里的按钮点击/取值都会失败；自动化用例必须先切面板并
   校验切换生效。
 - 入场动画（`obxFadeUp` + 交错延迟）会让 Selenium 的 `.text` 与"可交互"判定间歇性失败；
   用例要走 `innerText` 与 JS 点击，并等"渲染完成"而不是"元素存在"。
 - 嵌套 iframe（宿主内嵌 Companion）里，高度链与滚动容器必须由**被内嵌页自己**补齐
-  （pixiv-sync `index.html:9-11` 有注释），宿主不会替它传下去。
+  （pixiv-sync `index.html` 有注释），宿主不会替它传下去。
 - `--color-mix()` 在不同插件页里的序列化形式不同（oklab / color(srgb)），
-  跨插件做颜色断言要按像素比而不是字符串比（`tests/debug_nav_style_ui.py:44-60`）。
+  跨插件做颜色断言要按像素比而不是字符串比。
 
 ### 9.5 本轮 P0 修复记录（已实施）
 
@@ -903,8 +903,8 @@ pixiv-sync —— **34 hex / 2 rgba / 22 alert / 0 真 token** —— 以及两�
 | 2 | **pixiv-sync 交互口径**：22 处 `alert()` → `Toast.error/success/warning/info`，长汇总用 `Toast.show(msg,'info',6000)` | 同文件；`alert(` 22 → 0，`Toast.` 0 → 22 |
 | 3 | **pixiv-sync 弹窗**：自造 `.psync-modal`（z-index 999）→ 壳 `.modal` / `.modal-box` / `.modal-body` / `.modal-footer`；`style.display` 切换 → `classList.toggle('active')`；宽度用 `.modal-box.psync-oauth-box`（0,2,0）压过 base.css | 同文件；`base.js` 的 Toast 与 `base.css` 的 `.modal.active` 均已核对存在 |
 | 4 | **pixiv-sync 生命周期**：两个常驻 `setInterval` 与 `tick()` 自续轮询改由 `PluginLifecycle` 托管（`onShow` 起 / `onHide` 停 / `onDispose` 收尾），无壳上下文时退回旧行为 | 同文件 `bindLifecycle()`；宿主 image-viewer 是 keepAlive，切走即停 |
-| 5 | **media-player 生命周期**：新增 `_bindPluginLifecycle()`（`app.js:69`、`:90`）；`lyrics-parser` 增 `suspend()` / `resume()`，`show()` 在挂起时不启动频谱 rAF；`onDispose` 落一次进度并停定时器 | `plugins/media-player/frontend/js/{app.js,lyrics-parser.js}`；装载契约（82 成员）通过 |
-| 6 | **未定义 token**：`image-viewer.css:359` `--text-danger` → `var(--danger)`；`manga-library.css:102` `--mp-glass` → `var(--bg-surface)`；`group-mesh/network-location.html` `var(--bg, #17181c)` → `var(--bg-app)`，并把写死的 `color-scheme: light dark` 改为跟随 `data-theme` | 三个文件；扫描后仍被标出的其余变量均为 JS 运行时 `setProperty` 写入（`--obx-i` / `--lyrics-*` / `--reader-*` / `--hero-bg` / `--i` / `--range-val`），属正常 |
+| 5 | **media-player 生命周期**：新增 `_bindPluginLifecycle()`（`app.js`）；`lyrics-parser` 增 `suspend()` / `resume()`，`show()` 在挂起时不启动频谱 rAF；`onDispose` 落一次进度并停定时器 | `plugins/media-player/frontend/js/{app.js,lyrics-parser.js}`；装载契约（82 成员）通过 |
+| 6 | **未定义 token**：`image-viewer.css` `--text-danger` → `var(--danger)`；`manga-library.css` `--mp-glass` → `var(--bg-surface)`；`group-mesh/network-location.html` `var(--bg, #17181c)` → `var(--bg-app)`，并把写死的 `color-scheme: light dark` 改为跟随 `data-theme` | 三个文件；扫描后仍被标出的其余变量均为 JS 运行时 `setProperty` 写入（`--obx-i` / `--lyrics-*` / `--reader-*` / `--hero-bg` / `--i` / `--range-val`），属正常 |
 
 **尚未实施**（建议下一步）：
 
@@ -922,7 +922,7 @@ pixiv-sync —— **34 hex / 2 rgba / 22 alert / 0 真 token** —— 以及两�
 | 1 | **删除死组件 `createCardGrid`**：零采用，且它渲染的 `.manga-*` 在壳与任何插件样式里都没有定义 | `plugin-guide.md` §4.3 与本文件 §5/§9.2/§10 同步 |
 | 2 | **壳空态升级**：`.empty-state` 改为四段结构（+ `.empty-state--inline`、`--obx-empty-min-h`）；`effects.css` 的 reduced-motion 白名单补上 `.empty-state-icon` | `base.css`「通用状态」一节；壳内既有使用者（`base.js` 的设置弹窗）无需改动 |
 | 2 | **7 个插件迁移**到壳类并删除各自实现：`.iv-empty*`、`.nr-empty*`、`.ml-empty*`、`.mp-empty-state*`、`.cleaner-empty`、`.empty`（netease）、`.nl-empty`、`.psync-empty`（死类） | 全仓 `class="empty-state"` 约 57 处；`grep '(iv\|nr\|ml\|mp\|cleaner\|psync\|nl)-empty'` 只剩注释与 `.nr-empty-span` |
-| 3 | **内嵌页信号**：image-viewer 的扩展面板与 `folder-picker.js` 的提供方 iframe 在 URL 上追加 `?embed=1`；image-cleaner / pixiv-sync 在 `<head>` 里据此打上 `html.is-embedded`，把工具栏降级为普通操作行并隐藏与宿主重复的标题 | `app.js` 的 `_embedUrl()`、`folder-picker.js:207-215`、两个页面的 `<head>` 与 CSS（0,2,1 选择器） |
+| 3 | **内嵌页信号**：image-viewer 的扩展面板与 `folder-picker.js` 的提供方 iframe 在 URL 上追加 `?embed=1`；image-cleaner / pixiv-sync 在 `<head>` 里据此打上 `html.is-embedded`，把工具栏降级为普通操作行并隐藏与宿主重复的标题 | `app.js` 的 `_embedUrl()`、两个页面的 `<head>` 与 CSS（0,2,1 选择器） |
 | 4 | **静态门禁落地**：`tools/check_plugins.py` 新增前端 UI 契约检查（未定义变量与原生 `alert`/`confirm` 为 error，`!important` 与重复/越权关键帧为 warning），并在 `tests/test_plugin_spec.py` 补 `FrontendUiContractTests`（8 例） | 全仓运行：0 error、46 warning（40 基线 + 6 处 `!important`）；实装当天抓到 image-viewer 的 `obxRebuildSlide` 越权前缀，已改名 `iv-rebuild-slide` |
 | 5 | **设置入口与搜索框收敛**：pixiv-sync 删除手写设置表单（字段/默认值/范围钳制/保存逻辑），改走 `openSettingsModal`，后端 `download_dir` 由 `text` 改为 `directory`；image-cleaner 补上工具栏设置入口（此前 `threshold` 无入口）；搜索框按 document-reader 的构造（胶囊外框 + 图标在流内 + 无聚焦变宽）做成壳的 `.search-field` 唯一实现，四个插件标记同构、插件侧样式删净，宽度走 `--obx-search-width`、窄窗口在壳里统一收窄；壳新增 `.empty-state--error`，用于扫描失败与歌单加载失败 | pixiv-sync 前端 521 → 441 行；插件侧共删约 130 行搜索样式（4 套类名 / 7 档宽度）；`grep` 确认无 `loadSettings/saveSettings/intSetting/set-token/btn-save` 与 `*-search` 规则残留；检查器 0 error |
 
@@ -994,7 +994,7 @@ pixiv-sync —— **34 hex / 2 rgba / 22 alert / 0 真 token** —— 以及两�
 | 浮层层级与遮罩 | 在 base.css / shared.css 注释里写死层级约定（modal 1500 / toast 3000），并提供 `.obx-overlay` 使用 `--bg-overlay` |
 | 高度链 | 在 base.css 或文档里给一条明确写法（`#app { height: 100vh }` 或 `html,body{height:100%}`），避免第三个变体 |
 | token 关系说明 | 在 `variables.css` / `effects.css` 注释里写清 `--radius*` 与 `--obx-radius*` 的分工，以及"哪些 token 用户可调" |
-| 改壳侧共享资源后必须重新构建 | `npm --prefix shell/frontend run build`。`/shell/*` 的路由**优先发 `dist/shell/`**（`file_server.py:762-769`），不构建时 `public/shell/*` 的改动在界面上完全不生效 —— 曾因此把"新标记 + 旧样式"误判成 CSS 写错（搜索框胶囊外框消失） |
+| 改壳侧共享资源后必须重新构建 | `npm --prefix shell/frontend run build`。`/shell/*` 的路由**优先发 `dist/shell/`**，不构建时 `public/shell/*` 的改动在界面上完全不生效 —— 曾因此把"新标记 + 旧样式"误判成 CSS 写错（搜索框胶囊外框消失） |
 
 ### 10.2 按分级改插件
 
