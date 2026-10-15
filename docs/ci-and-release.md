@@ -14,6 +14,7 @@
 | 打包规则（spec/收集） | `python tools/check_packaging.py` | **exit 0**（硬门禁） |
 | 版本一致性 | `python tools/check_version.py` | **exit 0**（硬门禁） |
 | 测试文件可运行性 | `python tools/check_tests.py` | **exit 0**（硬门禁；`tests/test_*.py` 必须能被 unittest 收集到用例，手工脚本按约定命名 `tests/debug_*.py`） |
+| 文档引用一致性 | `python tools/check_docs.py` | **exit 0**（硬门禁；每个 `AGENTS.md` 反引号里的名字/路径、围栏命令里的路径、Markdown 链接都必须还存在。插件界面文档只查后两类，理由见脚本头部） |
 | 本地隐私门禁 | `python tools/check_private_paths.py` | **OK**（开发机硬门禁；CI 上无本地配置时 SKIP。见 §1.1） |
 | 类型检查（内核） | `python -m pyright main.py shell tools` | **0 错误**（硬门禁） |
 | 类型检查（插件+测试） | `python -m pyright plugins tests` | 基线（暂不拦截，见 §6） |
@@ -46,6 +47,7 @@ $py = ".\venv\Scripts\python.exe"
 & $py tools/check_packaging.py
 & $py tools/check_version.py
 & $py tools/check_tests.py
+& $py tools/check_docs.py
 & $py tools/check_npm_audit.py
 & $py tools/check_private_paths.py
 & $py -m pyright main.py shell tools
@@ -92,34 +94,42 @@ node tools/check_frontend_escape.cjs
 
 | job | runner | 内容 |
 | --- | --- | --- |
-| `lint` | ubuntu | ruff + 插件规范 + 打包规则 + 版本一致性 + 图标 sprite + 测试文件可运行性 |
+| `changes` | ubuntu | 变更集判定：算出这次只动了文档还是动了代码，其余 job 靠它的输出决定跑不跑 |
+| `lint` | ubuntu | ruff + 插件规范 + 打包规则 + 版本一致性 + 图标 sprite + 测试文件可运行性 + 文档引用一致性 |
+| `docs` | ubuntu | **只在变更集含 `.md` 时跑**：文档引用一致性（`tools/check_docs.py`） |
 | `typecheck` | windows | pyright 内核（硬门禁）+ 插件/测试（基线，不拦截） |
 | `test` | windows + ubuntu，py3.10 + 3.12 | unittest 全量（netease-music 的 4 项仅 Windows 运行） |
 | `frontend` | ubuntu | 转义门禁 + `npm ci` + `vue-tsc --noEmit` + `vite build` |
 | `package` | windows + ubuntu | 真实跑 PyInstaller + 校验产物内容；**只在 push `main` / 手动触发时跑**（日常 push 由 `package-smoke` 按路径兜底，产物仅作 artifact） |
 
-**纯文档改动整个工作流都不触发**（`paths-ignore: '**/*.md'`、`LICENSE`、
-`.gitignore`、`.gitattributes`）：这 5 个门禁全部只读代码——ruff 不扫 Markdown，
-`check_version` / `check_plugins` / `check_packaging` 读的是
-`pyproject.toml` / `package.json` / `manifest.json` / spec，前端 job 只构建
-`src/` 里的 TS/Vue——所以改这些文件不可能让门禁失败，跑一遍纯属烧 runner 时间。
+**按变更集决定跑哪些 job，而不是在 `on:` 上过滤工作流**：
 
-刻意**不**忽略的路径（宁可多跑一次）：
-
-| 路径 | 理由 |
+| 变更集 | 跑什么 |
 | --- | --- |
-| `docs/Releases/**` | 是 PyInstaller spec 与打包资源，属构建输入而非文档 |
-| `.github/workflows/**` | 工作流自身改动必须验证，改坏一次会静默失去所有门禁 |
-| `tools/**`、`tests/**` | 门禁脚本与被测代码本身 |
+| 只有 `.md` | `changes` + `docs`（约 10 秒） |
+| `.md` + 代码 | 全跑 |
+| 只有代码 | 除 `docs` 外全跑 |
+
+判定规则只有两条分支（`changes` job）：`*.md` 算文档，**其余任何文件都算"动了代码"**——
+包括 `docs/Releases/**`（是 PyInstaller spec 与打包资源，属构建输入而非文档）、
+`.github/workflows/**`（工作流自身改动必须验证，改坏一次会静默失去所有门禁）、
+`tools/**` 与 `tests/**`。`LICENSE` / `.gitignore` / `.gitattributes` 这类少见改动因此
+也会跑全量：宁可多跑一次，不要少跑一次。取不到变更集（强推、比对点缺失）时同样按
+"动了代码"处理。
+
+**为什么不在 `on:` 上用 `paths` / `paths-ignore`**：被路径过滤掉的工作流根本不启动，
+也就不会创建 check run——一旦本工作流被设为必需检查，PR 会永远停在
+*Expected — Waiting for status to be reported*（GitHub 没有"缺失的检查算通过"这个开关）。
+改用 job 级 `if:` 之后，被跳过的 job 以 `Success` 上报，必需检查不会被卡住。
+
+**纪律**：新增 job 必须同时写 `needs: changes` 与
+`if: needs.changes.outputs.code == 'true'`（或 `...docs == 'true'`）——漏写就是
+"每次全跑"或"永远不跑"。
 
 「只改注释/格式」的代码改动**无法按路径识别**，只能照常跑全量——这是刻意接受的
-代价：路径过滤宁漏不误，确认没价值时再手动取消运行即可。
+代价：判定宁可多跑，不要少跑。
 
-> 若将来给 `main` / `develop` 配上"必须先过 CI 才能合并"的保护规则，注意
-> `paths-ignore` 命中的 PR 不会产生任何检查项，容易被误判为"卡在 pending"。
-> 需要时改用 `dorny/paths-filter` 在 job 内做跳过（保留一个必然成功的检查项）。
-
-**日常 push 实际只跑 7 个 job**：`lint` + `typecheck` + `test`×4 + `frontend`。
+**日常 push 实际只跑 8 个 job**：`changes` + `lint` + `typecheck` + `test`×4 + `frontend`。
 `package`×2 被 `if:` 关在 push `main` / 手动触发上（被跳过的 job 仍会列在运行页面
 上显示 `skipped`，但不消耗 runner）；打包路径相关的回归由 `package-smoke.yml`
 按路径触发兜底，两者跑的是同一套 spec + `check_build_tree.py` 产物校验。
@@ -150,7 +160,7 @@ node tools/check_frontend_escape.cjs
 
 - **触发**：`push: tags: ['v*']`。打 tag 就是"我决定发这个版本"的声明；
   `workflow_dispatch` 保留作手动兜底（重跑某次发布、或只跑 `dry_run` 取产物）。
-- **自动做完**：版本一致性校验（tag ↔ pyproject ↔ package.json）、ruff / 插件规范 /
+- **自动做完**：版本一致性校验（tag ↔ pyproject ↔ package.json ↔ package-lock.json）、ruff / 插件规范 /
   打包规则 / 图标 sprite 一致性 / 测试文件可运行性 / 全量单测 / 前端转义门禁、
   双平台 PyInstaller 构建、`check_build_tree.py` 产物校验、打 zip / tar.gz、
   生成 `.sha256`、建**草稿** Release 并挂上产物。
@@ -175,12 +185,33 @@ node tools/check_frontend_escape.cjs
 ## 3. 版本号唯一来源
 
 - 唯一来源：`pyproject.toml` 的 `[project].version`。
-- `shell/frontend/package.json` 的 `version` 必须与之相同（`check_version.py` 校验）。
+- `shell/frontend/package.json` 的 `version` 必须与之相同；`shell/frontend/package-lock.json`
+  里的两处副本（根 `version` 与 `packages[""].version`）同样必须相同（`check_version.py`
+  校验）。`npm ci` 只校验依赖是否与锁文件一致，根 `version` 不在其中 —— 这两处副本没有
+  别的守卫。
 - tag 必须写成 `v<version>`；`release.yml` 会把 tag 与**它指向提交**里的
   pyproject 版本对齐检查，不一致时第一步就失败，**不会**产出名字与版本不符的安装包。
 - 打 tag 会**触发构建**（全量门禁 + 双平台产物 + 建草稿 Release），但**不会公开**：
   公开是另一下人工动作（点 Publish）。所以 tag 是"决定发版"，Publish 是"决定对外可见"。
 - 取值给脚本用：`python tools/check_version.py --print`（只输出裸版本号）。
+
+### 何时升哪一位
+
+判断口径只有一句：**别人的代码需要改才能继续用，就是 major；别人一行都不用改、但能用到
+新东西，就是 minor；其余是 patch。**
+
+- **major（破坏兼容）**：老的 `.config/` / `shell.json` 读不出来、已装的插件加载失败、
+  设置键改名后旧值丢失、插件契约里已有的字段或钩子被移除或改语义。升 major 时必须在
+  [docs/Releases/AGENTS.md](Releases/AGENTS.md) 的规则里写清迁移动作（用户要做什么），
+  不能只改数字。
+- **minor（公开契约变化）**：插件契约（`manifest.json` 字段、`PluginBase` 的钩子、
+  `plugin_manager` 暴露给插件的 API）、壳的路由与设置键、前端共享资源的契约
+  （`public/shell/**` 的 DOM id、CSS 变量、`data-*` 属性）**新增**或改语义。
+  单个插件自己的版本号跟它自己的契约走：插件的公开契约变了，插件 `manifest.json` 的
+  `version` 升 minor（插件是独立分发单元，与壳的版本号无关）。
+- **patch（不改变契约）**：只改实现、修缺陷、调整界面细节、改文档与注释。
+- 拿不准时看**有没有第二方读它**：有别的插件或用户配置依赖这个形状，就按契约变更算；
+  只在壳内部调用，按 patch 算。
 
 ---
 

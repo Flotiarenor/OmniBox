@@ -15,7 +15,8 @@ name: release
 #
 # 前置约定：
 #   1. 版本号唯一来源是 pyproject.toml 的 [project].version，
-#      shell/frontend/package.json 必须与它一致（tools/check_version.py 会把关）；
+#      shell/frontend/package.json 与 package-lock.json（两处副本）必须与它一致
+#      （tools/check_version.py 会把关）；
 #   2. tag 必须写成 v<version>，且与**它指向提交**里的 pyproject.toml 一致，
 #      否则第一步就失败，不会产出"名字与版本不符"的安装包；
 #   3. tag 指向的提交必须已经在 main 上（见 verify 的 guard 步骤）：避免给

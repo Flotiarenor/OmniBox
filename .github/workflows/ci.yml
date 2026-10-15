@@ -1,8 +1,10 @@
 name: ci
 
 # 门禁总览（每一条都在本地实测过，见 docs/ci-and-release.md）：
+#   changes     —— 变更集判定：算出这次只动了文档还是动了代码，其余 job 靠它的输出决定跑不跑
 #   lint        —— ruff 全量 + 插件规范 + 打包规则 + 版本一致性 + 图标 sprite + 测试文件可运行性
-#                  + 本地隐私门禁（开发机配置里的路径/密钥不得被复制进仓库；CI 上 SKIP）
+#                  + 文档引用一致性 + 本地隐私门禁（开发机配置里的路径/密钥不得被复制进仓库；CI 上 SKIP）
+#   docs        —— 只在变更集含 .md 时跑：文档引用一致性（AGENTS.md 的名字 / 路径 / 链接）
 #   typecheck   —— pyright（内核零错误硬门禁；插件/测试先输出基线不拦截）
 #   test        —— 构建前端 + unittest 全量，Windows + Linux 双平台
 #   frontend    —— 转义一致性门禁 + vue-tsc 类型检查 + vite 构建
@@ -12,32 +14,34 @@ name: ci
 # 历史缺陷里有一批是 Windows 专属的（SQLite 临时目录被占用导致清理失败、
 # PATH 分隔符写死 ':'、文件锁定）。只用 Linux runner 会永久掩盖它们。
 #
-# 为什么纯文档改动不跑（paths-ignore）：
-# 这 5 个门禁全部只读代码 —— ruff 不扫 Markdown，check_version/check_plugins/
-# check_packaging 读的是 pyproject/package.json/manifest/spec，前端 job 只构建
-# src/ 里的 TS/Vue。因此改 .md、README、LICENSE 一类文件不可能让门禁失败，
-# 跑一遍是纯烧 runner 时间。与 package-smoke.yml 的取舍一致（那边注释写的是
-# "避免每次改文档都烧 20 分钟的 Windows runner"）。
+# 为什么**不**在 on: 上用 paths / paths-ignore 过滤：
+# 被路径过滤掉的工作流根本不启动，也就不会创建 check run —— 一旦本工作流被设为必需检查，
+# PR 会永远停在 "Expected — Waiting for status to be reported"，而 GitHub 没有"缺失的
+# 检查算通过"这个开关。改用 job 级过滤：一个便宜的 changes job 先算出变更集，其余 job 用
+# `if:` 决定跑不跑 —— 被 `if` 跳过的 job 会以 Success 上报，必需检查因此不会被卡住。
 #
-# 刻意**不**列入 ignored 的路径（宁可多跑一次）：
-#   docs/Releases/**  —— 是打包 spec 与资源，构建输入，不是文档；
-#   .github/workflows/** —— 工作流自身改动必须验证，否则改坏一次会静默失去所有门禁；
-#   tools/** 与 tests/** —— 门禁与被测代码本身。
+#   只有 .md 改动  → changes + docs（约 10 秒），代码门禁全部跳过
+#   .md + 代码     → 全跑
+#   只有代码       → 除 docs 外全跑
+#
+# 判定规则只有两条分支（见 changes job）：`*.md` 算文档，其余任何文件都算"动了代码"。
+# 因此 LICENSE / .gitignore 这类少见改动会照常全跑 —— 宁可多跑一次，不要少跑一次；
+# 判定不出变更集时（例如强推导致取不到比对点）同样按"动了代码"处理。
+# 哪些东西算"代码"：除 `*.md` 之外的一切，包括 docs/Releases/**（打包 spec 与资源，是构建
+# 输入不是文档）、.github/workflows/**（改坏一次会静默失去所有门禁）、tools/** 与 tests/**。
+#
+# **纪律**：新增 job 必须同时写 `needs: changes` 与 `if: needs.changes.outputs.code == 'true'`
+# 或 `if: needs.changes.outputs.docs == 'true'` —— 漏写就是"每次全跑"或"永远不跑"。
+#
+# 为什么文档门禁要单独一个 job：除 check_docs.py 之外，其余门禁全部只读代码 —— ruff 不扫
+# Markdown，check_version/check_plugins/check_packaging 读的是 pyproject/package.json/
+# manifest/spec，前端 job 只构建 src/ 里的 TS/Vue。所以纯文档改动只需要跑 check_docs.py；
+# lint 里也保留一份，用来拦"代码改了、文档没跟上"（那是删除/改名符号的主要方向）。
 # 另外「只改注释/格式」的代码改动无法按路径识别，只能照常跑（跑一遍最省心）。
 on:
   push:
     branches: ['**']
-    paths-ignore:
-      - '**/*.md'
-      - 'LICENSE'
-      - '.gitignore'
-      - '.gitattributes'
   pull_request:
-    paths-ignore:
-      - '**/*.md'
-      - 'LICENSE'
-      - '.gitignore'
-      - '.gitattributes'
   workflow_dispatch:
 
 # 同一分支的新推送取消旧的运行，省配额
@@ -53,8 +57,93 @@ env:
   NODE_VERSION: '20'
 
 jobs:
+  changes:
+    name: 变更集判定
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+      docs: ${{ steps.classify.outputs.docs }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 要与比对点算出完整变更集，浅克隆里没有那些对象
+          fetch-depth: 0
+
+      # 判定只有两条分支：`*.md` 算文档，其余任何文件都算"动了代码"。
+      # 用 bash 的 case 而不是 on: 上的 `**/*.md`：case 模式里 `*` 可以跨 `/`，根目录与
+      # 任意层级的 .md 都命中，不依赖 `**` 是否匹配"零个目录"（这一点文档没有定论）。
+      - id: classify
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "手动触发：全部跑"
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "docs=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$EVENT" = "pull_request" ]; then
+            base="$BASE_SHA"
+          elif [ -n "${BEFORE:-}" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            base="$BEFORE"
+          else
+            # 新建分支的首次推送：before 是全 0，退回到"与上一个提交比"
+            base=$(git rev-parse "$SHA^" 2>/dev/null || echo "$SHA")
+          fi
+
+          # 判定步骤自己绝不能失败：changes 失败会让所有 needs 它的 job 被跳过，而被跳过的
+          # job 上报 Success —— 那就是"门禁静默没跑"。取不到比对点时必须退化成"按代码处理"。
+          if ! changed=$(git diff --name-only "$base" "$SHA" 2>/dev/null); then
+            echo "取不到变更集（$base..$SHA），按「动了代码」处理"
+            changed=""
+          fi
+          printf '变更集：\n%s\n' "$changed"
+
+          code=false
+          docs=false
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              *.md) docs=true ;;
+              *)    code=true ;;
+            esac
+          done <<< "$changed"
+
+          if [ -z "$changed" ]; then
+            # 取不到变更集时按"动了代码"处理：宁可多跑一次，也不要静默少跑
+            echo "变更集为空，按「动了代码」处理"
+            code=true
+          fi
+
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "docs=$docs" >> "$GITHUB_OUTPUT"
+
+  docs:
+    name: docs（AGENTS.md 引用一致性）
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 只用到标准库：不装 Python 依赖，也不构建前端 —— 纯文档改动只跑这一个 job
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 文档引用一致性（AGENTS.md 的名字 / 路径 / 链接）
+        run: python tools/check_docs.py
+
   lint:
     name: lint（ruff + 规范 + 版本 + 测试/图标）
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -86,7 +175,7 @@ jobs:
       - name: 打包规则检查（spec 与数据收集）
         run: python tools/check_packaging.py
 
-      - name: 版本一致性（pyproject / package.json）
+      - name: 版本一致性（pyproject / package.json / package-lock.json）
         run: python tools/check_version.py
 
       - name: 图标 sprite 一致性（sprite ↔ icon_data ↔ 引用）
@@ -94,6 +183,12 @@ jobs:
 
       - name: 测试文件可运行性（tests/test_*.py 必须真的有用例）
         run: python tools/check_tests.py
+
+      # 文档引用一致性：AGENTS.md 反引号里的名字/路径、围栏命令里的路径、Markdown 链接
+      # 都必须还存在。纯文档改动的方向由上面的 docs job 兜（同一个脚本），这里这一份
+      # 兜的是"代码改了、文档没跟上"。
+      - name: 文档引用一致性（AGENTS.md 的名字 / 路径 / 链接）
+        run: python tools/check_docs.py
 
       # 本地隐私门禁：读开发机配置（.config/plugins/*.json 等，均未跟踪）提取真实路径与
       # 密钥，再扫被跟踪文件里有没有被复制进去。runner 上没有这些配置，因此这里走 SKIP
@@ -104,6 +199,8 @@ jobs:
 
   typecheck:
     name: typecheck（pyright，内核硬门禁）
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -135,6 +232,8 @@ jobs:
 
   test:
     name: test（${{ matrix.os }} / py${{ matrix.python }}）
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -180,6 +279,8 @@ jobs:
 
   frontend:
     name: frontend（转义门禁 + 类型 + 构建）
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -218,7 +319,7 @@ jobs:
 
   package:
     name: package（PyInstaller 冒烟 + 产物校验，${{ matrix.os }}）
-    needs: [lint, frontend]
+    needs: [changes, lint, frontend]
     # 打包不在每次 push / PR 上跑：省掉 Linux + Windows 两个 runner 与约 100s 墙钟
     # （日常 push 由 9 个 job 降到 7 个）。覆盖率没有丢：
     #   - 改到打包相关文件（docs/Releases/**、requirements*.txt、pyproject.toml、
@@ -227,7 +328,7 @@ jobs:
     #     + check_build_tree.py 产物校验；
     #   - 进主干（push main）或手动触发时，这里再各跑一次，作为"改应用代码把打包
     #     悄悄改坏"（例如新增 PyInstaller 看不见的导入）的最后一道闸。
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+    if: ${{ needs.changes.outputs.code == 'true' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

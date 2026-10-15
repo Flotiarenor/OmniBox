@@ -1,12 +1,18 @@
-"""版本一致性检查：pyproject.toml / package.json / git tag 必须同源。
+"""版本一致性检查：pyproject.toml / package.json / package-lock.json / git tag 必须同源。
 
 为什么需要：自动打包与发布（GitHub Actions）要凭一个版本号决定产物名与 Release
 标签。此前版本号散落在多处且各自漂移（`shell/frontend/package.json` 曾被误写成
 3.0.0 —— 那是"Vue 3"的意思，不是版本号 —— 而 README 与 tag 是 v1.1.2），一旦
 不一致就会出现"tag 是 v1.2.0、包名却是别的"。
 
+`shell/frontend/package-lock.json` 里还有两份同源副本：根 `version` 与
+`packages[""].version`。**这两份此前无人看管**：`npm ci` 校验的是依赖是否与锁文件
+一致，根 `version` 不在其中 —— 实测 npm 11.13.0 在 package.json=1.0.0、锁文件
+=9.9.9 时 `npm ci --offline` 退出码 0 且不回写。也就是说它只会静静地漂移，直到
+下一次有人改锁文件时顺手抄错。
+
 用法：
-    python tools/check_version.py            # 仅检查 pyproject 与 package.json 一致
+    python tools/check_version.py            # 检查三个文件是否同源
     python tools/check_version.py v1.2.0     # 额外校验给定 tag 与之一致（CI 用）
     python tools/check_version.py --print    # 只打印版本号（CI 拼产物名用）
 
@@ -31,6 +37,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 PYPROJECT = PROJECT_ROOT / 'pyproject.toml'
 PACKAGE_JSON = PROJECT_ROOT / 'shell' / 'frontend' / 'package.json'
+PACKAGE_LOCK = PROJECT_ROOT / 'shell' / 'frontend' / 'package-lock.json'
 
 
 def read_pyproject_version(errors: list) -> str | None:
@@ -66,6 +73,35 @@ def read_package_version(errors: list) -> str | None:
     return version
 
 
+def read_lock_versions(errors: list) -> list:
+    """读出 package-lock.json 里所有版本号副本，返回 [(JSON 路径, 值)]。
+
+    两份副本都要查：npm 自己会同时写这两处，但只校验依赖，不校验它们是否与
+    package.json 一致（见模块 docstring 的实测）。
+    """
+    if not PACKAGE_LOCK.is_file():
+        errors.append(f'缺少 {PACKAGE_LOCK.relative_to(PROJECT_ROOT)}')
+        return []
+    try:
+        data = json.loads(PACKAGE_LOCK.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError) as e:
+        errors.append(f'package-lock.json 解析失败: {e}')
+        return []
+
+    packages = data.get('packages')
+    root_entry = packages.get('') if isinstance(packages, dict) else None
+    nested_version = root_entry.get('version') if isinstance(root_entry, dict) else None
+
+    found: list = []
+    for json_path, value in (('version', data.get('version')),
+                             ('packages[""].version', nested_version)):
+        if isinstance(value, str) and value.strip():
+            found.append((json_path, value))
+        else:
+            errors.append(f'package-lock.json 缺少 {json_path}')
+    return found
+
+
 def normalize(tag: str) -> str:
     return tag.removeprefix('v')
 
@@ -77,12 +113,21 @@ def main(argv: list) -> int:
     errors: list = []
     py_version = read_pyproject_version(errors)
     pkg_version = read_package_version(errors)
+    lock_versions = read_lock_versions(errors)
 
     if py_version and pkg_version and py_version != pkg_version:
         errors.append(
             f'版本不一致: pyproject.toml = {py_version}, '
             f'shell/frontend/package.json = {pkg_version}'
         )
+
+    if py_version:
+        for json_path, value in lock_versions:
+            if value != py_version:
+                errors.append(
+                    f'版本不一致: pyproject.toml = {py_version}, '
+                    f'shell/frontend/package-lock.json 的 {json_path} = {value}'
+                )
 
     if args:
         tag = args[0].strip()

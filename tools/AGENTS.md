@@ -6,12 +6,13 @@
 
 | 脚本 | 检查什么 | 何时必须跑 |
 | --- | --- | --- |
-| `check_version.py` | `pyproject.toml` / `shell/frontend/package.json` / git tag 同源（`--print` 打印当前版本） | 改版本号、打 tag |
+| `check_version.py` | `pyproject.toml` / `shell/frontend/package.json` / `package-lock.json`（根 `version` 与 `packages[""].version`）/ git tag 同源（`--print` 打印当前版本） | 改版本号、打 tag |
 | `check_plugins.py` | manifest 可解析、`name` 与目录名一致、前端/后端声明完整、每个字段都有读取方或已登记为无效果 | 改任何插件 |
 | `check_packaging.py` | PyInstaller spec 的数据收集规则（不需要真跑 PyInstaller） | 改 spec、收集规则或依赖 |
 | `check_build_tree.py` | 真正跑完 PyInstaller 之后，产物目录里有没有该有的东西 | 真跑过构建之后 |
 | `build_icons.py` | 由 `res/icons/icon_data.json` 生成 sprite 与注入函数，`--check` 校验一致性 | 改图标或图标相关代码 |
 | `check_tests.py` | `tests/test_*.py` 必须真的产出 `unittest` 用例 | 新增测试文件 |
+| `check_docs.py` | 每个 `AGENTS.md` 里引用的名字、路径与 Markdown 链接都还存在（插件界面文档只查链接与命令里的路径，理由见脚本头部） | 改任何 `AGENTS.md`、函数改名、文件挪位置 |
 | `check_private_paths.py` | 从**未跟踪**的本地配置提取真实路径与令牌，扫被跟踪文件里有没有被复制进去 | 开发机上每次提交前 |
 | `check_npm_audit.py` | 前端依赖漏洞（脚本内部固定官方源） | 改前端依赖 |
 | `check_frontend_escape.cjs` | 前端属性注入的转义一致性（用 node 运行） | 改前端脚本或样式 |

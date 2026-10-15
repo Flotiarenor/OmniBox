@@ -6,7 +6,7 @@
 ## 项目要点
 
 - 桌面应用框架：Python 后端（`shell/backend/`）+ Vue 3 前端（`shell/frontend/`），运行时可选 PyInstaller 冻结；插件在 `plugins/<name>/`（`manifest.json` + `backend/` + `frontend/`）。
-- 版本号唯一来源是 `pyproject.toml` 的 `[project].version`，`shell/frontend/package.json` 必须与之一致（由 `tools/check_version.py` 校验）。
+- 版本号唯一来源是 `pyproject.toml` 的 `[project].version`，`shell/frontend/package.json` 必须与之一致（由 `tools/check_version.py` 校验）；`shell/frontend/package-lock.json` 里的两处副本（根 `version` 与 `packages[""].version`）同样由它校验 —— `npm ci` 只校验依赖，不管这两处。
 - 打包产物中不允许出现用户数据（`data/`、`.config/`、`logs/`、`__pycache__`）；插件后端的动态依赖必须登记在 `HIDDEN_IMPORTS`。这两条的判据见 [docs/Releases/AGENTS.md](docs/Releases/AGENTS.md)。
 
 ## 提交前必须执行的检查
@@ -20,6 +20,7 @@ venv/bin/python tools/check_packaging.py
 venv/bin/python tools/check_npm_audit.py
 venv/bin/python tools/check_private_paths.py
 venv/bin/python tools/check_tests.py
+venv/bin/python tools/check_docs.py
 venv/bin/python -m pyright main.py shell tools
 venv/bin/python -m unittest discover -s tests
 ```
