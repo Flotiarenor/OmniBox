@@ -106,12 +106,18 @@ class DocumentReaderEngine {
         this.loadedEnd = index;
         this.currentChapterIndex = index;
 
-        const range = el.scrollHeight - el.clientHeight;
-        el.scrollTop = Math.max(0, Math.min(1, Number(fraction) || 0)) * range;
-        requestAnimationFrame(() => {
-            const r = el.scrollHeight - el.clientHeight;
-            el.scrollTop = Math.max(0, Math.min(1, Number(fraction) || 0)) * r;
-        });
+        // `fraction` 与 `chapterFraction()` 互为逆运算：都按"这一章的正文高度 + 它在容器
+        // 里的偏移"算，不按 (scrollHeight - clientHeight)。后者差着一屏，短章（EPUB /
+        // Markdown 常见）上会把记录的位置还原到接近章末；越出可滚范围的部分由浏览器
+        // 夹到章末（`prevPage` 传 1 要的正是"上一章的最底"）。
+        const ratio = Math.max(0, Math.min(1, Number(fraction) || 0));
+        const applyFraction = () => {
+            const node = this.chapterElement(index);
+            el.scrollTop = node ? node.offsetTop + ratio * node.offsetHeight
+                : ratio * (el.scrollHeight - el.clientHeight);
+        };
+        applyFraction();
+        requestAnimationFrame(applyFraction);
 
         this._prefetchChapter(index - 1);
         this._prefetchChapter(index + 1);

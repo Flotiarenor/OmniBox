@@ -587,6 +587,28 @@ class DocumentReaderFormatTests(unittest.TestCase):
         self.assertEqual(item['last_read_chapter'], 2)
         self.assertAlmostEqual(item['progress'], 0.7, places=3)
 
+    def test_listing_reports_recorded_scroll_position(self):
+        """`document_list` 报的 `scroll_position` 必须与进度文件一致。
+
+        回归：`update_progress` 只把章号回写 `_document_cache`，漏了 `scroll_position`；
+        文件未变时 `list_documents` 命中早返回分支、只认这份缓存，于是列表里的章内位置
+        永远是 0 —— 前端就算读它，拿到的也是"没有记录"。
+        """
+        (self.docs / 'a.txt').write_text('第一章\n正文\n第二章\n正文\n', encoding='utf-8')
+        self.plugin.list_documents()
+        self.plugin.update_progress('a.txt', 1, 0.42)
+
+        item = next(n for n in self.plugin.list_documents()['documents'] if n['id'] == 'a.txt')
+        self.assertAlmostEqual(item['scroll_position'], 0.42, places=3)
+
+        # 重启后仍要一致：缓存文件与进度文件都得带着它
+        self.plugin.on_unload()
+        reopened = self._new_plugin()
+        self.addCleanup(reopened.on_unload)
+        item = next(n for n in reopened.list_documents()['documents'] if n['id'] == 'a.txt')
+        self.assertAlmostEqual(item['scroll_position'], 0.42, places=3,
+                               msg='重启后列表里的章内位置丢了')
+
     # ===== 统一刷新基建 =====
 
     def test_freshness_sync_and_verify_drop_vanished_books(self):

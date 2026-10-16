@@ -157,6 +157,13 @@ class _Handler(BaseHTTPRequestHandler):
             content = (self.state.get('bodies') or {}).get(args[0], {}).get(str(args[1]), '')
             body = json.dumps({'content': content, 'format': 'html'})
         elif method == 'document_update_progress':
+            # 只记调用，**不**回灌 `document_list`：上一个用例的页面在本次导航时也会
+            # 触发一次 beforeunload 保存，把那个位置合并进书架列表就会串到下一个用例
+            # （现象是下一个用例"一打开就在第 6 章"）。位置还原由用例自己摆在文档
+            # 条目上，读回来的效果只看调用记录。
+            calls = list(self.state.get('progress_calls') or [])
+            calls.append([str(args[0]), args[1], args[2]])
+            self.state['progress_calls'] = calls
             body = json.dumps({'success': True})
         elif method == 'get_settings':
             body = json.dumps(dict(self.state.get('settings') or {}))
@@ -419,6 +426,112 @@ class DocumentReaderBrowserTests(unittest.TestCase):
             "return window.documentReader.engine.currentChapterIndex")
         self.assertGreaterEqual(index, 1, '翻页模式下点击右半区应当翻到下一章')
 
+    # ===== 阅读进度的记录与还原 =====
+
+    #: 每章正文的行数。必须让一章明显高于视口：当前章是按"视口 35% 处落在哪个分章块"
+    #: 判定的，章太短时这个点会落到下一章，测出来的就不是本用例关心的还原动作。
+    TALL_LINES = 60
+
+    def _set_tall_book(self, **overrides) -> None:
+        """一本 12 章、每章明显高于视口的书；`overrides` 用来带"上次读到"的记录。"""
+        items = [{'index': i, 'title': f'第{i + 1}章', 'word_count': 6} for i in range(12)]
+        bodies = {str(i): f'<p>第{i + 1}章正文</p>' * self.TALL_LINES for i in range(12)}
+        doc = _document(SHORT_BOOK, SHORT_TITLE, count=12)
+        doc.update(overrides)
+        self.set_state(documents=[doc], chapters=items, bodies={SHORT_BOOK: bodies})
+
+    def _open_here(self, book: str = SHORT_BOOK) -> None:
+        self.driver.execute_script('window.documentReader.openDocument(arguments[0]);', book)
+        self.wait('window.documentReader._isReaderMode')
+        time.sleep(0.8)
+
+    def _read_position(self) -> dict:
+        return self.driver.execute_script("""
+            const app = window.documentReader;
+            const el = document.getElementById('document-content-area');
+            return {chapter: app.engine.currentChapterIndex,
+                    fraction: app.engine.chapterFraction(),
+                    scrollTop: el ? el.scrollTop : null};
+        """)
+
+    def _progress_calls(self, since: int = 0) -> list:
+        """假后端记下的 `document_update_progress` 调用（`[书, 章号, 章内位置]`）。
+
+        起点用 `_progress_base()` 取：上一个用例的页面在 `open_app()` 导航时也会触发
+        一次 beforeunload 保存，那条请求落在共享的假后端里，只看本次用例写过什么。
+        """
+        calls = [list(call) for call in (_Handler.state.get('progress_calls') or [])]
+        return calls[since:]
+
+    def _progress_base(self) -> int:
+        return len(_Handler.state.get('progress_calls') or [])
+
+    def test_open_restores_recorded_chapter_and_offset(self):
+        """上次读到的章号**与章内位置**都要还原。
+
+        回归：`openDocument` 只用 `last_read_chapter`，`goToChapter(chapter, 0)` 把章内
+        位置写死为 0；后端存下来的 `scroll_position` 前端一次都没读过。单章文档（md /
+        单节 epub）只有这个位置可记，表现就是"每次打开都从开头开始"。
+        """
+        self._set_tall_book(last_read_chapter=4, scroll_position=0.5)
+        self.open_app()
+        self._open_here()
+
+        got = self._read_position()
+        details = json.dumps(got)
+        self.assertEqual(got['chapter'], 4, f'没有回到记录的章：{details}')
+        self.assertGreater(got['scrollTop'], 50, f'落回了章首，章内位置没还原：{details}')
+        self.assertAlmostEqual(got['fraction'], 0.5, delta=0.15,
+                               msg=f'章内位置与记录的差太多：{details}')
+
+    def test_reopen_in_same_session_keeps_the_new_place(self):
+        """读完 → 回书架 → 重开：落在刚读到的位置。
+
+        回归：`returnToShelf` 只重画书架、不刷新 `this.documents`，而 `openDocument`
+        从那份内存副本取位置 —— 同会话重开退回"进书架那一刻"的章号，接着关窗口时又把
+        那个旧位置写回磁盘，记录被一路擦回第 1 章。
+        """
+        self._set_tall_book()
+        self.open_app()
+        self._open_here()
+        base = self._progress_base()
+
+        self.driver.execute_script('window.documentReader.engine.goToChapter(6, 0.25);')
+        time.sleep(1.0)
+        self.driver.execute_script("document.getElementById('nr-back-to-shelf').click();")
+        self.wait('!window.documentReader._isReaderMode')
+        time.sleep(0.6)
+        self.assertEqual([call[1] for call in self._progress_calls(base)], [6],
+                         f'返回书架时没有把当前位置存下去：'
+                         f'{json.dumps(self._progress_calls(base))}')
+
+        self._open_here()
+        got = self._read_position()
+        self.assertEqual(got['chapter'], 6, f'同会话重开没有回到刚读到的章：{json.dumps(got)}')
+        self.assertGreater(got['scrollTop'], 20, f'同会话重开落回了章首：{json.dumps(got)}')
+
+    def test_closing_without_moving_keeps_the_record(self):
+        """打开一本书、没动过就关掉：不许把记录覆盖成刚打开的位置。
+
+        关窗口那条路（beforeunload / dispose）只该在位置真的变过时才写。
+        """
+        self._set_tall_book(last_read_chapter=4, scroll_position=0.5)
+        self.open_app()
+        self._open_here()
+        base = self._progress_base()
+        self.assertEqual(self._progress_calls(base), [], '打开一本书不该写进度')
+
+        self.driver.execute_script("window.dispatchEvent(new Event('beforeunload'));")
+        time.sleep(0.6)
+        self.assertEqual(self._progress_calls(base), [],
+                         f'位置没动过却写了进度：{json.dumps(self._progress_calls(base))}')
+
+        self.driver.execute_script('window.documentReader.engine.goToChapter(7, 0.5);')
+        time.sleep(1.0)
+        self.driver.execute_script("window.dispatchEvent(new Event('beforeunload'));")
+        time.sleep(0.6)
+        self.assertEqual([call[1] for call in self._progress_calls(base)], [7],
+                         f'动了位置却没有写进度：{json.dumps(self._progress_calls(base))}')
 
     # ===== 设置与编码 =====
 

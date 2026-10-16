@@ -44,6 +44,10 @@ class DocumentReader {
         this._dom = {};
         this.settings = null;
         this._shelfSeq = 0;           // 书架渲染序号：丢弃过期的异步封面回填
+        // 后端此刻记着的阅读位置（章号 + 章内 0~1）：打开时按它填，保存后按它更新。
+        // 关闭时位置没动过就不写 —— 否则"打开看一眼再关掉"会把上次读到的地方
+        // 覆盖成刚打开的位置（记录就是这样被一路擦回第 1 章的）。
+        this._savedPosition = null;
     }
 
     async init() {
@@ -153,7 +157,8 @@ class DocumentReader {
         this._bindContextMenu();
         this._bindScroll();
         this._bindLifecycle();
-        window.addEventListener('beforeunload', () => this._saveCurrentProgress(true));
+        // 关窗口 / 刷新：位置动过才写（见 `_saveCurrentProgress` 的 force 说明）
+        window.addEventListener('beforeunload', () => this._saveCurrentProgress(false));
     }
 
     /** 弹窗：点遮罩关闭（按按下位置判定，与壳内其它弹窗一致）。 */
@@ -283,10 +288,16 @@ class DocumentReader {
      * media-player 一致 —— 它压根不绑生命周期钩子，音频元素常驻所以不断）。
      * 之前这里写了 `onHide → tts.pause()`，表现就是"一切走朗读就断"。
      * 只保留 dispose：插件真被卸载/刷新时再收尾。
+     *
+     * dispose 之前要先存一次进度：iframe 被移除**不会**触发 beforeunload（只有整页
+     * 导航才会），而 keepAlive 的插件在设置变更、壳刷新这些路径上会被整个卸掉。
      */
     _bindLifecycle() {
         if (!window.PluginLifecycle) return;
-        window.PluginLifecycle.onDispose(() => this.tts.stop());
+        window.PluginLifecycle.onDispose(() => {
+            this._saveCurrentProgress(false);
+            this.tts.stop();
+        });
     }
 
     _scrollArea(factor) {
@@ -516,11 +527,25 @@ class DocumentReader {
             this.engine.setMode(this.mode);
             this.engine.reset(documentId, chapters, this.encoding);
             this._enterReaderMode(doc);
-            const chapter = options.chapter !== undefined && options.chapter !== null
+            // 调用方指定了章号（目录跳转 / 书签 / 重读）就走它，章内位置同理：只给了
+            // 章号的（书签跳转）落到章首，之后由 `scrollToChar` 按字符精确定位。
+            const hasTarget = options.chapter !== undefined && options.chapter !== null;
+            const chapter = hasTarget
                 ? options.chapter
                 : Math.max(0, Math.min(Number(doc.last_read_chapter) || 0, Math.max(0, chapters.length - 1)));
-            await this.engine.goToChapter(chapter, 0);
+            const fraction = hasTarget
+                ? this._clampFraction(options.fraction)
+                : this._clampFraction(doc.scroll_position);
+            await this.engine.goToChapter(chapter, fraction);
             this._afterPageRender();
+            // 还原到位之后才记"后端现在记的是这里"：这之后的保存以它为基准判断有没有
+            // 动过。`goToChapter` 里还有一帧 rAF 会再落一次位置，落定之后再校准基准。
+            this._savedPosition = { chapter, fraction, scrollTop: this._contentScrollTop() };
+            requestAnimationFrame(() => {
+                if (this.currentDocument === doc) {
+                    this._savedPosition = { chapter, fraction, scrollTop: this._contentScrollTop() };
+                }
+            });
             this._showLoading(false);
             if (options.startTts) {
                 // 从"左上角第一个字所在句子的开头"念起
@@ -607,25 +632,84 @@ class DocumentReader {
     /** 当前视口顶部那一句的起点（朗读与书签共用的定位法则）。 */
     // ===== 进度 =====
 
+    /** 章内位置统一夹到 0~1：后端存的是这个区间，越界值只可能是脏数据。 */
+    _clampFraction(value) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return 0;
+        return Math.max(0, Math.min(1, number));
+    }
+
+    /** 正文容器的滚动量（判断位置有没有动过的基准，见 `_saveCurrentProgress`）。 */
+    _contentScrollTop() {
+        const el = this._dom.contentArea;
+        return el ? el.scrollTop : 0;
+    }
+
+    /**
+     * 保存阅读进度（章号 + 章内位置）。
+     *
+     * `force=false` 只在"位置真的动过"时才写：关闭窗口那条路（beforeunload /
+     * dispose）用它 —— 打开一本书看两眼就关掉，不该把上次读到的地方覆盖成刚打开
+     * 的位置。
+     *
+     * 朗读时也要保存：朗读会带着滚动走，"上次读到哪"正是用户关掉应用后最想接着
+     * 看的地方。朗读自己没有状态文件，与阅读进度不会互相污染。
+     */
     async _saveCurrentProgress(force = false) {
         if (!this._isReaderMode || !this.currentDocument) return;
         if (!this.engine.chapters.length) return;
-        // 朗读时也会保存：朗读会带着滚动走，而"上次读到哪"正是用户关掉应用后
-        // 最想接着看的地方（需求：加上朗读后，持久化成了必要项）。
-        // 朗读自己没有状态文件，进度只记到章，所以两者不会互相污染。
+        const doc = this.currentDocument;
+        const chapter = this.engine.currentChapterIndex;
+        const fraction = this._clampFraction(this.engine.chapterFraction());
+        const scrollTop = this._contentScrollTop();
+        const saved = this._savedPosition;
+        // 位置有没有动过按**像素**比，不按章内比例：比例是"当前这章的正文高度"算出来的，
+        // 滚动条出现、字体度量这些重排会让同一次测量差上百分之几，比例判定会把"没动"
+        // 误判成"动过"，于是照旧覆盖记录。
+        if (!force && saved && saved.chapter === chapter
+            && Math.abs(scrollTop - (Number(saved.scrollTop) || 0)) < 8) {
+            return;
+        }
         try {
-            await Bridge.call('document_update_progress', this.currentDocument.id,
-                this.engine.currentChapterIndex, this.engine.chapterFraction(), this.encoding);
+            await Bridge.call('document_update_progress', doc.id, chapter, fraction, this.encoding);
         } catch (e) {
             console.error('保存进度失败:', e);
+            return;
         }
+        this._savedPosition = { chapter, fraction, scrollTop };
+        // 就地回写这份书架条目：`openDocument` 与封面进度条读的都是 `this.documents`
+        // 里的对象，不回写就会拿"进书架那一刻"的旧位置重开（表现成读完再进来又回到
+        // 开头），而且此时保存的正是那个旧位置 —— 记录会被它一路覆盖。
+        // **按 id 取当前那一份**，不能只写 `this.currentDocument`：打开之后书架只要
+        // 重新拉过一次列表（刷新引擎的自动同步就会触发），内存里就是另一批对象，
+        // 写回旧对象等于没写。
+        const target = this.documents.find((item) => item.id === doc.id) || doc;
+        for (const entry of target === doc ? [doc] : [target, doc]) {
+            entry.last_read_chapter = chapter;
+            entry.scroll_position = fraction;
+            entry.last_read_time = this._nowStamp();
+            const total = this.engine.chapters.length || Number(entry.chapter_count) || 0;
+            if (total > 0) entry.progress = (chapter + fraction) / total;
+        }
+        if (!this._isReaderMode) {
+            this._renderShelf(this._dom.searchInput ? this._dom.searchInput.value.trim() : '');
+        }
+    }
+
+    /** 与后端 `time.strftime('%Y-%m-%d %H:%M:%S')` 同形：最近阅读按字符串排序。 */
+    _nowStamp() {
+        const pad = (value) => String(value).padStart(2, '0');
+        const now = new Date();
+        return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+            + ` ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
     }
 
     async reloadDocument() {
         if (!this.currentDocument) return;
         const chapter = this.engine.currentChapterIndex;
+        const fraction = this.engine.chapterFraction();
         await this._saveCurrentProgress(true);
-        await this.openDocument(this.currentDocument.id, { chapter });
+        await this.openDocument(this.currentDocument.id, { chapter, fraction });
     }
 
     _showLoading(show) {
