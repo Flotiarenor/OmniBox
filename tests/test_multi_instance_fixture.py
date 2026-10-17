@@ -145,7 +145,7 @@ class MultiInstanceMeshTest(unittest.TestCase):
         root = cls._root
 
         # 共享根必须在实例数据根**之外**：add_share 会拒绝数据根与身份目录之内的
-        # 路径（§6.5 的硬约束），放在 data_root 下面会直接失败。
+        # 路径（这是一条硬约束），放在 data_root 下面会直接失败。
         cls.shared = root / 'shared'
         for rel, payload in cls.FILES.items():
             target = cls.shared / rel

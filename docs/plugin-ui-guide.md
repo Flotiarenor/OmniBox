@@ -14,14 +14,9 @@
 
 - 取证对象：`plugins/` 下 8 个插件前端（不含壳自身的 Vue 页面 `App.vue` /
   `views/SettingsView.vue` / `views/StatusView.vue`——它们是宿主 chrome，不是插件）。
-- 逐插件原始记录已并入各插件设计文档：`docs/group-mesh-design.md` §28、
-  `docs/image-viewer-design.md` §12、`docs/media-player-design.md`
-  「UI 现状取证（前端与壳契约对照）」、`docs/pixiv-sync-design.md` §8、
-  `docs/image-cleaner-design.md` §5、`docs/document-reader-design.md` §13、
-  `docs/manga-library-design.md` §5、`docs/netease-music-design.md` §5；
-  量化统计与命令见各文件与本文 §9；原先单独存放这些记录的审计目录已删除。
-- 相关既有文档：`docs/plugin-guide.md` §4（前端契约）、§5（主题同步）；
-  `docs/group-mesh-design.md` §22.7（UI 改造踩坑记录）。
+- 逐插件原始记录原先随各插件设计文档存放，这些设计文档已移出仓库；本文保留取证结论与
+  量化数字（见 §9）。原先单独存放这些记录的审计目录也已删除。
+- 相关既有文档：`docs/plugin-guide.md` §4（前端契约）、§5（主题同步）。
 
 ---
 
@@ -775,8 +770,7 @@ background: var(--mp-glass, var(--bg-surface));
 ### 9.1 一览（量化口径：`var(--` 次数 / 颜色字面量次数 / 共享组件调用数）
 
 本轮修复后，8 个插件的 `alert()` 全部归零、颜色字面量与 `rgba(` 只剩少量兜底，骨架均已用壳的
-`.obx-*` 组件（例外是 netease-music 的独立页无骨架，见 §9.2 P2-19）；逐插件的量化数字与计数
-命令已并入各插件设计文档（清单见本文开头的「逐插件原始记录」条目）。修复前的偏差集中在
+`.obx-*` 组件（例外是 netease-music 的独立页无骨架，见 §9.2 P2-19）。修复前的偏差集中在
 pixiv-sync —— **34 hex / 2 rgba / 22 alert / 0 真 token** —— 以及两处不存在的 token
 （image-viewer 多 1 处 `--text-danger`、manga-library 多 1 处 `--mp-glass`，见 §9.5）。
 计数口径：`var(--` 含壳 token 与插件私有 token；`#hex`/`rgba(` 含 `<style>` 块与内联样式。
@@ -784,8 +778,6 @@ pixiv-sync —— **34 hex / 2 rgba / 22 alert / 0 真 token** —— 以及两�
 > 本文引用的数字为**本轮修复后**的实测值；修复前 pixiv-sync 是 **34 hex / 2 rgba / 22 alert / 0 真 token**，
 > image-viewer 多 1 处 `--text-danger`、manga-library 多 1 处 `--mp-glass`（见 §9.5）。
 > `var(--` 含壳 token 与插件私有 token；`#hex`/`rgba(` 含 `<style>` 与内联样式。
-> 计数命令与逐文件明细见各插件设计文档的「UI 现状取证」一节（清单见本文开头的
-> 「逐插件原始记录」条目）。
 
 ### 9.2 偏差分级
 
@@ -859,8 +851,7 @@ pixiv-sync —— **34 hex / 2 rgba / 22 alert / 0 真 token** —— 以及两�
 
 ### 9.3 各插件值得吸收的做法
 
-> 逐插件详表见各插件设计文档「UI 现状取证」一节的「特色设计（值得吸收）」
-> （清单见本文开头的「逐插件原始记录」条目）。以下是跨插件复用的候选：
+> 以下是跨插件复用的候选：
 
 | 做法 | 出处 | 解决的问题 |
 | --- | --- | --- |

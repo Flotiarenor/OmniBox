@@ -3,7 +3,7 @@
 // 存储**不在** localStorage，而在后端 `<config_dir>/shell.json` 的 `prefs` 段：
 // 桌面窗口的 localStorage 住在 WebView2 profile 的 LevelDB 里，日志被强杀截断之后
 // Chromium 会在坏记录处停止回放，其后的写入在下次启动全部读不到 —— 表现为"设置存得进、
-// 重启就忘"，且没有任何报错（见 .dsh/shell-prefs-report.md）。
+// 重启就忘"，且没有任何报错。
 //
 // 读：`serve_shell` 在 index.html 里注入 `window.__OMNIBOX_SHELL_STATE__`，
 //     本模块在**首帧之前**同步读它，因此主题与配色不会闪一下默认值。
@@ -45,7 +45,7 @@ const LEGACY_KEYS = {
   glass: 'omni-glass',
 }
 
-/** 去抖窗口：设置页的滑块每次 `input` 都要写，合并到窗口末尾一次（报告 §7.3）。 */
+/** 去抖窗口：设置页的滑块每次 `input` 都要写，合并到窗口末尾一次。 */
 const FLUSH_DELAY_MS = 300
 /** 写失败后的重试延迟。 */
 const RETRY_DELAY_MS = 2000
@@ -141,7 +141,7 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null
 let warned = false
 let notify: (message: string) => void = message => console.warn('[ShellPrefs]', message)
 
-/** 接入界面提示：写失败必须能看到，不能静默（报告 §9）。 */
+/** 接入界面提示：写失败必须能看到，不能静默。 */
 export function setShellPrefsNotifier(fn: (message: string) => void): void {
   notify = fn
 }

@@ -1,6 +1,6 @@
 """主体（principal）与设备（device）身份。
 
-设计文档 §4.1/§4.2 的关键约束：**权限绑定在主体上，不绑定在设备上**。
+关键约束：**权限绑定在主体上，不绑定在设备上**。
 一个主体可以有多台设备；每台设备持有自己的密钥对。团体名单里成员以主体公钥
 标识，并把该主体已授权的设备公钥列在 `devices` 下（见 roster.py）。
 
@@ -14,7 +14,7 @@
 
 ## 私钥保护
 
-设计文档要求"设备私钥不导出，由操作系统提供的密钥存储保存（Windows 为 DPAPI，
+私钥保护的要求是"设备私钥不导出，由操作系统提供的密钥存储保存（Windows 为 DPAPI，
 Android 为 Keystore）"。本模块把私钥文件交给 `secret_store` 保护：Windows 用
 DPAPI，桌面 Linux / macOS 用 OS keyring，设置 `OMNIBOX_SECRET_KEY` 时用口令派生
 的 AES-256-GCM；三者都不可用时才回落到旧版明文，并在插件状态里如实标记。
@@ -83,7 +83,7 @@ class Principal:
 class Device:
     """一台设备。持有自己的密钥对，归属于某个主体。
 
-    设备有**两把由同一份种子派生的密钥**（设计文档 §4.3"身份统一"）：
+    设备有**两把由同一份种子派生的密钥**（"身份统一"）：
 
         private_key / public_key   Ed25519，用于签名（名单、共享项、注册记录）
         dh_private / dh_public     X25519，用于 Noise 握手的静态密钥
@@ -112,9 +112,9 @@ class Device:
     def create(name: str, principal: Principal) -> 'Device':
         """在本地创建一台归属于 `principal` 的设备并自签凭据。
 
-        设计文档 §4.2 的理想路径是"通过已有设备授权（局域网配对或二维码）由该主体
+        新增设备的理想路径是"通过已有设备授权（局域网配对或二维码）由该主体
         确认"。当调用方就是主体本人（主体私钥在手）时，直接由主体签发等价，
-        省掉一次配对；跨设备配对属于后续工作（见 `docs/group-mesh-design.md` §21.7）。
+        省掉一次配对；跨设备配对属于后续工作。
         """
         private_key, public_key = cp.generate_sign_keypair()
         dh_private, dh_public = cp.dh_keypair_from_sign_seed(private_key)

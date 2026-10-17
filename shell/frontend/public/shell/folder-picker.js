@@ -250,7 +250,7 @@ window.FolderPicker = (function () {
    * opts.localOnly    可选，true 时**不显示「网络位置」**：该字段只接受本机目录。
    *                    用于"目录本身就是产物"的字段（如 group-mesh 的远端下载目录）——
    *                    在那种字段上选"网络位置"语义是错的（远端内容要取到本地，
-   *                    而下载目录正是落点），见 docs/group-mesh-design.md §1.4。
+   *                    而下载目录正是落点）。
    */
   function createList(opts) {
     const options = opts || {};

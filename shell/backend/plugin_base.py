@@ -319,7 +319,7 @@ class PluginBase(ABC):
             return None
         return self._plugin_manager.get_plugin_instance(name)
 
-    # ===== 主体上下文（设计文档 group-mesh §12 第 1/2 项）=====
+    # ===== 主体上下文 =====
 
     def current_principal(self) -> Optional[PrincipalContext]:
         r"""本次调用的主体：**由壳注入**，无法被请求参数影响。
@@ -329,8 +329,8 @@ class PluginBase(ABC):
         的那个人"，而不是某个自称的 ID。没有主体时返回 `None`：
 
         * **后台线程**：`ContextVar` 不跨线程继承，插件自起的线程永远读不到主体
-          —— 这是设计约束而不是缺陷（§12 第 2 项明确要求"涉及主体的后台任务必须
-          显式携带主体信息"）。因此不要在后台任务里用本方法推断操作者。
+          —— 这是设计约束而不是缺陷（涉及主体的后台任务必须
+          显式携带主体信息）。因此不要在后台任务里用本方法推断操作者。
         * CLI / 自检 / 直接调用插件实例：同样没有主体。
 
         需要"必须有主体"的地方请用 `require_principal()`：让拒绝发生在业务逻辑

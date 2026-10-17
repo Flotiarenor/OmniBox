@@ -543,7 +543,7 @@ class PixivSyncCoreTests(unittest.TestCase):
     def test_download_rejects_non_image_content(self):
         """魔数校验失败必须抛 PixivError。
 
-        v0.5 起「下载内容真实性校验」是有意设计（docs/pixiv-sync-design.md），
+        v0.5 起「下载内容真实性校验」是有意设计，
         不是静默跳过：调用方拿不到文件，异常里带 URL 便于排查。
         """
         with tempfile.TemporaryDirectory() as td:

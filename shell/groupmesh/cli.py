@@ -272,7 +272,7 @@ def cmd_join(args: argparse.Namespace) -> int:
     roster = parse_invite(args.invite)
     current = load_roster(root)
     try:
-        # §5.2 规则 6：本地无名单时直接信任带外名单；有名单时走完整规则链
+        # 规则 6：本地无名单时直接信任带外名单；有名单时走完整规则链
         roster.accepts(current)
     except RecordError as e:
         die(f'名单未被接受: {e}')
@@ -299,7 +299,7 @@ def cmd_roster(args: argparse.Namespace) -> int:
     if args.action == 'show':
         info(json.dumps(roster.to_dict(), ensure_ascii=False, indent=2))
         info('')
-        info('宽限提示（§5.4，仅提示不阻断）:')
+        info('宽限提示（仅提示不阻断）:')
         info(json.dumps(staleness_report(roster, None), ensure_ascii=False, indent=2))
         return 0
 
@@ -343,7 +343,7 @@ def cmd_roster(args: argparse.Namespace) -> int:
         if len(members) == before:
             die('该主体不在名单里')
         admins = [a for a in admins if a != target]
-        changed = '已移除成员（注意 §5.4：移除生效窗口没有上界）'
+        changed = '已移除成员（注意：移除生效窗口没有上界）'
 
     elif args.action in ('promote', 'demote'):
         target = cp.b64d(args.principal)
@@ -360,7 +360,7 @@ def cmd_roster(args: argparse.Namespace) -> int:
             changed = '已撤销管理员'
 
     elif args.action == 'transfer':
-        # §5.6：群主密钥失效前唯一的自救手段
+        # 群主密钥失效前唯一的自救手段
         target = cp.b64d(args.principal)
         if not any(m.principal_key == target for m in members):
             die('新群主必须是名单里的成员')
@@ -422,7 +422,7 @@ def cmd_share(args: argparse.Namespace) -> int:
         save_shares(root, shares)
         info(f'共享项 {args.share_id} -> {path}')
         info('  ' + json.dumps(share.declaration.acl.to_dict(), ensure_ascii=False))
-        info('  安全提醒（§6.5）：不要把程序目录、配置目录作为共享根；'
+        info('  安全提醒：不要把程序目录、配置目录作为共享根；'
              '授予写权限等于允许对方在该目录内占用磁盘。')
         return 0
 

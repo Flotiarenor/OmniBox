@@ -1,21 +1,21 @@
 """团体名单（roster）：身份与授权的边界。
 
-这是设计文档 §5 的可执行实现，验证规则 1–6 逐条对应 `Roster.accepts()`。
+本模块是团体名单的可执行实现，验证规则 1–6 逐条对应 `Roster.accepts()`。
 
-## 两个权威面（§3.3）
+## 两个权威面
 
 名单只回答"谁的名单里有谁、谁是群主/管理员"。**群主与管理员对成员设备上的数据
 没有任何特权** —— 数据访问由各设备属主自己签发的共享项 ACL 决定（见 shares.py）。
 本模块不提供任何"管理员可访问他人文件"的路径。
 
-## 版本链与收敛（§5.2 / §5.3）
+## 版本链与收敛
 
 名单是**链式**的：`version` 单调递增，`prev` 指向前一份名单的哈希。
 规则 2 保证一份名单只有一个直接后继，于是并发签发（两名管理员同时改名单）
 产生的两份候选必然 `version` 与 `prev` 都相同 —— 此时按**名单哈希字典序取较小者**
 收敛，各节点无需通信即可得到同一结果。被丢弃的一份需要重新签发。
 
-## 宽限策略（§5.4）
+## 宽限策略
 
 **软件不做版本强制**：`expires` 只是提示字段，到期不阻断通信；节点也不因对方
 名单较旧而拒绝连接（见 `staleness_report()`）。需要写明后果：移除成员的有效
@@ -45,7 +45,7 @@ ROLE_OWNER = 'owner'
 ROLE_ADMIN = 'admin'
 ROLE_MEMBER = 'member'
 
-# 默认有效期：180 天。§5.4 明确它只是提示，不阻断通信。
+# 默认有效期：180 天。它只是提示，不阻断通信。
 DEFAULT_TTL_SECONDS = 180 * 24 * 3600
 
 
@@ -171,7 +171,7 @@ class Roster(SignedRecord):
     def entry_of_device(self, device_key: bytes) -> Optional[RosterEntry]:
         """按**设备**公钥反查成员。
 
-        设计文档 §3.3 要求"资源属主按主体判定，不按设备判定"，因此授权最终一定
+        规则是"资源属主按主体判定，不按设备判定"，因此授权最终一定
         落到 `entry_of()` 的结果上；本方法只用于握手阶段"这台设备属于哪个主体"。
         """
         for member in self.members:
@@ -198,7 +198,7 @@ class Roster(SignedRecord):
         now = int(time.time()) if now is None else now
         return now > self.expires
 
-    # ── 祖先判定（名单分发的准入条件，§5.7）───────────────────────────────
+    # ── 祖先判定（名单分发的准入条件）───────────────────────────────────────
 
     def appears_in_chain(self, other: 'Roster', *,
                          history: Optional[List['Roster']] = None,
@@ -206,7 +206,7 @@ class Roster(SignedRecord):
                          max_depth: int = 64) -> bool:
         """本名单是否出现在 `other` 一侧的名单链里（链 = `history` + `other`）。
 
-        这是"**对端拿得出本机这份名单（或它的后代）**"的判定，也是 §5.7 自动分发的
+        这是"**对端拿得出本机这份名单（或它的后代）**"的判定，也是自动分发的
         准入条件：能证明自己见过这个团体、且不比本机旧，才能换到本团体的名单。
 
         ## 为什么不是 `is_ancestor_of(other)`
@@ -294,7 +294,7 @@ class Roster(SignedRecord):
         return self.signature
 
     def accepts(self, current: Optional['Roster'], now: Optional[int] = None) -> None:
-        """按设计文档 §5.2 的规则 1–6 验证"本名单能否替换 `current`"。
+        """按规则 1–6 验证"本名单能否替换 `current`"。
 
         通过则返回 None，不通过抛 `RecordError`（消息里带上是哪条规则判掉的）。
 
@@ -348,7 +348,7 @@ class Roster(SignedRecord):
         #
         # 允许的仍然是"增删普通成员"：本机名单里没有的主体可以带任意设备进来；
         # 既有主体的设备集合必须逐个相同。给已入团的人加第二台设备属于该主体的
-        # 身份变更，需要群主签发（设计 §4.2 的设备凭据实装后可另行放开）。
+        # 身份变更，需要群主签发（设备凭据实装后可另行放开）。
         for entry in current.members:
             incoming = self.entry_of(entry.principal_key)
             if incoming is None:
@@ -358,7 +358,7 @@ class Roster(SignedRecord):
                     f'规则 5：管理员不得改动既有成员（{entry.name}）的设备绑定'
                     f'（设备是主体身份的凭据，需群主签发）')
 
-    # ── 冲突收敛（§5.3）──────────────────────────────────────────────────
+    # ── 冲突收敛 ──────────────────────────────────────────────────────────
 
     @staticmethod
     def pick_concurrent(a: 'Roster', b: 'Roster') -> 'Roster':
@@ -399,7 +399,7 @@ def founding_roster(group: str, owner: 'PrincipalLike', device_keys: List[bytes]
                     now: Optional[int] = None) -> Roster:
     """创建团体的创始名单：群主是唯一成员，带上一台自己的设备。
 
-    设计文档 §5.2 规则 6 的"信任锚起点"。返回的名单**已签名**（群主私钥）。
+    这是规则 6 的"信任锚起点"。返回的名单**已签名**（群主私钥）。
     """
     entry = RosterEntry(name=owner.name, principal_key=owner.public_key,
                         device_keys=list(device_keys))
@@ -424,12 +424,12 @@ class PrincipalLike(Protocol):
     private_key: bytes
 
 
-# ── 宽限策略的界面化表达（§5.4）─────────────────────────────────────────────
+# ── 宽限策略的界面化表达 ────────────────────────────────────────────────────
 
 def staleness_report(local: Roster, remote: Optional[Roster], now: Optional[int] = None) -> Dict[str, Any]:
     """生成"你的名单是否过期 / 与对方是否一致"的提示数据。
 
-    按 §5.4，这些信息**只用于提示，不阻断连接**。
+    这些信息**只用于提示，不阻断连接**。
     """
     now = int(time.time()) if now is None else now
     expired_days = max(0, (now - local.expires) // 86400) if local.is_expired(now) else 0

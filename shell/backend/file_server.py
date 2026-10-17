@@ -505,7 +505,7 @@ def _status_response(code: int, title: str, detail: str, prefs: dict | None = No
 
 # 只有管理员（owner / admin）能调用的 API 方法。
 #
-# 为什么需要这份清单（设计文档 group-mesh §12 第 5 项）：`/api/<插件>__<方法>` 原先
+# 为什么需要这份清单：`/api/<插件>__<方法>` 原先
 # 只校验令牌，任何持令牌者都能拿到壳的完整配置（含绑定地址与数据目录）、
 # 翻看各插件加载状态、改别人的日志级别或一次清空全部缩略图缓存。
 # 这些不是"某个插件的功能"，而是描述这台机器本身的壳级事实。
@@ -569,7 +569,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
     app = Flask(__name__)
     frontend_dist = _SHELL_DIR / 'frontend' / 'dist'
     _token = get_or_create_token(get_config_dir())
-    # 凭据 → 主体的映射（设计文档 group-mesh §12 第 1 项）。自举：凭据表为空时
+    # 凭据 → 主体的映射。自举：凭据表为空时
     # 把**既有的**全局令牌登记为本机 owner，因此老部署升级后令牌继续可用，
     # 而"这次调用是谁"从此有答案。
     _principals = PrincipalStore(get_config_dir(), bootstrap_token=_token)
@@ -598,7 +598,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         r"""受保护路径一律 403 —— 优先于「是否在允许根之内」的判定。
 
         为什么必须由壳兜住：文件路由的放行依据是插件自己给出的根（`get_file_roots()`
-        / `thumb_dir`），而根可以由插件设置改写（审计 §1.1 的改根链路）。开发模式下
+        / `thumb_dir`），而根可以由插件设置改写。开发模式下
         `<data_root>`（默认 ./data）与 `<config_dir>`（./.config）是兄弟目录，于是
         `<data_root>/../.config/auth_token.txt` 完全落在 /file 的允许范围内。
         auth_token.txt 是长期进程外凭据 —— 读走它，等于把一次前端 XSS 或一次局域网
@@ -647,7 +647,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         1. 校验凭据（Cookie 或 `X-Omnibox-Token` 头二选一）；
         2. 凭据通过后，把它解析成主体并写入 `CURRENT_PRINCIPAL`。
 
-        第 2 步是设计文档 §12 第 2 项要求的"受信注入"：主体只从**凭据**得到，
+        第 2 步是"受信注入"：主体只从**凭据**得到，
         绝不从请求参数读 —— 一个带 `{"principal": "<别人的 id>"}` 的请求与不带
         该字段的请求必须得到同一个主体。因此这里既不读 `request.args`，
         也不读 JSON body。
@@ -817,7 +817,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             # （shell/backend/window_state.py）。原先这里是一个恒返回失败的桩，但桥在
             # pywebview 注入之前会先装上 HTTP 替身，桌面窗口里的调用长期走这条 HTTP
             # 路径，只拿到"没有桌面窗口"的错误 —— 表现是「启动后进入全屏」与
-            # 「切换窗口全屏」都无效（见 .dsh/shell-prefs-report.md §6）。
+            # 「切换窗口全屏」都无效。
             'system_toggle_fullscreen': window_toggle_fullscreen,
             'system_set_window_fullscreen': window_set_fullscreen,
             'system_get_window_fullscreen': window_get_fullscreen,

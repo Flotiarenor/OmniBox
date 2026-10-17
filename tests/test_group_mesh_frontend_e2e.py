@@ -192,7 +192,7 @@ FRESH_STATUS = {
     'identity': None,
     'roster': None,
     'shares': [],
-    'unsupported': ['上传入口（写权限已就绪，界面尚未接通）', '内容寻址分块传输（§10）'],
+    'unsupported': ['上传入口（写权限已就绪，界面尚未接通）', '内容寻址分块传输'],
 }
 
 JOINED_STATUS = {
@@ -323,7 +323,7 @@ class FrontendRenderTest(unittest.TestCase):
         """弹窗必须用壳的 `.modal`，而不是插件自绘的弹窗容器。
 
         这条守的是"迁移不会悄悄退回"：自绘弹窗（`display: flex`）与 `[hidden]`/其它
-        显隐机制抢优先级正是 §5.7 那次事故的根因，一旦有人再加一个自绘弹窗，
+        显隐机制抢优先级正是那次事故的根因，一旦有人再加一个自绘弹窗，
         这里会直接失败。
         """
         driver = self._load(FRESH_STATUS)

@@ -123,7 +123,7 @@
               </section>
             </div>
 
-            <!-- 后续留位：设备配对 / 多设备 / 二维码授权（设计 §4.2，当前 add_device() 无调用方）。
+            <!-- 后续留位：设备配对 / 多设备 / 二维码授权（当前 add_device() 无调用方）。
                  实现时在这里加一张卡即可，不必动侧栏与其它面板。 -->
           </section>
 
@@ -137,7 +137,7 @@
               <div id="roster-actions" class="gm-actions"></div>
             </section>
 
-            <!-- 后续留位：群主转移 / 任免管理员（设计 §5.6，目前只有 CLI）与解散通告（§5.5）。 -->
+            <!-- 后续留位：群主转移 / 任免管理员（目前只有 CLI）与解散通告。 -->
           </section>
 
           <!-- ===== 面板：共享项 ===== -->
@@ -158,7 +158,7 @@
               </div>
             </section>
 
-            <!-- 后续留位：属主端的遗留 <目标>.part 可见性与清理（实现路径 §4.7、P2.5）。 -->
+            <!-- 后续留位：属主端的遗留 <目标>.part 可见性与清理。 -->
           </section>
 
           <!-- ===== 面板：远端共享（设备 → 共享项 → 目录 → 取回/上传） ===== -->
@@ -203,18 +203,18 @@
               <div id="remote-progress" class="gm-remote-progress" hidden></div>
             </section>
 
-            <!-- 后续留位：内容寻址 / 做种 / 房间与语音入口（设计 §8–§10）。 -->
+            <!-- 后续留位：内容寻址 / 做种 / 房间与语音入口。 -->
           </section>
 
           <!-- ===== 面板：路线图（原「尚未实现」列表，默认收起） ===== -->
           <section class="gm-panel" data-panel="roadmap" id="panel-roadmap"
                    data-title="路线图"
-                   data-sub="尚未实现的能力（与设计文档的差距清单）">
+                   data-sub="尚未实现的能力（与目标的差距清单）">
             <section class="gm-card">
               <h2>尚未实现</h2>
               <p class="gm-hint">
                 这份列表由后端 <code>get_status()['unsupported']</code> 给出，是本插件
-                与设计文档之间的差距清单；下面按模块折叠，需不需要看由你决定。
+                与目标的差距清单；下面按模块折叠，需不需要看由你决定。
               </p>
               <details class="gm-details">
                 <summary>查看未实现项</summary>
@@ -231,7 +231,7 @@
   <!-- 弹窗一律用壳的 .modal + .modal.active（base.css）。
        不再自绘 .gm-modal：壳的默认态**没有 display 声明**，因此不存在
        "作者样式的 display:flex 盖掉 UA 样式表给 [hidden] 的 display:none"
-       那个级联陷阱（记录见 docs/group-mesh-design.md）。 -->
+       那个级联陷阱。 -->
   <div id="create-box" class="modal">
     <div class="modal-box obx-anim-scale" style="width:480px;">
       <h3>创建团体</h3>

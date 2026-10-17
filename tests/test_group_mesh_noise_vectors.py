@@ -4,7 +4,7 @@
 cacophony 官方向量（`noiseprotocol` 仓库 `tests/vectors/cacophony.txt`，
 原始来源与 Unlicense/public-domain 许可见 `tests/fixtures/README.md`）。
 它不是"本实现输出的快照"：期望值来自夹具，不来自被测代码 —— 这一点是
-§5.14"测试复制被测常量"教训的直接应用。
+"测试复制被测常量"这条教训的直接应用。
 
 向量驱动的是我们用 `noiseprotocol` 包装出来的 `HandshakeState`：
 如果包装层的角色、prologue、静态/临时密钥注入、nonce 延续任何一处接错，

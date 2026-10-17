@@ -391,7 +391,7 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
         self.assertFalse(plugin.create_folder(f'{ns1}/新目录')['success'])
 
     def test_delete_folder_refuses_path_escaping_root(self):
-        """`../` 不能把删除带出根目录（审计 §1.2：这里曾漏掉 `_is_safe`）。
+        """`../` 不能把删除带出根目录（这里曾漏掉 `_is_safe`）。
 
         `_is_safe` 本会拒绝它（同文件 11 处调用都靠它），唯独 delete_folder 漏了，
         而该方法的破坏力最大：`shutil.rmtree` 直接删掉根目录外的整棵树。

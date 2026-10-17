@@ -133,7 +133,7 @@ class StorageMixin:
     def get_protected_paths(self) -> List[Path]:
         """身份目录整个申报为受保护：里面是主体的长期私钥与设备私钥。
 
-        设计文档 §4.1 要求"设备私钥不导出"。私钥内容现在由 `secret_store`
+        设备私钥不导出：私钥内容现在由 `secret_store`
         保护（Windows DPAPI / 桌面 keyring / `OMNIBOX_SECRET_KEY` 口令），这里
         再申报为受保护路径，保证它不会经 `/file`、`/files`、`/thumbs` 被端出去
         —— `plain` 回落时这条是唯一防线，因此不能省。

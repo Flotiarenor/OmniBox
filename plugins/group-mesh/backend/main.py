@@ -22,9 +22,9 @@
 **尚未接通**：内容寻址分块、Android 轻客户端。
 房间/语音/游戏面由未来的 Companion 子插件承担，不在本插件范围内。
 
-## 壳侧主体上下文（设计文档 §12）
+## 壳侧主体上下文
 
-设计文档 §12 第 1/2 项要求"凭据到主体的映射"与"插件以受信方式读取主体"。
+本节要求"凭据到主体的映射"与"插件以受信方式读取主体"。
 壳侧**已经落地**：`shell/backend/principal.py` 在鉴权通过后把主体写入
 `ContextVar`，插件用 `self.current_principal()` / `self.require_principal()`
 读取；请求参数里的 `principal` / `role` 字段影响不了它，后台线程读不到主体
@@ -34,7 +34,7 @@
 团体里的一个节点），访问控制只到"有效令牌"这一层。收尾时应在有副作用的方法
 （`add_member` / `add_share` / `start_node` / `stop_node` / `upload_remote` /
 `mirror_share` / `clear_remote_cache` 等）上调用 `require_principal()` 并按角色
-判定；背景与风险见 `docs/group-mesh-design.md`。
+判定。
 
 ## 代码布局
 
@@ -105,7 +105,7 @@ class GroupMeshPlugin(
           downloads/              从对端取回的文件（可用 download_dir 改到别处）
           .cache/                 可重建的派生数据（目录快照、连接待用）
 
-    ## 四种"位置"（分工见设计文档 §6.5）
+    ## 四种"位置"
 
     | 位置 | 谁能读 | 性质 |
     | --- | --- | --- |
@@ -125,7 +125,7 @@ class GroupMeshPlugin(
          'default': DEFAULT_PORT, 'min': 1024, 'max': 65535,
          'help': '共享节点对外提供服务的 TCP 端口。修改后需要重启节点。'},
         {'key': 'bind', 'label': '监听地址', 'type': 'text', 'default': '::',
-         'help': '默认 :: 同时接受 IPv6 与 IPv4。设计文档以公网 IPv6 为目标，'
+         'help': '默认 :: 同时接受 IPv6 与 IPv4。以公网 IPv6 为目标，'
                  '只有单个 IPv6 地址时填写该地址。'},
         {'key': 'group_name', 'label': '团体名称', 'type': 'text', 'default': '',
          'help': '创建团体时使用的标识。已加入团体后修改此项不会改名。'},
@@ -133,7 +133,7 @@ class GroupMeshPlugin(
          'help': '界面显示用的名字。留空时取主机名。'},
         {'key': 'ttl_days', 'label': '名单有效期（天）', 'type': 'number',
          'default': 180, 'min': 1, 'max': 3650,
-         'help': '仅作提示（设计文档 §5.4）：到期不阻断通信，界面会标注已过期。'},
+         'help': '仅作提示：到期不阻断通信，界面会标注已过期。'},
         # 位置之四：从对端取回的文件落点。留空时回落到 <数据根>/group-mesh/downloads。
         # 由 Shell 的 FolderPicker 渲染（`directory` 类型），值仍是字符串，
         # 因此这里不需要为它写任何解析代码。
@@ -169,7 +169,7 @@ class GroupMeshPlugin(
         self._listening: Optional[tuple] = None
         self._last_error: Optional[str] = None
         self._connection_count = 0
-        # 注册表（§7）：由 start_node() 载入并交给内核，用于向对端发布本机端点与
+        # 注册表：由 start_node() 载入并交给内核，用于向对端发布本机端点与
         # 共享清单，以及学习其他设备的端点。None = 本节点未启用注册表。
         self._registry = None
         # 本次运行发布的注册记录序号（None = 还没发布成功）。界面据此显示
@@ -193,7 +193,7 @@ class GroupMeshPlugin(
         # 惰性构造：不是每个实例都会跑节点。
         self._roster_history_store: Optional[roster_history_mod.RosterHistory] = None
         # 对端名单版本记录（端点 -> {group, version, hash}）：界面据此做
-        # "本机 v3 / 对方 v2" 的对照（§5.4 的宽限提示、§5.7 的分发可见性）。
+        # "本机 v3 / 对方 v2" 的对照（宽限提示与分发可见性）。
         self._peer_roster_notes: Dict[Tuple[str, int], Dict[str, Any]] = {}
         # 最近一次自动采纳的新名单（界面提示"你的名单已从对方升级"）。
         self._roster_notice: Optional[Dict[str, Any]] = None
@@ -210,7 +210,7 @@ class GroupMeshPlugin(
         # 卸载后老实例的上传线程可能还在收尾（取消要等到分块边界）。它**不得**再写
         # 任务表：同一个数据根已经交给新实例了，写回去会把新实例刚记下的任务覆盖掉。
         self._unloading = False
-        # 后台同步（设计文档 §5.7 / §7.3）：
+        # 后台同步：
         #   - 定时轮询：每 `sync_interval_seconds` 拉一次注册表与名单；
         #   - 变更时 push：名单/注册变更后立即唤醒循环，把新版本推给对端。
         # `_sync_lock` 保证"后台同步"与显式 `list_peers(refresh=True)` 不会同时

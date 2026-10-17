@@ -117,7 +117,7 @@ class UploadCancelled(Exception):
 def probe_upload(connection: Connection, share_id: str, path: str) -> Dict[str, Any]:
     """问对端：这个目标已经收下多少字节（续传起点）。
 
-    需要 **write** 权限而不是 read —— 上传方可能只有写权限（§6.2 的两档是独立的）。
+    需要 **write** 权限而不是 read —— 上传方可能只有写权限（两档权限是独立的）。
     """
     return connection.request({'op': 'write', 'share': share_id, 'path': path,
                                'part': True, 'probe': True})
@@ -186,7 +186,7 @@ def push_file(connection: Connection, share_id: str, local_path: Path,
 
 
 def fetch_registry(connection: Connection) -> Registry:
-    """取对端注册表快照（§7.3）。"""
+    """取对端注册表快照。"""
     response = connection.request({'op': 'registry', 'action': 'list'})
     return Registry.from_snapshot_dicts(response.get('records'))
 
@@ -196,7 +196,7 @@ def push_registry(connection: Connection, registry: Registry) -> Dict[str, Any]:
                                'records': registry.snapshot_dicts()})
 
 
-# ── 名单分发（§5.7）───────────────────────────────────────────────────────
+# ── 名单分发 ──────────────────────────────────────────────────────────────
 #
 # 两个方向都要带"我知道哪些历史名单"：`list` 用它换准入（对端据此判断我们确实
 # 属于这个团体、只是版本旧），`push` 用它让对端把新名单推给我们。
@@ -208,7 +208,7 @@ def fetch_roster(connection: Connection, local: Optional[Roster],
     """从对端拉一份名单；对端没有名单时返回 None。
 
     调用方拿到之后**必须**自己跑 `Roster.accepts(current)`：本函数只负责传输，
-    不做验证 —— 验证需要"本机当前名单"这个上下文，而它属于调用方（§5.2 规则 1–6）。
+    不做验证 —— 验证需要"本机当前名单"这个上下文，而它属于调用方（规则 1–6 由它执行）。
     """
     response = connection.request(_roster_payload('list', local, history))
     payload = response.get('roster')
@@ -219,7 +219,7 @@ def fetch_roster(connection: Connection, local: Optional[Roster],
 
 def push_roster(connection: Connection, roster: Roster,
                 history: Optional[List[Roster]] = None) -> Dict[str, Any]:
-    """把本机名单推给对端，由对端按规则 1–6 决定采纳与否（§5.7）。"""
+    """把本机名单推给对端，由对端按规则 1–6 决定采纳与否。"""
     request = _roster_payload('push', roster, history)
     request['roster'] = roster.to_dict()
     return connection.request(request)

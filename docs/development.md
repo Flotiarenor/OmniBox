@@ -182,10 +182,7 @@ directories:
 快速起步：运行 `python tools/new_plugin.py my-tool` 一键生成插件骨架（模板见 `tools/examples/hello-world`）。
 
 插件生态方向（Companion 插件 / 独立运行环境）见
-[主程序方向文档](./core-direction.md)；
-图像自动打标插件设计见 [image-tagger 设计文档](./image-tagger-design.md)；
-相册清理插件设计见 [image-cleaner 设计文档](./image-cleaner-design.md)；
-Pixiv 同步插件设计见 [pixiv-sync 设计文档](./pixiv-sync-design.md)。
+[主程序方向文档](./core-direction.md)。
 
 ---
 

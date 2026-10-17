@@ -1,6 +1,6 @@
 """节点服务端：处理一条连接上的请求。
 
-## 安全边界（设计文档 §6.5）
+## 安全边界
 
 "可写共享是数据投放面"：被授予写权限的主体可以在属主目录内创建任意文件。
 因此本模块把下列约束做成**硬约束**，不依赖调用方自觉：
@@ -10,7 +10,7 @@
 * 不提供远程重命名与移动；
 * 目录枚举数量有上限，避免一次请求把整个目录树返回。
 
-## 授权判定的位置（§6.3）
+## 授权判定的位置
 
 判定在这里、也就是**属主设备**上执行，判定依据是 `connection.peer.principal_key`
 —— 该值来自 Noise 握手验证过的静态公钥，再经团体名单解析而来，
@@ -144,7 +144,7 @@ class Node:
         不在名单里的设备（`peer.member is False`）一律按"非成员"处理：它的
         `principal_key` 是空的（名单里查不到主体），因此 `group_member=False`，
         任何 `group` / 具体主体列表的 ACL 都不会放行它。这一点必须写死在这里 ——
-        握手现在会接受未入名单的设备（为了让它能拉新名单，见 §5.7），
+        握手现在会接受未入名单的设备（为了让它能拉新名单），
         若这里不拦，它就等于一个直接拥有"成员"待遇的连接。
         """
         roster = self.current_roster()
@@ -169,7 +169,7 @@ class Node:
         容量核算：同一条连接上连续写入的分块属于同一次上传，占用基线只要量一次。
         直接调用（用例、自检）不传，等价于每次请求一份新状态 —— 结果一样，只是多量几次。
 
-        **未入名单的设备只放行 `roster`**（§5.7 的名单分发前提）：握手不再按"在不在
+        **未入名单的设备只放行 `roster`**（名单分发的前提）：握手不再按"在不在
         名单里"拒绝连接（否则新成员永远收不到新名单），改为在这里按 op 收敛权限。
         逐 op 判定而不是"连接建立时定生死"，是因为名单会在连接存活期内变（群主加人）。
         """
@@ -197,7 +197,7 @@ class Node:
                 return self._op_write(request, peer, write_state)
             return handler(request, peer)
         except AclDenied as e:
-            # 403 语义：越界与无权限同一语义（§6.5 / plugin-guide 的既有约定）
+            # 403 语义：越界与无权限同一语义（plugin-guide 的既有约定）
             return {'status': 'error', 'code': 'forbidden', 'error': str(e)}
         except PathRejected as e:
             return {'status': 'error', 'code': 'forbidden', 'error': str(e)}
@@ -264,7 +264,7 @@ class Node:
 
     def _op_write(self, request: Dict[str, Any], peer: PeerIdentity,
                   write_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """写入一个分块（§6.4 写入语义）。
+        """写入一个分块。
 
         三种用法：
 
@@ -278,7 +278,7 @@ class Node:
         * `part=False`：直接写目标文件。小文件与兼容旧客户端用。
 
         覆盖策略：目标已存在且 `overwrite` 不为真时拒绝（`exists`）。写权限是**可加**
-        的（§6.2），覆盖等于让别人少一份内容，必须由发起方显式要求。
+        的，覆盖等于让别人少一份内容，必须由发起方显式要求。
         """
         share = self._share_or_fail(request.get('share'))
         self._authorizer(peer).check(share.declaration, Permission.WRITE)
@@ -333,7 +333,7 @@ class Node:
         if exists and not overwrite and (truncate or part):
             raise RemoteFailure('exists', f'目标已存在: {relative}（需要 overwrite=true）')
 
-        # 容量上限（§6.5）：授予写权限等于允许对方占用磁盘。
+        # 容量上限：授予写权限等于允许对方占用磁盘。
         # 基线**每条连接只量一次**：每个分块都 os.walk 一遍共享根会让大文件上传慢到不可用
         # （1 GiB / 256 KiB 分块 = 4096 次全树遍历），因此按"基线 − 本次丢弃 + 已写入"推算。
         usage: Optional[Dict[str, Any]] = None
@@ -357,7 +357,7 @@ class Node:
         # `written` / `total` 是"这些字节已经在暂存文件里"的承诺，上传方据此更新进度
         # 与续传记录；不刷就可能报出尚未写入的旧长度，而对方按这个数字记了续传点
         # （多实例用例在 CI 上偶发 "任务报的进度与对端暂存文件大小必须一致" 就是它）。
-        # 不用 fsync：续传以 (大小, mtime) 对账（设计 §6.4），掉电级持久化不是这条
+        # 不用 fsync：续传以 (大小, mtime) 对账，掉电级持久化不是这条
         # 路径的保证，而每 256 KiB 同步落盘会明显拖慢上传。
         with open(staging, 'wb' if truncate else 'ab') as handle:
             handle.write(data)
@@ -379,7 +379,7 @@ class Node:
                 'staged': part and not committed, 'committed': committed}
 
     def _op_registry(self, request: Dict[str, Any], peer: PeerIdentity) -> Dict[str, Any]:
-        """交换注册表快照（§7.3）。
+        """交换注册表快照。
 
         `action=list` 返回本地快照；`action=push` 接收对端快照并合并。
         记录一律经 `Registry.add()` 校验设备自签与 seq 单调性，因此对端无法伪造。
@@ -395,12 +395,12 @@ class Node:
             return {'status': 'ok', 'accepted': accepted, 'total': len(self.registry)}
         raise RemoteFailure('bad_request', f'未知的 registry action: {action!r}')
 
-    # ── 名单分发（§5.7）───────────────────────────────────────────────────
+    # ── 名单分发 ──────────────────────────────────────────────────────────
 
     def _op_roster(self, request: Dict[str, Any], peer: PeerIdentity) -> Dict[str, Any]:
-        """交换团体名单（§5.7）。
+        """交换团体名单。
 
-        设计文档 §5.7 明确了两件事，本方法逐条落实：
+        本方法逐条落实两件事：
 
         * **分发通道不必可信**：名单自带群主/管理员签名，中转方无法篡改内容，只能
           拒绝服务。因此这里对收到的名单一律跑 `Roster.accepts()` 的规则 1–6，
@@ -496,7 +496,7 @@ class Node:
         return Roster.history_chain(local, *self._local_roster_history())
 
     def _peer_knows_history(self, request: Dict[str, Any], local: Roster) -> bool:
-        """对端手里的名单是否**本机认得**（§5.7 的准入条件）。
+        """对端手里的名单是否**本机认得**（准入条件）。
 
         判据：对端给出的最新那份，必须出现在本机一侧的名单链里
         （本机当前名单，或本机保存/收到的某个历史版本）。

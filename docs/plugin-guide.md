@@ -217,7 +217,7 @@ exts.clearActive();
 - 回归守卫：`tests/js/shell_extensions_active.mjs`（组件侧 6 例）+ 各宿主的侧栏用例
   （如 `tests/js/media_player_nav_active.mjs`）。
 
-> 目前已落地的 Companion 插件示例：`image-cleaner`（全相册重复/相似清理），设计见 `docs/image-cleaner-design.md`。
+> 目前已落地的 Companion 插件示例：`image-cleaner`（全相册重复/相似清理）。
 
 ## 2.2 重型依赖与独立运行环境（runtime）
 
@@ -242,7 +242,7 @@ torch / onnxruntime 等重依赖**不得**写在插件 `backend/main.py` 顶层 
 ```
 
 2. **控制器保持轻量**：`backend/main.py` 只做任务管理 / 进度 / 结果索引，通过 `shell.backend.adapter_process`（规划中）拉起 `<runtime.venv>/Scripts/python.exe` 子进程。
-3. **通信**：stdio JSON-lines，每行一个 JSON 对象；控制行下行、进度/结果上行（协议见 `docs/image-tagger-design.md`）。
+3. **通信**：stdio JSON-lines，每行一个 JSON 对象；控制行下行、进度/结果上行（协议见 `docs/core-direction.md` §9.4）。
 4. **部署**：`deploy.ps1` / `setup-venv.ps1` 按 `runtime.requirements` 创建插件独立 venv；失败不阻塞主程序。
 5. **原型阶段**允许懒 import 兜底：首次调用时才 `import torch`，并把任务放进后台线程；正式版切独立环境。
 
@@ -505,7 +505,7 @@ ok = self.thumb_cache.put(rel, jpeg_bytes, 'image/jpeg', self.root_dir / rel)
 - 失效校验：`source_mtime`（0.5s 容差）+ `source_size` 双条件，源文件替换后自动重生成；
 - 生成失败返回 None 且不写缓存（不缓存假缩略图）；
 - `size`、MIME 映射（`mime_map`）、并发数（`workers`）均可配置，默认 300×300 + 8 线程；
-- 已有实现参考：image-viewer（`ThumbCache` 接入 + `BackgroundTask` 重建任务，见 `docs/image-viewer-design.md` §3.2、§6.4）。
+- 已有实现参考：image-viewer（`ThumbCache` 接入 + `BackgroundTask` 重建任务）。
 
 ##### 自定义生成器（视频抽帧 / 内嵌封面等非图片源）
 
@@ -682,11 +682,11 @@ ctl.autoSync('');                     // 进视图 / 切目录时调用（组件
 `scope` 来自前端，按不可信输入处理：`..`、绝对路径、未知命名空间一律拒绝，解析结果
 还要再确认落在该根之内。方法表只有一处定义（`plugin_manager.freshness_api_methods()`），
 HTTP 与桌面 `js_api` 两条通道共用。已接入的实现参考：image-viewer
-（`plugins/image-viewer/backend/freshness.py`，见 `docs/image-viewer-design.md` §3.5）。
+（`plugins/image-viewer/backend/freshness.py`）。
 
 ### 3.5 完整 API 列表
 
-（以 image-viewer 为例，完整版见 `docs/image-viewer-design.md` §6）
+（以 image-viewer 为例）
 
 | API 方法                  | 参数                                              | 返回值                                                                                      | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

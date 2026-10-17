@@ -70,7 +70,7 @@ node tools/check_frontend_escape.cjs
    `auth_token.txt` 的整份内容（按原文匹配）；占位符形状（`SECRET-TOKEN`、`<your-key>`）不算；
 3. **用户名**：`%USERPROFILE%` 最后一段，只在路径上下文（`users/<名字>`）里算命中。
 
-实测价值：实装当天用它扫出 8 处真机路径（`docs/ci-and-release.md`、`docs/image-viewer-design.md`、
+实测价值：实装当天用它扫出 8 处真机路径（本文档、一份插件设计文档、
 `plugins/group-mesh/backend/shares.py` 的注释、以及 3 个用例文件），全部改成 `D:\…` 占位。
 已知边界：按**行文本**比对，把路径拆成多段字符串拼接后检测不到（用例把这条边界固化了）。
 

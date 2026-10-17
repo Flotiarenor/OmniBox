@@ -469,7 +469,7 @@ window.GroupMeshRemote = (function () {
   //
   // 与"取回"的方向相反：本机出文件、对端落盘。界面这一侧只负责取三样东西
   // （本机路径、目标文件名、是否覆盖），越界与权限都由对端判定 —— 客户端隐藏
-  // 按钮不构成授权（设计文档 §6.3）。
+  // 按钮不构成授权。
 
   function openUpload() {
     if (!state.current) {

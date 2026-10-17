@@ -351,7 +351,7 @@ function loadObjectWith(rel, needles) {
 }
 
 // ---- 5. image-viewer 的 _escapeAttr 必须与 _escapeHtml 同样严格 ----
-// 两个方法在 app-utils.js 分片里（app.js 拆成多个原型分片后位置变更，见 docs/image-viewer-design.md）
+// 两个方法在 app-utils.js 分片里（app.js 拆成多个原型分片后位置变更）
 const iv = loadObjectWith('plugins/image-viewer/frontend/js/app-utils.js', ['_escapeHtml(str)', '_escapeAttr(str)']);
 if (iv) {
   const out = iv._escapeAttr(PAYLOAD);

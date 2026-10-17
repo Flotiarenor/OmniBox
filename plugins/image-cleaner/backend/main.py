@@ -1,6 +1,6 @@
 """image-viewer 的 Companion 插件：全相册重复 / 相似图片清理。
 
-设计参考 docs/plugin-guide.md §2.1 与 docs/image-cleaner-design.md。
+设计参考 docs/plugin-guide.md §2.1。
 该插件不修改 image-viewer 宿主，只通过依赖实例复用其数据根目录与删除能力。
 """
 

@@ -1,11 +1,11 @@
-"""壳侧主体上下文（设计文档 group-mesh §12 第 1/2 项）的契约用例。
+"""壳侧主体上下文的契约用例。
 
 这组用例锁的是**验收标准本身**，不是实现细节：
 
   * 插件能通过 `PluginBase.current_principal()` 拿到**由壳注入**的主体标识；
   * 该值**无法被请求参数影响**（伪造 `principal` 字段的请求必须与不带的等价）；
   * 未登记的凭据不放行（401），且**不降级成匿名主体**；
-  * 后台线程**没有**主体（设计文档 §12：涉及主体的后台任务必须显式携带主体信息）。
+  * 后台线程**没有**主体（涉及主体的后台任务必须显式携带主体信息）。
 
 为什么必须有"伪造参数被忽略"和"后台线程没有主体"这两条：所有"从请求体读主体"
 或"没有主体就当成本机"的实现都能通过"能拿到主体"的用例，而它们在局域网多用户
@@ -199,7 +199,7 @@ class PrincipalContextTest(unittest.TestCase):
             self.assertEqual(require_principal().id, 'alice')
 
     def test_background_thread_does_not_inherit_principal(self):
-        """设计文档 §12：插件自起的后台线程不继承请求上下文。
+        """插件自起的后台线程不继承请求上下文。
 
         这不是缺陷而是约束：后台任务若要用主体，必须**显式**携带
         （`with use_principal(p):`），否则读到 None —— 而 None 会被
@@ -529,7 +529,7 @@ class WhoAmIPlugin(PluginBase):
         self.assertEqual(response.get_json()['result']['id'], 'owner')
 
     def test_plugin_thread_has_no_principal(self):
-        """插件自起的线程读不到主体：设计文档 §12 要求的"后台任务必须显式携带"。"""
+        """插件自起的线程读不到主体："后台任务必须显式携带"。"""
         response = self._call('in_thread')
         self.assertEqual(response.status_code, 200)
         self.assertIsNone(response.get_json()['result']['id'])
@@ -548,7 +548,7 @@ class WhoAmIPlugin(PluginBase):
 
 
 class AdminOnlyEndpointsTest(unittest.TestCase):
-    """管理员专属端点（设计文档 group-mesh §12 第 5 项）。
+    """管理员专属端点。
 
     原状：`system_get_config` / `system_get_plugin_status` 只校验令牌，任何持令牌者
     都能读走完整配置（含绑定地址、数据目录）与各插件加载状态。现在按角色判定：

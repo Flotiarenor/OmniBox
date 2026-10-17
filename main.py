@@ -322,8 +322,8 @@ def _run_app(config, manager):
     #   * 而"这次调用是谁"在本机没有第二个答案 —— 窗口页面本身就是 owner 令牌的持有者，
     #     插件 iframe 与它同源，同样能经 Bridge.callSystem 沿 parent 链取到
     #     pywebview.api 说话。**角色判定分不开同源的插件前端与壳**。
-    # 能分开的只有 origin 隔离（插件前端独立端口/子域 + postMessage 桥），见审计报告
-    # P1-8 的后续方案。HTTP 路径继续走同一份判定（file_server.guard_admin_methods），
+    # 能分开的只有 origin 隔离（插件前端独立端口/子域 + postMessage 桥），属于后续方案。
+    # HTTP 路径继续走同一份判定（file_server.guard_admin_methods），
     # 那是能携带非 owner 令牌、判定真正生效的通道。
     for method_name, method_fn in shell_methods.items():
         setattr(api, method_name, method_fn)
@@ -370,7 +370,7 @@ def _run_desktop_window(config, manager, api, host, port):
                   private_mode=False, storage_path=str(_webview_storage_dir()))
     # 这一行必须留在 `webview.start()` **之后**：它返回即"用户正常关窗退出"。
     # 异常展开（启动失败 / 崩溃）会跳过这里，进程被强杀同样不会执行 —— 「上次离开的
-    # 页面」只记安全退出的值，正是要靠这个位置来保证（报告 §7.5）。浏览器与
+    # 页面」只记安全退出的值，正是要靠这个位置来保证。浏览器与
     # `--web-only` 没有关窗事件，由 `app.run()` 返回处与空闲兜底提交覆盖。
     _commit_last_route()
 

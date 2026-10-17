@@ -3,7 +3,7 @@
 > 版本：**v1.0（方向定稿）**
 > 日期：2026-08-21
 > 状态：**设计阶段**
-> 关联文档：`docs/image-tagger-design.md`、`docs/plugin-guide.md`
+> 关联文档：`docs/plugin-guide.md`
 
 ---
 
@@ -139,7 +139,7 @@ class AdapterProcessManager:
 
 ### 3.6 长驻 Worker 协议（stdio JSON-lines）
 
-见 `docs/image-tagger-design.md` §7。Shell 不解析协议内容，只负责：
+协议见本文档 §9.4 的形态 D。Shell 不解析协议内容，只负责：
 - 进程生命周期
 - stdout/stderr 分路与日志持久化
 - 退出时 `cleanup_all()`
@@ -173,7 +173,7 @@ class AdapterProcessManager:
 
 | 阶段 | 主程序交付 | 插件侧 |
 |------|-----------|--------|
-| M0 | 本方向文档 + 更新 plugin-guide / adapter-spec | image-tagger 设计文档 |
+| M0 | 本方向文档 + 更新 plugin-guide / adapter-spec | image-tagger 规格（已移出仓库） |
 | M1 | `get_dependency`、`Bridge.callPlugin`、`system_get_plugin_extensions` | Companion 骨架加载成功 |
 | M2 | `manifest.runtime` + 部署脚本建独立 venv | Worker 在独立 venv 跑通 1 张 |
 | M3 | `adapter_process.py` 最小实装 + 退出清理 | 千张目录任务可用 |
@@ -199,14 +199,13 @@ class AdapterProcessManager:
 |------|------|
 | `plugin-guide.md` | 新增 Companion / 跨插件调用 / runtime 章节 |
 | 本文档 §9–§10 | 外部程序接入规范与接入实例（原 `adapter-spec.md` / `adapter-guide.md`，已并入本文） |
-| `image-tagger-design.md` | 本方向的首个消费者规格 |
 
 ---
 
 ## 9. 外部程序接入规范（Adapter Spec）
 
 > 版本：v1.1（设计定稿，尚未实装）。本节是外部大型程序接入的**通用规范**，与
-> §10 的接入实例、`docs/image-tagger-design.md` 的 stdio-worker 规格合为一份。
+> §10 的接入实例合为一份。
 >
 > **状态：规划中。** 当前代码中没有 `shell/backend/adapter_process.py`，`PluginBase`
 > 没有 `adapter_*` 方法，`PluginManager` 也不处理 `kind: "local-adapter"`。
@@ -217,8 +216,7 @@ class AdapterProcessManager:
 > 进程生命周期 + 日志流 + 状态轮询」弱耦合，验证了管理类重系统接入无需协议握手。
 >
 > **编号约定：保留族号。** `§9.2` 与 `§9.3` 下的 `#### 2.x` / `#### 3.x` 沿用规范原有
-> 编号（`§2.1` 启动、`§3.2` DB 直连、`§3.4` stdio-worker），因为 `docs/image-tagger-design.md`
-> 等文档按这些号引用；不要重排或重编号。
+> 编号（`§2.1` 启动、`§3.2` DB 直连、`§3.4` stdio-worker），不要重排或重编号。
 
 ### 9.1 词汇与定位
 
@@ -354,7 +352,7 @@ class AdapterProcessManager:
 | 项 | 约定 |
 |----|------|
 | 拉起 | `startup: "lazy"`：应用启动不拉起；首次任务时拉起，模型加载完成后输出 `{"type":"ready"}` |
-| 协议 | 每行一个 JSON 对象；控制行下行、进度/结果上行；字段见 `docs/image-tagger-design.md` §7 |
+| 协议 | 每行一个 JSON 对象；控制行下行、进度/结果上行 |
 | 进度 | Worker 输出 `progress` 行；控制器持久化到任务文件，前端轮询 |
 | 取消 | 控制行 `{"type":"cancel","taskId":...}`；Worker 在下一个检查点响应 |
 | 崩溃 | EOF → `ERR_WORKER_CRASH`；重启后按任务断点恢复 |
@@ -518,9 +516,8 @@ def adapter_root(self) -> Path                          # 校验过的外部程�
 
 > 版本：v1.1（设计稿）。状态：**规划中，尚未实装**——本节涉及的 `adapter_process.py`、
 > `PluginBase.adapter_*`、`kind: "local-adapter"` 当前均未实现。
-> 三个实例：**ALAS**（形态 A，自带 Web UI → iframe 嵌入）、
-> **战报识别系统**（形态 B，只有 DB → 直连）、**image-tagger**（形态 D，stdio-worker）
-> → 独立设计文档 `docs/image-tagger-design.md`。
+> 两个实例：**ALAS**（形态 A，自带 Web UI → iframe 嵌入）、
+> **战报识别系统**（形态 B，只有 DB → 直连）。
 >
 > **编号约定：保留族号。** 实例小节沿用其原有编号（`#### 4.x`–`#### 7.x`、
 > `#### 8.`–`#### 10.`），因为识别系统侧的 `adapter-contract.md` 按这些号互相引用。
@@ -530,7 +527,6 @@ def adapter_root(self) -> Path                          # 校验过的外部程�
 | 文件 | 归属 | 内容 |
 |------|------|------|
 | 本文档（`docs/core-direction.md` §9–§10） | OmniBox 项目 | 通用接入规范 + 外部程序的接入实例：插件设计、后端 API、设置项 |
-| `docs/image-tagger-design.md` | OmniBox 项目 | stdio-worker（形态 D）的首个落地规格 |
 | `adapter-contract.md` | 战报识别系统项目 | 识别系统侧数据契约（DB schema 等），由识别系统仓库维护，不在本仓库 |
 
 ### 10.1 实例一：ALAS（形态 A — iframe 嵌入）

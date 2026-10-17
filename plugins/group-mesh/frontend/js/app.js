@@ -2,7 +2,7 @@
  * group-mesh 插件前端。
  *
  * 只做四件事：读状态、切面板、渲染、把用户动作转成 Bridge.call。所有判定都在后端 ——
- * 前端不持有任何"谁能做什么"的规则（设计文档 §6.3：客户端隐藏按钮不构成授权）。
+ * 前端不持有任何"谁能做什么"的规则（客户端隐藏按钮不构成授权）。
  *
  * 界面形态与仓库里其它插件一致（manga-library / media-player / image-cleaner）：
  * 壳的 `.view-sub-sidebar` 常驻侧栏 + `.view-body > .view-toolbar + .view-content`。
@@ -74,7 +74,7 @@
   // 弹窗用壳的 `.modal` + `.modal.active`（base.css）。
   // 不再自绘 `.gm-modal[data-open]`：壳的默认态没有任何 display 声明，因此不存在
   // "作者样式的 display:flex 盖掉浏览器给 [hidden] 的 display:none"那个级联陷阱
-  // （事故记录见 docs/group-mesh-design.md，以及本插件 CSS 顶部注释）。
+  // （事故记录见本插件 CSS 顶部注释）。
   function openModal(id) {
     var node = el(id);
     if (node) { node.classList.add('active'); }
@@ -245,7 +245,7 @@
         escapeHtml(stale.expired_days) + ' 天</span> 仅提示，不阻断通信</p>';
     }
 
-    // 名单过期只是提示（设计 §5.4：软件不做版本强制），因此顶边用 warn 而不是 error
+    // 名单过期只是提示（软件不做版本强制），因此顶边用 warn 而不是 error
     cardOf('roster-body', stale.expired ? 'gm-card-warn' : 'gm-card-ok');
     body.innerHTML =
       '<dl class="gm-kv">' +

@@ -73,8 +73,8 @@ class StatusMixin:
             'shares': [],
             'share_roots': [],
             'unsupported': [
-                '内容寻址分块传输（§10）',
-                'Android 轻客户端（设计文档 §11.2，首版不实现）',
+                '内容寻址分块传输',
+                'Android 轻客户端（首版不实现）',
             ],
         }
 
@@ -101,7 +101,7 @@ class StatusMixin:
                     'member_count': len(roster.members),
                     'admin_count': len(roster.admin_keys),
                     'stale': staleness_report(roster, None),
-                    # 自动分发（§5.7）的可见性：最近一次采纳的新名单 + 各对端版本。
+                    # 自动分发的可见性：最近一次采纳的新名单 + 各对端版本。
                     # 没有这两个字段，用户无法判断"我是不是还停在旧名单上"。
                     'adopted_notice': self._roster_notice,
                     'peer_versions': [
