@@ -73,8 +73,13 @@ export function createDom() {
       style: { setProperty() { } },
       dataset: {}, children: [], handlers: {}, parentElement: null,
       classList: {
-        add(c) { if (!String(el.className).split(/\s+/).includes(c)) el.className = `${el.className} ${c}`.trim(); },
-        remove(c) { el.className = String(el.className).split(/\s+/).filter((x) => x && x !== c).join(' '); },
+        // 与真实 DOMTokenList 一致：add/remove 接受多个 token（插件里常见
+        // `classList.remove('theme-auto', 'theme-sepia', …)` 这种一次清一组的写法）。
+        add(...cs) { cs.forEach((c) => { if (!String(el.className).split(/\s+/).includes(c)) el.className = `${el.className} ${c}`.trim(); }); },
+        remove(...cs) {
+          const drop = new Set(cs);
+          el.className = String(el.className).split(/\s+/).filter((x) => x && !drop.has(x)).join(' ');
+        },
         contains: (c) => String(el.className).split(/\s+/).includes(c),
         toggle(c, force) {
           const on = force === undefined ? !el.classList.contains(c) : !!force;

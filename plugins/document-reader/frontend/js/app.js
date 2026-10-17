@@ -144,8 +144,16 @@ class DocumentReader {
             .addEventListener('click', () => openNrModal('nr-read-settings-modal'));
         document.getElementById('nr-open-voice')
             .addEventListener('click', () => this.voicePage.open());
+        // 设置弹窗保存后自己收尾：壳只把值写进后端，既不重载页面也不通知插件页
+        // 打开前先把去抖中的偏好落盘：弹窗会读一次后端值再整份回传，没落盘的改动会被
+        // 那一份旧值盖掉（只有已经读过后端才允许回写，否则写的是默认值）。
+        // 保存后重读一次，改了正文底色才当场看得见。
         document.getElementById('btn-settings')
-            .addEventListener('click', () => openSettingsModal({ title: '文档阅读设置' }));
+            .addEventListener('click', async () => {
+                if (this.settings.loaded) await this.settings.save(true);
+                if (!await openSettingsModal({ title: '文档阅读设置' })) return;
+                if (await this.settings.reload()) this.engine.setMode(this.mode);
+            });
 
         if (this._dom.tocFilter) {
             this._dom.tocFilter.addEventListener('input', () => this._renderTocItems());

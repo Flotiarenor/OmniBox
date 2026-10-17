@@ -41,18 +41,59 @@ class ReaderSettingsStore {
     constructor(app) {
         this.app = app;
         this._saveTimer = null;
+        // 后端偏好读过一次没有。读之前内存里是构造函数的默认值，拿它回写后端等于
+        // 把用户设置清成默认值（"点设置按钮太快"就能踩到）。
+        this._loaded = false;
+    }
+
+    /** 内存里的值是不是从后端读来的（可以安全回写）。 */
+    get loaded() {
+        return this._loaded;
     }
 
     /** 从后端设置读偏好并应用到界面。 */
     async load() {
-        const app = this.app;
         let settings = {};
         try {
             settings = await Bridge.call('get_settings') || {};
         } catch (e) {
             settings = {};
         }
-        // 后端还没有这些键（首次运行 / 刚从 localStorage 迁移）时给默认值
+        this._assign(settings);
+        this._migrateLegacy(settings);
+        this.apply(true);
+        this._loaded = true;
+    }
+
+    /** 设置弹窗保存后重新读一遍后端并应用。
+     *
+     * 为什么必须自己收尾：壳的设置弹窗只把值写进后端，既不重载页面也不通知插件页
+     * （`omnibox:settings-changed` 在壳里只有接收分支，见 docs/plugin-guide.md §4.3）。
+     * 不重读的话正文停在旧配色；更糟的是页内任何一次 `save()` 都会把**整份**偏好写回
+     * 后端，刚在弹窗里改的那一项会被内存里的旧值静默盖掉 —— 表现为"这一项设置永远
+     * 不生效"。
+     *
+     * 与 `load()` 的两处差别：读失败时保持现状而不是退回默认值（默认值是"首次运行"
+     * 的兜底，不是"读挂了"的兜底）；不重跑 localStorage 迁移（迁移只属于加载期）。
+     */
+    async reload() {
+        let settings;
+        try {
+            settings = await Bridge.call('get_settings');
+        } catch (e) {
+            console.error('重新读取阅读偏好失败:', e);
+            return false;
+        }
+        if (!settings || typeof settings !== 'object') return false;
+        this._assign(settings);
+        this.apply(true);
+        this._loaded = true;
+        return true;
+    }
+
+    /** 后端设置 → 内存值。后端还没有这些键（首次运行）时给默认值。 */
+    _assign(settings) {
+        const app = this.app;
         app.fontSize = Number(settings.reader_font_size) || 16;
         app.lineHeight = Number(settings.reader_line_height) || 1.8;
         app.letterSpacing = Number(settings.reader_letter_spacing) || 0;
@@ -63,8 +104,6 @@ class ReaderSettingsStore {
         app.bgMode = BODY_BG_MODES.includes(settings.reader_bg_mode)
             ? settings.reader_bg_mode : DEFAULT_BODY_BG_MODE;
         app.bodyColor = settings.reader_body_color || '#ffffff';
-        this._migrateLegacy(settings);
-        this.apply(true);
     }
 
     /** 老版本把偏好写在 localStorage，搬一次到后端设置。 */
@@ -162,7 +201,12 @@ class ReaderSettingsStore {
         }
     }
 
-    /** 落盘（防抖）。`immediate` 用于迁移这种"必须马上写"的场景。 */
+    /** 落盘（防抖）。`immediate` 用于迁移、以及"马上要读回后端"这种场景。
+     *
+     * 返回这一次写入的 Promise（防抖的那次返回 null）：调用方要等它落盘再读后端时
+     * 必须能 await —— 例如设置弹窗会先读一次后端值、保存时再整份回传，未落盘的改动
+     * 会被弹窗里的旧值盖掉。
+     */
     save(immediate = false) {
         clearTimeout(this._saveTimer);
         const write = async () => {
@@ -183,10 +227,8 @@ class ReaderSettingsStore {
                 console.error('保存阅读偏好失败:', e);
             }
         };
-        if (immediate) {
-            write();
-            return;
-        }
+        if (immediate) return write();
         this._saveTimer = setTimeout(write, 400);
+        return null;
     }
 }

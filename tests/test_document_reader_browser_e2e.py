@@ -584,6 +584,76 @@ class DocumentReaderBrowserTests(unittest.TestCase):
             "return [...document.querySelectorAll('.toast')].map(t => t.textContent).join('|');"),
             '保存后没有给出成功提示（保存通路没走完）')
 
+    def test_settings_modal_applies_reading_preferences_immediately(self):
+        """在「设置」弹窗里改「正文底色 = 透出壳背景」后，正文当场让出底色。
+
+        缺陷背景：壳的设置弹窗只把值写进后端，既不重载页面也不通知插件页
+        （`omnibox:settings-changed` 在壳里只有接收分支，见 docs/plugin-guide.md §4.3），
+        而插件的「设置」按钮把 `openSettingsModal()` 的返回值直接丢掉了。于是这一项
+        改完没有任何变化；更糟的是页内下一次 save() 会把内存里的旧值整份写回后端，
+        刚保存的新档位被静默盖掉 —— 表现为"这一项设置永远不生效"。
+
+        断言走完整通路：按钮 → 弹窗里选档位 → 保存 → 正文的 class 与计算样式都换过来，
+        页内「阅读设置」弹窗的回填值同步，后端存的是新值。
+        """
+        self.set_state(
+            documents=[_document('book.txt', '书', count=1, kind='txt')],
+            chapters=[{'index': 0, 'title': '第1章', 'word_count': 3}],
+            bodies={'book.txt': {'0': '正文'}},
+            settings={'reader_theme': 'auto', 'reader_bg_mode': 'theme', 'reader_font_size': 16},
+            schema=[
+                {'key': 'reader_font_size', 'label': '正文字号(px)', 'type': 'number',
+                 'default': 16},
+                {'key': 'reader_theme', 'label': '阅读主题', 'type': 'select', 'default': 'auto',
+                 'options': [{'label': '跟随主题', 'value': 'auto'},
+                             {'label': '夜间', 'value': 'dark'}]},
+                {'key': 'reader_bg_mode', 'label': '正文底色', 'type': 'select',
+                 'default': 'show',
+                 'options': [{'label': '跟随主题', 'value': 'theme'},
+                             {'label': '透出壳背景', 'value': 'show'},
+                             {'label': '指定色彩', 'value': 'solid'}]},
+            ])
+        self.open_app()
+        self.driver.execute_script("window.documentReader.openDocument(arguments[0]);", 'book.txt')
+        self.wait('window.documentReader._isReaderMode')
+        before = self.driver.execute_script("""
+            const el = document.getElementById('document-content-area');
+            return {bgMode: window.documentReader.bgMode,
+                    cls: el.className,
+                    bg: getComputedStyle(el).backgroundColor};
+        """)
+        self.assertIn('body-bg-theme', str(before['cls']).split(),
+                      f'初始档位不是跟随主题：{json.dumps(before, ensure_ascii=False)}')
+
+        self.driver.execute_script("document.getElementById('btn-settings').click();")
+        self.wait("document.querySelector('.modal.active"
+                  " .field[data-key=\"reader_bg_mode\"] select')")
+        self.driver.execute_script("""
+            const select = document.querySelector('.modal.active'
+                + ' .field[data-key="reader_bg_mode"] select');
+            select.value = 'show';
+        """)
+        self.driver.execute_script(
+            "document.querySelector('.modal.active [data-act=\"save\"]').click();")
+        self.wait("!document.querySelector('.modal.active')")
+        self.wait('window.documentReader.bgMode === "show"')
+
+        after = self.driver.execute_script("""
+            const el = document.getElementById('document-content-area');
+            return {bgMode: window.documentReader.bgMode,
+                    cls: el.className,
+                    bg: getComputedStyle(el).backgroundColor,
+                    popup: document.getElementById('document-bg-mode').value};
+        """)
+        details = json.dumps(after, ensure_ascii=False)
+        self.assertIn('body-bg-show', str(after['cls']).split(), f'正文没让出底色 {details}')
+        self.assertNotIn('body-bg-theme', str(after['cls']).split(),
+                         f'旧档位的 class 还留着 {details}')
+        self.assertEqual(after['bg'], 'rgba(0, 0, 0, 0)', f'正文底色不是透明的 {details}')
+        self.assertEqual(after['popup'], 'show', f'页内「阅读设置」没跟着回填 {details}')
+        self.assertEqual(_Handler.state['settings'].get('reader_bg_mode'), 'show',
+                         f'后端存下的不是新档位 {details}')
+
     def test_encoding_is_fully_automatic(self):
         """编码不再由用户选：界面上没有那个下拉框，重读也永远用 auto。
 
