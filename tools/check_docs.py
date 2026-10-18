@@ -82,8 +82,13 @@ SKIP_DIRS = frozenset({
 GENERATED_PREFIXES = (
     'dist/', 'node_modules/', 'venv/', '.build', '.config/', 'data/', 'logs/',
     'chromedriver/', '__pycache__/',
+    # 前端构建产物：`shell/frontend/dist/` 只在 `npm run build` 之后存在，而 lint 与 docs
+    # 两个 job 不构建前端 —— 文档引用它说的是"首页从哪来"，不是"仓库里有这个文件"。
+    'shell/frontend/dist/',
 )
-GENERATED_NAMES = frozenset({'__pycache__', 'se-metadata.json'})
+# 精确到某一份产物（不按前缀匹配）：`OmniBox/` 是 PyInstaller 的输出树，
+# `docs/Releases/AGENTS.md` 的产物表按该目录内的相对路径写它，真跑过构建才有。
+GENERATED_NAMES = frozenset({'__pycache__', 'se-metadata.json', 'OmniBox/'})
 
 # 插件自己的文档：按 docs/plugin-doc-spec.md 描述界面契约，不做名字/路径检查。
 PLUGIN_INTERFACE_DOC = re.compile(r'^plugins/[^/]+/AGENTS\.md$')

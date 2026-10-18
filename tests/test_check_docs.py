@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from tools.check_docs import check_docs, scan
+from tools.check_docs import _is_generated, check_docs, scan
 
 
 class CheckDocsGateTests(unittest.TestCase):
@@ -126,6 +126,31 @@ class CheckDocsGateTests(unittest.TestCase):
         self._write('AGENTS.md', '# 根\n\n首页由 `dist/index.html` 提供。\n')
 
         self.assertEqual(self._errors(), [])
+
+    def test_frontend_build_output_is_generated_at_any_depth(self):
+        """`shell/frontend/dist/index.html`：前端产物只有构建过才在，lint / docs job 不构建。
+
+        真实事故：这条引用让 develop 的 CI 连续三次报错 —— 本机因为构建过而通过，
+        CI 的 lint 与 docs 两个 job 没有 `dist/`，于是「文档引用一致性」必红。
+        """
+        self._write('AGENTS.md', '# 根\n\n壳首页由 `shell/frontend/dist/index.html` 提供。\n')
+
+        self.assertEqual(self._errors(), [])
+
+    def test_release_output_tree_is_generated(self):
+        """`OmniBox/`：PyInstaller 的输出树，产物表按 docs/Releases 内的相对路径写它。"""
+        self._write('docs/Releases/AGENTS.md', '# Releases\n\n打包产物是 `OmniBox/`。\n')
+
+        self.assertEqual(self._errors(), [])
+
+    def test_real_repo_artifact_references_stay_generated(self):
+        """仓库文档里指向构建产物的引用必须继续落在"生成物"分支。
+
+        否则同一条门禁在本机（构建过）通过、在 CI（没构建）红色 —— 它的价值反过来变成噪声。
+        """
+        for token in ('shell/frontend/dist/index.html', 'OmniBox/'):
+            with self.subTest(token=token):
+                self.assertTrue(_is_generated(token), token)
 
     def test_runtime_url_is_not_a_repo_path(self):
         """前导斜杠是运行时 URL（`/shell/base.js`），不是仓库路径。"""
