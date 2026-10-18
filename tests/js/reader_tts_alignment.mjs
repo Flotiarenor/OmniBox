@@ -49,10 +49,13 @@ globalThis.Toast = { info() {}, error() {}, success() {} };
 globalThis.fetch = async () => ({ ok: true });
 
 const calls = [];
+// 预取失败要用一个"会失败"的句子触发：深窗口的降级分支靠它走到
+const FAIL_TEXT = '触发失败。';
 globalThis.Bridge = {
   async call(method, ...args) {
     calls.push({ method, args });
     const [text] = args;
+    if (method === 'tts_speak' && text === FAIL_TEXT) throw new Error('端点拒绝连接');
     return { url: `/file?path=${encodeURIComponent(`C:\\tts\\${text.slice(0, 6)}.mp3`)}`,
              engine: 'openai', marks: [], cached: false };
   },
@@ -69,8 +72,13 @@ audio.pause = () => {};
 audio.removeAttribute = () => {};
 
 const src = fs.readFileSync(path.join(FRONTEND, 'js', 'reader-tts.js'), 'utf8');
+// 常量与类一起 eval：预取深度的默认值/上限是模块级常量（就在类上方），构造器要用到它
+const constStart = src.indexOf('const nrIcon');
 const clsStart = src.indexOf('class ReaderTts');
-const ReaderTts = new Function(`${src.slice(clsStart)}; return ReaderTts;`)();
+assert.ok(constStart >= 0 && clsStart > constStart,
+  'reader-tts.js 顶部的常量或类被改名了：本用例的切片需要同步');
+const ReaderTts = new Function(
+  `${src.slice(constStart, clsStart)}; ${src.slice(clsStart)}; return ReaderTts;`)();
 
 const app = {
   engine: { chapters: [0, 1], getChapterContext: () => null },
@@ -95,6 +103,14 @@ function makePlayer(pieces) {
 const P1 = { text: '第一句。', start: 0, end: 4 };
 const P2 = { text: '第二句。', start: 4, end: 8 };
 const P3 = { text: '第三句。', start: 8, end: 12 };
+const P4 = { text: '第四句。', start: 12, end: 16 };
+const BAD = { text: FAIL_TEXT, start: 16, end: 24 };
+
+/** 让 async 链路（指纹 → 请求 → 落格）跑完：两轮宏任务足够。 */
+const settle = async () => {
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+};
 
 // 1) 预取结果属于别的句子 → 丢弃，重取当前句，绝不能把别人的音频挂上去
 {
@@ -159,6 +175,68 @@ const P3 = { text: '第三句。', start: 8, end: 12 };
   assert.ok(entry, '预取结果应当落在第 2 格');
   assert.equal(entry.cacheKey, await tts._cacheKey('第二句。'),
     '落格时的指纹必须等于该句的指纹，否则取用时永远对不上、预取等于白做');
+}
+
+// 5) 预取深度：一次开播就把后面 `depth` 句一起排进队列
+{
+  const tts = makePlayer([P1, P2, P3]);
+  tts.index = 0;
+  assert.equal(tts.setPrefetchDepth(3), 3, '有效深度应当生效');
+  tts._prefetchNext();
+  await settle();
+  assert.deepEqual(calls.map((call) => call.args[2]).sort(), [1, 2],
+    '后面只有两句：深度 3 也只发两句');
+  assert.deepEqual([...tts._prefetched.keys()].sort(), [1, 2], '两句都要落进预取表');
+}
+
+// 6) 深度 1 就是改动前的行为：只排下一句
+{
+  const tts = makePlayer([P1, P2, P3, P4]);
+  tts.index = 0;
+  tts.setPrefetchDepth(1);
+  tts._prefetchNext();
+  await settle();
+  assert.deepEqual(calls.map((call) => call.args[2]), [1], '深度 1 只预取下一句');
+}
+
+// 7) 同一句不重复排：还在路上时再要一次也只发一个请求
+{
+  const tts = makePlayer([P1, P2, P3, P4]);
+  tts.index = 0;
+  tts.setPrefetchDepth(3);
+  tts._prefetchNext();
+  tts._prefetchNext();
+  await settle();
+  for (const index of [1, 2, 3]) {
+    assert.equal(calls.filter((call) => call.args[2] === index).length, 1,
+      `第 ${index + 1} 句只该请求一次`);
+  }
+}
+
+// 8) 预取失败 → 后面退回逐句现取（端点已经在排队时继续并发只会更慢）
+{
+  const tts = makePlayer([P1, BAD, P3, P4]);
+  tts.index = 0;
+  tts.setPrefetchDepth(3);
+  tts._prefetchNext();
+  await settle();
+  assert.ok(!tts._prefetched.has(1), '失败的那句不该进预取表');
+  assert.equal(tts._prefetchDepth, 1, '预取失败后深度应退回 1');
+  tts._prefetched.clear();          // 清掉这一轮已经拿到的，只看"退回后还排几句"
+  calls.length = 0;
+  tts.index = 1;
+  tts._prefetchNext();
+  await settle();
+  assert.deepEqual(calls.map((call) => call.args[2]), [2], '退回后每次只排一句');
+}
+
+// 9) 越界与非数字的深度一律退回 1（后端夹一次，前端再夹一次）
+{
+  const tts = makePlayer([P1]);
+  for (const bad of [0, -3, 9, '很多', undefined, null]) {
+    assert.equal(tts.setPrefetchDepth(bad), 1, `深度 ${String(bad)} 应退回 1`);
+  }
+  assert.equal(tts.setPrefetchDepth(8), 8, '上限之内应当生效');
 }
 
 console.log('reader_tts_alignment: OK');

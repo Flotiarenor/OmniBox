@@ -4,6 +4,7 @@
 
 - 职责：递归扫描配置的文档根目录并把它们聚合成书架，按格式选择阅读方式 —— txt 走 `TxtParser` 的章节偏移切片，md 与 epub 走后端白名单转换器产出的 HTML 片段，pdf 与其余格式交给系统默认程序；当前章正文可交给 edge-tts、OpenAI 兼容端点或系统离线音色朗读。
 - 形态：独立页插件，`frontend.route` 为 `/document-reader`；不承载 companion，也不内嵌进其它插件，`dependencies` 为空数组。
+- 库外工具：`tool/tts_speed.py` 在命令行量「合成语音的速度能不能跟上播放速度」，复用本插件的引擎、切句与参数整理，只读设置与文档，不改任何状态。
 
 
 ## 文件地图
@@ -16,14 +17,15 @@
 | `plugins/document-reader/backend/marks.py` | 书签存储与增删查 | `MarksMixin`、`MARKS_FILE`、`_load_marks`、`_save_marks`、`marks_list`、`marks_add`、`marks_remove` |
 | `plugins/document-reader/backend/parser.py` | TXT 编码探测、全文解码、章节识别与偏移切分 | `TxtParser`、`CHAPTER_PATTERNS`、`detect_encoding`、`_decode_strict`、`read_full_content`、`parse_txt`、`_split_by_word_count` |
 | `plugins/document-reader/backend/documents.py` | Markdown 与 EPUB 转白名单 HTML、EPUB 解包、系统程序打开 | `DocError`、`open_document`、`open_with_system`、`MarkdownDocument`、`EpubDocument`、`_clean`、`_HtmlCleaner`、`_TextProbe`、`_AnchorCollector`、`_decode`、`_safe_href`、`_local`、`_is_safe_member`、`_zip_join`、`_read_member`、`_find_opf`、`_parse_opf`、`_toc_titles`、`MAX_MEMBER_BYTES`、`MAX_EXTRACT_BYTES` |
-| `plugins/document-reader/backend/tts.py` | 朗读设置读取、切句接口、按内容缓存音频与缓存管理 | `TtsMixin`、`TTS_CACHE_LIMIT`、`TTS_RESULT_LIMIT`、`_AUDIO_EXTS`、`_CACHE_KEY_RE`、`_tts_cache_subdir`、`_tts_cache_dir`、`_tts_cache_dir_for_write`、`_tts_params`、`tts_status`、`tts_voices`、`_voice_tables`、`_edge_table`、`_endpoint_table`、`tts_segment`、`tts_speak`、`_tts_cache_prefix`、`_tts_cache_path`、`_tts_hit`、`_tts_meta_marks`、`_tts_prune`、`tts_cache_info`、`tts_clear_cache` |
+| `plugins/document-reader/backend/tts.py` | 朗读设置读取、切句接口、按内容缓存音频、预取深度下发与缓存管理 | `TtsMixin`、`TTS_CACHE_LIMIT`、`TTS_RESULT_LIMIT`、`TTS_PREFETCH_DEFAULT`、`TTS_PREFETCH_MIN`、`TTS_PREFETCH_MAX`、`_AUDIO_EXTS`、`_CACHE_KEY_RE`、`_tts_cache_subdir`、`_tts_cache_dir`、`_tts_cache_dir_for_write`、`_tts_params`、`_tts_prefetch`、`tts_status`、`tts_voices`、`_voice_tables`、`_edge_table`、`_endpoint_table`、`tts_segment`、`tts_speak`、`_tts_cache_prefix`、`_tts_cache_path`、`_tts_hit`、`_tts_meta_marks`、`_tts_prune`、`tts_cache_info`、`tts_clear_cache` |
 | `plugins/document-reader/backend/tts_engine.py` | 三档引擎的合成、降级链、音色清单与句切分 | `ENGINES`、`ENGINE_LABELS`、`ENGINE_ATTEMPTS`、`MAX_CHARS`、`DEFAULT_VOICE`、`VOICE_CACHE_TTL`、`VOICE_LIST_TIMEOUT`、`_RUNNERS`、`_SAPI_SCRIPT`、`split_text`、`is_edge_voice`、`edge_synthesize`、`openai_synthesize`、`system_synthesize`、`system_available`、`edge_voices`、`endpoint_voices`、`engine_voice_names`、`engine_has_voice`、`engine_available`、`available_engines`、`synthesize`、`status`、`clear_voice_cache` |
+| `plugins/document-reader/tool/tts_speed.py` | 库外测速工具：逐句计时并推算播放时间轴，判断连续朗读跟不跟得上 | `main`、`run`、`selftest`、`probe_duration`、`simulate`、`realtime_factor`、`judge`、`build_advice`、`render_report`、`load_backend`、`resolve_params`、`pick_text`、`SAMPLE_TEXT`、`STALL_THRESHOLD_S`、`DEPTH_LADDER`、`DEFAULT_SENTENCES` |
 | `plugins/document-reader/frontend/index.html` | 唯一入口页：静态 DOM 骨架与脚本装载顺序 | `#app`、`.view-sub-sidebar`、`.nr-sidebar`、`.obx-glass`、`#nr-reader-tools`、`#nr-open-voice`、`#nr-extensions`、`#nr-status`、`#nr-back-to-shelf`、`#nr-view-title`、`#nr-view-sub`、`#nr-search`、`#nr-search-clear`、`#nr-freshness`、`#btn-settings`、`#nr-shelf-view`、`#nr-grid`、`#nr-reader-view`、`#document-content-area`、`#document-progress-fill`、`#nr-voice-page`、`#nr-toc-modal`、`#nr-read-settings-modal` |
 | `plugins/document-reader/frontend/document-reader.css` | 全部样式：自有变量、布局、组件、主题与正文底色档位 | `--nr-radius`、`--nr-radius-sm`、`--nr-gradient`、`--nr-accent-soft`、`--reader-font-size`、`--reader-line-height`、`--reader-letter-spacing`、`--reader-bg-color`、`--reader-text-color`、`--reader-body-bg`、`--reader-highlight`、`.nr-grid`、`.nr-card`、`.document-content-area`、`.chapter-content`、`.theme-dark`、`.body-bg-show`、`::highlight(nr-reading)`、`@keyframes nrPulse` |
 | `plugins/document-reader/frontend/js/utils.js` | 段落切分、体积格式化、生成式 SVG 封面 | `DocumentUtils`、`splitParagraphs`、`formatContent`、`formatSize`、`_hashHue`、`coverColors`、`coverDataUrl` |
 | `plugins/document-reader/frontend/js/reader-engine.js` | 双模式阅读引擎：翻页、连续滚动窗口、字符偏移坐标系 | `DocumentReaderEngine`、`setMode`、`reset`、`goToChapter`、`nextPage`、`prevPage`、`handleScroll`、`_fillViewport`、`_loadAdjacent`、`_appendChapterDiv`、`_prependChapterDiv`、`_trimTop`、`_trimBottom`、`_syncChapterFromScroll`、`chapterFraction`、`chapterElement`、`getChapterContext`、`_textNodes`、`_pointAt`、`_rangeFor`、`_charAtViewportTop`、`sentenceStart`、`anchorAtViewportTop`、`chapterIndexForNode`、`anchorFromRange`、`scrollToChar` |
 | `plugins/document-reader/frontend/js/settings.js` | 阅读偏好的后端持久化、设置弹窗保存后的重读与旧 localStorage 迁移 | `ReaderSettingsStore`、`READER_PREF_KEYS`、`BODY_BG_MODES`、`DEFAULT_BODY_BG_MODE`、`LEGACY_SETTINGS_KEY`、`LEGACY_SETTINGS_KEY_OLD`、`loaded`、`load`、`reload`、`_assign`、`_migrateLegacy`、`apply`、`_applyBodyBackground`、`save` |
-| `plugins/document-reader/frontend/js/reader-tts.js` | 朗读控制器：切句、请求、预取、播放、句子高亮与浮动卡 | `ReaderTts`、`_createAudio`、`_buildCard`、`_syncCard`、`toggleCollapse`、`isPlaying`、`refreshStatus`、`_selectionAnchor`、`startFromSelection`、`startFromAnchor`、`startFromViewport`、`_startAt`、`_split`、`_requestSegment`、`_cacheKey`、`_playCurrent`、`_prefetchNext`、`_trace`、`_onEnded`、`_advanceChapter`、`toggle`、`pause`、`resume`、`stop`、`_highlight`、`_scrollIntoView`、`_clearHighlight` |
+| `plugins/document-reader/frontend/js/reader-tts.js` | 朗读控制器：切句、请求、按配置深度预取（失败退回 1）、播放、句子高亮与浮动卡 | `ReaderTts`、`NR_MAX_PREFETCH`、`NR_PREFETCH_FALLBACK`、`_createAudio`、`_buildCard`、`_syncCard`、`toggleCollapse`、`isPlaying`、`refreshStatus`、`setPrefetchDepth`、`_selectionAnchor`、`startFromSelection`、`startFromAnchor`、`startFromViewport`、`_startAt`、`_split`、`_requestSegment`、`_cacheKey`、`_playCurrent`、`_resolveSegment`、`_prefetchNext`、`_prefetchAt`、`_degradePrefetch`、`_trace`、`_onEnded`、`_advanceChapter`、`toggle`、`pause`、`resume`、`stop`、`_highlight`、`_scrollIntoView`、`_clearHighlight` |
 | `plugins/document-reader/frontend/js/reader-voice-page.js` | 朗读设置页：引擎、端点、音色表与试听、缓存管理 | `ReaderVoicePage`、`EDGE_VOICE_FALLBACK`、`_dom`、`open`、`close`、`_bind`、`_load`、`_loadVoices`、`_cacheTable`、`_buildTables`、`_edgeTable`、`_endpointTable`、`_collect`、`_save`、`_renderStatus`、`_renderVoices`、`_markActiveVoice`、`_renderCache`、`_clearCache`、`_openCacheDir`、`_test` |
 | `plugins/document-reader/frontend/js/app.js` | 主控制器：DOM 缓存、事件绑定、书架与阅读态切换、进度保存与还原 | `DocumentReader`、`openNrModal`、`closeNrModal`、`init`、`_cacheDom`、`_bindEvents`、`_bindModalDismiss`、`_bindReaderSettings`、`_bindKeyboard`、`_bindPageTurn`、`_bindScroll`、`_bindLifecycle`、`_mountFreshness`、`_autoSyncFreshness`、`_onFreshnessChanged`、`_loadDocuments`、`_loadMarks`、`loadExtensions`、`switchView`、`returnToShelf`、`_visibleDocuments`、`_updateStatus`、`openDocument`、`_enterReaderMode`、`_openNonChapter`、`_openExternal`、`_afterPageRender`、`_updateProgressBar`、`_clampFraction`、`_contentScrollTop`、`_saveCurrentProgress`、`_nowStamp`、`reloadDocument`、`_showLoading`、`getChapterContext`、`destroy` |
 | `plugins/document-reader/frontend/js/app-shelf.js` | 分片：封面网格、书签视图、空态模板 | `_renderShelf`、`_renderMarks`、`_removeMark`、`_emptyHtml`、`_cardHtml` |
@@ -52,7 +54,7 @@
 | `save_settings` | 设置项字典 | `success`；失败时返回 `error` | 写插件设置 |
 | `tts_segment` | `text`、`max_chars` | `segments` 数组 | 把正文切成句 |
 | `tts_speak` | `text`、`cache_key`、`segment_index`、`engine` | `url`、`mtime`、`cached`、`engine`、`marks`、`segmentIndex`；失败时返回 `error` | 合成一段并返回同源可播放 URL |
-| `tts_status` | 无 | `engines` 数组（条目键 `name`、`label`、`available`、`marks`）、`order`、`mode`、`voice`、`rate` | 引擎可用性一览 |
+| `tts_status` | 无 | `engines` 数组（条目键 `name`、`label`、`available`、`marks`）、`order`、`mode`、`voice`、`rate`、`prefetch` | 引擎可用性一览与当前预取深度 |
 | `tts_voices` | 无 | `mode` 与 `tables` 数组，表条目键为 `source`、`title`、`voices`、`unavailable`、`note` | 按引擎列音色候选 |
 | `tts_cache_info` | 无 | `path`、`files`、`bytes`、`limitBytes` | 朗读缓存位置与占用 |
 | `tts_clear_cache` | 无 | `success`、`removed`、`bytes` | 清空朗读缓存 |
@@ -101,7 +103,7 @@ DOM 结构树如下。
         - `.nr-voice-head`：`.nr-voice-title`、`#nr-voice-refresh`
         - `.nr-voice-body.obx-scroll`
           - `.nr-voice-card`（引擎）：`#nr-voice-status`、`#nr-voice-engine`、`#nr-voice-base`、`#nr-voice-key`、`#nr-voice-model`
-          - `.nr-voice-card`（音色与语速）：`#nr-voice-name`、`#nr-voice-rate`、`#nr-voice-rate-value`、`#nr-voice-test`、`#nr-voice-test-result`
+          - `.nr-voice-card`（音色与语速）：`#nr-voice-name`、`#nr-voice-rate`、`#nr-voice-rate-value`、`#nr-voice-prefetch`、`#nr-voice-test`、`#nr-voice-test-result`
           - `.nr-voice-card`（朗读缓存）：`#nr-voice-cache-path`、`#nr-voice-cache-size`、`#nr-voice-cache-open`、`#nr-voice-cache-clear`
           - `.nr-voice-card#nr-voice-card-edge` → `.nr-voice-list#nr-voice-list-edge`
           - `.nr-voice-card#nr-voice-card-endpoint` → `.nr-voice-list#nr-voice-list-endpoint`

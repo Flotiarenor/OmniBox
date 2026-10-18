@@ -646,6 +646,34 @@ class PluginSpeakDirectTests(unittest.TestCase):
         self.assertEqual(data['mode'], 'openai')
         self.assertEqual(data['voice'], 'alloy')
         self.assertEqual(len(data['engines']), 3)
+        self.assertEqual(data['prefetch'], self._prefetch_schema()['default'])
+
+    def _prefetch_schema(self):
+        return {item['key']: item for item in self.plugin.settings_schema}['tts_prefetch']
+
+    def test_prefetch_schema_matches_backend_limits(self):
+        """设置项的上下限必须与后端夹取一致：前端能选到的每个值，后端都得原样接受。"""
+        entry = self._prefetch_schema()
+        self.assertLessEqual(entry['min'], entry['default'])
+        self.assertLessEqual(entry['default'], entry['max'])
+        self.assertIs(entry.get('hidden'), True, '预取深度归朗读设置页，不重复出现在设置弹窗里')
+        for value in (entry['min'], entry['default'], entry['max']):
+            with self.subTest(value=value):
+                self.plugin.update_setting('tts_prefetch', value)
+                self.assertEqual(self.plugin.tts_status()['prefetch'], value)
+
+    def test_prefetch_depth_clamps_and_degrades_to_one(self):
+        """配置坏了退回 1：端点本来就慢时，再按一个错值并发几路合成是最糟的选择。"""
+        entry = self._prefetch_schema()
+        self.plugin.update_setting('tts_prefetch', 3)
+        self.assertEqual(self.plugin.tts_status()['prefetch'], 3)
+        for bad in (0, entry['min'] - 1, entry['max'] + 1, '很多', None):
+            with self.subTest(bad=bad):
+                self.plugin.update_setting('tts_prefetch', bad)
+                self.assertEqual(self.plugin.tts_status()['prefetch'], 1)
+        # 手改 JSON 写成小数：截断后落在范围内就照用（3.7 -> 3）
+        self.plugin.update_setting('tts_prefetch', 3.7)
+        self.assertEqual(self.plugin.tts_status()['prefetch'], 3)
 
     def test_voices_api_shape(self):
         """音色接口按引擎给表：`mode` 报当前档，`tables` 只含这一档（或自动模式两张）。
@@ -709,7 +737,7 @@ class PluginSpeakDirectTests(unittest.TestCase):
 
         # 朗读设置页上的字段（见 frontend/js/reader-voice-page.js 的 dom 表）
         voice_page_keys = ('tts_engine', 'tts_base_url', 'tts_api_key',
-                           'tts_model', 'tts_voice', 'tts_rate')
+                           'tts_model', 'tts_voice', 'tts_rate', 'tts_prefetch')
         for key in voice_page_keys:
             self.assertIn(key, schema, f'{key} 没有声明')
             self.assertTrue(schema[key].get('hidden') is True,

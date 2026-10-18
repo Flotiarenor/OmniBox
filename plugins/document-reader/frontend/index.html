@@ -140,6 +140,23 @@
               <input type="range" id="nr-voice-rate" min="-50" max="100" step="5" value="100">
               <span class="nr-setting-value" id="nr-voice-rate-value">100%</span>
             </div>
+            <div class="nr-setting-row">
+              <label for="nr-voice-prefetch">预取深度</label>
+              <select id="nr-voice-prefetch">
+                <option value="1">1 句 · 逐句现取（端点慢时用）</option>
+                <option value="2">2 句</option>
+                <option value="3">3 句</option>
+                <option value="4">4 句</option>
+                <option value="5">5 句 · 推荐</option>
+                <option value="6">6 句</option>
+                <option value="7">7 句</option>
+                <option value="8">8 句 · 上限（首句等待更长）</option>
+              </select>
+            </div>
+            <p class="nr-voice-hint">
+              播放当前句时同时合成后面几句：短句的音频撑不住一次合成，靠这个窗口把等待吃掉。
+              端点跟不上（读起来一直在等）就选 1，退回逐句现取。
+            </p>
             <div class="nr-voice-actions">
               <button type="button" class="btn" id="nr-voice-test">试听这一句</button>
               <span class="nr-voice-hint" id="nr-voice-test-result"></span>

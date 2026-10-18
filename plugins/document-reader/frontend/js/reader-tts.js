@@ -20,6 +20,12 @@ const nrIcon = (name) => (window.Icons && typeof window.Icons.html === 'function
     ? window.Icons.html(name)
     : '';
 
+// 预取深度：播放当前句时同时去要后面几句（后端设置项 tts_prefetch，朗读设置页可调）。
+// 一句一合成时，合成下一句的耗时必须小于**上一句**的音频长度；短句（五六个字，音频
+// 约 1.6 秒）撑不住本地端点一次约 1.9 秒的合成，只预取一句必然在那里卡住。
+const NR_MAX_PREFETCH = 8;          // 与后端 TTS_PREFETCH_MAX 一致，两侧各夹一次
+const NR_PREFETCH_FALLBACK = 1;     // 读不到设置时的保守值：只预取下一句（改动前的行为）
+
 class ReaderTts {
     constructor(app) {
         this.app = app;
@@ -31,6 +37,10 @@ class ReaderTts {
         this.audio = this._createAudio();   // 挂进 DOM，见 _createAudio 的说明
         this._seq = 0;             // 每次开播自增：过期的响应一律丢弃
         this._prefetched = new Map();
+        // 正在请求中的句子（序号 → 那次请求的 promise）。深窗口下"这一句可能已经在路上"，
+        // 这时要等它而不是再发一次：端点跟不上时，重发等于让同一句在端点上排两次队。
+        this._pending = new Map();
+        this._prefetchDepth = NR_PREFETCH_FALLBACK;
         // 音频元素当前挂的是哪一句。`ended` 事件不带身份，只靠序号推进会让迟到的
         // ended 多跳一句（听感就是跳读或重念），所以挂 src 时把身份记下来。
         this._audioIndex = undefined;
@@ -123,11 +133,31 @@ class ReaderTts {
             // 只留引擎短名（edge / openai / system）：底部状态行只有一行宽度，
             // 长标签会被截成 "edge-tts（神经音色，联网" 这种半截话
             if (!this.lastEngine && available.length) this.lastEngine = available[0].name;
+            this.setPrefetchDepth(this.status.prefetch);
             if (this.app && this.app._updateStatus) this.app._updateStatus();
         } catch (e) {
             this.status = null;
+            // 状态拿不到 = 设置也不可信：退回逐句现取，宁可偶尔卡一下也不要并发几路
+            this.setPrefetchDepth(NR_PREFETCH_FALLBACK);
         }
         return this.status;
+    }
+
+    /**
+     * 设置预取深度（句）。朗读设置页改完直接调它，不必再走一趟 `tts_status`。
+     *
+     * 非法值、越界值一律退回 `NR_PREFETCH_FALLBACK`：深度决定"同时在端点上排几路合成"，
+     * 配置坏了宁可按最保守的来，也不要让一个错值把端点压垮。
+     */
+    setPrefetchDepth(value) {
+        const depth = Number(value);
+        const usable = (Number.isInteger(depth) && depth >= 1 && depth <= NR_MAX_PREFETCH)
+            ? depth : NR_PREFETCH_FALLBACK;
+        if (usable !== this._prefetchDepth) {
+            this._trace(`预取深度 ${this._prefetchDepth} → ${usable}`);
+            this._prefetchDepth = usable;
+        }
+        return this._prefetchDepth;
     }
 
     // ===== 起点 =====
@@ -190,6 +220,7 @@ class ReaderTts {
         this.index = resumeIndex === null ? 0 : Math.max(0, Math.min(resumeIndex, this.pieces.length - 1));
         this._seq += 1;
         this._prefetched.clear();
+        this._pending.clear();
         this._audioIndex = undefined;
         // 卡片立即出现并进入"加载中"：首次合成要 1~3 秒（联网引擎更久），
         // 这段时间界面必须动起来，否则用户点了"开始朗读"看到的是一片静止，
@@ -293,18 +324,7 @@ class ReaderTts {
         let result = (taken && taken.cacheKey === wantKey
             && taken.result && taken.result.url && !taken.result.error) ? taken.result : null;
         if (taken && !result) this._trace(`丢弃不匹配的预取结果（第 ${index + 1} 句）`);
-        if (!result) {
-            try {
-                const asked = await this._requestSegment(piece);
-                result = asked.result;
-                if (asked.cacheKey !== wantKey) {
-                    this._trace(`请求指纹 ${asked.cacheKey} 与本句 ${wantKey} 不符，丢弃`);
-                    result = null;
-                }
-            } catch (e) {
-                result = { error: String(e) };
-            }
-        }
+        if (!result) result = await this._resolveSegment(piece, wantKey, index);
         if (seq !== this._seq) return;                 // 用户已经停/跳了
         if (!result || result.error) {
             Toast.error(`朗读失败：${(result && result.error) || '音频与当前句子对不上，已跳过'}`);
@@ -335,7 +355,57 @@ class ReaderTts {
     }
 
     /**
-     * 预取下一句。
+     * 取当前句的音频：先等"已经在路上的那次预取"，没有才自己发请求。
+     *
+     * 为什么要等而不是重发：深窗口下这一句的请求可能还在合成（端点慢的时候），重发会让
+     * 同一句在端点上排两次队 —— 端点已经跟不上时，这恰好是最不该做的事。预取那次失败或
+     * 指纹对不上时仍然自己再发一次，行为与只有一层预取时一致。
+     *
+     * `index` 由调用方给：取指纹那一步是异步的，期间 `this.index` 可能已经前进
+     * （上一句的 `ended` 赶在这之前到了），读 `this.index` 会去等别的句子的请求。
+     */
+    async _resolveSegment(piece, wantKey, index = this.index) {
+        const pending = this._pending.get(index);
+        if (pending) {
+            try {
+                const asked = await pending;
+                if (asked && asked.cacheKey === wantKey && asked.result && !asked.result.error) {
+                    // 这一格已经播掉了：从预取表里摘掉，免得回翻时错当成"还没播的下一句"
+                    this._pending.delete(index);
+                    this._prefetched.delete(index);
+                    return asked.result;
+                }
+            } catch (e) {
+                /* 预取那次失败：走下面的现取 */
+            }
+        }
+        try {
+            const asked = await this._requestSegment(piece);
+            if (asked.cacheKey !== wantKey) {
+                this._trace(`请求指纹 ${asked.cacheKey} 与本句 ${wantKey} 不符，丢弃`);
+                return null;
+            }
+            return asked.result;
+        } catch (e) {
+            return { error: String(e) };
+        }
+    }
+
+    /**
+     * 把后面 `_prefetchDepth` 句排进队列。
+     *
+     * 请求按序号**升序**发出：后端按到达顺序处理时，真正要播的那句总在队伍最前面，
+     * 深窗口不会反过来拖慢离得最近的那一句。
+     */
+    _prefetchNext() {
+        const depth = Math.max(1, Math.min(NR_MAX_PREFETCH, this._prefetchDepth | 0));
+        for (let offset = 1; offset <= depth; offset += 1) {
+            this._prefetchAt(this.index + offset);
+        }
+    }
+
+    /**
+     * 预取第 `index` 句（已经在队列里或已经拿到就跳过）。
      *
      * 用 `fetch` 把音频取进 HTTP 缓存，而不是只建一个 Image 对象 —— 后者根本不请求
      * mp3（image 解不了音频），等于没预热。真正命中缓存的是 `<audio>` 那次请求。
@@ -343,19 +413,43 @@ class ReaderTts {
      * 结果**带指纹**存下来：回调跑到时 `this.index` 可能已经变了，只按序号存会把
      * 别的句子顶到这一格上（取用时还会再核对一次，见 `_playCurrent`）。
      */
-    _prefetchNext() {
-        const next = this.pieces[this.index + 1];
-        if (!next || this._prefetched.has(this.index + 1)) return;
-        const index = this.index + 1;
+    _prefetchAt(index) {
+        const piece = this.pieces[index];
+        if (!piece || this._prefetched.has(index) || this._pending.has(index)) return;
         const seq = this._seq;
-        this._requestSegment(next, index).then((asked) => {
-            if (seq !== this._seq || !asked.result || !asked.result.url || asked.result.error) return;
-            this._prefetched.set(index, { cacheKey: asked.cacheKey, result: asked.result });
-            this._trace(`预取第 ${index + 1} 句 → ${asked.result.url}`);
+        const asked = this._requestSegment(piece, index);
+        this._pending.set(index, asked);
+        asked.then((entry) => {
+            this._pending.delete(index);
+            if (seq !== this._seq) return;
+            if (!entry || !entry.result || !entry.result.url || entry.result.error) {
+                this._degradePrefetch(`第 ${index + 1} 句预取失败`);
+                return;
+            }
+            this._prefetched.set(index, { cacheKey: entry.cacheKey, result: entry.result });
+            this._trace(`预取第 ${index + 1} 句 → ${entry.result.url}`);
             try {
-                fetch(asked.result.url).catch(() => {});      // 灌进浏览器缓存
+                fetch(entry.result.url).catch(() => {});      // 灌进浏览器缓存
             } catch (e) { /* 忽略：预取失败不影响正常播放 */ }
-        }).catch(() => {});
+        }, () => {
+            this._pending.delete(index);
+            if (seq === this._seq) this._degradePrefetch(`第 ${index + 1} 句预取异常`);
+        });
+    }
+
+    /**
+     * 预取失败 → 后续退回逐句现取。
+     *
+     * 预取失败通常意味着端点已经在排队或拒连；这时继续按深窗口并发，只会让真正要播的
+     * 那一句排得更久。退回 1 之后卡顿会回来，但播放至少还在往前走。
+     *
+     * 这是一次性的降级：回到配置值要等下一次 `refreshStatus()`（重新进阅读器，或在
+     * 朗读设置页点"刷新引擎状态"）—— 端点刚抖过就立刻按 5 路重排，多半会再失败一次。
+     */
+    _degradePrefetch(reason) {
+        if (this._prefetchDepth <= NR_PREFETCH_FALLBACK) return;
+        this._trace(`预取失败，深度 ${this._prefetchDepth} → ${NR_PREFETCH_FALLBACK}（${reason}）`);
+        this._prefetchDepth = NR_PREFETCH_FALLBACK;
     }
 
     /** 诊断日志：只有控制台开着才有开销，定位"读错句子"这类问题靠它。 */
@@ -410,6 +504,7 @@ class ReaderTts {
         this.pieces = this._split(context.text, 0);
         this.index = 0;
         this._prefetched.clear();
+        this._pending.clear();
         this._audioIndex = undefined;      // 换了章：旧音频的身份不再有效
         this._playCurrent();
     }
@@ -450,6 +545,7 @@ class ReaderTts {
             this.audio.load();
         } catch (e) { /* 忽略 */ }
         this._prefetched.clear();
+        this._pending.clear();
         this._audioIndex = undefined;
         this._pieces = [];
         this.pieces = [];

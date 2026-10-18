@@ -12,7 +12,7 @@ plugins/<name>/
 └── frontend/          # 静态页面，入口由 manifest.frontend 指定
 ```
 
-少数插件另有目录：`media-player/tool/`、`media-player/eq-presets/`。
+少数插件另有目录：`media-player/tool/`、`media-player/eq-presets/`、`document-reader/tool/`。
 
 现有插件：`document-reader` `group-mesh` `image-cleaner` `image-viewer` `manga-library` `media-player` `netease-music` `pixiv-sync`。
 
