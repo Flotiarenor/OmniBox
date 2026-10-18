@@ -125,8 +125,9 @@ class StateLocationTests(unittest.TestCase):
 
         plugin._save_state()
 
-        self.assertFalse((plugin._state_file.parent / 'media_state.tmp').exists(),
-                         '临时文件要已被替换掉')
+        leftovers = sorted(p.name for p in plugin._state_file.parent.iterdir()
+                           if p.name.endswith('.tmp'))
+        self.assertEqual(leftovers, [], '临时文件要已被替换掉')
         data = json.loads(plugin._state_file.read_text(encoding='utf-8'))
         self.assertEqual([p['name'] for p in data['playlists']], ['甲'])
 
