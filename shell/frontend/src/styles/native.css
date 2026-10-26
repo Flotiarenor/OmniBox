@@ -1,0 +1,120 @@
+/* native 面板运行时补齐：壳文档不加载 base.css（避免 body/.modal/.view-toolbar
+   等全局骨架规则进入壳），但 SchemaRenderer / NativePanel 使用的空态、加载态和
+   滚动条来自 base.css / effects.css。这里只按 .native-panel 作用域复制必需部分，
+   不把插件 iframe 的骨架样式泄漏到壳。 */
+
+.native-panel .empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 100%;
+  min-height: var(--obx-empty-min-h, 220px);
+  padding: 24px 20px;
+  text-align: center;
+  color: var(--text-secondary);
+  animation: obxFadeUp 0.4s ease both;
+}
+
+.native-panel .empty-state-icon {
+  font-size: 44px;
+  line-height: 1;
+  opacity: 0.55;
+  animation: obxFloat 4s ease-in-out infinite;
+}
+
+.native-panel .empty-state-text {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.native-panel .empty-state-hint {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  max-width: 460px;
+}
+
+.native-panel .empty-state .btn { margin-top: 6px; }
+
+.native-panel .empty-state--inline {
+  height: auto;
+  min-height: 0;
+  padding: 12px 8px;
+  gap: 4px;
+}
+
+.native-panel .empty-state--inline .empty-state-icon { font-size: 24px; }
+.native-panel .empty-state--error .empty-state-icon { opacity: 0.85; }
+.native-panel .empty-state--error .empty-state-text { color: var(--danger); }
+
+.native-panel .loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 50px;
+  color: var(--text-secondary);
+  font-size: 15px;
+}
+
+/* native 的滚动容器由壳渲染，无法在插件里加 .obx-scroll；在这里给同一组滚动条
+   规则，让 native 也得到细滚动条与悬停渐显，而不是依赖浏览器默认滚动条。 */
+.native-panel-body,
+.native-panel .schema-root {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.native-panel-body:hover,
+.native-panel .schema-root:hover {
+  scrollbar-color: color-mix(in srgb, var(--text-secondary) 38%, transparent) transparent;
+}
+
+.native-panel-body::-webkit-scrollbar,
+.native-panel .schema-root::-webkit-scrollbar { width: 6px; height: 6px; }
+
+.native-panel-body::-webkit-scrollbar-track,
+.native-panel .schema-root::-webkit-scrollbar-track,
+.native-panel-body::-webkit-scrollbar-corner,
+.native-panel .schema-root::-webkit-scrollbar-corner { background: transparent; }
+
+.native-panel-body::-webkit-scrollbar-thumb,
+.native-panel .schema-root::-webkit-scrollbar-thumb {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background-color: transparent;
+  background-clip: padding-box;
+  transition: background-color 0.25s ease;
+}
+
+.native-panel-body:hover::-webkit-scrollbar-thumb,
+.native-panel .schema-root:hover::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--text-secondary) 38%, transparent);
+}
+
+.native-panel-body::-webkit-scrollbar-thumb:hover,
+.native-panel .schema-root::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--text-secondary) 62%, transparent);
+}
+
+/* 内容区只保留一个滚动容器：NativePanel 的外层不滚，SchemaRenderer 的根滚动。
+   空态与加载态仍占满外层。 */
+.native-panel-body { overflow: hidden; }
+.native-panel .schema-root {
+  height: 100%;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+.native-panel .empty-state,
+.native-panel .loading { height: 100%; overflow-y: auto; }
+
+@media (prefers-reduced-motion: reduce) {
+  .native-panel .empty-state,
+  .native-panel .empty-state-icon {
+    animation-duration: 0.001s !important;
+    animation-iteration-count: 1 !important;
+  }
+}
