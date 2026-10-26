@@ -23,9 +23,11 @@ const BASE_JS = path.join(ROOT, 'shell', 'frontend', 'public', 'shell', 'base.js
 const ORIGIN = 'http://127.0.0.1:18080';
 
 let failed = 0;
-function check(name, fn) {
+// 必须是 async 并 await：调用方里有用例是异步的（设置弹窗的多回合要等回调），
+// 早期的同步写法会让那些断言在 process.exit 之后才跑 —— 等于没测。
+async function check(name, fn) {
   try {
-    fn();
+    await fn();
     console.log(`  PASS  ${name}`);
   } catch (e) {
     failed++;
@@ -34,15 +36,16 @@ function check(name, fn) {
 }
 
 /** 极简 DOM：够 base.js 的 mountButtons / openModal 走完渲染路径。 */
-function createHost({ withContainer = true, withFrame = true, frameSrc = '/plugins/image-cleaner/frontend/index.html' } = {}) {
+function createHost({ withContainer = true, withFrame = true, frameSrc = '/plugins/image-cleaner/frontend/index.html', serve = true } = {}) {
   const posted = [];
+  const postedTargets = [];
   const listeners = { message: [] };
   const hostWin = {
     label: 'host',
     location: { origin: ORIGIN, href: `${ORIGIN}/plugins/image-viewer/frontend/index.html` },
     addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
     removeEventListener() { },
-    postMessage(payload) { posted.push(payload); },
+    postMessage(payload, targetOrigin) { posted.push(payload); postedTargets.push(targetOrigin); },
   };
   hostWin.parent = { label: 'shell', location: { origin: ORIGIN }, postMessage() { } };
   const made = [];
@@ -99,7 +102,7 @@ function createHost({ withContainer = true, withFrame = true, frameSrc = '/plugi
   const childWin = {
     label: 'child',
     location: { origin: ORIGIN },
-    postMessage(payload) { posted.push(payload); },
+    postMessage(payload, targetOrigin) { posted.push(payload); postedTargets.push(targetOrigin); },
   };
   iframe.contentWindow = childWin;
 
@@ -122,13 +125,15 @@ function createHost({ withContainer = true, withFrame = true, frameSrc = '/plugi
   vm.runInContext(fs.readFileSync(BASE_JS, 'utf8'), sandbox, { filename: 'shell/base.js' });
 
   const hc = hostWin.HostChannel;
-  hc.serve({
-    isOwnFrame: hc.ownFrame(() => (withFrame ? [iframe] : [])),
-    containers: withContainer ? { 'host-toolbar': container } : {},
-  });
+  if (serve) {
+    hc.serve({
+      isOwnFrame: hc.ownFrame(() => (withFrame ? [iframe] : [])),
+      containers: withContainer ? { 'host-toolbar': container } : {},
+    });
+  }
 
   return {
-    hc, posted, container, ownBtn, childWin, made,
+    hc, posted, postedTargets, container, ownBtn, childWin, made,
     emit(data, source = childWin) {
       (listeners.message || []).slice().forEach((fn) => fn({ data, source, origin: ORIGIN }));
     },
@@ -147,7 +152,7 @@ const MOUNT_DATA = {
 };
 
 // ---------- 挂载 ----------
-check('host-mount 把子插件的按钮渲染进宿主容器，并回 host-reply(ok:true)', () => {
+await check('host-mount 把子插件的按钮渲染进宿主容器，并回 host-reply(ok:true)', () => {
   const h = createHost();
   h.emit({ type: 'omnibox:host-mount', exchange: 11, data: MOUNT_DATA });
   const buttons = h.mountedButtons();
@@ -164,21 +169,21 @@ check('host-mount 把子插件的按钮渲染进宿主容器，并回 host-reply
   assert.deepEqual({ exchange: reply.exchange, ok: reply.ok }, { exchange: 11, ok: true });
 });
 
-check('挂载的按钮排在宿主自己的按钮之前（不顶走宿主自带的操作）', () => {
+await check('挂载的按钮排在宿主自己的按钮之前（不顶走宿主自带的操作）', () => {
   const h = createHost();
   h.emit({ type: 'omnibox:host-mount', exchange: 12, data: MOUNT_DATA });
   const ids = h.container.children.map((c) => c.id || c.innerHTML.trim());
   assert.equal(ids[ids.length - 1], 'host-own-action', `宿主按钮必须留在最后（实际: ${ids.join(',')}）`);
 });
 
-check('重挂载先清掉上一批（页面重载后子插件会再发一次）', () => {
+await check('重挂载先清掉上一批（页面重载后子插件会再发一次）', () => {
   const h = createHost();
   h.emit({ type: 'omnibox:host-mount', exchange: 13, data: MOUNT_DATA });
   h.emit({ type: 'omnibox:host-mount', exchange: 14, data: MOUNT_DATA });
   assert.equal(h.mountedButtons().length, 2, '不能累积成 4 个');
 });
 
-check('点击挂载出来的按钮回发 host-run，且 event.source 认的是那个 iframe', () => {
+await check('点击挂载出来的按钮回发 host-run，且 event.source 认的是那个 iframe', () => {
   const h = createHost();
   h.emit({ type: 'omnibox:host-mount', exchange: 15, data: MOUNT_DATA });
   const btn = h.mountedButtons()[0];
@@ -189,7 +194,7 @@ check('点击挂载出来的按钮回发 host-run，且 event.source 认的是�
 });
 
 // ---------- 认不出来 / 没容器：必须显式失败 ----------
-check('宿主认领了这个 iframe、但 src 对不上时回 ok:false/no-frame（子插件把按钮放回自己页里）', () => {
+await check('宿主认领了这个 iframe、但 src 对不上时回 ok:false/no-frame（子插件把按钮放回自己页里）', () => {
   const h = createHost({ frameSrc: '/plugins/other-plugin/frontend/index.html' });
   h.emit({ type: 'omnibox:host-mount', exchange: 16, data: MOUNT_DATA });
   const reply = h.lastReply();
@@ -197,7 +202,7 @@ check('宿主认领了这个 iframe、但 src 对不上时回 ok:false/no-frame�
   assert.equal(reply.data.error, 'no-frame');
 });
 
-check('容器不存在时回 ok:false 且带 no-container（不是静默成功）', () => {
+await check('容器不存在时回 ok:false 且带 no-container（不是静默成功）', () => {
   const h = createHost({ withContainer: false });
   h.emit({ type: 'omnibox:host-mount', exchange: 17, data: MOUNT_DATA });
   const reply = h.lastReply();
@@ -205,7 +210,7 @@ check('容器不存在时回 ok:false 且带 no-container（不是静默成功�
   assert.match(String(reply.data.error), /no-container/);
 });
 
-check('非自己嵌的窗口发来的 host-mount 一律忽略（不渲染、不回信）', () => {
+await check('非自己嵌的窗口发来的 host-mount 一律忽略（不渲染、不回信）', () => {
   const h = createHost();
   const before = h.posted.length;
   h.emit({ type: 'omnibox:host-mount', exchange: 18, data: MOUNT_DATA },
@@ -215,16 +220,21 @@ check('非自己嵌的窗口发来的 host-mount 一律忽略（不渲染、不�
 });
 
 // ---------- 设置弹窗的多回合：值交回子插件 ----------
-check('ui 设置请求：先回信「我接下了」，再把值交回子插件（不等保存才算完）', async () => {
-  const h = createHost();
+// 这里只 `serve()` 一次（生产里也是每次页面加载一次）：重复 serve 会挂两个
+// message 监听，默认处理器会同时抢着回信，测的就不再是"多回合"本身。
+await check('ui 设置请求：先回信「我接下了」，再把值交回子插件（不等保存才算完）', async () => {
+  const h = createHost({ serve: false });
   const asked = [];
+  let commitValues = null;
   h.hc.serve({
     isOwnFrame: h.hc.ownFrame(() => [{ contentWindow: h.childWin }]),
     containers: { 'host-toolbar': h.container },
     handlers: {
       ui: (data) => {
         asked.push(data);
-        return (commit) => commit({ threshold: 8 });
+        // 与 defaultUiHandler 同一形状：先用 return true 把回信发出去，
+        // 弹窗/保存是后来的回合，用户没点保存前不能扣着回信。
+        return (commit) => { commitValues = commit; return true; };
       },
     },
   });
@@ -234,15 +244,34 @@ check('ui 设置请求：先回信「我接下了」，再把值交回子插件�
   });
   await new Promise((r) => setTimeout(r, 5));
   const reply = h.posted.filter((m) => m.type === 'omnibox:host-reply').pop();
+  assert.ok(reply, '没有回 host-reply');
   assert.deepEqual({ exchange: reply.exchange, ok: reply.ok }, { exchange: 21, ok: true },
     '回信只表示"接下了"');
+  assert.equal(asked.length, 1);
+
+  // 用户在弹窗里点保存：值通过 callback 交回子插件，由子插件自己落盘
+  assert.equal(typeof commitValues, 'function');
+  commitValues({ threshold: 8 });
+  await new Promise((r) => setTimeout(r, 5));
   const callbacks = h.posted.filter((m) => m.type === 'omnibox:host-callback');
   assert.equal(callbacks.length, 1, '应当把值作为 callback 交回子插件');
   assert.deepEqual(callbacks[0].data, { threshold: 8 });
   assert.equal(callbacks[0].action, 'ui', 'callback 的 action 与请求同名，子插件按它注册处理器');
-  assert.equal(asked.length, 1);
+  // 子插件处理完回 callback-reply：invoke 的那次回合到此结算（不留下 15s 悬空回合）
+  h.emit({ type: 'omnibox:host-callback-reply', step: callbacks[0].step, ok: true, data: null });
+  await new Promise((r) => setTimeout(r, 5));
 });
 
-console.log(failed ? `\n${failed} 例失败` : '\nHostChannel 宿主侧 8 例通过');
+await check('宿主回信/回调用明确的 targetOrigin（设置值只交给本页 origin）', () => {
+  const h = createHost();
+  h.emit({ type: 'omnibox:host-mount', exchange: 31, data: MOUNT_DATA });
+  assert.ok(h.posted.length > 0, '没有发出任何消息');
+  const wrong = h.postedTargets.filter((target) => target !== ORIGIN);
+  assert.equal(wrong.length, 0,
+    `有 ${wrong.length}/${h.postedTargets.length} 条消息的 targetOrigin 不是本页 origin：`
+    + JSON.stringify(wrong.slice(0, 3)));
+});
+
+console.log(failed ? `\n${failed} 例失败` : '\nHostChannel 宿主侧 9 例通过');
 process.exit(failed ? 1 : 0);
 

@@ -14,11 +14,13 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import ClassVar
+from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import shell.backend.file_server as file_server
 from shell.backend.auth import TOKEN_HEADER, get_or_create_token
 from shell.backend.file_server import _build_trusted_hosts, _local_ipv4_addresses, create_app
 from shell.backend.paths import get_config_dir
@@ -219,6 +221,27 @@ class PluginFrontendBootstrapTest(unittest.TestCase):
                 self.assertIn('/shell/icons.generated.js', html, '缺少图标集注入脚本，图标会全空')
                 self.assertIn("Bridge.setPrefix('demo');", html, '插件前缀必须按路由替换')
 
+    def test_content_ui_is_injected_before_plugin_bootstrap_runs(self):
+        """共享内容原语（content-ui.{js,css}）必须随引导片段注入每个 HTML 页面。
+
+        顺序有要求：`content-ui.js` 只定义 `window.ContentUI`，但插件页面在
+        `<body>` 的脚本里马上就会调用它，因此必须排在 `base.js` 之后、页内脚本之前；
+        `content-ui.css` 排在 `base.css` 之后。每个页面**恰好注入一次**（服务端
+        每次现读文件，不会累积）。
+        """
+        resp = self.client.get('/plugins/demo/frontend/index.html')
+        html = resp.get_data(as_text=True)
+        self.assertEqual(html.count('/shell/content-ui.js'), 1, 'content-ui.js 注入次数不是 1')
+        self.assertEqual(html.count('/shell/content-ui.css'), 1, 'content-ui.css 注入次数不是 1')
+        self.assertLess(html.index('/shell/base.js'), html.index('/shell/content-ui.js'))
+        self.assertLess(html.index('/shell/base.css'), html.index('/shell/content-ui.css'))
+        self.assertLess(html.index('/shell/content-ui.js'), html.index('</head>'),
+                        'content-ui.js 必须在页内脚本执行前就绪')
+        # 同一个页面重复请求也不能叠加第二份注入
+        again = self.client.get('/plugins/demo/frontend/index.html').get_data(as_text=True)
+        self.assertEqual(again.count('/shell/content-ui.js'), 1)
+        self.assertEqual(again, html)
+
     def test_non_html_is_served_untouched(self):
         resp = self.client.get('/plugins/demo/frontend/plain.txt')
         self.assertEqual(resp.status_code, 200)
@@ -291,6 +314,72 @@ class ResAssetTests(unittest.TestCase):
                 resp = self.client.get(path)
                 self.assertNotEqual(resp.status_code, 200)
                 self.assertNotIn('[project]', resp.get_data(as_text=True))
+
+
+class ShellAssetResolutionTests(unittest.TestCase):
+    """`/shell/<file>` 的 dist 优先 / public 回落，以及路径穿越。
+
+    为什么必须钉住：`public/shell/*` 会被 Vite 复制进 `dist/shell/`，同一文件存在
+    两份。改了源码没重新构建时，发出去的仍是 dist 里的旧副本（"源码改了、界面没变"），
+    所以顺序是**dist 优先**；开发期尚未进 dist 的新共享组件则从 public 回落提供。
+    这里用临时目录复刻两层结构，断言解析顺序与 404，不依赖本机是否构建过前端。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.shell = Path(self._tmp.name) / 'shell'
+        self.dist = self.shell / 'frontend' / 'dist' / 'shell'
+        self.public = self.shell / 'frontend' / 'public' / 'shell'
+        self.dist.mkdir(parents=True)
+        self.public.mkdir(parents=True)
+        (self.dist / 'both.js').write_text('DIST-VERSION', encoding='utf-8')
+        (self.public / 'both.js').write_text('PUBLIC-VERSION', encoding='utf-8')
+        (self.dist / 'only-dist.js').write_text('DIST-ONLY', encoding='utf-8')
+        (self.public / 'only-public.js').write_text('PUBLIC-ONLY', encoding='utf-8')
+
+        patcher = patch.object(file_server, '_SHELL_DIR', self.shell)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        config = {
+            'server': {'host': '127.0.0.1', 'port': 18080},
+            'directories': {'data_root': tempfile.gettempdir()},
+        }
+        self.client = create_app(config, _StubPluginManager()).test_client()
+
+    def _body(self, path: str) -> str:
+        """取一次响应正文并显式关闭（`send_from_directory` 会持有文件句柄）。"""
+        resp = self.client.get(path)
+        try:
+            self.assertEqual(resp.status_code, 200)
+            return resp.get_data(as_text=True)
+        finally:
+            resp.close()
+
+    def test_dist_copy_wins_when_both_exist(self):
+        self.assertEqual(self._body('/shell/both.js'), 'DIST-VERSION',
+                         'dist 优先：改了 public/shell 而未构建时不能发旧副本')
+
+    def test_dist_only_file_is_served(self):
+        self.assertEqual(self._body('/shell/only-dist.js'), 'DIST-ONLY')
+
+    def test_public_fallback_serves_component_not_in_dist(self):
+        self.assertEqual(self._body('/shell/only-public.js'), 'PUBLIC-ONLY',
+                         '未进 dist 的新共享组件必须从 public/shell 回落')
+
+    def test_missing_file_is_not_found(self):
+        self.assertEqual(self.client.get('/shell/nope.js').status_code, 404)
+
+    def test_path_traversal_outside_shell_is_rejected(self):
+        for path in ('/shell/../../../pyproject.toml',
+                     '/shell/%2e%2e/%2e%2e/pyproject.toml'):
+            with self.subTest(path=path):
+                resp = self.client.get(path)
+                try:
+                    self.assertNotEqual(resp.status_code, 200)
+                    self.assertNotIn('[project]', resp.get_data(as_text=True))
+                finally:
+                    resp.close()
 
 
 if __name__ == '__main__':

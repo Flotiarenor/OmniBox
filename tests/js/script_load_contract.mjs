@@ -66,7 +66,12 @@ export function shellInjectedGlobals() {
  * 逻辑用例（在 vm 里跑真实实现）都用它，避免各处各写一份 index.html 解析。
  */
 export function declaredScripts(frontendDir) {
-    const html = fs.readFileSync(path.join(frontendDir, 'index.html'), 'utf8');
+    return scriptsInHtml(frontendDir, 'index.html');
+}
+
+/** 读取指定 HTML 入口里的本地脚本（相对 frontend）；native.html 这类独立入口也适用。 */
+export function scriptsInHtml(frontendDir, htmlName) {
+    const html = fs.readFileSync(path.join(frontendDir, htmlName), 'utf8');
     const declared = [];
     for (const match of html.matchAll(/<script[^>]*\ssrc="([^"]+)"/g)) {
         const src = match[1];
@@ -171,18 +176,24 @@ export function runAssetContract({ label, frontendDir }) {
     const onDisk = fs.existsSync(jsDir)
         ? fs.readdirSync(jsDir).filter(f => f.endsWith('.js')).map(f => `js/${f}`)
         : [];
+    // 一个插件可以有多个 HTML 入口（例如 native.html 只装原生面板的逻辑脚本）；
+    // 这些入口引用的脚本同样不能算孤立，也不该漏掉全局名冲突检查。
+    const extraEntries = fs.readdirSync(frontendDir)
+        .filter(f => f.endsWith('.html') && f !== 'index.html');
+    const extraDeclared = extraEntries.flatMap(f => scriptsInHtml(frontendDir, f));
+    const allDeclared = [...new Set([...declared, ...extraDeclared])];
     // 像 pixiv-sync 这样"没有自己的脚本、由服务端注入 /shell/*.js"的前端是合法的；
     // 只要磁盘上有 js/*.js，就必须至少被引用了（否则下面的孤立脚本检查会失败）。
-    check('index.html 的本地脚本声明与 js/ 一致',
-        declared.length > 0 || onDisk.length === 0,
-        `declared=${JSON.stringify(declared)} onDisk=${JSON.stringify(onDisk)}`);
+    check('index.html / 独立入口的本地脚本声明与 js/ 一致',
+        allDeclared.length > 0 || onDisk.length === 0,
+        `declared=${JSON.stringify(declared)} extra=${JSON.stringify(extraDeclared)} onDisk=${JSON.stringify(onDisk)}`);
 
-    const missing = declared.filter(rel => !fs.existsSync(path.join(frontendDir, rel)));
+    const missing = allDeclared.filter(rel => !fs.existsSync(path.join(frontendDir, rel)));
     check('声明的脚本文件都存在', missing.length === 0, `缺失: ${JSON.stringify(missing)}`);
 
-    const orphans = onDisk.filter(rel => !declared.includes(rel));
-    check('js/ 下没有未被 index.html 引用的孤立脚本', orphans.length === 0,
-        `孤立: ${JSON.stringify(orphans)}（新分片必须加进 index.html）`);
+    const orphans = onDisk.filter(rel => !allDeclared.includes(rel));
+    check('js/ 下没有未被任何入口引用的孤立脚本', orphans.length === 0,
+        `孤立: ${JSON.stringify(orphans)}（新分片必须加进 index.html 或对应的独立入口）`);
 
     // 插件脚本与壳注入的 /shell/*.js 在同一个文档、同一个全局对象里跑：插件顶层声明一个
     // 同名函数/变量，就等于**把壳的那个替换掉**（`function openModal` 会盖住 base.js 的
@@ -194,7 +205,7 @@ export function runAssetContract({ label, frontendDir }) {
         `scripts=${JSON.stringify(shell.scripts)} names=${shell.names.size}`
         + '（清单只从 file_server.py 的引导片段里取，取不到说明那段源码改了写法）');
     const collisions = [];
-    for (const rel of declared) {
+    for (const rel of allDeclared) {
         const file = path.join(frontendDir, rel);
         if (!fs.existsSync(file)) continue;
         for (const [name, line] of topLevelNames(fs.readFileSync(file, 'utf8'))) {
