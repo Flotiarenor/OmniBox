@@ -122,6 +122,7 @@ html, body {
   display: flex;
   overflow: hidden;
   background-color: var(--bg-app);
+  position: relative;
 }
 
 /* ===== 设置页：背景图库 =====

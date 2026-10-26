@@ -3,14 +3,13 @@
 
    组织顺序（改之前先看这一行，别再把新规则追加到文件末尾）：
      1. 变量        本插件自己的色板，全部派生自壳的 CSS 变量
-     2. 布局        #app / 侧栏 / 主区 / 阅读区（壳的基类不再重定义）
+     2. 布局        #app / 主区 / 阅读区（壳的基类不再重定义）
      3. 组件        封面卡 / 目录项 / 弹窗内容 / 朗读卡 / 朗读设置页 / 空状态
      4. 状态        主题变体、选中、加载中、动效降级
 
-   壳注入的类（`.view-sub-sidebar` / `.view-body` / `.view-toolbar` / `.view-content` /
-   `.obx-nav-item` / `.obx-scroll` / `.modal` / `.btn`）**不在这里重定义** ——
-   plugin-guide §4.1 明确要求，之前这份文件把 `.document-content-area` 等规则
-   在末尾又覆盖了一遍，改一个颜色要找三处，现在按上面四段归位。
+   壳注入的类（`.view-body` / `.view-content` / `.obx-scroll` / `.modal` / `.btn`）
+   **不在这里重定义** —— plugin-guide §4.1 明确要求。页面 chrome（品牌块 / 左栏 /
+   导航 / 顶栏 / 搜索 / 状态栏 / 分隔条）由壳渲染，本文件不再包含它们的规则。
    ============================================================ */
 
 /* ===== 1. 变量 ===== */
@@ -35,140 +34,11 @@
     position: relative;
 }
 
-.nr-sidebar {
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-}
-
-.nr-brand {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 14px 14px 12px;
-    border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
-}
-
-.nr-brand-icon {
-    width: 34px;
-    height: 34px;
-    border-radius: var(--nr-radius-sm);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 18px;
-    flex-shrink: 0;
-    background: var(--nr-accent-soft);
-}
-
-.nr-brand-text {
-    min-width: 0;
-}
-
-.nr-brand-title {
-    font-size: 14px;
-    font-weight: 700;
-    color: var(--text-primary);
-}
-
-.nr-brand-sub {
-    margin-top: 1px;
-    font-size: 11px;
-    color: var(--text-secondary);
-    letter-spacing: 0.4px;
-}
-
-.nr-nav {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    padding: 6px 10px 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-}
-
-/* 分组标题：与 manga-library 的 .ml-nav-label 同一套（壳没有共享类） */
-.nr-nav-label {
-    padding: 12px 10px 5px;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.6px;
-    color: var(--text-muted);
-}
-
-/* 导航项：间距交给 .ml-nav-item / .gm-nav-item 的同一份写法，图标列固定 18px */
-.nr-nav-item {
-    gap: 9px;
-}
-
-.nr-nav-icon {
-    width: 18px;
-    text-align: center;
-    flex-shrink: 0;
-}
-
-.nr-nav-item > span:nth-child(2) {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-/* 计数徽标：与 group-mesh 的 .gm-nav-count 同一套（壳没有共享类，各插件抄同一份） */
-.nr-nav-count {
-    flex-shrink: 0;
-    margin-left: auto;
-    padding: 1px 7px;
-    border-radius: 999px;
-    background: var(--bg-hover);
-    color: var(--text-secondary);
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
-}
-
-.nr-nav-count:empty {
-    display: none;
-}
-
-.nr-sidebar-footer {
-    flex-shrink: 0;
-    padding: 11px 14px;
-    border-top: 1px solid var(--border);
-    font-size: 11px;
-    color: var(--text-secondary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.nr-toolbar-right {
-    gap: 10px;
-    /* 右侧动作组靠右：`.toolbar-group` 自身没有 margin-left:auto（壳只在部分插件
-       的 HTML 里用行内样式写的），漏了就会贴着标题，看起来像"设置跑到左边去了" */
-    margin-left: auto;
-}
-
-.nr-back-btn {
-    flex-shrink: 0;
-}
-
-.nr-title {
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--text-primary);
-}
-
-.nr-sub {
-    font-size: 12px;
-    color: var(--text-secondary);
-}
-
-/* 搜索框已抽到壳的 .search-field（base.css）——这一版的构造（胶囊外框 + 图标在流内 +
-   输入无边框）就是壳组件的形态来源，本文件不再保留副本。 */
+/* 品牌块 / 左栏 / 导航项 / 顶栏 / 搜索 / 状态栏归壳（PluginChrome.vue + 插件
+   manifest 的 frontend.chrome）；本文件只写内容区（书架网格、正文、朗读设置页、
+   弹窗内容）。 */
 .nr-content {
-    padding: 18px;
+    padding: 16px;
 }
 
 /* 阅读区：内容区自己滚（壳的 .view-content 不参与，避免两个滚动容器） */
@@ -177,6 +47,9 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    /* 加载提示是阅读器容器里的浮层（正文容器换章时会清空 innerHTML，
+       提示不能挂在里面） */
+    position: relative;
 }
 
 .nr-reader-view.hidden {
@@ -239,8 +112,8 @@
 /* ---- 封面网格 ---- */
 .nr-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    gap: 18px;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 16px;
     align-content: start;
 }
 
@@ -255,16 +128,8 @@
     position: relative;
     width: 100%;
     aspect-ratio: 3 / 4;
-    border-radius: var(--nr-radius);
     overflow: hidden;
     background: var(--bg-hover);
-    box-shadow: var(--shadow-sm);
-    transition: transform var(--transition-fast), box-shadow var(--transition-fast);
-}
-
-.nr-card:hover .nr-cover {
-    transform: translateY(-3px);
-    box-shadow: var(--shadow-md);
 }
 
 .nr-cover-img {
@@ -274,7 +139,9 @@
     display: block;
 }
 
-.nr-badge {
+/* 以下三条只服务 ContentUI 缺失时的旧卡片兜底（`.is-legacy`）：正常路径的
+   封面徽标/书签数/进度由共享 content-ui.css 的 `.cui-media-*` 渲染。 */
+.nr-card.is-legacy .nr-badge {
     position: absolute;
     left: 8px;
     bottom: 8px;
@@ -288,7 +155,7 @@
     backdrop-filter: blur(4px);
 }
 
-.nr-mark-count {
+.nr-card.is-legacy .nr-mark-count {
     position: absolute;
     right: 8px;
     top: 8px;
@@ -302,7 +169,7 @@
     background: rgba(0, 0, 0, 0.45);
 }
 
-.nr-cover-progress {
+.nr-card.is-legacy .nr-cover-progress {
     position: absolute;
     left: 0;
     right: 0;
@@ -311,14 +178,17 @@
     background: rgba(0, 0, 0, 0.25);
 }
 
-.nr-cover-progress span {
+.nr-card.is-legacy .nr-cover-progress span {
     display: block;
     height: 100%;
     background: var(--accent);
 }
 
 .nr-card-body {
-    padding: 8px 2px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 12px;
     min-width: 0;
 }
 
@@ -337,7 +207,23 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    margin-top: 2px;
+}
+
+/* ---- 共享 ContentUI 接入（书架） ----
+   卡片壳、圆角、边框、裁切、列宽/间距与正文内边距都走共享 content-ui.css；
+   插件只保留书架自己的网格项纵向对齐。媒体上的圆角/阴影由卡片统一裁切。 */
+.nr-grid.cui-grid {
+    /* 统一硬指标 160px/16px。旧调用通过 ContentUI.grid({min:'150px'}) 在元素上
+       留了一个行内 --cui-min，只有 !important 能压过行内自定义属性；网格模板本身
+       由 content-ui.css 固定成同一组字面值。 */
+    --cui-min: 160px !important;
+    --cui-gap: 16px !important;
+    align-content: start;
+}
+
+/* 书签视图按分组竖排：分组占满整行，不落进卡片列 */
+.nr-grid .nr-mark-group {
+    grid-column: 1 / -1;
 }
 
 /* ---- 正文排版 ---- */
@@ -682,16 +568,16 @@
 }
 
 /* 朗读设置面板的定位参照：`position: absolute` 的最近已定位祖先。
-   必须给在 `.view-body` 上 —— 给在 `#app` 上会让面板盖住左栏（实测 paneLeft=0）。 */
+   必须给在 `.view-body` 上 —— 它是本页内容区，面板只覆盖内容、不越出 iframe。 */
 .view-body {
     position: relative;
 }
 
-/* ---- 朗读设置：主区里的一个面板（与 .view-content 同一位置），不遮挡左侧栏 ---- */
+/* ---- 朗读设置：主区里的一个面板（与 .view-content 同一位置）；壳的 chrome 在
+   iframe 之外，因此这里 inset 到 0 就只铺满内容区 ---- */
 .nr-voice-page {
     position: absolute;
-    /* 顶部让开工具栏：它是"主区内容切换"，不是盖住整个插件的独立页 */
-    inset: 48px 0 0 0;
+    inset: 0;
     z-index: 30;
     display: flex;
     flex-direction: column;
@@ -805,9 +691,10 @@
 }
 
 #document-loading {
-    position: sticky;
-    bottom: 12px;
-    margin: 0 auto;
+    position: absolute;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%);
     width: max-content;
     z-index: 5;
     display: flex;
@@ -820,6 +707,18 @@
     box-shadow: var(--shadow-sm);
     font-size: 13px;
     color: var(--text-secondary);
+    pointer-events: none;
+}
+
+/* 旋转交给壳 effects.css 的 .obx-anim-spin（含 prefers-reduced-motion 降级），
+   这里只给圆环尺寸、描边与颜色，避免插件再定义一套 @keyframes。 */
+#document-loading .spinner {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
 }
 
 /* ---- 书签视图（主区） ---- */
@@ -1005,15 +904,8 @@
 }
 
 @media (max-width: 860px) {
-    /* 窄窗口收窄侧栏：媒体查询不改变特异性，裸 .nr-sidebar（0,1,0）会被壳的
-       .view-sub-sidebar（0,1,0，注入在插件样式之后）按 240px 盖回去，
-       必须写成 0,2,0 —— 与 iv/ml/mp/gm 四个插件同一写法（见 plugin-ui-guide.md §3.1）。
-       此前本插件是唯一在窄窗口不收窄侧栏的。 */
-    /* 窄窗口最多 200px。min() 而不是写死 200px：写死会让拖动分隔条在小窗口下失效
-       （媒体查询压过变量），min() 只压上限、保留用户拖得更窄的结果。 */
-    .nr-sidebar.view-sub-sidebar {
-        width: min(var(--sub-sidebar-width), 200px);
-    }
+    /* 侧栏宽度归壳（PluginChrome 的 .plugin-chrome-sidebar 读 --sub-sidebar-width，
+       窄窗口收窄也由壳的属性与分隔条规则负责），本文件只管内容。 */
     .nr-grid {
         grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
         gap: 12px;

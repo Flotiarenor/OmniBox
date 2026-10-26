@@ -7,165 +7,93 @@
   <link rel="stylesheet" href="media-player.css">
 </head>
 <body>
+  <!-- 内容页（壳追加 ?content=1 加载）：品牌块、左栏导航、歌单组、顶栏、搜索、状态栏与
+       侧栏分隔条由壳按 manifest 的 frontend.chrome 渲染，本文件只剩内容 —— 播放舞台、
+       播放条、歌词沉浸页、队列与 EQ 浮层、三个内容弹窗。 -->
   <div id="app">
-    <!-- ===== 左侧导航 ===== -->
-    <aside class="mp-sidebar view-sub-sidebar"
-           data-obx-splitter="--sub-sidebar-width"
-           data-obx-splitter-min="180"
-           data-obx-splitter-reserve="320"
-           data-obx-splitter-default="240">
-      <div class="mp-brand">
-        <div class="mp-brand-icon"><svg class="obx-icon"><use href="#headphones"></use></svg></div>
-        <div class="mp-brand-text">
-          <div class="mp-brand-title">媒体库</div>
-          <div class="mp-brand-sub">Music · Video</div>
-        </div>
-      </div>
+    <div class="view-body mp-main">
+      <!-- ===== 播放舞台 ===== -->
+      <!-- 拖动舞台屏下缘改变高度。offset=76 对应 --mp-pb-height（播放条高度），
+           因为元素高度 = calc(--mp-stage-vh + 播放条高)：两者改一处就要改另一处。 -->
+      <section class="mp-stage" id="mp-stage"
+               data-obx-splitter="--mp-stage-vh"
+               data-obx-splitter-axis="y"
+               data-obx-splitter-offset="76"
+               data-obx-splitter-min="160">
+        <div class="mp-stage-backdrop" id="mp-stage-backdrop"></div>
+        <div class="mp-stage-scrim"></div>
 
-      <nav class="mp-nav">
-        <button class="obx-nav-item mp-nav-item active" data-view="recent">
-          <span class="mp-nav-ico"><svg class="obx-icon"><use href="#history"></use></svg></span><span>最近播放</span>
-        </button>
-        <button class="obx-nav-item mp-nav-item" data-view="audio-albums">
-          <span class="mp-nav-ico"><svg class="obx-icon"><use href="#disc"></use></svg></span><span>音乐专辑</span>
-        </button>
-        <button class="obx-nav-item mp-nav-item" data-view="all-audio">
-          <span class="mp-nav-ico"><svg class="obx-icon"><use href="#music"></use></svg></span><span>全部音乐</span>
-        </button>
-        <button class="obx-nav-item mp-nav-item" data-view="video-albums">
-          <span class="mp-nav-ico"><svg class="obx-icon"><use href="#disc-3"></use></svg></span><span>视频专辑</span>
-        </button>
-        <button class="obx-nav-item mp-nav-item" data-view="all-video">
-          <span class="mp-nav-ico"><svg class="obx-icon"><use href="#clapperboard"></use></svg></span><span>全部视频</span>
-        </button>
-        <button class="obx-nav-item mp-nav-item" data-view="favorites">
-          <span class="mp-nav-ico"><svg class="obx-icon"><use href="#heart"></use></svg></span><span>我的喜欢</span>
-        </button>
-        <div id="mp-extensions"></div>
-      </nav>
-
-      <div class="mp-playlist-section">
-        <div class="mp-section-label">
-          <span>我的歌单</span>
-          <button id="btn-new-playlist" class="mp-ghost-btn" title="新建歌单"><svg class="obx-icon"><use href="#plus"></use></svg></button>
-        </div>
-        <div id="mp-playlist-list" class="mp-playlist-list obx-scroll"></div>
-      </div>
-
-      <div class="mp-sidebar-footer" id="mp-stats">
-        <div class="mp-mini-eq" id="mp-mini-eq" aria-hidden="true">
-          <span></span><span></span><span></span><span></span>
-        </div>
-        <span id="mp-stats-text">正在读取媒体库…</span>
-      </div>
-    </aside>
-
-    <!-- ===== 主区域 ===== -->
-    <div class="view-body">
-      <div class="view-toolbar mp-toolbar">
-        <div class="toolbar-group mp-view-heading">
-          <span class="mp-view-title" id="mp-view-title">最近播放</span>
-          <span class="mp-view-sub" id="mp-view-sub"></span>
-        </div>
-        <div class="toolbar-group mp-toolbar-right">
-        <div class="search-field">
-          <span class="search-field-icon"><svg class="obx-icon"><use href="#search"></use></svg></span>
-          <input type="text" id="media-search" placeholder="搜索媒体、专辑、艺术家…" autocomplete="off">
-          <button id="btn-search-clear" class="search-field-clear hidden" title="清除"><svg class="obx-icon"><use href="#x"></use></svg></button>
-        </div>
-          <!-- 媒体库的「同步（被动）/ 校验（手动）」由共享组件 shell/freshness.js 填充；
-               原先的「扫描」「深度扫描」两个按钮已下线（语义统一，见 docs/plugin-guide §3.4）。
-               下面这个按钮只剩一个职责：网易云视图里重新拉取在线数据（视图级刷新）。 -->
-          <button id="btn-scan" class="btn mp-tool-btn hidden" title="重新拉取网易云数据"><svg class="obx-icon"><use href="#refresh-cw"></use></svg> 刷新</button>
-          <div id="mp-freshness"></div>
-          <button id="btn-settings" class="btn mp-tool-btn"><svg class="obx-icon"><use href="#settings"></use></svg> 设置</button>
-        </div>
-      </div>
-
-      <div class="mp-main">
-        <!-- ===== 播放舞台 ===== -->
-        <!-- 拖动舞台屏下缘改变高度。offset=76 对应 --mp-pb-height（播放条高度），
-             因为元素高度 = calc(--mp-stage-vh + 播放条高)：两者改一处就要改另一处。 -->
-        <section class="mp-stage" id="mp-stage"
-                 data-obx-splitter="--mp-stage-vh"
-                 data-obx-splitter-axis="y"
-                 data-obx-splitter-offset="76"
-                 data-obx-splitter-min="160">
-          <div class="mp-stage-backdrop" id="mp-stage-backdrop"></div>
-          <div class="mp-stage-scrim"></div>
-
-          <div class="mp-stage-viewport">
-            <div class="mp-stage-art" id="mp-stage-art">
-              <div class="mp-stage-cover" id="mp-stage-cover">
-                <img id="mp-stage-cover-img" alt="" draggable="false">
-              </div>
-              <div class="mp-stage-info">
-                <div class="mp-stage-kind" id="mp-stage-kind">现在播放</div>
-                <div class="mp-stage-title" id="mp-stage-title">未在播放</div>
-                <div class="mp-stage-sub" id="mp-stage-sub">从左侧选择音乐或视频开始</div>
-                <div class="mp-stage-meta" id="mp-stage-meta"></div>
-              </div>
-              <div class="mp-stage-lyrics" id="mp-stage-lyrics" title="点击打开完整歌词"></div>
+        <div class="mp-stage-viewport">
+          <div class="mp-stage-art" id="mp-stage-art">
+            <div class="mp-stage-cover" id="mp-stage-cover">
+              <img id="mp-stage-cover-img" alt="" draggable="false">
             </div>
-
-            <div class="mp-stage-empty" id="mp-stage-empty">
-              <div class="mp-stage-empty-icon"><svg class="obx-icon"><use href="#headphones"></use></svg></div>
-              <div class="mp-stage-empty-text">选择一首音乐或视频开始播放</div>
+            <div class="mp-stage-info">
+              <div class="mp-stage-kind" id="mp-stage-kind">现在播放</div>
+              <div class="mp-stage-title" id="mp-stage-title">未在播放</div>
+              <div class="mp-stage-sub" id="mp-stage-sub">从左侧选择音乐或视频开始</div>
+              <div class="mp-stage-meta" id="mp-stage-meta"></div>
             </div>
-
-            <video id="video-player" class="mp-video" controlsList="nodownload" disablePictureInPicture></video>
-
-            <div class="mp-video-hint" id="mp-video-hint">
-              <div class="mp-video-hint-title" id="mp-video-hint-title"></div>
-            </div>
-            <button id="btn-stage-play" class="mp-stage-big-btn" title="播放/暂停"><svg class="obx-icon"><use href="#play"></use></svg></button>
+            <div class="mp-stage-lyrics" id="mp-stage-lyrics" title="点击打开完整歌词"></div>
           </div>
 
-          <!-- ===== 底部播放栏（舞台内，全屏时叠加在视频上） ===== -->
-          <div class="mp-playerbar" id="player-bar">
-            <div class="mp-pb-left">
-              <div class="mp-pb-cover" id="player-cover" title="歌词 / 沉浸模式">
-                <img id="player-cover-img" alt="" draggable="false">
-              </div>
-              <div class="mp-pb-info">
-                <div class="mp-pb-title" id="player-title">未在播放</div>
-                <div class="mp-pb-artist" id="player-artist"></div>
-              </div>
-              <button id="btn-toggle-fav" class="mp-icon-btn" title="喜欢"><svg class="obx-icon"><use href="#heart"></use></svg></button>
-            </div>
+          <div class="mp-stage-empty" id="mp-stage-empty">
+            <div class="mp-stage-empty-icon"><svg class="obx-icon"><use href="#headphones"></use></svg></div>
+            <div class="mp-stage-empty-text">选择一首音乐或视频开始播放</div>
+          </div>
 
-            <div class="mp-pb-center">
-              <div class="mp-controls">
-                <button id="btn-play-mode" class="mp-icon-btn" title="顺序播放"><svg class="obx-icon"><use href="#repeat"></use></svg></button>
-                <button id="btn-prev" class="mp-icon-btn" title="上一曲"><svg class="obx-icon"><use href="#skip-back"></use></svg></button>
-                <button id="btn-play-pause" class="mp-play-btn" title="播放/暂停"><svg class="obx-icon"><use href="#play"></use></svg></button>
-                <button id="btn-next" class="mp-icon-btn" title="下一曲"><svg class="obx-icon"><use href="#skip-forward"></use></svg></button>
-                <button id="btn-stop" class="mp-icon-btn" title="停止"><svg class="obx-icon"><use href="#square"></use></svg></button>
-              </div>
-              <div class="mp-progress-row">
-                <span id="time-current" class="mp-time">00:00</span>
-                <input type="range" id="progress-bar" class="mp-range mp-progress" min="0" max="100" value="0" step="0.1">
-                <span id="time-duration" class="mp-time">00:00</span>
-              </div>
-            </div>
+          <video id="video-player" class="mp-video" controlsList="nodownload" disablePictureInPicture></video>
 
-            <div class="mp-pb-right">
-              <button id="btn-queue" class="mp-icon-btn" title="播放队列"><svg class="obx-icon"><use href="#list-music"></use></svg></button>
-              <button id="btn-eq" class="mp-icon-btn" title="均衡器"><svg class="obx-icon"><use href="#sliders-horizontal"></use></svg></button>
-              <div class="mp-volume">
-                <button id="btn-volume-icon" class="mp-icon-btn" title="静音"><svg class="obx-icon"><use href="#volume-2"></use></svg></button>
-                <input type="range" id="volume-bar" class="mp-range mp-volume-bar" min="0" max="1" step="0.02" value="1">
-              </div>
-              <button id="btn-video-mode" class="mp-icon-btn hidden" title="画面 / 仅声音"><svg class="obx-icon"><use href="#clapperboard"></use></svg></button>
-              <button id="btn-wide" class="mp-icon-btn" title="宽屏模式"><svg class="obx-icon"><use href="#monitor"></use></svg></button>
-              <button id="btn-fullscreen" class="mp-icon-btn" title="沉浸歌词">⛶</button>
+          <div class="mp-video-hint" id="mp-video-hint">
+            <div class="mp-video-hint-title" id="mp-video-hint-title"></div>
+          </div>
+          <button id="btn-stage-play" class="mp-stage-big-btn" title="播放/暂停"><svg class="obx-icon"><use href="#play"></use></svg></button>
+        </div>
+
+        <!-- ===== 底部播放栏（舞台内，全屏时叠加在视频上） ===== -->
+        <div class="mp-playerbar" id="player-bar">
+          <div class="mp-pb-left">
+            <div class="mp-pb-cover" id="player-cover" title="歌词 / 沉浸模式">
+              <img id="player-cover-img" alt="" draggable="false">
+            </div>
+            <div class="mp-pb-info">
+              <div class="mp-pb-title" id="player-title">未在播放</div>
+              <div class="mp-pb-artist" id="player-artist"></div>
+            </div>
+            <button id="btn-toggle-fav" class="mp-icon-btn" title="喜欢"><svg class="obx-icon"><use href="#heart"></use></svg></button>
+          </div>
+
+          <div class="mp-pb-center">
+            <div class="mp-controls">
+              <button id="btn-play-mode" class="mp-icon-btn" title="顺序播放"><svg class="obx-icon"><use href="#repeat"></use></svg></button>
+              <button id="btn-prev" class="mp-icon-btn" title="上一曲"><svg class="obx-icon"><use href="#skip-back"></use></svg></button>
+              <button id="btn-play-pause" class="mp-play-btn" title="播放/暂停"><svg class="obx-icon"><use href="#play"></use></svg></button>
+              <button id="btn-next" class="mp-icon-btn" title="下一曲"><svg class="obx-icon"><use href="#skip-forward"></use></svg></button>
+              <button id="btn-stop" class="mp-icon-btn" title="停止"><svg class="obx-icon"><use href="#square"></use></svg></button>
+            </div>
+            <div class="mp-progress-row">
+              <span id="time-current" class="mp-time">00:00</span>
+              <input type="range" id="progress-bar" class="mp-range mp-progress" min="0" max="100" value="0" step="0.1">
+              <span id="time-duration" class="mp-time">00:00</span>
             </div>
           </div>
-        </section>
 
-        <!-- ===== 内容区 ===== -->
-        <div class="view-content mp-content obx-scroll" id="media-content"></div>
-      </div>
+          <div class="mp-pb-right">
+            <button id="btn-queue" class="mp-icon-btn" title="播放队列"><svg class="obx-icon"><use href="#list-music"></use></svg></button>
+            <button id="btn-eq" class="mp-icon-btn" title="均衡器"><svg class="obx-icon"><use href="#sliders-horizontal"></use></svg></button>
+            <div class="mp-volume">
+              <button id="btn-volume-icon" class="mp-icon-btn" title="静音"><svg class="obx-icon"><use href="#volume-2"></use></svg></button>
+              <input type="range" id="volume-bar" class="mp-range mp-volume-bar" min="0" max="1" step="0.02" value="1">
+            </div>
+            <button id="btn-video-mode" class="mp-icon-btn hidden" title="画面 / 仅声音"><svg class="obx-icon"><use href="#clapperboard"></use></svg></button>
+            <button id="btn-wide" class="mp-icon-btn" title="宽屏模式"><svg class="obx-icon"><use href="#monitor"></use></svg></button>
+            <button id="btn-fullscreen" class="mp-icon-btn" title="沉浸歌词">⛶</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== 内容区 ===== -->
+      <div class="view-content mp-content obx-scroll" id="media-content"></div>
     </div>
 
     <!-- ===== 歌词沉浸页 ===== -->

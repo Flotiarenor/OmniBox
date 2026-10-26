@@ -106,9 +106,13 @@ def wait_for_text(driver, element_id: str, needle: str, timeout: float = 5.0) ->
 
 
 def show_panel(driver, name: str) -> None:
-    """切到侧栏的某个面板，并确认切换真的生效。
+    """切到某个面板，并确认切换真的生效。
 
-    界面形态与仓库里其它插件一致：`.view-sub-sidebar` 常驻侧栏 + 主区面板，
+    面板入口在壳的左栏（`plugin_ui_audit` 的 `nav.panel` 覆盖壳这一侧）；本用例直接
+    加载内容页、没有壳，因此按内容页 `_bindHost` 实际校验的字段手工构造 `MessageEvent`
+    （`omnibox:view`，`origin` 取本页 origin、`source` 取本窗口），内容页校验通过后调
+    `setPanel`。这样测到的仍是真实的视图切换逻辑，而不是直接改 DOM。
+
     面板是**纯显隐**（`data-active`，不销毁 DOM）。因此断言"某元素可见/可点"之前
     必须先切到它所在的面板 —— 否则 Selenium 的 `is_displayed()` 会对隐藏面板里的
     元素返回 False，`.text` 也拿不到文本（隐藏元素没有渲染盒），`.click()` 会因为
@@ -126,11 +130,10 @@ def show_panel(driver, name: str) -> None:
 
     if active() == name:
         return
-    assert wait_until(lambda: bool(driver.execute_script(
-        "return document.querySelector('#gm-nav .gm-nav-item[data-panel=\"%s\"]');" % name))), \
-        f'侧栏里没有 data-panel="{name}" 的入口'
     driver.execute_script(
-        "document.querySelector('#gm-nav .gm-nav-item[data-panel=\"%s\"]').click();" % name)
+        "window.dispatchEvent(new MessageEvent('message', {"
+        "  data: {type: 'omnibox:view', view: arguments[0]},"
+        "  origin: location.origin, source: window}));", name)
     assert wait_until(lambda: active() == name), f'切到面板 {name} 失败（当前 {active()}）'
 
 

@@ -74,11 +74,13 @@ plugins/
 | `backend.entry`   | 默认 | 后端入口文件路径，默认`backend/main.py`，相对于插件根目录                     |
 | `backend.class`   | 默认 | 后端插件类名，默认`Plugin`，须继承 `PluginBase`                             |
 | `frontend.route`  | 默认 | 前端路由，默认`/<name>`，须以 `/` 开头                                      |
+| `frontend.chrome` | 可选 | 页面骨架声明：`brand`、`nav`、`toolbar`、`search`、`status`、`freshness`、`extensions`。声明后由壳的 `PluginChrome.vue` 渲染品牌块、导航、顶栏、搜索框、状态栏与分隔条，iframe 加载时追加 `?content=1` 且只装内容；未声明则维持整页模式（旧插件兼容）。字段形状见 [插件页面架构](./plugin-page-architecture.md) |
+| `frontend.chrome.extensions` | 可选 | `{placement: "sidebar", title}`：壳的 `PluginExtensions.vue` 从 `system_get_plugin_extensions` 取入口并渲染到导航区，宿主内容页不再自建扩展容器 |
 | `dependencies`    | 可选 | 依赖的其他插件名称列表                                                          |
 | `libs`            | 可选 | 插件本地附加库目录列表，默认`["backend/libs"]`，加载后端前会加入 `sys.path` |
 | `permissions`     | 可选 | 权限声明，**仅作知情明示**：运行时不做强制、也不在设置页展示（代码里没有任何读取方） |
 | `minShellVersion` | 可选 | 要求的最低 Shell 版本。**仅 `tools/check_plugins.py` 读取**：发布前自检时会拒绝高于当前 shell 的声明，但运行时既不告警也不拒绝加载（旧版 shell 会照常载入该插件） |
-| `keepAlive`       | 可选 | `true` 时离开页面**不**卸载 iframe（`v-show` 隐藏，DOM 与 JS 状态保留、播放与朗读不中断）；**默认离开即卸载，回来重新加载**。详见 §4.4 |
+| `keepAlive`       | 可选 | `true` 时离开页面**不**卸载 iframe（`v-show` 隐藏，DOM 与 JS 状态保留、播放与朗读不中断）；**默认离开即卸载，回来重新加载**。见「前端生命周期」一节 |
 | `hidden`          | 可选 | `true` 时不显示在 Shell 主导航，但仍可被宿主内嵌或通过插件 URL 访问           |
 | `kind`            | 可选 | `local-adapter`：声明本插件管理独立运行环境（重依赖插件使用；**尚未实装，只告警不阻断**，当前声明不生效） |
 | `runtime`         | 可选 | **规划中，尚未实装：填入不生效**，运行时没有任何读取方；独立运行环境声明（venv / 入口 / requirements），见 §2.2 |
@@ -134,8 +136,11 @@ await Bridge.callPlugin('image-tagger', 'tag_album', 'PIXEVAL/画师A');
 // 等价于 parent.pywebview.api['image-tagger__tag_album']('PIXEVAL/画师A')
 ```
 
-**扩展注册表**（宿主只写泛化渲染点）：扩展条目由插件的 `get_extensions()` 返回，
-Shell 会自动补上 `plugin` 字段。真实键见 `plugins/image-cleaner/backend/main.py`：
+**扩展注册表**：扩展条目由插件的 `get_extensions()` 返回，Shell 会自动补上 `plugin` 字段。
+声明了 `frontend.chrome` 的宿主由壳的 `PluginExtensions.vue` 从
+`system_get_plugin_extensions(host, 'sidebar')` 拉取并渲染入口，插件与宿主内容页都不需要写
+渲染点。共享层已移除 `renderExtensions`（`base.js` 不再提供该函数），它不再是可调用的 API；
+旧页面/旧壳如需回落，走条目的 `embedUrl`。真实键见 `plugins/image-cleaner/backend/main.py`：
 
 ```python
 class ImageCleanerPlugin(PluginBase):
@@ -147,77 +152,49 @@ class ImageCleanerPlugin(PluginBase):
             'icon': 'icon:brush-cleaning',
             'description': '扫描全部相册中的重复 / 相似图片',
             'section': '相册清理',                              # 侧边栏分组标题
-            'embedUrl': '/plugins/image-cleaner/frontend/index.html',
+            'native': {                                        # 新壳：壳的 NativePanel 渲染
+                'url': '/plugins/image-cleaner/frontend/native.html?native=1',
+                'title': '相册清理',
+            },
+            'embedUrl': '/plugins/image-cleaner/frontend/index.html',  # 旧壳回落
             'placement': 'sidebar',                            # 宿主渲染点位置
             'scope': 'all',
         }]
 ```
 
-宿主的点击行为由条目里出现的键决定（`shell/frontend/public/shell/base.js` 的
-`renderExtensions` 按以下优先级分支）：
+点击行为由条目里出现的键决定：
 
 | 键 | 行为 |
 | --- | --- |
-| `view` | 原生视图型：宿主自己渲染（需宿主传入 `options.onOpen`） |
-| `embedUrl` | 内嵌型：在宿主面板里打开 iframe（当前内置插件用的就是这条） |
+| `native` | 原生面板型：壳的 `NativePanel.vue` 打开 `{url, title}`，隐藏逻辑页提交 schema blocks（新壳优先走这条） |
+| `view` | 视图型：壳向宿主内容页发 `omnibox:view`，由内容页渲染对应视图 |
+| `embedUrl` | 内嵌回落型：在宿主面板里打开 iframe；只给不认 `native` 的旧壳使用 |
 | `route` | 独立路由型：跳转到插件自己的页面 |
 | `method` | 纯后端方法型：`Bridge.callPlugin(ext.plugin, ext.method)` 跨插件调用 |
 
-> **内嵌时宿主必须追加 `?embed=1`**（`embedUrl` 与"网络位置"提供方页同理，见
+> 声明了 `frontend.chrome` 的宿主**不用写扩展渲染代码**：`PluginChrome.vue` 里的
+> `PluginExtensions.vue` 自己拉取 `system_get_plugin_extensions(host, 'sidebar')` 并渲染入口，
+> 点击后由壳决定打开 `NativePanel` 还是下发 `omnibox:view`。插件只需要在 `get_extensions()`
+> 里声明条目，不要自己渲染入口或另建扩展容器。`renderExtensions` 已从
+> `shell/frontend/public/shell/base.js` 删除，不再是可调用的共享 API；旧页面/旧壳如需回落，
+> 走条目里的 `embedUrl`。
+
+> **内嵌回落时必须追加 `?embed=1`**（`embedUrl` 与"网络位置"提供方页同理，见
 > `shell/frontend/public/shell/folder-picker.js` 的 `openNetworkPicker`）：插件页据此知道
 > "我正被嵌在宿主面板里，宿主已经给了标题与返回"，从而收起自己的工具栏/标题。只看
 > `window.self !== window.top` 分辨不出来 —— 壳按路由加载插件时也在 iframe 里。
-> 约定与示例见 `docs/plugin-ui-guide.md` §3.4。
+> 约定与示例见 `docs/plugin-ui-guide.md`。
 
-宿主前端：
+> Shell **没有** `addToolbarButton(...)` 这个函数（历史文档里出现过，属于笔误）。
 
-```javascript
-// 推荐：使用通用渲染器（Shell base.js 已提供，签名 renderExtensions(container, host, placement, options)）
-renderExtensions(document.getElementById('extensions'), 'image-viewer', 'sidebar');
+**扩展入口的"同一时刻只有一个选中项"由壳维护**：`PluginExtensions.vue` 只负责渲染与上报点击，
+选中态由 `PluginChrome.activeExtensionId` 统一持有 —— 点击扩展入口时点亮该入口并清掉主导航
+高亮，点击主导航时清空扩展选中态，native 面板关闭时同样清空；`view` 型入口高亮期间主导航
+不叠加高亮。插件侧不需要维护按钮状态；旧实现返回的 `{ buttons, activate, clearActive }`
+控制器已随 `renderExtensions` 一起删除。
 
-// 或者手动拉取扩展后自行渲染（系统 API 必须走 callSystem）
-const exts = await Bridge.callSystem('system_get_plugin_extensions', 'image-viewer', 'sidebar');
-exts.forEach(ext => {
-  const btn = document.createElement('button');
-  btn.textContent = ext.label || ext.id;
-  btn.title = ext.description || '';
-  btn.addEventListener('click', () => {
-    if (ext.embedUrl) { /* 自行决定如何打开 iframe */ }
-    else if (ext.route) { parent.__omniboxNavigate?.(ext.route); }
-    else if (ext.method) { Bridge.callPlugin(ext.plugin, ext.method); }
-  });
-  document.getElementById('extensions').appendChild(btn);
-});
-```
-
-> Shell **没有** `addToolbarButton(...)` 这个函数（历史文档里出现过，属于笔误），
-> 通用渲染请用 `renderExtensions`，自定义渲染请照上面的分支自己实现。
-
-**扩展入口的高亮由 `renderExtensions` 统一维护**（"同一时刻只有一个当前项"这条不变量
-不再由宿主各自实现）：
-
-```javascript
-const exts = await renderExtensions(container, 'media-player', 'sidebar', {
-  title: '网易云音乐',
-  navSelector: '.mp-nav-item',                  // 宿主侧栏项：点扩展时一并取消它们的选中
-  onOpen: (ext, btn) => this.openNeteaseView(ext, btn),
-});
-// 宿主切换自己的视图时清一次扩展高亮：
-exts.clearActive();
-```
-
-- 返回值是控制器 `{ buttons, activate(btn), clearActive() }`；容器为空或列表为空也照样
-  返回（宿主不必判空）。
-- 组件在点击时自己完成：清掉 `navSelector` 命中的侧栏项 → 高亮被点的入口 → 再调
-  `onOpen` / `onEmbed`。**只有"会打开视图"的扩展参与高亮**（`ext.view` + `onOpen`，或
-  `ext.embedUrl`）；纯动作型（`route` / `method`）不点亮，否则等于谎报"当前视图"。
-- 为什么要有这一层：宿主通常有两套入口（侧栏项 + 扩展入口），互斥逻辑分散在两边就会
-  漏一个方向。实测 media-player 只清了侧栏项、扩展点击只清扩展项，先点「网易云登录」
-  再点「全部音乐」两个同时高亮（image-viewer 两个方向都写了才没暴露）。
-- 回归守卫：`tests/js/shell_extensions_active.mjs`（组件侧 6 例）+ 各宿主的侧栏用例
-  （如 `tests/js/media_player_nav_active.mjs`）。
-
-> 目前已落地的 Companion 插件示例：`image-cleaner`（全相册重复/相似清理）。
+> 目前已落地的 Companion 插件示例：`image-cleaner`（全相册重复/相似清理）与 `pixiv-sync`
+> （Pixiv 同步），都走 `native` 面板 + `embedUrl` 旧壳回落。
 
 ## 2.2 重型依赖与独立运行环境（runtime）
 
@@ -245,6 +222,47 @@ torch / onnxruntime 等重依赖**不得**写在插件 `backend/main.py` 顶层 
 3. **通信**：stdio JSON-lines，每行一个 JSON 对象；控制行下行、进度/结果上行（协议见 `docs/core-direction.md` §9.4）。
 4. **部署**：`deploy.ps1` / `setup-venv.ps1` 按 `runtime.requirements` 创建插件独立 venv；失败不阻塞主程序。
 5. **原型阶段**允许懒 import 兜底：首次调用时才 `import torch`，并把任务放进后台线程；正式版切独立环境。
+
+---
+
+## 2.3 页面骨架、内容归属与 native 面板
+
+页面的品牌块、侧栏导航、顶栏、搜索框、状态栏与分隔条属于**壳的 chrome**，不归插件前端。manifest
+声明 `frontend.chrome` 后：
+
+- 壳用 `PluginChrome.vue` 渲染骨架，插件 iframe 加载 `frontend/index.html` 时由壳追加 `?content=1`；
+- 内容页只保留内容 DOM，不得出现 `.view-sub-sidebar`、`.view-toolbar`、`.sub-sidebar-brand`、
+  `.obx-nav-item`（`tools/plugin_ui_audit.py` 的 `iframe.content-only` 会检查）；
+- 导航点击、顶栏动作、搜索输入由壳以 `omnibox:view` / `omnibox:action` / `omnibox:query` 下发；
+  内容页用 `omnibox:chrome` 上报标题、视图、动作、导航、搜索与状态；
+- 设置弹窗、统一刷新控件与扩展入口也归壳（见下文与 `docs/plugin-page-architecture.md`）。
+
+`frontend.chrome` 的字段形状（`brand` / `nav` / `toolbar` / `search` / `status` / `freshness` /
+`extensions`）与运行期补丁语义以 [插件页面架构](./plugin-page-architecture.md) 为准；
+手写前可对照 `plugins/media-player/manifest.json` 的完整声明。
+
+`frontend.chrome.content` 字段已移除（`canvas` / `native` / `hybrid` 不再有运行时效果）：壳按
+"是否声明 `frontend.chrome`"决定是否渲染页面骨架，按附属插件 `get_extensions()` 是否返回
+`native` 决定是否渲染 native 面板。native 内容来自附属插件 `get_extensions()` 返回的条目：
+
+```python
+{
+    'host': 'image-viewer',
+    'id': 'image-cleaner',
+    'label': '相册清理',
+    'section': '相册清理',
+    'native': {'url': '/plugins/image-cleaner/frontend/native.html?native=1', 'title': '相册清理'},
+    'embedUrl': '/plugins/image-cleaner/frontend/index.html',  # 旧壳回落
+    'placement': 'sidebar',
+}
+```
+
+新壳按 `native` 打开 `NativePanel.vue`：逻辑页在隐藏 iframe 里只提交 schema blocks 与处理动作，
+可见界面由 `SchemaRenderer.vue` 渲染；`embedUrl` 只给不认 `native` 的旧壳做整页回落。附属插件
+通常同时声明 `hidden: true`，不进入壳的主导航。设置能由 `settings_schema` 完整表达的插件，顶栏
+「设置」由壳的 `PluginSettingsModal.vue` 打开（`group-mesh`、`document-reader`、`manga-library`、
+`media-player`，以及 `image-cleaner` / `pixiv-sync` 的 native 顶栏设置动作）；image-viewer 的设置
+带按目录作用域与根目录列表控件，仍由内容页的 `openSettingsModal()` 渲染。
 
 ---
 
@@ -329,8 +347,8 @@ from pathlib import Path
 from shell.backend.plugin_base import PluginBase
 
 class MyPlugin(PluginBase):
-    # 声明设置项：设置弹窗（shell/base.js 的 openSettingsModal）+ SettingsStore
-    # 持久化由框架自动处理
+    # 声明设置项：声明 frontend.chrome 的插件由壳的 PluginSettingsModal 渲染，
+    # 保存后内容页收到 omnibox:action: settings-saved；SettingsStore 持久化由框架自动处理
     settings_schema = [
         {"key": "root_dir", "label": "数据根目录", "type": "text",
          "help": "存放数据的根目录"},
@@ -424,7 +442,7 @@ from pyradios import RadioBrowser
 
 - **`tasks.py` → `BackgroundTask`**（控制面）：后台线程 + 状态机 + 取消 + 进度 + 可选断点持久化。适用于任何长任务：全量重建、同步、批量下载、导入扫描。
 - **`thumb_cache.py` → `ThumbCache`**（数据面）：SQLite 缩略图缓存（WAL + mtime/size 失效校验 + 并行批量生成）。适用于任何「本地媒体 → 缩略图」：图片、视频封面抽帧、音频内嵌封面。
-- **`freshness.py` → `FreshnessEngine`**（决策面）：什么时候扫、哪些算变化、什么算幽灵。适用于任何"本地资源 → 派生数据"的插件。**接入方式见 §3.6**。
+- **`freshness.py` → `FreshnessEngine`**（决策面）：什么时候扫、哪些算变化、什么算幽灵。适用于任何"本地资源 → 派生数据"的插件。**接入方式见「统一刷新（同步 / 校验）」**。
 
 #### 后台任务 BackgroundTask
 
@@ -717,12 +735,13 @@ HTTP 与桌面 `js_api` 两条通道共用。已接入的实现参考：image-vi
 
 ### 4.1 Shell 注入的资源
 
-插件前端运行在 iframe 中，Shell 会自动注入以下资源：
+插件前端运行在 iframe 中。声明了 `frontend.chrome` 的插件，壳加载内容页时追加 `?content=1`，
+iframe 只装内容；没有 chrome 声明的旧插件仍是整页模式。Shell 对两种形态都会自动注入以下资源：
 
 - **CSS 变量**：`/shell/variables.css`（提供主题颜色、间距等）
-- **共用组件样式**：`/shell/shared.css`（按钮、表单控件、Toast、导航项、图标 —— 壳页面与
-  插件页同一份，见 `docs/plugin-ui-guide.md` §5）
-- **基础样式**：`/shell/base.css`（插件 iframe 的骨架与插件侧独有的布局/组件）
+- **共用组件样式**：`/shell/shared.css`（按钮、表单控件、Toast、图标与壳侧导航项 —— 壳页面与
+  插件页同一份，见 `docs/plugin-ui-guide.md`）
+- **基础样式**：`/shell/base.css`（内容页的布局基线与插件侧独有的组件；页面骨架样式在壳的 `plugin-page.css` 里）
 - **基础脚本**：`/shell/base.js`（提供全局 `Bridge` 对象和通用 UI 组件）
 
 **你无需在 HTML 中手动引入这些文件**，Shell 会在加载插件时自动注入到 `<head>` 中。
@@ -746,11 +765,11 @@ HTTP 与桌面 `js_api` 两条通道共用。已接入的实现参考：image-vi
   - `Motion.retrigger(el, className?)` 重新触发动画（默认 `obx-anim-heart`）
   - `Motion.show(el, className?)` 淡入上移显示
 
-另外两个共享**组件**（不只是资源，见 §4.3）：
+另外两个共享**组件**（不只是资源，见「全局 UI 组件」）：
 
 - `/shell/folder-picker.js|css` — `window.FolderPicker`：多位置文件夹列表与目录选择弹窗；
 - `/shell/freshness.js|css` — `window.Freshness`：统一的「同步 / 校验」控件（状态行 +
-  校验按钮 + 进度卡），接入方式见 §3.4「统一刷新（同步 / 校验）」。
+  校验按钮 + 进度卡），接入方式见「统一刷新（同步 / 校验）」。
 
 所有动画均遵循 `prefers-reduced-motion`，用户开启减少动态效果时自动降级。
 
@@ -758,157 +777,63 @@ HTTP 与桌面 `js_api` 两条通道共用。已接入的实现参考：image-vi
 > `alert()`/`confirm()` 是 error；`!important`、与壳逐值相同的关键帧、用 `obx-` 前缀命名
 > 插件自有动画是 warning。逐条依据见 `docs/plugin-ui-guide.md`。
 
-#### 通用布局与组件类（Shell 已注入，插件无需重复定义）
+#### 内容页继续使用的通用类
 
-以下 CSS 类已由 Shell 统一注入（`base.css` + `shared.css`），插件 HTML 直接使用即可，**不应在自己 CSS 中重复定义**（否则将不兼容未来主题变更）：
+页面骨架类不再属于插件：`.view-sub-sidebar`、`.view-toolbar`、`.toolbar-group`、
+`.sub-sidebar-brand`、`.obx-nav-item` 由壳的 `PluginChrome.vue` 渲染，内容页出现它们会被
+`tools/plugin_ui_audit.py` 的 `iframe.content-only` 判为失败（双份 chrome）。内容页仍可继续
+使用壳注入的以下类，但**不要**在自己的 CSS 中重复定义：
 
-| CSS 类                  | 用途                                                                  |
-| ----------------------- | --------------------------------------------------------------------- |
-| `.view-body`          | 主内容区容器（`flex: 1; flex-direction: column; overflow: hidden`） |
-| `.view-toolbar`       | 顶部工具栏（高 48px，`var(--bg-surface)` 背景，底部边框）           |
-| `.toolbar-group`      | 工具栏内的按钮组（`flex; align-items: center; gap: 8px`）           |
-| `.obx-toolbar-btn`    | **工具栏动作按钮**：高度 `var(--control-h)`(31px) / 13px / 内边距 `0 14px` / 图标与文字间距 6px，一处定义、全仓可调。`.view-toolbar` 内的 `.btn` 自动命中；工具栏**之外**（扩展视图头部、宿主挂载点、页面内的动作行）必须显式加这个类，否则尺寸会与主工具栏那一排分家 |
-| `.view-sub-sidebar`   | 左侧子侧边栏（宽`var(--sub-sidebar-width)`，默认 240px）            |
-| `.sub-sidebar-header` | 侧边栏标题行（大写标签，底部边框）                                    |
-| `.sub-sidebar-footer` | 侧边栏底部统计区（小字体，顶部边框）                                  |
-| `.view-content`       | 内容滚动区（`flex: 1; overflow-y: auto; padding: 16px`）            |
-| `.empty-state`        | 空态容器（图标 + 主文案 + 可选提示，居中）；子元素 `.empty-state-icon` / `.empty-state-text` / `.empty-state-hint`。小容器加 `.empty-state--inline`，需要更高/更矮用 `--obx-empty-min-h`；**不要自建 `.xx-empty`** |
-| `.obx-nav-item`       | 侧栏导航项（结构 + hover + 选中态；选中态标 `is-active` / `active` / `data-active="true"` 均可） |
-| `.obx-scroll`         | 现代窄滚动条（悬停渐显），**每个会滚动的容器都要加**；壳的 `.modal-body` 已自带 |
-| `.obx-anim-*` / `.obx-glass*` / `.obx-skeleton` / `.obx-card-lift` | 通用动效与玻璃/骨架/悬浮类（`effects.css`），已处理 `prefers-reduced-motion` |
-| `.obx-extension*` / `.obx-embed-frame` | Companion 扩展入口与内嵌 iframe 的通用样式 |
+- `.view-body` / `.view-content`：内容 iframe 自身的布局与滚动区；
+- `.empty-state`（含 `.empty-state-icon` / `.empty-state-text` / `.empty-state-hint`，小容器加
+  `.empty-state--inline`）：空态，不要自建 `.xx-empty`；
+- `.obx-scroll`：现代窄滚动条，**每个会滚动的容器都要加**；
+- `.obx-anim-*` / `.obx-glass*` / `.obx-skeleton` / `.obx-card-lift`：通用动效与玻璃/骨架/
+  悬浮类（`effects.css`），已处理 `prefers-reduced-motion`；
+- `.obx-extension*` / `.obx-embed-frame`：旧壳回落页的历史类，当前壳（`PluginExtensions` /
+  `NativePanel`）不再产出；新页面不要使用。
 
-`.obx-nav-item` 的视觉参数走 `--obx-nav-*`（`shared.css` 的「导航项」一节）：
+### 4.2 页面 chrome 与内容 iframe
 
-| token | 默认 | 说明 |
-| --- | --- | --- |
-| `--obx-nav-gap` / `--obx-nav-pad-y` / `--obx-nav-pad-x` | `10px` / `9px` / `12px` | 图标与文字的间距、内边距 |
-| `--obx-nav-radius` / `--obx-nav-font-size` | `10px` / `13px` | 圆角与字号 |
-| `--obx-nav-accent` | `var(--accent)` | 选中态用色 |
-| `--obx-nav-active-bg` | `color-mix(in srgb, var(--obx-nav-accent) 9%, transparent)` | 选中态底色（极淡） |
-| `--obx-nav-active-color` | `var(--obx-nav-accent)` | 选中态文字色 |
+manifest 的 `frontend.chrome` 声明品牌、导航、顶栏、搜索、状态与扩展入口。壳据此用
+`shell/frontend/src/components/PluginChrome.vue` 渲染整页骨架，并把内容 iframe 放进内容槽：
 
-选中态的"左缘 2px 强调色竖线"由 `.obx-nav-item` 的 `::before` 提供，插件**不要**再各自
-实现一遍选中态（image-viewer 曾把它整块填成渐变，与其它插件不一致）。插件只需保留自己的
-差异，例如图标栏宽度：
+- 壳加载内容页时追加 `?content=1`（`App.vue` 的 `pluginSrc`）。内容页只需处理自己的内容，
+  例如 group-mesh 的 `.view-content` 面板、media-player 的舞台与播放条。
+- 内容页**不得**再出现 `.view-sub-sidebar`、`.view-toolbar`、`.sub-sidebar-brand`、
+  `.obx-nav-item`，也不要在插件 CSS 里复刻品牌块与导航。
+- 标题、副标题、视图高亮、动作显隐、导航徽标、搜索开关与状态行都通过
+  `omnibox:chrome` 上报；壳只合并声明与补丁，不解释业务。
+- `PluginChrome` 还负责挂载统一刷新控件（`freshness`）、扩展入口（`extensions`）与侧栏分隔条。
 
-```css
-.iv-nav-item { gap: 9px; }              /* 结构/选中态都在 .obx-nav-item 里 */
-.iv-nav-item span { width: 18px; text-align: center; }
-```
+### 4.3 设置弹窗由壳渲染
 
-回归用例：`python tests/debug_nav_style_ui.py` —— 起真实壳服务，对四个插件的导航项断言
-"token 生效、选中态有底色与竖线、四个插件算出的样式一致"。
+设置是页面级弹窗：内容 iframe 里的 `.modal` 只相对自己的视口，盖不住壳的侧栏。因此：
 
-**示例 HTML 结构**：
+- `group-mesh`、`document-reader`、`manga-library`、`media-player` 的顶栏 `settings` 动作由
+  壳拦截（`App.vue` 的 `SHELL_SETTINGS_PLUGINS`），用
+  `shell/frontend/src/components/PluginSettingsModal.vue` 渲染；
+- 弹窗的 schema、初值与保存全部走 `<插件>__get_settings_schema`、`<插件>__get_settings`、
+  `<插件>__save_settings`，壳不持有设置语义；保存成功后壳发
+  `omnibox:action`（`settings-saved`），内容页据此重读设置并刷新当前视图；
+- `settings_schema` 的 `type: "directory"` 字段在壳弹窗里渲染成「路径行 + 选择目录…」，由壳内共享
+  `window.FolderPicker`（`shell/frontend/public/shell/folder-picker.js`）提供：可手输绝对路径，
+  「浏览…」走 `system_browse_dir`（共享基建 `media_catalog.list_subdirectories`，可看盘符与
+  「含图片 / 视频 / 音乐」）；`local_only: true` 的字段不显示「网络位置」按钮，其余字段可由声明了
+  network-location 能力的插件把远端共享项取到本地目录后回填。插件目录字段不再使用
+  `system_pick_path('directory')` 系统对话框 —— 该接口只剩壳自己的设置页选图片；
+- image-viewer 仍是例外：它的设置按目录作用域读写、还带根目录列表控件，由内容页调用
+  `openSettingsModal()` 渲染。其余插件不要再调用 `openSettingsModal()`，也不要自己拼设置弹窗；
+- `image-cleaner` / `pixiv-sync` 的 native 设置也由壳的 `PluginSettingsModal` 接管：原生面板顶栏
+  的「设置」动作由壳拦截，弹窗按插件 `settings_schema` 渲染，保存成功后向隐藏逻辑页发
+  `settings-saved`。附属插件的弹窗不显示外观块（它们没有自己的页面骨架）。
+- 四个壳内设置页与 image-viewer 的内容设置页顶部都有通用「外观」块：背景不透明度 +
+  「跟随壳透明度」。值存在壳偏好 `--plugin-glass-<插件名>`，不写进插件 `settings_schema`；
+  image-viewer 通过 `omnibox:get-plugin-appearance` / `omnibox:set-plugin-alpha` 读写同一份值。
+  默认跟随壳的 `--glass-alpha`，覆盖范围是页面骨架与内容页公共区域，不改变插件自绘卡片。
 
-```html
-<div id="app">
-  <div class="view-sub-sidebar">
-    <div class="sub-sidebar-header">浏览目录</div>
-    <!-- 目录树等 -->
-    <div class="sub-sidebar-footer">共 0 项</div>
-  </div>
-  <div class="view-body">
-    <div class="view-toolbar">
-      <div class="toolbar-group">...</div>
-      <div class="toolbar-group" style="margin-left:auto;"><svg class="obx-icon"><use href="#settings"></use></svg> 设置</div>
-    </div>
-    <div class="view-content">
-      <!-- 主内容区 -->
-    </div>
-  </div>
-</div>
-```
-
-### 4.2 全局 Bridge 对象
-
-`Bridge` 对象挂载在 `window` 上，提供以下方法：
-
-| 方法                                           | 说明                                                                    |
-| ---------------------------------------------- | ----------------------------------------------------------------------- |
-| `Bridge.call(method, ...args)`               | 调用后端 API（自动添加插件名前缀）                                      |
-| `Bridge.callSystem(method, ...args)`         | 调用 Shell 系统 API（不加插件前缀，如`system_get_plugin_extensions`） |
-| `Bridge.callPlugin(plugin, method, ...args)` | 跨插件调用其他插件后端 API                                              |
-| `Bridge.thumbUrl(relPath)`                   | 获取缩略图 URL（自动附加`?plugin=插件名`，路径逐段百分号编码，`%`/`#`/空格等字符安全） |
-| `Bridge.originalUrl(relPath)`                | 获取原图 URL（自动附加`?plugin=插件名`）                              |
-| `Bridge.setPrefix(prefix)`                   | 设置 API 前缀（Shell 在加载插件时自动调用）                             |
-
-**示例**：
-
-```javascript
-// 调用后端 list_images 方法
-const data = await Bridge.call('list_images', '', 1, 40, 'mtime', 'desc');
-
-// 获取缩略图 URL
-const thumbSrc = Bridge.thumbUrl('subdir/photo.jpg');
-// 返回：/thumbs/subdir/photo.jpg?plugin=image-viewer
-
-// 获取原图 URL
-const originalSrc = Bridge.originalUrl('subdir/photo.jpg');
-// 返回：/files/subdir/photo.jpg?plugin=image-viewer
-```
-
-### 4.3 全局 UI 组件
-
-Shell 还注入了以下可复用的 UI 组件函数（无需引入，直接使用）：
-
-| 函数                                                                | 说明                                      |
-| ------------------------------------------------------------------- | ----------------------------------------- |
-| `createTree(container, options)`                                  | 创建目录树组件                            |
-| `createLightbox(options)`                                         | 创建灯箱组件                              |
-| `createPagination(container, options)`                            | 创建分页组件                              |
-| `createContextMenu(options)`                                      | 创建右键菜单组件                          |
-| `createSettingsForm(container, schema, values)`                   | 按 schema 渲染设置表单                    |
-| `Freshness.mount({plugin, container, unit, onChange})`             | 挂载统一的「同步 / 校验」控件（见 §3.4）；`autoSync(scope)` / `verify()` / `cancel()` |
-| `Freshness.assetUrl(path, version)`                               | 派生资源 URL + 版本号（绕开 `/thumbs` 的一天强缓存） |
-| `renderExtensions(container, host, placement, options?)`          | 渲染注册到宿主侧边栏/工具栏的扩展插件入口 |
-| `openSettingsModal(options)`                                      | 打开统一设置弹窗                          |
-| `HostChannel.requestSettings(title)` / `HostChannel.request(action, data)` | 内嵌页请**上层**用它的文档渲染 UI（设置/确认），详见 plugin-ui-guide §3.5 |
-| `HostChannel.mountToolbar(buttons, {container, selector})` | 内嵌页把按钮挂到上层的工具栏/头部；宿主不表态时按钮留在本页 |
-| `confirmDialog(message, options)`                                 | 替代原生 confirm                          |
-| `Toast.success(msg)` / `Toast.error(msg)` / `Toast.info(msg)` | 显示 Toast 通知                           |
-| `Utils.formatFileSize(bytes)`                                     | 格式化文件大小                            |
-| `Utils.debounce(func, wait)`                                      | 防抖函数                                  |
-
-**示例**：
-
-```javascript
-// 打开设置弹窗。省略 onSave 时壳的默认实现走 `Bridge.call('save_settings', values)`。
-// **保存后必须自己收尾**：壳只弹一条 Toast，既不重载页面也不通知插件页（壳里只有
-// `omnibox:settings-changed` 的接收分支，仓库内没有发送方）。收尾二选一：整页重载
-// （image-cleaner 的 `_t=` 重载）或就地重渲染（group-mesh 的 `refresh()`）。
-// 不收尾时设置已经落盘，但界面上仍是旧值。
-openSettingsModal({
-  title: '媒体库设置',
-  successMessage: '设置已保存',
-}).then((saved) => { if (saved) location.reload(); });
-
-// 确认对话框
-const ok = await confirmDialog('删除后不可恢复，确定？', { danger: true });
-
-// 目录树
-createTree(document.getElementById('folder-tree'), {
-  data: [{ name: '根目录', path: '' }],
-  onLoadChildren: async (path) => await Bridge.call('list_dir', path),
-  onClick: (item) => console.log('选中', item.path)
-});
-
-// 灯箱
-const lightbox = createLightbox({
-  getImageUrl: (item) => item.url
-});
-lightbox.show(images, 0);
-
-// 统一「同步 / 校验」：空容器 + 一处挂载，轮询/进度/取消都由组件负责（见 §3.4）
-const ctl = Freshness.mount({
-  plugin: 'my-plugin',                    // 必须与 manifest.name 一致
-  container: document.getElementById('my-freshness'),
-  unit: '首',
-  onChange: () => reloadMyView(),
-});
-ctl.autoSync('');                         // 进视图 / 切目录时调用
-```
+> 覆写了 `get_settings()` 的插件必须把它登记进 `register_api()`（连同 `save_settings`），
+> 否则壳弹窗只会显示 schema 默认值、保存也会失败。
 
 ### 4.4 前端生命周期（onShow / onHide / onDispose）
 
@@ -962,7 +887,160 @@ onDispose(() => {
   监听器（该文件此前是 `addEventListener` 35 : `removeEventListener` 0）。
   回归用例见 `tests/js/image_viewer_lifecycle.mjs` 与 `tests/js/plugin_lifecycle.mjs`。
 
-### 4.5 插件专属文件
+### 4.5 搜索框
+
+搜索框由壳持有，插件不另建搜索输入：
+
+- 壳的输入经 `omnibox:query` 下发（250ms 防抖）；
+- 内容页在 `omnibox:chrome` 里用 `search.value` 回填输入框、用 `search.clear`（**递增序号**）
+  清空。切分类、进二级页、打开整页设置等场景要清空，否则上次搜的词留在框里与列表不一致；
+- `search.enabled` 控制是否显示搜索框；group-mesh 的 manifest 没有 `search` 声明，因此壳不渲染
+  搜索框，内容页也不要自己补一个。
+
+### 4.6 chrome 消息
+
+壳与内容 iframe 之间只通过同源 `postMessage` 通信：
+
+| 方向 | 消息 | 用途 |
+| --- | --- | --- |
+| 壳 → 内容 | `omnibox:view` | 切换视图；复合 id（如 `downloads:all`）由内容自行解释 |
+| 壳 → 内容 | `omnibox:action` | 顶栏动作，可带 `payload`；声明 `frontend.chrome` 且设置由壳接管的插件不会收到 `settings` |
+| 壳 → 内容 | `omnibox:action`（`settings-saved`） | 壳内设置弹窗保存成功 |
+| 壳 → 内容 | `omnibox:query` | 搜索输入 |
+| 内容 → 壳 | `omnibox:ready` | 握手，壳补发当前视图 |
+| 内容 → 壳 | `omnibox:chrome` | `title` / `subtitle` / `view` / `actions` / `nav` / `search` / `status` / `statusItems` 补丁 |
+| 内容 → 壳 | `omnibox:open-settings` | 内容页自己的设置入口请求壳开弹窗（可选 `title`） |
+
+`omnibox:chrome` 的 `search` 支持 `value`（回填）与 `clear`（递增序号清空）；`status.kind =
+eq-text` 且内容页上报 `state: "ok"` 时，壳把状态点换成四柱迷你 EQ（media-player 使用）。消息的
+完整字段与壳端合并规则见 [插件页面架构](./plugin-page-architecture.md)。
+
+### 4.7 native 内容协议
+
+附属插件（`hidden: true`）的 `get_extensions()` 返回 `native: {url, title}` 时，壳用
+`shell/frontend/src/components/NativePanel.vue` 打开面板：`url` 指向一个**不产生可见界面**的
+逻辑页（通常叫 `frontend/native.html`），可见内容由壳的
+`shell/frontend/src/components/SchemaRenderer.vue` 按 blocks 渲染。
+
+| 方向 | 消息 | 用途 |
+| --- | --- | --- |
+| 逻辑页 → 壳 | `omnibox:native-ready` | 就绪 |
+| 壳 → 逻辑页 | `omnibox:native-init` | 开始取数并提交 blocks |
+| 逻辑页 → 壳 | `omnibox:schema` | `{blocks}` |
+| 壳 → 逻辑页 | `omnibox:native-action` | `{action, payload}`，payload 发送前做 JSON 克隆 |
+| 逻辑页 → 壳 | `omnibox:native-error` | 内容加载失败 |
+
+blocks 的组件词汇（`shell/frontend/src/core/plugin-content.ts`）：`text`、`heading`、`kv`、
+`table`、`list`、`cards`、`checkbox-list`、`form`、`actions`、`progress`、`empty`、`image-grid`。
+规则：
+
+- native 内容不接收任意 HTML；交互只回传动作标识，壳不解释业务；
+- 逻辑页统一装载 `/shell/native-client.js`，用 `NativeExtension.create({ onInit, onAction, onDispose })`
+  处理 ready/init/action/schema/error 与 pagehide；插件只提供业务取数与 `buildBlocks()`，
+  不再各自手写消息骨架；
+- 页面级动作用 `render(blocks, toolbar)` 上报，壳在宿主顶栏渲染；内容区不再放第二排工具栏；
+- `cards` / `image-grid` 的 `image` 使用插件给的**缩略图 URL**（如 `Bridge.thumbUrl(...)`），
+  壳不另取原图；`NativePanel` 的缩略图预览只放大该 URL；
+- 面板打开期间宿主内容 iframe 用 `v-show` 隐藏但实例保留，`NativePanel` 只占宿主内容槽，
+  侧栏/顶栏与扩展入口继续可见；关闭后原位恢复；
+- 需要富文本、画布或视频的内容继续用 content iframe；附属插件不读宿主窗口上的对象，宿主能力
+  走 `Bridge`（`HostChannel` 仅旧壳的 embed 回落页使用）；
+- 旧壳不认 `native` 时回落 `embedUrl` 的整页内嵌；内嵌 URL 记得带 `?embed=1`。
+
+### 4.8 全局 Bridge 对象
+
+`Bridge` 对象挂载在 `window` 上，提供以下方法：
+
+| 方法                                           | 说明                                                                    |
+| ---------------------------------------------- | ----------------------------------------------------------------------- |
+| `Bridge.call(method, ...args)`               | 调用后端 API（自动添加插件名前缀）                                      |
+| `Bridge.callSystem(method, ...args)`         | 调用 Shell 系统 API（不加插件前缀，如`system_get_plugin_extensions`） |
+| `Bridge.callPlugin(plugin, method, ...args)` | 跨插件调用其他插件后端 API                                              |
+| `Bridge.thumbUrl(relPath)`                   | 获取缩略图 URL（自动附加`?plugin=插件名`，路径逐段百分号编码，`%`/`#`/空格等字符安全） |
+| `Bridge.originalUrl(relPath)`                | 获取原图 URL（自动附加`?plugin=插件名`）                              |
+| `Bridge.setPrefix(prefix)`                   | 设置 API 前缀（Shell 在加载插件时自动调用）                             |
+
+**示例**：
+
+```javascript
+// 调用后端 list_images 方法
+const data = await Bridge.call('list_images', '', 1, 40, 'mtime', 'desc');
+
+// 获取缩略图 URL
+const thumbSrc = Bridge.thumbUrl('subdir/photo.jpg');
+// 返回：/thumbs/subdir/photo.jpg?plugin=image-viewer
+
+// 获取原图 URL
+const originalSrc = Bridge.originalUrl('subdir/photo.jpg');
+// 返回：/files/subdir/photo.jpg?plugin=image-viewer
+```
+
+### 4.9 全局 UI 组件
+
+Shell 还注入了以下可复用的 UI 组件函数（无需引入，直接使用）：
+
+| 函数                                                                | 说明                                      |
+| ------------------------------------------------------------------- | ----------------------------------------- |
+| `createTree(container, options)`                                  | 创建目录树组件                            |
+| `createLightbox(options)`                                         | 创建灯箱组件                              |
+| `createPagination(container, options)`                            | 创建分页组件                              |
+| `createContextMenu(options)`                                      | 创建右键菜单组件                          |
+| `createSettingsForm(container, schema, values)`                   | 按 schema 渲染设置表单                    |
+| `Freshness.mount({plugin, container, unit, onChange})`             | 挂载统一的「同步 / 校验」控件（接入见「统一刷新（同步 / 校验）」）；`autoSync(scope)` / `verify()` / `cancel()` |
+| `Freshness.assetUrl(path, version)`                               | 派生资源 URL + 版本号（绕开 `/thumbs` 的一天强缓存） |
+| `openSettingsModal(options)`                                      | 在**内容页**打开设置弹窗。image-viewer 用它渲染按目录作用域的设置；其余声明 `frontend.chrome` 的插件由壳的 `PluginSettingsModal` 渲染，不需要调用它 |
+| `HostChannel.requestSettings(title)` / `HostChannel.request(action, data)` | 内嵌页请**上层**用它的文档渲染 UI（设置/确认），详见 `docs/plugin-ui-guide.md`；仅旧壳的 embed 回落页使用 |
+| `HostChannel.mountToolbar(buttons, {container, selector})` | 内嵌页把按钮挂到上层的工具栏/头部；宿主不表态时按钮留在本页。仅旧壳的 embed 回落页使用 |
+| `confirmDialog(message, options)`                                 | 替代原生 confirm                          |
+| `Toast.success(msg)` / `Toast.error(msg)` / `Toast.info(msg)` | 显示 Toast 通知                           |
+| `Utils.formatFileSize(bytes)`                                     | 格式化文件大小                            |
+| `Utils.debounce(func, wait)`                                      | 防抖函数                                  |
+
+> 扩展入口没有共享层 API：声明 `frontend.chrome` 的宿主由壳的 `PluginExtensions.vue` 从
+> `system_get_plugin_extensions` 拉取并渲染，插件只需用 `get_extensions()` 声明条目。
+> `renderExtensions` 已从 `base.js` 删除；旧页面/旧壳走条目的 `embedUrl` 回落。
+> `HostChannel.*` 只服务旧壳的 embed 回落页，新壳内容页/native 逻辑页不经过它。
+
+**示例**：
+
+```javascript
+// 仅内容页自绘设置时使用（当前只有 image-viewer）。声明 frontend.chrome 的插件由壳的
+// PluginSettingsModal 打开设置，保存后壳发 omnibox:action: settings-saved，不需要调用它。
+// 省略 onSave 时壳的默认实现走 `Bridge.call('save_settings', values)`。
+// **保存后必须自己收尾**：壳只弹一条 Toast。收尾二选一：整页重载，或就地重渲染。
+// 不收尾时设置已经落盘，但界面上仍是旧值。
+openSettingsModal({
+  title: '图片相册设置',
+  successMessage: '设置已保存',
+}).then((saved) => { if (saved) location.reload(); });
+
+// 确认对话框
+const ok = await confirmDialog('删除后不可恢复，确定？', { danger: true });
+
+// 目录树
+createTree(document.getElementById('folder-tree'), {
+  data: [{ name: '根目录', path: '' }],
+  onLoadChildren: async (path) => await Bridge.call('list_dir', path),
+  onClick: (item) => console.log('选中', item.path)
+});
+
+// 灯箱
+const lightbox = createLightbox({
+  getImageUrl: (item) => item.url
+});
+lightbox.show(images, 0);
+
+// 统一「同步 / 校验」：空容器 + 一处挂载，轮询/进度/取消都由组件负责（见「统一刷新（同步 / 校验）」）
+const ctl = Freshness.mount({
+  plugin: 'my-plugin',                    // 必须与 manifest.name 一致
+  container: document.getElementById('my-freshness'),
+  unit: '首',
+  onChange: () => reloadMyView(),
+});
+ctl.autoSync('');                         // 进视图 / 切目录时调用
+```
+
+### 4.10 插件专属文件
 
 插件只需提供自己的 HTML、CSS 和 JS 文件，并在 HTML 中引用它们：
 
@@ -1013,6 +1091,13 @@ Shell 通过 `<html>` 元素上的 `data-theme` 属性控制主题（`"light"` /
 
 - 所有 CSS 变量均可被用户覆盖，插件设计时不应依赖特定颜色值。
 - 若需要在 JS 中读取当前有效颜色，使用 `getComputedStyle(document.documentElement).getPropertyValue('--accent')`。
+
+**页面骨架跟随壳 token**：声明了 `frontend.chrome` 的插件，品牌、导航、顶栏、搜索、状态与
+分隔条由壳渲染，尺寸和颜色全部取壳的 CSS 变量（`--accent`、`--bg-surface`、`--border`、
+`--radius*`、`--sub-sidebar-width`、`--transition-fast` 等）。品牌渐变的第二色取 manifest 的
+`frontend.chrome.brand.accent`，由壳写到 `.plugin-page` 的 `--plugin-brand-2`；内容页不要覆盖
+这些变量，也不要给 chrome 类写样式。用户调整主题、强调色、圆角、动效或侧栏宽度时，骨架与内容
+一起生效。
 
 ### 5.3 全屏联动
 
@@ -1259,8 +1344,16 @@ def _get_thumb(self, rel_path: str) -> Path:
 
 ### 8.2 声明设置项
 
-在插件类中通过 `settings_schema` 声明设置项，框架自动完成持久化，壳的
-`openSettingsModal()`（`shell/base.js`，插件自己在设置按钮里调用）按 schema 渲染表单：
+在插件类中通过 `settings_schema` 声明设置项，框架自动完成持久化，壳按 schema 渲染表单：
+声明 `frontend.chrome` 的插件由壳的 `PluginSettingsModal` 在顶栏「设置」里打开，保存后内容页
+收到 `omnibox:action: settings-saved`；内容页不再自己渲染设置弹窗。image-viewer 是例外：它的设置
+按目录作用域读写，仍在内容页调用 `openSettingsModal()`。`image-cleaner` / `pixiv-sync` 的
+native 设置同样由 `PluginSettingsModal` 接管（入口是 native 顶栏的「设置」动作），保存后向
+隐藏逻辑页发 `settings-saved`。
+
+字段的唯一前端类型是 `shell/frontend/src/core/plugin-content.ts` 的 `SchemaField`：壳的
+`PluginSettingsModal`、壳的 `SchemaRenderer`（native `form`）与内容页 `base.js` 的
+`createSettingsForm` 都消费同一份 JSON。三者对个别字段的处理并不完全一致，见本节末尾。
 
 ```python
 class MyPlugin(PluginBase):
@@ -1285,17 +1378,40 @@ class MyPlugin(PluginBase):
 | `key`                      | 必填 | 设置键名                                                                                  |
 | `label`                    | 必填 | 设置面板显示名                                                                            |
 | `type`                     | 必填 | `text` / `number` / `range` / `select` / `checkbox` / `textarea` / `directory` / `info` |
-| `value`                    | 可选 | 仅 `info`：只读信息行的值（后端也可以改从 `get_settings()` 给，见下）                     |
+| `value`                    | 可选 | 字段初始值：`info` 的只读值、native `form` 初值；壳弹窗在 `get_settings` 未给该键时回退，内容页旧表单只对 `info` 使用 |
 | `default`                  | 可选 | 默认值（未保存过时使用）                                                                  |
-| `help`                     | 可选 | 悬浮`?` 提示文本（鼠标悬停显示）                                                        |
-| `min` / `max` / `step` | 可选 | number/range 类型约束                                                                     |
+| `help` / `hint`            | 可选 | 字段说明；`hint` 是 native 侧别名，渲染时与 `help` 取一                                    |
+| `min` / `max`              | 可选 | number/range 的边界：同时设控件属性，并在 `save_settings` 写盘前校验                      |
+| `step`                     | 可选 | 只设前端控件步长；后端不校验                                                              |
 | `options`                  | 可选 | select 类型的选项列表                                                                     |
-| `multi`                    | 可选 | 仅 `directory`：多值字段，列表可增删多行，第 2 行起标「额外」                          |
-| `placeholder` / `emptyText` | 可选 | 仅 `directory`：输入框占位符 / 列表为空时的提示文字                                      |
-| `local_only`               | 可选 | 仅 `directory`：`True` 时**不显示「网络位置」入口**（该目录只接受本机路径，见下）   |
-| `secret`                   | 可选 | `True` 表示**凭据类**设置项：Shell 拒绝把该插件的设置文件当媒体资源返回（见下）        |
-| `admin_only`               | 可选 | `True` 表示**改动该键需要管理员主体**（改媒体根、改对外端点一类，见下）              |
-| `hidden`                   | 可选 | `True` 表示**不在设置面板里显示**，但键仍可写（入口在插件自己的设置界面，见下）        |
+| `multi`                    | 可选 | 仅 `directory`：多值字段，列表可增删多行                                                  |
+| `placeholder` / `emptyText` | 可选 | 目录字段的占位符 / 空列表提示（`SchemaRenderer` 不读 `emptyText`）                       |
+| `local_only`               | 可选 | 仅 `directory`：三个入口的 `FolderPicker` 都不显示「网络位置」，只接受本机目录 |
+| `secret`                   | 可选 | `True` 表示**凭据类**设置项：对外掩码、设置文件受保护；空串清除（消费方差异见下）        |
+| `admin_only`               | 可选 | `True` 表示**改动该键需要管理员主体**；只由后端判定，前端不置灰/不隐藏                   |
+| `hidden`                   | 可选 | `True` 表示面板不渲染但键仍可写；壳弹窗与 `base.js` 跳过，`SchemaRenderer` 不判断         |
+| `required`                 | 可选 | 只给标签加必填样式，前端与后端都不做提交校验                                              |
+| `condition` / `save_target` | 可选 | 类型中的预留字段，当前没有消费方                                                          |
+
+#### 三个渲染路径的差异与未覆盖项
+
+同一个 `SchemaField` 被三处消费，不能假设字段在所有入口表现一致：
+
+- `PluginSettingsModal`：支持 `min`/`max`/`step`、`secret`（password、打开置空、勾选
+  「清除已保存的凭据」提交空串）、`hidden`（读取时过滤）、`directory`（壳内 `FolderPicker`）、
+  `multi`/`emptyText`/`local_only`、`required`（仅标签样式）、`info`；显示后端逐字段 `errors`
+  到对应输入框，`admin_only` 不置灰、不隐藏；不消费 `condition`、`save_target`。
+- `SchemaRenderer`（native `form`）：支持 `min`/`max`/`step`、`secret`（password；没有专用清除
+  控件）、`directory`（自绘路径行 + `FolderPicker` 浏览/网络位置，`local_only` 隐藏「网络位置」）、
+  `multi`、`info`；不判断 `hidden`、`required`、`emptyText`、`admin_only`、`condition`、`save_target`。
+  `form` block 仍可用，但 `image-cleaner` / `pixiv-sync` 已不通过它渲染插件设置。
+- `base.js` 的 `createSettingsForm`：支持 `min`/`max`/`step`、`directory`（`FolderPicker.createList`）/
+  `multi`/`local_only`/`emptyText`、`hidden`、`required`（仅标签样式）、`info`；**没有 secret
+  专用渲染**，凭据以掩码文本回填，原样提交由后端按"不改动"处理，清空输入框提交空串则由后端清除。
+
+`condition` 与 `save_target` 只存在于类型，当前没有任何消费方；`required` 没有提交校验；
+`step` 只在前端生效；`admin_only` 只由后端判定。`image-cleaner` / `pixiv-sync` 的 native 设置
+已由 `PluginSettingsModal` 接管，native `form` block 只用于非设置输入（pixiv-sync 的 OAuth 授权码）。
 
 #### 键要能存但不想显示：`"hidden": True`
 
@@ -1404,6 +1520,12 @@ def delete_files(self, rel_paths):
 | 空字符串 | 清除该凭据 |
 | 其它任意值 | 作为新凭据写入 |
 
+三个入口都能完成清除：`PluginSettingsModal` 打开时把 secret 输入框置空，并提供「清除已保存的
+凭据」勾选框 —— 勾选后提交空字符串；未勾选且输入框仍为空时省略该键（按上表"不改动"），填写
+新值则覆盖。内容页 `base.js` 的旧表单与 native `form` 没有专用清除控件，清空输入框提交空串即
+按上表清除。`admin_only` 也只在后端判定，三个入口都不置灰、不隐藏；`PluginSettingsModal` 会把
+后端返回的逐字段 `errors` 显示到对应输入框，同时显示汇总 `error`。
+
 未配置的凭据在 `get_settings()` 里保持空字符串（不打掩码），前端据此显示"未配置"
 即可；需要"是否已配置"的只读信号时，另建一个非 schema 的返回字段（如
 `token_configured`），不要把凭据本身放出去。
@@ -1432,7 +1554,8 @@ def get_protected_paths(self):
   也变成 403。只申报凭据文件。
 
 `type: "directory"` 的字段在插件设置弹窗里渲染成**与图片相册完全相同的目录列表** ——
-不是"样子像"，而是同一个实现（`window.FolderPicker`，见 §7.2；`base.js` 直接调它）：
+不是"样子像"，而是同一个实现（`window.FolderPicker`，见 §7.2；壳弹窗、native form 与内容页
+`base.js` 都直接调它）：
 
 - 每行是「主要 / 额外」标签 + 路径 + 方形 `icon:x` 删除按钮；第一行是**位置**属性而不是固定标记，
   所以每行都能删 —— 删掉第一行后下一行自动顶上成为主要目录；
@@ -1441,6 +1564,12 @@ def get_protected_paths(self):
   `media_catalog.list_subdirectories`，见 §7.2），可看盘符、逐级下钻、
   看到每个目录「含图片 / 视频 / 音乐」；
 - 重复目录（含只差尾斜杠的写法）与空路径会被拒绝并提示。
+
+> 声明 `frontend.chrome` 的插件与两个附属插件的 native 设置由壳的 `PluginSettingsModal` 渲染
+> 同一字段，目录列表也用同一个 `FolderPicker` 组件（`SettingsDirectoryField` 挂载
+> `createList`）：路径行、「浏览…」与「网络位置」的表现与内容页一致，`local_only: true` 时
+> 不显示「网络位置」。插件目录字段不再使用 `system_pick_path('directory')` 系统对话框。
+> 各处写入的值格式相同（单值一行、多值换行分隔）。
 
 **插件侧不需要写任何代码**，值仍是普通字符串：单值字段存一行路径（`str`），
 `multi: true` 的字段存换行分隔的多行（与改造前的 `text` / `textarea` 格式完全一致），保存走原来的 `save_settings()` 链路。
@@ -1474,8 +1603,9 @@ def get_settings(self):
 需要"能改的目录"就用 `directory`，两者别混。
 
 > **覆写了 `get_settings()` 就必须把它登记进 `register_api()`**（连同 `save_settings`）：
-> 壳的设置弹窗走 `Bridge.call('get_settings')` / `Bridge.call('save_settings')`，即
-> `POST /api/<插件>__<方法>`，而 `PluginManager` 只会额外登记 `<插件>__get_settings_schema`。
+> 壳的设置弹窗（顶栏的 `PluginSettingsModal` 与内容页的 `openSettingsModal`）最终都请求
+> `<插件>__get_settings` / `<插件>__save_settings`，而 `PluginManager` 只会额外登记
+> `<插件>__get_settings_schema`。
 > 漏登记的表现**完全是静默的**：弹窗打得开、每个字段显示 schema 默认值（`info` 行空白）、
 > 点保存提示"保存失败" —— image-cleaner 与 group-mesh 都这样漏过。可写 schema 的登记
 > 形态见 §3.2 的 `register_api()` 示例；`tools/check_plugins.py` 会拦住"前端会开设置弹窗
@@ -1574,6 +1704,15 @@ image-viewer 需要在不同文件夹应用不同设置（如行高、排序）�
    `selenium` 因此只声明在 `requirements-e2e.txt`（CI 装的是 `requirements-dev.txt`），
    未安装时用例自动 skip，不影响 `unittest discover` 结果。
 
+10. **插件页面骨架审计**：`venv/Scripts/python.exe tools/plugin_ui_audit.py`。它起真实壳
+    （或复用 `--base-url` 指向的实例）逐插件检查：壳是否渲染了
+    `.plugin-page` / `.plugin-chrome-sidebar` / `.plugin-title`，内容 iframe 是否残留 chrome
+    标记，壳导航与内容面板、标题是否同步，侧栏分隔条 hover 是否出现指示线，声明了
+    `frontend.chrome.freshness` 的插件是否挂上 `.obx-fresh`，以及控制台有没有 `SEVERE`。
+    参数：`--plugin <name>` 只查一个插件，`--json <path>` 输出机器可读结果。退出码：`0` 全部
+    PASS（含 SKIP）、`1` 有 FAIL、`2` 环境或参数错误（缺 `shell/frontend/dist`、Chrome、
+    selenium，或连不上壳）。设置弹窗保存、搜索回填与迷你 EQ 暂不在断言范围内。
+
 ---
 
 ## 10. 常见问题
@@ -1593,7 +1732,7 @@ image-viewer 需要在不同文件夹应用不同设置（如行高、排序）�
 ## 11. 最佳实践
 
 - **插件命名**：使用 `kebab-case`，避免与 Python 模块名冲突。
-- **布局复用**：优先使用 Shell 提供的通用布局类（`.view-body`、`.view-toolbar`、`.view-sub-sidebar` 等），**不要在插件 CSS 中重复定义**，以便统一维护和未来主题升级。
+- **页面骨架归壳**：声明 `frontend.chrome`，让壳渲染品牌、导航、顶栏、搜索、状态与分隔条；内容页只写内容，不出现 `.view-sub-sidebar` / `.view-toolbar` / `.sub-sidebar-brand` / `.obx-nav-item`，也不复刻这些类的样式。内容页的 `.view-body` / `.view-content` / `.obx-scroll` 直接使用壳注入的定义。
 - **颜色适配**：所有颜色使用 CSS 变量（如 `var(--bg-surface)`），避免硬编码颜色值。如需在 JS 中获取当前颜色，使用 `getComputedStyle(document.documentElement).getPropertyValue('--accent')`。
 - **主题无感知**：插件无需编写主题切换逻辑，Shell 已通过 MutationObserver 自动同步 `data-theme` 和 `data-custom-colors` 到所有 iframe。
 - **前端资源**：尽量轻量，避免引入大型框架（除非必要）。

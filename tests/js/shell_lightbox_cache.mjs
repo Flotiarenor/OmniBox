@@ -130,5 +130,37 @@ lightbox.setDecodedLimit('abc');
 lightbox.navigate(3);
 check('非数字按 0 处理', pool() === 0, `pool=${pool()}`);
 
+// ---------- 场景 5：信息栏只走 textContent（尺寸字段来自插件 / 后端数据） ----------
+const INFO_PAYLOAD = '\'"><img src=x onerror=alert(1)>&';
+console.log('场景 5：信息栏不接受 HTML（size/width/height 不是本组件的输入）');
+const infoLightbox = createLightbox({ getImageUrl: (item) => item.url });
+infoEl.innerHTML = '';
+infoEl.textContent = '';
+infoEl.children = [];
+infoLightbox.show([{ url: 'a/p0.jpg', size: 1024, width: INFO_PAYLOAD, height: 1 }], 0);
+check('分辨率/尺寸不拼进 innerHTML', !String(infoEl.innerHTML).includes('<img'),
+    `innerHTML=${infoEl.innerHTML}`);
+check('分辨率载荷作为文本原样显示',
+    (infoEl.children || []).some((row) => String(row.textContent).includes(INFO_PAYLOAD)),
+    `rows=${JSON.stringify((infoEl.children || []).map((row) => row.textContent))}`);
+
+// ---------- 场景 6：isOpen() / onClose（插件在壳返回/导航时先关灯箱） ----------
+console.log('场景 6：isOpen / onClose 生命周期');
+let closeCalls = 0;
+const lifecycle = createLightbox({
+    getImageUrl: (item) => item.url,
+    onClose: () => { closeCalls += 1; },
+});
+const isOpenOf = (box) => (typeof box.isOpen === 'function' ? box.isOpen() : false);
+check('isOpen() 是公开 API', typeof lifecycle.isOpen === 'function');
+check('初始未打开', isOpenOf(lifecycle) === false);
+lifecycle.show(items, 0);
+check('show 之后 isOpen() 为 true', isOpenOf(lifecycle) === true, `isOpen=${isOpenOf(lifecycle)}`);
+lifecycle.hide();
+check('hide 之后 isOpen() 为 false', isOpenOf(lifecycle) === false);
+check('hide 触发一次 onClose', closeCalls === 1, `closeCalls=${closeCalls}`);
+lifecycle.hide();
+check('未打开时重复 hide 不再触发 onClose', closeCalls === 1, `closeCalls=${closeCalls}`);
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} 项失败`);
 process.exit(failures === 0 ? 0 : 1);

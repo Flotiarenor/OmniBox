@@ -181,6 +181,25 @@ await check('setPaths 覆盖式替换并重新渲染', () => {
     assert.ok(!listBox.innerHTML.includes('/old'), '旧路径应被移除');
 });
 
+await check('single 模式只保留一个目录，且每次变化都通知调用方', () => {
+    // 单值 directory 设置（如 group-mesh 下载目录 / pixiv 下载目录）用这个模式：
+    // 多行在保存时只会取第一行，界面就不能允许加出第二行。
+    const changes = [];
+    const list = FolderPicker.createList({
+        paths: ['/a', '/b'],
+        single: true,
+        onChange: (paths) => changes.push(paths.slice()),
+    });
+    assert.deepEqual(list.getPaths(), ['/a'], '初始值里超出的行应被裁掉');
+    assert.equal(list.addPath('/c'), true);
+    assert.deepEqual(list.getPaths(), ['/c'], 'single 模式用新路径替换旧路径');
+    assert.equal(changes.length, 1, 'addPath 应触发 onChange');
+    assert.deepEqual(changes[0], ['/c']);
+    list.setPaths(['/d', '/e']);
+    assert.deepEqual(list.getPaths(), ['/d']);
+    assert.equal(changes.length, 2, 'setPaths 也应触发 onChange');
+});
+
 await check('导出含网络位置相关的成员（提供方发现 + 回填协议）', () => {
     for (const name of ['NETWORK_MESSAGE_TYPE', 'loadNetworkProviders', 'readProviderMessage']) {
         assert.ok(name in FolderPicker, `缺少导出 ${name}`);
@@ -283,6 +302,242 @@ await check('提供方菜单的一行转义 icon/label（两者都来自插件�
     const noIcons = FolderPicker.providerRow({}, 0);
     assert.ok(!noIcons.includes('undefined') && noIcons.includes('网络位置'),
         `图标集缺失时回退异常：${noIcons}`);
+});
+
+// ---------- 目录浏览弹窗（openDirBrowser）：真实渲染路径 ----------
+//
+// 前几组用例只跑 createList；目录浏览弹窗的失败分支（后端抛错 / data.error）是
+// "点『选择当前目录』拿到旧路径"这类缺陷的现场，必须把弹窗真正跑起来。下面的 DOM
+// 替身按选择器缓存节点，并把 list 的 innerHTML 解析成可点击条目（真实浏览器行为的
+// 最小复刻：属性实体在解析时解码）。
+
+class HtmlElementStub {}
+
+function decodeEntities(value) {
+    return String(value)
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&');
+}
+
+function makeRichElement(tag = 'div') {
+    const el = new HtmlElementStub();
+    const handlers = {};
+    const attrs = {};
+    const cached = new Map();
+    let html = '';
+    let entries = [];
+    Object.assign(el, {
+        tagName: String(tag).toUpperCase(),
+        className: '',
+        textContent: '',
+        value: '',
+        disabled: false,
+        tabIndex: -1,
+        dataset: {},
+        children: [],
+        parentNode: null,
+        isConnected: true,
+        style: { setProperty() { }, removeProperty() { } },
+        addEventListener(type, fn) { (handlers[type] = handlers[type] || []).push(fn); },
+        removeEventListener(type, fn) {
+            handlers[type] = (handlers[type] || []).filter((item) => item !== fn);
+        },
+        click() {
+            if (el.disabled) return;
+            (handlers.click || []).slice().forEach((fn) => fn({ target: el }));
+        },
+        setAttribute(key, value) { attrs[key] = String(value); },
+        getAttribute(key) { return key in attrs ? attrs[key] : null; },
+        removeAttribute(key) { delete attrs[key]; },
+        focus() { el.__focused = true; },
+        appendChild(child) {
+            child.parentNode = el;
+            el.children.push(child);
+            return child;
+        },
+        remove() {
+            if (el.parentNode) el.parentNode.children = el.parentNode.children.filter((c) => c !== el);
+            el.parentNode = null;
+            el.isConnected = false;
+        },
+        querySelector(selector) {
+            if (!cached.has(selector)) {
+                const child = makeRichElement('div');
+                child.parentNode = el;
+                el.children.push(child);
+                cached.set(selector, child);
+            }
+            return cached.get(selector);
+        },
+        querySelectorAll(selector) {
+            if (selector === '.iv-dirbrowser-item[data-path]') return entries.slice();
+            return [];
+        },
+    });
+    Object.defineProperty(el, 'innerHTML', {
+        get: () => html,
+        set: (value) => {
+            html = String(value);
+            entries = [];
+            const re = /data-path="([^"]*)"/g;
+            let match;
+            while ((match = re.exec(html)) !== null) {
+                const item = makeRichElement('div');
+                item.className = 'iv-dirbrowser-item';
+                item.dataset.path = decodeEntities(match[1]);
+                item.parentNode = el;
+                el.children.push(item);
+                entries.push(item);
+            }
+        },
+    });
+    return el;
+}
+
+function makeRichDocument() {
+    const body = makeRichElement('body');
+    return {
+        body,
+        activeElement: null,
+        readyState: 'complete',
+        createElement: (tag) => makeRichElement(tag),
+        addEventListener() { },
+        removeEventListener() { },
+        contains: (node) => node === body || (body.children || []).includes(node),
+        documentElement: makeRichElement('html'),
+        querySelector: () => null,
+        querySelectorAll: () => [],
+    };
+}
+
+/** 用真实 folder-picker.js 起一个能跑 openDirBrowser 的沙箱；routes 按路径给后端返回。 */
+function makeBrowserEnv(routes) {
+    const document = makeRichDocument();
+    const calls = [];
+    const sandbox = {
+        console,
+        document,
+        HTMLElement: HtmlElementStub,
+        Bridge: {
+            callSystem: async (method, path) => {
+                calls.push([method, path]);
+                const route = routes[path];
+                if (typeof route === 'function') return route();
+                if (route instanceof Error) throw route;
+                if (route === undefined) throw new Error('no fixture: ' + path);
+                return route;
+            },
+        },
+        Toast: { warning() { }, info() { }, error() { }, success() { } },
+        addEventListener() { },
+        removeEventListener() { },
+    };
+    sandbox.window = sandbox;
+    sandbox.globalThis = sandbox;
+    sandbox.setTimeout = setTimeout;
+    sandbox.clearTimeout = clearTimeout;
+    vm.createContext(sandbox);
+    loadKernelUtils(sandbox);
+    vm.runInContext(readFileSync(PICKER, 'utf8'), sandbox, { filename: 'folder-picker.js' });
+    return { picker: sandbox.window.FolderPicker, document, calls };
+}
+
+const tick = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
+const overlayOf = (env) => env.document.body.children.find(
+    (child) => String(child.className).includes('iv-picker-modal'));
+
+const ROUTES = {
+    // 盘符层：后端把「我的电脑」的 entry 也按目录返回
+    '': { path: '', parent: null, entries: [{ path: 'D:\\图库', name: '图库', kinds: [] }] },
+    'D:\\图库': {
+        path: 'D:\\图库', parent: 'D:\\',
+        entries: [{ path: 'D:\\图库\\a', name: 'a', kinds: [] }],
+    },
+    'D:\\图库\\a': new Error('目录已删除'),
+};
+
+await check('目录浏览器：禁用态按钮置灰、可用态不置灰（我的电脑按钮）', async () => {
+    const env = makeBrowserEnv(ROUTES);
+    const opening = env.picker.openDirBrowser('');
+    opening.then(() => { });
+    await tick();
+
+    const overlay = overlayOf(env);
+    assert.ok(overlay, 'openDirBrowser 没有把弹窗挂到 body');
+    const drivesBtn = overlay.querySelector('[data-act="drives"]');
+    assert.equal(drivesBtn.disabled, true, '盘符层里「我的电脑」就是当前层，应禁用');
+    assert.equal(drivesBtn.style.opacity, '0.45', '禁用态必须置灰');
+
+    // 点进一个真实目录：按钮恢复可用，且不能再留在"置灰"外观
+    const listEl = overlay.querySelector('[data-act="list"]');
+    listEl.querySelectorAll('.iv-dirbrowser-item[data-path]')[0].click();
+    await tick();
+    assert.equal(drivesBtn.disabled, false, '离开盘符层后按钮应可用');
+    assert.equal(drivesBtn.style.opacity, '1', '可用态不该显灰');
+
+    overlay.querySelector('[data-act="cancel"]').click();
+    await opening;
+});
+
+await check('目录导航失败后清空当前目录，不再允许「选择当前目录」返回旧路径', async () => {
+    const env = makeBrowserEnv(ROUTES);
+    const resolved = [];
+    const opening = env.picker.openDirBrowser('D:\\图库');
+    opening.then((value) => resolved.push(value));
+    await tick();
+
+    const overlay = overlayOf(env);
+    const selectBtn = overlay.querySelector('[data-act="select"]');
+    const listEl = overlay.querySelector('[data-act="list"]');
+    assert.equal(selectBtn.disabled, false, '前置：成功进入目录后可以选它');
+
+    // 点一个加载会抛错的子目录
+    listEl.querySelectorAll('.iv-dirbrowser-item[data-path]')[0].click();
+    await tick();
+    assert.ok(listEl.innerHTML.includes('目录读取失败'), `失败文案缺失：${listEl.innerHTML}`);
+    assert.equal(selectBtn.disabled, true, '导航失败后不能继续选目录');
+
+    // 点「选择当前目录」不得拿着上一次成功的路径结算
+    selectBtn.click();
+    await tick();
+    assert.deepEqual(resolved, [], '导航失败后点选择不应返回任何路径（更不能是旧路径）');
+
+    overlay.querySelector('[data-act="cancel"]').click();
+    await opening;
+    assert.deepEqual(resolved, [null], '取消应结算为 null');
+});
+
+await check('后端以 data.error 报错时同样清空当前目录并禁用选择', async () => {
+    const routes = {
+        'D:\\图库': {
+            path: 'D:\\图库', parent: 'D:\\',
+            entries: [{ path: 'D:\\图库\\locked', name: 'locked', kinds: [] }],
+        },
+        // 错误响应里也可能回带 path（把失败的目录原样报回来）；无论带不带，
+        // 这次导航都失败了 —— 不能把 path 当成"当前目录"选中。
+        'D:\\图库\\locked': { error: PAYLOAD, path: 'D:\\图库\\locked', parent: 'D:\\图库' },
+    };
+    const env = makeBrowserEnv(routes);
+    const opening = env.picker.openDirBrowser('D:\\图库');
+    opening.then(() => { });
+    await tick();
+
+    const overlay = overlayOf(env);
+    const selectBtn = overlay.querySelector('[data-act="select"]');
+    const listEl = overlay.querySelector('[data-act="list"]');
+    assert.equal(selectBtn.disabled, false, '前置：可以选当前目录');
+
+    listEl.querySelectorAll('.iv-dirbrowser-item[data-path]')[0].click();
+    await tick();
+    assert.ok(!listEl.innerHTML.includes('<img src=x'), `错误文本未转义：${listEl.innerHTML}`);
+    assert.ok(listEl.innerHTML.includes('&lt;img'), '错误文本应实体化');
+    assert.equal(selectBtn.disabled, true, 'data.error 之后不能继续选目录');
+
+    overlay.querySelector('[data-act="cancel"]').click();
+    await opening;
 });
 
 console.log(`\nshell_folder_picker: ${passed} 项检查${process.exitCode ? '（有失败）' : '全部通过'}`);

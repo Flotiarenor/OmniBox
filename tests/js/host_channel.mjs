@@ -26,6 +26,9 @@ const BASE_JS = path.join(ROOT, 'shell', 'frontend', 'public', 'shell', 'base.js
 
 const ORIGIN = 'http://127.0.0.1:18080';
 const SENT = [];
+// 每条出站消息的 targetOrigin。HostChannel 里走的是 `target.postMessage(payload, …)`，
+// 第二参数决定"浏览器把内容交给谁"：`*` = 交给目标窗口**当时**加载的任何源。
+const SENT_TARGETS = [];
 
 function loadPluginRuntime() {
   const listeners = { message: [] };
@@ -33,14 +36,14 @@ function loadPluginRuntime() {
   const body = { children: [], appendChild(el) { this.children.push(el); } };
   const parentWin = {
     location: { origin: ORIGIN },
-    postMessage(payload) { SENT.push(payload); },
+    postMessage(payload, targetOrigin) { SENT.push(payload); SENT_TARGETS.push(targetOrigin); },
   };
   const win = {
     label: 'probe',
     location,
     addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
     removeEventListener() { },
-    postMessage(payload) { SENT.push(payload); },
+    postMessage(payload, targetOrigin) { SENT.push(payload); SENT_TARGETS.push(targetOrigin); },
   };
   win.parent = parentWin;
 
@@ -245,6 +248,14 @@ await check('host-run 点名了不存在的按钮时静默忽略（不抛错、�
   assert.doesNotThrow(() => rt.emit({ type: 'omnibox:host-run', id: 'nope', action: 'click' }));
 });
 
-console.log(failed ? `\n${failed} 例失败` : '\nHostChannel 子插件侧 16 例通过');
+await check('全部出站消息带明确 targetOrigin（不把内容交给任意源）', () => {
+  assert.ok(SENT.length > 0, '没有发出任何消息');
+  const wildcard = SENT_TARGETS.filter((target) => target !== ORIGIN);
+  assert.equal(wildcard.length, 0,
+    `有 ${wildcard.length}/${SENT_TARGETS.length} 条消息的 targetOrigin 不是本页 origin：`
+    + JSON.stringify(wildcard.slice(0, 3)));
+});
+
+console.log(failed ? `\n${failed} 例失败` : '\nHostChannel 子插件侧 17 例通过');
 process.exit(failed ? 1 : 0);
 

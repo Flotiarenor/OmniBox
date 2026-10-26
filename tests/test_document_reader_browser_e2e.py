@@ -2,14 +2,12 @@
 
 为什么需要它（都是实测踩到的，node 桩与 Python 单测都看不见）：
 
-  - **侧栏被书名顶宽**：`.nr-sidebar` 是 flex 项，`min-width: auto` 等于内容的
-    min-content 宽度，一行不换行的长书名就是整个书名的宽度；而且壳的 base.css 是在
-    插件样式**之后**注入的，同特异性的 `.view-sub-sidebar{width:240px}` 会把插件写的
-    252px 与窄屏媒体查询变成死代码。这两件事只有真实布局引擎能量出来。
+  - **长书名把封面卡撑破**：卡片标题若不截断，长书名会把网格撑出横向溢出。侧栏宽度
+    已归壳（`.plugin-chrome-sidebar`），由 `tools/plugin_ui_audit.py` 与分隔条用例覆盖。
   - **连续滚动模式滑不动**：EPUB / Markdown 的小章节三章都填不满一屏时，容器根本
     滚不动 → 浏览器不产生滚动事件 → 既不会加载下一章，也没有任何"补满视图"的动作，
     用户看到的就是"只显示这一章、再也滑不下去，只能点目录跳章"。
-  - **滚动换章后目录高亮/工具栏标题不动**：当前章只在"加载相邻章"时才同步，
+  - **滚动换章后目录高亮不动**：当前章只在"加载相邻章"时才同步，
     章内滚动与滑到下一章都不会更新界面。
 
 做法：起一个本地 HTTP 服务，把插件真实的 index.html + 真实的壳样式喂给 Chrome，
@@ -167,10 +165,6 @@ class _Handler(BaseHTTPRequestHandler):
             body = json.dumps({'success': True})
         elif method == 'get_settings':
             body = json.dumps(dict(self.state.get('settings') or {}))
-        elif method == 'get_settings_schema':
-            # 壳的 openSettingsModal 先拉 schema 再拉值；不桩它就拿到 {} → 弹窗只显示空态，
-            # 「设置弹窗里有字段」这条就永远测不出来
-            body = json.dumps(list(self.state.get('schema') or []))
         elif method == 'save_settings':
             # 阅读偏好存在后端设置里（跨设备持久化）：桩必须真的记住，
             # 否则"用户改过的选择要能记住"这条永远测不出来
@@ -235,13 +229,25 @@ class DocumentReaderBrowserTests(unittest.TestCase):
         WebDriverWait(self.driver, timeout, poll_frequency=0.05).until(
             lambda d: d.execute_script(f'return !!({condition});'))
 
+    def send_host_message(self, payload: dict):
+        """模拟壳向内容页下发一条消息。
+
+        迁移后左栏导航、顶栏动作与设置弹窗都在壳里，内容页只处理消息；本文件直接加载
+        内容页、没有壳，因此按 `_bindHost` 实际校验的字段手工构造 `MessageEvent`
+        （`origin` 取本页 origin、`source` 取本窗口），测的仍是真实处理逻辑。
+        """
+        self.driver.execute_script(
+            "window.dispatchEvent(new MessageEvent('message', {"
+            "  data: arguments[0], origin: location.origin, source: window}));", payload)
+
     # ===== 封面卡网格 =====
 
     def test_cover_grid_survives_long_titles(self):
-        """长书名不许把卡片撑出横向溢出，也不许把侧栏顶宽。
+        """长书名不许把卡片撑出横向溢出。
 
         重构前这条测的是"书架那行不把侧栏撑宽"（书架当时在侧栏里）；现在书架是主区的
-        封面网格，同样的隐患换了个位置：书名在卡片里必须省略号截断，不能把网格撑破。
+        封面网格、侧栏由壳持有，同样的隐患换了个位置：书名在卡片里必须省略号截断，
+        不能把网格撑破。侧栏宽度归壳，已由 `tools/plugin_ui_audit.py` 与分隔条用例覆盖。
         """
         geometry = {}
         for label, route in (('带壳样式', '/'), ('无壳样式', '/bare')):
@@ -251,12 +257,10 @@ class DocumentReaderBrowserTests(unittest.TestCase):
                                bodies={})
                 self.open_app(route)
                 geometry[(label, tag)] = self.driver.execute_script("""
-                    const sidebar = document.querySelector('.nr-sidebar');
                     const grid = document.querySelector('.nr-grid');
                     const card = document.querySelector('.nr-card');
                     const title = document.querySelector('.nr-card-title');
                     return {
-                        sidebar: sidebar.getBoundingClientRect().width,
                         gridClient: grid.clientWidth, gridScroll: grid.scrollWidth,
                         cardWidth: card.getBoundingClientRect().width,
                         titleClient: title.clientWidth, titleScroll: title.scrollWidth,
@@ -264,8 +268,6 @@ class DocumentReaderBrowserTests(unittest.TestCase):
                 """)
             long_geo, short_geo = geometry[(label, 'long')], geometry[(label, 'short')]
             details = json.dumps([long_geo, short_geo], ensure_ascii=False)
-            self.assertLess(abs(long_geo['sidebar'] - short_geo['sidebar']), 1,
-                            f'{label}：侧栏宽度不该随书名长度变化 {details}')
             self.assertLessEqual(long_geo['gridScroll'], long_geo['gridClient'] + 1,
                                  f'{label}：长书名把封面网格撑出了横向溢出 {details}')
             # 长书名的标题必须真的被截断（scroll > client），否则就是"把卡片撑宽了"
@@ -356,9 +358,9 @@ class DocumentReaderBrowserTests(unittest.TestCase):
         """滚动换章后，目录弹窗里高亮的必须是新章。
 
         重构前这里测的是"侧栏目录的高亮跟着滚动走"（目录当时常驻侧栏，靠
-        `_syncReaderChrome` 那套节流刷新同步）。现在目录改成弹窗、打开时按
-        `engine.currentChapterIndex` 现刷 —— 所以校验点跟着搬到"打开弹窗后看到什么"，
-        这也正是用户能看见的那部分。
+        `_syncReaderChrome` 那套节流刷新同步）。现在目录是壳左栏的一项：点击后壳发
+        `omnibox:view: toc`，内容页打开弹窗并按 `engine.currentChapterIndex` 现刷 ——
+        所以校验点跟着搬到"打开弹窗后看到什么"，这也正是用户能看见的那部分。
         """
         self._open_scroll_mode()
         self.driver.execute_script("""
@@ -368,25 +370,21 @@ class DocumentReaderBrowserTests(unittest.TestCase):
             el.dispatchEvent(new Event('scroll'));
         """)
         time.sleep(0.6)
+        self.send_host_message({'type': 'omnibox:view', 'view': 'toc'})
         opened = self.driver.execute_script("""
             const app = window.documentReader;
-            document.getElementById('nr-open-toc').click();
             const active = document.querySelector('#nr-toc-list .document-chapter-item.active');
             return {
                 index: app.engine.currentChapterIndex,
                 modalOpen: document.getElementById('nr-toc-modal').classList.contains('active'),
                 activeIndex: active ? parseInt(active.dataset.index, 10) : null,
-                title: document.getElementById('nr-view-title').textContent,
-                book: (app.currentDocument || {}).title,
             };
         """)
         details = json.dumps(opened, ensure_ascii=False)
         self.assertTrue(opened['modalOpen'], f'目录弹窗没打开 {details}')
         self.assertEqual(opened['activeIndex'], opened['index'],
                          f'目录弹窗里高亮的不是当前章 {details}')
-        # 新形态下工具栏放的是书名（章节名在目录弹窗与正文里，不再挤工具栏）
-        self.assertEqual(opened['title'], opened['book'],
-                         f'工具栏没显示当前书名 {details}')
+        # 工具栏标题（书名）由壳渲染，属于 `tools/plugin_ui_audit.py` 的 `nav.title` 范围。
 
     def test_click_does_not_turn_page_in_scroll_mode(self):
         """连续滚动模式下点内容区不该翻页（整章重建会让阅读位置跳走）。"""
@@ -498,7 +496,7 @@ class DocumentReaderBrowserTests(unittest.TestCase):
 
         self.driver.execute_script('window.documentReader.engine.goToChapter(6, 0.25);')
         time.sleep(1.0)
-        self.driver.execute_script("document.getElementById('nr-back-to-shelf').click();")
+        self.send_host_message({'type': 'omnibox:action', 'action': 'back'})
         self.wait('!window.documentReader._isReaderMode')
         time.sleep(0.6)
         self.assertEqual([call[1] for call in self._progress_calls(base)], [6],
@@ -543,76 +541,22 @@ class DocumentReaderBrowserTests(unittest.TestCase):
         self.driver.execute_script('window.documentReader.openDocument(arguments[0]);', book)
         self.wait('window.documentReader._isReaderMode')
 
-    def test_toolbar_settings_button_opens_shell_settings_modal(self):
-        """点工具栏「设置」必须真的弹出壳的设置弹窗（含字段与保存）。
+    def test_settings_saved_reloads_reading_preferences(self):
+        """壳内设置弹窗保存后，内容页收到 `settings-saved` 要当场应用新档位。
 
-        缺陷背景：app.js 顶层曾定义 `function openModal(id)` —— 自绘弹窗（目录 / 阅读设置）
-        的开关。插件脚本与壳注入的 /shell/base.js 共享同一个全局对象，于是这个声明把壳的
-        `openModal(options)`（返回 Promise 的设置弹窗工厂）整个替换掉；`openSettingsModal()`
-        内部紧接着读返回值上的 `.then`，抛 TypeError，点「设置」只有控制台一行报错。
+        迁移后「设置」按钮与弹窗都归壳（`PluginSettingsModal`），内容页只负责保存成功后的
+        重读。缺陷背景：壳的设置弹窗只把值写进后端，若内容页不重读，正文停在旧配色；
+        更糟的是页内下一次 save() 会把内存里的旧值整份写回后端，刚保存的新档位被静默
+        盖掉 —— 表现为"这一项设置永远不生效"。
 
-        断言走完整通路：按钮 → 壳的弹窗 → schema 字段带上后端已有的值 → 保存后关闭。
+        断言走完整通路：后端已存新档位 → 壳发 `settings-saved` → 正文的 class 与计算样式
+        都换过来，页内「阅读设置」弹窗的回填值同步。
         """
         self.set_state(
             documents=[_document('book.txt', '书', count=1, kind='txt')],
             chapters=[{'index': 0, 'title': '第1章', 'word_count': 3}],
             bodies={'book.txt': {'0': '正文'}},
-            settings={'reader_font_size': 18},
-            schema=[{'key': 'reader_font_size', 'label': '正文字号(px)', 'type': 'number',
-                     'default': 16}])
-        self.open_app()
-        self.driver.execute_script("document.getElementById('btn-settings').click();")
-        self.wait("document.querySelector('.modal.active .settings-form"
-                  " .field[data-key=\"reader_font_size\"]')")
-        opened = self.driver.execute_script("""
-            const overlay = document.querySelector('.modal.active');
-            const field = overlay.querySelector('.field[data-key="reader_font_size"]');
-            return {
-                title: overlay.querySelector('h3').textContent,
-                hasSave: !!overlay.querySelector('[data-act="save"]'),
-                value: field.querySelector('input').value,
-            };""")
-        details = json.dumps(opened, ensure_ascii=False)
-        self.assertEqual(opened['title'], '文档阅读设置', f'弹出来的不是壳的设置弹窗 {details}')
-        self.assertTrue(opened['hasSave'], f'设置弹窗里没有保存按钮 {details}')
-        self.assertEqual(str(opened['value']), '18', f'字段没带上后端已有的值 {details}')
-
-        self.driver.execute_script(
-            "document.querySelector('.modal.active [data-act=\"save\"]').click();")
-        self.wait("!document.querySelector('.modal.active')")
-        self.assertIn('设置已保存', self.driver.execute_script(
-            "return [...document.querySelectorAll('.toast')].map(t => t.textContent).join('|');"),
-            '保存后没有给出成功提示（保存通路没走完）')
-
-    def test_settings_modal_applies_reading_preferences_immediately(self):
-        """在「设置」弹窗里改「正文底色 = 透出壳背景」后，正文当场让出底色。
-
-        缺陷背景：壳的设置弹窗只把值写进后端，既不重载页面也不通知插件页
-        （`omnibox:settings-changed` 在壳里只有接收分支，见 docs/plugin-guide.md §4.3），
-        而插件的「设置」按钮把 `openSettingsModal()` 的返回值直接丢掉了。于是这一项
-        改完没有任何变化；更糟的是页内下一次 save() 会把内存里的旧值整份写回后端，
-        刚保存的新档位被静默盖掉 —— 表现为"这一项设置永远不生效"。
-
-        断言走完整通路：按钮 → 弹窗里选档位 → 保存 → 正文的 class 与计算样式都换过来，
-        页内「阅读设置」弹窗的回填值同步，后端存的是新值。
-        """
-        self.set_state(
-            documents=[_document('book.txt', '书', count=1, kind='txt')],
-            chapters=[{'index': 0, 'title': '第1章', 'word_count': 3}],
-            bodies={'book.txt': {'0': '正文'}},
-            settings={'reader_theme': 'auto', 'reader_bg_mode': 'theme', 'reader_font_size': 16},
-            schema=[
-                {'key': 'reader_font_size', 'label': '正文字号(px)', 'type': 'number',
-                 'default': 16},
-                {'key': 'reader_theme', 'label': '阅读主题', 'type': 'select', 'default': 'auto',
-                 'options': [{'label': '跟随主题', 'value': 'auto'},
-                             {'label': '夜间', 'value': 'dark'}]},
-                {'key': 'reader_bg_mode', 'label': '正文底色', 'type': 'select',
-                 'default': 'show',
-                 'options': [{'label': '跟随主题', 'value': 'theme'},
-                             {'label': '透出壳背景', 'value': 'show'},
-                             {'label': '指定色彩', 'value': 'solid'}]},
-            ])
+            settings={'reader_theme': 'auto', 'reader_bg_mode': 'theme', 'reader_font_size': 16})
         self.open_app()
         self.driver.execute_script("window.documentReader.openDocument(arguments[0]);", 'book.txt')
         self.wait('window.documentReader._isReaderMode')
@@ -625,17 +569,10 @@ class DocumentReaderBrowserTests(unittest.TestCase):
         self.assertIn('body-bg-theme', str(before['cls']).split(),
                       f'初始档位不是跟随主题：{json.dumps(before, ensure_ascii=False)}')
 
-        self.driver.execute_script("document.getElementById('btn-settings').click();")
-        self.wait("document.querySelector('.modal.active"
-                  " .field[data-key=\"reader_bg_mode\"] select')")
-        self.driver.execute_script("""
-            const select = document.querySelector('.modal.active'
-                + ' .field[data-key="reader_bg_mode"] select');
-            select.value = 'show';
-        """)
-        self.driver.execute_script(
-            "document.querySelector('.modal.active [data-act=\"save\"]').click();")
-        self.wait("!document.querySelector('.modal.active')")
+        # 壳内弹窗保存后：后端已写入新档位，壳向内容页发 `settings-saved`
+        _Handler.state['settings'] = {
+            **(dict(_Handler.state.get('settings') or {})), 'reader_bg_mode': 'show'}
+        self.send_host_message({'type': 'omnibox:action', 'action': 'settings-saved'})
         self.wait('window.documentReader.bgMode === "show"')
 
         after = self.driver.execute_script("""

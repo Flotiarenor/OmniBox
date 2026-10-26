@@ -23,6 +23,7 @@ window.Freshness = (function () {
   const POLL_MS = 500;        // 校验进行中的轮询间隔（与 media-player 的扫描轮询同档）
   const SYNC_DEBOUNCE_MS = 400;
   const CARD_HIDE_MS = 4000;  // 完成后的进度卡停留时间
+  const VERIFY_STALE_MS = 7 * 24 * 60 * 60 * 1000; // 上次校验超过 7 天就提示重新校验
 
   let seq = 0;                // 版本号自增源（同一页面内单调）
 
@@ -112,13 +113,48 @@ window.Freshness = (function () {
     let hideTimer = null;
     let disposed = false;
     let supported = true;
+    //: 最近一次"读取任务状态"失败（瞬时错误）。只影响状态文案与按钮可用性，
+    //: 不能据此认定插件未接入统一刷新 —— 那会让一次 5xx / 超时永久禁用校验。
+    let stateError = false;
     //: 卡片是否处于"已完成、正在自动隐藏"的状态（此时没有任务在跑，但不该立刻收掉）
     let cardSettled = false;
     //: 上次"替用户自动起校验"的时间：预算型 partial 可能每次进视图都出现，得限流
     let lastAutoVerifyAt = 0;
     const AUTO_VERIFY_COOLDOWN_MS = 3 * 60 * 1000;
+    //: 本次校验刚结束的短暂状态（仅用于状态文案，不是后端字段）
+    let completion = null;
+    let completionTimer = null;
 
     // ----- 渲染 -----
+
+    function clearCompletion() {
+      if (completionTimer) { clearTimeout(completionTimer); completionTimer = null; }
+      completion = null;
+    }
+
+    /** 一次校验结束：只有这一瞬间才允许说"校验完成/未发现变化"。 */
+    function markCompletion(task) {
+      clearCompletion();
+      const extra = (task && task.extra) || {};
+      const changeKeys = ['added', 'changed', 'removed', 'pruned'];
+      const changedCount = changeKeys
+        .reduce((sum, key) => sum + (Number(extra[key]) || 0), 0);
+      // 没有变化计数时不能默认"无变化"：只有后端确实给了 extra 才敢下结论。
+      const known = typeof extra === 'object'
+        && (changeKeys.some((key) => Object.prototype.hasOwnProperty.call(extra, key))
+          || Object.prototype.hasOwnProperty.call(extra, 'invalidated'));
+      completion = {
+        errors: Number(task && task.error_count) || 0,
+        changed: changedCount > 0 || !!extra.invalidated,
+        known,
+      };
+      completionTimer = setTimeout(() => {
+        completion = null;
+        completionTimer = null;
+        renderStatus();
+      }, CARD_HIDE_MS);
+      renderStatus();
+    }
 
     function renderStatus() {
       if (!supported) {
@@ -129,6 +165,23 @@ window.Freshness = (function () {
       }
       const s = state || {};
       const task = s.task || {};
+      if (completion) {
+        if (completion.errors) {
+          el.status.textContent = `校验完成 · ${completion.errors} 项失败`;
+        } else if (completion.changed) {
+          el.status.textContent = '校验完成 · 有变化';
+        } else if (completion.known) {
+          el.status.textContent = '校验完成 · 未发现变化';
+        } else {
+          el.status.textContent = '校验完成';
+        }
+        return;
+      }
+      if (stateError) {
+        // 后端只是这一次没读到，不是"插件未接入"：给可重试的提示，按钮保持可点。
+        el.status.textContent = '状态读取失败，可重试';
+        return;
+      }
       if (s.busy && task.state === 'running') {
         const total = task.total || 0;
         const done = task.processed || 0;
@@ -138,18 +191,20 @@ window.Freshness = (function () {
         return;
       }
       if (s.version_stale) {
-        el.status.textContent = '派生数据待重算';
+        el.status.textContent = '有变化 · 需要校验';
         return;
       }
       if (s.last_verify_at) {
-        el.status.textContent = `已是最新 · 上次校验 ${timeAgo(s.last_verify_at)}`;
+        const verifiedAt = Number(s.last_verify_at) * 1000;
+        const stale = Number.isFinite(verifiedAt) && (Date.now() - verifiedAt > VERIFY_STALE_MS);
+        el.status.textContent = `上次校验 ${timeAgo(s.last_verify_at)}${stale ? ' · 建议重新校验' : ''}`;
         return;
       }
       if (s.entries) {
         el.status.textContent = `已索引 ${s.entries} ${unit} · 尚未校验`;
         return;
       }
-      el.status.textContent = '尚未建立索引';
+      el.status.textContent = '尚未校验';
     }
 
     function renderCard() {
@@ -207,7 +262,8 @@ window.Freshness = (function () {
       const before = state;
       renderStatus();
       renderCard();
-      el.verify.disabled = !supported || !!(state && state.busy);
+      // stateError 时即使上一次 state 还残留 busy，也要让按钮可点（重试入口）。
+      el.verify.disabled = !supported || (!stateError && !!(state && state.busy));
       return before;
     }
 
@@ -218,23 +274,34 @@ window.Freshness = (function () {
       try {
         const next = await call('system_freshness_state', plugin);
         if (next && next.available === false) { supported = false; }
+        stateError = false;
         const wasBusy = !!(state && state.busy);
         state = next || state;
+        // 新一轮任务开始后，上一次“校验完成”不再成立。
+        if (state && state.busy) clearCompletion();
         render();
         if (state && state.busy) {
           timer = setTimeout(poll, POLL_MS);
-        } else if (wasBusy) {
-          onSettled();
+        } else {
+          // 一次轮询到此结束：把 timer 复位。verify() 用 `if (!timer)` 判断
+          // "现在没有轮询在跑"，旧的（已经 fire 过的）定时器 id 为真会让第二次
+          // 点「校验」只弹卡片、永远不再 poll —— 卡片停在 0 / 0、状态停在旧文案。
+          timer = null;
+          if (wasBusy) onSettled();
         }
       } catch (e) {
-        supported = false;
-        renderStatus();
+        // 一次状态读取失败 ≠ 插件未接入统一刷新：只有后端明确 available === false
+        // 才置 supported=false。这里保留 supported，给出可重试的状态与按钮。
+        timer = null;
+        stateError = true;
+        render();
       }
     }
 
     function onSettled() {
       const task = (state && state.task) || {};
       if (task.state === 'cancelled') {
+        clearCompletion();
         finishCard('校验已取消');
         toast('info', '校验已取消，已完成的指纹保留');
       } else {
@@ -245,6 +312,8 @@ window.Freshness = (function () {
         if (extra.removed) parts.push(`清理 ${extra.removed}`);
         const errors = task.error_count || 0;
         finishCard(errors ? `校验完成（${errors} 项失败）` : '校验完成');
+        if (task.state === 'done') markCompletion(task);
+        else clearCompletion();
         toast(errors ? 'warning' : 'success',
           `校验完成${parts.length ? '：' + parts.join(' · ') : ''}${errors ? `，${errors} 项失败` : ''}`);
       }
@@ -256,18 +325,24 @@ window.Freshness = (function () {
     async function verify(opts2) {
       if (!supported) return;
       const auto = !!(opts2 && opts2.auto);
+      clearCompletion();
+      renderStatus();
       try {
         const res = await call('system_freshness_verify', plugin);
+        // 只有后端**明确**说"不支持"才永久禁用；其他失败都按可重试处理。
         if (res && res.error === 'unsupported') { supported = false; renderStatus(); return; }
         if (res && res.started === false && !res.running) {
           if (!auto) toast('error', (res && res.error) || '校验启动失败');
           hideCard();
           return;
         }
+        stateError = false;
         showCard(auto ? '正在校验（同步未覆盖全部目录）' : '正在校验');
         if (!timer) poll();
       } catch (e) {
         hideCard();
+        stateError = true;
+        render();
         if (!auto) toast('error', '校验启动失败：' + ((e && e.message) || e));
       }
     }
@@ -316,6 +391,7 @@ window.Freshness = (function () {
       if (timer) clearTimeout(timer);
       if (syncTimer) clearTimeout(syncTimer);
       if (hideTimer) clearTimeout(hideTimer);
+      clearCompletion();
       if (group.parentNode) group.parentNode.removeChild(group);
     }
 

@@ -273,7 +273,9 @@ class VoiceTableTests(unittest.TestCase):
             calls.append(1)
             raise RuntimeError('不该轮到 edge')
 
-        with mock.patch.dict(tts._RUNNERS, {'edge': edge_spy}), \
+        with mock.patch.object(tts, 'edge_voices',
+                               lambda: [{'name': 'zh-CN-XiaoxiaoNeural'}]), \
+                mock.patch.dict(tts._RUNNERS, {'edge': edge_spy}), \
                 mock.patch.object(tts, 'RETRY_DELAY_SECONDS', 0):
             result = tts.synthesize('今天下雨了。', plugin._tts_params())
         self.assertEqual(calls, [], 'edge 没有这个音色，不该去试')

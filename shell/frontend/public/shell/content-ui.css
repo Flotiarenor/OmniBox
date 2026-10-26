@@ -1,0 +1,359 @@
+/* 共享内容卡片 / 行（content iframe）。
+   只提供结构、状态与键盘焦点；视觉语言由调用方的内容根节点决定。
+   所有颜色/圆角/过渡走壳 token，不复制插件卡片样式。 */
+
+.cui-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--cui-min, 160px), 1fr));
+  gap: var(--cui-gap, 16px);
+  align-items: stretch;
+  /* 四个侧栏插件的卡片网格统一从这套变量取值；具体列宽/间距见下方
+     `.cui-grid.cui-grid`（用字面值钉住，避免调用方遗留行内变量造成不一致）。 */
+  --cui-min: 160px;
+  --cui-gap: 16px;
+}
+
+/* 卡片网格的统一硬指标：160px 列宽 / 16px 间距。双类选择器与插件自己的
+   `.xx-grid.cui-grid` 同特异性，但本文件在插件样式之后注入，因此统一生效。 */
+.cui-grid.cui-grid {
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 16px;
+}
+
+.cui-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cui-row-gap, 8px);
+}
+
+.cui-card,
+.cui-row {
+  position: relative;
+  box-sizing: border-box;
+  min-width: 0;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--obx-radius, var(--radius-lg, 10px));
+  overflow: hidden;
+  transition: border-color var(--transition-fast, 0.15s ease),
+    box-shadow var(--transition-fast, 0.15s ease),
+    transform var(--obx-ease, 0.15s ease);
+}
+
+.cui-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.cui-card[role="button"],
+.cui-row[role="button"] { cursor: pointer; }
+
+.cui-card:hover,
+.cui-row:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  box-shadow: var(--obx-shadow-1, var(--shadow-sm, 0 1px 4px rgba(0, 0, 0, 0.08)));
+}
+
+.cui-card:focus-visible,
+.cui-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.cui-card:active,
+.cui-row:active { transform: scale(0.995); }
+
+.cui-card.is-selected,
+.cui-card[aria-pressed="true"],
+.cui-row.is-selected,
+.cui-row[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-surface));
+}
+
+.cui-media {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  aspect-ratio: 16 / 9;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+
+/* 卡片内的媒体由卡片外框统一裁切：封面不再单独圆角/投影，避免同一个角
+   被卡片与媒体各切一次。行（cui-row）的缩略图仍保留自己的小圆角。 */
+.cui-card .cui-media {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* 卡片硬指标：封面统一 3:4 并由卡片裁切（variant 已废弃，不再按类型改比例）。 */
+.cui-card .cui-media { aspect-ratio: 3 / 4; }
+
+.cui-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 卡片正文的硬指标：10/12 内边距 + 4px 间距 + 58px 最小高度；
+   卡片总高 = 封面（列宽 × 4/3）+ 正文（≥58px）。 */
+.cui-card .cui-body { min-height: 58px; }
+
+.cui-media--empty::after {
+  content: '';
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  opacity: 0.6;
+}
+
+.cui-media--broken { background: var(--bg-hover); }
+
+.cui-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.cui-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cui-sub {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cui-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 2px;
+}
+
+.cui-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.cui-badge {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.cui-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 12px 10px;
+  margin-top: auto;
+}
+
+.cui-action {
+  min-height: 24px;
+  padding: 3px 9px;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cui-action-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cui-type {
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cui-status {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.cui-status--ok { color: var(--success); }
+.cui-status--warn { color: var(--warning); }
+.cui-status--error { color: var(--danger); }
+
+/* 密度只改间距与字号，不改变卡片结构。 */
+.cui-density-compact .cui-body { padding: 7px 9px; gap: 2px; }
+.cui-density-compact .cui-title { font-size: 12px; }
+.cui-density-compact .cui-actions { padding: 0 9px 8px; }
+.cui-density-compact.cui-row { padding: 5px 8px; gap: 8px; }
+.cui-density-spacious .cui-body { padding: 14px 16px; gap: 6px; }
+.cui-density-spacious .cui-title { font-size: 14px; }
+.cui-density-spacious .cui-actions { padding: 0 16px 14px; }
+.cui-density-spacious.cui-row { padding: 10px 12px; gap: 12px; }
+
+/* 封面上的只读信息。 */
+.cui-media-badge,
+.cui-media-count,
+.cui-media-time,
+.cui-media-text {
+  position: absolute;
+  z-index: 2;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 10px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  max-width: calc(100% - 20px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cui-media-badge { top: 8px; left: 8px; }
+.cui-media-count { left: 8px; bottom: 8px; }
+.cui-media-time { right: 8px; bottom: 8px; }
+.cui-media-text { left: 8px; top: 8px; }
+
+.cui-media-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  height: 3px;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.cui-media-progress-bar {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+}
+
+/* 操作放在封面角/底部时，按钮需要可读背景；默认 bottom 保持原布局。 */
+.cui-media > .cui-actions {
+  position: absolute;
+  z-index: 3;
+  margin: 0;
+  padding: 0;
+  flex-wrap: nowrap;
+}
+
+.cui-actions--top-right {
+  top: 8px;
+  right: 8px;
+  left: auto;
+}
+
+.cui-actions--top-right .cui-action,
+.cui-actions--overlay .cui-action {
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.cui-actions--overlay {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 18px 10px 10px;
+  justify-content: flex-end;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.55));
+}
+
+/* 集合：展开/收起只切换类，不重建卡片。 */
+.cui-collection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cui-collection .cui-item--hidden {
+  display: none;
+}
+
+.cui-collection-toggle {
+  align-self: center;
+  margin-top: 2px;
+}
+
+/* 媒体行：缩略图在左，文本在中，操作在右；仍可被键盘激活。 */
+.cui-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+}
+
+.cui-row .cui-media {
+  width: 48px;
+  flex: 0 0 48px;
+  aspect-ratio: 1;
+  border-radius: var(--radius-sm, 4px);
+}
+
+.cui-row .cui-body {
+  flex: 1 1 auto;
+  padding: 0;
+  gap: 2px;
+}
+
+.cui-row .cui-actions {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+  flex-wrap: nowrap;
+}
+
+.cui-row .cui-meta-row { margin-top: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cui-card,
+  .cui-row {
+    transition-duration: 0.001s;
+  }
+
+  .cui-card:active,
+  .cui-row:active { transform: none; }
+}

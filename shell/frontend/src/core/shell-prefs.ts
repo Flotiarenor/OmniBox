@@ -337,6 +337,32 @@ export function setShellTheme(theme: Theme): void {
  * 名字与取值都在这里再校验一次：后端会**整条拒收**畸形键并回退默认值，如果前端
  * 先把坏值写进了 `state`，界面显示的就会是一个永远不会生效的值。
  */
+/** 单个插件的背景不透明度覆盖；缺失表示跟随壳的 `--glass-alpha`。 */
+export const PLUGIN_ALPHA_PREFIX = '--plugin-glass-'
+
+function pluginAlphaKey(plugin: string): string {
+  return PLUGIN_ALPHA_PREFIX + plugin
+}
+
+export function pluginAlpha(plugin: string): number | null {
+  const match = /^(-?\d+(?:\.\d+)?)%$/.exec(String(state.colors[pluginAlphaKey(plugin)] ?? '').trim())
+  if (!match) return null
+  const value = Math.round(Number(match[1]))
+  if (!Number.isFinite(value)) return null
+  return Math.min(GLASS_LIMITS.alphaMax, Math.max(GLASS_LIMITS.alphaMin, value))
+}
+
+export function setPluginAlpha(plugin: string, alpha: number | null): void {
+  const key = pluginAlphaKey(plugin)
+  if (alpha == null) {
+    clearShellVar(key)
+    return
+  }
+  const value = Math.min(GLASS_LIMITS.alphaMax, Math.max(GLASS_LIMITS.alphaMin, Math.round(alpha)))
+  setShellVar(key, `${value}%`)
+}
+
+
 export function setShellVar(key: string, value: string): void {
   if (!isValidVarName(key) || !isStorableVarValue(value)) {
     console.warn('[ShellPrefs] 忽略非法的外观变量:', key, value)

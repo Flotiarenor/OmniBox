@@ -11,41 +11,10 @@ Object.assign(MediaPlayerApp.prototype, {
     // ============================================================
     // UI 事件绑定
     // ============================================================
+    // 页面 chrome（左栏导航、歌单组、顶栏「刷新 / 设置」、搜索框、状态栏）由壳渲染，
+    // 对应交互走 omnibox:view / omnibox:action / omnibox:query（见 app.js）；
+    // 这里只绑内容区（舞台、播放条、歌词页、队列 / EQ 浮层与三个内容弹窗）。
     _bindUI() {
-        // 左侧导航
-        document.querySelectorAll('.mp-nav-item').forEach(btn => {
-            btn.addEventListener('click', () => this.switchView(btn.dataset.view));
-        });
-
-        // 工具栏：媒体库的扫描入口已换成交互组件（`#mp-freshness`，见 _mountFreshness），
-        // 这里只剩网易云视图的「刷新」（视图级重新拉取，不是库扫描）
-        const scanBtn = document.getElementById('btn-scan');
-        scanBtn.addEventListener('click', () => this._doScan(false));
-        document.getElementById('btn-settings').addEventListener('click', () => this._openSettings());
-        const search = document.getElementById('media-search');
-        this._searchDebounced = MPUtils.debounce(() => this._loadCurrentView(), 300);
-        search.addEventListener('input', () => {
-            const value = search.value.trim();
-            document.getElementById('btn-search-clear').classList.toggle('hidden', !value);
-            this._searchDebounced();
-        });
-        search.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') {
-                search.value = '';
-                document.getElementById('btn-search-clear').classList.add('hidden');
-                this._loadCurrentView();
-            }
-        });
-        document.getElementById('btn-search-clear').addEventListener('click', () => {
-            search.value = '';
-            document.getElementById('btn-search-clear').classList.add('hidden');
-            this._loadCurrentView();
-            search.focus();
-        });
-
-        // 歌单
-        document.getElementById('btn-new-playlist').addEventListener('click', () => this._openPlaylistModal('create'));
-
         // 播放控制
         document.getElementById('btn-play-pause').addEventListener('click', () => this.core.togglePlay());
         document.getElementById('btn-prev').addEventListener('click', () => this.core.prev());

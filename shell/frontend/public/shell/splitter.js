@@ -265,15 +265,33 @@ window.ShellSplitter = (function () {
 
     function relayout() {
         layoutFrame = 0;
-        items.forEach((item) => {
-            if (!item.el.isConnected) return;
+        // 倒序遍历：插件重渲染会换掉元素，这里顺手把它们从注册表里摘掉。
+        // 把手是插在元素后的**兄弟节点**（元素被移除时它不跟着走），必须一并移除；
+        // 否则长会话里 items 与 DOM 都会随重渲染线性增长。
+        for (let i = items.length - 1; i >= 0; i -= 1) {
+            const item = items[i];
+            if (!item.el.isConnected) {
+                if (item.handle && item.handle.isConnected) {
+                    try { item.handle.remove(); } catch (e) { /* 已不在文档里 */ }
+                }
+                // ResizeObserver 会强引用被观察元素直到 unobserve/disconnect，
+                // 元素移除后必须停观察，否则"摘注册表"只修了一半泄漏。
+                if (resizeObserver) {
+                    try { resizeObserver.unobserve(item.el); } catch (e) { /* 已销毁 */ }
+                    if (item.observedParent) {
+                        try { resizeObserver.unobserve(item.observedParent); } catch (e) { /* 已销毁 */ }
+                    }
+                }
+                items.splice(i, 1);
+                continue;
+            }
             syncHandleVisibility(item);
             // 拖动中不重算：此时尺寸由指针驱动，重算会把值拉回上一次落盘的值。
-            if (item.dragging) return;
+            if (item.dragging) continue;
             // 尺寸还没量出来（切回前台的第一帧）时不动内联值：见 measurable 的说明。
-            if (!measurable(item)) return;
+            if (!measurable(item)) continue;
             render(item, userValueOf(item));
-        });
+        }
     }
 
     function scheduleRelayout() {
@@ -381,6 +399,8 @@ window.ShellSplitter = (function () {
             current: undefined,
             dragging: false,
             handle: null,
+            // 注册时观察的父容器：清理时要对它补一次 unobserve（见 relayout）。
+            observedParent: el.parentElement,
             pendingValue: null,
             pendingName: null,
             commitTimer: 0,
@@ -467,5 +487,11 @@ window.ShellSplitter = (function () {
         boot();
     }
 
-    return { scan, relayout: scheduleRelayout };
+    return {
+        scan,
+        relayout: scheduleRelayout,
+        // 只读：当前登记了几个分隔条。给用例一个可观测点 —— items 是闭包状态，
+        // 没有它就只能靠"数 DOM 里还剩几个把手"这类脆弱手法间接推断。
+        getItemCount: () => items.length,
+    };
 })();

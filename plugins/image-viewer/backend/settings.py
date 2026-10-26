@@ -8,6 +8,10 @@ import logging
 from pathlib import Path
 from typing import Dict
 
+from shell.backend.plugin_base import (
+    parse_setting_number,
+    validate_number_setting,
+)
 from shell.backend.thumb_cache import ThumbCache
 
 log = logging.getLogger(__name__)
@@ -205,14 +209,45 @@ class SettingsMixin:
             else:
                 settings = {}
         if rel_path:
-            # 文件夹级设置只保存视图/排序偏好；root_dir 是全局设置，不能写入某个文件夹，
-            # 否则会造成“看起来保存了但根目录没变”的困惑。
-            folder_settings = dict(settings or {})
-            folder_settings.pop('root_dir', None)
+            # 文件夹级设置只保存视图/排序偏好；root_dir / extra_roots 决定 `/file`
+            # 的允许根，是全局设置，不能写进某个文件夹。
             folders = self.setting('folders') or {}
             if not isinstance(folders, dict):
                 folders = {}
-            folders[rel_path] = folder_settings
+            existing = dict(folders.get(rel_path) or {})
+            existing.pop('root_dir', None)
+            existing.pop('extra_roots', None)
+            submitted = settings or {}
+            # 与 PluginBase.save_settings 同一套 number/range 校验：任一字段非法则
+            # 整次不落盘，返回可直接展示的字段级 errors（前端 _saveStep 会据此
+            # 保持弹窗并显示错误）。已生效的同值原样回传不拒，避免表单整体提交
+            # 时被历史越界值卡住 —— 与基类的口径一致。
+            effective = self._compute_settings(rel_path)
+            errors: Dict[str, str] = {}
+            for item in self.settings_schema:
+                key = item.get('key')
+                if not key or key not in submitted or key in ('root_dir', 'extra_roots'):
+                    continue
+                if item.get('type') in ('number', 'range'):
+                    parsed = parse_setting_number(submitted[key])
+                    old_parsed = parse_setting_number(effective.get(key))
+                    if parsed is not None and old_parsed is not None and parsed == old_parsed:
+                        existing[key] = parsed
+                        continue
+                    message, normalized = validate_number_setting(item, submitted[key])
+                    if message:
+                        errors[str(key)] = message
+                    else:
+                        existing[key] = normalized
+                else:
+                    existing[key] = submitted[key]
+            if errors:
+                return {
+                    "success": False,
+                    "error": "；".join(errors.values()),
+                    "errors": errors,
+                }
+            folders[rel_path] = existing
             self.update_setting('folders', folders)
             self._invalidate_albums_cache()
             return {"success": True}

@@ -109,8 +109,212 @@ RUNTIME_FIELD_READERS: Dict[str, List[Tuple[str, str]]] = {
     'libs': [('shell/backend/plugin_manager.py', "manifest.get('libs'")],
     'backend.entry': [('shell/backend/plugin_manager.py', "backend_cfg.get('entry'")],
     'backend.class': [('shell/backend/plugin_manager.py', "backend_cfg.get('class'")],
-    'frontend.route': [('shell/backend/plugin_manager.py', "m['frontend']['route']")],
+    'frontend.route': [('shell/backend/plugin_manager.py', "frontend['route']")],
+    'frontend.chrome': [('shell/backend/plugin_manager.py', "frontend.get('chrome')")],
 }
+
+# 白名单只收有运行期读取方的字段：`content`（内容归属枚举）、`nav[].dynamic`、
+# `status.kind: "text"` 曾经可声明但从未被壳读取，已从白名单与插件 manifest 删除 ——
+# 与 RUNTIME_FIELD_READERS"每个字段都必须有读取方"是同一条原则。
+_ALLOWED_CHROME_KEYS = frozenset({
+    'brand', 'nav', 'sidebarOrder', 'toolbar', 'search', 'status', 'freshness', 'extensions',
+})
+_ALLOWED_CHROME_BRAND_KEYS = frozenset({'icon', 'title', 'subtitle', 'accent'})
+_ALLOWED_CHROME_NAV_KEYS = frozenset({'id', 'section', 'visible', 'items'})
+_ALLOWED_CHROME_ITEM_KEYS = frozenset({'id', 'label', 'icon', 'badge', 'visible'})
+_ALLOWED_CHROME_ACTION_KEYS = frozenset({
+    'id', 'label', 'icon', 'variant', 'kind', 'placement', 'visible', 'disabled', 'active',
+})
+_ALLOWED_CHROME_SEARCH_KEYS = frozenset({'placeholder', 'enabled'})
+_ALLOWED_CHROME_STATUS_KEYS = frozenset({'kind', 'items'})
+_ALLOWED_CHROME_EXTENSION_KEYS = frozenset({'placement', 'title'})
+_CHROME_ACTION_VARIANTS = frozenset({'default', 'primary', 'danger'})
+_CHROME_ACTION_KINDS = frozenset({'button', 'text', 'badge'})
+_CHROME_ACTION_PLACEMENTS = frozenset({'leading', 'trailing'})
+_CHROME_STATUS_KINDS = frozenset({'dot-text', 'eq-text'})
+
+
+def _check_chrome_schema(frontend: dict, where: str) -> List[str]:
+    """校验 `frontend.chrome`：壳渲染页面骨架时读的就是这份声明。
+
+    声明写错不会报错，只会渲染出空侧栏/没有动作的顶栏，因此在这里把形状固定下来。
+    """
+    chrome = frontend.get('chrome')
+    if chrome is None:
+        return []
+    if not isinstance(chrome, dict):
+        return [f'{where} frontend.chrome 必须是对象']
+    errors: List[str] = []
+    unknown = set(chrome) - _ALLOWED_CHROME_KEYS
+    if unknown:
+        errors.append(f'{where} frontend.chrome 含未知字段 {sorted(unknown)}')
+
+    brand = chrome.get('brand')
+    if not isinstance(brand, dict):
+        errors.append(f'{where} frontend.chrome.brand 必须是对象')
+    else:
+        unknown = set(brand) - _ALLOWED_CHROME_BRAND_KEYS
+        if unknown:
+            errors.append(f'{where} frontend.chrome.brand 含未知字段 {sorted(unknown)}')
+        for key in ('title', 'subtitle', 'accent'):
+            if key in brand and not isinstance(brand[key], str):
+                errors.append(f'{where} frontend.chrome.brand.{key} 必须是字符串')
+        if 'icon' in brand and (not isinstance(brand['icon'], str)
+                                or not brand['icon'].startswith('icon:')):
+            errors.append(f'{where} frontend.chrome.brand.icon 必须是 icon:<名字>')
+
+    nav = chrome.get('nav')
+    if not isinstance(nav, list) or not nav:
+        errors.append(f'{where} frontend.chrome.nav 必须是非空数组')
+    else:
+        seen: set[str] = set()
+        for gi, group in enumerate(nav):
+            if not isinstance(group, dict):
+                errors.append(f'{where} frontend.chrome.nav[{gi}] 必须是对象')
+                continue
+            unknown = set(group) - _ALLOWED_CHROME_NAV_KEYS
+            if unknown:
+                errors.append(f'{where} frontend.chrome.nav[{gi}] 含未知字段 {sorted(unknown)}')
+            if 'section' in group and not isinstance(group['section'], str):
+                errors.append(f'{where} frontend.chrome.nav[{gi}].section 必须是字符串')
+            if 'id' in group and (not isinstance(group['id'], str) or not group['id'].strip()):
+                errors.append(f'{where} frontend.chrome.nav[{gi}].id 必须是非空字符串')
+            if 'visible' in group and not isinstance(group['visible'], bool):
+                errors.append(f'{where} frontend.chrome.nav[{gi}].visible 必须是 true/false')
+            items = group.get('items')
+            if not isinstance(items, list) or not items:
+                errors.append(f'{where} frontend.chrome.nav[{gi}].items 必须是非空数组')
+                continue
+            for ii, item in enumerate(items):
+                at = f'{where} frontend.chrome.nav[{gi}].items[{ii}]'
+                if not isinstance(item, dict):
+                    errors.append(f'{at} 必须是对象')
+                    continue
+                unknown = set(item) - _ALLOWED_CHROME_ITEM_KEYS
+                if unknown:
+                    errors.append(f'{at} 含未知字段 {sorted(unknown)}')
+                for key in ('id', 'label'):
+                    if not isinstance(item.get(key), str) or not item[key].strip():
+                        errors.append(f'{at}.{key} 必须是非空字符串')
+                if isinstance(item.get('id'), str):
+                    if item['id'] in seen:
+                        errors.append(f'{at}.id={item["id"]!r} 重复')
+                    seen.add(item['id'])
+                if 'icon' in item and (not isinstance(item['icon'], str)
+                                       or not item['icon'].startswith('icon:')):
+                    errors.append(f'{at}.icon 必须是 icon:<名字>')
+                if 'badge' in item and not isinstance(item['badge'], str):
+                    errors.append(f'{at}.badge 必须是字符串')
+                if 'visible' in item and not isinstance(item['visible'], bool):
+                    errors.append(f'{at}.visible 必须是 true/false')
+
+    toolbar = chrome.get('toolbar', [])
+    if not isinstance(toolbar, list):
+        errors.append(f'{where} frontend.chrome.toolbar 必须是数组')
+    else:
+        seen = set()
+        for ai, action in enumerate(toolbar):
+            at = f'{where} frontend.chrome.toolbar[{ai}]'
+            if not isinstance(action, dict):
+                errors.append(f'{at} 必须是对象')
+                continue
+            unknown = set(action) - _ALLOWED_CHROME_ACTION_KEYS
+            if unknown:
+                errors.append(f'{at} 含未知字段 {sorted(unknown)}')
+            for key in ('id', 'label'):
+                if not isinstance(action.get(key), str) or not action[key].strip():
+                    errors.append(f'{at}.{key} 必须是非空字符串')
+            if isinstance(action.get('id'), str):
+                if action['id'] in seen:
+                    errors.append(f'{at}.id={action["id"]!r} 重复')
+                seen.add(action['id'])
+            if 'icon' in action and (not isinstance(action['icon'], str)
+                                     or not action['icon'].startswith('icon:')):
+                errors.append(f'{at}.icon 必须是 icon:<名字>')
+            if 'variant' in action and (
+                    not isinstance(action['variant'], str)
+                    or action['variant'] not in _CHROME_ACTION_VARIANTS):
+                errors.append(f'{at}.variant 必须是 {sorted(_CHROME_ACTION_VARIANTS)} 之一')
+            if 'kind' in action and (
+                    not isinstance(action['kind'], str)
+                    or action['kind'] not in _CHROME_ACTION_KINDS):
+                errors.append(f'{at}.kind 必须是 {sorted(_CHROME_ACTION_KINDS)} 之一')
+            if 'placement' in action and (
+                    not isinstance(action['placement'], str)
+                    or action['placement'] not in _CHROME_ACTION_PLACEMENTS):
+                errors.append(
+                    f'{at}.placement 必须是 {sorted(_CHROME_ACTION_PLACEMENTS)} 之一')
+            for key in ('visible', 'disabled', 'active'):
+                if key in action and not isinstance(action[key], bool):
+                    errors.append(f'{at}.{key} 必须是 true/false')
+
+    status = chrome.get('status')
+    if status is not None and not isinstance(status, bool):
+        if not isinstance(status, dict):
+            errors.append(f'{where} frontend.chrome.status 必须是 true/false 或对象')
+        else:
+            unknown = set(status) - _ALLOWED_CHROME_STATUS_KEYS
+            if unknown:
+                errors.append(f'{where} frontend.chrome.status 含未知字段 {sorted(unknown)}')
+            if 'kind' in status and (
+                    not isinstance(status['kind'], str)
+                    or status['kind'] not in _CHROME_STATUS_KINDS):
+                errors.append(f'{where} frontend.chrome.status.kind 必须是 '
+                              f'{sorted(_CHROME_STATUS_KINDS)} 之一')
+            items = status.get('items')
+            if items is not None:
+                if not isinstance(items, list):
+                    errors.append(f'{where} frontend.chrome.status.items 必须是数组')
+                else:
+                    for si, item in enumerate(items):
+                        if not isinstance(item, dict):
+                            errors.append(f'{where} frontend.chrome.status.items[{si}] 必须是对象')
+                            continue
+                        for key in ('id', 'text'):
+                            if not isinstance(item.get(key), str) or not item[key].strip():
+                                errors.append(f'{where} frontend.chrome.status.items[{si}].{key} '
+                                              f'必须是非空字符串')
+
+    search = chrome.get('search')
+    if search is not None:
+        if not isinstance(search, dict):
+            errors.append(f'{where} frontend.chrome.search 必须是对象')
+        else:
+            unknown = set(search) - _ALLOWED_CHROME_SEARCH_KEYS
+            if unknown:
+                errors.append(f'{where} frontend.chrome.search 含未知字段 {sorted(unknown)}')
+            if 'placeholder' in search and not isinstance(search['placeholder'], str):
+                errors.append(f'{where} frontend.chrome.search.placeholder 必须是字符串')
+            if 'enabled' in search and not isinstance(search['enabled'], bool):
+                errors.append(f'{where} frontend.chrome.search.enabled 必须是 true/false')
+
+    extensions = chrome.get('extensions')
+    if extensions is not None:
+        if not isinstance(extensions, dict):
+            errors.append(f'{where} frontend.chrome.extensions 必须是对象')
+        else:
+            unknown = set(extensions) - _ALLOWED_CHROME_EXTENSION_KEYS
+            if unknown:
+                errors.append(f'{where} frontend.chrome.extensions 含未知字段 {sorted(unknown)}')
+            if 'placement' in extensions and extensions['placement'] != 'sidebar':
+                errors.append(f'{where} frontend.chrome.extensions.placement 目前只支持 sidebar')
+            if 'title' in extensions and not isinstance(extensions['title'], str):
+                errors.append(f'{where} frontend.chrome.extensions.title 必须是字符串')
+
+    sidebar_order = chrome.get('sidebarOrder')
+    if sidebar_order is not None:
+        if not isinstance(sidebar_order, list):
+            errors.append(f'{where} frontend.chrome.sidebarOrder 必须是数组')
+        elif not all(isinstance(key, str) and key for key in sidebar_order):
+            errors.append(f'{where} frontend.chrome.sidebarOrder 只能包含非空字符串')
+
+    fresh = chrome.get('freshness')
+    if fresh is not None and not isinstance(fresh, (bool, dict)):
+        errors.append(f'{where} frontend.chrome.freshness 必须是 true/false 或对象')
+    if isinstance(fresh, dict) and 'unit' in fresh and not isinstance(fresh['unit'], str):
+        errors.append(f'{where} frontend.chrome.freshness.unit 必须是字符串')
+    return errors
+
 
 # 只被检查器消费的字段：运行时没有任何读取方。
 # 必须与 RUNTIME_FIELD_READERS 分开登记 —— 否则把"检查器读自己"填进读取方表，
@@ -442,8 +646,16 @@ def _check_schema(cls) -> List[str]:
         keys.add(key)
 
         field_type = field.get('type', 'text')
-        if field_type not in ALLOWED_SCHEMA_TYPES:
+        # schema 是插件作者手写的 Python 值：type 写成 list/dict 时对
+        # ALLOWED_SCHEMA_TYPES 求值不可哈希，后续 `in {'number', 'range'}` 同样会抛
+        # TypeError。检查器必须在自己的输入上只报错、不中断；报完后把类型置空，
+        # 让依赖具体类型的检查（default/min/max/options）不再对这些字段执行。
+        if not isinstance(field_type, str):
+            errors.append(f'{where}.type 必须是字符串，实际是 {type(field_type).__name__}')
+            field_type = ''
+        elif field_type not in ALLOWED_SCHEMA_TYPES:
             errors.append(f'{where}.type={field_type!r} 不在支持列表 {sorted(ALLOWED_SCHEMA_TYPES)}')
+            field_type = ''
 
         if 'default' in field:
             default = field['default']
@@ -587,7 +799,7 @@ FRESHNESS_MOUNT_RE = re.compile(r'\bFreshness\s*\.\s*mount\s*\(')
 FRESHNESS_PLUGIN_ARG_RE = re.compile(r"""Freshness\s*\.\s*mount\s*\(\s*\{[^}]*?\bplugin\s*:\s*['"]([^'"]+)['"]""", re.DOTALL)
 
 
-def _check_freshness_contract(plugin_dir: Path, name: str) -> List[str]:
+def _check_freshness_contract(plugin_dir: Path, name: str, *, shell_mounts: bool = False) -> List[str]:
     """统一刷新基建（同步 / 校验）的接线检查（返回 errors）。
 
     三个静默失败，读代码都看不出来：
@@ -600,6 +812,9 @@ def _check_freshness_contract(plugin_dir: Path, name: str) -> List[str]:
     3. `Freshness.mount({plugin: '...'})` 的名字与 manifest 不一致（复制粘贴留下的）：
        壳按名字找不到实例，同样是"点了没反应"。这条最值得拦，因为它跨后端/前端/清单
        三处，而三处各自看都对。
+
+    声明了 `frontend.chrome.freshness` 的插件由壳的 PluginChrome 挂载组件，
+    此时不再要求插件自己的前端出现 `Freshness.mount`，但不能两边都没有。
     """
     errors: List[str] = []
     backend_declared = False
@@ -624,7 +839,19 @@ def _check_freshness_contract(plugin_dir: Path, name: str) -> List[str]:
             mount_called = True
         mount_names.extend(FRESHNESS_PLUGIN_ARG_RE.findall(text))
 
-    if backend_declared and not mount_called:
+    if shell_mounts:
+        component = PROJECT_ROOT / 'shell' / 'frontend' / 'src' / 'components' / 'PluginChrome.vue'
+        try:
+            shell_text = component.read_text(encoding='utf-8')
+        except OSError:
+            shell_text = ''
+        if not FRESHNESS_MOUNT_RE.search(shell_text):
+            errors.append(
+                'manifest 声明了 frontend.chrome.freshness，但壳的 PluginChrome.vue '
+                '没有 Freshness.mount(...)：接线断了'
+            )
+
+    if backend_declared and not mount_called and not shell_mounts:
         errors.append(
             'freshness_spec() 已声明但前端没有 Freshness.mount(...)：壳侧引擎与 '
             'system_freshness_* 端点都在，界面上却没有「校验」入口'
@@ -904,6 +1131,9 @@ def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -
             errors.append(f'{where} frontend.entry 不存在或越界: {frontend_entry}')
         else:
             errors.extend(f'[{folder_name}] {error}' for error in _check_frontend_assets(plugin_dir, frontend_entry))
+        chrome_decl = frontend.get('chrome')
+        errors.extend(f'[{folder_name}] {error}'
+                      for error in _check_chrome_schema(frontend, where))
 
         # 前端 UI 契约：与入口是否存在无关，独立扫 frontend/ 下的 css/html/js
         ui_errors, ui_warnings = _check_frontend_ui(plugin_dir)
@@ -915,7 +1145,10 @@ def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -
 
         # 统一刷新基建的接线：spec 与 Freshness.mount(...) 必须同时存在且插件名一致
         errors.extend(f'[{folder_name}] {error}'
-                      for error in _check_freshness_contract(plugin_dir, folder_name))
+                      for error in _check_freshness_contract(
+                          plugin_dir, folder_name,
+                          shell_mounts=isinstance(chrome_decl, dict)
+                          and bool(chrome_decl.get('freshness'))))
 
 
         backend = data.get('backend')

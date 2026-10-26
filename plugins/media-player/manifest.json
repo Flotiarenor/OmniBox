@@ -13,7 +13,57 @@
   },
   "frontend": {
     "entry": "frontend/index.html",
-    "route": "/media-player"
+    "route": "/media-player",
+    "chrome": {
+      "brand": {
+        "icon": "icon:headphones",
+        "title": "媒体库",
+        "subtitle": "Music · Video",
+        "accent": "#8b5cf6"
+      },
+      "sidebarOrder": ["extensions", "nav:library", "nav:playlists"],
+      "nav": [
+        {
+          "section": "媒体库",
+          "id": "library",
+          "items": [
+            { "id": "recent", "label": "最近播放", "icon": "icon:history" },
+            { "id": "audio-albums", "label": "音乐专辑", "icon": "icon:disc" },
+            { "id": "all-audio", "label": "全部音乐", "icon": "icon:music" },
+            { "id": "video-albums", "label": "视频专辑", "icon": "icon:disc-3" },
+            { "id": "all-video", "label": "全部视频", "icon": "icon:clapperboard" },
+            { "id": "favorites", "label": "我的喜欢", "icon": "icon:heart" }
+          ]
+        },
+        {
+          "section": "我的歌单",
+          "id": "playlists",
+          "items": [
+            { "id": "playlist-new", "label": "新建歌单", "icon": "icon:plus" }
+          ]
+        }
+      ],
+      "toolbar": [
+        {
+          "id": "netease-refresh",
+          "label": "刷新",
+          "icon": "icon:refresh-cw",
+          "visible": false
+        },
+        {
+          "id": "settings",
+          "label": "设置",
+          "icon": "icon:settings"
+        }
+      ],
+      "search": {
+        "placeholder": "搜索媒体、专辑、艺术家…",
+        "enabled": true
+      },
+      "status": { "kind": "eq-text" },
+      "freshness": { "unit": "首" },
+      "extensions": { "placement": "sidebar", "title": "网易云音乐" }
+    }
   },
   "minShellVersion": "1.2.0"
 }

@@ -13,6 +13,44 @@
   },
   "frontend": {
     "entry": "frontend/index.html",
-    "route": "/image-viewer"
+    "route": "/image-viewer",
+    "chrome": {
+      "brand": {
+        "icon": "icon:images",
+        "title": "图片相册",
+        "subtitle": "Gallery",
+        "accent": "#0ea5e9"
+      },
+      "sidebarOrder": ["nav:browse", "extensions"],
+      "nav": [
+        {
+          "section": "浏览",
+          "id": "browse",
+          "items": [
+            { "id": "albums", "label": "全部相册", "icon": "icon:layout-grid" },
+            { "id": "timeline", "label": "时间线", "icon": "icon:history" },
+            { "id": "latest", "label": "最近添加", "icon": "icon:sparkles" }
+          ]
+        }
+      ],
+      "toolbar": [
+        { "id": "back", "label": "返回", "icon": "icon:arrow-left", "placement": "leading", "visible": false },
+        { "id": "new-album", "label": "新建相册", "icon": "icon:plus" },
+        { "id": "slideshow", "label": "幻灯片", "icon": "icon:play", "visible": false },
+        { "id": "multi-select", "label": "开启多选", "icon": "icon:list-checks", "visible": false },
+        { "id": "selection-count", "label": "已选 0 项", "kind": "text", "visible": false },
+        { "id": "delete-selected", "label": "删除选中", "icon": "icon:trash-2", "variant": "danger", "visible": false },
+        { "id": "move-selected", "label": "移动选中", "icon": "icon:folder", "visible": false },
+        { "id": "refresh-thumbs", "label": "更新缩略图", "icon": "icon:images", "visible": false },
+        { "id": "settings", "label": "设置", "icon": "icon:settings" }
+      ],
+      "search": {
+        "placeholder": "搜索相册…",
+        "enabled": true
+      },
+      "status": { "kind": "dot-text" },
+      "freshness": { "unit": "张" },
+      "extensions": { "placement": "sidebar", "title": "扩展" }
+    }
   }
 }

@@ -412,11 +412,12 @@ class Browser:
     def find_by_text(self, needle: str, selector: str = CLICKABLE) -> Any:
         """按可见文字找控件（轮询到出现为止）。
 
-        插件里的扩展入口（相册清理 / Pixiv 同步）与不少按钮由共享组件渲染，类名会变，
-        文字是它们对用户唯一稳定的标识；因此点击优先走这里，选择器只在有 id 时用。
+        插件里的扩展入口（相册清理 / Pixiv 同步）由壳的 `PluginExtensions.vue` 渲染，不少按钮
+        由共享组件渲染；类名会变，文字是它们对用户唯一稳定的标识，因此点击优先走这里，
+        选择器只在有 id 时用。
 
-        **必须轮询**：扩展入口是 `renderExtensions()` 异步请求
-        `system_get_plugin_extensions` 之后才插进 DOM 的。早先这里只查一次，于是"入口还没
+        **必须轮询**：扩展入口要等壳的 `PluginExtensions.vue` 异步请求
+        `system_get_plugin_extensions` 返回后才插进 DOM。早先这里只查一次，于是"入口还没
         渲染"和"入口不存在"表现成同一个错误 —— 同一批场景里 08 会挂、11 却能过，取决于
         当次渲染快慢。
         """

@@ -17,7 +17,7 @@
 - **易于分发**：主程序可打包为便携目录/压缩包，插件可离线安装。
 - **跨平台**：支持 Windows、Linux，并提供 Web-only 模式，可通过浏览器直接访问。
 - **统一外观**：内置浅色/深色主题切换，支持自定义 CSS 变量级颜色配置，全插件自动同步。
-- **通用布局**：统一的工具栏、侧边栏、内容区样式（`.view-toolbar`、`.view-sub-sidebar` 等），插件无需重复定义。
+- **页面骨架统一**：manifest 声明 `frontend.chrome` 的插件由壳的 `PluginChrome` 渲染品牌、导航、顶栏、搜索、状态与分隔条；内容 iframe 只装内容（`?content=1`），不再各自实现侧栏与工具栏。
 - **轻量插件依赖**：插件可通过 `backend/libs` 携带纯 Python 依赖，无需安装进主 venv，删除目录即可卸载。
 - **Companion 插件体系**：支持扩展注册、宿主内嵌、跨插件调用，便于在宿主内部集成清理/打标等增强功能。
 
@@ -30,7 +30,10 @@ graph TB
     subgraph Container["PyWebView 桌面容器"]
         subgraph Shell["前端壳 — Vue 3 应用壳 (Shell)"]
             Nav["导航栏"]
-            Iframe["插件容器（iframe）"]
+            Chrome["PluginChrome<br/>品牌 / 导航 / 顶栏 / 搜索 / 状态 / 分隔条"]
+            Iframe["内容 iframe（?content=1）"]
+            Settings["PluginSettingsModal"]
+            Native["NativePanel"]
         end
         Bridge["PyWebView JS Bridge"]
         subgraph Backend["后端壳 — Python 后端壳"]
@@ -39,37 +42,50 @@ graph TB
         end
     end
 
-    Nav --> Iframe
+    Nav --> Chrome
+    Chrome --> Iframe
+    Settings -. "settings-saved" .-> Iframe
+    Native --> Iframe
     Bridge --> Shell
     Bridge --> Backend
     PM --> Flask
 ```
 
-- **前端壳**：Vue 3 + Vue Router，动态加载插件清单并生成导航和 iframe 路由。插件 iframe 默认离开即卸载、回来重新加载；在 manifest 里声明 `"keepAlive": true` 的插件保持存活（播放/朗读不中断、状态持续上报、首屏加载贵的那几类），切换时不受影响。
+- **前端壳**：Vue 3 + Vue Router，动态加载插件清单并生成导航和 iframe 路由。插件页面按 manifest 的 `frontend.chrome` 由 `PluginChrome` 渲染骨架，内容 iframe 只装内容；附属插件（image-cleaner / pixiv-sync）的 native 面板由壳的 `NativePanel` + `SchemaRenderer` 渲染。插件 iframe 默认离开即卸载、回来重新加载；在 manifest 里声明 `"keepAlive": true` 的插件保持存活（播放/朗读不中断、状态持续上报、首屏加载贵的那几类），切换时不受影响。
 - **后端壳**：Python 插件管理器，负责插件的发现、依赖解析、加载和 API 聚合。
 - **通信**：所有页面同源（`http://127.0.0.1`），插件前端可直接调用 `parent.pywebview.api` 访问后端方法；Web-only 模式下自动使用 HTTP API 桥接。
 - **Web-only 模式**：可通过 `python main.py --web-only` 启动，无需桌面窗口，适合 Linux 服务器 / NAS / 浏览器访问。
 - **插件**：每个插件是一个独立文件夹，包含 `manifest.json`、`backend/`（Python 代码）和 `frontend/`（静态网页资源）。插件可通过 `backend/libs` 携带纯 Python 依赖。
 - **配置**：主程序配置位于 `.config/app.yaml`，插件设置自动持久化到 `.config/plugins/<插件名>.json`（git 忽略）。设置变更后插件自动重载，无需重启应用。
 
-### 插件通用布局
+### 插件页面骨架与内容
 
-Shell 在 `base.css` 中统一注入以下布局类，**所有插件应直接使用，无需在自己的 CSS 中重复定义**：
+插件页面不再各自实现品牌块、侧栏、导航、顶栏、搜索与状态栏：
 
-| CSS 类                  | 用途                                  |
-| ----------------------- | ------------------------------------- |
-| `.view-body`          | 主内容区容器（flex 列，自动伸缩）     |
-| `.view-toolbar`       | 顶部工具栏（48px，统一背景/边框）     |
-| `.toolbar-group`      | 工具栏内的按钮组（flex 行，8px 间距） |
-| `.view-sub-sidebar`   | 左侧子侧边栏（240px）                 |
-| `.sub-sidebar-header` | 侧边栏标题行                          |
-| `.sub-sidebar-footer` | 侧边栏底部统计区                      |
-| `.view-content`       | 内容滚动区（flex: 1，自动 overflow）  |
+- **页面骨架归壳**：manifest 的 `frontend.chrome` 声明品牌、导航、顶栏、搜索、状态与扩展入口；
+  壳的 `PluginChrome.vue` 渲染骨架并持有侧栏分隔条。壳加载内容页时追加 `?content=1`。
+- **内容页只装内容**：内容 iframe 保留业务 DOM（相册、书架、阅读器、播放舞台等），不得出现
+  `.view-sub-sidebar`、`.view-toolbar`、`.sub-sidebar-brand`、`.obx-nav-item`；这些类与
+  `.plugin-page` / `.plugin-chrome-sidebar` / `.plugin-toolbar` 都只在壳文档里。
+- **设置弹窗归壳**：group-mesh、document-reader、manga-library、media-player 的顶栏「设置」
+  打开壳的 `PluginSettingsModal`（schema 来自插件后端，保存后内容页收到 `settings-saved`）；
+  image-viewer 的设置按目录作用域读写，仍由内容页的 `openSettingsModal()` 渲染。
+- **搜索框归壳**：壳持有输入框并经 `omnibox:query` 下发；内容页用 `omnibox:chrome` 的
+  `search.value` / `search.clear` 回填或清空，group-mesh 没有搜索。
+- **native 面板归壳**：附属插件在 `get_extensions()` 里声明 `native: {url, title}`，壳的
+  `NativePanel` 在宿主内容槽渲染逻辑页提交的 schema blocks；旧壳回落 `embedUrl` 整页内嵌。
+- **统一刷新与 mini EQ 归壳**：`freshness` 控件由 `PluginChrome` 挂载；`status.kind = eq-text`
+  且内容页上报播放中时，壳渲染四柱 EQ。
+- **契约可验收**：`tools/plugin_ui_audit.py` 起真实壳逐插件检查上述骨架、内容页 chrome 标记、
+  导航与标题同步、分隔条 hover 和控制台错误。
+
+主题、组件与消息细节见 [插件页面架构](./plugin-page-architecture.md) 与
+[插件 UI 统一设计参考](./plugin-ui-guide.md)。
 
 ### 设置页
 
 - 左侧分类 + 右侧面板：外观（主题/圆角/导航栏宽度/动效/13 项 CSS 变量颜色）、启动与窗口（首屏页面、启动全屏、WebView2 高性能 GPU 模式）、数据与缓存（数据目录、缩略图缓存占用与清空）、诊断（日志级别与日志目录、插件加载失败清单）、插件（已加载插件清单）、关于（版本/许可/项目主页）。
-- 插件设置项在插件页面里通过工具栏的「设置」按钮打开：壳的 `openSettingsModal()` 按该插件的 `settings_schema` 渲染表单。
+- 插件设置项在插件页面里通过工具栏的「设置」按钮打开：声明 `frontend.chrome` 的插件由壳的 `PluginSettingsModal` 按该插件的 `settings_schema` 渲染（目录字段用壳内共享 `FolderPicker` 浏览与选择本机目录，「网络位置」入口由 `local_only` 决定是否显示），保存成功后壳向内容页发 `settings-saved`，内容页重读设置；image-viewer 仍由内容页的 `openSettingsModal()` 渲染（按目录作用域）。`image-cleaner` / `pixiv-sync` 的 native 设置也由这个壳弹窗接管（入口是 native 顶栏的「设置」动作）。
 
 ### 外观主题
 

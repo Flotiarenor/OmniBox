@@ -6,9 +6,9 @@
   <title>团体组网</title>
   <link rel="stylesheet" href="group-mesh.css">
   <!--
-    布局沿仓库里其它插件的同一套形态（manga-library / media-player / image-cleaner）：
-    常驻侧栏 `.view-sub-sidebar` + 主区 `.view-body > .view-toolbar + .view-content`。
-    这些类由壳注入（plugin-guide §4.1 明确"不应在插件 CSS 里重复定义"），
+    页面骨架（品牌块 / 左栏 / 顶栏 / 搜索 / 状态栏 / 分隔条）由壳按 manifest 的
+    frontend.chrome 渲染；本页只保留内容区（`.view-body > .view-content`）。
+    视图切换、顶栏动作与设置弹窗都走 postMessage。这些壳类不在插件 CSS 里重复定义，
     本文件也**不**手动引入 /shell/*.css —— 壳会把样式与 Bridge 注入每个 HTML 页面
     （file_server 的 _PLUGIN_BOOTSTRAP_SCRIPT）。
 
@@ -21,75 +21,11 @@
 </head>
 <body>
   <div id="app">
-    <!-- 结构与其他插件一致（image-viewer / manga-library / media-player）：
-         侧栏是 #app 的**直接子元素**、跑满全高，工具栏属于**右侧主区**。
-         本插件先前把 `.view-toolbar` 放在 `#app` 下当兄弟节点，于是工具栏横跨整宽、
-         侧栏从工具栏下方才开始 —— 与别的插件一眼就能看出不同。
-         分隔线的归属也按这套结构分开：侧栏只画 border-right（右边缘那一竖条），
-         主区只画 border-bottom（工具栏那一条横线）；两边都画会在交角处叠成 2px。 -->
-    <aside class="gm-side view-sub-sidebar obx-glass"
-           data-obx-splitter="--sub-sidebar-width"
-           data-obx-splitter-min="180"
-           data-obx-splitter-reserve="320"
-           data-obx-splitter-default="240">
-      <div class="gm-brand">
-        <span class="gm-brand-icon"><svg class="obx-icon"><use href="#network"></use></svg></span>
-        <div class="gm-brand-text">
-          <div class="gm-brand-title">团体组网</div>
-          <div class="gm-brand-sub">无中心 · IPv6</div>
-        </div>
-      </div>
-
-      <nav class="gm-nav obx-scroll" id="gm-nav">
-        <div class="gm-nav-label">本机</div>
-        <button type="button" class="obx-nav-item gm-nav-item" data-panel="machine">
-          <span class="gm-nav-icon"><svg class="obx-icon"><use href="#monitor"></use></svg></span><span class="gm-nav-text">身份与节点</span>
-        </button>
-
-        <div class="gm-nav-label">团体</div>
-        <button type="button" class="obx-nav-item gm-nav-item" data-panel="group">
-          <span class="gm-nav-icon"><svg class="obx-icon"><use href="#users"></use></svg></span><span class="gm-nav-text">名单与成员</span>
-        </button>
-        <button type="button" class="obx-nav-item gm-nav-item" data-panel="shares">
-          <span class="gm-nav-icon"><svg class="obx-icon"><use href="#folder"></use></svg></span><span class="gm-nav-text">共享项</span>
-          <span class="gm-nav-count" id="gm-count-shares"></span>
-        </button>
-
-        <div class="gm-nav-label">传输</div>
-        <button type="button" class="obx-nav-item gm-nav-item" data-panel="remote">
-          <span class="gm-nav-icon"><svg class="obx-icon"><use href="#globe"></use></svg></span><span class="gm-nav-text">远端共享</span>
-          <span class="gm-nav-count" id="gm-count-peers"></span>
-        </button>
-
-        <div class="gm-nav-label">关于</div>
-        <button type="button" class="obx-nav-item gm-nav-item" data-panel="roadmap">
-          <span class="gm-nav-icon"><svg class="obx-icon"><use href="#compass"></use></svg></span><span class="gm-nav-text">路线图</span>
-        </button>
-      </nav>
-
-      <div class="gm-side-foot sub-sidebar-footer" id="gm-side-summary">
-        <span class="gm-foot-dot" id="gm-foot-dot"></span>
-        <span class="gm-foot-text" id="gm-foot-text">正在读取状态…</span>
-      </div>
-    </aside>
+    <!-- 页面骨架（品牌块 / 左栏 / 顶栏 / 分隔条 / 状态栏）由壳按 manifest 的
+         frontend.chrome 渲染；本页只保留内容区。视图切换与工具栏动作走 postMessage。 -->
 
     <div class="view-body gm-main">
-      <div class="view-toolbar gm-toolbar">
-        <div class="toolbar-group gm-heading">
-          <div class="gm-heading-text">
-            <div class="gm-title" id="gm-panel-title">团体组网</div>
-            <div class="gm-sub" id="gm-panel-sub">无中心团体：身份、名单、共享节点与加密传输</div>
-          </div>
-        </div>
-        <div class="toolbar-group gm-toolbar-right">
-          <button type="button" id="btn-refresh" class="btn btn-sm">刷新状态</button>
-          <!-- 本机共享根的「同步（被动）/ 校验（手动）」：用量与条目数由共享组件
-               触发的校验算出来并缓存（此前 refresh_share_roots 没有任何调用方，
-               那三个字段从来没被算过）。 -->
-          <div id="gm-freshness"></div>
-          <button type="button" id="btn-settings" class="btn btn-sm"><svg class="obx-icon"><use href="#settings"></use></svg> 设置</button>
-        </div>
-      </div>
+      <!-- 顶栏由壳渲染（标题/副标题、刷新、校验、设置）。本页不再保留第二份工具栏。 -->
 
       <!-- 内核缺失横幅。文案与后端一起改：`kernel.available` 现在恒为 True，
            这条横幅只在真的 import 不到 shell.groupmesh 时才有意义，

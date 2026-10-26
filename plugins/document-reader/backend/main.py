@@ -39,7 +39,10 @@ class DocumentReaderPlugin(
          "placeholder": "输入目录绝对路径，如 D:\\文档",
          "emptyText": "未添加任何目录，将使用默认数据目录（./data）",
          "help": "可添加多个目录（每行一个，第一行为主目录，缓存与阅读进度存在它下面）；"
-                 "每个目录都会递归扫描子目录。改动需管理员（它决定 /file 的允许根）"},
+                 "每个目录都会递归扫描子目录。改动需管理员（它决定 /file 的允许根）",
+         "section": "storage", "sectionTitle": "文档目录",
+         "sectionDescription": "书架扫描的根目录。多个目录每行一个，第一行为主目录（缓存与阅读进度存在它下面）。",
+         "sectionOrder": 10, "order": 10},
         # ===== 朗读（见 backend/tts_engine.py）=====
         # 这一组已迁到左栏的「朗读设置」页（`frontend/js/reader-voice-page.js`）：
         # 引擎三档、端点、Key、模型名、音色与语速、音色候选表与试听、缓存管理都在
@@ -63,10 +66,14 @@ class DocumentReaderPlugin(
              {"label": "edge-tts（神经音色，联网，支持逐字跟随）", "value": "edge"},
              {"label": "OpenAI 兼容端点（本地模型/云服务）", "value": "openai"},
              {"label": "系统离线音色（SAPI5，兜底）", "value": "system"},
-         ]},
+         ],
+         "section": "tts", "sectionTitle": "朗读", "sectionOrder": 40, "order": 10},
         {"key": "tts_order", "label": "自动模式顺序", "type": "text", "default": "openai,edge,system",
          "help": "逗号分隔，留空用默认顺序。音色属于哪一档就用哪一档念，其余档跳过；"
-                 "想省钱只用微软音色：edge,system"},
+                 "想省钱只用微软音色：edge,system",
+         "section": "tts", "sectionTitle": "朗读",
+         "sectionDescription": "朗读引擎顺序与端点参数；更多音色、语速与缓存选项在左栏「朗读设置」页。",
+         "sectionOrder": 40, "order": 20},
         # 端点是"进程会带着 Authorization: Bearer <tts_api_key> 去请求的地址"：
         # 允许任意主体改写它，等于把 owner 配置的凭据交给任意主机（并让本进程成为
         # 可读回内网响应的 SSRF 跳板）。两个键都声明 admin_only，由 PluginBase 统一判定。
@@ -75,22 +82,27 @@ class DocumentReaderPlugin(
          "placeholder": "http://127.0.0.1:8880",
          "help": "只填根地址，程序会请求 <它>/v1/audio/speech。插件不含模型，"
                  "模型由你自己的服务提供（Kokoro-FastAPI / GPT-SoVITS / 云 API 均可）；"
-                 "该地址会收到 Authorization 头，改动需管理员"},
+                 "该地址会收到 Authorization 头，改动需管理员",
+         "section": "tts", "sectionTitle": "朗读", "sectionOrder": 40, "order": 30},
         {"key": "tts_api_key", "label": "端点 API Key", "type": "text", "default": "",
          "secret": True, "admin_only": True, "hidden": True,
-         "help": "本地服务通常不需要；云服务填这里（保存后不明文回显，改动需管理员）"},
+         "help": "本地服务通常不需要；云服务填这里（保存后不明文回显，改动需管理员）",
+         "section": "tts", "sectionTitle": "朗读", "sectionOrder": 40, "order": 40},
         {"key": "tts_model", "label": "端点模型名", "type": "text", "default": "",
          "hidden": True,
-         "placeholder": "留空则不发送 model 字段"},
+         "placeholder": "留空则不发送 model 字段",
+         "section": "tts", "sectionTitle": "朗读", "sectionOrder": 40, "order": 50},
         {"key": "tts_voice", "label": "朗读音色", "type": "text", "default": "zh-CN-XiaoxiaoNeural",
          "hidden": True,
          "help": "edge-tts 用 ShortName（如 zh-CN-XiaoxiaoNeural / zh-CN-YunxiNeural），"
                  "OpenAI 兼容端点用端点自己的音色名（如 vivian、alloy）；"
-                 "两边的候选表在朗读设置页里按引擎列出"},
+                 "两边的候选表在朗读设置页里按引擎列出",
+         "section": "tts", "sectionTitle": "朗读", "sectionOrder": 40, "order": 60},
         {"key": "tts_rate", "label": "朗读语速", "type": "range", "min": -50, "max": 100,
          "step": 5, "default": 100, "hidden": True,
          "help": "百分比：100 是端点允许的倍速上限（约两倍速），听书默认拉满；"
-                 "-50 最慢。再往上端点会开始吞字，所以上限就到这里"},
+                 "-50 最慢。再往上端点会开始吞字，所以上限就到这里",
+         "section": "tts", "sectionTitle": "朗读", "sectionOrder": 40, "order": 70},
         # 预取深度：播放当前句时同时合成后面几句。一句一合成时，短句的音频（几秒）
         # 撑不住一次合成（本地端点约两秒），只预取一句必然在短句处卡住；这个窗口用
         # 前几句的播放时间一起吸收那段开销。调小了卡顿回来，调大了首句等待变长。
@@ -101,15 +113,21 @@ class DocumentReaderPlugin(
          "min": _tts.TTS_PREFETCH_MIN, "max": _tts.TTS_PREFETCH_MAX, "step": 1,
          "default": _tts.TTS_PREFETCH_DEFAULT, "hidden": True,
          "help": "播放当前句时同时合成后面几句。端点跟不上时选 1（退回逐句现取）；"
-                 "改动下一次朗读生效"},
+                 "改动下一次朗读生效",
+         "section": "tts", "sectionTitle": "朗读", "sectionOrder": 40, "order": 80},
         # ===== 阅读偏好 =====
         # 这一组**显示在设置面板里**：它就是"文档阅读维护的设置"，打开文档后正文怎么
         # 显示（字号 / 行距 / 字间距 / 主题 / 配色 / 正文底色 / 翻页方式）都从这里改。
         # 与朗读设置的分工是"正文怎么显示" vs "怎么念出来"，两组互不重叠。
         # 左栏的「阅读设置」弹窗是同一批值的快捷入口，两条路写同一份 save_settings。
-        {"key": "reader_font_size", "label": "正文字号(px)", "type": "number", "default": 16},
-        {"key": "reader_line_height", "label": "行距", "type": "number", "default": 1.8},
-        {"key": "reader_letter_spacing", "label": "字间距(px)", "type": "number", "default": 0},
+        {"key": "reader_font_size", "label": "正文字号(px)", "type": "number", "default": 16,
+         "section": "reading", "sectionTitle": "阅读",
+         "sectionDescription": "字号、行距、字间距与翻页方式；与左栏「阅读设置」弹窗写同一份设置。",
+         "sectionOrder": 20, "order": 10},
+        {"key": "reader_line_height", "label": "行距", "type": "number", "default": 1.8,
+         "section": "reading", "sectionTitle": "阅读", "sectionOrder": 20, "order": 20},
+        {"key": "reader_letter_spacing", "label": "字间距(px)", "type": "number", "default": 0,
+         "section": "reading", "sectionTitle": "阅读", "sectionOrder": 20, "order": 30},
         {"key": "reader_theme", "label": "阅读主题", "type": "select", "default": "auto",
          "options": [
              {"label": "跟随主题", "value": "auto"},
@@ -118,14 +136,20 @@ class DocumentReaderPlugin(
              {"label": "绿色", "value": "green"},
              {"label": "蓝色", "value": "blue"},
              {"label": "自定义", "value": "custom"},
-         ]},
-        {"key": "reader_bg_color", "label": "自定义背景色", "type": "text", "default": "#ffffff"},
-        {"key": "reader_text_color", "label": "自定义文字色", "type": "text", "default": "#1a1a1a"},
+         ],
+         "section": "appearance", "sectionTitle": "正文外观",
+         "sectionDescription": "主题、配色与正文底色。",
+         "sectionOrder": 30, "order": 10},
+        {"key": "reader_bg_color", "label": "自定义背景色", "type": "text", "default": "#ffffff",
+         "section": "appearance", "sectionTitle": "正文外观", "sectionOrder": 30, "order": 20},
+        {"key": "reader_text_color", "label": "自定义文字色", "type": "text", "default": "#1a1a1a",
+         "section": "appearance", "sectionTitle": "正文外观", "sectionOrder": 30, "order": 30},
         {"key": "reader_mode", "label": "阅读模式", "type": "select", "default": "scroll",
          "options": [
              {"label": "连续滚动", "value": "scroll"},
              {"label": "翻页（章内滚动）", "value": "page"},
-         ]},
+         ],
+         "section": "reading", "sectionTitle": "阅读", "sectionOrder": 20, "order": 40},
         # 正文底色：theme 跟随主题 / show 透出壳背景 / solid 指定色彩。
         # 与上面的"阅读主题"正交 —— 主题决定配色，这一项只决定底色是否透明。
         {"key": "reader_bg_mode", "label": "正文底色", "type": "select",
@@ -134,9 +158,11 @@ class DocumentReaderPlugin(
              {"label": "跟随主题", "value": "theme"},
              {"label": "透出壳背景", "value": "show"},
              {"label": "指定色彩", "value": "solid"},
-         ]},
+         ],
+         "section": "appearance", "sectionTitle": "正文外观", "sectionOrder": 30, "order": 40},
         {"key": "reader_body_color", "label": "正文底色色彩", "type": "text",
-         "default": "#ffffff"},
+         "default": "#ffffff",
+         "section": "appearance", "sectionTitle": "正文外观", "sectionOrder": 30, "order": 50},
     ]
 
     CACHE_FILE = '.document_cache.json'

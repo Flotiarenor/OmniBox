@@ -70,16 +70,15 @@ class ReaderVoicePage {
         if (!dom.page) return;
         this._bind();
         // 朗读设置是**主区的内容切换**（与书架网格、正文同一个位置），不是遮挡页：
-        // 左栏的"朗读设置"按钮保持选中，用户可以随时切回书架或正文
+        // 壳左栏的"朗读设置"导航项按上报的 view='voice' 保持选中，用户可以随时切回
+        // 书架或正文（壳发 omnibox:view）。
         dom.page.classList.remove('hidden');
         const shelf = document.getElementById('nr-shelf-view');
         const reader = document.getElementById('nr-reader-view');
         if (shelf) shelf.classList.add('hidden');
         if (reader) reader.classList.add('hidden');
-        document.querySelectorAll('.nr-nav-item').forEach((btn) => {
-            btn.classList.toggle('active', btn.id === 'nr-open-voice');
-        });
         this.app._voicePaneOpen = true;
+        this.app._pushChrome();
         this._load();
         this.app.tts.refreshStatus().then(() => this._renderStatus());
     }
@@ -92,7 +91,7 @@ class ReaderVoicePage {
         const back = this.app._isReaderMode ? 'nr-reader-view' : 'nr-shelf-view';
         const target = document.getElementById(back);
         if (target) target.classList.remove('hidden');
-        this.app._syncNavActive();
+        this.app._pushChrome();
     }
 
     _bind() {

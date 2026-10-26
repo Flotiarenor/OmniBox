@@ -20,8 +20,14 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
+import { createDom } from './dom_stub.mjs';
+
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
     '../../plugins/media-player/frontend');
+// 真实 iframe 由 file_server 的 _PLUGIN_BOOTSTRAP_SCRIPT 在插件脚本之前注入
+// /shell/content-ui.js；夹具必须装载同一份文件，否则渲染路径与线上不一致。
+const CONTENT_UI = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
+    '../../shell/frontend/public/shell/content-ui.js');
 
 const scripts = ['js/utils.js', 'js/app.js', 'js/app-views.js', 'js/app-render.js'];
 
@@ -42,43 +48,46 @@ async function check(name, fn) {
     }
 }
 
-// ---- 环境替身：只保证 _loadCurrentView / 导入 / 重建这几条路径能跑 ----
-function makeElement(id) {
-    const noop = () => { };
-    return {
-        id,
-        innerHTML: '',
-        textContent: '',
-        value: '',
-        disabled: false,
-        dataset: {},
-        style: { setProperty: noop, removeProperty: noop },
-        classList: { add: noop, remove: noop, toggle: noop, contains: () => false },
-        addEventListener: noop,
-        removeEventListener: noop,
-        querySelector: () => null,
-        querySelectorAll: () => [],
-    };
+// ---- 环境替身：结构走 dom_stub，ContentUI 用壳里的真实文件 ----
+// 这里不手写第 6 份 DOM 替身：ContentUI 会建真实子节点（grid/list/row/card），
+// 用 tests/js/dom_stub.mjs 才能让 `querySelector('.cui-media')`、appendChild 与
+// 事件登记按线上语义工作；innerHTML 只做 id 登记这一条已知限制也由它说明。
+function serialize(node) {
+    if (!node || typeof node !== 'object') return '';
+    const tag = node.tagName || 'div';
+    const attrs = [];
+    if (node.id) attrs.push(` id="${node.id}"`);
+    if (node.className) attrs.push(` class="${node.className}"`);
+    for (const key of Object.keys(node.dataset || {})) {
+        attrs.push(` data-${key.replace(/[A-Z]/g, ch => '-' + ch.toLowerCase())}="${node.dataset[key]}"`);
+    }
+    const children = (node.children || []).map(serialize).join('');
+    const inner = (node.__html || '') + children;
+    const text = inner ? inner : String(node.textContent == null ? '' : node.textContent);
+    return `<${tag}${attrs.join('')}>${text}</${tag}>`;
 }
 
 function makeHarness() {
-    const elements = new Map();
+    const { document, makeEl } = createDom();
     const storage = new Map();
     const state = { calls: [], toasts: [], plugin: {}, api: {} };
     const element = (id) => {
-        if (!elements.has(id)) elements.set(id, makeElement(id));
-        return elements.get(id);
+        const found = document.getElementById(id);
+        if (found) return found;
+        const created = makeEl('div');
+        created.id = id;
+        document.body.appendChild(created);
+        return created;
+    };
+    // 页面里写死的容器（内容根与几个勾选框）按需登记；其余 id 由 innerHTML 赋值时登记。
+    const documentShim = {
+        ...document,
+        getElementById: (id) => element(String(id)),
     };
 
     const sandbox = {
-        window: {},
-        document: {
-            getElementById: (id) => element(id),
-            querySelector: () => null,
-            querySelectorAll: () => [],
-            createElement: (tag) => makeElement(tag),
-            addEventListener: () => { },
-        },
+        window: null,
+        document: documentShim,
         localStorage: {
             getItem: (k) => (storage.has(k) ? storage.get(k) : null),
             setItem: (k, v) => storage.set(k, String(v)),
@@ -107,18 +116,22 @@ function makeHarness() {
         setTimeout, clearTimeout, setInterval, clearInterval,
         requestAnimationFrame: () => 0, cancelAnimationFrame: () => { },
     };
+    // 浏览器的 window 就是全局对象：content-ui.js 用 `window.ContentUI = ...` 暴露裸
+    // 全局 ContentUI，夹具只有让 window 指向上下文本身才能复现这一点。
+    sandbox.window = sandbox;
 
     const ctx = vm.createContext(sandbox);
     for (const rel of scripts) {
         vm.runInContext(fs.readFileSync(path.join(FRONTEND, rel), 'utf8'), ctx, { filename: rel });
     }
+    vm.runInContext(fs.readFileSync(CONTENT_UI, 'utf8'), ctx, { filename: 'shell/content-ui.js' });
     return {
         ctx,
         state,
         storage,
         element,
-        document: sandbox.document,
-        content: () => sandbox.document.getElementById('media-content').innerHTML,
+        document: documentShim,
+        content: () => serialize(documentShim.getElementById('media-content')),
         app: () => vm.runInContext('new MediaPlayerApp()', ctx),
         setGlobals: (values) => Object.assign(sandbox, values),
     };
@@ -205,8 +218,13 @@ const LOCAL = [
         h.state.plugin.get_created_playlists = () => ({ success: false, results: [], error: '未登录' });
         h.state.plugin.get_collected_playlists = () => ({ success: false, results: [], error: '未登录' });
         await app._loadCurrentView();
-        assert.match(h.content(), /我的歌单加载失败/);
+        // 统一状态机（ec71794）：未登录是前置条件，走 login 态而不是笼统的「加载失败」；
+        // 仍然必须说清原因、给出重试入口，而不是把空列表当成功缓存下来。
+        assert.match(h.content(), /data-ncm-state="login"/);
+        assert.match(h.content(), /尚未登录网易云音乐/);
         assert.match(h.content(), /未登录/);
+        assert.match(h.content(), /id="ncm-retry-btn"/);
+        assert.doesNotMatch(h.content(), /data-ncm-state="empty"/);
         assert.equal(h.storage.get('ncmCache_ncm-my-playlists'), undefined);
     });
 
@@ -255,13 +273,205 @@ const LOCAL = [
         assert.doesNotMatch(h.content(), /旧缓存歌单/);
     });
 
+    await check('单边失败时显示已有结果，但不把不完整列表写进缓存', async () => {
+        // 「创建成功 + 收藏失败」渲染已有的一半是合理的（总比整页错误强），但把这份
+        // 不完整列表写进缓存，会让缺的那半边在后续进入（甚至重启后）一直消失 ——
+        // 与「失败不写缓存」是同一条不变量，只是失败藏在单边里。
+        const h6 = makeHarness();
+        const app6 = h6.app();
+        app6.currentView = 'ncm-my-playlists';
+        h6.state.plugin.get_status = () => ({ ncm_cli_available: true });
+        h6.state.plugin.get_created_playlists = () => ({
+            success: true, results: [{ id: 'p1', name: '创建的歌单', track_count: 1 }],
+        });
+        h6.state.plugin.get_collected_playlists = () => ({ success: false, results: [], error: '网络超时' });
+        await app6._loadCurrentView();
+        assert.match(h6.content(), /创建的歌单/, '已有的一半仍要显示');
+        assert.equal(h6.storage.get('ncmCache_ncm-my-playlists'), undefined,
+            '单边失败时不能缓存不完整列表');
+
+        h6.state.plugin.get_collected_playlists = () => ({ success: true, results: [{ id: 'p2', name: '收藏的新歌单' }] });
+        await app6._loadCurrentView();
+        assert.ok(app6._currentListData.some(p => p.id === 'p2'),
+            '恢复后要重新拉取，而不是继续读不完整缓存');
+        assert.match(h6.content(), /收藏的新歌单/);
+    });
+
+    await check('「我的歌单」缓存超过 2h 必须重新请求，而不是直接渲染旧列表', async () => {
+        // 缓存只会由本机写入；别的设备增删歌单后本机看不到，必须靠 TTL 兜底。
+        const h7 = makeHarness();
+        const app7 = h7.app();
+        app7.currentView = 'ncm-my-playlists';
+        h7.state.plugin.get_status = () => ({ ncm_cli_available: true });
+        h7.storage.set('ncmCache_ncm-my-playlists', JSON.stringify({
+            v: 2,
+            ts: Date.now() - 2 * 60 * 60 * 1000 - 1000,
+            results: [{ id: 'old', name: '旧缓存歌单', track_count: 1, origin: 'created' }],
+        }));
+        h7.state.calls.length = 0;
+        h7.state.plugin.get_created_playlists = () => ({
+            success: true, results: [{ id: 'p1', name: '创建的歌单', track_count: 2 }],
+        });
+        h7.state.plugin.get_collected_playlists = () => ({ success: true, results: [] });
+
+        await app7._loadCurrentView();
+
+        assert.equal(h7.state.calls.some(c => c.method === 'get_created_playlists'), true,
+            '过期缓存必须重新请求接口');
+        assert.doesNotMatch(h7.content(), /旧缓存歌单/);
+        assert.match(h7.content(), /创建的歌单/);
+        const saved = JSON.parse(h7.storage.get('ncmCache_ncm-my-playlists'));
+        assert.ok(Number.isFinite(saved.ts) && Date.now() - saved.ts < 60 * 1000,
+            '重新拉取后要写入新的 ts，供下一次判断过期');
+    });
+
+    await check('「我的歌单」v2 缓存缺 ts（旧版本写入）按过期处理', async () => {
+        const h8 = makeHarness();
+        const app8 = h8.app();
+        app8.currentView = 'ncm-my-playlists';
+        h8.state.plugin.get_status = () => ({ ncm_cli_available: true });
+        h8.storage.set('ncmCache_ncm-my-playlists', JSON.stringify({
+            v: 2,
+            results: [{ id: 'old', name: '无 ts 缓存歌单', track_count: 1, origin: 'created' }],
+        }));
+        h8.state.calls.length = 0;
+        h8.state.plugin.get_created_playlists = () => ({ success: true, results: [] });
+        h8.state.plugin.get_collected_playlists = () => ({ success: true, results: [] });
+
+        await app8._loadCurrentView();
+
+        assert.equal(h8.state.calls.some(c => c.method === 'get_created_playlists'), true,
+            '没有时间戳的缓存无法判断新鲜度，必须重拉');
+        assert.doesNotMatch(h8.content(), /无 ts 缓存歌单/);
+    });
+
+    await check('「我的歌单」缓存 2h 内仍直接用缓存，不重复请求', async () => {
+        const h9 = makeHarness();
+        const app9 = h9.app();
+        app9.currentView = 'ncm-my-playlists';
+        h9.state.plugin.get_status = () => ({ ncm_cli_available: true });
+        h9.storage.set('ncmCache_ncm-my-playlists', JSON.stringify({
+            v: 2,
+            ts: Date.now() - 60 * 1000,
+            results: [{ id: 'c1', name: '缓存歌单', track_count: 1, origin: 'created' }],
+        }));
+        h9.state.calls.length = 0;
+
+        await app9._loadCurrentView();
+
+        assert.equal(h9.state.calls.some(c => c.method === 'get_created_playlists'), false,
+            '未过期时不该重新请求（TTL 不是禁用缓存）');
+        assert.match(h9.content(), /缓存歌单/);
+    });
+
+    await check('空列表不再回落到「暂无推荐歌单」文案（方法不做死兜底）', () => {
+        // 5 个调用点都在空列表时提前渲染 empty/search；_renderNeteasePlaylists 自己
+        // 再兜底只会把「推荐歌单」文案带回「我的歌单」。删除兜底后空数组只建空列表容器。
+        const h10 = makeHarness();
+        const app10 = h10.app();
+        app10._renderNeteasePlaylists([]);
+        assert.doesNotMatch(h10.content(), /暂无推荐歌单/);
+        app10._renderNeteasePlaylists(undefined);
+        assert.doesNotMatch(h10.content(), /暂无推荐歌单/);
+    });
+
     await check('真的没有歌单时用「我的歌单」的文案，而不是推荐歌单的', async () => {
         h.storage.delete('ncmCache_ncm-my-playlists');
         h.state.plugin.get_created_playlists = () => ({ success: true, results: [] });
         h.state.plugin.get_collected_playlists = () => ({ success: true, results: [] });
         await app._loadCurrentView();
-        assert.match(h.content(), /暂无我的歌单/);
+        // 空态（接口成功但无数据）与错误态互斥：不给重试按钮。
+        assert.match(h.content(), /data-ncm-state="empty"/);
+        assert.match(h.content(), /还没有创建或收藏的歌单/);
         assert.doesNotMatch(h.content(), /暂无推荐歌单/);
+        assert.doesNotMatch(h.content(), /ncm-retry-btn/);
+    });
+}
+
+// ============================================================
+// 2b. 网易云统一状态机：六个分支互斥，错误态可重试、空态/搜索无结果不加重试
+// ============================================================
+{
+    const stateCount = (html) => (html.match(/data-ncm-state="/g) || []).length;
+
+    const h = makeHarness();
+    const app = h.app();
+    app.currentView = 'ncm-my-playlists';
+    h.state.plugin.get_status = () => ({ ncm_cli_available: true });
+
+    await check('通用接口错误：error 态带 role=alert、原始原因与重试', async () => {
+        h.state.plugin.get_created_playlists = () => ({ success: false, results: [], error: '网络超时' });
+        h.state.plugin.get_collected_playlists = () => ({ success: false, results: [], error: '网络超时' });
+        await app._loadCurrentView();
+        const html = h.content();
+        assert.match(html, /data-ncm-state="error"/);
+        assert.match(html, /empty-state--error/);
+        assert.match(html, /role="alert"/);
+        assert.match(html, /网易云数据加载失败/);
+        assert.match(html, /网络超时/);
+        assert.match(html, /id="ncm-retry-btn"/);
+        assert.equal(stateCount(html), 1, '一次渲染只能有一个状态标记');
+    });
+
+    await check('未登录：login 态与 error 态互斥（不是空白也不是加载失败）', async () => {
+        h.state.plugin.get_created_playlists = () => ({ success: false, results: [], error: '未登录' });
+        h.state.plugin.get_collected_playlists = () => ({ success: false, results: [], error: '未登录' });
+        await app._loadCurrentView();
+        const html = h.content();
+        assert.match(html, /data-ncm-state="login"/);
+        assert.doesNotMatch(html, /data-ncm-state="error"/);
+        assert.match(html, /role="status"/);
+        assert.equal(stateCount(html), 1);
+    });
+
+    await check('API key 未配置：api-key 态给出配置原因且不贴 CLI 命令', async () => {
+        h.state.plugin.get_created_playlists = () => ({ success: false, results: [], error: 'API key 未设置，执行 npm install -g @music163/ncm-cli 后 config set' });
+        h.state.plugin.get_collected_playlists = () => ({ success: false, results: [], error: 'API key 未设置' });
+        await app._loadCurrentView();
+        const html = h.content();
+        assert.match(html, /data-ncm-state="api-key"/);
+        assert.match(html, /网易云 API 未配置/);
+        assert.doesNotMatch(html, /npm install|ncm-cli|config set/, '状态页不得回显安装/配置原始指令');
+        assert.match(html, /id="ncm-retry-btn"/);
+    });
+
+    await check('ncm-cli 缺失：cli-missing 态用自己的重试文案，不回显安装命令', () => {
+        app._renderNeteaseCliMissing({ error: 'ncm-cli 未安装\nnpm install -g @music163/ncm-cli' });
+        const html = h.content();
+        assert.match(html, /data-ncm-state="cli-missing"/);
+        assert.match(html, /网易云组件不可用/);
+        assert.match(html, /重新检测/);
+        assert.doesNotMatch(html, /npm install|ncm-cli/);
+    });
+
+    await check('搜索无结果：search 态不加重试', async () => {
+        app.currentView = 'ncm-playlists';
+        app.searchQuery = '找不到';
+        h.state.plugin.search_playlist = () => ({ success: true, results: [] });
+        await app._loadCurrentView();
+        const html = h.content();
+        assert.match(html, /data-ncm-state="search"/);
+        assert.match(html, /没有匹配的歌单/);
+        assert.doesNotMatch(html, /ncm-retry-btn/);
+        assert.equal(stateCount(html), 1);
+    });
+
+    await check('搜索接口失败：error 态带重试，而不是当成 0 个结果', async () => {
+        app.currentView = 'ncm-playlists';
+        app.searchQuery = '报错';
+        h.state.plugin.search_playlist = () => ({ success: false, results: [], error: '接口 500' });
+        await app._loadCurrentView();
+        const html = h.content();
+        assert.match(html, /data-ncm-state="error"/);
+        assert.match(html, /接口 500/);
+        assert.match(html, /id="ncm-retry-btn"/);
+    });
+
+    await check('二级页错误态的重试回调由调用方接管', () => {
+        let retried = 0;
+        app._renderNcmError('网络超时', () => { retried += 1; });
+        h.element('ncm-retry-btn').click();
+        assert.equal(retried, 1, '重试按钮应调用传入的回调，而不是回到一级视图加载');
     });
 }
 
@@ -340,7 +550,11 @@ const LOCAL = [
         const app5 = h5.app();
         let header = null;
         app5._renderDetail = (items, head) => { header = head; };
-        h5.state.plugin.get_playlist_tracks = () => ({ success: true, results: [] });
+        // 空歌单现在是「歌单为空」空态（ec71794），不再进详情页；给一条曲目走详情路径。
+        h5.state.plugin.get_playlist_tracks = () => ({
+            success: true,
+            results: [{ id: 's1', name: '曲目', artists: ['歌手'], duration: 1000 }],
+        });
 
         await app5.openNeteasePlaylist({ id: 'p1', name: '收藏单', origin: 'collected' });
         assert.equal(header.label, '收藏的歌单');
