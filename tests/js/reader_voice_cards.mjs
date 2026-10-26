@@ -17,13 +17,16 @@ const FRONTEND = path.resolve(HERE, '..', '..', 'plugins', 'document-reader', 'f
 const { document, makeEl } = createDom();
 globalThis.document = document;
 globalThis.window = { Icons: { html: () => '' } };
+// 设置内容可改：预取深度那一组用例要分别试"没配过 / 配了 / 配坏了"
+let storedSettings = {
+  tts_engine: 'auto', tts_base_url: 'http://192.168.31.4:8100',
+  tts_voice: 'vivian', tts_rate: 0,
+};
 globalThis.Bridge = {
   calls: [],
   async call(method, ...args) {
     this.calls.push({ method, args });
-    if (method === 'get_settings') {
-      return { tts_engine: 'auto', tts_base_url: 'http://192.168.31.4:8100', tts_voice: 'vivian', tts_rate: 0 };
-    }
+    if (method === 'get_settings') return storedSettings;
     if (method === 'save_settings') return { success: true };
     return {};
   },
@@ -33,7 +36,8 @@ globalThis.Toast = { info() {}, error() {}, success() {} };
 // 页面契约：两张卡片、两个列表容器都必须真实存在（改 UI 时先在这里断）
 const html = fs.readFileSync(path.join(FRONTEND, 'index.html'), 'utf8');
 for (const id of ['nr-voice-name', 'nr-voice-card-edge', 'nr-voice-list-edge',
-                  'nr-voice-card-endpoint', 'nr-voice-list-endpoint']) {
+                  'nr-voice-card-endpoint', 'nr-voice-list-endpoint',
+                  'nr-voice-prefetch']) {
   assert.match(html, new RegExp(`id="${id}"`), `index.html 缺少 #${id}`);
 }
 for (const title of ['edge-tts 音色', 'OpenAI 兼容端点音色']) {
@@ -50,7 +54,15 @@ for (const [tag, id, cls] of [
   ['input', 'nr-voice-model', ''],
   ['input', 'nr-voice-rate', ''],
   ['span', 'nr-voice-rate-value', ''],
+  ['select', 'nr-voice-prefetch', ''],
   ['p', 'nr-voice-status', ''],
+  ['button', 'nr-voice-refresh', 'btn btn-sm'],
+  ['button', 'nr-voice-test', 'btn'],
+  ['span', 'nr-voice-test-result', 'nr-voice-hint'],
+  ['code', 'nr-voice-cache-path', 'nr-voice-path'],
+  ['span', 'nr-voice-cache-size', 'nr-voice-hint'],
+  ['button', 'nr-voice-cache-open', 'btn'],
+  ['button', 'nr-voice-cache-clear', 'btn btn-danger'],
   ['section', 'nr-voice-card-edge', 'nr-voice-card hidden'],
   ['div', 'nr-voice-list-edge', 'nr-voice-list'],
   ['section', 'nr-voice-card-endpoint', 'nr-voice-card hidden'],
@@ -61,11 +73,19 @@ for (const [tag, id, cls] of [
   el.id = id;
   document.body.appendChild(el);
 }
+// 下拉框的候选在 index.html 里，替身不解析它：按页面上的 8 档补一份（_load 要按候选校验）
+document.getElementById('nr-voice-prefetch').options =
+  Array.from({ length: 8 }, (_, index) => ({ value: String(index + 1) }));
 
 const src = fs.readFileSync(path.join(FRONTEND, 'js', 'reader-voice-page.js'), 'utf8');
+// ReaderVoicePage 只用 Bridge/Toast/document，直接 eval 这个类（连同类上方的常量：
+// 图标函数、音色兜底表、预取深度默认值都在那里）
+const constStart = src.indexOf('const nrVoiceIcon');
 const clsStart = src.indexOf('class ReaderVoicePage');
-// ReaderVoicePage 只用 Bridge/Toast/document，直接 eval 这个类（跳过模块顶部的图标函数）
-const ReaderVoicePage = new Function(`${src.slice(clsStart)}; return ReaderVoicePage;`)();
+assert.ok(constStart >= 0 && clsStart > constStart,
+  'reader-voice-page.js 顶部的常量或类被改名了：本用例的切片需要同步');
+const ReaderVoicePage = new Function(
+  `${src.slice(constStart, clsStart)}; ${src.slice(clsStart)}; return ReaderVoicePage;`)();
 const el = (id) => document.getElementById(id);
 
 // 真实后端数据（可选）：由 `python tmp_fixture.py` 一类的方式导出 `tts_voices` 的原始回应，
@@ -91,7 +111,15 @@ if (fixturePath && fs.existsSync(fixturePath)) {
     `端点 ${ENDPOINT_TABLE.voices.length} 个，端点 unavailable=${ENDPOINT_TABLE.unavailable}）`);
 }
 
-const app = { tts: { status: null, refreshStatus: async () => {} }, _isReaderMode: false };
+const app = {
+  tts: {
+    status: null,
+    lastDepth: null,
+    async refreshStatus() {},
+    setPrefetchDepth(value) { this.lastDepth = value; },
+  },
+  _isReaderMode: false,
+};
 const voicePage = new ReaderVoicePage(app);
 
 /**
@@ -202,5 +230,29 @@ assert.ok(el('nr-voice-list-endpoint').children[endpointVoices.length - 1].class
 assert.ok(!firstItem('nr-voice-list-edge').classList.contains('active'), '另一档不该有选中态');
 assert.ok(!el('nr-voice-list-endpoint').children[0].classList.contains('active'),
   '同档里的其它音色不该有选中态');
+
+// 6) 预取深度：下拉框读的是 tts_prefetch，只认页面上写着的候选
+const prefetchSelect = el('nr-voice-prefetch');
+await voicePage._load();
+assert.equal(String(prefetchSelect.value), '5', '没配过时应显示默认深度 5');
+
+storedSettings = { ...storedSettings, tts_prefetch: 3 };
+await voicePage._load();
+assert.equal(String(prefetchSelect.value), '3', '配了 3 句就显示 3 句');
+
+// 候选之外的值（手改 JSON / 旧版本遗留）回落到默认，否则下次保存会写进 NaN
+storedSettings = { ...storedSettings, tts_prefetch: 99 };
+await voicePage._load();
+assert.equal(String(prefetchSelect.value), '5', '候选之外的深度应回落到默认值');
+
+// 7) 控件接线：改下拉框要**立刻**交给播放器并按离散控件立即落盘（不等防抖保存）
+voicePage._bind();
+el('nr-voice-prefetch').value = '3';
+const changeHandlers = el('nr-voice-prefetch').handlers.change || [];
+assert.equal(changeHandlers.length, 1, '下拉框必须绑上 change 处理器');
+changeHandlers.forEach((handler) => handler({ target: el('nr-voice-prefetch') }));
+assert.equal(app.tts.lastDepth, 3, '新深度要先落到播放器，下一次朗读才用得上');
+const prefetchSaved = Bridge.calls.filter((call) => call.method === 'save_settings').pop();
+assert.deepEqual(prefetchSaved.args[0], { tts_prefetch: 3 }, '深度要同步落盘');
 
 console.log('voice_page_cards: OK');

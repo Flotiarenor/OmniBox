@@ -2,14 +2,16 @@
  * group-mesh 插件前端。
  *
  * 只做四件事：读状态、切面板、渲染、把用户动作转成 Bridge.call。所有判定都在后端 ——
- * 前端不持有任何"谁能做什么"的规则（设计文档 §6.3：客户端隐藏按钮不构成授权）。
+ * 前端不持有任何"谁能做什么"的规则（客户端隐藏按钮不构成授权）。
  *
- * 界面形态与仓库里其它插件一致（manga-library / media-player / image-cleaner）：
- * 壳的 `.view-sub-sidebar` 常驻侧栏 + `.view-body > .view-toolbar + .view-content`。
+ * 页面骨架（品牌块 / 左栏 / 顶栏 / 状态栏 / 分隔条）由壳按 manifest 的
+ * `frontend.chrome` 渲染；壳给内容 iframe 追加 `?content=1`，本页只有内容区
+ * （`.view-body > .view-content`），不再包含 `.view-sub-sidebar` / `.view-toolbar`。
  * 面板切换是**纯显隐**（改 `data-active`，不销毁 DOM）：与壳"iframe 常驻、切走只是
  * v-show"的策略一致，也让所有 id 在任何面板下都存在，渲染函数不必关心当前在哪一页。
  * 面板的标题/副标题写在 index.html 的 `data-title` / `data-sub` 上（单一来源），
- * 新增一个面板 = 侧栏加一个 `button[data-panel]` + 一个 `section[data-panel]`。
+ * 新增一个面板 = manifest 的 `chrome.nav` 加一项 + 这里加一个同 id 的
+ * `section[data-panel]`（壳点击导航项后发 `omnibox:view`）。
  *
  * 远端分片（设备 → 共享项 → 目录 → 取回/上传）在 js/remote.js，由 init() 注入回调；
  * index.html 里 remote.js 必须排在 app.js 之前（契约见 tests/js/plugin_asset_contract.mjs）。
@@ -19,12 +21,42 @@
 
   var state = {
     status: null,
-    panel: 'machine'
+    panel: 'machine',
+    // 壳渲染页面骨架后，这些值通过 postMessage 上报（不再写自己的侧栏/顶栏 DOM）
+    statusText: '正在读取状态…',
+    statusState: 'idle',
+    sharesCount: 0,
+    peersCount: 0
   };
 
   // ── 工具 ────────────────────────────────────────────────────────────────
 
   function el(id) { return document.getElementById(id); }
+
+  // ── 与壳的页面骨架通信 ────────────────────────────────────────────────
+  // chrome（品牌块/左栏/顶栏/状态栏）由壳渲染；本页只上报标题、徽标与状态。
+  function postHost(payload) {
+    if (window.parent === window) { return; }
+    try { window.parent.postMessage(payload, location.origin); } catch (e) { /* 壳不在同源时不发 */ }
+  }
+
+  function sectionOf(name) {
+    return document.querySelector('#gm-panels > .gm-panel[data-panel="' + name + '"]');
+  }
+
+  function pushChrome() {
+    var section = sectionOf(state.panel);
+    var badges = {};
+    if (state.sharesCount) { badges.shares = String(state.sharesCount); }
+    if (state.peersCount) { badges.remote = String(state.peersCount); }
+    postHost({
+      type: 'omnibox:chrome',
+      title: section ? (section.getAttribute('data-title') || '团体组网') : '团体组网',
+      subtitle: section ? (section.getAttribute('data-sub') || '') : '',
+      badges: badges,
+      status: { text: state.statusText, state: state.statusState }
+    });
+  }
 
   function toast(message, isError) {
     // 壳提供 Toast；独立打开本页时回退到自绘提示
@@ -74,7 +106,7 @@
   // 弹窗用壳的 `.modal` + `.modal.active`（base.css）。
   // 不再自绘 `.gm-modal[data-open]`：壳的默认态没有任何 display 声明，因此不存在
   // "作者样式的 display:flex 盖掉浏览器给 [hidden] 的 display:none"那个级联陷阱
-  // （事故记录见 docs/group-mesh-design.md，以及本插件 CSS 顶部注释）。
+  // （事故记录见本插件 CSS 顶部注释）。
   function openModal(id) {
     var node = el(id);
     if (node) { node.classList.add('active'); }
@@ -125,18 +157,9 @@
       section.setAttribute('data-active',
         section.getAttribute('data-panel') === name ? 'true' : 'false');
     });
-    Array.prototype.forEach.call(document.querySelectorAll('#gm-nav .gm-nav-item'), function (item) {
-      item.setAttribute('data-active', item.getAttribute('data-panel') === name ? 'true' : 'false');
-    });
-    var section = document.querySelector('#gm-panels > .gm-panel[data-panel="' + name + '"]');
-    if (section) {
-      var title = el('gm-panel-title');
-      var sub = el('gm-panel-sub');
-      if (title) { title.textContent = section.getAttribute('data-title') || '团体组网'; }
-      if (sub) { sub.textContent = section.getAttribute('data-sub') || ''; }
-    }
     var content = el('gm-content');
     if (content) { content.scrollTop = 0; }
+    pushChrome();
   }
 
   // ── 渲染 ────────────────────────────────────────────────────────────────
@@ -245,7 +268,7 @@
         escapeHtml(stale.expired_days) + ' 天</span> 仅提示，不阻断通信</p>';
     }
 
-    // 名单过期只是提示（设计 §5.4：软件不做版本强制），因此顶边用 warn 而不是 error
+    // 名单过期只是提示（软件不做版本强制），因此顶边用 warn 而不是 error
     cardOf('roster-body', stale.expired ? 'gm-card-warn' : 'gm-card-ok');
     body.innerHTML =
       '<dl class="gm-kv">' +
@@ -275,8 +298,7 @@
 
   function renderShares(status) {
     var body = el('shares-body');
-    var count = el('gm-count-shares');
-    if (count) { count.textContent = status.shares.length ? String(status.shares.length) : ''; }
+    state.sharesCount = status.shares.length;
 
     if (!status.shares.length) {
       cardOf('shares-body', 'gm-card-muted');
@@ -390,13 +412,9 @@
     }).join('');
   }
 
-  /** 侧栏底部摘要：节点在不在跑、本机在哪个团体、名单第几版。
-      这几条是"我到底能不能被别人连上"的最小集合，因此常驻可见。 */
+  /** 状态栏摘要：节点在不在跑、本机在哪个团体、名单第几版。
+      这几条是"我到底能不能被别人连上"的最小集合；壳渲染状态栏，这里只上报。 */
   function renderSideSummary(status) {
-    var dot = el('gm-foot-dot');
-    var text = el('gm-foot-text');
-    if (!dot || !text) { return; }
-
     var node = status.node || {};
     var roster = status.roster;
     var identity = status.identity;
@@ -420,9 +438,9 @@
       parts.push(roster.group + ' · v' + roster.version);
       if ((roster.stale || {}).expired) { level = level === 'ok' ? 'warn' : level; }
     }
-    dot.setAttribute('data-state', level);
-    text.textContent = parts.join(' · ');
-    text.title = parts.join(' · ');
+    state.statusText = parts.join(' · ');
+    state.statusState = level;
+    pushChrome();
   }
 
   /** 首屏：get_status 还没回来时给骨架，而不是几张空卡片。 */
@@ -433,8 +451,9 @@
       body.innerHTML = '<span class="gm-skeleton-line obx-skeleton"></span>' +
         '<span class="gm-skeleton-line obx-skeleton" style="width:80%"></span>';
     });
-    var summary = el('gm-foot-text');
-    if (summary) { summary.textContent = '正在读取状态…'; }
+    state.statusText = '正在读取状态…';
+    state.statusState = 'idle';
+    pushChrome();
   }
 
   // ── 动作 ────────────────────────────────────────────────────────────────
@@ -451,22 +470,9 @@
     };
   }
 
-  // ── 统一刷新（同步 / 校验）────────────────────────────────────────────
-  //
-  // 本机共享根的用量与条目数是**派生数据**：由共享组件触发的校验算出来写进后端
-  // 缓存，卡片再读它。旧实现把 `refresh_share_roots` 注册了却没有任何调用方，
-  // 于是 used_bytes / entries / scanned_at 三个字段从来没被算过。
-  function mountFreshness() {
-    var host = el('gm-freshness');
-    if (!host || typeof window.Freshness === 'undefined') { return; }
-    if (typeof Bridge.callSystem !== 'function') { return; }
-    state.freshness = window.Freshness.mount({
-      plugin: 'group-mesh',
-      container: host,
-      unit: '项',
-      onChange: function () { refresh(); }
-    });
-  }
+  // ── 设置 ────────────────────────────────────────────────────────────────
+  // 设置弹窗由壳渲染（页面级弹窗要盖住宿主侧栏），保存后壳发 `settings-saved`，
+  // 这里重读状态 —— 端口/绑定/下载目录变了，停在旧画面会让人以为没生效。
 
   function refresh() {
     return call('get_status').then(function (status) {
@@ -480,10 +486,9 @@
       }
       return status;
     }).catch(function (err) {
-      var summary = el('gm-foot-text');
-      if (summary) { summary.textContent = '读取状态失败'; }
-      var dot = el('gm-foot-dot');
-      if (dot) { dot.setAttribute('data-state', 'error'); }
+      state.statusText = '读取状态失败';
+      state.statusState = 'error';
+      pushChrome();
       showError(err);
     });
   }
@@ -498,23 +503,10 @@
   // ── 绑定 ────────────────────────────────────────────────────────────────
 
   function bind() {
-    el('btn-refresh').addEventListener('click', refresh);
-
-    el('btn-settings').addEventListener('click', function () {
-      if (typeof window.openSettingsModal !== 'function') {
-        toast('设置面板需要从 OmniBox 壳内打开', true);
-        return;
-      }
-      // 保存后自己 refresh()：壳在保存后**不会**通知插件页（`omnibox:settings-changed`
-      // 只有接收方，仓库里没有发送方），不刷新的话端口/绑定这些值会停在旧画面上。
-      window.openSettingsModal({ title: '团体组网设置' }).then(function (saved) {
-        if (saved) { refresh(); }
-      });
-    });
-
-    Array.prototype.forEach.call(document.querySelectorAll('#gm-nav .gm-nav-item'), function (item) {
-      item.addEventListener('click', function () { setPanel(item.getAttribute('data-panel')); });
-    });
+    // 顶栏动作由壳渲染，点击后经 omnibox:action 回到这里；这两个按钮只用于
+    // 脱离壳直接打开内容页时的手工调试，不存在时跳过。
+    var refreshBtn = el('btn-refresh');
+    if (refreshBtn) { refreshBtn.addEventListener('click', refresh); }
 
     el('btn-add-share').addEventListener('click', function () {
       var shareId = el('share-id').value.trim();
@@ -593,9 +585,23 @@
     });
   }
 
+  // 与壳的页面骨架握手：视图切换、顶栏动作都从壳发过来；标题/徽标/状态反向上报。
+  function bindHost() {
+    window.addEventListener('message', function (event) {
+      if (event.origin !== location.origin || event.source !== window.parent) { return; }
+      var data = event.data || {};
+      if (data.type === 'omnibox:view' && data.view) { setPanel(data.view); return; }
+      if (data.type === 'omnibox:action') {
+        if (data.action === 'refresh') { refresh(); }
+        else if (data.action === 'settings-saved') { refresh(); }
+      }
+    });
+    postHost({ type: 'omnibox:ready' });
+  }
+
   function init() {
     bind();
-    mountFreshness();
+    bindHost();
     setPanel(state.panel);
     renderLoading();
     // 远端分片（js/remote.js）：把本文件的能力注入进去，它自己不碰后端与提示。
@@ -608,10 +614,10 @@
         escapeHtml: escapeHtml,
         openModal: openModal,
         closeModal: closeModal,
-        // 设备数由远端分片拿到后回报，侧栏计数不必自己去连对端
+        // 设备数由远端分片拿到后回报；壳读这个值渲染侧栏徽标
         onPeersLoaded: function (peers) {
-          var count = el('gm-count-peers');
-          if (count) { count.textContent = peers && peers.length ? String(peers.length) : ''; }
+          state.peersCount = peers && peers.length ? peers.length : 0;
+          pushChrome();
         }
       });
     }

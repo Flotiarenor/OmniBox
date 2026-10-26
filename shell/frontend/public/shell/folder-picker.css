@@ -57,6 +57,10 @@
 .iv-roots-empty { font-size: 12px; color: var(--text-muted); }
 
 /* ===== 目录选择器弹窗 ===== */
+.iv-picker-box { width: 520px; max-width: 100%; }
+.iv-picker-box--sm { width: 420px; }
+.iv-picker-box--wide { width: 640px; }
+
 .iv-dirbrowser { flex: 0 0 auto; padding: 14px 20px 0; }
 .iv-dirbrowser-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
 .iv-dirbrowser-path {

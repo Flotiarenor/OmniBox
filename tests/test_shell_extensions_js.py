@@ -2,8 +2,9 @@
 
 背景：扩展入口的高亮原先由每个宿主自己写（各自两次 className 查询），media-player 只
 写了单向 —— 先点「网易云登录」再点「全部音乐」两个同时高亮；image-viewer 两个方向都写
-了才没暴露。现在 `renderExtensions` 统一维护（点扩展清宿主侧栏项、宿主切视图调
-`clearActive()`），本用例直接测组件这一层。
+了才没暴露。现在由壳的 `PluginExtensions` 渲染与维护互斥；共享层不再提供
+`renderExtensions`（死亡守卫在 `tests/js/shell_extensions_active.mjs`，其中包含对
+`base.js` 不得再定义/挂回它的断言）。
 
 运行：
     python -m unittest tests.test_shell_extensions_js -v

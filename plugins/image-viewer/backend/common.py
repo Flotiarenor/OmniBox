@@ -32,26 +32,74 @@ is_safe_path = _fs.is_safe_path
 list_directory = _fs.list_directory
 natural_sort_key = _fs.natural_sort_key
 pixiv_number = _fs.pixiv_number
+pixiv_page_index = _fs.pixiv_page_index
 stat_mtime = _fs.stat_mtime
 
 
 def pixiv_sort(entries, name_fn, reverse, fuzzy=False):
-    """Pixiv 排序：前导数字条目按数字大小排（方向生效），
+    """Pixiv 作品排序：前导数字条目按作品号排（方向生效），
     无前导数字条目按自然名排并始终位于最后。
 
-    `fuzzy`（模糊匹配）只改**同号/无号条目之间**的比较键：关掉时同号内按
-    文件名字符串自然序，打开时按整名的自然序（数字段比数字、其余段比文字），
-    于是 `2024-05-10` < `2024-05-24 日富美` 这类「先数字再文字」的条目也能排对。
+    **方向只作用于作品号**，同一作品号内部另按两类定序：
+
+    - 页序号（`pixiv_page_index` 认得的 `800_p0` / `800_p1` / `800_p10`）：
+      恒按页号升序 —— 倒序决定作品先后，不翻转作品内部的页序；
+    - 其余条目：整名参与比较并跟随方向 —— 模糊匹配下同号只说明前导数字相同
+      （`2024-05-10` 与 `2024-05-24 日富美` 是两个作品），要按整名倒序。
+
+    `fuzzy`（模糊匹配）只改**同号/无号条目之间**的比较键：关掉时按文件名字符串
+    自然序，打开时按整名的自然序（数字段比数字、其余段比文字），于是
+    `2024-05-10` < `2024-05-24 日富美` 这类「先数字再文字」的条目也能排对。
     """
     numeric, other = [], []
     for it in entries:
         name = name_fn(it)
         num = pixiv_number(name)
-        key = (num, natural_sort_key(name if fuzzy else Path(name).name))
-        (numeric if num is not None else other).append((key, it))
+        name_key = natural_sort_key(name if fuzzy else Path(name).name)
+        if num is None:
+            other.append((name_key, it))
+        else:
+            numeric.append((num, name_key, pixiv_page_index(name), it))
+    # 先按作品号定作品先后（方向生效），再逐个同号组定组内顺序
     numeric.sort(key=lambda t: t[0], reverse=reverse)
+    ordered = []
+    start = 0
+    while start < len(numeric):
+        end = start + 1
+        while end < len(numeric) and numeric[end][0] == numeric[start][0]:
+            end += 1
+        ordered.extend(_same_work_order(numeric[start:end], reverse))
+        start = end
     other.sort(key=lambda t: t[0], reverse=reverse)
-    return [it for _, it in numeric] + [it for _, it in other]
+    return [it for *_num_key, it in ordered] + [it for _key, it in other]
+
+
+def _same_work_order(group, reverse):
+    """同一个作品号内的条目顺序：页序号升序在前，其余条目按名字（方向生效）。"""
+    pages = sorted((t for t in group if t[2] is not None), key=lambda t: t[2])
+    named = sorted((t for t in group if t[2] is None), key=lambda t: t[1], reverse=reverse)
+    return pages + named
+
+
+def is_pixiv_work_dir(dir_rel_path, entries, name_fn, has_cards=False) -> bool:
+    """目录自身是不是一个「作品」（里面是页序号，而不是作品列表）。
+
+    Pixiv 树是两层：作者目录（名字不带作品号，里面每个条目是一个作品）→ 作品
+    目录（名字就是作品号，里面是 `800_p0` / `800_p1` 这样的页）。判据取目录名的
+    前导数字，再用里面有没有子目录、条目号是什么校正：
+
+    - 纯图片目录（`has_cards` 为假）：目录名带作品号 → 这一层是页；整层没有
+      作品号 → 普通图片相册，两种都按名字升序展示；只有「目录名无号、条目有号」
+      才是平铺的单图作品列表（`pixiv/艺术家/<作品id>.jpg`）。
+    - 有子目录：条目号全等于目录号才算「同一个作品的页」，其余都是作品列表 ——
+      `2024 旅行`（里面有 800 / 900 两个作品）、`96neko`、`40原`（画师名恰好
+      以数字开头，子目录是作品）因此仍按作品列表处理。
+    """
+    own = pixiv_number(Path(dir_rel_path).name)
+    nums = {num for num in (pixiv_number(name_fn(e)) for e in entries) if num is not None}
+    if not has_cards:
+        return own is not None or not nums
+    return own is not None and nums == {own}
 
 
 def pick_cover(images: List[Dict], pixiv: bool, name_fn=lambda img: img['rel']) -> str:

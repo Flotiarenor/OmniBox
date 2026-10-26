@@ -13,6 +13,54 @@
   },
   "frontend": {
     "entry": "frontend/index.html",
-    "route": "/document-reader"
+    "route": "/document-reader",
+    "chrome": {
+      "brand": {
+        "icon": "icon:book-open",
+        "title": "文档阅读",
+        "subtitle": "Reader"
+      },
+      "nav": [
+        {
+          "section": "浏览",
+          "id": "browse",
+          "items": [
+            { "id": "all", "label": "全部文档", "icon": "icon:library" },
+            { "id": "recent", "label": "最近阅读", "icon": "icon:history" },
+            { "id": "marks", "label": "书签", "icon": "icon:star" },
+            { "id": "voice", "label": "朗读设置", "icon": "icon:volume-2" }
+          ]
+        },
+        {
+          "section": "当前文档",
+          "id": "reader-tools",
+          "visible": false,
+          "items": [
+            { "id": "toc", "label": "目录", "icon": "icon:list" },
+            { "id": "read-settings", "label": "阅读设置", "icon": "icon:sliders-horizontal" }
+          ]
+        }
+      ],
+      "toolbar": [
+        {
+          "id": "back",
+          "label": "返回",
+          "icon": "icon:arrow-left",
+          "placement": "leading",
+          "visible": false
+        },
+        {
+          "id": "settings",
+          "label": "设置",
+          "icon": "icon:settings"
+        }
+      ],
+      "search": {
+        "placeholder": "搜索书名、作者…",
+        "enabled": true
+      },
+      "status": true,
+      "freshness": { "unit": "本" }
+    }
   }
 }

@@ -458,11 +458,15 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
     def _click_row(self, index: int) -> None:
         self._click(f'#mp-detail-list .mp-row[data-idx="{index}"]')
 
-    def _open_playlist(self, query: str = '') -> None:
-        """按 fragment 配置加载插件页，进入歌单视图并等待列表渲染。
+    def _open_playlist(self, query: str = '', playlist_id: str = 'pl1') -> None:
+        """按 fragment 配置加载插件页，打开指定歌单并等待列表渲染。
 
         地址带自增的 query：只改 fragment 时浏览器不会重新加载文档，插件页不会重新初始化。
         fragment 用单参数 `#cfg=键:值|键:值`（见 STUB_SCRIPT 注释）。
+
+        歌单入口已迁到壳的「我的歌单」导航组，内容页不再渲染 `.mp-playlist-item`；
+        本文件直接加载内容页，因此走壳的同一条消息路径（`omnibox:view:
+        playlist:<id>`），验证的仍是内容页按 id 打开歌单并上报导航的逻辑。
         """
         type(self)._nav_seq += 1
         self.driver.get(f'{self.base_url}{PLUGIN_ENTRY}?case={type(self)._nav_seq}#cfg={query}')
@@ -472,8 +476,13 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
                 " && mediaPlayerApp.playlists.playlists.length);")),
             '插件页未初始化完成',
         )
-        self._click('.mp-playlist-item[data-pl-id="pl1"]')
-        self._wait(lambda: len(self._rows()) == len(TITLES), '歌单列表未渲染出全部条目')
+        self.driver.execute_script(
+            "window.dispatchEvent(new MessageEvent('message', {"
+            "  data: {type: 'omnibox:view', view: 'playlist:' + arguments[0]},"
+            "  origin: location.origin, source: window}));",
+            playlist_id)
+        expected = len(TITLES) if playlist_id == 'pl1' else 2
+        self._wait(lambda: len(self._rows()) == expected, '歌单列表未渲染出应有的条目')
 
     def _wait_playing(self, title: str, timeout: float = NAV_TIMEOUT) -> dict:
         start = time.time()
@@ -680,9 +689,9 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
         for button_id, panel_id in (('btn-eq', 'eq-panel'), ('btn-queue', 'queue-popup')):
             self._click_center(f'#{button_id}')
             self.assertEqual(self._panel_state(panel_id), '打开', f'前置条件失败：{panel_id} 未打开')
-            self._click('#mp-view-title')
+            self._click('#mp-stage-title')
             self.assertEqual(self._panel_state(panel_id), '未打开',
-                             f'点面板外（#mp-view-title）后 {panel_id} 仍开着')
+                             f'点面板外（#mp-stage-title）后 {panel_id} 仍开着')
 
     def test_eq_button_opens_after_view_and_mode_switching(self):
         """切换左侧视图与播放模式后再点均衡器仍要打开（覆盖刷新与模式变更后的状态）。"""
@@ -706,82 +715,75 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
             self.assertEqual(self._panel_state('eq-panel'), '打开',
                              f'播放模式 {mode} 下均衡器未打开')
 
-    def test_playlist_rows_open_their_own_items(self):
-        """侧栏两行歌单各自打开自己那份列表：点第 2 行要看到第 2 个歌单的 2 个条目。"""
-        self._open_playlist('pls:2')
-        self._wait(lambda: self.driver.execute_script(
-            "return document.querySelectorAll('.mp-playlist-item').length === 2;"),
-            '侧栏未渲染出两个歌单')
+    def test_playlist_view_opens_its_own_items(self):
+        """壳发 `omnibox:view: playlist:<id>` 后，打开的是那份歌单自己的条目。
 
-        self._click('.mp-playlist-item[data-pl-id="pl1"] .pl-name')
-        self._wait(lambda: self._current_playlist() == '测试歌单',
-                   '点第 1 行未打开「测试歌单」')
-        self._wait(lambda: len(self._rows()) == len(TITLES), '第 1 个歌单条目数不符')
-
-        self._click('.mp-playlist-item[data-pl-id="pl2"] .pl-name')
+        歌单行与「⋯」菜单已由壳的「我的歌单」导航组承担（入口是壳上的
+        `.plugin-nav-item`，见 `tools/plugin_ui_audit.py` 的用例）；本文件只剩内容页，
+        因此校验内容页按 view id 取对列表：第二个歌单只有第 4、5 首。
+        """
+        self._open_playlist('pls:2', playlist_id='pl2')
         self._wait(lambda: self._current_playlist() == '第二个歌单',
-                   '点第 2 行未打开「第二个歌单」')
-        self._wait(lambda: [r for r in self._rows()] == list(TITLES[3:]),
-                   '第 2 个歌单的条目与自己的 item_ids 不符')
+                   'omnibox:view 没有打开「第二个歌单」')
+        self._wait(lambda: self._rows() == list(TITLES[3:]),
+                   '第二个歌单的条目与自己的 item_ids 不符')
 
-    def test_playlist_menu_rename_by_icon_opens_modal(self):
-        """歌单「⋯」菜单里点「重命名」的图标（真实鼠标落点）必须打开重命名弹窗。
+    # 原来的「点歌单行 / 点『⋯』菜单图标」两条用例随内容页歌单侧栏一起删除：
+    # 行与菜单入口现在由壳的「我的歌单」导航组渲染（壳侧导航点击与菜单由壳的 e2e 覆盖），
+    # 内容页里已没有 `.mp-playlist-item` / `.pl-more`，保留只会测一个不存在的节点。
 
-        缺陷背景：菜单项处理器读的是 `ev.target.dataset.menuAct`，而菜单项里有图标，
-        点到图标字形时 `ev.target` 是 `<svg>`（没有菜单项 data 属性），读到 undefined，
-        结果是菜单关掉、什么都不做 —— 表现为「重命名 / 删除点了没反应」。
+
+    def _stage_gap_geometry(self) -> dict:
+        """舞台四周的间隔：主区顶边到舞台顶边、舞台左右边到主区左右边，加圆角。
+
+        顶栏已迁到壳（`.plugin-toolbar` 在壳文档里，内容页看不到也量不到）；内容页
+        第一块就是舞台，所以"舞台顶着工具栏"在内容页这一侧的等价判据是"舞台顶着
+        `.mp-main` 的顶边"，与左右贴边同一口径。
         """
-        self._open_playlist()
-        menu_opened = self.driver.execute_script("""
-            const more = document.querySelector('.mp-playlist-item .pl-more');
-            if (!more) return false;
-            const r = more.getBoundingClientRect();
-            mediaPlayerApp.showPlaylistMenu(more.dataset.plId, { clientX: r.left, clientY: r.top });
-            return !!document.getElementById('mp-context-menu');
-        """)
-        self.assertTrue(menu_opened, '歌单「⋯」菜单未生成')
-
-        hit = self._click_center('.mp-context-menu button[data-menu-act="rename"] svg')
-        self.assertIn('svg', hit.lower(), f'菜单项中心点应命中图标（实际 {hit}）')
-        self._wait(lambda: self._modal_title() == '重命名歌单',
-                   '点「重命名」的图标后未打开重命名弹窗')
-
-
-    def test_video_stage_touches_toolbar_and_edges(self):
-        """视频模式的舞台与工具栏、主区左右两侧**直接相接**，圆角归零。
-
-        舞台原先保留 `margin: 12px 16px 0` 与 18px 圆角，玻璃壳下那圈空带与四个圆角
-        缺口透出的是壳的背景图，视频画面被一圈未遮挡的背景包着。这里量的是"工具栏
-        底边到舞台顶边""舞台左右边到主区左右边"的距离。
-        """
-        self._open_playlist()
-        self._wait(lambda: self.driver.execute_script(
-            "return !!document.getElementById('mp-stage');"), '舞台未渲染')
-        self.driver.execute_script(
-            "document.getElementById('mp-stage').classList.add('video-on');")
-        time.sleep(0.4)
-        geo = self.driver.execute_script("""
+        return self.driver.execute_script("""
             const stage = document.getElementById('mp-stage');
-            const bar = document.querySelector('.mp-toolbar');
             const main = document.querySelector('.mp-main');
-            if (!stage || !bar || !main) return null;
-            const s = stage.getBoundingClientRect(), b = bar.getBoundingClientRect();
+            if (!stage || !main) return null;
+            const s = stage.getBoundingClientRect();
             const m = main.getBoundingClientRect();
             const cs = getComputedStyle(stage);
-            return {top: +(s.top - b.bottom).toFixed(1),
+            return {top: +(s.top - m.top).toFixed(1),
                     left: +(s.left - m.left).toFixed(1),
                     right: +(m.right - s.right).toFixed(1),
                     radius: cs.borderTopLeftRadius,
                     videoOn: stage.classList.contains('video-on')};
         """)
-        self.assertIsNotNone(geo, '取不到舞台/工具栏/主区的矩形')
-        self.assertTrue(geo['videoOn'], '舞台没有进入视频模式')
+
+    def _assert_stage_touches_edges(self, geo: dict, label: str) -> None:
+        """舞台与主区顶边、左右两侧**直接相接**，圆角归零。"""
+        self.assertIsNotNone(geo, '取不到舞台/主区的矩形')
         self.assertEqual(geo['top'], 0.0,
-                         f"舞台与工具栏之间还留着 {geo['top']}px")
-        self.assertEqual(geo['left'], 0.0, f"舞台左边还留着 {geo['left']}px")
-        self.assertEqual(geo['right'], 0.0, f"舞台右边还留着 {geo['right']}px")
-        self.assertEqual(geo['radius'], '0px',
-                         f"视频模式仍带圆角：{geo['radius']}")
+                         f"{label}：舞台与主区顶边之间还留着 {geo['top']}px")
+        self.assertEqual(geo['left'], 0.0, f"{label}：舞台左边还留着 {geo['left']}px")
+        self.assertEqual(geo['right'], 0.0, f"{label}：舞台右边还留着 {geo['right']}px")
+        self.assertEqual(geo['radius'], '0px', f"{label}：舞台仍带圆角：{geo['radius']}")
+
+    def _open_stage(self) -> None:
+        self._open_playlist()
+        self._wait(lambda: self.driver.execute_script(
+            "return !!document.getElementById('mp-stage');"), '舞台未渲染')
+
+    def test_music_stage_touches_edges(self):
+        """音乐模式的舞台与主区同口径贴边。"""
+        self._open_stage()
+        geo = self._stage_gap_geometry()
+        self.assertFalse(geo['videoOn'], '舞台不应处于视频模式')
+        self._assert_stage_touches_edges(geo, '音乐模式')
+
+    def test_video_stage_touches_edges(self):
+        """视频模式的舞台与主区顶边、左右两侧直接相接（高度收窄另见 .video-on）。"""
+        self._open_stage()
+        self.driver.execute_script(
+            "document.getElementById('mp-stage').classList.add('video-on');")
+        time.sleep(0.4)
+        geo = self._stage_gap_geometry()
+        self.assertTrue(geo['videoOn'], '舞台没有进入视频模式')
+        self._assert_stage_touches_edges(geo, '视频模式')
 
     def test_panels_do_not_cover_player_bar_controls(self):
         """窗口变矮时弹出面板仍不能压住播放栏按钮：压住的话点「均衡器」第一次只是关面板。

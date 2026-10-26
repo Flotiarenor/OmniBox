@@ -47,13 +47,18 @@ CURRENT_VITE = ('vite', 'high', 'GHSA-4w7w-66w2-5vf9', 'vite: path traversal')
 CURRENT_ESBUILD = ('esbuild', 'moderate', 'GHSA-67mh-4wv8-2f99', 'esbuild: dev server')
 FAKE = ('some-pkg', 'high', 'GHSA-0000-0000-0000', 'some new vulnerability')
 
-# 与真实 ACCEPTED 表逐条对应的"当前报告"：vite 三条 + esbuild 一条。
+# 与真实 ACCEPTED 表逐条对应的"当前报告"：vite 八条 + esbuild 一条。
 # 判定是两侧都管的，所以凡是断言"应当通过"的地方都必须用这份完整报告 ——
 # 少一条就会触发"登记项过期"那一侧的报错（最初只造了一条 vite，用例因此失败）。
 CURRENT_REPORT = (
     ('vite', 'high', 'GHSA-4w7w-66w2-5vf9', 'vite: optimized deps .map path traversal'),
     ('vite', 'high', 'GHSA-v6wh-96g9-6wx3', 'launch-editor: NTLMv2 hash disclosure'),
     ('vite', 'high', 'GHSA-fx2h-pf6j-xcff', 'vite: server.fs.deny bypass on Windows'),
+    ('vite', 'high', 'GHSA-587h-7wmj-h5pm', 'launch-editor: Windows path check bypass'),
+    ('vite', 'high', 'GHSA-698v-4r3x-3vcv', 'launch-editor: Windows argument escaping'),
+    ('vite', 'high', 'GHSA-9jrq-w75r-8gcw', 'vite: cross-origin script execution'),
+    ('vite', 'high', 'GHSA-r825-w8mm-5pxw', 'launch-editor: editor flag misinterpretation'),
+    ('vite', 'high', 'GHSA-rq7h-c2jc-7f22', 'vite: server.fs.allow bypass'),
     ('esbuild', 'moderate', 'GHSA-67mh-4wv8-2f99', 'esbuild: dev server request'),
 )
 

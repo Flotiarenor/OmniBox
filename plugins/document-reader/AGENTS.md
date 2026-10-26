@@ -4,29 +4,33 @@
 
 - 职责：递归扫描配置的文档根目录并把它们聚合成书架，按格式选择阅读方式 —— txt 走 `TxtParser` 的章节偏移切片，md 与 epub 走后端白名单转换器产出的 HTML 片段，pdf 与其余格式交给系统默认程序；当前章正文可交给 edge-tts、OpenAI 兼容端点或系统离线音色朗读。
 - 形态：独立页插件，`frontend.route` 为 `/document-reader`；不承载 companion，也不内嵌进其它插件，`dependencies` 为空数组。
+- 页面 chrome：manifest 声明 `frontend.chrome`，品牌块、左栏导航、顶栏动作、搜索框、状态栏与侧栏分隔条由壳的 `PluginChrome.vue` 渲染；壳加载内容页时追加 `?content=1`，iframe 内只有内容（书架、阅读器、朗读设置整页、目录与阅读设置弹窗）。
+- 库外工具：`tool/tts_speed.py` 在命令行量「合成语音的速度能不能跟上播放速度」，复用本插件的引擎、切句与参数整理，只读设置与文档，不改任何状态。
 
 
 ## 文件地图
 
 | 文件 | 职责 | 关键符号 |
 | --- | --- | --- |
+| `plugins/document-reader/manifest.json` | 插件声明与壳渲染的页面 chrome | `name`、`backend`、`frontend.route`、`frontend.chrome`（`brand`、`nav`、`toolbar`、`search`、`status`、`freshness`） |
 | `plugins/document-reader/backend/main.py` | 插件类骨架、设置 schema、API 注册、章节与封面读取、外部打开 | `DocumentReaderPlugin`、`settings_schema`、`register_api`、`KIND_BY_EXT`、`IN_APP_KINDS`、`CACHE_FILE`、`PROGRESS_FILE`、`CACHE_VERSION`、`CACHE_DIR_NAME`、`on_load`、`get_chapters`、`get_content`、`get_full_content`、`document_cover`、`open_external`、`tts_open_cache_dir`、`_document`、`_image_url`、`_extract_dir`、`_cache_path` |
 | `plugins/document-reader/backend/library.py` | 书架扫描、缓存与进度读写、统一刷新声明 | `LibraryMixin`、`_iter_documents`、`list_documents`、`_scan_document_meta`、`update_progress`、`_load_cache`、`_save_cache`、`_load_progress`、`_save_progress`、`_drop_book_cache`、`_kind_of`、`_base_document_key`、`freshness_spec`、`_document_key_for`、`_freshness_derive`、`_freshness_prune`、`_freshness_audit`、`_freshness_pass_end`、`_freshness_rebuild` |
 | `plugins/document-reader/backend/roots.py` | 文档根目录解析与切换、状态目录布局、旧状态与旧设置迁移 | `RootsMixin`、`CACHE_DIR_NAME`、`LEGACY_CACHE_DIR`、`LEGACY_CACHE_FILE`、`LEGACY_PROGRESS_FILE`、`LEGACY_PLUGIN_NAME`、`get_data_root`、`get_file_roots`、`_parse_roots`、`_set_roots`、`_migrate_legacy_state`、`_apply_root_dir`、`on_settings_changed` |
 | `plugins/document-reader/backend/marks.py` | 书签存储与增删查 | `MarksMixin`、`MARKS_FILE`、`_load_marks`、`_save_marks`、`marks_list`、`marks_add`、`marks_remove` |
 | `plugins/document-reader/backend/parser.py` | TXT 编码探测、全文解码、章节识别与偏移切分 | `TxtParser`、`CHAPTER_PATTERNS`、`detect_encoding`、`_decode_strict`、`read_full_content`、`parse_txt`、`_split_by_word_count` |
 | `plugins/document-reader/backend/documents.py` | Markdown 与 EPUB 转白名单 HTML、EPUB 解包、系统程序打开 | `DocError`、`open_document`、`open_with_system`、`MarkdownDocument`、`EpubDocument`、`_clean`、`_HtmlCleaner`、`_TextProbe`、`_AnchorCollector`、`_decode`、`_safe_href`、`_local`、`_is_safe_member`、`_zip_join`、`_read_member`、`_find_opf`、`_parse_opf`、`_toc_titles`、`MAX_MEMBER_BYTES`、`MAX_EXTRACT_BYTES` |
-| `plugins/document-reader/backend/tts.py` | 朗读设置读取、切句接口、按内容缓存音频与缓存管理 | `TtsMixin`、`TTS_CACHE_LIMIT`、`TTS_RESULT_LIMIT`、`_AUDIO_EXTS`、`_CACHE_KEY_RE`、`_tts_cache_subdir`、`_tts_cache_dir`、`_tts_cache_dir_for_write`、`_tts_params`、`tts_status`、`tts_voices`、`_voice_tables`、`_edge_table`、`_endpoint_table`、`tts_segment`、`tts_speak`、`_tts_cache_prefix`、`_tts_cache_path`、`_tts_hit`、`_tts_meta_marks`、`_tts_prune`、`tts_cache_info`、`tts_clear_cache` |
+| `plugins/document-reader/backend/tts.py` | 朗读设置读取、切句接口、按内容缓存音频、预取深度下发与缓存管理 | `TtsMixin`、`TTS_CACHE_LIMIT`、`TTS_RESULT_LIMIT`、`TTS_PREFETCH_DEFAULT`、`TTS_PREFETCH_MIN`、`TTS_PREFETCH_MAX`、`_AUDIO_EXTS`、`_CACHE_KEY_RE`、`_tts_cache_subdir`、`_tts_cache_dir`、`_tts_cache_dir_for_write`、`_tts_params`、`_tts_prefetch`、`tts_status`、`tts_voices`、`_voice_tables`、`_edge_table`、`_endpoint_table`、`tts_segment`、`tts_speak`、`_tts_cache_prefix`、`_tts_cache_path`、`_tts_hit`、`_tts_meta_marks`、`_tts_prune`、`tts_cache_info`、`tts_clear_cache` |
 | `plugins/document-reader/backend/tts_engine.py` | 三档引擎的合成、降级链、音色清单与句切分 | `ENGINES`、`ENGINE_LABELS`、`ENGINE_ATTEMPTS`、`MAX_CHARS`、`DEFAULT_VOICE`、`VOICE_CACHE_TTL`、`VOICE_LIST_TIMEOUT`、`_RUNNERS`、`_SAPI_SCRIPT`、`split_text`、`is_edge_voice`、`edge_synthesize`、`openai_synthesize`、`system_synthesize`、`system_available`、`edge_voices`、`endpoint_voices`、`engine_voice_names`、`engine_has_voice`、`engine_available`、`available_engines`、`synthesize`、`status`、`clear_voice_cache` |
-| `plugins/document-reader/frontend/index.html` | 唯一入口页：静态 DOM 骨架与脚本装载顺序 | `#app`、`.view-sub-sidebar`、`.nr-sidebar`、`.obx-glass`、`#nr-reader-tools`、`#nr-open-voice`、`#nr-extensions`、`#nr-status`、`#nr-back-to-shelf`、`#nr-view-title`、`#nr-view-sub`、`#nr-search`、`#nr-search-clear`、`#nr-freshness`、`#btn-settings`、`#nr-shelf-view`、`#nr-grid`、`#nr-reader-view`、`#document-content-area`、`#document-progress-fill`、`#nr-voice-page`、`#nr-toc-modal`、`#nr-read-settings-modal` |
+| `plugins/document-reader/tool/tts_speed.py` | 库外测速工具：逐句计时并推算播放时间轴，判断连续朗读跟不跟得上 | `main`、`run`、`selftest`、`probe_duration`、`simulate`、`realtime_factor`、`judge`、`build_advice`、`render_report`、`load_backend`、`resolve_params`、`pick_text`、`SAMPLE_TEXT`、`STALL_THRESHOLD_S`、`DEPTH_LADDER`、`DEFAULT_SENTENCES` |
+| `plugins/document-reader/frontend/index.html` | 内容页入口：书架、阅读器、朗读设置整页、两个内容弹窗与脚本装载顺序（页面 chrome 不在这里） | `#app`、`.view-body`、`#nr-shelf-view`、`#nr-grid`、`#nr-reader-view`、`#document-content-area`、`#document-progress-fill`、`#nr-voice-page`、`#nr-toc-modal`、`#nr-read-settings-modal` |
 | `plugins/document-reader/frontend/document-reader.css` | 全部样式：自有变量、布局、组件、主题与正文底色档位 | `--nr-radius`、`--nr-radius-sm`、`--nr-gradient`、`--nr-accent-soft`、`--reader-font-size`、`--reader-line-height`、`--reader-letter-spacing`、`--reader-bg-color`、`--reader-text-color`、`--reader-body-bg`、`--reader-highlight`、`.nr-grid`、`.nr-card`、`.document-content-area`、`.chapter-content`、`.theme-dark`、`.body-bg-show`、`::highlight(nr-reading)`、`@keyframes nrPulse` |
 | `plugins/document-reader/frontend/js/utils.js` | 段落切分、体积格式化、生成式 SVG 封面 | `DocumentUtils`、`splitParagraphs`、`formatContent`、`formatSize`、`_hashHue`、`coverColors`、`coverDataUrl` |
 | `plugins/document-reader/frontend/js/reader-engine.js` | 双模式阅读引擎：翻页、连续滚动窗口、字符偏移坐标系 | `DocumentReaderEngine`、`setMode`、`reset`、`goToChapter`、`nextPage`、`prevPage`、`handleScroll`、`_fillViewport`、`_loadAdjacent`、`_appendChapterDiv`、`_prependChapterDiv`、`_trimTop`、`_trimBottom`、`_syncChapterFromScroll`、`chapterFraction`、`chapterElement`、`getChapterContext`、`_textNodes`、`_pointAt`、`_rangeFor`、`_charAtViewportTop`、`sentenceStart`、`anchorAtViewportTop`、`chapterIndexForNode`、`anchorFromRange`、`scrollToChar` |
-| `plugins/document-reader/frontend/js/settings.js` | 阅读偏好的后端持久化与旧 localStorage 迁移 | `ReaderSettingsStore`、`READER_PREF_KEYS`、`BODY_BG_MODES`、`DEFAULT_BODY_BG_MODE`、`LEGACY_SETTINGS_KEY`、`LEGACY_SETTINGS_KEY_OLD`、`load`、`_migrateLegacy`、`apply`、`_applyBodyBackground`、`save` |
-| `plugins/document-reader/frontend/js/reader-tts.js` | 朗读控制器：切句、请求、预取、播放、句子高亮与浮动卡 | `ReaderTts`、`_createAudio`、`_buildCard`、`_syncCard`、`toggleCollapse`、`isPlaying`、`refreshStatus`、`_selectionAnchor`、`startFromSelection`、`startFromAnchor`、`startFromViewport`、`_startAt`、`_split`、`_requestSegment`、`_cacheKey`、`_playCurrent`、`_prefetchNext`、`_trace`、`_onEnded`、`_advanceChapter`、`toggle`、`pause`、`resume`、`stop`、`_highlight`、`_scrollIntoView`、`_clearHighlight` |
+| `plugins/document-reader/frontend/js/settings.js` | 阅读偏好的后端持久化、设置弹窗保存后的重读与旧 localStorage 迁移 | `ReaderSettingsStore`、`READER_PREF_KEYS`、`BODY_BG_MODES`、`DEFAULT_BODY_BG_MODE`、`LEGACY_SETTINGS_KEY`、`LEGACY_SETTINGS_KEY_OLD`、`loaded`、`load`、`reload`、`_assign`、`_migrateLegacy`、`apply`、`_applyBodyBackground`、`save` |
+| `plugins/document-reader/frontend/js/reader-tts.js` | 朗读控制器：切句、请求、按配置深度预取（失败退回 1）、播放、句子高亮与浮动卡 | `ReaderTts`、`NR_MAX_PREFETCH`、`NR_PREFETCH_FALLBACK`、`_createAudio`、`_buildCard`、`_syncCard`、`toggleCollapse`、`isPlaying`、`refreshStatus`、`setPrefetchDepth`、`_selectionAnchor`、`startFromSelection`、`startFromAnchor`、`startFromViewport`、`_startAt`、`_split`、`_requestSegment`、`_cacheKey`、`_playCurrent`、`_resolveSegment`、`_prefetchNext`、`_prefetchAt`、`_degradePrefetch`、`_trace`、`_onEnded`、`_advanceChapter`、`toggle`、`pause`、`resume`、`stop`、`_highlight`、`_scrollIntoView`、`_clearHighlight` |
 | `plugins/document-reader/frontend/js/reader-voice-page.js` | 朗读设置页：引擎、端点、音色表与试听、缓存管理 | `ReaderVoicePage`、`EDGE_VOICE_FALLBACK`、`_dom`、`open`、`close`、`_bind`、`_load`、`_loadVoices`、`_cacheTable`、`_buildTables`、`_edgeTable`、`_endpointTable`、`_collect`、`_save`、`_renderStatus`、`_renderVoices`、`_markActiveVoice`、`_renderCache`、`_clearCache`、`_openCacheDir`、`_test` |
-| `plugins/document-reader/frontend/js/app.js` | 主控制器：DOM 缓存、事件绑定、书架与阅读态切换、进度保存 | `DocumentReader`、`openNrModal`、`closeNrModal`、`init`、`_cacheDom`、`_bindEvents`、`_bindModalDismiss`、`_bindReaderSettings`、`_bindKeyboard`、`_bindPageTurn`、`_bindScroll`、`_bindLifecycle`、`_mountFreshness`、`_autoSyncFreshness`、`_onFreshnessChanged`、`_loadDocuments`、`_loadMarks`、`loadExtensions`、`switchView`、`returnToShelf`、`_visibleDocuments`、`_updateStatus`、`openDocument`、`_enterReaderMode`、`_openNonChapter`、`_openExternal`、`_afterPageRender`、`_updateProgressBar`、`_saveCurrentProgress`、`reloadDocument`、`_showLoading`、`getChapterContext`、`destroy` |
-| `plugins/document-reader/frontend/js/app-shelf.js` | 分片：封面网格、书签视图、空态模板 | `_renderShelf`、`_renderMarks`、`_removeMark`、`_emptyHtml`、`_cardHtml` |
+| `plugins/document-reader/frontend/js/app.js` | 主控制器：DOM 缓存、事件绑定、书架与阅读态切换、与壳的 chrome 消息、进度保存与还原 | `DocumentReader`、`openNrModal`、`closeNrModal`、`init`、`_cacheDom`、`_bindEvents`、`_bindModalDismiss`、`_bindReaderSettings`、`_bindKeyboard`、`_bindPageTurn`、`_bindScroll`、`_bindLifecycle`、`_postHost`、`_pushChrome`、`_clearSearch`、`_bindHost`、`_applyHostView`、`_applyHostAction`、`_openVoicePage`、`_reloadSettings`、`_reloadShelf`、`_loadDocuments`、`_loadMarks`、`switchView`、`returnToShelf`、`_onQuery`、`_visibleDocuments`、`_updateStatus`、`openDocument`、`_enterReaderMode`、`_openNonChapter`、`_openExternal`、`_afterPageRender`、`_updateProgressBar`、`_clampFraction`、`_contentScrollTop`、`_saveCurrentProgress`、`_nowStamp`、`reloadDocument`、`_showLoading`、`getChapterContext`、`destroy` |
+| `plugins/document-reader/frontend/js/app-shelf.js` | 分片：封面网格、书签视图、空态模板，并准备壳顶栏的标题/副标题数据 | `_renderShelf`、`_renderMarks`、`_removeMark`、`_emptyHtml`、`_cardHtml` |
 | `plugins/document-reader/frontend/js/app-toc.js` | 分片：目录弹窗渲染与筛选 | `openToc`、`_renderTocItems`、`_updateTocSub` |
 | `plugins/document-reader/frontend/js/app-menu.js` | 分片：正文右键菜单、书签增删、正文书签标记层 | `_bindContextMenu`、`_selectionText`、`_buildContextMenuItems`、`_resolveAnchor`、`_onContextAction`、`_debugEnabled`、`_openDevTools`、`_anchorFromViewport`、`addBookmark`、`goToMark`、`_flashMarks`、`_markLayer` |
 
@@ -52,7 +56,7 @@
 | `save_settings` | 设置项字典 | `success`；失败时返回 `error` | 写插件设置 |
 | `tts_segment` | `text`、`max_chars` | `segments` 数组 | 把正文切成句 |
 | `tts_speak` | `text`、`cache_key`、`segment_index`、`engine` | `url`、`mtime`、`cached`、`engine`、`marks`、`segmentIndex`；失败时返回 `error` | 合成一段并返回同源可播放 URL |
-| `tts_status` | 无 | `engines` 数组（条目键 `name`、`label`、`available`、`marks`）、`order`、`mode`、`voice`、`rate` | 引擎可用性一览 |
+| `tts_status` | 无 | `engines` 数组（条目键 `name`、`label`、`available`、`marks`）、`order`、`mode`、`voice`、`rate`、`prefetch` | 引擎可用性一览与当前预取深度 |
 | `tts_voices` | 无 | `mode` 与 `tables` 数组，表条目键为 `source`、`title`、`voices`、`unavailable`、`note` | 按引擎列音色候选 |
 | `tts_cache_info` | 无 | `path`、`files`、`bytes`、`limitBytes` | 朗读缓存位置与占用 |
 | `tts_clear_cache` | 无 | `success`、`removed`、`bytes` | 清空朗读缓存 |
@@ -77,23 +81,20 @@
 
 ## 前端结构
 
-DOM 结构树如下。
+壳渲染的 chrome（`manifest.json` 的 `frontend.chrome`，由 `PluginChrome.vue` 落 DOM）：
+
+- 品牌块：`icon:book-open`、标题「文档阅读」、副标题「Reader」。
+- 浏览组（`browse`）：`all` 全部文档、`recent` 最近阅读、`marks` 书签、`voice` 朗读设置；运行期徽标 `all` / `marks` 走 `omnibox:chrome.nav`。
+- 「当前文档」组（`reader-tools`，初始 `visible:false`）：`toc` 目录、`read-settings` 阅读设置；阅读态由内容页把该组显隐上报给壳。
+- 顶栏动作：`back`（返回，初始 `visible:false`，阅读态显示）、`settings`（设置）。
+- 搜索框：占位「搜索书名、作者…」；阅读态与朗读设置页由内容页隐藏。
+- 状态栏：`N 本 · 朗读 <引擎>`；统一刷新控件由壳挂载（`freshness.unit` 为「本」）。
+
+内容页 DOM（`plugins/document-reader/frontend/index.html`，iframe 内只有内容）：
 
 - `body`
   - `#app`
-    - `aside.view-sub-sidebar.nr-sidebar.obx-glass`
-      - `.nr-brand` → `.nr-brand-icon`、`.nr-brand-text`（含 `.nr-brand-title`、`.nr-brand-sub`）
-      - `nav.nr-nav.obx-scroll`
-        - `.nr-nav-label`（浏览）与 `button.obx-nav-item.nr-nav-item`（全部文档 / 最近阅读 / 书签）
-        - `.nr-nav-count`：`#nr-count-all`、`#nr-count-marks`
-        - `#nr-open-voice`
-        - `#nr-reader-tools`（阅读态显示）：`.nr-nav-label`（当前文档）、`#nr-open-toc`、`#nr-open-read-settings`
-        - `#nr-extensions`
-      - `.sub-sidebar-footer.nr-sidebar-footer#nr-status`
     - `.view-body`
-      - `.view-toolbar.nr-toolbar`
-        - `.toolbar-group.nr-heading`：`#nr-back-to-shelf`、`#nr-view-title`、`#nr-view-sub`
-        - `.toolbar-group.nr-toolbar-right`：`.search-field`（`#nr-search`、`#nr-search-clear`）、`#nr-freshness`、`#btn-settings`
       - `.view-content.nr-content.obx-scroll#nr-shelf-view` → `.nr-grid#nr-grid`
       - `.nr-reader-view#nr-reader-view` → `.document-content-area#document-content-area`
       - `.document-progress-bar` → `.document-progress-fill#document-progress-fill`
@@ -101,7 +102,7 @@ DOM 结构树如下。
         - `.nr-voice-head`：`.nr-voice-title`、`#nr-voice-refresh`
         - `.nr-voice-body.obx-scroll`
           - `.nr-voice-card`（引擎）：`#nr-voice-status`、`#nr-voice-engine`、`#nr-voice-base`、`#nr-voice-key`、`#nr-voice-model`
-          - `.nr-voice-card`（音色与语速）：`#nr-voice-name`、`#nr-voice-rate`、`#nr-voice-rate-value`、`#nr-voice-test`、`#nr-voice-test-result`
+          - `.nr-voice-card`（音色与语速）：`#nr-voice-name`、`#nr-voice-rate`、`#nr-voice-rate-value`、`#nr-voice-prefetch`、`#nr-voice-test`、`#nr-voice-test-result`
           - `.nr-voice-card`（朗读缓存）：`#nr-voice-cache-path`、`#nr-voice-cache-size`、`#nr-voice-cache-open`、`#nr-voice-cache-clear`
           - `.nr-voice-card#nr-voice-card-edge` → `.nr-voice-list#nr-voice-list-edge`
           - `.nr-voice-card#nr-voice-card-endpoint` → `.nr-voice-list#nr-voice-list-endpoint`
@@ -114,11 +115,19 @@ DOM 结构树如下。
 
 ## 与壳的契约
 
-- 壳布局与组件类：`.view-sub-sidebar`、`.sub-sidebar-footer`、`.view-body`、`.view-toolbar`、`.toolbar-group`、`.view-content`、`.obx-nav-item`、`.obx-scroll`、`.obx-glass`、`.obx-icon`、`.btn`、`.btn-sm`、`.btn-primary`、`.btn-danger`、`.modal`、`.modal-box`、`.modal-body`、`.modal-footer`、`.search-field`、`.search-field-icon`、`.search-field-clear`、`.search-input`、`.hidden`、`.empty-state`、`.empty-state-icon`、`.empty-state-text`、`.empty-state-hint`。
-- 壳 CSS 变量：`--accent`、`--bg-app`、`--bg-surface`、`--bg-hover`、`--border`、`--danger`、`--text-primary`、`--text-secondary`、`--text-muted`、`--shadow-sm`、`--shadow-md`、`--transition-fast`、`--sub-sidebar-width`、`--obx-i`。
-- 插件自有 CSS 变量前缀：`--nr-` 用于圆角、渐变与强调色，`--reader-` 用于正文字号、行距、字间距、配色与高亮；`--sub-sidebar-width` 由壳的侧栏分隔条写入（`shell/frontend/public/shell/splitter.js`）。
-- 共享前端组件：`Bridge.call`、`Bridge.callSystem`、`Bridge.originalUrl`、`Toast`、`Utils.escapeHtml`、`Utils.debounce`、`Icons.html`、`Motion.stagger`、`Freshness.mount`、`createContextMenu`、`confirmDialog`、`openSettingsModal`、`renderExtensions`、`PluginLifecycle.onDispose`。
-- 统一刷新控件由 `shell/frontend/public/shell/freshness.js` 填充 `#nr-freshness`，`Freshness.mount` 的入参为 `plugin`、`container`、`unit`、`onChange`。
-- 设置项 `root_dir` 的 `type` 取值 `directory` 由壳的目录选择器渲染（`shell/frontend/public/shell/folder-picker.js`）。
+- 页面 chrome 的消息（只在壳与内容 iframe 之间，同源 `postMessage`）：
+  - 壳 → 内容 `omnibox:view`：左栏导航项 id。`all` / `recent` / `marks` 切书架分类，`voice` 切朗读设置整页，`toc` / `read-settings` 是阅读态入口（打开内容弹窗）。
+  - 壳 → 内容 `omnibox:action`：`back` 返回书架、`refresh` 在统一刷新（同步/校验）完成后重读书架与书签、`settings-saved` 在壳内设置弹窗保存成功后重读阅读偏好并重扫书架。设置弹窗由壳的 `PluginSettingsModal` 打开，不再发 `settings`。
+  - 壳 → 内容 `omnibox:query`：搜索输入（壳侧 250ms 防抖），内容页按关键词过滤书架并在副标题上报「匹配 N / M 本」。
+  - 内容 → 壳 `omnibox:ready`：握手。壳收到后补发当前视图；内容页在 `init` 末尾主动发一次。
+  - 内容 → 壳 `omnibox:chrome`：`title` / `subtitle` / `view`（阅读态发空串清掉导航高亮、朗读设置页发 `voice`）、`actions`（`back.visible`、`settings`）、`nav`（`reader-tools.visible`、`all` / `marks` 徽标）、`search.enabled` 与 `search.value` / `search.clear`（切分类、进阅读态、开朗读设置时清空壳输入框）、`status`（`N 本 · 朗读 <引擎>`）。
+- 状态栏的引擎名取冒号/左括号前那一段（如 `edge`），因为壳的侧栏状态行只有一行宽。
+- 统一刷新控件由壳的 `PluginChrome` 挂载（`shell/frontend/public/shell/freshness.js` 的 `Freshness.mount`，`plugin` 为 `document-reader`、`unit` 为「本」），内容页不再挂 `#nr-freshness`；校验后的重载经 `omnibox:action: refresh` 回来。阅读态只重读文档与书签、不重绘书架（`_reloadShelf` 的阅读态守卫）：重绘会用书架分类的标题/统计覆盖壳顶栏的书名。
+- 壳布局与组件类（内容 iframe 继续使用）：`.view-body`、`.view-content`、`.obx-scroll`、`.obx-icon`、`.btn`、`.btn-sm`、`.btn-primary`、`.btn-danger`、`.modal`、`.modal-box`、`.modal-body`、`.modal-footer`、`.search-input`、`.hidden`、`.empty-state`、`.empty-state-icon`、`.empty-state-text`、`.empty-state-hint`。
+- 内容页不得再出现 chrome 标记：`.view-sub-sidebar`、`.view-toolbar`、`.sub-sidebar-brand`、`.obx-nav-item`（`tools/plugin_ui_audit.py` 的 `iframe.content-only` 会检查）。
+- 壳 CSS 变量：`--accent`、`--bg-app`、`--bg-surface`、`--bg-hover`、`--border`、`--danger`、`--text-primary`、`--text-secondary`、`--text-muted`、`--shadow-sm`、`--shadow-md`、`--transition-fast`、`--obx-i`。
+- 插件自有 CSS 变量前缀：`--nr-` 用于圆角、渐变与强调色，`--reader-` 用于正文字号、行距、字间距、配色与高亮。
+- 共享前端组件：`Bridge.call`、`Bridge.originalUrl`、`Toast`、`Utils.escapeHtml`、`Icons.html`、`Motion.stagger`、`createContextMenu`、`confirmDialog`、`PluginLifecycle.onDispose`。
+- 设置项 `root_dir` 的 `type` 取值 `directory` 由壳的 `PluginSettingsModal` 渲染：每个路径一行 +「选择目录…」，目录列表用壳内共享 `FolderPicker`（`shell/frontend/public/shell/folder-picker.js`）浏览本机目录；该字段未声明 `local_only`，因此「网络位置」入口也可见（来源由安装了 network-location 能力的插件提供）。
 - 共享后端基建：`shell/backend/plugin_base.py` 的 `PluginBase`（`setting`、`update_setting`、`_raw_settings`、`save_settings`、`settings_schema`）、`shell/backend/plugin_utils.py` 的 `load_sibling`、`shell/backend/paths.py` 的 `get_plugins_config_dir`、`shell/backend/freshness.py` 的 `FreshnessEngine`、`shell/backend/file_server.py` 的 `/file` 路由。
 - 壳契约与覆盖规则见 `docs/plugin-ui-guide.md`。

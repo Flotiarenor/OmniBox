@@ -41,8 +41,8 @@ class UploadMixin:
         """把本机文件上传到对端共享项（需要该共享项授予本机主体 `write`）。
 
         `remote_path` 留空时取本地文件名；可以带子目录（`sub/a.bin`），对端会自动建目录。
-        目标已存在时默认**拒绝**，要覆盖必须显式 `overwrite=True` —— 写权限是可加的
-        （设计文档 §6.2），覆盖等于让属主少一份内容，不能由上传方默认决定。
+        目标已存在时默认**拒绝**，要覆盖必须显式 `overwrite=True` —— 写权限是可加的，
+        覆盖等于让属主少一份内容，不能由上传方默认决定。
         """
         options = _opts(opts)
         device_id = str(options.get('device_id') or device_id or '')

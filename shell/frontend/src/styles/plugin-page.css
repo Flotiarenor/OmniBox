@@ -1,0 +1,761 @@
+@import './native.css';
+
+/* 壳渲染的插件页面骨架（PluginChrome.vue）。
+   页面 chrome 的唯一实现在这里；插件 iframe 只负责内容。 */
+
+.hidden { display: none !important; }
+
+.plugin-page {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--bg-app) var(--plugin-glass-alpha, var(--glass-alpha)), transparent);
+}
+
+.plugin-chrome-sidebar {
+  width: var(--sub-sidebar-width, 240px);
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--bg-sub-sidebar) var(--plugin-glass-alpha, var(--glass-alpha)), transparent);
+  border-right: 1px solid var(--border);
+}
+
+.plugin-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 16px 14px;
+  flex-shrink: 0;
+}
+
+.plugin-brand-icon {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-lg);
+  font-size: 21px;
+  color: var(--text-on-accent);
+  background: linear-gradient(
+    135deg,
+    var(--accent) 0%,
+    color-mix(in srgb, var(--accent) 55%, var(--plugin-brand-2, var(--accent))) 100%
+  );
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.plugin-brand-text { min-width: 0; }
+
+.plugin-brand-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.3;
+}
+
+.plugin-brand-sub {
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  letter-spacing: 0.4px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plugin-nav {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* 扩展入口与导航组共用同一个滚动容器；顺序由 section 列表决定。 */
+
+.plugin-nav-label {
+  padding: 12px 10px 5px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.plugin-nav-item {
+  width: 100%;
+  gap: 9px;
+}
+
+.plugin-nav-item .obx-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.plugin-nav-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-nav-count {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.plugin-nav-count:empty { display: none; }
+
+.plugin-status {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.plugin-status-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.plugin-status-dot[data-state="ok"] { background: var(--success); }
+.plugin-status-dot[data-state="warn"] { background: var(--warning); }
+.plugin-status-dot[data-state="error"] { background: var(--danger); }
+
+.plugin-status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plugin-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.plugin-toolbar {
+  position: relative;
+  z-index: 20;
+  height: var(--toolbar-height, 48px);
+  min-height: 0;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 16px;
+  flex-wrap: nowrap;
+  background: color-mix(in srgb, var(--bg-surface) var(--plugin-glass-alpha, var(--glass-alpha)), transparent);
+  border-bottom: 1px solid var(--border);
+}
+
+.plugin-heading {
+  flex: 1 1 auto;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.plugin-title {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plugin-sub {
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plugin-leading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.plugin-leading .btn { flex: 0 0 auto; }
+
+.plugin-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.plugin-actions > * { flex: 0 0 auto; }
+
+/* 隐藏的测量行：与真实 actions 同一套 .btn 度量，但不参与布局。 */
+.plugin-actions-measure {
+  position: absolute;
+  left: -99999px;
+  top: 0;
+  visibility: hidden;
+  pointer-events: none;
+  width: max-content;
+  max-width: none;
+  margin: 0;
+  flex-wrap: nowrap;
+}
+
+/* 隐藏测量行必须和真实工具栏处于同一紧凑档位，否则会按带字的宽度误判溢出。 */
+.plugin-actions-measure.is-compact .plugin-more-label { display: none; }
+.plugin-actions-measure.is-compact .plugin-more-btn { padding: 0 9px; }
+.plugin-actions-measure.is-tight [data-measure-action],
+.plugin-actions-measure.is-tight .plugin-more-btn {
+  gap: 0;
+  padding: 0 8px;
+  font-size: 0;
+}
+.plugin-actions-measure.is-tight .plugin-more-btn { padding: 0 7px; }
+.plugin-actions-measure.is-tight [data-measure-action] .obx-icon,
+.plugin-actions-measure.is-tight .plugin-more-btn .obx-icon { font-size: 13px; }
+
+.plugin-more {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.plugin-more-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.plugin-more-btn .obx-icon {
+  transition: transform var(--transition-fast, 0.15s ease);
+}
+
+.plugin-more-btn[aria-expanded="true"] .obx-icon {
+  transform: rotate(180deg);
+}
+
+.plugin-more-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 180px;
+  max-width: min(280px, 80vw);
+  max-height: min(60vh, 420px);
+  overflow: auto;
+  padding: 5px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--obx-shadow-2, var(--shadow-lg, 0 8px 32px rgba(0, 0, 0, 0.15)));
+}
+
+.plugin-more-item {
+  justify-content: flex-start;
+  width: 100%;
+  padding: 7px 9px;
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+/* 顶栏永远单行：按实际 toolbar 宽度切换紧凑档位，而不是看 viewport。
+   compact：隐藏文字标签、搜索折叠成图标、freshness 只留图标；
+   tight：动作与 leading 只留图标（title/aria-label 保留语义）；
+   ultra：连搜索/freshness 图标都收掉，保证标题、返回、主操作与 More。 */
+.plugin-toolbar.is-compact .plugin-heading { min-width: 64px; }
+
+.plugin-toolbar.is-compact .plugin-more-label { display: none; }
+
+.plugin-toolbar.is-compact .plugin-actions .plugin-more-btn { padding: 0 9px; }
+
+.plugin-toolbar.is-compact .plugin-search-wrap .plugin-search-toggle {
+  display: inline-flex;
+  width: 31px;
+  padding: 0;
+  justify-content: center;
+}
+
+.plugin-toolbar.is-compact .plugin-search-wrap .plugin-search { display: none; }
+
+.plugin-toolbar.is-compact .plugin-search-wrap.is-open .plugin-search {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 80;
+  display: flex;
+  width: min(260px, calc(100vw - 32px));
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-md);
+}
+
+.plugin-toolbar.is-compact .plugin-search-wrap.is-open .plugin-search input {
+  width: 100%;
+  min-width: 0;
+}
+
+.plugin-toolbar.is-compact .plugin-freshness .obx-fresh-status { display: none; }
+
+.plugin-toolbar.is-compact .plugin-freshness .obx-fresh-verify {
+  gap: 0;
+  padding: 0 9px;
+  font-size: 0;
+}
+
+/* 图标在 font-size:0 的按钮里必须显式恢复，否则 1em 会缩成 0。 */
+.plugin-toolbar.is-compact .plugin-freshness .obx-fresh-verify .obx-icon {
+  font-size: 13px;
+}
+
+.plugin-toolbar.is-tight > .plugin-leading > .btn,
+.plugin-toolbar.is-tight > .plugin-actions > .btn,
+.plugin-toolbar.is-tight .plugin-search-wrap .plugin-search-toggle,
+.plugin-toolbar.is-tight .plugin-actions .plugin-more-btn {
+  gap: 0;
+  padding: 0 8px;
+  font-size: 0;
+}
+
+.plugin-toolbar.is-tight .plugin-actions .plugin-more-btn { padding: 0 7px; }
+
+.plugin-toolbar.is-tight > .plugin-leading > .btn .obx-icon,
+.plugin-toolbar.is-tight > .plugin-actions > .btn .obx-icon,
+.plugin-toolbar.is-tight .plugin-search-wrap .plugin-search-toggle .obx-icon,
+.plugin-toolbar.is-tight .plugin-actions .plugin-more-btn .obx-icon {
+  font-size: 13px;
+}
+
+.plugin-toolbar.is-ultra { gap: 8px; padding: 6px 8px; }
+
+.plugin-toolbar.is-ultra .plugin-heading { min-width: 32px; }
+
+.plugin-toolbar.is-ultra .plugin-freshness { display: none; }
+
+.plugin-toolbar.is-ultra .plugin-search-wrap { display: flex; }
+
+.plugin-toolbar.is-ultra .plugin-search-wrap .plugin-search-toggle {
+  width: 24px;
+  padding: 0 3px;
+}
+
+.plugin-toolbar.is-ultra > .plugin-leading > .btn,
+.plugin-toolbar.is-ultra > .plugin-actions > .btn,
+.plugin-toolbar.is-ultra .plugin-actions .plugin-more-btn {
+  padding: 0 3px;
+}
+
+.plugin-toolbar.is-ultra .plugin-actions { gap: 4px; }
+
+.plugin-toolbar.is-ultra > .plugin-leading > .btn .obx-icon,
+.plugin-toolbar.is-ultra > .plugin-actions > .btn .obx-icon,
+.plugin-toolbar.is-ultra .plugin-actions .plugin-more-btn .obx-icon,
+.plugin-toolbar.is-ultra .plugin-search-wrap .plugin-search-toggle .obx-icon {
+  font-size: 13px;
+}
+
+/* 共享焦点环：壳页面没有 base.css 的浏览器默认轮廓兜底，统一给可交互元素
+   一条可见的 :focus-visible 指示；鼠标点击不出现，键盘 Tab 才出现。 */
+.plugin-toolbar .btn:focus-visible,
+.plugin-nav-item:focus-visible,
+.plugin-extension-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.plugin-page .obx-splitter:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.settings-modal .field input:focus-visible,
+.settings-modal .field select:focus-visible,
+.settings-modal .field textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.plugin-freshness { display: flex; align-items: center; }
+
+/* 搜索框：结构与 base.css 的 .search-field 同源；壳页面不加载 base.css，
+   这里给出同一组度量（胶囊外框 + 图标在流内 + 输入无边框）。 */
+.plugin-search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.plugin-search-toggle { display: none; }
+.plugin-toolbar .plugin-search-wrap .plugin-search-toggle { display: none; }
+
+.plugin-search {
+  --obx-search-width: 180px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-surface) var(--plugin-glass-alpha, var(--glass-alpha)), transparent);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.plugin-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.plugin-search .search-field-icon {
+  font-size: 12px;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.plugin-search input {
+  width: var(--obx-search-width);
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.plugin-search input::placeholder { color: var(--text-muted); }
+
+.plugin-action-text {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.plugin-action-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.plugin-status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+
+/* 工具栏按钮度量与 base.css 的 .view-toolbar .btn 同源：
+   壳页面不加载 base.css，这里给出同一组数字。 */
+.plugin-toolbar .btn {
+  height: var(--control-h, 31px);
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.plugin-content {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.plugin-content > iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  outline: none;
+}
+
+/* ===== native 内容（SchemaRenderer） ===== */
+.schema-root {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.schema-text { font-size: 13px; line-height: 1.7; color: var(--text-primary); }
+.schema-muted { color: var(--text-secondary); }
+.schema-danger { color: var(--danger); }
+.schema-heading { font-size: 15px; font-weight: 700; color: var(--text-primary); }
+
+.schema-kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 16px;
+  font-size: 13px;
+}
+.schema-kv dt { color: var(--text-secondary); }
+.schema-kv dd { margin: 0; color: var(--text-primary); min-width: 0; overflow-wrap: anywhere; }
+
+.schema-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.schema-table th,
+.schema-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+.schema-table th { color: var(--text-secondary); font-weight: 600; }
+
+.schema-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.schema-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+}
+.schema-thumb { width: 40px; height: 40px; object-fit: cover; border-radius: var(--radius-sm); flex-shrink: 0; }
+.schema-row-main { flex: 1; min-width: 0; }
+.schema-row-title { font-size: 13px; font-weight: 600; }
+.schema-row-sub { font-size: 11px; color: var(--text-secondary); }
+.schema-row-meta { font-size: 11px; color: var(--text-muted); }
+
+.schema-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+.schema-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.schema-card-image { width: 100%; aspect-ratio: 1; object-fit: cover; }
+.schema-card-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.schema-card-title { font-size: 13px; font-weight: 600; }
+.schema-card-sub { font-size: 11px; color: var(--text-secondary); }
+
+/* 缩略图按钮：只重置按钮外观，图片尺寸仍由 .schema-thumb / -check-thumb /
+   -card-image / image-grid 的既有规则决定。点击由 NativePanel 打开遮罩预览。 */
+.schema-preview-btn {
+  display: block;
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: zoom-in;
+  border-radius: var(--radius-sm);
+}
+.schema-preview-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.schema-preview-btn img { display: block; }
+.schema-preview-btn--card,
+.schema-preview-btn--grid { width: 100%; }
+
+.schema-badge {
+  align-self: flex-start;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.schema-checkbox-list { display: flex; flex-direction: column; gap: 14px; }
+.schema-group {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+.schema-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-hover) 55%, transparent);
+}
+.schema-group-title { flex: 1; font-size: 13px; font-weight: 600; }
+.schema-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  cursor: default;
+}
+.schema-check:nth-child(even) { background: color-mix(in srgb, var(--bg-hover) 28%, transparent); }
+.schema-check + .schema-check { border-top: 1px solid var(--border); }
+.schema-check input,
+.schema-check-label { cursor: pointer; }
+.schema-check input { width: 15px; height: 15px; accent-color: var(--accent); flex-shrink: 0; }
+.schema-check-thumb { width: 42px; height: 42px; object-fit: cover; border-radius: 6px; flex-shrink: 0; }
+.schema-check-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.schema-check-meta { color: var(--text-muted); }
+
+.schema-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-surface);
+}
+/* 目录字段：只读输入框 + 「选择…」。路径由系统对话框写入，避免手打错路径。 */
+.schema-directory { display: flex; align-items: center; gap: 8px; }
+.schema-directory input { flex: 1; min-width: 0; }
+.schema-directory input[readonly] {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  cursor: default;
+}
+.schema-directory .btn { flex-shrink: 0; }
+.schema-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* 批量操作保留在内容底部：滚动时贴底，和旧页面的 footer 一致。 */
+.schema-actions--bulk-actions {
+  position: sticky;
+  bottom: -16px;
+  margin: 0 -16px -16px;
+  padding: 10px 16px;
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-surface) 92%, transparent);
+  backdrop-filter: blur(8px);
+}
+.schema-actions--more-actions { justify-content: center; }
+.schema-actions--delete-confirm-actions {
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+
+.schema-kv {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+}
+
+.schema-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+}
+.schema-progress-head { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-secondary); }
+.schema-progress-track { height: 6px; border-radius: 999px; background: var(--bg-hover); overflow: hidden; }
+.schema-progress-fill { height: 100%; background: var(--accent); transition: width var(--transition-fast); }
+.schema-progress-detail { font-size: 11px; color: var(--text-muted); }
+
+.schema-image-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+.schema-image-grid img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: var(--radius-sm); }
+.schema-image-grid figcaption { font-size: 11px; color: var(--text-secondary); margin-top: 4px; }
+
+/* ===== native 面板（附属插件由壳渲染内容） ===== */
+.native-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: color-mix(in srgb, var(--bg-app) var(--plugin-glass-alpha, var(--glass-alpha)), transparent);
+}
+
+.native-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.native-panel-frame {
+  display: none;
+  width: 0;
+  height: 0;
+  border: 0;
+}
+
+/* 缩略图预览：全壳文档的遮罩，层级在 native 面板之上、Toast 之下。
+   点击遮罩空白处或按 Esc 关闭，由 NativePanel 处理。 */
+.native-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 2600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 56px;
+  background: var(--bg-overlay-strong);
+  overscroll-behavior: contain;
+}
+
+.native-preview-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.native-preview-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+}

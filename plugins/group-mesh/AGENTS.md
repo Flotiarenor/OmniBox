@@ -3,15 +3,15 @@
 ## 定位与形态
 
 - 职责：在本机建立主体与设备密钥、用签名名单维护团体，把本机目录挂成共享项并由节点在 Noise 加密连接上对外提供，同时把团体成员共享项里的文件取回、物化或镜像到本地。
-- 形态：独立页插件，路由 `frontend.route` 为 `/group-mesh`。
-- 同时是扩展提供方：`get_extensions()` 以 placement 值 `network-location` 注册，供壳的共享目录组件（`FolderPicker.createList`、`FolderPicker.loadNetworkProviders`、`FolderPicker.openDirBrowser`）在任意插件的 `directory` 设置里嵌入，嵌入页为 `embedUrl` 值 `/plugins/group-mesh/frontend/network-location.html`。
+- 形态：独立页插件，路由 `frontend.route` 为 `/group-mesh`；manifest 声明 `frontend.chrome`（`brand`、`nav`、`toolbar`、`status`、`freshness`），品牌块、导航、顶栏、状态栏与侧栏分隔条由壳的 `PluginChrome.vue` 渲染。壳加载内容页时追加 `?content=1`，iframe 内只有五个面板与六个弹窗；声明里没有 `search`，壳不渲染搜索框。顶栏「设置」由壳的 `PluginSettingsModal` 打开，保存后内容页收到 `settings-saved`；统一刷新控件由壳挂载（`freshness.unit` 为「项」）。
+- 同时是扩展提供方：`get_extensions()` 以 placement 值 `network-location` 注册，供 `/shell/folder-picker.js` 的目录组件发现并使用（`loadNetworkProviders` 按 placement 取提供方，`openNetworkPicker` 嵌入 `embedUrl` 并追加 `?embed=1`；`openDirBrowser` 负责本地目标目录）。壳的 `PluginSettingsModal` 目录字段（`SettingsDirectoryField`）与内容页 `openSettingsModal`（如 image-viewer）都走同一个 `FolderPicker`：字段未声明 `local_only` 时，目录行上的「网络位置」入口即发现本提供方；`local_only: true` 的字段不显示该入口。嵌入页为 `/plugins/group-mesh/frontend/network-location.html`。
 - 复用方式：其它插件通过 `PluginBase.get_dependency('group-mesh')` 取本插件实例；`dependencies` 为空数组，本插件不依赖任何插件。
 
 ## 文件地图
 
 | 文件 | 职责 | 关键符号 |
 | --- | --- | --- |
-| `plugins/group-mesh/manifest.json` | 插件声明 | `name`、`keepAlive`、`permissions`、`backend`、`frontend`、`icon`、`minShellVersion` |
+| `plugins/group-mesh/manifest.json` | 插件声明与壳渲染的页面 chrome | `name`、`keepAlive`、`permissions`、`backend`、`frontend.route`、`frontend.chrome`（`brand`、`nav`、`toolbar`、`status`、`freshness`）、`icon`、`minShellVersion` |
 | `plugins/group-mesh/backend/main.py` | 类骨架、设置 schema、API 注册、扩展注册、生命周期 | `GroupMeshPlugin`、`settings_schema`、`register_api`、`get_extensions`、`on_load`、`on_unload`、`DEFAULT_PORT`、`load_sibling`、`_common`、`_storage`、`_status`、`_group`、`_shares`、`_peers`、`_sync`、`_remote`、`_upload`、`_materialize`、`_mirror`、`_fetch`、`_node` |
 | `plugins/group-mesh/backend/common.py` | 分片共用常量与纯函数 | `_opts`、`safe_rel`、`within_root`、`_mtime_ns`、`DEFAULT_PORT`、`AUTO_START_RETRY_SECONDS`、`DEFAULT_MAX_FETCH_BYTES`、`PROBE_TIMEOUT_SECONDS`、`PROBE_OVERALL_SECONDS`、`SYNC_OVERALL_SECONDS`、`UPLOAD_TIMEOUT_SECONDS`、`UPLOAD_KEEP`、`UPLOAD_TASK_FILE`、`MIRROR_MTIME_WINDOW_NS` |
 | `plugins/group-mesh/backend/storage.py` | 路径属性、受保护路径、身份与名单的落盘 | `StorageMixin`、`get_data_root`、`identity_dir`、`cache_dir`、`downloads_dir`、`remote_cache_dir`、`staging_dir`、`get_protected_paths`、`_load_identity`、`_load_roster`、`_save_roster`、`_load_shares`、`_save_shares`、`_load_share_roots`、`_save_share_roots`、`_share_roots_file`、`_tree_usage`、`_roster_history`、`_record_roster_history`、`_load_roster_history` |
@@ -26,10 +26,10 @@
 | `plugins/group-mesh/backend/mirror.py` | 把共享项完整取到用户指定目录 | `MirrorMixin`、`mirror_share`、`_mirror_files`、`_mirror_file_current`、`MIRROR_MTIME_WINDOW_NS` |
 | `plugins/group-mesh/backend/fetch.py` | 占位判定、按需取字节、远端缓存用量与清理 | `FetchMixin`、`is_content_placeholder`、`ensure_file`、`max_fetch_bytes`、`remote_cache`、`clear_remote_cache`、`_fetch_lock`、`_discard_staging`、`DEFAULT_MAX_FETCH_BYTES` |
 | `plugins/group-mesh/backend/node.py` | 共享节点启停、注册发布、监听失败提示 | `NodeMixin`、`start_node`、`stop_node`、`get_node_status`、`_publish_registration`、`_refresh_own_registration`、`_republish_registration`、`_auto_start_node`、`_listen_error`、`_close_connections`、`on_settings_changed`、`DEFAULT_PORT`、`AUTO_START_RETRY_SECONDS` |
-| `plugins/group-mesh/frontend/index.html` | 插件主页面：侧栏、五个面板、六个弹窗、脚本装载 | `#gm-nav`、`#gm-panels`、`#gm-content`、`#gm-freshness`、`#kernel-missing`、`data-panel`、`data-title`、`data-sub`、`data-active`、`data-obx-splitter`、`data-obx-splitter-min`、`data-obx-splitter-reserve`、`data-obx-splitter-default` |
+| `plugins/group-mesh/frontend/index.html` | 内容页入口：五个面板、六个弹窗与脚本装载（页面骨架由壳渲染，不在这里） | `#gm-panels`、`#gm-content`、`#kernel-missing`、`data-panel`、`data-title`、`data-sub`、`data-active` |
 | `plugins/group-mesh/frontend/network-location.html` | 网络位置提供方页面（弹窗 iframe） | `nl-peers`、`nl-shares`、`nl-dest-input`、`nl-dest`、`nl-note`、`nl-pick`、`nl-run`、`nl-cancel`、`nl-item`、`nl-sub`、`nl-path`、`nl-step`、`nl-list`、`nl-actions`、`nl-pick-row`、`is-active`、`MESSAGE_TYPE`、`omnibox:network-location`、`loadPeers`、`selectPeer`、`selectShare`、`pickDestination`、`run`、`reply`、`destinationProblem`、`syncFromInput`、`normalizeDestination`、`applyPickedDestination`、`updateHint`、`updateRunButton`、`FolderPicker.openDirBrowser` |
-| `plugins/group-mesh/frontend/group-mesh.css` | 插件自有样式：侧栏、面板栅格、表格、徽章、远端两栏 | `--gm-radius`、`--gm-radius-sm`、`--gm-accent-soft`、`--gm-success-soft`、`--gm-warn-soft`、`--gm-danger-soft`、`--gm-peers-width`、`.gm-side`、`.gm-brand`、`.gm-nav`、`.gm-nav-item`、`.gm-nav-count`、`.gm-side-foot`、`.gm-foot-dot`、`.gm-main`、`.gm-toolbar`、`.gm-heading`、`.gm-content`、`.gm-panels`、`.gm-panel`、`.gm-grid`、`.gm-card`、`.gm-card-ok`、`.gm-card-warn`、`.gm-card-error`、`.gm-card-muted`、`.gm-card-wide`、`.gm-body`、`.gm-kv`、`.gm-actions`、`.gm-form`、`.gm-table`、`.gm-badge`、`.gm-hint`、`.gm-empty`、`.gm-skeleton-line`、`.gm-list`、`.gm-details`、`.gm-address`、`.gm-address-row`、`.gm-address-label`、`.gm-address-value`、`.gm-remote`、`.gm-remote-tools`、`.gm-remote-peers`、`.gm-remote-files`、`.gm-remote-head`、`.gm-remote-peer`、`.gm-remote-peer-head`、`.gm-remote-peer-name`、`.gm-remote-peer-ep`、`.gm-remote-row`、`.gm-remote-item`、`.gm-remote-item-active`、`.gm-remote-badge`、`.gm-remote-note`、`.gm-remote-crumb`、`.gm-remote-progress`、`.gm-remote-progress-error`、`.gm-remote-cache`、`.gm-upload-progress`、`.gm-check`、`.gm-toast`、`.gm-toast-error`、`.gm-banner`、`.gm-banner-error` |
-| `plugins/group-mesh/frontend/js/app.js` | 状态读取、面板切换、五个面板渲染、弹窗与动作绑定、统一刷新挂载 | `state`、`el`、`call`、`toast`、`escapeHtml`、`stagger`、`cardOf`、`openModal`、`closeModal`、`roleBadge`、`shortKey`、`button`、`fillActions`、`setPanel`、`render`、`protectionBadge`、`renderIdentity`、`renderRoster`、`renderShares`、`renderNode`、`renderUnsupported`、`renderSideSummary`、`renderLoading`、`showError`、`afterAction`、`mountFreshness`、`refresh`、`showInvite`、`bind`、`init` |
+| `plugins/group-mesh/frontend/group-mesh.css` | 插件自有样式：面板栅格、卡片、表格、徽章、远端两栏 | `--gm-radius`、`--gm-radius-sm`、`--gm-accent-soft`、`--gm-success-soft`、`--gm-warn-soft`、`--gm-danger-soft`、`--gm-peers-width`、`.gm-content`、`.gm-panel`、`.gm-grid`、`.gm-card`、`.gm-card-ok`、`.gm-card-warn`、`.gm-card-error`、`.gm-card-muted`、`.gm-card-wide`、`.gm-body`、`.gm-kv`、`.gm-actions`、`.gm-form`、`.gm-table`、`.gm-badge`、`.gm-badge-owner`、`.gm-badge-admin`、`.gm-badge-member`、`.gm-badge-ok`、`.gm-badge-warn`、`.gm-hint`、`.gm-empty`、`.gm-skeleton-line`、`.gm-list`、`.gm-details`、`.gm-address`、`.gm-address-row`、`.gm-address-label`、`.gm-address-value`、`.gm-remote`、`.gm-remote-tools`、`.gm-remote-peers`、`.gm-remote-files`、`.gm-remote-head`、`.gm-remote-peer`、`.gm-remote-peer-head`、`.gm-remote-peer-name`、`.gm-remote-peer-ep`、`.gm-remote-row`、`.gm-remote-item`、`.gm-remote-item-active`、`.gm-remote-badge`、`.gm-remote-note`、`.gm-remote-crumb`、`.gm-remote-progress`、`.gm-remote-progress-error`、`.gm-remote-cache`、`.gm-upload-progress`、`.gm-check`、`.gm-toast`、`.gm-toast-error`、`.gm-banner`、`.gm-banner-error` |
+| `plugins/group-mesh/frontend/js/app.js` | 状态读取、面板切换、五个面板渲染、弹窗与动作绑定 | `state`、`el`、`call`、`toast`、`escapeHtml`、`stagger`、`cardOf`、`openModal`、`closeModal`、`roleBadge`、`shortKey`、`button`、`fillActions`、`setPanel`、`render`、`protectionBadge`、`renderIdentity`、`renderRoster`、`renderShares`、`renderNode`、`renderUnsupported`、`renderSideSummary`、`renderLoading`、`showError`、`afterAction`、`refresh`、`showInvite`、`bind`、`init` |
 | `plugins/group-mesh/frontend/js/remote.js` | 「远端共享」分片的取数与渲染、上传轮询、可见性轮询 | `window.GroupMeshRemote`、`state`、`gmIcon`、`el`、`esc`、`renderPeers`、`renderPath`、`renderEntries`、`formatSize`、`renderProgress`、`refreshMyEndpoint`、`copyMyEndpoint`、`updatePeerEndpoint`、`refreshPeers`、`reportPeers`、`refreshCache`、`renderCacheSummary`、`materialize`、`listDirectory`、`download`、`openUpload`、`setUploadRunning`、`renderUploadProgress`、`uploadText`、`stopUploadPolling`、`pollUpload`、`doUpload`、`cancelUpload`、`bind`、`startViewPolling`、`stopViewPolling`、`bindLifecycle`、`init`、`VIEW_POLL_MS`、`viewTimer` |
 
 落盘产物（全部在 `get_data_root()` 值为 `<全局数据根>/group-mesh` 之下）：
@@ -104,22 +104,24 @@
 
 ## 前端结构
 
-DOM 结构树（`plugins/group-mesh/frontend/index.html`）：
+壳渲染的 chrome（`manifest.json` 的 `frontend.chrome`，由 `PluginChrome.vue` 落 DOM）：
 
-- `#app`
-  - `aside.gm-side.view-sub-sidebar.obx-glass`（`data-obx-splitter`、`data-obx-splitter-min`、`data-obx-splitter-reserve`、`data-obx-splitter-default`）
-    - `.gm-brand` → `.gm-brand-icon`、`.gm-brand-text`（`.gm-brand-title`、`.gm-brand-sub`）
-    - `nav.gm-nav.obx-scroll#gm-nav` → `.gm-nav-label`、`button.obx-nav-item.gm-nav-item[data-panel]`（内含 `.gm-nav-icon`、`.gm-nav-text`、`#gm-count-shares`、`#gm-count-peers`）
-    - `.gm-side-foot.sub-sidebar-footer#gm-side-summary` → `.gm-foot-dot#gm-foot-dot`、`.gm-foot-text#gm-foot-text`
-  - `.view-body.gm-main`
-    - `.view-toolbar.gm-toolbar` → `.toolbar-group.gm-heading`（`.gm-heading-text`、`#gm-panel-title`、`#gm-panel-sub`）、`.toolbar-group.gm-toolbar-right`（`#btn-refresh`、`#gm-freshness`、`#btn-settings`）
-    - `#kernel-missing.gm-banner.gm-banner-error`
-    - `.view-content.gm-content.obx-scroll#gm-content` → `.gm-panels.obx-stagger#gm-panels`
-      - `section.gm-panel#panel-machine[data-panel="machine"]` → `.gm-grid` → `section.gm-card.obx-card-lift`（`#identity-body`、`#identity-actions`）与 `section.gm-card.obx-card-lift`（`#node-body`、`#node-actions`）
-      - `section.gm-panel#panel-group[data-panel="group"]` → `section.gm-card`（`#roster-body`、`#roster-actions`）
-      - `section.gm-panel#panel-shares[data-panel="shares"]` → `section.gm-card`（`#shares-body`、`.gm-form`、`#share-id`、`#share-path`、`#share-write`、`#btn-add-share`）
-      - `section.gm-panel#panel-remote[data-panel="remote"]` → `section.gm-card`（`.gm-hint`、`.gm-address`、`.gm-address-row`、`.gm-address-label`、`#my-endpoint`、`#btn-copy-my-endpoint`、`#peer-endpoint`、`#peer-device`、`#btn-update-peer`、`.gm-remote-tools`、`#btn-peer-add`、`#remote-cache`、`.gm-remote`、`.gm-remote-peers.obx-scroll`、`.gm-remote-head`、`#peers-body`、`.gm-remote-files.obx-scroll`、`#remote-path`、`#remote-body`、`#remote-progress`）
-      - `section.gm-panel#panel-roadmap[data-panel="roadmap"]` → `section.gm-card` → `.gm-details` → `#unsupported-list.gm-list`
+- 品牌块：`icon:network`、标题「团体组网」、副标题「无中心 · IPv6」、`accent` 为 `#22d3ee`。
+- 导航四组：`本机`（`machine` 身份与节点）、`团体`（`group` 名单与成员、`shares` 共享项）、`传输`（`remote` 远端共享）、`关于`（`roadmap` 路线图）。
+- 顶栏动作：`refresh`（刷新状态）、`settings`（设置）；设置由壳的 `PluginSettingsModal` 打开。
+- 搜索：manifest 没有 `search` 声明，壳不渲染搜索框，内容页也不处理 `omnibox:query`。
+- 状态栏与统一刷新：`status: true`，文本由内容页按节点/团体/名单状态上报；统一刷新由壳挂载，`freshness.unit` 为「项」，校验完成后经 `refresh` 动作重读。
+
+DOM 结构树（`plugins/group-mesh/frontend/index.html`，内容 iframe 不含页面骨架）：
+
+- `#app` → `.view-body.gm-main`
+  - `#kernel-missing.gm-banner.gm-banner-error`
+  - `.view-content.gm-content.obx-scroll#gm-content` → `.gm-panels.obx-stagger#gm-panels`
+    - `section.gm-panel#panel-machine[data-panel="machine"]` → `.gm-grid` → `section.gm-card.obx-card-lift`（`#identity-body`、`#identity-actions`）与 `section.gm-card.obx-card-lift`（`#node-body`、`#node-actions`）
+    - `section.gm-panel#panel-group[data-panel="group"]` → `section.gm-card`（`#roster-body`、`#roster-actions`）
+    - `section.gm-panel#panel-shares[data-panel="shares"]` → `section.gm-card`（`#shares-body`、`.gm-form`、`#share-id`、`#share-path`、`#share-write`、`#btn-add-share`）
+    - `section.gm-panel#panel-remote[data-panel="remote"]` → `section.gm-card`（`.gm-hint`、`.gm-address`、`.gm-address-row`、`.gm-address-label`、`#my-endpoint`、`#btn-copy-my-endpoint`、`#peer-endpoint`、`#peer-device`、`#btn-update-peer`、`.gm-remote-tools`、`#btn-peer-add`、`#remote-cache`、`.gm-remote`、`.gm-remote-peers.obx-scroll`、`.gm-remote-head`、`#peers-body`、`.gm-remote-files.obx-scroll`、`#remote-path`、`#remote-body`、`#remote-progress`）
+    - `section.gm-panel#panel-roadmap[data-panel="roadmap"]` → `section.gm-card` → `.gm-details` → `#unsupported-list.gm-list`
 - `#create-box.modal` → `.modal-box.obx-anim-scale` → `.modal-body`（`#create-group-name`）、`.modal-footer`（`#btn-close-create`、`#btn-do-create`）
 - `#invite-box.modal` → `.modal-body`（`#invite-text`）、`.modal-footer`（`#btn-close-invite`、`#btn-copy-invite`）
 - `#join-box.modal` → `.modal-body`（`#join-text`）、`.modal-footer`（`#btn-close-join`、`#btn-do-join`）
@@ -148,12 +150,19 @@ DOM 结构树（`plugins/group-mesh/frontend/index.html`）：
 - `gm-badge`、`gm-badge-ok`、`gm-badge-warn`、`gm-badge-owner`、`gm-badge-admin`、`gm-badge-member`：`roleBadge` 与 `protectionBadge` 生成的角色与保护状态徽章
 - `gm-skeleton-line`：`renderLoading` 的首屏骨架
 - `gm-remote-item-active`、`gm-remote-progress-error`：远端分片的选中态与错误态
-- `data-state` 取值 `ok`、`warn`、`error`、`idle`：`renderSideSummary` 写给 `#gm-foot-dot`
+- `data-state` 取值 `ok`、`warn`、`error`、`idle`：`renderSideSummary` 写进 `state.statusState` 并经 `omnibox:chrome` 上报，壳据此画状态点
 - `data-remove`、`data-enter`、`data-download`、`data-materialize`、`data-device`、`data-share`：列表项上的动作标记，由 `bind` 与 `renderEntries` 的事件委托读取
 
 ## 与壳的契约
 
-壳类与骨架（`shell/frontend/public/shell/base.css`）：`.view-sub-sidebar`、`.view-body`、`.view-toolbar`、`.toolbar-group`、`.view-content`、`.modal`、`.modal.active`、`.sub-sidebar-footer`、`.empty-state--inline`、`.btn-sm`、`.btn-danger`。
+- **chrome 消息**（只在壳与内容 iframe 之间，同源 `postMessage`）：
+  - 壳 → 内容 `omnibox:view`：导航项 id（`machine` / `group` / `shares` / `remote` / `roadmap`），内容页 `setPanel` 切面板。
+  - 壳 → 内容 `omnibox:action`：`refresh` 重读 `get_status`；`settings-saved` 在壳内设置弹窗保存成功后重读状态。设置弹窗由壳的 `PluginSettingsModal` 打开，壳不下发 `settings`。
+  - 内容 → 壳 `omnibox:ready`：握手。
+  - 内容 → 壳 `omnibox:chrome`：`title`、`subtitle`、`badges`（`shares` / `remote` 计数）、`status`（文本与 `ok` / `warn` / `error` / `idle`）。本插件不声明搜索，也不上报 `view` / `nav` / `actions`；导航高亮由壳维护。
+- 内容页不得出现 chrome 标记：`.view-sub-sidebar`、`.view-toolbar`、`.sub-sidebar-brand`、`.obx-nav-item`（`tools/plugin_ui_audit.py` 的 `iframe.content-only` 会检查）。侧栏分隔条由壳持有，本页不含 `data-obx-splitter*`。
+
+壳类（`shell/frontend/public/shell/base.css`，内容 iframe 实际使用的）：`.view-body`、`.view-content`、`.modal`、`.modal.active`、`.empty-state--inline`、`.btn-sm`、`.btn-danger`。
 
 壳 token（`shell/frontend/public/shell/variables.css`）：`--bg-app`、`--bg-surface`、`--bg-hover`、`--border`、`--accent`、`--success`、`--warning`、`--danger`、`--danger-soft`、`--text-primary`、`--text-secondary`、`--text-muted`、`--text-on-accent`、`--radius`、`--radius-sm`、`--radius-lg`、`--shadow-md`、`--transition-fast`、`--sub-sidebar-width`。
 
@@ -163,8 +172,9 @@ DOM 结构树（`plugins/group-mesh/frontend/index.html`）：
 
 共享前端组件：
 
-- `window.Bridge.call`：`/api/<插件>__<方法>` 通道；`Bridge.callSystem` 与 `window.Freshness.mount({plugin, container, unit, onChange})`：统一刷新组件的同步与校验按钮
-- `window.openSettingsModal`：壳的统一设置弹窗
+- `window.Bridge.call`：`/api/<插件>__<方法>` 通道
+- 设置弹窗：由壳的 `PluginSettingsModal` 在顶栏 `settings` 动作里打开；保存成功后壳发 `settings-saved`，本页 `refresh()` 重读状态。内容页不再调用 `window.openSettingsModal`
+- 统一刷新：壳的 `PluginChrome` 用 `window.Freshness.mount({plugin, container, unit, onChange})` 挂载同步/校验按钮，完成后经 `refresh` 动作回到本页；内容页不再挂 `#gm-freshness`
 - `window.confirmDialog`：移除共享项前的确认
 - `window.Toast.success`、`window.Toast.error`：提示
 - `window.Icons.html`：取壳图标集里的 SVG 标记，`icons.generated.js` 提供 sprite
@@ -172,7 +182,6 @@ DOM 结构树（`plugins/group-mesh/frontend/index.html`）：
 - `window.Motion.stagger`：面板卡片的交错入场
 - `window.onShow`、`window.onHide`、`window.onDispose`：远端分片的轮询开关
 - `window.FolderPicker.openDirBrowser`：网络位置页的本地目录选择
-- 分隔条：`data-obx-splitter`、`data-obx-splitter-min`、`data-obx-splitter-reserve`、`data-obx-splitter-default`、`data-obx-splitter-handle`
 
 共享后端基建（`shell/backend/`）：
 

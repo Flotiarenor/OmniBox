@@ -1,7 +1,7 @@
 <#
     ipv6-test.ps1 —— Windows ↔ Linux 的**纯 IPv6** 跨机联调（group-mesh MVP）
 
-    设计文档 §1.1 的目标就是公网 IPv6，因此这条链路才是主路径；IPv4 只是
+    本内核的目标就是公网 IPv6，因此这条链路才是主路径；IPv4 只是
     同一网段内的兜底。本脚本验证：
 
       1. Linux 绑到本机全局 IPv6 并在注册记录里写入 IPv6 端点

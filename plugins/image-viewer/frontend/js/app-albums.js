@@ -20,38 +20,31 @@ Object.assign(ImageViewer.prototype, {
         } catch (e) {
             this.albums = [];
         }
+        // 只刷新相册数据，不改变当前层级：`showAlbums()` 会把 mode 强制切回 albums，
+        // 并清空当前目录与图片列表；在图片层点「校验」或保存设置时调用本方法，
+        // 用户会被弹回全部相册，随后的 `loadImages` 也因 mode 已变而永不执行。
+        if (this.mode === 'images') return;
         this.showAlbums();
-        // 被动同步：进相册视图时校验根目录集合（组件去抖 + 壳侧节流）
-        this._autoSyncFreshness('');
     },
 
     showAlbums() {
+        // 新导航代次：在途 loadImages 的响应从这一刻起作废，图片层状态也一并清空，
+        // 避免旧请求把已切走的瀑布流重新画回相册层。
+        this._navSeq += 1;
+        this._resetImageListState();
         this._cancelSlideshow();
         this.mode = this.mode === 'images' ? 'albums' : this.mode;
         this.filteredSeqIndexes = null;
         if (this.isMultiSelectMode) {
             this.isMultiSelectMode = false;
-            const multiBtn = document.getElementById('btn-multi-select');
-            if (multiBtn) {
-                multiBtn.classList.remove('active');
-                multiBtn.textContent = '开启多选';
-            }
             this.clearSelection();
         }
-        document.getElementById('iv-search').placeholder = '搜索相册…';
-        document.getElementById('iv-back').classList.toggle('hidden', this.mode !== 'children');
-        document.getElementById('btn-slideshow').classList.add('hidden');
-        document.getElementById('btn-multi-select').classList.add('hidden');
-        document.getElementById('btn-delete-selected').classList.add('hidden');
-        document.getElementById('btn-move-selected').classList.add('hidden');
-        const selectionCount = document.getElementById('iv-selection-count');
-        if (selectionCount) selectionCount.classList.add('hidden');
         document.getElementById('pagination').innerHTML = '';
         const imageGrid = document.getElementById('image-grid');
         imageGrid.innerHTML = '';
         imageGrid.style.height = '0';
 
-        const keyword = document.getElementById('iv-search').value.trim().toLowerCase();
+        const keyword = this.searchQuery.trim().toLowerCase();
         let albums = this.albums;
         if (this.mode === 'children' && this.childParentPath) {
             albums = albums.filter(a => a.parent === this.childParentPath);
@@ -72,28 +65,27 @@ Object.assign(ImageViewer.prototype, {
                 : this._sortAlbums(albums, 'name', 'asc');
         }
 
-        const titleEl = document.getElementById('iv-view-title');
-        const subEl = document.getElementById('iv-view-sub');
         const content = document.getElementById('iv-albums');
         content.innerHTML = '';
 
         if (this.mode === 'children') {
-            titleEl.textContent = this.childParentPath.split('/').pop() || '未分类';
-            subEl.textContent = `${albums.length} 个子相册`;
+            this._chromeTitle = this.childParentPath.split('/').pop() || '未分类';
+            this._chromeSub = `${albums.length} 个子相册`;
         } else if (this.currentView === 'timeline') {
-            titleEl.textContent = '时间线';
-            subEl.textContent = keyword ? `搜索 “${keyword}”` : '按添加时间归档';
+            this._chromeTitle = '时间线';
+            this._chromeSub = keyword ? `搜索 “${this.searchQuery}”` : '按添加时间归档';
         } else if (this.currentView === 'latest') {
-            titleEl.textContent = '最近添加';
-            subEl.textContent = keyword ? `搜索 “${keyword}”` : '最新更新的相册排在最前';
+            this._chromeTitle = '最近添加';
+            this._chromeSub = keyword ? `搜索 “${this.searchQuery}”` : '最新更新的相册排在最前';
         } else {
-            titleEl.textContent = '全部相册';
-            subEl.textContent = keyword ? `搜索 “${keyword}”` : `${albums.length} 个相册`;
+            this._chromeTitle = '全部相册';
+            this._chromeSub = keyword ? `搜索 “${this.searchQuery}”` : `${albums.length} 个相册`;
         }
 
         if (!albums.length) {
-            content.innerHTML = this._emptyHtml('icon:images', '暂无相册', keyword ? '换个关键词试试' : '点击左侧「新建相册」开始整理');
+            content.innerHTML = this._emptyHtml('icon:images', '暂无相册', keyword ? '换个关键词试试' : '在顶栏点「新建相册」开始整理');
             this._updateStats();
+            this._pushChrome();
             return;
         }
 
@@ -105,6 +97,7 @@ Object.assign(ImageViewer.prototype, {
             this._renderAlbumCards(content, albums, {});
         }
         this._updateStats();
+        this._pushChrome();
     },
 
     _renderTimeline(content, albums) {
@@ -117,7 +110,7 @@ Object.assign(ImageViewer.prototype, {
         content.innerHTML = [...groups.entries()].map(([key, list], gi) => `
             <section class="iv-timeline-section">
                 <div class="iv-time-label"><span>${key}</span><i>${list.length} 个相册</i></div>
-                <div class="iv-grid" data-group="${gi}"></div>
+                <div class="iv-grid cui-grid" data-group="${gi}"></div>
             </section>`).join('');
         content.querySelectorAll('.iv-grid[data-group]').forEach((grid, gi) => {
             const list = [...groups.values()][gi];
@@ -131,56 +124,126 @@ Object.assign(ImageViewer.prototype, {
         const target = container.classList.contains('iv-grid')
             ? container
             : this._ensureGrid(container);
-        const collapsed = new Set(this.albumConfig.collapsed || []);
-        const promoted = new Set(this.albumConfig.promoted || []);
-        const visibleEmpty = new Set(this.albumConfig.visible_empty_dirs || []);
-        target.innerHTML = albums.map((album) => {
-            const sub = album.path ? album.path : '根目录 · 未分类';
-            const time = opts.showTime ? `<span class="iv-time-badge">${this._timeAgo(album.mtime)}</span>` : '';
-            const badges = [];
-            if (collapsed.has(album.path)) badges.push(`<span class="iv-album-tag">${Icons.html('icon:package')} 已收纳</span>`);
-            if (promoted.has(album.path)) badges.push(`<span class="iv-album-tag iv-album-tag-hot">${Icons.html('icon:pin')} 已提升</span>`);
-            // 空目录默认不显示，显示出来的都是「新建相册」保留可见的
-            if (visibleEmpty.has(album.path) && !album.readable) {
-                badges.push(`<span class="iv-album-tag">${Icons.html('icon:folder')} 空相册</span>`);
-            }
-            const menu = (album.depth >= 1 && album.path !== '')
-                ? `<button class="iv-album-menu" data-path="${this._escapeAttr(album.path)}" title="相册设置">⋯</button>`
-                : '';
-            // 含子相册的目录显示递归总数（后端 readable），纯图片目录显示直接图片数
-            const total = album.readable != null ? album.readable : album.image_count;
-            const countText = album.has_children && total !== album.direct_count
-                ? `${total} 张 · 含子相册`
-                : `${total} 张`;
-            return `
-            <div class="iv-album" data-path="${this._escapeAttr(album.path)}">
-                <div class="iv-album-cover">
-                    ${album.cover ? `<img src="${this._thumbUrl({ url: album.cover, mtime: album.mtime })}" loading="lazy" alt=""
-                        onerror="if(!this.dataset.r){this.dataset.r='1';const u=new URL(this.src,location.origin);u.searchParams.set('r',Date.now());this.src=u.toString();}else{this.outerHTML='<div class=\'iv-cover-fallback\'>' + Icons.html('icon:image-off') + '</div>';}">` : '<div class="iv-cover-fallback">' + Icons.html('icon:image-off') + '</div>'}
-                    <span class="iv-album-badge">${countText}</span>
-                    ${time}
-                    ${badges.join('')}
-                </div>
-                <div class="iv-album-info">
-                    <div class="iv-album-name">${this._escapeHtml(album.name)}</div>
-                    <div class="iv-album-count">${this._escapeHtml(sub)}</div>
-                </div>
-                ${menu}
-            </div>`;
-        }).join('');
+        const sets = {
+            collapsed: new Set(this.albumConfig.collapsed || []),
+            promoted: new Set(this.albumConfig.promoted || []),
+            visibleEmpty: new Set(this.albumConfig.visible_empty_dirs || []),
+        };
+        const fragment = document.createDocumentFragment();
+        albums.forEach((album) => fragment.appendChild(this._albumCard(album, opts, sets)));
+        target.replaceChildren(fragment);
+    },
 
-        target.querySelectorAll('.iv-album').forEach(card => {
-            card.addEventListener('click', (e) => {
-                if (e.target.closest('.iv-album-menu')) return;
-                this.openAlbum(card.dataset.path);
-            });
+    /** 单张相册卡：结构/键盘激活/操作菜单/封面叠加都由 ContentUI.card 提供。 */
+    _albumCard(album, opts, sets) {
+        const sub = album.path ? album.path : '根目录 · 未分类';
+        // 含子相册的目录显示递归总数（后端 readable），纯图片目录显示直接图片数
+        const total = album.readable != null ? album.readable : album.image_count;
+        const countText = album.has_children && total !== album.direct_count
+            ? `${total} 张 · 含子相册`
+            : `${total} 张`;
+        const state = [];
+        if (sets.collapsed.has(album.path)) state.push('已收纳');
+        if (sets.promoted.has(album.path)) state.push('已提升');
+        if (sets.visibleEmpty.has(album.path) && !album.readable) state.push('空相册');
+        const menuAction = (album.depth >= 1 && album.path !== '')
+            ? this._albumMenuAction(album)
+            : null;
+        const card = ContentUI.card({
+            className: 'iv-album',
+            image: album.cover
+                ? {
+                    src: this._thumbUrl({ url: album.cover, mtime: album.mtime }),
+                    alt: '',
+                    data: { path: album.path },
+                    onError: (event, img) => this._handleAlbumCoverError(img),
+                }
+                : null,
+            mediaOverlay: {
+                badge: state.join(' · ') || undefined,
+                count: countText,
+                time: opts.showTime ? this._timeAgo(album.mtime) : undefined,
+            },
+            title: album.name,
+            sub,
+            data: { path: album.path },
+            ariaLabel: `${album.name}，${countText}`,
+            onActivate: () => this.openAlbum(album.path),
+            actions: menuAction ? [menuAction] : undefined,
+            actionsPlacement: menuAction ? 'top-right' : undefined,
         });
-        target.querySelectorAll('.iv-album-menu').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.showAlbumMenu(btn.dataset.path, e);
+        const media = card.querySelector('.cui-media');
+        const body = card.querySelector('.cui-body');
+        const title = card.querySelector('.cui-title');
+        const subEl = card.querySelector('.cui-sub');
+        if (media) media.classList.add('iv-album-cover');
+        if (body) body.classList.add('iv-album-info');
+        if (title) title.classList.add('iv-album-name');
+        if (subEl) subEl.classList.add('iv-album-count');
+        if (!album.cover) this._fillEmptyAlbumCover(card);
+        if (menuAction) {
+            // 相册菜单既可点右上角按钮，也可右键卡片打开；动作集合完全相同。
+            card.addEventListener('contextmenu', (event) => {
+                event.preventDefault();
+                this.showAlbumMenu(album.path, event);
             });
-        });
+        }
+        return card;
+    },
+
+    _albumMenuAction(album) {
+        return {
+            label: '⋯',
+            className: 'iv-album-menu',
+            title: '相册设置',
+            ariaLabel: `相册设置：${album.name}`,
+            data: { path: album.path },
+            onClick: (event) => {
+                const btn = event.currentTarget;
+                const rect = btn.getBoundingClientRect();
+                const keyboard = event.detail === 0 || (!event.clientX && !event.clientY);
+                this.showAlbumMenu(album.path, keyboard
+                    ? { clientX: rect.right, clientY: rect.bottom }
+                    : event);
+            },
+        };
+    },
+
+    /** 封面加载失败：重试一次（mtime/URL 不变时绕过一天强缓存），仍失败则换占位图。 */
+    _handleAlbumCoverError(img) {
+        if (!img) return;
+        if (!img.dataset.r) {
+            img.dataset.r = '1';
+            const url = new URL(img.src, location.origin);
+            url.searchParams.set('r', Date.now());
+            img.src = url.toString();
+            const media = img.closest('.cui-media');
+            if (media) media.classList.remove('cui-media--broken');
+            return;
+        }
+        const media = img.closest('.cui-media');
+        if (!media) return;
+        media.classList.remove('cui-media--broken');
+        media.classList.remove('cui-media--empty');
+        media.removeAttribute('aria-hidden');
+        // 只替换图片本身，ContentUI 的 mediaOverlay 计数/时间/状态保留
+        img.replaceWith(this._coverFallback());
+    },
+
+    /** 没有封面时 ContentUI 的空媒体框换成带图标的旧占位（封面视觉，不是共享 overlay）。 */
+    _fillEmptyAlbumCover(card) {
+        const media = card.querySelector('.cui-media');
+        if (!media) return;
+        media.classList.remove('cui-media--empty');
+        media.removeAttribute('aria-hidden');
+        media.appendChild(this._coverFallback());
+    },
+
+    _coverFallback() {
+        const fallback = document.createElement('div');
+        fallback.className = 'iv-cover-fallback';
+        fallback.innerHTML = Icons.html('icon:image-off');
+        return fallback;
     },
 
     _isCollapsed(album, config = this.albumConfig) {
@@ -250,8 +313,7 @@ Object.assign(ImageViewer.prototype, {
         let grid = container.querySelector(':scope > .iv-grid');
         if (!grid) {
             container.innerHTML = '';
-            grid = document.createElement('div');
-            grid.className = 'iv-grid';
+            grid = ContentUI.grid({ className: 'iv-grid', min: '170px' });
             container.appendChild(grid);
         }
         return grid;
@@ -297,6 +359,9 @@ Object.assign(ImageViewer.prototype, {
     },
 
     async openAlbum(path) {
+        // 打开相册就进入新的导航代次：在途的旧 loadImages（例如当前瀑布流或上一页）
+        // 立即作废，异步拿到设置后也要确认用户还在这个代次里。
+        const navSeq = ++this._navSeq;
         // 从列表/瀑布流点入时记录滚动位置，返回时恢复到刚刚浏览的位置
         if (this.mode === 'albums' || this.mode === 'children') {
             this._rememberScroll();
@@ -324,12 +389,14 @@ Object.assign(ImageViewer.prototype, {
                 isPixiv = !!s && s.sort_by === 'time_name';
                 pixivExplicit = !!s && !!s.pixiv_explicit;
             } catch (e) { /* 忽略 */ }
+            if (navSeq !== this._navSeq) return;
             if (!isPixiv || pixivExplicit || album.root_scope) {
                 this.mode = 'children';
                 this.childParentPath = path;
                 this.fromChildren = true;
                 this.currentPath = path;   // 同步当前浏览目录，保证设置基于当前目录
                 this.showAlbums();
+                this._armViewReplayGuard();
                 return;
             }
         }
@@ -338,20 +405,22 @@ Object.assign(ImageViewer.prototype, {
     },
 
     _showFolder(path) {
+        this._navSeq += 1;
+        this._resetImageListState();
         const album = this.albums.find(a => a.path === path);
         this.currentPath = path;
         this.currentPage = 1;
         this.mode = 'images';
         this.filteredSeqIndexes = null;
-        document.getElementById('iv-search').value = '';
-        document.getElementById('iv-search-clear').classList.add('hidden');
-        document.getElementById('iv-search').placeholder = '搜索当前相册…';
-        document.getElementById('iv-back').classList.remove('hidden');
-        document.getElementById('btn-slideshow').classList.remove('hidden');
-        document.getElementById('btn-multi-select').classList.remove('hidden');
-        document.getElementById('iv-view-title').textContent = album ? album.name : (path.split('/').pop() || '未分类');
-        document.getElementById('iv-view-sub').textContent = path || '根目录 · 未分类';
+        // 进相册层时清掉关键词：壳搜索框没有"让内容页回填输入值"的通道，输入框里
+        // 可能还留着上一次的关键词，但过滤从这里重置（已知边界，见 AGENTS.md）。
+        this.searchQuery = '';
+        this._searchClear += 1;
+        this._chromeTitle = album ? album.name : (path.split('/').pop() || '未分类');
+        this._chromeSub = path || '根目录 · 未分类';
         document.getElementById('iv-albums').innerHTML = '';
+        this._armViewReplayGuard();
+        this._pushChrome();
         this.loadImages(path, 1);
     },
 

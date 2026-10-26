@@ -46,10 +46,10 @@ function loadShell() {
   };
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(BASE_JS, 'utf8'), sandbox, { filename: 'shell/base.js' });
-  return { createSettingsForm: vm.runInContext('createSettingsForm', sandbox), makeEl };
+  return { createSettingsForm: vm.runInContext('createSettingsForm', sandbox), makeEl, win };
 }
 
-const { createSettingsForm, makeEl } = loadShell();
+const { createSettingsForm, makeEl, win } = loadShell();
 
 const SCHEMA = [
   { key: 'root_dir', label: '相册根目录', type: 'info', help: '扫描范围取自「图片相册」的根目录' },
@@ -111,5 +111,45 @@ check('setValues 跳过 info 字段（它没有控件可回填），其余字段
   assert.equal(fieldWrap(container, 'note').querySelector('input').value, 'hello');
 });
 
-console.log(failed ? `\n${failed} 例失败` : '\n设置表单 5 例通过');
+// ---------- directory：单值字段必须用单值模式，否则用户能加多行、保存却只留第一行 ----------
+
+/** 最小 FolderPicker 替身：只记录 createList 收到的选项与当前路径。 */
+const pickerCalls = [];
+win.FolderPicker = {
+  createList(opts) {
+    const state = { opts: opts || {}, paths: ((opts && opts.paths) || []).slice() };
+    pickerCalls.push(state);
+    return {
+      element: makeEl('div'),
+      getPaths: () => state.paths.slice(),
+      setPaths: (paths) => { state.paths = (paths || []).slice(); },
+      addPath: (path) => { state.paths = [path]; return true; },
+    };
+  },
+};
+
+check('单值 directory 字段走 single 模式，多值字段保留多行', () => {
+  pickerCalls.length = 0;
+  const schema = [
+    { key: 'download_dir', label: '下载目录', type: 'directory' },
+    { key: 'media_roots', label: '媒体文件夹', type: 'directory', multi: true },
+  ];
+  const values = { download_dir: 'D:\\下载', media_roots: 'D:\\媒体\nE:\\备份' };
+  const form = createSettingsForm(makeEl('div'), schema, values);
+  assert.equal(pickerCalls.length, 2, '两个 directory 字段都应由 FolderPicker 渲染');
+  assert.equal(pickerCalls[0].opts.single, true,
+    '非 multi 字段是单值设置，必须禁止加出第二行（否则保存时第二行被静默丢弃）');
+  assert.ok(!pickerCalls[1].opts.single, 'multi 字段不能进入 single 模式');
+  // 跨 realm 的数组不能用 deepEqual（sandbox 的 Array 与宿主不同），逐项断言
+  assert.equal(pickerCalls[0].opts.paths.length, 1);
+  assert.equal(pickerCalls[0].opts.paths[0], 'D:\\下载');
+  assert.equal(pickerCalls[1].opts.paths.length, 2);
+  assert.equal(pickerCalls[1].opts.paths[0], 'D:\\媒体');
+  assert.equal(pickerCalls[1].opts.paths[1], 'E:\\备份');
+  const submitted = form.getValues();
+  assert.equal(submitted.download_dir, 'D:\\下载');
+  assert.equal(submitted.media_roots, 'D:\\媒体\nE:\\备份');
+});
+
+console.log(failed ? `\n${failed} 例失败` : '\n设置表单 6 例通过');
 process.exit(failed ? 1 : 0);

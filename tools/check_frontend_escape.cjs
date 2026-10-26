@@ -119,6 +119,26 @@ function loadMethod(rel, needle, name) {
   return sandbox.__obj[name];
 }
 
+/**
+ * folder-picker 在壳文档里自己垫的那份 `escapeHtml`。
+ *
+ * 它是在**没有内核 Utils 的页面**（壳首页 / 设置弹窗）里给目录名、路径、提供方
+ * label 用的转义实现，和插件 iframe 里那份一样会被塞进属性值。门禁的宗旨是
+ * "不管实现放在内核还是别处都过同一关"，所以这里把它当作第 7 个实现来跑。
+ */
+function loadFolderPickerEscape() {
+  const sandbox = makeSandbox();
+  // 模拟壳页：window.Utils 存在（壳只垫了 iconHtml）但没有 escapeHtml，
+  // 组件因此走自己的兜底实现 —— 保留内核那份会让这项检查悄悄变成重复检查。
+  delete sandbox.Utils;
+  sandbox.document = { ...domStub(), addEventListener() { } };
+  vm.createContext(sandbox);
+  vm.runInContext(read('shell/frontend/public/shell/folder-picker.js'), sandbox, {
+    filename: 'folder-picker.js',
+  });
+  return sandbox.Utils && sandbox.Utils.escapeHtml;
+}
+
 function checkEscaper(label, fn) {
   if (typeof fn !== 'function') {
     failures.push(`${label}: 没取到函数`);
@@ -237,6 +257,65 @@ function checkInterpolationsRegistered(rel, registry) {
   }
 }
 
+/**
+ * 只扫描"模板字面量赋给 innerHTML"的插值：值进入 HTML 上下文前必须逐个过审。
+ *
+ * 为什么不能沿用 checkInterpolationsRegistered：那个函数把整个文件里所有 `${…}`
+ * 都当成 HTML 插值，而 base.js / freshness.js 里有大量 textContent、URL 拼接用的
+ * 模板，全量登记既没意义也会很快过期。这里只认 `.innerHTML = `…`` 与
+ * `.innerHTML += `…``，覆盖现有全部 HTML 模板；变量/拼接赋值（如
+ * `btn.innerHTML = icon + text`）不在静态检查范围内，残余见共享运行时审查报告。
+ */
+function checkInnerHtmlTemplateInterpolations(rel, registry) {
+  const source = read(rel);
+  const found = [];
+  const re = /\.innerHTML\s*\+?=\s*`/g;
+  let match;
+  while ((match = re.exec(source)) !== null) {
+    const line = source.slice(0, match.index).split('\n').length;
+    collectTemplateInterpolations(source, match.index + match[0].length - 1, found, line);
+  }
+  for (const entry of registry) {
+    if (!found.some((item) => item.expr === entry)) {
+      failures.push(`${rel}: innerHTML 登记项在模板里已找不到（登记表过期）：${entry}`);
+    }
+  }
+  for (const item of found) {
+    if (registry.includes(item.expr)) continue;
+    failures.push(
+      `${rel}: innerHTML 模板里有未登记的插值 \${${item.expr}}（第 ${item.line} 行）—— `
+      + '确认值已转义后再登记到 tools/check_frontend_escape.cjs');
+  }
+}
+
+/** 从 start（指向开头的反引号）扫一个模板字面量，收集其中每层 `${…}` 的表达式。 */
+function collectTemplateInterpolations(source, start, out, line) {
+  let i = start + 1;
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === '\\') { i += 2; continue; }
+    if (ch === '`') return i + 1;
+    if (ch === '$' && source[i + 1] === '{') {
+      const begin = i + 2;
+      let depth = 1;
+      i += 2;
+      while (i < source.length && depth > 0) {
+        const c = source[i];
+        if (c === '\\') { i += 2; continue; }
+        if (c === '{') { depth += 1; i += 1; continue; }
+        if (c === '}') { depth -= 1; i += 1; continue; }
+        if (c === '`') { i = collectTemplateInterpolations(source, i, out, line); continue; }
+        i += 1;
+      }
+      const expr = source.slice(begin, i - 1).replace(/\s+/g, ' ').trim();
+      if (expr) out.push({ expr, line });
+      continue;
+    }
+    i += 1;
+  }
+  return i;
+}
+
 // ---- 1. 各处 HTML 转义实现 ----
 checkEscaper('kernel Utils.escapeHtml', loadKernelUtils().escapeHtml);
 checkEscaper('media-player MPUtils.escapeHtml',
@@ -248,6 +327,10 @@ checkEscaper('image-viewer _escapeHtml',
   loadMethod('plugins/image-viewer/frontend/js/app-utils.js', '_escapeHtml(str)', '_escapeHtml'));
 checkEscaper('image-cleaner _escapeHtml',
   loadMethod('plugins/image-cleaner/frontend/js/app.js', '_escapeHtml(str)', '_escapeHtml'));
+// 第 7 份实现：folder-picker 在壳文档（没有内核 Utils.escapeHtml）里的兜底，
+// 同样用于属性值（data-path / title / placeholder）。新增转义实现必须登记到这里，
+// 否则"共享目录名里一个引号就能逃出属性"这类回归没有任何门禁能发现。
+checkEscaper('folder-picker ensureUtilsEscape', loadFolderPickerEscape());
 
 // ---- 2. 属性拼接场景：生成的 HTML 不能被打断 ----
 const mpUtils = runScript(read('plugins/media-player/frontend/js/utils.js'), 'MPUtils');
@@ -309,7 +392,8 @@ if (renderDetail) {
 checkInterpolationsRegistered('shell/frontend/public/shell/folder-picker.js', [
   "label ? `<span class=\"iv-dirbrowser-hint\">含 ${Utils.escapeHtml(label)}</span>` : ''",
   "note ? `<span class=\"iv-root-note\">${Utils.escapeHtml(note)}</span>` : ''",
-  'Utils.escapeHtml(data.error)',
+  // 导航失败态（markFailed）：错误文本来自后端 / 固定文案，进的是 list 的 innerHTML
+  'Utils.escapeHtml(message)',
   'Utils.escapeHtml(entry.path)',
   'Utils.escapeHtml(entry.name)',
   "Utils.escapeHtml(options.placeholder || '输入目录绝对路径')",
@@ -336,6 +420,43 @@ checkInterpolationsRegistered('shell/frontend/public/shell/folder-picker.js', [
   'Utils.escapeHtml(src)',
 ]);
 
+// ---- 4b. 共享内容原语也用同一张登记表 ----
+// content-ui.js 目前**没有任何模板插值**：全部结构走 createElement / textContent /
+// setAttribute，唯一的 innerHTML 是 iconMarkup() 产出的图标标记（名字先过
+// `^icon:[a-z0-9-]+$`，再经图标集的 KNOWN 白名单）。登记空表是给未来的插值上锁：
+// 一旦加了 `${…}` 拼接，门禁会要求先在这里过一遍"值是否已转义"。
+checkInterpolationsRegistered('shell/frontend/public/shell/content-ui.js', []);
+
+// ---- 4c. 共享运行时的 innerHTML 模板插值登记 ----
+// 只登记 `innerHTML = `…`` 模板里的插值。每一条都要能复核"值已转义或来自受控常量"：
+//   - Utils.escapeHtml(…) / Utils.iconHtml(…)（图标名经 Icons 的 KNOWN 白名单）
+//   - labelText(…)（内部 escapeHtml）
+//   - messageId / titleId：Math.random().toString(36) 生成，字符集受控
+//   - options.danger 的三元：只产出两个固定类名
+checkInnerHtmlTemplateInterpolations('shell/frontend/public/shell/base.js', [
+  'Utils.iconHtml(iconName)',
+  'Utils.escapeHtml(message)',
+  'messageId',
+  "options.danger ? 'btn-danger-solid' : 'btn-primary'",
+  "Utils.escapeHtml(options.okText || '确定')",
+  'titleId',
+  'Utils.escapeHtml(title)',
+  "labelText(labels.previous, '上一张')",
+  "Utils.iconHtml('icon:chevron-left')",
+  "labelText(labels.image, '原图查看')",
+  "labelText(labels.next, '下一张')",
+  "Utils.iconHtml('icon:chevron-right')",
+  "labelText(labels.close, '关闭')",
+  "Utils.iconHtml('icon:x')",
+]);
+// freshness.js 的进度卡模板：唯一的插值是图标名常量，状态/进度文本全部走 textContent。
+checkInnerHtmlTemplateInterpolations('shell/frontend/public/shell/freshness.js', [
+  "icon('refresh-cw')",
+]);
+// native-client.js 不写 innerHTML（消息都走 postMessage）：登记空表，
+// 以后新增的 innerHTML 模板必须先到这里过审。
+checkInnerHtmlTemplateInterpolations('shell/frontend/public/shell/native-client.js', []);
+
 /** 取多个方法块拼成对象（方法之间可能互相调用，如 _escapeAttr → _escapeHtml）。 */
 function loadObjectWith(rel, needles) {
   const source = read(rel);
@@ -351,7 +472,7 @@ function loadObjectWith(rel, needles) {
 }
 
 // ---- 5. image-viewer 的 _escapeAttr 必须与 _escapeHtml 同样严格 ----
-// 两个方法在 app-utils.js 分片里（app.js 拆成多个原型分片后位置变更，见 docs/image-viewer-design.md）
+// 两个方法在 app-utils.js 分片里（app.js 拆成多个原型分片后位置变更）
 const iv = loadObjectWith('plugins/image-viewer/frontend/js/app-utils.js', ['_escapeHtml(str)', '_escapeAttr(str)']);
 if (iv) {
   const out = iv._escapeAttr(PAYLOAD);
@@ -366,4 +487,4 @@ if (failures.length) {
   for (const f of failures) console.error(`  - ${f}`);
   process.exit(1);
 }
-console.log('check_frontend_escape: OK（内核 + 5 个插件的转义实现、渲染调用点与共享目录组件的插值登记均通过）');
+console.log('check_frontend_escape: OK（内核 + 5 个插件 + folder-picker 兜底的转义实现、渲染调用点，共享组件的模板与 innerHTML 插值登记均通过）');

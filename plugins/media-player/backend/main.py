@@ -6,6 +6,8 @@ import logging
 import os
 import re
 import shutil
+import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -29,6 +31,11 @@ INDEX_VERSION = _scanner.INDEX_VERSION
 # 播放队列持久化上限：状态文件按 id 列表存储，只保留前若干条以约束文件体积；
 # 超出时置 queue_truncated，前端恢复的是可恢复的那部分。
 QUEUE_PERSIST_LIMIT = 1000
+#: `os.replace` 的重试次数与单次等待。只针对"临时文件被外部实时扫描/索引短暂占用"
+#: 这类瞬时失败（WinError 5 / 32）：等待总计 `_REPLACE_DELAY * (1+2+3)` ≈ 300ms，
+#: 代价远低于"用户这次改动没落盘"。
+_REPLACE_ATTEMPTS = 3
+_REPLACE_DELAY = 0.05
 MediaItem = _models.MediaItem
 MediaAlbum = _models.MediaAlbum
 
@@ -42,54 +49,106 @@ class MediaPlayerPlugin(_freshness.FreshnessMixin, PluginBase):
          "placeholder": "输入目录绝对路径，如 D:\\音乐",
          "emptyText": "未添加任何目录，将使用默认数据目录（./data）",
          "help": "第一行为主目录（数据根 + 扫描根），其余目录作为额外扫描根，"
-                 "各根以目录名做前缀聚合；保存后生效。改动需管理员（它决定 /file 的允许根）"},
+                 "各根以目录名做前缀聚合；保存后生效。改动需管理员（它决定 /file 的允许根）",
+         "section": "media", "sectionTitle": "媒体库",
+         "sectionDescription": "媒体目录与扫描根；第一行为主目录，其余作为额外扫描根。",
+         "sectionOrder": 10, "order": 10},
         {"key": "lyrics_enabled", "label": "启用歌词显示", "type": "checkbox",
-         "default": True, "help": "关闭后不显示歌词入口"},
+         "default": True, "help": "关闭后不显示歌词入口",
+         "section": "lyrics", "sectionTitle": "歌词",
+         "sectionDescription": "歌词显示、字号、行高与对齐。",
+         "sectionOrder": 30, "order": 10},
         {"key": "lyrics_font_size", "label": "歌词字号", "type": "range",
-         "default": 16, "min": 12, "max": 40, "help": "未激活行的字号"},
+         "default": 16, "min": 12, "max": 40, "help": "未激活行的字号",
+         "section": "lyrics", "sectionTitle": "歌词",
+         "sectionDescription": "歌词显示、字号、行高与对齐。",
+         "sectionOrder": 30, "order": 20},
         {"key": "lyrics_active_size", "label": "当前行字号", "type": "range",
-         "default": 24, "min": 16, "max": 52, "help": "当前播放行的字号"},
+         "default": 24, "min": 16, "max": 52, "help": "当前播放行的字号",
+         "section": "lyrics", "sectionTitle": "歌词",
+         "sectionDescription": "歌词显示、字号、行高与对齐。",
+         "sectionOrder": 30, "order": 30},
         {"key": "lyrics_line_height", "label": "行高倍率", "type": "range",
          "default": 1.6, "min": 1.2, "max": 3.0, "step": 0.1,
-         "help": "行间距倍率"},
+         "help": "行间距倍率",
+         "section": "lyrics", "sectionTitle": "歌词",
+         "sectionDescription": "歌词显示、字号、行高与对齐。",
+         "sectionOrder": 30, "order": 40},
         {"key": "lyrics_glow", "label": "文字发光效果", "type": "checkbox",
-         "default": True, "help": "当前行文字发光"},
+         "default": True, "help": "当前行文字发光",
+         "section": "lyrics", "sectionTitle": "歌词",
+         "sectionDescription": "歌词显示、字号、行高与对齐。",
+         "sectionOrder": 30, "order": 50},
         {"key": "lyrics_align", "label": "歌词对齐", "type": "select",
          "options": [{"label": "居中", "value": "center"}, {"label": "左对齐", "value": "left"}],
-         "default": "center", "help": "歌词文本对齐方式"},
+         "default": "center", "help": "歌词文本对齐方式",
+         "section": "lyrics", "sectionTitle": "歌词",
+         "sectionDescription": "歌词显示、字号、行高与对齐。",
+         "sectionOrder": 30, "order": 60},
         {"key": "lyrics_bg_color", "label": "歌词背景色", "type": "text",
          "placeholder": "如 #1a1a2e 留空为默认",
-         "help": "纯色背景，支持 #RRGGBB 格式"},
+         "help": "纯色背景，支持 #RRGGBB 格式",
+         "section": "lyrics-appearance", "sectionTitle": "歌词外观",
+         "sectionDescription": "歌词颜色与背景效果。",
+         "sectionOrder": 40, "order": 10},
         {"key": "lyrics_font_color", "label": "歌词字体颜色", "type": "text",
           "default": "#ffffff", "placeholder": "#ffffff",
-          "help": "歌词文字颜色，支持 #RRGGBB 格式"},
+          "help": "歌词文字颜色，支持 #RRGGBB 格式",
+          "section": "lyrics-appearance", "sectionTitle": "歌词外观",
+          "sectionDescription": "歌词颜色与背景效果。",
+          "sectionOrder": 40, "order": 20},
         {"key": "lyrics_bg_blur", "label": "背景模糊度", "type": "range",
-          "default": 8, "min": 0, "max": 50, "help": "背景模糊效果强度"},
+          "default": 8, "min": 0, "max": 50, "help": "背景模糊效果强度",
+          "section": "lyrics-appearance", "sectionTitle": "歌词外观",
+          "sectionDescription": "歌词颜色与背景效果。",
+          "sectionOrder": 40, "order": 30},
         {"key": "lyrics_bg_brightness", "label": "背景明亮度", "type": "range",
           "default": 0.25, "min": 0.05, "max": 1.0, "step": 0.05,
-          "help": "背景亮度调节"},
+          "help": "背景亮度调节",
+          "section": "lyrics-appearance", "sectionTitle": "歌词外观",
+          "sectionDescription": "歌词颜色与背景效果。",
+          "sectionOrder": 40, "order": 40},
         {"key": "auto_hide_enabled", "label": "全屏自动隐藏控件", "type": "checkbox",
-         "default": True, "help": "进入全屏后鼠标静止自动隐藏控件"},
+         "default": True, "help": "进入全屏后鼠标静止自动隐藏控件",
+         "section": "playback", "sectionTitle": "播放",
+         "sectionDescription": "视频默认播放模式、播放起点与全屏控件行为。",
+         "sectionOrder": 20, "order": 30},
         {"key": "auto_hide_delay", "label": "自动隐藏延迟（秒）", "type": "range",
-         "default": 3, "min": 0, "max": 10, "step": 1},
+         "default": 3, "min": 0, "max": 10, "step": 1,
+         "section": "playback", "sectionTitle": "播放",
+         "sectionDescription": "视频默认播放模式、播放起点与全屏控件行为。",
+         "sectionOrder": 20, "order": 40},
         {"key": "default_video_mode", "label": "视频默认播放模式", "type": "select",
          "options": [{"label": "画面模式", "value": "video"}, {"label": "仅声音", "value": "audio"}],
-         "default": "video", "help": "视频默认以画面或仅声音播放"},
+         "default": "video", "help": "视频默认以画面或仅声音播放",
+         "section": "playback", "sectionTitle": "播放",
+         "sectionDescription": "视频默认播放模式、播放起点与全屏控件行为。",
+         "sectionOrder": 20, "order": 10},
         {"key": "resume_mode", "label": "播放起点", "type": "select",
          "options": [{"label": "从头播放", "value": "restart"},
                      {"label": "保留播放进度，低于5s从头开始", "value": "resume"}],
          "default": "restart",
          "help": "从头播放：每次点击曲目都从 0 开始；保留播放进度：续播上次位置，"
-                 "但剩余不足 5 秒时一律从头开始（音频、视频同样生效）"},
+                 "但剩余不足 5 秒时一律从头开始（音频、视频同样生效）",
+         "section": "playback", "sectionTitle": "播放",
+         "sectionDescription": "视频默认播放模式、播放起点与全屏控件行为。",
+         "sectionOrder": 20, "order": 20},
         {"key": "ffmpeg_path", "label": "ffmpeg 路径（视频封面抽取）", "type": "text",
          "placeholder": "留空自动检测 PATH",
          "help": "可选：填写 ffmpeg 可执行文件路径（如 C:\\ffmpeg\\bin\\ffmpeg.exe 或所在目录）；"
                 "留空时自动检测 PATH。检测到 ffmpeg 后视频封面由后端直接抽取（无需打开页面），"
-                "检测不到则回退为前端抽帧。"},
+                "检测不到则回退为前端抽帧。",
+         "section": "video", "sectionTitle": "视频与封面",
+         "sectionDescription": "视频封面抽取使用的 ffmpeg 路径。",
+         "sectionOrder": 50, "order": 10},
     ]
 
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
+        # 状态文件的读写锁。一次换曲时前端会连发 `media_save_playback` 与
+        # `media_update_recent`，桥调用在 pywebview 里各跑一条线程，两条都会落到
+        # `_save_state`；没有这把锁时它们会撞在同一个临时文件上（见 `_save_state`）。
+        self._state_lock = threading.RLock()
         roots = self._configured_roots()
         self._scan_roots: List[Path] = roots or [super().get_data_root()]
         self.root_dir = self._scan_roots[0]
@@ -310,17 +369,24 @@ class MediaPlayerPlugin(_freshness.FreshnessMixin, PluginBase):
             json.dump(payload, f, ensure_ascii=False, indent=2)
 
     def _load_state(self) -> dict:
+        """读状态文件。
+
+        与 `_save_state` 共用一把锁：Windows 上 `os.replace` 要求目标文件的所有
+        打开句柄都允许删除，读者在改名那一瞬间开着它，写者就会拿到 WinError 32。
+        备份损坏文件也在锁内做（`shutil.copy2` 同样要打开它）。
+        """
         defaults = {"favorites": [], "recent": [], "playlists": [], "playback": {}}
-        if self._state_file.exists():
-            try:
-                with open(self._state_file, 'r', encoding='utf-8') as f:
-                    return {**defaults, **json.load(f)}
-            except Exception as e:
-                # 解析失败**先备份**再退默认值：旧实现直接返回默认值，而下一次
-                # `_save_state()`（播放中每 2 秒一次）会把默认值写回去 —— 一次瞬时
-                # 读取失败（例如读到写入尚未完成的截断文件）就等于永久丢数据。
-                self._backup_broken_state(e)
-        return defaults
+        with self._state_lock:
+            if self._state_file.exists():
+                try:
+                    with open(self._state_file, 'r', encoding='utf-8') as f:
+                        return {**defaults, **json.load(f)}
+                except Exception as e:
+                    # 解析失败**先备份**再退默认值：旧实现直接返回默认值，而下一次
+                    # `_save_state()`（播放中每 2 秒一次）会把默认值写回去 —— 一次瞬时
+                    # 读取失败（例如读到写入尚未完成的截断文件）就等于永久丢数据。
+                    self._backup_broken_state(e)
+            return defaults
 
     def _backup_broken_state(self, error: Exception) -> None:
         stamp = time.strftime('%Y%m%d-%H%M%S')
@@ -332,18 +398,58 @@ class MediaPlayerPlugin(_freshness.FreshnessMixin, PluginBase):
             log.error(f'[MediaPlayer] 播放记录解析失败（{error}），备份也失败: {e}')
 
     def _save_state(self):
-        self._state_file.parent.mkdir(parents=True, exist_ok=True)
-        # 原子写：先落临时文件再 `os.replace`。直接 `open(..., 'w')` 会先把文件截断，
-        # 并发的读取方（或崩溃）可能拿到半份 JSON —— 那正是上一条"退默认值"的触发条件。
-        tmp = self._state_file.with_name('media_state.tmp')
-        try:
-            with open(tmp, 'w', encoding='utf-8') as f:
-                json.dump(self._state, f, ensure_ascii=False, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, self._state_file)
-        except Exception as e:
-            log.error(f"[MediaPlayer] 保存状态失败: {e}")
+        """原子写用户状态：一把锁串行化 + 每次独立的临时文件名。
+
+        为什么必须串行化：前端一次换曲会在同一个 tick 里连发
+        `media_save_playback` 与 `media_update_recent`，桥调用由 pywebview
+        各起一条线程执行。两个写者共用一个固定临时文件名时，一个还在
+        `fsync`、另一个已经 `os.replace`，Windows 就报 WinError 32（"另一个
+        程序正在使用此文件"）并把这一次写入丢掉 —— 表现为每次换曲偶发一条
+        "保存状态失败"。临时文件名取自 `mkstemp`，即使将来仍有并发写者也不会
+        撞同一路径；改名对瞬时占用重试，挡的是外部实时扫描/索引。
+        """
+        with self._state_lock:
+            self._state_file.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                # 先序列化再落盘：状态坏了在创建临时文件之前就暴露，不留半个文件
+                payload = json.dumps(self._state, ensure_ascii=False, indent=2)
+                fd, tmp_name = tempfile.mkstemp(
+                    prefix='.media_state.', suffix='.tmp', dir=str(self._state_file.parent))
+                os.close(fd)
+            except Exception as e:
+                log.error(f"[MediaPlayer] 保存状态失败: {e}")
+                return
+            tmp = Path(tmp_name)
+            try:
+                with open(tmp, 'w', encoding='utf-8') as f:
+                    f.write(payload)
+                    f.flush()
+                    os.fsync(f.fileno())
+                self._replace_with_retry(tmp)
+            except Exception as e:
+                log.error(f"[MediaPlayer] 保存状态失败: {e}")
+            finally:
+                # 改名成功时临时文件已经不在；失败时（被外部占用）留下的一份要清掉
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    def _replace_with_retry(self, tmp: Path) -> None:
+        """`os.replace(tmp, 状态文件)`，对瞬时占用重试几次。
+
+        只重试 `PermissionError`：Windows 上改名撞到"文件被占用"就是它
+        （WinError 5 / 32），等几十毫秒通常会成功；临时目录消失、磁盘满这类
+        失败重试也不会变好，交回调用方立刻报出来。
+        """
+        for attempt in range(_REPLACE_ATTEMPTS + 1):
+            try:
+                os.replace(tmp, self._state_file)
+                return
+            except PermissionError:
+                if attempt == _REPLACE_ATTEMPTS:
+                    raise
+                time.sleep(_REPLACE_DELAY * (attempt + 1))
 
     def _migrate_legacy_state(self):
         """把旧 music-player 的收藏 / 最近播放 / 歌单 / 播放状态迁入统一状态文件。

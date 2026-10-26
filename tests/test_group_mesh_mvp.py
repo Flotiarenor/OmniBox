@@ -1,6 +1,6 @@
 """group-mesh 协议内核（tools/group-mesh-mvp）的单元测试。
 
-被测对象是实现 `docs/group-mesh-design.md` 的**验证内核**，不是 Shell 插件：
+被测对象是 group-mesh 协议的**验证内核**，不是 Shell 插件：
 本文件只依赖标准库与 pycryptodome，不加载 Shell、不需要 GUI。
 
 覆盖重点（都是"错了会静默出事"的地方）：
@@ -9,9 +9,9 @@
   * Ed25519 签名与外部标准实现互通（RFC 8032），而不是只有自己认；
   * X25519 密钥必须由身份种子**派生**，Ed25519 私钥不能直接当 DH 标量；
   * Noise_XX 的 token 顺序与 nonce 延续规则（本实现曾在此处取错密钥与 nonce）；
-  * 名单验证规则 1–6 与并发收敛（§5.2/§5.3）；
-  * 共享项 ACL（§6.2：读 / 写按主体判定，写入可加）；
-  * 注册表 seq 单调性（§7）；
+  * 名单验证规则 1–6 与并发收敛；
+  * 共享项 ACL（读 / 写按主体判定，写入可加）；
+  * 注册表 seq 单调性；
   * 真实 TCP 的端到端链路，含越界路径与无权限写入必须被拒。
 
 运行：
@@ -343,7 +343,7 @@ class NoiseXXTest(unittest.TestCase):
 
 
 class NegotiationTest(unittest.TestCase):
-    """§4.5 协商字段的边界检查。
+    """协商字段的边界检查。
 
     `LOCAL` 的 `proto` 取自 `PROTO_VERSION` 而不是写字面量：这里要验的是"匹配则
     通过、不匹配则拒绝"，把版本号写死会让每次递增版本都改一遍用例，而真正的
@@ -403,7 +403,7 @@ class NegotiationTest(unittest.TestCase):
 
 
 class RosterRulesTest(unittest.TestCase):
-    """§5.2 验证规则 1–6 与 §5.3 并发收敛。"""
+    """验证规则 1–6 与并发收敛。"""
 
     def setUp(self):
         self.owner = Principal.create('owner')
@@ -559,7 +559,7 @@ class RosterRulesTest(unittest.TestCase):
             duplicate.validate_structure()
 
     def test_expiry_is_advisory_only(self):
-        """§5.4：过期只提示，不阻断 —— 过期名单照样能被接受。"""
+        """过期只提示，不阻断 —— 过期名单照样能被接受。"""
         expired = founding_roster('g', self.owner, [cp.generate_sign_keypair()[1]],
                                   ttl_seconds=-10)
         report = staleness_report(expired, None)
@@ -568,7 +568,7 @@ class RosterRulesTest(unittest.TestCase):
 
 
 class ShareAclTest(unittest.TestCase):
-    """§6.2 / §6.3：授权按主体判定，写入是**可加**的（只能新增）。"""
+    """授权按主体判定，写入是**可加**的（只能新增）。"""
 
     def setUp(self):
         self.owner = Principal.create('owner')
@@ -634,7 +634,7 @@ class ShareAclTest(unittest.TestCase):
 
 
 class PathSafetyTest(unittest.TestCase):
-    """§6.5：路径校验必须挡住 `..`、绝对路径与符号链接逃逸。"""
+    """路径校验必须挡住 `..`、绝对路径与符号链接逃逸。"""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -680,7 +680,7 @@ class PathSafetyTest(unittest.TestCase):
 
 
 class RegistryTest(unittest.TestCase):
-    """§7：注册记录由设备自签，seq 必须严格递增。"""
+    """注册记录由设备自签，seq 必须严格递增。"""
 
     def setUp(self):
         self.priv, self.pub = cp.generate_sign_keypair()
@@ -778,9 +778,8 @@ class AuthorizePeerTest(unittest.TestCase):
 
         为什么不是直接拒绝（v0.2 改）：名单是带外建立信任锚的，群主加人后签发
         新名单，而新成员手里只有旧名单。若握手阶段就把不在名单的设备拒掉，它永远
-        收不到那份新名单 —— 这正是实现路径文档 §5.10 记录的"我已被加进名单却
-        连不上任何人"。准入改为"设备绑定证明有效"（密码学自足），能做什么由
-        `Node.handle()` 按 op 收敛。
+        收不到那份新名单 —— 表现为"我已被加进名单却连不上任何人"。准入改为
+        "设备绑定证明有效"（密码学自足），能做什么由 `Node.handle()` 按 op 收敛。
         """
         _priv, unknown = cp.generate_sign_keypair()
         peer = authorize_peer(self.v2, unknown)
@@ -884,7 +883,7 @@ class RosterHistoryTest(unittest.TestCase):
 
 
 class RosterDistributionTest(unittest.TestCase):
-    """名单分发（§5.7）：通道不可信、签名是唯一判据、未入名单者只能拉名单。
+    """名单分发：通道不可信、签名是唯一判据、未入名单者只能拉名单。
 
     这一组用例守的是"自动分发"能成立**而且不把名单公开给陌生人**：
     准入判据是"对端拿得出本团体的历史名单"，采纳判据是 `Roster.accepts()` 的
@@ -1014,7 +1013,7 @@ class RosterDistributionTest(unittest.TestCase):
         self.assertEqual(response['version'], self.v2.version)
 
     def test_pending_device_with_history_can_pull(self):
-        """新成员手里只有旧名单：这正是它必须能连进来的原因（§5.7）。"""
+        """新成员手里只有旧名单：这正是它必须能连进来的原因。"""
         response = self.node.handle(
             {'op': 'roster', 'action': 'list', 'history': [self.v1.to_dict()]},
             self._peer(member=False))
@@ -1121,7 +1120,7 @@ class RosterDistributionTest(unittest.TestCase):
 
     # ── 未入名单者的权限收敛 ──────────────────────────────────────────────
 
-    # ── 本机保存的名单历史（§5.7 的准入凭据）────────────────────────────
+    # ── 本机保存的名单历史（准入凭据）───────────────────────────────────
 
     def test_peer_far_behind_is_admitted_when_history_is_kept(self):
         """落后多版的设备靠**本机历史**通过准入 —— 这才是不必手工贴串的关键。
@@ -1336,9 +1335,8 @@ class EndToEndTest(unittest.TestCase):
 
         这条用例在 v0.2 改过语义（原先是"握手即被拒"）。为什么要改：名单是带外
         建立信任锚的，群主加人后签发新名单，而新成员手里只有旧名单 —— 握手阶段就
-        拒绝它，它永远收不到那份新名单（实现路径文档 §5.10 的真实故障就是
-        "我已被加进名单却连不上任何人"）。准入改为在 op 层收敛，因此这里断言的是
-        "连得上、但除 roster 之外都被拒"。
+        拒绝它，它永远收不到那份新名单，表现为"我已被加进名单却连不上任何人"。
+        准入改为在 op 层收敛，因此这里断言的是"连得上、但除 roster 之外都被拒"。
         """
         outsider_root = Path(self._tmp.name) / 'outsider'
         outsider = Identity.init(outsider_root, 'outsider', 'outsider-pc')
@@ -1385,7 +1383,7 @@ class EndToEndTest(unittest.TestCase):
 
 
 class UploadTest(unittest.TestCase):
-    """§6.4 写入语义：暂存 + 提交、覆盖策略、配额、断线只留 `.part`。
+    """写入语义：暂存 + 提交、覆盖策略、配额、断线只留 `.part`。
 
     这一组是"共享面能不能投放"的核心：上传走 `<目标>.part` 分块写、最后一块 `eof`
     时原子改名。直接用 `push_bytes(part=False)` 覆写目标文件的话，一次断线就等于
@@ -1847,7 +1845,7 @@ class KernelPlacementTest(unittest.TestCase):
 
 
 class LocalAddressesTest(unittest.TestCase):
-    """§7.4 的地址过滤：至少不能把回环与链路本地当成可注册端点。"""
+    """地址过滤：至少不能把回环与链路本地当成可注册端点。"""
 
     def test_excludes_loopback_and_linklocal(self):
         from shell.groupmesh.registry import local_addresses
@@ -1865,7 +1863,7 @@ class LocalAddressesTest(unittest.TestCase):
         if any(':' in a for a in addresses) and any(':' not in a for a in addresses):
             first_v6 = next(i for i, a in enumerate(addresses) if ':' in a)
             first_v4 = next(i for i, a in enumerate(addresses) if ':' not in a)
-            self.assertLess(first_v6, first_v4, 'IPv6 应排在前面（设计文档以 IPv6 为目标）')
+            self.assertLess(first_v6, first_v4, 'IPv6 应排在前面（本项目以 IPv6 为目标）')
 
 
 class ServeBindFailureTest(unittest.TestCase):

@@ -254,18 +254,23 @@ class PluginManager:
 
     def get_frontend_manifests(self) -> List[dict]:
         """返回给前端路由使用的清单"""
-        return [
-            {
+        result: List[dict] = []
+        for m in self._manifests.values():
+            if m.get('hidden'):
+                continue
+            frontend = m.get('frontend') or {}
+            result.append({
                 'name': m['name'],
                 'displayName': m.get('displayName', m['name']),
                 'icon': m.get('icon', 'icon:package'),
-                'route': m['frontend']['route'],
+                'route': frontend['route'],
                 'entryUrl': f"/plugins/{m['name']}/frontend/index.html",
-                'keepAlive': bool(m.get('keepAlive', False))
-            }
-            for m in self._manifests.values()
-            if not m.get('hidden')
-        ]
+                'keepAlive': bool(m.get('keepAlive', False)),
+                # 有 chrome 声明的插件由壳渲染页面骨架，iframe 只装内容；
+                # 没有声明的残留走原来的整页模式（第三方/旧插件兼容）。
+                'chrome': frontend.get('chrome'),
+            })
+        return result
 
     def get_plugin_status(self) -> dict:
         """插件加载状态：供 /status 回答"某个插件为什么不见了"。

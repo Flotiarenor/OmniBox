@@ -1,6 +1,6 @@
 """image-viewer 的 Companion 插件：全相册重复 / 相似图片清理。
 
-设计参考 docs/plugin-guide.md §2.1 与 docs/image-cleaner-design.md。
+设计参考 docs/plugin-guide.md §2.1。
 该插件不修改 image-viewer 宿主，只通过依赖实例复用其数据根目录与删除能力。
 """
 
@@ -32,8 +32,14 @@ class ImageCleanerPlugin(PluginBase):
         # 值由 get_settings() 现取，前端只展示、不提交（见 plugin_base.save_settings）。
         # 原先这一行显示在内嵌页自己的工具栏上，那一排已整条去掉。
         {"key": "root_dir", "label": "相册根目录", "type": "info",
+         "section": "host", "sectionTitle": "宿主目录",
+         "sectionDescription": "扫描范围来自「图片相册」的根目录；多根时逐行列出，本插件只读。",
+         "sectionOrder": 10, "order": 10,
          "help": "扫描范围取自「图片相册」的根目录；要换目录请到图片相册的设置里改"},
         {"key": "threshold", "label": "相似判定阈值", "type": "range",
+         "section": "threshold", "sectionTitle": "阈值",
+         "sectionDescription": "dHash 汉明距离越小越严格；0 表示只有完全一致的 dHash 才判为相似。",
+         "sectionOrder": 20, "order": 10,
          "min": 0, "max": 16, "default": 8,
          "help": "汉明距离越小越严格，0 表示只有完全一致的 dHash 才判为相似"},
     ]
@@ -154,7 +160,11 @@ class ImageCleanerPlugin(PluginBase):
         return roots or [(host.get_data_root(), '')]
 
     def get_extensions(self) -> List[dict]:
-        """注册到 image-viewer 左侧栏的通用扩展入口。"""
+        """注册到 image-viewer 左侧栏的通用扩展入口。
+
+        新壳按 `native` 声明在宿主页内容槽渲染原生面板：逻辑页隐藏，只提交 schema
+        blocks 并处理动作。`embedUrl` 保留给不认识 `native` 的旧壳，继续走内嵌页回落。
+        """
         return [{
             'host': 'image-viewer',
             'id': 'image-cleaner',
@@ -162,6 +172,10 @@ class ImageCleanerPlugin(PluginBase):
             'icon': 'icon:brush-cleaning',
             'description': '扫描全部相册中的重复 / 相似图片',
             'section': '相册清理',  # 侧边栏独立分组标题（不与其他扩展挤在一个标题下）
+            'native': {
+                'url': '/plugins/image-cleaner/frontend/native.html?native=1',
+                'title': '相册清理',
+            },
             'embedUrl': '/plugins/image-cleaner/frontend/index.html',
             'placement': 'sidebar',
             'scope': 'all',
@@ -368,11 +382,84 @@ class ImageCleanerPlugin(PluginBase):
             self._save_scan_cache(cache)
         self._results_stale.clear()
 
+    def _cached_file_exists(self, rel: str, dirs: Dict[str, set]) -> bool:
+        """缓存里的相对路径当前是否还存在。
+
+        结果缓存保存的是扫描当时的分组；用户移动 / 删除图片后，缓存仍会指向
+        旧路径，打开面板时宿主 `/thumbs` 只能返回 404，整屏缩略图都会裂。
+        这里按父目录一次 `scandir` 建立名字集合，避免为同一目录的每张图各做
+        一次 `stat`；只读判断，不删除文件、不改缓存。
+        """
+        if not rel:
+            return False
+        path = Path(rel)
+        if path.is_absolute() or '..' in path.parts:
+            return False
+        abs_path = self._abs_for_rel(rel)
+        if not abs_path:
+            return False
+        source = Path(abs_path)
+        parent = source.parent
+        key = str(parent)
+        names = dirs.get(key)
+        if names is None:
+            try:
+                names = {
+                    os.path.normcase(entry.name)
+                    for entry in os.scandir(parent)
+                    if entry.is_file()
+                }
+            except OSError:
+                # 目录读不了（权限、超长路径等）时退回单文件判断，
+                # 不要让整个分组被误判为不存在。
+                try:
+                    return source.is_file()
+                except OSError:
+                    return False
+            dirs[key] = names
+        return os.path.normcase(source.name) in names
+
+    def _drop_missing_cached_files(self, groups: list) -> tuple[list, bool]:
+        """过滤掉结果缓存中已经不存在的文件；返回 (groups, 是否变化)。
+
+        组内少于两张的组没有清理意义，一并丢弃。只读：缓存文件仍保留原样，
+        下一次校验（统一刷新）会写入新的结果；这里通过 stale 告诉界面
+        "缓存看到了磁盘变化"。
+        """
+        if not isinstance(groups, list):
+            return [], True
+        dirs: Dict[str, set] = {}
+        cleaned: list = []
+        changed = False
+        for group in groups:
+            if not isinstance(group, dict):
+                changed = True
+                continue
+            files = group.get('files')
+            if not isinstance(files, list):
+                changed = True
+                continue
+            kept = [
+                rel for rel in files
+                if isinstance(rel, str) and self._cached_file_exists(rel, dirs)
+            ]
+            if len(kept) < 2:
+                changed = True
+                continue
+            if len(kept) != len(files):
+                group = dict(group)
+                group['files'] = kept
+                changed = True
+            cleaned.append(group)
+        return cleaned, changed
+
     def get_cached_scan(self, mode: str) -> Dict:
         """返回上次扫描结果；没有缓存时返回空结果。
 
         `stale` = "这份结果算出来之后，磁盘（或阈值）又变过"：界面据此提示
-        「点校验」，而不是把过期分组当成现状让人去删文件。
+        「点校验」，而不是把过期分组当成现状让人去删文件。返回前还会剔除
+        已经不存在的文件：文件被移动/删除后，旧缓存里的路径会让缩略图请求
+        变成 404；这类组同样标记 stale，但不改动缓存本身。
         """
         if mode not in ('dupe', 'similar'):
             return {'groups': [], 'scanned': 0, 'cached': False, 'stale': False}
@@ -380,11 +467,12 @@ class ImageCleanerPlugin(PluginBase):
         item = cache.get(mode)
         if not item or not isinstance(item, dict):
             return {'groups': [], 'scanned': 0, 'cached': False, 'stale': False}
+        groups, dropped = self._drop_missing_cached_files(item.get('groups', []))
         return {
-            'groups': item.get('groups', []),
+            'groups': groups,
             'scanned': item.get('scanned', 0),
             'cached': True,
-            'stale': bool(item.get('stale')) or mode in self._results_stale,
+            'stale': bool(item.get('stale')) or mode in self._results_stale or dropped,
             'saved_at': item.get('saved_at') or 0,
         }
 

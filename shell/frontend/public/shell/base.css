@@ -29,7 +29,23 @@ html[data-shell-glass="on"] .view-content,
 html[data-shell-glass="on"] .view-sub-sidebar,
 html[data-shell-glass="on"] .modal-box,
 html[data-shell-glass="on"] .search-input {
-  background: color-mix(in srgb, var(--bg-surface) var(--glass-alpha), transparent);
+  background: color-mix(in srgb, var(--bg-surface) var(--plugin-bg-alpha, var(--glass-alpha)), transparent);
+}
+
+/* / 按插件的背景不透明度：壳在 iframe load 后经 omnibox:appearance 下发。
+   内容页的根容器让出底色，面板/工具栏按同一个 alpha 混合；插件自绘的卡片仍可用
+   `.obx-glass` 进一步透，壳不猜测业务面板。 */
+html[data-plugin-bg="on"] body,
+html[data-plugin-bg="on"] #app {
+  background: transparent;
+}
+
+html[data-plugin-bg="on"] .view-toolbar,
+html[data-plugin-bg="on"] .view-content,
+html[data-plugin-bg="on"] .view-sub-sidebar,
+html[data-plugin-bg="on"] .modal-box,
+html[data-plugin-bg="on"] .search-input {
+  background: color-mix(in srgb, var(--bg-surface) var(--plugin-bg-alpha, var(--glass-alpha)), transparent);
 }
 
 /* 按钮：`.btn` 全家（含 `.btn-danger*`）在 shared.css —— 族内次序决定 `.btn.active` 与
@@ -137,6 +153,10 @@ html[data-shell-glass="on"] .search-input {
   border-color: var(--accent); pointer-events: none;
 }
 .pagination-bar a.disabled { color: var(--text-muted); pointer-events: none; }
+.pagination-bar a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .pagination-bar span.ellipsis {
   border: none; background: transparent; cursor: default; padding: 5px 8px;
 }
@@ -147,12 +167,18 @@ html[data-shell-glass="on"] .search-input {
   border-radius: var(--radius); box-shadow: var(--shadow-md);
   padding: 4px 0; z-index: 2000; list-style: none; margin: 0;
   display: none; min-width: 150px; border: 1px solid var(--border);
+  max-height: calc(100vh - 16px); overflow-y: auto;
 }
 .context-menu li {
   padding: 8px 16px; cursor: pointer; font-size: 13px;
   color: var(--text-primary); transition: background var(--transition-fast);
 }
 .context-menu li:hover { background: var(--bg-hover); }
+.context-menu li:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: var(--bg-hover);
+}
 .context-menu li.danger { color: var(--danger); }
 .context-menu li.danger:hover { background: var(--danger-soft); }
 
@@ -165,12 +191,20 @@ html[data-shell-glass="on"] .search-input {
 .lightbox.active { display: flex; }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 .lightbox img {
-  max-width: 90vw; max-height: 90vh; object-fit: contain;
+  max-width: 90vw; max-height: 90vh; width: auto; height: auto; object-fit: contain;
   box-shadow: 0 0 30px rgba(0,0,0,0.5);
   transition: transform 0.1s ease-out; transform-origin: center center;
   user-select: none; -webkit-user-drag: none; animation: zoomIn 0.2s ease;
 }
 @keyframes zoomIn { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+.lightbox-counter {
+  position: absolute; top: 16px; left: 16px; z-index: 1002;
+  padding: 5px 11px; border-radius: 999px;
+  background: rgba(0, 0, 0, 0.35); color: #fff;
+  font-size: 12px; line-height: 1.4; letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums; pointer-events: none;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+}
 .lightbox-arrow {
   position: absolute; top: 50%; transform: translateY(-50%);
   font-size: 28px; color: rgba(255,255,255,0.5); cursor: pointer;
@@ -178,6 +212,12 @@ html[data-shell-glass="on"] .search-input {
   transition: color var(--transition-fast);
 }
 .lightbox-arrow:hover { color: #fff; }
+.lightbox-arrow:focus-visible,
+.lightbox-close:focus-visible {
+  color: #fff;
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
 .lightbox-arrow.left { left: 20px; }
 .lightbox-arrow.right { right: 20px; }
 .lightbox-close {
@@ -188,7 +228,7 @@ html[data-shell-glass="on"] .search-input {
 .lightbox-close:hover { color: #fff; }
 .lightbox-info {
   position: absolute; top: 60px; right: 20px; z-index: 1002;
-  min-width: 150px; padding: 8px 12px; border-radius: 10px;
+  min-width: 150px; max-width: min(320px, calc(100vw - 32px)); padding: 8px 12px; border-radius: 10px;
   background: rgba(0, 0, 0, 0.35); color: #fff;
   font-size: 12px; line-height: 1.7; text-align: right;
   backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);

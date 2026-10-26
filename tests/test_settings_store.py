@@ -9,6 +9,7 @@
 """
 
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -177,6 +178,56 @@ class SettingsStoreTests(unittest.TestCase):
         merged = self.store.update('demo', {'b': 2})
         self.assertEqual(merged, {'a': 1, 'b': 2})
         self.assertEqual(self.store.get('demo'), {'a': 1, 'b': 2})
+
+    # ---------- os.replace 的瞬时失败重试 ----------
+
+    def test_replace_retries_transient_access_denied(self):
+        """改名被瞬时拒绝访问时必须重试，而不是让这次写入失败。
+
+        缺陷背景（实测，Windows）：全量测试期间同一个临时目录下的
+        `.shell.json.<随机>.tmp` 改名报 `PermissionError: [WinError 5] 拒绝访问`，
+        约 13 秒内连续 6 次，随后同一请求立刻成功 —— 成因是外部实时扫描在改名瞬间
+        持有临时文件。表现是 `/api/system_set_shell_prefs` 偶发 500、用户设置延迟生效。
+        """
+        real_replace = os.replace
+        calls = []
+
+        def flaky(src, dst):
+            calls.append(1)
+            if len(calls) == 1:
+                raise PermissionError(5, '拒绝访问')
+            return real_replace(src, dst)
+
+        with mock.patch('os.replace', side_effect=flaky), \
+                mock.patch('shell.backend.settings_store.time.sleep') as sleep:
+            self.store.set('demo', {'a': 1})
+
+        self.assertEqual(len(calls), 2, '第一次被拒后应当重试改名')
+        self.assertEqual(sleep.call_count, 1, '重试之间应当等待一次')
+        self.assertEqual(self.store.get('demo'), {'a': 1})
+
+    def test_replace_does_not_retry_other_errors(self):
+        """非 PermissionError（如临时目录被删）立刻抛出：重试不会变好，只会拖时间。"""
+        calls = []
+
+        def missing(src, dst):
+            calls.append(1)
+            raise FileNotFoundError(2, '系统找不到指定的文件')
+
+        with mock.patch('os.replace', side_effect=missing), \
+                self.assertRaises(FileNotFoundError):
+            self.store.set('demo', {'a': 1})
+        self.assertEqual(len(calls), 1, 'FileNotFoundError 不应重试')
+
+    def test_replace_gives_up_after_retries_without_leaving_tmp(self):
+        """一直拒绝访问：抛出原始异常，且不留下临时文件（调用方据此报错并重试整次调用）。"""
+        with mock.patch('os.replace', side_effect=PermissionError(5, '拒绝访问')) as replace, \
+                mock.patch('shell.backend.settings_store.time.sleep'), \
+                self.assertRaises(PermissionError):
+            self.store.set('demo', {'a': 1})
+        self.assertEqual(replace.call_count, 4, '应当尝试 1 次 + 重试 3 次')
+        self.assertEqual(self._tmp_files(), [])
+        self.assertFalse((self.dir / 'demo.json').exists())
 
 
 if __name__ == '__main__':

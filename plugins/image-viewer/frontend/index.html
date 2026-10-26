@@ -5,63 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>图片相册</title>
   <link rel="stylesheet" href="image-viewer.css">
+  <!--
+    本页是壳 iframe 里的内容页：品牌块/左栏/导航/扩展入口/顶栏/搜索/状态栏/分隔条由壳按
+    manifest 的 frontend.chrome 渲染；这里只保留内容（相册卡片、justified 图片网格、分页、
+    灯箱、相册右键菜单、三个弹窗与缩略图重建进度卡）。
+
+    视图切换、工具栏动作与搜索经 postMessage 进来（omnibox:view / omnibox:action /
+    omnibox:query），标题/副标题/视图/动作显隐/搜索占位/状态反向上报（omnibox:chrome）。
+    附属插件（image-cleaner / pixiv-sync）的 native 面板由壳打开，宿主不再渲染侧栏入口；
+    #extension-view 仅给不认 native 的旧壳，当前壳不进入这里。
+  -->
 </head>
 <body>
   <div id="app">
-    <aside class="iv-sidebar view-sub-sidebar obx-glass"
-           data-obx-splitter="--sub-sidebar-width"
-           data-obx-splitter-min="180"
-           data-obx-splitter-reserve="320"
-           data-obx-splitter-default="240">
-      <div class="iv-brand">
-        <div class="iv-brand-icon"><svg class="obx-icon"><use href="#images"></use></svg></div>
-        <div class="iv-brand-text">
-          <div class="iv-brand-title">图片相册</div>
-          <div class="iv-brand-sub">Gallery</div>
-        </div>
-      </div>
-      <nav class="iv-nav obx-scroll">
-        <div class="iv-nav-label">浏览</div>
-        <button class="obx-nav-item iv-nav-item active" data-view="albums"><svg class="obx-icon"><use href="#layout-grid"></use></svg>全部相册</button>
-        <button class="obx-nav-item iv-nav-item" data-view="timeline"><svg class="obx-icon"><use href="#history"></use></svg>时间线</button>
-        <button class="obx-nav-item iv-nav-item" data-view="latest"><svg class="obx-icon"><use href="#sparkles"></use></svg>最近添加</button>
-        <div id="iv-extensions"></div>
-      </nav>
-      <div class="iv-nav-footer">
-        <button id="iv-new-album" class="obx-nav-item iv-nav-item"><svg class="obx-icon"><use href="#plus"></use></svg>新建相册</button>
-      </div>
-      <div class="iv-sidebar-footer" id="iv-stats">正在读取…</div>
-    </aside>
-
     <div class="view-body">
-      <div class="view-toolbar iv-toolbar">
-        <div class="toolbar-group iv-view-heading">
-          <button id="iv-back" class="btn btn-sm hidden"><svg class="obx-icon"><use href="#arrow-left"></use></svg> 返回</button>
-          <div>
-            <div class="iv-view-title" id="iv-view-title">全部相册</div>
-            <div class="iv-view-sub" id="iv-view-sub"></div>
-          </div>
-        </div>
-        <div class="toolbar-group" style="margin-left:auto;">
-          <div class="search-field" id="iv-search-wrap">
-            <span class="search-field-icon"><svg class="obx-icon"><use href="#search"></use></svg></span>
-            <input type="text" id="iv-search" placeholder="搜索相册…" autocomplete="off">
-            <button id="iv-search-clear" class="search-field-clear hidden"><svg class="obx-icon"><use href="#x"></use></svg></button>
-          </div>
-          <span id="iv-selection-count" class="iv-selection-count hidden">已选 0 项</span>
-          <button id="btn-slideshow" class="btn hidden"><svg class="obx-icon"><use href="#play"></use></svg> 幻灯片</button>
-          <button id="btn-multi-select" class="btn hidden">开启多选</button>
-          <button id="btn-delete-selected" class="btn btn-danger hidden">删除选中</button>
-          <button id="btn-move-selected" class="btn hidden">移动选中</button>
-          <button id="btn-refresh-thumbs" class="btn hidden"><svg class="obx-icon"><use href="#images"></use></svg> 更新缩略图</button>
-          <!-- 同步状态 + 「校验」由共享组件 shell/freshness.js 填充。
-               原先的「刷新」「全量重建」两个按钮已下线：语义统一为
-               「同步（被动增量，无按钮）/ 校验（手动全量）」，判据与进度由壳托管。 -->
-          <div id="iv-freshness"></div>
-          <button id="btn-settings" class="btn"><svg class="obx-icon"><use href="#settings"></use></svg> 设置</button>
-        </div>
-      </div>
-
       <div class="view-content iv-content obx-scroll" id="iv-content">
         <div id="iv-albums"></div>
         <div id="image-grid" class="iv-image-grid"></div>
@@ -70,23 +27,14 @@
 
       <div id="extension-view" class="extension-view hidden">
         <div class="extension-view-header">
-          <!-- 标题行与主工具栏同形：主标题 + 一行说明两行结构（.iv-view-title / .iv-view-sub）。
-               只有一行标题时扩展头实测 45px、主工具栏 48px，进出扩展视图上边栏会矮一档。
-               说明文字用扩展自己声明的 description（app.js:openExtensionView），宿主不写插件专有文案。 -->
+          <!-- 旧 embed 回落：仅给不认 native 的旧壳，当前壳不进入这里。内嵌插件
+               （image-cleaner / pixiv-sync）把「设置」这类操作挂到
+               #extension-view-actions（HostChannel.mountToolbar）。头部只有「标题行 + 挂载点」
+               两个子项，不再自带按钮；native 面板由壳渲染后这条路径不再被新壳调用。 -->
           <div class="extension-view-heading">
             <div class="iv-view-title" id="extension-view-title">扩展</div>
             <div class="iv-view-sub" id="extension-view-sub"></div>
           </div>
-          <!-- 内嵌插件（image-cleaner / pixiv-sync）把「设置」这类操作挂到 #extension-view-actions：
-               它们只声明 {id,label,icon,title}，壳的 HostChannel.mountToolbar 渲染成
-               `.btn.obx-toolbar-btn.obx-host-action`（工具栏按钮组件，度量与主工具栏同源），
-               点击回发 host-run。宿主不出现任何具体按钮名，
-               也不需要在代码里改。见 plugin-ui-guide §3.5
-
-               这个挂载点就是头部的右端，不再另包一层、也不自带「返回相册」：头部只有
-               「标题行 + 这一组」两个子项，`space-between` 正好把它们分到两端（挂载点若
-               单列成第三项，会落在标题与右端之间，实测差 555px）。退出扩展视图走侧栏
-               导航项（全部相册 / 时间线 / 最近添加 ← `app.js:_bindUI` 里关掉本视图）。 -->
           <div class="extension-view-actions" id="extension-view-actions"></div>
         </div>
         <div class="extension-view-body">
@@ -94,124 +42,134 @@
         </div>
       </div>
     </div>
+  </div>
 
-    <div id="new-album-modal" class="modal">
-      <div class="modal-box obx-anim-scale" style="width:360px;">
-        <h3>新建相册</h3>
-        <div class="modal-body">
-          <div class="iv-field">
-            <label>相册名称</label>
-            <input type="text" id="iv-new-album-name" class="search-input" placeholder="例如：2026 旅行照片" style="width:100%;max-width:none;">
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn" id="iv-new-album-cancel">取消</button>
-          <button class="btn btn-primary" id="iv-new-album-confirm">创建</button>
+  <div id="new-album-modal" class="modal">
+    <div class="modal-box obx-anim-scale" style="width:360px;">
+      <h3>新建相册</h3>
+      <div class="modal-body">
+        <div class="iv-field">
+          <label>相册名称</label>
+          <input type="text" id="iv-new-album-name" class="search-input" placeholder="例如：2026 旅行照片" style="width:100%;max-width:none;">
         </div>
       </div>
-    </div>
-
-    <div id="move-modal" class="modal">
-      <div class="modal-box obx-anim-scale">
-        <h3>移动到文件夹</h3>
-        <div id="move-tree" class="tree-container move-tree" style="min-height:200px;"></div>
-        <div class="modal-footer">
-          <button class="btn" id="move-cancel">取消</button>
-          <button class="btn btn-primary" id="move-confirm">确认移动</button>
-        </div>
+      <div class="modal-footer">
+        <button class="btn" id="iv-new-album-cancel">取消</button>
+        <button class="btn btn-primary" id="iv-new-album-confirm">创建</button>
       </div>
     </div>
+  </div>
 
-    <div id="settings-modal" class="modal">
-      <div class="modal-box obx-anim-scale" style="width:400px;">
-        <h3>显示与排序设置</h3>
-        <div class="iv-settings-body obx-scroll">
-          <div class="iv-setting-section iv-setting-section-first">图片文件夹</div>
-          <!-- 列表由共享组件 shell/folder-picker.js 填充（插件不再自带实现） -->
-          <div id="setting-roots"></div>
-          <p class="iv-setting-note iv-setting-note-after-input">第一行为主目录（沿用相对路径），其余目录会作为顶层「文件夹」出现。保存后生效。</p>
+  <div id="move-modal" class="modal">
+    <div class="modal-box obx-anim-scale">
+      <h3>移动到文件夹</h3>
+      <div id="move-tree" class="tree-container move-tree" style="min-height:200px;"></div>
+      <div class="modal-footer">
+        <button class="btn" id="move-cancel">取消</button>
+        <button class="btn btn-primary" id="move-confirm">确认移动</button>
+      </div>
+    </div>
+  </div>
 
-          <div class="iv-setting-section">显示与排序</div>
-          <div class="iv-setting-item">
-            <label>图片行高 <span id="setting-row-height-val">200</span></label>
-            <input type="range" id="setting-row-height" min="100" max="400" value="200" class="iv-range">
-          </div>
-          <div class="iv-setting-item">
-            <label>每页图片数</label>
-            <input type="number" id="setting-per-page" min="10" max="200" step="10" value="40">
-          </div>
-          <div class="iv-setting-item">
-            <label>图片缓存 <span id="setting-lightbox-cache-val">8</span> 张</label>
-            <input type="range" id="setting-lightbox-cache" min="0" max="64" value="8" class="iv-range">
-          </div>
-          <p class="iv-setting-note iv-setting-note-after-input">
-            缓存最近看过的图，再打开时直接显示，不用等它一行行刷出来。数值越大越流畅，占内存也越多；0 = 关闭。
-          </p>
+  <div id="settings-modal" class="modal">
+    <div class="modal-box obx-anim-scale" style="width:400px;">
+      <h3>显示与排序设置</h3>
+      <div class="iv-settings-body obx-scroll">
+        <div class="iv-setting-section iv-setting-section-first">外观</div>
+        <label class="iv-check">
+          <input type="checkbox" id="setting-follow-shell" checked> 跟随壳透明度（<span id="setting-shell-alpha">84</span>%）
+        </label>
+        <div class="iv-setting-item">
+          <label>背景不透明度 <span id="setting-plugin-alpha-val">84</span>%</label>
+          <input type="range" id="setting-plugin-alpha" min="30" max="100" value="84" class="iv-range">
+        </div>
+
+        <div class="iv-setting-section">图片文件夹</div>
+        <!-- 列表由共享组件 shell/folder-picker.js 填充（插件不再自带实现） -->
+        <div id="setting-roots"></div>
+        <p class="iv-setting-note iv-setting-note-after-input">第一行为主目录（沿用相对路径），其余目录会作为顶层「文件夹」出现。保存后生效。</p>
+
+        <div class="iv-setting-section">显示与排序</div>
+        <div class="iv-setting-item">
+          <label>图片行高 <span id="setting-row-height-val">200</span></label>
+          <input type="range" id="setting-row-height" min="100" max="400" value="200" class="iv-range">
+        </div>
+        <div class="iv-setting-item">
+          <label>每页图片数</label>
+          <input type="number" id="setting-per-page" min="10" max="200" step="10" value="40">
+        </div>
+        <div class="iv-setting-item">
+          <label>图片缓存 <span id="setting-lightbox-cache-val">8</span> 张</label>
+          <input type="range" id="setting-lightbox-cache" min="0" max="64" value="8" class="iv-range">
+        </div>
+        <p class="iv-setting-note iv-setting-note-after-input">
+          缓存最近看过的图，再打开时直接显示，不用等它一行行刷出来。数值越大越流畅，占内存也越多；0 = 关闭。
+        </p>
+        <div class="iv-setting-item">
+          <label>排序方式</label>
+          <select id="setting-sort-by">
+            <option value="mtime">修改时间</option>
+            <option value="name">文件名</option>
+            <option value="time_name">Pixiv 排序支持</option>
+          </select>
+        </div>
+        <div class="iv-setting-item">
+          <label>排序方向</label>
+          <select id="setting-sort-order">
+            <option value="desc">倒序</option>
+            <option value="asc">正序</option>
+          </select>
+        </div>
+        <div id="setting-pixiv-fuzzy-section" class="hidden">
+          <div class="iv-setting-section">Pixiv 排序（模糊匹配）</div>
+          <label class="iv-check">
+            <input type="checkbox" id="setting-pixiv-fuzzy"> 模糊匹配
+          </label>
+          <p class="iv-setting-note">仅「Pixiv 排序支持」时可勾选：作品名不是数字开头时按「先数字再文字」排序，并让该文件夹套用 Pixiv 的浏览效果</p>
+        </div>
+        <div id="setting-album-sort-section">
+          <div class="iv-setting-section">作者视图（Pixiv 排序）二次排序</div>
           <div class="iv-setting-item">
             <label>排序方式</label>
-            <select id="setting-sort-by">
-              <option value="mtime">修改时间</option>
+            <select id="setting-album-sort-by">
+              <option value="mtime">更新时间</option>
               <option value="name">文件名</option>
-              <option value="time_name">Pixiv 排序支持</option>
+              <option value="count">图片数量</option>
             </select>
           </div>
           <div class="iv-setting-item">
             <label>排序方向</label>
-            <select id="setting-sort-order">
+            <select id="setting-album-sort-order">
               <option value="desc">倒序</option>
               <option value="asc">正序</option>
             </select>
           </div>
-          <div id="setting-pixiv-fuzzy-section" class="hidden">
-            <div class="iv-setting-section">Pixiv 排序（模糊匹配）</div>
-            <label class="iv-check">
-              <input type="checkbox" id="setting-pixiv-fuzzy"> 模糊匹配
-            </label>
-            <p class="iv-setting-note">仅「Pixiv 排序支持」时可勾选：作品名不是数字开头时按「先数字再文字」排序，并让该文件夹套用 Pixiv 的浏览效果</p>
-          </div>
-          <div id="setting-album-sort-section">
-            <div class="iv-setting-section">作者视图（Pixiv 排序）二次排序</div>
-            <div class="iv-setting-item">
-              <label>排序方式</label>
-              <select id="setting-album-sort-by">
-                <option value="mtime">更新时间</option>
-                <option value="name">文件名</option>
-                <option value="count">图片数量</option>
-              </select>
-            </div>
-            <div class="iv-setting-item">
-              <label>排序方向</label>
-              <select id="setting-album-sort-order">
-                <option value="desc">倒序</option>
-                <option value="asc">正序</option>
-              </select>
-            </div>
-            <p class="iv-setting-note">当前文件夹生效 Pixiv 排序时才会出现：画师网格的二次排序，全局生效</p>
-          </div>
-          <label class="iv-check">
-            <input type="checkbox" id="setting-apply-to-folder"> 仅应用于当前文件夹（<span id="setting-current-folder-name">根目录</span>）
-          </label>
+          <p class="iv-setting-note">当前文件夹生效 Pixiv 排序时才会出现：画师网格的二次排序，全局生效</p>
         </div>
-        <div class="modal-footer">
-          <button class="btn" id="settings-cancel">取消</button>
-          <button class="btn btn-primary" id="settings-save">保存并刷新</button>
-        </div>
+        <label class="iv-check">
+          <input type="checkbox" id="setting-apply-to-folder"> 仅应用于当前文件夹（<span id="setting-current-folder-name">根目录</span>）
+        </label>
+      </div>
+      <div id="settings-errors" class="iv-settings-errors hidden" role="alert"></div>
+      <div class="modal-footer">
+        <button class="btn" id="settings-cancel">取消</button>
+        <button class="btn btn-primary" id="settings-save">保存并刷新</button>
       </div>
     </div>
+  </div>
 
-    <div id="rebuild-progress" class="rebuild-progress-card hidden">
-      <div class="rebuild-progress-header">
-        <span><svg class="obx-icon"><use href="#brush-cleaning"></use></svg> 正在重建缩略图</span>
-        <button id="rebuild-progress-hide" class="rebuild-progress-hide" title="隐藏进度">—</button>
-      </div>
-      <div class="rebuild-progress-body">
-        <div id="rebuild-progress-text" class="rebuild-progress-text">0 / 0</div>
-        <div class="rebuild-progress"><div id="rebuild-progress-bar" class="rebuild-progress-bar"></div></div>
-        <div id="rebuild-progress-current" class="rebuild-progress-current"></div>
-        <div id="rebuild-progress-speed" class="rebuild-progress-speed"></div>
-        <div id="rebuild-errors" class="rebuild-errors"></div>
-        <button id="rebuild-progress-cancel" class="btn btn-sm">取消</button>
-      </div>
+  <div id="rebuild-progress" class="rebuild-progress-card hidden">
+    <div class="rebuild-progress-header">
+      <span><svg class="obx-icon"><use href="#brush-cleaning"></use></svg> 正在重建缩略图</span>
+      <button id="rebuild-progress-hide" class="rebuild-progress-hide" title="隐藏进度">—</button>
+    </div>
+    <div class="rebuild-progress-body">
+      <div id="rebuild-progress-text" class="rebuild-progress-text">0 / 0</div>
+      <div class="rebuild-progress"><div id="rebuild-progress-bar" class="rebuild-progress-bar"></div></div>
+      <div id="rebuild-progress-current" class="rebuild-progress-current"></div>
+      <div id="rebuild-progress-speed" class="rebuild-progress-speed"></div>
+      <div id="rebuild-errors" class="rebuild-errors"></div>
+      <button id="rebuild-progress-cancel" class="btn btn-sm">取消</button>
     </div>
   </div>
 

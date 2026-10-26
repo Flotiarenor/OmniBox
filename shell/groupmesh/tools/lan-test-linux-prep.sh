@@ -58,7 +58,7 @@ PYEOF
 echo "SHARED_SHA256=$(sha256sum "$BASE/shared/big.bin" | awk '{print $1}')" >> "$BASE/handoff.txt"
 echo "SHARED_SIZE=$(stat -c %s "$BASE/shared/big.bin")" >> "$BASE/handoff.txt"
 
-# 全局 IPv6（设计文档的目标地址族）：供 Windows 侧做真实 IPv6 直连
+# 全局 IPv6（本内核的目标地址族）：供 Windows 侧做真实 IPv6 直连
 echo "GLOBAL_V6=$(ip -6 addr show scope global | awk '/inet6/ {print $2}' | cut -d/ -f1 | head -1)" >> "$BASE/handoff.txt"
 
 cat "$BASE/handoff.txt"

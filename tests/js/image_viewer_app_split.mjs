@@ -12,7 +12,7 @@ const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
 
 const REQUIRED_METHODS = [
     'constructor', 'init', '_bindPluginLifecycle', 'loadSettings',
-    '_applyAlbumSortSettings', 'loadExtensions', 'openExtensionView', 'closeExtensionView',
+    '_applyAlbumSortSettings', 'openExtensionView', 'closeExtensionView',
     '_bindUI', 'loadAlbums', 'showAlbums', '_renderTimeline',
     '_renderAlbumCards', '_isCollapsed', '_filterVisibleAlbums', '_ensureGrid',
     '_gridConfigPath', '_gridIsPixiv', '_albumPageIsPixiv', '_sortAlbums',

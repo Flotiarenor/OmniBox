@@ -17,6 +17,7 @@ limitations under the License.
 from __future__ import annotations
 
 import logging
+import math
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional, Tuple
@@ -43,11 +44,14 @@ if TYPE_CHECKING:
 #    "options": [{"label": "修改时间", "value": "mtime"}, {"label": "文件名", "value": "name"}]}
 # 可选字段：
 #   "help": "..."      — 设置面板悬浮提示
+#   "min"/"max"        — number / range 的取值范围，在 save_settings 里校验（写盘前）
 #   "secret": True     — 凭据类设置项。两件事一起生效：
 #                        ① get_settings() 对外返回掩码（本方法会经 register_api
 #                           直接暴露给 HTTP，返回明文等于把凭据交给任何同源脚本）；
 #                        ② 该插件的设置文件不参与文件服务
 #                           （PluginBase.get_protected_paths）。
+#                        写入语义：键缺失或掩码 = 不改动；空字符串 = 清除；
+#                        其它非空值 = 覆盖。见 save_settings()。
 #                        见 docs/plugin-guide.md §8.2
 #
 # 注意：adapter_* 方法目前处于规划阶段，
@@ -105,6 +109,93 @@ def mask_secrets(schema, values):
         if masked.get(key):
             masked[key] = SECRET_MASK
     return masked
+
+
+def _setting_bound(item: Dict[str, Any], name: str) -> int | float | None:
+    """schema 里的 min/max；缺失或不是有限数字时视为没有该边界。"""
+    value = item.get(name)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return value if math.isfinite(float(value)) else None
+    except (OverflowError, ValueError):
+        return None
+
+
+def parse_setting_number(value: Any) -> int | float | None:
+    """把前端提交的值收敛成有限数字；接受数字与数字字符串（兼容旧调用）。
+
+    公开 API：插件在自己的按目录/运行期设置校验里复用它，归一化口径与
+    `save_settings` 相同（image-viewer 的文件夹级保存即如此）。
+
+    布尔值不算数字：`True` 在 Python 里是 `int` 的子类，直接放行会把开关状态写进
+    数值设置项。数字字符串归一成 int/float 后存盘，让 `setting()` 的读者不必再判类型。
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number: int | float = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            number = float(text)
+        except ValueError:
+            return None
+        if number.is_integer() and not any(char in text for char in '.eE'):
+            number = int(number)
+    else:
+        return None
+    try:
+        if not math.isfinite(float(number)):
+            return None
+    except (OverflowError, ValueError):
+        return None
+    return number
+
+
+def _display_setting_value(value: Any) -> str:
+    """错误文案里的取值：字符串带引号，其余用 str（截断过长内容）。"""
+    text = repr(value) if isinstance(value, str) else str(value)
+    return text if len(text) <= 60 else text[:57] + '...'
+
+
+def validate_number_setting(item: Dict[str, Any], value: Any) -> tuple[str | None, int | float | None]:
+    """按 schema 校验 number/range 的 min/max。
+
+    返回 `(错误文案, 归一化后的值)`：合法时文案为 None，非法时值为 None。
+
+    公开 API：插件自己的设置写入路径（如 image-viewer 的文件夹级保存）复用它，
+    文案与判定标准因此与 `save_settings` 的字段级 `errors` 完全一致。
+    """
+    key = item.get('key')
+    label = item.get('label') or key
+    parsed = parse_setting_number(value)
+    if parsed is None:
+        return f'设置项 {key}（{label}）必须是数字（收到 {_display_setting_value(value)}）', None
+    minimum = _setting_bound(item, 'min')
+    maximum = _setting_bound(item, 'max')
+    display = _display_setting_value(parsed)
+    if minimum is not None and maximum is not None and not (minimum <= parsed <= maximum):
+        return (
+            f'设置项 {key}（{label}）必须在 {_display_setting_value(minimum)}–'
+            f'{_display_setting_value(maximum)} 之间（收到 {display}）',
+            None,
+        )
+    if minimum is not None and parsed < minimum:
+        return (
+            f'设置项 {key}（{label}）必须大于等于 {_display_setting_value(minimum)}'
+            f'（收到 {display}）',
+            None,
+        )
+    if maximum is not None and parsed > maximum:
+        return (
+            f'设置项 {key}（{label}）必须小于等于 {_display_setting_value(maximum)}'
+            f'（收到 {display}）',
+            None,
+        )
+    return None, parsed
 
 
 class PluginBase(ABC):
@@ -319,7 +410,7 @@ class PluginBase(ABC):
             return None
         return self._plugin_manager.get_plugin_instance(name)
 
-    # ===== 主体上下文（设计文档 group-mesh §12 第 1/2 项）=====
+    # ===== 主体上下文 =====
 
     def current_principal(self) -> Optional[PrincipalContext]:
         r"""本次调用的主体：**由壳注入**，无法被请求参数影响。
@@ -329,8 +420,8 @@ class PluginBase(ABC):
         的那个人"，而不是某个自称的 ID。没有主体时返回 `None`：
 
         * **后台线程**：`ContextVar` 不跨线程继承，插件自起的线程永远读不到主体
-          —— 这是设计约束而不是缺陷（§12 第 2 项明确要求"涉及主体的后台任务必须
-          显式携带主体信息"）。因此不要在后台任务里用本方法推断操作者。
+          —— 这是设计约束而不是缺陷（涉及主体的后台任务必须
+          显式携带主体信息）。因此不要在后台任务里用本方法推断操作者。
         * CLI / 自检 / 直接调用插件实例：同样没有主体。
 
         需要"必须有主体"的地方请用 `require_principal()`：让拒绝发生在业务逻辑
@@ -365,6 +456,24 @@ class PluginBase(ABC):
         """schema 里声明了 `"admin_only": True` 的设置键（改根、改端点一类）。"""
         return admin_only_keys(self.settings_schema)
 
+    def _admin_denied_keys(self, keys) -> set:
+        """本次写入里需要管理员、而当前主体角色不足的键集合。"""
+        guarded = self._admin_only_keys() & {str(key) for key in keys}
+        if not guarded:
+            return set()
+        principal = _current_principal()
+        if principal is None or principal.is_admin:
+            return set()
+        return guarded
+
+    def _admin_error_for(self, key: str) -> str:
+        """单个键的越权文案；用于 `save_settings` 的字段级 `errors`。"""
+        principal = _current_principal()
+        if principal is None:
+            return f'设置项 {key} 需要管理员权限'
+        return (f'设置项 {key} 需要管理员权限'
+                f'（当前主体 {principal.name!r} 的角色是 {principal.role}）')
+
     def _admin_denial(self, keys) -> Optional[str]:
         """本次写入是否因角色不足被拒：被拒时返回错误文案，放行时返回 None。
 
@@ -376,14 +485,10 @@ class PluginBase(ABC):
         可信代码。真正需要"无主体即拒绝"的场景应直接在插件方法里调
         `require_principal()`。
         """
-        guarded = self._admin_only_keys() & {str(key) for key in keys}
-        if not guarded:
+        denied = self._admin_denied_keys(keys)
+        if not denied:
             return None
-        principal = _current_principal()
-        if principal is None or principal.is_admin:
-            return None
-        return (f'设置项 {", ".join(sorted(guarded))} 需要管理员权限'
-                f'（当前主体 {principal.name!r} 的角色是 {principal.role}）')
+        return '；'.join(self._admin_error_for(key) for key in sorted(denied))
 
     def is_protected_path(self, path) -> bool:
         r"""该路径是否属于 Shell 的受保护清单（壳凭据 + 全插件申报）。
@@ -433,8 +538,21 @@ class PluginBase(ABC):
         return mask_secrets(self.settings_schema, self._raw_settings())
 
     def save_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
-        """校验、写入 SettingsStore、检测变更、调用 on_settings_changed。
-        子类一般不需要覆盖此方法——覆盖 on_settings_changed() 即可响应设置变更。"""
+        """按 `settings_schema` 校验、写入 SettingsStore、检测变更并通知插件。
+
+        子类一般不需要覆盖此方法——覆盖 `on_settings_changed()` 即可响应设置变更。
+
+        校验语义（全部在写盘前完成，任一项失败则整次调用不落盘）：
+        - `number` / `range`：按 schema 的 `min` / `max` 校验；数字字符串会被归一成
+          int/float，布尔值不算数字。`min` / `max` 缺失表示该侧不限。
+        - `secret`：键缺失或值为 `SECRET_MASK` = 不改动；空字符串 = 清除（写入 ``''``）；
+          其它非空值 = 覆盖。这样前端既能把 `get_settings()` 的掩码整体回传，
+          也能通过清空输入框撤销凭据。
+        - `admin_only`：仍按当前主体的角色判定；失败时逐键给出文案。
+
+        失败返回值含可直接展示的 `error` 汇总与字段级 `errors`（`{设置键: 文案}`），
+        供设置弹窗定位到具体输入框。
+        """
         if not isinstance(settings, dict):
             return {"success": False, "error": "设置必须是字典"}
 
@@ -447,7 +565,7 @@ class PluginBase(ABC):
         # （例如 image-cleaner 的根目录）写进设置文件。判据用 declared 而不是 allowed：
         # 只声明 info 字段的插件 allowed 为空，不能因此退回"什么键都收"。
         allowed = {item['key'] for item in declared if item.get('type') != 'info'}
-        # 一律复制：不要与调用方传入的对象共享引用（下面会 pop）
+        # 一律复制：不要与调用方传入的对象共享引用（下面会 pop / 归一化数值）
         clean = {k: v for k, v in settings.items() if k in allowed} if declared else dict(settings)
 
         # 掩码原样回传 = "不改动"。前端会把 get_settings() 的值回填进输入框再整体
@@ -459,10 +577,38 @@ class PluginBase(ABC):
 
         # 改根/改端点一类设置项需要管理员主体（见 admin_only_keys 的说明）。
         # 判定必须放在掩码回传处理**之后**：把掩码原样提交回来等于"不改动"，
-        # 不该因此被判越权。
-        denial = self._admin_denial(clean)
-        if denial:
-            return {"success": False, "error": denial}
+        # 不该因此被判越权。数字越界与越权都先收集成字段级错误，再决定是否写盘。
+        denied = self._admin_denied_keys(clean)
+        errors: Dict[str, str] = {}
+        for item in declared:
+            key = item.get('key')
+            if key is None or key not in clean:
+                continue
+            key_text = str(key)
+            if key_text in denied:
+                errors[key_text] = self._admin_error_for(key_text)
+                continue
+            if item.get('type') in ('number', 'range'):
+                # 已生效的取值原样回传不因新校验被拒：设置面板总是整体提交，
+                # 历史配置里可能有 schema 收紧前写下的越界值（例如 group-mesh 用
+                # port=0 表示"由内核分配监听端口"）。只有"改成另一个非法值"才拒绝 —
+                # 否则用户打开设置什么都不改也会保存失败。
+                parsed = parse_setting_number(clean[key])
+                old_parsed = parse_setting_number(old[key]) if key in old else None
+                if parsed is not None and old_parsed is not None and parsed == old_parsed:
+                    clean[key] = parsed
+                    continue
+                message, normalized = validate_number_setting(item, clean[key])
+                if message:
+                    errors[key_text] = message
+                else:
+                    clean[key] = normalized
+        if errors:
+            return {
+                "success": False,
+                "error": "；".join(errors.values()),
+                "errors": errors,
+            }
 
         if self._settings_store:
             try:

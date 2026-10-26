@@ -39,6 +39,11 @@ class PixivSyncPlugin(PluginBase):
         {
             "key": "refresh_token",
             "label": "Pixiv Refresh Token",
+            "section": "credentials",
+            "sectionTitle": "账号凭据",
+            "sectionDescription": "账号级长期凭据；也可用顶栏「获取 Token」走内置 OAuth。",
+            "sectionOrder": 10,
+            "order": 10,
             "type": "text",
             # 申请 Shell 文件防护：本插件的设置文件（<config>/plugins/pixiv-sync.json）
             # 会被 /file、/files、/thumbs 无条件拒绝。refresh_token 是账号级长期凭据
@@ -52,6 +57,11 @@ class PixivSyncPlugin(PluginBase):
         {
             "key": "proxy",
             "label": "HTTP 代理",
+            "section": "network",
+            "sectionTitle": "网络",
+            "sectionDescription": "中国大陆访问 pixiv 通常需要代理；请求速率与并行拉取也在本组。",
+            "sectionOrder": 20,
+            "order": 10,
             "type": "text",
             "placeholder": "http://127.0.0.1:7890",
             "help": "中国大陆访问 pixiv 需要代理；留空 = 直连",
@@ -59,6 +69,11 @@ class PixivSyncPlugin(PluginBase):
         {
             "key": "download_dir",
             "label": "下载目录",
+            "section": "download",
+            "sectionTitle": "下载",
+            "sectionDescription": "下载落点与并发；目录改动需要管理员。",
+            "sectionOrder": 30,
+            "order": 10,
             # directory 类型由壳的共享组件 folder-picker 渲染（单值字段取首行路径，
             # 见 base.js 的 createSettingsForm）；原先声明成 text 时用户只能手打路径
             "type": "directory",
@@ -74,6 +89,11 @@ class PixivSyncPlugin(PluginBase):
         {
             "key": "workers",
             "label": "并发下载数",
+            "section": "download",
+            "sectionTitle": "下载",
+            "sectionDescription": "下载落点与并发；目录改动需要管理员。",
+            "sectionOrder": 30,
+            "order": 20,
             "type": "number",
             "default": 4,
             "min": 1,
@@ -83,6 +103,11 @@ class PixivSyncPlugin(PluginBase):
         {
             "key": "max_download",
             "label": "单次同步上限（条）",
+            "section": "limits",
+            "sectionTitle": "扫描与上限",
+            "sectionDescription": "单次同步与全量扫描的数量上限；0 = 不限。",
+            "sectionOrder": 40,
+            "order": 10,
             "type": "number",
             "default": 100,
             "min": 0,
@@ -92,6 +117,11 @@ class PixivSyncPlugin(PluginBase):
         {
             "key": "max_artists",
             "label": "单次全量扫描画师数上限",
+            "section": "limits",
+            "sectionTitle": "扫描与上限",
+            "sectionDescription": "单次同步与全量扫描的数量上限；0 = 不限。",
+            "sectionOrder": 40,
+            "order": 20,
             "type": "number",
             "default": 30,
             "min": 0,
@@ -101,6 +131,11 @@ class PixivSyncPlugin(PluginBase):
         {
             "key": "rate_limit",
             "label": "API 请求速率（次/秒）",
+            "section": "network",
+            "sectionTitle": "网络",
+            "sectionDescription": "中国大陆访问 pixiv 通常需要代理；请求速率与并行拉取也在本组。",
+            "sectionOrder": 20,
+            "order": 20,
             "type": "number",
             "default": 3,
             "min": 1,
@@ -110,6 +145,11 @@ class PixivSyncPlugin(PluginBase):
         {
             "key": "scan_workers",
             "label": "并行拉取画师数（滑动窗口）",
+            "section": "network",
+            "sectionTitle": "网络",
+            "sectionDescription": "中国大陆访问 pixiv 通常需要代理；请求速率与并行拉取也在本组。",
+            "sectionOrder": 20,
+            "order": 30,
             "type": "number",
             "default": 4,
             "min": 1,
@@ -868,7 +908,12 @@ class PixivSyncPlugin(PluginBase):
         }
 
     def get_extensions(self) -> List[dict]:
-        """注册到 image-viewer 左侧栏的扩展入口。"""
+        """注册到 image-viewer 左侧栏的扩展入口。
+
+        新壳按 `native` 声明在宿主页内容槽渲染原生面板：`frontend/native.html` 是隐藏的
+        逻辑页，只提交 schema blocks 并处理动作。`embedUrl` 保留给不认 `native` 的旧壳，
+        继续承载 `frontend/index.html` 的完整页面。
+        """
         return [
             {
                 "host": "image-viewer",
@@ -877,6 +922,10 @@ class PixivSyncPlugin(PluginBase):
                 "icon": "icon:palette",
                 "description": "同步下载关注画师新作与收藏画作",
                 "section": "Pixiv 同步",
+                "native": {
+                    "url": "/plugins/pixiv-sync/frontend/native.html?native=1",
+                    "title": "Pixiv 同步",
+                },
                 "embedUrl": "/plugins/pixiv-sync/frontend/index.html",
                 "placement": "sidebar",
                 "scope": "all",

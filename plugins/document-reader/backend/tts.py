@@ -38,6 +38,18 @@ _tts = load_sibling(__file__, 'tts_engine', 'document_reader_tts')
 TTS_CACHE_LIMIT = 200 * 1024 * 1024
 # 单次合成结果的合理上限：超过它说明引擎返回了异常内容，别往磁盘写
 TTS_RESULT_LIMIT = 40 * 1024 * 1024
+
+# 朗读预取深度（句）：前端在播放当前句时，同时去要后面几句。
+# 一句一合成时的硬指标是"合成下一句的耗时必须小于上一句的音频长度"：短句（五六个字，
+# 音频约 1.6 秒）撑不住本地端点一次约 1.9 秒的合成，只预取一句必然在这些地方卡住。
+# 深度就是那个旋钮 —— 大了白占端点与磁盘（首句等待也会变长），小了在短句处等。
+# 5 按"短句 1.6s 音频 / 单句合成 1.95s"这类实测场景定；tool/tts_speed.py 能按当前
+# 设置重算卡顿次数，改过引擎或语速后应当重跑一次。
+TTS_PREFETCH_DEFAULT = 5
+TTS_PREFETCH_MIN = 1
+# 上限 8：再多也只是把请求压在端点上排队，而首句的等待会跟着一起变长
+TTS_PREFETCH_MAX = 8
+
 _AUDIO_EXTS = ('.mp3', '.wav', '.ogg', '.opus', '.m4a')
 # 缓存键形状：前端给的是文本指纹（SHA-1 前 32 位十六进制；没有 SubtleCrypto 时
 # 是 `f<hex>`）。它会被拼成**文件名前缀**，所以只能接受十六进制 —— 一旦放开字符集，
@@ -155,7 +167,26 @@ class TtsMixin:
         data['mode'] = params['mode']
         data['voice'] = params['voice']
         data['rate'] = params['rate']
+        # 预取深度也走这里下发：它是前端播放队列的行为参数，不是引擎参数
+        # （引擎不关心"要几段"），但朗读面板与播放器都要知道当前值。
+        data['prefetch'] = self._tts_prefetch()
         return data
+
+    def _tts_prefetch(self) -> int:
+        """预取深度（句）：读设置；读不到或超出 [MIN, MAX] 一律退回 MIN。
+
+        为什么配坏时退回 1 而不是默认值 5：能配出非法值说明这条设置链路不可信，而端点
+        本来就慢时再并发五路合成是最糟的选择 —— 保守的 1 只表现为"偶尔卡一下"，
+        激进的值会表现为"点了半天才出声"。前端另有一道同样的夹取（设置值会经 HTTP
+        回来），两侧各夹一次，任何一边被绕过都不会把播放器带进并发狂潮。
+        """
+        try:
+            value = int(self.setting('tts_prefetch'))
+        except (TypeError, ValueError):
+            return TTS_PREFETCH_MIN
+        if TTS_PREFETCH_MIN <= value <= TTS_PREFETCH_MAX:
+            return value
+        return TTS_PREFETCH_MIN
 
     def tts_voices(self) -> Dict[str, Any]:
         """当前引擎可选的音色表：自动模式给两张（edge + 端点），指定引擎只给一张。

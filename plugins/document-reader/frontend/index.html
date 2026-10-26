@@ -5,98 +5,34 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>文档阅读</title>
   <link rel="stylesheet" href="document-reader.css">
+  <!--
+    本页是壳 iframe 里的内容页：品牌块/左栏/导航/顶栏/搜索/状态栏/分隔条由壳按
+    manifest 的 frontend.chrome 渲染；这里只保留内容（书架、阅读器、朗读设置整页、
+    目录与阅读设置弹窗、正文进度条）。
+
+    视图切换与工具栏动作经 postMessage 进来（omnibox:view / omnibox:action /
+    omnibox:query），标题/副标题/徽标/状态反向上报（omnibox:chrome）。
+  -->
 </head>
 <body>
   <div id="app">
-    <!-- ============ 左侧栏：只放导航与按钮，不放任何滑杆 ============
-         阅读器与目录/设置的关系见 docs/document-reader-design.md：
-         目录、阅读设置是弹窗，朗读设置是覆盖主区的独立页，入口都在这里。 -->
-    <aside class="view-sub-sidebar nr-sidebar obx-glass"
-           data-obx-splitter="--sub-sidebar-width"
-           data-obx-splitter-min="180"
-           data-obx-splitter-reserve="320"
-           data-obx-splitter-default="240">
-      <div class="nr-brand">
-        <div class="nr-brand-icon"><svg class="obx-icon"><use href="#book-open"></use></svg></div>
-        <div class="nr-brand-text">
-          <div class="nr-brand-title">文档阅读</div>
-          <div class="nr-brand-sub">Reader</div>
-        </div>
-      </div>
-
-      <!-- 统一导航。结构对齐 manga-library / group-mesh：
-           分组标题 + .obx-nav-item 按钮；没有自定义的"行内块"样式。
-           阅读时多出两组：左栏最上面一个"返回"，以及"当前文档"（目录 / 阅读设置）。 -->
-      <nav class="nr-nav obx-scroll">
-        <div class="nr-nav-label">浏览</div>
-        <button type="button" class="obx-nav-item nr-nav-item active" data-view="all">
-          <span class="nr-nav-icon"><svg class="obx-icon"><use href="#library"></use></svg></span><span>全部文档</span>
-          <span class="nr-nav-count" id="nr-count-all"></span>
-        </button>
-        <button type="button" class="obx-nav-item nr-nav-item" data-view="recent">
-          <span class="nr-nav-icon"><svg class="obx-icon"><use href="#history"></use></svg></span><span>最近阅读</span>
-        </button>
-        <button type="button" class="obx-nav-item nr-nav-item" data-view="marks">
-          <span class="nr-nav-icon"><svg class="obx-icon"><use href="#star"></use></svg></span><span>书签</span>
-          <span class="nr-nav-count" id="nr-count-marks"></span>
-        </button>
-        <button type="button" class="obx-nav-item nr-nav-item" id="nr-open-voice">
-          <span class="nr-nav-icon"><svg class="obx-icon"><use href="#volume-2"></use></svg></span><span>朗读设置</span>
-        </button>
-
-        <div id="nr-reader-tools" class="hidden">
-          <div class="nr-nav-label">当前文档</div>
-          <button type="button" class="obx-nav-item nr-nav-item" id="nr-open-toc">
-            <span class="nr-nav-icon"><svg class="obx-icon"><use href="#list"></use></svg></span><span>目录</span>
-          </button>
-          <button type="button" class="obx-nav-item nr-nav-item" id="nr-open-read-settings">
-            <span class="nr-nav-icon">A</span><span>阅读设置</span>
-          </button>
-        </div>
-
-        <div id="nr-extensions"></div>
-      </nav>
-
-      <!-- 底部状态行：文案等布局落地后再定（先占位） -->
-      <div class="sub-sidebar-footer nr-sidebar-footer" id="nr-status">正在读取…</div>
-    </aside>
-
-    <!-- ============ 主区 ============ -->
     <div class="view-body">
-      <div class="view-toolbar nr-toolbar">
-        <div class="toolbar-group nr-heading">
-          <button type="button" class="btn btn-sm nr-back-btn hidden" id="nr-back-to-shelf"><svg class="obx-icon"><use href="#arrow-left"></use></svg> 返回</button>
-          <span class="nr-title" id="nr-view-title">全部文档</span>
-          <span class="nr-sub" id="nr-view-sub"></span>
-        </div>
-        <div class="toolbar-group nr-toolbar-right">
-          <!-- 搜索框就是壳的 .search-field（base.css）：本插件的这一版是壳组件的形态来源 -->
-          <div class="search-field">
-            <span class="search-field-icon"><svg class="obx-icon"><use href="#search"></use></svg></span>
-            <input type="text" id="nr-search" placeholder="搜索书名、作者…" autocomplete="off">
-          <button type="button" id="nr-search-clear" class="search-field-clear hidden" title="清除"><svg class="obx-icon"><use href="#x"></use></svg></button>
-        </div>
-          <!-- 书架的统一「同步（被动）/ 校验（手动）」控件，由共享组件
-               shell/freshness.js 填充（此前本插件没有任何重扫入口）。 -->
-          <div id="nr-freshness"></div>
-          <button type="button" id="btn-settings" class="btn btn-sm"><svg class="obx-icon"><use href="#settings"></use></svg> 设置</button>
-        </div>
-      </div>
-
       <!-- 书架态：封面网格 -->
       <div class="view-content nr-content obx-scroll" id="nr-shelf-view">
         <div class="nr-grid" id="nr-grid"></div>
       </div>
 
-      <!-- 阅读态：正文 + 底部进度条（进度条通栏，不随正文缩进） -->
+      <!-- 阅读态：正文 + 底部进度条（进度条通栏，不随正文缩进）。
+           进度轨道默认隐藏：书架态、PDF/外部打开都没有可表示的阅读进度；
+           阅读器渲染出章节后由脚本显示。 -->
       <div class="nr-reader-view hidden" id="nr-reader-view">
         <div class="document-content-area" id="document-content-area"></div>
       </div>
-      <div class="document-progress-bar">
+      <div class="document-progress-bar hidden">
         <div class="document-progress-fill" id="document-progress-fill" style="width:0%"></div>
       </div>
 
-      <!-- 朗读设置：占主区（与 .view-content 同一个位置），不遮挡左侧栏 -->
+      <!-- 朗读设置：占主区（与 .view-content 同一个位置），不遮挡壳 chrome -->
       <div class="nr-voice-page hidden" id="nr-voice-page">
       <div class="nr-voice-head">
         <span class="nr-voice-title">朗读设置</span>
@@ -140,6 +76,23 @@
               <input type="range" id="nr-voice-rate" min="-50" max="100" step="5" value="100">
               <span class="nr-setting-value" id="nr-voice-rate-value">100%</span>
             </div>
+            <div class="nr-setting-row">
+              <label for="nr-voice-prefetch">预取深度</label>
+              <select id="nr-voice-prefetch">
+                <option value="1">1 句 · 逐句现取（端点慢时用）</option>
+                <option value="2">2 句</option>
+                <option value="3">3 句</option>
+                <option value="4">4 句</option>
+                <option value="5">5 句 · 推荐</option>
+                <option value="6">6 句</option>
+                <option value="7">7 句</option>
+                <option value="8">8 句 · 上限（首句等待更长）</option>
+              </select>
+            </div>
+            <p class="nr-voice-hint">
+              播放当前句时同时合成后面几句：短句的音频撑不住一次合成，靠这个窗口把等待吃掉。
+              端点跟不上（读起来一直在等）就选 1，退回逐句现取。
+            </p>
             <div class="nr-voice-actions">
               <button type="button" class="btn" id="nr-voice-test">试听这一句</button>
               <span class="nr-voice-hint" id="nr-voice-test-result"></span>

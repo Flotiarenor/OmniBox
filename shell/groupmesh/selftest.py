@@ -201,7 +201,7 @@ def check_roster() -> None:
     forged.sign(outsider.private_key)
     _expect_raises(RecordError, lambda: forged.accepts(v3), '规则 3（签名者资格）未生效')
 
-    # 并发收敛（§5.3）：同版本同 prev 取哈希较小者，且双方结果一致
+    # 并发收敛：同版本同 prev 取哈希较小者，且双方结果一致
     a = next_roster(v3, 'test-group', v3.owner_key, members4, ttl_seconds=3600)
     a.sign(owner.private_key)
     b = next_roster(v3, 'test-group', v3.owner_key, members4, ttl_seconds=7200)
@@ -209,7 +209,7 @@ def check_roster() -> None:
     _expect(Roster.pick_concurrent(a, b) is Roster.pick_concurrent(b, a),
             '并发收敛不是确定性的')
 
-    # 宽限策略（§5.4）：过期只提示，不阻断
+    # 宽限策略：过期只提示，不阻断
     expired = founding_roster('g', owner, [cp.generate_sign_keypair()[1]],
                               ttl_seconds=-10)
     report = staleness_report(expired, None)
@@ -217,7 +217,7 @@ def check_roster() -> None:
     expired.accepts(None)  # 仍然可接受
 
 
-# ── 共享项 ACL（§6）───────────────────────────────────────────────────────
+# ── 共享项 ACL ───────────────────────────────────────────────────────────
 
 def check_share_acl() -> None:
     owner = Principal.create('owner')
@@ -255,7 +255,7 @@ def check_share_acl() -> None:
     _expect(not tampered.verify_signature(), '篡改 ACL 后声明仍验签通过（严重）')
 
 
-# ── 注册表单调性（§7）─────────────────────────────────────────────────────
+# ── 注册表单调性 ─────────────────────────────────────────────────────────
 
 def check_registry() -> None:
     device_sk, device_pk = cp.generate_sign_keypair()
@@ -371,7 +371,7 @@ def check_end_to_end(verbose: bool = False) -> None:
                 text = client.fetch_bytes(connection, 'pub', 'note.txt')
                 _expect(text == b'hello from owner', '取回的小文件内容不一致')
 
-                # 越界访问必须被拒（§6.5）
+                # 越界访问必须被拒
                 from .transport import RemoteError
                 try:
                     client.fetch_bytes(connection, 'pub', '../../etc/passwd')
@@ -418,8 +418,8 @@ CHECKS: List[Tuple[str, Callable[[], None]]] = [
     ('密码学原语（X25519 / Ed25519 / AEAD / HKDF）', check_crypto),
     ('Noise_XX 握手与传输态', check_noise),
     ('团体名单状态机（规则 1-6 与并发收敛）', check_roster),
-    ('共享项 ACL（§6.2 读 / 写按主体判定）', check_share_acl),
-    ('注册表单调性与防重放（§7）', check_registry),
+    ('共享项 ACL（读 / 写按主体判定）', check_share_acl),
+    ('注册表单调性与防重放', check_registry),
     ('真实 TCP 端到端（协商+握手+分块取文件+上传+越界拒绝）', check_end_to_end),
 ]
 

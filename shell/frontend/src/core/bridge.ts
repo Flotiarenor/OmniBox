@@ -54,7 +54,7 @@ function isDesktopHost(): boolean {
  * 为什么必须等：pywebview 的 `window.pywebview` 是**页面加载之后**才注入的，而
  * 模块脚本可能与它在同一批任务里跑。原先这里"检查一次，没有就立刻装 HTTP 替身"，
  * 于是在桌面窗口里也会固化成 HTTP 通道 —— 壳的调用看似正常，但凡是"只有桌面窗口
- * 才做得到"的接口（全屏）都会走到给浏览器准备的拒绝分支（报告 §6）。
+ * 才做得到"的接口（全屏）都会走到给浏览器准备的拒绝分支。
  */
 function waitForPyWebView(timeoutMs: number): Promise<PyWebViewAPI | null> {
   return new Promise(resolve => {

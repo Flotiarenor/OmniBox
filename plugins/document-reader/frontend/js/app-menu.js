@@ -165,7 +165,7 @@ Object.assign(DocumentReader.prototype, {
             return;
         }
         try {
-            // 书签是唯一要字级位置的状态（阅读进度只记到章），见设计文档 §4
+            // 书签是唯一要字级位置的状态（阅读进度只记到章）
             const result = await Bridge.call('marks_add', this.currentDocument.id,
                 target.chapter, target.char, target.snippet, '');
             if (result && result.success) {

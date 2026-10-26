@@ -14,10 +14,11 @@
 | 打包规则（spec/收集） | `python tools/check_packaging.py` | **exit 0**（硬门禁） |
 | 版本一致性 | `python tools/check_version.py` | **exit 0**（硬门禁） |
 | 测试文件可运行性 | `python tools/check_tests.py` | **exit 0**（硬门禁；`tests/test_*.py` 必须能被 unittest 收集到用例，手工脚本按约定命名 `tests/debug_*.py`） |
-| 本地隐私门禁 | `python tools/check_private_paths.py` | **OK**（开发机硬门禁；CI 上无本地配置时 SKIP。见 §1.1） |
+| 文档引用一致性 | `python tools/check_docs.py` | **exit 0**（硬门禁；每个 `AGENTS.md` 反引号里的名字/路径、围栏命令里的路径、Markdown 链接都必须还存在。插件界面文档只查后两类，理由见脚本头部） |
+| 本地隐私门禁 | `python tools/check_private_paths.py` | **开发机硬门禁，不进入 CI**：runner 没有本地配置，必然 SKIP。见 §1.1 |
 | 类型检查（内核） | `python -m pyright main.py shell tools` | **0 错误**（硬门禁） |
-| 类型检查（插件+测试） | `python -m pyright plugins tests` | 基线（暂不拦截，见 §6） |
-| 单元测试 | `python -m unittest discover -s tests` | **failures=0 / errors=0**（硬门禁；Windows 专属与浏览器 e2e 用例在缺依赖时自动 skip，见 §2。本机 Windows 实测 818 例：811 passed、3 例环境失败） |
+| 类型检查（插件+测试） | `python -m pyright plugins tests` | **本地按需**；历史基线不再作为 CI 步骤（见 §6） |
+| 单元测试 | `python tools/plugin_ci.py --core` + `--plugin <name>` | **failures=0 / errors=0**（硬门禁；CI 按插件矩阵拆分，见 §2；本地仍可跑全量 `unittest discover`） |
 | 运行时禁止 print | `python -m unittest tests.test_no_print_in_runtime` | 通过（硬门禁） |
 | 前端转义一致性 | `node tools/check_frontend_escape.cjs` | **OK**（硬门禁） |
 | 前端依赖漏洞 | `python tools/check_npm_audit.py` | **OK**（硬门禁；脚本内固定官方 registry，见下） |
@@ -46,6 +47,7 @@ $py = ".\venv\Scripts\python.exe"
 & $py tools/check_packaging.py
 & $py tools/check_version.py
 & $py tools/check_tests.py
+& $py tools/check_docs.py
 & $py tools/check_npm_audit.py
 & $py tools/check_private_paths.py
 & $py -m pyright main.py shell tools
@@ -68,12 +70,13 @@ node tools/check_frontend_escape.cjs
    `auth_token.txt` 的整份内容（按原文匹配）；占位符形状（`SECRET-TOKEN`、`<your-key>`）不算；
 3. **用户名**：`%USERPROFILE%` 最后一段，只在路径上下文（`users/<名字>`）里算命中。
 
-实测价值：实装当天用它扫出 8 处真机路径（`docs/ci-and-release.md`、`docs/image-viewer-design.md`、
+实测价值：实装当天用它扫出 8 处真机路径（本文档、一份插件设计文档、
 `plugins/group-mesh/backend/shares.py` 的注释、以及 3 个用例文件），全部改成 `D:\…` 占位。
 已知边界：按**行文本**比对，把路径拆成多段字符串拼接后检测不到（用例把这条边界固化了）。
 
-> 它在 CI 上也跑，但 runner 没有本地配置 → 打印 `SKIP` 并以 0 退出。放在 CI 里的意义是
-> 让这一步不被忘记、也让脚本每次都被真实执行一遍（语法/导入错误当场暴露）。
+> 它只在开发机运行，不再占用 CI：runner 上没有本地配置，必然打印 `SKIP` 并以 0 退出，
+> 那个步骤永远不会失败。脚本本身仍由 `tests/test_check_private_paths.py` 和本地提交前
+> 检查覆盖，语法/导入错误不会因为不进 CI 而漏掉。
 
 > `check_npm_audit.py` 为什么不能用一句 `npm audit` 代替：本机 `npm config get registry`
 > 指向 npmmirror，而它**不实现 audit 端点**，直接跑得到的是
@@ -92,38 +95,63 @@ node tools/check_frontend_escape.cjs
 
 | job | runner | 内容 |
 | --- | --- | --- |
-| `lint` | ubuntu | ruff + 插件规范 + 打包规则 + 版本一致性 + 图标 sprite + 测试文件可运行性 |
-| `typecheck` | windows | pyright 内核（硬门禁）+ 插件/测试（基线，不拦截） |
-| `test` | windows + ubuntu，py3.10 + 3.12 | unittest 全量（netease-music 的 4 项仅 Windows 运行） |
+| `changes` | ubuntu | 变更集判定：算出这次只动了文档还是动了代码，其余 job 靠它的输出决定跑不跑 |
+| `plugins` | ubuntu | 从 `plugins/*/manifest.json` 读出插件名，输出 JSON 矩阵；不维护第二份插件清单 |
+| `lint` | ubuntu | ruff + 插件规范 + 打包规则 + 版本一致性 + 图标 sprite + 测试文件可运行性 + 文档引用一致性 |
+| `docs` | ubuntu | **只在变更集含 `.md` 时跑**：文档引用一致性（`tools/check_docs.py`） |
+| `typecheck` | windows | pyright 内核（硬门禁）；不再输出“插件/测试基线”这种不会失败的报告 |
+| `test` | windows + ubuntu，py3.10 + 3.12 | 共享测试（`tools/plugin_ci.py --core`，不含插件专属测试） |
+| `plugin` | windows + ubuntu，py3.12 | **每个插件一条 job**：`tools/plugin_ci.py --plugin <name>`；失败直接落到插件名 |
 | `frontend` | ubuntu | 转义门禁 + `npm ci` + `vue-tsc --noEmit` + `vite build` |
 | `package` | windows + ubuntu | 真实跑 PyInstaller + 校验产物内容；**只在 push `main` / 手动触发时跑**（日常 push 由 `package-smoke` 按路径兜底，产物仅作 artifact） |
 
-**纯文档改动整个工作流都不触发**（`paths-ignore: '**/*.md'`、`LICENSE`、
-`.gitignore`、`.gitattributes`）：这 5 个门禁全部只读代码——ruff 不扫 Markdown，
-`check_version` / `check_plugins` / `check_packaging` 读的是
-`pyproject.toml` / `package.json` / `manifest.json` / spec，前端 job 只构建
-`src/` 里的 TS/Vue——所以改这些文件不可能让门禁失败，跑一遍纯属烧 runner 时间。
+**按变更集决定跑哪些 job，而不是在 `on:` 上过滤工作流**：
 
-刻意**不**忽略的路径（宁可多跑一次）：
-
-| 路径 | 理由 |
+| 变更集 | 跑什么 |
 | --- | --- |
-| `docs/Releases/**` | 是 PyInstaller spec 与打包资源，属构建输入而非文档 |
-| `.github/workflows/**` | 工作流自身改动必须验证，改坏一次会静默失去所有门禁 |
-| `tools/**`、`tests/**` | 门禁脚本与被测代码本身 |
+| 只有 `.md` | `changes` + `docs`（约 10 秒） |
+| `.md` + 代码 | 全跑 |
+| 只有代码 | 除 `docs` 外全跑 |
+
+判定规则只有两条分支（`changes` job）：`*.md` 算文档，**其余任何文件都算"动了代码"**——
+包括 `docs/Releases/**`（是 PyInstaller spec 与打包资源，属构建输入而非文档）、
+`.github/workflows/**`（工作流自身改动必须验证，改坏一次会静默失去所有门禁）、
+`tools/**` 与 `tests/**`。`LICENSE` / `.gitignore` / `.gitattributes` 这类少见改动因此
+也会跑全量：宁可多跑一次，不要少跑一次。取不到变更集（强推、比对点缺失）时同样按
+"动了代码"处理。
+
+**为什么不在 `on:` 上用 `paths` / `paths-ignore`**：被路径过滤掉的工作流根本不启动，
+也就不会创建 check run——一旦本工作流被设为必需检查，PR 会永远停在
+*Expected — Waiting for status to be reported*（GitHub 没有"缺失的检查算通过"这个开关）。
+改用 job 级 `if:` 之后，被跳过的 job 以 `Success` 上报，必需检查不会被卡住。
+
+**纪律**：新增 job 必须同时写 `needs: changes` 与
+`if: needs.changes.outputs.code == 'true'`（或 `...docs == 'true'`）——漏写就是
+"每次全跑"或"永远不跑"。
 
 「只改注释/格式」的代码改动**无法按路径识别**，只能照常跑全量——这是刻意接受的
-代价：路径过滤宁漏不误，确认没价值时再手动取消运行即可。
+代价：判定宁可多跑，不要少跑。
 
-> 若将来给 `main` / `develop` 配上"必须先过 CI 才能合并"的保护规则，注意
-> `paths-ignore` 命中的 PR 不会产生任何检查项，容易被误判为"卡在 pending"。
-> 需要时改用 `dorny/paths-filter` 在 job 内做跳过（保留一个必然成功的检查项）。
+**日常 push 实际跑的 job**：`changes` + `plugins` + `lint` + `typecheck` + `test`×4 +
+`plugin`×（插件数 × 2 平台，当前 8 个插件 = 16）+ `frontend`。`package`×2 被 `if:`
+关在 push `main` / 手动触发上（被跳过的 job 仍会列在运行页面上显示 `skipped`，但不消耗
+runner）；打包路径相关的回归由 `package-smoke.yml` 按路径触发兜底，两者跑的是同一套
+spec + `check_build_tree.py` 产物校验。插件矩阵按插件拆分，失败日志只包含该插件的测试；
+新增插件只要按 `test_<插件名下划线>_*` 命名测试文件，不需要改 `ci.yml`。
 
-**日常 push 实际只跑 7 个 job**：`lint` + `typecheck` + `test`×4 + `frontend`。
-`package`×2 被 `if:` 关在 push `main` / 手动触发上（被跳过的 job 仍会列在运行页面
-上显示 `skipped`，但不消耗 runner）；打包路径相关的回归由 `package-smoke.yml`
-按路径触发兜底，两者跑的是同一套 spec + `check_build_tree.py` 产物校验。
+**从 CI 删除的“不可能发生”步骤**：
 
+- `ruff format --check` 曾经带 `continue-on-error: true`，永远不会让 CI 失败；它只是
+  输出差异，留在 CI 里会制造“已经检查过格式”的错觉。格式化检查仍在本地按需运行。
+- `pyright plugins tests` 曾经带 `continue-on-error: true`，同样永远不会失败；插件与
+  测试的类型基线不再作为 CI 步骤输出。
+- `check_private_paths.py` 只在开发机上读取 `.config/plugins/*.json`；runner 上这些
+  文件不存在，步骤必然 SKIP。它保留在本地提交前检查，不再占用 CI job。
+
+**插件测试如何归属**：`tools/plugin_ci.py` 从 `plugins/*/manifest.json` 读取插件清单，
+按 `test_<插件名下划线>_*.py` 前缀划分；`test_reader_*` 是 document-reader 的历史
+别名，只在脚本里登记这一条别名。`--core` 跑其余共享测试，`--plugin` 跑单个插件测试。
+两份选择器互斥且覆盖全部 `tests/test_*.py`，由 `tests/test_plugin_ci.py` 断言。
 **为什么必须有 `windows-latest`**：历史缺陷里有一批是 Windows 专属的——SQLite
 临时目录被占用导致清理失败（`WinError 32`）、`PATH` 分隔符写死 `:`、文件锁定。
 只跑 Linux runner 会把这些永久掩盖。
@@ -150,7 +178,7 @@ node tools/check_frontend_escape.cjs
 
 - **触发**：`push: tags: ['v*']`。打 tag 就是"我决定发这个版本"的声明；
   `workflow_dispatch` 保留作手动兜底（重跑某次发布、或只跑 `dry_run` 取产物）。
-- **自动做完**：版本一致性校验（tag ↔ pyproject ↔ package.json）、ruff / 插件规范 /
+- **自动做完**：版本一致性校验（tag ↔ pyproject ↔ package.json ↔ package-lock.json）、ruff / 插件规范 /
   打包规则 / 图标 sprite 一致性 / 测试文件可运行性 / 全量单测 / 前端转义门禁、
   双平台 PyInstaller 构建、`check_build_tree.py` 产物校验、打 zip / tar.gz、
   生成 `.sha256`、建**草稿** Release 并挂上产物。
@@ -175,12 +203,33 @@ node tools/check_frontend_escape.cjs
 ## 3. 版本号唯一来源
 
 - 唯一来源：`pyproject.toml` 的 `[project].version`。
-- `shell/frontend/package.json` 的 `version` 必须与之相同（`check_version.py` 校验）。
+- `shell/frontend/package.json` 的 `version` 必须与之相同；`shell/frontend/package-lock.json`
+  里的两处副本（根 `version` 与 `packages[""].version`）同样必须相同（`check_version.py`
+  校验）。`npm ci` 只校验依赖是否与锁文件一致，根 `version` 不在其中 —— 这两处副本没有
+  别的守卫。
 - tag 必须写成 `v<version>`；`release.yml` 会把 tag 与**它指向提交**里的
   pyproject 版本对齐检查，不一致时第一步就失败，**不会**产出名字与版本不符的安装包。
 - 打 tag 会**触发构建**（全量门禁 + 双平台产物 + 建草稿 Release），但**不会公开**：
   公开是另一下人工动作（点 Publish）。所以 tag 是"决定发版"，Publish 是"决定对外可见"。
 - 取值给脚本用：`python tools/check_version.py --print`（只输出裸版本号）。
+
+### 何时升哪一位
+
+判断口径只有一句：**别人的代码需要改才能继续用，就是 major；别人一行都不用改、但能用到
+新东西，就是 minor；其余是 patch。**
+
+- **major（破坏兼容）**：老的 `.config/` / `shell.json` 读不出来、已装的插件加载失败、
+  设置键改名后旧值丢失、插件契约里已有的字段或钩子被移除或改语义。升 major 时必须在
+  [docs/Releases/AGENTS.md](Releases/AGENTS.md) 的规则里写清迁移动作（用户要做什么），
+  不能只改数字。
+- **minor（公开契约变化）**：插件契约（`manifest.json` 字段、`PluginBase` 的钩子、
+  `plugin_manager` 暴露给插件的 API）、壳的路由与设置键、前端共享资源的契约
+  （`public/shell/**` 的 DOM id、CSS 变量、`data-*` 属性）**新增**或改语义。
+  单个插件自己的版本号跟它自己的契约走：插件的公开契约变了，插件 `manifest.json` 的
+  `version` 升 minor（插件是独立分发单元，与壳的版本号无关）。
+- **patch（不改变契约）**：只改实现、修缺陷、调整界面细节、改文档与注释。
+- 拿不准时看**有没有第二方读它**：有别的插件或用户配置依赖这个形状，就按契约变更算；
+  只在壳内部调用，按 patch 算。
 
 ---
 
@@ -323,47 +372,20 @@ RUF100（未使用的 noqa）会把这些标注判为冗余并删除——它们
 
 ---
 
-## 6. 收紧路线（下一步）
+## 6. 收紧路线（不进入 CI）
 
-`typecheck` job 的第二步（`pyright plugins tests`）是**报告但不拦截**的基线：
-本机 pyright 1.1.411 实测 **794 条错误**（plugins 552 / tests 242），远多于早期
-记录的规模，因此不能直接把 `continue-on-error` 去掉。按错误码分布：
-
-| 错误码 | 条数 | 主要成因 |
-| --- | --- | --- |
-| `reportAttributeAccessIssue` | 622 | 插件后端按 mixin 拆文件，mixin 方法访问宿主类在 `main.py` 里初始化的属性，pyright 在 mixin 自身上看不到声明 |
-| `reportOptionalMemberAccess` | 85 | 可选依赖 / 缓存条目缺失后仍取成员 |
-| `reportArgumentType` | 40 | 接口返回 `Unknown`，或 `dict` 值类型为 `str \| None` 传给要求 `str` 的参数 |
-| `reportIncompatibleMethodOverride` | 15 | 子类覆写签名比基类窄 |
-| `reportPossiblyUnboundVariable` | 10 | `try: import x` 失败分支里名字未初始化 |
-
-单文件错误数前五：`tests/test_document_reader_formats.py`（80）、
-`plugins/group-mesh/backend/sync.py`（53）、`plugins/image-viewer/backend/file_ops.py`
-（46）、`plugins/image-viewer/backend/listing.py`（44）、
-`plugins/group-mesh/backend/upload.py`（35）。
-
-收敛顺序建议：
-
-1. 先补 mixin 的属性声明（约占 622/794）：在 mixin 里显式注解
-   `_cache_path: Path` 一类属性，或放进 `TYPE_CHECKING` 块；
-2. 再处理 `reportOptionalMemberAccess` / `reportPossiblyUnboundVariable`；
-3. `tests/` 的 242 条单独一批（多为手工构造的假对象缺属性、
-   `spec_from_file_location` 返回 `ModuleSpec | None`）；
-4. 全清零后，把 `typecheck` job 的第二步改成不 `continue-on-error`，并让
-   `pyright main.py shell plugins tools tests` 成为一条命令。
-
-其它待办：
-
-- `ruff` 开启 `BLE001`/`S110`/`UP` 前，先做一次专项提交（每类一个 commit，
-  便于 review 与回滚）。
-- `ruff format` 未纳入门禁（`ci.yml` 里那一步带 `continue-on-error`，只报告）：
-  本机实测 173 个文件会被重排，即使把 `quote-style` 改成仓库在用的单引号也仍有
-  166 个 —— 仓库从未按 ruff format 排版过。建议单独一个"纯格式化"提交，
-  避免与逻辑改动混在同一个 diff 里。
-- Actions 目前用 `@v4` / `@v5` 主版本标签。若要更强的供应链防护，可改为
+- **`pyright plugins tests` 不再占用 CI**：本机 pyright 1.1.411 仍有约 794 条错误
+  （plugins 552 / tests 242），主要是 mixin 属性声明、可选成员访问与测试假对象缺属性。
+  这条基线曾经带 `continue-on-error`，永远不会让 CI 失败；现在只在本地按需运行，
+  等错误清零后再考虑作为硬门禁。收敛顺序：先补 mixin 属性声明，再处理
+  `reportOptionalMemberAccess` / `reportPossiblyUnboundVariable`，最后处理测试假对象。
+- **`ruff format` 不进入门禁**：仓库从未按 ruff format 排版，直接开启会重排 173 个文件。
+  如果要做，单独一个“纯格式化”提交，避免与逻辑改动混在同一个 diff 里。
+- **`ruff` 的 `BLE001` / `S110` / `UP`** 仍按专项提交逐类开启，便于 review 与回滚。
+- **Actions 版本**目前用 `@v4` / `@v5` 主版本标签；若要更强的供应链防护，可改为
   固定 commit SHA（Dependabot 可代为升级）。
-- `.gitattributes` 已固定"入库 LF、工作区按平台"，`.ps1` 检出为 CRLF。
-  如果历史提交里仍混有 CRLF，可跑一次 `git add --renormalize .` 收敛。
+- `.gitattributes` 已固定“入库 LF、工作区按平台”，`.ps1` 检出为 CRLF；
+  历史提交若仍混有 CRLF，可跑一次 `git add --renormalize .` 收敛。
 
 ---
 
@@ -437,7 +459,7 @@ RUF100（未使用的 noqa）会把这些标注判为冗余并删除——它们
 9. **前端工具链落后一个大版本以上，且 Vite 5 已停止接收安全补丁。** 核实结论：
    - Vite 的支持政策是"当前 minor 常规修复 / 前两个 major 只发安全补丁"（映射
      `{5:'5.4', 6:'6.4', 7:'7.3'}`）。当前 8.3 → **5.4 什么都不发**，而
-     `tools/check_npm_audit.py` 里那 3 条 vite 公告的受影范围是 `<=6.4.2`，7.x 已修，
+     `tools/check_npm_audit.py` 里 9 条 vite / esbuild 公告的受影响范围都落在当前大版本，
      唯一的修复路径就是跨大版本（这正是它们被登记为例外的原因）。
    - 最小耦合集：`vite ^8.3.0` + `@vitejs/plugin-vue ^6.0.9` + `vue-tsc ^3.3.11`，
      **`typescript` 留在 5.9.3**（vue-tsc 3.x 的 peer 只有 `>=5.0.0`，且不依赖 Vite）。

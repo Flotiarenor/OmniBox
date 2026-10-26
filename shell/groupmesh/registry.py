@@ -1,13 +1,13 @@
-"""注册与发现（设计文档 §7）。
+"""注册与发现。
 
-## 与名单解耦（§7.2）
+## 与名单解耦
 
     团体名单：群主/管理员签发，低频变更，内容是"主体、角色、设备公钥"
     注册记录：**设备自己**签发，高频变更，内容是"设备公钥、当前端点、共享清单、序号"
 
 注册是成员自助行为，不需要管理员参与，因此成员开关机不影响团体管理。
 
-## 同步方式（§7.3）
+## 同步方式
 
 注册记录是小数据集（按 200 台设备估算约 20～40 KB），因此**不使用 DHT**：
 任一在线共享节点都能提供完整快照；新上线设备拉一次快照，之后按 `seq` 增量同步。
@@ -36,7 +36,7 @@ from .records import RecordError, SignedRecord, b64_field, int_field, pretty, st
 # 端点：["240e:xxxx::1", 18443] 或 ["192.168.31.4", 19443]
 Endpoint = Tuple[str, int]
 
-# 单条注册记录的端点数量上限（§4.5/§7 的边界检查要求）
+# 单条注册记录的端点数量上限
 MAX_ENDPOINTS = 16
 
 
@@ -156,7 +156,7 @@ class Registry:
         return True
 
     def merge(self, other: 'Registry') -> int:
-        """并入另一份注册表视图，返回被采纳的记录数（§7.3 的增量同步）。"""
+        """并入另一份注册表视图，返回被采纳的记录数。"""
         return sum(1 for record in other.records.values() if self.add(record))
 
     # ── 查询 ──────────────────────────────────────────────────────────────
@@ -177,7 +177,7 @@ class Registry:
         return seen
 
     def snapshot(self) -> List[Registration]:
-        """完整快照（§7.3：任一在线共享节点都能提供）。"""
+        """完整快照（任一在线共享节点都能提供）。"""
         return list(self.records.values())
 
     def snapshot_dicts(self) -> List[Dict[str, Any]]:
@@ -237,15 +237,15 @@ def save_registry(root: Path, registry: Registry) -> None:
     os.replace(tmp, path)
 
 
-# ── 本机端点探测（§7.4 稳定地址）───────────────────────────────────────────
+# ── 本机端点探测（稳定地址）───────────────────────────────────────────────
 
 def local_addresses(prefer_ipv6: bool = True) -> List[str]:
     """列出本机可用于注册的地址。
 
-    设计文档 §7.4 要求使用**稳定地址**（EUI-64 或 RFC 7217 stable-privacy），
+    这里使用**稳定地址**（EUI-64 或 RFC 7217 stable-privacy），
     不使用 Windows 默认启用的 RFC 4941 临时地址（会轮换）。Python 标准库拿不到
     "该地址是否是临时地址"这一信息，因此这里只做**可达性不可能成立**的过滤，
-    **临时地址的识别留作待实测项**（见 `docs/group-mesh-design.md` §21.6.1）。
+    **临时地址的识别留作待实测项**。
 
     过滤掉：回环、链路本地、多播、未指定 —— 这些地址发布出去对任何对端都没有意义。
     保留其余全部（含私有网段与虚拟网卡）：实测本机有一张 Radmin VPN 网卡
@@ -280,8 +280,7 @@ def local_addresses(prefer_ipv6: bool = True) -> List[str]:
             addresses.append(address)
     if prefer_ipv6:
         # IPv6 优先（主路径）；同族内私有网段排前面 —— 局域网直连通常比走公网
-        # 更快，也更可能真的可达（设计文档 §4.6：IPv4 是可达性兜底；
-        # §4.6.1 讲的是临时/稳定地址的识别）。
+        # 更快，也更可能真的可达（IPv4 是可达性兜底）。
         addresses.sort(key=lambda a: (
             0 if ':' in a else 1,
             0 if ipaddress.ip_address(a).is_private else 1,

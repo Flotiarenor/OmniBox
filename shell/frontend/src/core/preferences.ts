@@ -4,7 +4,7 @@
 // 本模块只做转发：调用方（App.vue / SettingsView.vue）不必知道偏好存在哪里。
 //
 // 这里**不再有** localStorage 版本：桌面窗口的 localStorage 会在 LevelDB 日志被
-// 强杀截断后整段失效，壳偏好因此搬进了配置文件（见 .dsh/shell-prefs-report.md）。
+// 强杀截断后整段失效，壳偏好因此搬进了配置文件。
 import { shellPrefs, type StartupPrefs } from './shell-prefs'
 
 export {

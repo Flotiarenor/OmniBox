@@ -3,7 +3,7 @@
 //
 // 为什么不塞进阅读设置弹窗：这里要放引擎、端点、Key、模型、音色、语速与试听，
 // 是个"配置一次就不动"的页面；而字号主题是随时要调的。两者混在一个弹窗里，
-// 高频项会被低频项淹没（见 docs/document-reader-design.md §2）。
+// 高频项会被低频项淹没。
 //
 // 保存一律走插件的 `save_settings`（同一个 settings_schema），
 // 因此这里改的就是插件设置面板里那几项，不存在两份配置。
@@ -29,6 +29,10 @@ const EDGE_VOICE_FALLBACK = [
     { name: 'zh-CN-shaanxi-XiaoniNeural', note: '晓妮 · 陕西话' },
 ];
 
+// 预取深度的兜底值：与后端 schema 的默认值一致（后端读设置时还会再夹一次范围）。
+// 只在 get_settings 失败时用得上 —— 正常路径下值来自后端。
+const NR_PREFETCH_DEFAULT = 5;
+
 class ReaderVoicePage {
     constructor(app) {
         this.app = app;
@@ -49,6 +53,7 @@ class ReaderVoicePage {
             voice: document.getElementById('nr-voice-name'),
             rate: document.getElementById('nr-voice-rate'),
             rateValue: document.getElementById('nr-voice-rate-value'),
+            prefetch: document.getElementById('nr-voice-prefetch'),
             status: document.getElementById('nr-voice-status'),
             // 两档音色各占一张卡片：不出的那一档整张隐藏（见 _renderVoices）
             edgeList: document.getElementById('nr-voice-list-edge'),
@@ -65,16 +70,15 @@ class ReaderVoicePage {
         if (!dom.page) return;
         this._bind();
         // 朗读设置是**主区的内容切换**（与书架网格、正文同一个位置），不是遮挡页：
-        // 左栏的"朗读设置"按钮保持选中，用户可以随时切回书架或正文
+        // 壳左栏的"朗读设置"导航项按上报的 view='voice' 保持选中，用户可以随时切回
+        // 书架或正文（壳发 omnibox:view）。
         dom.page.classList.remove('hidden');
         const shelf = document.getElementById('nr-shelf-view');
         const reader = document.getElementById('nr-reader-view');
         if (shelf) shelf.classList.add('hidden');
         if (reader) reader.classList.add('hidden');
-        document.querySelectorAll('.nr-nav-item').forEach((btn) => {
-            btn.classList.toggle('active', btn.id === 'nr-open-voice');
-        });
         this.app._voicePaneOpen = true;
+        this.app._pushChrome();
         this._load();
         this.app.tts.refreshStatus().then(() => this._renderStatus());
     }
@@ -87,7 +91,7 @@ class ReaderVoicePage {
         const back = this.app._isReaderMode ? 'nr-reader-view' : 'nr-shelf-view';
         const target = document.getElementById(back);
         if (target) target.classList.remove('hidden');
-        this.app._syncNavActive();
+        this.app._pushChrome();
     }
 
     _bind() {
@@ -105,6 +109,15 @@ class ReaderVoicePage {
             dom.rateValue.textContent = `${dom.rate.value}%`;
             // 语速是连续输入，防抖落盘即可
             this._save({ tts_rate: parseInt(dom.rate.value, 10) });
+        });
+        // 预取深度是离散的 8 个候选，用下拉框而不是滑杆：滑轨上看不出档位，
+        // 也说不出"5 句"意味着什么，而下拉框把每一档的后果写在选项里。
+        dom.prefetch.addEventListener('change', () => {
+            const depth = parseInt(dom.prefetch.value, 10);
+            // 新深度同时交给播放器：用户改完往往马上回去听，等下一次 refreshStatus 太迟。
+            // 落盘仍走同一条 save_settings，后端读的时候还会再夹一次范围。
+            this.app.tts.setPrefetchDepth(depth);
+            this._save({ tts_prefetch: depth }, true);
         });
         // 离散控件改完就生效：它们后面往往紧接着"试听"，等防抖会合成到旧值
         [dom.engine, dom.base, dom.model, dom.voice].forEach((input) => {
@@ -200,6 +213,12 @@ class ReaderVoicePage {
         dom.voice.value = settings.tts_voice || 'zh-CN-XiaoxiaoNeural';
         dom.rate.value = settings.tts_rate === undefined || settings.tts_rate === null ? 100 : settings.tts_rate;
         dom.rateValue.textContent = `${dom.rate.value}%`;
+        // 预取深度：只认下拉框里真实存在的候选（8 档都写在 index.html 里）。
+        // 设置里存着候选之外的值（手改 JSON、旧版本遗留）时回落到默认值，
+        // 否则 `select.value` 会被置空，下一次保存就把 NaN 写了进去。
+        const wanted = Number(settings.tts_prefetch);
+        const offered = Array.from(dom.prefetch.options || [], (item) => Number(item.value));
+        dom.prefetch.value = String(offered.includes(wanted) ? wanted : NR_PREFETCH_DEFAULT);
         this._renderStatus();
         // 先把"按当前引擎该显示哪些表"画出来（不依赖网络，切引擎也走这里），
         // 再拉一次后端的权威清单把名字换成端点上真实的那批。

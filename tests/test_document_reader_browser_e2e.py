@@ -2,14 +2,12 @@
 
 为什么需要它（都是实测踩到的，node 桩与 Python 单测都看不见）：
 
-  - **侧栏被书名顶宽**：`.nr-sidebar` 是 flex 项，`min-width: auto` 等于内容的
-    min-content 宽度，一行不换行的长书名就是整个书名的宽度；而且壳的 base.css 是在
-    插件样式**之后**注入的，同特异性的 `.view-sub-sidebar{width:240px}` 会把插件写的
-    252px 与窄屏媒体查询变成死代码。这两件事只有真实布局引擎能量出来。
+  - **长书名把封面卡撑破**：卡片标题若不截断，长书名会把网格撑出横向溢出。侧栏宽度
+    已归壳（`.plugin-chrome-sidebar`），由 `tools/plugin_ui_audit.py` 与分隔条用例覆盖。
   - **连续滚动模式滑不动**：EPUB / Markdown 的小章节三章都填不满一屏时，容器根本
     滚不动 → 浏览器不产生滚动事件 → 既不会加载下一章，也没有任何"补满视图"的动作，
     用户看到的就是"只显示这一章、再也滑不下去，只能点目录跳章"。
-  - **滚动换章后目录高亮/工具栏标题不动**：当前章只在"加载相邻章"时才同步，
+  - **滚动换章后目录高亮不动**：当前章只在"加载相邻章"时才同步，
     章内滚动与滑到下一章都不会更新界面。
 
 做法：起一个本地 HTTP 服务，把插件真实的 index.html + 真实的壳样式喂给 Chrome，
@@ -157,13 +155,16 @@ class _Handler(BaseHTTPRequestHandler):
             content = (self.state.get('bodies') or {}).get(args[0], {}).get(str(args[1]), '')
             body = json.dumps({'content': content, 'format': 'html'})
         elif method == 'document_update_progress':
+            # 只记调用，**不**回灌 `document_list`：上一个用例的页面在本次导航时也会
+            # 触发一次 beforeunload 保存，把那个位置合并进书架列表就会串到下一个用例
+            # （现象是下一个用例"一打开就在第 6 章"）。位置还原由用例自己摆在文档
+            # 条目上，读回来的效果只看调用记录。
+            calls = list(self.state.get('progress_calls') or [])
+            calls.append([str(args[0]), args[1], args[2]])
+            self.state['progress_calls'] = calls
             body = json.dumps({'success': True})
         elif method == 'get_settings':
             body = json.dumps(dict(self.state.get('settings') or {}))
-        elif method == 'get_settings_schema':
-            # 壳的 openSettingsModal 先拉 schema 再拉值；不桩它就拿到 {} → 弹窗只显示空态，
-            # 「设置弹窗里有字段」这条就永远测不出来
-            body = json.dumps(list(self.state.get('schema') or []))
         elif method == 'save_settings':
             # 阅读偏好存在后端设置里（跨设备持久化）：桩必须真的记住，
             # 否则"用户改过的选择要能记住"这条永远测不出来
@@ -228,13 +229,25 @@ class DocumentReaderBrowserTests(unittest.TestCase):
         WebDriverWait(self.driver, timeout, poll_frequency=0.05).until(
             lambda d: d.execute_script(f'return !!({condition});'))
 
+    def send_host_message(self, payload: dict):
+        """模拟壳向内容页下发一条消息。
+
+        迁移后左栏导航、顶栏动作与设置弹窗都在壳里，内容页只处理消息；本文件直接加载
+        内容页、没有壳，因此按 `_bindHost` 实际校验的字段手工构造 `MessageEvent`
+        （`origin` 取本页 origin、`source` 取本窗口），测的仍是真实处理逻辑。
+        """
+        self.driver.execute_script(
+            "window.dispatchEvent(new MessageEvent('message', {"
+            "  data: arguments[0], origin: location.origin, source: window}));", payload)
+
     # ===== 封面卡网格 =====
 
     def test_cover_grid_survives_long_titles(self):
-        """长书名不许把卡片撑出横向溢出，也不许把侧栏顶宽。
+        """长书名不许把卡片撑出横向溢出。
 
         重构前这条测的是"书架那行不把侧栏撑宽"（书架当时在侧栏里）；现在书架是主区的
-        封面网格，同样的隐患换了个位置：书名在卡片里必须省略号截断，不能把网格撑破。
+        封面网格、侧栏由壳持有，同样的隐患换了个位置：书名在卡片里必须省略号截断，
+        不能把网格撑破。侧栏宽度归壳，已由 `tools/plugin_ui_audit.py` 与分隔条用例覆盖。
         """
         geometry = {}
         for label, route in (('带壳样式', '/'), ('无壳样式', '/bare')):
@@ -244,12 +257,10 @@ class DocumentReaderBrowserTests(unittest.TestCase):
                                bodies={})
                 self.open_app(route)
                 geometry[(label, tag)] = self.driver.execute_script("""
-                    const sidebar = document.querySelector('.nr-sidebar');
                     const grid = document.querySelector('.nr-grid');
                     const card = document.querySelector('.nr-card');
                     const title = document.querySelector('.nr-card-title');
                     return {
-                        sidebar: sidebar.getBoundingClientRect().width,
                         gridClient: grid.clientWidth, gridScroll: grid.scrollWidth,
                         cardWidth: card.getBoundingClientRect().width,
                         titleClient: title.clientWidth, titleScroll: title.scrollWidth,
@@ -257,8 +268,6 @@ class DocumentReaderBrowserTests(unittest.TestCase):
                 """)
             long_geo, short_geo = geometry[(label, 'long')], geometry[(label, 'short')]
             details = json.dumps([long_geo, short_geo], ensure_ascii=False)
-            self.assertLess(abs(long_geo['sidebar'] - short_geo['sidebar']), 1,
-                            f'{label}：侧栏宽度不该随书名长度变化 {details}')
             self.assertLessEqual(long_geo['gridScroll'], long_geo['gridClient'] + 1,
                                  f'{label}：长书名把封面网格撑出了横向溢出 {details}')
             # 长书名的标题必须真的被截断（scroll > client），否则就是"把卡片撑宽了"
@@ -349,9 +358,9 @@ class DocumentReaderBrowserTests(unittest.TestCase):
         """滚动换章后，目录弹窗里高亮的必须是新章。
 
         重构前这里测的是"侧栏目录的高亮跟着滚动走"（目录当时常驻侧栏，靠
-        `_syncReaderChrome` 那套节流刷新同步）。现在目录改成弹窗、打开时按
-        `engine.currentChapterIndex` 现刷 —— 所以校验点跟着搬到"打开弹窗后看到什么"，
-        这也正是用户能看见的那部分。
+        `_syncReaderChrome` 那套节流刷新同步）。现在目录是壳左栏的一项：点击后壳发
+        `omnibox:view: toc`，内容页打开弹窗并按 `engine.currentChapterIndex` 现刷 ——
+        所以校验点跟着搬到"打开弹窗后看到什么"，这也正是用户能看见的那部分。
         """
         self._open_scroll_mode()
         self.driver.execute_script("""
@@ -361,25 +370,21 @@ class DocumentReaderBrowserTests(unittest.TestCase):
             el.dispatchEvent(new Event('scroll'));
         """)
         time.sleep(0.6)
+        self.send_host_message({'type': 'omnibox:view', 'view': 'toc'})
         opened = self.driver.execute_script("""
             const app = window.documentReader;
-            document.getElementById('nr-open-toc').click();
             const active = document.querySelector('#nr-toc-list .document-chapter-item.active');
             return {
                 index: app.engine.currentChapterIndex,
                 modalOpen: document.getElementById('nr-toc-modal').classList.contains('active'),
                 activeIndex: active ? parseInt(active.dataset.index, 10) : null,
-                title: document.getElementById('nr-view-title').textContent,
-                book: (app.currentDocument || {}).title,
             };
         """)
         details = json.dumps(opened, ensure_ascii=False)
         self.assertTrue(opened['modalOpen'], f'目录弹窗没打开 {details}')
         self.assertEqual(opened['activeIndex'], opened['index'],
                          f'目录弹窗里高亮的不是当前章 {details}')
-        # 新形态下工具栏放的是书名（章节名在目录弹窗与正文里，不再挤工具栏）
-        self.assertEqual(opened['title'], opened['book'],
-                         f'工具栏没显示当前书名 {details}')
+        # 工具栏标题（书名）由壳渲染，属于 `tools/plugin_ui_audit.py` 的 `nav.title` 范围。
 
     def test_click_does_not_turn_page_in_scroll_mode(self):
         """连续滚动模式下点内容区不该翻页（整章重建会让阅读位置跳走）。"""
@@ -419,6 +424,112 @@ class DocumentReaderBrowserTests(unittest.TestCase):
             "return window.documentReader.engine.currentChapterIndex")
         self.assertGreaterEqual(index, 1, '翻页模式下点击右半区应当翻到下一章')
 
+    # ===== 阅读进度的记录与还原 =====
+
+    #: 每章正文的行数。必须让一章明显高于视口：当前章是按"视口 35% 处落在哪个分章块"
+    #: 判定的，章太短时这个点会落到下一章，测出来的就不是本用例关心的还原动作。
+    TALL_LINES = 60
+
+    def _set_tall_book(self, **overrides) -> None:
+        """一本 12 章、每章明显高于视口的书；`overrides` 用来带"上次读到"的记录。"""
+        items = [{'index': i, 'title': f'第{i + 1}章', 'word_count': 6} for i in range(12)]
+        bodies = {str(i): f'<p>第{i + 1}章正文</p>' * self.TALL_LINES for i in range(12)}
+        doc = _document(SHORT_BOOK, SHORT_TITLE, count=12)
+        doc.update(overrides)
+        self.set_state(documents=[doc], chapters=items, bodies={SHORT_BOOK: bodies})
+
+    def _open_here(self, book: str = SHORT_BOOK) -> None:
+        self.driver.execute_script('window.documentReader.openDocument(arguments[0]);', book)
+        self.wait('window.documentReader._isReaderMode')
+        time.sleep(0.8)
+
+    def _read_position(self) -> dict:
+        return self.driver.execute_script("""
+            const app = window.documentReader;
+            const el = document.getElementById('document-content-area');
+            return {chapter: app.engine.currentChapterIndex,
+                    fraction: app.engine.chapterFraction(),
+                    scrollTop: el ? el.scrollTop : null};
+        """)
+
+    def _progress_calls(self, since: int = 0) -> list:
+        """假后端记下的 `document_update_progress` 调用（`[书, 章号, 章内位置]`）。
+
+        起点用 `_progress_base()` 取：上一个用例的页面在 `open_app()` 导航时也会触发
+        一次 beforeunload 保存，那条请求落在共享的假后端里，只看本次用例写过什么。
+        """
+        calls = [list(call) for call in (_Handler.state.get('progress_calls') or [])]
+        return calls[since:]
+
+    def _progress_base(self) -> int:
+        return len(_Handler.state.get('progress_calls') or [])
+
+    def test_open_restores_recorded_chapter_and_offset(self):
+        """上次读到的章号**与章内位置**都要还原。
+
+        回归：`openDocument` 只用 `last_read_chapter`，`goToChapter(chapter, 0)` 把章内
+        位置写死为 0；后端存下来的 `scroll_position` 前端一次都没读过。单章文档（md /
+        单节 epub）只有这个位置可记，表现就是"每次打开都从开头开始"。
+        """
+        self._set_tall_book(last_read_chapter=4, scroll_position=0.5)
+        self.open_app()
+        self._open_here()
+
+        got = self._read_position()
+        details = json.dumps(got)
+        self.assertEqual(got['chapter'], 4, f'没有回到记录的章：{details}')
+        self.assertGreater(got['scrollTop'], 50, f'落回了章首，章内位置没还原：{details}')
+        self.assertAlmostEqual(got['fraction'], 0.5, delta=0.15,
+                               msg=f'章内位置与记录的差太多：{details}')
+
+    def test_reopen_in_same_session_keeps_the_new_place(self):
+        """读完 → 回书架 → 重开：落在刚读到的位置。
+
+        回归：`returnToShelf` 只重画书架、不刷新 `this.documents`，而 `openDocument`
+        从那份内存副本取位置 —— 同会话重开退回"进书架那一刻"的章号，接着关窗口时又把
+        那个旧位置写回磁盘，记录被一路擦回第 1 章。
+        """
+        self._set_tall_book()
+        self.open_app()
+        self._open_here()
+        base = self._progress_base()
+
+        self.driver.execute_script('window.documentReader.engine.goToChapter(6, 0.25);')
+        time.sleep(1.0)
+        self.send_host_message({'type': 'omnibox:action', 'action': 'back'})
+        self.wait('!window.documentReader._isReaderMode')
+        time.sleep(0.6)
+        self.assertEqual([call[1] for call in self._progress_calls(base)], [6],
+                         f'返回书架时没有把当前位置存下去：'
+                         f'{json.dumps(self._progress_calls(base))}')
+
+        self._open_here()
+        got = self._read_position()
+        self.assertEqual(got['chapter'], 6, f'同会话重开没有回到刚读到的章：{json.dumps(got)}')
+        self.assertGreater(got['scrollTop'], 20, f'同会话重开落回了章首：{json.dumps(got)}')
+
+    def test_closing_without_moving_keeps_the_record(self):
+        """打开一本书、没动过就关掉：不许把记录覆盖成刚打开的位置。
+
+        关窗口那条路（beforeunload / dispose）只该在位置真的变过时才写。
+        """
+        self._set_tall_book(last_read_chapter=4, scroll_position=0.5)
+        self.open_app()
+        self._open_here()
+        base = self._progress_base()
+        self.assertEqual(self._progress_calls(base), [], '打开一本书不该写进度')
+
+        self.driver.execute_script("window.dispatchEvent(new Event('beforeunload'));")
+        time.sleep(0.6)
+        self.assertEqual(self._progress_calls(base), [],
+                         f'位置没动过却写了进度：{json.dumps(self._progress_calls(base))}')
+
+        self.driver.execute_script('window.documentReader.engine.goToChapter(7, 0.5);')
+        time.sleep(1.0)
+        self.driver.execute_script("window.dispatchEvent(new Event('beforeunload'));")
+        time.sleep(0.6)
+        self.assertEqual([call[1] for call in self._progress_calls(base)], [7],
+                         f'动了位置却没有写进度：{json.dumps(self._progress_calls(base))}')
 
     # ===== 设置与编码 =====
 
@@ -430,46 +541,55 @@ class DocumentReaderBrowserTests(unittest.TestCase):
         self.driver.execute_script('window.documentReader.openDocument(arguments[0]);', book)
         self.wait('window.documentReader._isReaderMode')
 
-    def test_toolbar_settings_button_opens_shell_settings_modal(self):
-        """点工具栏「设置」必须真的弹出壳的设置弹窗（含字段与保存）。
+    def test_settings_saved_reloads_reading_preferences(self):
+        """壳内设置弹窗保存后，内容页收到 `settings-saved` 要当场应用新档位。
 
-        缺陷背景：app.js 顶层曾定义 `function openModal(id)` —— 自绘弹窗（目录 / 阅读设置）
-        的开关。插件脚本与壳注入的 /shell/base.js 共享同一个全局对象，于是这个声明把壳的
-        `openModal(options)`（返回 Promise 的设置弹窗工厂）整个替换掉；`openSettingsModal()`
-        内部紧接着读返回值上的 `.then`，抛 TypeError，点「设置」只有控制台一行报错。
+        迁移后「设置」按钮与弹窗都归壳（`PluginSettingsModal`），内容页只负责保存成功后的
+        重读。缺陷背景：壳的设置弹窗只把值写进后端，若内容页不重读，正文停在旧配色；
+        更糟的是页内下一次 save() 会把内存里的旧值整份写回后端，刚保存的新档位被静默
+        盖掉 —— 表现为"这一项设置永远不生效"。
 
-        断言走完整通路：按钮 → 壳的弹窗 → schema 字段带上后端已有的值 → 保存后关闭。
+        断言走完整通路：后端已存新档位 → 壳发 `settings-saved` → 正文的 class 与计算样式
+        都换过来，页内「阅读设置」弹窗的回填值同步。
         """
         self.set_state(
             documents=[_document('book.txt', '书', count=1, kind='txt')],
             chapters=[{'index': 0, 'title': '第1章', 'word_count': 3}],
             bodies={'book.txt': {'0': '正文'}},
-            settings={'reader_font_size': 18},
-            schema=[{'key': 'reader_font_size', 'label': '正文字号(px)', 'type': 'number',
-                     'default': 16}])
+            settings={'reader_theme': 'auto', 'reader_bg_mode': 'theme', 'reader_font_size': 16})
         self.open_app()
-        self.driver.execute_script("document.getElementById('btn-settings').click();")
-        self.wait("document.querySelector('.modal.active .settings-form"
-                  " .field[data-key=\"reader_font_size\"]')")
-        opened = self.driver.execute_script("""
-            const overlay = document.querySelector('.modal.active');
-            const field = overlay.querySelector('.field[data-key="reader_font_size"]');
-            return {
-                title: overlay.querySelector('h3').textContent,
-                hasSave: !!overlay.querySelector('[data-act="save"]'),
-                value: field.querySelector('input').value,
-            };""")
-        details = json.dumps(opened, ensure_ascii=False)
-        self.assertEqual(opened['title'], '文档阅读设置', f'弹出来的不是壳的设置弹窗 {details}')
-        self.assertTrue(opened['hasSave'], f'设置弹窗里没有保存按钮 {details}')
-        self.assertEqual(str(opened['value']), '18', f'字段没带上后端已有的值 {details}')
+        self.driver.execute_script("window.documentReader.openDocument(arguments[0]);", 'book.txt')
+        self.wait('window.documentReader._isReaderMode')
+        before = self.driver.execute_script("""
+            const el = document.getElementById('document-content-area');
+            return {bgMode: window.documentReader.bgMode,
+                    cls: el.className,
+                    bg: getComputedStyle(el).backgroundColor};
+        """)
+        self.assertIn('body-bg-theme', str(before['cls']).split(),
+                      f'初始档位不是跟随主题：{json.dumps(before, ensure_ascii=False)}')
 
-        self.driver.execute_script(
-            "document.querySelector('.modal.active [data-act=\"save\"]').click();")
-        self.wait("!document.querySelector('.modal.active')")
-        self.assertIn('设置已保存', self.driver.execute_script(
-            "return [...document.querySelectorAll('.toast')].map(t => t.textContent).join('|');"),
-            '保存后没有给出成功提示（保存通路没走完）')
+        # 壳内弹窗保存后：后端已写入新档位，壳向内容页发 `settings-saved`
+        _Handler.state['settings'] = {
+            **(dict(_Handler.state.get('settings') or {})), 'reader_bg_mode': 'show'}
+        self.send_host_message({'type': 'omnibox:action', 'action': 'settings-saved'})
+        self.wait('window.documentReader.bgMode === "show"')
+
+        after = self.driver.execute_script("""
+            const el = document.getElementById('document-content-area');
+            return {bgMode: window.documentReader.bgMode,
+                    cls: el.className,
+                    bg: getComputedStyle(el).backgroundColor,
+                    popup: document.getElementById('document-bg-mode').value};
+        """)
+        details = json.dumps(after, ensure_ascii=False)
+        self.assertIn('body-bg-show', str(after['cls']).split(), f'正文没让出底色 {details}')
+        self.assertNotIn('body-bg-theme', str(after['cls']).split(),
+                         f'旧档位的 class 还留着 {details}')
+        self.assertEqual(after['bg'], 'rgba(0, 0, 0, 0)', f'正文底色不是透明的 {details}')
+        self.assertEqual(after['popup'], 'show', f'页内「阅读设置」没跟着回填 {details}')
+        self.assertEqual(_Handler.state['settings'].get('reader_bg_mode'), 'show',
+                         f'后端存下的不是新档位 {details}')
 
     def test_encoding_is_fully_automatic(self):
         """编码不再由用户选：界面上没有那个下拉框，重读也永远用 auto。

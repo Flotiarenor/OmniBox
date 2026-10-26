@@ -31,7 +31,7 @@ class NodeMixin:
     def start_node(self) -> Dict[str, Any]:
         """在后台线程启动共享节点监听。
 
-        设计文档 §7.4：Windows 防火墙默认阻止入站，需要一次性添加规则；
+        Windows 防火墙默认阻止入站，需要一次性添加规则；
         这里只回报失败原因，不代替用户提权。
         """
         if self._node_thread is not None and self._node_thread.is_alive():
@@ -52,7 +52,7 @@ class NodeMixin:
         raw_port = self.setting('port', None)
         port = DEFAULT_PORT if raw_port is None or raw_port == '' else int(raw_port)
         shares = self._load_shares()
-        # 注册表（§7）：不注入的话 node 的 `_op_registry` 一律回 unavailable，
+        # 注册表：不注入的话 node 的 `_op_registry` 一律回 unavailable，
         # 于是"设备自己发布端点与共享清单、其他设备据此发现它"这条链断在插件层。
         # 载入失败不能让节点起不来 —— 注册表是可重建的辅助数据，缺了只是发现能力弱。
         try:
@@ -144,9 +144,9 @@ class NodeMixin:
         return {'success': True, 'node': self.get_node_status()}
 
     def _publish_registration(self, bind: str, port: int) -> Optional[int]:
-        """发布本机的注册记录：端点 + 共享清单（设计文档 §7.1）。
+        """发布本机的注册记录：端点 + 共享清单。
 
-        **注册是"设备自助"行为**（§7.2），所以这件事必须由节点自己做，而不是等人
+        **注册是"设备自助"行为**，所以这件事必须由节点自己做，而不是等人
         手动同步 —— 在此之前只有 CLI 的 `serve` 会发布（`cli.py` 的 `cmd_serve`），
         插件起的节点从不发布，于是其他设备的注册表里永远没有它的端点，
         "看得到对方"这条链在插件层就是断的。
@@ -203,9 +203,9 @@ class NodeMixin:
             return None
 
     def _refresh_own_registration(self) -> Optional[int]:
-        """本机地址或共享清单变了就递增 `seq` 重新发布（设计文档 §7.4）。
+        """本机地址或共享清单变了就递增 `seq` 重新发布。
 
-        §7.4 要求的是两条：用**稳定地址**发布，以及"定期比对本机全球单播地址集合，
+        两条要求：用**稳定地址**发布，以及"定期比对本机全球单播地址集合，
         变化则递增 seq 并重新发布"。原先我只在节点启动时发布一次 —— 那两条都没满足：
         换了网络（Wi-Fi 切换、DHCP 重新分配、IPv6 前缀变化）之后，对端的注册表里
         留着的是旧端点，表现为"明明两边都开着却连不上"，而且没有任何提示。
@@ -277,7 +277,7 @@ class NodeMixin:
             self._auto_start_attempted = True
             self._auto_start_error = None
             self._auto_start_retry_at = 0.0
-            log.info('[group-mesh] 已自动启动共享节点（设计文档 §7：注册是设备自助行为）')
+            log.info('[group-mesh] 已自动启动共享节点（注册是设备自助行为）')
         else:
             self._auto_start_error = result.get('error') or '自动启动失败'
             self._auto_start_retry_at = time.time() + AUTO_START_RETRY_SECONDS

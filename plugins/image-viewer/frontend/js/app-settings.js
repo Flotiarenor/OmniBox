@@ -28,6 +28,12 @@ Object.assign(ImageViewer.prototype, {
 
     async openSettingsModal() {
         document.getElementById('settings-modal').classList.add('active');
+        // 上一次保存被后端拒绝留下的字段错误不带到这一次
+        this._clearSettingsErrors();
+        this._bindAppearanceSettings();
+        this._syncAppearanceControls();
+        // 向壳取当前插件的背景不透明度（默认跟随壳）；响应通过 omnibox:appearance 回来。
+        this._postHost({ type: 'omnibox:get-plugin-appearance' });
         // 图片文件夹列表由共享组件建立（这里补建是因为设置弹窗可能晚于 init 才打开）
         if (!this.rootsPicker) this._resetRootsList();
         document.getElementById('setting-current-folder-name').textContent = this.currentPath || '根目录';
@@ -84,8 +90,93 @@ Object.assign(ImageViewer.prototype, {
         document.getElementById('settings-modal').classList.remove('active');
     },
 
+    /** 设置弹窗里的通用外观块：只控壳记录的单插件背景不透明度，不写进插件设置。 */
+    _syncAppearanceControls() {
+        const follow = document.getElementById('setting-follow-shell');
+        const range = document.getElementById('setting-plugin-alpha');
+        const shellAlpha = document.getElementById('setting-shell-alpha');
+        const value = document.getElementById('setting-plugin-alpha-val');
+        if (!follow || !range || !shellAlpha || !value) return;
+        const appearance = this._appearance || {};
+        const effective = Number(appearance.shellAlpha) || 84;
+        follow.checked = appearance.follow !== false;
+        shellAlpha.textContent = String(effective);
+        range.disabled = follow.checked;
+        range.value = String(Number(appearance.alpha) || effective);
+        value.textContent = String(Number(appearance.alpha) || effective);
+    },
+
+    _bindAppearanceSettings() {
+        if (this._appearanceBound) return;
+        const follow = document.getElementById('setting-follow-shell');
+        const range = document.getElementById('setting-plugin-alpha');
+        const value = document.getElementById('setting-plugin-alpha-val');
+        if (!follow || !range || !value) return;
+        this._appearanceBound = true;
+        follow.addEventListener('change', () => {
+            range.disabled = follow.checked;
+            if (follow.checked) {
+                range.value = document.getElementById('setting-shell-alpha')?.textContent || '84';
+                value.textContent = range.value;
+            }
+        });
+        range.addEventListener('input', () => { value.textContent = range.value; });
+    },
+
+    /** 清掉上一次保存失败留下的字段级错误。 */
+    _clearSettingsErrors() {
+        const box = document.getElementById('settings-errors');
+        if (!box) return;
+        box.classList.add('hidden');
+        box.replaceChildren();
+    },
+
+    /** 展示后端 `save_settings` 的字段级 errors（设置键 → 文案）；没有映射时显示汇总文案。 */
+    _showSettingsErrors(errors, message) {
+        const box = document.getElementById('settings-errors');
+        const fallback = message || '保存设置失败';
+        if (!box) {
+            Toast.error(fallback);
+            return;
+        }
+        const labels = {
+            row_height: '图片行高', per_page: '每页图片数', lightbox_cache: '图片缓存',
+            root_dir: '数据根目录', extra_roots: '额外图片目录',
+            sort_by: '排序方式', sort_order: '排序方向', pixiv_fuzzy: '模糊匹配',
+            album_sort_by: '二次排序方式', album_sort_order: '二次排序方向',
+        };
+        box.replaceChildren();
+        const entries = errors && typeof errors === 'object' ? Object.entries(errors) : [];
+        (entries.length ? entries : [['', fallback]]).forEach(([key, text]) => {
+            const line = document.createElement('div');
+            line.textContent = key ? `${labels[key] || key}：${text}` : String(text);
+            box.appendChild(line);
+        });
+        box.classList.remove('hidden');
+    },
+
+    /**
+     * 一次保存调用。后端明确返回 `success: false` 时抛出带字段错误的异常：
+     * 校验失败整次不落盘（含同一 payload 里的 root_dir），调用方不能当成功处理。
+     */
+    async _saveStep(...args) {
+        const result = await Bridge.call('save_settings', ...args);
+        if (result && result.success === false) {
+            const error = new Error(result.error || '保存设置失败');
+            error.fieldErrors = result.errors || {};
+            throw error;
+        }
+        return result;
+    },
+
     async saveSettings() {
         const isFolderOnly = document.getElementById('setting-apply-to-folder').checked;
+        const followShell = document.getElementById('setting-follow-shell').checked;
+        this._postHost({
+            type: 'omnibox:set-plugin-alpha',
+            follow: followShell,
+            alpha: parseInt(document.getElementById('setting-plugin-alpha').value, 10) || 84,
+        });
         const settings = {
             row_height: parseInt(document.getElementById('setting-row-height').value, 10),
             per_page: parseInt(document.getElementById('setting-per-page').value, 10),
@@ -119,15 +210,19 @@ Object.assign(ImageViewer.prototype, {
         }
         try {
             if (isFolderOnly) {
-                await Bridge.call('save_settings', this.currentPath,
+                await this._saveStep(this.currentPath,
                     { ...settings, ...(fuzzy || {}) });
-                if (albumSort) await Bridge.call('save_settings', '', albumSort);
-                await Bridge.call('save_settings', '', lightboxCache);
+                if (albumSort) await this._saveStep('', albumSort);
+                await this._saveStep('', lightboxCache);
             } else {
-                await Bridge.call('save_settings', '',
-                    { ...settings, ...(albumSort || {}), ...(fuzzy || {}), ...lightboxCache });
+                // 保存失败时后端整次不落盘：这里必须抛出，不能继续清文件夹级设置，
+                // 否则「全局设置没写进去、当前文件夹的旧覆盖值又被删了」。
+                await this._saveStep('', {
+                    ...settings, ...(albumSort || {}), ...(fuzzy || {}), ...lightboxCache
+                });
                 if (this.currentPath) await Bridge.call('clear_folder_settings', this.currentPath);
             }
+            this._clearSettingsErrors();
             this.currentSettings = {
                 ...(this.currentSettings || {}), ...settings,
                 ...(albumSort || {}), ...(fuzzy || {}), ...lightboxCache
@@ -145,7 +240,9 @@ Object.assign(ImageViewer.prototype, {
             if (this.mode === 'images') this.loadImages(this.currentPath, 1);
             else this.showAlbums();
         } catch (e) {
-            Toast.error('保存设置失败');
+            // 后端拒绝保存：不更新内存、不关弹窗、不刷新，留下可读原因供修改。
+            if (e && e.fieldErrors) this._showSettingsErrors(e.fieldErrors, e.message);
+            Toast.error((e && e.message) ? e.message : '保存设置失败');
         }
     },
 });

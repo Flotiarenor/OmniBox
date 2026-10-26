@@ -1,6 +1,6 @@
 """密码学原语封装。
 
-设计文档 §4.4 要求"握手使用 Noise 框架的现成实现，不自行设计密码学组合"。
+握手使用 Noise 框架的现成实现，不自行设计密码学组合。
 Noise 状态机现在由 `noise.py` 包装的 `noiseprotocol` 提供；本文件只保留
 **独立可复核的原语**：
 
@@ -98,7 +98,7 @@ def hmac_blake2s(key: bytes, data: bytes) -> bytes:
 def hkdf(ck: bytes, ikm: bytes, num_outputs: int = 2, info: bytes = b'') -> Tuple[bytes, ...]:
     """Noise 的 HKDF：以 ck 为盐、ikm 为输入，输出 num_outputs 个 32 字节密钥。
 
-    设计文档 §4.4 的"密钥由 HKDF 从握手结果派生"就是这里。`temp_k` 取第一个
+    Noise 的"密钥由 HKDF 从握手结果派生"就是这里。`temp_k` 取第一个
     输出，`new_ck` 取第二个。
     """
     if num_outputs not in (1, 2, 3):
@@ -292,7 +292,7 @@ def sign_public_from_private(private: bytes) -> bytes:
     return _ed_private_key(private).public_key().export_key(format='raw')
 
 
-# ── 由身份种子派生的 X25519 密钥（设计文档 §4.3 的"身份统一"）──────────────
+# ── 由身份种子派生的 X25519 密钥（"身份统一"）─────────────────────────────
 
 # 派生用的域分隔标签。换掉它等于换掉所有人的 DH 公钥，因此带版本号且不得修改。
 _DH_DERIVE_LABEL = b'group-mesh/x25519-static/v1'
@@ -303,7 +303,7 @@ def dh_keypair_from_sign_seed(seed: bytes) -> Tuple[bytes, bytes]:
 
     ## 为什么必须派生，而不能直接把 Ed25519 密钥当 X25519 用
 
-    设计文档 §4.3 要求"同一个设备密钥同时用于应用面握手与共享节点注册"。
+    需求是"同一个设备密钥同时用于应用面握手与共享节点注册"。
     但 **Ed25519 的密钥不能直接拿来做 X25519 的 DH**：
 
     * Ed25519 的私钥是种子经 SHA-512 派生、再做位裁剪后的**标量**，其用途是点乘
@@ -319,7 +319,7 @@ def dh_keypair_from_sign_seed(seed: bytes) -> Tuple[bytes, bytes]:
         X25519  私钥 = clamp(BLAKE2s(seed || label))   （握手 DH）
 
     两者都由种子唯一决定，因此设备仍然只有"一份身份密钥材料"，
-    满足 §4.3 的"不维护第二套账号"；同时各自落在正确的曲线上。
+    满足"不维护第二套账号"；同时各自落在正确的曲线上。
 
     `clamp` 按 RFC 7748 §5 在**字节**上做：`k[0] &= 0xF8; k[31] = (k[31] & 0x7F) | 0x40`。
     位操作与字节序无关，因此这里直接改小端字节串的第 0 / 第 31 字节，

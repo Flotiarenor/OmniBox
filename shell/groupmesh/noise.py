@@ -1,8 +1,8 @@
 """Noise_XX_25519_ChaChaPoly_BLAKE2s 握手与传输态。
 
-## 与设计文档的关系
+## 为什么选 Noise_XX
 
-设计文档 §4.4 选了 `Noise_XX`：两端均持有名单，不需要预先知道对方的静态密钥，
+本项目选了 `Noise_XX`：两端均持有名单，不需要预先知道对方的静态密钥，
 握手过程中双方互相认证并交换静态公钥。XX 的消息模式（Noise 规范 §8.3）是：
 
     -> e
@@ -64,7 +64,7 @@ PROTOCOL_NAME = NOISE_LIB_NAME
 
 # 握手阶段单条消息的明文上限。规范 §3 规定所有 Noise 消息不超过 65535 字节。
 MAX_HANDSHAKE_PAYLOAD = 65535 - 3 * (32 + cp.TAGLEN)
-# 传输阶段单帧明文上限。设计文档 §4.5 要求"解析必须做长度与取值边界检查"。
+# 传输阶段单帧明文上限。解析必须做长度与取值边界检查。
 MAX_TRANSPORT_FRAME = 1 << 20  # 1 MiB
 
 ROLE_INITIATOR = 'initiator'
@@ -95,8 +95,7 @@ class CipherState:
     `NoiseConnection`（安全关键的状态机），传输只借它的 CipherState ——
     同一套密钥、同一套 nonce 推进、同一套 AEAD，只是不套那层长度检查。
     代价是应用帧可能超过规范的 65535 字节上限，与只实现规范长度检查的
-    实现对传大帧时会被它们拒绝；这是本协议有意的帧长选择，记录在
-    docs/group-mesh-design.md。
+    实现对传大帧时会被它们拒绝；这是本协议有意的帧长选择。
     """
 
     def __init__(self, cipher, key: bytes, direction: str) -> None:
@@ -281,9 +280,9 @@ class SecureSession:
 
 
 def prologue_from_negotiation(local_hello: bytes, remote_hello: bytes) -> bytes:
-    """把 §4.5 的协商结果并入被认证的转录（Noise 的 prologue）。
+    """把协商结果并入被认证的转录（Noise 的 prologue）。
 
-    设计文档 §4.5 的实现约束 1 明确要求："协商结果必须并入被认证的握手转录
+    实现约束 1 要求："协商结果必须并入被认证的握手转录
     （Noise 的 prologue），否则存在降级攻击面"。
 
     两端各自发出的 hello 字节相同、收到的也相同，因此拼接顺序必须**确定**：

@@ -2,7 +2,7 @@
 
 ## 连接建立顺序
 
-    1. 明文 hello 双向交换（§4.5）—— proto / suites / features
+    1. 明文 hello 双向交换 —— proto / suites / features
     2. 协商结果并入 prologue，开始 Noise_XX 握手
     3. 握手验证对端静态公钥，再用**团体名单**判定该设备属于哪个主体（授权）
     4. 进入传输态，收发 JSON 消息
@@ -21,7 +21,7 @@ TCP 是字节流，必须自己定界：
 
 ## 为什么明文 hello 是安全的
 
-设计文档 §4.5 说明该消息"在认证之前处理"。它只携带协议版本与能力列表，不含
+这条消息"在认证之前处理"。它只携带协议版本与能力列表，不含
 身份信息；而其内容会并入被认证的 prologue，因此中间人篡改版本/套件会导致双方
 prologue 不一致、随后握手必然失败 —— 这就是防降级攻击的机制。
 """
@@ -106,7 +106,7 @@ def _parse_json(raw: bytes, what: str) -> Dict[str, Any]:
     return value
 
 
-# ── 协商（§4.5）──────────────────────────────────────────────────────────
+# ── 协商 ─────────────────────────────────────────────────────────────────
 
 @dataclass
 class Negotiation:
@@ -129,7 +129,7 @@ class Negotiation:
     @staticmethod
     def resolve(local: Dict[str, Any], remote: Dict[str, Any], local_bytes: bytes,
                 remote_bytes: bytes) -> 'Negotiation':
-        # 边界检查：hello 在认证之前被处理，字段必须逐个校验（§4.5 约束 2）
+        # 边界检查：hello 在认证之前被处理，字段必须逐个校验
         proto = remote.get('proto')
         if not isinstance(proto, int) or isinstance(proto, bool):
             raise TransportError('hello.proto 必须是整数')
@@ -156,7 +156,7 @@ class Negotiation:
                            local_hello=local_bytes, remote_hello=remote_bytes)
 
     def prologue(self) -> bytes:
-        """§4.5 约束 1：把协商结果并入被认证的握手转录。"""
+        """把协商结果并入被认证的握手转录。"""
         return noise_mod.prologue_from_negotiation(self.local_hello, self.remote_hello)
 
 
@@ -170,7 +170,7 @@ def exchange_hello(sock: socket.socket) -> Negotiation:
     return Negotiation.resolve(local, remote, local_bytes, remote_bytes)
 
 
-# ── 授权：由名单把设备公钥映射到主体（§3.3 / §12 第 1 项）───────────────
+# ── 授权：由名单把设备公钥映射到主体 ─────────────────────────────────────
 
 @dataclass
 class PeerIdentity:
@@ -186,7 +186,7 @@ class PeerIdentity:
     #
     # 为什么"不在名单里"不是直接断开（v0.2 改）：名单是**带外**建立信任锚的，
     # 群主加人后签发新名单，而新成员手里只有旧名单 —— 如果握手阶段就把不在名单的
-    # 设备拒掉，它永远收不到那份新名单（`docs/group-mesh-design.md` §22.10 的真实故障）。
+    # 设备拒掉，它永远收不到那份新名单。
     # 因此握手只要求**设备绑定证明有效**（密码学上自足），"能不能干活"由
     # `Node.handle()` 按 op 逐条判定：不在名单者只放行 `roster`（拉新名单）。
     member: bool = True
@@ -203,14 +203,14 @@ class PeerIdentity:
 def authorize_peer(roster: Optional[Roster], device_key: bytes) -> PeerIdentity:
     """按名单判定对端设备属于哪个主体，并标出它是否已在名单里。
 
-    设计文档 §12 第 1 项"调用者身份"在协议层的对应物：插件与壳都必须能从
+    这是"调用者身份"在协议层的对应物：插件与壳都必须能从
     **已验证的凭据**得到主体，而不是从请求参数里读一个自称的 ID。
 
     `roster is None`（本机还没建团）仍然直接拒绝：那种状态下本机没有任何"团体"
     可言，放行只会变成一个开放式入口。
 
     不在名单里的设备返回 `member=False` 而不是抛错：它的设备绑定证明已经通过
-    Noise 验证，因此连接本身是可信的，只有"能做什么"受限（§5.7 的名单分发需要
+    Noise 验证，因此连接本身是可信的，只有"能做什么"受限（名单分发需要
     让新成员连进来拿新名单）。
     """
     if roster is None:

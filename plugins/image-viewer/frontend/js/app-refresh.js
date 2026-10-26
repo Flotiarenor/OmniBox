@@ -13,11 +13,11 @@ Object.assign(ImageViewer.prototype, {
     // 刷新 / 更新缩略图
     // ============================================================
     /**
-     * 兼容入口（工具栏按钮已下线）：重新扫描并重载当前视图。
+     * 兼容入口：重新扫描并重载当前视图。
      *
      * 走的是后端的 `refresh` API，它现在转发到统一刷新的「同步」。保留这个方法是
-     * 为了"保存设置后刷新"这类既有调用点与调试脚本，新代码请用组件上的
-     * `autoSync()` / `verify()`。
+     * 为了"保存设置后刷新"这类既有调用点与调试脚本；界面上的「校验」入口由壳的
+     * PluginChrome 挂载（manifest 的 `frontend.chrome.freshness`）。
      */
     async refreshView() {
         try {
@@ -35,37 +35,16 @@ Object.assign(ImageViewer.prototype, {
     // ============================================================
     // 统一刷新基建（同步 / 校验）
     // ============================================================
-    /**
-     * 挂载共享的「同步状态 + 校验」控件（shell/freshness.js）。
-     *
-     * 语义（全壳统一）：
-     *   - 同步：被动、增量，由 `autoSync(scope)` 在进视图/切目录时触发；
-     *   - 校验：手动、全量，组件自己起后台任务并显示进度，完成后回调 onChange。
-     * 原先的「刷新」「全量重建」两个按钮与它们各自的清缓存逻辑由这里取代。
-     */
-    _mountFreshness() {
-        const host = document.getElementById('iv-freshness');
-        if (!host || typeof Freshness === 'undefined') return;
-        this.freshness = Freshness.mount({
-            plugin: 'image-viewer',
-            container: host,
-            unit: '张',
-            onChange: () => this._onFreshnessChanged(),
-        });
-    },
+    // 「同步状态 + 校验」控件（shell/frontend/public/shell/freshness.js）由壳的
+    // PluginChrome 挂载（manifest 的 frontend.chrome.freshness），内容页不再持有点击
+    // 入口；校验完成或同步发现变化后，壳发 `omnibox:action: refresh`，本页重载相册树与
+    // 当前目录的图片。
 
     /** 同步/校验发现了变化：重载相册树，图片视图则在当前目录上重取。 */
     async _onFreshnessChanged() {
         await this.loadAlbums();
         if (this.mode === 'images' && this.currentPath) {
             await this.loadImages(this.currentPath, this.currentPage);
-        }
-    },
-
-    /** 被动同步的触发点（进视图/切目录）。组件内部去抖，壳侧还有最小间隔。 */
-    _autoSyncFreshness(scope) {
-        if (this.freshness && typeof this.freshness.autoSync === 'function') {
-            this.freshness.autoSync(scope == null ? '' : scope);
         }
     },
 

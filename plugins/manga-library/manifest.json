@@ -11,7 +11,82 @@
   },
   "frontend": {
     "entry": "frontend/index.html",
-    "route": "/manga-library"
+    "route": "/manga-library",
+    "chrome": {
+      "brand": {
+        "icon": "icon:library",
+        "title": "漫画中心",
+        "subtitle": "Library · Download"
+      },
+      "nav": [
+        {
+          "section": "漫画库",
+          "id": "shelf",
+          "items": [
+            { "id": "all", "label": "全部漫画", "icon": "icon:library" },
+            { "id": "favorites", "label": "我的收藏", "icon": "icon:star" },
+            { "id": "recent", "label": "最近阅读", "icon": "icon:history" }
+          ]
+        },
+        {
+          "section": "下载中心",
+          "id": "downloads",
+          "items": [
+            { "id": "downloads:all", "label": "全部任务", "icon": "icon:download" },
+            { "id": "downloads:downloading", "label": "下载中", "icon": "icon:loader" },
+            { "id": "downloads:queued", "label": "排队中", "icon": "icon:clock" },
+            { "id": "downloads:paused", "label": "已暂停", "icon": "icon:pause" },
+            { "id": "downloads:completed", "label": "已完成", "icon": "icon:circle-check" },
+            { "id": "downloads:failed", "label": "失败", "icon": "icon:triangle-alert" }
+          ]
+        }
+      ],
+      "toolbar": [
+        {
+          "id": "back",
+          "label": "返回",
+          "icon": "icon:arrow-left",
+          "placement": "leading",
+          "visible": false
+        },
+        {
+          "id": "add-task",
+          "label": "添加任务",
+          "icon": "icon:plus",
+          "variant": "primary",
+          "visible": false
+        },
+        {
+          "id": "start-all",
+          "label": "全部开始",
+          "icon": "icon:play",
+          "visible": false
+        },
+        {
+          "id": "pause-all",
+          "label": "全部暂停",
+          "icon": "icon:pause",
+          "visible": false
+        },
+        {
+          "id": "clear-completed",
+          "label": "清除已完成",
+          "icon": "icon:trash-2",
+          "visible": false
+        },
+        {
+          "id": "settings",
+          "label": "设置",
+          "icon": "icon:settings"
+        }
+      ],
+      "search": {
+        "placeholder": "搜索漫画、作者…",
+        "enabled": true
+      },
+      "status": true,
+      "freshness": { "unit": "本" }
+    }
   },
   "description": "漫画库与下载中心合并插件：书架浏览、章节阅读、收藏、最近阅读与 jmcomic 下载任务管理。",
   "permissions": [

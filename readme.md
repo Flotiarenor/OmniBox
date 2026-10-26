@@ -141,6 +141,8 @@ curl -H "X-Omnibox-Token: $(cat .config/auth_token.txt)" \
 
 - [开发文档](./docs/development.md)：架构概览、从源码运行、调试、打包发布与 CI 门禁
 - [插件开发指南](./docs/plugin-guide.md) / [插件界面指南](./docs/plugin-ui-guide.md)
+- [插件页面架构](./docs/plugin-page-architecture.md)：壳渲染的品牌/导航/顶栏/搜索/状态/分隔条，content iframe 只装内容，附属插件的 native 面板由壳渲染
+- 插件页面骨架验收：`python tools/plugin_ui_audit.py`（需已构建的前端、Chrome 与 selenium，见 [tools/AGENTS.md](./tools/AGENTS.md)）
 - 一键生成插件骨架：`python tools/new_plugin.py my-tool`
 
 ## 许可证与反馈

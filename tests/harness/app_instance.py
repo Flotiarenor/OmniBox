@@ -222,6 +222,37 @@ class AppInstance:
         if not wait_until(lambda: port_is_free(self.port), PORT_RELEASE_TIMEOUT):
             print(f'[harness] 实例 {self.name} 停止后端口 {self.port} 仍被占用，'
                   f'很可能有孤儿进程（pid={proc.pid}）')
+        self.report_backend_errors()
+
+    #: 实例日志里"后端出了错"的判据。故意只认这几类**明确**的标记，不认普通告警：
+    #: 夹具的价值是"失败时手边就有证据"，不是把日志刷进测试输出。
+    _ERROR_MARKERS = ('Traceback (most recent call last)', ' 500 -', ' ERROR ')
+
+    def report_backend_errors(self, tail_lines: int = 40) -> bool:
+        """实例日志里出现后端异常时，把它打出来（返回是否命中）。
+
+        为什么必须在这里打：`AppInstance.start()` 把子进程的 stdout/stderr 写进
+        `<临时根>/<name>.boot.log`，而这个临时根由用例的 `TemporaryDirectory.cleanup()`
+        在收尾时删掉 —— 事后没有任何办法再看到后端的异常与请求行。实测定位一次
+        "`/api/system_set_shell_prefs` 偶发 500"时，正是这一步缺失导致只能临时插桩复现。
+
+        打印到 stderr：`unittest` 在用例失败时会连它一起显示；全部通过时它安静地留在
+        测试输出里，不干扰结论。
+        """
+        try:
+            text = self._log_path.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            return False
+        lines = text.splitlines()
+        hits = [i for i, line in enumerate(lines)
+                if any(marker in line for marker in self._ERROR_MARKERS)]
+        if not hits:
+            return False
+        start = max(0, hits[-1] - tail_lines + 1)
+        print(f'[harness] 实例 {self.name} 的日志里有后端错误'
+              f'（{len(hits)} 处，日志 {self._log_path}），尾部：\n'
+              + '\n'.join(lines[start:]), file=sys.stderr)
+        return True
 
     @staticmethod
     def _terminate_tree(proc: subprocess.Popen) -> None:
@@ -442,7 +473,7 @@ class MeshCluster:
         """建团 →（群主）逐个加成员 → 分发邀请串，返回最终名单的邀请串。
 
         **为什么不能"先加完所有人、再分发一份最终名单"**：`join_group` 只接受
-        **直接后继**（设计文档 §5.2 规则 2 要求 `prev == hash(当前名单)`）。一次加
+        **直接后继**（`prev` 必须等于当前名单的哈希）。一次加
         两个人会得到 v3，而成员手里是 v1，`prev` 指向 v2 而不是 v1 —— 直接被拒。
         所以按版本逐级推进：每加一名成员，所有非群主实例都更新到该版本。
         """
@@ -487,7 +518,7 @@ class MeshCluster:
         """把 `consumer` 指向某个已起节点的实例（手工对端）。
 
         回环地址不会被 `registry.local_addresses()` 注册，所以同机多实例之间**只能**
-        走这条路 —— 它同时也是设计文档 §7.4 承认的引导手段（带外填写地址）。
+        走这条路 —— 它同时也是带外填写地址这一引导手段。
         """
         self.call(consumer, 'peers', {'action': 'add', 'endpoint': endpoint,
                                       'name': name or endpoint})

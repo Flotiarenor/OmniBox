@@ -229,7 +229,7 @@ class PluginContractTest(unittest.TestCase):
         self.assertTrue(page.is_file(), f'提供方页面不存在: {page}')
 
     def test_identity_dir_is_protected(self):
-        """§4.1：设备私钥不导出。插件至少必须申报身份目录，禁止文件服务端出去。"""
+        """设备私钥不导出。插件至少必须申报身份目录，禁止文件服务端出去。"""
         protected = [Path(p) for p in self.plugin.get_protected_paths()]
         self.assertIn(self.plugin.identity_dir.resolve(),
                       [p.resolve() for p in protected])
@@ -320,7 +320,7 @@ class PluginWorkflowTest(unittest.TestCase):
         self.assertFalse(result['success'])
 
     def test_share_root_cannot_be_inside_data_root(self):
-        """§6.5：共享目录必须与程序数据、身份目录分离。"""
+        """共享目录必须与程序数据、身份目录分离。"""
         if not self.plugin.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
         self.plugin.init_identity({'name': 'guard'})
@@ -571,7 +571,7 @@ class RosterDistributionTest(unittest.TestCase):
     def test_roster_is_adopted_automatically_when_peers_push_it(self):
         """成员不必再手工贴邀请串：从对端拉到的名单会被验签、采纳并落盘。
 
-        这条覆盖的是"自动分发"在插件层的接线（§5.7）：`_adopt_remote_roster`
+        这条覆盖的是"自动分发"在插件层的接线：`_adopt_remote_roster`
         要跑规则 1–6、要落盘、要让 `get_status()` 能显示出"已从对方升级"。
         为什么必须锁落盘：只更新内存副本的话，插件重载（改设置、升级、壳重启）
         会退回旧名单 —— 表现成"刚升级完又变回去了"。
@@ -1150,7 +1150,7 @@ class AutoDiscoveryTest(unittest.TestCase):
     def test_all_published_endpoints_are_tried(self):
         """设备发布了多个端点时必须逐个试，不能在第一个失败后放弃。
 
-        §4.6.1 把 IPv4 定位为可达性兜底，因此设备常同时发布 IPv6 与 IPv4 端点；
+        IPv4 是可达性兜底，因此设备常同时发布 IPv6 与 IPv4 端点；
         只试首选那个的话，IPv6 没路由就会把一台其实能连的设备判成离线。
         """
         if not self._ready():
@@ -1196,7 +1196,7 @@ class AutoDiscoveryTest(unittest.TestCase):
         self.assertFalse(result['errors'], f'第二个端点成功后不该留下错误: {result["errors"]}')
 
     def test_endpoint_change_republishes_registration(self):
-        """本机地址集合变化时必须递增 seq 重新发布（设计文档 §7.4）。
+        """本机地址集合变化时必须递增 seq 重新发布。
 
         不重发的后果：对端留着旧端点，表现为"两边都开着却连不上"，且没有提示。
         """

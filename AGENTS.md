@@ -6,8 +6,9 @@
 ## 项目要点
 
 - 桌面应用框架：Python 后端（`shell/backend/`）+ Vue 3 前端（`shell/frontend/`），运行时可选 PyInstaller 冻结；插件在 `plugins/<name>/`（`manifest.json` + `backend/` + `frontend/`）。
-- 版本号唯一来源是 `pyproject.toml` 的 `[project].version`，`shell/frontend/package.json` 必须与之一致（由 `tools/check_version.py` 校验）。
+- 版本号唯一来源是 `pyproject.toml` 的 `[project].version`，`shell/frontend/package.json` 必须与之一致（由 `tools/check_version.py` 校验）；`shell/frontend/package-lock.json` 里的两处副本（根 `version` 与 `packages[""].version`）同样由它校验 —— `npm ci` 只校验依赖，不管这两处。
 - 打包产物中不允许出现用户数据（`data/`、`.config/`、`logs/`、`__pycache__`）；插件后端的动态依赖必须登记在 `HIDDEN_IMPORTS`。这两条的判据见 [docs/Releases/AGENTS.md](docs/Releases/AGENTS.md)。
+- 不允许注释添加后续无法持续维护的固定引用地址，文字引用，章节号。使用自足陈述描述。
 
 ## 提交前必须执行的检查
 
@@ -20,6 +21,7 @@ venv/bin/python tools/check_packaging.py
 venv/bin/python tools/check_npm_audit.py
 venv/bin/python tools/check_private_paths.py
 venv/bin/python tools/check_tests.py
+venv/bin/python tools/check_docs.py
 venv/bin/python -m pyright main.py shell tools
 venv/bin/python -m unittest discover -s tests
 ```
@@ -49,6 +51,11 @@ venv/bin/python -m unittest discover -s tests
 ## 其他文档
 
 项目方向 [docs/core-direction.md](docs/core-direction.md)；本地开发 [docs/development.md](docs/development.md)；CI 与发布 [docs/ci-and-release.md](docs/ci-and-release.md)。
+
+插件页面骨架（壳渲染 chrome、内容 iframe 只装内容、native 面板）见 [docs/plugin-page-architecture.md](docs/plugin-page-architecture.md)；
+界面规范见 [docs/plugin-ui-guide.md](docs/plugin-ui-guide.md)。改插件页面后可用
+`venv/Scripts/python.exe tools/plugin_ui_audit.py` 做真实壳验收（需已构建的 `shell/frontend/dist`、
+Chrome 与 selenium；不进 CI，用法与退出码见 [tools/AGENTS.md](tools/AGENTS.md)）。
 
 ## 与 agent 协作
 

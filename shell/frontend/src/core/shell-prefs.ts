@@ -3,7 +3,7 @@
 // 存储**不在** localStorage，而在后端 `<config_dir>/shell.json` 的 `prefs` 段：
 // 桌面窗口的 localStorage 住在 WebView2 profile 的 LevelDB 里，日志被强杀截断之后
 // Chromium 会在坏记录处停止回放，其后的写入在下次启动全部读不到 —— 表现为"设置存得进、
-// 重启就忘"，且没有任何报错（见 .dsh/shell-prefs-report.md）。
+// 重启就忘"，且没有任何报错。
 //
 // 读：`serve_shell` 在 index.html 里注入 `window.__OMNIBOX_SHELL_STATE__`，
 //     本模块在**首帧之前**同步读它，因此主题与配色不会闪一下默认值。
@@ -45,7 +45,7 @@ const LEGACY_KEYS = {
   glass: 'omni-glass',
 }
 
-/** 去抖窗口：设置页的滑块每次 `input` 都要写，合并到窗口末尾一次（报告 §7.3）。 */
+/** 去抖窗口：设置页的滑块每次 `input` 都要写，合并到窗口末尾一次。 */
 const FLUSH_DELAY_MS = 300
 /** 写失败后的重试延迟。 */
 const RETRY_DELAY_MS = 2000
@@ -141,7 +141,7 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null
 let warned = false
 let notify: (message: string) => void = message => console.warn('[ShellPrefs]', message)
 
-/** 接入界面提示：写失败必须能看到，不能静默（报告 §9）。 */
+/** 接入界面提示：写失败必须能看到，不能静默。 */
 export function setShellPrefsNotifier(fn: (message: string) => void): void {
   notify = fn
 }
@@ -337,6 +337,32 @@ export function setShellTheme(theme: Theme): void {
  * 名字与取值都在这里再校验一次：后端会**整条拒收**畸形键并回退默认值，如果前端
  * 先把坏值写进了 `state`，界面显示的就会是一个永远不会生效的值。
  */
+/** 单个插件的背景不透明度覆盖；缺失表示跟随壳的 `--glass-alpha`。 */
+export const PLUGIN_ALPHA_PREFIX = '--plugin-glass-'
+
+function pluginAlphaKey(plugin: string): string {
+  return PLUGIN_ALPHA_PREFIX + plugin
+}
+
+export function pluginAlpha(plugin: string): number | null {
+  const match = /^(-?\d+(?:\.\d+)?)%$/.exec(String(state.colors[pluginAlphaKey(plugin)] ?? '').trim())
+  if (!match) return null
+  const value = Math.round(Number(match[1]))
+  if (!Number.isFinite(value)) return null
+  return Math.min(GLASS_LIMITS.alphaMax, Math.max(GLASS_LIMITS.alphaMin, value))
+}
+
+export function setPluginAlpha(plugin: string, alpha: number | null): void {
+  const key = pluginAlphaKey(plugin)
+  if (alpha == null) {
+    clearShellVar(key)
+    return
+  }
+  const value = Math.min(GLASS_LIMITS.alphaMax, Math.max(GLASS_LIMITS.alphaMin, Math.round(alpha)))
+  setShellVar(key, `${value}%`)
+}
+
+
 export function setShellVar(key: string, value: string): void {
   if (!isValidVarName(key) || !isStorableVarValue(value)) {
     console.warn('[ShellPrefs] 忽略非法的外观变量:', key, value)

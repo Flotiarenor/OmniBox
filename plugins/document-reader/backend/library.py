@@ -239,7 +239,7 @@ class LibraryMixin:
     def update_progress(self, document_id: str, chapter_index: int,
                         scroll_position: float = 0.0,
                         encoding: str = 'auto') -> Dict[str, Any]:
-        """更新阅读进度（只记到章，见 docs/document-reader-design.md §4）。"""
+        """更新阅读进度：章号 + 章内位置（0~1），前端 `openDocument` 按它还原。"""
         progress = self._load_progress()
 
         kind = (self._document_cache.get(document_id) or {}).get('kind', 'txt')
@@ -265,6 +265,10 @@ class LibraryMixin:
             self._document_cache[document_id].update({
                 'last_read_time': progress[document_id]['last_read_time'],
                 'last_read_chapter': chapter_index,
+                # `scroll_position` 必须一起回写：文件没变时 `list_documents` 走早返回
+                # 分支、只认这份缓存，漏掉它列表里的章内位置就永远是 0（进度文件里
+                # 明明存着），前端拿到的记录等于没有。
+                'scroll_position': scroll_position,
                 'progress': overall,
                 'encoding': encoding,
             })

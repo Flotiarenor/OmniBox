@@ -236,11 +236,9 @@ class ImageCleaner {
         if (!group) return;
         const items = group.files.map(f => ({ url: f }));
         const index = group.files.indexOf(file);
-        const parentIv = parent && parent.imageViewer;
-        if (parentIv && parentIv.lightbox) {
-          // 优先使用 image-viewer 的全屏查看器，这样可以看到图片信息
-          parentIv.lightbox.show(items, index);
-        } else if (this.lightbox) {
+        // 预览只在本文档内完成：读宿主窗口上的 `imageViewer.lightbox` 属于跨 iframe
+        // 读私有状态，宿主改名或改成 native 面板后就是一条静默失效的耦合。
+        if (this.lightbox) {
           this.lightbox.show(items, index);
         }
       });

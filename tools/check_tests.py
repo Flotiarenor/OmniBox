@@ -8,7 +8,7 @@ CI 全绿，这个文件实际什么都没测。仓库里曾有两个这样的�
 （`tests/test_media_scan_task.py`、`tests/test_parallel_tmp.py`，现在改名为
 `tests/debug_*.py`），它们只在手工执行时才有意义，不属于测试套件。
 
-手工脚本的命名约定见 `docs/group-mesh-design.md`：放 `tests/debug_*.py`。
+手工脚本的命名约定：放 `tests/debug_*.py`。
 
 判定（逐个 `tests/test_*.py`）
 -----------------------------

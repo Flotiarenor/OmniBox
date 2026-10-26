@@ -6,28 +6,27 @@
 // app.js 之后、实例化之前（见 index.html），契约由 tests/js/media_player_app_split.mjs 把关。
 // ============================================================
 
+// 「我的歌单」缓存有效期，与歌单详情的 2h 一致。没有 TTL 时，别的设备增删歌单后
+// 本机只能靠顶栏「刷新」或重启才看到；v2 缓存缺 ts（旧版本写入）同样按过期处理。
+const NCM_MY_PLAYLISTS_TTL_MS = 2 * 60 * 60 * 1000;
+
 Object.assign(MediaPlayerApp.prototype, {
 
     // ============================================================
     // 扫描 / 设置
     // ============================================================
     /**
-     * 兼容入口：网易云视图的「刷新」= 丢弃在线数据缓存后重新拉取。
+     * 顶栏「刷新」：网易云视图的视图级刷新 = 丢弃在线数据缓存后重新拉取。
      *
-     * 媒体库本地的刷新（原先的「扫描」「深度扫描」）已交给共享组件
-     * `shell/freshness.js`（同步 / 校验），这里只保留视图级刷新 —— 两者语义
-     * 不同：一个重拉远端数据，一个核对本地磁盘。
+     * 媒体库本地的刷新（同步 / 校验）由壳的 `PluginChrome` 挂载
+     * `shell/freshness.js`，这里只保留视图级刷新 —— 两者语义不同：一个重拉
+     * 远端数据，一个核对本地磁盘。本地视图上这个动作是空操作（按钮也不可见）。
      */
-    async _doScan(deep = false) {
+    async _doScan() {
         if (this._scanning) return;
-        if (!this.currentView.startsWith('ncm-')) {
-            // 本地视图里没有"刷新在线数据"这回事：转交给统一校验
-            if (this.freshness) this.freshness.verify();
-            return;
-        }
+        if (!this.currentView.startsWith('ncm-')) return;
         this._scanning = true;
-        const btn = document.getElementById('btn-scan');
-        if (btn) btn.disabled = true;
+        this._updateActions();
         this._setLoading('正在刷新网易云数据…');
         this._clearNeteaseCache();
         try {
@@ -37,78 +36,56 @@ Object.assign(MediaPlayerApp.prototype, {
             Toast.error('刷新失败');
         } finally {
             this._scanning = false;
-            if (btn) {
-                btn.disabled = false;
-                btn.innerHTML = MPUtils.icon('icon:refresh-cw') + ' 刷新';
-            }
+            this._updateActions();
+            this._pushChrome();
         }
-    },
-
-    _openSettings(title = '媒体播放器设置') {
-        openSettingsModal({
-            title,
-            successMessage: '设置已保存',
-            onSave: async (values) => {
-                const result = await Bridge.call('save_settings', values);
-                if (result && result.success === false) return result;
-                return { success: true };
-            },
-        });
     },
 
     // ============================================================
     // 视图切换与加载
     // ============================================================
-    /**
-     * 侧栏**作用域项**的高亮入口；扩展入口的高亮归共享组件管（见 app.js 的 loadExtensions）。
-     *
-     * 回归对象：`switchView` 原先只清 `.mp-nav-item`，扩展入口点击只清扩展项 —— 先点
-     * 「网易云登录」再点「全部音乐」两个同时高亮。现在扩展那半由 `renderExtensions`
-     * 统一维护（点击时它自己清侧栏项），这里只负责清掉扩展的选中。
-     * 传 `{ view }` 亮某个作用域、传空对象表示二级页（专辑详情 / 歌单详情，全不亮）。
-     */
-    _setNavActive(target) {
-        const wantView = (target && target.view) || '';
-        document.querySelectorAll('.mp-nav-item').forEach(btn => {
-            btn.classList.toggle('active', !!wantView && btn.dataset.view === wantView);
-        });
-        if (this.extensions) this.extensions.clearActive();
-    },
-
+    /** 切到壳左栏「媒体库」组的一级视图。导航高亮由壳按上报的 view 处理，内容页
+        只维护当前视图与歌单导航组。搜索词是全局的，切视图时连同壳的输入框一起清掉。 */
     async switchView(view) {
+        // 只有视图真的变了才清：壳在加载/握手时会重发当前视图，那不是用户切分类。
+        const changed = this.currentView !== view;
         this.currentView = view;
         this.currentAlbum = null;
         this.currentPlaylist = null;
         this.playlists.currentId = '';
-        this._setNavActive({ view });
-        this.playlists.renderSidebar();
-        document.getElementById('media-search').value = '';
-        document.getElementById('btn-search-clear').classList.add('hidden');
+        if (changed) this._clearSearch();
+        this._updateActions();
+        this.playlists.syncNav();
         await this._loadCurrentView();
     },
 
+    /** 专辑详情是二级页：上报空 view，壳取消导航高亮。 */
     async openAlbum(key, kind) {
         this.currentView = 'album-detail';
         this.currentPlaylist = null;
         this.playlists.currentId = '';
         this.currentAlbum = { key, kind };
-        this._setNavActive({});
-        this.playlists.renderSidebar();
+        this._clearSearch();
+        this._updateActions();
+        this.playlists.syncNav();
         await this._loadCurrentView();
     },
 
+    /** 歌单详情：上报 `playlist:<id>`，壳据此高亮「我的歌单」组里的对应项。 */
     async openPlaylist(playlistId) {
         const pl = await this.playlists.get(playlistId);
         if (!pl) {
             Toast.error('歌单不存在');
+            this._pushChrome();
             return;
         }
         this.currentView = 'playlist';
         this.currentAlbum = null;
         this.currentPlaylist = pl;
         this.playlists.currentId = playlistId;
-        this._setNavActive({});
-        this.playlists.renderSidebar();
+        this._clearSearch();
+        this._updateActions();
+        this.playlists.syncNav();
         await this._loadCurrentView();
     },
 
@@ -169,17 +146,10 @@ Object.assign(MediaPlayerApp.prototype, {
 
     async _loadCurrentView() {
         const seq = ++this._loadSeq;
-        const keyword = (document.getElementById('media-search').value || '').trim();
-        const titleEl = document.getElementById('mp-view-title');
-        const subEl = document.getElementById('mp-view-sub');
-        const ncm = this.currentView.startsWith('ncm-');
-        // 工具栏按视图分工：网易云视图给「刷新」（重拉在线数据），本地视图给统一
-        // 组件（同步 / 校验）。两者不是同一件事，不能共用一个按钮。
-        const scanBtn = document.getElementById('btn-scan');
-        if (scanBtn) scanBtn.classList.toggle('hidden', !ncm);
-        const freshEl = document.getElementById('mp-freshness');
-        if (freshEl) freshEl.classList.toggle('hidden', ncm);
-        if (!ncm) this._autoSyncFreshness();
+        // 详情页不参与搜索：搜索词留在壳的输入框里，只在一级视图生效
+        const detail = ['album-detail', 'playlist', 'ncm-playlist-detail'].includes(this.currentView);
+        const keyword = detail ? '' : this.searchQuery;
+        this._updateActions();
         const viewsTitle = {
             'recent': ['最近播放', '最近听过的媒体'],
             'audio-albums': ['音乐专辑', '按专辑标签聚合'],
@@ -193,10 +163,13 @@ Object.assign(MediaPlayerApp.prototype, {
             'ncm-my-playlists': ['我的歌单', '网易云创建/收藏的歌单'],
             'ncm-login': ['登录', '网易云账号登录'],
         };
+        if (viewsTitle[this.currentView]) {
+            this._chromeTitle = viewsTitle[this.currentView][0];
+            this._chromeSub = viewsTitle[this.currentView][1];
+        }
 
         try {
             let data = [];
-            let mode = 'list';
 
             if (this.currentView.startsWith('ncm-')) {
                 // 先确认 ncm-cli 是否可用，避免在 Windows 等环境里直接卡死
@@ -215,17 +188,45 @@ Object.assign(MediaPlayerApp.prototype, {
                 if (keyword && this.currentView === 'ncm-playlists') {
                     const ncm = await Bridge.callPlugin('netease-music', 'search_playlist', keyword);
                     if (seq !== this._loadSeq) return;
-                    this._renderNeteasePlaylists(ncm.results || [], '没有匹配的歌单');
-                    titleEl.textContent = `搜索 “${keyword}”`;
-                    subEl.textContent = `${(ncm.results || []).length} 个歌单`;
+                    this._chromeTitle = `搜索 “${keyword}”`;
+                    if (ncm && ncm.success === false) {
+                        this._chromeSub = '加载失败';
+                        this._renderNcmError(ncm.error);
+                        return;
+                    }
+                    const results = ncm && Array.isArray(ncm.results) ? ncm.results : [];
+                    if (!results.length) {
+                        this._chromeSub = '0 个歌单';
+                        this._renderNcmState('search', {
+                            icon: 'icon:search',
+                            title: '没有匹配的歌单',
+                            hint: '换个关键词试试。',
+                        });
+                        return;
+                    }
+                    this._chromeSub = `${results.length} 个歌单`;
+                    this._renderNeteasePlaylists(results);
                     return;
                 }
                 if (keyword) {
                     const ncm = await Bridge.callPlugin('netease-music', 'search_song', keyword);
                     if (seq !== this._loadSeq) return;
-                    data = (ncm.results || []).map(song => this._neteaseToMediaItem(song));
-                    titleEl.textContent = `搜索 “${keyword}”`;
-                    subEl.textContent = `${data.length} 个结果`;
+                    this._chromeTitle = `搜索 “${keyword}”`;
+                    if (ncm && ncm.success === false) {
+                        this._chromeSub = '加载失败';
+                        this._renderNcmError(ncm.error);
+                        return;
+                    }
+                    data = ((ncm && ncm.results) || []).map(song => this._neteaseToMediaItem(song));
+                    this._chromeSub = `${data.length} 个结果`;
+                    if (!data.length) {
+                        this._renderNcmState('search', {
+                            icon: 'icon:search',
+                            title: '没有找到匹配的歌曲',
+                            hint: '换个关键词试试。',
+                        });
+                        return;
+                    }
                     this._renderList(data, { showAlbum: true, showTag: true });
                     return;
                 }
@@ -241,16 +242,22 @@ Object.assign(MediaPlayerApp.prototype, {
                         }
                         const ncm = await Bridge.callPlugin('netease-music', 'get_daily_recommend');
                         if (seq !== this._loadSeq) return;
-                        // 与「我的歌单」同一个坑：失败返回的空结果被按日缓存，当天就再也刷不出来
+                        // 失败与“空推荐”必须分开：失败是错误态（可重试），空推荐是真正的空白。
                         if (ncm && ncm.success === false) {
-                            this._renderEmpty('icon:triangle-alert', '每日推荐加载失败',
-                                ncm.error || '请先在「登录」中完成网易云登录');
+                            this._renderNcmError(ncm.error);
                             return;
                         }
-                        if ((ncm.results || []).length) {
-                            this._ncmCacheSet(cacheKey, { date: new Date().toISOString(), results: ncm.results });
+                        const results = (ncm && Array.isArray(ncm.results)) ? ncm.results : [];
+                        if (!results.length) {
+                            this._renderNcmState('empty', {
+                                icon: 'icon:music',
+                                title: '今日推荐为空',
+                                hint: '网易云暂时没有返回推荐内容。',
+                            });
+                            return;
                         }
-                        data = (ncm.results || []).map(song => this._neteaseToMediaItem(song));
+                        this._ncmCacheSet(cacheKey, { date: new Date().toISOString(), results });
+                        data = results.map(song => this._neteaseToMediaItem(song));
                         this._renderList(data, { showAlbum: true, showTag: true });
                         return;
                     }
@@ -266,10 +273,21 @@ Object.assign(MediaPlayerApp.prototype, {
                         }
                         const ncm = await Bridge.callPlugin('netease-music', 'search_playlist', '推荐');
                         if (seq !== this._loadSeq) return;
-                        if ((ncm.results || []).length) {
-                            this._ncmCacheSet(cacheKey, { ts: Date.now(), results: ncm.results });
+                        if (ncm && ncm.success === false) {
+                            this._renderNcmError(ncm.error);
+                            return;
                         }
-                        this._renderNeteasePlaylists(ncm.results || []);
+                        const results = (ncm && Array.isArray(ncm.results)) ? ncm.results : [];
+                        if (!results.length) {
+                            this._renderNcmState('empty', {
+                                icon: 'icon:list-music',
+                                title: '暂无推荐歌单',
+                                hint: '网易云暂时没有返回推荐歌单。',
+                            });
+                            return;
+                        }
+                        this._ncmCacheSet(cacheKey, { ts: Date.now(), results });
+                        this._renderNeteasePlaylists(results);
                         return;
                     }
                     case 'ncm-liked': {
@@ -284,24 +302,35 @@ Object.assign(MediaPlayerApp.prototype, {
                         const ncm = await Bridge.callPlugin('netease-music', 'get_liked_songs', 100);
                         if (seq !== this._loadSeq) return;
                         if (ncm && ncm.success === false) {
-                            this._renderEmpty('icon:triangle-alert', '喜欢列表加载失败',
-                                ncm.error || '请先在「登录」中完成网易云登录');
+                            this._renderNcmError(ncm.error);
                             return;
                         }
-                        if ((ncm.results || []).length) {
-                            this._ncmCacheSet(cacheKey, { results: ncm.results });
+                        const results = (ncm && Array.isArray(ncm.results)) ? ncm.results : [];
+                        if (!results.length) {
+                            this._renderNcmState('empty', {
+                                icon: 'icon:heart',
+                                title: '还没有喜欢的歌曲',
+                                hint: '在网易云点亮红心后，这里会同步显示。',
+                            });
+                            return;
                         }
-                        data = (ncm.results || []).map(song => this._neteaseToMediaItem(song));
+                        this._ncmCacheSet(cacheKey, { results });
+                        data = results.map(song => this._neteaseToMediaItem(song));
                         this._renderList(data, { showAlbum: true, showTag: true });
                         return;
                     }
                     case 'ncm-my-playlists': {
                         const cacheKey = 'ncm-my-playlists';
                         const cached = this._ncmCacheGet(cacheKey);
-                        // v2：旧缓存没有 origin，认了会渲染成不分段的平表（读到就该重拉）
-                        if (cached && cached.v === 2 && (cached.results || []).length) {
+                        // v2：旧缓存没有 origin，认了会渲染成不分段的平表（读到就该重拉）。
+                        // ts：超过 2h 或缺少时间戳都视为过期，避免别的设备改完歌单后本机一直看旧列表。
+                        const cachedFresh = cached && cached.v === 2
+                            && Array.isArray(cached.results) && cached.results.length
+                            && Number.isFinite(Number(cached.ts))
+                            && Date.now() - Number(cached.ts) < NCM_MY_PLAYLISTS_TTL_MS;
+                        if (cachedFresh) {
                             if (seq !== this._loadSeq) return;
-                            this._renderNeteasePlaylists(cached.results || []);
+                            this._renderNeteasePlaylists(cached.results);
                             return;
                         }
                         const [created, collected] = await Promise.allSettled([
@@ -321,13 +350,22 @@ Object.assign(MediaPlayerApp.prototype, {
                             .sort((a, b) => (a.origin === b.origin ? 0 : (a.origin === 'created' ? -1 : 1)));
                         const failed = settled.filter(v => v && v.success === false);
                         // 两个接口都失败才是失败：单边失败仍可能是「创建 0 个 + 收藏若干」
-                        if (!results.length && failed.length) {
-                            this._renderEmpty('icon:triangle-alert', '我的歌单加载失败',
-                                failed[0].error || '请先在「登录」中完成网易云登录');
+                        if (!results.length) {
+                            if (failed.length) {
+                                this._renderNcmError(failed[0].error);
+                                return;
+                            }
+                            this._renderNcmState('empty', {
+                                icon: 'icon:list-music',
+                                title: '还没有创建或收藏的歌单',
+                                hint: '网易云账号下暂时没有歌单。',
+                            });
                             return;
                         }
-                        if (results.length) this._ncmCacheSet(cacheKey, { v: 2, results });
-                        this._renderNeteasePlaylists(results, '暂无我的歌单');
+                        // 单边失败的列表仍要显示（总比整页错误强），但不能写缓存：
+                        // 写进去后缺的那半边会一直缺到过期（2h）或用户手动刷新。
+                        if (!failed.length) this._ncmCacheSet(cacheKey, { v: 2, ts: Date.now(), results });
+                        this._renderNeteasePlaylists(results);
                         return;
                     }
                 }
@@ -335,15 +373,14 @@ Object.assign(MediaPlayerApp.prototype, {
 
             if (keyword) {
                 data = await Bridge.call('media_search', keyword);
-                titleEl.textContent = `搜索 “${keyword}”`;
-                subEl.textContent = `${data.length} 个结果`;
+                this._chromeTitle = `搜索 “${keyword}”`;
+                this._chromeSub = `${data.length} 个结果`;
+                if (!data.length) {
+                    this._renderEmpty('icon:search', '没有找到匹配的媒体', '换个关键词试试。');
+                    return;
+                }
                 this._renderList(data, { showAlbum: true, showTag: true });
                 return;
-            }
-
-            if (viewsTitle[this.currentView]) {
-                titleEl.textContent = viewsTitle[this.currentView][0];
-                subEl.textContent = viewsTitle[this.currentView][1];
             }
 
             switch (this.currentView) {
@@ -381,8 +418,8 @@ Object.assign(MediaPlayerApp.prototype, {
                     const album = this.currentAlbum;
                     if (!album) return this._renderEmpty('icon:headphones', '请选择一个专辑');
                     const items = await Bridge.call('media_album_items', album.key, album.kind);
-                    titleEl.textContent = album.kind === 'video' ? '视频专辑' : '音乐专辑';
-                    subEl.textContent = `${items.length} 个媒体`;
+                    this._chromeTitle = album.kind === 'video' ? '视频专辑' : '音乐专辑';
+                    this._chromeSub = `${items.length} 个媒体`;
                     this._renderDetail(items, {
                         label: album.kind === 'video' ? '视频专辑' : '音乐专辑',
                         title: this._findAlbumName(album.key) || '专辑详情',
@@ -395,8 +432,8 @@ Object.assign(MediaPlayerApp.prototype, {
                 case 'playlist': {
                     const pl = this.currentPlaylist;
                     if (!pl) return this._renderEmpty('icon:list-music', '请选择一个歌单');
-                    titleEl.textContent = pl.name || '歌单';
-                    subEl.textContent = `${(pl.items || []).length} 个媒体`;
+                    this._chromeTitle = pl.name || '歌单';
+                    this._chromeSub = `${(pl.items || []).length} 个媒体`;
                     this._renderDetail(pl.items || [], {
                         label: '歌单',
                         title: pl.name,
@@ -413,6 +450,12 @@ Object.assign(MediaPlayerApp.prototype, {
         } catch (e) {
             console.error('加载视图失败:', e);
             this._renderEmpty('icon:triangle-alert', '加载失败', String(e && e.message || e));
+        } finally {
+            // 只让最后发起的那次加载上报 chrome：切视图时前一次请求可能后到
+            if (seq === this._loadSeq) {
+                await this._updateStats();
+                this._pushChrome();
+            }
         }
     },
 

@@ -24,13 +24,64 @@ window.FolderPicker = (function () {
     return String(path == null ? '' : path).trim().replace(/[\\/]+$/, '');
   }
 
+  /** 插件 iframe 有 Utils.escapeHtml；壳页只垫了 Utils.iconHtml，这里给同一入口兜底。 */
+  function ensureUtilsEscape() {
+    const utils = window.Utils || (window.Utils = {});
+    if (typeof utils.escapeHtml === 'function') return;
+    utils.escapeHtml = function (value) {
+      return String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[ch] || ch));
+    };
+  }
+  ensureUtilsEscape();
+
+  /** 打开前记录焦点、打开后把焦点送进弹窗，关闭时还回原按钮。 */
+  let lastPointerTarget = null;
+  function rememberTrigger(target) {
+    if (target instanceof HTMLElement && !target.closest('.iv-picker-modal')) {
+      lastPointerTarget = target;
+    }
+  }
+  document.addEventListener('pointerdown', (event) => rememberTrigger(event.target), true);
+  // Selenium/程序化 click 不一定先产生 pointerdown；click 也记一次，焦点落回 body 时仍能找回按钮。
+  document.addEventListener('click', (event) => rememberTrigger(event.target), true);
+
+  function captureFocus() {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active !== document.body) return active;
+    if (lastPointerTarget && document.contains(lastPointerTarget)) return lastPointerTarget;
+    return active instanceof HTMLElement ? active : null;
+  }
+
+  function focusOverlay(overlay) {
+    const box = overlay.querySelector('.modal-box');
+    if (!(box instanceof HTMLElement)) return;
+    box.setAttribute('tabindex', '-1');
+    box.focus();
+  }
+
+  function restoreFocus(element) {
+    if (!element || !document.contains(element)) return;
+    try {
+      element.focus();
+    } catch (e) {
+      /* 目标已不可聚焦：不阻断关闭 */
+    }
+  }
+
   /** 目录浏览弹窗：解析用户选中的绝对路径（取消/未选返回 null）。 */
-  function openDirBrowser(startPath) {
+  function openDirBrowser(startPath, mount, returnFocusArg) {
+    ensureUtilsEscape();
     return new Promise((resolve) => {
+      const returnFocus = returnFocusArg || captureFocus();
       const overlay = document.createElement('div');
-      overlay.className = 'modal active';
+      overlay.className = 'modal active iv-picker-modal';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-label', '选择目录');
       overlay.innerHTML = `
-        <div class="modal-box obx-anim-scale" style="width:520px;">
+        <div class="modal-box obx-anim-scale iv-picker-box">
           <h3>选择目录</h3>
           <div class="iv-dirbrowser">
             <div class="iv-dirbrowser-bar">
@@ -45,7 +96,8 @@ window.FolderPicker = (function () {
             <button class="btn btn-primary" data-act="select">选择当前目录</button>
           </div>
         </div>`;
-      document.body.appendChild(overlay);
+      (mount || document.body).appendChild(overlay);
+      focusOverlay(overlay);
 
       const listEl = overlay.querySelector('[data-act="list"]');
       const pathEl = overlay.querySelector('[data-act="path"]');
@@ -55,17 +107,53 @@ window.FolderPicker = (function () {
       let currentPath = '';
       let parentPath = null;
 
+      /**
+       * 导航失败后的状态：不能把上一次成功的目录留在 currentPath 里 —— 用户点
+       * 「选择当前目录」会拿到一个他刚刚明明导航失败的旧路径。失败后当前层不可选，
+       * 只保留"回盘符列表重试"这条路。
+       */
+      function markFailed(message, attemptedPath) {
+        currentPath = '';
+        parentPath = null;
+        pathEl.textContent = attemptedPath === DRIVES_SENTINEL
+          ? '我的电脑' : (attemptedPath || '目录读取失败');
+        listEl.innerHTML = `<div class="iv-dirbrowser-item empty">${Utils.escapeHtml(message)}</div>`;
+        upBtn.disabled = true;
+        upBtn.style.opacity = '0.45';
+        drivesBtn.disabled = false;   // 失败后仍可回盘符列表重试
+        drivesBtn.style.opacity = '1';
+        selectBtn.disabled = true;
+      }
+
+      function onEscape(event) {
+        if (!event || event.key !== 'Escape') return;
+        event.preventDefault();
+        event.stopPropagation();
+        finish(null);
+      }
+
       function finish(path) {
+        window.removeEventListener('keydown', onEscape, true);
         overlay.remove();
+        restoreFocus(returnFocus);
         resolve(path || null);
       }
 
+      window.addEventListener('keydown', onEscape, true);
+
       async function load(path) {
+        ensureUtilsEscape();
         // 「我的电脑」层用共享基建的哨兵路径表示：从任意目录都能一步退回盘符列表
         const isDrives = path === DRIVES_SENTINEL;
+        const attempted = isDrives ? DRIVES_SENTINEL : String(path || '');
         listEl.innerHTML = '<div class="loading">加载中…</div>';
         try {
           const data = await Bridge.callSystem('system_browse_dir', isDrives ? '' : (path || ''));
+          // 后端报错也是"这次导航失败"：先落失败态，绝不能把 data.path 当当前目录。
+          if (!data || data.error) {
+            markFailed((data && data.error) || '目录读取失败', attempted);
+            return;
+          }
           currentPath = isDrives ? DRIVES_SENTINEL : (data.path || '');
           parentPath = isDrives ? null : data.parent;
           pathEl.textContent = isDrives ? '我的电脑' : (data.path || '我的电脑');
@@ -74,13 +162,9 @@ window.FolderPicker = (function () {
           // 「我的电脑」按钮：进入盘符列表后它就是当前层，同理禁用
           const atDrives = !currentPath || currentPath === DRIVES_SENTINEL;
           drivesBtn.disabled = atDrives;
-          drivesBtn.style.opacity = atDrives ? '1' : '0.45';
+          drivesBtn.style.opacity = atDrives ? '0.45' : '1';
           selectBtn.disabled = atDrives;   // 盘符列表本身不是可选目录
           const entries = data.entries || [];
-          if (data.error) {
-            listEl.innerHTML = `<div class="iv-dirbrowser-item empty">${Utils.escapeHtml(data.error)}</div>`;
-            return;
-          }
           if (!entries.length) {
             listEl.innerHTML = '<div class="iv-dirbrowser-item empty">该目录下没有子文件夹</div>';
             return;
@@ -98,7 +182,7 @@ window.FolderPicker = (function () {
             item.addEventListener('click', () => load(item.dataset.path));
           });
         } catch (e) {
-          listEl.innerHTML = '<div class="iv-dirbrowser-item empty">目录读取失败</div>';
+          markFailed('目录读取失败', attempted);
         }
       }
 
@@ -174,12 +258,17 @@ window.FolderPicker = (function () {
   }
 
   /** 提供方选择菜单（只有一个提供方时不会走到这里）。 */
-  function openProviderMenu(providers) {
+  function openProviderMenu(providers, mount, returnFocusArg) {
+    ensureUtilsEscape();
     return new Promise((resolve) => {
+      const returnFocus = returnFocusArg || captureFocus();
       const overlay = document.createElement('div');
-      overlay.className = 'modal active';
+      overlay.className = 'modal active iv-picker-modal';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-label', '选择网络位置来源');
       overlay.innerHTML = `
-        <div class="modal-box obx-anim-scale" style="width:420px;">
+        <div class="modal-box obx-anim-scale iv-picker-box iv-picker-box--sm">
           <h3>选择网络位置来源</h3>
           <div class="iv-dirbrowser">
             <div class="iv-dirbrowser-list" data-act="list">
@@ -190,11 +279,21 @@ window.FolderPicker = (function () {
             <button class="btn" data-act="cancel">取消</button>
           </div>
         </div>`;
-      document.body.appendChild(overlay);
+      (mount || document.body).appendChild(overlay);
+      focusOverlay(overlay);
+      function onEscape(event) {
+        if (!event || event.key !== 'Escape') return;
+        event.preventDefault();
+        event.stopPropagation();
+        finish(null);
+      }
       function finish(result) {
+        window.removeEventListener('keydown', onEscape, true);
         overlay.remove();
+        restoreFocus(returnFocus);
         resolve(result || null);
       }
+      window.addEventListener('keydown', onEscape, true);
       overlay.querySelectorAll('[data-index]').forEach((item) => {
         item.addEventListener('click', () => finish(providers[Number(item.dataset.index)]));
       });
@@ -204,16 +303,21 @@ window.FolderPicker = (function () {
   }
 
   /** 打开提供方页面，等它回填一个本地目录（取消 / 关窗返回 null）。 */
-  function openNetworkPicker(provider) {
+  function openNetworkPicker(provider, mount, returnFocusArg) {
+    ensureUtilsEscape();
     return new Promise((resolve) => {
+      const returnFocus = returnFocusArg || captureFocus();
       // 与插件的扩展面板同一条约定：内嵌时在 URL 上追加 `?embed=1`，页面据此收起
       // 自己的标题/工具栏（宿主已经给了）。见 docs/plugin-ui-guide.md §3.4。
       const url = String(provider.embedUrl || '');
       const src = url + (url.includes('?') ? '&' : '?') + 'embed=1';
       const overlay = document.createElement('div');
-      overlay.className = 'modal active';
+      overlay.className = 'modal active iv-picker-modal';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-label', provider.label || '网络位置');
       overlay.innerHTML = `
-        <div class="modal-box obx-anim-scale" style="width:640px;">
+        <div class="modal-box obx-anim-scale iv-picker-box iv-picker-box--wide">
           <h3>${Utils.escapeHtml(provider.label || '网络位置')}</h3>
           <iframe class="iv-network-frame" src="${Utils.escapeHtml(src)}"
                   title="${Utils.escapeHtml(provider.label || '网络位置')}"></iframe>
@@ -221,12 +325,21 @@ window.FolderPicker = (function () {
             <button class="btn" data-act="cancel">取消</button>
           </div>
         </div>`;
-      document.body.appendChild(overlay);
+      (mount || document.body).appendChild(overlay);
+      focusOverlay(overlay);
       const frame = overlay.querySelector('iframe');
       const source = frame ? frame.contentWindow : null;
+      function onEscape(event) {
+        if (!event || event.key !== 'Escape') return;
+        event.preventDefault();
+        event.stopPropagation();
+        finish(null);
+      }
       function finish(result) {
         window.removeEventListener('message', onMessage);
+        window.removeEventListener('keydown', onEscape, true);
         overlay.remove();
+        restoreFocus(returnFocus);
         resolve(result || null);
       }
       function onMessage(event) {
@@ -234,6 +347,7 @@ window.FolderPicker = (function () {
         if (picked) finish(picked);
       }
       window.addEventListener('message', onMessage);
+      window.addEventListener('keydown', onEscape, true);
       overlay.querySelector('[data-act="cancel"]').addEventListener('click', () => finish(null));
       overlay.addEventListener('pointerdown', (e) => { if (e.target === overlay) finish(null); });
     });
@@ -250,12 +364,15 @@ window.FolderPicker = (function () {
    * opts.localOnly    可选，true 时**不显示「网络位置」**：该字段只接受本机目录。
    *                    用于"目录本身就是产物"的字段（如 group-mesh 的远端下载目录）——
    *                    在那种字段上选"网络位置"语义是错的（远端内容要取到本地，
-   *                    而下载目录正是落点），见 docs/group-mesh-design.md §1.4。
+   *                    而下载目录正是落点）。
    */
   function createList(opts) {
+    ensureUtilsEscape();
     const options = opts || {};
     const paths = options.paths || [];
     const localOnly = options.localOnly === true;
+    const single = options.single === true;
+    const mount = options.mount || document.body;
     const root = document.createElement('div');
     root.className = 'iv-roots';
     // 两段式：列表与「添加目录」行分开，中间那条 2px 是刻意留的（与图片相册一致）
@@ -285,7 +402,13 @@ window.FolderPicker = (function () {
     // 与 `options.labels` 分开存：后者是宿主自己算的（如「只含图片」），两者都要显示。
     const networkLabels = new Map();
 
+    function notify() {
+      if (typeof options.onChange === 'function') options.onChange(paths.slice());
+    }
+
     function render() {
+      if (single && paths.length > 1) paths.splice(1);
+      ensureUtilsEscape();
       // 「主要」是**位置**属性而不是每行自带的标记：第一行就是主目录，
       // 于是每行都能删（和「额外」行完全一样），删掉主目录后下一行自动顶上，
       // 不会出现「列表里没有主目录」的中间状态。
@@ -307,6 +430,7 @@ window.FolderPicker = (function () {
         btn.addEventListener('click', () => {
           paths.splice(Number(btn.dataset.index), 1);
           render();
+          notify();
         });
       });
     }
@@ -317,12 +441,20 @@ window.FolderPicker = (function () {
         Toast.warning('请输入或浏览选择一个目录');
         return false;
       }
+      if (single) {
+        if (paths.length === 1 && normalize(paths[0]) === value) return false;
+        paths.splice(0, paths.length, value);
+        render();
+        notify();
+        return true;
+      }
       if (paths.some(p => normalize(p) === value)) {
         Toast.warning('该目录已在列表中');
         return false;
       }
       paths.push(value);
       render();
+      notify();
       return true;
     }
 
@@ -335,7 +467,7 @@ window.FolderPicker = (function () {
     });
     browseBtn.addEventListener('click', async () => {
       if (options.onBeforeOpen) options.onBeforeOpen();
-      const picked = await openDirBrowser(input.value.trim());
+      const picked = await openDirBrowser(input.value.trim(), mount);
       if (picked) addPath(picked);
     });
     // localOnly 时这个按钮根本不在 DOM 里（见上面的模板），因此要判空
@@ -346,9 +478,9 @@ window.FolderPicker = (function () {
         Toast.warning('没有可用的网络位置来源：需要安装提供该能力的插件（如「团体组网」）');
         return;
       }
-      const provider = providers.length === 1 ? providers[0] : await openProviderMenu(providers);
+      const provider = providers.length === 1 ? providers[0] : await openProviderMenu(providers, mount);
       if (!provider) return;
-      const picked = await openNetworkPicker(provider);
+      const picked = await openNetworkPicker(provider, mount);
       if (!picked || picked.action !== 'picked') return;
       if (addPath(picked.path) && picked.label) {
         networkLabels.set(normalize(picked.path), picked.label);
@@ -367,7 +499,9 @@ window.FolderPicker = (function () {
       setPaths(list) {
         paths.length = 0;
         (list || []).forEach(p => paths.push(p));
+        if (single && paths.length > 1) paths.splice(1);
         render();
+        notify();
       },
     };
   }
@@ -378,6 +512,8 @@ window.FolderPicker = (function () {
     NETWORK_MESSAGE_TYPE,
     normalize,
     openDirBrowser,
+    openProviderMenu,
+    openNetworkPicker,
     createList,
     loadNetworkProviders,
     readProviderMessage,

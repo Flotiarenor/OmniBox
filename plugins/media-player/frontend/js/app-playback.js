@@ -151,8 +151,11 @@ Object.assign(MediaPlayerApp.prototype, {
         if (!playing && this.isFullscreen) this._showControls();
     },
 
+    // 状态栏归壳：manifest 把 `status.kind` 声明为 eq-text，壳在 state=ok（播放中）
+    // 时把状态点换成四柱迷你 EQ 动画；这里只上报播放/暂停。
     _updateMiniEq(playing) {
-        document.getElementById('mp-mini-eq').classList.toggle('playing', !!playing);
+        this._statusState = playing ? 'ok' : 'idle';
+        this._pushChrome();
     },
 
     onTimeUpdate() {

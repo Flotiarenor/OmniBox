@@ -8,7 +8,7 @@ import main.py（会成环），所以共用的常量与纯函数需要一个中
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-# 默认监听端口。与设计文档 §13 的默认参数一致，可被设置项覆盖。
+# 默认监听端口，可被设置项覆盖。
 DEFAULT_PORT = 19443
 
 # 自动启动节点失败后的冷却秒数。取 30 秒是因为最常见的失败原因是"旧进程还占着

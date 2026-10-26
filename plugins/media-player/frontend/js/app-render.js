@@ -38,54 +38,181 @@ Object.assign(MediaPlayerApp.prototype, {
     },
 
     // ============================================================
-    // 渲染：专辑卡片
+    // 渲染：网易云状态页（错误 / 未登录 / 空白 / 搜索无结果）
+    // ============================================================
+    /** 网易云接口错误的类别。只按后端返回的 error 文本做前置条件归类，不解释业务数据。 */
+    _ncmErrorKind(error) {
+        const text = String(error == null ? '' : error);
+        if (/api[\s_-]*key|appid|privatekey|未设置.*(key|密钥)|(key|密钥).*未设置/i.test(text)) return 'api-key';
+        if (/登录|login|cookie|未授权|unauthor/i.test(text)) return 'login';
+        return 'error';
+    },
+
+    /** 把后端 error 里可读的行留下来，去掉命令行形式的操作指引（安装/配置命令）。 */
+    _ncmErrorDetail(error) {
+        const lines = String(error == null ? '' : error)
+            .split(/\r?\n/)
+            .map(line => line.trim())
+            .filter(Boolean)
+            .filter(line => !/(ncm-cli|npm\s+install|config\s+set|appid|privatekey|运行\s|执行\s|安装命令|^\s*[-*]\s*)/i.test(line));
+        return lines.join('\n').slice(0, 300).trim();
+    },
+
+    /**
+     * 网易云状态页。
+     *
+     * state 取值：
+     * - `api-key` / `cli-missing` / `error`：错误态，使用壳的 `.empty-state--error` 并给出重试；
+     * - `login`：未登录前置条件，中性样式 + 重新检测（与系统错误区分）；
+     * - `empty`：接口成功但没有数据（真空白），不给重试；
+     * - `search`：搜索无结果，不给重试。
+     * `data-ncm-state` 暴露状态，便于 UI 审计与后续自动化断言。
+     */
+    _renderNcmState(state, options = {}) {
+        const content = document.getElementById('media-content');
+        if (!content) return;
+        const isError = state === 'api-key' || state === 'cli-missing' || state === 'error';
+        const retryLabel = options.retryLabel || (state === 'login' || state === 'cli-missing' ? '重新检测' : '重试');
+        const detail = options.detail
+            ? `<div class="mp-ncm-detail">${MPUtils.escapeHtml(options.detail)}</div>`
+            : '';
+        content.innerHTML = `
+            <div class="empty-state${isError ? ' empty-state--error' : ''}" data-ncm-state="${state}" role="${isError ? 'alert' : 'status'}">
+                <div class="empty-state-icon">${MPUtils.icon(options.icon || 'icon:music')}</div>
+                <div class="empty-state-text">${MPUtils.escapeHtml(options.title || '')}</div>
+                ${options.hint ? `<div class="empty-state-hint">${MPUtils.escapeHtml(options.hint)}</div>` : ''}
+                ${detail}
+                ${options.retry ? `<button class="btn btn-primary mp-ncm-retry" id="ncm-retry-btn">${MPUtils.escapeHtml(retryLabel)}</button>` : ''}
+            </div>`;
+        const retry = document.getElementById('ncm-retry-btn');
+        if (retry) {
+            retry.addEventListener('click', () => {
+                // 二级页的重试不能走 _loadCurrentView（它只认一级视图），由调用方给回调。
+                if (typeof options.onRetry === 'function') options.onRetry();
+                else this._loadCurrentView();
+            });
+        }
+    },
+
+    /** 网易云接口失败：API key / 未登录 / 其它错误分开表达，统一不展示原始 CLI 指令。 */
+    _renderNcmError(error, onRetry) {
+        const kind = this._ncmErrorKind(error);
+        if (kind === 'login') {
+            this._renderNcmState('login', {
+                icon: 'icon:user',
+                title: '尚未登录网易云音乐',
+                hint: '请在侧栏「登录」入口完成网易云登录，然后点击重试。',
+                retry: true,
+                retryLabel: '重试',
+                onRetry,
+            });
+            return;
+        }
+        if (kind === 'api-key') {
+            this._renderNcmState('api-key', {
+                icon: 'icon:triangle-alert',
+                title: '网易云 API 未配置',
+                hint: '网易云接口尚未完成 API 配置。完成配置后点击重试。',
+                detail: 'API key 未设置',
+                retry: true,
+                onRetry,
+            });
+            return;
+        }
+        this._renderNcmState('error', {
+            icon: 'icon:triangle-alert',
+            title: '网易云数据加载失败',
+            hint: '接口暂时不可用，请稍后重试。',
+            detail: this._ncmErrorDetail(error),
+            retry: true,
+            onRetry,
+        });
+    },
+
+    // ============================================================
+    // 渲染：专辑卡片（共享 ContentUI）
     // ============================================================
     _renderAlbums(albums, kind) {
         const content = document.getElementById('media-content');
         if (!albums || !albums.length) {
             const isVideo = kind === 'video';
-            this._renderEmpty(isVideo ? 'icon:disc-3' : 'icon:disc', isVideo ? '暂无视频专辑' : '暂无音乐专辑', '点击右上角「扫描」建立媒体索引');
+            this._renderEmpty(isVideo ? 'icon:disc-3' : 'icon:disc', isVideo ? '暂无视频专辑' : '暂无音乐专辑', '点击顶栏「校验」建立媒体索引');
             return;
         }
 
-        content.innerHTML = `<div class="mp-card-grid"></div>`;
-        const grid = content.firstElementChild;
-
-        albums.forEach((album, index) => {
-            const card = document.createElement('div');
-            card.className = 'mp-card';
-            card.style.setProperty('--i', Math.min(index, 26));
-            card.dataset.key = album.key;
-            card.dataset.kind = album.kind;
-            const cover = album.cover_item_id
-                ? MPUtils.coverImg(Bridge.thumbUrl(album.cover_item_id), kind === 'video' ? 'icon:clapperboard' : 'icon:disc',
-                    kind === 'video' ? `data-mp-thumb-id="${album.cover_item_id}"` : '',
-                    kind === 'video' ? album.cover_item_id : '')
-                : `<div class="cover-fallback">${kind === 'video' ? 'icon:clapperboard' : 'icon:disc'}</div>`;
-            card.innerHTML = `
-                <div class="mp-card-cover">
-                    ${cover}
-                    <span class="mp-card-badge">${album.count} 项</span>
-                    <button class="mp-card-play" data-key="${MPUtils.escapeHtml(album.key)}" data-kind="${album.kind}" title="播放全部">${MPUtils.icon('icon:play')}</button>
-                </div>
-                <div class="mp-card-body">
-                    <div class="mp-card-title">${MPUtils.escapeHtml(album.name)}</div>
-                    <div class="mp-card-sub">${MPUtils.escapeHtml(album.artist || '')}</div>
-                    <div class="mp-card-meta">${MPUtils.fmtDuration(album.total_duration)}</div>
-                </div>`;
-            grid.appendChild(card);
+        const grid = ContentUI.grid({
+            className: 'mp-card-grid',
+            ariaLabel: kind === 'video' ? '视频专辑' : '音乐专辑',
         });
+        albums.forEach((album, index) => grid.appendChild(this._buildAlbumCard(album, index, kind)));
+        content.innerHTML = '';
+        content.appendChild(grid);
         this._observeThumbImgs(grid);
     },
 
+    _buildAlbumCard(album, index, kind) {
+        const isVideo = kind === 'video';
+        const icon = isVideo ? 'icon:clapperboard' : 'icon:disc';
+        const coverUrl = album.cover_item_id ? Bridge.thumbUrl(album.cover_item_id) : '';
+        const card = ContentUI.card({
+            className: 'mp-card',
+            image: coverUrl ? {
+                src: coverUrl,
+                alt: '',
+                data: isVideo && album.cover_item_id ? { mpThumbId: album.cover_item_id } : null,
+                onError: (event, img) => {
+                    if (isVideo && album.cover_item_id && typeof MPCoverFail === 'function') {
+                        MPCoverFail(img, album.cover_item_id, icon);
+                    } else {
+                        MPUtils.fallbackCover(img, icon);
+                    }
+                },
+            } : null,
+            title: album.name,
+            sub: album.artist || '',
+            // 时长放封面左下，正文只留标题/副标题；四插件 body 高度才能一致。
+            mediaOverlay: {
+                badge: `${album.count} 项`,
+                count: MPUtils.fmtDuration(album.total_duration),
+            },
+            actionsPlacement: 'overlay',
+            actions: [{
+                label: '',
+                icon: 'icon:play',
+                className: 'mp-card-play',
+                data: { key: album.key, kind: album.kind },
+                title: '播放全部',
+                ariaLabel: `播放专辑 ${album.name}`,
+            }],
+            data: { key: album.key, kind: album.kind },
+            ariaLabel: `打开${isVideo ? '视频' : '音乐'}专辑 ${album.name}`,
+            onActivate: (event) => {
+                if (event && event.preventDefault) event.preventDefault();
+                this.openAlbum(album.key, album.kind);
+            },
+        });
+        card.style.setProperty('--i', Math.min(index, 26));
+        const media = card.querySelector('.cui-media');
+        if (!coverUrl && media) this._fillCoverFallback(media, icon);
+        return card;
+    },
+
+    async _playAlbum(key, kind) {
+        const items = await Bridge.call('media_album_items', key, kind);
+        if (items && items.length) {
+            this.core.setQueue(items, 0);
+            Toast.info(`正在播放：${items[0].title}`);
+        }
+    },
+
     // ============================================================
-    // 渲染：媒体列表
+    // 渲染：媒体列表（共享 ContentUI）
     // ============================================================
     _renderList(items, opts = {}, container = null) {
         const target = container || document.getElementById('media-content');
         if (!items || !items.length) {
             target.innerHTML = '';
-            target.appendChild(this._buildEmpty('icon:music', '暂无媒体', '点击右上角「扫描」建立媒体索引'));
+            target.appendChild(this._buildEmpty('icon:music', '暂无媒体', '点击顶栏「校验」建立媒体索引'));
             return;
         }
 
@@ -93,8 +220,12 @@ Object.assign(MediaPlayerApp.prototype, {
         this._currentListOpts = opts;
         this._currentListContainer = target;
 
-        const rows = items.map((item, index) => this._rowHtml(item, index, opts)).join('');
-        target.innerHTML = `<div class="mp-list">${rows}</div>`;
+        // 详情页的容器本身就是 .mp-list：直接复用，避免再套一层。
+        const reuse = target.classList && target.classList.contains('mp-list');
+        const list = reuse ? target : ContentUI.list({ className: 'mp-list', ariaLabel: opts.listLabel || '媒体列表' });
+        target.innerHTML = '';
+        if (!reuse) target.appendChild(list);
+        items.forEach((item, index) => list.appendChild(this._buildMediaRow(item, index, opts)));
         this._observeThumbImgs(target);
     },
 
@@ -108,43 +239,133 @@ Object.assign(MediaPlayerApp.prototype, {
         return div;
     },
 
-    _rowHtml(item, index, opts) {
-        const active = this.core.currentItem && this.core.currentItem.id === item.id;
+    _buildRowSub(item, opts) {
+        const parts = [];
+        if (item.artist) parts.push(item.artist);
+        if (opts.showAlbum && item.album) parts.push(item.album);
+        if (opts.showPlayedAt && item.played_at) parts.push(MPUtils.timeAgo(item.played_at));
+        return parts.join(' · ');
+    },
+
+    _rowActions(item, index, opts) {
         const isFav = this.favIds.has(item.id);
+        const make = (action, icon, label, extraClass = '') => ({
+            label: '',
+            icon,
+            className: `mp-row-action${extraClass ? ' ' + extraClass : ''}`,
+            data: { mpAction: action, idx: index },
+            title: label,
+            ariaLabel: label,
+        });
+        if (opts.playlistId) {
+            return [make('remove', 'icon:x', '移出歌单', 'danger')];
+        }
+        return [
+            make('fav', 'icon:heart', isFav ? '取消喜欢' : '喜欢', isFav ? 'fav-active' : ''),
+            make('queue', 'icon:plus', '添加到队列'),
+            make('playlist', 'icon:list-music', '加入歌单'),
+        ];
+    },
+
+    _buildMediaRow(item, index, opts) {
+        const active = this.core.currentItem && this.core.currentItem.id === item.id;
         const coverSrc = MPUtils.coverUrl(item);
         const videoId = item.kind === 'video' ? item.id : '';
-        const cover = coverSrc
-            ? MPUtils.coverImg(coverSrc, MPUtils.itemIcon(item),
-                videoId ? `data-mp-thumb-id="${videoId}"` : '', videoId)
-            : MPUtils.itemIcon(item);
-        const subParts = [];
-        if (item.artist) subParts.push(item.artist);
-        if (opts.showAlbum && item.album) subParts.push(item.album);
-        if (opts.showPlayedAt && item.played_at) subParts.push(MPUtils.timeAgo(item.played_at));
-        const sub = MPUtils.escapeHtml(subParts.join(' · '));
+        const fallbackIcon = MPUtils.itemIcon(item);
+        const sub = this._buildRowSub(item, opts);
+        const row = ContentUI.row({
+            className: 'mp-row',
+            image: coverSrc ? {
+                src: coverSrc,
+                alt: '',
+                data: videoId ? { mpThumbId: videoId } : null,
+                onError: (event, img) => {
+                    if (videoId && typeof MPCoverFail === 'function') MPCoverFail(img, videoId, fallbackIcon);
+                    else MPUtils.fallbackCover(img, fallbackIcon);
+                },
+            } : null,
+            title: item.title,
+            sub,
+            data: { idx: index, id: item.id },
+            ariaLabel: `${item.kind === 'video' ? '视频' : '音频'}：${item.title}${sub ? ' · ' + sub : ''}`,
+            actions: this._rowActions(item, index, opts),
+            onActivate: (event) => this._activateRow(index, event),
+        });
+        row.style.setProperty('--i', Math.min(index, 30));
+        if (active) row.classList.add('active');
 
-        const actions = [];
-        if (opts.playlistId) {
-            actions.push(`<button class="mp-row-action danger" data-mp-action="remove" data-idx="${index}" title="移出歌单">${MPUtils.icon('icon:x')}</button>`);
-        } else {
-            actions.push(`<button class="mp-row-action ${isFav ? 'fav-active' : ''}" data-mp-action="fav" data-idx="${index}" title="${isFav ? '取消喜欢' : '喜欢'}">${MPUtils.icon('icon:heart')}</button>`);
-            actions.push(`<button class="mp-row-action" data-mp-action="queue" data-idx="${index}" title="添加到队列">${MPUtils.icon('icon:plus')}</button>`);
-            actions.push(`<button class="mp-row-action" data-mp-action="playlist" data-idx="${index}" title="加入歌单">${MPUtils.icon('icon:list-music')}</button>`);
+        const indexEl = document.createElement('span');
+        indexEl.className = 'mp-row-index';
+        indexEl.textContent = String(index + 1);
+        row.insertBefore(indexEl, row.firstChild);
+
+        const media = row.querySelector('.cui-media');
+        if (media) {
+            media.classList.add('mp-row-cover');
+            if (!coverSrc) this._fillCoverFallback(media, fallbackIcon);
         }
+        const body = row.querySelector('.cui-body');
+        if (body) body.classList.add('mp-row-info');
+        const title = row.querySelector('.cui-title');
+        if (title) title.classList.add('mp-row-title');
+        const subEl = row.querySelector('.cui-sub');
+        if (subEl) subEl.classList.add('mp-row-sub');
 
-        return `
-            <div class="mp-row ${active ? 'active' : ''}" data-id="${MPUtils.escapeHtml(item.id)}" data-idx="${index}"
-                 style="--i:${Math.min(index, 30)}">
-                <span class="mp-row-index">${index + 1}</span>
-                <div class="mp-row-cover">${cover}</div>
-                <div class="mp-row-info">
-                    <div class="mp-row-title">${MPUtils.escapeHtml(item.title)}</div>
-                    <div class="mp-row-sub">${sub}</div>
-                </div>
-                ${opts.showTag ? `<span class="mp-row-tag ${item.kind === 'video' ? 'video' : ''}">${item.kind === 'video' ? '视频' : '音乐'}</span>` : ''}
-                <span class="mp-row-duration">${MPUtils.formatTime(item.duration)}</span>
-                <div class="mp-row-actions">${actions.join('')}</div>
-            </div>`;
+        const actions = row.querySelector('.cui-actions');
+        if (opts.showTag) {
+            const tag = document.createElement('span');
+            tag.className = `mp-row-tag${item.kind === 'video' ? ' video' : ''}`;
+            tag.textContent = item.kind === 'video' ? '视频' : '音乐';
+            row.insertBefore(tag, actions || null);
+        }
+        const duration = document.createElement('span');
+        duration.className = 'mp-row-duration';
+        duration.textContent = MPUtils.formatTime(item.duration);
+        row.insertBefore(duration, actions || null);
+        return row;
+    },
+
+    /**
+     * 行激活：鼠标点击由 ContentUI 的 role=button 处理，键盘 Enter/Space 同样走这里。
+     * 用 `preventDefault` 标记“已处理”，内容代理里的旧分支据 defaultPrevented 跳过，避免重复播放。
+     */
+    async _activateRow(index, event) {
+        if (event && event.preventDefault) event.preventDefault();
+        const item = this._currentListData[index];
+        if (!item) return;
+        if (this.currentView === 'ncm-playlists' || this.currentView === 'ncm-my-playlists') {
+            this.openNeteasePlaylist(item);
+            return;
+        }
+        if (this.currentView.startsWith('ncm-')) {
+            try {
+                const urlData = await Bridge.callPlugin('netease-music', 'get_song_url', item.ncm_encrypted_id || item.original_id, item.original_id);
+                if (!urlData || !urlData.url) {
+                    Toast.error('获取播放地址失败');
+                    return;
+                }
+                item.stream_url = urlData.url;
+            } catch (err) {
+                Toast.error('获取播放地址失败');
+                return;
+            }
+        }
+        this.core.setQueue(this._currentListData, index);
+    },
+
+    _fillCoverFallback(media, icon) {
+        media.classList.remove('cui-media--empty');
+        media.removeAttribute('aria-hidden');
+        // 媒体层里可能已经有 mediaOverlay / actions；只插占位，不覆盖它们。
+        const holder = document.createElement('div');
+        holder.className = 'cover-fallback';
+        holder.innerHTML = MPUtils.icon(icon);
+        media.insertBefore(holder, media.firstChild);
+    },
+
+    _rowHtml(item, index, opts) {
+        // 兼容拆分契约里的成员检查；行渲染统一走 ContentUI，返回无事件的 HTML 快照。
+        return this._buildMediaRow(item, index, opts).outerHTML;
     },
 
     _neteaseToMediaItem(song) {
@@ -165,30 +386,20 @@ Object.assign(MediaPlayerApp.prototype, {
     },
 
     _renderNeteaseCliMissing(status = {}) {
-        const content = document.getElementById('media-content');
-        if (!content) return;
-        const version = status.ncm_cli_version || '';
-        const error = status.error || '';
-        content.innerHTML = `
-            <div class="empty-state">
-                <div class="empty-state-icon">${MPUtils.icon('icon:triangle-alert')}</div>
-                <div class="empty-state-text">未检测到 ncm-cli</div>
-                <div class="empty-state-hint">网易云音乐插件需要 ncm-cli 才能登录和播放。</div>
-                <div style="margin-top:14px;text-align:left;max-width:520px;margin-left:auto;margin-right:auto;line-height:1.9;font-size:13px;">
-                    <div>安装命令：</div>
-                    <pre style="background:var(--bg-hover);padding:8px 10px;border-radius:8px;overflow-x:auto;">npm install -g @music163/ncm-cli</pre>
-                    <div style="margin-top:8px;">或者参考：</div>
-                    <div><a href="https://www.npmjs.com/package/@music163/ncm-cli" target="_blank" rel="noopener">https://www.npmjs.com/package/@music163/ncm-cli</a></div>
-                    ${version ? `<div style="margin-top:8px;">当前版本：${MPUtils.escapeHtml(version)}</div>` : ''}
-                    ${error ? `<div style="margin-top:8px;color:var(--danger);">${MPUtils.escapeHtml(error)}</div>` : ''}
-                </div>
-                <button class="btn btn-primary" id="ncm-recheck-btn" style="margin-top:14px;">我已安装，重新检测</button>
-            </div>`;
-        document.getElementById('ncm-recheck-btn')?.addEventListener('click', () => this._loadCurrentView());
+        // 只说明“依赖不可用”，不再把安装命令、包地址或 ncm-cli 原始错误贴进界面。
+        this._renderNcmState('cli-missing', {
+            icon: 'icon:triangle-alert',
+            title: '网易云组件不可用',
+            hint: '网易云功能依赖的本机组件尚未就绪。完成安装与登录后点击重新检测。',
+            detail: this._ncmErrorDetail(status.error),
+            retry: true,
+            retryLabel: '重新检测',
+        });
     },
 
     async _renderNeteaseLogin() {
         const content = document.getElementById('media-content');
+        let loginError = '';
         try {
             const login = await Bridge.callPlugin('netease-music', 'check_login');
             if (login && login.success) {
@@ -221,15 +432,24 @@ Object.assign(MediaPlayerApp.prototype, {
                     .addEventListener('change', (e) => this._rememberExportMissing(e.target.checked));
                 return;
             }
-        } catch (e) { }
-        content.innerHTML = `
-            <div class="empty-state">
-                <div class="empty-state-icon"><svg class="obx-icon"><use href="#circle-user"></use></svg></div>
-                <div class="empty-state-text">未登录网易云音乐</div>
-                <div class="empty-state-hint">请先在终端执行：ncm-cli configure 和 ncm-cli login</div>
-                <button class="btn btn-primary" id="ncm-login-btn" style="margin-top:12px;">我已登录</button>
-            </div>`;
-        document.getElementById('ncm-login-btn').addEventListener('click', () => this._loadCurrentView());
+            loginError = (login && login.error) || '';
+        } catch (e) {
+            loginError = String((e && e.message) || e);
+        }
+        if (loginError) {
+            const kind = this._ncmErrorKind(loginError);
+            if (kind !== 'login') {
+                this._renderNcmError(loginError);
+                return;
+            }
+        }
+        this._renderNcmState('login', {
+            icon: 'icon:user',
+            title: '尚未登录网易云音乐',
+            hint: '请先在本机完成网易云登录，然后点击下方「我已登录」按钮重新检测。',
+            retry: true,
+            retryLabel: '我已登录',
+        });
     },
 
     // ============================================================
@@ -368,7 +588,7 @@ Object.assign(MediaPlayerApp.prototype, {
             }
             if (!playlists.length) {
                 Toast.info(includeCollected
-                    ? '没有可同步的歌单：请先在终端完成 ncm-cli login，或账号下确实没有歌单'
+                    ? '没有可同步的歌单：请先完成网易云登录，或账号下确实没有歌单'
                     : '没有可同步的自建歌单（收藏的歌单默认跳过，可在上面勾选后重试）');
                 return;
             }
@@ -488,8 +708,11 @@ Object.assign(MediaPlayerApp.prototype, {
         this.currentView = 'ncm-playlist-detail';
         this.currentAlbum = null;
         this.currentPlaylist = null;
-        document.getElementById('media-search').value = '';
-        document.getElementById('btn-search-clear').classList.add('hidden');
+        // 壳的「刷新」只在网易云视图出现，详情页也算；标题/副标题按歌单上报
+        this._updateActions();
+        this._chromeTitle = playlist.name || '歌单';
+        this._chromeSub = `${playlist.track_count || 0} 首 · 播放 ${playlist.play_count || 0}`;
+        this._pushChrome();
         const content = document.getElementById('media-content');
         if (!content) return;
         const cacheKey = 'ncm-playlist-detail-' + playlist.id;
@@ -498,7 +721,7 @@ Object.assign(MediaPlayerApp.prototype, {
         // 来源标签：从「我的歌单」进来时带 origin，搜索/推荐进来的（别人的歌单）留空
         const label = playlist.origin === 'created' ? '创建的歌单'
             : (playlist.origin === 'collected' ? '收藏的歌单' : '歌单');
-        if (cached && cached.ts && (Date.now() - cached.ts < twoHours) && cached.results) {
+        if (cached && cached.ts && (Date.now() - cached.ts < twoHours) && (cached.results || []).length) {
             if (seq !== this._loadSeq) return;
             const items = (cached.results || []).map(song => this._neteaseToMediaItem(song));
             this._renderDetail(items, {
@@ -514,8 +737,22 @@ Object.assign(MediaPlayerApp.prototype, {
         try {
             const data = await Bridge.callPlugin('netease-music', 'get_playlist_tracks', playlist.id, 100, 0);
             if (seq !== this._loadSeq) return;
-            this._ncmCacheSet(cacheKey, { ts: Date.now(), results: data.results || [] });
-            const items = (data.results || []).map(song => this._neteaseToMediaItem(song));
+            // 后端失败时 results 为空、success=false：不能当成“空歌单”缓存并渲染。
+            if (data && data.success === false) {
+                this._renderNcmError(data.error, () => this.openNeteasePlaylist(playlist));
+                return;
+            }
+            const tracks = (data && Array.isArray(data.results)) ? data.results : [];
+            if (!tracks.length) {
+                this._renderNcmState('empty', {
+                    icon: 'icon:list-music',
+                    title: '歌单为空',
+                    hint: '这个歌单暂时没有曲目。',
+                });
+                return;
+            }
+            this._ncmCacheSet(cacheKey, { ts: Date.now(), results: tracks });
+            const items = tracks.map(song => this._neteaseToMediaItem(song));
             this._renderDetail(items, {
                 label,
                 title: playlist.name || '歌单',
@@ -524,23 +761,18 @@ Object.assign(MediaPlayerApp.prototype, {
                 kind: 'ncm-playlist',
             });
         } catch (e) {
-            content.innerHTML = '<div class="empty-state empty-state--error">'
-                + '<div class="empty-state-icon">' + MPUtils.icon('icon:triangle-alert') + '</div>'
-                + '<div class="empty-state-text">歌单加载失败</div>'
-                + '<div class="empty-state-hint">检查网络 / 代理设置，或到「' + MPUtils.icon('icon:settings') + ' 设置」重新登录后再试</div>'
-                + '</div>';
+            this._renderNcmError(String((e && e.message) || e), () => this.openNeteasePlaylist(playlist));
         }
     },
 
-    _renderNeteasePlaylists(playlists, emptyText = '暂无推荐歌单') {
+    _renderNeteasePlaylists(playlists) {
         const content = document.getElementById('media-content');
-        if (!playlists || !playlists.length) {
-            this._renderEmpty('icon:list-music', emptyText);
-            return;
-        }
+        // 空列表的兜底已删除：调用点在拿不到数据时都会先渲染 _renderNcmState('empty'/'search')，
+        // 这里再回落只会把「暂无推荐歌单」的文案带回「我的歌单」。
+        const items = Array.isArray(playlists) ? playlists : [];
         // 带 origin 的列表（我的歌单）按来源分段：创建在前、收藏在后，段头带数量。
-        // 段头不带 data-idx，点击委派只认 .mp-row，索引映射不受影响。
-        const counts = playlists.reduce((acc, p) => {
+        // 段头不带 data-idx，激活只认 .mp-row，索引映射不受影响。
+        const counts = items.reduce((acc, p) => {
             if (p && p.origin) acc[p.origin] = (acc[p.origin] || 0) + 1;
             return acc;
         }, {});
@@ -548,77 +780,85 @@ Object.assign(MediaPlayerApp.prototype, {
             created: `创建的歌单 · ${counts.created || 0}`,
             collected: `收藏的歌单 · ${counts.collected || 0}`,
         };
+        const list = ContentUI.list({ className: 'mp-list', ariaLabel: '网易云歌单' });
         let current = '';
-        content.innerHTML = `<div class="mp-list">${playlists.map((p, i) => {
-            let head = '';
-            if (p.origin && p.origin !== current) {
-                current = p.origin;
-                head = `<div class="mp-list-group">${MPUtils.escapeHtml(groupTitle[p.origin] || p.origin)}</div>`;
+        items.forEach((playlist, index) => {
+            if (playlist.origin && playlist.origin !== current) {
+                current = playlist.origin;
+                const head = document.createElement('div');
+                head.className = 'mp-list-group';
+                head.textContent = groupTitle[playlist.origin] || playlist.origin;
+                list.appendChild(head);
             }
-            return head + `
-            <div class="mp-row" data-idx="${i}">
-                <span class="mp-row-index">${i + 1}</span>
-                <div class="mp-row-cover">${p.cover_url ? `<img src="${MPUtils.escapeHtml(p.cover_url)}" onerror="this.outerHTML='${MPUtils.icon('icon:list-music')}'">` : '<span class="cover-fallback">' + MPUtils.icon('icon:list-music') + '</span>'}</div>
-                <div class="mp-row-info">
-                    <div class="mp-row-title">${MPUtils.escapeHtml(p.name)}</div>
-                    <div class="mp-row-sub">${p.track_count} 首 · 播放 ${p.play_count}</div>
-                </div>
-            </div>`;
-        }).join('')}</div>`;
-        this._currentListData = playlists;
+            list.appendChild(this._buildNeteasePlaylistRow(playlist, index));
+        });
+        content.innerHTML = '';
+        content.appendChild(list);
+        this._currentListData = items;
+        this._currentListContainer = list;
+    },
+
+    _buildNeteasePlaylistRow(playlist, index) {
+        const row = ContentUI.row({
+            className: 'mp-row',
+            image: playlist.cover_url ? {
+                src: playlist.cover_url,
+                alt: '',
+                onError: (event, img) => MPUtils.fallbackCover(img, 'icon:list-music'),
+            } : null,
+            title: playlist.name,
+            sub: `${playlist.track_count || 0} 首 · 播放 ${playlist.play_count || 0}`,
+            data: { idx: index },
+            ariaLabel: `打开歌单 ${playlist.name}`,
+            onActivate: (event) => this._activateRow(index, event),
+        });
+        const indexEl = document.createElement('span');
+        indexEl.className = 'mp-row-index';
+        indexEl.textContent = String(index + 1);
+        row.insertBefore(indexEl, row.firstChild);
+        const media = row.querySelector('.cui-media');
+        if (media) {
+            media.classList.add('mp-row-cover');
+            if (!playlist.cover_url) this._fillCoverFallback(media, 'icon:list-music');
+        }
+        const body = row.querySelector('.cui-body');
+        if (body) body.classList.add('mp-row-info');
+        const title = row.querySelector('.cui-title');
+        if (title) title.classList.add('mp-row-title');
+        const sub = row.querySelector('.cui-sub');
+        if (sub) sub.classList.add('mp-row-sub');
+        return row;
     },
 
     _bindContentDelegation() {
-        document.getElementById('media-content').addEventListener('click', async (e) => {
+        const content = document.getElementById('media-content');
+        // ContentUI 的 action 点击会 stopPropagation；在捕获阶段接管卡片播放与行内动作，
+        // 保持原有委托路径，同时不再给每个 action 挂 onClick。
+        content.addEventListener('click', async (e) => {
             const playBtn = e.target.closest('.mp-card-play');
             if (playBtn) {
                 e.stopPropagation();
-                const items = await Bridge.call('media_album_items', playBtn.dataset.key, playBtn.dataset.kind);
-                if (items && items.length) {
-                    this.core.setQueue(items, 0);
-                    Toast.info(`正在播放：${items[0].title}`);
-                }
+                await this._playAlbum(playBtn.dataset.key, playBtn.dataset.kind);
                 return;
             }
+            const action = e.target.closest('.mp-row-action');
+            if (!action) return;
+            e.stopPropagation();
+            const idx = parseInt(action.dataset.idx, 10);
+            if (!isNaN(idx)) await this._handleRowAction(action.dataset.mpAction, idx);
+        }, true);
 
+        content.addEventListener('click', async (e) => {
             const card = e.target.closest('.mp-card');
-            if (card) {
+            if (card && !e.defaultPrevented) {
                 this.openAlbum(card.dataset.key, card.dataset.kind);
                 return;
             }
 
-            const action = e.target.closest('.mp-row-action');
-            if (action) {
-                e.stopPropagation();
-                const idx = parseInt(action.dataset.idx, 10);
-                if (!isNaN(idx)) await this._handleRowAction(action.dataset.mpAction, idx);
-                return;
-            }
-
             const row = e.target.closest('.mp-row');
-            if (row && !isNaN(parseInt(row.dataset.idx, 10))) {
-                const idx = parseInt(row.dataset.idx, 10);
-                if (this.currentView === 'ncm-playlists' || this.currentView === 'ncm-my-playlists') {
-                    const playlist = this._currentListData[idx];
-                    if (playlist) this.openNeteasePlaylist(playlist);
-                    return;
-                }
-                if (this.currentView.startsWith('ncm-')) {
-                    const item = this._currentListData[idx];
-                    if (!item) return;
-                    try {
-                        const urlData = await Bridge.callPlugin('netease-music', 'get_song_url', item.ncm_encrypted_id || item.original_id, item.original_id);
-                        if (!urlData || !urlData.url) {
-                            Toast.error('获取播放地址失败');
-                            return;
-                        }
-                        item.stream_url = urlData.url;
-                    } catch (err) {
-                        Toast.error('获取播放地址失败');
-                        return;
-                    }
-                }
-                this.core.setQueue(this._currentListData, idx);
+            if (row && !e.defaultPrevented && !isNaN(parseInt(row.dataset.idx, 10))) {
+                // ContentUI 的 role=button 已经处理过点击（preventDefault）；这里是旧 DOM 的回落。
+                await this._activateRow(parseInt(row.dataset.idx, 10), e);
             }
         });
     },
@@ -676,6 +916,7 @@ Object.assign(MediaPlayerApp.prototype, {
                 favBtn.classList.toggle('fav-active', fav);
                 favBtn.innerHTML = MPUtils.icon('icon:heart');
                 favBtn.title = fav ? '取消喜欢' : '喜欢';
+                favBtn.setAttribute('aria-label', fav ? '取消喜欢' : '喜欢');
             }
         });
     },

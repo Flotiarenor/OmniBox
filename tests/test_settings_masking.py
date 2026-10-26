@@ -1,6 +1,6 @@
 """凭据类设置项的脱敏契约测试（`PluginBase.get_settings` / `SECRET_MASK`）。
 
-背景（审计 §1.3）：`get_settings()` 通常经 `register_api()` 暴露成
+背景：`get_settings()` 通常经 `register_api()` 暴露成
 `POST /api/<插件>__get_settings`，而插件 iframe 与壳同源。只要它返回明文，
 "壳拒绝把设置文件当媒体资源返回"那层防护就被绕开 —— 攻击者不必读文件，
 直接问 API 即可。pixiv-sync 的 refresh_token 是账号级长期凭据（可无限换取
@@ -159,7 +159,7 @@ class SecretMaskingTests(unittest.TestCase):
 class PixivSyncMaskingTests(unittest.TestCase):
     """真实插件侧：pixiv-sync 的 `get_settings()` 不得再交出明文 refresh_token。
 
-    这条用例直接构造真实的 PixivSyncPlugin（审计 §1.3 的对象），而不是拿一个
+    这条用例直接构造真实的 PixivSyncPlugin，而不是拿一个
     自造的 schema 模拟 —— 它是这轮改动真正要保护的那个凭据。
     """
 

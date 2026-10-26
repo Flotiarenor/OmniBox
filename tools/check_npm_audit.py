@@ -48,6 +48,16 @@ ACCEPTED: dict = {
         'vite', 'server.fs.deny 在 Windows 备用路径上被绕过，仅 vite dev server', 'vite 8'),
     'GHSA-67mh-4wv8-2f99': (
         'esbuild', 'vite 传递依赖；同样的 dev server 场景，随 vite 一并解决', 'vite 8'),
+    'GHSA-587h-7wmj-h5pm': (
+        'vite', 'launch-editor 的 Windows 路径检查绕过，仅 vite dev server', 'vite 8'),
+    'GHSA-698v-4r3x-3vcv': (
+        'vite', 'launch-editor 参数转义遗漏，仅 vite dev server', 'vite 8'),
+    'GHSA-9jrq-w75r-8gcw': (
+        'vite', 'dev server 自定义中间件的跨源脚本执行，打包产物不含 dev server', 'vite 8'),
+    'GHSA-r825-w8mm-5pxw': (
+        'vite', 'launch-editor 参数被当作编辑器参数解析，仅 vite dev server', 'vite 8'),
+    'GHSA-rq7h-c2jc-7f22': (
+        'vite', 'server.fs.allow 在特定路径下被绕过，仅 vite dev server', 'vite 8'),
 }
 
 

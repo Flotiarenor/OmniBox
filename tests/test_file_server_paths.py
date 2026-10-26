@@ -35,7 +35,7 @@ class _StubInstance:
     """最小插件实例：只实现文件/缩略图路由会调用的成员。
 
     存在的意义是能自由设定 `get_file_roots()` / `thumb_dir` / `get_protected_paths()`
-    —— 也就是审计 §1.1 那条链路的可控输入：插件把根设成"包含 .config 的目录"而不是
+    —— 也就是改根链路的可控输入：插件把根设成"包含 .config 的目录"而不是
     默认数据根，或者反过来申报受保护路径。
     """
 
@@ -391,7 +391,7 @@ class ThumbEnsureHookTests(_FileRouteFixture, unittest.TestCase):
 class ProtectedCredentialFileTests(_FileRouteFixture, unittest.TestCase):
     """壳自己的凭据文件不得从任何数据路由流出去。
 
-    攻击链（审计 §1.1 的改根链路 + 兄弟目录布局）：插件把文件根设成包含
+    攻击链（改根链路 + 兄弟目录布局）：插件把文件根设成包含
     <config_dir> 的目录 → `/file` 的「是否在允许根之内」检查通过 → 读走
     `auth_token.txt`。它是长期进程外凭据，读走等于把一次前端 XSS 或一次
     局域网泄露自举成持久令牌，所以这条判定必须独立于插件提供的根。

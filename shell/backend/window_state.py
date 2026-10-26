@@ -19,7 +19,7 @@ limitations under the License.
 HTTP 侧（`file_server.api_proxy`）是一个恒返回失败的桩，桌面 `js_api` 侧切真窗口。
 而壳的 `bridge.ts` 在 pywebview 注入 `window.pywebview` 之前就先装上了 HTTP 替身，
 `check()` 随即命中它并把它固化成 `_api`：**桌面窗口里的调用实际走的是 HTTP 那条**，
-于是「启动后进入全屏」与「切换窗口全屏」在桌面窗口里都不生效（报告 §6）。桥的初始化
+于是「启动后进入全屏」与「切换窗口全屏」在桌面窗口里都不生效。桥的初始化
 顺序已按 `pywebviewready` 修正，但两条通道仍必须给出同一个结果 —— 判定只写一处。
 
 `webview` 在函数内导入：`webview.platforms.edgechromium` 在导入期就摸 CLR/WinForms

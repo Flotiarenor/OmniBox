@@ -45,7 +45,7 @@ class PeerMixin:
     def _peer_endpoints(info: Dict[str, Any]) -> List[Tuple[str, int]]:
         """一台设备发布的**全部**可用端点（IPv6 在前，然后 IPv4）。
 
-        为什么不能只返回一个：§4.6.1 把 IPv4 定位为可达性兜底，设备因此常常同时
+        为什么不能只返回一个：IPv4 是可达性兜底，设备因此常常同时
         发布两种端点。只挑一个的话，首选那个不通（IPv6 没路由、对端只在 v4 上可达）
         就会把整台设备判成离线 —— 而它其实就在那儿。
         """
@@ -84,7 +84,7 @@ class PeerMixin:
     def _bootstrap_endpoints(self, identity: Any) -> List[Tuple[Tuple[str, int], str]]:
         """自举候选：**用本机自己发布的端点去问一次注册快照**。
 
-        为什么这一招成立（设计文档 §7.3）：注册数据是"任一在线共享节点都能提供完整
+        为什么这一招成立：注册数据是"任一在线共享节点都能提供完整
         快照"。而两台机器可能都还没跟对方说过话 —— 此时谁也不知道对方地址，但**本机
         注册记录里写着本机自己的地址**，拿它去问"任何在线节点"（包括自己），就能把
         对方的记录（含对方的端点）一起拿回来。
@@ -135,8 +135,8 @@ class PeerMixin:
         """手工登记 / 移除 / 更新对端端点（发现的**起点**）。
 
         为什么必须有这个东西：注册记录里的端点是设备自己发布的，而"第一次发现
-        一台设备"没有任何自动途径 —— 注册表此刻是空的。设计文档 §7.4 把这个缺口
-        交给"稳定地址 + 带外交换"，插件层就得提供一个填地址的地方，否则用户会卡在
+        一台设备"没有任何自动途径 —— 注册表此刻是空的。这个缺口由"稳定地址 + 带外交换"
+        来补，插件层就得提供一个填地址的地方，否则用户会卡在
         "我知道对方 IP，但界面里没有地方输入"。
 
         `action` 取值：
@@ -203,8 +203,8 @@ class PeerMixin:
         """本机的可分享地址串（给对方粘贴用）。
 
         为什么需要"复制"这个动作：地址无法自动跨机传播 —— 对方不问我、我也不知道
-        它换了地址；而带外交换（当面/聊天工具粘一次）是设计里就承认的引导手段
-        （§7.4）。因此界面要能一键拿到这串东西，让对方粘进"更新对方地址"。
+        它换了地址；而带外交换（当面/聊天工具粘一次）是设计里就承认的引导手段。
+        因此界面要能一键拿到这串东西，让对方粘进"更新对方地址"。
         """
         identity = self._load_identity()
         roster = self._load_roster()
@@ -278,7 +278,7 @@ class PeerMixin:
     def list_peers(self, opts: Any = None, refresh: bool = True) -> Dict[str, Any]:
         """列出团体里的对端设备及其可读共享项。
 
-        `refresh=True` 时逐台连过去拉注册快照（§7.3：任一在线节点都能提供完整
+        `refresh=True` 时逐台连过去拉注册快照（任一在线节点都能提供完整
         快照），因此"别人开机后我能看到它"不需要等任何人手动同步。对端不可达
         只影响它自己那一条 —— 不能因为有一台离线就让整张列表失败。
         """
@@ -295,14 +295,14 @@ class PeerMixin:
         errors: List[Dict[str, str]] = []
         if refresh and self._sync_lock.acquire(blocking=False):
             try:
-                # 先确保本机的注册记录是最新的（地址/共享变化时递增 seq 重发，§7.4）。
+                # 先确保本机的注册记录是最新的（地址/共享变化时递增 seq 重发）。
                 # 没有这一步，"我换了网络/改了共享项"会让对端一直用旧记录。
                 self._refresh_own_registration()
                 # 候选端点：手动登记的（**引导**）、本机自己发布的（**自举**）、
                 # 以及注册表里已经学到的。后台同步用的是同一个 `_sync_candidates`。
                 candidates = self._sync_candidates(identity, roster)
                 # **并行**探测。为什么必须并行：设备常同时发布 IPv6 与 IPv4 端点
-                # （§4.6.1 把 v4 当可达性兜底），而 IPv6 在本机常常没有路由 —— 串行
+                # （v4 是可达性兜底），而 IPv6 在本机常常没有路由 —— 串行
                 # 等超时的话，几个端点就能把一次刷新拖到一分钟以上（实测 80 秒）。
                 # 界面路径只等第一个成功，后台路径等全部（见 `_fetch_registries_parallel`）。
                 self._fetch_registries_parallel(candidates, identity, roster)
@@ -349,7 +349,7 @@ class PeerMixin:
         return {'success': True, 'peers': peers, 'errors': errors,
                 'registry_enabled': self._registry is not None,
                 'registry_size': len(self._registry) if self._registry is not None else 0,
-                # 名单分发的可见性：各对端报出的名单版本（§5.7 要求界面能做对照）
+                # 名单分发的可见性：各对端报出的名单版本（界面需要能做对照）
                 'roster_versions': [
                     {'endpoint': f'{host}:{port}', **note}
                     for (host, port), note in sorted(self._peer_roster_notes.items())

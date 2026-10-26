@@ -5,7 +5,7 @@
 1. `wait_for_server` 不得经环境代理访问本机 Flask（历史上表现为"服务已监听仍判启动超时"）；
 2. 「上次离开的页面」只记**安全退出** —— 桌面模式必须在 `webview.start()` **正常返回**
    之后提交，不能放进 `finally`：异常展开、崩溃与强杀都不算安全退出，那时应当保留
-   上一次安全退出的值（见 `.dsh/shell-prefs-report.md` §7.5）。
+   上一次安全退出的值。
 
 运行：
     python -m unittest tests.test_main_startup -v

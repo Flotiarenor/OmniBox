@@ -430,6 +430,89 @@ class ImageViewerMixedTestCase(unittest.TestCase):
             seq = [im['url'] for im in desc['all_images']]
             self.assertEqual(seq[:2], ['9999/9999_p0.jpg', '9999/9999_p1.jpg'])
 
+    def test_pixiv_sort_mixes_works_and_singles(self):
+        """Pixiv 排序支持：多图作品（子文件夹）与单图（平铺文件）在**同一个**序列里
+        按作品号排序（倒序 = 新作品在前），而不是「先全部文件夹、再全部单图」；
+        平铺的多图作品（旧布局 100_p0 / 100_p1）内部仍按 p0 → p1，方向不翻转页序。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # 多图作品 800 落成子文件夹，单图作品 900 / 700 平铺；
+            # 旧布局的多图作品 100 平铺成 100_p0 / 100_p1
+            for name in ['900.jpg', '700.jpg', '100_p0.jpg', '100_p1.jpg']:
+                _make_image(root / name, 100, 100)
+            for name in ['800_p0.jpg', '800_p1.jpg']:
+                _make_image(root / '800' / name, 100, 100)
+            module = self.module
+            orig = module.ImageViewerPlugin._resolved_config
+            try:
+                module.ImageViewerPlugin._resolved_config = {
+                    'root_dir': str(root),
+                    'folders': {'__global__': {'sort_by': 'time_name', 'sort_order': 'desc'}},
+                }
+                plugin = module.ImageViewerPlugin(
+                    {'name': 'image-viewer'},
+                    {'directories': {'data_root': str(root)}},
+                )
+            finally:
+                module.ImageViewerPlugin._resolved_config = orig
+
+            def names(data):
+                return [it.get('name') or Path(it['url']).name for it in data['items']]
+            # 倒序：900 → 800（文件夹）→ 700 → 100_p0 → 100_p1
+            self.assertEqual(names(plugin.list_folder_items('', 1, 40, 'time_name', 'desc')),
+                             ['900.jpg', '800', '700.jpg', '100_p0.jpg', '100_p1.jpg'])
+            # 正序：100_p0 → 100_p1 → 700 → 800（文件夹）→ 900
+            self.assertEqual(names(plugin.list_folder_items('', 1, 40, 'time_name', 'asc')),
+                             ['100_p0.jpg', '100_p1.jpg', '700.jpg', '800', '900.jpg'])
+            # 进入作品文件夹：页序 p0 → p1，倒序不翻转
+            self.assertEqual(names(plugin.list_folder_items('800', 1, 40, 'time_name', 'desc')),
+                             ['800_p0.jpg', '800_p1.jpg'])
+            # 连续浏览序列与瀑布流同序（作品展开后与单图交错）
+            seq = [im['url'] for im in
+                   plugin.list_folder_items('', 1, 40, 'time_name', 'desc')['all_images']]
+            self.assertEqual(seq, ['900.jpg', '800/800_p0.jpg', '800/800_p1.jpg',
+                                   '700.jpg', '100_p0.jpg', '100_p1.jpg'])
+
+    def test_pixiv_sort_digit_named_album_stays_work_list(self):
+        """目录名以数字开头但里面装的是作品时仍按作品号排序：`2024 旅行` 这类相册
+        名带数字，不能因此把里面的作品当成作品内部的页序；反过来，整层没有作品号
+        的普通图片目录仍是名字升序（不随方向翻转）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # 相册名带数字：里面是两个作品（文件夹 800 + 平铺单图 900）
+            _make_image(root / '2024 旅行' / '900.jpg', 100, 100)
+            for name in ['800_p0.jpg', '800_p1.jpg']:
+                _make_image(root / '2024 旅行' / '800' / name, 100, 100)
+            # 普通图片目录：整层无作品号
+            for name in ['b.jpg', 'a.jpg']:
+                _make_image(root / '风景' / name, 100, 100)
+            module = self.module
+            orig = module.ImageViewerPlugin._resolved_config
+            try:
+                module.ImageViewerPlugin._resolved_config = {
+                    'root_dir': str(root),
+                    'folders': {'__global__': {'sort_by': 'time_name', 'sort_order': 'desc'}},
+                }
+                plugin = module.ImageViewerPlugin(
+                    {'name': 'image-viewer'},
+                    {'directories': {'data_root': str(root)}},
+                )
+            finally:
+                module.ImageViewerPlugin._resolved_config = orig
+            def names(data):
+                return [it.get('name') or Path(it['url']).name for it in data['items']]
+
+            self.assertEqual(
+                names(plugin.list_folder_items('2024 旅行', 1, 40, 'time_name', 'desc')),
+                ['900.jpg', '800'])
+            self.assertEqual(
+                names(plugin.list_folder_items('2024 旅行', 1, 40, 'time_name', 'asc')),
+                ['800', '900.jpg'])
+            for order in ('asc', 'desc'):
+                self.assertEqual(
+                    names(plugin.list_folder_items('风景', 1, 40, 'time_name', order)),
+                    ['a.jpg', 'b.jpg'])
+
     def test_regenerate_thumbs(self):
         """更新缩略图：删除 SQLite 缓存并重新生成；非法路径报错。"""
         result = self.plugin.regenerate_thumbs(['workA/111_p0.png'])

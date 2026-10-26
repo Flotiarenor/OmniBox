@@ -19,6 +19,7 @@ NAMESPACE_MARKER = _common.NAMESPACE_MARKER
 ALLOWED_EXTENSIONS = _common.ALLOWED_EXTENSIONS
 list_directory = _common.list_directory
 natural_sort_key = _common.natural_sort_key
+_is_pixiv_work_dir = _common.is_pixiv_work_dir
 _pixiv_sort = _common.pixiv_sort
 
 class ListingMixin:
@@ -548,7 +549,7 @@ class ListingMixin:
 
         子文件夹以 p0 瓦片返回（封面 = p0，time_name 模式下带圆圈数量角标），
         单图以 image 返回。`all_images` 为按瀑布流顺序展开的连续浏览序列：
-        每个子文件夹的图片（p0 → p1 → …）依次展开、随后是单图，
+        每个子文件夹的图片（p0 → p1 → …）按瀑布流里它自己的位置展开，
         供灯箱向右连续翻看画师的其他作品（包括文件夹与单图）。
 
         **首屏只读当前目录一层**：没有直接图片、只有子目录的容器目录以
@@ -635,14 +636,17 @@ class ListingMixin:
             # Pixiv 排序支持：顶层作品/单图按 pixiv 数字号（前导数字）排序，方向生效
             # （倒序 = 大号在前 = 新作品在前），无数字名排最后；模糊匹配时同号/
             # 无号条目改为整名自然序（先数字再文字），让「日期+标题」也能排对。
-            # 纯图片文件夹（作品内部）图片仍按文件名自然序 p0 → p1，不受方向影响。
+            # 多图作品（子文件夹瓦片）与单图（平铺文件）排在**同一个**序列里，
+            # 否则就是「先所有文件夹、再所有单图」两段，与作品号无关。
+            # 当前目录自身是作品（`is_pixiv_work_dir`）时，里面是页序号：恒按
+            # 文件名自然序 p0 → p1，方向不参与（倒序不翻转作品内部的页序）。
             fuzzy = self._pixiv_fuzzy_mode(rel_path)
-            cards = _pixiv_sort(cards, lambda x: x['name'], reverse, fuzzy)
-            if cards:
-                images = _pixiv_sort(images, lambda x: Path(x['url']).name, reverse, fuzzy)
+            entries = cards + images
+            if _is_pixiv_work_dir(rel_path, entries, lambda x: x['name'],
+                                  has_cards=bool(cards)):
+                items = sorted(entries, key=lambda x: natural_sort_key(x['name']))
             else:
-                images.sort(key=lambda x: natural_sort_key(Path(x['url']).name))
-            items = cards + images
+                items = _pixiv_sort(entries, lambda x: x['name'], reverse, fuzzy)
         else:
             if sort_by == 'mtime':
                 cards.sort(key=lambda x: x['mtime'], reverse=reverse)
