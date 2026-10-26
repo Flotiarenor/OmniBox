@@ -13,13 +13,13 @@ Vue 3 + TypeScript + Vite。`src/` 是壳的界面（`components/` `core/` `rout
 - 壳首页（`/`、`/settings`、插件路由）由 `dist/index.html` 提供，dist 缺失时直接 404；CI 在跑测试前会先构建一次。
 - `dist/` 不提交（`.gitignore`）。
 
-`public/shell/` 共 13 个文件：
+`public/shell/` 共 16 个文件：
 
 | 类别 | 文件 |
 | --- | --- |
 | 样式 | `variables.css` `shared.css` `base.css` `effects.css` |
-| 组件 | `folder-picker.{css,js}` `freshness.{css,js}` `splitter.{css,js}` |
-| 脚本 | `base.js` `motion.js` `icons.generated.js` |
+| 组件 | `folder-picker.{css,js}` `freshness.{css,js}` `splitter.{css,js}` `content-ui.{css,js}` |
+| 脚本 | `base.js` `native-client.js` `motion.js` `icons.generated.js` |
 
 ## 与 `res/` 的区别
 

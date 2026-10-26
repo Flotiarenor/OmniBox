@@ -15,10 +15,20 @@
        必须排在构建产物 shell.css 之前 —— 壳页面独有的 .field-inline / .field-checkbox-row
        与 .field / .field-range 同族同特异性，靠"后出现"胜出。 -->
   <link rel="stylesheet" href="/shell/shared.css">
+  <!-- 共享动效/阴影 token 与 .obx-* 类：壳文档与插件 iframe 使用同一份。
+       只加载 effects.css，不加载 base.css —— 后者带 body/.modal/.view-toolbar
+       等全局骨架规则，加载进壳会改变壳自身布局。 -->
+  <link rel="stylesheet" href="/shell/effects.css">
   <!-- 分隔条内核：壳页面不注入 base.css 那套，必须自己引一份（与插件 iframe 同一实现，
        否则拖动逻辑在壳与插件里会各写一套）。 -->
+  <link rel="stylesheet" href="/shell/folder-picker.css">
   <link rel="stylesheet" href="/shell/splitter.css">
+  <link rel="stylesheet" href="/shell/freshness.css">
   <script src="/shell/splitter.js"></script>
+  <script src="/shell/folder-picker.js"></script>
+  <!-- 壳渲染的插件顶栏复用统一「同步 / 校验」组件（freshness.js）：
+       它只依赖 Bridge.callSystem / Utils.iconHtml / Toast，桥接垫片在 App.vue 里装。 -->
+  <script src="/shell/freshness.js"></script>
   <style>html, body {margin: 0;padding: 0}</style>
 </head>
 <body>

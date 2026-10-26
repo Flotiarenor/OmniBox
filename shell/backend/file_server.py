@@ -87,11 +87,13 @@ _PLUGIN_BOOTSTRAP_SCRIPT = (
     '<link rel="stylesheet" href="/shell/freshness.css">'
     '<link rel="stylesheet" href="/shell/effects.css">'
     '<link rel="stylesheet" href="/shell/splitter.css">'
+    '<link rel="stylesheet" href="/shell/content-ui.css">'
     '<script src="/shell/base.js"></script>'
     '<script src="/shell/folder-picker.js"></script>'
     '<script src="/shell/freshness.js"></script>'
     '<script src="/shell/motion.js"></script>'
     '<script src="/shell/splitter.js"></script>'
+    '<script src="/shell/content-ui.js"></script>'
     # 图标 sprite：必须**内联进文档**，不能靠 <use href="外部.svg#名字"> 引用。
     # 实测（pywebview / WebView2 / Edge 153）：外部文件的 <use> 一律不渲染，包围盒恒为 0，
     # 而同文档的 # 引用正常 —— 而 Chrome 会渲染外部引用，所以这个缺陷在浏览器里测不出来。

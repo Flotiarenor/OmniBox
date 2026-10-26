@@ -5,6 +5,7 @@ import App from './App.vue'
 import { createRouter } from './router'
 import { useBridge } from './core/bridge'
 import './styles/shell.css'  // 引入 Shell 样式
+import './styles/plugin-page.css'  // 壳渲染的插件页面骨架（PluginChrome）
 import { applyStoredAppearance } from './core/appearance'
 import { applyBackground } from './core/background'
 import { loadShellPrefs, onShellPrefsChanged } from './core/shell-prefs'
