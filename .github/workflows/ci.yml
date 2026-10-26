@@ -60,6 +60,8 @@ permissions:
 env:
   PYTHON_VERSION: '3.12'
   NODE_VERSION: '20'
+  # Windows runner 默认 ANSI cp1252；门禁与测试会输出中文，统一 UTF-8 避免 UnicodeEncodeError。
+  PYTHONIOENCODING: 'utf-8'
 
 jobs:
   changes:
