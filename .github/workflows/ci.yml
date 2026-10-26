@@ -2,13 +2,18 @@ name: ci
 
 # 门禁总览（每一条都在本地实测过，见 docs/ci-and-release.md）：
 #   changes     —— 变更集判定：算出这次只动了文档还是动了代码，其余 job 靠它的输出决定跑不跑
+#   plugins     —— 从 plugins/*/manifest.json 生成插件矩阵，新增插件不用改本文件
 #   lint        —— ruff 全量 + 插件规范 + 打包规则 + 版本一致性 + 图标 sprite + 测试文件可运行性
-#                  + 文档引用一致性 + 本地隐私门禁（开发机配置里的路径/密钥不得被复制进仓库；CI 上 SKIP）
+#                  + 文档引用一致性（本地隐私门禁只在开发机跑，runner 上必然 SKIP）
 #   docs        —— 只在变更集含 .md 时跑：文档引用一致性（AGENTS.md 的名字 / 路径 / 链接）
-#   typecheck   —— pyright（内核零错误硬门禁；插件/测试先输出基线不拦截）
-#   test        —— 构建前端 + unittest 全量，Windows + Linux 双平台
+#   typecheck   —— pyright（内核零错误硬门禁；不再输出不会失败的插件/测试基线）
+#   test        —— 构建前端 + 共享测试（tools/plugin_ci.py --core），Windows + Linux 双平台
+#   plugin      —— 每个插件一条 job（tools/plugin_ci.py --plugin <name>），Windows + Linux
 #   frontend    —— 转义一致性门禁 + vue-tsc 类型检查 + vite 构建
 #   package     —— 真实跑一次 PyInstaller 并校验产物内容
+#
+# 已删除的“不会失败”步骤：ruff format --check（continue-on-error）、pyright plugins tests
+# （continue-on-error）、CI 里的 check_private_paths（runner 没有本地配置，必然 SKIP）。
 #
 # 为什么 test/package 必须包含 windows-latest：
 # 历史缺陷里有一批是 Windows 专属的（SQLite 临时目录被占用导致清理失败、
@@ -140,6 +145,25 @@ jobs:
       - name: 文档引用一致性（AGENTS.md 的名字 / 路径 / 链接）
         run: python tools/check_docs.py
 
+  plugins:
+    name: 插件矩阵
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      names: ${{ steps.list.outputs.names }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 只读 manifest 目录：不装项目依赖，矩阵由插件目录动态生成，新增插件不用改 workflow。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - id: list
+        name: 读取插件清单
+        run: echo "names=$(python tools/plugin_ci.py --list)" >> "$GITHUB_OUTPUT"
+
   lint:
     name: lint（ruff + 规范 + 版本 + 测试/图标）
     needs: changes
@@ -165,10 +189,6 @@ jobs:
       - name: ruff（全量，含 E9/F 语法与未定义名字）
         run: python -m ruff check .
 
-      - name: ruff format 差异（仅报告，不作为门禁）
-        continue-on-error: true
-        run: python -m ruff format --check .
-
       - name: 插件规范检查
         run: python tools/check_plugins.py
 
@@ -189,13 +209,6 @@ jobs:
       # 兜的是"代码改了、文档没跟上"。
       - name: 文档引用一致性（AGENTS.md 的名字 / 路径 / 链接）
         run: python tools/check_docs.py
-
-      # 本地隐私门禁：读开发机配置（.config/plugins/*.json 等，均未跟踪）提取真实路径与
-      # 密钥，再扫被跟踪文件里有没有被复制进去。runner 上没有这些配置，因此这里走 SKIP
-      # 分支并以 0 退出 —— 它的价值在开发机（见 docs/ci-and-release.md「本地隐私门禁」）。
-      # 放在 CI 里是为了让这一步不被忘记、也让工具本身每次都被导入执行一遍。
-      - name: 本地隐私门禁（无本地配置时 SKIP）
-        run: python tools/check_private_paths.py
 
   typecheck:
     name: typecheck（pyright，内核硬门禁）
@@ -219,16 +232,10 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install -r requirements-dev.txt
 
-      # 内核（main.py / shell / tools）当前为 0 错误，作为硬门禁：
-      # 任何新增的类型错误都必须当场修掉。
+      # pyright 只保留内核硬门禁；插件/测试的历史基线不再以 continue-on-error 输出，
+      # 那条步骤不会让 CI 失败，留着只会制造“看起来检查过”的噪声。
       - name: pyright（内核，零错误门禁）
         run: python -m pyright main.py shell tools
-
-      # 插件与测试的类型错误尚未清零，先全量输出供逐步收敛，不拦截合并。
-      # 收紧步骤：把插件修到 0 后，把这一步改成不 continue-on-error。
-      - name: pyright（插件 + 测试，基线，不拦截）
-        continue-on-error: true
-        run: python -m pyright plugins tests
 
   test:
     name: test（${{ matrix.os }} / py${{ matrix.python }}）
@@ -271,11 +278,43 @@ jobs:
           npm --prefix shell/frontend ci
           npm --prefix shell/frontend run build
 
-      - name: 单元测试（全量）
-        run: python -m unittest discover -s tests -v
+      - name: 单元测试（共享）
+        run: python tools/plugin_ci.py --core
 
-      - name: 运行时禁止 print 门禁（发行版 console=False）
-        run: python -m unittest tests.test_no_print_in_runtime -v
+  plugin:
+    name: plugin / ${{ matrix.plugin }}（${{ matrix.os }}）
+    needs: [changes, plugins]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        plugin: ${{ fromJSON(needs.plugins.outputs.names) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      # 每个插件一条独立 job：失败能直接落到插件名；测试归属由 tools/plugin_ci.py 按
+      # test_<插件名下划线>_* 前缀决定，新增插件不需要改本文件。
+      - name: 插件测试（${{ matrix.plugin }}）
+        run: python tools/plugin_ci.py --plugin "${{ matrix.plugin }}"
 
   frontend:
     name: frontend（转义门禁 + 类型 + 构建）
@@ -319,9 +358,9 @@ jobs:
 
   package:
     name: package（PyInstaller 冒烟 + 产物校验，${{ matrix.os }}）
-    needs: [changes, lint, frontend]
-    # 打包不在每次 push / PR 上跑：省掉 Linux + Windows 两个 runner 与约 100s 墙钟
-    # （日常 push 由 9 个 job 降到 7 个）。覆盖率没有丢：
+    needs: [changes, lint, test, plugin, frontend]
+    # 打包不在每次 push / PR 上跑：省掉 Linux + Windows 两个 runner 与约 100s 墙钟。
+    # 覆盖率没有丢：
     #   - 改到打包相关文件（docs/Releases/**、requirements*.txt、pyproject.toml、
     #     tools/check_packaging.py、tools/check_build_tree.py）时，package-smoke.yml
     #     会在 PR 与 main/develop push 上按路径触发，跑的是同一套双平台 PyInstaller
