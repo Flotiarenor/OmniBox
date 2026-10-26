@@ -52,6 +52,11 @@ venv/bin/python -m unittest discover -s tests
 
 项目方向 [docs/core-direction.md](docs/core-direction.md)；本地开发 [docs/development.md](docs/development.md)；CI 与发布 [docs/ci-and-release.md](docs/ci-and-release.md)。
 
+插件页面骨架（壳渲染 chrome、内容 iframe 只装内容、native 面板）见 [docs/plugin-page-architecture.md](docs/plugin-page-architecture.md)；
+界面规范见 [docs/plugin-ui-guide.md](docs/plugin-ui-guide.md)。改插件页面后可用
+`venv/Scripts/python.exe tools/plugin_ui_audit.py` 做真实壳验收（需已构建的 `shell/frontend/dist`、
+Chrome 与 selenium；不进 CI，用法与退出码见 [tools/AGENTS.md](tools/AGENTS.md)）。
+
 ## 与 agent 协作
 
 - 需要在这个仓库里找东西时先问，不要靠大范围搜索硬凑。
