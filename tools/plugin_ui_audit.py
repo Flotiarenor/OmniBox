@@ -957,8 +957,10 @@ def _resolve_browser_binary() -> str | None:
 
 def _create_driver() -> Any:
     try:
-        from selenium import webdriver
-        from selenium.webdriver.chrome.options import Options as ChromeOptions
+        # selenium 只在 requirements-e2e.txt 里；CI 的 typecheck 不装它，运行时缺包由下面的
+        # except 转成环境错误提示。这里按行忽略缺失导入，不用文件级关闭掩盖其他漏导入。
+        from selenium import webdriver  # pyright: ignore[reportMissingImports]
+        from selenium.webdriver.chrome.options import Options as ChromeOptions  # pyright: ignore[reportMissingImports]
     except ImportError as exc:
         raise UiAuditError('未安装 selenium；先执行 pip install -r requirements-e2e.txt') from exc
 
