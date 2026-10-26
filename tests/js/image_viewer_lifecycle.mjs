@@ -8,6 +8,8 @@
 //   1. onHide 停掉幻灯片定时器，且不要求"停止播放"语义（这里是相册，无播放）；
 //   2. onShow 后从原来的位置继续（不是跳回第一张），用户主动停止则不续播；
 //   3. onDispose 摘掉 resize 监听器（监听器可回收，不再是 35 : 0）。
+// 幻灯片按钮在壳里（内容页没有 #btn-slideshow），所以启停状态按上报的
+// omnibox:chrome.actions.slideshow（label / active）断言，而不是读内容页 DOM。
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
@@ -85,7 +87,12 @@ function loadImageViewer() {
         innerWidth: 1200,
         innerHeight: 800,
     };
-    const parent = { location: { origin: 'http://127.0.0.1:18080' }, document: { documentElement: { getAttribute: () => null, setAttribute() { } } } };
+    const parent = {
+        location: { origin: 'http://127.0.0.1:18080' },
+        document: { documentElement: { getAttribute: () => null, setAttribute() { } } },
+        postMessage(payload) { chromeMessages.push(payload); },
+    };
+    const chromeMessages = [];
     win.parent = parent;
     const messageListeners = [];
     const doc = {
@@ -125,8 +132,7 @@ function loadImageViewer() {
     // 图标集桩：壳由引导脚本注入 /shell/icons.generated.js 并把 Icons 挂到全局。
     // 沙箱里 `window` 只是普通对象，所以 `window.Icons` 与裸标识符 `Icons` 要各挂一次
     // （插件代码两种写法都有：app-utils.js 用 window.Icons，app-grid.js 用 Icons）。
-    // 桩按壳产物的形态给出 `icon:名字` → `<svg class="obx-icon"><use href="#名字"></use></svg>`，
-    // 用例据此断言幻灯片按钮的图标标记。
+    // 桩按壳产物的形态给出 `icon:名字` → `<svg class="obx-icon"><use href="#名字"></use></svg>`。
     const iconsStub = {
         html: (name, className) => '<svg class="obx-icon'
             + (className ? ' ' + className : '') + '"><use href="#' + String(name).slice(5) + '"></use></svg>',
@@ -142,7 +148,7 @@ function loadImageViewer() {
     }
     vm.runInContext('globalThis.__IV = ImageViewer; globalThis.__life = window.PluginLifecycle;', sandbox);
     return {
-        win, doc, getEl, winListeners, messageListeners,
+        win, doc, getEl, winListeners, messageListeners, chromeMessages,
         ImageViewer: sandbox.__IV,
         lifecycle: sandbox.__life,
     };
@@ -161,18 +167,22 @@ console.log('场景 1：onHide 停掉幻灯片定时器（修复前切走后每 
 
     iv.toggleSlideshow();
     check('启动幻灯片后有定时器', iv.slideshowTimer !== null);
-    const stopHtml = env.getEl('btn-slideshow').innerHTML;
-    check('按钮变成"停止"',
-        stopHtml.includes('<use href="#pause">') && stopHtml.includes('停止'),
-        `实际 ${stopHtml}`);
+    const slideshowAction = () => {
+        const chrome = env.chromeMessages.filter(m => m.type === 'omnibox:chrome').at(-1);
+        return chrome && chrome.actions ? chrome.actions.slideshow : null;
+    };
+    const stopAction = slideshowAction();
+    check('壳顶栏的幻灯片动作变成"停止"',
+        !!stopAction && stopAction.active === true && stopAction.label === '停止',
+        `实际 ${JSON.stringify(stopAction)}`);
 
     env.lifecycle.setVisible(false);
     check('onHide 后定时器被清空', iv.slideshowTimer === null);
     check('onHide 记住了播放位置', iv._slideshowResumeIndex === 4, `实际 ${iv._slideshowResumeIndex}`);
-    const playHtml = env.getEl('btn-slideshow').innerHTML;
-    check('按钮恢复"幻灯片"',
-        playHtml.includes('<use href="#play">') && playHtml.includes('幻灯片'),
-        `实际 ${playHtml}`);
+    const playAction = slideshowAction();
+    check('壳顶栏的幻灯片动作恢复"幻灯片"',
+        !!playAction && playAction.active === false && playAction.label === '幻灯片',
+        `实际 ${JSON.stringify(playAction)}`);
 
     env.lifecycle.setVisible(true);
     await tick();

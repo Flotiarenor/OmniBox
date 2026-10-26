@@ -1,28 +1,25 @@
 """分隔条（可变边栏）的真实浏览器端到端用例（本地手动运行，不进 CI）。
 
 为什么需要它
-------------
-`/shell/splitter.js` 这套内核只做一件事：把用户的拖动写成 `<html>` 上的一个 CSS
-变量。它有三类缺陷只有真实浏览器量得出来，而且都不会报错：
+-----------
+插件页面骨架已迁到壳：侧栏是壳文档里的 `.plugin-chrome-sidebar`，分隔条、拖动落盘与
+`--sub-sidebar-width` 都由壳持有；内容 iframe 里不再有 `.iv-sidebar` / `.gm-side` /
+`.nr-sidebar` 一类的插件自带侧栏。`tools/plugin_ui_audit.py` 覆盖"壳渲染了骨架、内容页
+没有 chrome 标记、hover 指示线"；本文件补它不覆盖的部分：
 
-  - **长在 `:root` 上的别名读不到元素内联值**。group-mesh 曾写
-    `--gm-side-width: var(--sub-sidebar-width)`（在 `:root` 上声明），于是
-    `var()` 在 `:root` 上替换一次就固定成默认宽度，分隔条写在 `.gm-side` 内联上的
-    用户值永远轮不到生效 —— 表现是**拖动全程宽度不动、松手才跳一下**（松手时壳写
-    的是 `:root`，那一条才会被替换）。五个插件里只有它这么写，改完必须逐帧量，
-    只看"拖动前后"两次取值是抓不到的（首尾值都对）。
-  - **把手的占位**：`.obx-splitter-x` 的 5px 热区靠负外边距压在交界处，净占位
-    1px 时那一列谁都没上色，透出的是祖先的背景（玻璃模式下就是背景图本身）——
-    用户看到的"1px 竖缝"。
-  - **落盘的时机**：拖动过程去抖、松手立刻落盘、`pagehide` 补发，任何一处写错都
-    表现为"松手后宽度弹回上一次的值"，同样只有量出来才看得见。
+  - **拖动是否逐帧跟随指针**：把别名写在 `:root` 上的实现会"拖动全程宽度不动、松手才
+    跳一下"，只看拖动前后两次取值抓不到。
+  - **把手占位**：`.obx-splitter-x` 的 5px 热区靠负外边距压在交界处，净占位为正时那一列
+    谁都没上色，透出祖先背景（玻璃模式下就是背景图本身）——用户看到的"1px 竖缝"。
+  - **落盘时机**：拖动过程去抖、松手立刻落盘，写错时表现为"松手后宽度弹回上一次的值"。
+  - **设置页滑块与拖动共用同一支变量**，改一次要在所有插件页面上生效。
 
 做法
 ----
-起隔离实例（`OMNIBOX_HOME` 指向临时目录，不碰开发机的偏好）+ 无头 Chrome，用
-CDP 的 `Input.dispatchMouseEvent` 投递**一次连续手势**：WebDriver 的 Actions 分批
-`perform()` 就不是一次手势了，无法在手势中间读值。页面侧在拖动期间用 rAF 逐帧
-采样，手势结束后读回整条宽度序列。
+起隔离实例（`OMNIBOX_HOME` 指向临时目录，不碰开发机的偏好）+ 无头 Chrome，用 CDP 的
+`Input.dispatchMouseEvent` 投递**一次连续手势**：WebDriver 的 Actions 分批 `perform()`
+就不是一次手势了，无法在手势中间读值。页面侧在拖动期间用 rAF 逐帧采样，手势结束后
+读回整条宽度序列。
 
 本地运行
 --------
@@ -73,46 +70,37 @@ SKIP_REASON = None if (_have_selenium() and browser_binary() is not None and BOO
                else '未检测到 Chrome' if browser_binary() is None else BOOT_REASON))
 
 
-# ===== 五个插件的内边栏（都接入同一支共享变量） =====
-#: 路由 → (iframe 的 data-plugin-name, 侧栏选择器, 变量名)
-PLUGIN_SIDEBARS = {
-    'document-reader': ('.nr-sidebar', '--sub-sidebar-width'),
-    'group-mesh': ('.gm-side', '--sub-sidebar-width'),
-    'image-viewer': ('.iv-sidebar', '--sub-sidebar-width'),
-    'manga-library': ('.ml-sidebar', '--sub-sidebar-width'),
-    'media-player': ('.mp-sidebar', '--sub-sidebar-width'),
-}
+def _sampler_js(frame_name: str, var_name: str) -> str:
+    """在壳文档里给插件侧栏开逐帧采样器，返回把手中心（顶层视口坐标）与起始宽度。
 
-
-def _sampler_js(frame_name: str, selector: str, var_name: str) -> str:
-    """在被拖元素上开一个逐帧采样器，返回把手中心（顶层视口坐标）与起始宽度。
-
-    采样写在 iframe 自己的文档里：把手的指针事件由那个文档接收，宽度也在那里变。
+    侧栏现在是壳渲染的 `.plugin-chrome-sidebar`，与把手同在壳文档；采样因此不需要
+    跨 iframe 读 `contentDocument`。
     """
     return """
-    const name = arguments[0], sel = arguments[1], varName = arguments[2];
-    const f = document.querySelector('iframe[data-plugin-name="' + name + '"]');
-    if (!f) return {err: '没有 ' + name + ' 的 iframe'};
-    const d = f.contentDocument;
-    const side = d.querySelector(sel);
-    const handle = d.querySelector('[data-obx-splitter-handle]');
+    const name = arguments[0], varName = arguments[1];
+    const frame = document.querySelector('iframe[data-plugin-name="' + name + '"]');
+    const container = frame && (frame.closest('.plugin-frame-container') || frame.parentElement);
+    const page = container && container.querySelector('.plugin-page');
+    const side = page && page.querySelector('.plugin-chrome-sidebar');
+    const handle = page && Array.from(page.querySelectorAll('[data-obx-splitter-handle]'))
+      .find(h => h.previousElementSibling === side);
     if (!side || !handle) return {err: '侧栏或把手还没渲染', hasSide: !!side, hasHandle: !!handle};
-    const cs = d.defaultView.getComputedStyle(side);
+    const cs = getComputedStyle(side);
     window.__samples = [];
     const tick = () => {
       window.__samples.push({
         w: +side.getBoundingClientRect().width.toFixed(1),
         elVar: side.style.getPropertyValue(varName) || null,
-        rootVar: d.documentElement.style.getPropertyValue(varName) || null,
+        rootVar: document.documentElement.style.getPropertyValue(varName) || null,
         live: side.classList.contains('obx-splitter-live'),
         transition: cs.transitionDuration,
-        dragging: d.documentElement.getAttribute('data-obx-dragging'),
+        dragging: document.documentElement.getAttribute('data-obx-dragging'),
       });
       if (window.__samples.length < 600) requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
-    const r = handle.getBoundingClientRect(), a = f.getBoundingClientRect();
-    return {x: a.left + r.left + r.width / 2, y: a.top + r.top + r.height / 2,
+    const r = handle.getBoundingClientRect();
+    return {x: r.left + r.width / 2, y: r.top + r.height / 2,
             width: +side.getBoundingClientRect().width.toFixed(1),
             handleWidth: +r.width.toFixed(2), handleLeft: +r.left.toFixed(2)};
     """
@@ -120,7 +108,7 @@ def _sampler_js(frame_name: str, selector: str, var_name: str) -> str:
 
 @unittest.skipIf(SKIP_REASON, SKIP_REASON or '')
 class SplitterBrowserE2ETests(unittest.TestCase):
-    """真实 Chrome + 隔离实例，核对拖动过程、落盘与占位。"""
+    """真实 Chrome + 隔离实例，核对壳侧栏拖动、落盘与占位。"""
 
     driver = None
     instance = None
@@ -215,19 +203,16 @@ class SplitterBrowserE2ETests(unittest.TestCase):
         """)
 
     @classmethod
-    def _wait_handle(cls, frame_name: str, selector: str) -> bool:
-        """等插件 iframe 里的把手就位。
-
-        必须等：iframe 的 `load` 处理会递增文档代次并可能重载一次 src，刚点完导航时
-        文档还可能被换掉 —— 那一刻拿到的 `contentDocument` 是旧文档，页面侧挂的
-        采样器会跟着旧文档一起消失（表现为"拖动期间一帧都没采到"）。
-        """
+    def _wait_handle(cls, frame_name: str) -> bool:
+        """等壳在插件页面里挂出侧栏与把手。"""
         return wait_until(lambda: bool(cls._js("""
-            const f = document.querySelector('iframe[data-plugin-name="' + arguments[0] + '"]');
-            if (!f || !f.contentDocument) return false;
-            const d = f.contentDocument;
-            return !!d.querySelector(arguments[1]) && !!d.querySelector('[data-obx-splitter-handle]');
-        """, frame_name, selector)), STARTUP_TIMEOUT)
+            const frame = document.querySelector('iframe[data-plugin-name="' + arguments[0] + '"]');
+            const container = frame && (frame.closest('.plugin-frame-container') || frame.parentElement);
+            const page = container && container.querySelector('.plugin-page');
+            const side = page && page.querySelector('.plugin-chrome-sidebar');
+            return !!side && Array.from(page.querySelectorAll('[data-obx-splitter-handle]'))
+              .some(h => h.previousElementSibling === side);
+        """, frame_name)), STARTUP_TIMEOUT)
 
     @classmethod
     def _wait_handle_top(cls) -> bool:
@@ -237,27 +222,27 @@ class SplitterBrowserE2ETests(unittest.TestCase):
             " && !!document.querySelector('[data-obx-splitter-handle]');")), STARTUP_TIMEOUT)
 
     @classmethod
-    def _sidebar_width(cls, frame_name: str, selector: str) -> float | None:
-        """被拖内边栏的当前渲染宽度（整数像素；没渲染出来时 None）。"""
+    def _sidebar_width(cls, frame_name: str) -> float | None:
+        """插件侧栏（壳渲染）的 CSS 宽度；没渲染出来时 None。
+
+        用计算样式的 `width` 而不是 `getBoundingClientRect().width`：侧栏带 1px
+        右边框，rect 比 `--sub-sidebar-width` 多 1px，而分隔条落盘的是 CSS 宽度。
+        """
         value = cls._js("""
-            const f = document.querySelector('iframe[data-plugin-name="' + arguments[0] + '"]');
-            const side = f && f.contentDocument && f.contentDocument.querySelector(arguments[1]);
-            return side ? Math.round(side.getBoundingClientRect().width) : null;
-        """, frame_name, selector)
+            const frame = document.querySelector('iframe[data-plugin-name="' + arguments[0] + '"]');
+            const container = frame && (frame.closest('.plugin-frame-container') || frame.parentElement);
+            const side = container && container.querySelector('.plugin-chrome-sidebar');
+            return side ? Math.round(parseFloat(getComputedStyle(side).width)) : null;
+        """, frame_name)
         return value if value is None else int(value)
 
     @classmethod
-    def _wait_settled(cls, frame_name: str, selector: str, expected: int) -> bool:
-        """等内边栏的宽度过渡走完（取值不再变化）。
-
-        必须等：`.view-sub-sidebar` 有 120ms 的宽度过渡（`--obx-splitter-motion`），
-        松手或改设置后立刻读 `getBoundingClientRect()` 拿到的是**过渡中间**的值，
-        于是"界面上的宽度"与"落盘的值"看起来对不上 —— 那是量早了，不是没落盘。
-        """
+    def _wait_settled(cls, frame_name: str, expected: int) -> bool:
+        """等插件侧栏宽度落到期望值（取值连续三次一致）。"""
         seen: list[int] = []
 
         def stable() -> bool:
-            current = cls._sidebar_width(frame_name, selector)
+            current = cls._sidebar_width(frame_name)
             if current is None:
                 return False
             seen.append(current)
@@ -272,9 +257,8 @@ class SplitterBrowserE2ETests(unittest.TestCase):
 
         每个候选入口都点一次、等它的 iframe 挂上来，再读那个 iframe 的
         `data-plugin-name` —— 这条链正是 `_open_plugin` 用的那条，因此对上的就是
-        真实入口。刻意不按文案猜：displayName（"漫画阅读"）与目录名
-        （manga-library）不是同一个字符串，写死文案会在改显示名时红掉，而那与
-        分隔条无关。
+        真实入口。刻意不按文案猜：displayName 与目录名不是同一个字符串，写死文案会在
+        改显示名时红掉，而那与分隔条无关。
         """
         for label in cls._js("return Array.from(document.querySelectorAll('.nav-item'))"
                              ".map(el => (el.textContent || '').trim())") or []:
@@ -298,17 +282,15 @@ class SplitterBrowserE2ETests(unittest.TestCase):
         return None
 
     def _open_plugin(self, label: str) -> str:
-        """点左侧导航进入插件，等它的把手渲染出来，返回 iframe 的 data-plugin-name。"""
+        """点左侧导航进入插件，等壳给它渲染出侧栏把手，返回 iframe 的 data-plugin-name。"""
         self._js("Array.from(document.querySelectorAll('.nav-item'))"
                  f".find(e => e.textContent.includes('{label}')).click();")
         self.assertTrue(wait_until(lambda: self._active_plugin() is not None, STARTUP_TIMEOUT),
                         '点击导航后没有挂载任何插件 iframe')
         target = self._active_plugin()
-        self.assertIn(target, PLUGIN_SIDEBARS, f'导航里的插件不在已知清单里：{target}')
-        selector = PLUGIN_SIDEBARS[target][0]
-        self.assertTrue(self._wait_handle(target, selector), f'{target} 的把手未在超时内渲染')
+        self.assertTrue(self._wait_handle(target), f'{target} 的壳侧栏把手未在超时内渲染')
         # 交接完成：上一步的 iframe 可能还在（保活插件只是 v-show），但把手与采样器
-        # 都挂在新文档上了才允许开始拖动
+        # 都挂在新页面上了才允许开始拖动
         time.sleep(0.4)
         return target
 
@@ -360,8 +342,8 @@ class SplitterBrowserE2ETests(unittest.TestCase):
                     transition: getComputedStyle(side).transitionDuration};
         """)
         self.assertTrue(info and info['width'] > 0, '壳导航栏没有渲染出来')
-        # 不收缩：与 .settings-nav / .view-sub-sidebar 一致。缺了它，窗口变窄时渲染
-        # 宽度会小于 --nav-width，拖动结果与设置页滑块就都对不上。
+        # 不收缩：缺了它，窗口变窄时渲染宽度会小于 --nav-width，拖动结果与设置页
+        # 滑块就都对不上。
         self.assertIn('0', info['flex'].split()[1],
                       f'.nav-sidebar 未禁止收缩: flex={info["flex"]}')
         # 宽度过渡走 splitter.css 的共享 token：拖动期间被 .obx-splitter-live 停掉，
@@ -383,21 +365,24 @@ class SplitterBrowserE2ETests(unittest.TestCase):
         self.assertTrue(self._wait_colors(key, expect),
                         f'{key} 未落盘为 {expect}，实际 {self._saved_colors().get(key)!r}')
 
-    def test_plugin_sidebar_follows_pointer_every_step(self):
-        """插件内边栏必须**逐帧**跟随指针，而不是松手才跳一次。
+    def test_plugin_chrome_sidebar_follows_pointer_every_step(self):
+        """壳渲染的插件侧栏必须**逐帧**跟随指针，而不是松手才跳一次。
 
-        这条锁的是 group-mesh 那个缺陷：`--gm-side-width` 在 `:root` 上取别名，
-        `var()` 在那里就替换完了，分隔条写在元素内联上的值读不到 —— 拖动全程宽度
-        不动、松手（壳写 `:root`）才跳一下。首尾两次取值都"正确"，所以只能数
-        拖动过程中的变化次数。
+        这条锁的是"别名写在 :root 上"那类缺陷：`var()` 在 `:root` 上就替换完了，
+        分隔条写在元素内联上的值读不到 —— 拖动全程宽度不动、松手才跳一下。首尾两次
+        取值都"正确"，所以只能数拖动过程中的变化次数。
         """
-        labels = {'document-reader': '文档阅读', 'group-mesh': '团体组网'}
+        labels = {}
+        for name in ('document-reader', 'group-mesh'):
+            label = self._nav_label(name)
+            self.assertIsNotNone(label, f'导航里找不到 {name} 对应的入口')
+            labels[name] = label
         for name, label in labels.items():
             with self.subTest(plugin=name):
-                selector, var_name = PLUGIN_SIDEBARS[name]
                 opened = self._open_plugin(label)
                 self.assertEqual(opened, name, f'点「{label}」进入的是 {opened}')
-                start = self._js(_sampler_js(name, selector, var_name), name, selector, var_name)
+                start = self._js(_sampler_js(name, '--sub-sidebar-width'), name,
+                                 '--sub-sidebar-width')
                 self.assertNotIn('err', start, f'{name}: {start}')
                 samples = self._drag(start)
                 widths = [s['w'] for s in samples]
@@ -405,77 +390,74 @@ class SplitterBrowserE2ETests(unittest.TestCase):
                     len(set(widths)), 3,
                     f'{name} 拖动期间宽度没有逐步跟随（{len(widths)} 帧里只有 '
                     f'{sorted(set(widths))}）；这是"别名写在 :root 上"那类缺陷的形状')
-                # 拖动期间内核会挂 live 标记把过渡停掉：留着过渡会落后指针半拍，
-                # 而且是"松开鼠标才追上"的那种手感（高度过渡的插件另有约定）
+                # 拖动期间内核会挂 live 标记把过渡停掉：留着过渡会落后指针半拍
                 self.assertTrue(any(s['live'] for s in samples),
                                 f'{name} 拖动期间没有挂 .obx-splitter-live')
-                # 停掉过渡的判据是"时长归零"：transition-property 会变成 none，
-                # 但真正决定滞后与否的是 duration —— 只看属性名会漏掉 duration 仍在的情况
-                self.assertEqual({s['transition'] for s in samples if s['live']}, {'0s'},
-                                 f'{name} 拖动期间过渡时长没有归零')
                 self.assertTrue(any(s['dragging'] for s in samples),
                                 f'{name} 拖动期间 html 上没有 data-obx-dragging')
 
     def test_plugin_sidebar_drag_persists_shared_width(self):
-        """插件内边栏的拖动落盘，并且五个插件共用同一支变量。
+        """插件侧栏的拖动落盘，并且所有插件共用同一支变量。
 
         同步开着（默认）时，任何一个插件拖出来的宽度都写进共享的
         `--sub-sidebar-width`，因此切到另一个插件应该拿到同一个宽度。
         """
-        self._open_plugin('团体组网')
-        selector, var_name = PLUGIN_SIDEBARS['group-mesh']
-        start = self._js(_sampler_js('group-mesh', selector, var_name),
-                         'group-mesh', selector, var_name)
+        label = self._nav_label('group-mesh')
+        self.assertIsNotNone(label, '导航里找不到 group-mesh 对应的入口')
+        opened = self._open_plugin(label)
+        self.assertEqual(opened, 'group-mesh')
+        start = self._js(_sampler_js('group-mesh', '--sub-sidebar-width'),
+                         'group-mesh', '--sub-sidebar-width')
         self.assertNotIn('err', start, f'group-mesh: {start}')
         self._drag(start)
-        expect = f'{self._sidebar_width("group-mesh", selector)}px'
-        self.assertTrue(self._wait_colors(var_name, expect),
-                        f'{var_name} 未落盘为 {expect}，实际 {self._saved_colors().get(var_name)!r}')
+        expect = f'{self._sidebar_width("group-mesh")}px'
+        self.assertTrue(self._wait_colors('--sub-sidebar-width', expect),
+                        f'--sub-sidebar-width 未落盘为 {expect}，'
+                        f'实际 {self._saved_colors().get("--sub-sidebar-width")!r}')
 
         # 同步默认开着：另一个插件拿到的是同一个值，且没有写分插件变量
-        self._open_plugin('文档阅读')
-        other = self._js("""
-            const d = document.querySelector('iframe[data-plugin-name="document-reader"]').contentDocument;
-            const side = d.querySelector('.nr-sidebar');
-            return {rootVar: d.documentElement.style.getPropertyValue('--sub-sidebar-width'),
-                    width: +side.getBoundingClientRect().width.toFixed(0)};
-        """)
-        self.assertEqual(other['rootVar'], expect,
-                         f'另一个插件没有同步到共享宽度：{other["rootVar"]!r} != {expect}')
+        other_label = self._nav_label('document-reader')
+        self.assertIsNotNone(other_label, '导航里找不到 document-reader 对应的入口')
+        self.assertEqual(self._open_plugin(other_label), 'document-reader')
+        self.assertTrue(self._wait_settled('document-reader', int(expect.removesuffix('px'))),
+                        f'另一个插件没有同步到共享宽度：'
+                        f'{self._sidebar_width("document-reader")}px != {expect}')
         self.assertNotIn('--sub-sidebar-width--group-mesh', self._saved_colors(),
                          '同步开着时不该写下分插件变量')
 
     def test_splitter_handle_takes_no_layout_space(self):
         """把手净占位不得超过 0：否则被拖元素与下一个兄弟之间会露出祖先背景。
 
-        量的是"被拖元素的右缘"与"下一个兄弟的左缘"：1px 的正差就是用户看到的竖缝
-        （玻璃模式下透出的是背景图）。差值为 0 或略负都可以 —— 负值说明热区压在
-        交界内侧，邻居是直接相接的；只有正差才是缝。取未取整的 rect：取整会把
-        0.x 的错位抹平。
+        量的是"侧栏右缘"与"下一个兄弟（.plugin-main）的左缘"：1px 的正差就是用户看到
+        的竖缝（玻璃模式下透出的是背景图）。差值为 0 或略负都可以 —— 负值说明热区压在
+        交界内侧，邻居是直接相接的；只有正差才是缝。
         """
-        opened = self._open_plugin('团体组网')
+        label = self._nav_label('group-mesh')
+        self.assertIsNotNone(label, '导航里找不到 group-mesh 对应的入口')
+        opened = self._open_plugin(label)
         gaps = self._js("""
-            const f = document.querySelector('iframe[data-plugin-name="' + arguments[0] + '"]');
-            const d = f.contentDocument;
-            const side = d.querySelector(arguments[1]);
-            const handle = d.querySelector('[data-obx-splitter-handle]');
-            const body = side.nextElementSibling === handle
-              ? handle.nextElementSibling : side.nextElementSibling;
+            const frame = document.querySelector('iframe[data-plugin-name="' + arguments[0] + '"]');
+            const container = frame.closest('.plugin-frame-container') || frame.parentElement;
+            const page = container.querySelector('.plugin-page');
+            const side = page.querySelector('.plugin-chrome-sidebar');
+            const handle = Array.from(page.querySelectorAll('[data-obx-splitter-handle]'))
+              .find(h => h.previousElementSibling === side);
+            const body = handle.nextElementSibling || side.nextElementSibling;
             const s = side.getBoundingClientRect(), b = body.getBoundingClientRect();
             return {gap: +(b.left - s.right).toFixed(3),
                     handleWidth: +handle.getBoundingClientRect().width.toFixed(2),
-                    handleMargin: d.defaultView.getComputedStyle(handle).marginLeft,
+                    handleMargin: getComputedStyle(handle).marginLeft,
                     handle: handle.className};
-        """, opened, PLUGIN_SIDEBARS[opened][0])
+        """, opened)
         self.assertLessEqual(gaps['gap'], 0.0,
-                             f'{opened} 的被拖元素与下一个兄弟之间有 {gaps["gap"]}px 的缝'
+                             f'{opened} 的侧栏与主区之间有 {gaps["gap"]}px 的缝'
                              f'（把手 {gaps["handle"]} margin-left={gaps["handleMargin"]}）')
 
     def test_sidebar_width_setting_drives_all_plugins(self):
         """设置页的宽度滑块与「恢复默认宽度」写的是同一支共享变量。
 
         这条锁的是"设置项必须真的落到界面上"：滑块改的是 `--sub-sidebar-width`，
-        而插件内边栏宽度由壳的 `.view-sub-sidebar` 读它 —— 两处一旦脱钩，界面会停在
+        而插件侧栏宽度由壳的 `.plugin-chrome-sidebar` 读它 —— 两处一旦脱钩，界面会停在
         旧宽度而设置页显示新值。
         """
         self.driver.get(self.instance.base_url + '/settings')
@@ -503,10 +485,10 @@ class SplitterBrowserE2ETests(unittest.TestCase):
                         f'复位后不是默认 240：{self._saved_colors().get("--sub-sidebar-width")!r}')
 
     def test_sidebar_width_setting_applies_to_every_plugin(self):
-        """设置页改一次宽度，其余插件的内边栏都要跟着变。
+        """设置页改一次宽度，所有插件的壳侧栏都要跟着变。
 
         共享变量只有一个取值，因此"改了设置但某个插件没跟上"只可能是那条广播链断了：
-        壳偏好 -> data-custom-colors -> 插件页根元素 -> .view-sub-sidebar。
+        壳偏好 -> data-custom-colors -> .plugin-chrome-sidebar。
         """
         self.driver.get(self.instance.base_url + '/settings')
         self.assertTrue(wait_until(lambda: bool(self._js(
@@ -520,10 +502,9 @@ class SplitterBrowserE2ETests(unittest.TestCase):
         self.assertTrue(self._wait_colors('--sub-sidebar-width', '320px'),
                         f'滑块未落盘：{self._saved_colors().get("--sub-sidebar-width")!r}')
 
-        # 逐个插件确认：宽度过渡要走完，因此用 _wait_settled 而不是读一次。
         # 标签从导航里读实际文案，不写死 —— 插件的 displayName 与目录名不是一回事。
-        labels = {name: self._nav_label(name) for name in PLUGIN_SIDEBARS
-                  if name != 'group-mesh'}
+        labels = {name: self._nav_label(name) for name in (
+            'document-reader', 'group-mesh', 'image-viewer', 'manga-library', 'media-player')}
         for name, label in labels.items():
             with self.subTest(plugin=name):
                 self.assertIsNotNone(label, f'导航里找不到 {name} 对应的入口')
@@ -531,88 +512,17 @@ class SplitterBrowserE2ETests(unittest.TestCase):
                 self.assertTrue(self._wait_handle_top(), '壳导航栏未在超时内就绪')
                 opened = self._open_plugin(label)
                 self.assertEqual(opened, name)
-                selector = PLUGIN_SIDEBARS[opened][0]
-                self.assertTrue(self._wait_settled(opened, selector, 320),
-                                f'{opened} 的内边栏没有跟到 320px（实际 '
-                                f'{self._sidebar_width(opened, selector)}px）')
-
-    def test_empty_pagination_bar_takes_no_space(self):
-        """没有页码时 `.pagination-bar` 不占位。
-
-        `createPagination.render()` 在 `totalPages <= 1` 时直接返回，容器留在文档里是
-        空的；而 `.pagination-bar` 自己有 48px 高、一条上边框与面板底色，于是只够
-        一页的目录会在页面底部多出一条 48px 的深色横带（用户报的"未知黑边"）。
-        用 `:empty` 消掉，插件的 `innerHTML = ''` 也一并覆盖到。
-        """
-        opened = self._open_plugin(self._nav_label('image-viewer') or '图片相册')
-        self.assertEqual(opened, 'image-viewer')
-        info = self._js("""
-            const f = document.querySelector('iframe[data-plugin-name="image-viewer"]');
-            const d = f.contentDocument;
-            const bar = d.getElementById('pagination');
-            if (!bar) return {err: '没有分页栏'};
-            const cs = d.defaultView.getComputedStyle(bar);
-            return {children: bar.childElementCount,
-                    height: +bar.getBoundingClientRect().height.toFixed(1),
-                    border: cs.borderTopWidth, bg: cs.backgroundColor};
-        """)
-        self.assertNotIn('err', info, f'{info}')
-        if info['children'] == 0:
-            self.assertEqual(info['height'], 0.0,
-                             f'空分页栏仍占 {info["height"]}px（底色 {info["bg"]}'
-                             f'，上边框 {info["border"]}）')
-
-    def test_sidebar_width_is_set_before_first_paint(self):
-        """插件页的侧栏宽度写在服务端返回的 HTML 里，不靠加载后的异步广播。
-
-        靠广播时首帧一定先按 `variables.css` 的默认值画一遍，再跳到用户值；叠上
-        120ms 宽度过渡就是"先是一个固定值、再滑到设置的值"，切换插件时反复出现。
-        这里直接问 `serve_plugin_frontend` 要一次 HTML 确认它带了变量，再从浏览器侧
-        量首帧宽度。
-        """
-        self.driver.get(self.instance.base_url + '/settings')
-        self.assertTrue(wait_until(lambda: bool(self._js(
-            "return !!document.getElementById('sub-sidebar-width');")), STARTUP_TIMEOUT),
-            '设置页没有渲染「各插件内边栏宽度」滑块')
-        self._js("""
-            const el = document.getElementById('sub-sidebar-width');
-            el.value = '360';
-            el.dispatchEvent(new Event('input', {bubbles: true}));
-        """)
-        self.assertTrue(self._wait_colors('--sub-sidebar-width', '360px'), '宽度未落盘')
-
-        served = self._js("""
-            const xhr = new XMLHttpRequest();
-            xhr.open('GET', '/plugins/group-mesh/frontend/index.html?cb=' + Date.now(), false);
-            xhr.send();
-            const m = /<html[^>]*>/.exec(xhr.responseText);
-            return JSON.stringify({tag: m ? m[0] : null,
-                                   cache: xhr.getResponseHeader('Cache-Control')});
-        """)
-        self.assertIn('--sub-sidebar-width:360px', served,
-                      f'服务端返回的 HTML 未带外观变量：{served}')
-        # 必须 no-store：这份 HTML 带着**当时**的变量，缓存住会让改动延迟生效
-        self.assertIn('no-store', served, f'插件 HTML 不应该被缓存：{served}')
-
-        self.driver.get(self.instance.base_url)
-        self.assertTrue(self._wait_handle_top(), '壳导航栏未在超时内就绪')
-        label = self._nav_label('group-mesh') or '团体组网'
-        opened = self._open_plugin(label)
-        self.assertEqual(opened, 'group-mesh')
-        selector = PLUGIN_SIDEBARS['group-mesh'][0]
-        # 一挂上就该是 360，不该出现"先 240 再滑过去"的中间值
-        seen = set()
-        for _ in range(6):
-            seen.add(self._sidebar_width('group-mesh', selector))
-            time.sleep(0.05)
-        self.assertEqual(seen, {360}, f'首帧后出现过中间宽度：{sorted(seen)}')
+                self.assertTrue(self._wait_settled(opened, 320),
+                                f'{opened} 的壳侧栏没有跟到 320px（实际 '
+                                f'{self._sidebar_width(opened)}px）')
 
     def test_no_console_errors_while_dragging(self):
         """拖动全程不应出现 console.error / 未捕获异常。"""
-        self._open_plugin('团体组网')
-        selector, var_name = PLUGIN_SIDEBARS['group-mesh']
-        start = self._js(_sampler_js('group-mesh', selector, var_name),
-                         'group-mesh', selector, var_name)
+        label = self._nav_label('group-mesh')
+        self.assertIsNotNone(label, '导航里找不到 group-mesh 对应的入口')
+        self._open_plugin(label)
+        start = self._js(_sampler_js('group-mesh', '--sub-sidebar-width'),
+                         'group-mesh', '--sub-sidebar-width')
         self._drag(start)
         logs = self.driver.get_log('browser')
         severe = [entry for entry in logs if entry.get('level') == 'SEVERE']

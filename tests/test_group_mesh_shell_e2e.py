@@ -344,13 +344,52 @@ class GroupMeshInShellTest(unittest.TestCase):
         self.assertLess(payload['ms'], 15000,
                         f"list_peers 耗时 {payload['ms']}ms，界面会一直停在「正在读取设备」")
 
+    def _click_shell_nav(self, label: str) -> str:
+        """在壳文档的左栏里点一个导航项，返回点击前的壳标题。
+
+        面板入口由壳的 `PluginChrome` 渲染在 `.plugin-nav-item` 上（内容页里没有
+        `#gm-nav`）；点击后壳发 `omnibox:view`，内容页按 id 切面板并把新标题上报。
+        断言壳标题变化，等于同时验证了"入口在壳上"和"内容页接住了这条消息"。
+        """
+        self.driver.switch_to.default_content()
+        title = self.driver.execute_script(
+            "const t = document.querySelector('.plugin-title');"
+            "return t ? t.textContent.trim() : '';")
+        clicked = self.driver.execute_script(
+            "const item = Array.from(document.querySelectorAll('.plugin-nav-item'))"
+            ".find(el => (el.textContent || '').includes(arguments[0]));"
+            "if (!item) return false; item.click(); return true;", label)
+        self.assertTrue(clicked, f'壳左栏里没有「{label}」入口')
+        return str(title or '')
+
+    def _enter_active_frame(self, frame_name: str):
+        """切回指定插件的 iframe（壳点击导航不会重建 keepAlive 的 iframe）。"""
+        from selenium.webdriver.common.by import By
+
+        self.driver.switch_to.default_content()
+        self.driver.switch_to.frame(
+            self.driver.find_element(By.CSS_SELECTOR, f'iframe[data-plugin-name="{frame_name}"]'))
+
     def test_my_endpoint_is_rendered_in_the_shell(self):
-        """「我的地址」在真实壳里必须能渲染出来（它是地址交换的入口）。"""
+        """「我的地址」在真实壳里必须能渲染出来（它是地址交换的入口）。
+
+        切换走壳左栏的「远端共享」：迁移后内容页不再自绘 `#gm-nav`，入口与标题都在壳上。
+        同时断言壳顶栏标题跟着变成该面板声明的标题，避免"点了没反应"被当成渲染失败。
+        """
         self._ensure_identity()
         self._enter_plugin()
-        # 「我的地址」在「远端共享」面板里：面板是纯显隐切换，先切过去再读
-        self.driver.execute_script(
-            "document.querySelector('#gm-nav .gm-nav-item[data-panel=\"remote\"]').click();")
+        title_before = self._click_shell_nav('远端共享')
+        self.assertTrue(self._wait_for(
+            lambda: self.driver.execute_script(
+                "const t = document.querySelector('.plugin-title');"
+                "return !!t && t.textContent.trim() === '远端共享';")),
+            f'壳标题没有切到「远端共享」（点击前 {title_before!r}）')
+        self._enter_active_frame('group-mesh')
+        self.assertTrue(self._wait_for(
+            lambda: self.driver.execute_script(
+                "const p = document.querySelector('#gm-panels > .gm-panel[data-panel=\"remote\"]');"
+                "return !!p && p.getAttribute('data-active') === 'true';")),
+            '壳发出的 omnibox:view 没有切到「远端共享」面板')
         self.assertTrue(self._wait_for(
             lambda: '节点未运行' in text_for(self.driver, 'my-endpoint')
             or ':' in text_for(self.driver, 'my-endpoint')
