@@ -1,0 +1,360 @@
+/* 壳内插件设置弹窗（PluginSettingsModal.vue）。
+   只给壳文档用：内容 iframe 里的 .modal 由 base.css 负责。
+   字段族（.field / .field-label / .field-help / .field-range / .btn）走 /shell/shared.css，
+   这里只补弹窗框架、目录列表行与壳页面缺的 password 输入样式。 */
+
+.settings-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(8, 12, 20, 0.56);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+
+.settings-modal {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: min(400px, 100%);
+  max-height: min(86vh, 900px);
+  overflow: hidden;
+  color: var(--text-primary, #e6edf3);
+  /* 设置面板是独立页面级表面：固定不透明，不读取 --plugin-glass-alpha。 */
+  background: var(--bg-surface, #161b22);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-radius: var(--radius, 6px);
+  box-shadow: var(--shadow-lg, 0 8px 32px rgba(0, 0, 0, 0.15));
+}
+
+.settings-modal-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+}
+
+.settings-modal-title {
+  flex: 1;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.settings-modal-close {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--text-secondary, #8b98a8);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm, 8px);
+  cursor: pointer;
+  transition: color var(--transition-fast, 0.15s) ease,
+    background var(--transition-fast, 0.15s) ease;
+}
+
+.settings-modal-close:hover {
+  color: var(--text-primary, #e6edf3);
+  background: var(--bg-hover, rgba(255, 255, 255, 0.08));
+}
+
+.settings-modal-close:focus-visible {
+  outline: 2px solid var(--accent, #3b82f6);
+  outline-offset: 1px;
+}
+
+.settings-modal-body {
+  flex: 1;
+  min-height: 120px;
+  overflow-y: auto;
+  padding: 16px 20px 20px;
+  scrollbar-width: thin;
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* section 对齐 image-viewer 设置面板：12px 标题 + 11px 说明 + 顶部细线。 */
+.settings-section {
+  padding: 14px 0 6px;
+  border-top: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+}
+
+.settings-section--first {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.settings-section-head { margin: 0 0 12px; }
+
+.settings-section-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary, #8b98a8);
+}
+
+.settings-section-description {
+  margin: 5px 0 0;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-muted, #6e7681);
+}
+
+.settings-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.settings-modal .settings-fields .field {
+  display: grid;
+  grid-template-columns: minmax(120px, 160px) minmax(0, 1fr);
+  column-gap: 18px;
+  row-gap: 6px;
+  align-items: center;
+}
+
+.settings-modal .settings-fields .field.field-checkbox {
+  grid-template-columns: 18px minmax(0, 1fr);
+  column-gap: 10px;
+}
+
+.settings-modal .settings-fields .field > .field-label {
+  grid-column: 1;
+  grid-row: 1;
+  margin: 0;
+}
+
+.settings-modal .settings-fields .field.field-checkbox > input {
+  grid-column: 1;
+  grid-row: 1;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.settings-modal .settings-fields .field.field-checkbox > .field-label {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.settings-modal .settings-fields .field > :where(:not(.field-label):not(.field-help):not(.settings-secret-clear)) {
+  grid-column: 2;
+  min-width: 0;
+}
+
+.settings-modal .settings-fields .field > input,
+.settings-modal .settings-fields .field > select,
+.settings-modal .settings-fields .field > textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.settings-modal .settings-fields .field > .field-range { width: 100%; min-width: 0; }
+
+.settings-modal .settings-fields .field > .field-range input {
+  min-width: 0;
+}
+
+.settings-modal .settings-fields .field .field-range-value {
+  flex: 0 0 auto;
+}
+
+.settings-modal .settings-fields .field > .field-help,
+.settings-modal .settings-fields .field > .settings-field-error {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.settings-modal .settings-fields .field > .settings-secret-clear {
+  grid-column: 2;
+}
+
+.settings-modal .settings-fields .settings-field--wide {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.settings-modal .settings-fields .settings-field--wide > .field-label,
+.settings-modal .settings-fields .settings-field--wide > :not(.field-label):not(.field-help) {
+  grid-column: 1;
+}
+
+.settings-modal .settings-fields .settings-field--wide > .settings-path-add {
+  width: fit-content;
+}
+
+.settings-modal-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 140px;
+  padding: 0 12px;
+  font-size: 13px;
+  color: var(--text-secondary, #8b98a8);
+  text-align: center;
+}
+
+.settings-modal-error {
+  color: var(--danger, #ef4444);
+}
+
+.settings-save-error {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--danger, #ef4444);
+  background: color-mix(in srgb, var(--danger, #ef4444) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger, #ef4444) 42%, transparent);
+  border-radius: var(--radius-sm, 8px);
+}
+
+.settings-field-error {
+  color: var(--danger, #ef4444);
+}
+
+.settings-secret-clear {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-secondary, #8b98a8);
+  cursor: pointer;
+}
+
+.settings-secret-clear input {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+
+/* 目录字段：一行一个路径，输入框占满剩余宽度，按钮不收缩。 */
+.settings-path-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-path-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-path-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-path-row .btn {
+  flex: 0 0 auto;
+}
+
+.settings-path-add {
+  align-self: flex-start;
+  margin-top: 8px;
+}
+
+/* shared.css 的 .field 族只覆盖 text/number/select/textarea；凭据字段用 password，
+   这里补同一条外观，避免弹窗里出现浏览器默认样式。 */
+.settings-form .field input[type="password"] {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--text-primary, #e6edf3);
+  background: var(--bg-app, #0d1117);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-radius: var(--radius-sm, 8px);
+  outline: none;
+}
+
+.settings-form .field input[type="password"]:focus {
+  border-color: var(--accent, #3b82f6);
+}
+
+.settings-modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+}
+
+@media (max-width: 560px) {
+  .settings-modal-overlay { padding: 12px; }
+  .settings-modal { max-height: 92vh; }
+}
+
+/* 目录/网络位置选择器：FolderPicker 的弹窗挂进设置面板内部，避免壳焦点陷阱
+   把焦点限制在背景；壳文档不加载 base.css，这里补齐弹窗框架。 */
+.settings-modal .iv-picker-modal {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  background: var(--bg-overlay, rgba(0, 0, 0, 0.6));
+}
+
+.settings-modal .iv-picker-modal .modal-box {
+  display: flex;
+  flex-direction: column;
+  max-width: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+}
+
+.settings-modal .iv-picker-modal .modal-box h3 {
+  margin: 0;
+  padding: 14px 20px;
+  font-size: 15px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-modal .iv-picker-modal .modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-modal .iv-picker-modal .iv-dirbrowser {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.settings-modal .iv-picker-modal .iv-network-frame {
+  max-width: 100%;
+  max-height: 60vh;
+}
