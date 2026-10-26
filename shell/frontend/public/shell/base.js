@@ -144,6 +144,15 @@ window.addEventListener('message', function(event) {
   if (!isMessageFromShell(event)) return;
   var data = event.data;
   if (!data || typeof data.type !== 'string') return;
+  if (data.type === 'omnibox:appearance') {
+    var alpha = Number(data.alpha);
+    if (alpha === alpha) {
+      alpha = Math.max(0, Math.min(100, Math.round(alpha)));
+      document.documentElement.style.setProperty('--plugin-bg-alpha', alpha + '%');
+      document.documentElement.setAttribute('data-plugin-bg', 'on');
+    }
+    return;
+  }
   if (data.type === 'omnibox:settings-changed') {
     // 壳通知设置已变更：整页重载（插件自身状态由设置重新拉取）
     window.location.href = window.location.href.split('?')[0] + '?_t=' + Date.now();
@@ -225,140 +234,6 @@ window.Bridge = (function() {
 
 // 兼容旧代码的全局 bridge 别名
 window.bridge = window.Bridge;
-
-// ==================== 通用扩展入口渲染 ====================
-// 宿主插件只需提供一个容器，并声明 host + placement：
-//   renderExtensions(document.getElementById('extensions'), 'image-viewer', 'sidebar');
-// 扩展插件通过 get_extensions() 注册到 Shell 后，会自动渲染到该容器。
-//
-// **高亮（同一时刻只有一个当前项）由本组件统一维护**，宿主不必自己写 click 监听、
-// 也不必自己查 className：
-//   - 点了"会打开视图"的扩展（`ext.view` + `onOpen`，或 `ext.embedUrl`）→ 高亮它，
-//     并按 `options.navSelector` 清掉宿主侧栏项的选中；
-//   - 宿主切换自己的视图时调一次 `controller.clearActive()`。
-//   为什么要有这一层：宿主通常有两套入口（侧栏项 + 扩展入口），"互斥"这条不变量
-//   分散在两边就会漏。实测 media-player 只清了侧栏项、扩展点击只清扩展项，先点
-//   「网易云登录」再点「全部音乐」两个同时高亮（image-viewer 两个方向都写了才没暴露）。
-//   返回值是控制器 `{ buttons, activate, clearActive }`；容器为空也照样返回，宿主无需判空。
-function renderExtensions(container, host, placement, options = {}) {
-  const controller = {
-    buttons: [],
-    /** 高亮某个扩展入口（先清同组其它）；传空 = 全不亮。 */
-    activate(btn) {
-      if (!container) return;
-      // 逐个判断而不是用 `.obx-extension.active` 复合选择器：少一层选择器语义，
-      // 也便于用例里的极简 DOM 替身（它只按单个 class 匹配）
-      container.querySelectorAll('.obx-extension').forEach(node => {
-        if (node !== btn) node.classList.remove('active');
-      });
-      if (btn) btn.classList.add('active');
-    },
-    clearActive() {
-      controller.activate(null);
-    },
-  };
-  const clearNavActive = () => {
-    if (!container || !options.navSelector) return;
-    document.querySelectorAll(options.navSelector)
-      .forEach(node => node.classList.remove('active'));
-  };
-
-  if (!container) return Promise.resolve(controller);
-  container.innerHTML = '';
-
-  return Bridge.callSystem('system_get_plugin_extensions', host, placement)
-    .then(list => {
-      if (!Array.isArray(list) || list.length === 0) return controller;
-
-      // 分组渲染：扩展可带 section 声明自己的区块标题（如「相册清理」/「Pixiv 同步」），
-      // 没有 section 的扩展归入 options.title 区块（兼容旧宿主）。
-      const groups = new Map();
-      for (const ext of list) {
-        const key = ext.section || options.title || '';
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(ext);
-      }
-
-      for (const [key, exts] of groups) {
-        const section = document.createElement('div');
-        section.className = 'obx-extensions' + (options.className ? ' ' + options.className : '');
-
-        const groupTitle = exts[0] && exts[0].section ? exts[0].section : (options.title || '');
-        if (groupTitle) {
-          const title = document.createElement('div');
-          title.className = 'obx-extensions-title';
-          title.textContent = groupTitle;
-          section.appendChild(title);
-        }
-
-        exts.forEach(ext => {
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.className = 'obx-extension' + (options.itemClass ? ' ' + options.itemClass : '');
-          btn.title = ext.description || ext.label || ext.id || '';
-          btn.innerHTML =
-            `<span class="obx-extension-icon">${Utils.iconHtml(ext.icon || 'icon:puzzle')}</span>` +
-            `<span class="obx-extension-label">${Utils.escapeHtml(ext.label || ext.id || '扩展')}</span>`;
-
-          btn.addEventListener('click', () => {
-            // 会打开视图的扩展才高亮（纯动作型：跳路由 / 调后端方法，高亮它们等于
-            // 谎报"当前视图"）；同时清掉宿主侧栏项的选中，两个方向都不靠宿主记得。
-            const opensView = (ext.view && typeof options.onOpen === 'function')
-              || !!ext.embedUrl;
-            if (opensView) {
-              clearNavActive();
-              controller.activate(btn);
-            }
-            // 0. 原生视图型扩展：由宿主直接渲染，复用宿主 UI/播放器
-            if (ext.view && typeof options.onOpen === 'function') {
-              options.onOpen(ext, btn);
-              return;
-            }
-            // 1. 内嵌型扩展：在宿主内部打开 iframe 面板
-            if (ext.embedUrl) {
-              if (typeof options.onEmbed === 'function') {
-                options.onEmbed(ext, btn);
-              } else if (options.embedContainer) {
-                options.embedContainer.innerHTML = '';
-                const frame = document.createElement('iframe');
-                frame.src = ext.embedUrl;
-                frame.className = 'obx-embed-frame';
-                options.embedContainer.appendChild(frame);
-              }
-              return;
-            }
-            // 2. 独立路由型扩展：跳转到插件自身页面
-            if (ext.route) {
-              const nav = parent && parent.__omniboxNavigate;
-              if (typeof nav === 'function') {
-                nav(ext.route);
-              } else if (parent) {
-                parent.location.href = ext.route;
-              }
-              return;
-            }
-            // 3. 纯后端方法型扩展：跨插件调用
-            if (ext.method && ext.plugin) {
-              Bridge.callPlugin(ext.plugin, ext.method).catch(err => {
-                console.error('扩展调用失败:', err);
-                if (window.Toast) Toast.error('扩展调用失败');
-              });
-            }
-          });
-
-          controller.buttons.push(btn);
-          section.appendChild(btn);
-        });
-
-        container.appendChild(section);
-      }
-      return controller;
-    })
-    .catch(err => {
-      console.error('加载扩展失败:', err);
-      return controller;
-    });
-}
 
 // ==================== Utils ====================
 window.Utils = {
@@ -458,28 +333,124 @@ window.Toast = (function() {
   };
 })();
 
+// ==================== 弹窗/菜单的键盘与焦点公共工具 ====================
+// 旧调用只关心“弹窗何时关闭、返回值是什么”，这些工具只补可访问性，不改协议。
+// 全部做能力探测：tests/js 的 DOM 桩没有 focus/getBoundingClientRect，不能因此抛错。
+function _focusableIn(root) {
+  if (!root || typeof root.querySelectorAll !== 'function') return [];
+  const nodes = Array.from(root.querySelectorAll(
+    'a[href],button,input,select,textarea,[tabindex]:not([tabindex="-1"])'));
+  return nodes.filter((el) => {
+    if (!el || el.disabled) return false;
+    if (typeof el.getAttribute === 'function') {
+      if (el.getAttribute('aria-hidden') === 'true') return false;
+      if (el.getAttribute('tabindex') === '-1') return false;
+    }
+    if (typeof el.getBoundingClientRect === 'function') {
+      const rect = el.getBoundingClientRect();
+      if (!(rect.width > 0 || rect.height > 0)) return false;
+    }
+    return typeof el.focus === 'function';
+  });
+}
+
+function _rememberFocus() {
+  const el = document.activeElement;
+  return el && el !== document.body ? el : null;
+}
+
+function _restoreFocus(el) {
+  if (!el || el.isConnected === false || typeof el.focus !== 'function') return;
+  try { el.focus({ preventScroll: true }); } catch (e) { try { el.focus(); } catch (e2) { /* 元素已失效 */ } }
+}
+
+function _focusFirst(root, fallback) {
+  const list = _focusableIn(root);
+  const target = list[0] || fallback;
+  if (target && typeof target.focus === 'function') {
+    try { target.focus({ preventScroll: true }); } catch (e) { /* 旧浏览器忽略参数 */ }
+  }
+}
+
+function _trapTab(root, event) {
+  const list = _focusableIn(root);
+  if (!list.length) {
+    if (typeof event.preventDefault === 'function') event.preventDefault();
+    return;
+  }
+  const first = list[0];
+  const last = list[list.length - 1];
+  const active = document.activeElement;
+  const inside = !!(root && typeof root.contains === 'function' && root.contains(active));
+  if (event.shiftKey) {
+    if (!inside || active === first) {
+      event.preventDefault();
+      try { last.focus(); } catch (e) { /* 元素已失效 */ }
+    }
+  } else if (!inside || active === last) {
+    event.preventDefault();
+    try { first.focus(); } catch (e) { /* 元素已失效 */ }
+  }
+}
+
+function _dialogKeydown(root, event, close) {
+  if (!event) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    event.stopPropagation();
+    close();
+    return;
+  }
+  if (event.key === 'Tab') _trapTab(root, event);
+}
+
 // ==================== 确认对话框（替代原生 confirm） ====================
 function confirmDialog(message, options = {}) {
   return new Promise((resolve) => {
+    const previousFocus = _rememberFocus();
+    const messageId = 'confirm-message-' + Math.random().toString(36).slice(2, 8);
     const overlay = document.createElement('div');
     overlay.className = 'modal active';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-label', options.title || '确认');
+    overlay.setAttribute('aria-describedby', messageId);
     overlay.innerHTML = `
       <div class="modal-box modal-confirm">
         <div class="modal-body">
-          <div class="confirm-message">${Utils.escapeHtml(message)}</div>
+          <div class="confirm-message" id="${messageId}">${Utils.escapeHtml(message)}</div>
         </div>
         <div class="modal-footer">
           <button class="btn" data-act="cancel">取消</button>
-          <button class="btn ${options.danger ? 'btn-danger-solid' : 'btn-primary'}" data-act="ok">${options.okText || '确定'}</button>
+          <button class="btn ${options.danger ? 'btn-danger-solid' : 'btn-primary'}" data-act="ok">${Utils.escapeHtml(options.okText || '确定')}</button>
         </div>
       </div>`;
     document.body.appendChild(overlay);
-    const close = (val) => { overlay.remove(); resolve(val); };
+    const cancelBtn = overlay.querySelector('[data-act="cancel"]');
+    const okBtn = overlay.querySelector('[data-act="ok"]');
+    const onKeydown = (event) => _dialogKeydown(overlay, event, () => close(false));
+    let settled = false;
+    const close = (val) => {
+      if (settled) return;
+      settled = true;
+      overlay.removeEventListener('keydown', onKeydown);
+      overlay.remove();
+      _restoreFocus(previousFocus);
+      resolve(val);
+    };
+    overlay.addEventListener('keydown', onKeydown);
+    // 危险操作默认聚焦“取消”；普通确认聚焦可执行的“确定”。
+    const initial = options.danger ? cancelBtn : (okBtn || cancelBtn);
+    if (initial && typeof initial.focus === 'function') {
+      try { initial.focus({ preventScroll: true }); } catch (e) { /* 旧浏览器忽略参数 */ }
+    } else {
+      _focusFirst(overlay, cancelBtn);
+    }
     // pointerdown 而非 click：click 的 target 是按下/松开的最近公共祖先，
     // 在弹窗内按下、拖到遮罩上松开会被误判成"点了遮罩"。这里只看按下的位置。
     overlay.addEventListener('pointerdown', (e) => { if (e.target === overlay) close(false); });
-    overlay.querySelector('[data-act="cancel"]').addEventListener('click', () => close(false));
-    overlay.querySelector('[data-act="ok"]').addEventListener('click', () => close(true));
+    cancelBtn.addEventListener('click', () => close(false));
+    okBtn.addEventListener('click', () => close(true));
   });
 }
 
@@ -520,6 +491,10 @@ function createSettingsForm(container, schema, values = {}) {
         paths: raw.split('\n').map(line => line.trim()).filter(Boolean),
         placeholder: field.placeholder,
         emptyText: field.emptyText,
+        // `multi` 是设置契约的一部分：非 multi 的目录字段是**单值**设置，
+        // getValues() 只提交第一行。列表若仍允许多行，用户加的其余行会被静默丢弃，
+        // 因此用 FolderPicker 的 single 模式（新路径替换旧路径）与之对齐。
+        single: field.multi !== true,
         // 目录字段默认允许「网络位置」来源；声明 local_only 的字段（该目录本身就是
         // 产物，例如下载落点）不显示它 —— 在那类字段上选网络位置语义不成立。
         localOnly: field.local_only === true,
@@ -708,9 +683,14 @@ function openModal(options = {}) {
 
       const overlay = document.createElement('div');
       overlay.className = 'modal active';
+      const previousFocus = _rememberFocus();
+      const titleId = 'modal-title-' + Math.random().toString(36).slice(2, 8);
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-labelledby', titleId);
       overlay.innerHTML = `
         <div class="modal-box">
-          <h3>${Utils.escapeHtml(title)}</h3>
+          <h3 id="${titleId}">${Utils.escapeHtml(title)}</h3>
           <div class="modal-body settings-form"></div>
           <div class="modal-footer">
             <button class="btn" data-act="cancel">取消</button>
@@ -718,6 +698,17 @@ function openModal(options = {}) {
           </div>
         </div>`;
       document.body.appendChild(overlay);
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        overlay.removeEventListener('keydown', onKeydown);
+        overlay.remove();
+        _restoreFocus(previousFocus);
+        resolve(result);
+      };
+      const onKeydown = (event) => _dialogKeydown(overlay, event, () => finish(null));
+      overlay.addEventListener('keydown', onKeydown);
 
       const body = overlay.querySelector('.modal-body');
       if (!schema || schema.length === 0) {
@@ -730,14 +721,8 @@ function openModal(options = {}) {
       } else {
         form = createSettingsForm(body, schema, values || {});
       }
-
-      let settled = false;
-      const finish = (result) => {
-        if (settled) return;
-        settled = true;
-        overlay.remove();
-        resolve(result);
-      };
+      // 初始焦点给第一个可编辑字段；没有字段时给“取消”，避免焦点留在背景页面。
+      _focusFirst(overlay, overlay.querySelector('[data-act="cancel"]'));
 
       // pointerdown：按在遮罩上就关，按在弹窗内（哪怕拖到遮罩上松开）不关
       overlay.addEventListener('pointerdown', (e) => { if (e.target === overlay) finish(null); });
@@ -813,8 +798,25 @@ window.HostChannel = (function() {
     catch (e) { return null; }
   }
 
+  /**
+   * 出站消息的 targetOrigin。
+   *
+   * 这里曾写死 `'*'`：目标窗口（父窗口或某个内嵌 iframe）一旦被导航到外部页面，
+   * 之后的消息就原样交给那个外部页 —— 而 callback 带的是用户在设置弹窗里输入的值，
+   * 可能包含凭据。壳与插件页都由同一个本地文件服务发出，同源是唯一支持的拓扑；
+   * 取不到 origin（`file://` 之类的 opaque origin）时才回退 `'*'`：那种环境下没有
+   * 可保护的本地源，而字符串 `'null'` 不是合法的 targetOrigin（浏览器会抛错）。
+   */
+  function targetOrigin() {
+    try {
+      var origin = window.location && window.location.origin;
+      if (origin && origin !== 'null') return origin;
+    } catch (e) { /* 访问不到 location：按没有可用 origin 处理 */ }
+    return '*';
+  }
+
   function post(target, payload) {
-    try { target.postMessage(payload, '*'); } catch (e) { /* 跨域/已销毁，交给超时 */ }
+    try { target.postMessage(payload, targetOrigin()); } catch (e) { /* 跨域/已销毁，交给超时 */ }
   }
 
   /**
@@ -1281,16 +1283,41 @@ function createTree(container, options = {}) {
 // ==================== 灯箱组件 ====================
 function createLightbox(options = {}) {
   const getImageUrl = options.getImageUrl || ((item) => item.url);
+  const labels = Object.assign({
+    dialog: '图片查看器',
+    image: '原图查看',
+    previous: '上一张',
+    next: '下一张',
+    close: '关闭',
+    counter: null,
+  }, options.labels || {});
+  const counterEnabled = options.counter === true;
+  const advanceOnClick = options.advanceOnClick === true || options.advance === true;
+  const infoProvider = typeof options.infoProvider === 'function'
+    ? options.infoProvider : null;
+  const labelText = (value, fallback) => {
+    const text = typeof value === 'string' && value ? value : fallback;
+    if (typeof Utils.escapeHtml === 'function') return Utils.escapeHtml(text);
+    return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  };
 
   const overlay = document.createElement('div');
   overlay.className = 'lightbox';
+  overlay.tabIndex = -1;
   overlay.innerHTML = `
-    <div class="lightbox-arrow left">${Utils.iconHtml('icon:chevron-left')}</div>
-    <img id="lightbox-img" src="" alt="原图查看" draggable="false">
-    <div class="lightbox-arrow right">${Utils.iconHtml('icon:chevron-right')}</div>
-    <div class="lightbox-close">${Utils.iconHtml('icon:x')}</div>
-    <div class="lightbox-info"></div>
+    <div class="lightbox-arrow left" role="button" tabindex="0" aria-label="${labelText(labels.previous, '上一张')}">${Utils.iconHtml('icon:chevron-left')}</div>
+    <img id="lightbox-img" src="" alt="${labelText(labels.image, '原图查看')}" draggable="false">
+    <div class="lightbox-arrow right" role="button" tabindex="0" aria-label="${labelText(labels.next, '下一张')}">${Utils.iconHtml('icon:chevron-right')}</div>
+    <div class="lightbox-close" role="button" tabindex="0" aria-label="${labelText(labels.close, '关闭')}">${Utils.iconHtml('icon:x')}</div>
+    <div class="lightbox-info" aria-live="polite"></div>
   `;
+  if (typeof overlay.setAttribute === 'function') {
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-label', options.label
+      || (typeof labels.dialog === 'string' && labels.dialog) || '图片查看器');
+  }
   document.body.appendChild(overlay);
 
   const img = overlay.querySelector('#lightbox-img');
@@ -1298,10 +1325,23 @@ function createLightbox(options = {}) {
   const rightArrow = overlay.querySelector('.lightbox-arrow.right');
   const closeBtn = overlay.querySelector('.lightbox-close');
   const infoEl = overlay.querySelector('.lightbox-info');
+  let counterEl = null;
+  if (counterEnabled) {
+    counterEl = document.createElement('div');
+    counterEl.className = 'lightbox-counter';
+    counterEl.setAttribute('aria-live', 'polite');
+    overlay.appendChild(counterEl);
+  }
+  let previousFocus = null;
 
   let scale = 1, translate = { x: 0, y: 0 };
-  let isDragging = false, dragStart = { x: 0, y: 0 };
+  let isDragging = false, dragStart = { x: 0, y: 0 }, dragDistance = 0;
+  let suppressClick = false;
   let currentIndex = -1, items = [];
+  //: 灯箱是否处于打开态。`isOpen()` 与 `onClose` 让插件能在壳返回/导航时先关灯箱，
+  //: 而不是靠猜 class 或重复调用 hide()。
+  let opened = false;
+  let infoToken = 0;
 
   // ===== 解码位图内存缓存（"看过的图再打开瞬间整张出现"）=====
   //
@@ -1354,88 +1394,215 @@ function createLightbox(options = {}) {
     }
   }
 
+  /**
+   * 缩放后的平移夹取：放大态不允许把图拖到视口外，避免"超大图溢出看不到边"。
+   * 小图在 scale=1 时保持原尺寸居中，不主动放大（CSS 只限制 max，不设 width）。
+   */
+  function clampTranslate() {
+    if (scale <= 1) {
+      translate = { x: 0, y: 0 };
+      return;
+    }
+    const width = Number(img.offsetWidth) || 0;
+    const height = Number(img.offsetHeight) || 0;
+    const viewW = Number(window.innerWidth) || 0;
+    const viewH = Number(window.innerHeight) || 0;
+    if (!width || !height || !viewW || !viewH) return;
+    const maxX = Math.max(0, (width * scale - viewW) / 2);
+    const maxY = Math.max(0, (height * scale - viewH) / 2);
+    translate.x = Math.min(maxX, Math.max(-maxX, translate.x));
+    translate.y = Math.min(maxY, Math.max(-maxY, translate.y));
+  }
+
   function resetTransform() { scale = 1; translate = { x: 0, y: 0 }; applyTransform(); }
   function applyTransform() {
+    clampTranslate();
     img.style.transform = `translate(${translate.x}px, ${translate.y}px) scale(${scale})`;
     img.style.cursor = scale > 1 ? 'grab' : 'zoom-out';
   }
 
+  function counterText() {
+    const current = currentIndex + 1;
+    const total = items.length;
+    if (typeof labels.counter === 'function') return String(labels.counter(current, total));
+    if (typeof labels.counter === 'string' && labels.counter) {
+      return labels.counter
+        .replace(/\{current\}/g, String(current))
+        .replace(/\{total\}/g, String(total));
+    }
+    return `${current} / ${total}`;
+  }
+
+  function updateCounter() {
+    if (!counterEl) return;
+    counterEl.textContent = items.length ? counterText() : '';
+  }
+
+  /** `infoProvider` 的返回值：字符串/数组/{items}/{text}；只用 textContent，不接收 HTML。 */
+  function paintInfo(value) {
+    if (!infoEl) return;
+    infoEl.textContent = '';
+    if (value === null || value === undefined || value === '') return;
+    let entries;
+    if (Array.isArray(value)) entries = value;
+    else if (typeof value === 'object' && Array.isArray(value.items)) entries = value.items;
+    else if (typeof value === 'object' && value.text !== undefined) entries = [value.text];
+    else entries = [value];
+    entries.forEach((entry) => {
+      if (entry === null || entry === undefined || entry === '') return;
+      const row = document.createElement('div');
+      row.className = 'lightbox-info-item';
+      row.textContent = String(entry);
+      infoEl.appendChild(row);
+    });
+  }
+
   function updateInfo() {
     const item = items[currentIndex];
+    const token = ++infoToken;
     if (!item) {
       infoEl.innerHTML = '';
       return;
     }
+    // 新选项：信息由调用方给（漫画单页阅读、任意查看器），不耦合 image-viewer 的
+    // get_image_info；支持同步返回或 Promise。
+    if (infoProvider) {
+      let result;
+      try {
+        result = infoProvider(item, currentIndex, items);
+      } catch (e) {
+        infoEl.textContent = '';
+        return;
+      }
+      Promise.resolve(result).then((value) => {
+        if (token !== infoToken) return;
+        paintInfo(value);
+      }).catch(() => {
+        if (token === infoToken) infoEl.textContent = '';
+      });
+      return;
+    }
+    // 旧路径保持不变：item 自带尺寸直接显示，否则走桥的 get_image_info。
     const path = getImageUrl(item);
     if (item.size || item.width || item.height) {
       const sizeText = item.size ? Utils.formatFileSize(item.size) : '';
       const resolutionText = (item.width && item.height) ? `${item.width} × ${item.height}` : '';
-      infoEl.innerHTML =
-        (sizeText ? `<div class="lightbox-info-item">${sizeText}</div>` : '') +
-        (resolutionText ? `<div class="lightbox-info-item">${resolutionText}</div>` : '');
+      // size/width/height 来自插件或后端数据，不是本组件的输入：只走 textContent
+      // （paintInfo），拼进 innerHTML 时值里的一个引号就能在这里插标记。
+      paintInfo([sizeText, resolutionText].filter(Boolean));
       return;
     }
 
     infoEl.innerHTML = '<div class="lightbox-info-item">读取中…</div>';
     if (typeof Bridge.call !== 'function') return;
     Bridge.call('get_image_info', path).then(data => {
+      if (token !== infoToken) return;
       if (currentIndex < 0 || !items[currentIndex]) return;
       if (getImageUrl(items[currentIndex]) !== path) return;
       if (data && data.success) {
         item.size = data.size;
         item.width = data.width;
         item.height = data.height;
-        infoEl.innerHTML =
-          `<div class="lightbox-info-item">${Utils.formatFileSize(data.size)}</div>` +
-          `<div class="lightbox-info-item">${data.width} × ${data.height}</div>`;
+        paintInfo([
+          Utils.formatFileSize(data.size),
+          (data.width != null && data.height != null) ? `${data.width} × ${data.height}` : '',
+        ].filter(Boolean));
       } else {
         infoEl.innerHTML = '<div class="lightbox-info-item">无信息</div>';
       }
     }).catch(() => {
-      infoEl.innerHTML = '<div class="lightbox-info-item">无信息</div>';
+      if (token === infoToken) infoEl.innerHTML = '<div class="lightbox-info-item">无信息</div>';
     });
   }
 
   function show(itemList, index) {
     items = itemList; currentIndex = index;
+    opened = true;
+    previousFocus = _rememberFocus();
     img.src = Bridge.originalUrl(getImageUrl(items[currentIndex]));
     overlay.classList.add('active');
     updateInfo();
+    updateCounter();
     resetTransform();
     retainDecoded();
     document.addEventListener('keydown', onKey);
     img.addEventListener('wheel', onWheel, { passive: false });
     img.addEventListener('mousedown', onDragStart);
+    img.addEventListener('click', onImageClick);
     document.addEventListener('mousemove', onDragMove);
     document.addEventListener('mouseup', onDragEnd);
+    // 旧行为：初始焦点给关闭按钮。漫画单页阅读（advanceOnClick）把焦点给灯箱本身，
+    // 这样 Enter 是“下一页”，Esc 仍是关闭；Tab 再进入左右/关闭控件。
+    const initial = advanceOnClick ? overlay : closeBtn;
+    if (initial && typeof initial.focus === 'function') {
+      try { initial.focus({ preventScroll: true }); } catch (e) { /* 桩/旧浏览器无 focus */ }
+    }
   }
 
   function hide() {
+    const wasActive = overlay.classList.contains('active');
+    const wasOpen = opened;
+    opened = false;
     overlay.classList.remove('active'); img.src = '';
     infoEl.innerHTML = '';
-    // 关灯箱就把池清掉：留着这些元素会一直占着渲染进程内存与 GPU 纹理
+    infoToken += 1;
     decodedPool.clear();
     document.removeEventListener('keydown', onKey);
     img.removeEventListener('wheel', onWheel);
     img.removeEventListener('mousedown', onDragStart);
+    img.removeEventListener('click', onImageClick);
     document.removeEventListener('mousemove', onDragMove);
     document.removeEventListener('mouseup', onDragEnd);
+    if (wasActive) {
+      _restoreFocus(previousFocus);
+      previousFocus = null;
+    }
+    // 只有"真的从打开态关闭"才回调：重复 hide()（插件清理时常见）不该重复触发。
+    if (wasOpen && typeof options.onClose === 'function') {
+      try {
+        options.onClose();
+      } catch (e) {
+        console.error('[OmniBox] 灯箱 onClose 回调抛异常:', e);
+      }
+    }
   }
 
   function navigate(dir) {
+    if (!items.length) return;
     currentIndex += dir;
     if (currentIndex < 0) currentIndex = items.length - 1;
     if (currentIndex >= items.length) currentIndex = 0;
     img.src = Bridge.originalUrl(getImageUrl(items[currentIndex]));
     updateInfo();
+    updateCounter();
     resetTransform();
     retainDecoded();
   }
 
+  function onImageClick() {
+    if (!advanceOnClick) return;
+    if (suppressClick) {
+      suppressClick = false;
+      return;
+    }
+    // 放大态下的点击用于拖拽/查看局部，不翻页，避免误触。
+    if (isDragging || scale > 1) return;
+    navigate(1);
+  }
+
   function onKey(e) {
+    if (!overlay.classList.contains('active')) return;
+    if (e.key === 'Tab') {
+      _trapTab(overlay, e);
+      return;
+    }
     if (e.key === 'Escape') hide();
     if (e.key === 'ArrowLeft') navigate(-1);
     if (e.key === 'ArrowRight') navigate(1);
+    if (e.key === 'Enter' && advanceOnClick) {
+      e.preventDefault();
+      navigate(1);
+    }
   }
   function onWheel(e) {
     e.preventDefault();
@@ -1446,19 +1613,24 @@ function createLightbox(options = {}) {
   function onDragStart(e) {
     if (scale <= 1) return;
     e.preventDefault(); isDragging = true;
+    dragDistance = 0;
     dragStart.x = e.clientX - translate.x;
     dragStart.y = e.clientY - translate.y;
     img.style.cursor = 'grabbing';
   }
   function onDragMove(e) {
     if (!isDragging) return;
-    translate.x = e.clientX - dragStart.x;
-    translate.y = e.clientY - dragStart.y;
+    const nextX = e.clientX - dragStart.x;
+    const nextY = e.clientY - dragStart.y;
+    dragDistance += Math.abs(nextX - translate.x) + Math.abs(nextY - translate.y);
+    translate.x = nextX;
+    translate.y = nextY;
     applyTransform();
   }
   function onDragEnd() {
     if (!isDragging) return;
     isDragging = false;
+    if (dragDistance > 3) suppressClick = true;
     img.style.cursor = scale > 1 ? 'grab' : 'zoom-out';
   }
 
@@ -1466,6 +1638,15 @@ function createLightbox(options = {}) {
   closeBtn.addEventListener('click', hide);
   leftArrow.addEventListener('click', (e) => { e.stopPropagation(); navigate(-1); });
   rightArrow.addEventListener('click', (e) => { e.stopPropagation(); navigate(1); });
+  // role=button 的 div 没有原生键盘激活，补 Enter/Space。
+  [closeBtn, leftArrow, rightArrow].forEach((el) => {
+    el.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      e.stopPropagation();
+      el.click();
+    });
+  });
 
   /**
    * 就地替换浏览序列（列表随后异步补齐了更完整的序列时用）。
@@ -1486,21 +1667,46 @@ function createLightbox(options = {}) {
     img.src = Bridge.originalUrl(getImageUrl(item));
     resetTransform();
     updateInfo();
+    updateCounter();
     retainDecoded();
   }
 
   return {
     show, hide, navigate, setItems, setDecodedLimit,
+    // 打开态查询：插件在壳返回/导航时先判断"要不要关灯箱"，不必自己记状态。
+    isOpen: () => opened,
     // 只读：当前保留了几个解码位图。给用例一个可观测点 —— 池子是闭包状态，
     // 没有它就只能靠"数 cloneNode 调用"这类脆弱手法去间接推断。
     getDecodedCount: () => decodedPool.size,
     getIndex: () => currentIndex,
+    getCount: () => items.length,
   };
 }
 
 // ==================== 分页组件 ====================
 function createPagination(container, options = {}) {
+  if (container && typeof container.setAttribute === 'function') {
+    if (!container.getAttribute('role')) container.setAttribute('role', 'navigation');
+    if (!container.getAttribute('aria-label')) container.setAttribute('aria-label', options.label || '分页');
+  }
+  // 插件常在 render 之前自己 `container.innerHTML = ''`（image-viewer 就是这样），
+  // 焦点会先掉到 body。记住容器内最后聚焦的链接，用它判断“这次重绘该不该还焦点”。
+  let lastFocusedLink = null;
+  if (container && typeof container.addEventListener === 'function') {
+    container.addEventListener('focusin', (event) => {
+      if (event.target && container.contains && container.contains(event.target)) {
+        lastFocusedLink = event.target;
+      }
+    });
+  }
+
   function render(currentPage, totalPages) {
+    const active = document.activeElement;
+    const hadFocus = !!(container && typeof container.contains === 'function' && (
+      container.contains(active)
+      || (lastFocusedLink && lastFocusedLink.isConnected === false
+          && (!active || active === document.body))
+    ));
     container.innerHTML = '';
     if (totalPages <= 1) return;
     const delta = 2, pages = [];
@@ -1509,29 +1715,56 @@ function createPagination(container, options = {}) {
         pages.push(i);
       }
     }
-    container.appendChild(makeLink('«', 1, currentPage === 1));
-    container.appendChild(makeLink('‹', currentPage - 1, currentPage === 1));
+    container.appendChild(makeLink('«', 1, currentPage === 1, false, '第一页'));
+    container.appendChild(makeLink('‹', currentPage - 1, currentPage === 1, false, '上一页'));
     let last = 0;
     pages.forEach(page => {
       if (last + 1 < page) {
         const ellipsis = document.createElement('span');
         ellipsis.className = 'ellipsis'; ellipsis.textContent = '...';
+        ellipsis.setAttribute('aria-hidden', 'true');
         container.appendChild(ellipsis);
       }
-      container.appendChild(makeLink(page, page, false, page === currentPage));
+      container.appendChild(makeLink(page, page, false, page === currentPage, `第 ${page} 页`));
       last = page;
     });
-    container.appendChild(makeLink('›', currentPage + 1, currentPage === totalPages));
-    container.appendChild(makeLink('»', totalPages, currentPage === totalPages));
+    container.appendChild(makeLink('›', currentPage + 1, currentPage === totalPages, false, '下一页'));
+    container.appendChild(makeLink('»', totalPages, currentPage === totalPages, false, '最后一页'));
+    if (hadFocus) {
+      const current = container.querySelector('[aria-current="page"]')
+        || container.querySelector('a:not(.disabled)');
+      if (current && typeof current.focus === 'function') {
+        try { current.focus({ preventScroll: true }); } catch (e) { /* 旧浏览器 */ }
+        lastFocusedLink = current;
+      }
+    }
   }
 
-  function makeLink(text, page, isDisabled, isCurrent) {
+  function makeLink(text, page, isDisabled, isCurrent, label) {
     const el = document.createElement('a');
-    el.innerHTML = text;
-    if (isCurrent) el.classList.add('current');
-    if (isDisabled) el.classList.add('disabled');
-    if (!isDisabled && !isCurrent) {
-      el.addEventListener('click', () => { if (options.onPageChange) options.onPageChange(page); });
+    el.textContent = text;
+    el.setAttribute('aria-label', label || text);
+    if (isCurrent) {
+      el.classList.add('current');
+      el.setAttribute('aria-current', 'page');
+      el.tabIndex = -1;
+      el.setAttribute('href', '#');
+    } else if (isDisabled) {
+      el.classList.add('disabled');
+      el.setAttribute('aria-disabled', 'true');
+      el.tabIndex = -1;
+    } else {
+      el.setAttribute('href', '#');
+      el.addEventListener('click', (event) => {
+        if (event && typeof event.preventDefault === 'function') event.preventDefault();
+        if (options.onPageChange) options.onPageChange(page);
+      });
+      // 分页链接是 a[href]：Enter 原生可用；补 Space 与 button 一致。
+      el.addEventListener('keydown', (event) => {
+        if (event.key !== ' ' && event.key !== 'Spacebar') return;
+        event.preventDefault();
+        el.click();
+      });
     }
     return el;
   }
@@ -1543,29 +1776,133 @@ function createPagination(container, options = {}) {
 function createContextMenu(options = {}) {
   const menu = document.createElement('ul');
   menu.className = 'context-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', options.label || '操作菜单');
+  menu.tabIndex = -1;
+  let previousFocus = null;
+
+  function decorate() {
+    Array.from(menu.children || []).forEach((li) => {
+      if (!li || !li.tagName) return;
+      const separator = String(li.className || '').includes('nr-menu-sep')
+        || !(li.dataset && li.dataset.action);
+      if (separator) {
+        li.setAttribute('role', 'separator');
+        li.setAttribute('aria-hidden', 'true');
+        li.tabIndex = -1;
+      } else {
+        li.setAttribute('role', 'menuitem');
+        li.tabIndex = -1;
+      }
+    });
+  }
+
   (options.items || []).forEach(item => {
     const li = document.createElement('li');
     li.textContent = item.label;
     li.dataset.action = item.action;
+    li.setAttribute('role', 'menuitem');
+    li.tabIndex = -1;
     if (item.danger) li.classList.add('danger');
     li.addEventListener('click', () => {
-      menu.style.display = 'none';
+      hide(false);
       if (options.onSelect) options.onSelect(item.action);
     });
     menu.appendChild(li);
   });
   document.body.appendChild(menu);
-  document.addEventListener('click', () => { menu.style.display = 'none'; });
+
+  function hide(restoreFocus) {
+    if (menu.style.display === 'none') return;
+    menu.style.display = 'none';
+    if (restoreFocus) {
+      _restoreFocus(previousFocus);
+      previousFocus = null;
+    }
+  }
 
   function show(x, y, targetData) {
+    previousFocus = _rememberFocus();
+    decorate();
     menu._targetData = targetData;
-    menu.style.top = `${y}px`;
-    menu.style.left = `${x}px`;
     menu.style.display = 'block';
+    menu.style.left = '0px';
+    menu.style.top = '0px';
+    // 视口夹取：先量实际尺寸再定位，右/下边缘溢出时翻到指针的左侧/上方。
+    const rect = typeof menu.getBoundingClientRect === 'function'
+      ? menu.getBoundingClientRect() : { width: 0, height: 0 };
+    const margin = 8;
+    const vw = Number(window.innerWidth) || 0;
+    const vh = Number(window.innerHeight) || 0;
+    let left = Number(x) || 0;
+    let top = Number(y) || 0;
+    if (vw > 0 && rect.width > 0) {
+      left = Math.min(left, Math.max(margin, vw - rect.width - margin));
+      left = Math.max(margin, left);
+    }
+    if (vh > 0 && rect.height > 0) {
+      if (top + rect.height + margin > vh) top = top - rect.height;
+      top = Math.min(top, Math.max(margin, vh - rect.height - margin));
+      top = Math.max(margin, top);
+    }
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
+    const first = menu.querySelector('li[role="menuitem"]');
+    if (first && typeof first.focus === 'function') {
+      try { first.focus({ preventScroll: true }); } catch (e) { /* 旧浏览器 */ }
+    } else if (typeof menu.focus === 'function') {
+      try { menu.focus({ preventScroll: true }); } catch (e) { /* 旧浏览器 */ }
+    }
   }
+
+  menu.addEventListener('keydown', (event) => {
+    const items = Array.from(menu.querySelectorAll('li[role="menuitem"]'));
+    const active = document.activeElement;
+    const index = items.indexOf(active);
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      hide(true);
+      return;
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (!items.length) return;
+      const step = event.key === 'ArrowDown' ? 1 : -1;
+      const next = index < 0
+        ? (step > 0 ? 0 : items.length - 1)
+        : (index + step + items.length) % items.length;
+      try { items[next].focus(); } catch (e) { /* 元素已失效 */ }
+      return;
+    }
+    if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault();
+      if (!items.length) return;
+      const target = event.key === 'Home' ? items[0] : items[items.length - 1];
+      try { target.focus(); } catch (e) { /* 元素已失效 */ }
+      return;
+    }
+    if (event.key === 'Enter' || event.key === ' ') {
+      if (active && active.getAttribute && active.getAttribute('role') === 'menuitem') {
+        event.preventDefault();
+        active.click();
+      }
+    }
+  });
+
+  // 点外部关闭；点菜单项由上面的 li/插件处理器自行执行动作。
+  document.addEventListener('pointerdown', (event) => {
+    if (menu.style.display !== 'block') return;
+    if (event.target && menu.contains && menu.contains(event.target)) return;
+    hide(true);
+  });
+  menu.addEventListener('click', (event) => {
+    if (event.target && event.target.closest && event.target.closest('li')) hide(false);
+  });
+
   function getTargetData() { return menu._targetData; }
 
-  return { show, getTargetData, element: menu };
+  return { show, hide, getTargetData, element: menu };
 }
 
 // 注：这里曾有一个 `createCardGrid()`，实际采用数为 0，且它渲染的
