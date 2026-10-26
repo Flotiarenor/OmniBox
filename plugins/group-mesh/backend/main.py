@@ -123,16 +123,31 @@ class GroupMeshPlugin(
     settings_schema: ClassVar[List[Dict[str, Any]]] = [
         {'key': 'port', 'label': '监听端口', 'type': 'number',
          'default': DEFAULT_PORT, 'min': 1024, 'max': 65535,
+         'section': 'node', 'sectionTitle': '节点与网络',
+         'sectionDescription': '节点监听地址、同步间隔；修改端口后需要重启节点。',
+         'sectionOrder': 30, 'order': 10,
          'help': '共享节点对外提供服务的 TCP 端口。修改后需要重启节点。'},
         {'key': 'bind', 'label': '监听地址', 'type': 'text', 'default': '::',
+         'section': 'node', 'sectionTitle': '节点与网络',
+         'sectionDescription': '节点监听地址、同步间隔；修改端口后需要重启节点。',
+         'sectionOrder': 30, 'order': 20,
          'help': '默认 :: 同时接受 IPv6 与 IPv4。以公网 IPv6 为目标，'
                  '只有单个 IPv6 地址时填写该地址。'},
         {'key': 'group_name', 'label': '团体名称', 'type': 'text', 'default': '',
+         'section': 'identity', 'sectionTitle': '身份',
+         'sectionDescription': '团体名称与本机显示名；加入团体后修改团体名称不会改名。',
+         'sectionOrder': 10, 'order': 10,
          'help': '创建团体时使用的标识。已加入团体后修改此项不会改名。'},
         {'key': 'principal_name', 'label': '本机主体名称', 'type': 'text', 'default': '',
+         'section': 'identity', 'sectionTitle': '身份',
+         'sectionDescription': '团体名称与本机显示名；加入团体后修改团体名称不会改名。',
+         'sectionOrder': 10, 'order': 20,
          'help': '界面显示用的名字。留空时取主机名。'},
         {'key': 'ttl_days', 'label': '名单有效期（天）', 'type': 'number',
          'default': 180, 'min': 1, 'max': 3650,
+         'section': 'roster', 'sectionTitle': '名单',
+         'sectionDescription': '团体名单的提示有效期；到期不阻断通信，界面会标注已过期。',
+         'sectionOrder': 20, 'order': 10,
          'help': '仅作提示：到期不阻断通信，界面会标注已过期。'},
         # 位置之四：从对端取回的文件落点。留空时回落到 <数据根>/group-mesh/downloads。
         # 由 Shell 的 FolderPicker 渲染（`directory` 类型），值仍是字符串，
@@ -143,15 +158,24 @@ class GroupMeshPlugin(
         {'key': 'download_dir', 'label': '远端下载目录', 'type': 'directory',
          'local_only': True, 'admin_only': True,
          'default': '', 'placeholder': '默认：数据根/group-mesh/downloads',
+         'section': 'transfer', 'sectionTitle': '远端取回',
+         'sectionDescription': '从成员取回文件时的落点与单文件上限；下载目录改动需管理员。',
+         'sectionOrder': 40, 'order': 10,
          'help': '从团体成员那里取回的文件保存在这里。该目录经 /file 对界面可读，'
                  '但不对团体共享 —— 要共享它请单独挂一个共享项（改动需管理员）。'},
         {'key': 'max_fetch_mb', 'label': '按需取回单文件上限（MiB）', 'type': 'number',
          'default': 1024, 'min': 0, 'max': 102400,
+         'section': 'transfer', 'sectionTitle': '远端取回',
+         'sectionDescription': '从成员取回文件时的落点与单文件上限；下载目录改动需管理员。',
+         'sectionOrder': 40, 'order': 20,
          'help': '浏览远端目录时，超过这个大小的文件不会自动取回（0 表示不限制）。'
                  '远端目录先物化成目录结构与占位文件，字节在第一次取回时才取 —— '
                  '这个上限用来避免"点开一个目录就把磁盘写满"。'},
         {'key': 'sync_interval_seconds', 'label': '后台同步间隔（秒）', 'type': 'number',
          'default': 60, 'min': 5, 'max': 3600,
+         'section': 'node', 'sectionTitle': '节点与网络',
+         'sectionDescription': '节点监听地址、同步间隔；修改端口后需要重启节点。',
+         'sectionOrder': 30, 'order': 30,
          'help': '节点运行期间每隔这么久拉取一次注册表与团体名单，并把本机变更推给对端。'
                  '默认 60 秒；调小更及时，但会更频繁地连接对端。'},
     ]

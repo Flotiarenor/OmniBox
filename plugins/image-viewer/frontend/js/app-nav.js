@@ -9,6 +9,8 @@
 Object.assign(ImageViewer.prototype, {
 
     _handleBack() {
+        // 灯箱盖在图片层之上：壳返回先关它，本次返回不改变层级。
+        if (this._closeLightbox()) return;
         if (this.mode === 'images') {
             this._cancelSlideshow();
             if (this.navStack.length) {
@@ -17,6 +19,7 @@ Object.assign(ImageViewer.prototype, {
                     this.mode = 'albums';
                     this.childParentPath = '';
                     this.currentPath = '';
+                    this.fromChildren = false;
                     this.showAlbums();
                     this._restoreScroll();
                 } else {
@@ -33,6 +36,7 @@ Object.assign(ImageViewer.prototype, {
                 this.mode = 'albums';
                 this.childParentPath = '';
                 this.currentPath = '';
+                this.fromChildren = false;
                 this.showAlbums();
                 this._restoreScroll();
             }
@@ -43,19 +47,41 @@ Object.assign(ImageViewer.prototype, {
                     this.mode = 'albums';
                     this.childParentPath = '';
                     this.currentPath = '';
+                    this.fromChildren = false;
                     this.showAlbums();
                     this._restoreScroll();
                 } else {
                     this._showFolder(prev);
                 }
             } else {
-                this.mode = 'albums';
-                this.childParentPath = '';
-                this.currentPath = '';
-                this.showAlbums();
-                this._restoreScroll();
+                // 子相册可以多层嵌套：返回上一级子相册，只有顶层子相册才回全部相册。
+                const parent = this._parentChildrenPath();
+                if (parent) {
+                    this.mode = 'children';
+                    this.childParentPath = parent;
+                    this.currentPath = parent;
+                    this.fromChildren = true;
+                    this.showAlbums();
+                    this._restoreScroll();
+                } else {
+                    this.mode = 'albums';
+                    this.childParentPath = '';
+                    this.currentPath = '';
+                    this.fromChildren = false;
+                    this.showAlbums();
+                    this._restoreScroll();
+                }
             }
         }
+    },
+
+    /** 当前子相册层的父目录；顶层子相册返回空串（表示再返回就是全部相册）。 */
+    _parentChildrenPath() {
+        const path = this.childParentPath;
+        if (!path) return '';
+        const album = this.albums.find(a => a.path === path);
+        if (album && album.parent) return album.parent;
+        return path.split('/').slice(0, -1).join('/');
     },
 
     showAlbumMenu(path, e) {
@@ -152,7 +178,9 @@ Object.assign(ImageViewer.prototype, {
         const total = root
             ? (root.image_count || 0)
             : visible.reduce((sum, a) => sum + (a.direct_count || 0), 0);
-        document.getElementById('iv-stats').textContent = `${visible.length} 个相册 · ${total} 张图片`;
+        this._statusText = `${visible.length} 个相册 · ${total} 张图片`;
+        this._statusState = 'ok';
+        // 状态栏由壳按 `_pushChrome()` 上报的数据渲染。
     },
 
     // ===== 图片文件夹（多根目录）=====

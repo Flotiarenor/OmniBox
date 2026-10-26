@@ -34,18 +34,13 @@
   --gm-success-soft: color-mix(in srgb, var(--success) 15%, transparent);
   --gm-warn-soft: color-mix(in srgb, var(--warning) 18%, transparent);
   --gm-danger-soft: var(--danger-soft, color-mix(in srgb, var(--danger) 15%, transparent));
-  /* 侧栏宽度**不在这里**取别名：写成 `--gm-side-width: var(--sub-sidebar-width)` 时，
-     var() 是在 `:root` 上替换的，替换完再继承给 `.gm-side`，于是分隔条写在
-     `.gm-side` 内联上的用户值永远读不到 —— 表现就是拖动全程宽度不动、松手才跳一下
-     （松手时壳写的是 `:root`，那一条才会被替换）。宽度现在完全由壳的
-     `.view-sub-sidebar` 给出（`var(--sub-sidebar-width)`），本插件不再声明。 */
+  /* 页面骨架（侧栏宽度、分隔条、品牌块、顶栏）由壳渲染；本文件只负责内容区。 */
   --gm-peers-width: 272px;
 }
 
 /* ---------- 高度链 ----------
-   结构与壳的其它插件保持一致（image-viewer / manga-library / media-player）：
-   `#app` 自己就是 flex 行容器（侧栏 + 右侧主区），侧栏跑满全高；主区是
-   壳的 `.view-body`，内部再是 `.view-toolbar` + `.view-content`。
+   本页是壳 iframe 里的内容文档：`#app` 占满 iframe，`.view-body` 负责纵向伸缩，
+   `.view-content` 自己滚动。
 
    这条链不能省：base.css 给 body 设了 `overflow: hidden`，而 `.view-body`
    是 `flex: 1`，父级没有确定高度时它的 `min-height: 0` 链断掉，
@@ -62,47 +57,6 @@ body {
   min-height: 0;
   overflow: hidden;
   background: var(--bg-app);
-}
-
-.gm-main {
-  min-width: 0;
-}
-
-/* ============================ 工具栏 ============================ */
-
-.gm-toolbar {
-  gap: 12px;
-}
-
-.gm-heading {
-  gap: 10px;
-  min-width: 0;
-}
-
-.gm-heading-text {
-  min-width: 0;
-}
-
-/* 工具栏左侧与其它插件的 `.xx-view-heading` 同形：只有标题 + 副标题两块文字。
-   本插件试过把图标放进标题组（`.gm-icon`→大小 22px），结果同一个插件图标在
-   工具栏与侧栏牌头各出现一次、且两处尺寸不同；图标只留在牌头（`#network`）。 */
-.gm-title {
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.gm-sub {
-  margin-top: 1px;
-  font-size: 11px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.gm-toolbar-right {
-  margin-left: auto;
 }
 
 .gm-banner {
@@ -126,152 +80,6 @@ body {
   background: var(--bg-hover);
   font-size: 12px;
   overflow-x: auto;
-}
-
-/* ====================== 侧栏 + 主区（两栏） ======================
-   与 manga-library / media-player / image-viewer 同一套形态：侧栏是 `#app` 的
-   直接子元素、用壳的 `.view-sub-sidebar`（宽度/边框/底色由壳给），右侧是
-   `.view-body`（工具栏 + 内容区）。这里只补"本插件的侧栏"需要的排布。
-
-   分隔线按结构分工：侧栏只画 `border-right`，主区的 `.view-toolbar` 画
-   `border-bottom`。两边都画会在交角处叠成 2px（实测）。
-
-   选择器带上 `.view-sub-sidebar` 是有意的：壳的 base.css 用**同一个类**（0,1,0）把
-   方向和边框写死，与本插件规则同优先级时后注入的壳样式胜出。宽度已经跟随壳的
-   `--sub-sidebar-width`，不再各自取值；但窄窗口的横向排布（下面的 `@media
-   (max-width: 720px)`）仍要压过壳的 `flex-direction: column`，所以选择器保持 0,2,0。
-   不能靠改顺序 —— 注入顺序由壳决定（实测：裸 `.gm-side` 时窄窗口侧栏仍是竖排）。 */
-
-.gm-side.view-sub-sidebar {
-  /* 宽度由壳的 `.view-sub-sidebar` 给出（`var(--sub-sidebar-width)`），这里不再声明：
-     本插件曾经写成 `width: var(--gm-side-width)`，而 `--gm-side-width` 在 `:root`
-     上取 `var(--sub-sidebar-width)` 的值 —— var() 在 `:root` 上就替换完了，分隔条
-     写在侧栏内联上的用户值读不到，表现是拖动全程宽度不动、松手才跳一下。
-     别名必须留在取值来源那一层；这里索性不留别名。 */
-  flex-shrink: 0;
-  gap: 0;
-}
-
-.gm-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 14px 12px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.gm-brand-icon {
-  width: 34px;
-  height: 34px;
-  border-radius: var(--gm-radius-sm);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 18px;
-  flex-shrink: 0;
-  background: var(--gm-accent-soft);
-}
-
-.gm-brand-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.gm-brand-sub {
-  margin-top: 1px;
-  font-size: 11px;
-  color: var(--text-secondary);
-  letter-spacing: 0.3px;
-}
-
-.gm-nav {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 6px 8px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-/* 滚动条走壳的 `.obx-scroll`（本文件不再自己写一份 thin/transparent 规则） */
-
-.gm-nav-label {
-  padding: 12px 8px 4px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-
-/* 导航项的结构 / hover / 选中态全部来自壳的 `.obx-nav-item`（shared.css 的「导航项」
-   一节，含 `[data-active="true"]` 这一档）；这里只留本插件自己的差异：
-   撑满侧栏宽度 + 图标栏 18px。选中态的视觉参数可覆写
-   `--obx-nav-active-bg` / `--obx-nav-accent` 等 token。 */
-.gm-nav-item {
-  width: 100%;
-}
-
-.gm-nav-icon {
-  width: 18px;
-  text-align: center;
-  flex-shrink: 0;
-}
-
-.gm-nav-text {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 侧栏计数：有数据才出现（由 app.js 决定显隐），避免一排 0 占地方 */
-.gm-nav-count {
-  flex-shrink: 0;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: var(--bg-hover);
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-
-.gm-nav-count:empty {
-  display: none;
-}
-
-/* 侧栏底部摘要：节点状态 + 团体/名单（app.js 的 renderSideSummary 写） */
-.gm-side-foot {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 11px;
-  color: var(--text-secondary);
-  min-width: 0;
-}
-
-.gm-foot-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-muted);
-  flex-shrink: 0;
-}
-
-.gm-foot-dot[data-state="ok"] { background: var(--success); }
-.gm-foot-dot[data-state="warn"] { background: var(--warning); }
-.gm-foot-dot[data-state="error"] { background: var(--danger); }
-.gm-foot-dot[data-state="idle"] { background: var(--text-muted); }
-
-.gm-foot-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* ============================ 内容区 ============================ */
@@ -838,55 +646,8 @@ body {
 
 /* ==================== 响应式 ==================== */
 
-/* 窄窗口：侧栏折成一条横向导航，远端两栏改为上下堆叠 */
+/* 窄窗口：远端两栏改为上下堆叠（页面骨架由壳负责，内容页不再处理侧栏折叠） */
 @media (max-width: 720px) {
-  /* 两栏变上下：`#app` 是行容器，折成列即可（`.gm-main` 会自动占满剩余高度） */
-  #app {
-    flex-direction: column;
-  }
-
-  /* 折成上下布局后侧栏宽度由 100% 决定，横向拖动已无意义：隐藏分隔条把手，
-     否则它会作为 #app 的列成员多占一行。 */
-  #app > [data-obx-splitter-handle] {
-    display: none;
-  }
-
-  .gm-side.view-sub-sidebar {
-    width: 100%;
-    flex-direction: row;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 4px;
-    /* 分隔线换边：窄布局下侧栏与主区是"上下"关系，因此改成 border-bottom
-       并去掉右侧那条竖线（否则会多出一条悬空的边）。 */
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .gm-brand {
-    border-bottom: none;
-    padding: 8px 10px;
-  }
-
-  .gm-brand-text,
-  .gm-nav-label,
-  .gm-side-foot,
-  .gm-nav-icon {
-    display: none;
-  }
-
-  .gm-nav {
-    flex-direction: row;
-    flex-wrap: wrap;
-    overflow: visible;
-    padding: 6px 8px;
-  }
-
-  .gm-nav-item {
-    width: auto;
-    padding: 6px 10px;
-  }
-
   .gm-grid {
     grid-template-columns: minmax(0, 1fr);
   }

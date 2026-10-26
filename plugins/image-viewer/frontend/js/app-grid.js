@@ -12,7 +12,33 @@ Object.assign(ImageViewer.prototype, {
     // ============================================================
     // 图片网格
     // ============================================================
+    /**
+     * 清空图片层状态并作废在途 loadImages。
+     *
+     * 切换视图、进出目录、返回相册层时调用：`_navSeq` 变化会让旧请求的结果失效，
+     * `_loadSeq` 则让同一视图内被新请求取代的旧响应失效（翻页、刷新重取）。
+     */
+    _resetImageListState() {
+        this._loadSeq += 1;
+        this.currentItems = [];
+        this.currentImages = [];
+        this.currentAllImages = [];
+        this.currentAllOffset = 0;
+        this.currentPage = 1;
+        this.filteredSeqIndexes = null;
+        this._sequencePath = null;
+        this._sequenceFull = null;
+    },
+
     async loadImages(path = '', page = 1) {
+        const requestId = ++this._loadSeq;
+        const navSeq = this._navSeq;
+        // 只允许"最新请求 + 当前导航代次 + 仍在图片层 + 路径未变"的响应写 DOM。
+        const isCurrent = () => requestId === this._loadSeq
+            && navSeq === this._navSeq
+            && this.mode === 'images'
+            && this.currentPath === path;
+        if (!isCurrent()) return;
         const grid = document.getElementById('image-grid');
         const paginationEl = document.getElementById('pagination');
         grid.innerHTML = '<div class="loading">图片加载中…</div>';
@@ -21,6 +47,7 @@ Object.assign(ImageViewer.prototype, {
         try {
             // 先取该文件夹生效的设置（含父文件夹/全局回退），保证 per-folder 设置首次进入即生效
             const eff = await Bridge.call('get_settings', path);
+            if (!isCurrent()) return;
             if (eff) {
                 this.currentSettings = eff;
                 this.currentRowHeight = eff.row_height || 200;
@@ -29,9 +56,8 @@ Object.assign(ImageViewer.prototype, {
             const sortBy = this.currentSettings.sort_by || 'mtime';
             const sortOrder = this.currentSettings.sort_order || 'desc';
             const data = await Bridge.call('list_folder_items', path, page, perPage, sortBy, sortOrder);
+            if (!isCurrent()) return;
             this.currentPage = page;
-            // 被动同步：只校验当前目录（组件去抖，壳侧还会按目录做 mtime 短路）
-            this._autoSyncFreshness(path);
             this.currentItems = data.items || [];
             this.currentImages = this.currentItems.filter(it => it.type !== 'album');
             this.currentAllImages = data.all_images || this.currentImages;
@@ -50,25 +76,33 @@ Object.assign(ImageViewer.prototype, {
                 this.currentRowHeight = data.settings.row_height || 200;
             }
             const imgTotal = data.image_total != null ? data.image_total : this.currentImages.length;
-            document.getElementById('iv-stats').textContent =
-                (data.total === imgTotal) ? `共 ${data.total} 张图片` : `共 ${data.total} 项 · ${imgTotal} 张图片`;
+            this._statusText = (data.total === imgTotal)
+                ? `共 ${data.total} 张图片`
+                : `共 ${data.total} 项 · ${imgTotal} 张图片`;
+            this._statusState = 'ok';
             grid.innerHTML = '';
             this.filteredSeqIndexes = null;
             if (!this.currentItems.length) {
                 grid.innerHTML = this._emptyHtml('icon:images', '此相册暂无图片');
                 grid.style.height = 'auto';
+                this._pushChrome();
                 return;
             }
-            const keyword = document.getElementById('iv-search').value.trim();
+            const keyword = this.searchQuery;
             if (keyword) {
                 this.filterCurrentImages(keyword);
             } else {
                 this.renderJustifiedLayout(this.currentItems);
             }
             this.pagination.render(data.page, Math.ceil(data.total / perPage));
+            this._pushChrome();
         } catch (error) {
+            if (!isCurrent()) return;
             grid.innerHTML = this._emptyHtml('icon:triangle-alert', '图片加载失败');
             grid.style.height = 'auto';
+            this._statusText = '图片加载失败';
+            this._statusState = 'error';
+            this._pushChrome();
         }
     },
 
@@ -388,7 +422,7 @@ Object.assign(ImageViewer.prototype, {
         this._slideshowWanted = true;
         this.lightbox.show(this.currentAllImages, index);
         this.slideshowTimer = setInterval(() => this.lightbox.navigate(1), 3000);
-        document.getElementById('btn-slideshow').innerHTML = Icons.html('icon:pause') + ' 停止';
+        this._pushChrome();
         Toast.info('幻灯片播放中，每 3 秒切换一张');
     },
 
@@ -397,8 +431,7 @@ Object.assign(ImageViewer.prototype, {
             clearInterval(this.slideshowTimer);
             this.slideshowTimer = null;
         }
-        const btn = document.getElementById('btn-slideshow');
-        if (btn) btn.innerHTML = Icons.html('icon:play') + ' 幻灯片';
+        this._pushChrome();
     },
 
     // 离开当前列表（换相册 / 换文件夹）：用户已经不在这个上下文里，
@@ -413,25 +446,13 @@ Object.assign(ImageViewer.prototype, {
     // ============================================================
     toggleMultiSelectMode() {
         this.isMultiSelectMode = !this.isMultiSelectMode;
-        const btn = document.getElementById('btn-multi-select');
-        const deleteBtn = document.getElementById('btn-delete-selected');
-        const moveBtn = document.getElementById('btn-move-selected');
-        const thumbBtn = document.getElementById('btn-refresh-thumbs');
-        btn.classList.toggle('active', this.isMultiSelectMode);
-        btn.textContent = this.isMultiSelectMode ? '退出多选' : '开启多选';
-        deleteBtn.classList.toggle('hidden', !this.isMultiSelectMode);
-        moveBtn.classList.toggle('hidden', !this.isMultiSelectMode);
-        if (thumbBtn) thumbBtn.classList.toggle('hidden', !this.isMultiSelectMode);
-        const selectionCount = document.getElementById('iv-selection-count');
-        if (selectionCount) selectionCount.classList.toggle('hidden', !this.isMultiSelectMode);
         if (!this.isMultiSelectMode) this.clearSelection();
+        else this._updateSelectionCount();
     },
 
     _updateSelectionCount() {
-        const el = document.getElementById('iv-selection-count');
-        if (!el) return;
-        el.textContent = `已选 ${this.selectedImages.size} 项`;
-        el.classList.toggle('hidden', !this.isMultiSelectMode || this.selectedImages.size === 0);
+        // 计数与显隐由壳的顶栏动作渲染（多选态下才出现）；这里只负责上报。
+        this._pushChrome();
     },
 
     toggleSelectImage(imgUrl, cardEl) {

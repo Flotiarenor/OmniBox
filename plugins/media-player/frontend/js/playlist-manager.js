@@ -1,4 +1,7 @@
 // ===== 歌单管理（音视频混编） =====
+// 歌单的侧栏渲染已上移到壳：manifest 的 `frontend.chrome.nav` 声明了「我的歌单」动态组
+// （id `playlists`），运行期由 `syncNav()` 把这组 items 整组上报（每个歌单一项 +
+// 末尾的「新建歌单」）。本文件只管数据与后端调用。
 class MediaPlaylistManager {
     constructor(app) {
         this.app = app;
@@ -13,7 +16,7 @@ class MediaPlaylistManager {
             console.error('加载歌单失败:', e);
             this.playlists = [];
         }
-        this.renderSidebar();
+        this.syncNav();
     }
 
     async create(name) {
@@ -21,7 +24,7 @@ class MediaPlaylistManager {
             const result = await Bridge.call('media_playlist_save', name, '', []);
             if (result.success) {
                 this.playlists.push(result.playlist);
-                this.renderSidebar();
+                this.syncNav();
                 Toast.success(`歌单「${name}」已创建`);
                 return result.playlist;
             }
@@ -40,7 +43,7 @@ class MediaPlaylistManager {
             const result = await Bridge.call('media_playlist_save', name, playlistId, pl.item_ids || []);
             if (result.success) {
                 pl.name = name;
-                this.renderSidebar();
+                this.syncNav();
                 return true;
             }
         } catch (e) { }
@@ -53,7 +56,7 @@ class MediaPlaylistManager {
             if (result.success) {
                 this.playlists = this.playlists.filter(p => p.id !== playlistId);
                 if (this.currentId === playlistId) this.currentId = '';
-                this.renderSidebar();
+                this.syncNav();
                 Toast.success('歌单已删除');
                 return true;
             }
@@ -79,7 +82,7 @@ class MediaPlaylistManager {
             const result = await Bridge.call('media_playlist_save', pl.name, playlistId, merged);
             if (result.success) {
                 pl.item_ids = merged;
-                this.renderSidebar();
+                this.syncNav();
                 return true;
             }
         } catch (e) { }
@@ -94,7 +97,7 @@ class MediaPlaylistManager {
             const result = await Bridge.call('media_playlist_save', pl.name, playlistId, filtered);
             if (result.success) {
                 pl.item_ids = filtered;
-                this.renderSidebar();
+                this.syncNav();
                 return true;
             }
         } catch (e) { }
@@ -108,43 +111,18 @@ class MediaPlaylistManager {
             const result = await Bridge.call('media_playlist_save', pl.name, playlistId, itemIds);
             if (result.success) {
                 pl.item_ids = itemIds;
-                this.renderSidebar();
+                this.syncNav();
                 return true;
             }
         } catch (e) { }
         return false;
     }
 
-    // ===== 侧边栏渲染 =====
-    renderSidebar() {
-        const container = document.getElementById('mp-playlist-list');
-        if (!container) return;
-
-        if (!this.playlists.length) {
-            container.innerHTML = '<div class="mp-playlist-empty">暂无歌单，点击上方「新建歌单」创建</div>';
-            return;
-        }
-
-        container.innerHTML = this.playlists.map(pl => `
-            <div class="mp-playlist-item ${pl.id === this.currentId ? 'active' : ''}" data-pl-id="${pl.id}">
-                <span class="pl-name">${MPUtils.icon('icon:list-music')} ${MPUtils.escapeHtml(pl.name)}</span>
-                <span class="pl-count">${(pl.item_ids || []).length}</span>
-                <button class="pl-more" data-pl-id="${pl.id}" title="更多操作">⋯</button>
-            </div>
-        `).join('');
-
-        container.querySelectorAll('.mp-playlist-item').forEach(row => {
-            const id = row.dataset.plId;
-            row.addEventListener('click', (e) => {
-                if (e.target.classList.contains('pl-more')) return;
-                this.app.openPlaylist(id);
-            });
-            row.querySelector('.pl-more').addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.app.showPlaylistMenu(id, e);
-            });
-        });
-
-        if (this.app && this.app._updateStats) this.app._updateStats();
+    /** 把歌单列表作为壳侧「我的歌单」导航组上报；统计（歌单数）随之刷新。 */
+    syncNav() {
+        if (!this.app) return;
+        this.app._updateStats()
+            .then(() => this.app._pushChrome())
+            .catch(() => this.app._pushChrome());
     }
 }

@@ -18,7 +18,52 @@
   },
   "frontend": {
     "entry": "frontend/index.html",
-    "route": "/group-mesh"
+    "route": "/group-mesh",
+    "chrome": {
+      "brand": {
+        "icon": "icon:network",
+        "title": "团体组网",
+        "subtitle": "无中心 · IPv6",
+        "accent": "#22d3ee"
+      },
+      "nav": [
+        {
+          "section": "本机",
+          "id": "machine",
+          "items": [
+            { "id": "machine", "label": "身份与节点", "icon": "icon:monitor" }
+          ]
+        },
+        {
+          "section": "团体",
+          "id": "group",
+          "items": [
+            { "id": "group", "label": "名单与成员", "icon": "icon:users" },
+            { "id": "shares", "label": "共享项", "icon": "icon:folder" }
+          ]
+        },
+        {
+          "section": "传输",
+          "id": "remote",
+          "items": [
+            { "id": "remote", "label": "远端共享", "icon": "icon:globe" }
+          ]
+        },
+        {
+          "section": "关于",
+          "id": "about",
+          "items": [
+            { "id": "roadmap", "label": "路线图", "icon": "icon:compass" }
+          ]
+        }
+      ],
+      "toolbar": [
+        { "id": "refresh", "label": "刷新状态", "icon": "icon:refresh-cw" },
+        { "id": "settings", "label": "设置", "icon": "icon:settings" }
+      ],
+      "status": true,
+      "freshness": { "unit": "项" }
+    }
   },
   "minShellVersion": "1.2.0"
 }

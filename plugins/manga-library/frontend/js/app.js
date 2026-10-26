@@ -1,5 +1,16 @@
 // ============================================================
 // 漫画中心：漫画库 + 下载中心（合并插件）
+//
+// 页面 chrome（品牌块 / 左栏导航 / 顶栏 / 搜索 / 状态栏 / 分隔条）由壳按
+// manifest 的 frontend.chrome 渲染；本文件只维护内容：
+//   书架三视图（all / favorites / recent）
+//   下载中心六种过滤（downloads:<filter>，toolbar 动作只在下载中心出现）
+//   漫画详情 / 章节 / 图片，两个内容弹窗与沉浸式阅读器
+//
+// 与壳的通信：壳发 omnibox:view / omnibox:action / omnibox:query，本文件回
+// omnibox:chrome（标题、副标题、视图、动作显隐与禁用、导航徽标、搜索可用性、状态）。
+// 设置的分享组件（同步 / 校验）由壳的 PluginChrome 挂载，校验完成后的重载经
+// omnibox:action: refresh 回来。
 // ============================================================
 class MangaLibraryApp {
     constructor() {
@@ -15,6 +26,21 @@ class MangaLibraryApp {
         this.isMultiChapter = false;
         this.viewLevel = 'home'; // home / chapters / images
         this._initialized = false;
+
+        // 壳渲染的 chrome 的运行期数据：标题/副标题由内容侧维护，动作、徽标、
+        // 搜索与状态的显隐由 _pushChrome() 在每次状态变化时整份上报。
+        this.searchQuery = '';
+        this._chromeTitle = '全部漫画';
+        this._chromeSub = '';
+        this._statusText = '正在读取…';
+        this._statusState = 'idle';
+        this._searchEnabled = true;
+        // 让壳的搜索框跟着内容页清空：一次性载荷，随下一次 chrome 上报发出。
+        // 不能每帧上报关键词 —— 那会把用户正在输入的内容顶回去。
+        this._searchSync = null;
+        this._searchClearSeq = 0;
+        this._shelfCounts = { total: 0, favorites: 0, recent: 0 };
+        this._actions = {};
     }
 
     async init() {
@@ -23,15 +49,180 @@ class MangaLibraryApp {
 
         this.reader = new MangaReader();
         this._bindUI();
-        this._mountFreshness();
+        this._updateActions();
         await this.loadView();
         await this.loadTasks();
         this._bindPluginLifecycle();
         this._startPoll();
+        // 与壳握手：先声明监听，再发 ready；壳收到 ready 后补发当前视图。
+        this._bindHost();
+        this._pushChrome();
     }
 
-    // 可见性通知（与 image-viewer 同一约定）：常驻 iframe 切到后台后，没有任何理由
-    // 继续每 2s 拉一次任务列表，轮询停掉，回到前台由 onShow 重新拉起。
+    // ============================================================
+    // 与壳的页面骨架通信
+    // ============================================================
+
+    /** 内容页与壳同源：消息只发给父窗口，脱离壳单独打开时不发。 */
+    _postHost(payload) {
+        if (window.parent === window) return;
+        try { window.parent.postMessage(payload, location.origin); } catch (e) { /* 非同源父窗口不发 */ }
+    }
+
+    /** 上报 chrome：标题、副标题、视图、动作显隐/禁用、导航徽标、搜索可用性与状态。 */
+    _pushChrome() {
+        const searchSync = this._searchSync;
+        this._searchSync = null;
+        this._postHost({
+            type: 'omnibox:chrome',
+            title: this._chromeTitle,
+            subtitle: this._chromeSub,
+            view: this._chromeViewId(),
+            actions: this._actions,
+            nav: this._navPatch(),
+            search: { enabled: this._searchEnabled, ...(searchSync || {}) },
+            status: { text: this._statusText, state: this._statusState },
+        });
+    }
+
+    /** 清空搜索词，并让壳的输入框回空。切视图/进详情时调用：列表已经换了内容，
+        框里还留着旧关键词会与当前视图对不上。 */
+    _clearSearch() {
+        this.searchQuery = '';
+        this._searchSync = { value: '', clear: ++this._searchClearSeq };
+    }
+
+    /** 壳左栏的高亮视图 id：详情/阅读态发空串清掉高亮，下载中心用复合 id。 */
+    _chromeViewId() {
+        if (this.viewLevel !== 'home') return '';
+        if (this.currentView === 'downloads') return `downloads:${this.downloadFilter}`;
+        return this.currentView;
+    }
+
+    /** 导航徽标补丁：漫画库三个视图与下载中心的任务总数；值取空串表示清掉徽标。
+        导航项当前始终可见，`visible` 与徽标一起上报，壳按同一份补丁渲染。 */
+    _navPatch() {
+        const item = (count) => ({ badge: count ? String(count) : '', visible: true });
+        return {
+            all: item(this._shelfCounts.total),
+            favorites: item(this._shelfCounts.favorites),
+            recent: item(this._shelfCounts.recent),
+            'downloads:all': item(this.tasks.length),
+        };
+    }
+
+    /** 壳的握手与反向下发：视图、顶栏动作、搜索输入。 */
+    _bindHost() {
+        window.addEventListener('message', (event) => {
+            if (event.origin !== location.origin || event.source !== window.parent) return;
+            const data = event.data || {};
+            if (data.type === 'omnibox:view' && typeof data.view === 'string') {
+                this._applyHostView(data.view);
+                return;
+            }
+            if (data.type === 'omnibox:action') {
+                this._applyHostAction(data.action);
+                return;
+            }
+            if (data.type === 'omnibox:query') {
+                this._onQuery(data.query);
+            }
+        });
+        this._postHost({ type: 'omnibox:ready' });
+    }
+
+    /** 壳左栏的导航项：漫画库三视图与下载中心的六个过滤项（复合 id）。 */
+    _applyHostView(viewId) {
+        if (viewId.startsWith('downloads:')) {
+            this.switchView('downloads', viewId.slice('downloads:'.length));
+            return;
+        }
+        if (viewId === 'all' || viewId === 'favorites' || viewId === 'recent') this.switchView(viewId);
+    }
+
+    /** 壳顶栏动作：返回、下载中心的四个动作、统一刷新的重载信号，以及壳设置弹窗保存后的重载。 */
+    async _applyHostAction(action) {
+        if (action === 'back') { this._goBack(); return; }
+        if (action === 'add-task') { this.showAddModal(); return; }
+        if (action === 'settings-saved') {
+            // 漫画根目录可能被改过：书架与下载任务都按新根重读一次。
+            await this.loadView();
+            await this.loadTasks();
+            return;
+        }
+        if (action === 'refresh') {
+            await this.loadView();
+            await this.loadTasks();
+            return;
+        }
+        if (action === 'start-all') await Bridge.call('download_start_all');
+        else if (action === 'pause-all') await Bridge.call('download_pause_all');
+        else if (action === 'clear-completed') await Bridge.call('download_clear_completed');
+        else return;
+        await this.loadTasks();
+    }
+
+    /** 壳左侧返回：阅读器 → 图片 → 章节（多章时）或书架；章节/详情 → 书架。 */
+    _goBack() {
+        // 阅读器是全屏覆盖层，比图片层更内层：壳返回先关它，层级不变。
+        if (this._closeReader()) return;
+        if (this.viewLevel === 'images') {
+            if (this.isMultiChapter) {
+                this.viewLevel = 'chapters';
+                this.loadView();
+            } else {
+                this.switchView('all');
+            }
+            return;
+        }
+        if (this.viewLevel === 'chapters') this.switchView('all');
+    }
+
+    /** 关闭阅读器并返回是否真的关了一个：没有打开的阅读器时返回 false。 */
+    _closeReader() {
+        if (!this.reader || typeof this.reader.isOpen !== 'function' || !this.reader.isOpen()) {
+            return false;
+        }
+        this.reader.close();
+        return true;
+    }
+
+    /** 独立打开本页时保留内容内返回；壳内（content=1）返回由壳左侧按钮承担。 */
+    _backButtonHtml() {
+        return window.parent === window
+            ? `<button class="btn ml-hero-back" id="ml-detail-back">${Icons.html('icon:arrow-left')} 返回</button>`
+            : '';
+    }
+
+    /** 壳搜索框的输入（壳侧已去抖 250ms）；下载中心与详情页不参与搜索。 */
+    _onQuery(query) {
+        const next = String(query == null ? '' : query).trim();
+        if (next === this.searchQuery) return;
+        this.searchQuery = next;
+        if (this.currentView === 'downloads' || this.viewLevel !== 'home') return;
+        this.loadView();
+    }
+
+    /** 顶栏动作的运行期状态：返回只在详情/章节/图片层级出现，下载动作只在下载中心出现。 */
+    _updateActions() {
+        const isDownloads = this.currentView === 'downloads';
+        const count = (status) => this.tasks.filter(t => t.status === status).length;
+        this._actions = {
+            back: { visible: this.viewLevel !== 'home' },
+            'add-task': { visible: isDownloads },
+            'start-all': { visible: isDownloads, disabled: count('paused') === 0 },
+            'pause-all': { visible: isDownloads, disabled: count('downloading') === 0 },
+            'clear-completed': { visible: isDownloads, disabled: count('completed') === 0 },
+            settings: { visible: true },
+        };
+    }
+
+    // ============================================================
+    // 可见性通知
+    // ============================================================
+
+    // 常驻 iframe 切到后台后，没有任何理由继续每 2s 拉一次任务列表，
+    // 轮询停掉，回到前台由 onShow 重新拉起。
     _bindPluginLifecycle() {
         if (!window.PluginLifecycle) return;
         const lifecycle = window.PluginLifecycle;
@@ -52,48 +243,9 @@ class MangaLibraryApp {
     }
 
     // ============================================================
-    // UI 绑定
+    // UI 绑定（chrome 的监听全部换成 omnibox 消息，这里只剩内容弹窗）
     // ============================================================
     _bindUI() {
-        document.querySelectorAll('.ml-nav-item').forEach(btn => {
-            btn.addEventListener('click', () => {
-                this.switchView(btn.dataset.view, btn.dataset.dlFilter || 'all');
-            });
-        });
-
-        document.getElementById('btn-settings').addEventListener('click', () => {
-            openSettingsModal({ title: '漫画中心设置' });
-        });
-
-        const search = document.getElementById('manga-search');
-        const debounced = Utils.debounce(() => this.loadView(), 300);
-        search.addEventListener('input', () => {
-            document.getElementById('ml-search-clear').classList.toggle('hidden', !search.value.trim());
-            debounced();
-        });
-        document.getElementById('ml-search-clear').addEventListener('click', () => {
-            search.value = '';
-            document.getElementById('ml-search-clear').classList.add('hidden');
-            this.loadView();
-            search.focus();
-        });
-
-        // 下载任务工具栏
-        document.getElementById('ml-add-task').addEventListener('click', () => this.showAddModal());
-        document.getElementById('ml-start-all').addEventListener('click', async () => {
-            await Bridge.call('download_start_all');
-            await this.loadTasks();
-        });
-        document.getElementById('ml-pause-all').addEventListener('click', async () => {
-            await Bridge.call('download_pause_all');
-            await this.loadTasks();
-        });
-        document.getElementById('ml-clear-completed').addEventListener('click', async () => {
-            await Bridge.call('download_clear_completed');
-            await this.loadTasks();
-        });
-
-        // 添加任务弹窗
         document.getElementById('ml-cancel-add').addEventListener('click', () => this.closeAddModal());
         document.getElementById('ml-confirm-add').addEventListener('click', () => this.confirmAdd());
         document.getElementById('ml-close-detail').addEventListener('click', () => this.closeDetailModal());
@@ -107,105 +259,93 @@ class MangaLibraryApp {
     }
 
     switchView(view, dlFilter = 'all') {
+        // 左栏导航是页面级跳转：阅读器盖在内容上时先关掉它，否则用户会看到
+        // 「点了导航但画面没变」。返回动作由 `_goBack` 自己先关阅读器。
+        this._closeReader();
+        const filter = view === 'downloads' ? (dlFilter || 'all') : 'all';
+        // 只有上下文真的变了才清搜索框：壳在加载/握手时会重发当前视图。
+        const changed = this.currentView !== view || this.downloadFilter !== filter
+            || this.viewLevel !== 'home' || !!this.currentDetail;
         this.currentView = view;
-        this.downloadFilter = dlFilter;
+        this.downloadFilter = filter;
         this.viewLevel = 'home';
         this.currentDetail = null;
-        document.querySelectorAll('.ml-nav-item').forEach(b => {
-            const active = b.dataset.view === view && (view !== 'downloads' || (b.dataset.dlFilter || 'all') === dlFilter);
-            b.classList.toggle('active', active);
-        });
-        document.getElementById('manga-search').value = '';
-        document.getElementById('ml-search-clear').classList.add('hidden');
+        if (changed) this._clearSearch();
+        this._updateActions();
         this.loadView();
-    }
-
-    // ============================================================
-    // 统一刷新（同步 / 校验）
-    // ============================================================
-
-    /** 挂载共享组件（shell/freshness.js，见 docs/plugin-guide §3.4）。 */
-    _mountFreshness() {
-        const host = document.getElementById('ml-freshness');
-        if (!host || typeof Freshness === 'undefined') return;
-        this.freshness = Freshness.mount({
-            plugin: 'manga-library',
-            container: host,
-            unit: '部',
-            onChange: () => this.loadView(),
-        });
-    }
-
-    /** 被动同步：进书架视图时触发（组件去抖，壳侧还有最小间隔）。 */
-    _autoSyncFreshness() {
-        if (this.freshness && typeof this.freshness.autoSync === 'function') {
-            this.freshness.autoSync('');
-        }
     }
 
     // ============================================================
     // 视图渲染
     // ============================================================
     async loadView() {
-        // 书架的被动同步：只在看书架类视图时做（下载中心不关心磁盘漫画目录）
-        if (!['downloads'].includes(this.currentView)) this._autoSyncFreshness();
         const content = document.getElementById('ml-content');
-        const title = document.getElementById('ml-view-title');
-        const sub = document.getElementById('ml-view-sub');
+        if (!content) return;
         const isDownloads = this.currentView === 'downloads';
-        const keyword = (document.getElementById('manga-search').value || '').trim();
-
         const isDetail = this.viewLevel === 'chapters' || this.viewLevel === 'images';
-        // 工具栏按视图切换
-        document.getElementById('ml-search-wrap').classList.toggle('hidden', isDownloads || isDetail);
-        document.getElementById('ml-add-task').classList.toggle('hidden', !isDownloads);
-        document.getElementById('ml-start-all').classList.toggle('hidden', !isDownloads);
-        document.getElementById('ml-pause-all').classList.toggle('hidden', !isDownloads);
-        document.getElementById('ml-clear-completed').classList.toggle('hidden', !isDownloads);
+        const keyword = this.searchQuery;
 
+        this._searchEnabled = !isDownloads && !isDetail;
         if (isDownloads) {
-            title.textContent = '下载中心';
-            sub.textContent = '漫画下载任务管理';
-            this.renderDownloads();
-            return;
+            this._chromeTitle = '下载中心';
+            this._chromeSub = '漫画下载任务管理';
+        } else if (isDetail) {
+            this._chromeTitle = '漫画详情';
+            this._chromeSub = '';
+        } else if (keyword) {
+            this._chromeTitle = `搜索 “${keyword}”`;
+            this._chromeSub = '';
+        } else {
+            this._chromeTitle = { all: '全部漫画', favorites: '我的收藏', recent: '最近阅读' }[this.currentView] || '全部漫画';
+            this._chromeSub = this.currentView === 'all' ? '按文件夹扫描' : '';
         }
 
         try {
-            let items = [];
-            if (keyword) {
-                items = await Bridge.call('manga_search', keyword);
-                title.textContent = `搜索 “${keyword}”`;
-                sub.textContent = `${items.length} 个结果`;
-                this._renderGrid(content, items, { single: true });
+            if (isDownloads) {
+                this.renderDownloads();
                 return;
             }
-
-            if (this.viewLevel === 'chapters') {
-                this.renderChapters(content);
-                return;
-            }
-            if (this.viewLevel === 'images') {
-                await this.renderImages(content);
-                return;
-            }
-
-            const state = await Bridge.call('manga_get_state');
-            if (this.currentView === 'all') {
-                title.textContent = '全部漫画';
-                sub.textContent = '按文件夹扫描';
-                this._renderGrid(content, await Bridge.call('manga_list'), { single: true });
-            } else if (this.currentView === 'favorites') {
-                title.textContent = '我的收藏';
-                sub.textContent = `${state.favorites.length} 部`;
-                this._renderGrid(content, state.favorites, { single: true });
-            } else if (this.currentView === 'recent') {
-                title.textContent = '最近阅读';
-                sub.textContent = `${state.recent.length} 部`;
-                this._renderGrid(content, state.recent, { single: true });
-            }
+            await this._renderShelfView(content, keyword);
         } catch (e) {
             console.error('加载视图失败:', e);
-            content.innerHTML = this._emptyHtml('icon:triangle-alert', '加载失败', String(e && e.message || e));
+            content.innerHTML = this._emptyHtml('icon:triangle-alert', '加载失败', String((e && e.message) || e));
+        } finally {
+            this.updateStats();
+            this._updateActions();
+            this._pushChrome();
+        }
+    }
+
+    /** 书架三视图与详情页；搜索关键字只在一级书架视图生效。 */
+    async _renderShelfView(content, keyword) {
+        if (this.viewLevel === 'chapters') { this.renderChapters(content); return; }
+        if (this.viewLevel === 'images') { await this.renderImages(content); return; }
+
+        const state = await Bridge.call('manga_get_state');
+        this._shelfCounts.favorites = (state.favorites || []).length;
+        this._shelfCounts.recent = (state.recent || []).length;
+
+        if (keyword) {
+            const items = await Bridge.call('manga_search', keyword);
+            this._chromeSub = `${items.length} 个结果`;
+            // 搜索无结果与空库是两回事：前者不该提示去改漫画根目录。
+            this._renderGrid(content, items, {
+                single: true,
+                empty: { icon: 'icon:search', text: '没有匹配的漫画' },
+            });
+            return;
+        }
+        if (this.currentView === 'all') {
+            const items = await Bridge.call('manga_list');
+            this._shelfCounts.total = items.length;
+            this._chromeSub = '按文件夹扫描';
+            this._renderGrid(content, items, { single: true });
+        } else if (this.currentView === 'favorites') {
+            this._chromeSub = `${this._shelfCounts.favorites} 部`;
+            this._renderGrid(content, state.favorites, { single: true });
+        } else if (this.currentView === 'recent') {
+            this._chromeSub = `${this._shelfCounts.recent} 部`;
+            this._renderGrid(content, state.recent, { single: true });
         }
     }
 
@@ -221,46 +361,88 @@ class MangaLibraryApp {
     _renderGrid(container, items, opts = {}) {
         if (!container) return;
         if (!items || !items.length) {
-            container.innerHTML = this._emptyHtml('icon:library', '暂无漫画', opts.single ? '可在设置中调整漫画根目录' : '');
+            // opts.empty 给调用方换一整套空态文案（搜索无结果）；不传时是空库文案。
+            const empty = opts.empty;
+            const hint = empty ? (empty.hint || '') : (opts.single ? '可在设置中调整漫画根目录' : '');
+            container.innerHTML = this._emptyHtml(
+                (empty && empty.icon) || 'icon:library',
+                (empty && empty.text) || '暂无漫画',
+                hint,
+            );
             return;
         }
-        // 单视图容器不是网格时，内部包一层 .ml-grid，避免卡片撑满整行
+        // 书架卡片走共享 ContentUI（结构、懒加载、role=button、Enter/Space 激活由它提供）；
+        // 章节与图片网格仍是插件自己的 .ml-card，本函数只服务书架三视图与搜索结果。
         const target = opts.single ? this._ensureGrid(container) : container;
-        target.innerHTML = items.map((manga, i) => {
-            const cover = manga.cover_url
-                ? MangaUtils.coverImg(Bridge.originalUrl(manga.cover_url))
-                : `<div class="ml-cover-fallback">${Icons.html('icon:library')}</div>`;
-            return `
-            <div class="ml-card" data-folder="${MangaUtils.escapeHtml(manga.folder_name)}" style="--obx-i:${Math.min(i, 32)}">
-                <button class="ml-fav-star ${manga.is_fav ? 'active' : ''}" data-folder="${MangaUtils.escapeHtml(manga.folder_name)}" title="收藏">${Icons.html('icon:star')}</button>
-                <div class="ml-cover">${cover}<span class="ml-badge">${manga.page_count}页</span></div>
-                <div class="ml-info">
-                    <div class="ml-card-title">${MangaUtils.escapeHtml(manga.title)}</div>
-                    <div class="ml-card-sub">${MangaUtils.escapeHtml(manga.author || '')}</div>
-                </div>
-            </div>`;
-        }).join('');
-
-        target.querySelectorAll('.ml-card').forEach(card => {
-            card.addEventListener('click', (e) => {
-                if (e.target.closest('.ml-fav-star')) return;
-                this.openMangaDetail(card.dataset.folder);
-            });
-        });
-        target.querySelectorAll('.ml-fav-star').forEach(star => {
-            star.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                await this.toggleFav(star.dataset.folder);
-            });
+        target.replaceChildren();
+        items.forEach((manga, index) => {
+            target.appendChild(this._shelfCard(manga, index));
         });
     }
 
+    /** 一张书架卡片：ContentUI.card + 本插件的封面降级。 */
+    _shelfCard(manga, index) {
+        const folderName = manga.folder_name;
+        const title = manga.title || folderName;
+        const author = manga.author || '';
+        const coverUrl = manga.cover_url ? Bridge.originalUrl(manga.cover_url) : '';
+
+        // 收藏星交给共享 actions + actionsPlacement('top-right')：位置、按钮
+        // 外观与「操作区不激活卡片」的判定都在 ContentUI 内部，插件不再定位。
+        const card = ContentUI.card({
+            className: 'ml-shelf-card',
+            image: coverUrl ? { src: coverUrl, alt: title } : null,
+            title,
+            sub: author,
+            // 页数走封面上的只读层；正文不再重复一个 badge。
+            mediaOverlay: { badge: `${manga.page_count}页` },
+            ariaLabel: `${title}${author ? '，' + author : ''}，${manga.page_count}页`,
+            data: { folder: folderName },
+            actionsPlacement: 'top-right',
+            actions: [{
+                icon: 'icon:star',
+                label: '',
+                className: 'ml-fav-star' + (manga.is_fav ? ' active' : ''),
+                title: manga.is_fav ? '取消收藏' : '收藏',
+                ariaLabel: manga.is_fav ? '取消收藏' : '收藏',
+                data: { folder: folderName },
+                onClick: () => this.toggleFav(folderName),
+            }],
+            onActivate: () => this.openMangaDetail(folderName),
+        });
+        card.style.setProperty('--obx-i', String(Math.min(index, 32)));
+        this._attachCoverFallback(card, coverUrl);
+        return card;
+    }
+
+    /** 封面缺失或加载失败时用插件原来的图标降级（ContentUI 只标记 broken）。 */
+    _attachCoverFallback(card, coverUrl) {
+        const media = card.querySelector('.cui-media');
+        if (!media) return;
+        const fallback = () => {
+            if (media.querySelector('.ml-cover-fallback')) return;
+            media.classList.remove('cui-media--empty', 'cui-media--broken');
+            media.removeAttribute('aria-hidden');
+            const broken = media.querySelector('.cui-image');
+            if (broken) broken.remove();
+            const node = document.createElement('div');
+            node.className = 'ml-cover-fallback';
+            node.innerHTML = Icons.html('icon:library');
+            media.appendChild(node);
+        };
+        if (!coverUrl) { fallback(); return; }
+        const img = media.querySelector('.cui-image');
+        if (!img) { fallback(); return; }
+        img.addEventListener('error', fallback, { once: true });
+        // 命中缓存的坏图不会等到下一个事件循环：创建时就已经 complete。
+        if (img.complete && img.naturalWidth === 0) fallback();
+    }
+
     _ensureGrid(container) {
-        let grid = container.querySelector(':scope > .ml-grid');
+        let grid = container.querySelector(':scope > .cui-grid');
         if (!grid) {
             container.innerHTML = '';
-            grid = document.createElement('div');
-            grid.className = 'ml-grid';
+            grid = ContentUI.grid({ className: 'ml-shelf-grid', ariaLabel: '漫画书架' });
             container.appendChild(grid);
         }
         return grid;
@@ -272,10 +454,13 @@ class MangaLibraryApp {
             document.querySelectorAll('.ml-fav-star').forEach(el => {
                 if (el.dataset.folder === folderName) {
                     el.classList.toggle('active', isFav);
-                    el.innerHTML = Icons.html('icon:star');
+                    el.title = isFav ? '取消收藏' : '收藏';
+                    el.setAttribute('aria-label', el.title);
                     Motion.retrigger(el, 'obx-anim-heart');
                 }
             });
+            this._shelfCounts.favorites = Math.max(0, this._shelfCounts.favorites + (isFav ? 1 : -1));
+            this._pushChrome();
             if (this.currentView === 'favorites' || this.currentView === 'recent') this.loadView();
         } catch (e) {
             Toast.error('收藏操作失败');
@@ -294,9 +479,8 @@ class MangaLibraryApp {
             this.isMultiChapter = detail.is_multi_chapter;
             this._chapterPath = '';
             this.viewLevel = this.isMultiChapter ? 'chapters' : 'images';
-
-            document.getElementById('ml-view-title').textContent = '漫画详情';
-            document.getElementById('ml-view-sub').textContent = '';
+            // 详情是二级页：搜索只作用于一级书架，进入后把关键词与壳输入框一起清掉。
+            this._clearSearch();
             await this.loadView();
         } catch (e) {
             console.error('打开漫画详情失败', e);
@@ -308,7 +492,7 @@ class MangaLibraryApp {
         const infoHtml = this._detailInfoHtml(detail.info);
         content.innerHTML = `
             <div class="ml-detail-hero" style="--ml-hero-bg:${detail.chapters[0] && detail.chapters[0].cover_url ? `url("${Bridge.originalUrl(detail.chapters[0].cover_url)}")` : 'none'}">
-                <button class="btn ml-hero-back" id="ml-detail-back">${Icons.html('icon:arrow-left')} 返回</button>
+                ${this._backButtonHtml()}
                 <div class="ml-detail-cover">${detail.chapters[0] && detail.chapters[0].cover_url ? MangaUtils.coverImg(Bridge.originalUrl(detail.chapters[0].cover_url)) : Icons.html('icon:library')}</div>
                 <div class="ml-detail-info">
                     <div class="ml-detail-label">漫画详情</div>
@@ -325,12 +509,15 @@ class MangaLibraryApp {
                 <div id="ml-chapters" class="ml-grid"></div>
             </section>`;
 
-        document.getElementById('ml-detail-back').addEventListener('click', () => this.switchView('all'));
+        const backBtn = document.getElementById('ml-detail-back');
+        if (backBtn) backBtn.addEventListener('click', () => this._goBack());
         document.getElementById('ml-detail-fav').addEventListener('click', async (e) => {
             const btn = e.target;
             const isFav = await Bridge.call('manga_toggle_favorite', this.currentFolderName);
             btn.classList.toggle('btn-primary', isFav);
             btn.innerHTML = Icons.html('icon:star') + (isFav ? ' 已收藏' : ' 收藏');
+            this._shelfCounts.favorites = Math.max(0, this._shelfCounts.favorites + (isFav ? 1 : -1));
+            this._pushChrome();
         });
 
         const grid = document.getElementById('ml-chapters');
@@ -352,7 +539,7 @@ class MangaLibraryApp {
         const detail = this.currentDetail;
         content.innerHTML = `
             <div class="ml-detail-hero">
-                <button class="btn ml-hero-back" id="ml-detail-back">${Icons.html('icon:arrow-left')} 返回</button>
+                ${this._backButtonHtml()}
                 <div class="ml-detail-info">
                     <div class="ml-detail-label">阅读</div>
                     <div class="ml-detail-title">${MangaUtils.escapeHtml(detail.title)}</div>
@@ -364,14 +551,8 @@ class MangaLibraryApp {
                 <h3 class="ml-section-title"><svg class="obx-icon"><use href="#images"></use></svg> 图片</h3>
                 <div id="ml-pages" class="ml-grid"></div>
             </section>`;
-        document.getElementById('ml-detail-back').addEventListener('click', () => {
-            if (this.isMultiChapter) {
-                this.viewLevel = 'chapters';
-                this.loadView();
-            } else {
-                this.switchView('all');
-            }
-        });
+        const backBtn = document.getElementById('ml-detail-back');
+        if (backBtn) backBtn.addEventListener('click', () => this._goBack());
 
         const grid = document.getElementById('ml-pages');
         grid.innerHTML = '<div class="empty-state"><div class="obx-anim-spin" style="width:32px;height:32px;border-radius:50%;border:3px solid var(--ml-accent-soft);border-top-color:var(--accent);"></div><div>图片加载中…</div></div>';
@@ -419,11 +600,15 @@ class MangaLibraryApp {
             const result = await Bridge.call('download_list');
             this.tasks = result.tasks || [];
             this.updateStats();
+            this._updateActions();
             // 数据没变就不重渲染：整段 innerHTML 重建会让每个 .ml-task 的入场动画
             // 从头播一遍，看起来就像页面每 2s 自己刷新一次。
             if (this.currentView === 'downloads' && JSON.stringify(this.tasks) !== this._tasksKey) {
                 this.renderDownloads(false);
             }
+            // 轮询到新的任务状态后，顶栏按钮的 visible/disabled 必须一起刷新，
+            // 否则壳上的按钮会停在旧态（例如没有任务可暂停时仍可点）。
+            this._pushChrome();
         } catch (e) {
             console.error('加载下载任务失败:', e);
         }
@@ -434,10 +619,12 @@ class MangaLibraryApp {
         const active = this.tasks.filter(t => t.status === 'downloading').length;
         const completed = this.tasks.filter(t => t.status === 'completed').length;
         const queued = this.tasks.filter(t => t.status === 'queued').length;
-        const stats = document.getElementById('ml-stats');
-        if (stats) stats.textContent = `任务 ${total} · 下载中 ${active} · 完成 ${completed} · 排队 ${queued}`;
-        const sub = document.getElementById('ml-view-sub');
-        if (this.currentView === 'downloads' && sub) sub.textContent = `全部 ${total} · 下载中 ${active} · 已完成 ${completed} · 排队 ${queued}`;
+        const failed = this.tasks.filter(t => t.status === 'failed').length;
+        this._statusText = `任务 ${total} · 下载中 ${active} · 完成 ${completed} · 排队 ${queued}`;
+        this._statusState = active ? 'ok' : (failed ? 'warn' : 'idle');
+        if (this.currentView === 'downloads') {
+            this._chromeSub = `全部 ${total} · 下载中 ${active} · 已完成 ${completed} · 排队 ${queued}`;
+        }
     }
 
     // animate=false 用于轮询驱动的刷新：只换内容、不重播入场动画（.ml-no-anim）。

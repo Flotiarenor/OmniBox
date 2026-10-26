@@ -1,5 +1,5 @@
 /* ============================================================
-   图片相册 — 按文件夹聚合的相册风格
+   图片相册 — 内容 iframe 的样式（页面 chrome 归壳）
    依赖 Shell 注入的 variables.css / shared.css / base.css / effects.css
    ============================================================ */
 
@@ -19,103 +19,51 @@
     var(--bg-app);
 }
 
-/* ===== 侧边栏 ===== */
-/* 宽度由壳的 `.view-sub-sidebar` 提供（var(--sub-sidebar-width)，默认 240px）。
-   这里不要写死宽度：壳与本规则同为 0,1,0，而壳的样式注入在 </head> 之前，
-   等特异性时壳胜出，写死值不生效（见 docs/plugin-ui-guide.md §3.1）。 */
-.iv-sidebar {
-  display: flex;
-  flex-direction: column;
-  border-right: 1px solid var(--border);
-  overflow: hidden;
-}
-
-.iv-brand { display: flex; align-items: center; gap: 12px; padding: 18px 16px 14px; }
-.iv-brand-icon {
-  width: 40px; height: 40px; border-radius: 12px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 21px; color: var(--text-on-accent); background: var(--iv-gradient);
-  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 35%, transparent);
-}
-.iv-brand-title { font-size: 15px; font-weight: 700; color: var(--text-primary); }
-.iv-brand-sub { font-size: 11px; color: var(--text-secondary); margin-top: 1px; letter-spacing: 0.4px; }
-
-.iv-nav { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; }
-/* 结构、hover、选中态都来自壳的 `.obx-nav-item`（shared.css 的「导航项」一节），
-   这里只留本插件自己的差异（图标栏宽度）。外观可覆写 `--obx-nav-*`。 */
-.iv-nav-item {
-  gap: 9px;
-}
-.iv-nav-item .obx-icon { width: 18px; height: 18px; text-align: center; }
-/* 侧栏里的扩展入口（`.obx-extension.active`）不在这里覆写：选中态由壳的 base.css
-   提供，本插件先前把它整块填成渐变，与上面刚统一的导航项不一致。 */
-.iv-sidebar-footer { padding: 11px 14px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-secondary); }
-
-/* ===== 工具栏 ===== */
-.iv-toolbar { gap: 12px; }
-.iv-view-heading { align-items: center; gap: 10px; }
-.iv-view-title { font-size: 15px; font-weight: 700; color: var(--text-primary); }
-.iv-view-sub { font-size: 11px; color: var(--text-secondary); }
-
-.iv-selection-count {
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--accent);
-  background: var(--iv-accent-soft);
-  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
-  white-space: nowrap;
-}
-
 /* ===== 内容 ===== */
 .iv-content { padding: 16px; background: transparent; }
 
 .iv-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-  gap: 16px;
+  /* 相册 JS 仍传 ContentUI.grid({min:'170px'})，本任务只改 CSS；用最高优先级声明
+     覆盖内联的 --cui-min，保证硬指标 160/16。 */
+  --cui-min: 160px !important;
+  --cui-gap: 16px;
 }
 
-.iv-album {
-  position: relative;
+/* 相册卡：结构、键盘激活（role=button/tabindex）与操作区事件隔离由 ContentUI.card
+   提供；这里只覆盖它不知道的相册视觉与封面层。content-ui.css 在本文件之后注入，
+   所以用双类选择器保留原有圆角/悬浮/间距。 */
+.cui-card.iv-album {
   border-radius: var(--iv-radius);
-  overflow: hidden;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  cursor: pointer;
   transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.22s ease, border-color 0.22s ease;
-  content-visibility: auto;
-  contain-intrinsic-size: 260px;
 }
-.iv-album:hover {
+.cui-card.iv-album:hover {
   transform: translateY(-5px);
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
   box-shadow: var(--obx-shadow-2);
 }
-.iv-album-cover { position: relative; aspect-ratio: 1; background: var(--bg-hover); overflow: hidden; }
+/* 四家统一 3:4 媒体比例；封面本身的视觉（圆角裁切、hover 缩放、占位层）保留。 */
+.cui-card.iv-album .cui-media {
+  aspect-ratio: 3 / 4;
+}
+.cui-card.iv-album .cui-image {
+  object-fit: cover;
+}
 .iv-album-cover img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1); }
 .iv-album:hover .iv-album-cover img { transform: scale(1.05); }
 .iv-cover-fallback {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   font-size: 40px; background: linear-gradient(145deg, var(--iv-accent-soft), var(--bg-hover)); opacity: 0.85;
 }
-.iv-album-badge {
-  position: absolute; right: 8px; bottom: 8px; padding: 3px 9px; border-radius: 999px;
-  font-size: 11px; font-weight: 600; color: #fff; background: rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(6px);
+/* 叠加信息（计数/时间/状态）由 ContentUI 的 mediaOverlay 渲染为 .cui-media-*，
+   本文件不再保留相册自己的徽标样式。 */
+/* 正文沿用共享的 padding:10px 12px / gap:4px；这里只补最小高度，保证每张相册卡
+   在标题、计数均为单行时总高一致。 */
+.cui-card.iv-album .cui-body {
+  min-height: 58px;
 }
-.iv-album-star {
-  position: absolute; top: 8px; right: 8px; z-index: 5;
-  border: none; background: transparent; font-size: 20px; cursor: pointer;
-  color: rgba(255, 255, 255, 0.65); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
-  transition: transform 0.2s ease, color 0.2s ease;
-}
-.iv-album-star:hover { transform: scale(1.25); }
-.iv-album-star.active { color: #ffd166; }
-.iv-album-info { padding: 10px 12px 12px; }
 .iv-album-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.iv-album-count { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
+.iv-album-count { font-size: 11px; color: var(--text-secondary); }
 
 /* ===== 图片瀑布网格 ===== */
 .iv-image-grid { position: relative; width: 100%; }
@@ -180,6 +128,15 @@
   font-size: 12px; font-weight: 600; color: var(--text-secondary);
   margin: 4px 0 10px; padding-top: 12px; border-top: 1px solid var(--border);
 }
+/* 设置面板是操作面，不跟随插件背景不透明度/壳玻璃：始终用不透明的 --bg-surface。
+   共享 base.css 的 html[data-plugin-bg="on"] / html[data-shell-glass="on"] .modal-box
+   会把背景混成半透明；这里用 ID 选择器（1,0,0）覆盖那两条（0,2,1）。 */
+#settings-modal .modal-box {
+  background: var(--bg-surface);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 /* 弹窗正文可滚动（壳的 .modal-box 已是 flex 列 + max-height:80vh）：
    设置项变多以后必须自己滚，否则按钮会被顶出视口 */
 .iv-settings-body { flex: 1; overflow-y: auto; padding: 16px 20px 20px; }
@@ -187,6 +144,15 @@
 .iv-setting-note { font-size: 11px; color: var(--text-muted); margin: -6px 0 12px; line-height: 1.5; }
 /* 紧跟在输入行后面的说明：上面要留出间隔，负 margin 会贴到输入框上 */
 .iv-setting-note-after-input { margin-top: 14px; }
+/* 后端拒绝保存时的字段级错误（PluginBase.save_settings 的 errors）。
+   放在弹窗正文与按钮之间：与表单同屏可见，又不会被右上角 Toast 挡住。 */
+.iv-settings-errors {
+  margin: 0 20px 12px; padding: 8px 10px;
+  border-left: 2px solid var(--danger); border-radius: 4px;
+  background: var(--bg-hover); color: var(--danger);
+  font-size: 12px; line-height: 1.6;
+}
+.iv-settings-errors.hidden { display: none; }
 
 /* ===== 图片文件夹 / 目录选择器 ===== */
 /* 这两块的样式与实现已搬到 Shell 共享组件，由 /shell/folder-picker.css 注入
@@ -195,26 +161,8 @@
 
 /* 空态样式已统一到壳的 .empty-state（base.css 的「通用状态」一节），
    这里不再保留 .iv-empty* 副本。 */
-@media (max-width: 860px) {
-  /* 窄窗口要压过壳的宽度必须提高特异性：媒体查询不改变特异性 */
-  /* 窄窗口最多 200px。用 min() 而不是写死 200px：写死会让拖动分隔条在小窗口下
-     完全失效（媒体查询压过变量），而 min() 只压上限，用户拖得更窄时仍尊重用户值。 */
-  .iv-sidebar.view-sub-sidebar { width: min(var(--sub-sidebar-width), 200px); }
-  .iv-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
-}
 
-/* ===== v2 新增：搜索 / 时间线 / 新建相册 ===== */
-.iv-nav-label {
-  padding: 12px 10px 5px;
-  font-size: 11px; font-weight: 700; letter-spacing: 0.6px;
-  text-transform: uppercase; color: var(--text-muted);
-}
-.iv-nav-footer { padding: 8px 10px; border-top: 1px solid var(--border); }
-.iv-nav-footer .iv-nav-item { width: 100%; }
-
-/* 搜索框：结构与宽度全部走壳的 .search-field（base.css 的 --obx-search-width），
-   本插件不再写搜索样式（原 .iv-search 的 220/270px 两档宽度已删） */
-
+/* ===== v2 新增：时间线 / 新建相册 ===== */
 .iv-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
 .iv-field label { font-size: 13px; font-weight: 500; color: var(--text-primary); }
 
@@ -225,33 +173,9 @@
 }
 .iv-time-label i { font-style: normal; font-size: 11px; font-weight: 500; color: var(--text-muted); }
 
-.iv-time-badge {
-  position: absolute; top: 8px; left: 8px; z-index: 4;
-  padding: 3px 9px; border-radius: 999px;
-  font-size: 11px; font-weight: 600; color: #fff;
-  background: var(--iv-gradient); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-}
-
-/* ===== v3：性能优化 / 相册层级操作 ===== */
-.iv-album-menu {
-  position: absolute; top: 8px; right: 42px; z-index: 6;
-  width: 28px; height: 28px; border: none; border-radius: 9px;
-  background: rgba(0, 0, 0, 0.45); color: #fff; font-size: 15px; cursor: pointer;
-  opacity: 0; transition: opacity 0.18s ease, background 0.18s ease;
-  backdrop-filter: blur(6px);
-}
-.iv-album:hover .iv-album-menu { opacity: 1; }
-.iv-album-menu:hover { background: rgba(0, 0, 0, 0.65); }
-
-.iv-album-tag {
-  position: absolute; top: 8px; left: 8px; z-index: 4;
-  padding: 3px 9px; border-radius: 999px;
-  font-size: 11px; font-weight: 600; color: #fff;
-  background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(6px);
-}
-.iv-album-tag-hot {
-  background: var(--iv-gradient); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-}
+/* ===== v3：相册层级操作 =====
+   相册菜单用 ContentUI.card 的 actions/actionsPlacement='top-right'，按钮外观、
+   点击隔离与封面角定位都由共享层负责；相册不再私有定位 .cui-actions。 */
 
 .iv-context-menu {
   position: fixed; z-index: 600; min-width: 160px; padding: 5px;
@@ -355,7 +279,7 @@
   align-self: flex-end;
 }
 
-/* ===== 扩展插件内嵌视图（替换主内容区，不遮挡全屏查看器） ===== */
+/* ===== 旧 embed 回落：扩展插件内嵌视图（新壳用 native 面板，不再走这条） ===== */
 .view-body {
   position: relative;
 }
@@ -374,18 +298,16 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  /* 与主工具栏（.view-toolbar，`var(--toolbar-height)`=48px）逐像素同高：内嵌页自己的工具栏
-     在 `html.is-embedded` 下已降级为无底边操作行，这一条就是用户眼里的"这个视图的工具栏"，
-     进出扩展视图时它不该比主工具栏矮一档（原先只有一行标题，实测 45px 对 48px）。 */
+  /* 与主工具栏逐像素同高：内嵌页自己的工具栏在 `html.is-embedded` 下已降级为无底边
+     操作行，这一条就是用户眼里的"这个视图的工具栏"。 */
   height: var(--toolbar-height, 48px);
   padding: 0 16px;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-/* 左侧标题行：结构与主工具栏的 `.iv-view-heading` 相同（两行，字号走 .iv-view-title /
-   .iv-view-sub），只是容器从横向 flex 改为纵向。`min-width:0` + `overflow:hidden` 是给
-   窄窗口兜底：固定高度下，说明文字过长不能把标题行撑出容器。 */
+/* 左侧标题行：两行结构（`.iv-view-title` / `.iv-view-sub`）。`min-width:0` +
+   `overflow:hidden` 是给窄窗口兜底：固定高度下，说明文字过长不能把标题行撑出容器。 */
 .extension-view-heading {
   display: flex;
   flex-direction: column;
@@ -393,21 +315,16 @@
   min-width: 0;
   overflow: hidden;
 }
+.iv-view-title { font-size: 15px; font-weight: 700; color: var(--text-primary); }
+.iv-view-sub { font-size: 11px; color: var(--text-secondary); }
 .extension-view-heading .iv-view-sub {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* 头部按钮：唯一来源是内嵌插件挂上来的（壳的 HostChannel.mountToolbar 渲染成
-   `.btn.obx-toolbar-btn.obx-host-action`）。它们的尺寸由壳的工具栏按钮组件提供，
-   本文件**不再**校正 `.btn-sm`：那段 `font-size: 13px; padding: 6px 14px` 的补丁曾经
-   是唯一让宿主头部与主工具栏同高的办法，现在壳的 `.obx-toolbar-btn` 一处即可，留着
-   反而会与壳的组件分家（宿主头部不是 `.view-toolbar`，命中不到那条默认规则，所以
-   挂载按钮必须带类 —— 这一步由 `base.js` 的 mountButtons 完成）。
-   同样**不要在这里另写 display / flex / gap**：那会把挂上来的按钮换成另一种排版方式。 */
 /* 头部右端就是内嵌插件的挂载点本身（`index.html` 的 `#extension-view-actions`，也是
    `HostChannel.serve({containers})` 里给出去的那个元素）。间距按主工具栏的 `.toolbar-group`
-   取 8px：挂载点上没有 gap 时，相邻两个按钮会紧贴在一起（两个 inline 盒子之间没有空白）。 */
+   取 8px：挂载点上没有 gap 时，相邻两个按钮会紧贴在一起。 */
 .extension-view-actions {
   display: flex;
   align-items: center;
