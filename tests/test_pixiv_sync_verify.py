@@ -107,13 +107,21 @@ class PixivSyncVerifyTests(unittest.TestCase):
         items, _ = self.plugin._db().load_pending("following")
         return next(i["done"] for i in items if i["id"] == self.WORK_ID)
 
+    def _verify_sync(self):
+        """同步跑一次全量校验。
+
+        `verify_downloaded` 现在启动后台任务（面板上要有进度条），测试里不等线程，
+        直接走引擎的同一条路径拿审计结果——两条路径共用 `on_verified` 钩子。
+        """
+        report = engine_for(self.plugin).verify()
+        return report.get("audited") or {}
+
     def test_verify_requeues_incomplete_work(self):
         """校验内容：缺页作品移出去重集合、done 归 0，本地无文件的失效 id 同样移除。"""
         self.assertTrue(self._done())  # 旧状态：半截下载被当成已下载
 
-        result = self.plugin.verify_downloaded()
+        result = self._verify_sync()
 
-        self.assertTrue(result["ok"])
         self.assertEqual(result["incomplete"], 1)
         self.assertEqual(result["stale_removed"], 1)  # 777 本地无文件
         self.assertEqual(store.load_ids(self.plugin._ids_file()), set())
@@ -121,7 +129,7 @@ class PixivSyncVerifyTests(unittest.TestCase):
 
     def test_sync_import_does_not_take_partial_work_back(self):
         """校验内容之后，同步开始前的旧图导入不会把缺页作品重新认成已下载。"""
-        self.plugin.verify_downloaded()
+        self._verify_sync()
 
         found = self.plugin._scan_existing_ids()
 
@@ -130,7 +138,7 @@ class PixivSyncVerifyTests(unittest.TestCase):
 
     def test_download_fills_only_missing_pages_and_records_again(self):
         """重新入队后同步只补缺的页；补齐后作品重新入去重集合、清单 done 置 1。"""
-        self.plugin.verify_downloaded()
+        self._verify_sync()
         self.plugin._scan_existing_ids()
         client = _FakeImageClient()
         self.plugin._pixiv_client = client

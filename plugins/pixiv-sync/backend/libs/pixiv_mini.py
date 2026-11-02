@@ -101,13 +101,19 @@ class PixivClient:
         self,
         proxies: dict[str, str] | None = None,
         timeout: int = 30,
+        api_timeout: float = 12,
+        api_retries: int = 2,
     ) -> None:
         # requests.Session 不是线程安全的；插件会在扫描/下载线程池里并发调用
         # 同一个 client，因此这里改为“每个线程一个 Session”，token 等字段仍共享。
         self._proxies = dict(proxies or {})
         self._local = threading.local()
         self.session = self._get_session()
+        # 两档超时：图片下载给足时间（timeout），登录与列表接口正常只要亚秒级，
+        # 用更短的一档（api_timeout）以免网络抖动时把用户按在“正在登录”上干等。
         self.timeout = timeout
+        self.api_timeout = api_timeout
+        self.api_retries = api_retries
         self.access_token: str | None = None
         self.refresh_token: str | None = None
         self.user_id: int | None = None
@@ -170,7 +176,7 @@ class PixivClient:
             "redirect_uri": _REDIRECT_URI,
         }
         headers = {"user-agent": "PixivAndroidApp/5.0.234 (Android 11; Pixel 5)"}
-        resp = self._request("POST", f"{_OAUTH_HOST}/auth/token", headers=headers, data=data)
+        resp = self._api_request("POST", f"{_OAUTH_HOST}/auth/token", headers=headers, data=data)
         if resp.status_code not in {200, 301, 302}:
             raise PixivError(
                 f"auth_with_code() failed! HTTP {resp.status_code}: {resp.text[:200]}",
@@ -208,7 +214,7 @@ class PixivClient:
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
         }
-        resp = self._request(
+        resp = self._api_request(
             "POST", f"{_OAUTH_HOST}/auth/token", headers=headers, data=data
         )
         if resp.status_code not in {200, 301, 302}:
@@ -233,6 +239,15 @@ class PixivClient:
     # ------------------------------------------------------------------
     # 内部请求
     # ------------------------------------------------------------------
+    def _api_request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        """登录与列表/详情接口：短超时 + 少重试，失败要快。
+
+        图片下载走 `_request` 的默认档（30s × 3 次）——大图慢是正常的，
+        但元数据请求慢通常意味着网络抖了，几秒钟内报错比让用户等一两分钟有用。
+        """
+        kwargs.setdefault("timeout", self.api_timeout)
+        return self._request(method, url, retries=self.api_retries, **kwargs)
+
     def _call(self, path: str, params: dict[str, Any] | None = None) -> JsonDict:
         if not self.access_token:
             raise PixivError("Authentication required! Call auth() or set_auth() first!")
@@ -242,7 +257,7 @@ class PixivClient:
             "app-os": "ios",
             "app-os-version": "14.6",
         }
-        resp = self._request("GET", f"{self.hosts}{path}", headers=headers, params=params)
+        resp = self._api_request("GET", f"{self.hosts}{path}", headers=headers, params=params)
         if resp.status_code != 200:
             raise PixivError(
                 f"GET {path} HTTP {resp.status_code}: {resp.text[:200]}", body=resp.text

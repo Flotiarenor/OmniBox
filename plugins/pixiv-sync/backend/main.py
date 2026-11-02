@@ -382,6 +382,11 @@ class PixivSyncPlugin(PluginBase):
 
     def _freshness_audit(self, keys) -> Dict:
         """全量校验：以指纹库的有效键集合重建记录（含清单 done 快照）。"""
+        # 目录遍历走完后还有一段"按清单对账"的尾巴（几万个 stat），实测要好几秒；
+        # 不写一句话，进度条会停在 100% 让人以为卡死。
+        engine = engine_for(self)
+        if engine is not None:
+            engine.progress("正在核对已下载记录…")
         return self._sync_ids_from_keys(keys, reset_done=True, remove_zero=True)
 
     def _freshness_pass_end(self, report, verified: bool) -> Dict:
@@ -512,6 +517,9 @@ class PixivSyncPlugin(PluginBase):
         with self._lock:
             if self._thread and self._thread.is_alive():
                 return {"ok": False, "error": "已有同步任务在运行"}
+            # 校验与同步都会改写"已下载记录"：互斥，避免两边对账互相覆盖。
+            if self._library_state().get("busy"):
+                return {"ok": False, "error": "正在校验本地内容，请等它结束再同步"}
             self._cancel_flag = False
             self._thread = threading.Thread(
                 target=self._run_sync, args=(kind,), daemon=True
@@ -527,19 +535,36 @@ class PixivSyncPlugin(PluginBase):
         """同步喜欢：内部先自动刷新收藏清单（增量），再按清单下载新作。"""
         return self._start("bookmarks")
 
+    def _set_phase(self, task: Dict, text: str) -> None:
+        """推进任务阶段：写 `current` 并落盘，同时把"本阶段耗时"记进日志。
+
+        阶段文案就是用户在面板上看到的进度明细。任务一旦进入线程就立刻置为
+        `running`，`queued` 只保留线程启动前的瞬间——否则用户看到的是"排队中 /
+        准备中"这种没有信息量的状态，而真正耗时的登录、本地核对、拉清单都藏在里面。
+        """
+        now = time.time()
+        with self._task_lock:
+            since = now - float(task.get("phase_started_at") or task.get("started_at") or now)
+            task["current"] = text
+            task["phase_started_at"] = now
+        tasks.persist_task(self._tasks_file(), task)
+        log.info("[pixiv-sync] 阶段: %s（上一阶段 %.1fs）", text, since)
+
     def _run_sync(self, kind: str):
         self._begin_task_runtime()
         task = tasks.new_task(kind)
+        # 线程已经起来了：先置 running，再用 current 表达阶段。queued 只覆盖线程启动前的瞬间。
+        task["state"] = "running"
         tasks.persist_task(self._tasks_file(), task)
         self._task = task
         ids = self._load_ids()
         failed = self._load_failed_ids()
         try:
+            self._set_phase(task, "正在登录 Pixiv…")
             self._authenticate()
-            # 识别用户手动放入的旧图（按命名规则提取 id 并入去重集合）
-            scanned = self._scan_existing_ids()
-            if scanned:
-                log.info(f"[pixiv-sync] 扫描到 {scanned} 个已存在作品，并入去重集合")
+            # 本地已有作品不再在每次同步前全盘核对：那是显式维护动作
+            # （refresh_downloaded / verify_downloaded，面板「账号与维护」里的两个按钮）。
+            # 同步直接用 downloaded_ids.json 这份记录，避免每次几秒的目录遍历。
             if self._cancel_flag:
                 task["state"] = "cancelled"
                 task["current"] = "已取消"
@@ -551,8 +576,7 @@ class PixivSyncPlugin(PluginBase):
             #   同步画师 = 刷新关注清单（新画师全量 + illust_follow 聚合增量 + 兜底）；
             #   同步喜欢 = 刷新收藏清单（首次全量/增量翻页）。
             #   此阶段触发 429 会抛 RateLimitError 停车（见下），冷却后重点同步即续跑。
-            task["current"] = f"正在更新{'关注' if kind == 'following' else '收藏'}作品清单…"
-            tasks.persist_task(self._tasks_file(), task)
+            self._set_phase(task, f"正在更新{'关注' if kind == 'following' else '收藏'}作品清单…")
             if kind == "following":
                 items, scan_data = scan.collect_following_pending(self, task, ids)
             else:
@@ -589,6 +613,8 @@ class PixivSyncPlugin(PluginBase):
         with self._lock:
             if self._thread and self._thread.is_alive():
                 return {"ok": False, "error": "已有任务在运行"}
+            if self._library_state().get("busy"):
+                return {"ok": False, "error": "正在校验本地内容，请等它结束再刷新名单"}
             self._cancel_flag = False
             self._thread = threading.Thread(
                 target=self._run_refresh, args=(kind,), daemon=True
@@ -615,7 +641,9 @@ class PixivSyncPlugin(PluginBase):
         tasks.persist_task(self._tasks_file(), task)
         self._task = task
         try:
+            self._set_phase(task, "正在登录 Pixiv…")
             self._authenticate()
+            self._set_phase(task, f"正在更新{'关注' if kind == 'following' else '收藏'}作品清单…")
             ids = self._load_ids()
             if kind == "following":
                 items, scan_data = scan.collect_following_pending(self, task, ids)
@@ -813,7 +841,11 @@ class PixivSyncPlugin(PluginBase):
         """
         engine = engine_for(self)
         if engine is None:
-            return {"ok": False, "error": "刷新基建未接入"}
+            # 旧壳没有统一刷新基建：退回直接走盘，至少能把手动放入的作品并进来。
+            found = self._scan_existing_ids()
+            return {"ok": True, "total": len(self._load_ids()), "imported": found,
+                    "stale_removed": 0, "zero_removed": 0, "failed_cleared": 0,
+                    "incomplete": 0, "incomplete_skipped": 0}
         engine.sync("", force=True)
         last = (engine.state().get("last_report") or {}).get("pass_end") or {}
         if not last or last.get("skipped"):
@@ -825,20 +857,33 @@ class PixivSyncPlugin(PluginBase):
                                 "failed_cleared", "incomplete_skipped")}}
 
     def verify_downloaded(self) -> Dict:
-        """校验已下载内容（兼容入口，转发到统一刷新的「校验」）。
+        """启动本地内容校验（后台任务，立即返回）。
 
-        语义不变：本地无有效文件的失效 id 移出记录；清单 page_count 比本地页数多的
-        作品（半截下载、漏页）一并移出并重置 done，下次同步只补缺的页；不导入新增
-        （手动放入的旧图用「刷新记录」—— 现在被动同步也会导入）。
+        这是面板「账号与维护 → 校验本地内容」按钮的入口：一次走盘把"手动放入的作品"
+        并进来、把本地已无文件的失效记录移除、清理 0 字节残片、清掉"本地已有文件"的
+        失败记录，并把页数不足的作品重置 done 以便下次同步补齐。
+
+        为什么走后台而不是同步返回：全量校验在 6 万个文件上是几十秒量级（要遍历目录、
+        写索引、再按清单对账），同步调用会让按钮看起来"点了没反应"。进度经
+        `get_status.library` 暴露（目录数 processed/total + 当前目录），前端画进度条。
         """
         engine = engine_for(self)
         if engine is None:
+            # 旧壳没有统一刷新基建：退回同步走盘，只能导入，无法给出进度。
+            found = self._scan_existing_ids()
+            return {"ok": True, "started": False, "finished": True,
+                    "total": len(self._load_ids()), "imported": found}
+        if self._thread and self._thread.is_alive():
+            return {"ok": False, "error": "同步任务进行中，结束后再校验本地内容"}
+        result = engine.start_verify()
+        return {"ok": True, **result}
+
+    def cancel_verify(self) -> Dict:
+        """停止正在跑的本地内容校验（面板进度条上的「停止校验」）。"""
+        engine = engine_for(self)
+        if engine is None:
             return {"ok": False, "error": "刷新基建未接入"}
-        report = engine.verify()
-        audited = report.get("audited") or {}
-        return {"ok": True, **{k: audited.get(k, 0) for k in
-                               ("stale_removed", "zero_removed", "failed_cleared",
-                                "total", "incomplete")}}
+        return {"ok": bool(engine.request_cancel())}
 
     # ---------- 状态 / API ----------
 
@@ -867,6 +912,7 @@ class PixivSyncPlugin(PluginBase):
             bookmarks_done = cnt(db, "bookmarks", 1)
         except Exception as e:
             log.error(f"[pixiv-sync] 读取清单统计失败: {e}")
+        library = self._library_state()
         return {
             "task": task,
             "root_dir": root,
@@ -887,6 +933,29 @@ class PixivSyncPlugin(PluginBase):
             "failed_skipped": len(self._load_failed_ids()),
             # 429 冷却倒计时（秒），0 表示无需冷却
             "rate_limit_cooldown": self._rate_limit_cooldown(),
+            # 本地内容校验（后台任务）的进度投影：前端据此画进度条与停止按钮
+            "library": library,
+        }
+
+    def _library_state(self) -> Dict:
+        """统一刷新引擎的进度投影；引擎不可用时返回"未接入"的空形状。"""
+        engine = engine_for(self)
+        if engine is None:
+            return {"available": False, "busy": False, "task": None,
+                    "entries": 0, "dirs": 0, "last_verify_at": 0}
+        try:
+            state = engine.state()
+        except Exception as e:  # 引擎读库失败不该把整个状态接口打挂
+            log.error(f"[pixiv-sync] 读取本地索引状态失败: {e}")
+            return {"available": False, "busy": False, "task": None,
+                    "entries": 0, "dirs": 0, "last_verify_at": 0}
+        return {
+            "available": bool(state.get("available", True)),
+            "busy": bool(state.get("busy")),
+            "task": state.get("task"),
+            "entries": int(state.get("entries") or 0),
+            "dirs": int(state.get("dirs") or 0),
+            "last_verify_at": float(state.get("last_verify_at") or 0),
         }
 
     def register_api(self) -> dict:
@@ -898,6 +967,7 @@ class PixivSyncPlugin(PluginBase):
             "refresh_bookmarks_lists": self.refresh_bookmarks_lists,
             "refresh_downloaded": self.refresh_downloaded,
             "verify_downloaded": self.verify_downloaded,
+            "cancel_verify": self.cancel_verify,
             "retry_failed": self.retry_failed,
             "cancel_task": self.cancel_task,
             "open_config": self.open_config,

@@ -66,6 +66,7 @@ function setup(initialStatus) {
   const listeners = {};
   const calls = [];
   const timers = new Map();
+  const overrides = {};
   let timerSeq = 0;
   let status = initialStatus;
   const parent = { postMessage: (payload) => messages.push(payload) };
@@ -81,6 +82,11 @@ function setup(initialStatus) {
     Bridge: {
       async call(method, ...args) {
         calls.push({ method, args });
+        // 按方法覆盖返回：维护类接口的返回形状由用例决定。
+        if (Object.prototype.hasOwnProperty.call(overrides, method)) {
+          const value = overrides[method];
+          return typeof value === 'function' ? value(...args) : value;
+        }
         if (method === 'get_status') return status;
         if (method === 'start_oauth') return { ok: true, url: 'https://app-api.pixiv.net/web/v1/login?code_challenge=x' };
         if (method === 'finish_oauth') return { ok: true, user_id: 'u1' };
@@ -105,9 +111,14 @@ function setup(initialStatus) {
   const schema = () => messages.filter(m => m.type === 'omnibox:schema').at(-1);
   const blocks = () => (schema() && schema().blocks) || [];
   const toolbar = () => (schema() && schema().toolbar) || [];
-  const block = (id) => blocks().find(b => b.id === id) || null;
+  // blocks 可被 section 嵌套（文档式版把指标/任务/操作分区），查找必须递归。
+  const flatten = (list) => (list || []).reduce(
+    (acc, item) => acc.concat(item, item.blocks ? flatten(item.blocks) : []), []);
+  const block = (id) => flatten(blocks()).find(b => b.id === id) || null;
   return {
     messages, listeners, calls, timers, status: (next) => { status = next; },
+    /** 指定某个 Bridge 方法的返回值（用于维护类接口）。 */
+    bridgeResult: (method, value) => { overrides[method] = value; },
     send, schema, blocks, toolbar, block,
     init: () => send({ type: 'omnibox:native-init' }),
     action: (name, payload) => send({ type: 'omnibox:native-action', action: name, payload }),
@@ -129,113 +140,285 @@ const IDLE_STATUS = {
   task: null,
 };
 
-check('装载即发 omnibox:native-ready；native-init 后提交 schema 与 toolbar', async () => {
-  const env = setup(IDLE_STATUS);
-  assert(env.messages.some(m => m.type === 'omnibox:native-ready'), '装载期要发 native-ready');
-  await env.init();
-  const schema = env.schema();
-  assert(schema, 'native-init 后要提交 schema');
-  assert(Array.isArray(schema.blocks) && schema.blocks.length > 0, 'blocks 不能为空');
-  assert(Array.isArray(schema.toolbar), 'toolbar 必须是数组');
-  sameJson(schema.toolbar.map(a => a.id), ['refresh-status', 'oauth-start', 'open-config', 'open-settings']);
-  assert(env.block('no-token'), '未配置 Token 要有空态块');
-  const actions = env.block('main-actions').actions;
-  assert(actions.every(a => a.disabled === true), '未配置 Token 时同步按钮应禁用');
-});
-
-check('任务运行中：progress 块字段名与 native 契约一致（value/total/text/detail/cancel）', async () => {
-  const env = setup({
-    ...IDLE_STATUS,
-    token_configured: true,
-    task: {
-      kind: 'following', state: 'running', done: 3, total: 10,
-      downloaded: 2, skipped: 1, failed: 0, current: '作品 123',
-    },
+// 每个 check 都必须 await：早先版本直接串行调用、随后立即 process.exit，
+// 于是所有 async 断言都在退出前没跑完，用例永远"通过"。现在由 run() 顺序 await。
+async function run() {
+  await check('装载即发 omnibox:native-ready；native-init 后提交 schema 与 toolbar', async () => {
+    const env = setup(IDLE_STATUS);
+    assert(env.messages.some(m => m.type === 'omnibox:native-ready'), '装载期要发 native-ready');
+    await env.init();
+    const schema = env.schema();
+    assert(schema, 'native-init 后要提交 schema');
+    assert(Array.isArray(schema.blocks) && schema.blocks.length > 0, 'blocks 不能为空');
+    assert(Array.isArray(schema.toolbar), 'toolbar 必须是数组');
+    assert(schema.layout === 'document', '版式要声明 document（壳据此收窄正文）');
+    sameJson(schema.toolbar.map(a => a.id), ['refresh-status', 'oauth-start', 'open-config', 'open-settings']);
+    assert(env.block('no-token'), '未配置 Token 要有空态块');
+    assert(env.block('no-token').icon, '空态要带图标');
+    assert(env.block('no-token').submit.id === 'oauth-start', '空态的主操作是获取 Token');
+    // 没有 Token 时同步一定失败：空态取代禁用按钮，而不是留一排灰按钮。
+    assert(!env.block('main-actions'), '未配置 Token 时不渲染同步按钮');
   });
-  await env.init();
-  const progress = env.block('task-progress');
-  assert(progress, '运行中要有 progress 块');
-  assert(progress.type === 'progress');
-  assert(progress.value === 3 && progress.total === 10, '进度取 done/total');
-  assert(progress.text.indexOf('同步画师') === 0, '进度文案带任务类型');
-  assert(progress.detail === '正在处理：作品 123');
-  assert(progress.cancel && progress.cancel.id === 'cancel-task', 'progress 自带取消动作');
-  assert(!env.block('main-actions').actions.some(a => a.disabled === false),
-    '任务运行中同步按钮应禁用');
+
+  await check('指标区：四格同级数字，第 4 格在无失败时显示 other_done', async () => {
+    const env = setup({ ...IDLE_STATUS, token_configured: true, other_done: 7, failed_skipped: 0 });
+    await env.init();
+    const stats = env.block('status-stats');
+    assert(stats && stats.type === 'stats', '要有 stats 块');
+    sameJson(stats.metrics.map(m => m.label), ['已下载', '关注待下', '收藏待下', '其他作品']);
+    assert(stats.metrics[0].value === '12', '指标值由插件格式化（千分位/单位）');
+    sameJson(stats.metrics[2].hint, '共 5');
+    const main = env.block('main-actions').actions;
+    assert(main.length === 2, '主操作只留两个同步按钮（刷新名单入口已移除）');
+    sameJson(main.map(a => a.variant), ['accent', 'accent']);
+    sameJson(main.map(a => a.label), ['同步关注作品', '同步收藏作品']);
+    assert(!env.block('secondary-actions'), '没有失败跳过时不出现重试入口');
+    const meta = env.block('status-meta');
+    assert(meta.dot === 'success', '已连接要有绿色状态点');
+    const acct = env.block('account-actions').actions;
+    const verify = acct.find(a => a.id === 'verify-library');
+    const logout = acct.find(a => a.id === 'logout');
+    assert(verify && verify.size === 'sm' && !verify.variant,
+      '维护区要有「校验本地内容」小按钮（同步不再全盘核对）');
+    assert(logout && logout.size === 'sm' && logout.variant === 'danger', '清除 Token 是小号危险按钮');
+    assert(!env.block('task-section'), '上次任务正常结束时任务区整块隐藏');
+  });
+
+  await check('有失败跳过时：第 4 格换成失败计数，并出现重试入口', async () => {
+    const env = setup({ ...IDLE_STATUS, token_configured: true, failed_skipped: 3 });
+    await env.init();
+    const stats = env.block('status-stats');
+    const last = stats.metrics[3];
+    assert(last.label === '失败跳过' && last.value === '3', '失败计数占用第 4 格');
+    assert(last.tone === 'danger', '失败计数用语义色');
+    const retry = env.block('secondary-actions').actions.find(a => a.id === 'retry-failed');
+    assert(retry && /3/.test(retry.label), '失败>0 才出现重试入口，且带数量');
+  });
+
+  await check('任务运行中：progress 块字段名与 native 契约一致（value/total/text/detail/cancel）', async () => {
+    const env = setup({
+      ...IDLE_STATUS,
+      token_configured: true,
+      task: {
+        kind: 'following', state: 'running', done: 3, total: 10,
+        downloaded: 2, skipped: 1, failed: 0, current: '作品 123',
+      },
+    });
+    await env.init();
+    const progress = env.block('task-progress');
+    assert(progress, '运行中要有 progress 块');
+    assert(progress.type === 'progress');
+    assert(progress.value === 3 && progress.total === 10, '进度取 done/total');
+    assert(progress.text.indexOf('同步关注作品') === 0, '进度文案带任务类型');
+    assert(progress.detail.indexOf('作品 3/10') > 0, '明细行给计数');
+    assert(/已用 \d+:\d\d/.test(progress.detail), '明细行要带已用时间，避免只有一个“准备中”');
+    assert(progress.indeterminate === false, '有总数时不是不确定进度');
+    assert(progress.cancel && progress.cancel.id === 'cancel-task', 'progress 自带取消动作');
+    assert(progress.detail.indexOf('作品 123') === 0, '阶段文案（当前处理项）放在明细行最前面');
+    assert(!env.block('main-actions').actions.some(a => a.disabled === false),
+      '任务运行中同步按钮应禁用');
+  });
+
+  await check('总数未定时 progress 标为 indeterminate，不画假百分比', async () => {
+    const env = setup({
+      ...IDLE_STATUS,
+      token_configured: true,
+      task: { kind: 'following', state: 'running', done: 0, total: 0, downloaded: 0, skipped: 0, failed: 0 },
+    });
+    await env.init();
+    assert(env.block('task-progress').indeterminate === true, '扫名单阶段要标 indeterminate');
+    const idle = env.block('task-progress');
+    assert(idle.detail.indexOf('已用') > 0, '没有总数时也要给阶段与已用时间');
+  });
+
+  await check('OAuth：start_oauth 后提交登录地址与 form(code)，完成后回到主视图', async () => {
+    const env = setup({ ...IDLE_STATUS, token_configured: true });
+    await env.init();
+    await env.action('oauth-start');
+    assert(env.lastCall('start_oauth'), '要调 start_oauth');
+    const form = env.block('oauth-form');
+    assert(form && form.type === 'form', 'OAuth 视图要有授权码表单');
+    sameJson(form.fields.map(f => f.key), ['code']);
+    const code = env.block('oauth-url');
+    assert(code && code.type === 'code', '登录地址要用可复制的 code 块');
+    assert(code.text.indexOf('https://app-api.pixiv.net') === 0, '登录地址要能被复制');
+    assert(code.copyable === true, '要支持复制');
+    sameJson(env.toolbar().map(a => a.id), ['oauth-close', 'oauth-restart']);
+
+    await env.action('oauth-finish', { values: { code: '  abc123  ' } });
+    assert(env.lastCall('finish_oauth'), '要调 finish_oauth');
+    assert(env.lastCall('finish_oauth').args[0] === 'abc123', '授权码要去空白后提交');
+    // 操作结果走消息级 toast，不进 blocks（旧版是正文里的 banner）。
+    const toast = env.schema().toast;
+    assert(toast && /Token 获取成功/.test(toast.text), '结果提示用消息级 toast');
+    assert(!env.block('notice'), '操作结果不再占用 blocks');
+    assert(env.block('main-actions'), '完成后回到主视图');
+  });
+
+  await check('清除 Token：模态确认块由 blocks 派生，确认后才写设置', async () => {
+    const env = setup({ ...IDLE_STATUS, token_configured: true });
+    await env.init();
+    await env.action('logout');
+    const dialog = env.block('confirm-dialog');
+    assert(dialog && dialog.type === 'confirm', '清除 Token 要弹阻断确认');
+    assert(dialog.tone === 'danger' && dialog.title, '确认块带标题与危险语义');
+    sameJson([dialog.confirm.id, dialog.cancel.id], ['logout-confirm', 'confirm-cancel']);
+    assert(env.callCount('save_settings') === 0, '确认前不能写设置');
+
+    await env.action('confirm-cancel');
+    assert(!env.block('confirm-dialog'), '取消后确认块消失（壳据此关闭模态）');
+    assert(env.callCount('save_settings') === 0, '取消不能写设置');
+
+    await env.action('logout');
+    await env.action('logout-confirm');
+    const call = env.lastCall('save_settings');
+    assert(call, '确认后要写设置');
+    sameJson(call.args[0], { refresh_token: '' });
+    assert(!env.block('confirm-dialog'), '执行后确认块消失');
+    assert(/已清除/.test(env.schema().toast.text), '结果用 toast 反馈');
+  });
+
+  await check('失败用常驻横幅（可关闭），成功才用 Toast', async () => {
+    const env = setup({ ...IDLE_STATUS, token_configured: true });
+    await env.init();
+    await env.action('oauth-start');
+    // 空授权码是本地校验失败，不碰网络：OAuth 视图里必须能看到持续可见的错误。
+    await env.action('oauth-finish', { values: { code: '   ' } });
+    const alert = env.block('notice-alert');
+    assert(alert && alert.type === 'banner', '失败要常驻横幅，不是一闪而过的 Toast');
+    assert(alert.tone === 'danger', '失败用危险色');
+    assert(alert.action && alert.action.id === 'notice-dismiss', '横幅要能手动关闭');
+    assert(!env.schema().toast, '失败不弹 Toast');
+    await env.action('notice-dismiss');
+    assert(!env.block('notice-alert'), '点「知道了」后横幅消失');
+
+    // 成功路径：清除 Token 成功只弹 Toast，不占版面。
+    await env.action('oauth-close');
+    await env.action('logout');
+    await env.action('logout-confirm');
+    assert(env.schema().toast && /已清除/.test(env.schema().toast.text), '成功用 Toast');
+    assert(!env.block('notice-alert'), '成功不产生常驻横幅');
+  });
+
+  await check('重试失败：可重来的操作走就地确认，不弹模态', async () => {
+    const env = setup({ ...IDLE_STATUS, token_configured: true, failed_skipped: 2 });
+    await env.init();
+    await env.action('retry-failed');
+    assert(env.block('pending-actions'), '就地二次确认');
+    assert(!env.block('confirm-dialog'), '派生数据的清除不弹模态');
+    const ids = env.block('pending-actions').actions.map(a => a.id);
+    sameJson(ids, ['retry-failed-confirm', 'pending-cancel']);
+  });
+
+  await check('限流冷却用横幅提示，不混在正文里', async () => {
+    const env = setup({ ...IDLE_STATUS, token_configured: true, rate_limit_cooldown: 84 });
+    await env.init();
+    const banner = env.block('cooldown');
+    assert(banner && banner.type === 'banner' && banner.tone === 'warning', '冷却要有 warning 横幅');
+    assert(/01:24/.test(banner.text), '横幅带冷却时间');
+  });
+
+  await check('校验本地内容：启动后台任务，失败留在横幅', async () => {
+    const env = setup({ ...IDLE_STATUS, token_configured: true });
+    env.bridgeResult('verify_downloaded', { ok: true, started: true, running: true });
+    await env.init();
+    await env.action('verify-library');
+    assert(env.lastCall('verify_downloaded'), '按钮要调 verify_downloaded');
+    const toast = env.schema().toast;
+    assert(toast && /正在校验本地内容/.test(toast.text), '启动后要给"正在校验"的 Toast');
+    assert(!env.block('notice-alert'), '启动成功不产生横幅');
+
+    const failing = setup({ ...IDLE_STATUS, token_configured: true });
+    failing.bridgeResult('verify_downloaded', { ok: false, error: '同步任务进行中' });
+    await failing.init();
+    await failing.action('verify-library');
+    const alert = failing.block('notice-alert');
+    assert(alert && /校验启动失败/.test(alert.text), '启动失败留在常驻横幅');
+    assert(!failing.schema().toast, '失败不弹 Toast');
+  });
+
+  await check('校验本地内容：后台任务期间有进度块，结束后补结果 Toast', async () => {
+    const running = {
+      ...IDLE_STATUS, token_configured: true,
+      library: {
+        available: true, busy: true, entries: 0, dirs: 0, last_verify_at: 0,
+        task: { state: 'running', total: 9054, processed: 1516,
+                current: 'Leafpie/106706225', extra: {} },
+      },
+    };
+    const env = setup(running);
+    await env.init();
+    const progress = env.block('library-progress');
+    assert(progress && progress.type === 'progress', '校验期间要有进度块');
+    assert(progress.value === 1516 && progress.total === 9054, '进度取 processed/total');
+    assert(/个目录/.test(progress.detail), '明细要说明已处理目录数');
+    assert(/Leafpie/.test(progress.detail), '明细要给出当前目录');
+    assert(progress.cancel && progress.cancel.id === 'cancel-verify', '要有停止校验动作');
+    assert(env.block('main-actions').actions.every(a => a.disabled === true),
+      '校验在跑时同步按钮要禁用');
+    assert(env.block('account-actions').actions.every(a => a.disabled === true),
+      '校验在跑时维护按钮要禁用');
+
+    // 结束：busy=false，结果计数来自引擎任务 extra 的 pass_end 摘要
+    env.status({
+      ...IDLE_STATUS, token_configured: true,
+      library: {
+        available: true, busy: false, entries: 29534, dirs: 9083, last_verify_at: 1,
+        task: { state: 'done', extra: {
+          total: 29534, imported: 3, stale_removed: 1, incomplete: 2 } },
+      },
+    });
+    await env.action('refresh-status');
+    const toast = env.schema().toast;
+    assert(toast && /本地内容已校验/.test(toast.text), '结束后要有结果 Toast');
+    assert(/新增 3/.test(toast.text) && /移除失效 1/.test(toast.text)
+      && /缺页重新入队 2/.test(toast.text), 'Toast 要给出三个业务计数');
+    assert(!env.block('library-progress'), '结束后进度块消失');
+    assert(/本地索引 29,534 项/.test(env.block('account-status').text), '账号区显示索引条目数');
+  });
+
+  await check('settings-saved 由壳回发后重读 get_status', async () => {
+    const env = setup({ ...IDLE_STATUS, token_configured: true });
+    await env.init();
+    const before = env.callCount('get_status');
+    await env.action('settings-saved');
+    assert(env.callCount('get_status') > before, '设置保存后要重读状态');
+  });
+
+  await check('pagehide 清理轮询定时器（iframe 被移除后不残留 timer）', async () => {
+    const env = setup(IDLE_STATUS);
+    await env.init();
+    assert(env.timers.size > 0, '初始化后应有一个轮询定时器');
+    for (const fn of env.listeners.pagehide || []) fn({});
+    assert(env.timers.size === 0, 'pagehide 后不能继续轮询');
+  });
+
+  await check('缺少 /shell/native-client.js 时向壳报 native-error，而不是空白面板', async () => {
+    const messages = [];
+    const sandbox = {
+      window: {
+        parent: { postMessage: (payload) => messages.push(payload) },
+        location: { origin: 'http://127.0.0.1:18080' },
+        addEventListener() { },
+      },
+      document: {},
+      console,
+    };
+    const ctx = vm.createContext(sandbox);
+    vm.runInContext(fs.readFileSync(NATIVE, 'utf8'), ctx);
+    const error = messages.find(m => m.type === 'omnibox:native-error');
+    assert(error, '缺客户端时要报 native-error');
+    assert(/native-client\.js/.test(error.error), '错误文案要指出缺哪个文件');
+  });
+}
+
+run().then(() => {
+  console.log(failed ? ('\n' + failed + ' 例失败') : ('\npixiv-sync 原生面板 ' + total + ' 例通过'));
+  process.exit(failed ? 1 : 0);
+}, (e) => {
+  console.log('用例执行崩溃：' + (e && e.message ? e.message : e));
+  process.exit(1);
 });
-
-check('OAuth：start_oauth 后提交登录地址与 form(code)，完成后回到主视图', async () => {
-  const env = setup({ ...IDLE_STATUS, token_configured: true });
-  await env.init();
-  await env.action('oauth-start');
-  assert(env.lastCall('start_oauth'), '要调 start_oauth');
-  const form = env.block('oauth-form');
-  assert(form && form.type === 'form', 'OAuth 视图要有授权码表单');
-  sameJson(form.fields.map(f => f.key), ['code']);
-  assert(env.block('oauth-url').items[0].sub.indexOf('https://app-api.pixiv.net') === 0,
-    '登录地址要能被复制');
-  sameJson(env.toolbar().map(a => a.id), ['oauth-close', 'oauth-restart']);
-
-  await env.action('oauth-finish', { values: { code: '  abc123  ' } });
-  assert(env.lastCall('finish_oauth'), '要调 finish_oauth');
-  assert(env.lastCall('finish_oauth').args[0] === 'abc123', '授权码要去空白后提交');
-  const notice = env.block('notice');
-  assert(notice && /Token 获取成功/.test(notice.text));
-  assert(env.block('main-actions'), '完成后回到主视图');
-});
-
-check('清除 Token：两步确认后只提交空串 refresh_token（掩码语义不被破坏）', async () => {
-  const env = setup({ ...IDLE_STATUS, token_configured: true });
-  await env.init();
-  await env.action('logout');
-  const pending = env.block('pending-actions');
-  assert(pending, '第一步只展示确认动作，不直接清 Token');
-  assert(env.callCount('save_settings') === 0, '确认前不能写设置');
-  sameJson(pending.actions.map(a => a.id), ['logout-confirm', 'pending-cancel']);
-
-  await env.action('logout-confirm');
-  const call = env.lastCall('save_settings');
-  assert(call, '确认后要写设置');
-  sameJson(call.args[0], { refresh_token: '' });
-  assert(env.block('notice') && /已清除/.test(env.block('notice').text));
-});
-
-check('settings-saved 由壳回发后重读 get_status', async () => {
-  const env = setup({ ...IDLE_STATUS, token_configured: true });
-  await env.init();
-  const before = env.callCount('get_status');
-  await env.action('settings-saved');
-  assert(env.callCount('get_status') > before, '设置保存后要重读状态');
-});
-
-check('pagehide 清理轮询定时器（iframe 被移除后不残留 timer）', async () => {
-  const env = setup(IDLE_STATUS);
-  await env.init();
-  assert(env.timers.size > 0, '初始化后应有一个轮询定时器');
-  for (const fn of env.listeners.pagehide || []) fn({});
-  assert(env.timers.size === 0, 'pagehide 后不能继续轮询');
-});
-
-check('缺少 /shell/native-client.js 时向壳报 native-error，而不是空白面板', async () => {
-  const messages = [];
-  const sandbox = {
-    window: {
-      parent: { postMessage: (payload) => messages.push(payload) },
-      location: { origin: 'http://127.0.0.1:18080' },
-      addEventListener() { },
-    },
-    document: {},
-    console,
-  };
-  const ctx = vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(NATIVE, 'utf8'), ctx);
-  const error = messages.find(m => m.type === 'omnibox:native-error');
-  assert(error, '缺客户端时要报 native-error');
-  assert(/native-client\.js/.test(error.error), '错误文案要指出缺哪个文件');
-});
-
-console.log(failed ? ('\n' + failed + ' 例失败') : ('\npixiv-sync 原生面板 ' + total + ' 例通过'));
-process.exit(failed ? 1 : 0);
 """
 
 

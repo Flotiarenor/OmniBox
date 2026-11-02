@@ -6,10 +6,14 @@
 //
 // 三条约束：
 // - 本页在壳里是 display:none 的 iframe，页面内的 Toast / modal 用户看不见，
-//   所以提示与两步确认一律用 text / actions block 表达，不弹窗；
+//   所以提示与两步确认一律用 banner / actions block 表达，不弹窗；
 // - 不读宿主 DOM，也不读 parent 上的宿主对象；后端能力只走 Bridge.call；
 // - 轮询只在本页进行：重复的 omnibox:native-init 与反复调度都不会叠出第二个定时器，
 //   iframe 被壳移除时（pagehide / beforeunload）停掉定时器。
+//
+// 版式：提交 blocks 时带 `layout: 'document'`，壳据此把正文收窄到 960px、组间放 24px。
+// 页面结构是「状态行 → 指标 → （有任务时）同步任务 → 操作 → 账号 → 说明」；
+// 主操作只有一个主按钮，刷新与重试是链接型第三级动作。
 (function () {
   'use strict';
 
@@ -43,11 +47,10 @@
     paused: '已暂停（可重新同步续跑）',
   };
   const TASK_KINDS = {
-    following: '同步画师',
-    bookmarks: '同步喜欢',
-    refresh_following: '刷新关注名单',
-    refresh_bookmarks: '刷新喜欢名单',
+    following: '同步关注作品',
+    bookmarks: '同步收藏作品',
   };
+  /** 文档式版：壳把正文收窄到 960px 居中，组间 24px。 */
   const state = {
     view: 'main',           // main / oauth
     initialized: false,
@@ -55,8 +58,10 @@
     status: null,
     statusError: '',
     tokenConfigured: false,
-    notice: null,           // {tone, text}
-    pending: null,          // {text, confirm, cancel}：两步确认
+    notice: null,           // {tone, text}：操作结果，走 Toast，不进 blocks
+    libraryBusy: false,     // 上一轮 get_status 里本地校验是否在跑（用于完成时补提示）
+    pending: null,          // {text, confirm, cancel}：可重来的 inline 二次确认
+    confirm: null,          // {title, text, confirm, cancel}：不可逆操作的阻断确认
     oauth: { url: '', code: '' },
     submitting: false,
   };
@@ -64,13 +69,29 @@
   let pollTimer = null;
   let client = null;
   let lastSignature = '';
+  /** 已经作为 Toast 发出去的通知键，避免同一条结果反复弹。 */
+  let sentNotice = '';
 
   // ---------- 与壳的通道 ----------
 
   function render() {
     if (!client) return;
     lastSignature = signature();
-    client.render(buildBlocks(), buildToolbar());
+    const options = { layout: 'document' };
+    // 操作结果走一次性 Toast：不进 blocks、不占版面，也不会被下一次轮询覆盖成残留文案。
+    const notice = state.notice;
+    if (notice && notice.text && notice.tone !== 'danger') {
+      // 成功与中性结果走一次性 Toast：不占版面，也不会被下一次轮询覆盖成残留文案。
+      const key = (notice.tone || 'default') + ':' + notice.text;
+      if (key !== sentNotice) {
+        sentNotice = key;
+        options.toast = { text: notice.text, tone: notice.tone || 'default' };
+      }
+    } else {
+      // 失败不走 Toast（会自己消失），改为常驻 banner；这里清空去重键。
+      sentNotice = '';
+    }
+    client.render(buildBlocks(), buildToolbar(), options);
   }
 
   function errText(error) {
@@ -129,7 +150,7 @@
     return state.view === 'main';
   }
 
-  // 主视图之外有表单（设置、OAuth 授权码）：轮询期间不重发 blocks，否则
+  // 主视图之外有表单（OAuth 授权码）：轮询期间不重发 blocks，否则
   // SchemaRenderer 会按新 blocks 重建表单值，用户正在输入的内容被清掉。
   function signature() {
     return JSON.stringify({
@@ -139,218 +160,337 @@
       tokenConfigured: state.tokenConfigured,
       notice: state.notice,
       pending: state.pending,
+      confirm: state.confirm,
     });
   }
 
   // ---------- blocks ----------
 
-  function pushText(blocks, id, value, tone) {
-    blocks.push({ type: 'text', id: id, text: value, tone: tone || 'default' });
+  function text(id, value, tone) {
+    return { type: 'text', id: id, text: value, tone: tone || 'muted' };
   }
 
-  function statusItems() {
-    const status = state.status || {};
-    return [
-      { title: 'Token', sub: state.tokenConfigured ? '已配置' : '未配置' },
-      { title: '下载根目录', sub: status.root_dir || '未知' },
-      {
-        title: '画师名单',
-        sub: num(status.selected_artists) > 0
-          ? num(status.selected_artists) + ' 位（只同步名单中的画师）'
-          : '全部关注画师',
-      },
-    ];
+  function collect() {
+    const out = [];
+    for (let i = 0; i < arguments.length; i += 1) {
+      const item = arguments[i];
+      if (!item) continue;
+      if (Array.isArray(item)) out.push.apply(out, item);
+      else out.push(item);
+    }
+    return out;
   }
 
-  /** 一行摘要：旧页两行状态栏压成可扫读的计数摘要，放在 kv 之上。 */
-  function summaryText() {
+  /** 一行概要：Token / 下载根 / 名单 / 上次同步，压在指标区之上。 */
+  function metaText() {
     const status = state.status || {};
-    const parts = [
-      '已下载 ' + fmt(status.downloaded_total) + ' 张',
-      '关注 ' + fmt(status.following_total)
-        + '（待下 ' + fmt(status.pending_following) + '）',
-      '喜欢 ' + fmt(status.bookmarks_total)
-        + '（待下 ' + fmt(status.pending_bookmarks) + '）',
-    ];
-    if (num(status.other_done)) parts.push('其他 ' + fmt(status.other_done));
-    if (num(status.failed_skipped)) parts.push('失败跳过 ' + fmt(status.failed_skipped));
+    const parts = [state.tokenConfigured ? '已连接' : '未配置 Token'];
+    if (status.root_dir) parts.push('下载根 ' + status.root_dir);
+    parts.push(
+      '画师名单 ' + (num(status.selected_artists) > 0
+        ? num(status.selected_artists) + ' 位'
+        : '全部关注画师'),
+    );
+    const task = taskOf();
+    if (task && !taskActive(task) && task.finished_at) {
+      parts.push('上次同步 ' + timeText(task.finished_at));
+    }
     return parts.join(' · ');
   }
 
-  function statusBlocks(blocks) {
-    blocks.push({ type: 'heading', id: 'status-heading', text: '同步概览' });
-    blocks.push({ type: 'text', id: 'status-summary', text: summaryText() });
-    blocks.push({ type: 'kv', id: 'status-kv', items: statusItems() });
-    const cooldown = num((state.status || {}).rate_limit_cooldown);
-    if (cooldown > 0) {
-      pushText(
-        blocks, 'cooldown',
-        'Pixiv 限流冷却约 ' + clock(cooldown) + '，建议冷却结束后再同步。',
-        'danger',
-      );
+  /**
+   * 指标区：四格同级数字。
+   *
+   * 第 4 格在“有失败跳过”时让给失败计数，否则显示“其他作品”（`other_done`：
+   * 既不在关注名单也不在收藏名单的已下载作品，例如手动同步或手动放入的图）；
+   * 这两者是不同字段，不能互相顶替。
+   */
+  function statsBlock() {
+    const status = state.status || {};
+    const failed = num(status.failed_skipped);
+    const metrics = [
+      { label: '已下载', value: fmt(status.downloaded_total), hint: '张' },
+      { label: '关注待下', value: fmt(status.pending_following), hint: '共 ' + fmt(status.following_total) },
+      { label: '收藏待下', value: fmt(status.pending_bookmarks), hint: '共 ' + fmt(status.bookmarks_total) },
+    ];
+    if (failed > 0) {
+      metrics.push({ label: '失败跳过', value: fmt(failed), hint: '可重试', tone: 'danger' });
+    } else {
+      metrics.push({ label: '其他作品', value: fmt(status.other_done), hint: '不在名单内' });
     }
-    if (state.statusError && state.status) {
-      pushText(blocks, 'status-warning', '状态刷新失败：' + state.statusError, 'danger');
-    }
+    return { type: 'stats', id: 'status-stats', metrics: metrics };
   }
 
-  function taskBlocks(blocks) {
-    const task = taskOf();
-    blocks.push({ type: 'heading', id: 'task-heading', text: '同步任务' });
-    if (!task) {
-      pushText(
-        blocks, 'task-empty',
-        '尚无同步记录。点下方「同步画师」或「同步喜欢」开始；两者都会先更新名单再下载新作。',
-        'muted',
-      );
-      return;
+  /** 限流冷却与状态读取失败：横幅比正文里的红字更容易被看到。 */
+  function alertBlocks() {
+    const out = [];
+    const cooldown = num((state.status || {}).rate_limit_cooldown);
+    if (cooldown > 0) {
+      out.push({
+        type: 'banner',
+        id: 'cooldown',
+        tone: 'warning',
+        icon: 'icon:triangle-alert',
+        text: 'Pixiv 限流冷却约 ' + clock(cooldown) + '，建议冷却结束后再同步。',
+      });
     }
+    if (state.statusError && state.status) {
+      out.push({
+        type: 'banner',
+        id: 'status-warning',
+        tone: 'danger',
+        icon: 'icon:triangle-alert',
+        text: '状态刷新失败：' + state.statusError,
+      });
+    }
+    return out;
+  }
+
+  /** 任务区：没有任务、或上次任务正常结束时整块不出现（结束时间在状态行里）。 */
+  function taskSection() {
+    const task = taskOf();
+    if (!task) return null;
+    const failed = String(task.state) === 'failed' || !!task.error;
+    // 空闲页只有「状态行 + 指标 + 操作 + 账号」四块；失败是唯一需要占一块的终态，
+    // 否则用户看不到错误原因。其余终态（完成/取消/暂停）一行放在状态行里。
+    if (!taskActive(task) && !failed) return null;
     const label = TASK_STATES[String(task.state)] || String(task.state || '未知状态');
+    const blocks = [];
     if (taskActive(task)) {
       const total = num(task.total);
       const done = num(task.done);
-      const percent = total > 0 ? Math.min(100, Math.round(done / total * 100)) : 0;
+      // 阶段文案来自后端 current（"正在登录 Pixiv…" / "已扫描画师 12/30 位" / …）。
+      // 没有阶段文案时才用启动兜底，并把已用时间带上：长任务最怕"只有一个准备中"。
+      const phase = String(task.current || '').trim() || '正在启动…';
+      const elapsed = num(task.started_at) > 0
+        ? Math.max(0, Date.now() / 1000 - num(task.started_at))
+        : 0;
+      const parts = [phase, '已用 ' + clock(elapsed)];
+      if (total > 0 || done > 0) {
+        parts.push('作品 ' + fmt(done) + '/' + fmt(total)
+          + ' · 下载 ' + fmt(task.downloaded)
+          + ' · 跳过 ' + fmt(task.skipped)
+          + ' · 失败 ' + fmt(task.failed));
+      }
       blocks.push({
         type: 'progress',
         id: 'task-progress',
         value: done,
         total: total,
+        // 扫名单阶段后端还没有总数：这时是“进行中”而不是 0%
+        indeterminate: total <= 0,
         text: taskKindLabel(task) + ' · ' + label,
-        detail: task.current ? '正在处理：' + task.current : '准备中',
-        cancel: { id: 'cancel-task', label: '取消任务' },
+        detail: parts.join(' · '),
+        cancel: { id: 'cancel-task', label: '取消任务', variant: 'link' },
       });
-      pushText(
-        blocks, 'task-meta',
-        '作品 ' + fmt(done) + '/' + fmt(total) + '（' + percent + '%）'
-          + ' · 下载 ' + fmt(task.downloaded)
-          + ' · 跳过 ' + fmt(task.skipped)
-          + ' · 失败 ' + fmt(task.failed),
-        'muted',
-      );
-      return;
+      return { type: 'section', id: 'task-section', title: '同步任务', blocks: blocks };
     }
     const summary = taskKindLabel(task) + ' · ' + label
       + ' · 作品 ' + fmt(task.done) + '/' + fmt(task.total)
       + '，下载 ' + fmt(task.downloaded)
       + '，跳过 ' + fmt(task.skipped)
       + '，失败 ' + fmt(task.failed);
-    pushText(blocks, 'task-summary', summary, task.state === 'failed' ? 'danger' : 'muted');
-    if (task.error) pushText(blocks, 'task-error', '错误：' + task.error, 'danger');
-    if (task.finished_at) {
-      pushText(blocks, 'task-finished', '上次结束：' + timeText(task.finished_at), 'muted');
+    blocks.push(text('task-summary', summary, failed ? 'danger' : 'muted'));
+    if (task.error) {
+      blocks.push({
+        type: 'banner',
+        id: 'task-error',
+        tone: 'danger',
+        icon: 'icon:triangle-alert',
+        text: '错误：' + task.error,
+      });
     }
+    return { type: 'section', id: 'task-section', title: '同步任务', blocks: blocks };
+  }
+
+  function actionsSection() {
+    // 校验在跑时也禁用同步：两者都会改写已下载记录，后端也会拒绝。
+    const library = (state.status && state.status.library) || null;
+    const busy = taskBusy() || !!(library && library.busy);
+    // 没有 Token 时同步/刷新/重试都会在后台线程里认证失败，按钮直接禁用，
+    // 把入口收窄到「获取 Token」与顶栏设置。
+    const locked = busy || !state.tokenConfigured;
+    const main = [
+      // 两个方向同权：都用 accent（强调非实心），不制造“主/次”的暗示。
+      { id: 'sync-following', label: '同步关注作品', icon: 'icon:download', variant: 'accent', disabled: locked },
+      { id: 'sync-bookmarks', label: '同步收藏作品', icon: 'icon:heart', variant: 'accent', disabled: locked },
+    ];
+    const secondary = [];
+    if (num((state.status || {}).failed_skipped) > 0) {
+      secondary.push({
+        id: 'retry-failed',
+        label: '重试失败作品（' + fmt((state.status || {}).failed_skipped) + '）',
+        variant: 'link',
+        disabled: locked,
+      });
+    }
+    const blocks = [{ type: 'actions', id: 'main-actions', actions: main }];
+    if (secondary.length) blocks.push({ type: 'actions', id: 'secondary-actions', actions: secondary });
+    return {
+      type: 'section',
+      id: 'actions-section',
+      title: '操作',
+      blocks: blocks,
+    };
+  }
+
+  function accountSection() {
+    const status = state.status || {};
+    const parts = ['Token 已配置'];
+    const cooldown = num(status.rate_limit_cooldown);
+    parts.push(cooldown > 0 ? '请求限速 冷却 ' + clock(cooldown) : '请求限速 正常');
+    const library = status.library || null;
+    if (library && num(library.entries) > 0) {
+      parts.push('本地索引 ' + fmt(library.entries) + ' 项');
+    }
+    // 同步或校验在跑时，维护动作一律禁用（两者都会改写已下载记录，后端也互斥）。
+    const busy = taskBusy() || !!(library && library.busy);
+    const blocks = [text('account-status', parts.join(' · '))];
+    blocks.push({
+      type: 'actions',
+      id: 'account-actions',
+      actions: [
+        // 本地核对是唯一的维护入口：同步任务本身不再全盘遍历，手动放进目录的图
+        // 必须点这里才会并入已下载记录（另一条兼容入口 refresh_downloaded 只做导入）。
+        { id: 'verify-library', label: '校验本地内容', size: 'sm', disabled: busy },
+        { id: 'logout', label: '清除 Token', variant: 'danger', size: 'sm', disabled: busy },
+      ],
+    });
+    return { type: 'section', id: 'account-section', title: '账号与维护', blocks: blocks };
   }
 
   function mainBlocks() {
-    const blocks = [];
-    statusBlocks(blocks);
-    taskBlocks(blocks);
+    const meta = text('status-meta', metaText());
+    // 一行状态 + 语义色圆点：已连接是绿色，未配置是红色（后面还有空态兜底）。
+    meta.dot = state.tokenConfigured ? 'success' : 'danger';
+    const blocks = collect(
+      failureBanner(),
+      pendingBlock(),
+      confirmBlock(),
+      meta,
+    );
 
     if (!state.tokenConfigured) {
       blocks.push({
         type: 'empty',
         id: 'no-token',
+        icon: 'icon:key-round',
         text: '尚未配置 Pixiv Refresh Token',
         hint: '没有 Token 无法同步。用「获取 Token」走内置 OAuth 登录，或在设置里粘贴 refresh_token。',
         submit: { id: 'oauth-start', label: '获取 Token' },
       });
+      return blocks;
     }
 
-    const busy = taskBusy();
-    // 没有 Token 时同步/刷新/重试都会在后台线程里认证失败，按钮直接禁用，
-    // 把入口收窄到「获取 Token」与顶栏设置。
-    const locked = busy || !state.tokenConfigured;
-    blocks.push({ type: 'heading', id: 'actions-heading', text: '操作' });
-    blocks.push({
-      type: 'actions',
-      id: 'main-actions',
-      actions: [
-        { id: 'sync-following', label: '同步画师', icon: 'icon:download', variant: 'primary', disabled: locked },
-        { id: 'sync-bookmarks', label: '同步喜欢', icon: 'icon:heart', disabled: locked },
-        { id: 'refresh-following', label: '刷新关注名单', icon: 'icon:refresh-cw', disabled: locked },
-        { id: 'refresh-bookmarks', label: '刷新喜欢名单', icon: 'icon:refresh-cw', disabled: locked },
-      ],
-    });
+    return blocks.concat(collect(
+      alertBlocks(),
+      statsBlock(),
+      taskSection(),
+      librarySection(),
+      actionsSection(),
+      accountSection(),
+      text(
+        'hint',
+        '下载的画作会出现在「图片相册」中，重复作品按 Pixiv 作品 ID 自动跳过；'
+          + '下载目录、Token 与并发数在设置里修改。',
+      ),
+    ));
+  }
 
-    // 运行中的取消在 progress 块里；这里只留维护动作，避免同一屏出现两个「取消」。
-    blocks.push({
-      type: 'actions',
-      id: 'maintenance-actions',
-      actions: [{
-        id: 'retry-failed', label: '重试失败作品', icon: 'icon:trash-2', variant: 'danger',
-        disabled: locked,
-      }],
-    });
+  /**
+   * 失败提示：常驻横幅 + 「知道了」关闭。
+   *
+   * 判据与成功相反——成功可以瞬时（Toast），失败必须留在原地让用户看到并处理，
+   * 不能像 Toast 那样 2 秒多就消失。
+   */
+  function failureBanner() {
+    if (!state.notice || state.notice.tone !== 'danger') return null;
+    return {
+      type: 'banner',
+      id: 'notice-alert',
+      tone: 'danger',
+      icon: 'icon:triangle-alert',
+      text: state.notice.text,
+      action: { id: 'notice-dismiss', label: '知道了', variant: 'link' },
+    };
+  }
 
-    const account = [];
-    if (state.tokenConfigured) {
-      account.push({ id: 'logout', label: '清除 Token', variant: 'danger', disabled: busy });
-    }
-    if (account.length) blocks.push({ type: 'actions', id: 'account-actions', actions: account });
+  /** 可重来的二次确认：就地横幅 + 两个按钮，不打断页面。 */
+  function pendingBlock() {
+    if (!state.pending) return null;
+    return [
+      { type: 'banner', id: 'pending-banner', tone: 'warning', icon: 'icon:triangle-alert', text: state.pending.text },
+      { type: 'actions', id: 'pending-actions', actions: [state.pending.confirm, state.pending.cancel] },
+    ];
+  }
 
-    pushText(
-      blocks, 'hint',
-      '下载的画作会出现在「图片相册」中，重复作品按 Pixiv 作品 ID 自动跳过；'
-        + '下载目录与 Token 等在设置弹窗里修改。',
-      'muted',
-    );
-    return blocks;
+  /**
+   * 不可逆操作的阻断确认：块交给壳的 NativePanel 画成模态层。
+   * 只用于「清除 Token」这类破坏用户凭据的操作；派生数据的清除仍走 pendingBlock。
+   */
+  function confirmBlock() {
+    if (!state.confirm) return null;
+    return {
+      type: 'confirm',
+      id: 'confirm-dialog',
+      tone: 'danger',
+      title: state.confirm.title,
+      text: state.confirm.text,
+      confirm: state.confirm.confirm,
+      cancel: state.confirm.cancel,
+    };
   }
 
   function oauthBlocks() {
-    const blocks = [{ type: 'heading', id: 'oauth-heading', text: '获取 Pixiv Token' }];
-    pushText(
-      blocks, 'oauth-warning',
-      '下面步骤中不要重新点「获取 Token」，否则验证码会失效，需要重来。',
-      'danger',
-    );
+    const blocks = [{
+      type: 'banner',
+      id: 'oauth-warning',
+      tone: 'danger',
+      icon: 'icon:triangle-alert',
+      text: '下面步骤中不要重新点「获取 Token」，否则验证码会失效，需要重来。',
+    }];
     if (state.oauth.url) {
       blocks.push({
-        type: 'kv',
+        type: 'code',
         id: 'oauth-url',
-        items: [{ title: '登录地址（选中后复制到已登录的浏览器标签页）', sub: state.oauth.url }],
+        language: '登录地址',
+        text: state.oauth.url,
+        copyable: true,
+        wrap: true,
       });
     } else {
-      pushText(blocks, 'oauth-no-url', '还没有登录地址：点「重新获取登录地址」生成。', 'muted');
+      blocks.push(text('oauth-no-url', '还没有登录地址：点顶栏「重新获取登录地址」生成。'));
     }
-    pushText(
-      blocks, 'oauth-step-1',
-      '1. 浏览器通常会自动打开 Pixiv 登录页；若没有，把上面的地址粘贴到已登录的浏览器新标签页回车。',
-      'muted',
-    );
-    pushText(
-      blocks, 'oauth-step-2',
-      '2. 登录后页面会跳转或报「协议未知，无法导航」。按 F12 打开 Console，'
-        + '从报错或 Network 里找到 callback?...&code=XXXX，复制 code= 后面那串。',
-      'muted',
-    );
-    pushText(
-      blocks, 'oauth-step-3',
-      '3. 粘贴到下面并点「完成登录」；授权码几分钟内有效。',
-      'muted',
-    );
     blocks.push({
-      type: 'form',
-      id: 'oauth-form',
-      fields: [{
-        key: 'code',
-        label: '授权码 code',
-        type: 'text',
-        value: state.oauth.code,
-        placeholder: '粘贴 code= 后面的字符串',
-      }],
-      submit: { id: 'oauth-finish', label: '完成登录' },
+      type: 'section',
+      id: 'oauth-steps',
+      title: '登录步骤',
+      blocks: [
+        text(
+          'oauth-step-1',
+          '1. 浏览器通常会自动打开 Pixiv 登录页；若没有，把上面的地址粘贴到已登录的浏览器新标签页回车。',
+        ),
+        text(
+          'oauth-step-2',
+          '2. 登录后页面会跳转或报「协议未知，无法导航」。按 F12 打开 Console，'
+            + '从报错或 Network 里找到 callback?...&code=XXXX，复制 code= 后面那串。',
+        ),
+        text('oauth-step-3', '3. 粘贴到下面并点「完成登录」；授权码几分钟内有效。'),
+        {
+          type: 'form',
+          id: 'oauth-form',
+          fields: [{
+            key: 'code',
+            label: '授权码 code',
+            type: 'text',
+            value: state.oauth.code,
+            placeholder: '粘贴 code= 后面的字符串',
+          }],
+          submit: { id: 'oauth-finish', label: '完成登录' },
+        },
+      ],
     });
     return blocks;
-  }
-
-  function pendingBlocks(blocks) {
-    pushText(blocks, 'pending-text', state.pending.text, 'danger');
-    blocks.push({
-      type: 'actions',
-      id: 'pending-actions',
-      actions: [state.pending.confirm, state.pending.cancel],
-    });
   }
 
   function buildToolbar() {
@@ -376,36 +516,28 @@
   }
 
   function buildBlocks() {
-    const blocks = [];
-    if (state.notice) {
-      blocks.push({
-        type: 'text', id: 'notice', text: state.notice.text,
-        tone: state.notice.tone || 'default',
-      });
-    }
-    if (state.pending) pendingBlocks(blocks);
-    if (state.view === 'oauth') return blocks.concat(oauthBlocks());
+    // 失败横幅在每个视图都要能出现：OAuth 失败的提示不能因为换了视图就丢掉。
+    if (state.view === 'oauth') return collect(failureBanner(), oauthBlocks());
     if (state.statusError && !state.status) {
-      blocks.push({ type: 'heading', id: 'load-error-heading', text: '同步状态不可用' });
-      blocks.push({
+      return collect(failureBanner(), [{
         type: 'empty',
         id: 'load-error',
+        icon: 'icon:triangle-alert',
         text: '读取同步状态失败',
         hint: state.statusError + '。请确认「图片相册」已加载，然后重试。',
         submit: { id: 'reload', label: '重试' },
-      });
-      return blocks;
+      }]);
     }
     if (!state.status) {
-      blocks.push({
+      return [{
         type: 'empty',
         id: 'loading',
+        icon: 'icon:loader',
         text: '正在读取同步状态…',
         hint: '原生面板与插件后端通过本机接口通信。',
-      });
-      return blocks;
+      }];
     }
-    return blocks.concat(mainBlocks());
+    return mainBlocks();
   }
 
   // ---------- 数据 ----------
@@ -417,6 +549,18 @@
         state.status = result;
         state.tokenConfigured = !!result.token_configured;
         state.statusError = '';
+        // 校验从"在跑"变成"不在跑"的这一刻补一条结果提示：进度块消失后，
+        // 光看页面是看不出校验完成还是被停掉的。
+        const library = result.library || null;
+        const busy = !!(library && library.busy);
+        if (state.libraryBusy && !busy) {
+          state.notice = {
+            tone: (library && library.task && String(library.task.state) === 'done')
+              ? 'success' : 'muted',
+            text: verifySummary(library && library.task),
+          };
+        }
+        state.libraryBusy = busy;
       } else {
         state.statusError = '后端返回的状态不是对象';
       }
@@ -447,6 +591,10 @@
 
   function nextDelay() {
     if (taskActive(taskOf())) return STATUS_RUNNING_MS;
+    // 本地校验在跑时也要快轮询：它的进度是逐目录推进的，8s 一次会像卡住。
+    if (state.status && state.status.library && state.status.library.busy) {
+      return STATUS_RUNNING_MS;
+    }
     if (num(state.status && state.status.rate_limit_cooldown) > 0) return STATUS_COOLDOWN_MS;
     return STATUS_IDLE_MS;
   }
@@ -493,10 +641,14 @@
   }
 
   async function refreshNow() {
+    // loadStatus 可能在"校验刚结束"时补一条结果提示；手动刷新不能把它清掉。
+    const previous = state.notice;
     await loadStatus();
-    state.notice = state.statusError
-      ? { tone: 'danger', text: '状态刷新失败：' + state.statusError }
-      : null;
+    if (state.statusError) {
+      state.notice = { tone: 'danger', text: '状态刷新失败：' + state.statusError };
+    } else if (state.notice === previous) {
+      state.notice = null;
+    }
     restartPoll(nextDelay());
   }
 
@@ -523,7 +675,7 @@
       if (result && result.ok === false) {
         state.notice = { tone: 'danger', text: '重试启动失败：' + (result.error || '未知错误') };
       } else {
-        const kind = result && result.kind === 'bookmarks' ? '同步喜欢' : '同步画师';
+        const kind = result && result.kind === 'bookmarks' ? '同步收藏作品' : '同步关注作品';
         state.notice = {
           tone: 'default',
           text: '已清除 ' + num(result && result.cleared) + ' 条失败跳过记录，并按「' + kind + '」重新同步',
@@ -585,13 +737,15 @@
 
   async function clearToken() {
     state.pending = null;
+    // 确认块一被移除，壳的模态层就关闭（开关由 blocks 派生）。
+    state.confirm = null;
     try {
       // 空字符串是后端约定的"清除凭据"；掩码原样回传才表示"不改动"。
       const result = await Bridge.call('save_settings', { refresh_token: '' });
       if (result && result.success === false) {
         state.notice = { tone: 'danger', text: '清除失败：' + (result.error || '未知错误') };
       } else {
-        state.notice = { tone: 'default', text: '已清除保存的 Refresh Token' };
+        state.notice = { tone: 'success', text: '已清除保存的 Refresh Token' };
       }
     } catch (e) {
       state.notice = { tone: 'danger', text: '清除失败：' + errText(e) };
@@ -624,18 +778,126 @@
     };
   }
 
+  /** 校验本地内容：走盘对齐记录（导入手动作品、移除失效、缺页重新入队）。 */
+  async function verifyLibrary() {
+    try {
+      const result = await Bridge.call('verify_downloaded');
+      if (result && result.ok === false) {
+        state.notice = { tone: 'danger', text: '校验失败：' + (result.error || '未知错误') };
+      } else {
+        const total = num(result && result.total);
+        const imported = num(result && result.imported);
+        const stale = num(result && result.stale_removed);
+        const incomplete = num(result && result.incomplete);
+        const parts = ['本地内容已校验：共 ' + fmt(total) + ' 张'];
+        if (imported) parts.push('新增 ' + fmt(imported));
+        if (stale) parts.push('移除失效 ' + fmt(stale));
+        if (incomplete) parts.push('缺页重新入队 ' + fmt(incomplete));
+        if (parts.length === 1) parts.push('没有变化');
+        state.notice = { tone: 'success', text: parts.join('，') };
+      }
+    } catch (e) {
+      state.notice = { tone: 'danger', text: '校验失败：' + errText(e) };
+    }
+    await loadStatus();
+  }
+
+  /**
+   * 本地内容校验的进度块。
+   *
+   * 校验是后台任务（几万个文件、几十秒量级），进度由 `get_status.library` 投影过来：
+   * 目录数 processed/total + 当前目录。没有它，用户点完按钮只会看到"什么都没发生"。
+   */
+  function librarySection() {
+    const lib = (state.status && state.status.library) || null;
+    if (!lib || !lib.busy) return null;
+    const task = lib.task || {};
+    const total = num(task.total);
+    const processed = num(task.processed);
+    const detail = [
+      task.current ? '正在处理：' + task.current : '正在遍历目录…',
+      '已处理 ' + fmt(processed) + (total > 0 ? ' / ' + fmt(total) : '') + ' 个目录',
+    ].join(' · ');
+    return {
+      type: 'section',
+      id: 'library-section',
+      title: '本地内容',
+      blocks: [{
+        type: 'progress',
+        id: 'library-progress',
+        value: processed,
+        total: total,
+        indeterminate: total <= 0,
+        text: '校验本地内容',
+        detail: detail,
+        cancel: { id: 'cancel-verify', label: '停止校验', variant: 'link' },
+      }],
+    };
+  }
+
+  /** 校验结束时的结果文案；计数来自引擎任务 extra 里的 pass_end 摘要。 */
+  function verifySummary(task) {
+    if (task && String(task.state) === 'cancelled') return '本地内容校验已停止';
+    const extra = (task && task.extra) || {};
+    const total = num(extra.total);
+    const imported = num(extra.imported);
+    const stale = num(extra.stale_removed);
+    const incomplete = num(extra.incomplete);
+    const parts = ['本地内容已校验：共 ' + fmt(total) + ' 张'];
+    if (imported) parts.push('新增 ' + fmt(imported));
+    if (stale) parts.push('移除失效 ' + fmt(stale));
+    if (incomplete) parts.push('缺页重新入队 ' + fmt(incomplete));
+    if (parts.length === 1) parts.push('没有变化');
+    return parts.join('，');
+  }
+
+  /** 校验本地内容：启动后台任务，进度由轮询的 get_status.library 带回来。 */
+  async function verifyLibrary() {
+    try {
+      const result = await Bridge.call('verify_downloaded');
+      if (result && result.ok === false) {
+        state.notice = { tone: 'danger', text: '校验启动失败：' + (result.error || '未知错误') };
+      } else if (result && result.finished) {
+        // 旧壳没有刷新基建：同步走盘后直接拿到了结果
+        state.notice = { tone: 'success', text: verifySummary({ extra: result, state: 'done' }) };
+      } else {
+        state.notice = { tone: 'muted', text: '正在校验本地内容，进度见「本地内容」' };
+      }
+    } catch (e) {
+      state.notice = { tone: 'danger', text: '校验启动失败：' + errText(e) };
+    }
+    await loadStatus();
+    restartPoll(STATUS_RUNNING_MS);
+  }
+
+  /** 停止本地内容校验。 */
+  async function cancelVerify() {
+    try {
+      const result = await Bridge.call('cancel_verify');
+      state.notice = result && result.ok === false
+        ? { tone: 'danger', text: '停止校验失败：' + (result.error || '未知错误') }
+        : { tone: 'muted', text: '已请求停止校验' };
+    } catch (e) {
+      state.notice = { tone: 'danger', text: '停止校验失败：' + errText(e) };
+    }
+    await loadStatus();
+  }
+
+  /** 清除凭据不可逆：走壳的阻断确认（模态），不是就地横幅。 */
   function askLogout() {
     state.notice = null;
-    state.pending = {
-      text: '清除已保存的 Pixiv Refresh Token？清除后需要重新登录才能同步。',
-      confirm: { id: 'logout-confirm', label: '清除 Token', variant: 'danger' },
-      cancel: { id: 'pending-cancel', label: '取消' },
+    state.confirm = {
+      title: '清除 Pixiv Refresh Token？',
+      text: '清除后需要重新登录才能同步，已下载的作品不受影响。',
+      confirm: { id: 'logout-confirm', label: '清除 Token' },
+      cancel: { id: 'confirm-cancel', label: '取消' },
     };
   }
 
   async function handleAction(action, payload) {
     if (!action) return;
-    if (state.submitting && action !== 'pending-cancel') return;
+    // 两个「取消」任何时候都要能关闭确认层，否则弹窗会被 submitting 卡住。
+    if (state.submitting && action !== 'pending-cancel' && action !== 'confirm-cancel') return;
     state.submitting = true;
     try {
       switch (action) {
@@ -648,16 +910,10 @@
           await refreshNow();
           break;
         case 'sync-following':
-          await startTask('sync_following', '同步画师');
+          await startTask('sync_following', '同步关注作品');
           break;
         case 'sync-bookmarks':
-          await startTask('sync_bookmarks', '同步喜欢');
-          break;
-        case 'refresh-following':
-          await startTask('refresh_following_lists', '刷新关注名单');
-          break;
-        case 'refresh-bookmarks':
-          await startTask('refresh_bookmarks_lists', '刷新喜欢名单');
+          await startTask('sync_bookmarks', '同步收藏作品');
           break;
         case 'cancel-task':
           await cancelTask();
@@ -670,6 +926,13 @@
           break;
         case 'pending-cancel':
           state.pending = null;
+          break;
+        case 'notice-dismiss':
+          // 失败横幅的显式关闭：用户看过之后由他自己清掉。
+          state.notice = null;
+          break;
+        case 'confirm-cancel':
+          state.confirm = null;
           break;
         case 'oauth-start':
         case 'oauth-restart':
@@ -685,6 +948,12 @@
           break;
         case 'logout':
           askLogout();
+          break;
+        case 'verify-library':
+          await verifyLibrary();
+          break;
+        case 'cancel-verify':
+          await cancelVerify();
           break;
         case 'logout-confirm':
           await clearToken();
