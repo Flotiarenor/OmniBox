@@ -54,7 +54,7 @@ function makeGroup(prefix, count) {
  * `groups` 是 get_cached_scan 的返回值（对象或 (mode) => 对象），
  * `deleted` 决定 delete_files 回什么（默认全部删除）。
  */
-function setup({ groups = [], scanned = 0, stale = false, deleted = null } = {}) {
+function setup({ groups = [], scanned = 0, stale = false, deleted = null, freshnessState = null } = {}) {
   const messages = [];
   const listeners = {};
   const bridgeCalls = [];
@@ -84,7 +84,7 @@ function setup({ groups = [], scanned = 0, stale = false, deleted = null } = {})
     },
     Freshness: {
       mount: () => ({
-        state: () => ({ busy: false, task: null }),
+        state: () => freshnessState || { busy: false, task: null },
         verify: async () => { },
         cancel: async () => { },
         autoSync: () => { },
@@ -305,6 +305,83 @@ await check('删除成功后文件窗口重置，并清空选中', async () => {
   assert.equal(env.groupsBlock().groups[0].items.length, 12, '删除后大组的文件窗口也要回到 12');
   assert.equal(env.selectedCount(), 0, '删除成功后选中集合清空');
   assert.equal(env.groupsBlock().groups.length, 1, '不足两张的小组被丢弃');
+});
+
+// ============================================================
+// 3.5 反馈分档：删除走阻断确认（模态），成功走 Toast，失败留在横幅
+// ============================================================
+
+await check('删除不可逆：提交 confirm 块（模态），确认前不调删除接口', async () => {
+  const env = setup({ groups: [makeGroup('a', 30)] });
+  await env.init();
+  await env.action('select-group', { index: 0 });
+  await env.action('delete-selected');
+  await env.flush();
+  const dialog = env.findBlock('delete-dialog');
+  assert.ok(dialog, '删除确认要提交 confirm 块，由壳画成模态');
+  assert.equal(dialog.type, 'confirm');
+  assert.equal(dialog.tone, 'danger');
+  assert.match(dialog.title, /删除 30 张图片/);
+  assert.equal(dialog.confirm.id, 'delete-confirm');
+  assert.equal(dialog.cancel.id, 'delete-cancel');
+  assert.ok(!env.findBlock('delete-confirm-actions'), '旧的内联确认按钮组不再提交');
+  assert.equal(env.deleteCall(), undefined, '确认前不能调删除接口');
+
+  await env.action('delete-cancel');
+  await env.flush();
+  assert.ok(!env.findBlock('delete-dialog'), '取消后确认块消失（壳据此关模态）');
+  assert.equal(env.deleteCall(), undefined, '取消不调删除接口');
+});
+
+await check('成功结果走消息级 Toast，不进 blocks；失败留常驻横幅并可关闭', async () => {
+  const env = setup({
+    groups: [makeGroup('a', 30)],
+    deleted: (files) => ({ deleted: files, errors: [] }),
+  });
+  await env.init();
+  await env.action('select-group', { index: 0 });
+  await env.confirmDelete();
+  assert.match(env.schema().toast.text, /已删除 30 张图片/, '成功提示用 Toast');
+  assert.ok(!env.findBlock('notice'), '成功提示不再占 blocks');
+  assert.ok(!env.findBlock('notice-alert'), '成功不产生常驻横幅');
+
+  // 失败：删除接口报错 → 常驻横幅 + 「知道了」
+  const failing = setup({
+    groups: [makeGroup('a', 30)],
+    deleted: () => ({ deleted: [], errors: ['磁盘只读'] }),
+  });
+  await failing.init();
+  await failing.action('select-group', { index: 0 });
+  await failing.confirmDelete();
+  const alert = failing.findBlock('notice-alert');
+  assert.ok(alert, '失败要常驻横幅');
+  assert.equal(alert.tone, 'danger');
+  assert.equal(alert.action.id, 'notice-dismiss', '横幅要能手动关闭');
+  assert.ok(!failing.schema().toast, '失败不弹 Toast');
+
+  await failing.action('notice-dismiss');
+  await failing.flush();
+  assert.ok(!failing.findBlock('notice-alert'), '点「知道了」后横幅消失');
+});
+
+await check('总数未知时进度条标 indeterminate，而不是 0/0', async () => {
+  const unknown = setup({
+    groups: [makeGroup('a', 30)],
+    freshnessState: { busy: true, task: { state: 'running', processed: 0, total: 0, current: '' } },
+  });
+  await unknown.init();
+  const unknownProgress = unknown.findBlock('scan-progress');
+  assert.ok(unknownProgress, '校验中要有进度块');
+  assert.equal(unknownProgress.indeterminate, true, '总数未知要标 indeterminate');
+
+  const known = setup({
+    groups: [makeGroup('a', 30)],
+    freshnessState: { busy: true, task: { state: 'running', processed: 5, total: 20, current: 'a.jpg' } },
+  });
+  await known.init();
+  const knownProgress = known.findBlock('scan-progress');
+  assert.equal(knownProgress.indeterminate, false, '有总数时按百分比显示');
+  assert.equal(knownProgress.total, 20);
 });
 
 // ============================================================

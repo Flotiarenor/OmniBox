@@ -36,11 +36,26 @@
   let refreshPromise = null;
   let scanPending = false;
   let scanStartedAt = 0;
+  /** 已作为 Toast 发出去的通知键，避免同一条结果反复弹。 */
+  let sentNotice = '';
 
   // ---------- 与壳的通道 ----------
 
   function render() {
-    if (client) client.render(buildBlocks(), buildToolbar());
+    if (!client) return;
+    const options = {};
+    const notice = state.notice;
+    // 成功与中性结果走一次性 Toast；失败留在常驻 banner 里，不能一闪而过。
+    if (notice && notice.text && notice.tone !== 'danger') {
+      const key = (notice.tone || 'default') + ':' + notice.text;
+      if (key !== sentNotice) {
+        sentNotice = key;
+        options.toast = { text: notice.text, tone: notice.tone || 'default' };
+      }
+    } else {
+      sentNotice = '';
+    }
+    client.render(buildBlocks(), buildToolbar(), options);
   }
 
   function errText(error) {
@@ -160,48 +175,54 @@
     const busy = state.busy;
 
     let statusText = '';
+    let statusDot = 'muted';
     if (busy) {
       statusText = state.task && state.task.current
         ? '校验中：' + state.task.current
         : '正在校验…';
+      statusDot = 'accent';
     } else if (!state.cached) {
       statusText = '尚未校验';
+      statusDot = 'muted';
     } else {
       statusText = '已扫描 ' + state.scanned + ' 张'
         + (state.stale ? ' · 磁盘有变化，建议重新校验' : '');
+      statusDot = state.stale ? 'warning' : 'success';
     }
-    blocks.push({ type: 'text', id: 'scanned', text: statusText, tone: 'muted' });
+    blocks.push({ type: 'text', id: 'scanned', text: statusText, tone: 'muted', dot: statusDot });
 
-    if (state.notice) {
+    // 失败：常驻横幅 + 「知道了」，不能被下一次提交静默吞掉。
+    if (state.notice && state.notice.tone === 'danger') {
       blocks.push({
-        type: 'text', id: 'notice', text: state.notice.text,
-        tone: state.notice.tone || 'default',
+        type: 'banner', id: 'notice-alert', tone: 'danger', icon: 'icon:triangle-alert',
+        text: state.notice.text,
+        action: { id: 'notice-dismiss', label: '知道了', variant: 'link' },
       });
     }
 
     if (busy) {
       const task = state.task || {};
+      const total = Number(task.total) || 0;
       blocks.push({
         type: 'progress', id: 'scan-progress',
         value: Number(task.processed) || 0,
-        total: Number(task.total) || 0,
+        total: total,
+        // 总数未知时不要用 0/N 假装进度，交给壳画进行中。
+        indeterminate: total <= 0,
         text: task.state === 'running' ? '校验中' : '准备中',
         detail: task.current ? '正在处理：' + task.current : '',
         cancel: { id: 'cancel-scan', label: '取消' },
       });
     }
 
+    // 删除不可逆：走壳的阻断确认（模态），确认块由 blocks 派生。
     if (state.pendingDelete) {
       blocks.push({
-        type: 'text', id: 'delete-confirm', tone: 'danger',
-        text: '确定删除选中的 ' + state.selected.size + ' 张图片吗？删除后不可恢复。',
-      });
-      blocks.push({
-        type: 'actions', id: 'delete-confirm-actions',
-        actions: [
-          { id: 'delete-confirm', label: '确认删除', variant: 'danger' },
-          { id: 'delete-cancel', label: '取消' },
-        ],
+        type: 'confirm', id: 'delete-dialog', tone: 'danger',
+        title: '删除 ' + state.selected.size + ' 张图片？',
+        text: '删除后不可恢复，勾选的文件会直接从这里移除。',
+        confirm: { id: 'delete-confirm', label: '确认删除' },
+        cancel: { id: 'delete-cancel', label: '取消' },
       });
     }
 
@@ -494,6 +515,10 @@
         break;
       case 'delete-cancel':
         state.pendingDelete = false;
+        state.notice = null;
+        break;
+      case 'notice-dismiss':
+        // 失败横幅的显式关闭：用户看过之后由他自己清掉。
         state.notice = null;
         break;
       case 'reload':
