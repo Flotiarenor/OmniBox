@@ -21,8 +21,11 @@ PyYAML==6.0.3
 pywebview==6.2.1
 bottle==0.13.4
 proxy_tools==0.1.0
-pythonnet==3.0.5
-clr_loader==0.2.10
+# pythonnet 3.2.1 声明 Requires-Python >=3.11,<3.16：本文件因此只支持 Python 3.11–3.15，
+# pyproject.toml 的 requires-python、pyrightconfig、CI 矩阵与 setup-venv 脚本的版本门禁
+# 都按这一区间写死，改这里要一起改。
+pythonnet==3.2.1
+clr_loader==0.3.1
 cffi==2.0.0
 pycparser==3.0
 typing_extensions==4.15.0

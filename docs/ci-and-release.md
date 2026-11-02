@@ -100,7 +100,7 @@ node tools/check_frontend_escape.cjs
 | `lint` | ubuntu | ruff + 插件规范 + 打包规则 + 版本一致性 + 图标 sprite + 测试文件可运行性 + 文档引用一致性 |
 | `docs` | ubuntu | **只在变更集含 `.md` 时跑**：文档引用一致性（`tools/check_docs.py`） |
 | `typecheck` | windows | pyright 内核（硬门禁）；不再输出“插件/测试基线”这种不会失败的报告 |
-| `test` | windows + ubuntu，py3.10 + 3.12 | 共享测试（`tools/plugin_ci.py --core`，不含插件专属测试） |
+| `test` | windows + ubuntu，py3.11 + 3.12 | 共享测试（`tools/plugin_ci.py --core`，不含插件专属测试） |
 | `plugin` | windows + ubuntu，py3.12 | **每个插件一条 job**：`tools/plugin_ci.py --plugin <name>`；失败直接落到插件名 |
 | `frontend` | ubuntu | 转义门禁 + `npm ci` + `vue-tsc --noEmit` + `vite build` |
 | `package` | windows + ubuntu | 真实跑 PyInstaller + 校验产物内容；**只在 push `main` / 手动触发时跑**（日常 push 由 `package-smoke` 按路径兜底，产物仅作 artifact） |

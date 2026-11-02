@@ -103,7 +103,7 @@ graph TB
 
 ### 环境要求
 
-- Python 3.10+
+- Python 3.11–3.15（上界由 `requirements.txt` 的 `pythonnet` 决定）
 - Node.js 18+
 - npm 9+
 - Windows：PowerShell 5.1+
