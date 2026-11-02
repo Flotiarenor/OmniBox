@@ -220,7 +220,7 @@ torch / onnxruntime 等重依赖**不得**写在插件 `backend/main.py` 顶层 
 
 2. **控制器保持轻量**：`backend/main.py` 只做任务管理 / 进度 / 结果索引，通过 `shell.backend.adapter_process`（规划中）拉起 `<runtime.venv>/Scripts/python.exe` 子进程。
 3. **通信**：stdio JSON-lines，每行一个 JSON 对象；控制行下行、进度/结果上行（协议见 `docs/core-direction.md` §9.4）。
-4. **部署**：`deploy.ps1` / `setup-venv.ps1` 按 `runtime.requirements` 创建插件独立 venv；失败不阻塞主程序。
+4. **部署**：`runtime` 实装后由 `deploy.ps1` / `setup-venv.ps1` 按 `runtime.requirements` 创建插件独立 venv（失败不阻塞主程序）；当前脚本里没有这段逻辑，实装前不要依赖它。
 5. **原型阶段**允许懒 import 兜底：首次调用时才 `import torch`，并把任务放进后台线程；正式版切独立环境。
 
 ---
