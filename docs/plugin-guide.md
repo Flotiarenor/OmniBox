@@ -926,19 +926,23 @@ eq-text` 且内容页上报 `state: "ok"` 时，壳把状态点换成四柱迷�
 | --- | --- | --- |
 | 逻辑页 → 壳 | `omnibox:native-ready` | 就绪 |
 | 壳 → 逻辑页 | `omnibox:native-init` | 开始取数并提交 blocks |
-| 逻辑页 → 壳 | `omnibox:schema` | `{blocks}` |
+| 逻辑页 → 壳 | `omnibox:schema` | `{blocks, toolbar?, layout?}` |
 | 壳 → 逻辑页 | `omnibox:native-action` | `{action, payload}`，payload 发送前做 JSON 克隆 |
 | 逻辑页 → 壳 | `omnibox:native-error` | 内容加载失败 |
 
-blocks 的组件词汇（`shell/frontend/src/core/plugin-content.ts`）：`text`、`heading`、`kv`、
-`table`、`list`、`cards`、`checkbox-list`、`form`、`actions`、`progress`、`empty`、`image-grid`。
-规则：
+blocks 的组件词汇（`shell/frontend/src/core/plugin-content.ts`）：`text`、`heading`、`stats`、
+`section`、`banner`、`code`、`kv`、`table`、`list`、`cards`、`checkbox-list`、`form`、`actions`、
+`progress`、`empty`、`image-grid`。规则：
 
 - native 内容不接收任意 HTML；交互只回传动作标识，壳不解释业务；
 - 逻辑页统一装载 `/shell/native-client.js`，用 `NativeExtension.create({ onInit, onAction, onDispose })`
   处理 ready/init/action/schema/error 与 pagehide；插件只提供业务取数与 `buildBlocks()`，
   不再各自手写消息骨架；
 - 页面级动作用 `render(blocks, toolbar)` 上报，壳在宿主顶栏渲染；内容区不再放第二排工具栏；
+- 版式用 `render(blocks, toolbar, { layout: 'document' })` 声明：正文收窄到 960px 居中、组间 24px；
+  不声明时维持整宽排版（未写 `layout` 的插件渲染结果不变）；
+- 层级用块表达：同级指标用 `stats`、分组用 `section`、提示用 `banner`、可复制文本用 `code`，
+  一个页面只留一个 `primary` 动作，第三级入口用 `actions` 的 `variant: 'link'`；
 - `cards` / `image-grid` 的 `image` 使用插件给的**缩略图 URL**（如 `Bridge.thumbUrl(...)`），
   壳不另取原图；`NativePanel` 的缩略图预览只放大该 URL；
 - 面板打开期间宿主内容 iframe 用 `v-show` 隐藏但实例保留，`NativePanel` 只占宿主内容槽，

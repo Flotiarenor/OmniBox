@@ -58,7 +58,7 @@
 原生逻辑页（`frontend/native.html`）不产生 DOM：
 
 - `<body>` 只装载 `/shell/native-client.js` 与 `js/native.js`，不引入样式表；壳的 `NativePanel` 负责可见界面。
-- 向壳提交的 blocks 类型：`actions`、`text`、`progress`、`checkbox-list`、`empty`。
+- 向壳提交的 blocks 类型：`text`（状态行带 `dot` 语义点）、`banner`（失败常驻 + `notice-dismiss`「知道了」）、`confirm`（删除的阻断确认，壳画成面板内模态层）、`progress`（总数未知时 `indeterminate`）、`actions`、`checkbox-list`、`empty`。反馈分档与 pixiv-sync 一致：成功走消息级 `toast`（`render` 第三个参数），失败留常驻 `banner`，不可逆的删除用 `confirm` 块。
 - 壳消息：逻辑页装载 `/shell/native-client.js`，用 `NativeExtension.create({ onInit, onAction, onDispose })`；客户端负责 `omnibox:native-ready` / `native-init` / `schema` / `native-action` / `native-error` 与 pagehide 清理，本页只实现 `init`、`handleAction` 与 blocks 构造。
 - 数据来源：`Bridge.call` 的 `get_cached_scan`、`delete_files`；校验进度与取消走 `Freshness.mount` 返回的 `state`、`verify`、`cancel`、`autoSync`；设置由壳的 `PluginSettingsModal` 读写后端 `settings_schema`，保存后逻辑页收 `settings-saved`。
 

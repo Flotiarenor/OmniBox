@@ -136,7 +136,7 @@ native 面板：
 | --- | --- | --- |
 | 逻辑页 → 壳 | `omnibox:native-ready` | 就绪 |
 | 壳 → 逻辑页 | `omnibox:native-init` | 开始取数并提交 blocks |
-| 逻辑页 → 壳 | `omnibox:schema` | `{blocks}` |
+| 逻辑页 → 壳 | `omnibox:schema` | `{blocks, toolbar?, layout?, toast?}` |
 | 壳 → 逻辑页 | `omnibox:native-action` | `{action, payload}`，payload 在发送前做 JSON 克隆 |
 | 逻辑页 → 壳 | `omnibox:native-error` | 内容加载失败 |
 
@@ -146,15 +146,28 @@ native 面板：
 
 | 组件 | 用途 |
 | --- | --- |
-| `text` / `heading` | 段落与区块标题 |
+| `text` / `heading` | 段落与区块标题；`text` 可带 `dot` 语义色圆点表示状态 |
+| `stats` | 一组同级指标（`metrics`：label / value / hint / tone），渲染成 `<dl>`，数字等宽 |
+| `section` | 分组容器：标题 + 细线 + 子 blocks（可嵌套），承担组内/组间间距 |
+| `banner` | 一条醒目但非模态的提示（tone + 图标 + 可选动作），`aria-live="polite"` |
+| `code` | 等宽文本 + 复制按钮（`copyable` / `wrap`） |
+| `confirm` | 不可逆操作的阻断确认；由 `NativePanel` 画成面板内模态层（遮罩随面板存活） |
 | `kv` / `table` | 只读键值与表格 |
 | `list` / `cards` | 列表行与卡片；支持缩略图、徽标、动作 |
 | `checkbox-list` | 分组复选框文件列表（相册清理、批量选择） |
-| `form` | 设置表单；字段沿用设置 schema 的类型 |
-| `actions` | 动作组 |
-| `progress` | 长任务进度与取消 |
-| `empty` | 空态与错误态 |
+| `form` | 设置表单；字段沿用设置 schema 的类型，字段可按 `section` 分组 |
+| `actions` | 动作组；`variant` 取 `default` / `primary` / `accent` / `danger` / `link`，`size: 'sm'` 压到小号档 |
+| `progress` | 长任务进度与取消；`indeterminate` 表示总数未知 |
+| `empty` | 空态与错误态；可带 `icon` |
 | `image-grid` | 只读图片网格 |
+
+版式由 `omnibox:schema` 的可选 `layout` 字段声明：`document` 把正文收窄到 960px 居中、组间 24px
+（`NativeExtension.create(...).render(blocks, toolbar, { layout: 'document' })`）；缺省 `default`
+维持整宽与 14px 间距，未声明 `layout` 的插件渲染结果不变。
+
+`toast` 是消息级的瞬时反馈（`{text, tone}`），不是块：壳在面板内弹一次 Toast，
+同一段文本会去重。三档反馈的分工（Toast / banner / confirm）写在 [plugin-ui-guide.md](plugin-ui-guide.md)
+的「Native 内容」一节。
 
 规则：native 内容不接收任意 HTML；交互只回传动作标识；需要富文本、画布或视频的内容继续用
 content iframe。附属插件不读宿主窗口上的对象，宿主能力走 Bridge / HostChannel。
@@ -181,6 +194,7 @@ ready 重试、init、schema、action、error 与 pagehide 清理由客户端处
 | `multi` / `emptyText` | `multi`、`emptyText` 使用 | `multi` 使用；`emptyText` 不使用 | `FolderPicker` 使用 |
 | `local_only` | `FolderPicker` 隐藏「网络位置」 | `FolderPicker` 隐藏「网络位置」 | `FolderPicker` 隐藏「网络位置」 |
 | `required` | 只加标签样式 | 不判断 | 只加标签样式 |
+| `section` / `sectionTitle` / `sectionDescription` / `sectionOrder` / `order` | 按 section 分组并排序 | 同左（同一套规则） | 不消费 |
 | `info` | 只读展示，不提交 | 只读展示，不提交 | 只读展示，不提交 |
 | `condition` / `save_target` | 不消费 | 不消费 | 不消费 |
 

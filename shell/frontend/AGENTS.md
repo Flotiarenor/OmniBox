@@ -13,13 +13,22 @@ Vue 3 + TypeScript + Vite。`src/` 是壳的界面（`components/` `core/` `rout
 - 壳首页（`/`、`/settings`、插件路由）由 `dist/index.html` 提供，dist 缺失时直接 404；CI 在跑测试前会先构建一次。
 - `dist/` 不提交（`.gitignore`）。
 
-`public/shell/` 共 16 个文件：
+`public/shell/` 共 17 个文件：
 
 | 类别 | 文件 |
 | --- | --- |
 | 样式 | `variables.css` `shared.css` `base.css` `effects.css` |
 | 组件 | `folder-picker.{css,js}` `freshness.{css,js}` `splitter.{css,js}` `content-ui.{css,js}` |
-| 脚本 | `base.js` `native-client.js` `motion.js` `icons.generated.js` |
+| 脚本 | `base.js` `toast.js` `native-client.js` `motion.js` `icons.generated.js` |
+
+`toast.js` 是壳页面与插件 iframe 共用的 Toast 唯一实现：两边的引导片段都引它，
+`src/core/toast.ts` 只是给它加类型入口，`base.js` 不再自己定义 `window.Toast`。
+
+`.modal` 骨架（`.modal` / `.modal-box` / `.modal-body` / `.modal-footer`）在 `shared.css`：
+壳页面不加载 `base.css`，模态骨架只能放在两边都加载的那一份里。`base.js` 的
+`Shell.dialog` 为插件页的 `.modal` 补无障碍与键盘行为（`role="dialog"` / `aria-modal="true"`、
+焦点进入与归还、Esc、Tab 循环、点遮罩关闭、`modal:close` 事件），壳文档自己的弹窗
+（`PluginSettingsModal`、folder-picker）由 `src/core/use-dialog-focus.ts` 与组件自己负责。
 
 ## 与 `res/` 的区别
 

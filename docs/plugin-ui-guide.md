@@ -43,6 +43,14 @@ manifest 用 `frontend.chrome` 声明骨架；壳加载内容页时追加 `?cont
   **不要**假装它能盖住壳侧栏。
 - 页面级设置、跨插件确认、需要盖住导航的弹窗，走壳的 `PluginSettingsModal` 或 native 面板。
 - Esc、点遮罩、点取消都应关闭；打开时焦点进入弹窗，关闭后还给触发元素。
+- 后三条由壳统一提供，插件不必自己实现：`base.js` 监听 `.modal` 元素的 `active` 类变化，
+  打开时补 `role="dialog"` / `aria-modal="true"` / `aria-labelledby`（取 `.modal-box h3` 的文本）、
+  记住并移入焦点，关闭时撤掉这些属性并把焦点还给打开前持有焦点的元素；Esc、Tab 循环、
+  点遮罩关闭都在同一处处理。因此**不要**再给 `.modal` 手写 `role="dialog"`——带了该属性的元素
+  视为"自己管无障碍"，壳会跳过它。关闭时模态元素上会派发 `modal:close`（可冒泡），
+  插件需要清理自己的状态时监听它；也可以用 `Shell.dialog.open(el)` / `Shell.dialog.close(el)` 直接开关。
+- 用 `.mp-*` 这类自建弹窗骨架的插件拿不到上述行为：要么改用 `.modal` 骨架，要么自己补齐
+  `role="dialog"` / `aria-modal` / Esc / 焦点归还。
 - 四个壳内设置页与 image-viewer 的内容设置页顶部都有一个「外观」块：背景不透明度滑块 +
   默认勾选的「跟随壳透明度」。它属于壳偏好 `--plugin-glass-<插件名>`，不写进插件
   `settings_schema`；image-viewer 的内容页设置通过 `omnibox:get-plugin-appearance` /
@@ -100,11 +108,53 @@ manifest 用 `frontend.chrome` 声明骨架；壳加载内容页时追加 `?cont
 
 ## Native 内容
 
-- 只提交结构化 blocks：`text` / `heading` / `kv` / `table` / `list` / `cards` / `checkbox-list` /
-  `form` / `actions` / `progress` / `empty` / `image-grid`。
+- 只提交结构化 blocks：`text` / `heading` / `stats` / `section` / `banner` / `code` / `confirm` / `kv` /
+  `table` / `list` / `cards` / `checkbox-list` / `form` / `actions` / `progress` / `empty` / `image-grid`。
+  字段定义在 `shell/frontend/src/core/plugin-content.ts`，`SchemaRenderer` 与 `NativePanel` 是唯一渲染方。
+
+### 反馈分三档，按“用户要不要做决定”选，不按“是不是出错”选
+
+| 档位 | 用法 | 实现 |
+| --- | --- | --- |
+| **Toast**（瞬时、不阻断、不占版面） | **成功**与中性结果：已请求取消、已清除、已打开目录 | `render(blocks, toolbar, { toast: { text, tone } })` 的消息级字段；壳与插件页共用 `/shell/toast.js` 这一份实现（DOM 结构、`.toast*` 样式与同一段文本的去重都在那里） |
+| **Banner**（就地、不阻断） | 持续为真的状态与**所有失败**：限流冷却、状态读取失败、操作失败、可重来的二次确认 | `banner` 块 + `actions` 块；失败横幅给一个「知道了」`action` 让用户显式关闭 |
+| **Confirm**（阻断） | 不可逆且破坏用户数据：清除凭据、删除文件、覆盖 | `confirm` 块，由 `NativePanel` 画成模态层 |
+
+判据：**不可逆 + 破坏用户数据**才用 `confirm`；派生数据（可重算、可重来）用就地确认；状态与失败用
+`banner`；只有成功与中性结果用 `toast`。**不要用 Toast 报错**——它几秒后自己消失，用户来不及读，
+也没有留下痕迹；失败必须常驻到用户关闭或下一次成功。
+
+- `confirm` 的契约：`{ type: 'confirm', title, text, tone, confirm, cancel }`；壳负责遮罩、Esc 与点遮罩
+  等于取消、焦点进入弹窗并关闭后归还、Tab 不跑出弹窗。**遮罩画在 `.native-panel` 内部而不是 body**：
+  面板被隐藏或卸载时模态随之消失，不会留下孤儿弹窗。弹窗开关由 blocks 派生——插件每次提交都带着
+  这个块，确认后去掉它；不要另发“打开/关闭弹窗”的消息。
+- `toast` 不是块：它不占 blocks，也不会留在页面上等下一次轮询覆盖。逻辑页不渲染可见 Toast（它是
+  隐藏 iframe），所以只能交给壳。
+- content 页自己要弹提示时，用壳注入的 `window.Toast`（唯一实现是 `/shell/toast.js`，壳页面与
+  插件 iframe 引的是同一份）：它带 `role="status"` / `aria-live="polite"`、同文本去重与悬停暂停。
+  不要另拼 `.toast` 节点或自绘一套提示，否则两份实现的样式与行为会各自漂移。
+- 版式：`client.render(blocks, toolbar, { layout: 'document' })` 把正文收窄到 960px 居中、组间放到 24px，
+  适合以文字与指标为主的页面；不写 `layout` 时维持既有的整宽排版与 14px 间距，旧插件不受影响。
+- 层级优先用块与间距表达，不要用字号和颜色硬堆：一组同级数字用 `stats`，一块内容用 `section`，
+  一条提示用 `banner`；`text` 只写句子。
+- `stats` 的 `metrics` 里 `value` 由插件格式化（千分位、单位、百分号），壳只负责排版与 `<dl>` 语义。
+- `section` 支持嵌套 blocks，只做静态分组，没有折叠态。
+- `banner` 的 `tone` 取 `default` / `muted` / `accent` / `success` / `warning` / `danger`，
+  自带 `role="status"` 与 `aria-live="polite"`；限流、失败、冷却这类反馈用它，不要写成红字正文。
+- `code` 默认带复制按钮（`copyable: false` 关掉），复制成功后就地显示「已复制」。
+- `actions` 的 `variant` 有 `default` / `primary` / `accent` / `danger` / `link`：
+  `primary` 是页面唯一主按钮；两个同权动作并列时用 `accent`（强调但非实心，不制造主次暗示）；
+  第三级入口（重试、清空）用 `link`；`size: 'sm'` 压到小号档。
+- `text` 可带 `dot`（语义色圆点，取值同 `tone`）表示一行状态（已连接 / 未配置 / 冷却中）；
+  圆点只是辅助，文字必须自己说清状态。
+- `progress` 在总数未知时传 `indeterminate: true`（不要用 0/0 假装百分比）；`detail` 放计数。
+- `empty` 可带 `icon`（如 `icon:key-round`），图标走 sprite，缺 `Icon.vue` 的尺寸规则由
+  `native.css` 补齐。
 - 图片缩略图可点击预览；预览用的是插件给的 `image` URL，需要原图时在 schema 里补字段，不要读宿主 DOM。
 - 表单的 `directory` 字段用壳的目录选择；用户取消不报错，失败就地提示。
-- 不在 native 逻辑页里渲染可见弹窗/Toast；确认与提示用 blocks 表达，或走 `actions` 两步确认。
+- 表单字段的 `section` / `sectionTitle` / `sectionDescription` / `sectionOrder` 与 `order` 由
+  壳弹窗和 native `form` 共同消费（两组渲染现在都按同一规则分组）。
+- 不在 native 逻辑页里渲染可见弹窗/Toast；确认与提示用 blocks 与消息级 `toast` 表达。
 - 动作按钮的 `visible` / `disabled` 由逻辑页每次提交 blocks 时给出，壳不推断业务。
 
 ## 可访问性与键盘
