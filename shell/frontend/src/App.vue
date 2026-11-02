@@ -19,7 +19,7 @@ import PluginSettingsModal from './components/PluginSettingsModal.vue'
 import NativePanel from './components/NativePanel.vue'
 import type { SchemaAction } from './core/plugin-content'
 import { ensureIcons, iconHtml } from './core/icons.generated'
-import { toast, toastError, toastInfo, toastSuccess } from './core/toast'
+import { toastError } from './core/toast'
 import { useBridge } from './core/bridge'
 import { escapeHtml as escapeHtmlText } from '@vue/shared'
 import { rememberLastRoute, resolveStartRoute } from './core/preferences'
@@ -484,8 +484,9 @@ function onNativeMessage(event: MessageEvent): void {
   }
 }
 
-/** freshness.js 是插件页组件；壳要复用它，先把 Bridge / Utils / Toast 三个入口垫上。
- *  它们只在组件调用时读取，所以安装时机只要早于 PluginChrome 挂载即可。 */
+/** freshness.js 与 folder-picker.js 是插件页组件；壳要复用它们，先把 Bridge / Utils
+ *  两个入口垫上（Toast 由 /shell/toast.js 提供，壳首页与插件引导片段引的是同一份）。
+ *  这几个入口只在组件调用时读取，所以安装时机只要早于 PluginChrome 挂载即可。 */
 function installShellBridgeShims(): void {
   ;(window as any).Bridge = {
     callSystem: (method: string, ...args: unknown[]) => bridge.call(method, ...args),
@@ -495,13 +496,6 @@ function installShellBridgeShims(): void {
     // FolderPicker 在壳文档里渲染目录名/错误文本，需要与插件 iframe 同一套转义；
     // 直接复用 Vue 的共享实现，不在这里复制一份正则。
     escapeHtml: (value: unknown) => escapeHtmlText(value == null ? '' : String(value)),
-  }
-  ;(window as any).Toast = {
-    success: (message: string) => toastSuccess(message),
-    error: (message: string) => toastError(message),
-    info: (message: string) => toastInfo(message),
-    warning: (message: string) => toast(message, 'warning'),
-    show: (message: string, type?: string) => toast(message, (type as any) || 'info'),
   }
   ensureIcons()
 }

@@ -434,7 +434,6 @@ checkInterpolationsRegistered('shell/frontend/public/shell/content-ui.js', []);
 //   - messageId / titleId：Math.random().toString(36) 生成，字符集受控
 //   - options.danger 的三元：只产出两个固定类名
 checkInnerHtmlTemplateInterpolations('shell/frontend/public/shell/base.js', [
-  'Utils.iconHtml(iconName)',
   'Utils.escapeHtml(message)',
   'messageId',
   "options.danger ? 'btn-danger-solid' : 'btn-primary'",
@@ -453,6 +452,9 @@ checkInnerHtmlTemplateInterpolations('shell/frontend/public/shell/base.js', [
 checkInnerHtmlTemplateInterpolations('shell/frontend/public/shell/freshness.js', [
   "icon('refresh-cw')",
 ]);
+// toast.js 的消息只走 createTextNode，唯一的 innerHTML 是图标标记（图标名是文件内常量）。
+// 登记空表是给未来的插值上锁：一旦有值被拼进模板，门禁会先要求确认它是否已转义。
+checkInnerHtmlTemplateInterpolations('shell/frontend/public/shell/toast.js', []);
 // native-client.js 不写 innerHTML（消息都走 postMessage）：登记空表，
 // 以后新增的 innerHTML 模板必须先到这里过审。
 checkInnerHtmlTemplateInterpolations('shell/frontend/public/shell/native-client.js', []);

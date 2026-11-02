@@ -80,7 +80,7 @@ _PLUGIN_BOOTSTRAP_SCRIPT = (
     '<link rel="stylesheet" href="/shell/variables.css">'
     # shared.css 是壳页面与插件页共用的组件层，与 variables.css 一起放最前。
     # 它与 base.css 的先后不再影响结果：base.css 里已没有 .btn / .field / .toast /
-    # .obx-nav-item / .obx-icon 这五个族的规则，族内次序只在 shared.css 内部决定。
+    # .modal / .obx-nav-item / .obx-icon 这些族的规则，族内次序只在 shared.css 内部决定。
     '<link rel="stylesheet" href="/shell/shared.css">'
     '<link rel="stylesheet" href="/shell/base.css">'
     '<link rel="stylesheet" href="/shell/folder-picker.css">'
@@ -88,6 +88,10 @@ _PLUGIN_BOOTSTRAP_SCRIPT = (
     '<link rel="stylesheet" href="/shell/effects.css">'
     '<link rel="stylesheet" href="/shell/splitter.css">'
     '<link rel="stylesheet" href="/shell/content-ui.css">'
+    # Toast 的实现只有一份（壳首页引的也是它）：必须排在 base.js 之前 —— base.js
+    # 里用到 Toast 的地方（设置弹窗保存结果）是运行期才读的，但插件自身脚本跟着
+    # base.js 一起在 <head> 执行，晚加载就会让先跑的插件代码拿不到 window.Toast。
+    '<script src="/shell/toast.js"></script>'
     '<script src="/shell/base.js"></script>'
     '<script src="/shell/folder-picker.js"></script>'
     '<script src="/shell/freshness.js"></script>'

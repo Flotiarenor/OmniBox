@@ -233,14 +233,6 @@ def main() -> int:
                   "  .getPropertyValue('--warning').trim(); document.body.appendChild(probe);"
                   "var want = getComputedStyle(probe).color; probe.remove();"
                   "return getComputedStyle(b).color === want;"))
-        check('暗色下兜底 toast 是深底浅字（不是反色）',
-              driver.execute_script(
-                  "var t = document.createElement('div'); t.className = 'gm-toast';"
-                  "document.body.appendChild(t); var cs = getComputedStyle(t);"
-                  "var r = {bg: cs.backgroundColor, fg: cs.color}; t.remove();"
-                  "return r.bg !== r.fg && r.bg.indexOf('rgb(48, 54, 61)') >= 0"
-                  " || r.bg.indexOf('22, 27, 34') >= 0;"),
-              '期望底色为 --bg-surface(#161b22)')
     finally:
         driver.quit()
 

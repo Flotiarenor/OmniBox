@@ -9,11 +9,34 @@ export interface SchemaAction {
   id: string
   label: string
   icon?: string
-  variant?: 'default' | 'primary' | 'danger'
+  /**
+   * 视觉档位：`primary` 主操作、`accent` 强调但非实心（同权重动作并列时用）、
+   * `danger` 危险、`link` 文字链。
+   */
+  variant?: 'default' | 'primary' | 'accent' | 'danger' | 'link'
+  /** 小号档（`.btn-sm`）。按需压尺寸，不改变档位语义。 */
+  size?: 'sm'
   disabled?: boolean
   active?: boolean
   visible?: boolean
   payload?: unknown
+}
+
+/** 语义色调。`default` 是正文色，其余按含义映射到壳 token。 */
+export type SchemaTone = 'default' | 'muted' | 'accent' | 'success' | 'warning' | 'danger'
+
+/**
+ * 一个同级指标（`stats` 块的条目）。
+ *
+ * `value` 由插件格式化后直接展示：千分位、单位、百分号都属业务表达，壳不猜数字。
+ * 壳只负责排版权重（等宽数字、字阶）与无障碍语义（`<dl>`）。
+ */
+export interface SchemaStat {
+  label: string
+  value: string | number
+  hint?: string
+  tone?: SchemaTone
+  action?: SchemaAction
 }
 
 export interface SchemaItem {
@@ -122,9 +145,19 @@ export interface SchemaBlock {
     | 'progress'
     | 'empty'
     | 'image-grid'
+    | 'stats'
+    | 'section'
+    | 'banner'
+    | 'code'
+    | 'confirm'
   id?: string
   text?: string
-  tone?: 'default' | 'muted' | 'danger'
+  tone?: SchemaTone
+  /**
+   * `text` 块行首的语义色圆点（复用 `tone` 取值）。用于一行状态，
+   * 例如「已连接 / 未配置 / 冷却中」；不给值时保持纯文字。
+   */
+  dot?: SchemaTone
   items?: SchemaItem[]
   columns?: string[]
   rows?: string[][]
@@ -140,10 +173,53 @@ export interface SchemaBlock {
   src?: string
   alt?: string
   caption?: string
+
+  // ---- stats ----
+  /** `stats` 的指标条目；字段名不复用 `items`，避免与 `SchemaItem[]` 的类型混淆 */
+  metrics?: SchemaStat[]
+
+  // ---- section ----
+  /** `section` 的标题（短标签），同时供其它需要标题的块复用 */
+  title?: string
+  /** `section` 的子 blocks，递归渲染 */
+  blocks?: SchemaBlock[]
+
+  // ---- banner ----
+  icon?: string
+  action?: SchemaAction
+
+  // ---- confirm（不可逆操作的阻断确认，由 NativePanel 画成模态层）----
+  /** 确认动作；`text` 是说明，`title` 是标题 */
+  confirm?: SchemaAction
+
+  // ---- code ----
+  language?: string
+  copyable?: boolean
+  wrap?: boolean
+
+  // ---- progress 增强 ----
+  /** 不确定进度：忽略 value/total，显示循环动画 */
+  indeterminate?: boolean
 }
 
 export interface SchemaPayload {
   blocks: SchemaBlock[]
   /** 页面级动作：由宿主顶栏渲染，不在内容区画第二排工具条。 */
   toolbar?: SchemaAction[]
+  /**
+   * 操作结果的瞬时反馈（Toast）。**不是块**：它不占版面、不需要用户响应，
+   * 由壳在面板内弹出一次。重复发送同一段文本时壳会去重，轮询不会刷屏。
+   */
+  toast?: SchemaToast
+  /**
+   * 版式：`document` 约束正文度量（内容最宽 960px 居中、组间 24px），
+   * 适合以文字与指标为主的页面；缺省 `default` 维持既有 14px 间距与整宽排版。
+   */
+  layout?: 'default' | 'document'
+}
+
+/** 一次瞬时反馈。`tone` 决定图标与颜色；停留时长由壳决定。 */
+export interface SchemaToast {
+  text: string
+  tone?: SchemaTone
 }

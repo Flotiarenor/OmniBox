@@ -527,16 +527,174 @@
   overflow: auto;
 }
 
+/* document 版式：约束正文度量（内容最宽 960px 居中）、组间 24px。
+   用对称内边距而不是 max-width：滚动条仍贴在面板右缘，内容不会缩成一条窄带。 */
+.schema-root--document {
+  gap: 24px;
+  padding: 20px max(24px, calc((100% - 960px) / 2));
+}
+/* document 版式里间距由容器的 gap 决定：段落与标题的浏览器默认外边距会把
+   组间距离撑成 24+26px，必须清零（默认版式保留旧行为，避免改变其它插件的排版）。 */
+.schema-root--document .schema-text,
+.schema-root--document .schema-heading,
+.schema-root--document .schema-stats,
+.schema-root--document .schema-code { margin: 0; }
+
+/* 嵌套渲染（section 内部）的堆叠容器：不产生新的滚动区与内边距，间距交给父级。
+   `.schema-section-body` 只包这一个子节点，所以组内间距放在这里而不是父级的 gap。 */
+.schema-stack { display: flex; flex-direction: column; gap: 10px; }
+
 .schema-text { font-size: 13px; line-height: 1.7; color: var(--text-primary); }
-.schema-muted { color: var(--text-secondary); }
+.schema-muted { color: var(--text-soft); }
 .schema-danger { color: var(--danger); }
 .schema-heading { font-size: 15px; font-weight: 700; color: var(--text-primary); }
+
+/* 语义色调：stats / banner / text 共用，值一律走 token */
+.schema-tone-default { color: var(--text-primary); }
+.schema-tone-muted { color: var(--text-soft); }
+.schema-tone-accent { color: var(--accent); }
+.schema-tone-success { color: var(--success); }
+.schema-tone-warning { color: var(--warning); }
+.schema-tone-danger { color: var(--danger); }
+
+/* 行首状态点：用 tone 表达语义（已连接 / 未配置 / 冷却中），并保留文字说明，
+   不单靠颜色传达状态。 */
+.schema-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  vertical-align: 1px;
+}
+.schema-dot--success { background: var(--success); }
+.schema-dot--danger { background: var(--danger); }
+.schema-dot--warning { background: var(--warning); }
+.schema-dot--accent { background: var(--accent); }
+.schema-dot--muted { background: var(--text-muted); }
+.schema-dot--default { background: var(--text-secondary); }
+
+/* ===== stats：一组同级指标 ===== */
+.schema-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+.schema-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+}
+.schema-stat-label { font-size: 12px; color: var(--text-soft); }
+.schema-stat-value {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.schema-stat-hint { margin: 0; font-size: 11px; color: var(--text-soft); }
+.schema-stat-action { margin: 2px 0 0; }
+
+/* ===== section：分组容器（标题 + 细线 + 内容） ===== */
+.schema-section { display: flex; flex-direction: column; gap: 0; }
+.schema-section-head { display: flex; align-items: center; }
+.schema-section-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-soft);
+}
+.schema-section-head::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  margin-left: 12px;
+  /* 面板是玻璃底：--border 压在壁纸上几乎看不见，用正文色低比例混出实心细线。
+     两种主题下都成立（深色主题的正文色是浅色）。 */
+  background: color-mix(in srgb, var(--text-primary) 16%, transparent);
+}
+
+.schema-section-body { padding-top: 12px; }
+
+/* ===== banner：一条醒目但非模态的提示 ===== */
+.schema-banner {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px 9px 16px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--bg-hover) 70%, transparent);
+}
+.schema-banner::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: currentColor;
+  opacity: 0.75;
+  border-radius: var(--radius) 0 0 var(--radius);
+}
+.schema-banner.schema-tone-default { background: color-mix(in srgb, var(--bg-hover) 70%, transparent); }
+.schema-banner.schema-tone-muted { background: color-mix(in srgb, var(--bg-hover) 55%, transparent); }
+.schema-banner.schema-tone-accent { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.schema-banner.schema-tone-success { background: color-mix(in srgb, var(--success) 12%, transparent); }
+.schema-banner.schema-tone-warning { background: color-mix(in srgb, var(--warning) 14%, transparent); }
+.schema-banner.schema-tone-danger { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.schema-banner-text { flex: 1; min-width: 0; }
+.schema-banner-icon { width: 15px; height: 15px; flex-shrink: 0; }
+
+/* ===== code：等宽文本 + 复制 ===== */
+.schema-code {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+}
+.schema-code-head { display: flex; align-items: center; gap: 8px; }
+.schema-code-language {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--text-soft);
+  text-transform: uppercase;
+}
+.schema-code-copy { margin-left: auto; }
+.schema-code-body {
+  margin: 0;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+.schema-code-body.is-wrapped { white-space: pre-wrap; overflow-wrap: anywhere; }
+.schema-code-body:not(.is-wrapped) { overflow-x: auto; white-space: pre; }
 
 .schema-kv {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   gap: 6px 16px;
   font-size: 13px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
 }
 .schema-kv dt { color: var(--text-secondary); }
 .schema-kv dd { margin: 0; color: var(--text-primary); min-width: 0; overflow-wrap: anywhere; }
@@ -681,26 +839,105 @@
   background: color-mix(in srgb, var(--danger) 8%, transparent);
 }
 
-.schema-kv {
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-surface);
-}
-
 .schema-progress {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 12px;
-  border: 1px solid var(--border);
+  gap: 8px;
+  padding: 13px 16px 14px 18px;
   border-radius: var(--radius);
   background: var(--bg-surface);
+  /* 左侧强调条：进度是页面上“正在发生的事”，用一条竖线定位，不加边框与阴影 */
+  position: relative;
+  overflow: hidden;
 }
-.schema-progress-head { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-secondary); }
-.schema-progress-track { height: 6px; border-radius: 999px; background: var(--bg-hover); overflow: hidden; }
-.schema-progress-fill { height: 100%; background: var(--accent); transition: width var(--transition-fast); }
-.schema-progress-detail { font-size: 11px; color: var(--text-muted); }
+.schema-progress::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--accent);
+}
+.schema-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+.schema-progress-text { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.schema-progress-count { font-variant-numeric: tabular-nums; }
+.schema-progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  overflow: hidden;
+  position: relative;
+}
+.schema-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width var(--transition-normal);
+}
+/* 不确定进度：不定宽填充改成 30% 宽、往复滑动的条，避免“假百分比”误导 */
+.schema-progress-track.is-indeterminate .schema-progress-fill {
+  width: 30%;
+  animation: obxSchemaIndeterminate 1.4s ease-in-out infinite;
+}
+@keyframes obxSchemaIndeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(340%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .schema-progress-track.is-indeterminate .schema-progress-fill {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+  }
+  .schema-progress-fill { transition: none; }
+}
+.schema-progress-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 12px;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}
+.schema-progress-detail { flex: 1 1 100%; min-width: 0; }
+.schema-progress .btn-link { align-self: flex-end; padding-right: 0; }
+
+/* 表单分组（SchemaField.section）：无 section 时渲染成不显示边框的单组，与旧布局一致 */
+.schema-form-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.schema-form-section + .schema-form-section {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.schema-form-section-title {
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-soft);
+}
+.schema-form-section-description {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-soft);
+}
 
 .schema-image-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
 .schema-image-grid img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: var(--radius-sm); }
@@ -729,6 +966,51 @@
   width: 0;
   height: 0;
   border: 0;
+}
+
+/* ===== native 阻断确认 =====
+   遮罩归面板（absolute inset 0），不 Teleport 到 body：面板 v-show 隐藏或卸载时
+   它一起消失，不会留下盖在别处的孤儿弹窗。 */
+.native-confirm {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg-overlay);
+}
+.native-confirm-box {
+  width: min(420px, 100%);
+  max-height: 100%;
+  overflow: auto;
+  padding: 18px 20px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-lg);
+}
+.native-confirm-head { display: flex; align-items: center; gap: 8px; }
+.native-confirm-icon { width: 18px; height: 18px; flex-shrink: 0; color: var(--danger); }
+.native-confirm-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+.native-confirm-text {
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-soft);
+}
+.native-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
 }
 
 /* 缩略图预览：全壳文档的遮罩，层级在 native 面板之上、Toast 之下。

@@ -15,9 +15,15 @@
        必须排在构建产物 shell.css 之前 —— 壳页面独有的 .field-inline / .field-checkbox-row
        与 .field / .field-range 同族同特异性，靠"后出现"胜出。 -->
   <link rel="stylesheet" href="/shell/shared.css">
+  <!-- 图标 sprite：Toast 的前缀图标取自壳图标集，所以壳首页也要加载与插件页同一份
+       注入脚本（它自己幂等，Vue 侧的 ensureIcons 再调一次不会重复插入）。 -->
+  <script src="/shell/icons.generated.js"></script>
+  <!-- Toast 的唯一实现，插件 iframe 的引导片段引的也是这一份：两个文档共用一段
+       DOM 渲染、去重与无障碍逻辑，壳里不再另存一套。 -->
+  <script src="/shell/toast.js"></script>
   <!-- 共享动效/阴影 token 与 .obx-* 类：壳文档与插件 iframe 使用同一份。
-       只加载 effects.css，不加载 base.css —— 后者带 body/.modal/.view-toolbar
-       等全局骨架规则，加载进壳会改变壳自身布局。 -->
+       只加载 effects.css，不加载 base.css —— 后者带 body/.view-toolbar 等全局骨架
+       规则，加载进壳会改变壳自身布局（模态骨架 .modal 已在 shared.css，两边同源）。 -->
   <link rel="stylesheet" href="/shell/effects.css">
   <!-- 分隔条内核：壳页面不注入 base.css 那套，必须自己引一份（与插件 iframe 同一实现，
        否则拖动逻辑在壳与插件里会各写一套）。 -->
@@ -27,7 +33,8 @@
   <script src="/shell/splitter.js"></script>
   <script src="/shell/folder-picker.js"></script>
   <!-- 壳渲染的插件顶栏复用统一「同步 / 校验」组件（freshness.js）：
-       它只依赖 Bridge.callSystem / Utils.iconHtml / Toast，桥接垫片在 App.vue 里装。 -->
+       它只依赖 Bridge.callSystem / Utils.iconHtml / Toast —— Bridge 与 Utils 的垫片在
+       App.vue 里装，Toast 由上面的 /shell/toast.js 提供。 -->
   <script src="/shell/freshness.js"></script>
   <style>html, body {margin: 0;padding: 0}</style>
 </head>

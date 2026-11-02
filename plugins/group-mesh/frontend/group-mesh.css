@@ -620,29 +620,8 @@ body {
   accent-color: var(--accent);
 }
 
-/* ==================== 兜底提示 ====================
-   壳提供 window.Toast（base.js）时用壳的；脱离壳直接打开本页时回退到这个自绘提示。
-   底色用 --bg-surface + 边框表达语义，不再用 --text-primary 当背景（暗色主题下
-   那是浅色底 + 深色字，与壳的 .toast 观感相反）。 */
-.gm-toast {
-  position: fixed;
-  right: 20px;
-  bottom: 20px;
-  padding: 10px 16px;
-  border-radius: var(--gm-radius-sm);
-  border: 1px solid var(--success);
-  background: var(--bg-surface);
-  color: var(--text-primary);
-  box-shadow: var(--shadow-md, var(--obx-shadow-2, 0 10px 30px rgba(0, 0, 0, 0.2)));
-  font-size: 13px;
-  z-index: 3000;
-  max-width: 420px;
-  animation: obxFadeUp 0.25s var(--obx-ease, ease) both;
-}
-
-.gm-toast-error {
-  border-color: var(--danger);
-}
+/* 提示（Toast）不在本插件里定义样式：壳与插件页共用 /shell/shared.css 的 `.toast*`
+   规则，实现只有 /shell/toast.js 一份。 */
 
 /* ==================== 响应式 ==================== */
 

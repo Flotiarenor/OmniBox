@@ -59,6 +59,7 @@ def _have_browser() -> bool:
 
 
 STUB_BRIDGE = """
+<script src="/shell/toast.js"></script>
 <script src="/shell/base.js"></script>
 <script>
 window.__CALLS__ = [];

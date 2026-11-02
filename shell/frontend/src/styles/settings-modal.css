@@ -309,44 +309,24 @@
 }
 
 /* 目录/网络位置选择器：FolderPicker 的弹窗挂进设置面板内部，避免壳焦点陷阱
-   把焦点限制在背景；壳文档不加载 base.css，这里补齐弹窗框架。 */
+   把焦点限制在背景。弹窗框架（`.modal` / `.modal-box` / `.modal-footer` / 标题行）
+   在 `/shell/shared.css`，壳页面与插件 iframe 用的是同一份；这里只留壳内这一层的差异：
+   挂进设置面板内部所以定位是 absolute、层级压低，边框与标题内边距按设置面板的密度收紧。 */
 .settings-modal .iv-picker-modal {
   position: absolute;
-  inset: 0;
   z-index: 30;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   padding: 12px;
-  background: var(--bg-overlay, rgba(0, 0, 0, 0.6));
 }
 
 .settings-modal .iv-picker-modal .modal-box {
-  display: flex;
-  flex-direction: column;
   max-width: 100%;
   max-height: 100%;
   overflow: hidden;
-  color: var(--text-primary);
-  background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-lg);
 }
 
 .settings-modal .iv-picker-modal .modal-box h3 {
-  margin: 0;
   padding: 14px 20px;
-  font-size: 15px;
-  border-bottom: 1px solid var(--border);
-}
-
-.settings-modal .iv-picker-modal .modal-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 12px 20px;
-  border-top: 1px solid var(--border);
 }
 
 .settings-modal .iv-picker-modal .iv-dirbrowser {

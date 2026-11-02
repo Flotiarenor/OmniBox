@@ -16,6 +16,10 @@
   --text-primary: #1a1a1a;
   --text-secondary: #6c757d;
   --text-muted: #adb5bd;
+  /* 辅助文字：由正文色与背景混出的实心色，比 --text-secondary 更深。
+     亮色下约 8.6:1、暗色下约 5.9:1，正文尺寸也满足 4.5:1；
+     小号说明文字优先用它，--text-secondary 只用于≥13px 的次要文本。 */
+  --text-soft: color-mix(in srgb, var(--text-primary) 70%, var(--bg-surface));
   --text-sidebar: #1a1a1a;
   --text-sidebar-active: #ffffff;
   --text-on-accent: #ffffff;

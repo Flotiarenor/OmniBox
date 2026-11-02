@@ -59,16 +59,10 @@
   }
 
   function toast(message, isError) {
-    // 壳提供 Toast；独立打开本页时回退到自绘提示
-    if (window.Toast && typeof window.Toast.success === 'function') {
-      if (isError) { window.Toast.error(message); } else { window.Toast.success(message); }
-      return;
-    }
-    var node = document.createElement('div');
-    node.className = 'gm-toast' + (isError ? ' gm-toast-error' : '');
-    node.textContent = message;
-    document.body.appendChild(node);
-    setTimeout(function () { node.remove(); }, 4200);
+    // 提示只有一份实现：壳注入的 /shell/toast.js（与壳页面共用）。本页其余接口也都要
+    // 走壳的 Bridge，脱离壳直接打开本来就不可用，所以不再保留第二套自绘提示。
+    if (!window.Toast) return;
+    (isError ? window.Toast.error : window.Toast.success)(message);
   }
 
   function call(method) {
