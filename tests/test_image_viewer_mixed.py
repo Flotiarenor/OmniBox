@@ -74,7 +74,7 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         cls._tmp.cleanup()
 
     def test_album_cover_is_p0(self):
-        albums = self.plugin.list_albums()['albums']
+        albums = self.plugin.albums.list_albums()['albums']
         workA = next(a for a in albums if a['path'] == 'workA')
         self.assertEqual(workA['direct_count'], 4)
         self.assertEqual(workA['cover'], 'workA/111_p0.png')
@@ -83,7 +83,7 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         self.assertEqual(workB['cover'], 'workB/222_p0.png')
 
     def test_folder_items_mixed_root(self):
-        data = self.plugin.list_folder_items('', 1, 40)
+        data = self.plugin.listing.list_folder_items('', 1, 40)
         items = data['items']
         # empty + workA + workB 三个子相册卡片 + 1 张根目录单图
         self.assertEqual(data['total'], 4)
@@ -101,26 +101,26 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         self.assertEqual(empty['cover'], '')
 
     def test_folder_items_order_p0_to_p1(self):
-        data = self.plugin.list_folder_items('workA', 1, 40)
+        data = self.plugin.listing.list_folder_items('workA', 1, 40)
         urls = [it['url'] for it in data['items']]
         self.assertEqual(urls, ['workA/111_p0.png', 'workA/111_p1.png',
                                 'workA/111_p2.png', 'workA/111_p10.png'])
 
     def test_folder_items_pagination(self):
-        page1 = self.plugin.list_folder_items('', 1, 3)
+        page1 = self.plugin.listing.list_folder_items('', 1, 3)
         self.assertEqual(len(page1['items']), 3)
         self.assertTrue(page1['has_next'])
-        page2 = self.plugin.list_folder_items('', 2, 3)
+        page2 = self.plugin.listing.list_folder_items('', 2, 3)
         self.assertEqual(len(page2['items']), 1)
         self.assertFalse(page2['has_next'])
 
     def test_folder_items_all_offset_pagination(self):
         """分页对齐：第 2+ 页瓦片在完整连续序列中的起始偏移 all_offset 必须正确，
         否则点击灯箱会错位打开到序列开头的图片。"""
-        page1 = self.plugin.list_folder_items('', 1, 3, 'name', 'asc')
+        page1 = self.plugin.listing.list_folder_items('', 1, 3, 'name', 'asc')
         self.assertEqual(page1['all_offset'], 0)
         # page2 只剩 single.jpg；之前为 empty(0) + workA(4) + workB(2) = 6 张
-        page2 = self.plugin.list_folder_items('', 2, 3, 'name', 'asc')
+        page2 = self.plugin.listing.list_folder_items('', 2, 3, 'name', 'asc')
         self.assertEqual(page2['all_offset'], 6)
         self.assertEqual(page2['items'][0]['url'], 'single.jpg')
         # 第 2 页首项（single.jpg）应对齐完整序列的第 all_offset 张
@@ -129,11 +129,11 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         self.assertEqual(len(page2['all_images']), 7)
 
     def test_list_images_natural_sort(self):
-        data = self.plugin.list_images('workA', 1, 40, 'name', 'asc')
+        data = self.plugin.listing.list_images('workA', 1, 40, 'name', 'asc')
         urls = [im['url'] for im in data['images']]
         self.assertEqual(urls, ['workA/111_p0.png', 'workA/111_p1.png',
                                 'workA/111_p2.png', 'workA/111_p10.png'])
-        data_desc = self.plugin.list_images('workA', 1, 40, 'name', 'desc')
+        data_desc = self.plugin.listing.list_images('workA', 1, 40, 'name', 'desc')
         self.assertEqual([im['url'] for im in data_desc['images']],
                          list(reversed(urls)))
 
@@ -146,13 +146,13 @@ class ImageViewerMixedTestCase(unittest.TestCase):
             p = self.root / 'workA' / name
             os.utime(p, (base + delta, base + delta))
 
-        data_desc = self.plugin.list_folder_items('workA', 1, 40, 'time_name', 'desc')
+        data_desc = self.plugin.listing.list_folder_items('workA', 1, 40, 'time_name', 'desc')
         urls_desc = [it['url'] for it in data_desc['items']]
         # mtime 各不相同，但 time_name 下图片仍按 p0 → p1 → p2 → p10
         self.assertEqual(urls_desc, ['workA/111_p0.png', 'workA/111_p1.png',
                                      'workA/111_p2.png', 'workA/111_p10.png'])
         # 正序/倒序选择无效：asc 结果与 desc 完全一致
-        data_asc = self.plugin.list_folder_items('workA', 1, 40, 'time_name', 'asc')
+        data_asc = self.plugin.listing.list_folder_items('workA', 1, 40, 'time_name', 'asc')
         self.assertEqual([it['url'] for it in data_asc['items']], urls_desc)
 
     def test_folder_items_all_images_flat_sequence(self):
@@ -178,7 +178,7 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         finally:
             module.ImageViewerPlugin._resolved_config = orig
         # 当前视图按 name 排序，但 workA 自己有 time_name → 其图片按 p0→p1 展开（不受 mtime 影响）
-        data = plugin.list_folder_items('', 1, 40, 'name', 'asc')
+        data = plugin.listing.list_folder_items('', 1, 40, 'name', 'asc')
         seq = [im['url'] for im in data['all_images']]
         self.assertEqual(seq, [
             'workA/111_p0.png', 'workA/111_p1.png', 'workA/111_p2.png', 'workA/111_p10.png',
@@ -199,7 +199,7 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         for name, delta in [('111_p0.png', 0), ('111_p1.png', 100),
                             ('111_p2.png', 200), ('111_p10.png', 50)]:
             os.utime(self.root / 'workA' / name, (base + delta, base + delta))
-        data = self.plugin.list_folder_items('workA', 1, 40, 'time_name', 'desc')
+        data = self.plugin.listing.list_folder_items('workA', 1, 40, 'time_name', 'desc')
         seq = [im['url'] for im in data['all_images']]
         self.assertEqual(seq, ['workA/111_p0.png', 'workA/111_p1.png',
                                'workA/111_p2.png', 'workA/111_p10.png'])
@@ -229,15 +229,15 @@ class ImageViewerMixedTestCase(unittest.TestCase):
             )
         finally:
             module.ImageViewerPlugin._resolved_config = orig
-        albums = plugin.list_albums()['albums']
+        albums = plugin.albums.list_albums()['albums']
         workA = next(a for a in albums if a['path'] == 'workA')
         self.assertEqual(workA['cover'], 'workA/111_p0.png')
 
     def test_album_cache_persist_current_version(self):
         """当前版本相册索引应写入 _ALBUM_CACHE_VERSION，避免每次重启都被当作旧缓存作废。"""
-        version = self.module.ImageViewerPlugin._ALBUM_CACHE_VERSION
-        self.plugin.list_albums()
-        self.assertEqual(self.plugin._album_cache.get('version'), version)
+        version = self.module._const.LIMITS.album_cache_version
+        self.plugin.albums.list_albums()
+        self.assertEqual(self.plugin.albums.cache_version, version)
         cache_file = self.root / '.cache' / 'albums_index.json'
         if cache_file.exists():
             import json
@@ -259,7 +259,7 @@ class ImageViewerMixedTestCase(unittest.TestCase):
             {'directories': {'data_root': str(self.root)}},
         )
         plugin._settings_store = FakeStore()
-        plugin.save_folder_settings('photos/2026', {
+        plugin.settings.save_folder('photos/2026', {
             'root_dir': '/tmp/should-not-be-stored',
             'sort_by': 'name',
             'sort_order': 'asc',
@@ -270,7 +270,7 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         self.assertEqual(folder_settings['sort_by'], 'name')
 
     def test_settings_defaults(self):
-        s = self.plugin.get_settings('')
+        s = self.plugin.settings.for_path('')
         self.assertEqual(s['sort_by'], 'mtime')
         self.assertEqual(s['sort_order'], 'desc')
 
@@ -301,11 +301,11 @@ class ImageViewerMixedTestCase(unittest.TestCase):
             {'directories': {'data_root': str(self.root)}},
         )
         plugin._settings_store = store
-        result = plugin.save_folder_settings('', {
+        result = plugin.settings.save_folder('', {
             'row_height': 300, 'per_page': 60, 'sort_by': 'name', 'sort_order': 'asc',
         })
         self.assertTrue(result.get('success'))
-        applied = plugin.get_settings('')
+        applied = plugin.settings.for_path('')
         self.assertEqual(applied['row_height'], 300)
         self.assertEqual(applied['sort_by'], 'name')
         # 新实例 = 重启后重新加载，仍能读到同一份设置
@@ -314,7 +314,7 @@ class ImageViewerMixedTestCase(unittest.TestCase):
             {'directories': {'data_root': str(self.root)}},
         )
         reopened._settings_store = store
-        persisted = reopened.get_settings('')
+        persisted = reopened.settings.for_path('')
         self.assertEqual(persisted['row_height'], 300)
         self.assertEqual(persisted['sort_by'], 'name')
         self.assertEqual(persisted['sort_order'], 'asc')
@@ -355,7 +355,7 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         finally:
             module.ImageViewerPlugin._resolved_config = original
         plugin._settings_store = store
-        settings = plugin.get_settings('')
+        settings = plugin.settings.for_path('')
         self.assertEqual(settings['sort_by'], 'name')     # 新保存优先于 __global__
         self.assertEqual(settings['row_height'], 300)     # 新保存的插件级键生效
         self.assertEqual(settings['per_page'], 60)        # __global__ 补齐没存过的项
@@ -379,21 +379,21 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         finally:
             module.ImageViewerPlugin._resolved_config = orig
         # 自身精确命中（显式配置点）
-        s_self = plugin.get_settings('pixiv/following')
+        s_self = plugin.settings.for_path('pixiv/following')
         self.assertEqual(s_self['sort_by'], 'time_name')
         self.assertTrue(s_self['pixiv_explicit'])
         # 子文件夹继承父文件夹的 time_name，但自身非显式配置点
-        s_child = plugin.get_settings('pixiv/following/artistB')
+        s_child = plugin.settings.for_path('pixiv/following/artistB')
         self.assertEqual(s_child['sort_by'], 'time_name')
         self.assertFalse(s_child['pixiv_explicit'])
         # 未存任何 Pixiv 相关键的目录也不是配置点（只继承全局/父级）
-        self.assertFalse(plugin.get_settings('pixiv/following/artistB/deep')['pixiv_explicit'])
+        self.assertFalse(plugin.settings.for_path('pixiv/following/artistB/deep')['pixiv_explicit'])
         # 单独修改的子文件夹以自己为准（不继承父级）
-        self.assertEqual(plugin.get_settings('pixiv/following/artistA')['sort_by'], 'name')
+        self.assertEqual(plugin.settings.for_path('pixiv/following/artistA')['sort_by'], 'name')
         # 单独修改的子文件夹继续向其子文件夹传播
-        self.assertEqual(plugin.get_settings('pixiv/following/artistA/deep')['sort_by'], 'name')
+        self.assertEqual(plugin.settings.for_path('pixiv/following/artistA/deep')['sort_by'], 'name')
         # 无关文件夹回退到全局/默认
-        self.assertEqual(plugin.get_settings('photos/2026')['sort_by'], 'mtime')
+        self.assertEqual(plugin.settings.for_path('photos/2026')['sort_by'], 'mtime')
 
     def test_pixiv_sort_by_number(self):
         """Pixiv 排序支持：顶层按前导数字（作品 ID）排序且方向生效，无数字名排最后；
@@ -419,11 +419,11 @@ class ImageViewerMixedTestCase(unittest.TestCase):
             finally:
                 module.ImageViewerPlugin._resolved_config = orig
             # 倒序：数字大在前（新作品在前），无数字名排最后
-            desc = plugin.list_folder_items('', 1, 40, 'time_name', 'desc')
+            desc = plugin.listing.list_folder_items('', 1, 40, 'time_name', 'desc')
             self.assertEqual([it['path'] for it in desc['items']],
                              ['9999', '1000', '200', 'abc-artist'])
             # 正序：数字小在前
-            asc = plugin.list_folder_items('', 1, 40, 'time_name', 'asc')
+            asc = plugin.listing.list_folder_items('', 1, 40, 'time_name', 'asc')
             self.assertEqual([it['path'] for it in asc['items']],
                              ['200', '1000', '9999', 'abc-artist'])
             # 作品内部多图片仍以 p0 开始（倒序下也从 p0 起）
@@ -459,17 +459,17 @@ class ImageViewerMixedTestCase(unittest.TestCase):
             def names(data):
                 return [it.get('name') or Path(it['url']).name for it in data['items']]
             # 倒序：900 → 800（文件夹）→ 700 → 100_p0 → 100_p1
-            self.assertEqual(names(plugin.list_folder_items('', 1, 40, 'time_name', 'desc')),
+            self.assertEqual(names(plugin.listing.list_folder_items('', 1, 40, 'time_name', 'desc')),
                              ['900.jpg', '800', '700.jpg', '100_p0.jpg', '100_p1.jpg'])
             # 正序：100_p0 → 100_p1 → 700 → 800（文件夹）→ 900
-            self.assertEqual(names(plugin.list_folder_items('', 1, 40, 'time_name', 'asc')),
+            self.assertEqual(names(plugin.listing.list_folder_items('', 1, 40, 'time_name', 'asc')),
                              ['100_p0.jpg', '100_p1.jpg', '700.jpg', '800', '900.jpg'])
             # 进入作品文件夹：页序 p0 → p1，倒序不翻转
-            self.assertEqual(names(plugin.list_folder_items('800', 1, 40, 'time_name', 'desc')),
+            self.assertEqual(names(plugin.listing.list_folder_items('800', 1, 40, 'time_name', 'desc')),
                              ['800_p0.jpg', '800_p1.jpg'])
             # 连续浏览序列与瀑布流同序（作品展开后与单图交错）
             seq = [im['url'] for im in
-                   plugin.list_folder_items('', 1, 40, 'time_name', 'desc')['all_images']]
+                   plugin.listing.list_folder_items('', 1, 40, 'time_name', 'desc')['all_images']]
             self.assertEqual(seq, ['900.jpg', '800/800_p0.jpg', '800/800_p1.jpg',
                                    '700.jpg', '100_p0.jpg', '100_p1.jpg'])
 
@@ -503,19 +503,19 @@ class ImageViewerMixedTestCase(unittest.TestCase):
                 return [it.get('name') or Path(it['url']).name for it in data['items']]
 
             self.assertEqual(
-                names(plugin.list_folder_items('2024 旅行', 1, 40, 'time_name', 'desc')),
+                names(plugin.listing.list_folder_items('2024 旅行', 1, 40, 'time_name', 'desc')),
                 ['900.jpg', '800'])
             self.assertEqual(
-                names(plugin.list_folder_items('2024 旅行', 1, 40, 'time_name', 'asc')),
+                names(plugin.listing.list_folder_items('2024 旅行', 1, 40, 'time_name', 'asc')),
                 ['800', '900.jpg'])
             for order in ('asc', 'desc'):
                 self.assertEqual(
-                    names(plugin.list_folder_items('风景', 1, 40, 'time_name', order)),
+                    names(plugin.listing.list_folder_items('风景', 1, 40, 'time_name', order)),
                     ['a.jpg', 'b.jpg'])
 
     def test_regenerate_thumbs(self):
         """更新缩略图：删除 SQLite 缓存并重新生成；非法路径报错。"""
-        result = self.plugin.regenerate_thumbs(['workA/111_p0.png'])
+        result = self.plugin.file_ops.regenerate_thumbs(['workA/111_p0.png'])
         self.assertEqual(result['errors'], [])
         self.assertIn('workA/111_p0.png', result['regenerated'])
         thumb_data = self.plugin.get_thumb_data('workA/111_p0.png')
@@ -524,16 +524,16 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         db_path = self.root / '.cache' / 'thumbs.db'
         self.assertTrue(db_path.exists())
         # 非法路径报错
-        bad = self.plugin.regenerate_thumbs(['../evil.png'])
+        bad = self.plugin.file_ops.regenerate_thumbs(['../evil.png'])
         self.assertTrue(bad['errors'])
 
     def test_refresh(self):
         """全局刷新：清空缓存后视图仍可正常加载。"""
-        r = self.plugin.refresh()
+        r = self.plugin.freshness.refresh()
         self.assertTrue(r.get('success'))
-        data = self.plugin.list_folder_items('', 1, 40)
+        data = self.plugin.listing.list_folder_items('', 1, 40)
         self.assertGreater(data['total'], 0)
-        albums = self.plugin.list_albums()['albums']
+        albums = self.plugin.albums.list_albums()['albums']
         self.assertGreater(len(albums), 0)
 
     def test_rebuild_all_clears_cache_and_rebuilds(self):
@@ -542,12 +542,12 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         import time
         first = self.plugin.get_thumb_data('workA/111_p0.png')
         self.assertIsNotNone(first)
-        result = self.plugin.rebuild_all()
+        result = self.plugin.rebuild.rebuild_all()
         self.assertTrue(result.get('started'))
         # 等待后台任务完成
         status = {}
         for _ in range(300):
-            status = self.plugin.rebuild_status()
+            status = self.plugin.rebuild.status()
             if status.get('done'):
                 break
             time.sleep(0.02)
@@ -586,7 +586,7 @@ class ImageViewerMixedTestCase(unittest.TestCase):
                 )
             finally:
                 module.ImageViewerPlugin._resolved_config = orig
-            data = plugin.list_folder_items('', 1, 40, 'time_name', 'desc')
+            data = plugin.listing.list_folder_items('', 1, 40, 'time_name', 'desc')
             card = data['items'][0]
             self.assertEqual(card['path'], 'artist100')
             self.assertEqual(card['image_count'], 0)          # 无直接图片
@@ -601,11 +601,11 @@ class ImageViewerMixedTestCase(unittest.TestCase):
 
             # 二级加载补齐：封面 = pixiv 倒序第一个含图子目录（9000）的 p0，
             # 计数 = 递归总数 2 + 2
-            tiles = plugin.load_album_tiles(['artist100'])['tiles']
+            tiles = plugin.tiles.load_album_tiles(['artist100'])['tiles']
             self.assertEqual(tiles['artist100']['total_count'], 4)
             self.assertEqual(tiles['artist100']['cover'], 'artist100/9000/9000_p0.jpg')
             # 补齐结果回写索引缓存：再列一次目录就直接拿得到，不必再走子树
-            again = plugin.list_folder_items('', 1, 40, 'time_name', 'desc')
+            again = plugin.listing.list_folder_items('', 1, 40, 'time_name', 'desc')
             card2 = again['items'][0]
             self.assertFalse(card2['pending'])
             self.assertEqual(card2['total_count'], 4)
@@ -614,17 +614,17 @@ class ImageViewerMixedTestCase(unittest.TestCase):
             # 瓦片补好了，但连续序列仍然不含容器里的图片：序列要等打开灯箱时
             # 由 `list_album_images` 取（展开容器要读整棵子树，不能放在列目录里）
             self.assertTrue(again['sequence_pending'])
-            seq = plugin.list_album_images('')['images']
+            seq = plugin.tiles.list_album_images('')['images']
             # artist100 是容器：序列里锚一张代表封面（9000 的 p0）当入口，不展开子树
             self.assertEqual([im['url'] for im in seq], ['artist100/9000/9000_p0.jpg'])
-            self.assertEqual(plugin.list_album_images('')['offset']['artist100'], 0)
+            self.assertEqual(plugin.tiles.list_album_images('')['offset']['artist100'], 0)
             # 进到该容器内一层就能拿到作品级的完整序列（作品按文件名自然序）
-            inner_seq = plugin.list_album_images('artist100')['images']
+            inner_seq = plugin.tiles.list_album_images('artist100')['images']
             self.assertEqual([im['url'] for im in inner_seq],
                              ['artist100/500/500_p0.jpg', 'artist100/500/500_p1.jpg',
                               'artist100/9000/9000_p0.jpg', 'artist100/9000/9000_p1.jpg'])
-            self.assertEqual(plugin.list_album_images('artist100')['offset']['artist100/500'], 0)
-            self.assertEqual(plugin.list_album_images('artist100')['offset']['artist100/9000'], 2)
+            self.assertEqual(plugin.tiles.list_album_images('artist100')['offset']['artist100/500'], 0)
+            self.assertEqual(plugin.tiles.list_album_images('artist100')['offset']['artist100/9000'], 2)
 
 
 class FreshnessTimingTestCase(unittest.TestCase):
@@ -662,22 +662,22 @@ class FreshnessTimingTestCase(unittest.TestCase):
         report = self.engine.verify()
 
         self.assertIn('albums', report['pass_end'], '校验要在任务里把索引重建完')
-        stamp = self.plugin._albums_cached_at
-        result = self.plugin.list_albums()
+        stamp = self.plugin.albums.cached_at
+        result = self.plugin.albums.list_albums()
         self.assertTrue(result.get('cached'), '校验结束后第一帧必须直接命中缓存')
-        self.assertEqual(self.plugin._albums_cached_at, stamp, '不该再重扫一遍目录树')
+        self.assertEqual(self.plugin.albums.cached_at, stamp, '不该再重扫一遍目录树')
 
     def test_sync_invalidates_only_touched_album_nodes(self):
         self.engine.sync('', force=True)               # 先建指纹，之后的同步才是增量的
-        self.plugin.list_albums()                      # 再建索引
-        cache = self.plugin._album_cache['dirs']
+        self.plugin.albums.list_albums()                      # 再建索引
+        cache = self.plugin.entries.entries
         self.assertIn('workA', cache)
         self.assertIn('workB', cache)
 
         _make_image(self.root / 'workA' / '111_p2.png', 300, 200)   # 只动 workA
         self.engine.sync('', force=True)
 
-        cache = self.plugin._album_cache['dirs']
+        cache = self.plugin.entries.entries
         self.assertNotIn('workA', cache, '变化目录要作废')
         self.assertNotIn('', cache, '合成根聚合整棵树，必须作废')
         self.assertIn('workB', cache, '没变的目录要继续复用，否则整库重扫')

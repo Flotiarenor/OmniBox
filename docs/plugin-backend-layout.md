@@ -49,8 +49,8 @@
 
 ```
 plugins/<name>/backend/
-  main.py          入口（facade）：settings_schema、register_api、壳按名调用的钩子、装配
-  const.py         插件内部共享的常量与纯函数（只有入口加载它）
+  main.py          入口（facade）：register_api 绑定表、壳按名调用的钩子、装配
+  const.py         纯数据与共享常量：设置项 schema、扩展名、上限、失效键集合（只有入口加载它）
   paths.py         PathLayout：数据根、缓存/缩略图/索引文件的派生路径、虚拟路径与命名空间
   settings.py      SettingsResolver：按目录的设置读取与逐级继承
   thumbs.py        ThumbStore：尺寸元数据缓存、缩略图字节、落盘时机
@@ -312,6 +312,23 @@ class AlbumIndex:
 
 入口是**唯一**可以 `load_sibling` 的地方，也是唯一知道"谁依赖谁"的地方。
 
+### 入口只放什么
+
+| 放 | 不放 |
+| --- | --- |
+| 装配（构造组件、注入依赖） | 任何业务逻辑（方法体超过"一行委派"就说明放错了） |
+| `register_api()` 绑定表 | 每个 API 键的转发方法（26 个键 = 26 个方法，直接吃掉行数预算） |
+| 壳按名调用的钩子（一行委派） | 设置项 schema、常量、纯函数（这些是**数据**，放 `const.py`） |
+| 需要在插件自身身份上完成的操作（诊断聚合、壳引擎按实例挂取） | 组件可以自己完成的事 |
+
+**设置项 schema 这类纯数据放 `const.py`，入口只保留装配、API 绑定表与壳钩子。** schema
+是"插件对外声明什么设置项"的数据，不是装配；把它留在入口会把装配挤到行数上限附近，让
+下一个加 API 键的人被迫去删注释。入口以 `settings_schema = SETTINGS_SCHEMA` 引用它，
+`PluginBase` 与壳的设置弹窗都从类属性读，行为与写在入口里完全一致。
+
+行数口径：**目标是 ≤ 200 行，R2 的硬上限是 250 行**。目标比硬上限低 50 行，是给"下一个
+加 API 键的人"留的余量——踩到硬上限时正确的做法是把数据或职责挪进组件，不是压缩可读性。
+
 ```python
 # plugins/<name>/backend/main.py
 """插件入口：类骨架、设置 schema、API 表、壳钩子与装配。
@@ -406,6 +423,11 @@ class XxxPlugin(PluginBase):
 - **不要在入口里覆写 `PluginBase.get_settings()`**。带参数的"按目录读设置"是组件的
   `settings.for_path(rel_path)`；覆写基类同名方法会改变它的签名，基类的脱敏与默认值语义
   随之失效（现状里 `image-viewer` 就有这个冲突，只是它今天没有 `secret` 键才没出事）。
+- **附属插件按实例调用的成员必须在门面保留短委派**。壳按名取的九个钩子不是唯一的实例级
+  契约：声明了 `dependencies: ["<宿主>"]` 的插件会直接读宿主实例（`getattr(host,
+  'list_roots')`、`host.delete_files(...)`）。这些成员如果把实现只放在组件里，宿主实例上
+  就没有了——而调用方通常带 `getattr` 兜底，**漏了不报错**，只是静默退化成单根或某个功能
+  失效。正确做法是在门面写两三行委派，并在 API 表用例里钉住"这些成员按实例可调"。
 
 ## 八步迁移顺序
 
@@ -433,6 +455,72 @@ venv/Scripts/python.exe tools/plugin_ci.py --plugin <plugin>
 
 `pyright plugins/<plugin>` 的条数可以当进度条：伪影（`for class "XxxMixin*"`）应当一步步
 降到 0，剩下的都是真错误。门禁对该插件的 warning 会一直存在，直到第 8 步删掉豁免文件。
+
+## 参考实现：image-viewer 迁移后的实际形态
+
+`image-viewer` 是这份配方的参考实现（迁移后 `pyright plugins/image-viewer` 0 错误、
+分层门禁无警告）。它的组件比上面那张布局表更细，原因是相册类插件的索引逻辑本身接近
+900 行，按下面的职责切开之后每个文件都在 400 行以内：
+
+| 文件 | 组件 | 职责 | 依赖 |
+| --- | --- | --- | --- |
+| `main.py` | `ImageViewerPlugin` | `settings_schema` 引用、API 表、壳钩子、装配、诊断、附属契约成员（200 行） | 全部（唯一装配点） |
+| `const.py` | — | 设置项 schema、扩展名、上限、硬默认值、失效键集合 | 无 |
+| `naming.py` | `PixivNaming` | 作品号 / 页序号 / 封面挑选 / 排序规则（纯） | 无 |
+| `paths.py` | `PathLayout` | 根、派生路径、虚拟路径、命名空间（含映射缓存） | `SettingsPort` |
+| `settings.py` | `SettingsResolver` | 按目录设置与继承、Pixiv 标记 | `paths`、两个端口、入口的读取闭包 |
+| `thumbs.py` | `ThumbStore` | 尺寸元数据、`ThumbCache`、落盘时机 | `paths` |
+| `scanner.py` | `DirScanner` | 单目录裸扫描 | `paths`、`naming` |
+| `dirs.py` | `DirSnapshot` | 全树目录枚举与落盘快照 | `paths` |
+| `entries.py` | `DirEntryCache` | 目录条目存储：带 mtime 的扫描与递归聚合 | `paths`、`scanner`、`settings`、`naming` |
+| `albums.py` | `AlbumIndex` | 相册树、全树聚合、索引缓存生命周期 | `paths`、`dirs`、`entries`、`settings`、`config`、`naming` |
+| `album_config.py` | `AlbumConfig` | 可见性配置与「保留可见」标记 | `paths` |
+| `tiles.py` | `AlbumTiles` | 子目录瓦片、按批补齐、灯箱序列 | `paths`、`entries`、`settings`、`thumbs`、`naming` |
+| `listing.py` | `Listing` | 分页列表与列表缓存 | `paths`、`tiles`、`settings`、`thumbs`、`naming` |
+| `file_ops.py` | `FileOps` | 增删改与定向重建 | `paths`、`thumbs`、`config`、`albums`、`listing`、宿主的受保护判定 |
+| `rebuild.py` | `RebuildTask` | 后台重建任务 | `paths`、`thumbs`、`albums`、`listing` |
+| `freshness.py` | `FreshnessProvider` | 刷新规格与钩子、兼容刷新入口 | `paths`、`thumbs`、`albums`、`entries`、`listing`、引擎闭包 |
+
+装配顺序就是依赖顺序，两个方向相反的环在这一步断掉：
+
+- **扫描 ↔ 索引**：裸扫描（`scanner`）与"带缓存的那层"（`entries`）分开，`albums` 只
+  用它们，两者都不再回头调 `albums`；
+- **索引 ↔ 文件操作**：「保留可见」标记（`album_config`）从 `file_ops` 移出，两边都只
+  依赖它，不再互调。
+
+## 配方修正（来自参考实现）
+
+上面几节的骨架是方向，不是逐字可抄的成品。参考实现踩到的五点写成规则：
+
+1. **入口不要给每个 API 方法写一行委派。** 26 个 API 键各写一行委派会直接吃掉 R2 的
+   250 行预算，剩下的装配与 schema 就放不下了。正确做法是：`register_api` 直接绑组件
+   方法（`'list_albums': self.albums.list_albums`），入口只保留壳按名调用的九个钩子、
+   `diagnose`，以及**确实需要插件身份**的兼容入口（例如壳的刷新引擎按插件实例挂载，
+   取它的操作要经过入口或由入口注入闭包）。
+2. **共享纯函数超过三个时收成一个注入对象。** 往三个组件的构造参数里各塞两三个函数会
+   让签名不可读。参考实现把 Pixiv 命名规则收成 `naming.PixivNaming` 一个对象；成组的
+   数值上限收成 `const.Limits`（连带唯一的截断策略 `limit_all_images`）。两者都只由入口
+   构造一次，再按构造参数注入 —— 仍然满足"组件之间不互相 import"。
+3. **不要写 `self.thumb_dir = self.paths.thumb_dir`。** 基类的 `thumb_dir` 已经从
+   `get_data_root()` 派生，赋值只会把值钉进 `_thumb_dir_override`，换根后必须记得重新
+   赋值，否则陈旧。参考实现直接不覆写，靠 `get_data_root() → paths.root` 跟随。
+4. **用例要跟着改，并补一条 API 表用例。** 迁移前用例直接调插件实例上的 API 方法，
+   等于顺带验证了 `register_api` 的绑定；迁移后调用点改成组件路径（参考实现改了 128 处），
+   绑定本身就没有覆盖了。用一条小用例锁住"键与顺序不变 + 每个键绑到哪个组件 + 九个钩子
+   仍在入口类上 + 入口没有覆盖 `PluginBase.get_settings`"。
+
+5. **附属插件按实例调用的宿主成员要在门面留短委派。** 配方原先只列了"壳按名调用的九个
+   钩子"，但声明 `dependencies: ["<宿主>"]` 的插件会直接读宿主实例：`image-cleaner` 用
+   `getattr(host, 'list_roots')` 拿额外根前缀、用 `host.delete_files(...)` 复用宿主的删除
+   与缓存清理。迁移时如果只把实现留在组件里，宿主实例上就没有这两个成员了 —— 调用方带
+   `getattr` 兜底，所以**不报错**，只是静默退回单根（表现为"额外图库里的文件不参与扫描"）。
+   正确做法：门面保留两三行委派，并在 `register_api` 表用例里断言这些成员按实例可调。
+   推广：判断"哪些成员必须留在实例上"的依据是**谁按名字从实例上取**（壳、附属插件、测试），
+   不是"它是不是 API 键"。
+
+另外一条与行为等价有关的发现：`ensure_thumb` 的旧实现返回缩略图路径，而基类契约是返回
+`None` —— 这是个被 mixin 噪声淹没的真错误，壳与附属插件都不消费这个返回值。迁移时按
+基类契约改成返回 `None`，顺手补上了这条类型错误。
 
 ## 顺带该做的（归属到上面某一步，不要另立一次重构）
 

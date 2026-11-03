@@ -71,7 +71,7 @@ class FolderSettingsValidationTests(unittest.TestCase):
 
     def test_invalid_numbers_are_rejected_and_not_persisted(self):
         plugin = self._plugin()
-        result = plugin.save_folder_settings('作者A/作品1', {
+        result = plugin.settings.save_folder('作者A/作品1', {
             'row_height': 9999,      # max 400
             'per_page': 5,           # min 10
             'lightbox_cache': -1,    # min 0
@@ -84,7 +84,7 @@ class FolderSettingsValidationTests(unittest.TestCase):
 
     def test_valid_numbers_are_normalized_before_persisting(self):
         plugin = self._plugin()
-        result = plugin.save_folder_settings('作者A/作品2', {
+        result = plugin.settings.save_folder('作者A/作品2', {
             'row_height': '250',
             'per_page': '20',
             'sort_by': 'name',
@@ -96,14 +96,14 @@ class FolderSettingsValidationTests(unittest.TestCase):
         self.assertEqual(stored['per_page'], 20)
         self.assertIsInstance(stored['per_page'], int)
         self.assertEqual(stored['sort_by'], 'name')
-        self.assertEqual(plugin.get_settings('作者A/作品2')['row_height'], 250)
+        self.assertEqual(plugin.settings.for_path('作者A/作品2')['row_height'], 250)
 
     def test_invalid_save_keeps_previous_folder_settings(self):
         plugin = self._plugin()
-        self.assertTrue(plugin.save_folder_settings('作者A/作品3', {
+        self.assertTrue(plugin.settings.save_folder('作者A/作品3', {
             'row_height': 300, 'sort_by': 'name',
         }).get('success'))
-        result = plugin.save_folder_settings('作者A/作品3', {
+        result = plugin.settings.save_folder('作者A/作品3', {
             'row_height': 9999, 'sort_by': 'time_name',
         })
         self.assertFalse(result.get('success'), result)
@@ -113,7 +113,7 @@ class FolderSettingsValidationTests(unittest.TestCase):
 
     def test_global_scope_and_admin_keys_do_not_leak_into_folder(self):
         plugin = self._plugin()
-        result = plugin.save_folder_settings('作者A/作品4', {
+        result = plugin.settings.save_folder('作者A/作品4', {
             'root_dir': 'D:/不该写进文件夹',
             'extra_roots': 'D:/也不该',
             'row_height': 200,
@@ -128,12 +128,12 @@ class FolderSettingsValidationTests(unittest.TestCase):
 
     def test_global_save_path_still_validates(self):
         plugin = self._plugin()
-        bad = plugin.save_folder_settings('', {'row_height': 9999})
+        bad = plugin.settings.save_folder('', {'row_height': 9999})
         self.assertFalse(bad.get('success'), bad)
         self.assertIn('row_height', (bad.get('errors') or {}))
-        good = plugin.save_folder_settings('', {'row_height': 300, 'per_page': 60})
+        good = plugin.settings.save_folder('', {'row_height': 300, 'per_page': 60})
         self.assertTrue(good.get('success'), good)
-        self.assertEqual(plugin.get_settings('')['row_height'], 300)
+        self.assertEqual(plugin.settings.for_path('')['row_height'], 300)
 
 
 class ManifestChromeTests(unittest.TestCase):

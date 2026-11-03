@@ -290,7 +290,7 @@ class ScanTaskTests(unittest.TestCase):
         viewer.setting = lambda key, default=None: (
             str(extra) if key == 'extra_roots' else
             (str(self.root) if key == 'root_dir' else default))
-        viewer._rebuild_paths()
+        viewer.paths.invalidate()
         cleaner = self.cleaner_module.ImageCleanerPlugin(
             {'name': 'image-cleaner'}, {'directories': {'data_root': str(self.root)}})
         cleaner._host = viewer

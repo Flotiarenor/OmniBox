@@ -110,7 +110,7 @@ class ExtraRootScanTests(unittest.TestCase):
         namespace = next(item for item in root.list_roots() if not item['is_primary'])['prefix']
         self.assertEqual(namespace, '__额外图库')
         # 前缀就是宿主自己解析得了的那段：反过来解一次必须落回额外根
-        physical, _inner = root._resolve_path('__额外图库/作者B/作品9/1.jpg')
+        physical, _inner = root.paths.resolve_path('__额外图库/作者B/作品9/1.jpg')
         self.assertEqual(physical, self.extra / '作者B' / '作品9' / '1.jpg')
 
     # ---------- 2. 跨根重复 ----------

@@ -12,17 +12,22 @@
 | 文件 | 职责 | 关键符号 |
 | --- | --- | --- |
 | `plugins/image-viewer/manifest.json` | 插件声明、入口指向与壳渲染的页面 chrome | `ImageViewerPlugin`、`backend.entry`、`frontend.route`、`frontend.chrome` |
-| `plugins/image-viewer/backend/main.py` | 类骨架、设置 schema、常量、API 注册、诊断 | `ImageViewerPlugin`、`register_api`、`settings_schema`、`diagnose`、`get_root_dir`、`list_roots`、`browse_dir`、`_pixiv_mode` |
-| `plugins/image-viewer/backend/common.py` | 无状态共享常量与纯函数 | `NAMESPACE_MARKER`、`pixiv_sort`、`is_pixiv_work_dir`、`pick_cover`、`cover_rank`、`same_path` |
-| `plugins/image-viewer/backend/filesystem.py` | 路径安全、自然序、尺寸元数据等纯工具 | `ALLOWED_EXTENSIONS`、`natural_sort_key`、`pixiv_number`、`pixiv_page_index`、`get_image_size`、`drop_image_meta`、`ensure_thumbnail`、`stat_mtime` |
-| `plugins/image-viewer/backend/namespace.py` | 多根目录与虚拟命名空间路径 | `NamespaceMixin`、`_split_virtual`、`_virtual_path`、`_namespace_map`、`_roots`、`get_file_roots`、`resolve_file_path`、`_is_namespace_node`、`_is_safe` |
-| `plugins/image-viewer/backend/thumbs.py` | 元数据缓存、缩略图字节、尺寸填充 | `ThumbMixin`、`get_data_root`、`get_thumb_data`、`ensure_thumb`、`get_image_info`、`_fill_image_sizes`、`_cache_list`、`_limit_all_images`、`_get_thumb` |
-| `plugins/image-viewer/backend/listing.py` | 目录 / 图片列表与子目录聚合扫描 | `ListingMixin`、`list_images`、`list_folder_items`、`list_album_images`、`load_album_tiles`、`list_dir`、`_scan_one_subdir`、`_children_total`、`_all_images_offset` |
-| `plugins/image-viewer/backend/albums.py` | 相册树、封面挑选、目录快照与索引缓存 | `AlbumMixin`、`list_albums`、`_build_albums`、`_list_album_dirs`、`_dirs_snapshot`、`_save_dirs_index`、`_load_dirs_index`、`_walk_album_dirs`、`_invalidate_albums_cache`、`get_album_config`、`set_album_config`、`prewarm_album_dirs` |
-| `plugins/image-viewer/backend/file_ops.py` | 目录 / 文件增删改与兼容刷新入口 | `FileOpsMixin`、`create_folder`、`delete_folder`、`delete_files`、`move_files`、`regenerate_thumbs`、`refresh`、`_mark_visible`、`_prune_visible_marks` |
-| `plugins/image-viewer/backend/rebuild.py` | 缩略图全量 / 定向重建后台任务 | `RebuildMixin`、`rebuild_all`、`rebuild_folder`、`rebuild_status`、`rebuild_cancel`、`_collect_all_images`、`_rebuild_worker`、`on_unload` |
-| `plugins/image-viewer/backend/freshness.py` | 接入壳的统一刷新基建 | `FreshnessMixin`、`get_cache_dir`、`freshness_spec`、`_freshness_derive`、`_freshness_prune`、`_freshness_audit`、`_freshness_pass_end`、`_freshness_rebuild`、`_drop_album_nodes` |
-| `plugins/image-viewer/backend/settings.py` | 按目录的设置读写与继承 | `SettingsMixin`、`get_settings`、`save_folder_settings`、`clear_folder_settings`、`update_setting`、`on_settings_changed`、`compute_pixiv_flags`、`_compute_settings`、`_settings_source` |
+| `plugins/image-viewer/backend/main.py` | 入口（facade）：`register_api` 绑定表、壳按名调用的钩子、附属插件契约成员、装配与诊断（`settings_schema` 引用 `const.SETTINGS_SCHEMA`） | `ImageViewerPlugin`、`settings_schema`、`register_api`、`diagnose`、`get_file_roots`、`resolve_file_path`、`get_data_root`、`get_thumb_data`、`ensure_thumb`、`get_cache_dir`、`freshness_spec`、`on_settings_changed`、`on_unload`、`list_roots`、`delete_files` |
+| `plugins/image-viewer/backend/const.py` | 设置项 schema、扩展名、性能上限、硬默认值与失效键集合（只有入口加载） | `SETTINGS_SCHEMA`、`IMAGE_EXTENSIONS`、`Limits`、`LIMITS`、`HARD_DEFAULTS`、`SORT_KEYS`、`ROOT_KEYS` |
+| `plugins/image-viewer/backend/naming.py` | Pixiv 命名约定下的排序与封面策略（无状态） | `PixivNaming`、`number`、`page_index`、`pick_cover`、`cover_rank`、`sort`、`is_work_dir`、`image_sort_key` |
+| `plugins/image-viewer/backend/paths.py` | 数据根、派生路径、虚拟路径与命名空间（含命名空间映射缓存） | `PathLayout`、`NAMESPACE_MARKER`、`same_path`、`roots`、`extra_roots`、`token_map`、`roots_index`、`namespace_nodes`、`namespace_for`、`split_virtual`、`virtual_path`、`resolve_dir`、`resolve_path`、`is_namespace_node`、`is_safe`、`resolve_file_path`、`list_roots`、`browse_dir` |
+| `plugins/image-viewer/backend/settings.py` | 按目录的设置读取与逐级继承、Pixiv 标记 | `SettingsResolver`、`for_path`、`save_folder`、`clear_folder`、`invalidate`、`pixiv_mode`、`pixiv_fuzzy_mode`、`compute_pixiv_flags`、`stats` |
+| `plugins/image-viewer/backend/thumbs.py` | 尺寸元数据缓存、缩略图字节与落盘时机 | `ThumbStore`、`get_image_size`、`fill_image_sizes`、`flush`、`clear_meta`、`get_thumb_data`、`ensure_thumb`、`get_image_info`、`drop`、`delete_key`、`prune_keys` |
+| `plugins/image-viewer/backend/scanner.py` | 单目录裸扫描（无状态，封面规则由调用方给出） | `DirScanner`、`scan` |
+| `plugins/image-viewer/backend/dirs.py` | 全树目录枚举与落盘快照 | `DirSnapshot`、`ensure`、`walk`、`snapshot`、`record`、`roots_fingerprint`、`prewarm`、`reset`、`diagnostics` |
+| `plugins/image-viewer/backend/albums.py` | 相册树、全树聚合与索引缓存的生命周期 | `AlbumIndex`、`list_albums`、`invalidate`、`reset_index`、`cache_version`、`dir_entries`、`diagnostics` |
+| `plugins/image-viewer/backend/entries.py` | 目录级条目存储：带 mtime 校验的扫描与递归聚合 | `DirEntryCache`、`scan`、`children_total`、`aggregate`、`cached_total`、`drop_nodes`、`misses` |
+| `plugins/image-viewer/backend/album_config.py` | 相册可见性配置与「保留可见的空目录」标记 | `AlbumConfig`、`get`、`set_action`、`mark_visible`、`replace_visible_marks`、`drop_marks_under`、`prune` |
+| `plugins/image-viewer/backend/tiles.py` | 子目录瓦片、按批补齐与灯箱连续浏览序列 | `AlbumTiles`、`scan_items`、`resolve_pending`、`load_album_tiles`、`list_album_images`、`card_cover_size` |
+| `plugins/image-viewer/backend/listing.py` | 目录内的分页列表与列表缓存 | `Listing`、`list_images`、`list_folder_items`、`list_dir`、`clear_cache`、`cache_entries` |
+| `plugins/image-viewer/backend/file_ops.py` | 目录与文件的新增、删除、移动、定向重建缩略图 | `FileOps`、`create_folder`、`delete_folder`、`delete_files`、`move_files`、`regenerate_thumbs` |
+| `plugins/image-viewer/backend/rebuild.py` | 缩略图全量 / 增量重建的后台任务 | `RebuildTask`、`rebuild_all`、`rebuild_folder`、`collect_all_images`、`status`、`cancel`、`shutdown` |
+| `plugins/image-viewer/backend/freshness.py` | 接入壳的统一刷新基建（同步 / 校验）与兼容刷新入口 | `FreshnessProvider`、`spec`、`derive`、`prune`、`audit`、`pass_end`、`rebuild`、`refresh` |
 | `plugins/image-viewer/frontend/index.html` | 内容页入口：内容容器、旧 embed 回落、三个弹窗、保存失败错误区、进度卡与脚本装载顺序（页面 chrome 不在这里） | `#app`、`.view-body`、`#iv-content`、`#iv-albums`、`#image-grid`、`#pagination`、`#extension-view`、`#settings-modal`、`#settings-errors`、`#setting-follow-shell`、`#setting-plugin-alpha`、`js/app.js` |
 | `plugins/image-viewer/frontend/image-viewer.css` | 插件样式与自有 CSS 变量 | `--iv-radius`、`--iv-gradient`、`.iv-album`、`.iv-image-card`、`.iv-context-menu`、`.extension-view` |
 | `plugins/image-viewer/frontend/js/app.js` | `ImageViewer` 类骨架、初始化、生命周期、与壳的 chrome 消息、UI 事件绑定、旧 embed 回落 | `ImageViewer`、`init`、`_bindUI`、`_bindPluginLifecycle`、`_postHost`、`_pushChrome`、`_bindHost`、`_applyHostView`、`_applyHostAction`、`_onQuery`、`_serveHostChannel`、`loadSettings`、`openExtensionView`、`closeExtensionView`、`_applyAlbumSortSettings`、`_embedUrl` |
@@ -34,7 +39,7 @@
 | `plugins/image-viewer/frontend/js/app-utils.js` | 缩略图 URL、转义、空态、时间格式化 | `_thumbUrl`、`_escapeHtml`、`_escapeAttr`、`_emptyHtml`、`_timeAgo`、`_monthKey`、`_formatDuration` |
 | `plugins/image-viewer/frontend/js/justified-layout.js` | Justified 行布局计算 | `JustifiedLayout`、`JustifiedLayout.compute` |
 
-落盘缓存产物位于 `cache_dir`，其路径由 `_rebuild_paths` 派生：`image_meta.json`（`_load_meta` / `_save_meta`）、`albums_index.json`（`_load_album_cache` / `_save_album_cache`）、`dirs_index.json`（`_load_dirs_index` / `_save_dirs_index`）、`albums_config.json`（`_load_album_config` / `_save_album_config`）、`thumbs.db`（`ThumbCache`）、`freshness.db`（壳的 `FreshnessStore`）。
+落盘缓存产物位于 `cache_dir`，其路径由 `PathLayout.rebind` 派生：`image_meta.json`（`ThumbStore.flush` / `clear_meta`）、`albums_index.json`（`AlbumIndex` 的加载与落盘）、`dirs_index.json`（`DirSnapshot` 的加载与落盘）、`albums_config.json`（`AlbumConfig`）、`thumbs.db`（`ThumbCache`）、`freshness.db`（壳的 `FreshnessStore`）。
 
 ## 后端 API 契约
 
@@ -62,7 +67,7 @@
 | `rebuild_status` | 无 | `{running, done, success, cancelled, rebuild_path, total, processed, current, error_count, errors}` | 重建任务进度 |
 | `rebuild_cancel` | 无 | `{success}` / `{success, error}` | 取消重建任务 |
 | `get_settings` | `rel_path` | `row_height`、`per_page`、`sort_by`、`sort_order`、`pixiv_fuzzy`、`album_sort_by`、`album_sort_order`、`root_dir`、`pixiv_explicit` | 按目录读取生效设置（含逐级继承） |
-| `save_settings`（实现为 `save_folder_settings`） | `rel_path`、`settings` | `{success}` | 保存全局设置或文件夹级设置 |
+| `save_settings`（实现为 `SettingsResolver.save_folder`） | `rel_path`、`settings` | `{success}` | 保存全局设置或文件夹级设置 |
 | `get_root_dir` | 无 | 第一根目录的绝对路径 | 读取主数据根 |
 | `list_roots` | 无 | `[{path, label, is_primary, exists, namespace, prefix}]` | 全部根目录，供 folder-picker 与附属插件遍历 |
 | `browse_dir` | `path` | 共享基建 `list_subdirectories` 结果，条目带 `is_image_dir` | 设置页浏览本机目录 |
@@ -77,7 +82,7 @@
 | `resolve_file_path` | `rel_path` | 物理 `Path` / `None` | 带 `NAMESPACE_MARKER` 前缀的虚拟路径 → 物理路径 |
 | `get_data_root` | 无 | `Path` | 数据根，供元数据与缓存路径派生 |
 | `get_thumb_data` | `rel_path` | `(bytes, mime)` / `None` | `/thumbs` 响应的缩略图字节（取自 `ThumbCache.get`） |
-| `ensure_thumb` | `rel_path` | 缩略图文件路径；不可用时返回空串 | 旧版文件式缩略图入口 |
+| `ensure_thumb` | `rel_path` | 无（与基类契约一致；现场生成散文件缩略图） | 旧版文件式缩略图入口，仅供兼容代码 |
 | `get_cache_dir` | 无 | `Path`（返回 `cache_dir`） | 统一刷新指纹库的落点 |
 | `freshness_spec` | 无 | 新鲜度规格 dict | 声明根、前缀与钩子 |
 | `on_settings_changed` | `changed_keys` | 无 | `root_dir` / `extra_roots` / 排序类键变更后重建缓存路径 |
@@ -140,4 +145,4 @@
 - 插件自有 CSS 变量（定义在 `frontend/image-viewer.css` 的 `:root`）：`--iv-radius`、`--iv-radius-sm`、`--iv-gradient`、`--iv-accent-soft`。
 - 共享前端组件：`createLightbox`（`show` / `hide` / `navigate` / `setItems` / `setDecodedLimit` / `getIndex`）、`createPagination`（`render`）、`createContextMenu`（`show`）、`createTree`、`Freshness.assetUrl`、`FolderPicker.createList`（`getPaths` / `setPaths`；壳内设置弹窗的 `directory` 字段也用同一组件，`localOnly` 为真时隐藏「网络位置」）、`HostChannel.serve` / `HostChannel.ownFrame`（仅旧壳，当前壳不进入）、`PluginLifecycle.onShow` / `onHide` / `onDispose`、`Bridge.call` / `Bridge.thumbUrl`、`Icons.html`、`Utils.debounce` / `Utils.escapeHtml`、`Toast.success` / `Toast.error` / `Toast.info` / `Toast.warning`、`confirmDialog`。
 - 内容页不得再出现 chrome 标记：`.view-sub-sidebar`、`.view-toolbar`、`.sub-sidebar-brand`、`.obx-nav-item`（`tools/plugin_ui_audit.py` 的 `iframe.content-only` 会检查）。
-- 共享后端基建：`shell/backend/plugin_base.py` 的 `PluginBase`、`setting`、`save_settings`、`update_setting`、`is_protected_path`；`shell/backend/thumb_cache.py` 的 `ThumbCache.get` / `delete` / `clear` / `prune` / `generate_bulk`；`shell/backend/freshness.py` 的 `engine_for`、`reset_throttle` 与 `freshness_spec` 字段名（`roots`、`prefixes`、`include`、`derive`、`prune`、`on_verified`、`on_pass_end`、`rebuild`、`content_version`、`stat_entries`、`unit`、`min_sync_interval`、`max_dirs_per_sync`）；`shell/backend/tasks.py` 的 `BackgroundTask`；`shell/backend/media_catalog.py` 的 `list_subdirectories`、`is_safe_path`、`list_directory`；`shell/backend/plugin_utils.py` 的 `load_sibling`。
+- 共享后端基建：`shell/backend/plugin_base.py` 的 `PluginBase`、`setting`、`save_settings`、`update_setting`、`is_protected_path`；`shell/backend/thumb_cache.py` 的 `ThumbCache.get` / `delete` / `clear` / `prune` / `generate_bulk`；`shell/backend/freshness.py` 的 `engine_for`、`reset_throttle` 与 `freshness_spec` 字段名（`roots`、`prefixes`、`include`、`derive`、`prune`、`on_verified`、`on_pass_end`、`rebuild`、`content_version`、`stat_entries`、`unit`、`min_sync_interval`、`max_dirs_per_sync`）；`shell/backend/tasks.py` 的 `BackgroundTask`；`shell/backend/media_catalog.py` 的 `list_subdirectories`、`is_safe_path`、`list_directory`、`scan_directory`、`natural_sort_key`；`shell/backend/json_cache.py` 的 `read_json` / `write_json` / `read_cached_json` / `write_cached_json`；`shell/backend/ports.py` 的 `SettingsPort` / `PersistPort`；`shell/backend/plugin_utils.py` 的 `load_sibling`。
