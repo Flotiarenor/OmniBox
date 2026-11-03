@@ -93,7 +93,12 @@ class GroupMeshChromeTests(unittest.TestCase):
             self.assertIn(key, nav_ids, f'徽标键 {key} 不是任何 nav 项的 id，壳不会显示它')
 
     def test_toolbar_actions_are_handled(self):
-        handled = set(re.findall(r"data\.action === '([^']+)'", self.app_js))
+        # 提取口径只认"分支判断里的动作字面量"，不依赖它是从哪取的：
+        # 收敛前是 `if (data.action === 'refresh')`，收敛到 /shell/chrome-client.js 之后
+        # 是 `onAction: function (action) { if (action === 'refresh') … }`。
+        # 两种写法都含 `action === '<动作>'`，因此同一口径同时覆盖。刻意不从
+        # chrome-client.js 里找动作名：那里只做分发，具体处理哪个动作由本页决定。
+        handled = set(re.findall(r"action === '([^']+)'", self.app_js))
         declared = [item['id'] for item in self.chrome.get('toolbar') or []]
         self.assertTrue(declared)
         self.assertEqual(len(declared), len(set(declared)), 'toolbar id 不能重复')

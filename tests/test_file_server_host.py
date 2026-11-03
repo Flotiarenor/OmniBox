@@ -242,6 +242,32 @@ class PluginFrontendBootstrapTest(unittest.TestCase):
         self.assertEqual(again.count('/shell/content-ui.js'), 1)
         self.assertEqual(again, html)
 
+    def test_split_shared_runtime_is_injected_and_served(self):
+        """共享运行时按区段拆成八段后：每段都被注入、都能按 URL 取到、顺序不变。
+
+        拆分只允许"加载顺序"这一项最小修正，所以这里钉住三件事：每段在引导片段里恰好出现
+        一次；`/shell/<分段>` 返回非空 200（漏注入或落盘失败会让插件页在真实壳里整块少一类
+        组件，而页面本身看起来正常）；内核层与 Toast 的相对顺序不变（其余分段与共享组件都按
+        全局名读 `window.Utils` / `window.Bridge` / `window.Toast`）。
+        """
+        runtime = (
+            'base.js', 'dialogs.js', 'settings.js', 'host-channel.js',
+            'tree.js', 'lightbox.js', 'pagination.js', 'context-menu.js',
+        )
+        html = self.client.get('/plugins/demo/frontend/index.html').get_data(as_text=True)
+        for name in runtime:
+            with self.subTest(script=name):
+                self.assertEqual(html.count(f'/shell/{name}'), 1, f'{name} 的注入次数不是 1')
+                resp = self.client.get(f'/shell/{name}')
+                self.assertEqual(resp.status_code, 200, f'/shell/{name} 取不到（dist 与 public 都缺）')
+                self.assertGreater(len(resp.get_data()), 0, f'/shell/{name} 是空文件')
+        positions = [html.index(f'/shell/{name}') for name in runtime]
+        self.assertEqual(positions, sorted(positions), '共享运行时的注入顺序被打乱：顺序即依赖顺序')
+        self.assertLess(html.index('/shell/toast.js'), html.index('/shell/base.js'),
+                        'Toast 必须早于 base.js（插件脚本跟着这批脚本一起执行）')
+        self.assertLess(html.index('/shell/base.js'), html.index('/shell/folder-picker.js'),
+                        'folder-picker / freshness / content-ui 按全局名读运行时的 Utils / Bridge')
+
     def test_non_html_is_served_untouched(self):
         resp = self.client.get('/plugins/demo/frontend/plain.txt')
         self.assertEqual(resp.status_code, 200)

@@ -1,6 +1,6 @@
 // HostChannel（子插件 → 上层）协议自检。
 //
-// 背景：内嵌插件页要"请上层用它的文档渲染我的设置弹窗"时，走的是 base.js 的
+// 背景：内嵌插件页要"请上层用它的文档渲染我的设置弹窗"时，走的是共享运行时的
 // HostChannel：子页 postMessage 一个 request，上层收到后用 `event.source` 回信，
 // 需要保存时由上层把值 callback 回子页、子页自己落盘。
 //
@@ -16,13 +16,13 @@
 // 子窗口调 probe，postMessage 却落在宿主窗口上）。那是宿主侧测试框架的坑，不是协议
 // 行为；两侧之间的真实投递由 tests/js/host_channel_host.mjs 的宿主用例覆盖。
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
+import { loadShellRuntime } from './shell_scripts.mjs';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const BASE_JS = path.join(ROOT, 'shell', 'frontend', 'public', 'shell', 'base.js');
 
 const ORIGIN = 'http://127.0.0.1:18080';
 const SENT = [];
@@ -82,7 +82,7 @@ function loadPluginRuntime() {
     requestAnimationFrame: (fn) => setTimeout(fn, 0),
   };
   vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(BASE_JS, 'utf8'), sandbox, { filename: 'shell/base.js' });
+  loadShellRuntime(sandbox);
   return {
     hc: win.HostChannel,
     sourceButton,

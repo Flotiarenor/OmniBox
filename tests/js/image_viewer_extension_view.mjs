@@ -4,7 +4,7 @@
 //   - 头部只有「标题行 + 插件挂载点」两个子项，不自带按钮（「返回相册」已去掉）
 // 说明是头部两行结构里的第二行（`.iv-view-sub`）：缺了它扩展头只有一行标题，
 // 比主工具栏矮一档；按钮的字号/内边距/高度/间隙是否与主工具栏一致，几何实测在
-// tests/debug_extension_header_ui.py。
+// tools/debug/debug_extension_header_ui.py。
 //
 // 装载顺序取自 index.html（见 script_load_contract.mjs）：app.js 拆成分片后本用例
 // 自动跟着走，不需要在这里维护文件名清单。

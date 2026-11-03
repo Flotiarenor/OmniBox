@@ -6,11 +6,17 @@ import { loadPlugins, getPlugins, type PluginChromeState } from './core/plugin-l
 import {
   disposeFrames,
   ensureFrame,
-  LIFECYCLE_MESSAGES,
   noteFrameEpoch,
   refreshFrame,
   type LifecycleMessage,
 } from './core/plugin-visibility'
+import {
+  leavingFrames,
+  pluginFrameSrc,
+  reloadedFrameMessages,
+  splitByKeepAlive,
+} from './core/plugin-frames'
+import { isPluginChromeMessage, mergeChromeState } from './core/plugin-chrome-protocol'
 import SettingsView from './views/SettingsView.vue'
 import StatusView from './views/StatusView.vue'
 import Icon from './components/Icon.vue'
@@ -88,9 +94,11 @@ const reloadCounters = reactive<Record<string, number>>({})
 
 // 必须定义在下面的 route watcher 之前：watcher 是 immediate，会在 setup 期同步执行
 const plugins = computed(() => getPlugins())
-const keepAlivePlugins = computed(() => plugins.value.filter(p => p.keepAlive))
-// 默认组：不声明 keepAlive 的插件离开即卸载 iframe，回来是干净重载
-const transientPlugins = computed(() => plugins.value.filter(p => !p.keepAlive))
+// 常驻组（声明了 keepAlive）离开只隐藏 iframe，不保活组离开即卸载 —— 分组极性
+// 与互补性由 core/plugin-frames 判定，tests/js/plugin_frames.mjs 覆盖。
+const pluginGroups = computed(() => splitByKeepAlive(plugins.value))
+const keepAlivePlugins = computed(() => pluginGroups.value.keepAlive)
+const transientPlugins = computed(() => pluginGroups.value.transient)
 const currentPlugin = computed(() => route.meta.pluginName as string || '')
 const isSettings = computed(() => route.path === '/settings')
 const isStatus = computed(() => route.path === '/status')
@@ -123,7 +131,7 @@ function onFrameLoad(e: Event, name: string) {
   frameMounted.set(name, mounted)
   const reloaded = noteFrameEpoch(name, epoch)
   const messages = reloaded
-    ? (mounted && windowVisible.value ? [LIFECYCLE_MESSAGES.shown] : HIDDEN_BY_DEFAULT)
+    ? reloadedFrameMessages(mounted, windowVisible.value)
     : ensureFrame(name, mounted)
   notifyFrame(name, messages)
   refreshFrameVisibility(name)
@@ -136,13 +144,9 @@ function onFrameLoad(e: Event, name: string) {
 }
 
 function pluginSrc(p: { name: string; entryUrl: string; chrome?: unknown }): string {
-  // 有 chrome 声明的插件只加载内容页；骨架由壳渲染。
-  const base = p.chrome
-    ? p.entryUrl + (p.entryUrl.includes('?') ? '&' : '?') + 'content=1'
-    : p.entryUrl
-  const n = reloadCounters[p.name] || 0
-  if (!n) return base
-  return base + (base.includes('?') ? '&' : '?') + '_r=' + n
+  // chrome 插件只加载内容页（带 content=1），骨架由壳渲染；重试计数以 `_r` 追加。
+  // 拼装规则在 core/plugin-frames，tests/js/plugin_frames.mjs 覆盖两种形态。
+  return pluginFrameSrc(p, reloadCounters[p.name] || 0)
 }
 
 /** 单插件背景不透明度：有覆盖用覆盖，否则跟随壳的玻璃不透明度。 */
@@ -176,7 +180,6 @@ const frameMounted = new Map<string, boolean>()
 const frameEpochs = new Map<string, number>()
 // 窗口级可见性：最小化 / 切标签页时为 false
 const windowVisible = ref(true)
-const HIDDEN_BY_DEFAULT: LifecycleMessage[] = []
 
 function setFrameRef(name: string, el: Element | null) {
   const frame = el?.querySelector('iframe')
@@ -216,12 +219,14 @@ function refreshAllFrameVisibility() {
 
 // 不保活组：离开即卸载 iframe，卸载前发一次 dispose
 function disposeLeavingFrames(keepAliveNames: Set<string>) {
-  const leaving = Array.from(frameRefs.keys()).filter(name => {
-    if (keepAliveNames.has(name)) return false
-    if (!frameMounted.get(name)) return false
-    frameMounted.set(name, false)
-    return true
+  const leaving = leavingFrames({
+    registered: frameRefs.keys(),
+    mounted: Array.from(frameMounted).filter(([, mounted]) => mounted).map(([name]) => name),
+    keepAlive: keepAliveNames,
   })
+  if (!leaving.length) return
+  // 先记账再发通知：这些 frame 已不再作为活动插件挂载，同一次切换里不该被重复 dispose
+  leaving.forEach(name => frameMounted.set(name, false))
   disposeFrames(leaving).forEach((message, index) => sendToFrame(leaving[index], message))
 }
 
@@ -393,13 +398,9 @@ function openNativeSettings(panel: { host: string; plugin: string; title: string
 function onPluginChromeMessage(event: MessageEvent): void {
   if (event.origin !== window.location.origin) return
   const data = event.data
-  if (!data || (
-    data.type !== 'omnibox:ready'
-    && data.type !== 'omnibox:chrome'
-    && data.type !== 'omnibox:open-settings'
-    && data.type !== 'omnibox:get-plugin-appearance'
-    && data.type !== 'omnibox:set-plugin-alpha'
-  )) return
+  // 白名单是协议的唯一真源（core/plugin-chrome-protocol），未登记类型不接；
+  // 每个登记项都必须在 docs/plugin-page-architecture.md 的消息表里有出处。
+  if (!isPluginChromeMessage(data)) return
   const name = frameNameForSource(event.source)
   if (!name) return
   if (data.type === 'omnibox:get-plugin-appearance') {
@@ -426,36 +427,12 @@ function onPluginChromeMessage(event: MessageEvent): void {
     postChromeView(name)
     return
   }
+  // 只剩 omnibox:chrome：标题/视图/角标/动作/导航/搜索的合并规则在
+  // core/plugin-chrome-protocol（返回新状态，不就地改），tests/js/plugin_chrome_protocol.mjs 覆盖。
+  if (data.type !== 'omnibox:chrome') return
   const st = chromeStates[name]
   if (!st) return
-  if (typeof data.title === 'string') st.title = data.title
-  if (typeof data.subtitle === 'string') st.subtitle = data.subtitle
-  if (typeof data.view === 'string') st.view = data.view
-  if (data.badges && typeof data.badges === 'object') {
-    const badges: Record<string, string> = {}
-    Object.entries(data.badges).forEach(([key, value]) => {
-      if (value !== null && value !== undefined && String(value) !== '') badges[key] = String(value)
-    })
-    st.badges = badges
-  }
-  if (data.status && typeof data.status === 'object') {
-    st.status = {
-      text: String(data.status.text || ''),
-      state: String(data.status.state || 'idle'),
-    }
-  }
-  if (data.actions && typeof data.actions === 'object') {
-    st.actions = { ...(st.actions || {}), ...data.actions }
-  }
-  if (data.nav && typeof data.nav === 'object') {
-    st.nav = { ...(st.nav || {}), ...data.nav }
-  }
-  if (data.search && typeof data.search === 'object') {
-    st.search = { ...(st.search || {}), ...data.search }
-  }
-  if (Array.isArray(data.statusItems)) {
-    st.statusItems = data.statusItems
-  }
+  chromeStates[name] = mergeChromeState(st, data)
 }
 
 /** 宿主插件请求打开 native 面板：只接受已挂载 iframe 的同源消息，URL 必须在本仓库插件路径下。

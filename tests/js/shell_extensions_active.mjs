@@ -1,6 +1,8 @@
 // 共享运行时「扩展入口」渲染的历史实现已删除：壳侧的 `PluginExtensions.vue` 负责
 // 扩展入口与"同一时刻只有一个当前项"的互斥。本文件是**死亡 API 守卫**：
-// 一旦有人把第二套实现塞回 base.js、或插件/壳源码重新引用它，这里就红。
+// 一旦有人把第二套实现塞回共享运行时（注入插件页的 /shell/*.js）、或插件/壳源码
+// 重新引用它，这里就红。被扫的共享脚本清单取自 file_server.py 的引导片段，
+// 拆分 / 加段不用改这里。
 //
 // 历史背景（为什么以前需要它）：高亮原先由每个宿主自己写，media-player 只写了单向、
 // image-viewer 写了双向才没暴露，两条入口会同时亮。那套逻辑现在只保留壳侧一份。
@@ -11,17 +13,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { shellScriptOrder, shellScriptSource } from './shell_scripts.mjs';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const BASE_JS = path.join(ROOT, 'shell', 'frontend', 'public', 'shell', 'base.js');
-const SHELL = fs.readFileSync(BASE_JS, 'utf8');
+const SHELL = shellScriptOrder().map((name) => shellScriptSource(name)).join('\n');
 
 assert.ok(
   !/function\s+renderExtensions\b/.test(SHELL),
-  'base.js 不应再定义 renderExtensions：扩展入口由壳的 PluginExtensions 承担',
+  '共享运行时不应再定义 renderExtensions：扩展入口由壳的 PluginExtensions 承担',
 );
 assert.ok(
   !/window\.renderExtensions\s*=/.test(SHELL),
-  'base.js 不得把 renderExtensions 再挂回 window（共享运行时不重复实现壳的组件）',
+  '共享运行时不得把 renderExtensions 再挂回 window（不重复实现壳的组件）',
 );
 
 function* walk(dir) {

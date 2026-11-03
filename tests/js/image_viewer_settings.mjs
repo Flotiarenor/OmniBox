@@ -15,6 +15,7 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 import { readDeclaredScripts } from './script_load_contract.mjs';
+import { loadShellScripts } from './shell_scripts.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const FRONTEND = path.join(ROOT, 'plugins', 'image-viewer', 'frontend');
@@ -156,6 +157,8 @@ function loadImageViewer(handlers = {}) {
     sandbox.window = sandbox;
     sandbox.parent = parent;
     vm.createContext(sandbox);
+    // 内容页的握手在壳注入的 /shell/chrome-client.js 里：按引导片段装载同一份实现。
+    loadShellScripts(sandbox, ['chrome-client.js']);
     for (const { rel, source } of readDeclaredScripts(FRONTEND)) {
         vm.runInContext(source, sandbox, { filename: `plugins/image-viewer/frontend/${rel}` });
     }

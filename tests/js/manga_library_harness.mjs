@@ -12,6 +12,8 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
+import { loadShellScripts } from './shell_scripts.mjs';
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..', '..');
 const FRONTEND = path.join(ROOT, 'plugins', 'manga-library', 'frontend');
@@ -691,6 +693,8 @@ export function loadManga(options = {}) {
     }
 
     vm.createContext(sandbox);
+    // 内容页的握手在壳注入的 /shell/chrome-client.js 里：按引导片段装载同一份实现。
+    loadShellScripts(sandbox, ['chrome-client.js']);
     // 真实 DOM 的空壳：把 index.html 的 body 内容解析进来（去掉脚本与注释），
     // 这样 #ml-content、阅读器容器与两个弹窗和线上结构一致。
     const indexHtml = fs.readFileSync(path.join(FRONTEND, 'index.html'), 'utf8');

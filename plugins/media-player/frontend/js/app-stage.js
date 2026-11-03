@@ -209,7 +209,30 @@ Object.assign(MediaPlayerApp.prototype, {
         const btn = document.getElementById('btn-video-mode');
         btn.innerHTML = MPUtils.icon(this.core.videoMode ? 'icon:clapperboard' : 'icon:music');
         btn.title = this.core.videoMode ? '切换到仅声音' : '切换到画面';
-        Bridge.call('media_set_config', 'default_video_mode', this.core.videoMode ? 'video' : 'audio').catch(() => { });
+        this._persistVideoMode();
+    },
+
+    /**
+     * 把「仅声音 / 画面」偏好写进设置。
+     *
+     * 切换本身已经生效（用户当场就能看到换的是哪个），但偏好没落盘时**必须说出来**：
+     * 重启后会回到旧值，界面却没有任何提示，用户只会觉得"这个设置不生效"。
+     *
+     * 两条失败路径都要覆盖：Promise 被拒（PyWebView API 不可用 / 传输失败），以及
+     * 接口成功但 `{success: false}` —— 后端把 `update_setting` 的布尔结果包成
+     * `success` 返回，`Bridge.call` 只是把它原样交回来，不算 reject。
+     *
+     * 提示文本与切换方向无关：壳的 Toast 对同一段文本会去重，连点只弹一条。
+     */
+    _persistVideoMode() {
+        const value = this.core.videoMode ? 'video' : 'audio';
+        Bridge.call('media_set_config', 'default_video_mode', value)
+            .then((result) => {
+                if (result && result.success === false) throw new Error('media_set_config failed');
+            })
+            .catch(() => {
+                Toast.error('已切换，但「仅声音 / 画面」偏好没能保存，重启后会恢复原样');
+            });
     },
 
     _isVideoShowing() {
