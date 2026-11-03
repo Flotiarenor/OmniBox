@@ -341,7 +341,6 @@ class AlbumTiles:
 
         # 这里要真展开图片，所以 aggregate=True（代价只付在打开灯箱这一下）
         cards, album_images = self.scan_items(rel_path, sub_dirs, aggregate=True)
-        sort_by = self._settings.for_path(rel_path).get('sort_by') or 'mtime'
         images.sort(key=lambda item: natural_sort_key(Path(item['url']).name))
         cards.sort(key=lambda item: natural_sort_key(item['name']))
 
@@ -350,12 +349,10 @@ class AlbumTiles:
         for card in cards:
             offset[card['path']] = len(sequence)
             rep = self.card_cover_size(card['cover']) if card['cover'] else (1, 1)
-            sub_settings = self._settings.for_path(card['path'])
-            sub_sort = sub_settings.get('sort_by') or sort_by
-            sub_reverse = (sub_settings.get('sort_order') or 'desc') == 'desc'
+            # 与列表一致：作品内部页序恒为文件名自然序 p0 → p1（「图片本身的顺序」），
+            # 序列首张 = 瓦片封面；排序设置只管顶层瓦片顺序，不管序列内部页序。
             sub_images = sorted(album_images.get(card['path'], []),
-                                key=self._naming.image_sort_key(sub_sort),
-                                reverse=(sub_sort != 'time_name' and sub_reverse))
+                                key=lambda sub: natural_sort_key(Path(sub['url']).name))
             if card.get('has_children') and not sub_images:
                 # 容器子目录：位置锚在它自己的代表封面（画师最近的作品 p0）。整棵子树
                 # 不展开 —— 那正是列表时被推迟的工作，这里只为"点得到"提供一个入口，

@@ -87,7 +87,7 @@
    （不要动画/闪烁：一屏几十张同时闪会非常吵），取到后由脚本就地替换封面 */
 .iv-tile-pending .iv-cover-fallback { opacity: 0.45; }
 
-/* ===== 圆圈数量角标（仅「时间+文件名」排序模式下显示在 p0 瓦片右下角） ===== */
+/* ===== 圆圈数量角标（子文件夹瓦片右下角，数量已知即显示） ===== */
 .iv-count-badge {
   position: absolute; right: 8px; bottom: 8px; z-index: 4;
   min-width: 22px; height: 22px; padding: 0 6px; box-sizing: border-box;

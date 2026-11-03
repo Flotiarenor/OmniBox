@@ -50,7 +50,7 @@
 | `list_images` | `rel_path`、`page`、`per_page`、`sort_by`、`sort_order` | `{images, page, total, has_next, has_prev, settings}` | 单目录图片分页列表 |
 | `list_folder_items` | `rel_path`、`page`、`per_page`、`sort_by`、`sort_order` | `{items, all_images, all_truncated, all_capped, all_offset, page, total, image_total, pending_count, sequence_pending, has_next, has_prev, settings}` | 混合列表：直接图片 + 子相册 p0 瓦片 |
 | `load_album_tiles` | `paths` | `{tiles: {path: {cover, total_count, image_count, width, height, use_time_name, mtime}}}` | 按批补齐进入视口的瓦片封面与递归计数 |
-| `list_album_images` | `rel_path` | `{images, offset, capped}` | 灯箱用的连续浏览序列 |
+| `list_album_images` | `rel_path` | `{images, offset, capped}` | 灯箱用的连续浏览序列；每个作品块恒按文件名自然序 `p0 → pN`，块首即该瓦片的封面（排序设置只决定瓦片顺序，不翻转块内页序） |
 | `list_dir` | `rel_path` | `[{name, path}]` | 目录树（移动目标选择） |
 | `list_albums` | 无 | `{albums, config, changed}` | 相册全树展开 |
 | `create_folder` | `rel_path` | `{success, path}` / `{success, error}` | 新建相册目录 |
@@ -122,7 +122,7 @@
 
 - 相册卡片：`.iv-grid`、`.iv-album`、`.iv-album-cover`、`.iv-album-badge`、`.iv-album-info`、`.iv-album-name`、`.iv-album-count`、`.iv-album-menu`、`.iv-album-tag`、`.iv-album-tag-hot`、`.iv-time-badge`、`.iv-cover-fallback`
 - 时间线：`.iv-timeline-section`、`.iv-time-label`
-- 图片瓦片：`.iv-image-card`、`.iv-image-card.selected`、`.iv-cover-img`、`.iv-count-badge`、`.iv-tile-pending`
+- 图片瓦片：`.iv-image-card`、`.iv-image-card.selected`、`.iv-cover-img`、`.iv-count-badge`（子文件夹瓦片右下角的页数 / 递归张数，数量已知即显示，与排序模式无关）、`.iv-tile-pending`
 - 相册右键菜单：`.iv-context-menu`
 - 空态与加载：`.empty-state`、`.empty-state-icon`、`.empty-state-text`、`.empty-state-hint`、`.loading`
 

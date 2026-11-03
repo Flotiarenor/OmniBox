@@ -262,12 +262,13 @@ class Listing:
                 all_images.append({'url': item['url'], 'width': item['width'],
                                    'height': item['height']})
             else:
-                sub_settings = self._settings.for_path(item['path'])
-                sub_sort = sub_settings.get('sort_by') or sort_by
-                sub_reverse = (sub_settings.get('sort_order') or 'desc') == 'desc'
+                # 块内页序恒按文件名自然序 p0 → p1（「图片本身的顺序」）：与封面
+                # （自然序第一张 = p0）和「p0 → p1 → …」契约一致。若跟随子文件夹
+                # 生效的排序，默认「mtime 倒序」下块首是最后一页（pN），点击封面
+                # 会打开 pN 而不是 p0。排序设置只管顶层瓦片顺序（瀑布流），不管
+                # 连续浏览序列内部的页序。
                 sub_images = sorted(album_images.get(item['path'], []),
-                                    key=self._naming.image_sort_key(sub_sort),
-                                    reverse=(sub_sort != 'time_name' and sub_reverse))
+                                    key=lambda sub: natural_sort_key(Path(sub['url']).name))
                 for sub_image in sub_images:
                     all_images.append({'url': sub_image['url'],
                                        'width': sub_image['width'],

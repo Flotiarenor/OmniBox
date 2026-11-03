@@ -132,8 +132,8 @@ Object.assign(ImageViewer.prototype, {
             });
         }
 
-        // 圆圈数量角标：仅在该瓦片对应子文件夹自身生效的排序为「时间+文件名」时显示
-        // （自己没设置则继承父级，后端 use_time_name 已算好）
+        // 圆圈数量角标：子文件夹瓦片一律显示（数量已知时），与排序模式无关。
+        // 原先只在「Pixiv 排序支持」下显示，普通排序下看不出一个作品有几页
 
         cards.forEach((cardData, index) => {
             const item = items[index];
@@ -172,7 +172,7 @@ Object.assign(ImageViewer.prototype, {
                     card.appendChild(fb);
                 }
                 // 角标：补到计数之前不渲染，避免先亮一个 0（见 _applyAlbumTile）
-                if (item.use_time_name && item.total_count != null) {
+                if (item.total_count != null) {
                     const badge = document.createElement('span');
                     badge.className = 'iv-count-badge';
                     badge.textContent = item.total_count;
@@ -344,7 +344,6 @@ Object.assign(ImageViewer.prototype, {
         item.pending = false;
         item.cover = tile.cover || '';
         item.total_count = tile.total_count;
-        item.use_time_name = !!tile.use_time_name;
         if (tile.cover) {
             const img = card.querySelector('img.iv-cover-img')
                 || card.querySelector('.iv-cover-fallback');
@@ -361,8 +360,8 @@ Object.assign(ImageViewer.prototype, {
                 img.replaceWith(real);
             }
         }
-        // 角标：Pixiv 排序下显示递归张数；补到之前不显示（避免先亮一个 0）
-        if (item.use_time_name && tile.total_count != null) {
+        // 角标：数量补齐后显示递归张数；补到之前不显示（避免先亮一个 0）
+        if (tile.total_count != null) {
             let badge = card.querySelector('.iv-count-badge');
             if (!badge) {
                 badge = document.createElement('span');

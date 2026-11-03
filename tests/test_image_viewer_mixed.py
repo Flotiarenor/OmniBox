@@ -204,6 +204,49 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         self.assertEqual(seq, ['workA/111_p0.png', 'workA/111_p1.png',
                                'workA/111_p2.png', 'workA/111_p10.png'])
 
+    def test_all_images_block_starts_at_cover_under_mtime_sort(self):
+        """回归：顶层按「修改时间倒序」（全局默认）时，连续序列里每个作品的页块仍须
+        按文件名自然序从封面开始（p0 → p1）。此前页块沿用文件夹排序设置，mtime 倒序下
+        块首变成最后一页——点封面 p0 却打开 pN。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = 1_700_000_000.0
+            for i in range(4):
+                p = root / 'workA' / f'141236569_p{i}.png'
+                _make_image(p, 64, 64)
+                os.utime(p, (base + i, base + i))
+            for i in range(2):
+                q = root / 'workB' / f'222_p{i}.png'
+                _make_image(q, 64, 64)
+                os.utime(q, (base + 10 + i, base + 10 + i))
+
+            module = self.module
+            orig = module.ImageViewerPlugin._resolved_config
+            try:
+                module.ImageViewerPlugin._resolved_config = {'root_dir': str(root)}
+                plugin = module.ImageViewerPlugin(
+                    {'name': 'image-viewer'},
+                    {'directories': {'data_root': str(root)}},
+                )
+            finally:
+                module.ImageViewerPlugin._resolved_config = orig
+
+            # 前端把生效设置传下来：mtime 倒序（全局默认）
+            data = plugin.listing.list_folder_items('', 1, 40, 'mtime', 'desc')
+            workA = next(it for it in data['items'] if it['path'] == 'workA')
+            # 封面恒为自然序第一页 p0
+            self.assertEqual(workA['cover'], 'workA/141236569_p0.png')
+            seq = [im['url'] for im in data['all_images']]
+            # workA 块按 p0 → p3（不是 mtime 倒序的 p3 → p0），块首 == 封面
+            start = seq.index('workA/141236569_p0.png')
+            self.assertEqual(seq[start:start + 4], [
+                'workA/141236569_p0.png', 'workA/141236569_p1.png',
+                'workA/141236569_p2.png', 'workA/141236569_p3.png'])
+            # 三级完整序列（list_album_images）块序一致，补齐后灯箱仍停在 p0
+            full = [im['url'] for im in plugin.tiles.list_album_images('')['images']]
+            fstart = full.index('workA/141236569_p0.png')
+            self.assertEqual(full[fstart:fstart + 4], seq[start:start + 4])
+
     def test_album_cache_version_invalidation(self):
         """旧版(version 2)相册索引缓存作废：封面重新按当前规则计算，不复用旧的 mtime 封面。"""
         import json
