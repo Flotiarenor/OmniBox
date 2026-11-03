@@ -244,6 +244,22 @@ class CheckDocsGateTests(unittest.TestCase):
         self.assertEqual(result.docs, 0)
         self.assertEqual(result.errors, [])
 
+    def test_release_build_tree_is_not_scanned(self):
+        """发布构建的输出树（docs/Releases/OmniBox/）带插件文档副本，不参与门禁。
+
+        真实事故：本机构建过一次 release 后，这个目录里的 plugins/*/AGENTS.md 被
+        当作仓库文档扫描，报出 488 条引用缺失；同一棵树在 CI 上不存在，于是门禁在
+        本机与 CI 上给出相反结论。
+        """
+        self._write('docs/Releases/OmniBox/plugins/AGENTS.md',
+                    '# 打包副本\n\n`RUNTIME_FIELD_READERS`\n\n见 [根](../AGENTS.md)。\n')
+        self._write('docs/Releases/OmniBox/plugins/alpha/backend/main.py', 'x = 1\n')
+
+        result = scan(self.root)
+
+        self.assertEqual(result.docs, 0)
+        self.assertEqual(result.errors, [])
+
 
 if __name__ == '__main__':   # pragma: no cover
     unittest.main()

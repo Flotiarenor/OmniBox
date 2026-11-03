@@ -73,9 +73,15 @@ PATH_SUFFIXES = CODE_SUFFIXES | {'.md', '.toml', '.yml', '.yaml', '.txt', '.svg'
 ARTIFACT_SUFFIXES = frozenset({'.zip', '.7z', '.db', '.log', '.png', '.jpg', '.webp', '.mp4', '.ico'})
 
 # 不进索引的目录：生成物、依赖、运行期数据、本机缓存。
+#
+# `OmniBox` / `omnibox` 是发布构建的输出树（docs/Releases/OmniBox/）：它带着
+# plugins/ 的副本，其中包含插件的 AGENTS.md。那些副本的引用是相对**源码树**写的
+# （../AGENTS.md、../docs/…），放进索引后会被当成损坏引用报出来 —— 门禁因此
+# 变成"工作区没构建过才通过"，与它自己的用途相反。
 SKIP_DIRS = frozenset({
     '.git', '.build', '.build-linux', '.build-work', '.build-dist', '.ruff_cache',
     '.dsh', 'venv', 'node_modules', 'dist', 'chromedriver', '__pycache__',
+    'OmniBox', 'omnibox',
 })
 
 # 生成物 / 运行期目录：文档引用它们是说明"产物落在哪"，不是"仓库里有这个文件"。
