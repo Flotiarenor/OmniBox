@@ -8,7 +8,9 @@
 * 路径校验：相对路径解析后必须仍在该共享项根目录内（拒绝 `..` 与符号链接逃逸）；
 * 共享目录与程序目录、配置目录分离：共享项路径由属主显式指定，不由插件推断；
 * 不提供远程重命名与移动；
-* 目录枚举数量有上限，避免一次请求把整个目录树返回。
+* 目录枚举数量有上限，避免一次请求把整个目录树返回；
+* 单条读应答有帧上限（见 `MAX_READ_BYTES`），超限的读请求在**读盘之前**拒绝，
+  避免一条请求按文件大小分配内存。
 
 ## 授权判定的位置
 
@@ -28,18 +30,38 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import __version__ as KERNEL_VERSION
+from .crypto_prims import TAGLEN
 from .identity import Identity
+from .noise import MAX_TRANSPORT_FRAME
 from .records import RecordError
 from .registry import Registration, Registry, new_registration
 from .roster import Roster
 from .shares import AclDenied, Authorizer, LocalShare, Permission
-from .transport import Connection, PeerIdentity, TransportError, exchange_hello, run_handshake
+from .transport import (
+    MAX_FRAME_BYTES,
+    Connection,
+    PeerIdentity,
+    TransportError,
+    exchange_hello,
+    run_handshake,
+)
 
 log = logging.getLogger(__name__)
 
 # 目录枚举与文件大小的硬上限
 MAX_LIST_ENTRIES = 2000
 MAX_WRITE_BYTES = 8 * 1024 * 1024
+
+# 单条应答能装的明文上限。两条上限要同时成立才发得出去：传输层限制的是**密文**
+# 帧（`transport.MAX_FRAME_BYTES`），Noise 传输态限制的是**明文**帧
+# （`noise.MAX_TRANSPORT_FRAME`），而密文 = 明文 + AEAD 认证标签。这里不另立一个
+# 数字：改上限时只改那两处，读路径自动跟随。
+MAX_RESPONSE_PLAINTEXT_BYTES = min(MAX_TRANSPORT_FRAME, MAX_FRAME_BYTES - TAGLEN)
+# 读应答里除 `data` 之外的 JSON 字段（share / path / offset / size / length / eof
+# 与键名）的余量。路径长度随用户目录名浮动，按"上千字节的长路径"留 4 KiB。
+_READ_ENVELOPE_RESERVE = 4096
+# 单次读最多返回多少**原始字节**：base64 有 4/3 膨胀，向下取整留出整字节余量。
+MAX_READ_BYTES = ((MAX_RESPONSE_PLAINTEXT_BYTES - _READ_ENVELOPE_RESERVE) * 3) // 4
 
 
 def resolve_in_share(root: str, relative: str) -> str:
@@ -233,7 +255,18 @@ class Node:
                 'mtime_ns': int(info.st_mtime_ns)}
 
     def _op_read(self, request: Dict[str, Any], peer: PeerIdentity) -> Dict[str, Any]:
-        """读取一段文件内容。支持 offset/length，便于分段传输大文件。"""
+        """读取一段文件内容。支持 offset/length，便于分段传输大文件。
+
+        **单条应答装不下的读请求一律先拒**，不能"先读进内存再指望加密时拦下"：
+        应答在加密阶段才会因为超过帧上限失败，而那时整个文件已经在内存里了 ——
+        有读权限的对端用一条不带 `length` 的请求就能让服务端按文件大小分配内存。
+        因此这里读之前先按帧上限判定，超限回 `too_large`，由调用方改用分段读
+        （`client.fetch_bytes` 一直按 `DEFAULT_CHUNK_BYTES` 分段）。
+
+        显式 `length` 超过帧上限时同样报 `too_large`，而不是静默截断成更小的一段：
+        客户端的分块循环把"收到的字节数少于请求的字节数"当成**文件已读完**，
+        静默截断会让它悄悄返回半份文件。
+        """
         share = self._share_or_fail(request.get('share'))
         self._authorizer(peer).check(share.declaration, Permission.READ)
 
@@ -253,11 +286,19 @@ class Node:
         size = os.path.getsize(target)
         if offset > size:
             raise RemoteFailure('bad_request', f'offset 越界（{offset} > {size}）')
-        length = min(length or size - offset, size - offset)
+        remaining = size - offset
+        # `length` 为 0 / 缺省沿用既有语义：读到文件末尾
+        wanted = min(length, remaining) if length else remaining
+        if wanted > MAX_READ_BYTES:
+            raise RemoteFailure(
+                'too_large',
+                f'单次读取不得超过 {MAX_READ_BYTES} 字节（请求 {wanted} 字节，'
+                f'文件大小 {size}）；请用 offset/length 分段读取')
 
         with open(target, 'rb') as handle:
             handle.seek(offset)
-            data = handle.read(length)
+            data = handle.read(wanted)
+
         return {'status': 'ok', 'share': share.share_id, 'path': relative, 'offset': offset,
                 'size': size, 'length': len(data), 'eof': offset + len(data) >= size,
                 'data': base64.b64encode(data).decode('ascii')}
