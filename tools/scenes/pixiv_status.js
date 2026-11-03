@@ -1,32 +1,43 @@
-/* 把 pixiv-sync 的状态栏补成一份示例数据（README 截图用；不联网、不用真实账号）。
+/* 让 pixiv-sync 的原生面板显示一份示例数据（README 截图用；不联网、不用真实账号）。
  *
- * 字段与格式逐条抄自 plugins/pixiv-sync/frontend/index.html 的 refreshStatus()——
- * 漏补一个字段，画面上就会露出真实的 0，而 picture 里看不出来是漏了哪个。
- * `#st-root` 刻意不动：它由实例的 download_dir 设置渲染，正是我们要展示的路径。
+ * 为什么不再直接改 DOM：页架构迁移后，面板的可见内容由**壳**的 NativePanel + SchemaRenderer
+ * 按隐藏逻辑页提交的 blocks 渲染，`frontend/native.html` 里没有可改的可见节点。所以这里改成
+ * "包装数据源"：替换隐藏逻辑页的 `Bridge.call('get_status')`，再由场景点壳侧顶栏的「刷新状态」
+ * 触发一次真实渲染 —— 数字、单位与版式全部来自线上代码。
  *
- * 为什么可以直接改 DOM：目标是**一张图**，不是让应用真的处于这个状态。补之前场景已把
- * 页面自己的定时器（refreshStatus 每 10s、冷却倒计时每 1s）停掉，否则下一次轮询会把
- * 这里的取值覆盖回去，而且失败是静默的。
+ * 只覆盖**示例数字**，其余字段沿用真实返回值：特别是 `root_dir` 不伪造 —— 面板上的「下载根」
+ * 就是实例自己的 `download_dir` 设置值。仓库里因此不出现任何本机目录，截图里的路径由
+ * 仓库外的示例库基线配置提供。
+ *
+ * 遗漏字段会露出真实的 0，从图上分辨不出来，所以这里按 `get_status` 的完整返回逐项对照补数。
+ * 幂等：已经包装过就什么都不做 —— 场景可能因重试跑到第二次。
  */
 (() => {
-  const set = (id, text) => {
-    const el = document.getElementById(id);
-    if (el) el.textContent = text;
+  const frame = document.querySelector('iframe.native-panel-frame');
+  if (!frame || !frame.contentWindow) return 'no-native-frame';
+  const win = frame.contentWindow;
+  if (!win.Bridge || typeof win.Bridge.call !== 'function') return 'no-bridge';
+  if (win.__pixivStatusStubbed) return 'already-stubbed';
+  const real = win.Bridge.call.bind(win.Bridge);
+  // 示例数字：字段名与 `plugins/pixiv-sync/backend/pixiv_sync/status.py` 的返回键一致。
+  const sample = {
+    token_configured: true,
+    downloaded_total: 1466,
+    selected_artists: 12,
+    following_total: 1240,
+    following_done: 1238,
+    pending_following: 2,
+    bookmarks_total: 186,
+    bookmarks_done: 186,
+    pending_bookmarks: 0,
+    other_done: 42,
+    failed_skipped: 7,
   };
-  const token = document.getElementById('st-token');
-  if (token) {
-    token.className = 'dot ok';
-    token.title = '已配置';
-  }
-  set('st-total', '已下载 1466 张');
-  set('st-last', '上次结束: 09:24:31');
-  set('st-ft', '1240');
-  set('st-pf', '2');
-  set('st-fd', '1238');
-  set('st-bt', '186');
-  set('st-pb', '0');
-  set('st-bd', '186');
-  set('st-od', '42');
-  set('st-failed', '7');
-  set('st-selected', '画师名单: 12 位');
+  win.Bridge.call = function (method) {
+    const result = real.apply(null, arguments);
+    if (String(method) !== 'get_status') return result;
+    return Promise.resolve(result).then((status) => Object.assign({}, status, sample));
+  };
+  win.__pixivStatusStubbed = true;
+  return 'stubbed';
 })();
