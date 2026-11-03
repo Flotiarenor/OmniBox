@@ -11,6 +11,7 @@
 | --- | --- | --- |
 | 静态检查（全量） | `python -m ruff check .` | **0 错误**（硬门禁） |
 | 插件规范 | `python tools/check_plugins.py` | **exit 0**（硬门禁） |
+| 插件后端分层 | `python tools/check_plugin_layering.py` | **exit 0**（硬门禁；禁 Mixin 切分 R1、文件行数上限 R2、只有 manifest 声明的入口可加载兄弟模块 R3。未迁移的插件按插件豁免于 `tools/layering_allowlist/<plugin>.txt`，迁移完成即删除；豁免文件过期本身是错误。形态与迁移步骤见 [plugin-backend-layout.md](plugin-backend-layout.md)） |
 | 打包规则（spec/收集） | `python tools/check_packaging.py` | **exit 0**（硬门禁） |
 | 版本一致性 | `python tools/check_version.py` | **exit 0**（硬门禁） |
 | 测试文件可运行性 | `python tools/check_tests.py` | **exit 0**（硬门禁；`tests/test_*.py` 必须能被 unittest 收集到用例，手工脚本按约定命名 `tests/debug_*.py`） |
@@ -43,6 +44,7 @@
 $py = ".\venv\Scripts\python.exe"
 & $py -m ruff check .
 & $py tools/check_plugins.py
+& $py tools/check_plugin_layering.py
 & $py tools/build_icons.py --check
 & $py tools/check_packaging.py
 & $py tools/check_version.py
@@ -97,7 +99,7 @@ node tools/check_frontend_escape.cjs
 | --- | --- | --- |
 | `changes` | ubuntu | 变更集判定：算出这次只动了文档还是动了代码，其余 job 靠它的输出决定跑不跑 |
 | `plugins` | ubuntu | 从 `plugins/*/manifest.json` 读出插件名，输出 JSON 矩阵；不维护第二份插件清单 |
-| `lint` | ubuntu | ruff + 插件规范 + 打包规则 + 版本一致性 + 图标 sprite + 测试文件可运行性 + 文档引用一致性 |
+| `lint` | ubuntu | ruff + 插件规范 + 插件后端分层 + 打包规则 + 版本一致性 + 图标 sprite + 测试文件可运行性 + 文档引用一致性 |
 | `docs` | ubuntu | **只在变更集含 `.md` 时跑**：文档引用一致性（`tools/check_docs.py`） |
 | `typecheck` | windows | pyright 内核（硬门禁）；不再输出“插件/测试基线”这种不会失败的报告 |
 | `test` | windows + ubuntu，py3.11 + 3.12 | 共享测试（`tools/plugin_ci.py --core`，不含插件专属测试） |
@@ -379,6 +381,10 @@ RUF100（未使用的 noqa）会把这些标注判为冗余并删除——它们
   这条基线曾经带 `continue-on-error`，永远不会让 CI 失败；现在只在本地按需运行，
   等错误清零后再考虑作为硬门禁。收敛顺序：先补 mixin 属性声明，再处理
   `reportOptionalMemberAccess` / `reportPossiblyUnboundVariable`，最后处理测试假对象。
+  其中 mixin 那部分不是"补声明"能根治的（分片里的 `self.x` 在类型层面确实不存在），
+  按插件组件化迁移解决，形态、迁移步骤与每步验收命令见
+  [plugin-backend-layout.md](plugin-backend-layout.md)；进度由
+  `tools/check_plugin_layering.py` 的豁免文件数量反映。
 - **`ruff format` 不进入门禁**：仓库从未按 ruff format 排版，直接开启会重排 173 个文件。
   如果要做，单独一个“纯格式化”提交，避免与逻辑改动混在同一个 diff 里。
 - **`ruff` 的 `BLE001` / `S110` / `UP`** 仍按专项提交逐类开启，便于 review 与回滚。

@@ -3,8 +3,8 @@ name: ci
 # 门禁总览（每一条都在本地实测过，见 docs/ci-and-release.md）：
 #   changes     —— 变更集判定：算出这次只动了文档还是动了代码，其余 job 靠它的输出决定跑不跑
 #   plugins     —— 从 plugins/*/manifest.json 生成插件矩阵，新增插件不用改本文件
-#   lint        —— ruff 全量 + 插件规范 + 打包规则 + 版本一致性 + 图标 sprite + 测试文件可运行性
-#                  + 文档引用一致性（本地隐私门禁只在开发机跑，runner 上必然 SKIP）
+#   lint        —— ruff 全量 + 插件规范 + 插件后端分层 + 打包规则 + 版本一致性 + 图标 sprite
+#                  + 测试文件可运行性 + 文档引用一致性（本地隐私门禁只在开发机跑，runner 上必然 SKIP）
 #   docs        —— 只在变更集含 .md 时跑：文档引用一致性（AGENTS.md 的名字 / 路径 / 链接）
 #   typecheck   —— pyright（内核零错误硬门禁；不再输出不会失败的插件/测试基线）
 #   test        —— 构建前端 + 共享测试（tools/plugin_ci.py --core），Windows + Linux 双平台
@@ -192,6 +192,12 @@ jobs:
 
       - name: 插件规范检查
         run: python tools/check_plugins.py
+
+      # 后端分层门禁：禁 Mixin 切分、文件行数上限、只有入口可以加载兄弟模块。
+      # 尚未迁移的插件靠 tools/layering_allowlist/<plugin>.txt 豁免（每个插件一份，
+      # 迁移完成即删除），因此这条步骤在迁移进行中是"逐插件收紧"的棘轮。
+      - name: 插件后端分层检查
+        run: python tools/check_plugin_layering.py
 
       - name: 打包规则检查（spec 与数据收集）
         run: python tools/check_packaging.py

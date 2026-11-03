@@ -86,6 +86,7 @@ iframe 以 `?content=1` 只装内容（插件页禁止 `.view-sub-sidebar`、`.v
 
 - [docs/plugin-guide.md](../docs/plugin-guide.md) —— 插件开发指南：结构、manifest、companion 插件、重型依赖、后端、前端、外观、文件服务、设置持久化、调试与测试。
 - [docs/plugin-page-architecture.md](../docs/plugin-page-architecture.md) —— 壳渲染的页面骨架、content iframe / native 面板归属、设置与搜索归属。
+- [docs/plugin-backend-layout.md](../docs/plugin-backend-layout.md) —— 后端布局与迁移配方：入口只做装配，其余模块是显式接收依赖的组件，组件之间不互相 import。
 - [docs/plugin-ui-guide.md](../docs/plugin-ui-guide.md) —— 界面规范：共享组件、外观变量、样式约定。
 
 改插件页面后跑 `venv/Scripts/python.exe tools/plugin_ui_audit.py`：它用真实壳检查页面骨架与内容页契约（见 [tools/AGENTS.md](../tools/AGENTS.md)）。
