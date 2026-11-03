@@ -236,10 +236,12 @@ class MangaLibraryPlugin(PluginBase):
         失效由统一刷新基建驱动 —— 目录级短路判定"没变"时连 `derive` 都不会被调用，
         所以切视图、切分栏、`manga_get_state` + `manga_list` 各调一次，全都只读内存。
         """
-        if self._shelf is None or self._shelf_dirty:
-            self._shelf = scan_manga(self.manga_dir, self._state['favorites'])
+        shelf = self._shelf
+        if shelf is None or self._shelf_dirty:
+            shelf = scan_manga(self.manga_dir, self._state['favorites'])
+            self._shelf = shelf
             self._shelf_dirty = False
-        return self._shelf
+        return shelf
 
     def list_manga(self) -> List[Dict]:
         return self._scan_manga()

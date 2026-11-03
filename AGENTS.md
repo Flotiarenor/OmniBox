@@ -23,16 +23,14 @@ venv/bin/python tools/check_npm_audit.py
 venv/bin/python tools/check_private_paths.py
 venv/bin/python tools/check_tests.py
 venv/bin/python tools/check_docs.py
-venv/bin/python -m pyright main.py shell tools
-venv/bin/python tools/check_pyright_plugins.py
+venv/bin/python -m pyright main.py shell tools plugins
 venv/bin/python -m unittest discover -s tests
 ```
 
-门禁脚本合计约 15 秒（两次 `pyright` 分析占大半）；`unittest discover` 是全量里最慢的一段，
+门禁脚本合计约 15 秒（`pyright` 一次全范围分析占大半）；`unittest discover` 是全量里最慢的一段，
 本机实测约 4 分钟（插件实例启动的用例占主要部分），改动小也建议跑全量 —— 插件测试按前缀拆分，
-单跑容易漏。`pyright` 对 `main.py shell tools` 是零错误硬门禁（与 CI 的 typecheck job 同范围）；
-插件后端另由 `tools/check_pyright_plugins.py` 按插件棘轮把关：已迁移的插件与新建插件必须 0 错误，
-尚未迁移的插件挂着已知欠账（清单在 `tools/pyright_allowlist/`，每次跑都会打印条数）。测试仍是基线、不拦截。
+单跑容易漏。`pyright` 覆盖内核与全部插件（`main.py shell tools plugins`），零错误硬门禁，
+与 CI 的 typecheck job 同范围；测试类型仍是基线、不拦截。
 每个门禁为什么存在、什么时候必须跑，见 [tools/AGENTS.md](tools/AGENTS.md)。
 
 ## 按改动选读

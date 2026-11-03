@@ -11,7 +11,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, Callable, ClassVar, Dict, Iterable, List, Optional, Protocol, cast
 
 from shell.backend.media_catalog import IMAGE_EXTENSIONS
 from shell.backend.plugin_base import PluginBase
@@ -24,6 +24,17 @@ ALLOWED_EXTENSIONS = IMAGE_EXTENSIONS
 
 class _ScanCancelled(Exception):
     """扫描被取消（后台 worker 的取消点抛出，由 `_scan_worker` 吞掉并放弃写结果）。"""
+
+
+class _HostExtensions(Protocol):
+    """`image-viewer` 实例上、`PluginBase` 之外本插件用到的成员。
+
+    `get_dependency()` 的静态类型是 `PluginBase | None`，而宿主额外注册的能力不在基类上，
+    所以按实例取用时要显式告诉类型检查器它是什么。`Protocol` 不参与运行期，行为不变。
+    """
+
+    def delete_files(self, rel_paths: List[str]) -> Dict:
+        ...
 
 
 class ImageCleanerPlugin(PluginBase):
@@ -76,12 +87,13 @@ class ImageCleanerPlugin(PluginBase):
     def get_file_roots(self) -> List[Path]:
         return self._get_host().get_file_roots()
 
-    @property
-    def thumb_dir(self) -> Path:
-        return self._get_host().thumb_dir
+    # 不覆写 `thumb_dir`：基类 getter 是 `get_data_root() / '.cache' / 'thumbs'`，而本插件的
+    # `get_data_root()` 已经转发给宿主，派生出的就是宿主的缩略图目录。早先这里用一个只读
+    # property 直接转发宿主的值，与基类的可写 property 形状不一致（缺 `fset`）。
 
-    def ensure_thumb(self, rel_path: str) -> str:
-        return self._get_host().ensure_thumb(rel_path)
+    def ensure_thumb(self, rel_path: str) -> None:
+        """复用宿主的缩略图入口；基类契约是"无返回值"，壳也不消费它。"""
+        self._get_host().ensure_thumb(rel_path)
 
     def get_thumb_data(self, rel_path: str):
         return self._get_host().get_thumb_data(rel_path)
@@ -144,7 +156,9 @@ class ImageCleanerPlugin(PluginBase):
         退回单根的行为与加额外图库支持之前完全一致。
         """
         host = self._get_host()
-        lister = getattr(host, 'list_roots', None)
+        # `list_roots` 是宿主后来才加的能力：旧版宿主可能没有它，所以这里仍按"可能不存在"取。
+        lister = cast(Optional[Callable[[], List[Dict]]],
+                      getattr(host, 'list_roots', None))
         if not callable(lister):
             return [(host.get_data_root(), '')]
         roots: list[tuple[Path, str]] = []
@@ -714,7 +728,7 @@ class ImageCleanerPlugin(PluginBase):
             from PIL import Image
             with Image.open(abs_path) as img:
                 small = img.convert('L').resize((9, 8))
-            pixels = list(small.getdata())
+            pixels = list(cast(Iterable[int], small.getdata()))
         except Exception:
             return None
 
@@ -740,9 +754,11 @@ class ImageCleanerPlugin(PluginBase):
         return {'groups': groups, 'scanned': len(valid)}
 
     def _resolve_threshold(self, threshold: Optional[int]) -> int:
-        if threshold is None:
-            threshold = self.setting('threshold', 8)
-        return max(0, min(16, int(threshold)))
+        # `setting()` 是动态类型；schema 里 threshold 的类型是 number、默认 8，写入时已按
+        # min/max 校验，所以读回来一定是数字（可能被存成 float）。
+        raw: int | float = threshold if threshold is not None else cast(
+            int | float, self.setting('threshold', 8))
+        return max(0, min(16, int(raw)))
 
     def _dhash_all(self, files: list, task: Optional['BackgroundTask'] = None) -> tuple:
         """算出每张图的 dHash，返回 `(hashes, valid)`；读不了的图不进 `valid`。
@@ -814,7 +830,7 @@ class ImageCleanerPlugin(PluginBase):
 
     def delete_files(self, rel_paths: List[str]) -> Dict:
         """复用 image-viewer 的删除接口，保持路径安全与宿主缓存清理一致。"""
-        return self._get_host().delete_files(rel_paths)
+        return cast(_HostExtensions, self._get_host()).delete_files(rel_paths)
 
     # ---------- 后台扫描任务（共享基建 shell.backend.tasks） ----------
 

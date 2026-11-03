@@ -17,8 +17,7 @@
 | 测试文件可运行性 | `python tools/check_tests.py` | **exit 0**（硬门禁；`tests/test_*.py` 必须能被 unittest 收集到用例，手工脚本按约定命名 `tests/debug_*.py`） |
 | 文档引用一致性 | `python tools/check_docs.py` | **exit 0**（硬门禁；每个 `AGENTS.md` 反引号里的名字/路径、围栏命令里的路径、Markdown 链接都必须还存在。插件界面文档只查后两类，理由见脚本头部） |
 | 本地隐私门禁 | `python tools/check_private_paths.py` | **开发机硬门禁，不进入 CI**：runner 没有本地配置，必然 SKIP。见 §1.1 |
-| 类型检查（内核） | `python -m pyright main.py shell tools` | **0 错误**（硬门禁） |
-| 类型检查（插件后端） | `python tools/check_pyright_plugins.py` | **0 错误**（硬门禁，按插件棘轮：已迁移与新建插件必须 0；尚未迁移的两个插件把已知错误逐条挂在 `tools/pyright_allowlist/`，每次打印条数） |
+| 类型检查（内核 + 插件） | `python -m pyright main.py shell tools plugins` | **0 错误**（硬门禁；覆盖内核与全部插件的后端） |
 | 类型检查（测试） | `python -m pyright tests` | **本地按需**；仍是基线，不进 CI（见 §6） |
 | 单元测试 | `python tools/plugin_ci.py --core` + `--plugin <name>` | **failures=0 / errors=0**（硬门禁；CI 按插件矩阵拆分，见 §2；本地仍可跑全量 `unittest discover`） |
 | 运行时禁止 print | `python -m unittest tests.test_no_print_in_runtime` | 通过（硬门禁） |
@@ -53,8 +52,7 @@ $py = ".\venv\Scripts\python.exe"
 & $py tools/check_docs.py
 & $py tools/check_npm_audit.py
 & $py tools/check_private_paths.py
-& $py -m pyright main.py shell tools
-& $py tools/check_pyright_plugins.py
+& $py -m pyright main.py shell tools plugins
 & $py -m unittest discover -s tests
 node tools/check_frontend_escape.cjs
 ```
@@ -103,7 +101,7 @@ node tools/check_frontend_escape.cjs
 | `plugins` | ubuntu | 从 `plugins/*/manifest.json` 读出插件名，输出 JSON 矩阵；不维护第二份插件清单 |
 | `lint` | ubuntu | ruff + 插件规范 + 插件后端分层 + 打包规则 + 版本一致性 + 图标 sprite + 测试文件可运行性 + 文档引用一致性 |
 | `docs` | ubuntu | **只在变更集含 `.md` 时跑**：文档引用一致性（`tools/check_docs.py`） |
-| `typecheck` | windows | pyright 内核（硬门禁）+ 插件后端按插件棘轮（`tools/check_pyright_plugins.py`） |
+| `typecheck` | windows | pyright 内核 + 全部插件（零错误硬门禁） |
 | `test` | windows + ubuntu，py3.11 + 3.12 | 共享测试（`tools/plugin_ci.py --core`，不含插件专属测试） |
 | `plugin` | windows + ubuntu，py3.12 | **每个插件一条 job**：`tools/plugin_ci.py --plugin <name>`；失败直接落到插件名 |
 | `frontend` | ubuntu | 转义门禁 + `npm ci` + `vue-tsc --noEmit` + `vite build` |
@@ -148,8 +146,8 @@ spec + `check_build_tree.py` 产物校验。插件矩阵按插件拆分，失败
 - `ruff format --check` 曾经带 `continue-on-error: true`，永远不会让 CI 失败；它只是
   输出差异，留在 CI 里会制造“已经检查过格式”的错觉。格式化检查仍在本地按需运行。
 - `pyright plugins tests` 曾经带 `continue-on-error: true`，同样永远不会失败。现在这条
-  被拆成两半：插件后端改成**真门禁**（`tools/check_pyright_plugins.py`，见上面门禁表与 §6），
-  测试类型仍是本地按需基线。
+  改成**真门禁**：插件后端组件化之后错误清零，`pyright main.py shell tools plugins` 一条
+  命令覆盖内核与全部插件；测试类型仍是本地按需基线（见 §6）。
 - `check_private_paths.py` 只在开发机上读取 `.config/plugins/*.json`；runner 上这些
   文件不存在，步骤必然 SKIP。它保留在本地提交前检查，不再占用 CI job。
 
@@ -379,17 +377,16 @@ RUF100（未使用的 noqa）会把这些标注判为冗余并删除——它们
 
 ## 6. 收紧路线（不进入 CI）
 
-- **插件后端的类型检查已经进门禁**：四个插件按
+- **插件后端的类型检查已经进门禁，且没有附加机制**：四个插件按
   [plugin-backend-layout.md](plugin-backend-layout.md) 完成组件化后，`pyright plugins`
-  从 664 条错误降到 10 条 —— 消失的 603 条全是 mixin 分片造成的
-  `Cannot access attribute "... " for class "XxxMixin*"` 伪影，剩下的 10 条集中在两个
-  未迁移的插件里。因此插件后端改为**按插件棘轮**（`tools/check_pyright_plugins.py`）：
-  没有豁免文件的插件必须 0 错误，两个未迁移插件把欠账逐条挂在 `tools/pyright_allowlist/`，
-  修完即删文件、棘轮对该插件永久生效。这就是"不再有插件类型基线"的实际形态；参考实现的
-  组件布局与每步验收命令见 [plugin-backend-layout.md](plugin-backend-layout.md)。
+  从 664 条错误降到 0 —— 消失的 603 条全是 mixin 分片造成的
+  `Cannot access attribute "... " for class "XxxMixin*"` 伪影，剩下的 10 条是
+  image-cleaner 与 manga-library 的 10 条既有类型错误，也已逐条修掉（只改类型、不改行为）。
+  现在就是一条命令覆盖内核与全部插件，没有豁免清单、没有类型基线；参考实现的组件布局与
+  每步验收命令见 [plugin-backend-layout.md](plugin-backend-layout.md)。
 - **测试类型仍是基线，不进 CI**：`pyright tests` 剩下的错误主要是测试假对象缺属性与
-  `reportOptionalMemberAccess`，与产品代码正确性无关。要在测试上也收紧，可照插件的做法
-  再来一次棘轮（按文件豁免、修一删一），但目前没有排期。
+  `reportOptionalMemberAccess`，与产品代码正确性无关。要在测试上也收紧，可照分层门禁的
+  做法按文件豁免、修一删一，但目前没有排期。
 - **`ruff format` 不进入门禁**：仓库从未按 ruff format 排版，直接开启会重排 173 个文件。
   如果要做，单独一个“纯格式化”提交，避免与逻辑改动混在同一个 diff 里。
 - **`ruff` 的 `BLE001` / `S110` / `UP`** 仍按专项提交逐类开启，便于 review 与回滚。

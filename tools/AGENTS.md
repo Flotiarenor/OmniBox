@@ -1,6 +1,6 @@
 # tools
 
-仓库自己的门禁与构建期工具，不是产品代码。`python -m pyright main.py shell tools` 把它们算作内核硬门禁，因此**这里的脚本也要保持零类型错误**。
+仓库自己的门禁与构建期工具，不是产品代码。`python -m pyright main.py shell tools plugins` 把它们与全部插件一起算作零错误硬门禁，因此**这里的脚本也要保持零类型错误**。
 
 ## 门禁脚本
 
@@ -9,7 +9,6 @@
 | `check_version.py` | `pyproject.toml` / `shell/frontend/package.json` / `package-lock.json`（根 `version` 与 `packages[""].version`）/ git tag 同源（`--print` 打印当前版本） | 改版本号、打 tag |
 | `check_plugins.py` | manifest 可解析、`name` 与目录名一致、前端/后端声明完整、每个字段都有读取方或已登记为无效果 | 改任何插件 |
 | `check_plugin_layering.py` | 插件后端的分层棘轮：禁 Mixin 切分（R1）、单文件/入口行数上限（R2）、只有 manifest 声明的入口可以加载兄弟模块（R3）。未迁移的插件按插件豁免于 `tools/layering_allowlist/`，迁移完成即删除对应文件；豁免过期本身是错误 | 改插件后端结构、迁移完一个插件 |
-| `check_pyright_plugins.py` | 插件后端的类型检查棘轮：跑一次 pyright 分析 `plugins`，按插件比对 `tools/pyright_allowlist/`。没有豁免文件的插件必须 0 错误（含新建插件）；有豁免文件的插件只留 warning 并打印条数；豁免过期或没有对应插件都是错误。它补的是"`pyright main.py shell tools` 根本不看插件"这个缺口 | 改任何插件后端、修完一个插件的欠账 |
 | `check_packaging.py` | PyInstaller spec 的数据收集规则（不需要真跑 PyInstaller） | 改 spec、收集规则或依赖 |
 | `check_build_tree.py` | 真正跑完 PyInstaller 之后，产物目录里有没有该有的东西 | 真跑过构建之后 |
 | `build_icons.py` | 由 `res/icons/icon_data.json` 生成 sprite 与注入函数，`--check` 校验一致性 | 改图标或图标相关代码 |
