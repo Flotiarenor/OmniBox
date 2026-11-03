@@ -6,6 +6,21 @@
 
 ---
 
+## 插件是受信代码
+
+插件不是沙箱里的扩展，而是与主程序一起运行的本地代码。两条机制决定了这一点：
+
+- **后端在壳的进程里执行**：`PluginManager` 用 `importlib` 按路径加载插件后端入口（默认 `backend/main.py`），模块名固定为 `<插件名>.backend.main`，随后在**主进程内**实例化入口类；插件与壳共享同一个解释器、同一份 `sys.path` 与同一套文件系统权限。加载时只校验入口文件落在插件目录内，不校验代码做了什么；manifest 的 `permissions` 与 `dependencies` 是声明，运行时不按它们拦住任何调用。
+- **前端与壳同源**：壳在 `App.vue` 里用 `<iframe>` 加载 `/plugins/<name>/frontend/…`，页面与壳由同一个服务提供，因此同源；这些 iframe 没有 `sandbox` 属性。插件脚本能读写壳文档的 DOM 与同源状态，`postMessage` 协议只是双方的约定，不构成权限边界。
+
+后果：**安装一个插件，等于在这台机器上安装并运行一段第三方代码**。它能访问你让它处理的目录，也能访问同一个进程有权访问的任何路径、发起任何网络请求；它的前端脚本在壳的源里执行。这与 VS Code 扩展的信任模型同一级别，不是浏览器插件的隔离模型。因此只安装来源可信、能拿到源码的插件：安装前先看 `plugins/<name>/backend/` 与 `frontend/` 里有什么，尤其是入口的 `__init__` / `on_load` 做了什么、前端向哪些地址发请求。
+
+`protected_paths` 不改变这条结论。壳在 `/file`、`/files`、`/thumbs` 与插件前端路由上执行它：清单包含壳的访问令牌、主体凭据表、壳配置文件与日志，以及插件自己申报的凭据路径；命中即返回 `403`，优先级高于"是否在允许的根之内"。它解决的是**事故** —— 插件的媒体根把 `.config` 圈了进去（开发模式下数据根与配置目录是兄弟目录），用户正常浏览时就把令牌当媒体文件发出去了。它挡不住恶意插件：插件后端在主进程里，一行 `open()` 就能读到同一个文件，不经过任何路由。写插件时把它当作"不要误伤壳的凭据"的约束，而不是隔离。
+
+真正的隔离需要进程级方案（插件在自己的子进程里跑）；重型依赖的独立运行环境尚未实装，当前没有任何一层隔离。
+
+---
+
 ## 1. 插件目录结构
 
 每个插件是一个独立文件夹，放置在项目根目录的 `plugins/` 下。结构如下：
@@ -775,7 +790,7 @@ iframe 只装内容；没有 chrome 声明的旧插件仍是整页模式。Shell
 - **共用组件样式**：`/shell/shared.css`（按钮、表单控件、Toast、图标与壳侧导航项 —— 壳页面与
   插件页同一份，见 `docs/plugin-ui-guide.md`）
 - **基础样式**：`/shell/base.css`（内容页的布局基线与插件侧独有的组件；页面骨架样式在壳的 `plugin-page.css` 里）
-- **基础脚本**：`/shell/base.js`（提供全局 `Bridge` 对象和通用 UI 组件）
+- **共享运行时**：从 `/shell/base.js` 起的一组同作用域脚本（`Bridge`、`Utils`、`PluginLifecycle` 在 `base.js`，弹窗、设置表单、宿主通道与通用 UI 组件各有分段；分段与各自职责见 `shell/frontend/AGENTS.md`）。注入顺序即依赖顺序，唯一真源是 `shell/backend/file_server.py` 的 `_PLUGIN_BOOTSTRAP_SCRIPT`。
 
 **你无需在 HTML 中手动引入这些文件**，Shell 会在加载插件时自动注入到 `<head>` 中。
 
@@ -855,6 +870,9 @@ manifest 的 `frontend.chrome` 声明品牌、导航、顶栏、搜索、状态�
   「含图片 / 视频 / 音乐」）；`local_only: true` 的字段不显示「网络位置」按钮，其余字段可由声明了
   network-location 能力的插件把远端共享项取到本地目录后回填。插件目录字段不再使用
   `system_pick_path('directory')` 系统对话框 —— 该接口只剩壳自己的设置页选图片；
+- `system_browse_dir` 是**管理员专属**端点（与 `system_pick_path` 一样按"窥探/操作这台机器"归类）：
+  它返回宿主文件系统的任意绝对路径树。非管理员仍可手输绝对路径保存设置项，但「浏览…」会拿到
+  403、对话框显示"目录读取失败"，只能取消。桌面窗口本身是 owner 令牌的持有者，不受影响。
 - image-viewer 仍是例外：它的设置按目录作用域读写、还带根目录列表控件，由内容页调用
   `openSettingsModal()` 渲染。其余插件不要再调用 `openSettingsModal()`，也不要自己拼设置弹窗；
 - `image-cleaner` / `pixiv-sync` 的 native 设置也由壳的 `PluginSettingsModal` 接管：原生面板顶栏
@@ -1212,7 +1230,9 @@ Shell 就会拒绝把该插件的设置文件当媒体资源返回；敏感内�
 
 Shell **不维护系统路径黑名单**：把整个盘符当媒体根（一整块媒体盘）是正当用法，
 因此壳不会因为「根看起来太宽」而拒绝；插件读写哪些路径由插件作者与安装者自负其责
-（见 §11 权限声明一节）。
+（见 §11 权限声明一节）。受保护清单也是同一套取向：它防的是插件把凭据文件当媒体发出去
+这类事故，不是隔离插件 —— 插件后端在主进程内运行，读同一个文件不必经过任何路由
+（见「插件是受信代码」）。
 
 **安全响应头**：所有响应（含 `/api`、`/file`、`/thumbs`、错误页）统一带
 `X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、
@@ -1255,12 +1275,13 @@ def browse_dir(self, path: str = ''):
 - 目录超过 2000 个时截断（浏览整个盘符根时不至于卡住）。
 
 **② 前端界面（大多数插件只需要这一层）** —— `system_browse_dir` 已把上面的
-`list_subdirectories` 注册成宿主接口，而「主要 / 额外 + 浏览…」这套目录列表是
+`list_subdirectories` 注册成宿主接口（**管理员专属**：它返回宿主文件系统的任意目录树，
+非管理员调用得到 403），而「主要 / 额外 + 浏览…」这套目录列表是
 **Shell 共享组件**，实现只有一份：
 
 | 资源 | 位置 | 谁在用 |
 | --- | --- | --- |
-| `window.FolderPicker` | `shell/frontend/public/shell/folder-picker.js` | `settings_schema` 里 `type:"directory"` 的字段（由 `base.js` 调用），以及 image-viewer 的设置页 |
+| `window.FolderPicker` | `shell/frontend/public/shell/folder-picker.js` | `settings_schema` 里 `type:"directory"` 的字段（由 `settings.js` 的 `createSettingsForm` 调用），以及 image-viewer 的设置页 |
 | `.iv-root-*` / `.iv-dirbrowser-*` 样式 | `shell/frontend/public/shell/folder-picker.css` | 同上 |
 
 这套组件原本长在 image-viewer 里（`app.js` 的 `_renderRoots` / `openDirBrowser`），
@@ -1360,7 +1381,7 @@ def _get_thumb(self, rel_path: str) -> Path:
 
 - **状态码语义**：`401`（未授权）/ `403`（越权）/ `404`（不存在）由后端返回，`/api` 前缀为 JSON（`{error, detail}`），浏览器路径为本体风格标记页；
 - **壳内统一展示**：插件 iframe 加载到错误标记页时（标记页 `<html>` 带 `data-status-page="<code>"` 属性），Vue 壳检测后自动跳转壳内建视图 `/status?code=…&from=…` 显示错误卡片（含重试）；浏览器顶层直接访问错误 URL 时标记页 JS 自动跳转同一视图；
-- **调试面板**：`python main.py --status-debug` 启动后，`/status` 视图显示状态调试面板（健康检查 / API 鉴权演示 / 错误跳转演示）；一键调试环境见 `python tests/debug_status_pages.py`；
+- **调试面板**：`python main.py --status-debug` 启动后，`/status` 视图显示状态调试面板（健康检查 / API 鉴权演示 / 错误跳转演示）；一键调试环境见 `python tools/debug/debug_status_pages.py`；
 - **API 错误 Toast**：HTTP 桥收到 401/403/404/5xx 时派发 `omnibox:api-error` 事件，壳内弹出本体 Toast（插件前端无需处理）。
 
 ---
@@ -1389,7 +1410,7 @@ native 设置同样由 `PluginSettingsModal` 接管（入口是 native 顶栏的
 隐藏逻辑页发 `settings-saved`。
 
 字段的唯一前端类型是 `shell/frontend/src/core/plugin-content.ts` 的 `SchemaField`：壳的
-`PluginSettingsModal`、壳的 `SchemaRenderer`（native `form`）与内容页 `base.js` 的
+`PluginSettingsModal`、壳的 `SchemaRenderer`（native `form`）与内容页 `settings.js` 的
 `createSettingsForm` 都消费同一份 JSON。三者对个别字段的处理并不完全一致，见本节末尾。
 
 ```python
@@ -1426,7 +1447,7 @@ class MyPlugin(PluginBase):
 | `local_only`               | 可选 | 仅 `directory`：三个入口的 `FolderPicker` 都不显示「网络位置」，只接受本机目录 |
 | `secret`                   | 可选 | `True` 表示**凭据类**设置项：对外掩码、设置文件受保护；空串清除（消费方差异见下）        |
 | `admin_only`               | 可选 | `True` 表示**改动该键需要管理员主体**；只由后端判定，前端不置灰/不隐藏                   |
-| `hidden`                   | 可选 | `True` 表示面板不渲染但键仍可写；壳弹窗与 `base.js` 跳过，`SchemaRenderer` 不判断         |
+| `hidden`                   | 可选 | `True` 表示面板不渲染但键仍可写；壳弹窗与 `settings.js` 跳过，`SchemaRenderer` 不判断         |
 | `required`                 | 可选 | 只给标签加必填样式，前端与后端都不做提交校验                                              |
 | `condition` / `save_target` | 可选 | 类型中的预留字段，当前没有消费方                                                          |
 
@@ -1442,7 +1463,7 @@ class MyPlugin(PluginBase):
   控件）、`directory`（自绘路径行 + `FolderPicker` 浏览/网络位置，`local_only` 隐藏「网络位置」）、
   `multi`、`info`；不判断 `hidden`、`required`、`emptyText`、`admin_only`、`condition`、`save_target`。
   `form` block 仍可用，但 `image-cleaner` / `pixiv-sync` 已不通过它渲染插件设置。
-- `base.js` 的 `createSettingsForm`：支持 `min`/`max`/`step`、`directory`（`FolderPicker.createList`）/
+- `settings.js` 的 `createSettingsForm`：支持 `min`/`max`/`step`、`directory`（`FolderPicker.createList`）/
   `multi`/`local_only`/`emptyText`、`hidden`、`required`（仅标签样式）、`info`；**没有 secret
   专用渲染**，凭据以掩码文本回填，原样提交由后端按"不改动"处理，清空输入框提交空串则由后端清除。
 
@@ -1559,7 +1580,7 @@ def delete_files(self, rel_paths):
 
 三个入口都能完成清除：`PluginSettingsModal` 打开时把 secret 输入框置空，并提供「清除已保存的
 凭据」勾选框 —— 勾选后提交空字符串；未勾选且输入框仍为空时省略该键（按上表"不改动"），填写
-新值则覆盖。内容页 `base.js` 的旧表单与 native `form` 没有专用清除控件，清空输入框提交空串即
+新值则覆盖。内容页 `settings.js` 的旧表单与 native `form` 没有专用清除控件，清空输入框提交空串即
 按上表清除。`admin_only` 也只在后端判定，三个入口都不置灰、不隐藏；`PluginSettingsModal` 会把
 后端返回的逐字段 `errors` 显示到对应输入框，同时显示汇总 `error`。
 
@@ -1592,14 +1613,15 @@ def get_protected_paths(self):
 
 `type: "directory"` 的字段在插件设置弹窗里渲染成**与图片相册完全相同的目录列表** ——
 不是"样子像"，而是同一个实现（`window.FolderPicker`，见 §7.2；壳弹窗、native form 与内容页
-`base.js` 都直接调它）：
+`settings.js` 都直接调它）：
 
 - 每行是「主要 / 额外」标签 + 路径 + 方形 `icon:x` 删除按钮；第一行是**位置**属性而不是固定标记，
   所以每行都能删 —— 删掉第一行后下一行自动顶上成为主要目录；
 - 下面是「输入框 + 浏览… + 添加」：可以手输绝对路径、回车添加，或点「浏览…」
   弹出宿主目录选择器（`system_browse_dir` → 共享基建
   `media_catalog.list_subdirectories`，见 §7.2），可看盘符、逐级下钻、
-  看到每个目录「含图片 / 视频 / 音乐」；
+  看到每个目录「含图片 / 视频 / 音乐」。该端点管理员专属：非管理员点「浏览…」
+  会看到"目录读取失败"，手输路径仍然可用；
 - 重复目录（含只差尾斜杠的写法）与空路径会被拒绝并提示。
 
 > 声明 `frontend.chrome` 的插件与两个附属插件的 native 设置由壳的 `PluginSettingsModal` 渲染
@@ -1678,6 +1700,11 @@ def get_settings(self):
 | 保存全部               | `self.save_settings({...})`                               |
 | 保存单个（运行时状态） | `self.update_setting('last_volume', 0.8)`                 |
 
+`save_settings` 与 `update_setting` 都走 `SettingsStore.update()`：读-改-写在同一把
+插件锁内完成，因此"前端保存设置"与"插件运行期回写状态"并发时不会互相覆盖（两条路径
+各写同一个 JSON 的不同键，谁都不会丢掉对方的键）。`update_setting` 写入失败时返回
+`False` 并记一条 warning —— 调用方只判真假时，日志是唯一的排障线索。
+
 ### 8.4 响应设置变更
 
 **不要覆写 `save_settings()`**。设置变更时，基类会自动调用 `on_settings_changed(changed_keys)`，只需覆写它：
@@ -1722,7 +1749,7 @@ image-viewer 需要在不同文件夹应用不同设置（如行高、排序）�
 4. **查看 Flask 日志**：所有文件请求都会显示在控制台，便于排查 404 错误。
 5. **检查注入是否成功**：在控制台输入 `typeof Bridge`，应返回 `"object"`；输入 `typeof createTree`，应返回 `"function"`。
 6. **状态调试（--status-debug）**：以 `python main.py --web-only --status-debug` 启动后，访问 `/status` 显示壳内调试面板（健康检查 200 / API 鉴权 401 / 错误跳转演示），用于验证鉴权与错误页行为。
-7. **一键调试环境**：`python tests/debug_status_pages.py` 自动起独立端口调试服务器（注入「坏插件」演示 iframe 404 → 壳内错误卡片链路），并用 requests 打印 11 个 HTTP 场景触发表，浏览器打开 `/status` 即调试面板；Ctrl+C 自动清理。
+7. **一键调试环境**：`python tools/debug/debug_status_pages.py` 自动起独立端口调试服务器（注入「坏插件」演示 iframe 404 → 壳内错误卡片链路），并用 requests 打印 11 个 HTTP 场景触发表，浏览器打开 `/status` 即调试面板；Ctrl+C 自动清理。
 8. **HTTP 直连注意**：`/api`、`/file`、`/thumbs` 受令牌保护（见 §7.1），curl 测试需带 `X-Omnibox-Token` 头或先访问首页拿 Cookie；无 Cookie 客户端访问 `/thumbs/x.png` 会得到 401 而非 404。
 9. **真实浏览器端到端（改壳前端后建议跑）**：
 
@@ -1737,9 +1764,9 @@ image-viewer 需要在不同文件夹应用不同设置（如行高、排序）�
    **为什么需要它**：有一类缺陷是"界面静默不更新"——接口数据、status、cookie 全正常，
    但界面不渲染，而且**不抛异常、控制台没有报错**。实测过一次（插件列表不是响应式数据，
    computed 在数据到达前求值并永久缓存空数组），unittest 与 vm 桩都抓不到，只有真实浏览器能抓。
-   **这类用例不进 CI**：本地打开应用一眼可见的问题属于本地自测范围，CI 上跑真实浏览器又慢又脆；
-   `selenium` 因此只声明在 `requirements-e2e.txt`（CI 装的是 `requirements-dev.txt`），
-   未安装时用例自动 skip，不影响 `unittest discover` 结果。
+   **其中壳交互这两条已进 CI**：`tools/shell_e2e_smoke.py` 在 `shell-e2e` job 里跑壳整体链路与分隔条两条用例，
+   缺 selenium / Chrome / 前端产物或有用例被跳过都判失败。其余 7 个 e2e 仍只在本地跑：`selenium`
+   只声明在 `requirements-e2e.txt`，未安装时它们自动 skip，不影响 `unittest discover` 结果。
 
 10. **插件页面骨架审计**：`venv/Scripts/python.exe tools/plugin_ui_audit.py`。它起真实壳
     （或复用 `--base-url` 指向的实例）逐插件检查：壳是否渲染了
@@ -1773,7 +1800,7 @@ image-viewer 需要在不同文件夹应用不同设置（如行高、排序）�
 - **颜色适配**：所有颜色使用 CSS 变量（如 `var(--bg-surface)`），避免硬编码颜色值。如需在 JS 中获取当前颜色，使用 `getComputedStyle(document.documentElement).getPropertyValue('--accent')`。
 - **主题无感知**：插件无需编写主题切换逻辑，Shell 已通过 MutationObserver 自动同步 `data-theme` 和 `data-custom-colors` 到所有 iframe。
 - **前端资源**：尽量轻量，避免引入大型框架（除非必要）。
-- **权限声明**：如实填写 `permissions`，作为面向用户的知情明示（安装/设置页可见）。框架**不设运行时权限墙**——插件后端运行在主进程内，任何声明都无法拦截 `import os` 之类直接系统访问；隔离与信任依赖进程级 runtime 方案（见 `docs/core-direction.md` §3.4、§3.5）。
+- **权限声明**：如实填写 `permissions`，它是对外的知情声明、运行时没有任何读取方。框架**不设运行时权限墙**——插件后端运行在主进程内，任何声明都拦不住 `import os` 这类直接系统访问；信任模型见「插件是受信代码」，进程级隔离方案尚未实装。
 - **版本管理**：遵循语义化版本，方便依赖解析。
 - **错误处理**：后端方法应捕获异常并返回有意义的错误信息，避免前端收到 Python 堆栈。
 - **设置持久化**：使用 `settings_schema` 声明式配置，设置自动存储在 `.config/plugins/<name>.json`。读取用 `setting()`，保存用 `save_settings()`，响应变更用 `on_settings_changed()`。**不要**覆写 `save_settings()`，**不要**在插件目录创建 `settings.json`。
