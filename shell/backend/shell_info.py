@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -113,6 +114,11 @@ BACKGROUND_LIBRARY_DIRNAME = 'backgrounds'
 MAX_BACKGROUND_IMAGES = 300
 # 单张上限：选错文件（例如把几十 GB 的视频改名成 .jpg）时不必先整份复制进 .config。
 MAX_BACKGROUND_IMAGE_BYTES = 64 * 1024 * 1024
+# 删除图片时的重试：Windows 上浏览器正在读这张图（刚设为背景、缩略图还在加载）会让
+# `unlink` 报 WinError 32「另一个程序正在使用此文件」。这类占用是毫秒级的，重试几次
+# 等句柄关闭；不重试则「删除当前背景」变成看运气的操作，界面只收到一条删除失败。
+UNLINK_RETRIES = 10
+UNLINK_RETRY_DELAY_SECONDS = 0.1
 # Windows 文件名的保留字符与控制字符：源文件名直接拿来当库内文件名会写不进去。
 _UNSAFE_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
@@ -311,10 +317,21 @@ class ShellInfo:
             return {'success': False, 'error': f'解析路径失败: {e}'}
         if resolved.parent != folder or not resolved.is_file():
             return {'success': False, 'error': f'不在背景图库里: {target}'}
-        try:
-            resolved.unlink()
-        except OSError as e:
-            return {'success': False, 'error': f'删除图片失败: {e}'}
+        for attempt in range(UNLINK_RETRIES):
+            try:
+                resolved.unlink()
+                break
+            except FileNotFoundError:
+                # 并发删除：目标已经被别的请求删掉了，结果与成功一致
+                break
+            except PermissionError as e:
+                # 浏览器短暂占用（见 UNLINK_RETRIES 的说明）：等到最后一次再报错
+                if attempt == UNLINK_RETRIES - 1:
+                    log.warning(f'[ShellInfo] 背景图删除失败（重试 {UNLINK_RETRIES} 次仍被占用）: {e}')
+                    return {'success': False, 'error': f'删除图片失败: {e}'}
+                time.sleep(UNLINK_RETRY_DELAY_SECONDS)
+            except OSError as e:
+                return {'success': False, 'error': f'删除图片失败: {e}'}
         log.info(f'[ShellInfo] 背景图已删除 {resolved.name}')
         return {'success': True, 'name': resolved.name}
 
