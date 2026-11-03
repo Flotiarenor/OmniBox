@@ -7,25 +7,66 @@
 - 同时是扩展提供方：`get_extensions()` 以 placement 值 `network-location` 注册，供 `/shell/folder-picker.js` 的目录组件发现并使用（`loadNetworkProviders` 按 placement 取提供方，`openNetworkPicker` 嵌入 `embedUrl` 并追加 `?embed=1`；`openDirBrowser` 负责本地目标目录）。壳的 `PluginSettingsModal` 目录字段（`SettingsDirectoryField`）与内容页 `openSettingsModal`（如 image-viewer）都走同一个 `FolderPicker`：字段未声明 `local_only` 时，目录行上的「网络位置」入口即发现本提供方；`local_only: true` 的字段不显示该入口。嵌入页为 `/plugins/group-mesh/frontend/network-location.html`。
 - 复用方式：其它插件通过 `PluginBase.get_dependency('group-mesh')` 取本插件实例；`dependencies` 为空数组，本插件不依赖任何插件。
 
+## 后端分层
+
+入口 `plugins/group-mesh/backend/main.py` 是唯一的装配点：它 `load_sibling` 加载
+`const` 与 18 个组件模块（`pulse`、`peer_facts`、`storage`、`registry`、`connections`、
+`node`、`discovery`、`peers`、`group`、`shares`、`status`、`remote`、`materialize`、
+`mirror`、`fetch`、`uploads`、`upload`），构造组件并注入依赖。**组件之间不互相 import**
+（分层门禁 R3），共享的无状态工具（`MeshRules`）与常量放在 `const.py` 由入口传下去。
+
+装配顺序就是依赖顺序（自下而上）：
+
+| 层 | 组件 | 构造依赖 |
+| --- | --- | --- |
+| 常量 | `const` | 无 |
+| 脉冲 | `pulse.SyncPulse` | 设置端口 |
+| 对端事实 | `peer_facts.PeerFacts` | 共享锁 |
+| 本机数据 | `storage.Storage` | 数据根、设置端口、脉冲 |
+| 注册表 | `registry.MeshRegistry` | 存储、共享锁 |
+| 连接 | `connections.ConnectionPool` | 共享锁 |
+| 节点 | `node.Node` | 存储、注册表、连接池、脉冲、设置端口、默认端口 |
+| 发现 | `discovery.Discovery` | 存储、注册表、连接池、脉冲、对端事实、节点 |
+| 对端 | `peers.Peers` | 存储、注册表、发现、节点、对端事实、脉冲、规则 |
+| 团体 | `group.Group` | 存储、设置端口、规则 |
+| 共享项 | `shares.Shares` | 存储、节点、设置端口、共享锁、规则、全局数据根、刷新引擎闭包 |
+| 状态 | `status.StatusReport` | 存储、节点、发现、脉冲、共享项、对端事实、设置端口 |
+| 远端链 | `remote.Remote`、`materialize.Materialize` | 存储、注册表、连接池、规则 |
+| 镜像 | `mirror.Mirror` | 存储、注册表、连接池、物化、规则、受保护判定 |
+| 取字节 | `fetch.Fetch` | 存储、物化、远端、设置端口、规则 |
+| 上传 | `uploads.UploadQueue`、`upload.Uploader` | 存储、规则／存储、注册表、任务表、规则 |
+
+**一个共享锁**：连接池、注册表合并、共享项读改写共用装配期创建的那一把 `lock`。
+迁移前它们就是同一把锁，拆开会改变并发行为（后台探测与界面请求的互斥范围）。
+
+**两条刻意保留的注入接缝**：`Shares` 收的是一个 `lambda: engine_for(self)` 闭包
+（刷新引擎按插件实例缓存，需要入口身份）；`Mirror` 收的是 `self.is_protected_path`
+（受保护判定在基类）。两者都是构造参数注入，不是运行期 `getattr`。
+
 ## 文件地图
 
 | 文件 | 职责 | 关键符号 |
 | --- | --- | --- |
 | `plugins/group-mesh/manifest.json` | 插件声明与壳渲染的页面 chrome | `name`、`keepAlive`、`permissions`、`backend`、`frontend.route`、`frontend.chrome`（`brand`、`nav`、`toolbar`、`status`、`freshness`）、`icon`、`minShellVersion` |
-| `plugins/group-mesh/backend/main.py` | 类骨架、设置 schema、API 注册、扩展注册、生命周期 | `GroupMeshPlugin`、`settings_schema`、`register_api`、`get_extensions`、`on_load`、`on_unload`、`DEFAULT_PORT`、`load_sibling`、`_common`、`_storage`、`_status`、`_group`、`_shares`、`_peers`、`_sync`、`_remote`、`_upload`、`_materialize`、`_mirror`、`_fetch`、`_node` |
-| `plugins/group-mesh/backend/common.py` | 分片共用常量与纯函数 | `_opts`、`safe_rel`、`within_root`、`_mtime_ns`、`DEFAULT_PORT`、`AUTO_START_RETRY_SECONDS`、`DEFAULT_MAX_FETCH_BYTES`、`PROBE_TIMEOUT_SECONDS`、`PROBE_OVERALL_SECONDS`、`SYNC_OVERALL_SECONDS`、`UPLOAD_TIMEOUT_SECONDS`、`UPLOAD_KEEP`、`UPLOAD_TASK_FILE`、`MIRROR_MTIME_WINDOW_NS` |
-| `plugins/group-mesh/backend/storage.py` | 路径属性、受保护路径、身份与名单的落盘 | `StorageMixin`、`get_data_root`、`identity_dir`、`cache_dir`、`downloads_dir`、`remote_cache_dir`、`staging_dir`、`get_protected_paths`、`_load_identity`、`_load_roster`、`_save_roster`、`_load_shares`、`_save_shares`、`_load_share_roots`、`_save_share_roots`、`_share_roots_file`、`_tree_usage`、`_roster_history`、`_record_roster_history`、`_load_roster_history` |
-| `plugins/group-mesh/backend/status.py` | 首屏状态汇总 | `StatusMixin`、`get_status` |
-| `plugins/group-mesh/backend/group.py` | 身份初始化、团体创建与加入、邀请串、成员增减 | `GroupMixin`、`init_identity`、`create_group`、`join_group`、`get_invite`、`get_device_keys`、`add_member`、`_invite_string` |
-| `plugins/group-mesh/backend/shares.py` | 共享项挂载与移除、用量与条目数、统一刷新声明 | `ShareMixin`、`get_share_roots`、`add_share`、`remove_share`、`refresh_share_roots`、`freshness_spec`、`_root_state`、`_share_roots_report`、`_scan_share_usage`、`_count_entries`、`_freshness_derive`、`_freshness_prune`、`_freshness_audit`、`_freshness_pass_end`、`_freshness_rebuild` |
-| `plugins/group-mesh/backend/peers.py` | 对端设备与可读共享项、手工登记地址、本机地址串 | `PeerMixin`、`peers`、`my_endpoint`、`list_peers`、`_peers_file`、`_load_manual_peers`、`_save_manual_peers`、`_parse_endpoint`、`_peer_names`、`_device_names`、`_peer_endpoints`、`_pick_endpoint`、`_bootstrap_endpoints` |
-| `plugins/group-mesh/backend/sync.py` | 注册表与名单的后台轮询与变更 push、出站连接池、候选端点 | `SyncMixin`、`get_sync_status`、`_sync_interval_seconds`、`_request_sync`、`_clear_sync_dirty`、`_start_sync`、`_stop_sync`、`_sync_loop`、`_sync_once`、`_sync_candidates`、`_push_pending_changes`、`_push_roster`、`_push_registry`、`_ensure_registry`、`_fetch_registries_parallel`、`_fetch_registry_from`、`_adopt_remote_roster`、`_connect`、`_release`、`_open_dedicated`、`_manual_endpoints`、`PROBE_TIMEOUT_SECONDS`、`PROBE_OVERALL_SECONDS`、`SYNC_OVERALL_SECONDS` |
-| `plugins/group-mesh/backend/remote.py` | 列对端共享项与目录、取回单个文件 | `RemoteMixin`、`list_remote`、`download_remote`、`_fetch_to` |
-| `plugins/group-mesh/backend/upload.py` | 上传任务、进度与取消、续传记录 | `UploadMixin`、`upload_remote`、`upload_status`、`cancel_upload`、`_register_upload`、`_prune_uploads`、`_persist_uploads`、`_restore_uploads`、`_upload_view`、`_cancel_all_uploads`、`_upload_task_file`、`_upload_record_file`、`_upload_key`、`_resume_offset`、`_upload_worker`、`UPLOAD_KEEP`、`UPLOAD_TASK_FILE`、`UPLOAD_TIMEOUT_SECONDS` |
-| `plugins/group-mesh/backend/materialize.py` | 远端目录物化、索引与对账 | `MaterializeMixin`、`materialize_remote`、`_remote_index_file`、`_load_remote_index`、`_cached_remote_index`、`_invalidate_remote_index`、`_save_remote_index`、`_walk_remote`、`_prune_absent`、`_content_changed`、`_is_fetched`、`_apply_remote_mtime` |
-| `plugins/group-mesh/backend/mirror.py` | 把共享项完整取到用户指定目录 | `MirrorMixin`、`mirror_share`、`_mirror_files`、`_mirror_file_current`、`MIRROR_MTIME_WINDOW_NS` |
-| `plugins/group-mesh/backend/fetch.py` | 占位判定、按需取字节、远端缓存用量与清理 | `FetchMixin`、`is_content_placeholder`、`ensure_file`、`max_fetch_bytes`、`remote_cache`、`clear_remote_cache`、`_fetch_lock`、`_discard_staging`、`DEFAULT_MAX_FETCH_BYTES` |
-| `plugins/group-mesh/backend/node.py` | 共享节点启停、注册发布、监听失败提示 | `NodeMixin`、`start_node`、`stop_node`、`get_node_status`、`_publish_registration`、`_refresh_own_registration`、`_republish_registration`、`_auto_start_node`、`_listen_error`、`_close_connections`、`on_settings_changed`、`DEFAULT_PORT`、`AUTO_START_RETRY_SECONDS` |
+| `plugins/group-mesh/backend/main.py` | 入口（facade）：设置 schema 引用、API 绑定表、壳按名调用的钩子、装配 | `GroupMeshPlugin`、`settings_schema`、`register_api`、`get_extensions`、`get_data_root`、`get_protected_paths`、`freshness_spec`、`is_content_placeholder`、`ensure_file`、`on_load`、`on_unload`、`on_settings_changed`、`cache_dir`、`downloads_dir` |
+| `plugins/group-mesh/backend/const.py` | 共享常量、设置项 schema 与跨组件纯函数（只有入口加载） | `SETTINGS_SCHEMA`、`DEFAULT_PORT`、`MeshRules`、`RULES`、`opts`、`mtime_ns`、`safe_rel`、`within_root` |
+| `plugins/group-mesh/backend/pulse.py` | 后台同步的脏标志、唤醒/停止事件与间隔 | `SyncPulse`、`interval`、`request`、`clear`、`dirty`、`status`、`wake_event`、`stop_event`、`last_sync_at`、`last_error` |
+| `plugins/group-mesh/backend/peer_facts.py` | 对端的运行期事实：连不上的端点、名单版本、采纳提示 | `PeerFacts`、`reset_unreachable`、`mark_unreachable`、`note_roster`、`notes_snapshot`、`version_list`、`set_notice`、`unreachable`、`roster_notes`、`notice` |
+| `plugins/group-mesh/backend/storage.py` | 数据根与派生路径、身份/名单/共享项/手动对端的落盘、用量统计 | `Storage`、`root`、`identity_dir`、`cache_dir`、`downloads_dir`、`remote_cache_dir`、`staging_dir`、`protected_paths`、`tree_usage`、`count_entries`、`load_identity`、`load_roster`、`save_roster`、`roster_history`、`record_roster_history`、`load_roster_history`、`load_shares`、`save_shares`、`load_share_roots`、`save_share_roots`、`share_roots_file`、`load_manual_peers`、`save_manual_peers`、`peers_file` |
+| `plugins/group-mesh/backend/registry.py` | 注册表对象与「设备 → 端点/共享清单」的派生视图 | `MeshRegistry`、`published_seq`、`ensure`、`reload`、`enabled`、`size`、`get`、`add_and_save`、`merge_and_save`、`snapshot_copy`、`device_names`、`peer_endpoints`、`pick_endpoint`、`peer_names`、`bootstrap_endpoints`、`candidates_for` |
+| `plugins/group-mesh/backend/connections.py` | 出站连接：界面侧复用池与后台专用短连接 | `ConnectionPool`、`PROBE_TIMEOUT_SECONDS`、`get`、`release`、`open_dedicated`、`close_all` |
+| `plugins/group-mesh/backend/node.py` | 共享节点启停、注册记录发布、自动启动、监听失败提示 | `Node`、`AUTO_START_RETRY_SECONDS`、`start`、`stop`、`publish`、`refresh_own`、`republish`、`auto_start`、`listen_error`、`status`、`listening`、`on_settings_changed` |
+| `plugins/group-mesh/backend/discovery.py` | 后台同步轮次、候选端点、注册快照并行探测与推送 | `Discovery`、`PROBE_OVERALL_SECONDS`、`SYNC_OVERALL_SECONDS`、`status`、`start`、`stop`、`run_once`、`probe_round`、`sync_candidates`、`push_pending_changes`、`fetch_registries_parallel`、`fetch_registry_from`、`adopt_remote_roster` |
+| `plugins/group-mesh/backend/peers.py` | 对端设备与可读共享项、手工登记地址、本机地址串 | `Peers`、`action`、`parse_endpoint`、`my_endpoint`、`list_peers` |
+| `plugins/group-mesh/backend/group.py` | 身份初始化、团体创建与加入、邀请串、成员增减 | `Group`、`init_identity`、`create_group`、`join_group`、`invite_string`、`get_invite`、`get_device_keys`、`add_member` |
+| `plugins/group-mesh/backend/shares.py` | 共享项挂载与移除、用量与条目数、统一刷新声明 | `Shares`、`usage_cache`、`get_share_roots`、`add_share`、`remove_share`、`refresh_share_roots`、`root_state`、`share_roots_report`、`scan_share_usage`、`spec`、`derive`、`prune`、`audit`、`pass_end`、`rebuild` |
+| `plugins/group-mesh/backend/status.py` | 首屏状态汇总 | `StatusReport`、`get_status` |
+| `plugins/group-mesh/backend/remote.py` | 列对端共享项与目录、取回单个文件 | `Remote`、`list_remote`、`download_remote`、`fetch_to` |
+| `plugins/group-mesh/backend/materialize.py` | 远端目录物化、索引缓存与对账 | `Materialize`、`index_cache`、`materialize_remote`、`index_file`、`load_index`、`cached_index`、`invalidate_index`、`save_index`、`walk_remote`、`prune_absent`、`content_changed`、`is_fetched`、`apply_remote_mtime` |
+| `plugins/group-mesh/backend/mirror.py` | 把共享项完整取到用户指定目录 | `Mirror`、`MIRROR_MTIME_WINDOW_NS`、`mirror_share`、`mirror_files`、`mirror_file_current` |
+| `plugins/group-mesh/backend/fetch.py` | 占位判定、按需取字节、远端缓存用量与清理 | `Fetch`、`DEFAULT_MAX_FETCH_BYTES`、`is_content_placeholder`、`ensure_file`、`fetch_lock`、`discard_staging`、`max_fetch_bytes`、`remote_cache`、`clear_remote_cache` |
+| `plugins/group-mesh/backend/uploads.py` | 上传任务表与续传记录（不持有线程、不发请求） | `UploadQueue`、`UPLOAD_KEEP`、`UPLOAD_TASK_FILE`、`register`、`prune`、`persist`、`restore`、`view`、`finish`、`fail`、`cancel_all`、`status`、`cancel`、`upload_key`、`load_records`、`save_record`、`clear_record`、`resume_offset`、`local_stamp` |
+| `plugins/group-mesh/backend/upload.py` | 把本机文件投放到对端：来源校验、任务启动、上传线程 | `Uploader`、`UPLOAD_TIMEOUT_SECONDS`、`upload_remote`、`worker` |
 | `plugins/group-mesh/frontend/index.html` | 内容页入口：五个面板、六个弹窗与脚本装载（页面骨架由壳渲染，不在这里） | `#gm-panels`、`#gm-content`、`#kernel-missing`、`data-panel`、`data-title`、`data-sub`、`data-active` |
 | `plugins/group-mesh/frontend/network-location.html` | 网络位置提供方页面（弹窗 iframe） | `nl-peers`、`nl-shares`、`nl-dest-input`、`nl-dest`、`nl-note`、`nl-pick`、`nl-run`、`nl-cancel`、`nl-item`、`nl-sub`、`nl-path`、`nl-step`、`nl-list`、`nl-actions`、`nl-pick-row`、`is-active`、`MESSAGE_TYPE`、`omnibox:network-location`、`loadPeers`、`selectPeer`、`selectShare`、`pickDestination`、`run`、`reply`、`destinationProblem`、`syncFromInput`、`normalizeDestination`、`applyPickedDestination`、`updateHint`、`updateRunButton`、`FolderPicker.openDirBrowser` |
 | `plugins/group-mesh/frontend/group-mesh.css` | 插件自有样式：面板栅格、卡片、表格、徽章、远端两栏 | `--gm-radius`、`--gm-radius-sm`、`--gm-accent-soft`、`--gm-success-soft`、`--gm-warn-soft`、`--gm-danger-soft`、`--gm-peers-width`、`.gm-content`、`.gm-panel`、`.gm-grid`、`.gm-card`、`.gm-card-ok`、`.gm-card-warn`、`.gm-card-error`、`.gm-card-muted`、`.gm-card-wide`、`.gm-body`、`.gm-kv`、`.gm-actions`、`.gm-form`、`.gm-table`、`.gm-badge`、`.gm-badge-owner`、`.gm-badge-admin`、`.gm-badge-member`、`.gm-badge-ok`、`.gm-badge-warn`、`.gm-hint`、`.gm-empty`、`.gm-skeleton-line`、`.gm-list`、`.gm-details`、`.gm-address`、`.gm-address-row`、`.gm-address-label`、`.gm-address-value`、`.gm-remote`、`.gm-remote-tools`、`.gm-remote-peers`、`.gm-remote-files`、`.gm-remote-head`、`.gm-remote-peer`、`.gm-remote-peer-head`、`.gm-remote-peer-name`、`.gm-remote-peer-ep`、`.gm-remote-row`、`.gm-remote-item`、`.gm-remote-item-active`、`.gm-remote-badge`、`.gm-remote-note`、`.gm-remote-crumb`、`.gm-remote-progress`、`.gm-remote-progress-error`、`.gm-remote-cache`、`.gm-upload-progress`、`.gm-check`、`.gm-banner`、`.gm-banner-error` |
@@ -36,19 +77,19 @@
 
 | 路径 | 读写符号 |
 | --- | --- |
-| `identity/principal.json`、`identity/` 下的设备密钥文件 | `_load_identity`、`Identity.init`、`Identity.load`、`get_protected_paths` |
-| `identity/roster.json` | `_load_roster`、`_save_roster` |
-| `identity/roster-history.json` | `_load_roster_history`、`_record_roster_history`、`RosterHistory` |
-| `identity/shares.json` | `_load_shares`、`_save_shares` |
-| `identity/share_roots.json` | `_load_share_roots`、`_save_share_roots`、`_share_roots_file` |
-| `identity/registry.json` | `_ensure_registry`、`_publish_registration`、`_fetch_registry_from` |
-| `identity/state.json` | `_refresh_own_registration`、`_publish_registration` |
-| `downloads/`（`download_dir` 设置项可改） | `downloads_dir`、`download_remote`、`_fetch_to` |
-| `.cache/remote/<设备ID>/<共享标识>/` 与 `<共享标识>.index.json` | `remote_cache_dir`、`_walk_remote`、`_save_remote_index`、`ensure_file` |
-| `.cache/staging/<设备ID>/<共享标识>/` | `staging_dir`、`_fetch_to`、`_discard_staging`、`clear_remote_cache` |
-| `.cache/peers.json` | `_peers_file`、`_load_manual_peers`、`_save_manual_peers` |
-| `upload-tasks.json` | `_upload_task_file`、`_persist_uploads`、`_restore_uploads` |
-| `uploads.json` | `_upload_record_file`、`_load_upload_records`、`_save_upload_record`、`_clear_upload_record` |
+| `identity/principal.json`、`identity/` 下的设备密钥文件 | `Storage.load_identity`、`Identity.init`、`Identity.load`、`get_protected_paths` |
+| `identity/roster.json` | `Storage.load_roster`、`Storage.save_roster` |
+| `identity/roster-history.json` | `Storage.load_roster_history`、`Storage.record_roster_history`、`RosterHistory` |
+| `identity/shares.json` | `Storage.load_shares`、`Storage.save_shares` |
+| `identity/share_roots.json` | `Storage.load_share_roots`、`Storage.save_share_roots`、`Storage.share_roots_file` |
+| `identity/registry.json` | `MeshRegistry.ensure`、`MeshRegistry.reload`、`MeshRegistry.add_and_save`、`MeshRegistry.merge_and_save` |
+| `identity/state.json` | `Node.refresh_own`、`Node.publish` |
+| `downloads/`（`download_dir` 设置项可改） | `Storage.downloads_dir`、`Remote.download_remote`、`Remote.fetch_to` |
+| `.cache/remote/<设备ID>/<共享标识>/` 与 `<共享标识>.index.json` | `Storage.remote_cache_dir`、`Materialize.walk_remote`、`Materialize.save_index`、`Fetch.ensure_file` |
+| `.cache/staging/<设备ID>/<共享标识>/` | `Storage.staging_dir`、`Remote.fetch_to`、`Fetch.discard_staging`、`Fetch.clear_remote_cache` |
+| `.cache/peers.json` | `Storage.peers_file`、`Storage.load_manual_peers`、`Storage.save_manual_peers` |
+| `upload-tasks.json` | `UploadQueue.task_file`、`UploadQueue.persist`、`UploadQueue.restore` |
+| `uploads.json` | `UploadQueue.record_file`、`UploadQueue.load_records`、`UploadQueue.save_record`、`UploadQueue.clear_record` |
 
 ## 后端 API 契约
 
@@ -84,7 +125,7 @@
 | `get_settings` | 无 | 设置键值 | 壳的统一设置弹窗读取 |
 | `save_settings` | 设置键值 | `success`、`error` | 壳的统一设置弹窗落盘 |
 
-入参形态：上面除无参方法外都接受一个 `opts` 字典，或同名的逐个位置参数（由 `_opts` 归一）。
+入参形态：上面除无参方法外都接受一个 `opts` 字典，或同名的逐个位置参数（由 `MeshRules.opts` 归一）。
 
 壳按名调用的成员：
 
@@ -186,7 +227,8 @@ DOM 结构树（`plugins/group-mesh/frontend/index.html`，内容 iframe 不含�
 共享后端基建（`shell/backend/`）：
 
 - `PluginBase`（`plugins/group-mesh/backend/main.py` 的基类）：提供 `setting`、`get_settings`、`save_settings`、`get_protected_paths`、`current_principal`、`require_principal`、`get_dependency`
-- `load_sibling`（`shell/backend/plugin_utils.py`）：加载 12 个后端分片
+- `load_sibling`（`shell/backend/plugin_utils.py`）：加载 `const` 与 18 个后端组件模块（只有入口调用）
+- `ports.SettingsPort`（`shell/backend/ports.py`）：组件读取设置的唯一入口，入口把 `self` 直接传进去
 - `engine_for`（`shell/backend/freshness.py`）：`refresh_share_roots` 与 `freshness_spec` 依赖的刷新引擎
 
 协议内核（`shell/groupmesh/`，独立于 Flask 与插件目录）：`GroupMeshPlugin` 使用 `shell.groupmesh.identity` 的 `Identity`、`shell.groupmesh.roster` 的 `Roster`、`RosterEntry`、`founding_roster`、`next_roster`、`staleness_report`、`shell.groupmesh.records` 的 `RecordError`、`shell.groupmesh.shares` 的 `Acl`、`LocalShare`、`new_share`、`shell.groupmesh.registry`、`shell.groupmesh.secret_store`、`shell.groupmesh.roster_history` 的 `RosterHistory`、`shell.groupmesh.client` 作为 `mesh_client`、`shell.groupmesh.transport` 的 `RemoteError` 与 `TransportError`。

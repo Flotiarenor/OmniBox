@@ -1,7 +1,7 @@
-"""按需取字节与远端缓存（GroupMeshPlugin 的一个 mixin 分片）。
+"""按需取字节与远端缓存用量：`/file` 的占位判定、`ensure_file` 钩子、缓存清理。
 
-方法从 main.py 逐字搬来，状态仍由 GroupMeshPlugin.__init__ 持有 —— 分片只把方法
-挂到同一个类上，因此方法与调用点都没有变。
+状态自持：按路径的取回锁（`fetch_locks`）。索引缓存由 `Materialize` 持有，取回动作
+复用 `Remote.fetch_to`，落点与用量统计来自 `Storage`。
 """
 
 from __future__ import annotations
@@ -12,16 +12,29 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List
 
-from shell.backend.plugin_utils import load_sibling
+from shell.backend.ports import SettingsPort
 
 log = logging.getLogger(__name__)
 
-_common = load_sibling(__file__, 'common', 'group_mesh')
-_opts = _common._opts
-DEFAULT_MAX_FETCH_BYTES = _common.DEFAULT_MAX_FETCH_BYTES
+#: 按需取回单个文件的默认上限（1 GiB）。浏览远端目录时不该因为点开一个目录就把
+#: 磁盘写满；超过上限的文件不自动取，界面会提示。
+DEFAULT_MAX_FETCH_BYTES = 1024 * 1024 * 1024
 
-class FetchMixin:
-    """`/file` 的占位判定与 ensure_file 钩子、取回并发去重，以及缓存用量与清理。"""
+
+class Fetch:
+    def __init__(self, storage: Any, materialize: Any, remote: Any,
+                 settings: SettingsPort, rules: Any) -> None:
+        self._storage = storage
+        self._materialize = materialize
+        self._remote = remote
+        self._settings = settings
+        self._rules = rules
+        # 按需取字节的按路径锁：并发请求同一个远端文件时只让一个线程去取。
+        # 键是 (设备ID, 共享标识, 相对路径)。
+        self.fetch_locks: Dict[tuple, threading.Lock] = {}
+        self._fetch_locks_guard = threading.Lock()
+
+    # ── `/file` 钩子 ──────────────────────────────────────────────────────
 
     def is_content_placeholder(self, path: Any) -> bool:
         """该路径是否"已物化但字节还没取回"（`/file` 每次请求都会问）。
@@ -37,13 +50,13 @@ class FetchMixin:
         """
         try:
             target = Path(path)
-            rel = target.resolve().relative_to(self.remote_cache_dir.resolve())
+            rel = target.resolve().relative_to(self._storage.remote_cache_dir.resolve())
         except (OSError, ValueError):
             return False
         parts = rel.parts
         if len(parts) < 3:
             return False
-        index = self._cached_remote_index(parts[0], parts[1])
+        index = self._materialize.cached_index(parts[0], parts[1])
         meta = (index.get('entries') or {}).get('/'.join(parts[2:]))
         if not isinstance(meta, dict) or meta.get('dir'):
             return False
@@ -68,7 +81,7 @@ class FetchMixin:
         """
         try:
             target = Path(path)
-            rel = target.resolve().relative_to(self.remote_cache_dir.resolve())
+            rel = target.resolve().relative_to(self._storage.remote_cache_dir.resolve())
         except (OSError, ValueError):
             return   # 不是远端缓存里的东西：本钩子不管
         parts = rel.parts
@@ -76,7 +89,7 @@ class FetchMixin:
             return   # 期望 <设备ID>/<共享标识>/<相对路径…>
         device_id, share_id = parts[0], parts[1]
         relative = '/'.join(parts[2:])
-        index = self._cached_remote_index(device_id, share_id)
+        index = self._materialize.cached_index(device_id, share_id)
         meta = (index.get('entries') or {}).get(relative)
         if not isinstance(meta, dict) or meta.get('dir'):
             return
@@ -95,16 +108,16 @@ class FetchMixin:
         # `fetch_to_file` 用的是**按目标路径推导**的 `.part` 临时名，两个线程为同一个
         # 路径同时取字节就会撞在同一个临时文件上（交错写入 → 内容损坏）。
         # 锁内复核一次"是不是已经被别人取回了"，重复传输也一并省掉。
-        with self._fetch_lock(device_id, share_id, relative):
+        with self.fetch_lock(device_id, share_id, relative):
             try:
                 if target.is_file() and target.stat().st_size == remote_size:
                     return
             except OSError:
                 pass
-            staging = self.staging_dir / device_id / share_id / relative
-            result = self._fetch_to(staging, device_id, share_id, relative)
+            staging = self._storage.staging_dir / device_id / share_id / relative
+            result = self._remote.fetch_to(staging, device_id, share_id, relative)
             if not result.get('success'):
-                self._discard_staging(staging)
+                self.discard_staging(staging)
                 log.info(f'[group-mesh] 按需取回失败 {relative}: {result.get("error")}')
                 return
             # 暂存文件与物化目标同在 `.cache` 下（同卷由构造保证），因此 os.replace 是
@@ -112,13 +125,13 @@ class FetchMixin:
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(staging, target)
-                self._apply_remote_mtime(target, meta.get('mtime_ns'))
-                self._invalidate_remote_index(device_id, share_id)
+                self._materialize.apply_remote_mtime(target, meta.get('mtime_ns'))
+                self._materialize.invalidate_index(device_id, share_id)
             except OSError as e:
-                self._discard_staging(staging)
+                self.discard_staging(staging)
                 log.warning(f'[group-mesh] 物化落位失败 {relative}: {e}')
 
-    def _fetch_lock(self, device_id: str, share_id: str, relative: str) -> threading.Lock:
+    def fetch_lock(self, device_id: str, share_id: str, relative: str) -> threading.Lock:
         """取 (设备ID, 共享标识, 相对路径) 对应的一把锁（进程内）。
 
         锁对象不做回收：条目数就是"被并发读过的远端文件数"，与物化缓存同量级；
@@ -126,14 +139,14 @@ class FetchMixin:
         """
         key = (device_id, share_id, relative)
         with self._fetch_locks_guard:
-            lock = self._fetch_locks.get(key)
+            lock = self.fetch_locks.get(key)
             if lock is None:
                 lock = threading.Lock()
-                self._fetch_locks[key] = lock
+                self.fetch_locks[key] = lock
             return lock
 
     @staticmethod
-    def _discard_staging(staging: Path) -> None:
+    def discard_staging(staging: Path) -> None:
         """清掉失败的暂存文件（`fetch_to_file` 失败时会留下 `<目标>.part`）。"""
         for candidate in (staging, staging.with_suffix(staging.suffix + '.part')):
             try:
@@ -145,14 +158,16 @@ class FetchMixin:
     def max_fetch_bytes(self) -> int:
         """按需取回的单文件上限，避免一次浏览把磁盘塞满。"""
         try:
-            configured = int(self.setting('max_fetch_mb', 0) or 0)
+            configured = int(self._settings.setting('max_fetch_mb', 0) or 0)
         except (TypeError, ValueError):
             configured = 0
         return configured * 1024 * 1024 if configured > 0 else DEFAULT_MAX_FETCH_BYTES
 
+    # ── 远端缓存用量与清理 ────────────────────────────────────────────────
+
     def remote_cache(self) -> Dict[str, Any]:
         """已物化的远端内容一览（界面显示用了多少磁盘、可以清哪些）。"""
-        root = self.remote_cache_dir
+        root = self._storage.remote_cache_dir
         items: List[Dict[str, Any]] = []
         if root.is_dir():
             for device_dir in sorted(root.iterdir()):
@@ -161,7 +176,7 @@ class FetchMixin:
                 for share_dir in sorted(device_dir.iterdir()):
                     if not share_dir.is_dir():
                         continue
-                    index = self._load_remote_index(device_dir.name, share_dir.name)
+                    index = self._materialize.load_index(device_dir.name, share_dir.name)
                     entries = index.get('entries') or {}
                     files = [rel for rel, meta in entries.items() if not meta.get('dir')]
                     fetched = 0
@@ -181,13 +196,13 @@ class FetchMixin:
                         'files': len(files),
                         'fetched': fetched,
                         'pending': len(files) - fetched,
-                        'bytes': self._tree_usage(share_dir)[0],
+                        'bytes': self._storage.tree_usage(share_dir)[0],
                         'materialized_at': index.get('materialized_at'),
                         'truncated': bool(index.get('truncated')),
                         'root': str(share_dir),
                     })
         return {'success': True, 'root': str(root), 'items': items,
-                'total_bytes': self._tree_usage(root)[0] if root.is_dir() else 0}
+                'total_bytes': self._storage.tree_usage(root)[0] if root.is_dir() else 0}
 
     def clear_remote_cache(self, opts: Any = None, device_id: str = '',
                            share_id: str = '') -> Dict[str, Any]:
@@ -198,10 +213,10 @@ class FetchMixin:
         """
         import shutil
 
-        options = _opts(opts)
+        options = self._rules.opts(opts)
         device_id = str(options.get('device_id') or device_id or '').strip().lower()
         share_id = str(options.get('share_id') or share_id or '')
-        root = self.remote_cache_dir
+        root = self._storage.remote_cache_dir
         freed = 0
         if root.exists():
             if device_id and share_id:
@@ -214,14 +229,14 @@ class FetchMixin:
             for target in targets:
                 if not target.exists():
                     continue
-                freed += self._tree_usage(target)[0]
+                freed += self._storage.tree_usage(target)[0]
                 shutil.rmtree(target, ignore_errors=True)
                 removed.append(str(target))
         else:
             removed = []
-        staging = self.staging_dir
+        staging = self._storage.staging_dir
         if staging.exists():
-            freed += self._tree_usage(staging)[0]
+            freed += self._storage.tree_usage(staging)[0]
             shutil.rmtree(staging, ignore_errors=True)
-        self._invalidate_remote_index()
+        self._materialize.invalidate_index()
         return {'success': True, 'removed': removed, 'freed_bytes': freed}

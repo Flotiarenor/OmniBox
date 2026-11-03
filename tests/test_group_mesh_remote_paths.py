@@ -42,7 +42,18 @@ def _load(name: str):
 
 _materialize = _load('materialize')
 _mirror = _load('mirror')
-_common = _materialize._common
+_const = _load('const')
+
+
+def _host(component):
+    """组件实例的"只装依赖"版本：这些纯路径方法不碰连接、存储与网络。
+
+    组件之间不互相 import，依赖一律由入口注入，因此用例只要把 `MeshRules` 挂上就能
+    单独验证归一与拒绝规则（这正是组件化的目的一：不启动插件就能测一个能力）。
+    """
+    instance = component.__new__(component)
+    instance._rules = _const.RULES
+    return instance
 
 
 class SafeRelTests(unittest.TestCase):
@@ -57,7 +68,7 @@ class SafeRelTests(unittest.TestCase):
             ('目录\\文件.jpg', '目录/文件.jpg'),      # Windows 分隔符归一
         ):
             with self.subTest(value=value):
-                self.assertEqual(_common.safe_rel(value), expected)
+                self.assertEqual(_const.RULES.safe_rel(value), expected)
 
     def test_illegal_paths_are_rejected(self):
         for value in (
@@ -69,7 +80,7 @@ class SafeRelTests(unittest.TestCase):
             'a\x00b',
         ):
             with self.subTest(value=value):
-                self.assertIsNone(_common.safe_rel(value))
+                self.assertIsNone(_const.RULES.safe_rel(value))
 
     def test_within_root_rejects_escape_and_symlink(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -81,23 +92,20 @@ class SafeRelTests(unittest.TestCase):
             # 比对指向同一位置而不是逐字比字符串：临时目录在 Windows 上可能是 8.3 短名
             # （CI 的 C:\Users\RUNNER~1\…），而 within_root 走 resolve() 得到长名，
             # 逐字比较会假失败。同款判定见 tests/harness/support.py::same_path。
-            self.assertTrue(same_path(_common.within_root(root, 'a/b.txt'), root / 'a' / 'b.txt'))
-            self.assertIsNone(_common.within_root(root, '../outside.txt'))
+            self.assertTrue(same_path(_const.RULES.within_root(root, 'a/b.txt'), root / 'a' / 'b.txt'))
+            self.assertIsNone(_const.RULES.within_root(root, '../outside.txt'))
 
             link = root / 'link.txt'
             try:
                 link.symlink_to(outside)
             except (OSError, NotImplementedError):
                 return                          # 平台不支持符号链接：上面两条已覆盖
-            self.assertIsNone(_common.within_root(root, 'link.txt'),
+            self.assertIsNone(_const.RULES.within_root(root, 'link.txt'),
                               '符号链接把目标引到了根外，仍被判成根内')
 
 
 class WalkRemoteTests(unittest.TestCase):
     """对端应答里的条目名：越界条目必须在进入 walked 之前被丢掉。"""
-
-    class _Host(_materialize.MaterializeMixin):
-        pass
 
     def setUp(self):
         self._real = mesh_client.list_directory
@@ -116,22 +124,19 @@ class WalkRemoteTests(unittest.TestCase):
             {'name': '..', 'dir': True},
             {'name': 'C:/evil.txt', 'dir': False, 'size': 3},
         ]})
-        walked = self._Host()._walk_remote(object(), 'album', '.', 4, 100)
+        walked = _host(_materialize.Materialize).walk_remote(object(), 'album', '.', 4, 100)
         self.assertEqual(list(walked), ['正常.jpg'],
                          f'越界条目进入了 walked: {sorted(walked)}')
 
     def test_file_path_from_peer_is_validated_too(self):
         """调用方要的是个文件时，路径来自对端应答的 `path` 字段，同样要过归一。"""
         self._patch({'dir': False, 'path': '../../etc/passwd', 'size': 10})
-        walked = self._Host()._walk_remote(object(), 'album', '.', 4, 100)
+        walked = _host(_materialize.Materialize).walk_remote(object(), 'album', '.', 4, 100)
         self.assertEqual(walked, {})
 
 
 class PruneAbsentTests(unittest.TestCase):
     """对账删除：索引里的越界键不得删掉根外文件。"""
-
-    class _Host(_materialize.MaterializeMixin):
-        pass
 
     def test_out_of_root_keys_are_not_deleted(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -140,7 +145,7 @@ class PruneAbsentTests(unittest.TestCase):
             victim = Path(tmp) / 'outside.txt'
             victim.write_text('DO NOT DELETE', encoding='utf-8')
 
-            removed = self._Host()._prune_absent(
+            removed = _host(_materialize.Materialize).prune_absent(
                 root, {'../outside.txt': {'dir': False}}, {})
             self.assertEqual(removed, 0)
             self.assertTrue(victim.exists(), '根外文件被对账删除删掉了')
@@ -152,20 +157,31 @@ class PruneAbsentTests(unittest.TestCase):
             stale = root / '相册' / 'old.jpg'
             stale.write_bytes(b'x')
 
-            removed = self._Host()._prune_absent(root, {'相册/old.jpg': {'dir': False}}, {})
+            removed = _host(_materialize.Materialize).prune_absent(root, {'相册/old.jpg': {'dir': False}}, {})
             self.assertEqual(removed, 1)
             self.assertFalse(stale.exists())
 
 
+class _MaterializeStub:
+    """`mirror_files` 只用到的物化能力：写对端 mtime（与落盘断言无关，吞掉）。"""
+
+    def apply_remote_mtime(self, target, mtime_ns):
+        pass
+
+
+class _MirrorHost(_mirror.Mirror):
+    """镜像用例的宿主：路径判定走真实实现，"已达一致"固定为否（每次都写）。"""
+
+    def __init__(self):
+        self._rules = _const.RULES
+        self._materialize = _MaterializeStub()
+
+    def mirror_file_current(self, target, info):
+        return False
+
+
 class MirrorFilesTests(unittest.TestCase):
     """镜像写盘：越界目标必须在调用 fetch_to_file 之前被拦下。"""
-
-    class _Host(_mirror.MirrorMixin):
-        def _mirror_file_current(self, target, info):
-            return False
-
-        def _apply_remote_mtime(self, target, mtime_ns):
-            pass
 
     def setUp(self):
         self._real = mesh_client.fetch_to_file
@@ -188,7 +204,7 @@ class MirrorFilesTests(unittest.TestCase):
             outside = Path(tmp) / 'outside.txt'
             outside.write_bytes(b'ORIGINAL')
 
-            result = self._Host()._mirror_files(
+            result = _MirrorHost().mirror_files(
                 object(), 'album', root,
                 {'../outside.txt': {'dir': False, 'size': 7}}, 0)
 
@@ -202,7 +218,7 @@ class MirrorFilesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / 'root'
             root.mkdir()
-            result = self._Host()._mirror_files(
+            result = _MirrorHost().mirror_files(
                 object(), 'album', root, {'相册/新.jpg': {'dir': False, 'size': 7}}, 0)
             self.assertEqual(result['fetched'], 1, result)
             self.assertEqual((root / '相册' / '新.jpg').read_bytes(), b'ATTACKER')

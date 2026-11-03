@@ -1,7 +1,7 @@
-"""远端浏览与取回（GroupMeshPlugin 的一个 mixin 分片）。
+"""远端浏览与取回：列对端共享项 / 目录，把单个文件取回本机。
 
-方法从 main.py 逐字搬来，状态仍由 GroupMeshPlugin.__init__ 持有 —— 分片只把方法
-挂到同一个类上，因此方法与调用点都没有变。
+状态自持：无。连接由 `ConnectionPool` 持有（复用的与专用的分开），候选端点由
+`MeshRegistry` 给，落点由 `Storage` 给。
 """
 
 from __future__ import annotations
@@ -10,17 +10,18 @@ import logging
 from pathlib import Path
 from typing import Any, Dict
 
-from shell.backend.plugin_utils import load_sibling
 from shell.groupmesh import client as mesh_client
 from shell.groupmesh.transport import RemoteError, TransportError
 
 log = logging.getLogger(__name__)
 
-_common = load_sibling(__file__, 'common', 'group_mesh')
-_opts = _common._opts
 
-class RemoteMixin:
-    """列对端共享项 / 目录，以及把单个文件取回本机下载目录。"""
+class Remote:
+    def __init__(self, storage: Any, registry: Any, connections: Any, rules: Any) -> None:
+        self._storage = storage
+        self._registry_store = registry
+        self._connections = connections
+        self._rules = rules
 
     def list_remote(self, opts: Any = None, device_id: str = '', share_id: str = '',
                     path: str = '.') -> Dict[str, Any]:
@@ -29,17 +30,17 @@ class RemoteMixin:
         `device_id` 可以留空：引导阶段只填了地址时，直接连那个地址，对端会在应答里
         报出自己的身份（`peer_device_id`），界面据此补上设备 ID。
         """
-        options = _opts(opts)
+        options = self._rules.opts(opts)
         device_id = str(options.get('device_id') or device_id or '').strip().lower()
         share_id = str(options.get('share_id') or share_id or '')
         path = str(options.get('path') or path or '.')
 
-        identity = self._load_identity()
-        roster = self._load_roster()
+        identity = self._storage.load_identity()
+        roster = self._storage.load_roster()
         if identity is None or roster is None:
             return {'success': False, 'error': '需要先创建身份与团体'}
 
-        candidates = self._manual_endpoints(device_id, roster)
+        candidates = self._registry_store.candidates_for(device_id, roster)
         if not candidates:
             return {'success': False,
                     'error': '还没有可用的对端地址。请先在"对端"里登记一台设备的地址，'
@@ -48,7 +49,7 @@ class RemoteMixin:
         last_error = ''
         for endpoint, label in candidates:
             try:
-                connection = self._connect(endpoint, identity, roster)
+                connection = self._connections.get(endpoint, identity, roster)
             except (RemoteError, TransportError, OSError) as e:
                 last_error = f'{label or endpoint[0]}:{endpoint[1]} 连不上: {e}'
                 continue
@@ -69,7 +70,7 @@ class RemoteMixin:
                 last_error = f'与 {label or peer_id} 的连接中断: {e}'
                 continue
             finally:
-                self._release(connection)
+                self._connections.release(connection)
 
             return {'success': True, 'device_id': peer_id, 'peer_device_id': peer_id,
                     'name': label or connection.peer.name,
@@ -90,7 +91,7 @@ class RemoteMixin:
         撞成一个，而相对路径同时也是 `list_remote` 返回的 `path`，界面据此直接
         拼出可访问的本机路径。
         """
-        options = _opts(opts)
+        options = self._rules.opts(opts)
         device_id = str(options.get('device_id') or device_id or '')
         share_id = str(options.get('share_id') or share_id or '')
         path = str(options.get('path') or path or '')
@@ -107,19 +108,19 @@ class RemoteMixin:
         relative = Path(str(path).replace('\\', '/').lstrip('/'))
         if relative.is_absolute() or any(part == '..' for part in relative.parts):
             return {'success': False, 'error': f'路径越界: {path!r}'}
-        destination = self.downloads_dir / share_id / relative
+        destination = self._storage.downloads_dir / share_id / relative
         try:
-            destination.resolve().relative_to(self.downloads_dir.resolve())
+            destination.resolve().relative_to(self._storage.downloads_dir.resolve())
         except ValueError:
             return {'success': False, 'error': f'路径越界: {path!r}'}
         if destination.exists() and not overwrite:
             return {'success': True, 'skipped': True, 'local_path': str(destination),
                     'reason': '本机已有同名文件（overwrite=true 可覆盖）'}
 
-        return self._fetch_to(destination, device_id, share_id, str(path))
+        return self.fetch_to(destination, device_id, share_id, str(path))
 
-    def _fetch_to(self, destination: Path, device_id: str, share_id: str,
-                  path: str) -> Dict[str, Any]:
+    def fetch_to(self, destination: Path, device_id: str, share_id: str,
+                 path: str) -> Dict[str, Any]:
         """把对端共享项里的一个文件取到**指定路径**（不做越界校验，调用方负责）。
 
         为什么从 `download_remote` 里抽出来：按需取字节（`ensure_file`）要落到物化
@@ -127,12 +128,12 @@ class RemoteMixin:
         "确定性错误不换设备重试"这些分支完全一样。各写一份的话两边迟早漂移
         （一边记得不重试、另一边忘了，真正的拒绝原因被"另一台也连不上"盖掉）。
         """
-        identity = self._load_identity()
-        roster = self._load_roster()
+        identity = self._storage.load_identity()
+        roster = self._storage.load_roster()
         if identity is None or roster is None:
             return {'success': False, 'error': '需要先创建身份与团体'}
 
-        candidates = self._manual_endpoints(device_id, roster)
+        candidates = self._registry_store.candidates_for(device_id, roster)
         if not candidates:
             return {'success': False,
                     'error': '还没有可用的对端地址。请先在"对端"里登记一台设备的地址，'
@@ -141,7 +142,7 @@ class RemoteMixin:
         last_error = ''
         for endpoint, label in candidates:
             try:
-                connection = self._connect(endpoint, identity, roster)
+                connection = self._connections.get(endpoint, identity, roster)
             except (RemoteError, TransportError, OSError) as e:
                 last_error = f'{label or endpoint[0]}:{endpoint[1]} 连不上: {e}'
                 continue
@@ -156,7 +157,7 @@ class RemoteMixin:
                 last_error = f'传输失败: {e}'
                 continue
             finally:
-                self._release(connection)
+                self._connections.release(connection)
 
             try:
                 size = destination.stat().st_size
