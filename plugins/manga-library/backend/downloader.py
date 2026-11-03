@@ -1,19 +1,35 @@
 """jmcomic 下载执行器。
 
 从 Plugin 主类中拆出，避免 main.py 同时承担任务管理、状态持久化和下载细节。
+
+**取消语义**：任务的 `_stop_event` 只在下载循环的块级检查点上被读取 —— 章节级
+（进入下一章之前）与图片级（每一张图落盘之前）。jmcomic 自己的调度是"章节与
+图片各起线程/线程池"，所以检查点必须放在被调度的那个函数里；只在一个地方置
+信号、循环不查，结果是界面显示"已暂停"而线程继续写盘。
+
+`client_module` 是给用例留的接缝：真实下载要连网络，用例注入一个可控的假实现
+（同样的调用顺序与钩子），断言"暂停后不再写盘"这一**行为**，而不是观察 mock
+调用次数。生产路径留空，按需懒 import。
 """
 
 import json
 import os
 import time
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 
-def execute_download(task, manga_dir: str, state_dir: str, lock, logger=None) -> Optional[Dict]:
-    """执行实际下载，返回 album_info；被停止时返回 None。"""
+def _load_client() -> Any:
+    """懒 import 第三方下载客户端：没装时只有真正下载才失败，插件仍能加载。"""
     import jmcomic
-    from jmcomic import JmcomicText
+    return jmcomic
+
+
+def execute_download(task, manga_dir: str, state_dir: str, lock, logger=None,
+                     client_module: Any = None) -> Optional[Dict]:
+    """执行实际下载，返回 album_info；被停止（含下载中途暂停）时返回 None。"""
+    jmcomic = client_module if client_module is not None else _load_client()
+    JmcomicText = jmcomic.JmcomicText
 
     download_dir = task.download_dir or os.path.join(manga_dir, task.album_id)
     # 纵深防御：即使调用方没校验 album_id，也绝不允许下载目录落在漫画根目录之外
@@ -171,11 +187,18 @@ def execute_download(task, manga_dir: str, state_dir: str, lock, logger=None) ->
         JmDownloader 的同名方法除了通知回调，还要维护自己的簿记（download_success_dict
         与 plugin / feature 回调链）；用 `downloader.before_album = ...` 覆盖实例属性会
         把这些静默跳过。子类里 super() 一次，两边都不丢。
+
+        取消点放在 `download_by_photo_detail` / `download_by_image_detail`：这两个函数
+        正是 jmcomic 调度器（章节线程 / 图片线程池）调用的目标，在它们身上先判一次
+        停止信号，就能在"下一章 / 下一张图"之前退出，而不是等整本下完。判断后直接
+        返回、不抛异常：抛异常会被 jmcomic 的 `catch_exception` 记成"图片下载失败"
+        并刷出成百条错误日志，而暂停不是失败。
         """
 
-        def __init__(self, jm_option, progress_ref):
+        def __init__(self, jm_option, progress_ref, stop_event):
             super().__init__(jm_option)
             self.progress = progress_ref
+            self._stop_event = stop_event
 
         def before_album(self, album):
             # 多章漫画按章节分目录：jmcomic 落盘用的就是站点的图片名（00001.jpg …），
@@ -197,14 +220,31 @@ def execute_download(task, manga_dir: str, state_dir: str, lock, logger=None) ->
             super().after_image(image, img_save_path)
             self.progress.after_image(image, img_save_path)
 
+        def download_by_photo_detail(self, photo):
+            """章节级检查点：暂停后不再进入下一章的下载。"""
+            if self._stop_event.is_set():
+                return
+            super().download_by_photo_detail(photo)
+
+        def download_by_image_detail(self, image):
+            """图片级检查点：每一张图落盘之前判一次，暂停后不再写盘。"""
+            if self._stop_event.is_set():
+                return
+            super().download_by_image_detail(image)
+
     option = jmcomic.JmOption.construct(option_dict)
     progress = ProgressCallback(task, lock, state_dir, download_dir)
 
-    with ProgressDownloader(option, progress) as downloader:
+    with ProgressDownloader(option, progress, task._stop_event) as downloader:
         if task._stop_event.is_set():
             return None
 
         # 返回值由 progress.before_album 回填到 progress.album_info；
         # download_album 的返回对象本身用不到（以前赋给 album 后从未使用）。
         downloader.download_album(task.album_id)
-        return progress.album_info
+
+    # 循环内的检查点保证"不再写盘"；这里再判一次，让调用方拿到"被取消"而不是
+    # "已完成" —— 中途暂停时 download_album 会正常返回（跳过了剩余章节/图片）。
+    if task._stop_event.is_set():
+        return None
+    return progress.album_info

@@ -94,11 +94,10 @@ class ImageViewer {
     // 与壳的页面骨架通信
     // ============================================================
 
-    /** 内容页与壳同源：消息只发给父窗口，脱离壳单独打开（或沙箱里没有 window）时不发。 */
+    /** 内容页与壳同源：消息只发给父窗口，脱离壳单独打开（或沙箱里没有 window）时不发。
+        实现只有一份（/shell/chrome-client.js），这里只是本页的调用出口。 */
     _postHost(payload) {
-        if (typeof window === 'undefined' || !window.parent || window.parent === window) return;
-        const origin = typeof location !== 'undefined' ? location.origin : '';
-        try { window.parent.postMessage(payload, origin); } catch (e) { /* 非同源父窗口不发 */ }
+        if (typeof window !== 'undefined') window.ChromeClient.post(payload);
     }
 
     /**
@@ -180,33 +179,25 @@ class ImageViewer {
         });
     }
 
-    /** 壳的握手与反向下发：视图、顶栏动作、搜索输入。 */
+    /** 壳的握手与反向下发：视图、顶栏动作、搜索输入、背景外观。
+        校验、分发与 ready 握手都在 /shell/chrome-client.js（四个内容页共用一份）；
+        `omnibox:appearance` 只有本插件消费，走 onMessage 自己解释。 */
     _bindHost() {
-        window.addEventListener('message', (event) => {
-            if (event.origin !== location.origin || event.source !== window.parent) return;
-            const data = event.data || {};
-            if (data.type === 'omnibox:view' && typeof data.view === 'string') {
-                this._applyHostView(data.view);
-                return;
-            }
-            if (data.type === 'omnibox:action') {
-                this._applyHostAction(data.action);
-                return;
-            }
-            if (data.type === 'omnibox:query') {
-                this._onQuery(data.query);
-                return;
-            }
-            if (data.type === 'omnibox:appearance') {
+        this._chrome = window.ChromeClient.create({
+            onView: (view) => this._applyHostView(view),
+            onAction: (action) => this._applyHostAction(action),
+            onQuery: (query) => this._onQuery(query),
+            onMessage: (data) => {
+                if (data.type !== 'omnibox:appearance') return;
                 this._appearance = {
                     alpha: Number(data.alpha) || 84,
                     follow: data.follow !== false,
                     shellAlpha: Number(data.shellAlpha) || 84,
                 };
                 this._syncAppearanceControls();
-            }
+            },
         });
-        this._postHost({ type: 'omnibox:ready' });
+        this._chrome.bind();
     }
 
     /** 壳左栏的三个浏览项：切视图并清掉二级页（子相册 / 图片层）的返回栈。 */

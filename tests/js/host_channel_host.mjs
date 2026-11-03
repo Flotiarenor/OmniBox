@@ -13,13 +13,13 @@
 //   · host-run：点击回发 {type, id}，源窗口是那个 iframe（不是父窗口）
 //   · 非自己嵌的窗口发来的 host-mount 一律忽略
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
+import { loadShellRuntime } from './shell_scripts.mjs';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const BASE_JS = path.join(ROOT, 'shell', 'frontend', 'public', 'shell', 'base.js');
 const ORIGIN = 'http://127.0.0.1:18080';
 
 let failed = 0;
@@ -35,7 +35,7 @@ async function check(name, fn) {
   }
 }
 
-/** 极简 DOM：够 base.js 的 mountButtons / openModal 走完渲染路径。 */
+/** 极简 DOM：够共享运行时的 mountButtons / openModal 走完渲染路径。 */
 function createHost({ withContainer = true, withFrame = true, frameSrc = '/plugins/image-cleaner/frontend/index.html', serve = true } = {}) {
   const posted = [];
   const postedTargets = [];
@@ -122,7 +122,7 @@ function createHost({ withContainer = true, withFrame = true, frameSrc = '/plugi
     requestAnimationFrame: (fn) => setTimeout(fn, 0),
   };
   vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(BASE_JS, 'utf8'), sandbox, { filename: 'shell/base.js' });
+  loadShellRuntime(sandbox);
 
   const hc = hostWin.HostChannel;
   if (serve) {

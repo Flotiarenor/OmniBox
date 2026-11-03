@@ -1,12 +1,23 @@
-# OmniBox 端到端（浏览器）测试依赖 —— 仅本地手动运行，不进 CI
+# OmniBox 端到端（浏览器）测试依赖
+#
+# 谁用它：
+#   - CI 的 shell-e2e job（.github/workflows/ci.yml）：真实浏览器冒烟门禁，跑
+#     tools/shell_e2e_smoke.py → tests/test_shell_browser_e2e.py（壳整体链路：导航渲染 /
+#     iframe 挂载 / 生命周期通知 / 控制台零错误）与 tests/test_splitter_browser_e2e.py
+#     （壳侧栏拖动逐帧跟随 / 落盘 / 把手占位），共 14 条；
+#   - 本地手动跑其余 8 个 *_e2e.py（灯箱、分隔条、壳偏好等），它们仍不进 CI。
 #
 # 为什么单独一个文件而不是塞进 requirements-dev.txt：
-#   - CI（.github/workflows/ci.yml）会安装 requirements-dev.txt，若把 selenium 放进去，
-#     每次 CI 都要下载 ChromeDriver，且这类"真实浏览器"用例在 CI 上更脆弱；
-#   - 这类缺陷（界面静默不更新、导航消失）在本地打开应用就能一眼看到，属于本地自测范围。
+#   - 只有 shell-e2e 这一个 job 需要浏览器；塞进 requirements-dev.txt 会让 lint /
+#     typecheck / test / plugin 每个 job 都多装一份 selenium 与驱动链路，而它们一条
+#     浏览器用例都不跑；
+#   - 本机跑单元测试的人也不需要它：未安装 selenium 时 e2e 用例自动跳过。
 #
 # 安装：venv/Scripts/pip install -r requirements-e2e.txt   （Linux/macOS: venv/bin/pip）
-# 运行：venv/Scripts/python -m unittest tests.test_shell_browser_e2e -v
-# 未安装 selenium 时用例自动跳过，不会让 `unittest discover` 变红。
+# 跑 CI 同一条：venv/Scripts/python tools/shell_e2e_smoke.py
+# 本地单跑其它用例：venv/Scripts/python -m unittest tests.test_splitter_browser_e2e -v
+#
+# 注意：门禁入口把"用例被跳过"当失败（缺 selenium / Chrome / 前端产物都会以非 0 退出），
+# 所以 CI 上这条 job 不会因为环境不具备而静默变绿。
 
 selenium==4.49.0

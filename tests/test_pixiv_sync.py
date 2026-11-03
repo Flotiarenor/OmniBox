@@ -19,14 +19,15 @@ from urllib.parse import parse_qs, urlparse
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_BACKEND = PROJECT_ROOT / "plugins" / "pixiv-sync" / "backend"
 PLUGIN_LIBS = PLUGIN_BACKEND / "libs"
-for p in (str(PLUGIN_BACKEND), str(PLUGIN_LIBS)):
+PLUGIN_TOOL = PROJECT_ROOT / "plugins" / "pixiv-sync" / "tool"
+for p in (str(PLUGIN_BACKEND), str(PLUGIN_LIBS), str(PLUGIN_TOOL)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+import pixiv_purge_non_original as purge
 from pixiv_mini import PixivClient, PixivError
 from pixiv_sync import artist as artist_mod
 from pixiv_sync import download, scan, store
-from pixiv_sync import pixiv_purge_non_original as purge
 from pixiv_sync.db import WorksDB
 from pixiv_sync.download import process_illust
 

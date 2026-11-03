@@ -78,6 +78,7 @@ iframe 以 `?content=1` 只装内容（插件页禁止 `.view-sub-sidebar`、`.v
 
 ## 规则
 
+- 插件按受信代码对待：后端入口由 `PluginManager` 在主进程内加载，前端 iframe 与壳同源且不带 sandbox 属性。`permissions` 只是知情声明，`get_protected_paths` 申报的路径只防"插件误把凭据当媒体发出去"这类事故，不是隔离边界——同进程的插件代码读同一个文件不必经过任何路由。改插件时按"它能读整台机器"审视，删 / 移 / 覆盖文件的接口尤其如此，不要把判断建立在"壳会拦住"上。完整说明见 [docs/plugin-guide.md](../docs/plugin-guide.md) 的「插件是受信代码」。
 - 新增插件用脚手架，不要手写骨架：`python tools/new_plugin.py my-tool`（模板 `tools/examples/hello-world`）。
 - 提交前跑 `python tools/check_plugins.py`、`python tools/check_plugin_layering.py`。
 - 后端结构按 [docs/plugin-backend-layout.md](../docs/plugin-backend-layout.md)：入口只做装配与委派，其余是显式接收依赖的组件，组件之间不互相 import。后端类型检查也是硬门禁：`pyrightconfig.json` 覆盖 `plugins`，全部插件必须 0 错误，不许用 `# pyright: ignore` 一类注释消音。

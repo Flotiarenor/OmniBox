@@ -57,6 +57,10 @@ flowchart LR
   内容页不再自绘设置弹窗。
 - **content iframe**：只保留内容，加载时带 `?content=1`；不得出现
   `.view-sub-sidebar`、`.view-toolbar`、`.sub-sidebar-brand`、`.obx-nav-item`。
+- **content iframe 与壳同源**：`src` 指向同一个服务上的 `/plugins/<name>/frontend/…`，壳与
+  `NativePanel` 里的 iframe 都没有 `sandbox` 属性，插件脚本因此能读写壳文档的 DOM 与同源状态；
+  消息协议是双方的约定，不构成权限边界。插件按受信代码对待，完整说明见
+  [plugin-guide.md](plugin-guide.md) 的「插件是受信代码」。
 - **native 面板**：附属插件声明 `native: {url, title}`；壳把 `NativePanel` 放进宿主
   `PluginChrome` 的内容槽，宿主侧栏/顶栏保留，内容 iframe 用 `v-show` 隐藏但实例不销毁；
   面板不再画自己的头部，标题与页面级动作（`omnibox:schema.toolbar`）都进宿主顶栏；退出走
@@ -179,9 +183,9 @@ ready 重试、init、schema、action、error 与 pagehide 清理由客户端处
 唯一前端类型是 `shell/frontend/src/core/plugin-content.ts` 的 `SchemaField`（以及
 `SchemaFieldOption` / `SchemaFieldValue` / `SchemaFieldCondition`）。两个壳内渲染路径共用它：
 `PluginSettingsModal` 渲染后端 `settings_schema`，`SchemaRenderer` 渲染 native `form` blocks；
-内容页 `base.js` 的 `createSettingsForm` 也读取同一份字段 JSON，但没有 TypeScript 类型。
+内容页 `settings.js` 的 `createSettingsForm` 也读取同一份字段 JSON，但没有 TypeScript 类型。
 
-| 字段 | 壳弹窗 `PluginSettingsModal` | native `form` / `SchemaRenderer` | 内容页旧表单 `base.js` |
+| 字段 | 壳弹窗 `PluginSettingsModal` | native `form` / `SchemaRenderer` | 内容页旧表单 `settings.js` |
 | --- | --- | --- | --- |
 | `key` / `label` / `type` / `placeholder` / `options` | 使用 | 使用 | 使用 |
 | `value` | 初始值回退（`get_settings` 优先） | 初始值（`value` 优先） | 仅 `info` 使用；普通字段用 `default` |
@@ -206,7 +210,7 @@ ready 重试、init、schema、action、error 与 pagehide 清理由客户端处
 `secret`：`get_settings()` 对非空值返回掩码 `********`；提交掩码 = 不改动，提交空字符串 =
 清除，提交其它非空值 = 覆盖。三个前端入口都能完成清除：`PluginSettingsModal` 打开时把
 secret 输入框置空，并给出「清除已保存的凭据」勾选框，勾选后提交空字符串；未勾选且输入框
-仍为空时省略该键（不改动），填写新值则覆盖。内容页 `base.js` 与 native `form` 没有专用
+仍为空时省略该键（不改动），填写新值则覆盖。内容页 `settings.js` 与 native `form` 没有专用
 清除控件，清空输入框提交空串即清除。清除能力不依赖迁移阶段。
 
 **native 设置已由壳的设置弹窗接管**：`image-cleaner` 与 `pixiv-sync` 的原生面板不再构造

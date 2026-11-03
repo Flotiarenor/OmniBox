@@ -25,12 +25,18 @@ venv/bin/python tools/check_tests.py
 venv/bin/python tools/check_docs.py
 venv/bin/python -m pyright main.py shell tools plugins
 venv/bin/python -m unittest discover -s tests
+venv/bin/python tools/shell_e2e_smoke.py    # 真实浏览器冒烟：需 Chrome + requirements-e2e.txt
 ```
 
 门禁脚本合计约 15 秒（`pyright` 一次全范围分析占大半）；`unittest discover` 是全量里最慢的一段，
 本机实测约 4 分钟（插件实例启动的用例占主要部分），改动小也建议跑全量 —— 插件测试按前缀拆分，
 单跑容易漏。`pyright` 覆盖内核与全部插件（`main.py shell tools plugins`），零错误硬门禁，
 与 CI 的 typecheck job 同范围；测试类型仍是基线、不拦截。
+`tools/shell_e2e_smoke.py` 是唯一需要真实浏览器的门禁（本机约 35 秒）：它先要求已构建的
+`shell/frontend/dist`，再起真实壳与无头 Chrome 跑 `tests/test_shell_browser_e2e.py`（壳整体链路）
+与 `tests/test_splitter_browser_e2e.py`（侧栏拖动 / 落盘 / 把手占位）共 14 条用例；缺
+selenium / Chrome / 前端产物、有用例被跳过、用例数少于预期，一律以非 0 退出 —— 这类用例在
+`unittest` 里是条件跳过、退出码 0，跳过不等于验证过。CI 的 shell-e2e job 跑同一条。
 每个门禁为什么存在、什么时候必须跑，见 [tools/AGENTS.md](tools/AGENTS.md)。
 
 ## 按改动选读
@@ -38,7 +44,7 @@ venv/bin/python -m unittest discover -s tests
 | 改动落在 | 先读 |
 | --- | --- |
 | `shell/backend/**` | [shell/backend/AGENTS.md](shell/backend/AGENTS.md) |
-| `shell/frontend/**`（含 `public/shell/**`） | [shell/frontend/AGENTS.md](shell/frontend/AGENTS.md) —— 改共享资源后必须 `npm --prefix shell/frontend run build`，否则改动不生效 |
+| `shell/frontend/**`（含 `public/shell/**`） | [shell/frontend/AGENTS.md](shell/frontend/AGENTS.md) —— 改共享资源后必须 `npm --prefix shell/frontend run build`，否则改动不生效；改壳交互（导航 / iframe / 生命周期通知）后再跑 `venv/Scripts/python.exe tools/shell_e2e_smoke.py` |
 | `plugins/**` | [plugins/AGENTS.md](plugins/AGENTS.md)；单个插件内部另有 `plugins/<name>/AGENTS.md`（按 [docs/plugin-doc-spec.md](docs/plugin-doc-spec.md) 写）；改后端结构先读 [docs/plugin-backend-layout.md](docs/plugin-backend-layout.md) |
 | `docs/Releases/**`、`requirements*.txt`、`pyproject.toml`、`tools/check_packaging.py`、`tools/check_build_tree.py` | [docs/Releases/AGENTS.md](docs/Releases/AGENTS.md) —— 追加一次真实构建与 `check_build_tree.py` |
 | `tools/**` | [tools/AGENTS.md](tools/AGENTS.md) |

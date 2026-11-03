@@ -103,7 +103,7 @@ class ExtraRootScanTests(unittest.TestCase):
         _make_image(self.extra / '作者B' / '作品9' / '1.jpg', (200, 30, 30))
         cleaner = self._cleaner(self._viewer(str(self.extra)))
 
-        rels = sorted(f['rel'] for f in cleaner._all_album_files())
+        rels = sorted(f['rel'] for f in cleaner.scanner.all_files())
         self.assertEqual(rels, ['__额外图库/作者B/作品9/1.jpg', '作者A/作品1/1.jpg'])
 
         root = self._viewer(str(self.extra))
@@ -121,7 +121,7 @@ class ExtraRootScanTests(unittest.TestCase):
         _make_image(self.extra / '备份' / 'b.jpg', (9, 9, 9))       # 唯一，不该进组
         cleaner = self._cleaner(self._viewer(str(self.extra)))
 
-        result = cleaner.duplicate_scan()
+        result = cleaner.pipeline.duplicate_scan()
         groups = [sorted(g['files']) for g in result['groups']]
         self.assertIn(['__额外图库/备份/a.jpg', 'a.jpg'], groups)
         self.assertEqual(len(groups), 1, f'只应有一组重复：{groups}')
@@ -149,7 +149,7 @@ class ExtraRootScanTests(unittest.TestCase):
         host.list_roots = None          # 模拟旧版 image-viewer
         cleaner = self._cleaner(host)
 
-        rels = [f['rel'] for f in cleaner._all_album_files()]
+        rels = [f['rel'] for f in cleaner.scanner.all_files()]
         self.assertEqual(rels, ['a.jpg'], '旧宿主上只扫主目录，行为与改动前一致')
         self.assertEqual(cleaner.get_settings()['root_dir'], str(self.root))
 
@@ -168,7 +168,7 @@ class ExtraRootScanTests(unittest.TestCase):
         ]
         cleaner = self._cleaner(host)
 
-        rels = [f['rel'] for f in cleaner._all_album_files()]
+        rels = [f['rel'] for f in cleaner.scanner.all_files()]
         self.assertEqual(rels, ['作者A/a.jpg'], '没有前缀就只扫主目录，不能带错前缀去删')
         self.assertEqual(cleaner.get_settings()['root_dir'], str(self.root))
 
@@ -187,11 +187,11 @@ class ExtraRootScanTests(unittest.TestCase):
         shutil.copy2(self.root / 'a.jpg', nested / 'a.jpg')   # 逐字节相同
         cleaner = self._cleaner(self._viewer(str(nested)))
 
-        rels = sorted(f['rel'] for f in cleaner._all_album_files())
+        rels = sorted(f['rel'] for f in cleaner.scanner.all_files())
         self.assertEqual(rels, ['a.jpg', '备份/a.jpg'],
                          '主根那次扫描已经收过它，命名空间那次要丢掉')
 
-        groups = [sorted(g['files']) for g in cleaner.duplicate_scan()['groups']]
+        groups = [sorted(g['files']) for g in cleaner.pipeline.duplicate_scan()['groups']]
         self.assertEqual(groups, [['a.jpg', '备份/a.jpg']],
                          f'跨根重复照常抓到，但不该出现同一物理文件的两条路径：{groups}')
 

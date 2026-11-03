@@ -674,18 +674,24 @@ class PluginBase(ABC):
         即使不校验 schema，**改根/改端点一类设置项仍然要过角色判定**：该键会经
         `update_setting` 落进与 `save_settings` 同一个 JSON，进程重启后由
         `setting()` 读回并生效 —— 绕过这一步等于绕过 `save_settings` 的限权。
+
+        写入必须走 `SettingsStore.update()`：它把读-改-写收在**同一把插件锁**内，因此与
+        前端的 `save_settings`（同样走 `update()`）并发时不会互相覆盖。先 `get()` 再
+        `set()` 会把锁拆成两段，中间窗口内对方写入的键会被这里的整份内容覆盖掉 ——
+        表现是运行期状态偶发丢失，且不报错、无日志。
         """
         denial = self._admin_denial([key])
         if denial:
             log.warning(f"[{self.name}] 拒绝写入设置项 {key!r}: {denial}")
             return False
         if self._settings_store:
-            current = self._settings_store.get(self.name) or {}
-            current[key] = value
             try:
-                self._settings_store.set(self.name, current)
+                self._settings_store.update(self.name, {key: value})
                 return True
-            except Exception:
+            except Exception as e:
+                # 不能静默返回 False：调用方通常只判真假，没有日志就只剩"状态没保存上"
+                # 这一个现象，排障时无从下手。
+                log.warning(f"[{self.name}] 写入设置项 {key!r} 失败: {e}")
                 return False
         return False
 

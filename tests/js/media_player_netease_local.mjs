@@ -21,6 +21,7 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 import { createDom } from './dom_stub.mjs';
+import { loadShellScripts } from './shell_scripts.mjs';
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
     '../../plugins/media-player/frontend');
@@ -121,6 +122,8 @@ function makeHarness() {
     sandbox.window = sandbox;
 
     const ctx = vm.createContext(sandbox);
+    // 内容页的握手在壳注入的 /shell/chrome-client.js 里：按引导片段装载同一份实现。
+    loadShellScripts(ctx, ['chrome-client.js']);
     for (const rel of scripts) {
         vm.runInContext(fs.readFileSync(path.join(FRONTEND, rel), 'utf8'), ctx, { filename: rel });
     }

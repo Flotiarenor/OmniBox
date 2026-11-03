@@ -18,12 +18,10 @@
     "data",
     "shell/frontend/node_modules",
     "shell/frontend/dist",
-    "**/__pycache__",
-    "plugins/pixiv-sync/backend/libs"
+    "**/__pycache__"
   ],
   "extraPaths": [
-    "plugins/pixiv-sync/backend/libs",
-    "docs/Releases"
+    "plugins/pixiv-sync/backend/libs"
   ],
   "reportMissingTypeStubs": false
 }

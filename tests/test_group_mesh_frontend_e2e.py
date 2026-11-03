@@ -165,6 +165,12 @@ def shell_injection() -> str:
     toast = SHELL_PUBLIC / 'toast.js'
     if toast.is_file():
         parts.append(f'<!-- toast.js -->\n<script>\n{toast.read_text(encoding="utf-8")}\n</script>')
+    # 内容页的 omnibox 握手在 /shell/chrome-client.js：不注入它，`bindHost()` 会直接抛错，
+    # 页面停在「正在加载…」，一整片断言会以"渲染没发生"的形式失败。
+    client = SHELL_PUBLIC / 'chrome-client.js'
+    if client.is_file():
+        parts.append(
+            f'<!-- chrome-client.js -->\n<script>\n{client.read_text(encoding="utf-8")}\n</script>')
     return '\n'.join(parts)
 
 

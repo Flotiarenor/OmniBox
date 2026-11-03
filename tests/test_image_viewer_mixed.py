@@ -296,6 +296,13 @@ class ImageViewerMixedTestCase(unittest.TestCase):
                 return self.data.get(name, {})
             def set(self, name, value):
                 self.data[name] = value
+            # 与 SettingsStore.update 同语义（同一把锁内的读-改-写）：`update_setting`
+            # 现在走这个方法，替身缺了它就等于"写入必失败"，用例会静默什么都测不到。
+            def update(self, name, values):
+                merged = dict(self.data.get(name, {}))
+                merged.update(values)
+                self.data[name] = merged
+                return merged
 
         plugin = self.module.ImageViewerPlugin(
             {'name': 'image-viewer'},
@@ -311,6 +318,57 @@ class ImageViewerMixedTestCase(unittest.TestCase):
         folder_settings = stored.get('folders', {}).get('photos/2026', {})
         self.assertNotIn('root_dir', folder_settings)
         self.assertEqual(folder_settings['sort_by'], 'name')
+
+    def test_folder_settings_write_failure_is_reported(self):
+        """写入失败必须上报 `success: False`：前端 `_saveStep` 据此保持弹窗并显示错误，
+        原先无条件报成功，表现是"保存了但没生效"、磁盘上还是旧值。"""
+
+        class FailingStore:
+            def get(self, name):
+                return {}
+
+            def set(self, name, value):
+                raise OSError('设置目录只读（用例注入）')
+
+            def update(self, name, values):
+                raise OSError('设置目录只读（用例注入）')
+
+        plugin = self.module.ImageViewerPlugin(
+            {'name': 'image-viewer'},
+            {'directories': {'data_root': str(self.root)}},
+        )
+        plugin._settings_store = FailingStore()
+        with self.assertLogs('shell.backend.plugin_base', level='WARNING') as captured:
+            result = plugin.settings.save_folder('photos/2026', {'sort_by': 'name'})
+        self.assertFalse(result.get('success'))
+        self.assertIn('写入失败', result.get('error', ''))
+        self.assertIn('设置目录只读', '\n'.join(captured.output), '失败原因应留在日志里')
+
+    def test_clear_folder_write_failure_is_reported(self):
+        """同上：清除文件夹级设置没写成就不能回"已回退到全局"。"""
+
+        class FailingStore:
+            def __init__(self):
+                self.data = {'image-viewer': {'folders': {'photos': {'sort_by': 'name'}}}}
+
+            def get(self, name):
+                return self.data.get(name, {})
+
+            def set(self, name, value):
+                raise OSError('设置目录只读（用例注入）')
+
+            def update(self, name, values):
+                raise OSError('设置目录只读（用例注入）')
+
+        plugin = self.module.ImageViewerPlugin(
+            {'name': 'image-viewer'},
+            {'directories': {'data_root': str(self.root)}},
+        )
+        plugin._settings_store = FailingStore()
+        with self.assertLogs('shell.backend.plugin_base', level='WARNING'):
+            result = plugin.settings.clear_folder('photos')
+        self.assertFalse(result.get('success'))
+        self.assertIn('清除', result.get('error', ''))
 
     def test_settings_defaults(self):
         s = self.plugin.settings.for_path('')

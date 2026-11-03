@@ -26,9 +26,24 @@ for _stream in (sys.stdout, sys.stderr):
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SPEC_DIR = PROJECT_ROOT / 'docs' / 'Releases'
-for _p in (str(PROJECT_ROOT), str(SPEC_DIR)):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+
+def _spec_common():
+    """按文件路径加载 docs/Releases/spec_common.py。
+
+    `docs/Releases` 是构建暂存目录，不是源码树的一部分（`pyrightconfig.json` 的
+    extraPaths 不再包含它），因此这里不靠"目录在 sys.path 上"，显式按路径加载。
+    """
+    path = SPEC_DIR / 'spec_common.py'
+    spec = importlib.util.spec_from_file_location('spec_common', path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f'无法为 {path} 创建加载器')
+    module = importlib.util.module_from_spec(spec)
+    sys.modules['spec_common'] = module
+    spec.loader.exec_module(module)
+    return module
 
 # 产物中必须存在的内容（相对产物根目录，用 / 分隔）
 #
@@ -88,7 +103,7 @@ def check_pyz_covers_hidden_imports(exe: Path, errors: list) -> None:
     这个检查看的是**真正打出来的产物**。
     """
     try:
-        from spec_common import HIDDEN_IMPORTS
+        HIDDEN_IMPORTS = _spec_common().HIDDEN_IMPORTS
     except Exception as e:  # spec 读不到时不当致命错误，静态检查那边会报
         print(f'  [warn] 读不到 HIDDEN_IMPORTS，跳过 PYZ 覆盖检查: {e}')
         return

@@ -86,7 +86,7 @@ class ScanTaskTests(unittest.TestCase):
     def _wait(self, plugin, timeout: float = 30.0) -> dict:
         deadline = time.time() + timeout
         while time.time() < deadline:
-            status = plugin.scan_status()
+            status = plugin.scans.status()
             if not status['running']:
                 return status
             time.sleep(0.02)
@@ -101,7 +101,7 @@ class ScanTaskTests(unittest.TestCase):
         _make_image(self.root / 'b.jpg', (9, 9, 9))
         cleaner = self._cleaner()
 
-        started = cleaner.scan_start('dupe')
+        started = cleaner.scans.start('dupe')
         self.assertTrue(started.get('started'), started)
         status = self._wait(cleaner)
         self.assertTrue(status['success'], status)
@@ -110,13 +110,13 @@ class ScanTaskTests(unittest.TestCase):
         self.assertEqual(status['processed'], 3, '全部文件都定论后进度走满')
         self.assertEqual(status['groups'], 1)
 
-        cached = cleaner.get_cached_scan('dupe')
+        cached = cleaner.results.get_cached_scan('dupe')
         self.assertTrue(cached['cached'], '任务结束必须把结果写进扫描缓存')
         self.assertEqual(cached['scanned'], 3)
         self.assertEqual([sorted(g['files']) for g in cached['groups']],
                          [['a.jpg', '副本/a.jpg']],
                          '后台任务与同步入口必须用同一份分组逻辑')
-        self.assertEqual([sorted(g['files']) for g in cleaner.duplicate_scan()['groups']],
+        self.assertEqual([sorted(g['files']) for g in cleaner.pipeline.duplicate_scan()['groups']],
                          [sorted(g['files']) for g in cached['groups']])
 
     def test_similar_scan_task_writes_cache_with_phase_progress(self):
@@ -124,18 +124,18 @@ class ScanTaskTests(unittest.TestCase):
         _make_image(self.root / 'b.jpg', (200, 30, 30))
         cleaner = self._cleaner()
 
-        cleaner.scan_start('similar')
+        cleaner.scans.start('similar')
         status = self._wait(cleaner)
         self.assertTrue(status['success'], status)
         self.assertEqual(status['mode'], 'similar')
         self.assertEqual(status['total'], 2, '第二阶段的分母是有效图片数')
         self.assertEqual(status['processed'], 2)
-        self.assertTrue(cleaner.get_cached_scan('similar')['cached'])
+        self.assertTrue(cleaner.results.get_cached_scan('similar')['cached'])
 
     def test_unknown_mode_falls_back_to_dupe(self):
         _make_image(self.root / 'a.jpg')
         cleaner = self._cleaner()
-        self.assertEqual(cleaner.scan_start('nonsense').get('mode'), 'dupe')
+        self.assertEqual(cleaner.scans.start('nonsense').get('mode'), 'dupe')
         self._wait(cleaner)
 
     # ---------- 2. 不叠第二个任务 ----------
@@ -145,12 +145,12 @@ class ScanTaskTests(unittest.TestCase):
         gate = threading.Event()
         task = BackgroundTask(kind='image-cleaner-scan', extra={'mode': 'dupe'})
         task.start(lambda t: gate.wait(10))
-        cleaner._scan_task = task
+        cleaner.scans._task = task
         try:
-            again = cleaner.scan_start('dupe')
+            again = cleaner.scans.start('dupe')
             self.assertFalse(again.get('started'), '已有任务在跑时不能再起一个')
             self.assertTrue(again.get('running'))
-            self.assertTrue(cleaner.scan_cancel()['success'])
+            self.assertTrue(cleaner.scans.cancel()['success'])
         finally:
             gate.set()
             task.cancel()
@@ -165,9 +165,9 @@ class ScanTaskTests(unittest.TestCase):
         task = BackgroundTask(kind='image-cleaner-scan', extra={'mode': 'dupe'})
         task.cancel()                                    # 未 start 就取消 → cancelled 为真
 
-        cleaner._scan_worker(task, 'dupe', None)
+        cleaner.scans.worker(task, 'dupe', None)
 
-        self.assertFalse(cleaner._load_scan_cache().get('dupe'),
+        self.assertFalse(cleaner.results.load().get('dupe'),
                          '被取消的扫描不能留下任何分组结果')
         self.assertEqual(task.status()['processed'], 0)
 
@@ -175,12 +175,12 @@ class ScanTaskTests(unittest.TestCase):
 
     def test_idle_status_and_cancel_shapes(self):
         cleaner = self._cleaner()
-        status = cleaner.scan_status()
+        status = cleaner.scans.status()
         self.assertFalse(status['running'])
         self.assertFalse(status['done'])
         self.assertEqual(status['total'], 0)
         self.assertEqual(status['mode'], '')
-        cancelled = cleaner.scan_cancel()
+        cancelled = cleaner.scans.cancel()
         self.assertFalse(cancelled['success'])
         self.assertIn('没有正在运行', cancelled['error'])
 
@@ -189,7 +189,7 @@ class ScanTaskTests(unittest.TestCase):
         gate = threading.Event()
         task = BackgroundTask(kind='image-cleaner-scan', extra={'mode': 'dupe'})
         task.start(lambda t: gate.wait(10))
-        cleaner._scan_task = task
+        cleaner.scans._task = task
         try:
             cleaner.on_unload()
             self.assertTrue(task.cancelled, '进程退出要取消正在跑的扫描（结果缓存保留）')
@@ -208,9 +208,9 @@ class ScanTaskTests(unittest.TestCase):
         gate = threading.Event()
         task = BackgroundTask(kind='image-cleaner-scan', extra={'mode': 'dupe'})
         task.start(lambda t: gate.wait(10))
-        cleaner._scan_task = task
+        cleaner.scans._task = task
         try:
-            second = cleaner.scan_start('dupe')
+            second = cleaner.scans.start('dupe')
             self.assertFalse(second['started'], f'已有任务在跑时不该再起一个: {second}')
             self.assertTrue(second['running'])
         finally:
@@ -234,13 +234,13 @@ class ScanTaskTests(unittest.TestCase):
         report = engine.verify()
 
         self.assertEqual(report['pass_end']['scanned'], 3)
-        dupe = cleaner.get_cached_scan('dupe')
+        dupe = cleaner.results.get_cached_scan('dupe')
         self.assertTrue(dupe['cached'])
         self.assertFalse(dupe['stale'], '校验完的结果不该还是过期的')
         self.assertEqual([sorted(g['files']) for g in dupe['groups']],
                          [['a.jpg', 'b.jpg']])
         # 指纹落盘：旧后台路径从不保存 dhash.json，重启即全量重算
-        self.assertTrue(cleaner._dhash_cache_path().exists(), 'dHash 缓存必须落盘')
+        self.assertTrue(cleaner.hashes.path().exists(), 'dHash 缓存必须落盘')
 
     def test_deleted_file_invalidates_result_and_hash(self):
         from shell.backend.freshness import engine_for
@@ -251,20 +251,20 @@ class ScanTaskTests(unittest.TestCase):
         engine = engine_for(cleaner)
         engine.spec.min_sync_interval = 0.0
         engine.verify()
-        self.assertEqual(len(cleaner.get_cached_scan('dupe')['groups']), 1)
+        self.assertEqual(len(cleaner.results.get_cached_scan('dupe')['groups']), 1)
 
         (self.root / 'b.jpg').unlink()
         engine.spec.min_sync_interval = 0.0
         engine.sync('', force=True)
 
-        self.assertTrue(cleaner.get_cached_scan('dupe')['stale'],
+        self.assertTrue(cleaner.results.get_cached_scan('dupe')['stale'],
                         '磁盘变了之后结果缓存必须标记过期')
         after = engine.verify()
         self.assertEqual(after['audited']['valid_entries'], 1)
-        self.assertEqual(cleaner.get_cached_scan('dupe')['groups'], [],
+        self.assertEqual(cleaner.results.get_cached_scan('dupe')['groups'], [],
                          '重新分组后不该再报已删除文件的重复对')
-        dead = cleaner._dhash_cache_key(str(self.root / 'b.jpg'))
-        self.assertNotIn(dead, cleaner._dhash_cache, '已删除文件的指纹必须清掉')
+        dead = cleaner.hashes.key_for_abs(str(self.root / 'b.jpg'))
+        self.assertNotIn(dead, cleaner.hashes.entries, '已删除文件的指纹必须清掉')
 
     def test_threshold_change_invalidates_similar_result(self):
         from shell.backend.freshness import engine_for
@@ -274,11 +274,11 @@ class ScanTaskTests(unittest.TestCase):
         engine = engine_for(cleaner)
         engine.spec.min_sync_interval = 0.0
         engine.verify()
-        self.assertFalse(cleaner.get_cached_scan('similar')['stale'])
+        self.assertFalse(cleaner.results.get_cached_scan('similar')['stale'])
 
         cleaner.on_settings_changed({'threshold'})
 
-        self.assertTrue(cleaner.get_cached_scan('similar')['stale'],
+        self.assertTrue(cleaner.results.get_cached_scan('similar')['stale'],
                         '改阈值后相似分组必须重算（旧实现看完还是旧分组）')
 
     def test_abs_for_rel_handles_extra_root_prefix(self):
@@ -295,13 +295,13 @@ class ScanTaskTests(unittest.TestCase):
             {'name': 'image-cleaner'}, {'directories': {'data_root': str(self.root)}})
         cleaner._host = viewer
 
-        roots = cleaner._scan_roots()
+        roots = cleaner.host.roots()
         prefix = next(p for _r, p in roots if p)
-        self.assertEqual(Path(cleaner._abs_for_rel(f'{prefix}/a.jpg')).resolve(),
+        self.assertEqual(Path(cleaner.host.abs_for_rel(f'{prefix}/a.jpg')).resolve(),
                          (extra / 'a.jpg').resolve())
-        self.assertEqual(Path(cleaner._abs_for_rel('b.jpg')).resolve(),
+        self.assertEqual(Path(cleaner.host.abs_for_rel('b.jpg')).resolve(),
                          (self.root / 'b.jpg').resolve())
-        self.assertIsNone(cleaner._abs_for_rel(''))
+        self.assertIsNone(cleaner.host.abs_for_rel(''))
 
 
 if __name__ == '__main__':   # pragma: no cover

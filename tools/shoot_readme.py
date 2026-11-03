@@ -71,13 +71,25 @@ INSTALL_HINT = (
     '（selenium 刻意不在 requirements-dev 里，CI 不装；理由见该文件抬头）。'
 )
 
-# 按文字找控件时的候选集合：按钮、链接、导航项、工具栏按钮与扩展入口。
-CLICKABLE = ('button, a, [role="button"], .obx-nav-item, .obx-toolbar-btn, '
-             '.obx-extension, .iv-nav-item, .ml-nav-item, .mp-nav-item, .nr-nav-item, .gm-nav-item')
+# 按文字找控件时的候选集合：壳侧骨架（PluginChrome 的导航项 / 顶栏动作 / 扩展入口）、
+# 原生面板里的动作，以及内容页自己的按钮、链接与工具栏按钮。
+CLICKABLE = ('button, a, [role="button"], .obx-nav-item, .plugin-nav-item, '
+             '.plugin-extension-item, .plugin-actions button, .plugin-leading button, '
+             '.native-panel button, .obx-toolbar-btn')
 
 # 复制基线时剔除的东西：WebView2 profile（几十 MB）、日志、访问令牌与主体表。
 # 令牌与主体表由实例启动时自己重建，复制过去只会把上一轮的凭据带进新一轮。
 EXCLUDE_NAMES = frozenset({'webview', 'logs', 'auth_token.txt', 'principals.json'})
+
+
+def flatten_text(text: str) -> str:
+    """把 DOM 里取到的可见文字压成单行（连续空白 → 一个空格）。
+
+    断言的是"这段文字在画面上看得见"，不是"它在同一个文本节点里"：`innerText` 会在块级
+    元素之间插换行，于是"已下载"与"1,466 张"分处两个 span 时就断成两行。不归一化的话，
+    断言会因为版式细节（而不是内容）红。
+    """
+    return ' '.join(str(text or '').split())
 
 
 class ShootError(RuntimeError):
@@ -183,15 +195,19 @@ class Server:
         except subprocess.TimeoutExpired:
             proc.kill()
 
-    def call(self, method: str, *args: Any) -> Any:
-        """调 `/api/<method>`（壳方法与插件方法同一张表：`<插件>__<方法>`）。"""
+    def call(self, method: str, *args: Any, timeout: float = 60) -> Any:
+        """调 `/api/<method>`（壳方法与插件方法同一张表：`<插件>__<方法>`）。
+
+        `timeout` 可调：某些 setup 是**同步**全库扫描（image-cleaner 的相似分组要逐图算
+        dHash），默认 60s 不够。
+        """
         ensure_import_path()
         from shell.backend.auth import TOKEN_HEADER
         body = json.dumps({'args': list(args), 'kwargs': {}}, ensure_ascii=False).encode('utf-8')
         request = urllib.request.Request(
             f'{self.base_url}/api/{method}', data=body, method='POST',
             headers={'Content-Type': 'application/json', TOKEN_HEADER: self.token})
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode('utf-8'))
         if isinstance(payload, dict) and payload.get('error'):
             raise ShootError(f'{method} 调用失败：{payload["error"]}')
@@ -305,6 +321,14 @@ def load_webdriver() -> Any:
         raise ShootError(INSTALL_HINT) from exc
 
 
+def load_keys_module() -> Any:
+    """按需导入 selenium 的按键常量；同样不进 requirements-dev，CI 没有这个包。"""
+    try:
+        return importlib.import_module('selenium.webdriver.common.keys')
+    except ImportError as exc:  # pragma: no cover - 取决于本机环境
+        raise ShootError(INSTALL_HINT) from exc
+
+
 def chrome_binary() -> Optional[str]:
     """复用 e2e 用例的 Chrome 定位。
 
@@ -323,6 +347,9 @@ class Browser:
         self.driver = driver
         self.base_url = base_url
         self.viewport = viewport
+        # 壳骨架动作（导航项 / 顶栏动作 / 扩展入口）默认作用于哪个插件页；
+        # `shell_page()` 在每一步之前把它设成目标插件。
+        self._plugin = ''
 
     # ── 基础动作 ─────────────────────────────────────────────────────────
 
@@ -396,7 +423,173 @@ class Browser:
         return bool((element.get_attribute('src') or '').strip())
 
     def body_text(self) -> str:
-        return str(self.driver.execute_script('return document.body.innerText') or '')
+        return flatten_text(str(self.driver.execute_script('return document.body.innerText') or ''))
+
+    def visible_text(self) -> str:
+        """截图里能看到的全部文字：壳文档 + 当前**可见**插件 iframe 的内容文档。
+
+        页架构是"壳渲染 chrome、内容 iframe 只装内容"：标题 / 导航 / 状态 / 校验控件在壳
+        文档里，专辑卡、播放条、阅读正文在 iframe 里，两者都在同一张截图上。只读当前 frame
+        会漏掉另一半 —— 旧场景的断言是 iframe 文案，新架构下标题与导航搬到了壳里。
+
+        只取**可见**的那个 `.plugin-frame-container`（keep-alive 的插件 iframe 用 v-show
+        隐藏，仍留在 DOM 里）：否则断言可能命中另一个插件页里的同名词。
+        """
+        self.driver.switch_to.default_content()
+        shell = self.body_text()
+        content = str(self.driver.execute_script(
+            "const frames = Array.from("
+            "  document.querySelectorAll('.plugin-frame-container iframe.plugin-iframe'));"
+            "const frame = frames.find(f => f.offsetWidth || f.offsetHeight) || null;"
+            "if (!frame) return '';"
+            "try {"
+            "  const doc = frame.contentDocument;"
+            "  return doc && doc.body ? (doc.body.innerText || '') : '';"
+            "} catch (e) { return ''; }") or '')
+        return flatten_text(shell + '\n' + content)
+
+    def visible_text_any(self) -> str:
+        """同 `visible_text`，但**不切换 frame**：从任意上下文都能读到两边的文字。
+
+        步骤里常出现"点内容页里的卡片 → 等壳侧副标题更新"（例如相册数报在壳的
+        `.plugin-sub` 里），这时若用会切 frame 的 `visible_text`，后续在 iframe 里的点击
+        就跑到了壳文档。`window.top` 同源可读，所以这里直接拼两侧的 `innerText`。
+        """
+        return flatten_text(str(self.driver.execute_script(
+            "const top = window.top;"
+            "const shell = top.document.body.innerText || '';"
+            "const frames = Array.from("
+            "  top.document.querySelectorAll('.plugin-frame-container iframe.plugin-iframe'));"
+            "const frame = frames.find(f => f.offsetWidth || f.offsetHeight) || null;"
+            "let content = '';"
+            "try {"
+            "  if (frame && frame.contentDocument && frame.contentDocument.body) {"
+            "    content = frame.contentDocument.body.innerText || '';"
+            "  }"
+            "} catch (e) { content = ''; }"
+            "return shell + '\\n' + content;") or ''))
+
+    def wait_visible_text(self, needle: str, timeout: float = UI_TIMEOUT) -> None:
+        """等一段文案出现在"截图里看得见的地方"（壳或内容 iframe），不切换 frame。"""
+        if not wait_until(lambda: needle in self.visible_text_any(), timeout):
+            raise ShootError(f'等不到文案（壳与内容页都没有）：{needle}')
+
+    # ── 壳骨架（PluginChrome）的动作：导航项 / 顶栏动作 / 扩展入口 ────────────
+    #
+    # 这三类控件由壳渲染在**壳文档**里、按插件各占一个 `.plugin-frame-container`；
+    # 多个插件页同时存在（keep-alive），所以选择器必须先定位到那个容器再找控件 ——
+    # 直接在壳文档里点 `.plugin-nav-item` 会命中另一个插件的同 id 导航项。
+
+    def shell_page(self, plugin: str) -> None:
+        """切回壳文档，并把后续壳骨架动作的目标插件记为 `plugin`。"""
+        self.driver.switch_to.default_content()
+        self._plugin = plugin
+
+    def _nav_item_js(self) -> str:
+        return (
+            "const name = arguments[0], view = arguments[1];"
+            "const frame = Array.from(document.querySelectorAll('iframe.plugin-iframe'))"
+            "  .find(f => f.getAttribute('data-plugin-name') === name) || null;"
+            "const container = frame ? (frame.closest('.plugin-frame-container') || frame.parentElement) : null;"
+            "const page = container ? container.querySelector('.plugin-page') : null;"
+            "const item = page ? page.querySelector("
+            "  '.plugin-nav-item[data-view-id=\"' + view + '\"]') : null;"
+            "if (!item) return false;"
+            "item.click(); return true;"
+        )
+
+    def click_view(self, plugin: str, view: str) -> None:
+        """按 `data-view-id` 点壳侧导航项（例如 image-viewer 的 albums / document-reader 的 toc）。
+
+        导航项可能**后来才出现**（插件在阅读态才把「目录」组报成可见），所以先等它出现，
+        再点一次 —— 反复点会触发重复的视图切换，状态反而更难收敛。
+        """
+        self.shell_page(plugin)
+        js = self._nav_item_js()
+        if not wait_until(lambda: self.driver.execute_script(
+                js.replace('item.click(); return true;', 'return true;'), plugin, view), UI_TIMEOUT):
+            available = self.driver.execute_script(
+                "const name = arguments[0];"
+                "const frame = Array.from(document.querySelectorAll('iframe.plugin-iframe'))"
+                "  .find(f => f.getAttribute('data-plugin-name') === name) || null;"
+                "const container = frame ? (frame.closest('.plugin-frame-container') || frame.parentElement) : null;"
+                "const page = container ? container.querySelector('.plugin-page') : null;"
+                "return page ? Array.from(page.querySelectorAll('.plugin-nav-item'))"
+                "  .map(b => b.getAttribute('data-view-id') || '') : [];", plugin)
+            raise ShootError(f'壳侧导航项不存在：{plugin} / {view}（当前导航项 {available}）')
+        self.driver.execute_script(js, plugin, view)
+
+    def wait_view(self, plugin: str, view: str, timeout: float = UI_TIMEOUT) -> None:
+        """等壳骨架把活动视图切到 `view`（`.plugin-page[data-active-view]`）。"""
+        self.driver.switch_to.default_content()
+        js = (
+            "const name = arguments[0];"
+            "const frame = Array.from(document.querySelectorAll('iframe.plugin-iframe'))"
+            "  .find(f => f.getAttribute('data-plugin-name') === name) || null;"
+            "const container = frame ? (frame.closest('.plugin-frame-container') || frame.parentElement) : null;"
+            "const page = container ? container.querySelector('.plugin-page') : null;"
+            "return page ? (page.getAttribute('data-active-view') || '') : null;"
+        )
+        if not wait_until(lambda: self.driver.execute_script(js, plugin) == view, timeout):
+            current = self.driver.execute_script(js, plugin)
+            raise ShootError(f'壳骨架没有切到视图 {plugin} / {view}（当前 {current!r}）')
+
+    def click_action(self, plugin: str, label: str) -> None:
+        """按文案点壳侧顶栏动作（含 leading 区与「更多」菜单之外的动作区）。
+
+        `.plugin-actions-measure` 是同一排按钮的**量宽副本**（aria-hidden，用于计算溢出），
+        文案与真按钮相同；不过滤它就会点在不可见的副本上 —— 看着点到了、界面没反应。
+        """
+        self.shell_page(plugin)
+        js = (
+            "const name = arguments[0], label = arguments[1];"
+            "const frame = Array.from(document.querySelectorAll('iframe.plugin-iframe'))"
+            "  .find(f => f.getAttribute('data-plugin-name') === name) || null;"
+            "const container = frame ? (frame.closest('.plugin-frame-container') || frame.parentElement) : null;"
+            "if (!container) return false;"
+            "const groups = [container.querySelector('.plugin-leading'),"
+            "  container.querySelector('.plugin-actions:not(.plugin-actions-measure)')];"
+            "const buttons = groups.filter(Boolean).flatMap(g => Array.from(g.querySelectorAll('button')));"
+            "const textOf = b => ((b.innerText || '') + ' ' + (b.title || '') + ' '"
+            "  + (b.getAttribute('aria-label') || '')).trim();"
+            "const hit = buttons.find(b => textOf(b).includes(label));"
+            "if (!hit) return false;"
+            "hit.click(); return true;"
+        )
+        if not wait_until(lambda: self.driver.execute_script(
+                js.replace('hit.click(); return true;', 'return true;'), plugin, label), UI_TIMEOUT):
+            available = self.driver.execute_script(
+                "const name = arguments[0];"
+                "const frame = Array.from(document.querySelectorAll('iframe.plugin-iframe'))"
+                "  .find(f => f.getAttribute('data-plugin-name') === name) || null;"
+                "const container = frame ? (frame.closest('.plugin-frame-container') || frame.parentElement) : null;"
+                "const actions = container ? container.querySelector('.plugin-actions:not(.plugin-actions-measure)') : null;"
+                "return actions ? Array.from(actions.querySelectorAll('button'))"
+                "  .map(b => ((b.innerText || '') + '|' + (b.title || '')).trim()).filter(Boolean) : [];", plugin)
+            raise ShootError(f'壳侧顶栏没有这个动作：{plugin} / {label}（当前 {available}）')
+        self.driver.execute_script(js, plugin, label)
+
+    def click_extension(self, plugin: str, label: str) -> None:
+        """点壳侧扩展入口（`PluginExtensions` 渲染的 `.plugin-extension-item`）。
+
+        扩展条目来自 `system_get_plugin_extensions` 的异步返回，必须轮询等它出现。
+        """
+        self.shell_page(plugin)
+        js = (
+            "const name = arguments[0], label = arguments[1];"
+            "const frame = Array.from(document.querySelectorAll('iframe.plugin-iframe'))"
+            "  .find(f => f.getAttribute('data-plugin-name') === name) || null;"
+            "const container = frame ? (frame.closest('.plugin-frame-container') || frame.parentElement) : null;"
+            "if (!container) return false;"
+            "const items = Array.from(container.querySelectorAll('.plugin-extension-item'));"
+            "const hit = items.find(b => ((b.innerText || b.textContent || '').trim()).includes(label));"
+            "if (!hit) return false;"
+            "hit.click(); return true;"
+        )
+        if not wait_until(lambda: self.driver.execute_script(
+                js.replace('hit.click(); return true;', 'return true;'), plugin, label), UI_TIMEOUT):
+            raise ShootError(f'壳侧扩展入口不存在：{plugin} / {label}')
+        self.driver.execute_script(js, plugin, label)
 
     def run_script_file(self, relative: str) -> None:
         """执行仓库内的一个 JS 文件（场景里的"补画面"脚本）。
@@ -447,7 +640,7 @@ class Browser:
 
     def wait_text(self, needle: str, timeout: float = UI_TIMEOUT) -> None:
         if not wait_until(lambda: needle in self.body_text(), timeout):
-            raise ShootError(f'等不到文案：{needle}')
+            raise ShootError(f'等不到文案：{needle}（当前文档片段：{self.body_text()[:400]}）')
 
     def wait_gone(self, selector: str, timeout: float = UI_TIMEOUT) -> None:
         """等一个元素消失。
@@ -469,7 +662,161 @@ class Browser:
 
     # ── 场景步骤 ─────────────────────────────────────────────────────────
 
-    def click_selector(self, selector: str) -> None:
+    def wait_freshness_idle(self, timeout: float = 60.0) -> None:
+        """等壳侧「同步 / 校验」控件的**自动同步**跑完。
+
+        为什么必须等：`freshness.js` 在挂载时被动跑一次增量同步，完成时回调会向内容页发
+        `omnibox:action refresh` —— 插件据此重载自己的视图（document-reader 会退回书架）。
+        拍摄途中撞上这次重载，画面会在中途被换掉，现象却是"点了没反应 / 自己退回去了"，
+        从场景表上完全看不出来。
+
+        先等控件挂上（没有 `chrome.freshness` 的页面直接放行），再等它空闲；最后留一小段
+        时间让"完成 → 内容页重载"这条动作落地。
+        """
+        presence = (
+            "const containers = Array.from(document.querySelectorAll('.plugin-frame-container'));"
+            "const visible = containers.find(c => c.offsetWidth || c.offsetHeight) || null;"
+            "return !!(visible && visible.querySelector('.plugin-freshness .obx-fresh'));"
+        )
+        if not wait_until(lambda: bool(self.driver.execute_script(presence)), 8.0):
+            return
+        idle = (
+            "const containers = Array.from(document.querySelectorAll('.plugin-frame-container'));"
+            "const visible = containers.find(c => c.offsetWidth || c.offsetHeight) || null;"
+            "const fresh = visible ? visible.querySelector('.plugin-freshness') : null;"
+            "if (!fresh) return true;"
+            "const card = fresh.querySelector('.obx-fresh-card');"
+            "const hidden = !card || card.classList.contains('hidden');"
+            "const status = (fresh.querySelector('.obx-fresh-status') || {}).textContent || '';"
+            "return hidden && status.indexOf('正在') < 0 && status.indexOf('同步中') < 0;"
+        )
+        if not wait_until(lambda: bool(self.driver.execute_script(idle)), timeout):
+            raise ShootError('壳侧的自动同步 / 校验一直没结束，拍摄会在中途被打断')
+        time.sleep(0.8)
+
+    def scroll_to(self, selector: str, text: Optional[str] = None, margin: float = 6.0) -> None:
+        """把匹配元素滚到它所在**滚动容器**的顶部（留 `margin`），并把页面级滚动清零。
+
+        为什么不用 `scrollIntoView`：它会把**所有**可滚祖先（含 iframe 的文档本身）一起滚，
+        弹窗标题因此被顶出视口 —— 截图里「标题消失、顶部一条被裁掉一半的滑杆行」就是这么来的，
+        而且是否发生取决于当时的滚动量，不可复现。这里只动最近的那一层滚动容器。
+        """
+        js = (
+            "const sel = arguments[0], needle = arguments[1] || '', margin = arguments[2];"
+            "const el = Array.from(document.querySelectorAll(sel))"
+            "  .find(e => !needle || ((e.innerText || e.textContent || '').includes(needle)));"
+            "if (!el) return false;"
+            "let node = el.parentElement, scroller = null;"
+            "while (node && node !== document.body) {"
+            "  const st = getComputedStyle(node);"
+            "  if (/auto|scroll/.test(st.overflowY) && node.scrollHeight - node.clientHeight > 4) {"
+            "    scroller = node; break;"
+            "  }"
+            "  node = node.parentElement;"
+            "}"
+            "if (scroller) {"
+            "  const delta = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top;"
+            "  scroller.scrollTop = Math.max(0, scroller.scrollTop + delta - margin);"
+            "}"
+            "if (document.scrollingElement) document.scrollingElement.scrollTop = 0;"
+            "window.scrollTo(0, 0);"
+            "return true;")
+        if not self.driver.execute_script(js, selector, text or '', margin):
+            raise ShootError(f'要滚到顶部的元素不存在：{selector} / {text}')
+
+    def require_in_viewport(self, selector: str, text: Optional[str] = None,
+                            timeout: float = 10.0) -> None:
+        """断言元素**完整落在视口内**，且没有被滚动容器裁切、页面本身也没被滚动。
+
+        为什么 `expect` 挡不住这类问题：`expect` 比的是"文字在不在 DOM 里"，
+        `getBoundingClientRect()` 之外的可见性（滚出视口、被 `overflow:hidden` 的祖先裁掉一半）
+        它一概看不见 —— 标题滚出画面、露出半截滑杆的行因此能通过 `--check`。
+        """
+        js = (
+            "const sel = arguments[0], needle = arguments[1] || '';"
+            "const el = Array.from(document.querySelectorAll(sel))"
+            "  .find(e => !needle || ((e.innerText || e.textContent || '').includes(needle)));"
+            "if (!el) return { ok: false, why: 'missing' };"
+            "const r = el.getBoundingClientRect();"
+            "const vw = window.innerWidth, vh = window.innerHeight;"
+            "const rect = { top: Math.round(r.top), bottom: Math.round(r.bottom),"
+            "  left: Math.round(r.left), right: Math.round(r.right) };"
+            "if (!(r.top >= -0.5 && r.left >= -0.5 && r.bottom <= vh + 0.5 && r.right <= vw + 0.5)) {"
+            "  return { ok: false, why: 'out-of-viewport', rect: rect, vw: vw, vh: vh };"
+            "}"
+            "let node = el.parentElement;"
+            "while (node && node !== document.body) {"
+            "  const st = getComputedStyle(node);"
+            "  if (/auto|scroll/.test(st.overflowY) && node.scrollHeight - node.clientHeight > 4) {"
+            "    const sr = node.getBoundingClientRect();"
+            "    if (r.top < sr.top - 0.5 || r.bottom > sr.bottom + 0.5) {"
+            "      return { ok: false, why: 'clipped-by-scroller', rect: rect,"
+            "        scroller: { top: Math.round(sr.top), bottom: Math.round(sr.bottom),"
+            "          scrollTop: node.scrollTop } };"
+            "    }"
+            "  }"
+            "  node = node.parentElement;"
+            "}"
+            "const pageTop = document.scrollingElement ? document.scrollingElement.scrollTop : 0;"
+            "if (pageTop !== 0) return { ok: false, why: 'page-scrolled', rect: rect, pageTop: pageTop };"
+            "return { ok: true, rect: rect };")
+        def probe() -> Dict[str, Any]:
+            return dict(self.driver.execute_script(js, selector, text or '') or {})
+        if not wait_until(lambda: bool(probe().get('ok')), timeout):
+            detail = probe()
+            raise ShootError(f'构图断言失败：{selector} {text or ""} -> '
+                             f'{json.dumps(detail, ensure_ascii=False)}')
+
+    def press_key(self, key: str) -> None:
+        """在当前文档里按一个键（场景用它收起可能残留的浮层）。
+
+        元素级 `send_keys` 不需要真实焦点，投给 `body` 即可；`Escape` 是多数浮层/弹窗
+        既有的关闭键，但**不能假设它一定能关**——调用方仍要用 `wait_gone` 确认收起了。
+        """
+        keys = load_keys_module().Keys
+        named = {'escape': keys.ESCAPE, 'esc': keys.ESCAPE, 'enter': keys.ENTER,
+                 'tab': keys.TAB, 'space': keys.SPACE}
+        body = self.driver.find_element('tag name', 'body')
+        body.send_keys(named.get(key.strip().lower(), key))
+
+    def click_until(self, selector: str, until_text: str, timeout: float = 25.0) -> None:
+        """点一个元素直到某段文案出现；没出现就重点。
+
+        卡片类入口在数据/设置到达后会整体重渲染，第一次 `click` 可能落在被替换前的节点上
+        （事件处理器还没重新绑定），表现为"点了没反应"，而且不会报错。重试一次成本极低，
+        比在场景里堆 sleep 稳。
+        """
+        deadline = time.time() + timeout
+        attempts = 0
+        while time.time() < deadline:
+            attempts += 1
+            try:
+                self.click_js(selector, timeout=min(5.0, max(1.0, deadline - time.time())))
+            except ShootError:
+                pass
+            if wait_until(lambda: until_text in self.visible_text_any(),
+                          min(8.0, max(0.5, deadline - time.time()))):
+                return
+        raise ShootError(f'点了 {attempts} 次 {selector} 也没等到文案：{until_text}')
+
+    def click_js(self, selector: str, timeout: float = UI_TIMEOUT) -> None:
+        """在当前文档里用元素自身的 `click()` 点它。
+
+        为什么不用 Selenium 的原生 click：列表视图会在数据到达后**整体重渲染**，原生 click
+        按坐标派发 —— 元素在这一瞬间被替换就会点到别的位置（而且不报错），表现为"点了没
+        反应"或"进了另一个相册"。`el.click()` 打在当前节点上，事件处理器要么收到、要么
+        元素已不在（这里先等它出现再点一次）。
+        """
+        if not wait_until(lambda: bool(self.driver.execute_script(
+                'return !!document.querySelector(arguments[0]);', selector)), timeout):
+            raise ShootError(f'等不到元素：{selector}')
+        clicked = self.driver.execute_script(
+            'const el = document.querySelector(arguments[0]);'
+            'if (!el) return false; el.click(); return true;', selector)
+        if not clicked:
+            raise ShootError(f'点击失败（元素在点击前消失）：{selector}')
+
+    def click_selector(self, selector: str, timeout: float = UI_TIMEOUT) -> None:
         """点一个选择器：等它出现 → 点 → 失败就重取一次。
 
         列表类视图会在数据到达后**整体重渲染**，先前 find 到的元素随即失效
@@ -478,7 +825,7 @@ class Browser:
         """
         last: Optional[str] = None
         for attempt in range(3):
-            element = self.find(selector, timeout=UI_TIMEOUT if attempt == 0 else 5.0)
+            element = self.find(selector, timeout=timeout if attempt == 0 else 5.0)
             try:
                 element.click()
                 return
@@ -505,6 +852,7 @@ class Browser:
         raise ShootError(f'点击失败：文字「{needle}」（{last}）')
 
     def run_step(self, step: Dict[str, Any]) -> None:
+        timeout = float(step.get('timeout', UI_TIMEOUT))
         if 'goto' in step:
             self.goto(str(step['goto']))
         elif 'frame' in step:
@@ -512,15 +860,51 @@ class Browser:
         elif 'frame_element' in step:
             self.frame_element(str(step['frame_element']))
         elif 'click' in step:
-            self.click_selector(str(step['click']))
+            self.click_selector(str(step['click']), timeout=timeout)
+        elif 'click_js' in step:
+            self.click_js(str(step['click_js']), timeout=timeout)
+        elif 'click_until' in step:
+            target = step['click_until']
+            self.click_until(str(target['selector']), str(target['until_text']),
+                             timeout=float(target.get('timeout', 25.0)))
+        elif 'key' in step:
+            self.press_key(str(step['key']))
+        elif 'scroll_to' in step:
+            target = step['scroll_to']
+            self.scroll_to(str(target['selector']), target.get('text'),
+                           float(target.get('margin', 6.0)))
+        elif 'require_in_viewport' in step:
+            target = step['require_in_viewport']
+            self.require_in_viewport(str(target['selector']), target.get('text'),
+                                     float(target.get('timeout', 10.0)))
         elif 'click_text' in step:
             self.click_text(str(step['click_text']), str(step.get('in', CLICKABLE)))
+        elif 'click_view' in step:
+            target = step['click_view']
+            self.click_view(str(target['plugin']), str(target['view']))
+        elif 'wait_view' in step:
+            target = step['wait_view']
+            self.wait_view(str(target['plugin']), str(target['view']), timeout=timeout)
+        elif 'click_action' in step:
+            target = step['click_action']
+            self.click_action(str(target['plugin']), str(target['label']))
+        elif 'click_extension' in step:
+            target = step['click_extension']
+            self.click_extension(str(target['plugin']), str(target['label']))
+        elif 'wait_js' in step:
+            # 等一段 JS 表达式为真：比固定 sleep 稳（原生面板的逻辑页要等 native-ready
+            # 握手后才挂上 window.Bridge，早一步注入补丁就是静默失败）
+            expression = str(step['wait_js'])
+            if not wait_until(lambda: bool(self.driver.execute_script(expression)), timeout):
+                raise ShootError(f'等不到条件成立：{expression}')
         elif 'wait' in step:
-            self.find(str(step['wait']))
+            self.find(str(step['wait']), timeout=timeout)
         elif 'wait_text' in step:
-            self.wait_text(str(step['wait_text']))
+            self.wait_text(str(step['wait_text']), timeout=timeout)
+        elif 'wait_visible_text' in step:
+            self.wait_visible_text(str(step['wait_visible_text']), timeout=timeout)
         elif 'wait_gone' in step:
-            self.wait_gone(str(step['wait_gone']))
+            self.wait_gone(str(step['wait_gone']), timeout=timeout)
         elif 'scroll_into_view' in step:
             self.scroll_into_view(str(step['scroll_into_view']))
         elif 'scroll_text' in step:
@@ -653,7 +1037,8 @@ def apply_setup(server: Server, scene: Dict[str, Any], baseline: Dict[str, Any])
     if isinstance(prefs, dict) and prefs:
         server.call('system_set_shell_prefs', prefs)
     for call in scene.get('setup', []) or []:
-        server.call(str(call['method']), *list(call.get('args', [])))
+        server.call(str(call['method']), *list(call.get('args', [])),
+                    timeout=float(call.get('timeout', 60)))
 
 
 def run_scene(server: Server, browser: Browser, scene: Dict[str, Any], *,
@@ -675,11 +1060,15 @@ def run_scene(server: Server, browser: Browser, scene: Dict[str, Any], *,
     route = str(scene.get('route', '/'))
     if route and route != '/':
         browser.navigate(route)
+    # 壳侧 freshness 的自动同步会在挂载后几秒完成并让内容页重载视图；
+    # 场景开始前先等它落定，否则点击与重载互相穿插（表现为"点了没反应"）。
+    browser.wait_freshness_idle()
     for step in scene.get('steps', []) or []:
         browser.run_step(step)
 
     expect = [str(item) for item in scene.get('expect', []) or []]
-    text = browser.body_text()
+    # 截的是整个视口：壳骨架与内容 iframe 都在画面里，断言必须两边都看（见 visible_text）
+    text = browser.visible_text()
     missing = [item for item in expect if item not in text]
     if missing:
         raise ShootError(f'[{slot}] 界面里找不到这些文案，配图已过期：{missing}')
@@ -746,9 +1135,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if not source.is_dir():
                 raise ShootError(
                     f'找不到基线目录：{source}\n'
-                    f'先跑 `python tools/shoot_readme_setup.py --library <示例库根> '
-                    f'--manga <漫画根>` 起配置实例，在里面配好背景 / 主题 / 各插件根目录；'
-                    f'或改用 --blank 现场生成一份最小配置。')
+                    f'先起配置台把基线配一次：`python tools/shoot_readme_setup.py`，'
+                    f'在里面配好各插件库根 / 主题 / 宽度 / 背景（壁纸可带 --wallpapers <目录> 预导入）；'
+                    f'`--blank` 只写"够首页与图片相册出内容"的最小配置，'
+                    f'03/04/05/06/07/10/12/13 会缺库根与背景，出的图与其余槽位不一致。')
             copy_baseline(source, home)
         baseline_prefs = read_baseline_prefs(home)
         server = Server(home, args.port or free_port(),

@@ -11,15 +11,16 @@
 | --- | --- | --- |
 | 静态检查（全量） | `python -m ruff check .` | **0 错误**（硬门禁） |
 | 插件规范 | `python tools/check_plugins.py` | **exit 0**（硬门禁） |
-| 插件后端分层 | `python tools/check_plugin_layering.py` | **exit 0**（硬门禁；禁 Mixin 切分 R1、文件行数上限 R2、只有 manifest 声明的入口可加载兄弟模块 R3。未迁移的插件按插件豁免于 `tools/layering_allowlist/<plugin>.txt`，迁移完成即删除；豁免文件过期本身是错误。形态与迁移步骤见 [plugin-backend-layout.md](plugin-backend-layout.md)） |
+| 插件后端分层 | `python tools/check_plugin_layering.py` | **exit 0**（硬门禁；禁 Mixin 切分 R1、文件行数上限 R2、只有 manifest 声明的入口可加载兄弟模块 R3。豁免机制按插件生效：`--allowlist-dir` 指向的目录里放 `<插件名>.txt` 即该插件不被拦，删掉才正式受约束，豁免文件过期本身是错误。8 个插件已全部完成组件化，当前没有豁免文件。形态与迁移步骤见 [plugin-backend-layout.md](plugin-backend-layout.md)） |
 | 打包规则（spec/收集） | `python tools/check_packaging.py` | **exit 0**（硬门禁） |
 | 版本一致性 | `python tools/check_version.py` | **exit 0**（硬门禁） |
-| 测试文件可运行性 | `python tools/check_tests.py` | **exit 0**（硬门禁；`tests/test_*.py` 必须能被 unittest 收集到用例，手工脚本按约定命名 `tests/debug_*.py`） |
+| 测试文件可运行性 | `python tools/check_tests.py` | **exit 0**（硬门禁；`tests/test_*.py` 必须能被 unittest 收集到用例，手工脚本统一放 `tools/debug/`） |
 | 文档引用一致性 | `python tools/check_docs.py` | **exit 0**（硬门禁；每个 `AGENTS.md` 反引号里的名字/路径、围栏命令里的路径、Markdown 链接都必须还存在。插件界面文档只查后两类，理由见脚本头部） |
 | 本地隐私门禁 | `python tools/check_private_paths.py` | **开发机硬门禁，不进入 CI**：runner 没有本地配置，必然 SKIP。见 §1.1 |
 | 类型检查（内核 + 插件） | `python -m pyright main.py shell tools plugins` | **0 错误**（硬门禁；覆盖内核与全部插件的后端） |
 | 类型检查（测试） | `python -m pyright tests` | **本地按需**；仍是基线，不进 CI（见 §6） |
 | 单元测试 | `python tools/plugin_ci.py --core` + `--plugin <name>` | **failures=0 / errors=0**（硬门禁；CI 按插件矩阵拆分，见 §2；本地仍可跑全量 `unittest discover`） |
+| 浏览器冒烟（壳交互） | `python tools/shell_e2e_smoke.py` | **14 条用例通过 / 0 跳过**（硬门禁；CI 的 `shell-e2e` job 跑同一条：真实壳 + 无头 Chrome，跑壳整体链路（导航渲染 / iframe 挂载 / 生命周期通知 / 控制台错误）与分隔条（侧栏拖动逐帧跟随 / 落盘 / 把手占位）两条用例。缺 selenium / Chrome / 已构建的 `shell/frontend/dist`、有用例被跳过、用例数少于预期，一律以非 0 退出 —— 跳过不算通过。其余 7 个 `*_e2e.py` 不进 CI） |
 | 运行时禁止 print | `python -m unittest tests.test_no_print_in_runtime` | 通过（硬门禁） |
 | 前端转义一致性 | `node tools/check_frontend_escape.cjs` | **OK**（硬门禁） |
 | 前端依赖漏洞 | `python tools/check_npm_audit.py` | **OK**（硬门禁；脚本内固定官方 registry，见下） |
@@ -34,9 +35,17 @@
 > `shell_settings_form` / `image_cleaner_scan`。
 >
 > 本机 Linux 实测 `skipped=70`，都属"环境不具备时条件跳过"，不是门禁失效：
-> 浏览器 e2e（需 selenium + Chrome/Edge，见 `requirements-e2e.txt`，刻意不进 CI）、
+> 其余 7 个浏览器 e2e（需 selenium + Chrome，见 `requirements-e2e.txt`）、
 > Windows 专属（DPAPI、NTFS 大小写、`\\?\` 扩展前缀、netease-music 的 `.cmd` shim）、
 > 无系统离线音色时的 TTS 用例。
+>
+> 例外是壳交互那两条：`tests/test_shell_browser_e2e.py`（壳整体链路）与
+> `tests/test_splitter_browser_e2e.py`（分隔条 / 侧栏拖动）由 `tools/shell_e2e_smoke.py`
+> 在 CI 的 `shell-e2e` job 里跑，且**被跳过即失败**。它们验的是"接口有数据、导航不渲染""拖动
+> 全程宽度不动、松手才跳一次"这类只有真实浏览器能发现的回归（历史缺陷：接口返回
+> 4 个插件，界面显示「暂无插件」，控制台无任何报错）。`unittest` 对这类用例的判定是
+> `OK (skipped=7)`、退出码 0 —— 门禁看起来在跑，实际一条都没验证，所以入口只认
+> "跑过、且 0 跳过"。
 
 本地一次性跑全部（PowerShell）：
 
@@ -54,6 +63,7 @@ $py = ".\venv\Scripts\python.exe"
 & $py tools/check_private_paths.py
 & $py -m pyright main.py shell tools plugins
 & $py -m unittest discover -s tests
+& $py tools/shell_e2e_smoke.py    # 真实浏览器冒烟：需 Chrome + requirements-e2e.txt，CI 的 shell-e2e job 跑同一条
 node tools/check_frontend_escape.cjs
 ```
 
@@ -105,7 +115,20 @@ node tools/check_frontend_escape.cjs
 | `test` | windows + ubuntu，py3.11 + 3.12 | 共享测试（`tools/plugin_ci.py --core`，不含插件专属测试） |
 | `plugin` | windows + ubuntu，py3.12 | **每个插件一条 job**：`tools/plugin_ci.py --plugin <name>`；失败直接落到插件名 |
 | `frontend` | ubuntu | 转义门禁 + `npm ci` + `vue-tsc --noEmit` + `vite build` |
+| `shell-e2e` | ubuntu | 真实浏览器冒烟：构建前端后跑 `tools/shell_e2e_smoke.py`（真实壳 + 无头 Chrome，壳整体链路 + 分隔条，共 14 条用例）；缺环境或有用例被跳过都判失败 |
 | `package` | windows + ubuntu | 真实跑 PyInstaller + 校验产物内容；**只在 push `main` / 手动触发时跑**（日常 push 由 `package-smoke` 按路径兜底，产物仅作 artifact） |
+
+**真实浏览器门禁的依赖从哪来**（`shell-e2e`）：
+
+- 浏览器用 runner 自带的 Google Chrome；`tools/shell_e2e_smoke.py` 按 `chrome` /
+  `google-chrome` / `chromium` 依次定位，Linux 上必要时把可执行文件以 `chrome` 的名字挂进
+  `PATH`（`tests/harness/browser_binary.py` 的判据只认这个名字，Linux 的浏览器叫 `google-chrome`）。
+- 驱动由 Selenium Manager 解析：优先本地与 `~/.cache/selenium`（job 用 `actions/cache` 缓存，
+  镜像里的 Chrome 升级后缓存不匹配时 Manager 会自己重下），版本对得上就不联网。
+- 拿不到浏览器或驱动时**不会跳过**：缺 selenium / Chrome / 前端产物以 `2` 退出，e2e 因驱动
+  失败抛出的 `SkipTest` 以 `1` 退出并打印原因。外部下载失败因此只会是"带原因的红"，
+  不是静默的绿。
+- job 设 `timeout-minutes: 15`：浏览器卡死不会拖满默认的 6 小时。
 
 **按变更集决定跑哪些 job，而不是在 `on:` 上过滤工作流**：
 
@@ -135,7 +158,7 @@ node tools/check_frontend_escape.cjs
 代价：判定宁可多跑，不要少跑。
 
 **日常 push 实际跑的 job**：`changes` + `plugins` + `lint` + `typecheck` + `test`×4 +
-`plugin`×（插件数 × 2 平台，当前 8 个插件 = 16）+ `frontend`。`package`×2 被 `if:`
+`plugin`×（插件数 × 2 平台，当前 8 个插件 = 16）+ `frontend` + `shell-e2e`。`package`×2 被 `if:`
 关在 push `main` / 手动触发上（被跳过的 job 仍会列在运行页面上显示 `skipped`，但不消耗
 runner）；打包路径相关的回归由 `package-smoke.yml` 按路径触发兜底，两者跑的是同一套
 spec + `check_build_tree.py` 产物校验。插件矩阵按插件拆分，失败日志只包含该插件的测试；
@@ -407,7 +430,7 @@ RUF100（未使用的 noqa）会把这些标注判为冗余并删除——它们
 | `album_id` 未校验直接拼下载目录 | `plugins/manga-library/backend/{main,downloader}.py` | `os.path.join(root, "../../..")` 折叠越界 + `makedirs` 在漫画根目录外建目录写文件。现在要求纯数字，并在下载器再做一次 realpath 越界校验 |
 | 设置文件名由 `plugin_name` 直接拼接 | `shell/backend/settings_store.py` | 可越出配置目录写 JSON（如 Linux `~/.config/autostart/`）。现在强制"裸文件名"，拒绝分隔符与 `..` |
 | 缩略图属性未转义 | `plugins/manga-library/frontend/js/app.js` | 该文件唯一漏转义的插值，且落在 `src="${...}"` 属性里 → 注入 `onerror=`，插件与宿主同源且带令牌 Cookie |
-| 假 mpv 脚本写在全局可写的 temp 根目录、固定文件名 | `plugins/netease-music/backend/netease_music_api.py` | 本地其它用户可预占/替换该脚本（它会被本进程执行）。现在落在私有子目录并 `chmod 0700` |
+| 假 mpv 脚本写在全局可写的 temp 根目录、固定文件名 | `plugins/netease-music/backend/fake_mpv.py` | 本地其它用户可预占/替换该脚本（它会被本进程执行）。现在落在私有子目录并 `chmod 0700` |
 | `PATH` 用 `:` 拼接 | 同上 | Windows 上整个 PATH 被当成一个路径，假 mpv 永远找不到 → 取 URL 静默退化为 403 外链 |
 
 数据丢失 / 正确性：

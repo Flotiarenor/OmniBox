@@ -13,19 +13,22 @@ Vue 3 + TypeScript + Vite。`src/` 是壳的界面（`components/` `core/` `rout
 - 壳首页（`/`、`/settings`、插件路由）由 `dist/index.html` 提供，dist 缺失时直接 404；CI 在跑测试前会先构建一次。
 - `dist/` 不提交（`.gitignore`）。
 
-`public/shell/` 共 17 个文件：
+`public/shell/` 注入给插件的资源按用途分四类：
 
 | 类别 | 文件 |
 | --- | --- |
 | 样式 | `variables.css` `shared.css` `base.css` `effects.css` |
 | 组件 | `folder-picker.{css,js}` `freshness.{css,js}` `splitter.{css,js}` `content-ui.{css,js}` |
-| 脚本 | `base.js` `toast.js` `native-client.js` `motion.js` `icons.generated.js` |
+| 共享运行时 | `base.js`（`PluginLifecycle` / `Bridge` / `Utils`）、`dialogs.js`（`confirmDialog`、`Shell.dialog`）、`settings.js`（`createSettingsForm`、`openModal`、`openSettingsModal`）、`host-channel.js`（`HostChannel`）、`tree.js`（`createTree`）、`lightbox.js`（`createLightbox`）、`pagination.js`（`createPagination`）、`context-menu.js`（`createContextMenu`） |
+| 脚本 | `toast.js` `native-client.js` `motion.js` `icons.generated.js` |
+
+共享运行时的 8 个脚本是**同一个全局作用域里的普通脚本，顺序即依赖顺序**：`base.js` 在它们最前（其余分段按全局名读 `window.Utils` / `window.Bridge`），`toast.js` 又必须排在 `base.js` 之前。注入顺序的唯一真源是 `shell/backend/file_server.py` 的 `_PLUGIN_BOOTSTRAP_SCRIPT`；新增或调整分段只改那里，不要另抄一份清单。
 
 `toast.js` 是壳页面与插件 iframe 共用的 Toast 唯一实现：两边的引导片段都引它，
 `src/core/toast.ts` 只是给它加类型入口，`base.js` 不再自己定义 `window.Toast`。
 
 `.modal` 骨架（`.modal` / `.modal-box` / `.modal-body` / `.modal-footer`）在 `shared.css`：
-壳页面不加载 `base.css`，模态骨架只能放在两边都加载的那一份里。`base.js` 的
+壳页面不加载 `base.css`，模态骨架只能放在两边都加载的那一份里。`dialogs.js` 的
 `Shell.dialog` 为插件页的 `.modal` 补无障碍与键盘行为（`role="dialog"` / `aria-modal="true"`、
 焦点进入与归还、Esc、Tab 循环、点遮罩关闭、`modal:close` 事件），壳文档自己的弹窗
 （`PluginSettingsModal`、folder-picker）由 `src/core/use-dialog-focus.ts` 与组件自己负责。

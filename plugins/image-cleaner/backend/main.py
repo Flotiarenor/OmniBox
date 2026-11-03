@@ -1,117 +1,102 @@
-"""image-viewer 的 Companion 插件：全相册重复 / 相似图片清理。
+"""image-viewer 的 Companion 插件：全相册重复 / 相似图片清理。入口（facade）。
 
-设计参考 docs/plugin-guide.md §2.1。
-该插件不修改 image-viewer 宿主，只通过依赖实例复用其数据根目录与删除能力。
+本文件只做三件事：声明对壳暴露的 API 表、把组件装配起来、把壳按名调用的钩子一行委派给
+组件。设置项 schema 与扩展条目在 `const.py`，业务逻辑在各组件里（分层门禁硬上限 250 行，
+目标 200 行以内）。
+
+该插件不修改 image-viewer 宿主，只通过依赖实例复用其数据根目录与删除能力；宿主实例的
+解析（含"未加载则报错"）留在入口，组件通过 `HostBridge` 按需问"宿主在哪"。
+
+接缝说明：`load_sibling` 返回 `ModuleType`，装配出来的组件属性在静态检查里是 `Any`。这是
+有意的取舍 —— 需要检查的东西都在组件里；为让接缝有类型而把插件目录塞进 `sys.path` 会换来
+模块名冲突。
+
+装配顺序就是依赖顺序：宿主适配 → 指纹库 / 结果缓存 → 扫描 → 分组 → 编排 → 后台任务 →
+统一刷新；反向依赖一律由构造参数注入。
 """
 
-import hashlib
-import json
-import logging
-import os
-import threading
-import time
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Dict, Iterable, List, Optional, Protocol, cast
+from typing import Any, ClassVar, Dict, List
 
-from shell.backend.media_catalog import IMAGE_EXTENSIONS
+from shell.backend.freshness import engine_for
 from shell.backend.plugin_base import PluginBase
-from shell.backend.tasks import BackgroundTask
+from shell.backend.plugin_utils import load_sibling
 
-log = logging.getLogger(__name__)
-
-ALLOWED_EXTENSIONS = IMAGE_EXTENSIONS
-
-
-class _ScanCancelled(Exception):
-    """扫描被取消（后台 worker 的取消点抛出，由 `_scan_worker` 吞掉并放弃写结果）。"""
-
-
-class _HostExtensions(Protocol):
-    """`image-viewer` 实例上、`PluginBase` 之外本插件用到的成员。
-
-    `get_dependency()` 的静态类型是 `PluginBase | None`，而宿主额外注册的能力不在基类上，
-    所以按实例取用时要显式告诉类型检查器它是什么。`Protocol` 不参与运行期，行为不变。
-    """
-
-    def delete_files(self, rel_paths: List[str]) -> Dict:
-        ...
+_const = load_sibling(__file__, 'const', 'image_cleaner')
+_cancel = load_sibling(__file__, 'cancel', 'image_cleaner')
+_host = load_sibling(__file__, 'host', 'image_cleaner')
+_hashes = load_sibling(__file__, 'hashes', 'image_cleaner')
+_scanner = load_sibling(__file__, 'scanner', 'image_cleaner')
+_duplicates = load_sibling(__file__, 'duplicates', 'image_cleaner')
+_similar = load_sibling(__file__, 'similar', 'image_cleaner')
+_results = load_sibling(__file__, 'results', 'image_cleaner')
+_pipeline = load_sibling(__file__, 'pipeline', 'image_cleaner')
+_background = load_sibling(__file__, 'background', 'image_cleaner')
+_freshness = load_sibling(__file__, 'freshness', 'image_cleaner')
 
 
 class ImageCleanerPlugin(PluginBase):
-    settings_schema: ClassVar[List[Dict[str, Any]]] = [
-        # 只读信息行（`type: "info"`）：扫描的就是宿主「图片相册」的数据根目录，
-        # 值由 get_settings() 现取，前端只展示、不提交（见 plugin_base.save_settings）。
-        # 原先这一行显示在内嵌页自己的工具栏上，那一排已整条去掉。
-        {"key": "root_dir", "label": "相册根目录", "type": "info",
-         "section": "host", "sectionTitle": "宿主目录",
-         "sectionDescription": "扫描范围来自「图片相册」的根目录；多根时逐行列出，本插件只读。",
-         "sectionOrder": 10, "order": 10,
-         "help": "扫描范围取自「图片相册」的根目录；要换目录请到图片相册的设置里改"},
-        {"key": "threshold", "label": "相似判定阈值", "type": "range",
-         "section": "threshold", "sectionTitle": "阈值",
-         "sectionDescription": "dHash 汉明距离越小越严格；0 表示只有完全一致的 dHash 才判为相似。",
-         "sectionOrder": 20, "order": 10,
-         "min": 0, "max": 16, "default": 8,
-         "help": "汉明距离越小越严格，0 表示只有完全一致的 dHash 才判为相似"},
-    ]
+    #: 设置项声明是纯数据，放在 const.py（入口只做装配与委派）。
+    settings_schema: ClassVar[List[Dict[str, Any]]] = _const.SETTINGS_SCHEMA
 
-    #: dHash 缓存条目的版本标记（`_image_dhash` 的 `'v'`）。改哈希算法/归一化规则时 +1：
-    #: 旧条目一律重算，同时作为统一刷新的 `content_version` 整体作废指纹库。
-    DHASH_VERSION: ClassVar[int] = 2
-
-    def __init__(self, manifest, config):
+    def __init__(self, manifest: dict, config: dict) -> None:
         super().__init__(manifest, config)
+        # 宿主实例解析一次后缓存在入口：`get_dependency()` 要在插件自身身份上完成，
+        # 组件只拿"问宿主在哪"与"取宿主的根清单"两个闭包。
         self._host = None
-        self._dhash_cache = {}
-        self._dhash_cache_file = None
-        # 结果缓存里哪些 mode 已经过期（内存标记，落盘由 on_pass_end 统一做）
-        self._results_stale: set = set()
-        # 后台扫描任务（共享基建 BackgroundTask）；同时只允许一个在跑。
-        # `_scan_lock` 保护"查-建-赋值"：Flask 是 threaded=True，原先这段没有锁，
-        # 两个并发请求可以各起一个任务互相覆盖。
-        self._scan_task: Optional[BackgroundTask] = None
-        self._scan_lock = threading.Lock()
+        self.host = _host.HostBridge(self._get_host, self._host_root_listings)
+        self.hashes = _hashes.DHashStore(self.get_cache_dir, _const.DHASH_VERSION)
+        self.results = _results.ScanResults(
+            self.get_cache_dir, self.host, _const.SCAN_MODES)
+        self.scanner = _scanner.AlbumScanner(self.host, _const.ALLOWED_EXTENSIONS)
+        self.duplicates = _duplicates.DuplicateFinder(_cancel.check_cancel)
+        self.similar = _similar.SimilarFinder(self, self.hashes, _cancel.check_cancel)
+        self.pipeline = _pipeline.ScanPipeline(
+            self.name, self.scanner, self.duplicates, self.similar, self.results,
+            self.hashes, _const.SCAN_MODES)
+        self.scans = _background.ScanTaskRunner(
+            'image-cleaner-scan', self.pipeline, self.results,
+            _cancel.check_cancel, _cancel.ScanCancelled, lambda: engine_for(self))
+        self.fresh = _freshness.FreshnessProvider(
+            self.host, self.hashes, self.results, self.pipeline,
+            _const.ALLOWED_EXTENSIONS, _const.DHASH_VERSION,
+            lambda: engine_for(self))
 
-    # ---------- 宿主访问与文件路由复用 ----------
+    def _get_host(self) -> Any:
+        """宿主实例（`image-viewer`）；未加载时抛错，与迁移前判据一致。
 
-    def _get_host(self):
+        返回类型标 `Any`：宿主在 `PluginBase` 之外还注册了 `list_roots` / `delete_files`，
+        按实例取用时的具体形状不是本插件声明的；入口只在这一处承担这个接缝。
+        """
         if self._host is None:
             self._host = self.get_dependency('image-viewer')
             if self._host is None:
                 raise RuntimeError('image-cleaner 需要 image-viewer 插件已加载并声明依赖')
         return self._host
 
-    def get_data_root(self) -> Path:
-        return self._get_host().get_data_root()
+    def _host_root_listings(self):
+        """宿主的根目录清单；旧版宿主没有 `list_roots()` 时返回 None（按单根处理）。
 
-    def get_file_roots(self) -> List[Path]:
-        return self._get_host().get_file_roots()
-
-    # 不覆写 `thumb_dir`：基类 getter 是 `get_data_root() / '.cache' / 'thumbs'`，而本插件的
-    # `get_data_root()` 已经转发给宿主，派生出的就是宿主的缩略图目录。早先这里用一个只读
-    # property 直接转发宿主的值，与基类的可写 property 形状不一致（缺 `fset`）。
-
-    def ensure_thumb(self, rel_path: str) -> None:
-        """复用宿主的缩略图入口；基类契约是"无返回值"，壳也不消费它。"""
-        self._get_host().ensure_thumb(rel_path)
-
-    def get_thumb_data(self, rel_path: str):
-        return self._get_host().get_thumb_data(rel_path)
+        `list_roots` 是宿主后来才加的能力，所以这里按"可能不存在"取。这个取法留在入口，
+        因为它按名字从宿主实例取成员：`tools/check_plugins.py` 的附属插件契约检查要看得见。
+        """
+        lister = getattr(self._get_host(), 'list_roots', None)
+        return lister() if callable(lister) else None
 
     def register_api(self) -> dict:
         # `get_settings` / `save_settings` **必须登记**：壳的设置弹窗（宿主渲染那条与
         # 本页回落那条）走的都是 `Bridge.call('get_settings')` / `Bridge.call('save_settings')`
         # → `POST /api/image-cleaner__<方法>`，而 `PluginManager` 只会额外登记
-        # `<插件>__get_settings_schema`（plugin_manager.py:566-572）。此前两个都漏了，
-        # 表现是"弹窗打得开、root_dir 信息行空白、阈值恒为默认 8、保存必然失败"，
-        # 且前端全程无报错。回归守卫见 tests/test_image_cleaner_settings.py。
+        # `<插件>__get_settings_schema`。此前两个都漏了，表现是"弹窗打得开、root_dir
+        # 信息行空白、阈值恒为默认 8、保存必然失败"，且前端全程无报错。
+        # 回归守卫见 tests/test_image_cleaner_settings.py 与 tests/test_image_cleaner_api_table.py。
         return {
-            'duplicate_scan': self.duplicate_scan,
-            'similar_scan': self.similar_scan,
-            'scan_start': self.scan_start,
-            'scan_status': self.scan_status,
-            'scan_cancel': self.scan_cancel,
-            'get_cached_scan': self.get_cached_scan,
+            'duplicate_scan': self.pipeline.duplicate_scan,
+            'similar_scan': self.pipeline.similar_scan,
+            'scan_start': self.scans.start,
+            'scan_status': self.scans.status,
+            'scan_cancel': self.scans.cancel,
+            'get_cached_scan': self.results.get_cached_scan,
             'delete_files': self.delete_files,
             'get_status': self.get_status,
             'get_settings': self.get_settings,
@@ -119,11 +104,10 @@ class ImageCleanerPlugin(PluginBase):
         }
 
     def get_status(self) -> Dict:
-        host = self._get_host()
-        roots = [str(root) for root, _prefix in self._scan_roots()]
+        roots = [str(root) for root, _prefix in self.host.roots()]
         return {
-            'host': host.name,
-            'root_dir': roots[0] if roots else str(host.get_data_root()),
+            'host': self.host.name(),
+            'root_dir': roots[0] if roots else str(self.host.data_root()),
             'roots': roots,
             'scope': 'all',
         }
@@ -138,783 +122,44 @@ class ImageCleanerPlugin(PluginBase):
         """
         settings = super().get_settings()
         try:
-            settings['root_dir'] = '\n'.join(str(root) for root, _prefix in self._scan_roots())
+            settings['root_dir'] = '\n'.join(
+                str(root) for root, _prefix in self.host.roots())
         except RuntimeError:
             settings['root_dir'] = ''
         return settings
 
-    def _scan_roots(self) -> list[tuple[Path, str]]:
-        """扫描范围：宿主的全部根目录 + 各自的虚拟路径前缀（主目录在前）。
+    # ===== 壳按名调用的钩子：名字与签名与迁移前完全一致 =====
 
-        结果是 `(物理根目录, 前缀)`：前缀取自宿主的 `list_roots()`（第一根为空串，额外根是
-        `__<命名空间>`），扫描出的相对路径必须带上它，否则缩略图 / 原图 / 删除三条路由都会
-        按**主目录**去解释，落到不存在的路径上。
+    def get_data_root(self) -> Path:
+        return self.host.data_root()
 
-        宿主没提供 `list_roots()`（旧版本），或**提供了但项里没有前缀**（早于 `prefix`
-        字段的版本）时一律退回单根：后一种情况不能"前缀缺失就当空串"——那会把额外根里的
-        文件按主根解释，除了 404，`delete_files()` 还会落到主根下的**另一个同名文件**上。
-        退回单根的行为与加额外图库支持之前完全一致。
-        """
-        host = self._get_host()
-        # `list_roots` 是宿主后来才加的能力：旧版宿主可能没有它，所以这里仍按"可能不存在"取。
-        lister = cast(Optional[Callable[[], List[Dict]]],
-                      getattr(host, 'list_roots', None))
-        if not callable(lister):
-            return [(host.get_data_root(), '')]
-        roots: list[tuple[Path, str]] = []
-        for index, item in enumerate(lister() or []):
-            item = item or {}
-            path = str(item.get('path') or '')
-            if not path:
-                continue
-            prefix = str(item.get('prefix') or '')
-            if index and not prefix:
-                return [(host.get_data_root(), '')]
-            roots.append((Path(path), prefix))
-        return roots or [(host.get_data_root(), '')]
+    def get_file_roots(self) -> List[Path]:
+        return self.host.file_roots()
 
-    def get_extensions(self) -> List[dict]:
-        """注册到 image-viewer 左侧栏的通用扩展入口。
+    def ensure_thumb(self, rel_path: str) -> None:
+        self.host.ensure_thumb(rel_path)
 
-        新壳按 `native` 声明在宿主页内容槽渲染原生面板：逻辑页隐藏，只提交 schema
-        blocks 并处理动作。`embedUrl` 保留给不认识 `native` 的旧壳，继续走内嵌页回落。
-        """
-        return [{
-            'host': 'image-viewer',
-            'id': 'image-cleaner',
-            'label': '相册清理',
-            'icon': 'icon:brush-cleaning',
-            'description': '扫描全部相册中的重复 / 相似图片',
-            'section': '相册清理',  # 侧边栏独立分组标题（不与其他扩展挤在一个标题下）
-            'native': {
-                'url': '/plugins/image-cleaner/frontend/native.html?native=1',
-                'title': '相册清理',
-            },
-            'embedUrl': '/plugins/image-cleaner/frontend/index.html',
-            'placement': 'sidebar',
-            'scope': 'all',
-        }]
-
-    # ---------- 统一刷新基建（同步 / 校验） ----------
-    #
-    # 本插件的派生数据有两层：**逐图指纹**（dHash）与**分组结果**（按 mode 缓存）。
-    # 旧实现里两者都只在前端点「重新扫描」时才动，而且后台路径从不落盘 dHash ——
-    # 重启后全部重算，扫描缓存也没有任何失效判据（key 只有 mode），新加的图片
-    # 看不到。接入基建后：
-    #
-    # - 被动同步只对"新增/指纹变化"的文件算 dHash（目录级短路，稳态零成本）；
-    # - 手动「校验」= 全量比对 + 幽灵清理（删掉磁盘上已消失文件的指纹与孤儿条目），
-    #   整趟结束时用刚维护好的指纹重新分组，直接把两个模式的结果写进缓存；
-    # - `get_cached_scan` 回报 `stale`，界面据此提示而不是拿旧分组当真。
-
-    def freshness_spec(self) -> Dict:
-        return {
-            'roots': lambda: [root for root, _prefix in self._scan_roots()],
-            # 前缀必须跟着宿主现算：命名空间 token 由 image-viewer 生成，
-            # 写死会与 `_all_album_files()` 的 rel 对不上（指纹库键就全错位）
-            'prefixes': lambda: [prefix for _root, prefix in self._scan_roots()],
-            'include': tuple(sorted(ALLOWED_EXTENSIONS)),
-            'derive': self._freshness_derive,
-            'prune': self._freshness_prune,
-            'on_verified': self._freshness_audit,
-            'on_pass_end': self._freshness_pass_end,
-            'rebuild': self._freshness_rebuild,
-            # 指纹算法版本 = dHash 缓存里的 `v` 标记（见 `_image_dhash`）：
-            # 规则变了由基建整体作废，不再指望"记得清缓存"
-            'content_version': self.DHASH_VERSION,
-            'unit': '张',
-            'min_sync_interval': 5.0,
-        }
-
-    def _freshness_derive(self, items) -> Dict:
-        """条目新增/指纹变化：只给这些文件算 dHash（这是全流程最贵的一步）。"""
-        errors = []
-        for item in items:
-            abs_path = str(item.get('path') or '')
-            if not abs_path:
-                continue
-            try:
-                self._image_dhash(abs_path, float(item.get('mtime') or 0))
-            except Exception as e:          # 单张失败不影响整趟
-                errors.append(f'{item.get("key")}: {e}')
-        self._mark_results_stale()
-        return {'count': len(items), 'errors': errors[:20]}
-
-    def _freshness_prune(self, keys) -> int:
-        """条目消失：删掉它的指纹，并作废分组结果。"""
-        removed = 0
-        for rel in keys:
-            abs_path = self._abs_for_rel(str(rel))
-            if not abs_path:
-                continue
-            if self._dhash_cache.pop(self._dhash_cache_key(abs_path), None) is not None:
-                removed += 1
-        if keys:
-            self._mark_results_stale()
-        return removed
-
-    def _freshness_audit(self, keys) -> Dict:
-        """全量校验后的对账：指纹缓存里只保留磁盘上仍然存在的图片。
-
-        旧实现的 `_dhash_cache` 没有上限也没有清理：在资源管理器里删掉的图片，
-        指纹会永久留着（`dhash.json` 只增不减）。
-        """
-        valid = set()
-        for rel in keys:
-            abs_path = self._abs_for_rel(str(rel))
-            if abs_path:
-                valid.add(self._dhash_cache_key(abs_path))
-        dropped = 0
-        for key in [k for k in self._dhash_cache if k not in valid]:
-            self._dhash_cache.pop(key, None)
-            dropped += 1
-        self._mark_results_stale()
-        return {'dropped_hashes': dropped, 'valid_entries': len(valid)}
-
-    def _freshness_pass_end(self, report, verified: bool) -> Dict:
-        """整趟结束：落盘指纹；校验这一趟顺便把两个模式的结果重新分组写盘。"""
-        self._save_dhash_cache()
-        if verified:
-            return self._regroup_all()
-        self._persist_stale_flags()
-        return {'hashes': len(self._dhash_cache), 'verified': False}
-
-    def _freshness_rebuild(self, kind: str = 'derived') -> Dict:
-        """逃生门：丢弃逐图指纹与分组结果（不动相册本身）。"""
-        self._dhash_cache = {}
-        try:
-            path = self._dhash_cache_path()
-            if path.exists():
-                path.unlink()
-        except OSError as e:
-            log.warning(f'[{self.name}] 删除 dhash 缓存失败: {e}')
-        self._save_scan_cache({})
-        self._results_stale.clear()
-        return {'kind': kind, 'cleared': True}
-
-    # ---------- 指纹与结果的内部工具 ----------
-
-    @staticmethod
-    def _dhash_cache_key(abs_path: str) -> str:
-        return 'dhash:' + hashlib.md5(abs_path.encode()).hexdigest()
-
-    def _abs_for_rel(self, rel: str) -> Optional[str]:
-        """虚拟相对路径 → 绝对路径（指纹缓存的键是绝对路径的摘要）。
-
-        命名空间前缀先匹配（额外根），再回落到第一根 —— 顺序反了会把
-        `__额外图库/a.jpg` 当成主根下的同名目录。
-        """
-        rel = str(rel or '').strip('/')
-        if not rel:
-            return None
-        roots = self._scan_roots()
-        for root, prefix in roots:
-            if prefix and (rel == prefix or rel.startswith(prefix + '/')):
-                inner = rel[len(prefix):].lstrip('/')
-                return str(root / inner) if inner else None
-        for root, _prefix in roots:
-            return str(root / rel)
-        return None
-
-    def _regroup_all(self) -> Dict:
-        """用当前指纹缓存重新分组，并写入两个 mode 的结果缓存。"""
-        files = self._all_album_files()
-        out: Dict = {'scanned': len(files)}
-        threshold = self._resolve_threshold(None)
-        for mode in ('dupe', 'similar'):
-            try:
-                if mode == 'dupe':
-                    groups = self._duplicate_groups(files)
-                else:
-                    hashes, valid = self._dhash_all(files)
-                    groups = self._similar_groups(hashes, valid, threshold)
-            except Exception as e:
-                log.error(f'[{self.name}] 重新分组失败（{mode}）: {e}')
-                out[mode] = {'error': str(e)}
-                continue
-            self._save_scan_result(mode, groups, len(files))
-            out[mode] = len(groups)
-        return out
-
-    # ---------- 扫描结果缓存 ----------
-
-    def _scan_cache_path(self) -> Path:
-        return self._get_host().get_data_root() / '.cache' / 'image-cleaner' / 'scan_cache.json'
-
-    def _load_scan_cache(self) -> dict:
-        try:
-            path = self._scan_cache_path()
-            if path.exists():
-                with open(path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                if isinstance(data, dict):
-                    return data
-        except Exception:
-            pass
-        return {}
-
-    def _save_scan_cache(self, cache: dict):
-        try:
-            path = self._scan_cache_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(cache, f, ensure_ascii=False)
-        except Exception as e:
-            log.error(f"[{self.name}] 保存扫描结果缓存失败: {e}")
-
-    def _save_scan_result(self, mode: str, groups: list, scanned: int):
-        cache = self._load_scan_cache()
-        cache[mode] = {
-            'groups': groups,
-            'scanned': scanned,
-            'saved_at': time.time(),
-            'stale': False,
-        }
-        self._save_scan_cache(cache)
-        self._results_stale.discard(mode)
-
-    def _mark_results_stale(self, *modes: str) -> None:
-        """结果缓存作废（磁盘变了、阈值变了、条目集合变了）。
-
-        只在内存里标记，落盘由 `on_pass_end` 钩子统一做 —— 索引/结果都是单文件，
-        不能每处理一个目录就整体重写一遍。
-        """
-        self._results_stale.update(modes or ('dupe', 'similar'))
-
-    def _persist_stale_flags(self) -> None:
-        if not self._results_stale:
-            return
-        cache = self._load_scan_cache()
-        changed = False
-        for mode in self._results_stale:
-            item = cache.get(mode)
-            if isinstance(item, dict) and not item.get('stale'):
-                item['stale'] = True
-                cache[mode] = item
-                changed = True
-        if changed:
-            self._save_scan_cache(cache)
-        self._results_stale.clear()
-
-    def _cached_file_exists(self, rel: str, dirs: Dict[str, set]) -> bool:
-        """缓存里的相对路径当前是否还存在。
-
-        结果缓存保存的是扫描当时的分组；用户移动 / 删除图片后，缓存仍会指向
-        旧路径，打开面板时宿主 `/thumbs` 只能返回 404，整屏缩略图都会裂。
-        这里按父目录一次 `scandir` 建立名字集合，避免为同一目录的每张图各做
-        一次 `stat`；只读判断，不删除文件、不改缓存。
-        """
-        if not rel:
-            return False
-        path = Path(rel)
-        if path.is_absolute() or '..' in path.parts:
-            return False
-        abs_path = self._abs_for_rel(rel)
-        if not abs_path:
-            return False
-        source = Path(abs_path)
-        parent = source.parent
-        key = str(parent)
-        names = dirs.get(key)
-        if names is None:
-            try:
-                names = {
-                    os.path.normcase(entry.name)
-                    for entry in os.scandir(parent)
-                    if entry.is_file()
-                }
-            except OSError:
-                # 目录读不了（权限、超长路径等）时退回单文件判断，
-                # 不要让整个分组被误判为不存在。
-                try:
-                    return source.is_file()
-                except OSError:
-                    return False
-            dirs[key] = names
-        return os.path.normcase(source.name) in names
-
-    def _drop_missing_cached_files(self, groups: list) -> tuple[list, bool]:
-        """过滤掉结果缓存中已经不存在的文件；返回 (groups, 是否变化)。
-
-        组内少于两张的组没有清理意义，一并丢弃。只读：缓存文件仍保留原样，
-        下一次校验（统一刷新）会写入新的结果；这里通过 stale 告诉界面
-        "缓存看到了磁盘变化"。
-        """
-        if not isinstance(groups, list):
-            return [], True
-        dirs: Dict[str, set] = {}
-        cleaned: list = []
-        changed = False
-        for group in groups:
-            if not isinstance(group, dict):
-                changed = True
-                continue
-            files = group.get('files')
-            if not isinstance(files, list):
-                changed = True
-                continue
-            kept = [
-                rel for rel in files
-                if isinstance(rel, str) and self._cached_file_exists(rel, dirs)
-            ]
-            if len(kept) < 2:
-                changed = True
-                continue
-            if len(kept) != len(files):
-                group = dict(group)
-                group['files'] = kept
-                changed = True
-            cleaned.append(group)
-        return cleaned, changed
-
-    def get_cached_scan(self, mode: str) -> Dict:
-        """返回上次扫描结果；没有缓存时返回空结果。
-
-        `stale` = "这份结果算出来之后，磁盘（或阈值）又变过"：界面据此提示
-        「点校验」，而不是把过期分组当成现状让人去删文件。返回前还会剔除
-        已经不存在的文件：文件被移动/删除后，旧缓存里的路径会让缩略图请求
-        变成 404；这类组同样标记 stale，但不改动缓存本身。
-        """
-        if mode not in ('dupe', 'similar'):
-            return {'groups': [], 'scanned': 0, 'cached': False, 'stale': False}
-        cache = self._load_scan_cache()
-        item = cache.get(mode)
-        if not item or not isinstance(item, dict):
-            return {'groups': [], 'scanned': 0, 'cached': False, 'stale': False}
-        groups, dropped = self._drop_missing_cached_files(item.get('groups', []))
-        return {
-            'groups': groups,
-            'scanned': item.get('scanned', 0),
-            'cached': True,
-            'stale': bool(item.get('stale')) or mode in self._results_stale or dropped,
-            'saved_at': item.get('saved_at') or 0,
-        }
-
-    # ---------- 全相册文件收集 ----------
-
-    def _all_album_files(self) -> list:
-        """递归扫描全部相册（宿主的主目录 + 额外图片目录），跳过隐藏目录和 .cache。
-
-        每个根的相对路径都要带上宿主的虚拟前缀（见 `_scan_roots`）：图片相册把额外图库
-        当相册展示，清理必须扫到它，否则额外图库里的重复、以及"主目录一份 + 额外图库
-        一份"这种跨根重复永远找不出来。
-
-        **同一个物理文件只收一条**：额外根可以落在主根之内（宿主的 `_extra_roots()`
-        只排除完全相同的路径，不排除嵌套），那样一个文件会有两条虚拟路径
-        （`备份/a.jpg` 与 `__备份 (2)/a.jpg`）。不收手的话它们会被判成"两张完全重复的
-        图片"——"只留一张"之后的删除会对同一个文件 unlink 两次（第二次报"部分删除失败"），
-        "全选组"删除更会把唯一副本一起删掉。保留先出现的条目，即主根的虚拟路径。
-        """
-        files = []
-        seen: set[str] = set()
-        for root, prefix in self._scan_roots():
-            try:
-                if not root.exists() or not root.is_dir():
-                    continue
-                for current, dir_names, filenames in os.walk(root):
-                    dir_names[:] = [d for d in dir_names
-                                    if not d.startswith('.') and d != '.cache']
-                    current_path = Path(current)
-                    try:
-                        rel_dir = current_path.relative_to(root).as_posix()
-                    except ValueError:
-                        continue
-                    for name in filenames:
-                        if name.startswith('.'):
-                            continue
-                        if Path(name).suffix.lower() not in ALLOWED_EXTENSIONS:
-                            continue
-                        abs_path = current_path / name
-                        # 去重键：规范化大小写与 . / .. 之后的绝对路径。两个根在宿主侧
-                        # 都已 resolve()（root_dir 与 _extra_roots），嵌套时两种走法得到
-                        # 同一字符串，因此这里不需要再碰一次文件系统。
-                        key = os.path.normcase(os.path.abspath(str(abs_path)))
-                        if key in seen:
-                            continue
-                        try:
-                            stat = abs_path.stat()
-                        except OSError:
-                            continue
-                        seen.add(key)
-                        rel_in_root = (Path(rel_dir) / name).as_posix() if rel_dir else name
-                        files.append({
-                            'rel': f'{prefix}/{rel_in_root}' if prefix else rel_in_root,
-                            'abs': str(abs_path),
-                            'size': stat.st_size,
-                            'mtime': stat.st_mtime,
-                        })
-            except OSError:
-                continue
-        return files
-
-    # ---------- 完全重复 ----------
-
-    @staticmethod
-    def _file_quick_hash(abs_path: str, size: int) -> Optional[str]:
-        """先读首尾各 64KB + 文件大小做快速指纹，避免整文件 MD5。
-
-        读取失败返回 None（而不是"空内容的 md5"，见 _file_full_hash 的说明）。
-        """
-        h = hashlib.md5()
-        h.update(str(size).encode())
-        try:
-            with open(abs_path, 'rb') as f:
-                head = f.read(65536)
-                if len(head) == 0 and size > 0:
-                    # 声明有内容却读不出任何字节：文件正在被写入/被占用/权限不足
-                    return None
-                h.update(head)
-                if size > 131072:
-                    f.seek(max(0, size - 65536))
-                    h.update(f.read(65536))
-        except OSError:
-            return None
-        return h.hexdigest()
-
-    @staticmethod
-    def _file_full_hash(abs_path: str) -> Optional[str]:
-        """整文件 MD5；**任何读取失败都返回 None，绝不返回"空内容的摘要"**。
-
-        历史缺陷：失败时 `pass` 后照样返回 hashlib.md5() 的空摘要
-        （d41d8cd98f00b204e9800998ecf8427e），于是所有读不到的文件共享同一个
-        digest，被 duplicate_scan 当成"完全重复"分组。而这个插件的下一步是
-        delete_files → unlink：一组"假重复"被一键删除 = 真实照片永久丢失。
-        文件在扫描期间被写入（同步/复制进行中）是最容易触发的场景。
-
-        额外做一致性校验：读取过程中文件大小变化、或**实际读到的字节数与
-        声明大小不符**（正在被写入、被截断），摘要都不可信，同样返回 None。
-        """
-        h = hashlib.md5()
-        read_bytes = 0
-        try:
-            with open(abs_path, 'rb') as f:
-                before = os.fstat(f.fileno()).st_size
-                while True:
-                    chunk = f.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    read_bytes += len(chunk)
-                    h.update(chunk)
-                after = os.fstat(f.fileno()).st_size
-        except OSError:
-            return None
-        if before != after or read_bytes != before:
-            return None
-        return h.hexdigest()
-
-    def duplicate_scan(self) -> Dict:
-        """扫描全部相册，返回跨相册的完全重复图片分组（同步入口：后台任务与用例共用分组逻辑）。"""
-        files = self._all_album_files()
-        if not files:
-            return {'groups': [], 'scanned': 0}
-
-        scanned = len(files)
-        groups = self._duplicate_groups(files)
-        self._save_scan_result('dupe', groups, scanned)
-        return {'groups': groups, 'scanned': scanned}
-
-    # ---------- 分组计算（同步入口与后台 worker 共用同一份实现） ----------
-
-    @staticmethod
-    def _check_cancel(task: Optional['BackgroundTask']) -> None:
-        """后台任务的取消点：取消时抛出 `_ScanCancelled`，由 worker 吞掉并放弃写结果。"""
-        if task is not None and task.cancelled:
-            raise _ScanCancelled()
-
-    def _duplicate_groups(self, files: list,
-                          task: Optional['BackgroundTask'] = None) -> List[dict]:
-        """完全重复分组（`task` 非空时上报进度并响应取消）。
-
-        进度以**文件**为单位：`total` = 本次扫描的文件数，`processed` = 已定论的文件数
-        （尺寸唯一或快速指纹不一致的在早期阶段就定论，指纹一致的必须算完完整摘要才定论），
-        因此进度单调、结束时正好走到 `total`。
-        """
-        by_size: Dict[int, list] = {}
-        for f in files:
-            by_size.setdefault(f['size'], []).append(f)
-
-        progressed = 0
-        if task is not None:
-            task.update(total=len(files), processed=0, current='')
-
-        groups = []
-        for size, batch in by_size.items():
-            if len(batch) < 2:
-                progressed += len(batch)
-                if task is not None:
-                    task.update(processed=progressed)
-                continue
-            by_quick: Dict[str, list] = {}
-            for f in batch:
-                self._check_cancel(task)
-                key = self._file_quick_hash(f['abs'], f['size'])
-                if key is None:
-                    progressed += 1  # 读不到的文件不参与比较，更不能参与删除
-                    continue
-                by_quick.setdefault(key, []).append(f)
-            for candidates in by_quick.values():
-                if len(candidates) < 2:
-                    progressed += len(candidates)   # 快速指纹已足以定论
-                    if task is not None:
-                        task.update(processed=progressed)
-                    continue
-                by_full: Dict[str, list] = {}
-                for f in candidates:
-                    self._check_cancel(task)
-                    digest = self._file_full_hash(f['abs'])
-                    progressed += 1
-                    if task is not None:
-                        task.update(processed=progressed, current=Path(f['rel']).name)
-                    if digest is None:
-                        continue  # 同上：摘要不可信就退出候选集
-                    by_full.setdefault(digest, []).append(f)
-                for digest, dups in by_full.items():
-                    if len(dups) >= 2:
-                        groups.append({
-                            'hash': digest,
-                            'size': size,
-                            'files': [d['rel'] for d in dups],
-                        })
-        groups.sort(key=lambda g: -len(g['files']))
-        return groups
-
-    # ---------- 视觉相似 ----------
-
-    def _dhash_cache_path(self) -> Path:
-        if self._dhash_cache_file is None:
-            self._dhash_cache_file = self._get_host().get_data_root() / '.cache' / 'image-cleaner' / 'dhash.json'
-        return self._dhash_cache_file
-
-    def _load_dhash_cache(self):
-        if self._dhash_cache:
-            return
-        try:
-            path = self._dhash_cache_path()
-            if path.exists():
-                with open(path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                if isinstance(data, dict):
-                    self._dhash_cache = data
-        except Exception:
-            self._dhash_cache = {}
-
-    def _save_dhash_cache(self):
-        try:
-            path = self._dhash_cache_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(self._dhash_cache, f, ensure_ascii=False)
-        except Exception as e:
-            log.error(f"[{self.name}] 保存 dHash 缓存失败: {e}")
-
-    def _image_dhash(self, abs_path: str, mtime: float) -> Optional[int]:
-        """64-bit 差异哈希（dHash），结果写入 image-cleaner 自己的缓存。
-
-        **读图失败返回 `None`，与"哈希值恰好是 0"分开**：纯色/近纯色图的 dHash 本来
-        就是 0，而旧实现让失败也返回 0、调用方又用 `if h:` 过滤 —— 两种含义混在一起，
-        纯色图（以及任何 dHash 为 0 的图）永远进不了相似分组。失败同样**不写缓存**，
-        否则一次读失败会被缓存钉住（mtime 不变就永远不再重算）。
-
-        缓存条目带 `'v': 2`：旧版把"读图失败"也作为 hash 0 存进缓存，缺版本号的条目
-        一律重算，避免那些 0 被当成合法哈希继续参与分组。
-        """
-        key = self._dhash_cache_key(abs_path)
-        self._load_dhash_cache()
-        cached = self._dhash_cache.get(key)
-        if cached and cached.get('v') == self.DHASH_VERSION and cached.get('mtime') == mtime:
-            return int(cached.get('hash', 0))
-
-        try:
-            from PIL import Image
-            with Image.open(abs_path) as img:
-                small = img.convert('L').resize((9, 8))
-            pixels = list(cast(Iterable[int], small.getdata()))
-        except Exception:
-            return None
-
-        value = 0
-        for row in range(8):
-            for col in range(8):
-                value <<= 1
-                if pixels[row * 9 + col] > pixels[row * 9 + col + 1]:
-                    value |= 1
-        self._dhash_cache[key] = {'v': self.DHASH_VERSION, 'mtime': mtime, 'hash': value}
-        return value
-
-    def similar_scan(self, threshold: int | None = None) -> Dict:
-        """扫描全部相册，返回跨相册的视觉相似图片分组（同步入口：后台任务与用例共用分组逻辑）。"""
-        files = self._all_album_files()
-        if len(files) < 2:
-            return {'groups': [], 'scanned': len(files)}
-
-        hashes, valid = self._dhash_all(files)
-        groups = self._similar_groups(hashes, valid, threshold)
-        self._save_dhash_cache()
-        self._save_scan_result('similar', groups, len(valid))
-        return {'groups': groups, 'scanned': len(valid)}
-
-    def _resolve_threshold(self, threshold: Optional[int]) -> int:
-        # `setting()` 是动态类型；schema 里 threshold 的类型是 number、默认 8，写入时已按
-        # min/max 校验，所以读回来一定是数字（可能被存成 float）。
-        raw: int | float = threshold if threshold is not None else cast(
-            int | float, self.setting('threshold', 8))
-        return max(0, min(16, int(raw)))
-
-    def _dhash_all(self, files: list, task: Optional['BackgroundTask'] = None) -> tuple:
-        """算出每张图的 dHash，返回 `(hashes, valid)`；读不了的图不进 `valid`。
-
-        `task` 非空时上报第一段进度：`total` = 本次扫描的文件数、`processed` = 已算完的
-        文件数。第二段（两两比较）由 `_similar_groups` 另开分母与阶段文案。
-        """
-        if task is not None:
-            task.update(total=max(1, len(files)), processed=0, current='计算相似指纹')
-        hashes: List[int] = []
-        valid: List[dict] = []
-        for index, item in enumerate(files):
-            self._check_cancel(task)
-            digest = self._image_dhash(item['abs'], item['mtime'])
-            if task is not None:
-                task.update(processed=index + 1, current=Path(item['rel']).name)
-            if digest is None:
-                continue          # 读不了的不参与相似判定（0 是合法哈希，不能兼表失败）
-            hashes.append(digest)
-            valid.append(item)
-        return hashes, valid
-
-    def _similar_groups(self, hashes: List[int], valid: list,
-                        threshold: Optional[int],
-                        task: Optional['BackgroundTask'] = None) -> List[dict]:
-        """dHash 并查集聚类（`task` 非空时上报进度并响应取消）。
-
-        两两比较是 O(n²)，进度按**外层下标**推进。这是扫描的第二段，分母是有效图片数
-        （与第一段"文件数"不同），前端按 `current` 里的阶段文字区分，不需要把两段
-        凑成一个百分比。
-        """
-        threshold = self._resolve_threshold(threshold)
-        n = len(valid)
-        if task is not None:
-            task.update(total=max(1, n), processed=0, current='比较相似度')
-        parent = list(range(n))
-
-        def find(x):
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        def union(a, b):
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[rb] = ra
-
-        for i in range(n):
-            self._check_cancel(task)
-            hi = hashes[i]
-            for j in range(i + 1, n):
-                # 尺寸差异过大不可能是相似图
-                if max(valid[i]['size'], valid[j]['size']) > min(valid[i]['size'], valid[j]['size']) * 6:
-                    continue
-                if (hi ^ hashes[j]).bit_count() <= threshold:
-                    union(i, j)
-            if task is not None:
-                task.update(processed=i + 1)
-
-        clusters: Dict[int, List[str]] = {}
-        for i in range(n):
-            clusters.setdefault(find(i), []).append(valid[i]['rel'])
-        groups = [{'files': sorted(paths)} for paths in clusters.values() if len(paths) >= 2]
-        groups.sort(key=lambda g: -len(g['files']))
-        return groups
-
-    # ---------- 删除 ----------
+    def get_thumb_data(self, rel_path: str):
+        return self.host.thumb_data(rel_path)
 
     def delete_files(self, rel_paths: List[str]) -> Dict:
         """复用 image-viewer 的删除接口，保持路径安全与宿主缓存清理一致。"""
-        return cast(_HostExtensions, self._get_host()).delete_files(rel_paths)
+        return self._get_host().delete_files(rel_paths)
 
-    # ---------- 后台扫描任务（共享基建 shell.backend.tasks） ----------
+    def get_extensions(self) -> List[dict]:
+        """注册到 image-viewer 左侧栏的通用扩展入口（条目数据在 const.py）。"""
+        return _const.extension_entries()
 
-    def scan_start(self, mode: str = 'dupe', threshold: Optional[int] = None) -> Dict:
-        """把整库重新分组放进后台任务（兼容入口）。
-
-        接入统一刷新后，用户点的是共享组件上的「校验」（`system_freshness_verify`）：
-        它维护指纹缓存并在整趟结束时把两个模式都重新分组、写进结果缓存。这个方法
-        保留给"只想重算某一个 mode 的分组"的调用方（老前端、调试脚本），语义与
-        `_scan_worker` 一致：算分组 → 写缓存 → 取消时不写。
-
-        任务状态**不落盘**：本插件没有"断点续跑"语义，重启后重新校验即可
-        （指纹与结果缓存都在）。
-        """
-        mode = 'similar' if str(mode) == 'similar' else 'dupe'
-        with self._scan_lock:
-            # 查-建-赋值必须在同一把锁里：Flask 是 threaded=True，两个并发请求
-            # 原先可以各起一个任务，后一个覆盖前一个的 `_scan_task`。
-            if self._scan_task is not None and self._scan_task.state in ('running', 'queued'):
-                return {'started': False, 'running': True, **self.scan_status()}
-            task = BackgroundTask(kind='image-cleaner-scan', extra={'mode': mode, 'groups': 0})
-            self._scan_task = task
-        task.start(self._scan_worker, args=(mode, threshold))
-        return {'started': True, 'running': True, 'mode': mode}
-
-    def _scan_worker(self, task: 'BackgroundTask', mode: str, threshold: Optional[int]) -> None:
-        """后台扫描 worker：算分组 → 写扫描缓存；取消时不写任何结果。"""
-        try:
-            files = self._all_album_files()
-            self._check_cancel(task)
-            if mode == 'similar':
-                hashes, valid = self._dhash_all(files, task)
-                groups = self._similar_groups(hashes, valid, threshold, task)
-                scanned = len(valid)
-            else:
-                groups = self._duplicate_groups(files, task)
-                scanned = len(files)
-        except _ScanCancelled:
-            return
-        self._save_scan_result(mode, groups, scanned)
-        task.update(current='', extra={'groups': len(groups), 'scanned': scanned})
-
-    def scan_status(self) -> Dict:
-        """后台扫描任务的进度（`BackgroundTask.status()` 的投影）。"""
-        task = self._scan_task
-        if task is None:
-            return {'running': False, 'done': False, 'success': False, 'cancelled': False,
-                    'mode': '', 'total': 0, 'processed': 0, 'current': '', 'groups': 0}
-        status = task.status()
-        return {
-            'running': status['running'],
-            'done': status['done'],
-            'success': status['success'],
-            'cancelled': status['cancelled'],
-            'mode': status['extra'].get('mode', ''),
-            'total': status['total'],
-            'processed': status['processed'],
-            'current': status['current'],
-            'groups': int(status['extra'].get('groups', 0) or 0),
-        }
-
-    def scan_cancel(self) -> Dict:
-        """请求取消当前扫描；取消的任务不写结果缓存（没有"半份结果"）。"""
-        if self._scan_task is not None and self._scan_task.state in ('running', 'queued'):
-            self._scan_task.cancel()
-            return {'success': True}
-        # 兼容：取消统一校验（用户点的是共享组件上的「取消」）
-        from shell.backend.freshness import engine_for
-        engine = engine_for(self)
-        if engine is not None and engine.request_cancel():
-            return {'success': True}
-        return {'success': False, 'error': '没有正在运行的扫描任务'}
+    def freshness_spec(self) -> Dict:
+        return self.fresh.spec()
 
     def on_settings_changed(self, changed_keys) -> None:
         """阈值变化 → 相似分组必须重算（旧实现没有这个钩子，改完阈值看的是旧分组）。"""
         if 'threshold' in changed_keys:
-            self._mark_results_stale('similar')
-            self._persist_stale_flags()
-        from shell.backend.freshness import engine_for
-        engine = engine_for(self)
-        if engine is not None:
-            engine.reset_throttle()
+            self.results.mark_stale('similar')
+            self.results.persist_stale()
+        self.fresh.reset_throttle()
 
     def on_unload(self) -> None:
         """进程退出收尾：取消正在跑的扫描任务（已写出的结果缓存保留）。"""
-        if self._scan_task is not None and self._scan_task.state in ('running', 'queued'):
-            self._scan_task.cancel()
+        self.scans.shutdown()

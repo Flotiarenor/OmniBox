@@ -121,7 +121,7 @@ class CachedScanFilterTests(unittest.TestCase):
         self._write_cache(groups)
         cleaner = self._cleaner()
 
-        result = cleaner.get_cached_scan('dupe')
+        result = cleaner.results.get_cached_scan('dupe')
 
         self.assertTrue(result['cached'])
         self.assertEqual(result['scanned'], 9, 'scanned 是扫描口径，不因剔除而改')
@@ -137,7 +137,7 @@ class CachedScanFilterTests(unittest.TestCase):
         self._write_cache(groups)
         cleaner = self._cleaner()
 
-        result = cleaner.get_cached_scan('dupe')
+        result = cleaner.results.get_cached_scan('dupe')
 
         self.assertFalse(result['stale'], '文件都在时不能凭空标 stale')
         self.assertEqual(result['groups'], groups)
@@ -154,7 +154,7 @@ class CachedScanFilterTests(unittest.TestCase):
         before_cache = cache_path.read_bytes()
         before_files = self._files_in(self.root)
 
-        cleaner.get_cached_scan('dupe')
+        cleaner.results.get_cached_scan('dupe')
 
         self.assertEqual(cache_path.read_bytes(), before_cache,
                          '过滤只发生在返回值里，缓存文件必须原样保留')
@@ -171,7 +171,7 @@ class CachedScanFilterTests(unittest.TestCase):
         self._write_cache([{'files': ['../outside/secret.jpg', 'a.jpg']}])
         cleaner = self._cleaner()
 
-        result = cleaner.get_cached_scan('dupe')
+        result = cleaner.results.get_cached_scan('dupe')
 
         self.assertEqual(result['groups'], [], '穿越路径不算命中，组内只剩 a.jpg 一张 → 丢组')
         self.assertTrue(result['stale'])
@@ -185,7 +185,7 @@ class CachedScanFilterTests(unittest.TestCase):
         self._write_cache([{'files': [str(outside), 'a.jpg', 'b.jpg']}])
         cleaner = self._cleaner()
 
-        result = cleaner.get_cached_scan('dupe')
+        result = cleaner.results.get_cached_scan('dupe')
 
         self.assertEqual([g['files'] for g in result['groups']], [['a.jpg', 'b.jpg']],
                          '绝对路径必须剔除（否则可以拿根外文件当"缓存命中"）')
@@ -197,12 +197,12 @@ class CachedScanFilterTests(unittest.TestCase):
         extra = self.tmp / '外部' / '额外图库'
         _touch(extra / 'x.jpg')
         _touch(extra / 'y.jpg')
-        prefix = self._cleaner(extra_roots=str(extra))._scan_roots()[1][1]
+        prefix = self._cleaner(extra_roots=str(extra)).host.roots()[1][1]
         self.assertTrue(prefix, '额外根必须有前缀')
         self._write_cache([{'files': [f'{prefix}/x.jpg', f'{prefix}/y.jpg', f'{prefix}/gone.jpg']}])
         cleaner = self._cleaner(extra_roots=str(extra))
 
-        result = cleaner.get_cached_scan('dupe')
+        result = cleaner.results.get_cached_scan('dupe')
 
         self.assertEqual([g['files'] for g in result['groups']],
                          [[f'{prefix}/x.jpg', f'{prefix}/y.jpg']],

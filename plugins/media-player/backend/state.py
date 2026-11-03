@@ -2,24 +2,28 @@
 
 状态自持：状态字典、读写锁、状态文件路径、旧版迁移标记都在这里。
 
-为什么必须串行化写入：前端一次换曲会在同一个 tick 里连发 `media_save_playback` 与
+原子写的机制**只有一份**，在 `shell.backend.json_cache.write_json`（同目录临时文件 +
+`flush` + `fsync` + `os.replace`）：本模块不再自己拼临时文件，避免同一台机器上两种
+"原子写"各自漂移。
+
+为什么还要串行化写入：前端一次换曲会在同一个 tick 里连发 `media_save_playback` 与
 `media_update_recent`，桥调用由 pywebview 各起一条线程执行。两个写者共用一个固定临时
 文件名时，一个还在 `fsync`、另一个已经 `os.replace`，Windows 就报 WinError 32
 （"另一个程序正在使用此文件"）并把这一次写入丢掉 —— 表现为每次换曲偶发一条"保存状态
-失败"。临时文件名取自 `mkstemp`，即使将来仍有并发写者也不会撞同一路径；改名对瞬时
-占用重试，挡的是外部实时扫描/索引。
+失败"。共用一把锁 + `mkstemp` 生成的一次性临时名解决并发写者；另外对"改名撞上外部
+实时扫描/索引的瞬时占用"重试几次，那一条不能靠临时名规避。
 """
 
 import json
 import logging
-import os
 import shutil
-import tempfile
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
+
+from shell.backend.json_cache import write_json
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +43,7 @@ def _defaults() -> Dict[str, Any]:
 class UserStateStore:
     """`media_state.json` 的读取与原子写入（用户可见集合的语义在 collections.py）。"""
 
-    #: `os.replace` 的重试次数与单次等待。只针对"临时文件被外部实时扫描/索引短暂占用"
+    #: 整次写调用的重试次数与单次等待。只针对"目标文件被外部实时扫描/索引短暂占用"
     #: 这类瞬时失败（WinError 5 / 32）：等待总计 ≈300ms，代价远低于"用户这次改动没落盘"。
     replace_attempts = 3
     replace_delay = 0.05
@@ -84,49 +88,20 @@ class UserStateStore:
             self.data = _defaults()
 
     def save(self) -> None:
-        """原子写用户状态：一把锁串行化 + 每次独立的临时文件名。"""
-        with self._lock:
-            self.state_file.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                # 先序列化再落盘：状态坏了在创建临时文件之前就暴露，不留半个文件
-                payload = json.dumps(self.data, ensure_ascii=False, indent=2)
-                fd, tmp_name = tempfile.mkstemp(
-                    prefix='.media_state.', suffix='.tmp', dir=str(self.state_file.parent))
-                os.close(fd)
-            except Exception as error:
-                log.error(f"[MediaPlayer] 保存状态失败: {error}")
-                return
-            tmp = Path(tmp_name)
-            try:
-                with open(tmp, 'w', encoding='utf-8') as handle:
-                    handle.write(payload)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                self._replace_with_retry(tmp)
-            except Exception as error:
-                log.error(f"[MediaPlayer] 保存状态失败: {error}")
-            finally:
-                # 改名成功时临时文件已经不在；失败时（被外部占用）留下的一份要清掉
-                try:
-                    tmp.unlink(missing_ok=True)
-                except OSError:
-                    pass
+        """原子写用户状态：一把锁串行化 + 复用 `json_cache` 的写入口。
 
-    def _replace_with_retry(self, tmp: Path) -> None:
-        """`os.replace(tmp, 状态文件)`，对瞬时占用重试几次。
-
-        只重试 `PermissionError`：Windows 上改名撞到"文件被占用"就是它（WinError 5 / 32），
-        等几十毫秒通常会成功；临时目录消失、磁盘满这类失败重试也不会变好，交回调用方
-        立刻报出来。
+        重试是**整次写调用**重来，而不是只重试改名：`write_json` 面向"随时可以重算的
+        缓存"，把底层异常吞成 False（缓存损失的后果只是重算，用户数据不是）。因此在
+        这里按返回值重试，并在全部失败后补一条带文件路径的错误日志。
         """
-        for attempt in range(self.replace_attempts + 1):
-            try:
-                os.replace(tmp, self.state_file)
-                return
-            except PermissionError:
-                if attempt == self.replace_attempts:
-                    raise
-                time.sleep(self.replace_delay * (attempt + 1))
+        with self._lock:
+            for attempt in range(self.replace_attempts + 1):
+                if write_json(self.state_file, self.data, indent=2, create_parent=True):
+                    return
+                if attempt < self.replace_attempts:
+                    time.sleep(self.replace_delay * (attempt + 1))
+            log.error(f"[MediaPlayer] 保存状态失败: {self.state_file}"
+                      f"（重试 {self.replace_attempts} 次仍失败）")
 
     def _backup_broken(self, error: Exception) -> None:
         stamp = time.strftime('%Y%m%d-%H%M%S')

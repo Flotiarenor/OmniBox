@@ -11,13 +11,9 @@
 //   ② 0 = 关闭：不再保留任何位图；
 //   ③ 关灯箱即清空：不把内存留到下次打开。
 // 用最小 DOM 桩（vm 沙箱）跑，不需要真浏览器。
-import fs from 'node:fs';
-import path from 'node:path';
 import vm from 'node:vm';
-import { fileURLToPath } from 'node:url';
 
-const SHELL_BASE_JS = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
-    '../../shell/frontend/public/shell/base.js');
+import { loadShellRuntime } from './shell_scripts.mjs';
 
 let failures = 0;
 function check(name, cond, extra = '') {
@@ -81,9 +77,9 @@ const sandbox = {
     Utils: { iconHtml: () => '', formatFileSize: (n) => `${n} B` },
 };
 const ctx = vm.createContext(sandbox);
-vm.runInContext(fs.readFileSync(SHELL_BASE_JS, 'utf8'), ctx, { filename: 'shell/base.js' });
+loadShellRuntime(ctx);
 
-// 页面里 `Bridge` 是全局名字（base.js 内部直接写 `Bridge.originalUrl(...)`），
+// 页面里 `Bridge` 是全局名字（共享运行时内部直接写 `Bridge.originalUrl(...)`），
 // 而它只挂在 window 上；vm 沙箱里两者是分开的：把 window 上的再挂回沙箱全局。
 // `createLightbox` 是顶层函数声明，直接落在沙箱全局上。
 sandbox.Bridge = sandbox.window.Bridge || sandbox.Bridge;

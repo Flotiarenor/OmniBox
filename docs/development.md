@@ -168,7 +168,7 @@ http://127.0.0.1:18080
 > **错误处理与调试**：401/403/404 统一由壳内 `/status` 视图展示（错误卡片 + 重试，
 > 浏览器直接访问错误 URL 也会自动跳转）；`/health` 返回 `200 {"status":"ok"}` 供探活。
 > 以 `python main.py --web-only --status-debug` 启动后，`/status` 会显示状态调试面板
-> （健康检查 / API 鉴权演示）；一键调试环境见 `python tests/debug_status_pages.py`。
+> （健康检查 / API 鉴权演示）；一键调试环境见 `python tools/debug/debug_status_pages.py`。
 
 ### 安装插件
 

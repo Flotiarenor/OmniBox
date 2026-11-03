@@ -86,7 +86,7 @@ function makeSandbox(extra) {
   return sandbox;
 }
 
-/** 内核 window.Utils 对象字面量：直接在沙箱里跑真实的 base.js 片段。 */
+/** 基础层 window.Utils 对象字面量：直接在沙箱里跑真实的 base.js 片段。 */
 let kernelUtils = null;
 function loadKernelUtils() {
   if (kernelUtils) return kernelUtils;
@@ -261,7 +261,7 @@ function checkInterpolationsRegistered(rel, registry) {
  * 只扫描"模板字面量赋给 innerHTML"的插值：值进入 HTML 上下文前必须逐个过审。
  *
  * 为什么不能沿用 checkInterpolationsRegistered：那个函数把整个文件里所有 `${…}`
- * 都当成 HTML 插值，而 base.js / freshness.js 里有大量 textContent、URL 拼接用的
+ * 都当成 HTML 插值，而共享运行时 / freshness.js 里有大量 textContent、URL 拼接用的
  * 模板，全量登记既没意义也会很快过期。这里只认 `.innerHTML = `…`` 与
  * `.innerHTML += `…``，覆盖现有全部 HTML 模板；变量/拼接赋值（如
  * `btn.innerHTML = icon + text`）不在静态检查范围内，残余见共享运行时审查报告。
@@ -428,18 +428,24 @@ checkInterpolationsRegistered('shell/frontend/public/shell/folder-picker.js', [
 checkInterpolationsRegistered('shell/frontend/public/shell/content-ui.js', []);
 
 // ---- 4c. 共享运行时的 innerHTML 模板插值登记 ----
-// 只登记 `innerHTML = `…`` 模板里的插值。每一条都要能复核"值已转义或来自受控常量"：
+// 只登记 `innerHTML = `…`` 模板里的插值，按**文件**分表（共享运行时按区段拆成多个文件后，
+// 每份文件各自登记：登记项与源码同文件，搬代码时登记表必须跟着搬，过期登记会在这里报）。
+// 每一条都要能复核"值已转义或来自受控常量"：
 //   - Utils.escapeHtml(…) / Utils.iconHtml(…)（图标名经 Icons 的 KNOWN 白名单）
 //   - labelText(…)（内部 escapeHtml）
 //   - messageId / titleId：Math.random().toString(36) 生成，字符集受控
 //   - options.danger 的三元：只产出两个固定类名
-checkInnerHtmlTemplateInterpolations('shell/frontend/public/shell/base.js', [
+checkInnerHtmlTemplateInterpolations('shell/frontend/public/shell/dialogs.js', [
   'Utils.escapeHtml(message)',
   'messageId',
   "options.danger ? 'btn-danger-solid' : 'btn-primary'",
   "Utils.escapeHtml(options.okText || '确定')",
+]);
+checkInnerHtmlTemplateInterpolations('shell/frontend/public/shell/settings.js', [
   'titleId',
   'Utils.escapeHtml(title)',
+]);
+checkInnerHtmlTemplateInterpolations('shell/frontend/public/shell/lightbox.js', [
   "labelText(labels.previous, '上一张')",
   "Utils.iconHtml('icon:chevron-left')",
   "labelText(labels.image, '原图查看')",

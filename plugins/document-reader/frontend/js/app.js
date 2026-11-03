@@ -95,10 +95,10 @@ class DocumentReader {
 
     // ===== 与壳的页面骨架通信 =====
 
-    /** 内容页与壳同源：消息只发给父窗口，脱离壳单独打开时不发。 */
+    /** 内容页与壳同源：消息只发给父窗口，脱离壳单独打开时不发。
+        实现只有一份（/shell/chrome-client.js），这里只是本页的调用出口。 */
     _postHost(payload) {
-        if (window.parent === window) return;
-        try { window.parent.postMessage(payload, location.origin); } catch (e) { /* 非同源父窗口不发 */ }
+        window.ChromeClient.post(payload);
     }
 
     /** 上报 chrome：标题、副标题、视图（'' 表示阅读态、不落导航高亮）、
@@ -135,24 +135,15 @@ class DocumentReader {
         this._searchSync = { value: '', clear: ++this._searchClearSeq };
     }
 
-    /** 壳的握手与反向下发：视图、顶栏动作、搜索输入。 */
+    /** 壳的握手与反向下发：视图、顶栏动作、搜索输入。
+        校验、分发与 ready 握手都在 /shell/chrome-client.js（四个内容页共用一份）。 */
     _bindHost() {
-        window.addEventListener('message', (event) => {
-            if (event.origin !== location.origin || event.source !== window.parent) return;
-            const data = event.data || {};
-            if (data.type === 'omnibox:view' && typeof data.view === 'string') {
-                this._applyHostView(data.view);
-                return;
-            }
-            if (data.type === 'omnibox:action') {
-                this._applyHostAction(data.action);
-                return;
-            }
-            if (data.type === 'omnibox:query') {
-                this._onQuery(data.query);
-            }
+        this._chrome = window.ChromeClient.create({
+            onView: (view) => this._applyHostView(view),
+            onAction: (action) => this._applyHostAction(action),
+            onQuery: (query) => this._onQuery(query),
         });
-        this._postHost({ type: 'omnibox:ready' });
+        this._chrome.bind();
     }
 
     /** 壳左栏的导航项都发 omnibox:view：三个书架分类、朗读设置与「当前文档」组的

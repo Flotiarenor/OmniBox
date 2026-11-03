@@ -3,15 +3,20 @@
 文件：
 - <root>/.cache/pixiv-sync/downloaded_ids.json  已下载作品 id 集合
 - <root>/.cache/pixiv-sync/failed_ids.json      404/已删除、永久跳过的 id 集合
+
+落盘走内核 `shell.backend.json_cache` 的唯一原子写入口（临时文件 + fsync +
+os.replace）：直接覆写在进程被杀时会留下半截 JSON，去重记录从此读不出来，
+表现只是"整个库重下一遍"。
 """
 
 import json
 import logging
 import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Set, Tuple
+
+from shell.backend.json_cache import write_json
 
 log = logging.getLogger(__name__)
 
@@ -53,27 +58,6 @@ def _parse_ids(data: Any) -> Set[int]:
     return ids
 
 
-def _atomic_write_json(path: Path, payload: dict) -> None:
-    """先写临时文件再原子替换，避免任务中断把 JSON 写坏。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
-    )
-    tmp_path = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-    except Exception:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
-
-
 def load_ids(path: Path) -> Set[int]:
     try:
         return _parse_ids(json.loads(path.read_text(encoding="utf-8")))
@@ -83,11 +67,13 @@ def load_ids(path: Path) -> Set[int]:
 
 def save_ids(path: Path, ids: Set[int]) -> bool:
     try:
-        _atomic_write_json(path, {"ids": sorted(ids)})
-        return True
+        ok = write_json(path, {"ids": sorted(ids)}, indent=None, create_parent=True)
     except Exception as e:
         log.error(f"[pixiv-sync] 保存 downloaded_ids.json 失败: {e}")
         return False
+    if not ok:
+        log.error(f"[pixiv-sync] 保存 downloaded_ids.json 失败: {path}")
+    return ok
 
 
 def load_failed_ids(path: Path) -> Set[int]:
@@ -99,11 +85,13 @@ def load_failed_ids(path: Path) -> Set[int]:
 
 def save_failed_ids(path: Path, failed: Set[int]) -> bool:
     try:
-        _atomic_write_json(path, {"ids": sorted(failed)})
-        return True
+        ok = write_json(path, {"ids": sorted(failed)}, indent=None, create_parent=True)
     except Exception as e:
         log.error(f"[pixiv-sync] 保存 failed_ids.json 失败: {e}")
         return False
+    if not ok:
+        log.error(f"[pixiv-sync] 保存 failed_ids.json 失败: {path}")
+    return ok
 
 
 def scan_local(

@@ -1,10 +1,18 @@
-"""网易云音乐 Companion 插件后端。"""
+"""网易云音乐 Companion 插件后端。
+
+入口只做装配、API 表与壳钩子：ncm-cli 命令执行、输出解析、假 mpv 截获分别在
+`ncm_cli.py` / `parsing.py` / `fake_mpv.py`，音乐数据接口在 `netease_music_api.py`。
+组件之间不互相 import，依赖一律由这里按构造参数注入。
+"""
 
 from typing import ClassVar
 
 from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_utils import load_sibling
 
+_ncm = load_sibling(__file__, 'ncm_cli', 'netease_music')
+_parsing = load_sibling(__file__, 'parsing', 'netease_music')
+_fake_mpv = load_sibling(__file__, 'fake_mpv', 'netease_music')
 _api = load_sibling(__file__, 'netease_music_api', 'netease_music')
 NeteaseMusicAPI = _api.NeteaseMusicAPI
 
@@ -13,10 +21,15 @@ class NeteaseMusicPlugin(PluginBase):
     def __init__(self, manifest, config):
         super().__init__(manifest, config)
         self._api = None
+        # 装配顺序就是依赖顺序：三个无状态协作者按构造参数注入数据接口（组件之间不 import）。
+        self._runner = _ncm.NcmRunner()
+        self._parser = _parsing.OutputParser()
+        self._fake_mpv = _fake_mpv.FakeMpv()
 
     def _get_api(self) -> NeteaseMusicAPI:
         if self._api is None:
-            self._api = NeteaseMusicAPI(check_install=False)
+            self._api = NeteaseMusicAPI(
+                self._runner, self._parser, self._fake_mpv, check_install=False)
         return self._api
 
     # ---------- 统一刷新基建（远端来源） ----------

@@ -155,7 +155,8 @@ def migrate_legacy_root_dir(settings: SettingsPort, store: Any, plugin_name: str
     所以迁移放在 `on_load`：先补写新名下的设置，再由入口按它重建根目录。
     迁移只在新区没有值时发生，用户之后自己保存的设置不会被覆盖。
 
-    返回迁移过来的 root_dir；没有可迁移的值时返回 None。
+    返回迁移过来的 root_dir；没有可迁移的值、或写入失败时返回 None（调用方按
+    "没有迁移"处理，不要回退到旧插件名的根）。
     """
     if store is None or str(settings.setting('root_dir') or '').strip():
         return None
@@ -167,6 +168,13 @@ def migrate_legacy_root_dir(settings: SettingsPort, store: Any, plugin_name: str
     root_dir = str(legacy.get('root_dir') or '').strip()
     if not root_dir:
         return None
-    update_setting('root_dir', root_dir)
+    if not update_setting('root_dir', root_dir):
+        # 写失败绝不能报"已迁移"：返回旧根会让入口 _rebind_roots 按旧插件名的目录跑
+        # （而新名下没落盘，下次启动再迁一次），日志里却写着成功 —— 排障时无从下手。
+        # 返回 None 让入口保持"没有迁移"的状态：本次按默认根/已配置根运行。
+        log.warning(f'[{plugin_name}] 迁移 root_dir 到新插件名失败（设置未写入，'
+                    f'update_setting 返回 False）: key=root_dir, '
+                    f'legacy={legacy_name}, value={root_dir}')
+        return None
     log.info(f'[{plugin_name}] 已从 {legacy_name} 的设置迁移 root_dir')
     return root_dir

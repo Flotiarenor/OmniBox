@@ -35,9 +35,9 @@
 
   // ── 与壳的页面骨架通信 ────────────────────────────────────────────────
   // chrome（品牌块/左栏/顶栏/状态栏）由壳渲染；本页只上报标题、徽标与状态。
+  // 收发规则在 /shell/chrome-client.js（内容页共用一份），这里只是本页的调用出口。
   function postHost(payload) {
-    if (window.parent === window) { return; }
-    try { window.parent.postMessage(payload, location.origin); } catch (e) { /* 壳不在同源时不发 */ }
+    window.ChromeClient.post(payload);
   }
 
   function sectionOf(name) {
@@ -580,17 +580,18 @@
   }
 
   // 与壳的页面骨架握手：视图切换、顶栏动作都从壳发过来；标题/徽标/状态反向上报。
+  // 来源校验、消息分发与 ready 握手都在 /shell/chrome-client.js（内容页共用一份）。
   function bindHost() {
-    window.addEventListener('message', function (event) {
-      if (event.origin !== location.origin || event.source !== window.parent) { return; }
-      var data = event.data || {};
-      if (data.type === 'omnibox:view' && data.view) { setPanel(data.view); return; }
-      if (data.type === 'omnibox:action') {
-        if (data.action === 'refresh') { refresh(); }
-        else if (data.action === 'settings-saved') { refresh(); }
+    window.ChromeClient.create({
+      onView: function (name) {
+        // 空视图按"没有要切的页面"处理，与收敛前的 `data.view` 真假判定一致
+        if (name) { setPanel(name); }
+      },
+      onAction: function (action) {
+        if (action === 'refresh') { refresh(); }
+        else if (action === 'settings-saved') { refresh(); }
       }
-    });
-    postHost({ type: 'omnibox:ready' });
+    }).bind();
   }
 
   function init() {

@@ -43,7 +43,7 @@ manifest 用 `frontend.chrome` 声明骨架；壳加载内容页时追加 `?cont
   **不要**假装它能盖住壳侧栏。
 - 页面级设置、跨插件确认、需要盖住导航的弹窗，走壳的 `PluginSettingsModal` 或 native 面板。
 - Esc、点遮罩、点取消都应关闭；打开时焦点进入弹窗，关闭后还给触发元素。
-- 后三条由壳统一提供，插件不必自己实现：`base.js` 监听 `.modal` 元素的 `active` 类变化，
+- 后三条由壳统一提供，插件不必自己实现：`dialogs.js` 监听 `.modal` 元素的 `active` 类变化，
   打开时补 `role="dialog"` / `aria-modal="true"` / `aria-labelledby`（取 `.modal-box h3` 的文本）、
   记住并移入焦点，关闭时撤掉这些属性并把焦点还给打开前持有焦点的元素；Esc、Tab 循环、
   点遮罩关闭都在同一处处理。因此**不要**再给 `.modal` 手写 `role="dialog"`——带了该属性的元素

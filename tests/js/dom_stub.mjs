@@ -1,4 +1,4 @@
-// 极简 DOM 替身：给"把壳的 base.js 或插件的前端 js 装进 node 跑一遍"的用例共用。
+// 极简 DOM 替身：给"把壳注入的共享运行时或插件的前端 js 装进 node 跑一遍"的用例共用。
 //
 // 为什么共用：`tests/js` 下已经有 5 份手写的同类替身（host_channel_host /
 // image_viewer_lifecycle / media_player_netease_local / shell_folder_picker /
@@ -10,7 +10,7 @@
 //   * 事件登记（`el.click()` 可直接触发 click 处理器）与按 tag / `.class` / `#id` 的查询
 //   * `innerHTML = "..."` 只做一件事：把其中的 `id="x"` 登记进 document.getElementById
 //     —— **不解析 HTML 结构**，需要布局、样式、事件冒泡的用例请走无头浏览器
-//     （`tests/debug_*.py`），不要往这里加。
+//     （`tools/debug/` 下的 debug_*.py），不要往这里加。
 //
 // 用法：
 //     import { createDom } from './dom_stub.mjs';
@@ -71,7 +71,7 @@ export function createDom() {
       className: '', textContent: '', value: '', type: '', title: '', htmlFor: '',
       placeholder: '', checked: false, disabled: false,
       style: { setProperty() { } },
-      dataset: {}, children: [], handlers: {}, parentElement: null,
+      dataset: {}, children: [], handlers: {}, parentElement: null, parentNode: null,
       classList: {
         // 与真实 DOMTokenList 一致：add/remove 接受多个 token（插件里常见
         // `classList.remove('theme-auto', 'theme-sepia', …)` 这种一次清一组的写法）。
@@ -92,6 +92,8 @@ export function createDom() {
         if (child.__owner) child.__owner.children = child.__owner.children.filter((c) => c !== child);
         child.__owner = el;
         child.parentElement = el;
+        // 真实 DOM 里 child.parentNode 就是父元素：toast.js 的去重与摘除都读它
+        child.parentNode = el;
         el.children.push(child);
         return child;
       },
@@ -99,12 +101,20 @@ export function createDom() {
         if (child.__owner) child.__owner.children = child.__owner.children.filter((c) => c !== child);
         child.__owner = el;
         child.parentElement = el;
+        child.parentNode = el;
         const at = ref ? el.children.indexOf(ref) : -1;
         if (at < 0) el.children.push(child); else el.children.splice(at, 0, child);
         return child;
       },
+      removeChild(child) {
+        el.children = el.children.filter((c) => c !== child);
+        if (child) { child.parentNode = null; child.parentElement = null; }
+        return child;
+      },
       remove() {
         if (el.__owner) el.__owner.children = el.__owner.children.filter((c) => c !== el);
+        el.parentNode = null;
+        el.parentElement = null;
       },
       setAttribute() { }, getAttribute() { return null; }, removeAttribute() { },
       addEventListener(type, fn) { (el.handlers[type] = el.handlers[type] || []).push(fn); },
