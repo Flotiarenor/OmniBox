@@ -8,6 +8,7 @@
 | --- | --- | --- |
 | `check_version.py` | `pyproject.toml` / `shell/frontend/package.json` / `package-lock.json`（根 `version` 与 `packages[""].version`）/ git tag 同源（`--print` 打印当前版本） | 改版本号、打 tag |
 | `check_plugins.py` | manifest 可解析、`name` 与目录名一致、前端/后端声明完整、每个字段都有读取方或已登记为无效果 | 改任何插件 |
+| `check_plugin_layering.py` | 插件后端的分层棘轮：禁 Mixin 切分（R1）、单文件/入口行数上限（R2）、只有 manifest 声明的入口可以加载兄弟模块（R3）。未迁移的插件按插件豁免于 `tools/layering_allowlist/`，迁移完成即删除对应文件；豁免过期本身是错误 | 改插件后端结构、迁移完一个插件 |
 | `check_packaging.py` | PyInstaller spec 的数据收集规则（不需要真跑 PyInstaller） | 改 spec、收集规则或依赖 |
 | `check_build_tree.py` | 真正跑完 PyInstaller 之后，产物目录里有没有该有的东西 | 真跑过构建之后 |
 | `build_icons.py` | 由 `res/icons/icon_data.json` 生成 sprite 与注入函数，`--check` 校验一致性 | 改图标或图标相关代码 |

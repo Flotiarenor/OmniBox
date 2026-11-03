@@ -1,0 +1,22 @@
+# 分层豁免：media-player
+#
+# 为什么有这份文件：tools/check_plugin_layering.py 的 R1（禁 Mixin 切分）、R2（文件行数）、
+# R3（只有入口可以加载兄弟模块）对尚未组件化的插件必然先失败。豁免按**插件**粒度分文件，
+# 好让多个智能体并行迁移时各删各的，不会改到同一个共享清单。
+#
+# 它怎么消失：迁移完成后删掉整个文件（迁移配方的最后一步）。留着不删会被门禁判为
+# 「豁免文件已过期」并报错；文件存在期间，每次跑门禁都会打印一条 warning 提醒。
+# 本文件正文只是当前违规的快照，供迁移时对照使用；门禁只检查文件是否存在。
+#
+# 迁移配方见 docs/plugin-backend-layout.md。
+#
+# 当前违规（迁移完成后应全部消失）：
+#   R1 plugins/media-player/backend/freshness.py：定义了 Mixin 类 FreshnessMixin：把类切成 mixin 文件后每个分片的 `self.x` 在静态检查里都不存在，且 `super()` 会命中 mixin 而不是基类。按 docs/plugin-backend-layout.md 改成显式组件 + 入口注入
+#   R3 plugins/media-player/backend/freshness.py：第 32 行调用了 load_sibling：只有入口可以加载兄弟模块，组件需要的依赖由入口通过构造参数注入
+#   R3 plugins/media-player/backend/freshness.py：第 33 行调用了 load_sibling：只有入口可以加载兄弟模块，组件需要的依赖由入口通过构造参数注入
+#   R1 plugins/media-player/backend/main.py：类 MediaPlayerPlugin 继承了 Mixin FreshnessMixin：入口类只应继承 PluginBase，能力靠组合注入而不是多重继承
+#   R2 plugins/media-player/backend/main.py：入口文件 1066 行，超过上限 250 行：入口只放 settings_schema、register_api、壳按名调用的钩子与装配；业务挪进组件
+#   R3 plugins/media-player/backend/scanner.py：第 19 行调用了 load_sibling：只有入口可以加载兄弟模块，组件需要的依赖由入口通过构造参数注入
+#   R3 plugins/media-player/backend/scanner.py：第 20 行调用了 load_sibling：只有入口可以加载兄弟模块，组件需要的依赖由入口通过构造参数注入
+#   R3 plugins/media-player/backend/scanner.py：第 21 行调用了 load_sibling：只有入口可以加载兄弟模块，组件需要的依赖由入口通过构造参数注入
+#   R3 plugins/media-player/backend/scanner.py：第 22 行调用了 load_sibling：只有入口可以加载兄弟模块，组件需要的依赖由入口通过构造参数注入

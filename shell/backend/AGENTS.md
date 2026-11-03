@@ -14,7 +14,9 @@ OmniBox 的 Python 后端：Flask 应用（`create_app()`）与插件契约。
 | `plugin_base.py` | 插件基类与设置模式下的密钥处理 | `PluginBase` `secret_keys` `admin_only_keys` `mask_secrets` |
 | `plugin_utils.py` | 插件同目录分片模块的加载 | `load_sibling` |
 | `file_server.py` | Flask 路由、静态资源、状态页 | `create_app` `guard_admin_methods` `serve_shell_assets` `_status_response` |
-| `media_catalog.py` | 统一媒体目录浏览契约（路径安全、面包屑、扩展名分类） | `is_safe_path` `resolve_safe_path` `classify_file` `list_directory` `list_system_roots` |
+| `media_catalog.py` | 统一媒体目录浏览契约（路径安全、面包屑、扩展名分类、目录扫描原语） | `is_safe_path` `resolve_safe_path` `classify_file` `list_directory` `list_system_roots` `scan_directory` `natural_sort_key` `is_hidden_name` `ScanResult` |
+| `json_cache.py` | 插件共享的 JSON 落盘：原子写 + 版本/指纹校验的缓存读取 | `read_json` `write_json` `read_cached_json` `write_cached_json` `CACHE_VERSION_KEY` |
+| `ports.py` | 插件组件与宿主的最小能力契约（Protocol，`PluginBase` 结构化满足） | `SettingsPort` `PersistPort` |
 | `freshness.py` | 同步 / 校验引擎：插件声明规格，壳侧驱动 | `FreshnessSpec` `FreshnessStore` `FreshnessEngine` `FsSource` `engine_for` |
 | `thumb_cache.py` | 缩略图缓存与维护 | `ThumbCache` `cache_stats` `clear_all_caches` |
 | `tasks.py` | 后台任务 | `BackgroundTask` |
@@ -32,6 +34,7 @@ OmniBox 的 Python 后端：Flask 应用（`create_app()`）与插件契约。
 ## 规则
 
 - **动态导入必须登记**：插件后端由运行时 `importlib` 加载，它 import 的每个 `shell.backend.*` 与第三方模块都要写进 `docs/Releases/spec_common.py` 的 `HIDDEN_IMPORTS`，第三方包同时写进 `requirements.txt`。判定与门禁见 [docs/Releases/AGENTS.md](../../docs/Releases/AGENTS.md)。
+- **插件组件只 import 这里**：插件后端组件不是包、目录不在 `sys.path` 上，组件之间不能互相 import（门禁 `tools/check_plugin_layering.py` 的 R3 会拦）。无状态工具与跨组件契约因此放在本目录，由组件直接 `from shell.backend...` 引入；形态与迁移步骤见 [docs/plugin-backend-layout.md](../../docs/plugin-backend-layout.md)。
 - **用户数据只写在可执行文件所在目录**（由 `paths.py` 决定）：在产物目录运行过程序后，不要直接压缩发布。
 - **设置存储只走原子写入**：`SettingsStore` 用 `tempfile` + `fsync` + `os.replace`，不要改回 `open(w)` 直接覆写。
 - **静态资源的解析顺序属前端**：见 [shell/frontend/AGENTS.md](../frontend/AGENTS.md)。

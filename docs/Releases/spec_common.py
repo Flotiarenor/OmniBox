@@ -39,6 +39,11 @@ HIDDEN_IMPORTS = [
     # 插件共享基建：只有 image-viewer / media-player 会 import
     'shell.backend.tasks',
     'shell.backend.thumb_cache',
+    # 组件化之后插件后端的共用底座：组件只 import shell.backend（不再互相 load_sibling），
+    # 因此这些模块必须显式声明，否则冻结后组件 import 失败、插件整体不加载。
+    # 迁移配方见 docs/plugin-backend-layout.md。
+    'shell.backend.json_cache',
+    'shell.backend.ports',
     # 统一刷新基建（同步 / 校验）：插件声明 freshness_spec() 由壳侧驱动，
     # 但插件自己的兼容入口会 import 它取引擎（image-viewer 的 refresh()），
     # 将来插件直接声明 FsSource 也要能 import

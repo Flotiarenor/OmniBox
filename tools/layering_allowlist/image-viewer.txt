@@ -1,0 +1,33 @@
+# 分层豁免：image-viewer
+#
+# 为什么有这份文件：tools/check_plugin_layering.py 的 R1（禁 Mixin 切分）、R2（文件行数）、
+# R3（只有入口可以加载兄弟模块）对尚未组件化的插件必然先失败。豁免按**插件**粒度分文件，
+# 好让多个智能体并行迁移时各删各的，不会改到同一个共享清单。
+#
+# 它怎么消失：迁移完成后删掉整个文件（迁移配方的最后一步）。留着不删会被门禁判为
+# 「豁免文件已过期」并报错；文件存在期间，每次跑门禁都会打印一条 warning 提醒。
+# 本文件正文只是当前违规的快照，供迁移时对照使用；门禁只检查文件是否存在。
+#
+# 迁移配方见 docs/plugin-backend-layout.md。
+#
+# 当前违规（迁移完成后应全部消失）：
+#   R1 plugins/image-viewer/backend/albums.py：定义了 Mixin 类 AlbumMixin：把类切成 mixin 文件后每个分片的 `self.x` 在静态检查里都不存在，且 `super()` 会命中 mixin 而不是基类。按 docs/plugin-backend-layout.md 改成显式组件 + 入口注入
+#   R3 plugins/image-viewer/backend/albums.py：第 19 行调用了 load_sibling：只有入口可以加载兄弟模块，组件需要的依赖由入口通过构造参数注入
+#   R2 plugins/image-viewer/backend/albums.py：后端文件 579 行，超过上限 400 行：按职责拆成组件文件
+#   R3 plugins/image-viewer/backend/common.py：第 26 行调用了 load_sibling：只有入口可以加载兄弟模块，组件需要的依赖由入口通过构造参数注入
+#   R1 plugins/image-viewer/backend/file_ops.py：定义了 Mixin 类 FileOpsMixin：把类切成 mixin 文件后每个分片的 `self.x` 在静态检查里都不存在，且 `super()` 会命中 mixin 而不是基类。按 docs/plugin-backend-layout.md 改成显式组件 + 入口注入
+#   R3 plugins/image-viewer/backend/file_ops.py：第 18 行调用了 load_sibling：只有入口可以加载兄弟模块，组件需要的依赖由入口通过构造参数注入
+#   R1 plugins/image-viewer/backend/freshness.py：定义了 Mixin 类 FreshnessMixin：把类切成 mixin 文件后每个分片的 `self.x` 在静态检查里都不存在，且 `super()` 会命中 mixin 而不是基类。按 docs/plugin-backend-layout.md 改成显式组件 + 入口注入
+#   R3 plugins/image-viewer/backend/freshness.py：第 29 行调用了 load_sibling：只有入口可以加载兄弟模块，组件需要的依赖由入口通过构造参数注入
+#   R1 plugins/image-viewer/backend/listing.py：定义了 Mixin 类 ListingMixin：把类切成 mixin 文件后每个分片的 `self.x` 在静态检查里都不存在，且 `super()` 会命中 mixin 而不是基类。按 docs/plugin-backend-layout.md 改成显式组件 + 入口注入
+#   R3 plugins/image-viewer/backend/listing.py：第 17 行调用了 load_sibling：只有入口可以加载兄弟模块，组件需要的依赖由入口通过构造参数注入
+#   R2 plugins/image-viewer/backend/listing.py：后端文件 726 行，超过上限 400 行：按职责拆成组件文件
+#   R1 plugins/image-viewer/backend/main.py：类 ImageViewerPlugin 继承了 Mixin NamespaceMixin, ThumbMixin, ListingMixin, AlbumMixin, FileOpsMixin, RebuildMixin, FreshnessMixin, SettingsMixin：入口类只应继承 PluginBase，能力靠组合注入而不是多重继承
+#   R2 plugins/image-viewer/backend/main.py：入口文件 295 行，超过上限 250 行：入口只放 settings_schema、register_api、壳按名调用的钩子与装配；业务挪进组件
+#   R1 plugins/image-viewer/backend/namespace.py：定义了 Mixin 类 NamespaceMixin：把类切成 mixin 文件后每个分片的 `self.x` 在静态检查里都不存在，且 `super()` 会命中 mixin 而不是基类。按 docs/plugin-backend-layout.md 改成显式组件 + 入口注入
+#   R3 plugins/image-viewer/backend/namespace.py：第 16 行调用了 load_sibling：只有入口可以加载兄弟模块，组件需要的依赖由入口通过构造参数注入
+#   R1 plugins/image-viewer/backend/rebuild.py：定义了 Mixin 类 RebuildMixin：把类切成 mixin 文件后每个分片的 `self.x` 在静态检查里都不存在，且 `super()` 会命中 mixin 而不是基类。按 docs/plugin-backend-layout.md 改成显式组件 + 入口注入
+#   R3 plugins/image-viewer/backend/rebuild.py：第 18 行调用了 load_sibling：只有入口可以加载兄弟模块，组件需要的依赖由入口通过构造参数注入
+#   R1 plugins/image-viewer/backend/settings.py：定义了 Mixin 类 SettingsMixin：把类切成 mixin 文件后每个分片的 `self.x` 在静态检查里都不存在，且 `super()` 会命中 mixin 而不是基类。按 docs/plugin-backend-layout.md 改成显式组件 + 入口注入
+#   R1 plugins/image-viewer/backend/thumbs.py：定义了 Mixin 类 ThumbMixin：把类切成 mixin 文件后每个分片的 `self.x` 在静态检查里都不存在，且 `super()` 会命中 mixin 而不是基类。按 docs/plugin-backend-layout.md 改成显式组件 + 入口注入
+#   R3 plugins/image-viewer/backend/thumbs.py：第 18 行调用了 load_sibling：只有入口可以加载兄弟模块，组件需要的依赖由入口通过构造参数注入
