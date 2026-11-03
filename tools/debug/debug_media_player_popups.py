@@ -31,10 +31,10 @@
 运行
 ----
 Windows:
-    venv\\Scripts\\python tests\\debug_media_player_popups.py
+    venv\\Scripts\\python tools\\debug\\debug_media_player_popups.py
 
 Linux / macOS:
-    venv/bin/python tests/debug_media_player_popups.py
+    venv/bin/python tools/debug/debug_media_player_popups.py
 
 环境变量：
     OMNIBOX_HEADLESS=1      用无头 Chrome（默认 0：带界面真实窗口，便于肉眼复核）
@@ -50,12 +50,12 @@ import sys
 import time
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # 复用回归用例里的浏览器探测与端口 / 健康检查（同一套 OMNIBOX_* 环境变量）与桩数据
-from tests.test_media_player_browser_e2e import (
+from tests.test_media_player_browser_e2e import (  # noqa: E402
     STARTUP_TIMEOUT,
     STUB_SCRIPT,
     _chrome_binary,
@@ -108,7 +108,8 @@ def _panels(driver) -> dict:
 def _visible(panels: dict, key: str) -> str:
     """把面板状态压成一行可读判据：打开 / 未打开 / 不存在。"""
     value = panels.get(key)
-    if value == 'absent':
+    # 取不到该键、或脚本对它返回 'absent' 时，面板根本不在 DOM 里
+    if not isinstance(value, dict):
         return '不存在'
     if value['display'] == 'none':
         return '未打开'
@@ -174,8 +175,8 @@ def _real_click(driver, x: float, y: float) -> None:
     用 W3C 指针动作按视口坐标点击（`move_to_element_with_offset` 的偏移基准是元素中心，
     x/y 直接传视口坐标会越界），失败时退回合成事件并在日志里标注。
     """
-    from selenium.webdriver.common.actions.action_builder import ActionBuilder
-    from selenium.webdriver.common.actions.pointer_input import PointerInput
+    from selenium.webdriver.common.actions.action_builder import ActionBuilder  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.common.actions.pointer_input import PointerInput  # pyright: ignore[reportMissingImports]
     pointer = PointerInput('mouse', 'probe')
     builder = ActionBuilder(driver, mouse=pointer)
     builder.pointer_action.move_to_location(int(x), int(y)).click()
@@ -235,8 +236,8 @@ def _icon_center_controls(driver) -> list:
 
 def _real_click_at_center(driver, button_id: str) -> str:
     """真实鼠标点控件中心（即命中图标字形），返回命中的元素描述。"""
-    from selenium.webdriver.common.actions.action_builder import ActionBuilder
-    from selenium.webdriver.common.actions.pointer_input import PointerInput
+    from selenium.webdriver.common.actions.action_builder import ActionBuilder  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.common.actions.pointer_input import PointerInput  # pyright: ignore[reportMissingImports]
     x, y = driver.execute_script("""
         const rect = document.getElementById(arguments[0]).getBoundingClientRect();
         return [rect.left + rect.width / 2, rect.top + rect.height / 2];
@@ -360,14 +361,14 @@ def main() -> int:
         _log('未检测到 Chrome/Edge：可用 OMNIBOX_CHROME_BINARY 指定可执行文件路径')
         return 2
     try:
-        import selenium  # noqa: F401
+        import selenium  # noqa: F401  # pyright: ignore[reportMissingImports]
     except Exception:
         _log('未安装 selenium：先执行 venv\\Scripts\\pip install -r requirements-e2e.txt')
         return 2
 
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
-    from selenium.webdriver.chrome.service import Service
+    from selenium import webdriver  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.chrome.options import Options  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.chrome.service import Service  # pyright: ignore[reportMissingImports]
 
     headless = os.environ.get('OMNIBOX_HEADLESS', '0') not in ('', '0', 'false', 'False')
     port = _free_port()
@@ -470,6 +471,9 @@ def main() -> int:
         _log('')
         _log('—— 均衡器按钮：四种点击方式 ——')
         _watch_document_clicks(driver)
+        # 第一种方式（js-button）的结果作为基准，后面三种与它比；显式给初值，
+        # 免得读代码的人以为循环顺序可以随意调整。
+        baseline = None
         for mode in ('js-button', 'js-svg', 'mouse-svg', 'mouse-edge'):
             result = _probe(driver, 'btn-eq', 'btn-eq', 'eq-panel', mode)
             if mode == 'js-button':
@@ -540,8 +544,8 @@ def main() -> int:
             _view(f'点 .pl-name（含图标）第 {index + 1} 行')
 
         _log('  连续真实鼠标点同一行 5 次：')
-        from selenium.webdriver.common.actions.action_builder import ActionBuilder
-        from selenium.webdriver.common.actions.pointer_input import PointerInput
+        from selenium.webdriver.common.actions.action_builder import ActionBuilder  # pyright: ignore[reportMissingImports]
+        from selenium.webdriver.common.actions.pointer_input import PointerInput  # pyright: ignore[reportMissingImports]
         for attempt in range(5):
             x, y = driver.execute_script("""
                 const row = document.querySelectorAll('.mp-playlist-item')[0];

@@ -21,7 +21,7 @@
 运行
 ----
     venv\\Scripts\\pip install -r requirements-e2e.txt        # 只需一次
-    venv\\Scripts\\python tests\\debug_materialized_gallery.py
+    venv\\Scripts\\python tools\\debug\\debug_materialized_gallery.py
 
 可选环境变量
 ------------
@@ -48,12 +48,12 @@ import time
 import urllib.parse
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from tests.harness.app_instance import MeshCluster, boot_prerequisites
-from tests.test_media_player_browser_e2e import (
+from tests.harness.app_instance import MeshCluster, boot_prerequisites  # noqa: E402
+from tests.test_media_player_browser_e2e import (  # noqa: E402
     _chrome_binary,
     _chromedriver_path,
 )
@@ -86,8 +86,13 @@ def _force_utf8_stdout() -> None:
     某个字符打不出来也只显示成 `?`，不会中断。
     """
     for stream in (sys.stdout, sys.stderr):
+        # 静态类型里 sys.stdout 是 TextIO，没有 reconfigure；运行期它是 TextIOWrapper，
+        # 所以按"有没有这个方法"取，而不是给它补类型断言。
+        reconfigure = getattr(stream, 'reconfigure', None)
+        if not callable(reconfigure):
+            continue
         try:
-            stream.reconfigure(encoding='utf-8', errors='replace')
+            reconfigure(encoding='utf-8', errors='replace')
         except Exception:
             pass
 
@@ -158,7 +163,7 @@ def enter_plugin(driver, nav_label: str, plugin_name: str):
     访问的那个。实测踩到：切到「图片相册」之后仍在「团体组网」的文档里找元素 ——
     等满 25 秒超时，而截图里页面明明是对的（截图抓的是 OS 窗口，不受 frame 上下文影响）。
     """
-    from selenium.webdriver.common.by import By
+    from selenium.webdriver.common.by import By  # pyright: ignore[reportMissingImports]
 
     driver.switch_to.default_content()
     nav = next((e for e in driver.find_elements(By.CSS_SELECTOR, '.nav-item')
@@ -236,7 +241,7 @@ def lightbox_state(driver) -> str:
 
 def close_lightbox(driver) -> None:
     """点灯箱右上角的关闭按钮（壳的通用 Lightbox，见 shell/frontend/public/shell/base.js）。"""
-    from selenium.webdriver.common.by import By
+    from selenium.webdriver.common.by import By  # pyright: ignore[reportMissingImports]
 
     close = next((e for e in driver.find_elements(By.CSS_SELECTOR, '.lightbox-close')
                   if e.is_displayed()), None)
@@ -319,10 +324,10 @@ def main() -> int:
     namespace = f'__{entry["namespace"]}'
     say(f'「图片相册」的额外目录已登记，虚拟路径前缀 = {namespace}')
 
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
-    from selenium.webdriver.chrome.service import Service
-    from selenium.webdriver.common.by import By
+    from selenium import webdriver  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.chrome.options import Options  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.chrome.service import Service  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.common.by import By  # pyright: ignore[reportMissingImports]
 
     driver_path = _chromedriver_path()
 

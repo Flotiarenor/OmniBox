@@ -8,7 +8,7 @@
   · 交错动画的 --obx-i 是否真的写到了卡片上（否则 .obx-stagger 等于没接）。
 
 用法：
-    venv/Scripts/python.exe tests/debug_group_mesh_ui.py
+    venv/Scripts/python.exe tools/debug/debug_group_mesh_ui.py
 失败时打印断言名与非零退出码。
 """
 from __future__ import annotations
@@ -17,12 +17,12 @@ import json
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / 'tests'))
 
-from selenium import webdriver
-from test_group_mesh_frontend_e2e import (
+from selenium import webdriver  # noqa: E402  # pyright: ignore[reportMissingImports]
+from test_group_mesh_frontend_e2e import (  # noqa: E402  # pyright: ignore[reportMissingImports]
     JOINED_STATUS,
     STUB,
     shell_injection,

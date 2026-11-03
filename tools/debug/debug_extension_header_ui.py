@@ -12,7 +12,7 @@
 按钮的字号 / 内边距 / 高度 / 渲染方式 / 图标尺寸 / 图标与文字间距 / 按钮间隙。
 头部不再自带「返回相册」，因此头部里的按钮必须全部是插件挂上来的（`.obx-host-action`）。
 
-用法：venv/Scripts/python.exe tests/debug_extension_header_ui.py
+用法：venv/Scripts/python.exe tools/debug/debug_extension_header_ui.py
 缺少 selenium 或 Chrome 时跳过（退出码 0）；Chrome 定位统一走
 `tests/harness/browser_binary.py`（本机只有 Edge 时不能喂给 `webdriver.Chrome`）。
 """
@@ -21,7 +21,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -151,8 +151,8 @@ setTimeout(function () {
 
 def main() -> int:
     try:
-        from selenium import webdriver
-        from selenium.webdriver.chrome.options import Options
+        from selenium import webdriver  # pyright: ignore[reportMissingImports]
+        from selenium.webdriver.chrome.options import Options  # pyright: ignore[reportMissingImports]
     except ImportError:
         print('未安装 selenium，跳过')
         return 0

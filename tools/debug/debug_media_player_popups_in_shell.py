@@ -1,6 +1,6 @@
 """媒体播放器「均衡器 / 队列 / 歌单菜单」修复后的壳内复核脚本（手动运行，不是 unittest 用例）。
 
-与 tests/debug_media_player_popups.py 的区别：本脚本不注入桩，走的是
+与 tools/debug/debug_media_player_popups.py 的区别：本脚本不注入桩，走的是
 **真实壳页面 → 真实插件 iframe → 真实媒体库**，即用户实际看到的那条加载路径。
 桩脚本直接打开插件页（顶层文档），position:fixed 的弹出面板参照的是插件页视口；
 壳内插件页在 iframe 里，面板参照的是 iframe 视口 —— 命中测试的坐标系不同，
@@ -16,7 +16,7 @@
 运行
 ----
 Windows:
-    venv\\Scripts\\python tests\\debug_media_player_popups_in_shell.py
+    venv\\Scripts\\python tools\\debug\\debug_media_player_popups_in_shell.py
 
 环境变量：
     OMNIBOX_HEADLESS=1     用无头 Chrome（默认 0：带界面，便于肉眼复核）
@@ -32,11 +32,11 @@ import sys
 import time
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from tests.test_media_player_browser_e2e import (
+from tests.test_media_player_browser_e2e import (  # noqa: E402
     STARTUP_TIMEOUT,
     _chrome_binary,
     _chromedriver_path,
@@ -113,14 +113,14 @@ def main() -> int:
         _log('未检测到 Chrome/Edge：可用 OMNIBOX_CHROME_BINARY 指定可执行文件路径')
         return 2
     try:
-        import selenium  # noqa: F401
+        import selenium  # noqa: F401  # pyright: ignore[reportMissingImports]
     except Exception:
         _log('未安装 selenium：先执行 venv\\Scripts\\pip install -r requirements-e2e.txt')
         return 2
 
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
-    from selenium.webdriver.chrome.service import Service
+    from selenium import webdriver  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.chrome.options import Options  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.chrome.service import Service  # pyright: ignore[reportMissingImports]
 
     headless = os.environ.get('OMNIBOX_HEADLESS', '0') not in ('', '0', 'false', 'False')
     port = _free_port()
@@ -216,7 +216,7 @@ def main() -> int:
         _log(f'  插件页视口={loaded["viewport"]}')
         if not loaded['knowPanelButton']:
             _log('  ! 运行中的 app-ui-events.js 没有 _isClickInside：本脚本针对修复后的版本，'
-                 '旧版本请改用 tests/debug_media_player_popups.py')
+                 '旧版本请改用 tools/debug/debug_media_player_popups.py')
             return 2
         if loaded['svgBox'] == [0, 0]:
             _log('  ! 图标未渲染（svg 盒为 0×0）：壳内 sprite 没进文档，'

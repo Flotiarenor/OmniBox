@@ -21,7 +21,7 @@
 
 运行
 ----
-    venv\\Scripts\\python tests\\debug_network_location.py
+    venv\\Scripts\\python tools\\debug\\debug_network_location.py
 
 可选环境变量：OMNIBOX_DEMO_PAUSE（每步停顿秒数，默认 2.5）、OMNIBOX_DEMO_HOLD
 （结束后保持浏览器打开秒数，默认 300）、OMNIBOX_DEMO_OUT（截图目录）。
@@ -36,11 +36,13 @@ import tempfile
 import time
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from tests.debug_materialized_gallery import (
+from tests.harness.app_instance import MeshCluster, boot_prerequisites  # noqa: E402
+from tests.test_media_player_browser_e2e import _chrome_binary, _chromedriver_path  # noqa: E402
+from tools.debug.debug_materialized_gallery import (  # noqa: E402
     HOLD,
     PAUSE,
     _force_utf8_stdout,
@@ -51,8 +53,6 @@ from tests.debug_materialized_gallery import (
     shoot,
     wait_for,
 )
-from tests.harness.app_instance import MeshCluster, boot_prerequisites
-from tests.test_media_player_browser_e2e import _chrome_binary, _chromedriver_path
 
 # 四张不同长宽比：宽高正确时是正常的 justified 瀑布流（这是"字节真的到本地了"的肉眼证据）
 PHOTOS = {
@@ -111,10 +111,10 @@ def main() -> int:
     mirror_dir.mkdir(parents=True, exist_ok=True)
     say(f'本次的落地目录（用户自己选的，在图片库里）：{mirror_dir}')
 
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
-    from selenium.webdriver.chrome.service import Service
-    from selenium.webdriver.common.by import By
+    from selenium import webdriver  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.chrome.options import Options  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.chrome.service import Service  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.common.by import By  # pyright: ignore[reportMissingImports]
 
     options = Options()
     options.binary_location = binary

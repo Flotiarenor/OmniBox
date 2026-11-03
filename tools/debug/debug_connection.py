@@ -22,7 +22,7 @@
 运行
 ----
     venv\\Scripts\\pip install -r requirements-e2e.txt        # 只需一次
-    venv\\Scripts\\python tests\\debug_connection.py
+    venv\\Scripts\\python tools\\debug\\debug_connection.py
 
 可选环境变量
 ------------
@@ -52,7 +52,7 @@ import tempfile
 import time
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -62,7 +62,9 @@ _VENV_SCRIPTS = PROJECT_ROOT / 'venv' / 'Scripts'
 if _VENV_SCRIPTS.is_dir():
     os.environ['PATH'] = str(_VENV_SCRIPTS) + os.pathsep + os.environ.get('PATH', '')
 
-from tests.debug_materialized_gallery import (
+from tests.harness.app_instance import MeshCluster, boot_prerequisites  # noqa: E402
+from tests.test_media_player_browser_e2e import _chrome_binary, _chromedriver_path  # noqa: E402
+from tools.debug.debug_materialized_gallery import (  # noqa: E402
     HOLD,
     _force_utf8_stdout,
     click,
@@ -72,8 +74,6 @@ from tests.debug_materialized_gallery import (
     shoot,
     wait_for,
 )
-from tests.harness.app_instance import MeshCluster, boot_prerequisites
-from tests.test_media_player_browser_e2e import _chrome_binary, _chromedriver_path
 
 SHARE_ID = 'handover'
 # 三份共享内容：中文名 + 子目录 + 纯 ASCII。字节是随机的，用于 sha256 对比。
@@ -138,7 +138,7 @@ def watch_upload(driver, seconds: float) -> str:
     为什么要采样而不是点完截一帧：1 MB 级文件走回环不到 1 秒就传完，肉眼与截图都可能
     只看到最后一帧；采样能把中间帧留在终端里，作为进度回传生效的证据。
     """
-    from selenium.webdriver.common.by import By
+    from selenium.webdriver.common.by import By  # pyright: ignore[reportMissingImports]
 
     script = ("const b = document.getElementById('upload-progress');"
               "return b ? (b.textContent || '') : '';")
@@ -198,7 +198,7 @@ def select_panel(driver, name: str) -> None:
     等内容非空是因为 `enter_plugin()` 的等待条件（`.nav-item` 数量 > 0，见
     `debug_materialized_gallery.py`）命中的是**壳首页**的元素，插件首屏此时可能还是空的。
     """
-    from selenium.webdriver.common.by import By
+    from selenium.webdriver.common.by import By  # pyright: ignore[reportMissingImports]
 
     if not wait_for(driver, lambda: len(driver.find_elements(
             By.CSS_SELECTOR, f'#gm-nav .gm-nav-item[data-panel="{name}"]')) > 0):
@@ -264,10 +264,10 @@ def main() -> int:
     upload_source.write_bytes(_random_bytes(UPLOAD_BYTES))
     say(f'待上传文件：{upload_source}（{UPLOAD_BYTES // 1024} KB）')
 
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
-    from selenium.webdriver.chrome.service import Service
-    from selenium.webdriver.common.by import By
+    from selenium import webdriver  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.chrome.options import Options  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.chrome.service import Service  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.common.by import By  # pyright: ignore[reportMissingImports]
 
     # 驱动优先用本仓库内配好的那份：都留给 Selenium Manager 的话，它要联网解析/下载，
     # 在国内网络下实测会长时间没有输出（看起来像卡死），而脚本此时一个字符都还没打。

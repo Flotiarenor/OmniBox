@@ -13,7 +13,7 @@
 
 运行
 ----
-    venv\\Scripts\\python tests\\debug_media_player_panel_overlap.py
+    venv\\Scripts\\python tools\\debug\\debug_media_player_panel_overlap.py
 
 环境变量：
     OMNIBOX_HEADLESS=1                             用无头 Chrome（默认 0）
@@ -29,11 +29,11 @@ import sys
 import time
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from tests.test_media_player_browser_e2e import (
+from tests.test_media_player_browser_e2e import (  # noqa: E402
     STARTUP_TIMEOUT,
     STUB_SCRIPT,
     _chrome_binary,
@@ -101,14 +101,14 @@ def main() -> int:
         _log('未检测到 Chrome/Edge：可用 OMNIBOX_CHROME_BINARY 指定可执行文件路径')
         return 2
     try:
-        import selenium  # noqa: F401
+        import selenium  # noqa: F401  # pyright: ignore[reportMissingImports]
     except Exception:
         _log('未安装 selenium：先执行 venv\\Scripts\\pip install -r requirements-e2e.txt')
         return 2
 
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
-    from selenium.webdriver.chrome.service import Service
+    from selenium import webdriver  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.chrome.options import Options  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.chrome.service import Service  # pyright: ignore[reportMissingImports]
 
     headless = os.environ.get('OMNIBOX_HEADLESS', '0') not in ('', '0', 'false', 'False')
     port = _free_port()

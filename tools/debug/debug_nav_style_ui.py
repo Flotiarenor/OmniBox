@@ -16,7 +16,7 @@ CSS 会被 CORS 挡掉，只能把 CSS 内联进 `<style>`，而内联后样式�
 也就没有这个不确定性。
 
 用法（需要本机有 Chrome/Edge，约 10 秒）：
-    venv/Scripts/python.exe tests/debug_nav_style_ui.py
+    venv/Scripts/python.exe tools/debug/debug_nav_style_ui.py
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ import sys
 import time
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -207,7 +207,7 @@ def _wait_health(base_url: str, timeout: float = 40.0) -> bool:
 
 
 def main() -> int:
-    from selenium import webdriver
+    from selenium import webdriver  # pyright: ignore[reportMissingImports]
 
     port = _free_port()
     base_url = f'http://127.0.0.1:{port}'

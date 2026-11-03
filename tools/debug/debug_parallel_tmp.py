@@ -1,4 +1,4 @@
-"""pixiv-sync 手工联调脚本（不是 unittest；仅 `python tests/debug_parallel_tmp.py` 时执行）。
+"""pixiv-sync 手工联调脚本（不是 unittest；仅 `python tools/debug/debug_parallel_tmp.py` 时执行）。
 
 需要环境变量 PIXIV_REFRESH_TOKEN。v0.3 起不再有 download_original /
 multi_page_subfolder 开关。
@@ -9,8 +9,9 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Any, cast
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 
@@ -26,7 +27,9 @@ def main() -> None:
         config={"directories": {"data_root": str(tmp / "data")}},
     )
     mgr.load_all()
-    inst = mgr.get_plugin_instance("pixiv-sync")
+    # sync_following / get_status / cancel_task 是 pixiv-sync 自己的方法，不在 PluginBase
+    # 的契约里；这里按本脚本用到的形状取，免得为一次手工联调给产品代码加类型。
+    inst = cast(Any, mgr.get_plugin_instance("pixiv-sync"))
     inst.save_settings({
         "refresh_token": os.environ["PIXIV_REFRESH_TOKEN"],
         "proxy": "http://127.0.0.1:7890",

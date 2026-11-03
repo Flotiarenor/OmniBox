@@ -14,7 +14,7 @@
 
 用法（需要本机有 Chrome，约 15 秒）
 ----------------------------------
-    venv/Scripts/python.exe tests/debug_shell_icons_ui.py
+    venv/Scripts/python.exe tools/debug/debug_shell_icons_ui.py
 
 注意：本用例用 Chrome 跑。**Chrome 通过不代表窗口通过** —— 外部引用的那条缺陷恰恰
 Chrome 测不出来，所以脚本会显式断言"引用必须是同文档的 `#名字`"与"图形包围盒非零"，
@@ -30,7 +30,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -114,8 +114,8 @@ def free_port() -> int:
 
 
 def main() -> int:
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
+    from selenium import webdriver  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.chrome.options import Options  # pyright: ignore[reportMissingImports]
 
     port = free_port()
     base = f'http://127.0.0.1:{port}'

@@ -13,7 +13,7 @@ image-viewer / manga-library / media-player 的插件弹窗）改用 `pointerdow
 避免"CDP 序列其实没触发 click"时其余用例空过。
 
 用法：
-    venv/Scripts/python.exe tests/debug_modal_backdrop_press.py
+    venv/Scripts/python.exe tools/debug/debug_modal_backdrop_press.py
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -67,7 +67,7 @@ def _wait_for(predicate, timeout: float = 20.0) -> bool:
 
 
 def main() -> int:
-    from selenium import webdriver
+    from selenium import webdriver  # pyright: ignore[reportMissingImports]
 
     port = _free_port()
     base_url = f'http://127.0.0.1:{port}'

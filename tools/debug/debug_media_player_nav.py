@@ -20,11 +20,11 @@
 ----
 Windows:
     venv\\Scripts\\pip install -r requirements-e2e.txt
-    venv\\Scripts\\python tests\\debug_media_player_nav.py
+    venv\\Scripts\\python tools\\debug\\debug_media_player_nav.py
 
 Linux / macOS:
     venv/bin/pip install -r requirements-e2e.txt
-    venv/bin/python tests/debug_media_player_nav.py
+    venv/bin/python tools/debug/debug_media_player_nav.py
 
 可选环境变量：
     OMNIBOX_CHROME_BINARY / OMNIBOX_CHROMEDRIVER  指定 Chrome / chromedriver 路径
@@ -44,12 +44,12 @@ import sys
 import time
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # 复用回归用例里的浏览器探测与端口/健康检查（同一套 OMNIBOX_* 环境变量）
-from tests.test_media_player_browser_e2e import (
+from tests.test_media_player_browser_e2e import (  # noqa: E402
     STARTUP_TIMEOUT,
     _chrome_binary,
     _chromedriver_path,
@@ -71,14 +71,14 @@ def main() -> int:
         _log('未检测到 Chrome/Edge：可用 OMNIBOX_CHROME_BINARY 指定可执行文件路径')
         return 2
     try:
-        import selenium  # noqa: F401
+        import selenium  # noqa: F401  # pyright: ignore[reportMissingImports]
     except Exception:
         _log('未安装 selenium：先执行 venv\\Scripts\\pip install -r requirements-e2e.txt')
         return 2
 
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
-    from selenium.webdriver.chrome.service import Service
+    from selenium import webdriver  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.chrome.options import Options  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.chrome.service import Service  # pyright: ignore[reportMissingImports]
 
     port = _free_port()
     base = f'http://127.0.0.1:{port}'
@@ -228,7 +228,7 @@ def _wait(driver, script: str, message: str, timeout: float = 30.0):
 
 
 def _wait_iframe(driver, timeout: float = 30.0):
-    from selenium.common.exceptions import NoSuchElementException
+    from selenium.common.exceptions import NoSuchElementException  # pyright: ignore[reportMissingImports]
 
     start = time.time()
     while time.time() - start < timeout:

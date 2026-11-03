@@ -2,7 +2,7 @@
 """触发并展示 OmniBox 各类 HTTP 状态页 / 应用内错误区域，便于调试。
 
 用法:
-    python tests/debug_status_pages.py [--port 18089] [--no-open]
+    python tools/debug/debug_status_pages.py [--port 18089] [--no-open]
 
 行为:
     1. 创建临时「坏插件」(backend 正常、frontend 缺失 → 404)，
@@ -25,7 +25,7 @@ import time
 import webbrowser
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 BAD_PLUGIN_NAME = 'debug-bad-plugin'

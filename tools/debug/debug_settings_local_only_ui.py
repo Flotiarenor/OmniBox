@@ -9,7 +9,7 @@
 同时断言别的字段（媒体文件夹那种）**仍然有**，避免"改错方向"也算通过。
 
 用法：
-    venv/Scripts/python.exe tests/debug_settings_local_only_ui.py
+    venv/Scripts/python.exe tools/debug/debug_settings_local_only_ui.py
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -87,7 +87,7 @@ def open_plugin_settings(driver, plugin: str, nav_label: str) -> bool:
     结果读到的还是上一个插件的设置（本文件第一版就这样把 media-player 的对照用例
     跑成了 group-mesh 的 schema）。
     """
-    from selenium.webdriver.common.by import By
+    from selenium.webdriver.common.by import By  # pyright: ignore[reportMissingImports]
     driver.switch_to.default_content()
     nav = next((e for e in driver.find_elements(By.CSS_SELECTOR, '.nav-item')
                 if nav_label in e.text), None)
@@ -108,7 +108,7 @@ def open_plugin_settings(driver, plugin: str, nav_label: str) -> bool:
 
 
 def main() -> int:
-    from selenium import webdriver
+    from selenium import webdriver  # pyright: ignore[reportMissingImports]
 
     port = _free_port()
     base_url = f'http://127.0.0.1:{port}'

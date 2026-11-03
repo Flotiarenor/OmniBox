@@ -1,13 +1,13 @@
 """media-player 后台扫描任务冒烟测试：启动 → 进度 → 完成 → 断点恢复 → 封面。
 
-手工脚本（不是 unittest；`unittest discover` 不会执行它）。命名按仓库约定放在
-`tests/debug_*.py`。
+手工脚本（不是 unittest；`unittest discover` 不会执行它）。手工脚本统一放在
+`tools/debug/`，与 `tests/` 里被收集的用例分开。
 
 当前操作的后端组件：`plugin.freshness`（同步 / 校验 / 状态 / 取消）、`plugin.library`
 （条目与专辑查询、统计）、`plugin.covers`（封面字节、抽帧回写、缺失判定、孤儿清理）、
 `plugin.index`（条目快照）。
 
-运行：venv\Scripts\python.exe tests\debug_media_scan_task.py
+运行：venv\\Scripts\\python.exe tools\\debug\\debug_media_scan_task.py
 """
 
 import shutil
@@ -16,12 +16,12 @@ import tempfile
 import time
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import importlib.util
+import importlib.util  # noqa: E402
 
-from shell.backend.freshness import engine_for
+from shell.backend.freshness import engine_for  # noqa: E402
 
 # 测试数据放工作区内（沙箱/CI 下系统临时目录可能不可写）
 _TMP_BASE = PROJECT_ROOT / '.build' / 'mp-scan-test'

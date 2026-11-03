@@ -10,7 +10,7 @@
 当前操作的后端组件：`plugin.state`（用户状态文件的读写、锁与改名重试）、
 `plugin.paths`（状态文件落点）。
 
-用法：python tests/debug_media_player_state_race.py
+用法：python tools/debug/debug_media_player_state_race.py
 """
 
 import importlib.util
@@ -22,11 +22,11 @@ import threading
 import time
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from shell.backend.settings_store import SettingsStore
+from shell.backend.settings_store import SettingsStore  # noqa: E402
 
 PLUGIN_PATH = PROJECT_ROOT / 'plugins' / 'media-player' / 'backend' / 'main.py'
 

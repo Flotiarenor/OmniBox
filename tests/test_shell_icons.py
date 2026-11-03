@@ -12,7 +12,7 @@
 3. 模板里引用了没冻结的图标名时，`<use>` 指向不存在的 id，结果是**一片空白且无报错**。
 
 所以这里钉住两件事：源数据与 sprite 同步、引用全部有源。
-（真实浏览器里的渲染验证见 tests/debug_shell_icons_ui.py。）
+（真实浏览器里的渲染验证见 tools/debug/debug_shell_icons_ui.py。）
 """
 from __future__ import annotations
 
@@ -160,7 +160,7 @@ class IconStyleTests(unittest.TestCase):
 
         外部文件的 `<use>` 在 pywebview 的 WebView2 里**不渲染**（实测包围盒恒为 0），
         而 Chrome 会渲染 —— 写成外部路径就会"浏览器正常、窗口全空"，且 DOM 与控制台
-        都干净。这条用例是那个缺陷的静态守卫（真渲染守卫见 debug_shell_icons_ui.py）。
+        都干净。这条用例是那个缺陷的静态守卫（真渲染守卫见 tools/debug/debug_shell_icons_ui.py）。
         """
         source = ICON_COMPONENT.read_text(encoding='utf-8')
         self.assertIn('`#${symbolId.value}`', source)
