@@ -8,182 +8,61 @@
     可通过「重试失败作品」按钮一键清除并自动重新同步一次
   - 断点：任务状态每张一写 <root>/.cache/pixiv-sync/tasks.json，重启后恢复 paused
 
-实现已拆分到 backend/pixiv_sync/（limiter/tasks/store/db/artist/scan/download/oauth）。
-本文件只保留插件类：设置、线程编排、API 挂载与宿主交互。
+本文件只做四件事：声明插件对壳暴露什么（设置 schema、扩展入口）、把组件装配起来、
+把壳按名调用的钩子一行委派给组件、保留既有模块与用例按实例取用的成员。业务逻辑在
+backend/pixiv_sync/ 的组件里（门禁把入口的行数上限钉在 250 行）。
+
+加载语义：manifest.libs 已把 backend 与 backend/libs 放进 sys.path，因此这里用真包
+import 取组件（本仓库另一套约定是 load_sibling 的兄弟模块加载）。保持真包 import 的
+理由：pixiv_sync 是有 __init__.py 的包，vendored 依赖 pixiv_mini 在其 libs 子目录；
+改成分片加载要把整个包拍平、改写全部模块签名与既有用例，收益只是统一一处加载约定，
+而 pyright 对 libs 的覆盖已经通过类型检查范围达成。
 """
 
-import logging
-import os
-import subprocess
-import sys
 import threading
-import time
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Set
 
-from pixiv_mini import PixivClient, PixivError
-from pixiv_sync import download, oauth, scan, store, tasks
-from pixiv_sync.db import WorksDB
-from pixiv_sync.limiter import RateLimiter, RateLimitError
+from pixiv_mini import PixivClient
+from pixiv_sync import const, oauth
+from pixiv_sync.library import LocalLibrary
+from pixiv_sync.limits import SettingsLimits
+from pixiv_sync.maintenance import Maintenance
+from pixiv_sync.paths import CachePaths
+from pixiv_sync.records import IdRecords
+from pixiv_sync.runner import SyncRunner
+from pixiv_sync.selection import ArtistSelection
+from pixiv_sync.session import PixivSession
+from pixiv_sync.status import StatusReport
+from pixiv_sync.workspace import TaskWorkspace
 
-from shell.backend.freshness import engine_for
+from shell.backend.freshness import FreshnessEngine, engine_for
 from shell.backend.plugin_base import PluginBase
-
-log = logging.getLogger(__name__)
-
-CACHE_SUBDIR = Path(".cache") / "pixiv-sync"
 
 
 class PixivSyncPlugin(PluginBase):
-    settings_schema: ClassVar[List[Dict[str, Any]]] = [
-        {
-            "key": "refresh_token",
-            "label": "Pixiv Refresh Token",
-            "section": "credentials",
-            "sectionTitle": "账号凭据",
-            "sectionDescription": "账号级长期凭据；也可用顶栏「获取 Token」走内置 OAuth。",
-            "sectionOrder": 10,
-            "order": 10,
-            "type": "text",
-            # 申请 Shell 文件防护：本插件的设置文件（<config>/plugins/pixiv-sync.json）
-            # 会被 /file、/files、/thumbs 无条件拒绝。refresh_token 是账号级长期凭据
-            # （可无限换取 access_token 且自动轮换），而插件文件根由设置改写，
-            # 默认数据根与配置目录是兄弟目录 —— 没有这条申报，一次同源脚本执行
-            # 就能把凭据读走。见 PluginBase.get_protected_paths。
-            "secret": True,
-            "placeholder": "粘贴 refresh_token（非 access_token）",
-            "help": "获取: gppt (github.com/eggplants/get-pixivpy-token) 或插件内 OAuth 向导",
-        },
-        {
-            "key": "proxy",
-            "label": "HTTP 代理",
-            "section": "network",
-            "sectionTitle": "网络",
-            "sectionDescription": "中国大陆访问 pixiv 通常需要代理；请求速率与并行拉取也在本组。",
-            "sectionOrder": 20,
-            "order": 10,
-            "type": "text",
-            "placeholder": "http://127.0.0.1:7890",
-            "help": "中国大陆访问 pixiv 需要代理；留空 = 直连",
-        },
-        {
-            "key": "download_dir",
-            "label": "下载目录",
-            "section": "download",
-            "sectionTitle": "下载",
-            "sectionDescription": "下载落点与并发；目录改动需要管理员。",
-            "sectionOrder": 30,
-            "order": 10,
-            # directory 类型由壳的共享组件 folder-picker 渲染（单值字段取首行路径，
-            # 见 base.js 的 createSettingsForm）；原先声明成 text 时用户只能手打路径
-            "type": "directory",
-            # 它决定插件的落盘根（`_root()`），也就决定 /file 的允许根之一：
-            # 改写它等于让下载内容落到任意目录、并把该目录对界面开放。
-            "admin_only": True,
-            "placeholder": "默认: image-viewer 数据根目录",
-            "help": "留空 = 写入 image-viewer 相册根目录，下载后自动出现在相册（改动需管理员）",
-        },
-        # 注：原图下载与多图子文件夹为固定行为（默认开启），不提供设置开关；
-        #     如需调整请直接改 backend/pixiv_sync/download.py 中 all_image_urls 的
-        #     want_original 与 process_illust 的 subfolder 判定。
-        {
-            "key": "workers",
-            "label": "并发下载数",
-            "section": "download",
-            "sectionTitle": "下载",
-            "sectionDescription": "下载落点与并发；目录改动需要管理员。",
-            "sectionOrder": 30,
-            "order": 20,
-            "type": "number",
-            "default": 4,
-            "min": 1,
-            "max": 8,
-            "help": "同时下载的画师/作品数；机械盘建议 1-2，SSD 可 4-8",
-        },
-        {
-            "key": "max_download",
-            "label": "单次同步上限（条）",
-            "section": "limits",
-            "sectionTitle": "扫描与上限",
-            "sectionDescription": "单次同步与全量扫描的数量上限；0 = 不限。",
-            "sectionOrder": 40,
-            "order": 10,
-            "type": "number",
-            "default": 100,
-            "min": 0,
-            "max": 10000,
-            "help": "每次「同步画师/同步喜欢」最多下载的作品数；0 = 不限。想分批下载可设小值，下完再点同步继续",
-        },
-        {
-            "key": "max_artists",
-            "label": "单次全量扫描画师数上限",
-            "section": "limits",
-            "sectionTitle": "扫描与上限",
-            "sectionDescription": "单次同步与全量扫描的数量上限；0 = 不限。",
-            "sectionOrder": 40,
-            "order": 20,
-            "type": "number",
-            "default": 30,
-            "min": 0,
-            "max": 500,
-            "help": "每次同步最多「全量扫描」（首次入库/新关注画师拉全部历史）的画师数；仅需增量更新的画师不受此限制、会一次扫完。实测约 30 个全量画师可能触发 429，建议保持默认。0 = 不限（有 429 风险）",
-        },
-        {
-            "key": "rate_limit",
-            "label": "API 请求速率（次/秒）",
-            "section": "network",
-            "sectionTitle": "网络",
-            "sectionDescription": "中国大陆访问 pixiv 通常需要代理；请求速率与并行拉取也在本组。",
-            "sectionOrder": 20,
-            "order": 20,
-            "type": "number",
-            "default": 3,
-            "min": 1,
-            "max": 10,
-            "help": "app-api 请求限速，间隔带随机抖动；pixiv 限流阈值约 3/s，调高有 429 风险",
-        },
-        {
-            "key": "scan_workers",
-            "label": "并行拉取画师数（滑动窗口）",
-            "section": "network",
-            "sectionTitle": "网络",
-            "sectionDescription": "中国大陆访问 pixiv 通常需要代理；请求速率与并行拉取也在本组。",
-            "sectionOrder": 20,
-            "order": 30,
-            "type": "number",
-            "default": 4,
-            "min": 1,
-            "max": 8,
-            "help": "刷新名单时同时拉取列表的画师数；总速率仍受 rate_limit 限制，此值只是滑动窗口大小",
-        },
-    ]
+    settings_schema: ClassVar[List[Dict[str, Any]]] = const.SETTINGS_SCHEMA
 
-    def __init__(self, manifest, config):
+    def __init__(self, manifest, config) -> None:
         super().__init__(manifest, config)
         self._host = None
-        self._pixiv_client: Optional[PixivClient] = None
-        self._lock = threading.Lock()          # 保护任务线程启动/取消
-        self._task_lock = threading.RLock()     # 保护计数 / ids / failed 集合 / 清单写（可重入）
-        try:
-            initial_rate = float(self.setting("rate_limit", 3))
-        except (TypeError, ValueError):
-            initial_rate = 3.0
-        self._rate_limiter = RateLimiter(rate=initial_rate)  # app-api 请求限速
-        self._rate_limited_until: Optional[float] = None  # 429 后的冷却截止时间
-        self._task: Optional[Dict[str, Any]] = None
-        self._thread: Optional[threading.Thread] = None
-        self._cancel_flag = False
-        self._downloaded_ids: Optional[Set[int]] = None
-        self._failed_ids: Optional[Set[int]] = None
-        # 统一刷新基建：本趟看到的本地变化数（0 = 无需按指纹库重算 ids）
-        self._local_changed = 0
+        self._lock = threading.Lock()          # 保护任务线程启动/取消（OAuth 向导也读它）
+        self._task_lock = threading.RLock()    # 保护计数 / ids / failed 集合 / 清单写（可重入）
         self._oauth_verifier: Optional[str] = None
-        self._db_wrapper: Optional[WorksDB] = None
-        self._active_root: Optional[Path] = None      # 任务运行期间固定根目录
-        self._deferred_root_reset = False
-        self._deferred_client_reset = False
-        self._selected_cache: Optional[tuple] = None  # (mtime_ns, size, selected)
-        self._task = tasks.load_task(self._tasks_file())
+        # 装配顺序就是依赖顺序：先算根，再建"知道路径的读者"，最后建编排者。
+        self.paths = CachePaths(self, self._host_data_root)
+        self.session = PixivSession(self, self.update_setting)
+        self.records = IdRecords(self.paths)
+        self.limits = SettingsLimits(self)
+        self.workspace = TaskWorkspace(self.paths, self._task_lock)
+        self.library = LocalLibrary(self.paths, self.records, self.workspace.db,
+                                    self._engine, self._task_lock, const.FRESHNESS_INCLUDE)
+        self.selection = ArtistSelection(self.paths)
+        self.runner = SyncRunner(self, self.records, self.session, self.workspace,
+                                 self.library, self.selection, self._lock, self._task_lock)
+        self.maintenance = Maintenance(self.records, self.library, self.runner, self._engine)
+        self.status = StatusReport(self.paths, self.records, self.selection, self.session,
+                                   self.runner, self.workspace, self.library, self)
 
     # ---------- 宿主访问 ----------
 
@@ -194,158 +73,84 @@ class PixivSyncPlugin(PluginBase):
                 raise RuntimeError("pixiv-sync 需要 image-viewer 插件已加载并声明依赖")
         return self._host
 
+    def _host_data_root(self) -> Path:
+        """未配置下载目录时的落点：宿主相册根目录。"""
+        return Path(self._get_host().get_data_root())
+
+    def _engine(self) -> Optional[FreshnessEngine]:
+        """统一刷新引擎（按需创建并缓存在本实例上）。"""
+        return engine_for(self)
+
+    # ---------- 既有模块与用例按实例取用的成员：短委派，名字不变 ----------
+    # scan / download / oauth 的模块函数以插件实例为操作数（迁移前就是这份契约），
+    # 用例也直接调用其中几个。改名或删掉等于静默失效：调用方一旦带 getattr 兜底，
+    # 漏了不报错，只是某个功能退化成空。
+
     def _root(self) -> Path:
-        """下载根目录：用户自定义 download_dir，否则用宿主相册根目录。
-
-        任务运行期间返回 `_active_root`，避免任务中途修改下载目录导致
-        SQLite/去重记录/下载目录指向两个不同的根。
-        """
-        if self._active_root is not None:
-            return self._active_root
-        d = (self.setting("download_dir") or "").strip()
-        if d:
-            return Path(d).expanduser().resolve()
-        return self._get_host().get_data_root()
-
-    def _cache_dir(self) -> Path:
-        return self._root() / CACHE_SUBDIR
-
-    # ---------- 缓存文件路径 ----------
+        return self.paths.root()
 
     def _ids_file(self) -> Path:
-        return self._cache_dir() / "downloaded_ids.json"
-
-    def _failed_file(self) -> Path:
-        return self._cache_dir() / "failed_ids.json"
+        return self.paths.ids_file()
 
     def _tasks_file(self) -> Path:
-        return self._cache_dir() / "tasks.json"
+        return self.paths.tasks_file()
 
     def _artists_file(self) -> Path:
-        return self._cache_dir() / "artists.json"
-
-    def _works_file(self) -> Path:
-        return self._cache_dir() / "works.db"
-
-    # ---------- 客户端 ----------
+        return self.paths.artists_file()
 
     def _client(self) -> PixivClient:
-        if self._pixiv_client is None:
-            kwargs: Dict[str, Any] = {"timeout": 30}
-            proxy = (self.setting("proxy") or "").strip()
-            if proxy:
-                if "://" not in proxy:
-                    proxy = f"http://{proxy}"  # 允许只填 127.0.0.1:7890
-                kwargs["proxies"] = {"https": proxy, "http": proxy}
-            self._pixiv_client = PixivClient(**kwargs)
-        return self._pixiv_client
+        return self.session.client()
 
-    # ---------- 去重记录 / 永久跳过记录 ----------
+    def _db(self):
+        """清单库连接（懒建，与任务线程共用同一把锁）。"""
+        return self.workspace.db()
 
     def _load_ids(self) -> Set[int]:
-        if self._downloaded_ids is None:
-            self._downloaded_ids = store.load_ids(self._ids_file())
-        return self._downloaded_ids
+        return self.records.downloaded()
 
-    def _save_ids(self):
-        store.save_ids(self._ids_file(), self._load_ids())
+    def _load_selected_artists(self) -> Set[str]:
+        return self.selection.selected()
 
-    def _load_failed_ids(self) -> Set[int]:
-        if self._failed_ids is None:
-            self._failed_ids = store.load_failed_ids(self._failed_file())
-        return self._failed_ids
+    def _scan_existing_ids(self) -> int:
+        return self.library.scan_existing_ids()
 
-    def _save_failed_ids(self):
-        store.save_failed_ids(self._failed_file(), self._load_failed_ids())
+    def _max_download(self) -> int:
+        return self.limits.max_download()
 
-    # ---------- 清单 SQLite（懒连接） ----------
+    def _max_artists(self) -> int:
+        return self.limits.max_artists()
 
-    def _db(self) -> WorksDB:
-        if self._db_wrapper is None:
-            with self._task_lock:
-                if self._db_wrapper is None:
-                    self._db_wrapper = WorksDB(self._works_file(), self._task_lock)
-        return self._db_wrapper
+    def _workers(self) -> int:
+        return self.limits.workers()
 
-    def _begin_task_runtime(self) -> None:
-        """任务开始：固定本次任务的下载根目录。"""
-        if self._active_root is None:
-            self._active_root = self._root()
+    def _scan_workers(self) -> int:
+        return self.limits.scan_workers()
 
-    def _reset_root_state(self) -> None:
-        """下载目录变更后重置所有依赖根目录的缓存状态。"""
-        with self._task_lock:
-            if self._db_wrapper is not None:
-                self._db_wrapper.close()
-                self._db_wrapper = None
-            self._downloaded_ids = None
-            self._failed_ids = None
-            self._selected_cache = None
-            self._local_changed = 0
-        self._task = tasks.load_task(self._tasks_file())
-        engine = engine_for(self)
-        if engine is not None:
-            # 换根后清掉去抖，让下一次被动同步立刻按新根重扫
-            engine.reset_throttle()
+    @property
+    def _pixiv_client(self) -> Optional[PixivClient]:
+        return self.session.cached_client
 
-    def _finish_task_runtime(self) -> None:
-        """任务结束：解除根目录固定，并应用运行期间用户修改设置的延迟重置。"""
-        self._active_root = None
-        if self._deferred_root_reset:
-            self._deferred_root_reset = False
-            self._reset_root_state()
-        if self._deferred_client_reset:
-            self._deferred_client_reset = False
-            self._pixiv_client = None
+    @_pixiv_client.setter
+    def _pixiv_client(self, value: Optional[PixivClient]) -> None:
+        self.session.cached_client = value
 
-    def on_unload(self) -> None:
-        """进程退出收尾：停同步线程、落盘最后一次任务状态、关 SQLite。
+    @property
+    def _rate_limiter(self):
+        return self.session.limiter
 
-        不关连接会留下 -wal/-shm 边车文件并一直占着 works.db —— Windows 下
-        文件被占用时连复制/移动数据目录都会失败。落盘的任务若仍是 running，
-        下次 load_task 会归一成 paused 续跑。
-        """
-        self._cancel_flag = True
-        thread = self._thread
-        if thread is not None and thread.is_alive():
-            thread.join(timeout=2)  # 协作式取消：给 worker 一个收尾窗口，不强等
-        with self._task_lock:
-            if self._task:
-                tasks.persist_task(self._tasks_file(), self._task)
-            if self._db_wrapper is not None:
-                self._db_wrapper.close()
-                self._db_wrapper = None
+    @property
+    def _thread(self):
+        return self.runner.thread
 
+    @property
+    def _cancel_flag(self) -> bool:
+        return self.runner.cancel_flag
 
-    def _authenticate(self) -> None:
-        """用 refresh_token 换取 access_token，并自动回写 Pixiv 可能轮换的 refresh_token。"""
-        token = (self.setting("refresh_token") or "").strip()
-        if not token:
-            raise PixivError("未配置 refresh_token，请先在设置中填写")
-        self._client().auth(refresh_token=token)
-        rotated = self._client().refresh_token
-        if rotated and rotated != token:
-            self.update_setting("refresh_token", rotated)
-            log.info("[pixiv-sync] refresh_token 已轮换，自动回写设置")
+    @_cancel_flag.setter
+    def _cancel_flag(self, value: bool) -> None:
+        self.runner.cancel_flag = value
 
-    def _note_rate_limited(self, cooldown: float = 600.0) -> None:
-        self._rate_limited_until = time.time() + cooldown
-
-    def _rate_limit_cooldown(self) -> int:
-        if self._rate_limited_until is None:
-            return 0
-        return max(0, int(self._rate_limited_until - time.time()))
-
-
-    # ---------- 统一刷新基建（同步 / 校验） ----------
-    #
-    # "本地图片树 → 已下载作品集合"是本插件唯一的文件系统派生数据。旧实现每次
-    # 刷新记录/校验内容都全盘 walk 一遍（`store.scan_local`），而它们并没有共同的
-    # 失效判据。接入基建后：目录级短路决定"要不要重算"，**判据（缺页才算未完成）
-    # 与语义（谁进/谁出 ids）完全不变** —— 只是不再每次都走一遍磁盘。
-    #
-    # 另一方面，刷新记录与校验内容还有各自的并发缺口（只挡下载线程、自己不占位），
-    # 现在两者都转发到引擎，由引擎的单飞与状态托管。
+    # ---------- 壳按名调用的钩子：一行委派 ----------
 
     def get_cache_dir(self) -> Path:
         """缓存目录 = 本插件自己的 `<下载根>/.cache/pixiv-sync`。
@@ -354,355 +159,18 @@ class PixivSyncPlugin(PluginBase):
         未配置时才回落到宿主数据根），基类默认实现会去读 `config['directories']`，
         而本插件的测试与运行都可能不带 `data_root`。
         """
-        return self._cache_dir()
+        return self.paths.cache_dir()
 
     def freshness_spec(self) -> Dict:
-        return {
-            'roots': lambda: [self._root() / "pixiv"],
-            # 与 store.ID_NAME_RE 认识的扩展名保持一致：键集合要能反推出作品页数
-            'include': ('.jpg', '.jpeg', '.png', '.gif', '.webp'),
-            'derive': self._freshness_derive,
-            'prune': self._freshness_prune,
-            'on_verified': self._freshness_audit,
-            'on_pass_end': self._freshness_pass_end,
-            'rebuild': self._freshness_rebuild,
-            'content_version': 1,
-            'unit': '张',
-            # 图片树可能上万文件：被动同步间隔放宽，避免每次进页面都走一遍
-            'min_sync_interval': 10.0,
-        }
+        return self.library.spec()
 
-    def _freshness_derive(self, items) -> Dict:
-        self._local_changed += len(items)
-        return {'count': len(items)}
+    def on_unload(self) -> None:
+        self.runner.shutdown()
 
-    def _freshness_prune(self, keys) -> int:
-        self._local_changed += len(keys)
-        return len(keys)
+    def on_settings_changed(self, changed_keys) -> None:
+        self.runner.apply_settings_changed(changed_keys)
 
-    def _freshness_audit(self, keys) -> Dict:
-        """全量校验：以指纹库的有效键集合重建记录（含清单 done 快照）。"""
-        # 目录遍历走完后还有一段"按清单对账"的尾巴（几万个 stat），实测要好几秒；
-        # 不写一句话，进度条会停在 100% 让人以为卡死。
-        engine = engine_for(self)
-        if engine is not None:
-            engine.progress("正在核对已下载记录…")
-        return self._sync_ids_from_keys(keys, reset_done=True, remove_zero=True)
-
-    def _freshness_pass_end(self, report, verified: bool) -> Dict:
-        """整趟结束：集合完整时才据它重算 ids（部分遍历会把没走到的当成消失）。"""
-        if report.get('partial') or report.get('errors'):
-            return {'skipped': 'incomplete'}
-        if not (verified or self._local_changed):
-            return {'skipped': 'unchanged'}
-        self._local_changed = 0
-        return self._sync_ids_from_keys(self._engine_keys(), reset_done=bool(verified),
-                                        remove_zero=True)
-
-    def _engine_keys(self) -> Set[str]:
-        engine = engine_for(self)
-        return engine.valid_keys() if engine is not None else set()
-
-    def _freshness_rebuild(self, kind: str = "derived") -> Dict:
-        """逃生门：按磁盘重算记录（**不删除** downloaded_ids.json —— 那是用户数据，
-        删掉等于让整个库重下一遍）。"""
-        return self._sync_ids_from_keys(self._engine_keys(), reset_done=True,
-                                        remove_zero=True)
-
-    def _local_pages(self, keys, remove_zero: bool = False):
-        """有效键集合 → ({作品 id: {页号}}, 删除的 0 字节文件数)。
-
-        0 字节残片（下载中断留下的）**不算有效页**，并按旧行为顺手删掉：
-        让它算一页会把"半截下载"判成"下全了"，缺页的作品就再也补不回来
-        （判据与 `store.scan_local(remove_zero=True)` 一致）。
-        """
-        root = self._root() / "pixiv"
-        pages: Dict[int, set] = {}
-        zero = 0
-        for key in keys or ():
-            path = root / str(key)
-            try:
-                size = path.stat().st_size
-            except OSError:
-                continue
-            if size <= 0:
-                if remove_zero:
-                    try:
-                        path.unlink()
-                        zero += 1
-                    except OSError:
-                        pass
-                continue
-            match = store.ID_NAME_RE.match(path.name)
-            if not match:
-                continue
-            iid = int(match.group(1))
-            page = int(match.group(2)) if match.group(2) else 0
-            pages.setdefault(iid, set()).add(page)
-        return pages, zero
-
-    def _sync_ids_from_keys(self, keys, reset_done: bool, remove_zero: bool) -> Dict:
-        """按有效键集合把"已下载作品"与磁盘对齐（刷新记录与校验内容共用的实现）。
-
-        `stale` 与 `incomplete` 必须是两类，不能合并：前者是"本地一个有效文件都没有"
-        （失效记录），后者是"本地有文件但页数不足"（半截下载）。界面按两个数字分开
-        说明（"移除失效记录 N 条，缺页重新入队 M 件"），合并后就只剩一个笼统的数字。
-        两者都会被移出去重集合，因此 `ids` 最终等于 `recorded`。
-        """
-        pages, zero = self._local_pages(keys, remove_zero=remove_zero)
-        local_ids = {iid for iid, pg in pages.items() if pg}
-        incomplete = self._db().incomplete_ids(pages)
-        recorded = set(self._db().importable_ids(pages))
-        before = set(self._load_ids())
-        stale = sorted(before - local_ids)
-        failed = self._load_failed_ids()
-        # 失败跳过里"本地已经有有效文件"的，应当被清掉（下次同步会重新检查）
-        failed_cleared = [iid for iid in failed if iid in local_ids]
-        with self._task_lock:
-            # **就地增删**：`_run_sync` 里的 `ids` 是同一个 set 对象，换成新对象会让
-            # 下载线程随后写回的记录全部丢失（`_save_ids` 读的是 self._downloaded_ids）。
-            ids = self._load_ids()
-            ids.intersection_update(recorded)
-            ids.update(recorded)
-            store.save_ids(self._ids_file(), ids)
-            if failed_cleared:
-                for iid in failed_cleared:
-                    failed.discard(iid)
-                store.save_failed_ids(self._failed_file(), failed)
-        reset = sorted(set(stale) | set(incomplete))
-        if reset_done and reset:
-            self._db().reset_done_ids(reset)
-        return {
-            'ok': True,
-            'total': len(recorded),
-            'imported': len(recorded - before),
-            'stale_removed': len(stale),
-            'incomplete': len(incomplete),
-            'incomplete_skipped': len(local_ids) - len(recorded),
-            'failed_cleared': len(failed_cleared),
-            'zero_removed': zero,
-        }
-
-    # ---------- 已有图片扫描（手动放入的旧图并入去重） ----------
-
-    def _scan_existing_ids(self) -> int:
-        """扫描下载目录（<root>/pixiv/）中已存在的图片，按命名规则提取作品 id 并入去重集合。
-
-        用于识别用户手动放入的旧图：文件名符合 `{id}.jpg` / `{id}_p0.jpg` 规则即可被识别，
-        之后全量更新会直接跳过，不会重复检查/下载。
-
-        清单已记录、但本地页数少于清单 page_count 的作品**不并入**：半截下载若在这里
-        被认成「已下载」，下载阶段就再也不会碰它，「校验内容」刚移出的作品也会被重新
-        认回去，缺的页永远补不回来（判据见 db.WorksDB.importable_ids）。
-
-        优先用指纹库的键集合（同步刚走过，等于白拿）；引擎不可用时退回全盘 walk。
-        """
-        keys = self._engine_keys()
-        if keys:
-            pages, _zero = self._local_pages(keys)
-        else:
-            _ids, _zero, pages = store.scan_local(self._root() / "pixiv")
-        ids = self._load_ids()
-        before = len(ids)
-        ids |= self._db().importable_ids(pages)
-        found = len(ids) - before
-        if found:
-            with self._task_lock:
-                store.save_ids(self._ids_file(), ids)
-        return found
-
-    # ---------- 待下载清单 / 下载 任务 ----------
-
-    def _start(self, kind: str) -> Dict:
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return {"ok": False, "error": "已有同步任务在运行"}
-            # 校验与同步都会改写"已下载记录"：互斥，避免两边对账互相覆盖。
-            if self._library_state().get("busy"):
-                return {"ok": False, "error": "正在校验本地内容，请等它结束再同步"}
-            self._cancel_flag = False
-            self._thread = threading.Thread(
-                target=self._run_sync, args=(kind,), daemon=True
-            )
-            self._thread.start()
-        return {"ok": True, "data": {"kind": kind}}
-
-    def sync_following(self) -> Dict:
-        """同步画师：内部先自动刷新关注清单（增量），再按清单下载新作。"""
-        return self._start("following")
-
-    def sync_bookmarks(self) -> Dict:
-        """同步喜欢：内部先自动刷新收藏清单（增量），再按清单下载新作。"""
-        return self._start("bookmarks")
-
-    def _set_phase(self, task: Dict, text: str) -> None:
-        """推进任务阶段：写 `current` 并落盘，同时把"本阶段耗时"记进日志。
-
-        阶段文案就是用户在面板上看到的进度明细。任务一旦进入线程就立刻置为
-        `running`，`queued` 只保留线程启动前的瞬间——否则用户看到的是"排队中 /
-        准备中"这种没有信息量的状态，而真正耗时的登录、本地核对、拉清单都藏在里面。
-        """
-        now = time.time()
-        with self._task_lock:
-            since = now - float(task.get("phase_started_at") or task.get("started_at") or now)
-            task["current"] = text
-            task["phase_started_at"] = now
-        tasks.persist_task(self._tasks_file(), task)
-        log.info("[pixiv-sync] 阶段: %s（上一阶段 %.1fs）", text, since)
-
-    def _run_sync(self, kind: str):
-        self._begin_task_runtime()
-        task = tasks.new_task(kind)
-        # 线程已经起来了：先置 running，再用 current 表达阶段。queued 只覆盖线程启动前的瞬间。
-        task["state"] = "running"
-        tasks.persist_task(self._tasks_file(), task)
-        self._task = task
-        ids = self._load_ids()
-        failed = self._load_failed_ids()
-        try:
-            self._set_phase(task, "正在登录 Pixiv…")
-            self._authenticate()
-            # 本地已有作品不再在每次同步前全盘核对：那是显式维护动作
-            # （refresh_downloaded / verify_downloaded，面板「账号与维护」里的两个按钮）。
-            # 同步直接用 downloaded_ids.json 这份记录，避免每次几秒的目录遍历。
-            if self._cancel_flag:
-                task["state"] = "cancelled"
-                task["current"] = "已取消"
-                return
-            task["state"] = "running"
-            tasks.persist_task(self._tasks_file(), task)
-
-            # 阶段 1：自动刷新清单（增量、带断点，用户无需先手动点「刷新」）。
-            #   同步画师 = 刷新关注清单（新画师全量 + illust_follow 聚合增量 + 兜底）；
-            #   同步喜欢 = 刷新收藏清单（首次全量/增量翻页）。
-            #   此阶段触发 429 会抛 RateLimitError 停车（见下），冷却后重点同步即续跑。
-            self._set_phase(task, f"正在更新{'关注' if kind == 'following' else '收藏'}作品清单…")
-            if kind == "following":
-                items, scan_data = scan.collect_following_pending(self, task, ids)
-            else:
-                items, scan_data = scan.collect_bookmarks_pending(self, task, ids)
-            self._db().save_pending(kind, items, scan_data)
-            if self._cancel_flag:
-                task["state"] = "cancelled"
-                task["current"] = "已取消"
-                return
-
-            # 阶段 2：按清单下载
-            download.download_pending(self, task, ids, failed, kind)
-
-            task["state"] = "cancelled" if self._cancel_flag else "done"
-        except RateLimitError as e:
-            task["state"] = "failed"
-            task["error"] = str(e)
-            self._note_rate_limited()
-        except PixivError as e:
-            task["state"] = "failed"
-            task["error"] = str(e)
-        except Exception as e:
-            task["state"] = "failed"
-            task["error"] = f"{type(e).__name__}: {e}"
-        finally:
-            task["finished_at"] = time.time()
-            task["current"] = ""
-            self._save_ids()
-            store.save_failed_ids(self._failed_file(), failed)
-            tasks.persist_task(self._tasks_file(), task)
-            self._finish_task_runtime()
-
-    def _start_refresh(self, kind: str) -> Dict:
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return {"ok": False, "error": "已有任务在运行"}
-            if self._library_state().get("busy"):
-                return {"ok": False, "error": "正在校验本地内容，请等它结束再刷新名单"}
-            self._cancel_flag = False
-            self._thread = threading.Thread(
-                target=self._run_refresh, args=(kind,), daemon=True
-            )
-            self._thread.start()
-        return {"ok": True}
-
-    def refresh_following_lists(self) -> Dict:
-        """仅刷新关注画师作品清单（不下载）。
-
-        「同步画师」已内置自动刷新；本入口用于只想更新清单看统计、
-        或手动控制大批量首次铺底的刷新时机。
-        """
-        return self._start_refresh("following")
-
-    def refresh_bookmarks_lists(self) -> Dict:
-        """仅刷新喜欢画作清单（不下载）；「同步喜欢」已内置自动刷新。"""
-        return self._start_refresh("bookmarks")
-
-    def _run_refresh(self, kind: str):
-        self._begin_task_runtime()
-        task = tasks.new_task(f"refresh_{kind}")
-        task["state"] = "running"
-        tasks.persist_task(self._tasks_file(), task)
-        self._task = task
-        try:
-            self._set_phase(task, "正在登录 Pixiv…")
-            self._authenticate()
-            self._set_phase(task, f"正在更新{'关注' if kind == 'following' else '收藏'}作品清单…")
-            ids = self._load_ids()
-            if kind == "following":
-                items, scan_data = scan.collect_following_pending(self, task, ids)
-            else:
-                items, scan_data = scan.collect_bookmarks_pending(self, task, ids)
-            self._db().save_pending(kind, items, scan_data)
-            task["state"] = "cancelled" if self._cancel_flag else "done"
-            task["total"] = len(items)
-            done_cnt = sum(1 for i in items if i.get("done"))
-            task["current"] = (
-                f"清单 {len(items)} 条（已下 {done_cnt}）· 已扫描"
-                + ("完成" if (scan_data or {}).get("complete") else "部分（可再点刷新继续）")
-            )
-        except RateLimitError as e:
-            task["state"] = "failed"
-            task["error"] = str(e)
-            self._note_rate_limited()
-        except PixivError as e:
-            task["state"] = "failed"
-            task["error"] = str(e)
-        except Exception as e:
-            task["state"] = "failed"
-            task["error"] = f"{type(e).__name__}: {e}"
-        finally:
-            task["finished_at"] = time.time()
-            tasks.persist_task(self._tasks_file(), task)
-            self._finish_task_runtime()
-
-    def cancel_task(self) -> Dict:
-        with self._lock:
-            if self._task and self._task.get("state") in ("queued", "running"):
-                self._cancel_flag = True
-        return {"ok": True}
-
-    def retry_failed(self) -> Dict:
-        """一键清除永久跳过的 404 记录，并立即重新同步一次（重试失败作品）。
-
-        重新同步的来源取最近一次任务（画师/喜欢）；无历史任务时默认同步画师。
-        清空后失败的清单条目保持未下载状态，会自然回到待下载队列。
-        """
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return {"ok": False, "error": "已有任务在运行"}
-            failed = self._load_failed_ids()
-            with self._task_lock:
-                self._failed_ids = set()
-            store.save_failed_ids(self._failed_file(), set())
-            kind = "following"
-            t = tasks.load_task(self._tasks_file())
-            if t and t.get("kind") in ("following", "bookmarks"):
-                kind = t["kind"]
-            self._cancel_flag = False
-            self._thread = threading.Thread(
-                target=self._run_sync, args=(kind,), daemon=True
-            )
-            self._thread.start()
-        return {"ok": True, "cleared": len(failed), "kind": kind}
-
-    # ---------- 内置 OAuth 向导 ----------
+    # ---------- OAuth 向导 ----------
 
     def start_oauth(self) -> Dict:
         return oauth.start(self)
@@ -710,267 +178,21 @@ class PixivSyncPlugin(PluginBase):
     def finish_oauth(self, code: str) -> Dict:
         return oauth.finish(self, code)
 
-    # ---------- 画师名单（selected_artists.txt：只同步指定画师） ----------
-
-    _SELECTED_TEMPLATE = (
-        "# Pixiv 同步画师名单\n"
-        "# 每行一个画师：填画师名字或 Pixiv 用户 id（# 开头为注释，空行忽略）\n"
-        "# 示例:\n"
-        "#   柠檬静静静静\n"
-        "#   66477791\n"
-        "#\n"
-        "# 本文件存在且非空时，同步画师只处理名单中的画师；\n"
-        "# 删除本文件或清空内容 = 同步全部关注画师\n"
-    )
-
-    def _selected_file(self) -> Path:
-        return self._cache_dir() / "selected_artists.txt"
-
-    @staticmethod
-    def _read_text_robust(file: Path) -> str:
-        """读取文本文件，兼容 UTF-8 / UTF-8 BOM / GBK（记事本默认 ANSI 编码）。"""
-        for enc in ("utf-8-sig", "gb18030"):
-            try:
-                return file.read_text(encoding=enc)
-            except (UnicodeDecodeError, OSError):
-                continue
-        return ""
-
-    def _load_selected_artists(self) -> Set[str]:
-        """读取画师名单：每行一个画师（名字或 Pixiv 用户 id），# 注释、空行忽略。
-
-        文件不存在或为空 = 同步全部关注画师。状态轮询频率较高，按文件
-        mtime_ns/size 做一层轻量缓存。
-        """
-        file = self._selected_file()
-        try:
-            stat = file.stat()
-            signature = (stat.st_mtime_ns, stat.st_size)
-        except OSError:
-            self._selected_cache = None
-            return set()
-
-        if self._selected_cache is not None:
-            cached_sig, cached_value = self._selected_cache
-            if cached_sig == signature:
-                return set(cached_value)
-
-        selected: Set[str] = set()
-        try:
-            text = self._read_text_robust(file)
-        except Exception as e:
-            log.error(f"[pixiv-sync] 读取画师名单失败: {e}")
-            self._selected_cache = (signature, selected)
-            return selected
-        for line in text.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            selected.add(line)
-        self._selected_cache = (signature, selected)
-        return selected
-
-    def open_config(self) -> Dict:
-        """打开画师名单配置文件所在文件夹。
-
-        每次调用都会重写注释模板（保留用户填写的画师行，非注释行），
-        方便用户始终能看到用法说明。
-        """
-        try:
-            file = self._selected_file()
-            file.parent.mkdir(parents=True, exist_ok=True)
-            artists: List[str] = []
-            if file.exists():
-                for line in self._read_text_robust(file).splitlines():
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        artists.append(line)
-            body = self._SELECTED_TEMPLATE
-            if artists:
-                body += "\n" + "\n".join(artists) + "\n"
-            file.write_text(body, encoding="utf-8")
-            if sys.platform == "win32":
-                os.startfile(str(file.parent))
-            elif sys.platform == "darwin":
-                subprocess.Popen(
-                    ["open", str(file.parent)],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                )
-            else:
-                subprocess.Popen(
-                    ["xdg-open", str(file.parent)],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                )
-            return {"ok": True, "file": str(file)}
-        except Exception as e:
-            return {"ok": False, "error": f"打开失败: {e}"}
-
-    # ---------- 下载记录维护 ----------
-
-    def _max_download(self) -> int:
-        try:
-            return max(0, int(self.setting("max_download", 100)))
-        except (TypeError, ValueError):
-            return 100
-
-    def _max_artists(self) -> int:
-        try:
-            return max(0, int(self.setting("max_artists", 30)))
-        except (TypeError, ValueError):
-            return 30
-
-    def _scan_workers(self) -> int:
-        """刷新名单的并行拉取画师数（滑动窗口）。"""
-        try:
-            return max(1, min(8, int(self.setting("scan_workers", 4))))
-        except (TypeError, ValueError):
-            return 4
-
-    def _workers(self) -> int:
-        try:
-            return max(1, min(8, int(self.setting("workers", 4))))
-        except (TypeError, ValueError):
-            return 4
-
-    def refresh_downloaded(self) -> Dict:
-        """刷新已下载记录（兼容入口，转发到统一刷新的「同步」）。
-
-        语义不变：以本地为准重建 ids（手动删过的移除、手动加的导入、0 字节清理），
-        清单已记录但本地页数不足的作品不并入（半截下载不算「已下载」，要补齐请点
-        「校验内容」把它重新入队）。差别只是"要不要真扫一遍"现在由指纹决定。
-        """
-        engine = engine_for(self)
-        if engine is None:
-            # 旧壳没有统一刷新基建：退回直接走盘，至少能把手动放入的作品并进来。
-            found = self._scan_existing_ids()
-            return {"ok": True, "total": len(self._load_ids()), "imported": found,
-                    "stale_removed": 0, "zero_removed": 0, "failed_cleared": 0,
-                    "incomplete": 0, "incomplete_skipped": 0}
-        engine.sync("", force=True)
-        last = (engine.state().get("last_report") or {}).get("pass_end") or {}
-        if not last or last.get("skipped"):
-            # 同步没有走到重算（集合不完整）：退回显式按指纹库重算一次
-            last = self._sync_ids_from_keys(self._engine_keys(), reset_done=False,
-                                            remove_zero=True)
-        return {"ok": True, **{k: last.get(k, 0) for k in
-                               ("total", "zero_removed", "stale_removed",
-                                "failed_cleared", "incomplete_skipped")}}
-
-    def verify_downloaded(self) -> Dict:
-        """启动本地内容校验（后台任务，立即返回）。
-
-        这是面板「账号与维护 → 校验本地内容」按钮的入口：一次走盘把"手动放入的作品"
-        并进来、把本地已无文件的失效记录移除、清理 0 字节残片、清掉"本地已有文件"的
-        失败记录，并把页数不足的作品重置 done 以便下次同步补齐。
-
-        为什么走后台而不是同步返回：全量校验在 6 万个文件上是几十秒量级（要遍历目录、
-        写索引、再按清单对账），同步调用会让按钮看起来"点了没反应"。进度经
-        `get_status.library` 暴露（目录数 processed/total + 当前目录），前端画进度条。
-        """
-        engine = engine_for(self)
-        if engine is None:
-            # 旧壳没有统一刷新基建：退回同步走盘，只能导入，无法给出进度。
-            found = self._scan_existing_ids()
-            return {"ok": True, "started": False, "finished": True,
-                    "total": len(self._load_ids()), "imported": found}
-        if self._thread and self._thread.is_alive():
-            return {"ok": False, "error": "同步任务进行中，结束后再校验本地内容"}
-        result = engine.start_verify()
-        return {"ok": True, **result}
-
-    def cancel_verify(self) -> Dict:
-        """停止正在跑的本地内容校验（面板进度条上的「停止校验」）。"""
-        engine = engine_for(self)
-        if engine is None:
-            return {"ok": False, "error": "刷新基建未接入"}
-        return {"ok": bool(engine.request_cancel())}
-
-    # ---------- 状态 / API ----------
-
-    def get_status(self) -> Dict:
-        with self._lock:
-            task = dict(self._task) if self._task else None
-        root = None
-        try:
-            root = str(self._root())
-        except Exception:
-            pass
-        ids = self._load_ids()
-
-        def cnt(db, kind: str, done: Optional[int] = None) -> int:
-            try:
-                return db.counts(kind, done)
-            except Exception:
-                return 0
-
-        following_total = following_done = bookmarks_total = bookmarks_done = 0
-        try:
-            db = self._db()
-            following_total = cnt(db, "following")
-            following_done = cnt(db, "following", 1)
-            bookmarks_total = cnt(db, "bookmarks")
-            bookmarks_done = cnt(db, "bookmarks", 1)
-        except Exception as e:
-            log.error(f"[pixiv-sync] 读取清单统计失败: {e}")
-        library = self._library_state()
-        return {
-            "task": task,
-            "root_dir": root,
-            "token_configured": bool((self.setting("refresh_token") or "").strip()),
-            "downloaded_total": len(ids),
-            "running": bool(self._thread and self._thread.is_alive()),
-            "selected_artists": len(self._load_selected_artists()),
-            "selected_file": str(self._selected_file()),
-            # 清单统计
-            "following_total": following_total,
-            "following_done": following_done,
-            "pending_following": following_total - following_done,
-            "bookmarks_total": bookmarks_total,
-            "bookmarks_done": bookmarks_done,
-            "pending_bookmarks": bookmarks_total - bookmarks_done,
-            "other_done": max(0, len(ids) - following_done - bookmarks_done),
-            # 永久跳过（404/已删除）
-            "failed_skipped": len(self._load_failed_ids()),
-            # 429 冷却倒计时（秒），0 表示无需冷却
-            "rate_limit_cooldown": self._rate_limit_cooldown(),
-            # 本地内容校验（后台任务）的进度投影：前端据此画进度条与停止按钮
-            "library": library,
-        }
-
-    def _library_state(self) -> Dict:
-        """统一刷新引擎的进度投影；引擎不可用时返回"未接入"的空形状。"""
-        engine = engine_for(self)
-        if engine is None:
-            return {"available": False, "busy": False, "task": None,
-                    "entries": 0, "dirs": 0, "last_verify_at": 0}
-        try:
-            state = engine.state()
-        except Exception as e:  # 引擎读库失败不该把整个状态接口打挂
-            log.error(f"[pixiv-sync] 读取本地索引状态失败: {e}")
-            return {"available": False, "busy": False, "task": None,
-                    "entries": 0, "dirs": 0, "last_verify_at": 0}
-        return {
-            "available": bool(state.get("available", True)),
-            "busy": bool(state.get("busy")),
-            "task": state.get("task"),
-            "entries": int(state.get("entries") or 0),
-            "dirs": int(state.get("dirs") or 0),
-            "last_verify_at": float(state.get("last_verify_at") or 0),
-        }
+    # ---------- API 表与扩展声明 ----------
 
     def register_api(self) -> dict:
         return {
-            "get_status": self.get_status,
-            "sync_following": self.sync_following,
-            "sync_bookmarks": self.sync_bookmarks,
-            "refresh_following_lists": self.refresh_following_lists,
-            "refresh_bookmarks_lists": self.refresh_bookmarks_lists,
-            "refresh_downloaded": self.refresh_downloaded,
-            "verify_downloaded": self.verify_downloaded,
-            "cancel_verify": self.cancel_verify,
-            "retry_failed": self.retry_failed,
-            "cancel_task": self.cancel_task,
-            "open_config": self.open_config,
+            "get_status": self.status.report,
+            "sync_following": self.runner.sync_following,
+            "sync_bookmarks": self.runner.sync_bookmarks,
+            "refresh_following_lists": self.runner.refresh_following_lists,
+            "refresh_bookmarks_lists": self.runner.refresh_bookmarks_lists,
+            "refresh_downloaded": self.maintenance.refresh_downloaded,
+            "verify_downloaded": self.maintenance.verify_downloaded,
+            "cancel_verify": self.maintenance.cancel_verify,
+            "retry_failed": self.runner.retry_failed,
+            "cancel_task": self.runner.cancel_task,
+            "open_config": self.selection.open_config,
             "start_oauth": self.start_oauth,
             "finish_oauth": self.finish_oauth,
             "get_settings": self.get_settings,
@@ -978,47 +200,5 @@ class PixivSyncPlugin(PluginBase):
         }
 
     def get_extensions(self) -> List[dict]:
-        """注册到 image-viewer 左侧栏的扩展入口。
-
-        新壳按 `native` 声明在宿主页内容槽渲染原生面板：`frontend/native.html` 是隐藏的
-        逻辑页，只提交 schema blocks 并处理动作。`embedUrl` 保留给不认 `native` 的旧壳，
-        继续承载 `frontend/index.html` 的完整页面。
-        """
-        return [
-            {
-                "host": "image-viewer",
-                "id": "pixiv-sync",
-                "label": "Pixiv 同步",
-                "icon": "icon:palette",
-                "description": "同步下载关注画师新作与收藏画作",
-                "section": "Pixiv 同步",
-                "native": {
-                    "url": "/plugins/pixiv-sync/frontend/native.html?native=1",
-                    "title": "Pixiv 同步",
-                },
-                "embedUrl": "/plugins/pixiv-sync/frontend/index.html",
-                "placement": "sidebar",
-                "scope": "all",
-            }
-        ]
-
-    def on_settings_changed(self, changed_keys):
-        running = bool(self._thread and self._thread.is_alive())
-        if changed_keys & {"refresh_token", "proxy"}:
-            if running:
-                # 运行中的任务继续用旧 client/代理，结束后再重置。
-                self._deferred_client_reset = True
-            else:
-                self._pixiv_client = None
-        if "download_dir" in changed_keys:
-            # 下载根目录变了：所有缓存文件路径与 SQLite 连接都指向新目录。
-            # 若任务正在跑，先固定旧根目录，任务结束后再切换。
-            if running:
-                self._deferred_root_reset = True
-            else:
-                self._reset_root_state()
-        if "rate_limit" in changed_keys:
-            try:
-                self._rate_limiter.set_rate(float(self.setting("rate_limit", 3)))
-            except (TypeError, ValueError):
-                pass
+        """注册到 image-viewer 左侧栏的扩展入口。"""
+        return const.extensions()

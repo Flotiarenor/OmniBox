@@ -22,7 +22,7 @@ def start(p) -> Dict[str, Any]:
 
 
 def finish(p, code: str) -> Dict[str, Any]:
-    """用授权码换取 token 并自动保存 refresh_token（第二步）。"""
+    """用授权码换取 token 并自动保存 refresh_token（第二步）；写不进设置时返回 ok=False。"""
     try:
         with p._lock:
             if p._thread and p._thread.is_alive():
@@ -36,7 +36,17 @@ def finish(p, code: str) -> Dict[str, Any]:
         client.auth_with_code(code, p._oauth_verifier)
         p._oauth_verifier = None
         if client.refresh_token:
-            p.update_setting("refresh_token", client.refresh_token)
+            if not p.update_setting("refresh_token", client.refresh_token):
+                # 授权本身已经通过（Pixiv 发了新 token），但它没能写进设置：重启后
+                # 设置里还是旧值/空值，得重新授权。不能回 ok=True 让界面显示"已保存"，
+                # 也**不重置** `_pixiv_client`：那是"新 token 已生效"的收尾动作，
+                # 而这次 token 根本没落盘（`authenticate()` 每次都从设置重读 token，
+                # 本会话能不能继续用取决于旧值是否还有效，这里不承诺）。
+                return {
+                    "ok": False,
+                    "error": "授权已通过，但 token 未能保存，重启后需要重新授权"
+                             "（可再点一次获取 Token）",
+                }
             p._pixiv_client = None  # 新 token，重置客户端
         return {"ok": True, "user_id": client.user_id}
     except PixivError as e:

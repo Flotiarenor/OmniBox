@@ -34,15 +34,15 @@ from __future__ import annotations
 
 import argparse
 import io
-import json
 import os
 import re
 import sqlite3
 import sys
-import tempfile
 import time
 from pathlib import Path
 from typing import Set
+
+from cli_support import is_tty, reset_done_in_db, resolve_root, strip_ids
 
 if isinstance(sys.stdout, io.TextIOWrapper):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -53,13 +53,6 @@ if isinstance(sys.stderr, io.TextIOWrapper):
 ID_NAME_RE = re.compile(r"^(\d+)(?:_?p\d+)?\.(?:jpe?g|png|gif|webp)$", re.IGNORECASE)
 
 CACHE_SUBDIR = Path(".cache") / "pixiv-sync"
-
-
-def _is_tty() -> bool:
-    try:
-        return sys.stdin.isatty()
-    except Exception:
-        return False
 
 
 # ---------- 收集目标作品 id ----------
@@ -117,129 +110,6 @@ def collect_missing_ids(db_path: Path, pixiv_root: Path) -> Set[int]:
     return done_ids - present
 
 
-def _atomic_write_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
-    )
-    tmp_path = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-    except Exception:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
-
-
-# ---------- 记录修改（不动文件） ----------
-
-def strip_ids(path: Path, ids: Set[int]) -> int:
-    """从 json 记录文件中移除作品 id，保留其他字段；返回移除条数。"""
-    if not path.exists() or not ids:
-        return 0
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return 0
-    if isinstance(data, list):
-        data = {"ids": data}
-    if not isinstance(data, dict):
-        return 0
-    cur = data.get("ids") or []
-    keep = []
-    for x in cur:
-        try:
-            if int(x) not in ids:
-                keep.append(x)
-        except (TypeError, ValueError):
-            keep.append(x)  # 保留无法解析的历史脏数据，避免误删用户记录
-    removed = len(cur) - len(keep)
-    if removed:
-        data["ids"] = keep
-        try:
-            _atomic_write_json(path, data)
-        except OSError as e:
-            print(f"  ! 写入 {path.name} 失败: {e}")
-            return 0
-    return removed
-
-
-def reset_done(db_path: Path, ids: Set[int]) -> int:
-    """把 works.db 里这些作品的 done 标记改为 0（改回未下载）。"""
-    if not db_path.exists() or not ids:
-        return 0
-    try:
-        conn = sqlite3.connect(str(db_path))
-        conn.execute("PRAGMA busy_timeout=5000")
-        try:
-            placeholders = ",".join("?" * len(ids))
-            cur = conn.execute(
-                f"UPDATE works SET done=0 WHERE id IN ({placeholders})",
-                tuple(sorted(ids)),
-            )
-            conn.commit()
-            return cur.rowcount
-        finally:
-            conn.close()
-    except Exception as e:
-        print(f"  ! 重置 works.db done 失败: {e}")
-        return 0
-
-
-# ---------- 根目录定位 ----------
-
-def resolve_root(root_arg: str) -> Path:
-    """确定下载根目录：--root > 自动探测 > 交互输入。"""
-    if root_arg:
-        p = Path(root_arg).resolve()
-        if not (p / "pixiv").exists():
-            print(f"! 目录 {p} 下没有 pixiv/ 相册子目录（确认是否填对了下载根目录）？")
-            print("  仍将继续。")
-        return p
-
-    cwd = Path.cwd()
-    candidates = []
-    app_yaml = cwd / ".config" / "app.yaml"
-    if app_yaml.exists():
-        try:
-            root = _data_root_from_yaml(app_yaml, cwd)
-            if root:
-                candidates.append(("app.yaml data_root", root))
-        except Exception:
-            pass
-    candidates.append(("cwd/data", cwd / "data"))
-    for label, p in candidates:
-        if (p / "pixiv").exists():
-            print(f"自动找到相册根目录: {p}（{label}）")
-            return p.resolve()
-
-    print("-" * 60)
-    default = str(cwd / "data")
-    ans = input(
-        f"未找到相册根目录，请输入下载根目录\n"
-        f"（目录下应包含 pixiv/ 与 .cache/pixiv-sync/；留空使用 {default}）: "
-    ).strip()
-    return Path(ans or default).resolve()
-
-
-def _data_root_from_yaml(yaml_path: Path, base: Path):
-    import re as _re
-
-    body = yaml_path.read_text(encoding="utf-8")
-    m = _re.search(r"^\s*data_root\s*:\s*(.+)$", body, _re.MULTILINE)
-    if not m:
-        return None
-    val = m.group(1).strip().strip("'\"")
-    p = Path(val)
-    if not p.is_absolute():
-        p = base / p
-    return p.resolve()
 
 
 def main() -> int:
@@ -275,7 +145,7 @@ def main() -> int:
     # 目标模式：--missing > --hours > 交互询问
     use_missing = args.missing
     hours = args.hours
-    if not use_missing and hours is None and _is_tty():
+    if not use_missing and hours is None and is_tty():
         ans = input(
             "目标作品如何确定？\n"
             "  1 = 时间窗口（最近 N 小时的图片，需要文件还在）\n"
@@ -333,7 +203,7 @@ def main() -> int:
 
     ids_removed = strip_ids(cache / "downloaded_ids.json", target)
     failed_removed = strip_ids(cache / "failed_ids.json", target)
-    done_reset = reset_done(db_path, target)
+    done_reset = reset_done_in_db(db_path, target)
 
     print()
     print("执行完成:")

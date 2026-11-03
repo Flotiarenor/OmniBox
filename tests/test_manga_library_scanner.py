@@ -25,7 +25,7 @@ SCANNER_PATH = PROJECT_ROOT / 'plugins' / 'manga-library' / 'backend' / 'scanner
 PLUGIN_DIR = PROJECT_ROOT / 'plugins' / 'manga-library'
 scanner = load_sibling(str(SCANNER_PATH), 'scanner', 'manga_library_scanner_test')
 
-# 测试数据放工作区内（沙箱/CI 下系统临时目录可能不可写，同 tests/debug_media_scan_task.py）。
+# 测试数据放工作区内（沙箱/CI 下系统临时目录可能不可写，同 tools/debug/debug_media_scan_task.py）。
 # 目录名自己拼而不用 tempfile.mkdtemp：mkdtemp 建出的是 mode 0700 目录，本机沙箱下
 # 连子目录都建不进去（WinError 5）。
 TMP_BASE = PROJECT_ROOT / '.build' / 'manga-scan-test'
@@ -143,6 +143,9 @@ class ShelfCacheTest(_TempRootTestCase):
     回归对象：旧实现的 `_cache` 是死缓存 —— 唯一调用点 `_scan_manga` 的判据是
     `if self._cache is None`，而 `list_manga` 在调用它之前刚把 `_cache` 置 None，
     于是每次 `manga_get_state` + `manga_list` 各全量重扫一遍，切一次视图两遍全树。
+
+    组件化之后书架缓存在 `Library` 上（`plugin.library`），API 表把 `manga_list`
+    等键直接绑到它，入口不再有同名转发方法。
     """
 
     def _plugin(self):
@@ -161,42 +164,46 @@ class ShelfCacheTest(_TempRootTestCase):
         plugin, engine = self._plugin()
         engine.spec.min_sync_interval = 0.0
 
-        first = plugin.list_manga()
+        library = plugin.library
+        first = library.list_manga()
         engine.sync('', force=True)                 # 被动同步：磁盘没变
-        plugin._shelf = None                        # 人为丢掉缓存，证明下面读的是缓存
+        library._shelf = None                       # 人为丢掉缓存，证明下面读的是缓存
         engine.spec.content_version = plugin.SHELF_VERSION
-        shelf = plugin._scan_manga()
+        shelf = library.rescan()
 
         self.assertEqual([m['folder_name'] for m in shelf], ['A'])
         self.assertEqual([m['folder_name'] for m in first], ['A'])
-        self.assertFalse(plugin._shelf_dirty, '稳态不该被标脏')
+        self.assertFalse(library._shelf_dirty, '稳态不该被标脏')
 
     def test_new_folder_invalidates_shelf(self):
         _touch(self.root / 'A', '001.jpg')
         plugin, engine = self._plugin()
         engine.spec.min_sync_interval = 0.0
-        self.assertEqual([m['folder_name'] for m in plugin.list_manga()], ['A'])
+        library = plugin.library
+        self.assertEqual([m['folder_name'] for m in library.list_manga()], ['A'])
 
         _touch(self.root / 'B', '001.jpg')
         engine.sync('', force=True)
 
-        self.assertTrue(plugin._shelf_dirty, '新增漫画后书架缓存必须作废')
-        self.assertEqual([m['folder_name'] for m in plugin.list_manga()], ['A', 'B'])
+        self.assertTrue(library._shelf_dirty, '新增漫画后书架缓存必须作废')
+        self.assertEqual([m['folder_name'] for m in library.list_manga()], ['A', 'B'])
 
     def test_favorite_toggle_invalidates_shelf(self):
         _touch(self.root / 'A', '001.jpg')
         plugin, _engine = self._plugin()
-        self.assertFalse(plugin.list_manga()[0]['is_fav'])
+        library = plugin.library
+        self.assertFalse(library.list_manga()[0]['is_fav'])
 
-        self.assertTrue(plugin.toggle_favorite('A'))
+        self.assertTrue(library.toggle_favorite('A'))
 
-        self.assertTrue(plugin.list_manga()[0]['is_fav'])
+        self.assertTrue(library.list_manga()[0]['is_fav'])
 
     def test_invalid_folder_name_is_rejected(self):
         plugin, _engine = self._plugin()
+        library = plugin.library
         for bad in ('../x', 'a/b', 'a\\b', '', '.', '..'):
-            self.assertFalse(plugin.toggle_favorite(bad), bad)
-            self.assertEqual(plugin.update_recent(bad, 1)['status'], 'error', bad)
+            self.assertFalse(library.toggle_favorite(bad), bad)
+            self.assertEqual(library.update_recent(bad, 1)['status'], 'error', bad)
 
 
 if __name__ == '__main__':

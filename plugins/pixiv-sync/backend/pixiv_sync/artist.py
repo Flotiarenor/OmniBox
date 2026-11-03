@@ -1,13 +1,17 @@
-"""画师目录解析：名字命名 + id→名字缓存 + 改名迁移。"""
+"""画师目录解析：名字命名 + id→名字缓存 + 改名迁移。
+
+落盘走内核 `shell.backend.json_cache` 的唯一原子写入口：artists.json 被整批下载线程
+按批重写，直接覆写在进程被杀时会留下半截 JSON，画师改名迁移的缓存从此丢失。
+"""
 
 import json
 import logging
-import os
 import re
 import shutil
-import tempfile
 from pathlib import Path
 from typing import Dict
+
+from shell.backend.json_cache import write_json
 
 log = logging.getLogger(__name__)
 
@@ -42,23 +46,8 @@ def load_cache(path: Path) -> Dict[str, str]:
 
 def save_cache(path: Path, cache: Dict[str, str]):
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(
-            prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
-        )
-        tmp_path = Path(tmp_name)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(cache, f, ensure_ascii=False, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, path)
-        except Exception:
-            try:
-                tmp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            raise
+        if not write_json(path, cache, indent=2, create_parent=True):
+            log.error(f"[pixiv-sync] 保存画师缓存失败: {path}")
     except Exception as e:
         log.error(f"[pixiv-sync] 保存画师缓存失败: {e}")
 

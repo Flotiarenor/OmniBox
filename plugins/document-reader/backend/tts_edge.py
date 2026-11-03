@@ -3,6 +3,12 @@
 `edge_tts` 是动态依赖（已登记在 HIDDEN_IMPORTS），没装时 `available()` 返回 False，
 降级链自然落到下一档。本模块不 import 兄弟模块；入口把它的三个函数交给
 `SpeechEngine` 与设置面板。
+
+**超时**：合成是流式网络读，没有超时上限时，对端把连接挂住会让请求线程无限等下去
+（表现是"点朗读后一直转圈"，连错误都没有）。判据取"这么久没有收到新的数据块"，
+而不是总时长 —— 长文本合成得久是正常现象，网络卡住的表现是再也没有下一块。
+超时抛 `SynthesisTimeout`（`retryable = False`：等满一轮超时已经是这一次的上限，
+在同一个引擎上再重试只是把请求拖长数倍），由引擎的降级链换成下一档或如实报错。
 """
 
 from __future__ import annotations
@@ -16,10 +22,41 @@ log = logging.getLogger(__name__)
 
 DEFAULT_VOICE = 'zh-CN-XiaoxiaoNeural'
 
+#: 流空闲超时（秒）：这么久没有新的数据块就判超时。
+STREAM_IDLE_TIMEOUT_SECONDS = 20.0
+
+
+class SynthesisTimeout(RuntimeError):
+    """合成超时（可识别：调用方据此提示"网络太慢"而不是"引擎坏了"）。
+
+    `retryable` 由引擎的 `_attempt_engine` 读取：False 表示原地重试不会变好。
+    """
+
+    retryable = False
+
 
 def available(params: Dict[str, Any]) -> bool:
     """装了 edge_tts 就能用；网络问题在合成时才会暴露。"""
     return importlib.util.find_spec('edge_tts') is not None
+
+
+async def _stream_chunks(communicate, timeout: float):
+    """按块读 `communicate.stream()`，每块最多等 `timeout` 秒。
+
+    `asyncio.wait_for` 只包**单次读取**：它取消的是"这一次等数据"，整段合成不设
+    总时长上限。超时抛 `SynthesisTimeout`，因此调用方拿到的是可识别的错误而不是
+    永远挂起的 await。
+    """
+    iterator = communicate.stream().__aiter__()
+    while True:
+        try:
+            chunk = await asyncio.wait_for(iterator.__anext__(), timeout)
+        except StopAsyncIteration:
+            return
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            raise SynthesisTimeout(
+                f'edge-tts 合成超时（{timeout:g} 秒内没有收到新的音频数据）') from exc
+        yield chunk
 
 
 async def _edge_stream(text: str, voice: str, rate: str) -> Tuple[bytes, List[dict]]:
@@ -36,7 +73,7 @@ async def _edge_stream(text: str, voice: str, rate: str) -> Tuple[bytes, List[di
     audio = bytearray()
     marks: List[dict] = []
     anchor: Optional[int] = None
-    async for chunk in communicate.stream():
+    async for chunk in _stream_chunks(communicate, STREAM_IDLE_TIMEOUT_SECONDS):
         if chunk['type'] == 'audio':
             if anchor is None:
                 anchor = communicate.state['chunk_audio_bytes']

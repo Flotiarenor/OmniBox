@@ -159,6 +159,10 @@ class SpeechEngine:
         只有"还有重试次数"时才算可重试 —— 参数类错误（如端点返回 400）重试也是白等，
         但网络类错误（超时、连接重置）重试往往就好了，而调用方无法可靠区分两者，
         所以统一重试：代价是最多多等 0.8 秒，收益是不必降到系统音色。
+
+        例外是异常自己声明了 `retryable = False`（例如 `tts_edge` 的合成超时）：
+        那类错误等一轮就已经到了这一次的时间上限，原地再等两轮只是把请求拖长数倍，
+        正确做法是立刻交给降级链的下一档。
         """
         runner = self._runners[engine]
         last_error: Optional[Exception] = None
@@ -169,6 +173,8 @@ class SpeechEngine:
                 last_error = e
                 log.warning(f'[document-reader] 朗读引擎 {engine} 第 {attempt}/'
                             f'{ENGINE_ATTEMPTS} 次失败: {e}')
+                if getattr(e, 'retryable', True) is False:
+                    break
                 if attempt < ENGINE_ATTEMPTS:
                     time.sleep(RETRY_DELAY_SECONDS * attempt)
         errors.append(f'{engine}: {last_error}')
