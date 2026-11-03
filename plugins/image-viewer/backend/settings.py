@@ -285,7 +285,14 @@ class SettingsResolver:
                 'errors': errors,
             }
         folders[rel_path] = existing
-        self._persist.update_setting('folders', folders)
+        # 写入结果必须上报：`update_setting` 返回 False 表示这次没落盘（设置文件写失败、
+        # 或 admin_only 键被拒）。原先无条件返回 success，前端 `_saveStep` 据此关弹窗、
+        # 刷新界面 —— 而磁盘上是旧值，表现是"保存了但没生效"，无处可查。
+        if not self._persist.update_setting('folders', folders):
+            return {
+                'success': False,
+                'error': '文件夹设置保存失败：设置文件写入失败',
+            }
         self.invalidate()
         self._on_written()
         return {'success': True}
@@ -295,7 +302,13 @@ class SettingsResolver:
         folders = self._settings.setting('folders') or {}
         if isinstance(folders, dict) and rel_path in folders:
             del folders[rel_path]
-            self._persist.update_setting('folders', folders)
+            # 与 `_save_folder_level` 同一口径：没写成就不能报成功，否则界面上"已回退
+            # 到全局"、实际仍按文件夹级设置生效。
+            if not self._persist.update_setting('folders', folders):
+                return {
+                    'success': False,
+                    'error': '清除文件夹设置失败：设置文件写入失败',
+                }
             self.invalidate()
             self._on_written()
         return {'success': True}
