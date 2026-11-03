@@ -7,7 +7,7 @@
     "跟不上"的结论会一起错，界面上看不出来。
   * **播放队列模型**复刻 `reader-tts.js` 的预取行为（每句开始播才要下一句）。它决定
     "卡顿"这个数字，写错一个下标就会把等待算到前一句头上，或者把稳态落后算成零卡顿。
-  * **参数复用**：测速必须用插件真实的参数整理（`TtsMixin._tts_params`），其中包含
+  * **参数复用**：测速必须用插件真实的参数整理（`tts.normalize_params`），其中包含
     "edge 音色填进端点时要换成端点通用名"这条规则。工具自己抄一份就必然漂移。
 
 全程零网络、不出声：合成一律是假的，音频字节在用例里现造。
@@ -250,7 +250,7 @@ class MeasureTests(unittest.TestCase):
 
 
 class SettingsTests(unittest.TestCase):
-    """参数必须经由插件的 `_tts_params` 整理 —— 包括 edge 音色换成端点通用名那条规则。"""
+    """参数必须经由插件的 `tts.normalize_params` 整理 —— 包括 edge 音色换成端点通用名那条规则。"""
 
     @classmethod
     def setUpClass(cls):

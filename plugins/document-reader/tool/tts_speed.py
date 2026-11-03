@@ -392,7 +392,7 @@ def load_backend() -> Dict[str, Any]:
     """加载本插件后端里测速要用到的几个模块（只加载一次，不构造插件实例）。
 
     不构造 `DocumentReaderPlugin`：它的 `__init__` 会读文档缓存与书签，测速不该碰这些
-    状态。要的只有三样 —— 引擎（`synthesize`）、参数整理（`TtsMixin._tts_params`）、
+    状态。要的只有三样 —— 引擎（`SpeechEngine`）、参数整理（`tts.normalize_params`）、
     设置项默认值（`settings_schema`）。
     """
     global _BACKEND
@@ -402,19 +402,40 @@ def load_backend() -> Dict[str, Any]:
         sys.path.insert(0, str(PROJECT_ROOT))
     from shell.backend.plugin_utils import load_sibling
 
+    const = load_sibling(str(BACKEND_DIR / 'const.py'), 'const', 'document_reader_speed')
     tts_module = load_sibling(str(BACKEND_DIR / 'tts.py'), 'tts', 'document_reader_speed')
+    engine_module = load_sibling(str(BACKEND_DIR / 'tts_engine.py'), 'tts_engine',
+                                 'document_reader_speed')
+    edge = load_sibling(str(BACKEND_DIR / 'tts_edge.py'), 'tts_edge', 'document_reader_speed')
+    endpoint = load_sibling(str(BACKEND_DIR / 'tts_endpoint.py'), 'tts_endpoint',
+                            'document_reader_speed')
+    system = load_sibling(str(BACKEND_DIR / 'tts_system.py'), 'tts_system',
+                           'document_reader_speed')
     main_module = _load_module(BACKEND_DIR / 'main.py', 'document_reader_speed_main')
     schema = {item['key']: item.get('default')
               for item in main_module.DocumentReaderPlugin.settings_schema if item.get('key')}
+    voices = endpoint.VoiceCatalog(edge.voices)
+    engine = engine_module.SpeechEngine(
+        {'edge': edge.synthesize, 'openai': endpoint.synthesize,
+         'system': system.synthesize},
+        {'edge': edge.available, 'openai': endpoint.available,
+         'system': system.available},
+        voices.engine_voice_names,
+    )
     _BACKEND = {
-        # tts.py 把引擎模块加载成 `_tts`（见那里的 `load_sibling`），与插件运行期是同一份
-        'engine': tts_module._tts,
-        'params_of': tts_module.TtsMixin._tts_params,
+        # 与插件运行期是同一个装配形态：引擎映射由入口（这里是测速工具）注入
+        'engine': engine,
+        'params_of': tts_module.normalize_params,
         # 预取深度的夹取与兜底在插件里，测速不重复实现一遍（改规则时只改一处）
-        'prefetch_of': tts_module.TtsMixin._tts_prefetch,
+        'prefetch_of': tts_module.clamp_prefetch,
+        'prefetch_limits': (const.TTS_LIMITS.prefetch_min, const.TTS_LIMITS.prefetch_max),
         'schema': schema,
         'parser': load_sibling(str(BACKEND_DIR / 'parser.py'), 'parser', 'document_reader_speed'),
-        'documents': load_sibling(str(BACKEND_DIR / 'documents.py'), 'documents', 'document_reader_speed'),
+        'documents': load_sibling(str(BACKEND_DIR / 'documents.py'), 'documents',
+                                  'document_reader_speed'),
+        'epub': load_sibling(str(BACKEND_DIR / 'epub.py'), 'epub', 'document_reader_speed'),
+        'markdown': load_sibling(str(BACKEND_DIR / 'markdown.py'), 'markdown',
+                                 'document_reader_speed'),
     }
     return _BACKEND
 
@@ -447,7 +468,7 @@ def read_settings(path: Path) -> Dict[str, Any]:
 
 
 class _SettingsView:
-    """把一份设置字典伪装成插件实例，好让 `TtsMixin._tts_params` 直接复用。
+    """把一份设置字典伪装成插件实例，好让 `tts.normalize_params` 直接复用。
 
     复用而不是重写一遍参数整理：那里有一条不能丢的规则 —— 引擎选 `openai` 时，edge 的
     音色名（`zh-CN-XiaoxiaoNeural`）要换成端点的通用名（`alloy`），否则端点会静默换成
@@ -460,9 +481,6 @@ class _SettingsView:
     def setting(self, key: str, default: Any = None) -> Any:
         return self._values.get(key, default)
 
-    def _raw_settings(self) -> Dict[str, Any]:
-        return dict(self._values)
-
 
 def resolve_params(backend: Dict[str, Any], stored: Dict[str, Any],
                    overrides: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -471,9 +489,11 @@ def resolve_params(backend: Dict[str, Any], stored: Dict[str, Any],
     for key, value in overrides.items():
         if value is not None:
             merged[key] = value
-    params = backend['params_of'](_SettingsView(merged))
+    view = _SettingsView(merged)
+    params = backend['params_of'](view, merged, backend['engine'])
     # 预取深度不是引擎参数，但时间轴要用它：按插件同一套夹取规则算，测的就是界面的策略
-    params['prefetch'] = backend['prefetch_of'](_SettingsView(merged))
+    params['prefetch'] = backend['prefetch_of'](
+        merged.get('tts_prefetch'), *backend['prefetch_limits'])
     return params, merged
 
 
@@ -619,7 +639,7 @@ def _fmt_clock(seconds: float) -> str:
     return f'{seconds:.2f}s（{seconds / 60:.1f} 分钟）'
 
 
-def build_advice(rtf: float, sim: Dict[str, Any], depths: Dict[str, Dict[str, Any]],
+def build_advice(rtf: float, sim: Dict[str, Any], depths: Dict[int, Dict[str, Any]],
                  depth: int) -> List[str]:
     """按结论给可操作的建议；数字全部来自本轮测量，不写「大概」「可能」。"""
     advice: List[str] = []
@@ -738,7 +758,12 @@ def _document_chapter(args: argparse.Namespace, backend: Dict[str, Any]) -> Tupl
         title = str(chapters[index].get('title') or f'第 {index + 1} 章')
         return content[int(start):int(end)], f'{path.name} 第 {index + 1} 章《{title}》'
 
-    document = backend['documents'].open_document(str(path), kind, encoding=args.encoding)
+    document = backend['documents'].open_document(
+        str(path), kind,
+        read_text=backend['parser'].TxtParser.read_full_content,
+        epub_cls=backend['epub'].EpubDocument,
+        markdown_cls=backend['markdown'].MarkdownDocument,
+        encoding=args.encoding)
     chapters = document.chapters()
     if index >= len(chapters):
         raise SystemExit(f'章序号越界：这本书有 {len(chapters)} 章，--chapter {index} 超出范围')
@@ -754,7 +779,7 @@ def _progress_printer(row: Dict[str, Any], total: int) -> None:
           f'合成 {row["synth_s"]:.2f}s', file=sys.stderr, flush=True)
 
 
-def _engine_label(engine: Dict[str, Any], params: Dict[str, Any]) -> str:
+def _engine_label(engine: Any, params: Dict[str, Any]) -> str:
     data = engine.status(params)
     labels = {item['name']: item['label'] for item in data.get('engines') or []}
     mode = params['mode']
