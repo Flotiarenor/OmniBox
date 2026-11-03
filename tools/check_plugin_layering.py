@@ -257,19 +257,19 @@ def check_plugins(
             violations.extend(_check_line_limits(path, where, is_entry=is_entry))
         known[name] = violations
 
-    # 豁免按插件生效：文件存在 = 该插件尚未迁移，整条规则跳过，但留 warning。
+    # 豁免按插件生效：文件存在 = 该插件按长期豁免处理，整条规则跳过，但留 warning。
     for name, violations in sorted(known.items()):
         waiver = allowlist_dir / f'{name}.txt'
         if waiver.is_file():
             if not violations:
                 errors.append(
                     f'[{name}] 分层豁免文件 {_rel(waiver, PROJECT_ROOT)} 已过期：'
-                    f'该插件不再违反任何分层规则，删掉这份文件（迁移的最后一步）')
+                    f'该插件已不再违反任何分层规则，删掉这份文件')
                 continue
             kinds = sorted({v.rule for v in violations})
             warnings.append(
                 f'[{name}] 分层豁免生效中（{_rel(waiver, PROJECT_ROOT)}，'
-                f'覆盖 {", ".join(kinds)}）：该插件还没完成组件化，迁移后删除这份文件')
+                f'覆盖 {", ".join(kinds)}）：非本轮迁移范围，下次改到该插件时顺手拆并删除本文件')
             continue
         for violation in violations:
             errors.append(f'[{name}] {violation.rule} {violation.where}：{violation.message}')

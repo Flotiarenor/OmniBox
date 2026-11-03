@@ -1,0 +1,12 @@
+# pyright 豁免：manga-library
+#
+# 为什么有这份文件：tools/check_pyright_plugins.py 要求每个插件 0 错误；本插件不在本轮
+# 后端组件化迁移范围内，还剩 2 条历史错误。豁免按插件分文件，好让并行迁移时各删各的。
+# 它只影响这个门禁：tools/layering_allowlist/ 里的豁免是另一条规则（文件行数），两者互不替代。
+#
+# 它怎么消失：把这些错误修到 0 之后删掉整个文件（棘轮的最后一步）。留着不删会被判为
+# 「豁免文件已过期」并报错；文件存在期间，每次跑门禁都会打印条数与文件路径。
+#
+# 下面每条都与 pyright 输出逐字对应，供修复时对照。
+#   plugins/manga-library/backend/download_state.py:11:28 Cannot access attribute "to_state_dict" for class "object"   Attribute "to_state_dict" is unknown [reportAttributeAccessIssue]
+#   plugins/manga-library/backend/main.py:242:16 Type "List[Dict[Unknown, Unknown]] | None" is not assignable to return type "List[Dict[Unknown, Unknown]]"   Type "List[Dict[Unknown, Unknown]] | None" is not assignable to type "List[Dict[Unknown, Unknown]]"     "None" is not assignable to "List[Dict[Unknown, Unknown]]" [reportReturnType]

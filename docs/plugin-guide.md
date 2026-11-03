@@ -579,40 +579,73 @@ class AudioCoverCache(ThumbCache):
 带 `Cache-Control: max-age=86400` 而 URL 没有版本号 —— 重建了缩略图，浏览器一天不回源
 （media-player 曾单独在 URL 上打 `&v=<mtime>` 绕开）。这些现在都由基建统一处理。
 
-**插件只回答三个问题**（`PluginBase.freshness_spec()`；不声明 = 不参与，行为不变）：
+**插件只回答三个问题**（`PluginBase.freshness_spec()`；不声明 = 不参与，行为不变）。
+规格与钩子放在一个**组件**里，由入口装配后一行委派 —— 不要写成 `class FreshnessMixin`
+再让入口类继承：分片混入会被 `tools/check_plugin_layering.py` 的 R1 拦下，理由（静态检查
+失效、`super()` 命中混入）与正确形态见 [plugin-backend-layout.md](plugin-backend-layout.md)。
 
 ```python
-# plugins/my-plugin/backend/freshness.py（分片，与 main.py 同目录，与 §3.1 的类骨架同形）
-class FreshnessMixin:
-    def get_cache_dir(self):          # 可选：默认 <数据根>/.cache/<插件名>
-        return self.cache_dir         # 指纹库放这里：freshness.db
+# plugins/my-plugin/backend/freshness.py（组件：入口 load_sibling 加载并注入依赖）
+from typing import Any, Callable, Dict, Optional
 
-    def freshness_spec(self):
+
+class FreshnessProvider:
+    """向壳声明新鲜度规格并实现它的钩子。
+
+    不继承、不 import PluginBase：依赖全部由入口按构造参数注入，因此可以脱离插件单独测。
+    """
+
+    def __init__(self, paths: Any, thumbs: Any,
+                 engine_provider: Callable[[], Optional[Any]]) -> None:
+        self._paths = paths
+        self._thumbs = thumbs
+        # 壳把刷新引擎挂在插件实例上；组件不持有宿主对象，只按需问"引擎在哪"
+        self._engine = engine_provider
+
+    def spec(self) -> Dict[str, Any]:
         return {
-            'roots': lambda: self._roots(),   # ① 管哪些文件（可调用 = 跟着设置走）
+            'roots': self._paths.roots,       # ① 管哪些文件（可调用 = 跟着设置走）
             'prefixes': lambda: (...),        #    多根时的虚拟前缀（默认第一根 ''、其余 __<目录名>）
             'include': ('.jpg', '.png'),      #    关心的后缀（空 = 全部常规文件）
             'content_version': 4,             # ② 解析规则版本：变了就整体作废派生数据
-            'derive': self._on_changed,       # ③ 条目新增/变化时做什么（只对变化项调用）
-            'prune': self._on_removed,        #    条目消失时清派生缓存
-            'on_verified': self._on_verified, #    全量校验后按"有效键集合"对账孤儿
-            'rebuild': self._clear_derived,   #    逃生门：丢弃派生缓存（设置页入口，管理员）
+            'derive': self.derive,            # ③ 条目新增/变化时做什么（只对变化项调用）
+            'prune': self.prune,              #    条目消失时清派生缓存
+            'on_verified': self.audit,        #    全量校验后按"有效键集合"对账孤儿
+            'rebuild': self.rebuild,          #    逃生门：丢弃派生缓存（设置页入口，管理员）
             'stat_entries': True,             #    目录不大且"替换要立刻反映"时开（见下）
             'unit': '张',
         }
 ```
 
+```python
+# plugins/my-plugin/backend/main.py（入口只做装配与一行委派）
+class MyPlugin(PluginBase):
+    def __init__(self, manifest: dict, config: dict) -> None:
+        super().__init__(manifest, config)
+        # …其余组件…
+        self.freshness = _freshness.FreshnessProvider(
+            self.paths, self.thumbs,
+            lambda: getattr(self, '_freshness_engine', None))
+
+    def get_cache_dir(self):            # 可选：默认 <数据根>/.cache/<插件名>
+        return self.paths.cache_dir     # 指纹库放这里：freshness.db
+
+    def freshness_spec(self):
+        return self.freshness.spec()
+```
+
 条目键 = `前缀/根内相对路径`，与插件对外用的路径同形 —— 派生缓存的键（缩略图键、
-索引键）可以直接复用，不需要额外映射表。三个钩子都**只做缓存失效/清理，不做重活**：
+索引键）可以直接复用，不需要额外映射表。三个钩子都**只做缓存失效/清理，不做重活**，
+方法体与迁移前一样，只是接收者从 `self` 换成注入进来的组件：
 
 ```python
-def _on_changed(self, items):     # items: [{key, path, mtime, size, dir}, ...]
-    self._list_cache.clear()      # 派生数据按需重算才是最快路径
-def _on_removed(self, keys):
+def derive(self, items):          # items: [{key, path, mtime, size, dir}, ...]
+    self._listing.clear_cache()   # 派生数据按需重算才是最快路径
+def prune(self, keys):
     for rel in keys:
-        self.thumb_cache.delete(rel)
-def _on_verified(self, keys):     # keys: 当前全部有效条目键（整趟无错时才调用）
-    return {'rows': self.thumb_cache.prune(keys)}
+        self._thumbs.delete(rel)
+def audit(self, keys):            # keys: 当前全部有效条目键（整趟无错时才调用）
+    return {'rows': self._thumbs.prune(keys)}
 ```
 
 前端挂载共享组件（**不要**自己写按钮与轮询）：

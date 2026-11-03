@@ -1,0 +1,18 @@
+# pyright 豁免：image-cleaner
+#
+# 为什么有这份文件：tools/check_pyright_plugins.py 要求每个插件 0 错误；本插件不在本轮
+# 后端组件化迁移范围内，还剩 8 条历史错误。豁免按插件分文件，好让并行迁移时各删各的。
+# 它只影响这个门禁：tools/layering_allowlist/ 里的豁免是另一条规则（文件行数），两者互不替代。
+#
+# 它怎么消失：把这些错误修到 0 之后删掉整个文件（棘轮的最后一步）。留着不删会被判为
+# 「豁免文件已过期」并报错；文件存在期间，每次跑门禁都会打印条数与文件路径。
+#
+# 下面每条都与 pyright 输出逐字对应，供修复时对照。
+#   plugins/image-cleaner/backend/main.py:80:9 "thumb_dir" incorrectly overrides property of same name in class "PluginBase"   Property method "fset" is missing in override [reportIncompatibleMethodOverride]
+#   plugins/image-cleaner/backend/main.py:83:9 Method "ensure_thumb" overrides class "PluginBase" in an incompatible manner   Return type mismatch: base method returns type "None", override returns type "str"     "str" is not assignable to "None" [reportIncompatibleMethodOverride]
+#   plugins/image-cleaner/backend/main.py:84:16 Type "None" is not assignable to return type "str"   "None" is not assignable to "str" [reportReturnType]
+#   plugins/image-cleaner/backend/main.py:151:38 Argument of type "object | list[_T@enumerate]" cannot be assigned to parameter "iterable" of type "Iterable[_T@enumerate]" in function "__new__"   Type "object | list[_T@enumerate]" is not assignable to type "Iterable[_T@enumerate]"     "object" is incompatible with protocol "Iterable[_T@enumerate]"       "__iter__" is not present [reportArgumentType]
+#   plugins/image-cleaner/backend/main.py:717:27 Argument of type "ImagingCore" cannot be assigned to parameter "iterable" of type "Iterable[_T@list]" in function "__init__"   "ImagingCore" is incompatible with protocol "Iterable[_T@list]"     "__iter__" is not present [reportArgumentType]
+#   plugins/image-cleaner/backend/main.py:745:35 Argument of type "int | None" cannot be assigned to parameter "x" of type "ConvertibleToInt" in function "__new__"   Type "int | None" is not assignable to type "ConvertibleToInt"     Type "None" is not assignable to type "ConvertibleToInt"       "None" is not assignable to "str"       "None" is incompatible with protocol "Buffer"         "__buffer__" is not present       "None" is incompatible with protocol "SupportsInt"         "__int__" is not present       "None" is incompatible with protocol "SupportsIndex"   ... [reportArgumentType]
+#   plugins/image-cleaner/backend/main.py:745:35 Argument of type "int | None" cannot be assigned to parameter "x" of type "ConvertibleToInt" in function "__new__"   Type "int | None" is not assignable to type "ConvertibleToInt"     Type "None" is not assignable to type "ConvertibleToInt"       "None" is not assignable to "str"       "None" is incompatible with protocol "Buffer"         "__buffer__" is not present       "None" is incompatible with protocol "SupportsInt"         "__int__" is not present       "None" is incompatible with protocol "SupportsIndex" [reportArgumentType]
+#   plugins/image-cleaner/backend/main.py:817:33 Cannot access attribute "delete_files" for class "PluginBase"   Attribute "delete_files" is unknown [reportAttributeAccessIssue]

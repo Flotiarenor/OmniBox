@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib.util
 import json
 import re
@@ -1238,7 +1239,179 @@ def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -
             if not callable(getattr(cls, 'register_api', None)):
                 errors.append(f'{where} 后端类缺少 register_api 方法')
 
+    # 附属插件按实例取宿主成员：名字必须真的存在于宿主实例上（AST 判定，不导入插件）。
+    plugin_index = {name: (plugin_dir, data) for plugin_dir, name, data in discovered}
+    for plugin_dir, name, data in discovered:
+        where = f'[{name}]'
+        errors.extend(
+            f'{where} {message}'
+            for message in _check_companion_host_contract(plugin_dir, data, plugin_index))
+
     return errors, warnings
+
+
+# ===== 附属插件 ↔ 宿主成员契约（AST 判定，不导入插件）=====
+# 真实事故（image-viewer 组件化时）：`delete_files` / `list_roots` 的实现搬进了组件，宿主
+# 实例上就没有这两个成员了；而 image-cleaner 是按实例取的（`host.delete_files(...)` 与
+# `getattr(host, 'list_roots')`）。这类漏掉**不报错**：`getattr` 带默认值，于是静默退回单根，
+# 表现只是"额外图库里的文件不参与扫描"。所以在这里静态核对：附属插件按实例取到的宿主成员名，
+# 必须出现在宿主的 `register_api` 键、宿主入口里定义的函数/类属性、或 `PluginBase` 的成员里。
+HOST_LOOKUP = 'get_dependency'
+
+
+def _parse_python(path: Path) -> ast.Module | None:
+    try:
+        return ast.parse(path.read_text(encoding='utf-8'))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return None
+
+
+def _plugin_base_members() -> set[str]:
+    """`PluginBase` 上按实例可用的成员名：方法、property、类属性、`self.x` 赋值。"""
+    tree = _parse_python(PROJECT_ROOT / 'shell' / 'backend' / 'plugin_base.py')
+    members: set[str] = set()
+    if tree is None:
+        return members
+    for cls in (node for node in ast.walk(tree)
+                if isinstance(node, ast.ClassDef) and node.name == 'PluginBase'):
+        for stmt in cls.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                members.add(stmt.name)
+            elif isinstance(stmt, ast.Assign):
+                members.update(t.id for t in stmt.targets if isinstance(t, ast.Name))
+        for node in ast.walk(cls):
+            if (isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store)
+                    and isinstance(node.value, ast.Name) and node.value.id == 'self'):
+                members.add(node.attr)
+    return members
+
+
+def _host_instance_surface(entry_path: Path) -> set[str]:
+    """宿主按实例暴露的成员：入口定义的函数/类属性、`register_api` 的键、`PluginBase` 成员。"""
+    surface = _plugin_base_members()
+    tree = _parse_python(entry_path)
+    if tree is None:
+        return surface
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            surface.add(node.name)
+        elif isinstance(node, ast.ClassDef):
+            for stmt in node.body:
+                if isinstance(stmt, ast.Assign):
+                    surface.update(t.id for t in stmt.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.Return) and isinstance(node.value, ast.Dict):
+            for key in node.value.keys:
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    surface.add(key.value)
+    return surface
+
+
+def _is_host_expr(node: ast.AST | None, host_attrs: set[str],
+                  host_routines: set[str], aliases: set[str]) -> bool:
+    """这个表达式是否代表"宿主实例"。"""
+    if node is None:
+        return False
+    if isinstance(node, ast.Attribute):
+        return (isinstance(node.value, ast.Name) and node.value.id == 'self'
+                and node.attr in host_attrs)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        func = node.func
+        return (isinstance(func.value, ast.Name) and func.value.id == 'self'
+                and func.attr in host_routines)
+    return isinstance(node, ast.Name) and node.id in aliases
+
+
+def _host_member_accesses(tree: ast.Module) -> list[tuple[str, int]]:
+    """附属插件里"从宿主实例上取成员"的 (名字, 行号)。"""
+    host_attrs: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            func = node.value.func
+            if isinstance(func, ast.Attribute) and func.attr == HOST_LOOKUP:
+                for target in node.targets:
+                    if (isinstance(target, ast.Attribute)
+                            and isinstance(target.value, ast.Name)
+                            and target.value.id == 'self'):
+                        host_attrs.add(target.attr)
+    host_routines = {
+        node.name for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(isinstance(inner, ast.Return)
+                and _is_host_expr(inner.value, host_attrs, set(), set())
+                for inner in ast.walk(node))
+    }
+    # 局部别名（`host = self._get_host()`）可能需要多轮才能追平链式赋值。
+    aliases: set[str] = set()
+    for _ in range(4):
+        found = {
+            target.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and _is_host_expr(node.value, host_attrs, host_routines, aliases)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
+        if found <= aliases:
+            break
+        aliases |= found
+
+    accesses: list[tuple[str, int]] = []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Attribute)
+                and _is_host_expr(node.value, host_attrs, host_routines, aliases)):
+            accesses.append((node.attr, node.lineno))
+        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == 'getattr' and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)
+                and _is_host_expr(node.args[0], host_attrs, host_routines, aliases)):
+            accesses.append((node.args[1].value, node.lineno))
+    return accesses
+
+
+def _rel_path(path: Path) -> str:
+    """消息里一律用仓库相对路径；不在仓库内（用例临时目录）时退回原样。"""
+    try:
+        return path.resolve().relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _check_companion_host_contract(
+    plugin_dir: Path,
+    data: dict,
+    plugin_index: Dict[str, Tuple[Path, dict]],
+) -> List[str]:
+    """声明了 dependencies 的插件，按实例取到的宿主成员必须真的存在。"""
+    problems: List[str] = []
+    dependencies = data.get('dependencies')
+    if not isinstance(dependencies, list):
+        return problems
+    for dep in dependencies:
+        host = plugin_index.get(dep)
+        if host is None:
+            continue
+        host_dir, host_data = host
+        backend = host_data.get('backend') or {}
+        entry = backend.get('entry') if isinstance(backend, dict) else None
+        if not isinstance(entry, str):
+            continue
+        surface = _host_instance_surface(host_dir / entry)
+        if not surface:
+            continue
+        for py_file in sorted((plugin_dir / 'backend').rglob('*.py')):
+            tree = _parse_python(py_file)
+            if tree is None:
+                continue
+            for member, lineno in _host_member_accesses(tree):
+                if member in surface:
+                    continue
+                problems.append(
+                    f'{_rel_path(py_file)} 第 {lineno} 行按实例从宿主 '
+                    f'{dep} 取了 {member}，但宿主没有按实例暴露它（register_api 键 / 入口定义'
+                    f'的成员 / PluginBase 成员里都没有）：这类漏掉不报错，只会静默退化。'
+                    f'要么在宿主入口补一行委派，要么改用宿主已暴露的成员')
+    return problems
 
 
 def main(argv: Iterable[str] | None = None) -> int:

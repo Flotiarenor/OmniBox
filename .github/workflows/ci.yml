@@ -6,7 +6,7 @@ name: ci
 #   lint        —— ruff 全量 + 插件规范 + 插件后端分层 + 打包规则 + 版本一致性 + 图标 sprite
 #                  + 测试文件可运行性 + 文档引用一致性（本地隐私门禁只在开发机跑，runner 上必然 SKIP）
 #   docs        —— 只在变更集含 .md 时跑：文档引用一致性（AGENTS.md 的名字 / 路径 / 链接）
-#   typecheck   —— pyright（内核零错误硬门禁；不再输出不会失败的插件/测试基线）
+#   typecheck   —— pyright：内核零错误硬门禁 + 插件后端按插件棘轮（豁免清单在 tools/pyright_allowlist/）
 #   test        —— 构建前端 + 共享测试（tools/plugin_ci.py --core），Windows + Linux 双平台
 #   plugin      —— 每个插件一条 job（tools/plugin_ci.py --plugin <name>），Windows + Linux
 #   frontend    —— 转义一致性门禁 + vue-tsc 类型检查 + vite 构建
@@ -218,7 +218,7 @@ jobs:
         run: python tools/check_docs.py
 
   typecheck:
-    name: typecheck（pyright，内核硬门禁）
+    name: typecheck（pyright：内核零错误 + 插件棘轮）
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
@@ -242,6 +242,12 @@ jobs:
       # 那条步骤不会让 CI 失败，留着只会制造“看起来检查过”的噪声。
       - name: pyright（内核，零错误门禁）
         run: python -m pyright main.py shell tools
+
+      # 插件后端：已迁移与新建插件必须 0 错误；未迁移的插件按 tools/pyright_allowlist/
+      # 挂账（每次打印条数，修完即删文件）。这是"插件类型检查回到门禁"的唯一入口 ——
+      # 直接把 plugins 塞进上面那条命令会被两个未迁移插件的 10 条历史错误永久卡住。
+      - name: pyright（插件后端，按插件棘轮）
+        run: python tools/check_pyright_plugins.py
 
   test:
     name: test（${{ matrix.os }} / py${{ matrix.python }}）

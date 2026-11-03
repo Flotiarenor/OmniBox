@@ -79,7 +79,8 @@ iframe 以 `?content=1` 只装内容（插件页禁止 `.view-sub-sidebar`、`.v
 ## 规则
 
 - 新增插件用脚手架，不要手写骨架：`python tools/new_plugin.py my-tool`（模板 `tools/examples/hello-world`）。
-- 提交前跑 `python tools/check_plugins.py`。
+- 提交前跑 `python tools/check_plugins.py`、`python tools/check_plugin_layering.py`、`python tools/check_pyright_plugins.py`。
+- 后端结构按 [docs/plugin-backend-layout.md](../docs/plugin-backend-layout.md)：入口只做装配与委派，其余是显式接收依赖的组件，组件之间不互相 import。后端类型检查也是硬门禁：`pyrightconfig.json` 里插件的错误必须为 0，新插件与已迁移插件不带欠账（未迁移的老插件欠账在 `tools/pyright_allowlist/` 逐条挂账），不许用 `# pyright: ignore` 一类注释消音。
 - 插件后端的动态依赖必须登记：见 [docs/Releases/AGENTS.md](../docs/Releases/AGENTS.md)。
 
 ## 先读
