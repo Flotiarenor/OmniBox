@@ -1,1066 +1,170 @@
-"""媒体播放器插件主类：统一音频/视频媒体库。"""
+"""media-player 插件入口：API 表、壳钩子与装配。
 
-import hashlib
-import json
+本文件只做三件事：声明插件对壳暴露什么、把组件装配起来、把壳按名调用的钩子一行
+委派给组件。设置项 schema 在 `const.py`，业务逻辑在各组件里（分层门禁硬上限 250 行，
+目标是 200 行以内）。
+
+接缝说明：`load_sibling` 返回 `ModuleType`，装配出来的组件属性在静态检查里是 `Any`。
+这是有意的取舍 —— 需要检查的东西都在组件里；为让接缝有类型而塞进 `sys.path` 会换来
+模块名冲突。
+
+装配顺序就是依赖顺序：路径 → 扫描器 → 索引 → 用户状态 → 封面库 → 查询 / 导出 / 歌词 /
+预设 / 诊断 → 刷新。反向依赖一律由构造参数注入，组件之间不互相 import。
+
+"数据根"有两个：本插件对壳声明的 `get_data_root()` 是**媒体根**（索引与封面库跟着它
+走），而壳自己的数据根（`PluginBase.get_data_root()`）只用来放用户状态文件。
+"""
+
 import logging
-import os
-import re
-import shutil
-import tempfile
-import threading
-import time
-import uuid
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 from shell.backend.freshness import engine_for
 from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_utils import load_sibling
-from shell.backend.thumb_cache import ThumbCache
 
 log = logging.getLogger(__name__)
 
-_scanner = load_sibling(__file__, 'scanner', 'media_player')
+_const = load_sibling(__file__, 'const', 'media_player')
 _models = load_sibling(__file__, 'models', 'media_player')
+_metadata = load_sibling(__file__, 'metadata', 'media_player')
+_video_meta = load_sibling(__file__, 'video_meta', 'media_player')
 _ffmpeg = load_sibling(__file__, 'video_ffmpeg', 'media_player')
+_scanner = load_sibling(__file__, 'scanner', 'media_player')
+_paths = load_sibling(__file__, 'paths', 'media_player')
+_index = load_sibling(__file__, 'index', 'media_player')
+_state = load_sibling(__file__, 'state', 'media_player')
+_collections = load_sibling(__file__, 'collections', 'media_player')
+_covers = load_sibling(__file__, 'covers', 'media_player')
+_library = load_sibling(__file__, 'library', 'media_player')
+_report = load_sibling(__file__, 'report', 'media_player')
+_lyrics = load_sibling(__file__, 'lyrics', 'media_player')
+_presets = load_sibling(__file__, 'presets', 'media_player')
+_diagnostics = load_sibling(__file__, 'diagnostics', 'media_player')
 _freshness = load_sibling(__file__, 'freshness', 'media_player')
 
-cover_generator = _scanner.cover_generator
-INDEX_VERSION = _scanner.INDEX_VERSION
 
-# 播放队列持久化上限：状态文件按 id 列表存储，只保留前若干条以约束文件体积；
-# 超出时置 queue_truncated，前端恢复的是可恢复的那部分。
-QUEUE_PERSIST_LIMIT = 1000
-#: `os.replace` 的重试次数与单次等待。只针对"临时文件被外部实时扫描/索引短暂占用"
-#: 这类瞬时失败（WinError 5 / 32）：等待总计 `_REPLACE_DELAY * (1+2+3)` ≈ 300ms，
-#: 代价远低于"用户这次改动没落盘"。
-_REPLACE_ATTEMPTS = 3
-_REPLACE_DELAY = 0.05
-MediaItem = _models.MediaItem
-MediaAlbum = _models.MediaAlbum
+class MediaPlayerPlugin(PluginBase):
+    # 设置项声明是纯数据，放在 const.py；壳的设置弹窗与 PluginBase 都从类属性读。
+    settings_schema: ClassVar[List[Dict[str, Any]]] = _const.SETTINGS_SCHEMA
 
-
-class MediaPlayerPlugin(_freshness.FreshnessMixin, PluginBase):
-    settings_schema: ClassVar[List[Dict[str, Any]]] = [
-        # 目录列表（type:"directory"）由 Shell 共享组件渲染，与图片相册的
-        # 「图片文件夹」是同一套实现（shell/frontend/public/shell/folder-picker.js）
-        {"key": "media_roots", "label": "媒体文件夹", "type": "directory", "multi": True,
-         "admin_only": True,
-         "placeholder": "输入目录绝对路径，如 D:\\音乐",
-         "emptyText": "未添加任何目录，将使用默认数据目录（./data）",
-         "help": "第一行为主目录（数据根 + 扫描根），其余目录作为额外扫描根，"
-                 "各根以目录名做前缀聚合；保存后生效。改动需管理员（它决定 /file 的允许根）",
-         "section": "media", "sectionTitle": "媒体库",
-         "sectionDescription": "媒体目录与扫描根；第一行为主目录，其余作为额外扫描根。",
-         "sectionOrder": 10, "order": 10},
-        {"key": "lyrics_enabled", "label": "启用歌词显示", "type": "checkbox",
-         "default": True, "help": "关闭后不显示歌词入口",
-         "section": "lyrics", "sectionTitle": "歌词",
-         "sectionDescription": "歌词显示、字号、行高与对齐。",
-         "sectionOrder": 30, "order": 10},
-        {"key": "lyrics_font_size", "label": "歌词字号", "type": "range",
-         "default": 16, "min": 12, "max": 40, "help": "未激活行的字号",
-         "section": "lyrics", "sectionTitle": "歌词",
-         "sectionDescription": "歌词显示、字号、行高与对齐。",
-         "sectionOrder": 30, "order": 20},
-        {"key": "lyrics_active_size", "label": "当前行字号", "type": "range",
-         "default": 24, "min": 16, "max": 52, "help": "当前播放行的字号",
-         "section": "lyrics", "sectionTitle": "歌词",
-         "sectionDescription": "歌词显示、字号、行高与对齐。",
-         "sectionOrder": 30, "order": 30},
-        {"key": "lyrics_line_height", "label": "行高倍率", "type": "range",
-         "default": 1.6, "min": 1.2, "max": 3.0, "step": 0.1,
-         "help": "行间距倍率",
-         "section": "lyrics", "sectionTitle": "歌词",
-         "sectionDescription": "歌词显示、字号、行高与对齐。",
-         "sectionOrder": 30, "order": 40},
-        {"key": "lyrics_glow", "label": "文字发光效果", "type": "checkbox",
-         "default": True, "help": "当前行文字发光",
-         "section": "lyrics", "sectionTitle": "歌词",
-         "sectionDescription": "歌词显示、字号、行高与对齐。",
-         "sectionOrder": 30, "order": 50},
-        {"key": "lyrics_align", "label": "歌词对齐", "type": "select",
-         "options": [{"label": "居中", "value": "center"}, {"label": "左对齐", "value": "left"}],
-         "default": "center", "help": "歌词文本对齐方式",
-         "section": "lyrics", "sectionTitle": "歌词",
-         "sectionDescription": "歌词显示、字号、行高与对齐。",
-         "sectionOrder": 30, "order": 60},
-        {"key": "lyrics_bg_color", "label": "歌词背景色", "type": "text",
-         "placeholder": "如 #1a1a2e 留空为默认",
-         "help": "纯色背景，支持 #RRGGBB 格式",
-         "section": "lyrics-appearance", "sectionTitle": "歌词外观",
-         "sectionDescription": "歌词颜色与背景效果。",
-         "sectionOrder": 40, "order": 10},
-        {"key": "lyrics_font_color", "label": "歌词字体颜色", "type": "text",
-          "default": "#ffffff", "placeholder": "#ffffff",
-          "help": "歌词文字颜色，支持 #RRGGBB 格式",
-          "section": "lyrics-appearance", "sectionTitle": "歌词外观",
-          "sectionDescription": "歌词颜色与背景效果。",
-          "sectionOrder": 40, "order": 20},
-        {"key": "lyrics_bg_blur", "label": "背景模糊度", "type": "range",
-          "default": 8, "min": 0, "max": 50, "help": "背景模糊效果强度",
-          "section": "lyrics-appearance", "sectionTitle": "歌词外观",
-          "sectionDescription": "歌词颜色与背景效果。",
-          "sectionOrder": 40, "order": 30},
-        {"key": "lyrics_bg_brightness", "label": "背景明亮度", "type": "range",
-          "default": 0.25, "min": 0.05, "max": 1.0, "step": 0.05,
-          "help": "背景亮度调节",
-          "section": "lyrics-appearance", "sectionTitle": "歌词外观",
-          "sectionDescription": "歌词颜色与背景效果。",
-          "sectionOrder": 40, "order": 40},
-        {"key": "auto_hide_enabled", "label": "全屏自动隐藏控件", "type": "checkbox",
-         "default": True, "help": "进入全屏后鼠标静止自动隐藏控件",
-         "section": "playback", "sectionTitle": "播放",
-         "sectionDescription": "视频默认播放模式、播放起点与全屏控件行为。",
-         "sectionOrder": 20, "order": 30},
-        {"key": "auto_hide_delay", "label": "自动隐藏延迟（秒）", "type": "range",
-         "default": 3, "min": 0, "max": 10, "step": 1,
-         "section": "playback", "sectionTitle": "播放",
-         "sectionDescription": "视频默认播放模式、播放起点与全屏控件行为。",
-         "sectionOrder": 20, "order": 40},
-        {"key": "default_video_mode", "label": "视频默认播放模式", "type": "select",
-         "options": [{"label": "画面模式", "value": "video"}, {"label": "仅声音", "value": "audio"}],
-         "default": "video", "help": "视频默认以画面或仅声音播放",
-         "section": "playback", "sectionTitle": "播放",
-         "sectionDescription": "视频默认播放模式、播放起点与全屏控件行为。",
-         "sectionOrder": 20, "order": 10},
-        {"key": "resume_mode", "label": "播放起点", "type": "select",
-         "options": [{"label": "从头播放", "value": "restart"},
-                     {"label": "保留播放进度，低于5s从头开始", "value": "resume"}],
-         "default": "restart",
-         "help": "从头播放：每次点击曲目都从 0 开始；保留播放进度：续播上次位置，"
-                 "但剩余不足 5 秒时一律从头开始（音频、视频同样生效）",
-         "section": "playback", "sectionTitle": "播放",
-         "sectionDescription": "视频默认播放模式、播放起点与全屏控件行为。",
-         "sectionOrder": 20, "order": 20},
-        {"key": "ffmpeg_path", "label": "ffmpeg 路径（视频封面抽取）", "type": "text",
-         "placeholder": "留空自动检测 PATH",
-         "help": "可选：填写 ffmpeg 可执行文件路径（如 C:\\ffmpeg\\bin\\ffmpeg.exe 或所在目录）；"
-                "留空时自动检测 PATH。检测到 ffmpeg 后视频封面由后端直接抽取（无需打开页面），"
-                "检测不到则回退为前端抽帧。",
-         "section": "video", "sectionTitle": "视频与封面",
-         "sectionDescription": "视频封面抽取使用的 ffmpeg 路径。",
-         "sectionOrder": 50, "order": 10},
-    ]
-
-    def __init__(self, manifest, config):
+    def __init__(self, manifest: dict, config: dict) -> None:
         super().__init__(manifest, config)
-        # 状态文件的读写锁。一次换曲时前端会连发 `media_save_playback` 与
-        # `media_update_recent`，桥调用在 pywebview 里各跑一条线程，两条都会落到
-        # `_save_state`；没有这把锁时它们会撞在同一个临时文件上（见 `_save_state`）。
-        self._state_lock = threading.RLock()
-        roots = self._configured_roots()
-        self._scan_roots: List[Path] = roots or [super().get_data_root()]
-        self.root_dir = self._scan_roots[0]
-        self._cache_dir = self.root_dir / '.cache'
-        self._cache_file = self._cache_dir / 'media_index.json'
-        self._state_file = self._state_dir() / 'media_state.json'
-        self._task_file = self._cache_dir / 'scan_task.json'
-        self._cache_dir.mkdir(parents=True, exist_ok=True)
-        self._items: Dict[str, MediaItem] = {}
-        self._adopt_orphan_state()
-        self._state = self._load_state()
-        self._load_index()
-        self._index_dirty = False        # 索引有未落盘的改动（整趟结束/退出时写一次）
-        self._legacy_migrated = False
-        self._migrate_legacy_state()
-        self._restore_scan_task()
-        # 封面统一走 ThumbCache（SQLite）：音频内嵌/文件夹封面由 cover_generator
-        # 按需生成；视频封面由前端 canvas 抽帧后经 media_put_thumb 回写。
-        # mtime/size 失效自动重生成，不再散落 .cache/covers
-        self._thumb_cache = ThumbCache(
-            self._cache_dir / 'thumbs.db', size=(640, 640),
-            generator=cover_generator, workers=3)
+        # 显式写 PluginBase.get_data_root(self) 而不是 super()：不依赖 MRO 顺序。
+        self.paths = _paths.PathLayout(self, PluginBase.get_data_root(self),
+                                       lambda: PluginBase.get_data_root(self))
+        self.scanner = _scanner.MediaScanner(_models, _metadata, _video_meta, _ffmpeg)
+        self.index = _index.MediaIndex(self.paths.cache_file,
+                                       self.scanner.index_version, _models)
+        self.state = _state.UserStateStore(self.paths, self.index,
+                                           self.scanner.item_id)
+        self.state.adopt_orphan()
+        self.state.load()
+        self.index.load()
+        self.state.migrate_legacy()
+        self.paths.drop_stale_scan_task()
+        self.collections = _collections.MediaCollections(
+            self.state, self.index, _const.QUEUE_PERSIST_LIMIT)
+        self.covers = _covers.CoverStore(self.paths, self.index,
+                                         self.scanner.cover_generator)
+        self.library = _library.MediaLibrary(self.index, self.state, _models)
+        self.report = _report.MissingReport(self.paths, self.index)
+        self.lyrics = _lyrics.LyricsReader(self.index)
+        self.presets = _presets.EqPresets(Path(__file__).parent.parent / 'eq-presets')
+        self.diagnostics = _diagnostics.AudioDiagnostics(
+            self.index, self, _ffmpeg,
+            lambda: load_sibling(__file__, 'metadata', 'media_player'))
+        self.freshness = _freshness.FreshnessProvider(
+            self.paths, self.index, self.covers, self.scanner, lambda: engine_for(self))
         # ffmpeg 可选通道：注入用户设置路径（探测结果缓存，设置变更时刷新）
         _ffmpeg.configure(self.setting('ffmpeg_path') or '')
 
-    def get_thumb_data(self, filepath: str) -> Optional[tuple]:
-        """/thumbs 路由：按 item id 返回封面 (data, mime)；未索引/生成失败返回 None。"""
-        item = self._items.get(filepath)
-        if item is None or not item.path:
-            return None
-        return self._thumb_cache.get(filepath, Path(item.path))
-
-    def put_thumb(self, item_id: str = '', data_url: str = '') -> dict:
-        """前端 canvas 抽帧回写封面（data URL → ThumbCache，不经过生成器）。
-
-        仅接受 data:image/ 前缀，限制体积防滥用；源文件 mtime/size 一并记录，
-        文件替换后条目自动失效（前端会重新抽帧）。
-        """
-        if not item_id or not data_url or not data_url.startswith('data:image/'):
-            return {'success': False, 'error': '参数无效'}
-        item = self._items.get(item_id)
-        if item is None or not item.path:
-            return {'success': False, 'error': '媒体不存在'}
-        try:
-            header, _, b64 = data_url.partition(',')
-            if len(b64) > 3 * 1024 * 1024:   # 上限约 2MB 图片数据
-                return {'success': False, 'error': '数据过大'}
-            import base64
-            data = base64.b64decode(b64, validate=True)
-            if not data:
-                return {'success': False, 'error': '数据为空'}
-            mime = 'image/png' if 'png' in header else 'image/jpeg'
-            self._thumb_cache.put(item_id, data, mime, Path(item.path))
-            return {'success': True}
-        except Exception as e:
-            return {'success': False, 'error': f'写入失败: {e}'}
-
-    def thumb_missing(self, item_ids: List[str] | None = None) -> dict:
-        """批量查询哪些条目的封面尚未缓存（供前端按浏览位置预取，避免重复抽帧）。
-
-        单连接批量判定（ThumbCache.has_many），避免每个 id 一次 SQLite 建连。
-        """
-        items = []
-        for sid in (item_ids or [])[:200]:
-            item = self._items.get(sid)
-            if item is None or not item.path:
-                continue
-            items.append((sid, Path(item.path)))
-        return {'missing': self._thumb_cache.has_many(items)}
-
-    def get_data_root(self) -> Path:
-        return self.root_dir
-
-    # ---------- 用户数据的落点（歌单 / 喜欢 / 播放进度） ----------
-
-    def _state_dir(self) -> Path:
-        """用户数据的目录：**壳数据根**下，而不是媒体文件夹里。
-
-        背景：`media_state.json` 原先落在「媒体文件夹」第一行的 `.cache` 下，而那一行
-        同时是数据根。用户在设置里换一个文件夹（或调整顺序）就等于把整个状态文件换到
-        别处：插件在**新位置写一份空状态**，旧的那份留在原地再也没人读 —— 用户视角
-        是"我的歌单被删了"。实际发生过一次：旧媒体根下的 `media_state.json` 里整份
-        播放记录（几十个歌单、上百个喜欢）完好无损，而插件已经在新媒体根下用一份空
-        状态跑了一整天。因此用户数据的落点改到壳数据根下（与指纹库同级），媒体文件夹
-        怎么改都不再影响它；老位置的旧文件由 `_adopt_orphan_state()` 收养回来。
-
-        索引与封面库**仍然跟着媒体根**：它们描述的就是那些文件，换根重建才对。
-        """
-        try:
-            base = Path(PluginBase.get_data_root(self))
-        except (KeyError, TypeError, OSError):
-            # 壳没给 `directories.data_root`（脚本/用例直接构造插件）时退回媒体根，
-            # 保证插件仍可用，只是失去"换文件夹不丢用户数据"的保护
-            base = self._cache_dir.parent
-        return base / '.cache' / 'media-player'
-
-    def _adopt_orphan_state(self) -> None:
-        """新落点还没有状态文件时，从各媒体根的旧位置挑最完整的一份收养。
-
-        评分只数**用户自己攒出来的东西**（歌单 + 喜欢）：`recent` 谁都是满的（上限
-        50 条），拿它当权重会把"刚换过根、什么都没有"的那份也算得一样高。
-        复制而不是移动：旧文件留在原地可回溯，收养来的这份此后是唯一写入方。
-        """
-        try:
-            if self._state_file.exists():
-                return
-        except OSError:
-            return
-        best: Optional[Path] = None
-        best_score = 0
-        candidates = list(self._scan_roots)
-        for root in candidates:
-            candidate = Path(root) / '.cache' / 'media_state.json'
-            try:
-                if not candidate.exists():
-                    continue
-                data = json.loads(candidate.read_text(encoding='utf-8'))
-            except Exception:
-                continue
-            score = len(data.get('playlists') or []) + len(data.get('favorites') or [])
-            if score > best_score:
-                best, best_score = candidate, score
-        if best is None or best_score <= 0:
-            return
-        try:
-            self._state_file.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(best, self._state_file)
-            log.info(f'[MediaPlayer] 已收养旧的播放记录 {best} → {self._state_file}'
-                     f'（歌单+喜欢 {best_score} 条）')
-        except OSError as e:
-            log.error(f'[MediaPlayer] 收养旧播放记录失败 {best}: {e}')
-
-    def get_file_roots(self) -> List[Path]:
-        """跨主目录与额外媒体目录提供文件访问。"""
-        return list(self._scan_roots) or [self.root_dir]
-
-    def _configured_roots(self) -> List[Path]:
-        """把「媒体文件夹」列表解析成有序根目录。
-
-        第一行是主目录（数据根 + 扫描根），其余是额外扫描根。
-        兼容旧配置：早期是 `root_dir` + `media_dirs`（每行一个）两个字段，
-        用户没重新保存过设置时按旧字段原样读出来，界面上合并成同一个列表。
-        """
-        entries = self.setting('media_roots')
-        if not str(entries or '').strip():
-            legacy = [self.setting('root_dir') or '']
-            legacy += str(self.setting('media_dirs') or '').splitlines()
-            entries = '\n'.join(legacy)
-        roots: List[Path] = []
-        for line in str(entries or '').splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                path = Path(line).expanduser().resolve()
-            except Exception:
-                continue
-            if path not in roots:
-                roots.append(path)
-        return roots
-
-    def _media_dirs(self) -> List[str]:
-        """全部扫描根（字符串形式），扫描 worker 与设置变更后重建都用它。"""
-        return [str(root) for root in self._scan_roots]
-
-    def _restore_scan_task(self) -> None:
-        """旧版任务文件的清理钩子（已废弃）。
-
-        根级断点（`scan_task.json` + `completed_roots`）由统一刷新基建的目录
-        指纹取代，残留的任务文件不再有读取方，留着只会让"上次扫描被中断"
-        这类状态永远挂在界面上。这里只做一次清理。
-        """
-        try:
-            if self._task_file.exists():
-                self._task_file.unlink()
-                log.info('[MediaPlayer] 已清理旧版扫描断点文件 scan_task.json')
-        except OSError:
-            pass
-
-    def _reload_index(self):
-        self._load_index()
-        self._state = self._load_state()
-
-    # ---------- 索引缓存 ----------
-
-    def _publish_items(self, items: Dict[str, MediaItem]) -> None:
-        """把索引换成一份**新的**快照字典（唯一的写入 self._items 的入口）。
-
-        桥接/HTTP 线程会直接遍历 self._items（search / recent / all_audio …），
-        而扫描 worker 在检查点之间会持续往工作字典里塞新条目。绝不能把工作
-        字典本身赋给 self._items —— 那样读取方就会撞上 "dictionary changed
-        size during iteration"：前端扫描期间每 500ms 轮询会放大暴露。
-        """
-        self._items = items
-
-    def _load_index(self):
-        if self._cache_file.exists():
-            try:
-                with open(self._cache_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                if data.get('version') != INDEX_VERSION:
-                    # 索引结构升级（如新增曲目号/专辑艺术家字段）时自动重建
-                    self._publish_items({})
-                    return
-                # 先在本地字典里建好再一次性发布：边建边写会让读取方看到半成品
-                loaded: Dict[str, MediaItem] = {}
-                for raw in data.get('items', []):
-                    item = MediaItem.from_cache(raw)
-                    loaded[item.id] = item
-                self._publish_items(loaded)
-            except Exception:
-                self._publish_items({})
-
-    def _save_index(self, result: Dict):
-        self._cache_file.parent.mkdir(parents=True, exist_ok=True)
-        payload = {'version': INDEX_VERSION, **result}
-        with open(self._cache_file, 'w', encoding='utf-8') as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-
-    def _load_state(self) -> dict:
-        """读状态文件。
-
-        与 `_save_state` 共用一把锁：Windows 上 `os.replace` 要求目标文件的所有
-        打开句柄都允许删除，读者在改名那一瞬间开着它，写者就会拿到 WinError 32。
-        备份损坏文件也在锁内做（`shutil.copy2` 同样要打开它）。
-        """
-        defaults = {"favorites": [], "recent": [], "playlists": [], "playback": {}}
-        with self._state_lock:
-            if self._state_file.exists():
-                try:
-                    with open(self._state_file, 'r', encoding='utf-8') as f:
-                        return {**defaults, **json.load(f)}
-                except Exception as e:
-                    # 解析失败**先备份**再退默认值：旧实现直接返回默认值，而下一次
-                    # `_save_state()`（播放中每 2 秒一次）会把默认值写回去 —— 一次瞬时
-                    # 读取失败（例如读到写入尚未完成的截断文件）就等于永久丢数据。
-                    self._backup_broken_state(e)
-            return defaults
-
-    def _backup_broken_state(self, error: Exception) -> None:
-        stamp = time.strftime('%Y%m%d-%H%M%S')
-        backup = self._state_file.with_name(f'media_state.corrupt-{stamp}.json')
-        try:
-            shutil.copy2(self._state_file, backup)
-            log.error(f'[MediaPlayer] 播放记录解析失败（{error}），已备份到 {backup}')
-        except OSError as e:
-            log.error(f'[MediaPlayer] 播放记录解析失败（{error}），备份也失败: {e}')
-
-    def _save_state(self):
-        """原子写用户状态：一把锁串行化 + 每次独立的临时文件名。
-
-        为什么必须串行化：前端一次换曲会在同一个 tick 里连发
-        `media_save_playback` 与 `media_update_recent`，桥调用由 pywebview
-        各起一条线程执行。两个写者共用一个固定临时文件名时，一个还在
-        `fsync`、另一个已经 `os.replace`，Windows 就报 WinError 32（"另一个
-        程序正在使用此文件"）并把这一次写入丢掉 —— 表现为每次换曲偶发一条
-        "保存状态失败"。临时文件名取自 `mkstemp`，即使将来仍有并发写者也不会
-        撞同一路径；改名对瞬时占用重试，挡的是外部实时扫描/索引。
-        """
-        with self._state_lock:
-            self._state_file.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                # 先序列化再落盘：状态坏了在创建临时文件之前就暴露，不留半个文件
-                payload = json.dumps(self._state, ensure_ascii=False, indent=2)
-                fd, tmp_name = tempfile.mkstemp(
-                    prefix='.media_state.', suffix='.tmp', dir=str(self._state_file.parent))
-                os.close(fd)
-            except Exception as e:
-                log.error(f"[MediaPlayer] 保存状态失败: {e}")
-                return
-            tmp = Path(tmp_name)
-            try:
-                with open(tmp, 'w', encoding='utf-8') as f:
-                    f.write(payload)
-                    f.flush()
-                    os.fsync(f.fileno())
-                self._replace_with_retry(tmp)
-            except Exception as e:
-                log.error(f"[MediaPlayer] 保存状态失败: {e}")
-            finally:
-                # 改名成功时临时文件已经不在；失败时（被外部占用）留下的一份要清掉
-                try:
-                    tmp.unlink(missing_ok=True)
-                except OSError:
-                    pass
-
-    def _replace_with_retry(self, tmp: Path) -> None:
-        """`os.replace(tmp, 状态文件)`，对瞬时占用重试几次。
-
-        只重试 `PermissionError`：Windows 上改名撞到"文件被占用"就是它
-        （WinError 5 / 32），等几十毫秒通常会成功；临时目录消失、磁盘满这类
-        失败重试也不会变好，交回调用方立刻报出来。
-        """
-        for attempt in range(_REPLACE_ATTEMPTS + 1):
-            try:
-                os.replace(tmp, self._state_file)
-                return
-            except PermissionError:
-                if attempt == _REPLACE_ATTEMPTS:
-                    raise
-                time.sleep(_REPLACE_DELAY * (attempt + 1))
-
-    def _migrate_legacy_state(self):
-        """把旧 music-player 的收藏 / 最近播放 / 歌单 / 播放状态迁入统一状态文件。
-
-        旧插件使用「相对路径」作为歌曲 id，新插件使用绝对路径的 md5 摘要，
-        这里在索引可用时做一次映射，成功后把旧文件改名保留。
-        """
-        if self._legacy_migrated:
-            return
-        self._legacy_migrated = True
-        legacy_file = self._cache_dir / 'music_state.json'
-        if not legacy_file.exists():
-            return
-        try:
-            legacy = json.loads(legacy_file.read_text(encoding='utf-8'))
-        except Exception:
-            return
-        if not isinstance(legacy, dict):
-            return
-
-        if not self._items:
-            # 索引尚未建立：保留旧文件，等待首次扫描后再迁移
-            self._legacy_migrated = False
-            return
-
-        mapping = {}
-        raw_ids = set()
-        raw_ids.update(str(x) for x in legacy.get('favorites', []) if x)
-        raw_ids.update(str(x.get('id', '')) for x in legacy.get('recent', []) if x.get('id'))
-        raw_ids.update(str(x) for pl in legacy.get('playlists', []) for x in pl.get('song_ids', []))
-        if legacy.get('playback', {}).get('song_id'):
-            raw_ids.add(str(legacy['playback']['song_id']))
-
-        for raw_id in raw_ids:
-            try:
-                legacy_path = Path(raw_id)
-                if not legacy_path.is_absolute():
-                    legacy_path = self._cache_dir.parent / legacy_path
-                new_id = hashlib.md5(str(legacy_path.resolve()).encode('utf-8')).hexdigest()[:16]
-                if new_id in self._items:
-                    mapping[raw_id] = new_id
-            except Exception:
-                pass
-
-        favorites = [mapping[x] for x in legacy.get('favorites', []) if str(x) in mapping]
-        playlists = []
-        for pl in legacy.get('playlists', []):
-            item_ids = [mapping[x] for x in pl.get('song_ids', []) if str(x) in mapping]
-            playlists.append({
-                'id': str(pl.get('id') or uuid.uuid4().hex[:12]),
-                'name': pl.get('name') or '迁移歌单',
-                'item_ids': item_ids,
-                'created_at': pl.get('created_at', ''),
-                'updated_at': pl.get('updated_at', ''),
-            })
-        playback = {}
-        old_pb = legacy.get('playback', {})
-        old_song = old_pb.get('song_id')
-        if old_song and str(old_song) in mapping:
-            playback = {
-                'item_id': mapping[str(old_song)],
-                'loop_mode': old_pb.get('loop_mode', 'none'),
-                'shuffle': bool(old_pb.get('shuffle', False)),
-                'volume': old_pb.get('volume', 1.0),
-            }
-
-        if favorites:
-            self._state['favorites'] = list(dict.fromkeys(self._state.get('favorites', []) + favorites))
-
-        legacy_recent = [
-            {'id': mapping[entry.get('id')], 'played_at': entry.get('played_at', '')}
-            for entry in legacy.get('recent', []) if str(entry.get('id', '')) in mapping
-        ]
-        if legacy_recent:
-            merged_recent = {entry.get('id'): entry for entry in legacy_recent}
-            for entry in self._state.get('recent', []):
-                merged_recent.setdefault(entry.get('id'), entry)
-            self._state['recent'] = sorted(
-                merged_recent.values(),
-                key=lambda x: x.get('played_at', ''),
-                reverse=True,
-            )[:50]
-
-        if playlists and not self._state.get('playlists'):
-            self._state['playlists'] = playlists
-        if playback and not self._state.get('playback'):
-            self._state['playback'] = playback
-        self._save_state()
-
-        try:
-            legacy_file.replace(legacy_file.with_name('music_state.json.migrated'))
-            log.info(f"[MediaPlayer] 已迁移旧 music-player 状态 → {self._state_file.name}")
-        except Exception:
-            pass
-
-    def _get_item(self, item_id: str) -> Optional[MediaItem]:
-        return self._items.get(item_id)
-
-    # ---------- 扫描与浏览 ----------
-
-    def scan(self, force: bool = False) -> Dict:
-        """启动媒体库刷新（兼容入口）。
-
-        实现已委托给壳的统一刷新基建：`force=False` 走「同步」（被动增量，
-        目录级短路），`force=True` 走「校验」（全量逐项比对 + 幽灵清理）。
-        旧实现的根级断点状态机（`scan_task.json` / `completed_roots` / paused
-        恢复）已删除 —— 指纹精确到目录，续跑不再需要单独的任务文件。
-        新代码请直接用 `system_freshness_sync` / `system_freshness_verify`。
-        """
-        engine = engine_for(self)
-        if engine is None:
-            return {'success': False, 'error': '刷新基建未接入'}
-        if force:
-            started = engine.start_verify()
-            return {'success': bool(started.get('started')), **started}
-        report = engine.sync('', force=True)
-        return {'success': True, 'started': True, 'report': report, **self.scan_status()}
-
-    def scan_status(self) -> Dict:
-        """扫描状态（前端轮询）。
-
-        契约与旧实现保持一致：`state` ∈ `none/done/cancelled/running`，
-        另带 `processed/total/current/extra`（audio/video）。
-
-        - 校验在跑（或刚跑完）→ 直接投影 `BackgroundTask.status()`；
-        - 没有任务时 → 若索引已经同步过，返回 `done` + 最近一趟的计数。
-          同步是**同步调用**（无任务），把"没有任务"报成 `none` 会让轮询方
-          以为"什么都没发生"，与旧的"扫描完成"契约不符。
-        """
-        engine = engine_for(self)
-        if engine is None:
-            return {'state': 'none'}
-        state = engine.state()
-        task = state.get('task')
-        if task:
-            return task
-        report = state.get('last_report') or {}
-        if not report:
-            return {'state': 'none'}
-        end = report.get('pass_end') or {}
-        return {
-            'state': 'done',
-            'processed': report.get('dirs', 0),
-            'total': report.get('dirs', 0),
-            'current': '',
-            'extra': {k: end.get(k) for k in ('audio', 'video', 'total') if k in end},
-        }
-
-    def scan_cancel(self) -> Dict:
-        """请求取消正在跑的全量校验（已写入的指纹与派生数据保留，可续跑）。"""
-        engine = engine_for(self)
-        if engine is None:
-            return {'success': False, 'error': '刷新基建未接入'}
-        return {'success': engine.request_cancel()}
-
-    def on_unload(self) -> None:
-        """进程退出收尾：取消在跑的校验并落盘索引。
-
-        没有单独的任务文件要落盘：指纹库由基建按目录事务写入，索引由
-        `on_pass_end` 钩子落盘（见 freshness 分片）。
-        """
-        engine = engine_for(self)
-        if engine is not None:
-            engine.request_cancel()
-        if getattr(self, '_index_dirty', False):
-            try:
-                self._save_index({'items': [i.to_dict() for i in self._items.values()],
-                                  'updated': time.time()})
-                self._index_dirty = False
-            except Exception as e:
-                log.error(f'[MediaPlayer] 退出前保存索引失败: {e}')
-
-    def search(self, keyword: str = '') -> List[Dict]:
-        kw = (keyword or '').strip().lower()
-        items = self._items.values()
-        if kw:
-            items = [i for i in items if kw in f'{i.title} {i.artist} {i.album}'.lower()]
-        return [i.to_dict() for i in sorted(items, key=lambda x: x.title.lower())]
-
-    def recent(self, limit: int = 50) -> List[Dict]:
-        items = sorted(self._items.values(), key=lambda x: x.mtime, reverse=True)
-        return [i.to_dict() for i in items[:max(1, min(200, int(limit)))]]
-
-    def all_audio(self) -> List[Dict]:
-        return [i.to_dict() for i in self._items.values() if i.kind == 'audio']
-
-    def all_video(self) -> List[Dict]:
-        return [i.to_dict() for i in self._items.values() if i.kind == 'video']
-
-    def _albums(self, kind: str) -> List[Dict]:
-        albums: Dict[str, MediaAlbum] = {}
-        for item in self._items.values():
-            if item.kind != kind:
-                continue
-            album = albums.get(item.album_key)
-            if album is None:
-                album = MediaAlbum(
-                    key=item.album_key,
-                    name=item.album,
-                    kind=kind,
-                    cover_path=item.cover_path,
-                    artist=item.album_artist or item.artist,
-                )
-                albums[item.album_key] = album
-            album.items.append(item)
-
-        result = []
-        for album in albums.values():
-            # 音频按曲目号排序，视频按标题排序
-            if kind == 'audio':
-                album.items.sort(key=lambda x: (x.track or 0, x.title.lower()))
-            else:
-                album.items.sort(key=lambda x: x.title.lower())
-            data = album.to_dict()
-            # 封面懒生成：前端用首个有封面条目的 item id 请求 /thumbs/<id>
-            data['cover_item_id'] = next((i.id for i in album.items if i.has_cover), '')
-            # 注意：不把 items 全量塞进专辑响应（前端只看 count/时长/封面），
-            # 大媒体库下每次专辑视图都传全库 JSON 会显著拖慢页面与桥接。
-            result.append(data)
-        result.sort(key=lambda x: x['name'].lower())
-        return result
-
-    def audio_albums(self) -> List[Dict]:
-        return self._albums('audio')
-
-    def video_albums(self) -> List[Dict]:
-        return self._albums('video')
-
-    def stats(self) -> Dict:
-        fav_count = len(self._state.get('favorites', []))
-        audio = [i for i in self._items.values() if i.kind == 'audio']
-        video = [i for i in self._items.values() if i.kind == 'video']
-        return {
-            'audio': len(audio),
-            'video': len(video),
-            'total': len(self._items),
-            # 仅按 album_key 去重计数，避免为统计构建完整专辑结构（大库下明显更省）
-            'audio_albums': len({i.album_key for i in audio}),
-            'video_albums': len({i.album_key for i in video}),
-            'favorites': fav_count,
-            'playlists': len(self._state.get('playlists', [])),
-        }
-
-    def album_items(self, album_key: str, kind: str = '') -> List[Dict]:
-        items = [i for i in self._items.values() if i.album_key == album_key]
-        if kind:
-            items = [i for i in items if i.kind == kind]
-        if '//album::' in album_key:
-            items.sort(key=lambda x: (x.track or 0, x.title.lower()))
-        else:
-            items.sort(key=lambda x: x.title.lower())
-        return [i.to_dict() for i in items]
-
-    def get_item(self, item_id: str) -> Dict:
-        item = self._get_item(item_id)
-        return item.to_dict() if item else {}
-
-    # ---------- 歌单（音视频混编） ----------
-
-    def playlist_list(self) -> List[dict]:
-        return self._state.get('playlists', [])
-
-    def playlist_get(self, playlist_id: str) -> dict:
-        for pl in self._state.get('playlists', []):
-            if pl['id'] == playlist_id:
-                items = [self._get_item(sid).to_dict() for sid in pl.get('item_ids', []) if self._get_item(sid)]
-                return {**pl, 'items': items}
-        return {}
-
-    def playlist_save(self, name: str = '', playlist_id: str = '', item_ids: List[str] | None = None) -> dict:
-        playlists = self._state.get('playlists', [])
-        now = time.strftime('%Y-%m-%d %H:%M:%S')
-        if playlist_id:
-            for pl in playlists:
-                if pl['id'] == playlist_id:
-                    pl['name'] = name or pl['name']
-                    # 未传 item_ids（如仅重命名）时保留原有曲目，避免误清空歌单
-                    if item_ids is not None:
-                        pl['item_ids'] = item_ids
-                    pl['updated_at'] = now
-                    self._save_state()
-                    return {'success': True, 'playlist': pl}
-            return {'success': False, 'error': '歌单不存在'}
-        if item_ids is None:
-            item_ids = []
-        new_pl = {
-            'id': uuid.uuid4().hex[:12],
-            'name': name or '新建歌单',
-            'item_ids': item_ids,
-            'created_at': now,
-            'updated_at': now,
-        }
-        playlists.append(new_pl)
-        self._state['playlists'] = playlists
-        self._save_state()
-        return {'success': True, 'playlist': new_pl}
-
-    def playlist_delete(self, playlist_id: str) -> dict:
-        before = len(self._state.get('playlists', []))
-        self._state['playlists'] = [pl for pl in self._state.get('playlists', []) if pl['id'] != playlist_id]
-        if len(self._state['playlists']) < before:
-            self._save_state()
-            return {'success': True}
-        return {'success': False, 'error': '歌单不存在'}
-
-    # ---------- 喜欢 / 最近 / 播放状态 ----------
-
-    def toggle_favorite(self, item_id: str) -> dict:
-        favs = self._state.setdefault('favorites', [])
-        if item_id in favs:
-            favs.remove(item_id)
-            is_fav = False
-        else:
-            favs.append(item_id)
-            is_fav = True
-        self._save_state()
-        return {'is_fav': is_fav}
-
-    def add_favorites(self, item_ids: Optional[List[str]] = None) -> dict:
-        """批量加入喜欢（幂等）。网易云「喜欢」导入用它一次写盘。
-
-        只接受索引中存在的 id：`get_state` 是按索引解析收藏的，写入索引外的 id
-        会变成看不见也删不掉的死条目。已存在的 id 不计入 added（重复导入不重复计数）。
-        """
-        favs = self._state.setdefault('favorites', [])
-        added = []
-        for raw in item_ids or []:
-            item_id = str(raw or '')
-            if item_id and item_id in self._items and item_id not in favs and item_id not in added:
-                added.append(item_id)
-        if added:
-            favs.extend(added)
-            self._save_state()
-        return {'success': True, 'added': len(added)}
-
-    def update_recent(self, item_id: str) -> dict:
-        recent = self._state.setdefault('recent', [])
-        recent = [r for r in recent if r.get('id') != item_id]
-        recent.insert(0, {'id': item_id, 'played_at': time.strftime('%Y-%m-%d %H:%M:%S')})
-        self._state['recent'] = recent[:50]
-        self._save_state()
-        return {'success': True}
-
-    def save_playback(self, item_id: str = '', loop_mode: str = 'none', shuffle: bool = False,
-                      volume: float = 1.0, video_mode: str = 'video',
-                      queue_index: Optional[int] = None) -> dict:
-        # 就地更新而不是整体替换：队列 id 列表（save_queue）与播放参数分开更新，
-        # 换曲时整条队列不应被覆盖掉。
-        pb = self._state.setdefault('playback', {})
-        pb.update({
-            'item_id': item_id,
-            'loop_mode': loop_mode,
-            'shuffle': shuffle,
-            'volume': volume,
-            'video_mode': video_mode,
-        })
-        if queue_index is not None:
-            pb['queue_index'] = max(0, int(queue_index))
-        self._state['playback'] = pb
-        self._save_state()
-        return {'success': True}
-
-    def save_queue(self, item_ids: Optional[List[str]] = None) -> dict:
-        """保存当前播放队列的条目 id 列表（按播放顺序），供重启后恢复整条队列。
-
-        只存 id 不存条目正文：状态文件因此与媒体库大小无关。超过 QUEUE_PERSIST_LIMIT
-        的队列只保留前若干条，并置 truncated 标记（恢复时退化为可恢复的部分）。
-        """
-        ids = [str(i) for i in (item_ids or []) if i]
-        pb = self._state.setdefault('playback', {})
-        pb['queue_ids'] = ids[:QUEUE_PERSIST_LIMIT]
-        pb['queue_truncated'] = len(ids) > QUEUE_PERSIST_LIMIT
-        pb['queue_index'] = min(max(0, int(pb.get('queue_index', 0))), max(0, len(pb['queue_ids']) - 1))
-        self._state['playback'] = pb
-        self._save_state()
-        return {'success': True, 'count': len(pb['queue_ids']), 'truncated': pb['queue_truncated']}
-
-    def get_items(self, item_ids: Optional[List[str]] = None) -> List[Dict]:
-        """按传入顺序批量取条目（队列恢复用），已不存在的 id 直接跳过。"""
-        ids = [str(i) for i in (item_ids or []) if i][:QUEUE_PERSIST_LIMIT]
-        return [self._get_item(i).to_dict() for i in ids if self._get_item(i)]
-
-    def get_playback(self) -> dict:
-        pb = self._state.get('playback', {})
-        item_id = pb.get('item_id', '')
-        if item_id and self._get_item(item_id) is None:
-            self._state['playback'] = {}
-            self._save_state()
-            return {}
-        return pb
-
-    def get_state(self) -> dict:
-        fav_ids = self._state.get('favorites', [])
-        recent_entries = self._state.get('recent', [])[:20]
-
-        favorites = []
-        for sid in fav_ids:
-            item = self._get_item(sid)
-            if item:
-                data = item.to_dict()
-                data['is_fav'] = True
-                favorites.append(data)
-
-        recent = []
-        for entry in recent_entries:
-            item = self._get_item(entry.get('id', ''))
-            if item:
-                data = item.to_dict()
-                data['played_at'] = entry.get('played_at', '')
-                recent.append(data)
-
-        return {'favorites': favorites, 'recent': recent}
-
-    # ---------- 设置 ----------
-
-    def on_settings_changed(self, changed_keys):
-        if 'ffmpeg_path' in changed_keys:
-            _ffmpeg.configure(self.setting('ffmpeg_path') or '')
-        if 'media_roots' in changed_keys:
-            new_roots = self._configured_roots() or [super().get_data_root()]
-            new_dir = new_roots[0]
-            old_roots = list(self._scan_roots)
-            self._scan_roots = new_roots
-            engine = engine_for(self)
-            if engine is not None:
-                # 根集合变了：清掉去抖，让下一次进视图的被动同步立刻按新根重扫；
-                # 被移除的根留下的条目由校验的差集删除清理（不再是幽灵条目）
-                engine.reset_throttle()
-            # 只有**数据根**（第一行）变了才需要搬缓存：额外的扫描根增删不影响
-            # 索引/进度/缩略图库的落点，重建一遍反而会把已有索引丢掉。
-            if new_dir == self.root_dir:
-                if old_roots != new_roots:
-                    log.info(f'[MediaPlayer] 扫描根变更：{len(old_roots)} → {len(new_roots)} 个')
-                return
-            # 数据根变更：终止进行中的校验，索引与封面库跟着换落点。
-            # **用户数据（歌单/喜欢/播放进度）不跟着走** —— 它落在壳数据根下
-            # （`_state_dir()`），换文件夹不该把用户攒的东西一起换掉。
-            if engine is not None:
-                engine.request_cancel()
-            self.root_dir = new_dir
-            self._cache_dir = self.root_dir / '.cache'
-            self._cache_file = self._cache_dir / 'media_index.json'
-            self._state_file = self._state_dir() / 'media_state.json'
-            self._task_file = self._cache_dir / 'scan_task.json'
-            self._cache_dir.mkdir(parents=True, exist_ok=True)
-            self._publish_items({})
-            self._reload_index()
-            # 封面库跟随数据根重建
-            self._thumb_cache = ThumbCache(
-                self._cache_dir / 'thumbs.db', size=(640, 640),
-                generator=cover_generator, workers=3)
-
-    # ---------- 导出清单 ----------
-
-    def _report_root(self) -> Path:
-        """清单落点：音频最多的媒体根（补档清单要和音乐放一起）。
-
-        「数据根」不一定是音乐根 —— 多根配置下第一行可能是视频盘（当前配置就是这样）。
-        按谁的音频条目多来挑，挑不出来才退回数据根。
-        """
-        best: Optional[Path] = None
-        best_count = 0
-        for root in self._scan_roots or [self.root_dir]:
-            count = 0
-            for item in self._items.values():
-                if item.kind != 'audio':
-                    continue
-                try:
-                    if Path(item.path).is_relative_to(root):
-                        count += 1
-                except (OSError, ValueError):
-                    continue
-            if count > best_count:
-                best, best_count = root, count
-        return best or self.root_dir
-
-    def export_missing(self, lines: Optional[List[str]] = None, title: str = '网易云缺失曲目') -> dict:
-        """把「在线歌单里本地缺失的曲目」写成文本清单，供补档。
-
-        **每次整体重写**（不是追加）：清单要能反映最近一次同步后的真实状态，否则把缺的歌
-        补齐后旧清单还挂在那里，看着像没同步。没有缺失时也照样写一份（正文写「没有缺失」），
-        不留着上一次的旧内容。
-
-        文件名固定（标题去路径字符后当名字）、内容逐行清洗，只写进自己的媒体根：
-        这是个结果导出，不该变成一个能写任意路径 / 任意内容的文件接口。
-        """
-        clean = [re.sub(r'\s+', ' ', str(x or '')).strip() for x in (lines or [])]
-        clean = [x for x in clean if x]
-        body = clean or ['（本次同步没有缺失曲目）']
-        safe_title = re.sub(r'[\\/:*?"<>|\r\n]', '', str(title or '')).strip()[:60] or '网易云缺失曲目'
-        target = self._report_root() / f'{safe_title}.txt'
-        header = f'# {safe_title}\n# 生成时间：{time.strftime("%Y-%m-%d %H:%M:%S")}\n'
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(header + '\n'.join(body) + '\n', encoding='utf-8')
-        except OSError as e:
-            return {'success': False, 'error': f'写入失败: {e}'}
-        return {'success': True, 'path': str(target), 'count': len(clean)}
-
-    # ---------- 歌词 / 调试 / EQ ----------
-
-    def get_lyrics(self, item_id: str) -> dict:
-        item = self._get_item(item_id)
-        if not item:
-            return {'lyrics': '', 'source': 'none'}
-        file_path = Path(item.path)
-        lrc_path = file_path.with_suffix('.lrc')
-        if not lrc_path.exists():
-            return {'lyrics': '', 'source': 'none'}
-        for enc in ('utf-8', 'gbk', 'gb2312'):
-            try:
-                return {'lyrics': lrc_path.read_text(encoding=enc), 'source': 'lrc'}
-            except (UnicodeDecodeError, UnicodeError):
-                continue
-            except Exception:
-                break
-        return {'lyrics': '', 'source': 'none'}
-
-    def debug_meta(self, item_id: str = '') -> dict:
-        if not item_id:
-            return {'error': '请提供 item_id 参数'}
-        item = self._get_item(item_id)
-        if not item:
-            return {'error': f'媒体不存在: {item_id}'}
-        file_path = Path(item.path)
-        if not file_path.exists():
-            return {'error': f'文件不存在: {file_path}'}
-        try:
-            from shell.backend.plugin_utils import load_sibling
-            _metadata = load_sibling(__file__, 'metadata', 'media_player')
-            MetadataReader = _metadata.MetadataReader
-        except Exception:
-            return {'error': 'metadata 模块不可用'}
-        result = MetadataReader.debug_meta(file_path)
-        result['parsed'] = item.to_dict()
-        return result
-
-    def ffmpeg_status(self) -> dict:
-        """ffmpeg 可用性探测（force 重新检测，供设置/调试确认）。"""
-        path = _ffmpeg.find_ffmpeg(force=True)
-        return {
-            'available': bool(path),
-            'path': path or '',
-            'configured': self.setting('ffmpeg_path') or '',
-        }
-
-    def _eq_presets_dir(self) -> Path:
-        return Path(__file__).parent.parent / 'eq-presets'
-
-    def list_eq_presets(self) -> list:
-        presets_dir = self._eq_presets_dir()
-        if not presets_dir.exists():
-            return []
-        presets = []
-        for f in sorted(presets_dir.glob('*.json')):
-            try:
-                data = json.loads(f.read_text(encoding='utf-8'))
-                data['id'] = f.stem
-                presets.append(data)
-            except Exception:
-                pass
-        return presets
-
-    def save_eq_preset(self, name: str = '', bands: list | None = None) -> dict:
-        if not name or not bands:
-            return {'success': False, 'error': '缺少参数'}
-        presets_dir = self._eq_presets_dir()
-        presets_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = ''.join(c for c in name if c.isalnum() or c in '_- ')[:40].strip().replace(' ', '_')
-        if not safe_name:
-            safe_name = 'custom'
-        file_path = presets_dir / f'{safe_name}.json'
-        file_path.write_text(json.dumps({'name': name, 'bands': bands}, ensure_ascii=False, indent=2), encoding='utf-8')
-        return {'success': True, 'id': safe_name, 'name': name, 'bands': bands}
-
     def register_api(self) -> dict:
         return {
-            'media_scan': self.scan,
-            'media_scan_status': self.scan_status,
-            'media_scan_cancel': self.scan_cancel,
-            'media_search': self.search,
-            'media_recent': self.recent,
-            'media_stats': self.stats,
-            'media_audio_albums': self.audio_albums,
-            'media_all_audio': self.all_audio,
-            'media_video_albums': self.video_albums,
-            'media_all_video': self.all_video,
-            'media_album_items': self.album_items,
-            'media_get_item': self.get_item,
-            'media_get_items': self.get_items,
-            'media_playlist_list': self.playlist_list,
-            'media_playlist_get': self.playlist_get,
-            'media_playlist_save': self.playlist_save,
-            'media_playlist_delete': self.playlist_delete,
-            'media_toggle_favorite': self.toggle_favorite,
-            'media_add_favorites': self.add_favorites,
-            'media_update_recent': self.update_recent,
-            'media_get_state': self.get_state,
-            'media_save_playback': self.save_playback,
-            'media_save_queue': self.save_queue,
-            'media_get_playback': self.get_playback,
-            'media_get_lyrics': self.get_lyrics,
-            'media_export_missing': self.export_missing,
-            'media_put_thumb': self.put_thumb,
-            'media_thumb_missing': self.thumb_missing,
-            'media_debug_meta': self.debug_meta,
-            'media_ffmpeg_status': self.ffmpeg_status,
-            'media_list_eq_presets': self.list_eq_presets,
-            'media_save_eq_preset': self.save_eq_preset,
+            'media_scan': self.freshness.scan,
+            'media_scan_status': self.freshness.status,
+            'media_scan_cancel': self.freshness.cancel,
+            'media_search': self.library.search,
+            'media_recent': self.library.recent,
+            'media_stats': self.library.stats,
+            'media_audio_albums': self.library.audio_albums,
+            'media_all_audio': self.library.all_audio,
+            'media_video_albums': self.library.video_albums,
+            'media_all_video': self.library.all_video,
+            'media_album_items': self.library.album_items,
+            'media_get_item': self.library.get_item,
+            'media_get_items': self.collections.get_items,
+            'media_playlist_list': self.collections.playlist_list,
+            'media_playlist_get': self.collections.playlist_get,
+            'media_playlist_save': self.collections.playlist_save,
+            'media_playlist_delete': self.collections.playlist_delete,
+            'media_toggle_favorite': self.collections.toggle_favorite,
+            'media_add_favorites': self.collections.add_favorites,
+            'media_update_recent': self.collections.update_recent,
+            'media_get_state': self.collections.get_state,
+            'media_save_playback': self.collections.save_playback,
+            'media_save_queue': self.collections.save_queue,
+            'media_get_playback': self.collections.get_playback,
+            'media_get_lyrics': self.lyrics.get,
+            'media_export_missing': self.report.export,
+            'media_put_thumb': self.covers.put,
+            'media_thumb_missing': self.covers.missing,
+            'media_debug_meta': self.diagnostics.debug_meta,
+            'media_ffmpeg_status': self.diagnostics.ffmpeg_status,
+            'media_list_eq_presets': self.presets.list_all,
+            'media_save_eq_preset': self.presets.save,
             'media_get_config': lambda key, default=None: self.setting(key, default),
             'media_set_config': lambda key, value: {'success': self.update_setting(key, value)},
             'get_settings': self.get_settings,
             'save_settings': self.save_settings,
         }
+
+    # ===== 壳按名调用的钩子：名字与签名与迁移前完全一致 =====
+
+    def get_data_root(self) -> Path:
+        return self.paths.root_dir
+
+    def get_file_roots(self) -> List[Path]:
+        """跨主目录与额外媒体目录提供文件访问。"""
+        return self.paths.file_roots()
+
+    def get_thumb_data(self, rel_path: str) -> Optional[Tuple[bytes, str]]:
+        return self.covers.get_thumb_data(rel_path)
+
+    def freshness_spec(self) -> Dict[str, Any]:
+        return self.freshness.spec()
+
+    def on_settings_changed(self, changed_keys) -> None:
+        """设置变更：按改动范围重绑组件状态（入口是唯一知道依赖关系的编排点）。"""
+        changed = set(changed_keys)
+        if 'ffmpeg_path' in changed:
+            _ffmpeg.configure(self.setting('ffmpeg_path') or '')
+        if 'media_roots' not in changed:
+            return
+        old_root = self.paths.root_dir
+        old_roots = list(self.paths.scan_roots)
+        self.paths.rebind()
+        engine = engine_for(self)
+        if engine is not None:
+            # 根集合变了：清掉去抖，让下一次进视图的被动同步立刻按新根重扫；
+            # 被移除的根留下的条目由校验的差集删除清理（不再是幽灵条目）
+            engine.reset_throttle()
+        if self.paths.root_dir == old_root:
+            # 只有**数据根**（第一行）变了才需要搬缓存：额外的扫描根增删不影响
+            # 索引/进度/缩略图库的落点，重建一遍反而会把已有索引丢掉。
+            if old_roots != self.paths.scan_roots:
+                log.info(f'[MediaPlayer] 扫描根变更：{len(old_roots)} → '
+                         f'{len(self.paths.scan_roots)} 个')
+            return
+        # 数据根变更：终止进行中的校验，索引与封面库跟着换落点。
+        # **用户数据（歌单/喜欢/播放进度）不跟着走** —— 它落在壳数据根下（paths.state_file），
+        # 换文件夹不该把用户攒的东西一起换掉。
+        if engine is not None:
+            engine.request_cancel()
+        self.index.bind(self.paths.cache_file)
+        self.index.load()
+        self.state.load()
+        self.covers.rebind()
+
+    def on_unload(self) -> None:
+        self.freshness.shutdown()

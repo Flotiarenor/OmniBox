@@ -14,13 +14,24 @@
 | 文件 | 职责 | 关键符号 |
 | --- | --- | --- |
 | `plugins/media-player/manifest.json` | 插件元信息与壳渲染的页面 chrome | `name`、`backend.entry`、`backend.class`、`frontend.entry`、`frontend.route`、`frontend.chrome`（`brand`、`sidebarOrder`、`nav`、`toolbar`、`search`、`status`、`freshness`、`extensions`）、`keepAlive`、`permissions` |
-| `plugins/media-player/backend/main.py` | 类骨架、设置 schema、API 注册、索引与用户状态落盘、封面库接入、ffmpeg 配置、EQ 预设读写 | `MediaPlayerPlugin`、`settings_schema`、`register_api`、`freshness_spec`、`get_data_root`、`get_file_roots`、`get_thumb_data`、`on_settings_changed`、`on_unload`、`_state_dir`、`_adopt_orphan_state`、`_publish_items`、`_load_index`、`_save_index`、`_load_state`、`_save_state`、`_replace_with_retry`、`_migrate_legacy_state`、`_configured_roots`、`_media_dirs`、`_restore_scan_task`、`INDEX_VERSION`、`QUEUE_PERSIST_LIMIT` |
+| `plugins/media-player/backend/main.py` | 入口（facade）：`settings_schema` 引用、`register_api` 绑定表、壳按名调用的钩子、装配（组件按职责拆到下列文件，入口只做一行委派） | `MediaPlayerPlugin`、`settings_schema`、`register_api`、`get_data_root`、`get_file_roots`、`get_thumb_data`、`freshness_spec`、`on_settings_changed`、`on_unload` |
+| `plugins/media-player/backend/const.py` | 纯数据：设置项 schema、播放队列持久化上限（只有入口加载） | `SETTINGS_SCHEMA`、`QUEUE_PERSIST_LIMIT` |
+| `plugins/media-player/backend/paths.py` | 扫描根、索引 / 封面库 / 用户状态落点、根内相对目录与命名空间、旧任务文件清理 | `PathLayout`、`rebind`、`_configured_roots`、`_state_dir`、`file_roots`、`root_for`、`namespace_for`、`rel_dir_for`、`drop_stale_scan_task` |
+| `plugins/media-player/backend/index.py` | 索引条目快照的发布与落盘、结构版本校验 | `MediaIndex`、`load`、`save`、`publish`、`touch`、`get`、`bind`、`clear_file`、`items`、`dirty` |
+| `plugins/media-player/backend/state.py` | 用户状态文件的落点、原子写（锁 + `mkstemp` + 改名重试）、旧落点收养、旧插件迁移 | `UserStateStore`、`load`、`save`、`adopt_orphan`、`migrate_legacy`、`replace_attempts`、`replace_delay`、`recent_limit` |
+| `plugins/media-player/backend/collections.py` | 歌单 / 喜欢 / 最近播放 / 播放参数与队列的业务规则 | `MediaCollections`、`playlist_list`、`playlist_get`、`playlist_save`、`playlist_delete`、`toggle_favorite`、`add_favorites`、`update_recent`、`save_playback`、`save_queue`、`get_items`、`get_playback`、`get_state` |
+| `plugins/media-player/backend/covers.py` | 封面库（`ThumbCache`）读写：`/thumbs` 取字节、前端抽帧回写、批量缺失判定、失效与对账 | `CoverStore`、`get_thumb_data`、`put`、`missing`、`delete`、`prune`、`clear`、`rebind`、`COVER_SIZE` |
+| `plugins/media-player/backend/library.py` | 浏览查询：搜索、最近、全部音视频、专辑聚合、统计（只读投影，不持缓存） | `MediaLibrary`、`search`、`recent`、`all_audio`、`all_video`、`audio_albums`、`video_albums`、`album_items`、`get_item`、`stats` |
+| `plugins/media-player/backend/report.py` | 缺失曲目清单导出与落点挑选 | `MissingReport`、`report_root`、`export`、`DEFAULT_TITLE` |
+| `plugins/media-player/backend/lyrics.py` | 同目录 `.lrc` 读取与编码回退 | `LyricsReader`、`get`、`ENCODINGS` |
+| `plugins/media-player/backend/presets.py` | 均衡器预设的列出与保存（文件名清洗） | `EqPresets`、`list_all`、`save` |
+| `plugins/media-player/backend/diagnostics.py` | 标签解析诊断与 ffmpeg 探测；`metadata` 模块按**调用时机**延迟获取 | `AudioDiagnostics`、`debug_meta`、`ffmpeg_status` |
 | `plugins/media-player/backend/models.py` | 条目与专辑数据类 | `MediaItem`、`MediaAlbum`、`to_dict`、`from_cache`、`count`、`total_duration` |
-| `plugins/media-player/backend/scanner.py` | 扩展名集合与解析规则版本、条目构造、专辑键、封面路径查找、封面字节生成器 | `INDEX_VERSION`、`AUDIO_EXTS`、`VIDEO_EXTS`、`MEDIA_EXTS`、`COVER_NAMES`、`cover_generator`、`item_id`、`find_cover`、`build_item`、`_audio_album_key`、`_video_album_key` |
-| `plugins/media-player/backend/metadata.py` | 音频标签读取与内嵌 / 目录封面字节提取 | `MetadataReader`、`read`、`debug_meta`、`extract_cover_bytes`、`has_embedded_cover`、`_read_with_mutagen`、`_read_by_filename`、`_extract_embedded_cover`、`_cover_from_id3`、`_cover_from_flac`、`_cover_from_mp4`、`_find_folder_cover`、`_parse_track`、`_id3_text`、`detect_image_mime`、`SUPPORTED_EXTS`、`HAS_MUTAGEN` |
+| `plugins/media-player/backend/scanner.py` | 条目构造、专辑键、封面路径查找、封面字节生成器；扩展名与解析规则版本（依赖由入口注入） | `MediaScanner`、`INDEX_VERSION`、`VIDEO_EXTS`、`COVER_NAMES`、`item_id`、`find_cover`、`cover_generator`、`has_embedded_cover`、`build_item`、`media_exts`、`cover_names`、`index_version` |
+| `plugins/media-player/backend/metadata.py` | 音频标签读取与内嵌 / 目录封面字节提取（mutagen 是强制依赖，顶层 import） | `MetadataReader`、`read`、`debug_meta`、`extract_cover_bytes`、`has_embedded_cover`、`_read_with_mutagen`、`_read_by_filename`、`_extract_embedded_cover`、`_cover_from_id3`、`_cover_from_flac`、`_cover_from_mp4`、`_find_folder_cover`、`_parse_track`、`_id3_text`、`detect_image_mime`、`SUPPORTED_EXTS`、`HAS_MUTAGEN` |
 | `plugins/media-player/backend/video_meta.py` | 视频时长探测 | `probe_duration` |
 | `plugins/media-player/backend/video_ffmpeg.py` | ffmpeg 定位与抽帧通道 | `configure`、`find_ffmpeg`、`extract_frame`、`SEEK_DEFAULT`、`SEEK_MIN`、`SEEK_MAX`、`FRAME_TIMEOUT` |
-| `plugins/media-player/backend/freshness.py` | 统一刷新基建的插件侧声明与钩子 | `FreshnessMixin`、`freshness_spec`、`COVER_KEY_PREFIX`、`_freshness_key`、`_freshness_derive`、`_freshness_prune`、`_freshness_audit`、`_freshness_pass_end`、`_freshness_rebuild`、`_refresh_covers`、`_namespace_for`、`_root_for`、`_rel_dir_for` |
+| `plugins/media-player/backend/freshness.py` | 统一刷新基建的规格声明与钩子，以及兼容刷新入口与扫描状态投影 | `FreshnessProvider`、`spec`、`key`、`derive`、`prune`、`audit`、`pass_end`、`rebuild`、`scan`、`status`、`cancel`、`shutdown`、`COVER_KEY_PREFIX` |
 | `plugins/media-player/eq-presets/*.json` | 内置均衡器预设（`name`、`bands`） | `name`、`bands` |
 | `plugins/media-player/tool/library_tool.py` | 库外维护脚本：专辑标签、重复文件、歌词对照 | `main`、`cmd_albums`、`cmd_dups`、`cmd_lrc`、`selftest`、`resolve_library`、`load_cache`、`build_plan`、`write_tags`、`find_dups`、`scan_lyrics`、`LRC_QUARANTINE` |
 | `plugins/media-player/frontend/index.html` | 内容页骨架（无 chrome）与脚本装载顺序 | `#app`、`.view-body.mp-main`、`#mp-stage`、`#player-bar`、`#media-content`、`#lyrics-page`、`#queue-popup`、`#eq-panel`、`#modal-playlist`、`#modal-add-to-playlist`、`#modal-eq-name` |
@@ -38,7 +49,7 @@
 | `plugins/media-player/frontend/js/app-playback.js` | 播放状态回显、队列浮层、歌单弹窗与右键菜单 | `onTrackChange`、`onPlayStateChange`、`onTimeUpdate`、`updatePlayModeUI`、`updateVolumeUI`、`_updateStageCover`、`_updateStageBackdrop`、`_updatePlayerCover`、`_updateFavButton`、`_updateMiniEq`、`_highlightRows`、`_toggleQueue`、`_renderQueue`、`_clearQueue`、`_openPlaylistModal`、`_openAddToPlaylist`、`showPlaylistMenu`、`_closePlaylistMenu` |
 | `plugins/media-player/frontend/js/app-stage.js` | 均衡器、歌词 / 视频 / 宽屏 / 全屏、控件自动隐藏、键盘快捷键 | `_toggleEQ`、`_positionPops`、`_hideEQ`、`_buildEQBands`、`_resetEQ`、`updateStageLyrics`、`_toggleWideMode`、`_toggleLyrics`、`_toggleVideoMode`、`_isVideoShowing`、`toggleFullscreen`、`_enterFullscreen`、`_exitFullscreen`、`_bindFsMove`、`_stopAutoHide`、`_scheduleAutoHide`、`_showControls`、`_hideControls`、`_bindKeyboard` |
 
-落盘产物：壳数据根下 `.cache/media-player/media_state.json`（`_load_state` / `_save_state`，另有 `media_state.corrupt-<stamp>.json` 备份与 `mkstemp` 生成的一次性 `.media_state.<随机>.tmp` 临时文件），媒体根下 `.cache/media_index.json`（`_load_index` / `_save_index`）、`.cache/thumbs.db`（`ThumbCache`）、`scan_task.json`（`_restore_scan_task` 清理的旧文件）；`_report_root` 决定缺失清单 `网易云缺失曲目.txt` 的落点（`export_missing`），`_eq_presets_dir` 决定 `save_eq_preset` 写出的 `<名称>.json`，`_migrate_legacy_state` 读取旧文件 `music_state.json`。
+落盘产物：壳数据根下 `.cache/media-player/media_state.json`（`UserStateStore.load` / `save`，另有 `media_state.corrupt-<stamp>.json` 备份与 `mkstemp` 生成的一次性 `.media_state.<随机>.tmp` 临时文件），媒体根下 `.cache/media_index.json`（`MediaIndex.load` / `save`，落点由 `PathLayout.rebind` 派生）、`.cache/thumbs.db`（`CoverStore` 持有的 `ThumbCache`）、`scan_task.json`（`PathLayout.drop_stale_scan_task` 清理的旧文件）；`MissingReport.report_root` 决定缺失清单 `网易云缺失曲目.txt` 的落点（`MissingReport.export`），入口注入的 `eq-presets` 目录决定 `EqPresets.save` 写出的 `<名称>.json`，`UserStateStore.migrate_legacy` 读取旧文件 `music_state.json`。
 
 ## 后端 API 契约
 
@@ -89,9 +100,9 @@
 | --- | --- | --- | --- |
 | `settings_schema` | 无 | 设置项字典列表 | 壳渲染设置面板；`media_roots` 声明 `type` = `directory`、`multi`、`admin_only`，由壳的 `PluginSettingsModal` 用「目录行 + 选择目录」渲染（`SettingsDirectoryField` → `/shell/folder-picker.js` 的 `FolderPicker.createList`）；字段未声明 `local_only` 时，目录行还提供「网络位置」入口（由 group-mesh 的 `network-location` 扩展提供） |
 | `freshness_spec` | 无 | `roots`、`include`、`include_names`、`key_of`、`derive`、`prune`、`on_verified`、`on_pass_end`、`rebuild`、`content_version`、`unit`、`min_sync_interval`、`max_dirs_per_sync` | 统一刷新基建接管增量与校验 |
-| `get_data_root` | 无 | `Path` | 缓存目录 `_cache_dir` 与索引 `_cache_file` 的基准 |
+| `get_data_root` | 无 | `Path`（媒体根 `PathLayout.root_dir`） | `paths.cache_dir` 与 `paths.cache_file` 的基准，也是壳 `/file` 的第一根 |
 | `get_file_roots` | 无 | `Path` 列表 | `/file` 路由的允许根 |
-| `get_thumb_data` | `filepath`（item id） | `(bytes, mime)` 或 `None` | `/thumbs` 路由按 id 取封面 |
+| `get_thumb_data` | `rel_path`（item id） | `(bytes, mime)` 或 `None` | `/thumbs` 路由按 id 取封面（`CoverStore.get_thumb_data`） |
 | `get_settings` | 无 | 设置字典 | 设置面板初值 |
 | `save_settings` | `values` | 保存结果 | 触发 `on_settings_changed` |
 | `on_settings_changed` | `changed_keys` | 无 | 刷新 ffmpeg 通道、重建扫描根与索引 |
@@ -167,5 +178,5 @@
 - 内容页不得再出现 chrome 标记：`.view-sub-sidebar`、`.view-toolbar`、`.sub-sidebar-brand`、`.obx-nav-item`（`tools/plugin_ui_audit.py` 的 `iframe.content-only` 会检查）。
 - 消费的壳 CSS 变量：`--accent`、`--bg-app`、`--bg-surface`、`--bg-hover`、`--bg-overlay`、`--border`、`--danger`、`--danger-soft`、`--text-primary`、`--text-secondary`、`--text-muted`、`--text-on-accent`、`--transition-fast`、`--obx-accent-soft`、`--obx-glass-bg`、`--obx-glass-bg-strong`、`--obx-radius`、`--obx-radius-sm`、`--obx-shadow-1`、`--obx-shadow-2`。
 - 插件自有 CSS 变量前缀：`--mp-*`（`--mp-stage-vh`、`--mp-pb-height`、`--mp-accent-2`、`--mp-accent-soft`、`--mp-glass`、`--mp-glass-strong`、`--mp-gradient`、`--mp-shadow-1`、`--mp-shadow-2`、`--mp-radius`、`--mp-radius-sm`、`--mp-pop-bottom`）与 `--lyrics-*`、`--range-val`、`--i`、`--hero-bg`。
-- 共享后端基建：`FreshnessMixin` 的 `freshness_spec` 契约由 `shell/backend/freshness.py` 的 `engine_for` 消费，缩略图读写走 `shell/backend/thumb_cache.py` 的 `ThumbCache`，分片加载走 `shell/backend/plugin_utils.py` 的 `load_sibling`。
+- 共享后端基建：`FreshnessProvider` 的 `freshness_spec` 契约由 `shell/backend/freshness.py` 的 `engine_for` 消费，封面读写走 `shell/backend/thumb_cache.py` 的 `ThumbCache`，组件装配走 `shell/backend/plugin_utils.py` 的 `load_sibling`（只有入口调用）。
 - 界面与样式的完整约定见 `docs/plugin-ui-guide.md`。

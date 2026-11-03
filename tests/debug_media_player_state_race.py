@@ -1,11 +1,14 @@
 """手工复现 media-player 状态文件的并发写（日志里的 "保存状态失败: [WinError 32]"）。
 
 用真实的 `MediaPlayerPlugin` 和真实的状态文件体量（几十 KB），多线程同时调
-`_save_state()`，观察是否出现 `WinError 32` / `Errno 13`。修复前的实测：
+`state.save()`，观察是否出现 `WinError 32` / `Errno 13`。修复前的实测：
 2 线程 × 200 次写盘里 140 次 WinError 32 + 66 次 Errno 13；修复后为 0。
 
 为什么不是 unittest：这条只用来现场观察时序（放大窗口、看失败率），断言由
 `tests/test_media_player_state_concurrency.py` 负责。
+
+当前操作的后端组件：`plugin.state`（用户状态文件的读写、锁与改名重试）、
+`plugin.paths`（状态文件落点）。
 
 用法：python tests/debug_media_player_state_race.py
 """
@@ -30,6 +33,8 @@ PLUGIN_PATH = PROJECT_ROOT / 'plugins' / 'media-player' / 'backend' / 'main.py'
 
 def load_module():
     spec = importlib.util.spec_from_file_location('media_player_state_race', str(PLUGIN_PATH))
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f'无法加载插件入口：{PLUGIN_PATH}')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -43,20 +48,20 @@ def make_plugin(module, tmp):
         {'name': 'media-player'},
         {'directories': {'data_root': str(tmp / 'shell-data')}})
     plugin._settings_store = SettingsStore(str(tmp / 'settings'))
-    plugin._state['playlists'] = [
+    plugin.state.data['playlists'] = [
         {'id': f'p{i}', 'name': f'歌单 {i}', 'item_ids': [f'x{j}' for j in range(30)],
          'created_at': '2026-01-01 00:00:00', 'updated_at': '2026-01-01 00:00:00'}
         for i in range(24)]
-    plugin._state['favorites'] = [f'f{i}' for i in range(150)]
-    plugin._state['recent'] = [{'id': f'r{i}', 'played_at': '2026-01-01 00:00:00'}
-                               for i in range(50)]
-    plugin._save_state()
+    plugin.state.data['favorites'] = [f'f{i}' for i in range(150)]
+    plugin.state.data['recent'] = [{'id': f'r{i}', 'played_at': '2026-01-01 00:00:00'}
+                                   for i in range(50)]
+    plugin.state.save()
     return plugin
 
 
 def race(plugin, threads_n, per_thread, fsync_delay=0.0):
     """threads_n 条线程尽量同时开始，各写 per_thread 次，返回 (错误列表, 耗时)。"""
-    log = plugin._save_state.__func__.__globals__['log']
+    log = plugin.state.save.__func__.__globals__['log']
     errors = []
     original_error = log.error
     log.error = lambda msg, *args, **kwargs: errors.append(str(msg))
@@ -73,7 +78,7 @@ def race(plugin, threads_n, per_thread, fsync_delay=0.0):
     def worker():
         barrier.wait()
         for _ in range(per_thread):
-            plugin._save_state()
+            plugin.state.save()
 
     threads = [threading.Thread(target=worker) for _ in range(threads_n)]
     started = time.perf_counter()
@@ -93,7 +98,7 @@ def main():
     module = load_module()
     with tempfile.TemporaryDirectory() as tmpdir:
         plugin = make_plugin(module, Path(tmpdir))
-        print(f'状态文件 {plugin._state_file.name}: {plugin._state_file.stat().st_size} B\n')
+        print(f'状态文件 {plugin.paths.state_file.name}: {plugin.paths.state_file.stat().st_size} B\n')
 
         cases = [
             ('2 线程 × 200 次（原速）', 2, 200, 0.0),
@@ -110,11 +115,11 @@ def main():
             if errors:
                 print(f'  样例: {errors[0]}')
             try:
-                json.loads(plugin._state_file.read_text(encoding='utf-8'))
+                json.loads(plugin.paths.state_file.read_text(encoding='utf-8'))
                 print('  落盘结果: 可解析')
             except Exception as exc:
                 print(f'  落盘结果: 无法解析（{exc}）')
-            leftovers = sorted(p.name for p in plugin._state_file.parent.iterdir()
+            leftovers = sorted(p.name for p in plugin.paths.state_file.parent.iterdir()
                                if p.name.endswith('.tmp'))
             print(f'  残留临时文件: {leftovers}\n')
         plugin.on_unload()

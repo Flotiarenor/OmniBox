@@ -28,6 +28,8 @@ _PLUGIN = PROJECT_ROOT / 'plugins' / 'media-player' / 'backend' / 'main.py'
 
 def _load_plugin_class():
     spec = importlib.util.spec_from_file_location('media_player_state_test', str(_PLUGIN))
+    if spec is None or spec.loader is None:      # 静态类型的 Optional；这里必然有加载器
+        raise RuntimeError(f'无法加载插件入口：{_PLUGIN}')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.MediaPlayerPlugin
@@ -65,21 +67,21 @@ class StateLocationTests(unittest.TestCase):
 
         # 两侧都 resolve：`PluginBase.get_data_root()` 会解析路径，Windows 上
         # 临时目录的 8.3 短名（ADMINI~1）与长名解析结果不同
-        self.assertEqual(plugin._state_file.resolve(),
+        self.assertEqual(plugin.paths.state_file.resolve(),
                          (self.shell_data / '.cache' / 'media-player'
                           / 'media_state.json').resolve())
-        self.assertNotIn(str(self.media), str(plugin._state_file),
+        self.assertNotIn(str(self.media), str(plugin.paths.state_file),
                          '用户数据不能落在媒体文件夹里')
 
     def test_changing_media_root_keeps_the_state_file(self):
         plugin = self._plugin([self.media, self.video])
-        plugin.playlist_save('我的歌单', '', [])
-        before = plugin._state_file
+        plugin.collections.playlist_save('我的歌单', '', [])
+        before = plugin.paths.state_file
 
         plugin.on_settings_changed({'media_roots'})       # 把另一个媒体根挪到第一行
 
-        self.assertEqual(plugin._state_file, before, '换媒体文件夹不该换用户数据的落点')
-        self.assertEqual([p['name'] for p in plugin.playlist_list()], ['我的歌单'])
+        self.assertEqual(plugin.paths.state_file, before, '换媒体文件夹不该换用户数据的落点')
+        self.assertEqual([p['name'] for p in plugin.collections.playlist_list()], ['我的歌单'])
 
     def test_orphan_state_is_adopted_on_first_run(self):
         """新落点没有状态文件时，收养各媒体根里最完整的那份（歌单 + 喜欢）。"""
@@ -88,9 +90,9 @@ class StateLocationTests(unittest.TestCase):
 
         plugin = self._plugin([self.media, self.video])
 
-        self.assertEqual([p['name'] for p in plugin.playlist_list()], ['网易云 · 甲'],
+        self.assertEqual([p['name'] for p in plugin.collections.playlist_list()], ['网易云 · 甲'],
                          '要收养更完整的那份')
-        self.assertEqual(plugin._state['favorites'], [1, 2, 3])
+        self.assertEqual(plugin.state.data['favorites'], [1, 2, 3])
         self.assertTrue((self.video / '.cache' / 'media_state.json').exists(),
                         '收养是复制，旧文件要留在原地可回溯')
 
@@ -104,7 +106,7 @@ class StateLocationTests(unittest.TestCase):
 
         plugin = self._plugin([self.media, self.video])
 
-        self.assertEqual(plugin.playlist_list(), [], '已有状态文件就不再收养')
+        self.assertEqual(plugin.collections.playlist_list(), [], '已有状态文件就不再收养')
 
     def test_broken_state_is_backed_up_not_overwritten_silently(self):
         state_dir = self.shell_data / '.cache' / 'media-player'
@@ -114,21 +116,21 @@ class StateLocationTests(unittest.TestCase):
 
         plugin = self._plugin([self.media])
 
-        self.assertEqual(plugin.playlist_list(), [])
+        self.assertEqual(plugin.collections.playlist_list(), [])
         backups = list(state_dir.glob('media_state.corrupt-*.json'))
         self.assertEqual(len(backups), 1, '损坏的状态文件必须先备份再退默认值')
         self.assertEqual(backups[0].read_text(encoding='utf-8'), '{"playlists": [')
 
     def test_state_write_is_atomic(self):
         plugin = self._plugin([self.media])
-        plugin.playlist_save('甲', '', [])
+        plugin.collections.playlist_save('甲', '', [])
 
-        plugin._save_state()
+        plugin.state.save()
 
-        leftovers = sorted(p.name for p in plugin._state_file.parent.iterdir()
+        leftovers = sorted(p.name for p in plugin.paths.state_file.parent.iterdir()
                            if p.name.endswith('.tmp'))
         self.assertEqual(leftovers, [], '临时文件要已被替换掉')
-        data = json.loads(plugin._state_file.read_text(encoding='utf-8'))
+        data = json.loads(plugin.paths.state_file.read_text(encoding='utf-8'))
         self.assertEqual([p['name'] for p in data['playlists']], ['甲'])
 
 
