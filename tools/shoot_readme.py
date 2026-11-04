@@ -291,9 +291,10 @@ def write_minimal_home(home: Path, library: str) -> None:
     config = home / '.config'
     plugins = config / 'plugins'
     plugins.mkdir(parents=True, exist_ok=True)
-    (config / 'app.yaml').write_text('server:\n  host: 127.0.0.1\n  port: 18080\n'
-                                     'trusted_hosts: []\ndirectories:\n  data_root: ./data\n',
-                                     encoding='utf-8')
+    (config / 'app.json').write_text(json.dumps({
+        'server': {'host': '127.0.0.1', 'port': 18080, 'trusted_hosts': []},
+        'directories': {'data_root': './data'},
+    }, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     (config / 'shell.json').write_text(json.dumps({
         'prefs': {
             'theme': 'light',

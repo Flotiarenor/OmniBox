@@ -806,7 +806,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         # Werkzeug 的英文默认页，用户看不懂也拿不到统一外观。
         return _status_response(400, '请求无效',
                                 '请求的 Host 不在允许列表中，或请求格式不正确。'
-                                '若通过局域网 / 反向代理访问，请在 app.yaml 的 '
+                                '若通过局域网 / 反向代理访问，请在 app.json 的 '
                                 'server.trusted_hosts 中补充你的访问地址。',
                                 _page_prefs())
 

@@ -15,7 +15,6 @@ itsdangerous==2.2.0
 blinker==1.9.0
 click==8.3.3
 colorama==0.4.6
-PyYAML==6.0.3
 
 # --- 桌面窗口与 Python/JS 桥接 ---
 pywebview==6.2.1
@@ -57,6 +56,11 @@ keyring==25.7.0
 # --- 插件依赖（pixiv-sync 等在同进程内 import） ---
 jmcomic==2.6.19
 commonX==0.6.40
+# PyYAML 不是内核直接依赖（主配置已改成 JSON），但 jmcomic 的 `common`（commonX）
+# 在 `common.base.packer` 里硬 import 它，而两个包都没有声明这条依赖：
+# 少了它，manga-library 一 import jmcomic 就 ImportError。它同时被
+# docs/Releases/spec_common.py 的 HIDDEN_IMPORTS 点名（`yaml.cyaml`）。
+PyYAML==6.0.3
 
 # --- 终端输出（jmcomic / rich 链路） ---
 rich==15.0.0

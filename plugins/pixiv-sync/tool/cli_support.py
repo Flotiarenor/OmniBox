@@ -33,8 +33,32 @@ def is_tty() -> bool:
         return False
 
 
+def data_root_from_json(config_path: Path, base: Path) -> Optional[Path]:
+    """从 `.config/app.json` 的 `directories.data_root` 读下载根；无该键返回 None。"""
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    directories = data.get("directories")
+    if not isinstance(directories, dict):
+        return None
+    value = directories.get("data_root")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    path = Path(value.strip()).expanduser()
+    if not path.is_absolute():
+        path = base / path
+    return path.resolve()
+
+
 def data_root_from_yaml(yaml_path: Path, base: Path) -> Optional[Path]:
-    """从 `.config/app.yaml` 的 `data_root` 读下载根；无该键返回 None。"""
+    """旧版落点 `.config/app.yaml` 的 `data_root`；无该键返回 None。
+
+    主配置已改为 `app.json`（与仓库其余持久化一致），这里保留旧版读法只是为了让
+    工具能在"新版本还没启动过、旧文件尚未迁移"的机器上继续工作。
+    """
     import re
 
     body = yaml_path.read_text(encoding="utf-8")
@@ -59,15 +83,18 @@ def resolve_root(root_arg: Optional[str]) -> Path:
 
     cwd = Path.cwd()
     candidates = []
-    # 1) 当前目录有 .config/app.yaml → 按 data_root
-    app_yaml = cwd / ".config" / "app.yaml"
-    if app_yaml.exists():
+    # 1) 当前目录的 .config 里有主配置 → 按它的 data_root（旧版是 app.yaml）
+    for name, reader in (("app.json", data_root_from_json), ("app.yaml", data_root_from_yaml)):
+        config_file = cwd / ".config" / name
+        if not config_file.exists():
+            continue
         try:
-            root = data_root_from_yaml(app_yaml, cwd)
-            if root:
-                candidates.append(("app.yaml data_root", root))
+            root = reader(config_file, cwd)
         except Exception:
-            pass
+            root = None
+        if root:
+            candidates.append((f"{name} data_root", root))
+            break
     # 2) cwd/data
     candidates.append(("cwd/data", cwd / "data"))
     for label, p in candidates:

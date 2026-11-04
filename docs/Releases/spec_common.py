@@ -71,6 +71,8 @@ HIDDEN_IMPORTS = [
     'werkzeug.serving',
     'jinja2.ext',              # Flask 内部依赖
     'markupsafe._native',
+    # PyYAML 由 jmcomic 的 `common`（commonX）在 `common.base.packer` 里硬 import：
+    # 静态分析能跟到 `common`，但 C 加速器要显式点名才会打包。
     'yaml.cyaml',
     # 插件动态加载的第三方依赖
     'mutagen',

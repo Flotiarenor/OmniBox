@@ -69,7 +69,7 @@ node tools/check_frontend_escape.cjs
 
 ### 1.1 本地隐私门禁（`tools/check_private_paths.py`）
 
-拦的是"把开发机上的东西提交上去"：本地运行期配置（`.config/plugins/*.json`、`.config/app.yaml`、
+拦的是"把开发机上的东西提交上去"：本地运行期配置（`.config/plugins/*.json`、`.config/app.json`、
 `.config/auth_token.txt`、`data/group-mesh/identity/*.json`）**不在 git 里**（`.gitignore` 覆盖），
 但里面的真实路径与令牌很容易在写文档、注释、用例时被顺手复制进去，而这类改动其它门禁完全
 看不见（ruff 不扫字符串，`check_plugins` 只看插件契约，打包规则只查数据收集）。

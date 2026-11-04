@@ -72,7 +72,7 @@ _POLL_INTERVAL = 0.2
 # 真实应用启动时会 import 的模块（都在 requirements.txt 里）。缺任何一个就说明
 # 这台机器跑不动应用 —— 典型是 headless Linux 没有 pywebview 的 GUI 后端。
 # 用例据此 skip，而不是把"环境不具备"报成失败。
-_REQUIRED_MODULES = ('webview', 'flask', 'yaml', 'requests', 'PIL', 'Crypto')
+_REQUIRED_MODULES = ('webview', 'flask', 'requests', 'PIL', 'Crypto')
 
 
 class AppStartFailure(RuntimeError):

@@ -2,7 +2,7 @@
 
 为什么需要它
 ------------
-本地运行期配置（`.config/plugins/*.json`、`.config/app.yaml`、`data/group-mesh/identity/*`
+本地运行期配置（`.config/plugins/*.json`、`.config/app.json`、`data/group-mesh/identity/*`
 与 `.config/auth_token.txt`）**不在 git 里**（`.gitignore` 覆盖），但里面的值很容易在写
 文档、注释、用例时被顺手复制进去：真机路径、共享目录、令牌。一旦推送就等于公开，而且
 这类改动在其它门禁里完全看不见 —— ruff 不扫字符串，check_plugins 只看插件契约，
@@ -54,6 +54,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 #: 本地运行期配置（相对仓库根；glob）。这些文件不该被跟踪，内容才是隐私来源。
 LOCAL_CONFIG_GLOBS = (
+    '.config/app.json',
+    # 主配置的历史落点（迁移时会改名为 <名字>.migrated 留在原处）
     '.config/app.yaml',
     '.config/auth_token.txt',
     '.config/principals.json',
@@ -136,7 +138,7 @@ def _path_tokens(text: str) -> set:
 
 
 def _secret_tokens(text: str) -> set:
-    """JSON 里键名像密钥的值；解析不了（例如 yaml）就当纯文本看。"""
+    """JSON 里键名像密钥的值；解析不了（旧版 yaml 落点）就当纯文本看。"""
     tokens = set()
     try:
         data = json.loads(text)

@@ -15,22 +15,24 @@ limitations under the License.
 '''
 
 import atexit
+import json
 import logging
 import os
-import shutil
+import re
 import sys
 import threading
 import time
 from copy import deepcopy
+from pathlib import Path
 
 import requests
 import webview
-import yaml
 
 from shell.backend.app_logging import setup_logging
 from shell.backend.auth import get_or_create_token, get_token_file
 from shell.backend.file_dialog import pick_path
 from shell.backend.file_server import create_app
+from shell.backend.json_cache import write_json
 from shell.backend.media_catalog import list_subdirectories
 from shell.backend.paths import (
     USER_DATA_DIR_ENV,
@@ -60,6 +62,17 @@ from shell.backend.window_state import (
 
 log = logging.getLogger(__name__)
 
+# ============================================================
+# 主配置：JSON 落点、默认值与旧版 YAML 迁移
+# ============================================================
+# 为什么是 JSON 而不是 YAML：这个文件只有四个叶子键，日常使用不看也不改；而仓库里其余
+# 全部持久化（`shell.json`、`.config/plugins/*.json`、各插件状态）都是 JSON。统一一种
+# 格式之后，读、写都落在标准库上（内核不再 import PyYAML —— 它今天仍留在 requirements
+# 里，是 jmcomic 那条链的传递依赖），并且"同一份配置只有一种读法"：迁移前它还有第二套
+# 读法（维护脚本按正则从 app.yaml 里抠 data_root）。旧版落点仍会被读一次并转存，读法见
+# `_read_legacy_config`。
+CONFIG_FILE_NAME = 'app.json'
+
 DEFAULT_CONFIG = {
     'server': {
         'host': '127.0.0.1',
@@ -74,8 +87,295 @@ DEFAULT_CONFIG = {
 }
 
 
+def _legacy_config_paths() -> list[Path]:
+    """旧版配置的落点，按"从新到旧"排列。
+
+    `<config>/app.yaml` 是上一版的位置；`<user_data>/config.yaml` 更早（那时配置还放在
+    用户数据根目录，后来才收进 `.config`）。两者都只用于一次性迁移。
+    """
+    return [get_config_dir() / 'app.yaml', get_user_data_dir() / 'config.yaml']
 
 
+#: 旧版 YAML 里一行"键: 值"的形态（值可以为空，表示下面跟着一个块）
+_LEGACY_KEY_LINE = re.compile(r'^(?P<key>[A-Za-z_][A-Za-z0-9_.-]*):(?P<rest>.*)$')
+
+
+def _legacy_scalar(raw: str) -> object:
+    """解析旧版 YAML 的一个标量行；返回字符串、列表，或 None 表示"这个键下面是块"。
+
+    只处理四种形态：不带引号、单引号、双引号（去掉引号），以及列表（`[]` 或 `[a, b]`）。
+    行尾的 `#` 注释按 YAML 规则只在引号外、且前面是空白时才算注释；引号内的 `#` 属于值。
+    """
+    quote = ''
+    cut = len(raw)
+    for index, char in enumerate(raw):
+        if quote:
+            if char == quote:
+                quote = ''
+            continue
+        if char in ('"', "'"):
+            quote = char
+        elif char == '#' and (index == 0 or raw[index - 1] in ' \t'):
+            cut = index
+            break
+    value = raw[:cut].strip()
+    if not value:
+        return None
+    if value == '{}':
+        return {}
+    if value.startswith('[') and value.endswith(']'):
+        return [_unquote(part.strip()) for part in value[1:-1].split(',') if part.strip()]
+    return _unquote(value)
+
+
+def _unquote(value: str) -> str:
+    """去掉成对的引号（只认同一种引号成对，不做转义处理）。"""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        return value[1:-1]
+    return value
+
+
+def _read_legacy_config(path: Path) -> dict | None:
+    """读旧版 `app.yaml` / `config.yaml`，返回嵌套 dict；无法解析时返回 None。
+
+    只为一次性迁移存在：内核已不再 import PyYAML（它仍作为 jmcomic 那条链的传递依赖
+    留在 requirements 里，与主配置无关），而老用户的旧文件里可能有自己改过的
+    host / port / trusted_hosts / data_root，直接丢默认值等于把这些设置清掉。
+    支持的写法就是旧版默认配置与文档示例用到的全部：
+
+    * 两层映射，子键缩进两个空格；
+    * 标量：不带引号 / 单引号 / 双引号，行尾注释；
+    * 列表：`key: []`、`key: [a, b]`、以及 `key:` 后跟 `- 值` 的块（PyYAML 默认输出
+      的块状列表把 `-` 与键放在同一缩进，因此两空格与四空格都要认）。
+
+    解析失败一律返回 None 而不是"尽量读出来"：迁移读错值比迁移失败更糟——`data_root`
+    读成半截字符串会把数据根换到别处，而调用方对 None 的处理是"保留旧文件、本次用默认值"。
+    """
+    try:
+        text = path.read_text(encoding='utf-8')
+    except (OSError, UnicodeDecodeError):
+        return None
+
+    data: dict = {}
+    section: str | None = None
+    pending_list: str | None = None
+    for raw in text.splitlines():
+        if not raw.strip() or raw.lstrip().startswith('#'):
+            continue
+        indent = len(raw) - len(raw.lstrip(' '))
+        if '\t' in raw[:indent + 1]:
+            return None
+        body = raw.strip()
+
+        if indent == 0:
+            match = _LEGACY_KEY_LINE.match(body)
+            if not match:
+                return None
+            section = match.group('key')
+            pending_list = None
+            value = _legacy_scalar(match.group('rest'))
+            if value is None:
+                data[section] = {}
+                pending_list = section       # 紧跟的 `- 值` 属于这个键
+            else:
+                data[section] = value
+            continue
+
+        block = data.get(section) if section else None
+        if not isinstance(block, dict):
+            return None
+
+        if body.startswith('- '):
+            if pending_list is None:
+                return None
+            item = _legacy_scalar(body[2:])
+            if item is None or isinstance(item, list):
+                return None
+            current = block.get(pending_list)
+            if isinstance(current, list):
+                current.append(item)
+            elif current == {}:
+                block[pending_list] = [item]
+            else:
+                return None
+            continue
+
+        if indent != 2:
+            return None
+        match = _LEGACY_KEY_LINE.match(body)
+        if not match:
+            return None
+        key = match.group('key')
+        value = _legacy_scalar(match.group('rest'))
+        pending_list = key if value is None else None
+        block[key] = {} if value is None else value
+
+    return data
+
+
+def _retire_legacy_config(path: Path) -> None:
+    """把已迁移的旧文件改名保留（不删除），避免同名覆盖掉用户上一次的备份。"""
+    for index in range(100):
+        suffix = '.migrated' if index == 0 else f'.migrated-{index + 1}'
+        target = path.with_name(path.name + suffix)
+        if target.exists():
+            continue
+        try:
+            path.rename(target)
+        except OSError as error:
+            log.warning(f"[OmniBox] 旧配置已迁移，但改名失败（可手动删除 {path}）: {error}")
+            return
+        log.info(f"[OmniBox] 旧配置已改名保留: {target}")
+        return
+
+
+def _read_config_file(path: Path) -> dict | None:
+    """读 `app.json`；文件不可读、不是 JSON、顶层不是对象时返回 None。"""
+    try:
+        with open(path, encoding='utf-8') as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _coerce_port(value: object) -> int | None:
+    """把配置里的端口归一成可用的整数；非法值返回 None。
+
+    手改配置时把端口写成字符串（`"port": "18080"`）是最常见的笔误，而下游
+    `_resolve_port` 直接 `int()` 取值：不归一的话一个引号就能让启动失败。
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        port = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        port = int(value.strip())
+    else:
+        return None
+    return port if 1 <= port <= 65535 else None
+
+
+def _coerce_host_list(value: object) -> list[str]:
+    """把 `trusted_hosts` 归一成字符串列表（单个字符串按一项处理）。"""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items: list = [value]
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+    else:
+        log.warning(f"[OmniBox] server.trusted_hosts 不是列表，已忽略: {value!r}")
+        return []
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
+def _normalize_config(config: dict) -> dict:
+    """补齐默认值并校正字段类型；幂等（同一份输入反复调用结果不变）。
+
+    手改配置时最容易踩的两处是类型：`port` 写成字符串、`trusted_hosts` 写成单个字符串
+    （整条白名单会因"不是列表"被静默忽略）。这里就地纠正并留下说明日志，与 `data_root`
+    的既有做法一致 —— 宁可带着日志继续启动，也不要因为一个引号退出。
+
+    只在**键存在**时告警：缺键是正常情况（用户删掉某项想用默认值），按默认值补上即可，
+    把它报成"无效"只会制造噪音。
+    """
+    defaults = deepcopy(DEFAULT_CONFIG)
+
+    server = config.get('server')
+    if not isinstance(server, dict):
+        if server is not None:
+            log.error("[OmniBox] 配置项 server 格式错误，已重置为默认值")
+        server = {}
+    config['server'] = server
+
+    if 'host' in server:
+        host = server['host']
+        if isinstance(host, str) and host.strip():
+            server['host'] = host.strip()
+        else:
+            log.warning(f"[OmniBox] server.host 无效，已使用默认值: {host!r}")
+            server['host'] = defaults['server']['host']
+    if 'port' in server:
+        port = _coerce_port(server['port'])
+        if port is None:
+            log.warning(f"[OmniBox] server.port 无效，已使用默认值: {server['port']!r}")
+            server['port'] = defaults['server']['port']
+        else:
+            server['port'] = port
+    if 'trusted_hosts' in server:
+        server['trusted_hosts'] = _coerce_host_list(server['trusted_hosts'])
+    for key, value in defaults['server'].items():
+        server.setdefault(key, deepcopy(value))
+
+    directories = config.get('directories')
+    if not isinstance(directories, dict):
+        if directories is not None:
+            log.error("[OmniBox] 配置项 directories 格式错误，已重置为默认值")
+        directories = {}
+    config['directories'] = directories
+    if 'data_root' in directories:
+        data_root = directories['data_root']
+        if isinstance(data_root, str) and data_root.strip():
+            directories['data_root'] = data_root.strip()
+        else:
+            log.warning(f"[OmniBox] directories.data_root 无效，已使用默认值: {data_root!r}")
+            directories['data_root'] = defaults['directories']['data_root']
+    for key, value in defaults['directories'].items():
+        directories.setdefault(key, value)
+    return config
+
+
+def _migrate_legacy_config(cfg_path: Path) -> tuple[bool, dict | None]:
+    """把旧版 YAML 落点一次性转存为 `app.json`。
+
+    返回 `(是否发现旧文件, 迁移来的配置)`。发现旧文件但读不出来时第二项为 None，调用方
+    据此**不写** `app.json` —— 下次启动会再试一次，用户改过的设置不会被一组默认值顶掉。
+    转存成功才把旧文件改名（`.migrated`，保留内容）。
+    """
+    for old_path in _legacy_config_paths():
+        if not old_path.exists():
+            continue
+        legacy = _read_legacy_config(old_path)
+        if legacy is None:
+            log.error(f"[OmniBox] 旧版配置无法解析，本次使用默认值（旧文件保留，下次启动再试）: {old_path}")
+            return True, None
+        migrated = _normalize_config(legacy)
+        if not write_json(cfg_path, migrated, create_parent=True):
+            log.error(f"[OmniBox] 旧配置迁移写入失败，本次沿用旧配置值: {cfg_path}")
+        else:
+            log.info(f"[OmniBox] 配置已迁移: {old_path} → {cfg_path}")
+            _retire_legacy_config(old_path)
+        return True, migrated
+    return False, None
+
+
+def load_config() -> dict:
+    """读主配置；缺失时建默认值、有旧版落点时迁移，返回值里的 data_root 是绝对路径。"""
+    cfg_path = get_config_dir() / CONFIG_FILE_NAME
+
+    if cfg_path.exists():
+        config = _read_config_file(cfg_path)
+        if config is None:
+            # 文件在但读不出来：不覆写用户文件（可能只是改到一半），本次用默认值
+            log.error(f"[OmniBox] 配置文件无法解析，本次使用默认配置: {cfg_path}")
+            config = deepcopy(DEFAULT_CONFIG)
+    else:
+        found, migrated = _migrate_legacy_config(cfg_path)
+        if migrated is not None:
+            config = migrated
+        else:
+            config = deepcopy(DEFAULT_CONFIG)
+            # 发现旧文件却读不出来时不落盘：留给下次启动重试（原因已在上面记过）
+            if not found and not write_json(cfg_path, config, create_parent=True):
+                log.error(f"[OmniBox] 默认配置写入失败: {cfg_path}")
+            elif not found:
+                log.info(f"[OmniBox] 创建默认配置: {cfg_path}")
+
+    config = _normalize_config(config)
+    # 相对路径 data_root 统一锚定到用户数据目录
+    config['directories']['data_root'] = str(resolve_data_root(config['directories']['data_root']))
+    return config
 
 
 def _argv_value(flag: str) -> str | None:
@@ -97,53 +397,6 @@ def _argv_value(flag: str) -> str | None:
         return None
     return value
 
-
-def load_config():
-    user_data_dir = get_user_data_dir()
-    cfg_path = get_config_dir() / 'app.yaml'
-
-    # 缺失时：尝试从旧 config.yaml 迁移，否则创建默认配置
-    if not cfg_path.exists():
-        cfg_path.parent.mkdir(parents=True, exist_ok=True)
-        old_path = user_data_dir / 'config.yaml'
-        if old_path.exists():
-            shutil.copy(old_path, cfg_path)
-            log.info(f"[OmniBox] 迁移配置: config.yaml → {cfg_path}")
-        else:
-            with open(cfg_path, 'w', encoding='utf-8') as f:
-                yaml.safe_dump(DEFAULT_CONFIG, f, allow_unicode=True, sort_keys=False)
-            log.info(f"[OmniBox] 创建默认配置: {cfg_path}")
-
-    with open(cfg_path, 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
-
-    if not isinstance(config, dict):
-        log.info("[OmniBox] 配置文件内容无效，已使用默认配置")
-        config = {}
-
-    defaults = deepcopy(DEFAULT_CONFIG)
-
-    # 补齐 server 配置
-    server = config.setdefault('server', {})
-    if not isinstance(server, dict):
-        log.error("[OmniBox] 配置项 server 格式错误，已重置为默认值")
-        server = defaults['server']
-        config['server'] = server
-    for key, value in defaults['server'].items():
-        server.setdefault(key, value)
-
-    # 补齐 directories 配置
-    directories = config.setdefault('directories', {})
-    if not isinstance(directories, dict):
-        log.error("[OmniBox] 配置项 directories 格式错误，已重置为默认值")
-        directories = defaults['directories']
-        config['directories'] = directories
-    if not isinstance(directories.get('data_root'), str) or not directories['data_root'].strip():
-        directories['data_root'] = defaults['directories']['data_root']
-
-    # 相对路径 data_root 统一锚定到用户数据目录
-    directories['data_root'] = str(resolve_data_root(directories['data_root']))
-    return config
 
 def wait_for_server(host, port, timeout=5):
     start = time.time()

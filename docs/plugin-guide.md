@@ -294,7 +294,7 @@ from abc import ABC, abstractmethod
 class PluginBase(ABC):
     def __init__(self, manifest: dict, config: dict):
         self.manifest = manifest
-        self.config = config            # 全局配置（.config/app.yaml 内容）
+        self.config = config            # 全局配置（.config/app.json 内容）
         self.name = manifest['name']
         self._settings_store = None     # 由 PluginManager 注入
         self._resolved_config = {}      # 构造前预加载的已解析设置
@@ -1394,7 +1394,7 @@ def _get_thumb(self, rel_path: str) -> Path:
 
 ```
 .config/
-├── app.yaml                    ← 主程序配置
+├── app.json                    ← 主程序配置
 └── plugins/
     ├── media-player.json       ← 各插件设置（git 忽略）
     └── image-viewer.json

@@ -20,7 +20,7 @@
 | `plugin_ci.py` | 按插件拆分 CI 测试：`--list` 从 manifest 生成矩阵，`--core` 跑共享测试，`--plugin <name>` 跑单插件测试；测试归属按 `test_<插件名下划线>_*` 前缀 | CI 的 `test` 与 `plugin` job；改测试归属规则时 |
 | `shell_e2e_smoke.py` | 真实浏览器冒烟门禁：用 `unittest` 跑 `tests/test_shell_browser_e2e.py`（壳整体链路：导航渲染 / iframe 挂载 / 生命周期通知 / 控制台零错误）与 `tests/test_splitter_browser_e2e.py`（侧栏拖动逐帧跟随 / 落盘 / 把手占位），共 14 条、真实壳 + 无头 Chrome；并把"用例被跳过""用例数少于预期"判为失败。退出码 `0` 通过、`1` 有用例失败或被跳过、`2` 缺 selenium / Chrome / 已构建的 `shell/frontend/dist` | 改壳前端交互、改这条门禁本身；CI 的 shell-e2e job |
 
-`check_private_paths.py` 读 `.config/plugins/*.json`、`.config/app.yaml`、`.config/auth_token.txt`、`data/group-mesh/identity/*.json`（均未跟踪）。CI runner 上不存在这些配置，因此它不再是 CI 步骤，只在开发机提交前运行；在本地没有配置时会打印 SKIP 并以 0 退出。
+`check_private_paths.py` 读 `.config/plugins/*.json`、`.config/app.json`、`.config/auth_token.txt`、`data/group-mesh/identity/*.json`（均未跟踪）。CI runner 上不存在这些配置，因此它不再是 CI 步骤，只在开发机提交前运行；在本地没有配置时会打印 SKIP 并以 0 退出。
 
 → 因此：注释、文档、用例里的示例路径一律写成 `D:\…` 占位，不要使用开发机真实路径。
 

@@ -56,7 +56,7 @@ graph TB
 - **通信**：所有页面同源（`http://127.0.0.1`），插件前端可直接调用 `parent.pywebview.api` 访问后端方法；Web-only 模式下自动使用 HTTP API 桥接。
 - **Web-only 模式**：可通过 `python main.py --web-only` 启动，无需桌面窗口，适合 Linux 服务器 / NAS / 浏览器访问。
 - **插件**：每个插件是一个独立文件夹，包含 `manifest.json`、`backend/`（Python 代码）和 `frontend/`（静态网页资源）。插件可通过 `backend/libs` 携带纯 Python 依赖。
-- **配置**：主程序配置位于 `.config/app.yaml`，插件设置自动持久化到 `.config/plugins/<插件名>.json`（git 忽略）。设置变更后插件自动重载，无需重启应用。
+- **配置**：主程序配置位于 `.config/app.json`，插件设置自动持久化到 `.config/plugins/<插件名>.json`（git 忽略）。设置变更后插件自动重载，无需重启应用。
 
 ### 插件页面骨架与内容
 
@@ -178,15 +178,24 @@ http://127.0.0.1:18080
 
 ### 配置文件
 
-主程序配置位于 `.config/app.yaml`：
+主程序配置位于 `.config/app.json`（缺键按默认值补齐，端口写成字符串也会被归一成整数）：
 
-```yaml
-server:
-  host: "127.0.0.1"
-  port: 18080
-directories:
-  data_root: "./data"
+```json
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 18080,
+    "trusted_hosts": []
+  },
+  "directories": {
+    "data_root": "./data"
+  }
+}
 ```
+
+旧版本的 `.config/app.yaml`（以及更早的 `<用户数据目录>/config.yaml`）会在首次启动时自动
+转存为 `app.json`，旧文件改名为 `<原文件名>.migrated` 保留；转存失败时保留旧文件、本次使用
+默认值，下次启动再试。
 
 插件设置自动保存到 `.config/plugins/` 目录，修改后无需重启应用即可生效。
 

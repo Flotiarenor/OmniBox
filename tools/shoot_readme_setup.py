@@ -14,7 +14,7 @@
 
 它会替你做的两件事
 ------------------
-1. 建一份**隔离且空白**的基线 `<home>/.config`（之后应用自己补齐 `app.yaml`、`shell.json`、
+1. 建一份**隔离且空白**的基线 `<home>/.config`（之后应用自己补齐 `app.json`、`shell.json`、
    各插件设置与访问令牌）；
 2. 可选：把 `--wallpapers` 目录里的图片复制进 `<home>/.config/backgrounds`，省掉手工导入
    （目录不存在就跳过）。
@@ -80,7 +80,7 @@ def seed_home(home: Path) -> None:
     的"就说不清了；而截图红线本身就要求基线里不出现真实路径。空白起步，配置全部由你
     在窗口里做一次，之后每次拍摄都复用它。
 
-    启动时应用会自己补齐 `app.yaml`、`shell.json`、各插件的设置文件与访问令牌
+    启动时应用会自己补齐 `app.json`、`shell.json`、各插件的设置文件与访问令牌
     （`main.py` 的首次运行路径），因此这里不需要预置任何东西。
     """
     (home / '.config').mkdir(parents=True, exist_ok=True)
