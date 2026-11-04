@@ -244,13 +244,16 @@ class ImageViewerPixivFuzzyTestCase(unittest.TestCase):
         self.assertFalse(plain.settings.for_path('_artist')['pixiv_fuzzy'])
 
     def test_album_cache_semantics_unchanged(self):
-        """本次改动不动缓存里的封面/标志语义：索引缓存版本保持 4。
+        """模糊匹配不动缓存里的封面/标志语义；版本号由索引 schema 决定。
 
-        模糊匹配只影响配置点判定（`pixiv_explicit`）与同号条目的比较键，
-        缓存的 `direct_cover` / `pixiv` 计算方式与改动前一致，因此不需要
-        升版本作废旧索引（升了等于让所有用户白扫一遍全库）。
+        模糊匹配只影响配置点判定（`pixiv_explicit`）与同号条目的比较键，缓存的
+        `direct_cover` / `pixiv` 计算方式与改动前一致，因此不因它升版本（升了等于让
+        所有用户白扫一遍全库）。当前版本是 7：v5 来自「更新单元数」的 schema 变更
+        （`direct_units` / `total_units`），v6 改成与漫画阅读插件对齐（书的边界由漫画
+        根决定，见 `books.py`），v7 作废 v6 期间按文件名猜页码落下的条目；这些都与模糊
+        匹配无关，再改封面/标志语义时才该再一次升版本。
         """
-        self.assertEqual(self.module._const.LIMITS.album_cache_version, 4)
+        self.assertEqual(self.module._const.LIMITS.album_cache_version, 7)
 
 
 if __name__ == '__main__':   # pragma: no cover

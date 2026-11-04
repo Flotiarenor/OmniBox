@@ -8,7 +8,8 @@
 有意的取舍 —— 需要检查的东西都在组件里；为让接缝有类型而塞进 `sys.path` 会换来模块名冲突。
 
 装配顺序就是依赖顺序：路径 → 设置 → 缩略图 → 扫描 → 目录快照 → 可见性配置 → 目录条目
-→ 相册索引 → 瓦片 → 列表 → 文件操作 / 重建 / 刷新；反向依赖一律由构造参数注入。
+→ 漫画书范围 → 相册索引 → 最近图片 → 瓦片 → 列表 → 文件操作 / 重建 / 刷新；反向依赖一律
+由构造参数注入。
 `get_data_root` 直接返回 `paths.root`：已无 mixin 覆写基类方法。
 """
 
@@ -29,6 +30,8 @@ _entries = load_sibling(__file__, 'entries', 'image_viewer')
 _dirs = load_sibling(__file__, 'dirs', 'image_viewer')
 _album_config = load_sibling(__file__, 'album_config', 'image_viewer')
 _albums = load_sibling(__file__, 'albums', 'image_viewer')
+_books = load_sibling(__file__, 'books', 'image_viewer')
+_recent = load_sibling(__file__, 'recent', 'image_viewer')
 _tiles = load_sibling(__file__, 'tiles', 'image_viewer')
 _listing = load_sibling(__file__, 'listing', 'image_viewer')
 _file_ops = load_sibling(__file__, 'file_ops', 'image_viewer')
@@ -59,9 +62,15 @@ class ImageViewerPlugin(PluginBase):
         self.album_config = _album_config.AlbumConfig(self.paths, self._invalidate_albums)
         self.entries = _entries.DirEntryCache(
             self.paths, self.scanner, self.settings, self.naming)
+        # 漫画书的边界由漫画阅读插件给（manifest 的 dependencies 声明这条联动）：
+        # 组件只拿一个读取函数，插件不在 / 未配置时它返回 None，时间线整体退化成普通图片。
+        self.books = _books.MangaBooks(self.paths, self._manga_root, extensions)
         self.albums = _albums.AlbumIndex(
             self.paths, self.dirs_snapshot, self.entries, self.settings,
-            self.album_config, self.naming, limits)
+            self.album_config, self.naming, limits, self.books)
+        self.recent = _recent.RecentImages(
+            self.paths, self.albums, self.thumbs, self.naming, extensions, limits,
+            self.books)
         self.tiles = _tiles.AlbumTiles(
             self.paths, self.entries, self.settings, self.thumbs, self.naming,
             extensions, limits)
@@ -107,9 +116,31 @@ class ImageViewerPlugin(PluginBase):
             'list_roots': self.paths.list_roots,
             'browse_dir': self.paths.browse_dir,
             'delete_folder': self.file_ops.delete_folder,
+            'list_recent_images': self.recent.list_recent_images,
         }
 
     # ===== 宿主协作者（组件通过闭包/端口拿到，不持有插件对象） =====
+
+    def _manga_root(self) -> str | None:
+        """漫画根（来自漫画阅读插件 `manga-library` 的设置）；读不到时返回 None。
+
+        时间线按这根画出的边界把"一本书"合并成一张卡，因此它属于跨插件联动而不是本插件
+        的设置项：漫画插件不在、未配置或根目录不在本插件的图片根里时返回 None，调用方
+        退化成普通图片，不会用文件名去猜。`_resolved_config` 的 `manga_root` 预设供自检
+        与用例在不起插件的情况下指定同一根。
+        """
+        preset = self._resolved_config.get('manga_root')
+        if preset:
+            return str(preset)
+        dependency = self.get_dependency('manga-library')
+        if dependency is None:
+            return None
+        try:
+            settings = dependency.get_settings()
+        except Exception:
+            return None
+        root = settings.get('root_dir') if isinstance(settings, dict) else None
+        return str(root) if root else None
 
     def _read_raw_settings(self) -> Dict[str, Any]:
         """启动时预设 ∪ 当前设置文件（未脱敏、不含 schema 默认值，不能用 setting() 代替）。"""
@@ -161,6 +192,7 @@ class ImageViewerPlugin(PluginBase):
     def on_settings_changed(self, changed_keys) -> None:
         """设置变更：按改动范围重绑组件状态（入口是唯一知道依赖关系的编排点）。"""
         changed = set(changed_keys)
+        self.books.invalidate()
         if _const.ROOT_KEYS & changed:
             rooted = 'root_dir' in changed
             new_dir = self.setting('root_dir')

@@ -34,9 +34,12 @@ Object.assign(ImageViewer.prototype, {
         const requestId = ++this._loadSeq;
         const navSeq = this._navSeq;
         // 只允许"最新请求 + 当前导航代次 + 仍在图片层 + 路径未变"的响应写 DOM。
+        // `_recentActive` 互斥：时间线「按图片」层的列表来自 list_recent_images，
+        // 目录列表（list_folder_items）的响应不能再画进这一层。
         const isCurrent = () => requestId === this._loadSeq
             && navSeq === this._navSeq
             && this.mode === 'images'
+            && !this._recentActive
             && this.currentPath === path;
         if (!isCurrent()) return;
         const grid = document.getElementById('image-grid');
@@ -104,6 +107,115 @@ Object.assign(ImageViewer.prototype, {
             this._statusState = 'error';
             this._pushChrome();
         }
+    },
+
+    /**
+     * 时间线「按图片」层的更新单元列表：后端按最近修改时间跨目录取一页"作品或单图"。
+     *
+     * 条目与 list_folder_items 的 `items` 同形：作品是 `type:'album'` 的瓦片（p0 封面 +
+     * 张数角标），散图是 `type:'image'`；`all_images` 是本页单元按作品 p0→pN 展开的
+     * 连续浏览序列。渲染直接走 renderJustifiedLayout（它已支持 album 瓦片与按张数
+     * 累加的灯箱起点），本方法只负责取数、状态栏与分页。
+     *
+     * 与 loadImages 同一套请求代次守卫：只有"最新请求 + 当前导航代次 + 仍在图片层 +
+     * 仍由「按图片」进入"的响应才能写 DOM，切走后迟到的响应不得重绘。
+     */
+    async loadRecentImages(page = 1) {
+        const requestId = ++this._loadSeq;
+        const navSeq = this._navSeq;
+        const isCurrent = () => requestId === this._loadSeq
+            && navSeq === this._navSeq
+            && this.mode === 'images'
+            && this._recentActive;
+        if (!isCurrent()) return;
+        const grid = document.getElementById('image-grid');
+        const paginationEl = document.getElementById('pagination');
+        grid.innerHTML = '<div class="loading">图片加载中…</div>';
+        grid.style.height = 'auto';
+        paginationEl.innerHTML = '';
+        // 与 loadImages 一致：先取生效设置，保证 per_page / row_height 是当下的值。
+        // 「按图片」层是跨相册视图，不属于任何目录，因此读全局设置而不是上一个目录的。
+        try {
+            const eff = await Bridge.call('get_settings', '');
+            if (!isCurrent()) return;
+            if (eff) {
+                this.currentSettings = eff;
+                this.currentRowHeight = eff.row_height || 200;
+            }
+        } catch (e) { /* 取不到就按现有设置渲染 */ }
+        const perPage = this.currentSettings.per_page || 40;
+        try {
+            const data = await Bridge.call('list_recent_images', page, perPage);
+            if (!isCurrent()) return;
+            this.currentPage = page;
+            this.currentItems = (data && data.items) || [];
+            this.currentImages = this.currentItems.filter(it => it.type !== 'album');
+            // 灯箱序列就是后端给的本页展开序列（作品按 p0→pN 逐张展开）：单元在序列
+            // 里的起始下标由 renderJustifiedLayout 按"前面各单元的张数"累加得出，
+            // 所以偏移恒为 0。
+            this.currentAllImages = (data && data.all_images) || [];
+            this.currentAllOffset = 0;
+            // 最近图片列表没有"容器子目录待展开"的问题：不设 _sequencePath，
+            // 打开灯箱时不会去取 list_album_images。
+            this._sequencePath = null;
+            this._sequenceFull = null;
+            this.filteredSeqIndexes = null;
+            // total 是单元数（作品 + 单图），image_total 才是图片张数：两者不同时必须
+            // 分开说，否则"共 3 张"会让人以为本页只有 3 张图。
+            const total = data && data.total != null ? data.total : this.currentItems.length;
+            const imageTotal = data && data.image_total != null
+                ? data.image_total
+                : this.currentImages.length;
+            const partial = !!(data && data.partial);
+            // partial 为真表示目录扫描预算用尽：这一页不是全库扫描的结果，必须说出来，
+            // 并用 warn 色状态点提示列表不完整。
+            const countText = total === imageTotal
+                ? `共 ${total} 张图片`
+                : `共 ${total} 项 · ${imageTotal} 张图片`;
+            this._statusText = partial
+                ? `${countText}（仅列出最近扫描到的部分）`
+                : countText;
+            this._statusState = partial ? 'warn' : 'ok';
+            grid.innerHTML = '';
+            if (!this.currentItems.length) {
+                grid.innerHTML = this._emptyHtml('icon:images', '最近没有图片');
+                grid.style.height = 'auto';
+                this._pushChrome();
+                return;
+            }
+            const keyword = this.searchQuery;
+            if (keyword) {
+                this.filterCurrentImages(keyword);
+            } else {
+                this.renderJustifiedLayout(this.currentItems);
+            }
+            // 分页按单元数（total）算：按图片张数算会把页数算少。
+            if (total > 0) {
+                const currentPage = (data && data.page) || page;
+                this.pagination.render(currentPage, Math.max(1, Math.ceil(total / perPage)));
+            }
+            this._pushChrome();
+        } catch (error) {
+            if (!isCurrent()) return;
+            grid.innerHTML = this._emptyHtml('icon:triangle-alert', '图片加载失败');
+            grid.style.height = 'auto';
+            this._statusText = '图片加载失败';
+            this._statusState = 'error';
+            this._pushChrome();
+        }
+    },
+
+    /** 分页回调：按当前图片层的来源分派（最近图片 / 目录图片）。 */
+    _reloadPage(page = 1) {
+        if (this._recentActive) return this.loadRecentImages(page);
+        return this.loadImages(this.currentPath, page);
+    },
+
+    /** 重载当前页（刷新、删除、移动、重建缩略图等操作结束后共用）。 */
+    _reloadCurrentView() {
+        if (this._recentActive) return this.loadRecentImages(this.currentPage || 1);
+        if (this.mode === 'images') return this.loadImages(this.currentPath, this.currentPage || 1);
+        return Promise.resolve();
     },
 
     renderJustifiedLayout(items) {
@@ -496,7 +608,7 @@ Object.assign(ImageViewer.prototype, {
             if (result.errors.length) Toast.error(`部分删除失败: ${result.errors.join('; ')}`);
             else Toast.success(`已删除 ${imgs.length} 张图片`);
             this.clearSelection();
-            await this.loadImages(this.currentPath, this.currentPage);
+            await this._reloadCurrentView();
         } catch (e) {
             Toast.error('删除请求失败');
         }
@@ -525,7 +637,7 @@ Object.assign(ImageViewer.prototype, {
             else Toast.success(`已移动 ${imgs.length} 张图片`);
             this.clearSelection();
             this.closeMoveModal();
-            await this.loadImages(this.currentPath, this.currentPage);
+            await this._reloadCurrentView();
         } catch (e) {
             Toast.error('移动请求失败');
         }

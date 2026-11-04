@@ -24,6 +24,12 @@ class ImageViewer {
 
         this.mode = 'albums';            // albums | children | images
         this.currentView = 'albums';     // albums | timeline | latest
+        // 时间线视图内的展示方式（本次会话记住，不落盘）：
+        // albums = 按月分组的相册卡片，images = 最近图片（list_recent_images）的 justified 网格。
+        this.timelineMode = 'albums';
+        // 图片层是否由「按图片」进入：为真时图片来自 list_recent_images，currentPath 为空，
+        // 灯箱序列就是本页图片（currentAllImages = currentItems），没有连续浏览序列要补。
+        this._recentActive = false;
         this.childParentPath = '';
         this.fromChildren = false;
         this.currentPath = '';
@@ -172,7 +178,10 @@ class ImageViewer {
             nav: { browse: { visible: true } },
             search: {
                 enabled: !this._extensionOpen,
-                placeholder: isImages ? '搜索当前相册…' : '搜索相册…',
+                // 「按图片」层的图片来自最近图片列表（不是某个目录）：搜索只过滤本页。
+                placeholder: isImages
+                    ? (this._recentActive ? '搜索当前页图片…' : '搜索当前相册…')
+                    : '搜索相册…',
                 clear: this._searchClear,
             },
             status: { text: this._statusText, state: this._statusState },
@@ -217,6 +226,8 @@ class ImageViewer {
         this._navSeq += 1;
         this.currentView = view;
         this.mode = 'albums';
+        // 切视图一律离开「按图片」层：图片来自最近图片列表，不属于任何导航项。
+        this._recentActive = false;
         this.childParentPath = '';
         this.fromChildren = false;
         this.currentPath = '';
@@ -303,7 +314,9 @@ class ImageViewer {
 
         this.lightbox = createLightbox({ getImageUrl: (item) => item.url });
         this.pagination = createPagination(document.getElementById('pagination'), {
-            onPageChange: (page) => this.loadImages(this.currentPath, page)
+            // 翻页按当前图片层的来源分派：相册目录走 list_folder_items 那套，时间线的
+            // 「按图片」层走 list_recent_images（见 app-grid.js 的 _reloadPage）。
+            onPageChange: (page) => this._reloadPage(page)
         });
         this.contextMenu = createContextMenu({
             items: [

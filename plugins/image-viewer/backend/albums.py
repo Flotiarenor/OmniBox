@@ -12,7 +12,10 @@
 - 代表封面按 Pixiv 作品号倒序取第一个非空封面（= 最近的作品）；非 Pixiv 目录取 mtime
   最新、同 mtime 比名字；
 - 同深度时命名空间节点（虚拟）先算：它与合成根同为 depth 0，而合成根要把额外根目录的
-  图片并进相册树总数，必须等它们的结果先出来。
+  图片并进相册树总数，必须等它们的结果先出来；
+- 除图片张数外还聚合**更新单元数**（`unit_count`）：同一目录里同作品号的多页、连号页码
+  的一本书在时间线里只占一张卡，所以单元数要像张数一样自底向上汇总，且两者必须用同一份
+  分组实现（`naming.unit_groups`），否则「最近更新」的单元总数与扫描出来的单元数会对不上。
 
 **不预生成缩略图**：预生成上万次随机小文件 I/O 得不偿失，交给 `/thumbs` 按需生成。
 """
@@ -31,13 +34,14 @@ class AlbumIndex:
     """相册树、全树聚合与索引缓存的生命周期。"""
 
     def __init__(self, paths: Any, snapshot: Any, entries: Any, settings: Any,
-                 config: Any, naming: Any, limits: Any) -> None:
+                 config: Any, naming: Any, limits: Any, books: Any = None) -> None:
         self._paths = paths
         self._snapshot = snapshot
         self._entries = entries
         self._settings = settings
         self._config = config
         self._naming = naming
+        self._books = books
         self._ttl = limits.albums_ttl
         self._version = limits.album_cache_version
         self._cached: Optional[Dict[str, Any]] = None
@@ -228,7 +232,8 @@ class AlbumIndex:
                 entries[rel] = {
                     'path': rel, 'name': rel[len(self._paths.marker):],
                     'depth': 0, 'parent': None,
-                    'direct_count': 0, 'direct_cover': '', 'direct_mtime': 0.0,
+                    'direct_count': 0, 'direct_units': 0,
+                    'direct_cover': '', 'direct_mtime': 0.0,
                     'pixiv': pixiv_flags[rel], 'has_children': bool(children),
                     'children': children, 'mtime': mtime, 'virtual': True,
                 }
@@ -262,12 +267,16 @@ class AlbumIndex:
                          reverse=True)
         order_ms = (time.perf_counter() - order_started) * 1000
         agg_started = time.perf_counter()
-        totals: Dict[str, Tuple[int, str, float, tuple]] = {}
+        # 漫画根下的一级子目录是「一本书」：它整本算一个更新单元，章（它的子目录）不再
+        # 各自成单元。书的范围只在这里判定一次，条目里的 `direct_units` 不认识漫画根。
+        book_paths = self._books.book_flags(list(dirs)) if self._books is not None else set()
+        totals: Dict[str, Tuple[int, str, float, tuple, int]] = {}
         child_visits = 0
         for entry in ordered:
             rel = entry['path']
             pixiv = pixiv_flags[rel]
             total = entry['direct_count']
+            units = entry['direct_units']
             cover = entry['direct_cover']
             newest = entry['direct_mtime']
             rank = self._naming.cover_rank(cover, newest, pixiv)
@@ -278,6 +287,7 @@ class AlbumIndex:
                 if not child_totals:
                     continue
                 total += child_totals[0]
+                units += child_totals[4]
                 if child_totals[2] > newest:
                     newest = child_totals[2]
                 # 封面：Pixiv 树取作品号最大的子目录（画师最近的作品），非 Pixiv 目录
@@ -285,7 +295,10 @@ class AlbumIndex:
                 if child_totals[3] > rank:
                     rank = child_totals[3]
                     cover = child_totals[1]
-            totals[rel] = (total, cover, newest, rank)
+            if rel in book_paths:
+                # 整本一张卡：吞掉章与更深层目录各自算出的单元数，空书不占单元
+                units = 1 if total else 0
+            totals[rel] = (total, cover, newest, rank, units)
         agg_ms = (time.perf_counter() - agg_started) * 1000
         self._breakdown = {
             'flags': round(flags_ms, 1),
@@ -298,12 +311,13 @@ class AlbumIndex:
 
         albums: List[Dict] = []
         for entry in entries.values():
-            total, cover, newest, _rank = totals[entry['path']]
+            total, cover, newest, _rank, units = totals[entry['path']]
             # 把全树聚合的结果写回缓存条目：`children_total`（列表时的按需聚合）与这里
             # 读的是同一组字段，两条路径互为缓存 —— 列一次目录便不必再走整棵子树，
             # 反过来相册索引重建也不重扫已按需算过的目录。
             entry['total_mtime'] = entry.get('mtime')
             entry['total_count'] = total
+            entry['total_units'] = units
             entry['total_cover'] = cover
             albums.append({
                 'name': entry['name'],
@@ -311,6 +325,12 @@ class AlbumIndex:
                 'parent': entry['parent'],
                 'image_count': total,
                 'direct_count': entry['direct_count'],
+                # 递归更新单元数（按作品分组后的卡数）：时间线「按图片」的分页与总数
+                # 用它，与 image_count 一起由同一次聚合算出
+                'unit_count': units,
+                # 这本书由漫画阅读插件的漫画根界定：时间线「按图片」把它整本列成一张卡，
+                # 书的章不再单独成单元
+                'book': entry['path'] in book_paths,
                 'has_children': entry['has_children'],
                 'cover': cover,
                 'mtime': newest,

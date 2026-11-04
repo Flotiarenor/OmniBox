@@ -1,9 +1,10 @@
 """Pixiv 命名约定下的排序与封面策略。
 
-为什么是一个类而不是散函数：这里的规则（作品号、页序号、封面优先级）**只由文件名
-决定**，是同一个业务概念的三四种问法；组件需要其中不止一种（扫描要挑封面、相册树
-要比较封面优先级、列表要排序），而插件后端不是包、组件之间不能互相 import。把四条
-规则收成一个可以整体注入的对象，比往三个组件的构造函数里各塞两三个函数干净。
+为什么是一个类而不是散函数：这里的规则（作品号、页序号、作品分组、封面优先级）**只由
+文件名决定**，是同一个业务概念的三四种问法；组件需要其中不止一种（扫描要挑封面与数更新
+单元、相册树要比较封面优先级、列表要排序、时间线要按作品合并），而插件后端不是包、组件
+之间不能互相 import。把这几条规则收成一个可以整体注入的对象，比往每个组件的构造函数里
+各塞几个函数干净。
 
 无状态：不含缓存、不碰磁盘、不读设置。调用方（入口）只构造一次。
 
@@ -59,6 +60,36 @@ class PixivNaming:
                 return name_fn(min(same_work,
                                    key=lambda img: natural_sort_key(Path(name_fn(img)).name)))
         return name_fn(min(images, key=lambda img: natural_sort_key(Path(name_fn(img)).name)))
+
+    def work_units(self, names: List[Any]) -> List[List[str]]:
+        """把一个目录里的文件名按「作品」分组（扫描与时间线共用这一份实现）。
+
+        多页作品在时间线里只占一张卡，分组必须与"打开作品目录看到的"一致：同一目录里
+        `page_index` 认得的页按**作品号**归组，组内按页序号升序（同页序号再按名字自然
+        序）；其余文件各成一组。分组边界是目录 —— 不同目录下同号的作品不会被并成一张卡。
+
+        组顺序稳定：多页作品组按作品号升序在前，单文件组按名字自然序在后。单页的
+        `800_p0` 也是长度为 1 的组，调用方按组大小决定它显示成作品还是单图。
+        """
+        pages: Dict[int, List[str]] = {}
+        singles: List[str] = []
+        for name in names:
+            text = str(name)
+            page = self.page_index(text)
+            num = self.number(text) if page is not None else None
+            if num is None:
+                singles.append(text)
+                continue
+            pages.setdefault(num, []).append(text)
+        units: List[List[str]] = []
+        for num in sorted(pages):
+            members = pages[num]
+            members.sort(key=lambda item: (self.page_index(item) or 0,
+                                           natural_sort_key(item)))
+            units.append(members)
+        singles.sort(key=natural_sort_key)
+        units.extend([name] for name in singles)
+        return units
 
     def cover_rank(self, cover_rel: str, mtime: float, pixiv: bool) -> Tuple:
         """封面优先级键（可直接 max() 比较）。

@@ -47,6 +47,12 @@ class DirScanner:
             }
             for item in result['files']
         ]
+        # 更新单元数：按作品分组后的组数（同一作品的差分页算一个单元）。时间线要用
+        # 组内容、扫描只关心个数，两者共用 `PixivNaming.work_units` 这一份实现，否则
+        # 「最近更新」的总数与扫描出来的单元数会各算一套。漫画书的合并不在这里 ——
+        # 书的边界由漫画插件（`books.MangaBooks`）决定，在相册聚合时整本记一个单元。
+        direct_units = len(self._naming.work_units(
+            [item['name'] for item in result['files']]))
         # 封面：Pixiv 树取作品号最大的一张（p0），其余取文件名自然序第一张；
         # 相册新旧仍按最新 mtime 计算
         newest = max((img['mtime'] for img in images), default=0.0)
@@ -60,6 +66,7 @@ class DirScanner:
             'depth': inner.count('/') + (1 if inner else 0),
             'parent': parent,
             'direct_count': len(images),
+            'direct_units': direct_units,
             'direct_cover': cover,
             'direct_mtime': newest,
             'pixiv': pixiv,      # 封面挑选依据，缓存复用时要核对（见 AlbumIndex.scan_dir_cached）

@@ -40,12 +40,10 @@ Object.assign(ImageViewer.prototype, {
     // 入口；校验完成或同步发现变化后，壳发 `omnibox:action: refresh`，本页重载相册树与
     // 当前目录的图片。
 
-    /** 同步/校验发现了变化：重载相册树，图片视图则在当前目录上重取。 */
+    /** 同步/校验发现了变化：重载相册树，图片视图则在当前层重取（目录或最近图片）。 */
     async _onFreshnessChanged() {
         await this.loadAlbums();
-        if (this.mode === 'images' && this.currentPath) {
-            await this.loadImages(this.currentPath, this.currentPage);
-        }
+        await this._reloadCurrentView();
     },
 
     // ============================================================
@@ -83,7 +81,7 @@ Object.assign(ImageViewer.prototype, {
             this.clearSelection();
             this.filteredSeqIndexes = null;
             if (this.mode === 'images') {
-                this.loadImages(this.currentPath, 1);
+                this._reloadCurrentView();
             } else {
                 this.showAlbums();
             }
@@ -180,7 +178,7 @@ Object.assign(ImageViewer.prototype, {
             if (result.errors.length) Toast.error(`部分失败: ${result.errors.join('; ')}`);
             else Toast.success(`已重新生成 ${imgs.length} 张缩略图`);
             this.clearSelection();
-            await this.loadImages(this.currentPath, this.currentPage);
+            await this._reloadCurrentView();
         } catch (e) {
             Toast.error('更新缩略图失败');
         }

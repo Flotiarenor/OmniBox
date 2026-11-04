@@ -5,7 +5,7 @@
 - 职责：浏览本地图片目录，把文件夹聚合为相册树，并以混合瀑布流与灯箱查看图片。
 - 形态：独立页插件（`frontend.route` = `/image-viewer`）；页面 chrome 由 manifest 的 `frontend.chrome` 声明，壳的 `PluginChrome` 渲染品牌块、左栏导航、扩展入口、顶栏动作、搜索框、状态栏与侧栏分隔条，壳加载内容页时追加 `?content=1`，iframe 内只有内容（相册卡片、justified 图片网格、分页、灯箱、弹窗、缩略图重建进度卡）。
 - 宿主形态：companion 插件（image-cleaner / pixiv-sync，二者在各自 `manifest.json` 里声明 `dependencies: ["image-viewer"]`）的入口由壳的 `PluginExtensions` 渲染，点击后在宿主页内容槽打开 `NativePanel`（侧栏/顶栏保留，内容 iframe 用 `v-show` 隐藏、关闭后原位恢复）；`#extension-frame` 与 `openExtensionView` 仅给不认 native 的旧壳，当前壳不进入这里。
-- `manifest.json` 关键字段：`name` = `image-viewer`；`backend.entry` = `backend/main.py`；`backend.class` = `ImageViewerPlugin`；`frontend.entry` = `frontend/index.html`；`frontend.route` = `/image-viewer`；`frontend.chrome` 含 `brand`、`nav`（`browse` 组）、`toolbar`、`search`、`status`、`freshness`、`extensions`；`keepAlive` = `true`；`permissions` = `filesystem:read`、`filesystem:write`；`dependencies` 为空列表（无依赖）；`icon` = `icon:images`。
+- `manifest.json` 关键字段：`name` = `image-viewer`；`backend.entry` = `backend/main.py`；`backend.class` = `ImageViewerPlugin`；`frontend.entry` = `frontend/index.html`；`frontend.route` = `/image-viewer`；`frontend.chrome` 含 `brand`、`nav`（`browse` 组）、`toolbar`、`search`、`status`、`freshness`、`extensions`；`keepAlive` = `true`；`permissions` = `filesystem:read`、`filesystem:write`；`dependencies` = `["manga-library"]`（读它的漫画根来界定「一本书」，见 `backend/books.py`；对方未安装或未配置时整体退化成普通图片）；`icon` = `icon:images`。
 
 ## 文件地图
 
@@ -14,13 +14,15 @@
 | `plugins/image-viewer/manifest.json` | 插件声明、入口指向与壳渲染的页面 chrome | `ImageViewerPlugin`、`backend.entry`、`frontend.route`、`frontend.chrome` |
 | `plugins/image-viewer/backend/main.py` | 入口（facade）：`register_api` 绑定表、壳按名调用的钩子、附属插件契约成员、装配与诊断（`settings_schema` 引用 `const.SETTINGS_SCHEMA`） | `ImageViewerPlugin`、`settings_schema`、`register_api`、`diagnose`、`get_file_roots`、`resolve_file_path`、`get_data_root`、`get_thumb_data`、`ensure_thumb`、`get_cache_dir`、`freshness_spec`、`on_settings_changed`、`on_unload`、`list_roots`、`delete_files` |
 | `plugins/image-viewer/backend/const.py` | 设置项 schema、扩展名、性能上限、硬默认值与失效键集合（只有入口加载） | `SETTINGS_SCHEMA`、`IMAGE_EXTENSIONS`、`Limits`、`LIMITS`、`HARD_DEFAULTS`、`SORT_KEYS`、`ROOT_KEYS` |
-| `plugins/image-viewer/backend/naming.py` | Pixiv 命名约定下的排序与封面策略（无状态） | `PixivNaming`、`number`、`page_index`、`pick_cover`、`cover_rank`、`sort`、`is_work_dir`、`image_sort_key` |
+| `plugins/image-viewer/backend/naming.py` | Pixiv 命名约定下的排序、作品分组与封面策略（无状态） | `PixivNaming`、`number`、`page_index`、`work_units`、`pick_cover`、`cover_rank`、`sort`、`is_work_dir`、`image_sort_key` |
 | `plugins/image-viewer/backend/paths.py` | 数据根、派生路径、虚拟路径与命名空间（含命名空间映射缓存） | `PathLayout`、`NAMESPACE_MARKER`、`same_path`、`roots`、`extra_roots`、`token_map`、`roots_index`、`namespace_nodes`、`namespace_for`、`split_virtual`、`virtual_path`、`resolve_dir`、`resolve_path`、`is_namespace_node`、`is_safe`、`resolve_file_path`、`list_roots`、`browse_dir` |
 | `plugins/image-viewer/backend/settings.py` | 按目录的设置读取与逐级继承、Pixiv 标记 | `SettingsResolver`、`for_path`、`save_folder`、`clear_folder`、`invalidate`、`pixiv_mode`、`pixiv_fuzzy_mode`、`compute_pixiv_flags`、`stats` |
 | `plugins/image-viewer/backend/thumbs.py` | 尺寸元数据缓存、缩略图字节与落盘时机 | `ThumbStore`、`get_image_size`、`fill_image_sizes`、`flush`、`clear_meta`、`get_thumb_data`、`ensure_thumb`、`get_image_info`、`drop`、`delete_key`、`prune_keys` |
-| `plugins/image-viewer/backend/scanner.py` | 单目录裸扫描（无状态，封面规则由调用方给出） | `DirScanner`、`scan` |
+| `plugins/image-viewer/backend/scanner.py` | 单目录裸扫描（无状态，封面规则由调用方给出） | `DirScanner`、`scan`、`direct_units` |
 | `plugins/image-viewer/backend/dirs.py` | 全树目录枚举与落盘快照 | `DirSnapshot`、`ensure`、`walk`、`snapshot`、`record`、`roots_fingerprint`、`prewarm`、`reset`、`diagnostics` |
-| `plugins/image-viewer/backend/albums.py` | 相册树、全树聚合与索引缓存的生命周期 | `AlbumIndex`、`list_albums`、`invalidate`、`reset_index`、`cache_version`、`dir_entries`、`diagnostics` |
+| `plugins/image-viewer/backend/albums.py` | 相册树、全树聚合（图片数与更新单元数）与索引缓存的生命周期 | `AlbumIndex`、`list_albums`、`invalidate`、`reset_index`、`cache_version`、`dir_entries`、`diagnostics`、`unit_count`、`book` |
+| `plugins/image-viewer/backend/books.py` | 与漫画阅读插件对齐的书范围：漫画根下的一级子目录是一本书，给出整本的页序、封面与标题 | `MangaBooks`、`kind`、`is_book`、`book_flags`、`book_pages`、`book_title`、`invalidate` |
+| `plugins/image-viewer/backend/recent.py` | 时间线「按图片」的跨目录最近更新分页：以上界做优先队列展开，只扫可能进入前 K 名的目录；一个更新单元 = 一本书（漫画根界定）、一个作品（同作品号的多页）或一张单图 | `RecentImages`、`list_recent_images`、`_expand`、`_push_book`、`_work_name`、`_public_unit`、`_Candidate` |
 | `plugins/image-viewer/backend/entries.py` | 目录级条目存储：带 mtime 校验的扫描与递归聚合 | `DirEntryCache`、`scan`、`children_total`、`aggregate`、`cached_total`、`drop_nodes`、`misses` |
 | `plugins/image-viewer/backend/album_config.py` | 相册可见性配置与「保留可见的空目录」标记 | `AlbumConfig`、`get`、`set_action`、`mark_visible`、`replace_visible_marks`、`drop_marks_under`、`prune` |
 | `plugins/image-viewer/backend/tiles.py` | 子目录瓦片、按批补齐与灯箱连续浏览序列 | `AlbumTiles`、`scan_items`、`resolve_pending`、`load_album_tiles`、`list_album_images`、`card_cover_size` |
@@ -31,9 +33,9 @@
 | `plugins/image-viewer/frontend/index.html` | 内容页入口：内容容器、旧 embed 回落、三个弹窗、保存失败错误区、进度卡与脚本装载顺序（页面 chrome 不在这里） | `#app`、`.view-body`、`#iv-content`、`#iv-albums`、`#image-grid`、`#pagination`、`#extension-view`、`#settings-modal`、`#settings-errors`、`#setting-follow-shell`、`#setting-plugin-alpha`、`js/app.js` |
 | `plugins/image-viewer/frontend/image-viewer.css` | 插件样式与自有 CSS 变量 | `--iv-radius`、`--iv-gradient`、`.iv-album`、`.iv-image-card`、`.iv-context-menu`、`.extension-view` |
 | `plugins/image-viewer/frontend/js/app.js` | `ImageViewer` 类骨架、初始化、生命周期、与壳的 chrome 消息、UI 事件绑定、旧 embed 回落 | `ImageViewer`、`init`、`_bindUI`、`_bindPluginLifecycle`、`_postHost`、`_pushChrome`、`_bindHost`、`_applyHostView`、`_applyHostAction`、`_onQuery`、`_serveHostChannel`、`loadSettings`、`openExtensionView`、`closeExtensionView`、`_applyAlbumSortSettings`、`_embedUrl` |
-| `plugins/image-viewer/frontend/js/app-albums.js` | 相册树浏览、渲染与作者网格排序 | `loadAlbums`、`showAlbums`、`_renderAlbumCards`、`_renderTimeline`、`_filterVisibleAlbums`、`_isCollapsed`、`_sortAlbums`、`_gridIsPixiv`、`_gridConfigPath`、`_ensureGrid`、`openAlbum`、`_showFolder`、`_rememberScroll`、`_restoreScroll`、`_popNavStack` |
+| `plugins/image-viewer/frontend/js/app-albums.js` | 相册树浏览、渲染、作者网格排序与时间线展示切换 | `loadAlbums`、`showAlbums`、`_renderAlbumCards`、`_renderTimeline`、`setTimelineMode`、`_renderTimelineToggle`、`_filterVisibleAlbums`、`_isCollapsed`、`_sortAlbums`、`_gridIsPixiv`、`_gridConfigPath`、`_ensureGrid`、`openAlbum`、`_showFolder`、`_rememberScroll`、`_restoreScroll`、`_popNavStack` |
 | `plugins/image-viewer/frontend/js/app-nav.js` | 返回栈、相册右键菜单、状态栏统计（相册数 / 图片数）、新建相册、根目录列表 | `_handleBack`、`showAlbumMenu`、`_closeAlbumMenu`、`_updateStats`、`_resetRootsList`、`_rootPaths`、`openNewAlbumModal`、`createAlbum` |
-| `plugins/image-viewer/frontend/js/app-grid.js` | 图片网格、Justified 布局、瓦片二级加载、幻灯片、多选 / 移动 / 删除、选中计数上报 | `loadImages`、`renderJustifiedLayout`、`_showFromCard`、`_upgradeSequence`、`_resetAlbumTiles`、`_watchAlbumTile`、`_flushAlbumTiles`、`_loadAlbumTileBatch`、`_applyAlbumTile`、`filterCurrentImages`、`toggleSlideshow`、`_stopSlideshow`、`toggleMultiSelectMode`、`_updateSelectionCount`、`toggleSelectImage`、`clearSelection`、`handleContextAction`、`deleteSelectedImages`、`openMoveModal`、`confirmMove` |
+| `plugins/image-viewer/frontend/js/app-grid.js` | 图片网格、Justified 布局、瓦片二级加载、幻灯片、多选 / 移动 / 删除、选中计数上报 | `loadImages`、`loadRecentImages`、`_reloadPage`、`_reloadCurrentView`、`renderJustifiedLayout`、`_showFromCard`、`_upgradeSequence`、`_resetAlbumTiles`、`_watchAlbumTile`、`_flushAlbumTiles`、`_loadAlbumTileBatch`、`_applyAlbumTile`、`filterCurrentImages`、`toggleSlideshow`、`_stopSlideshow`、`toggleMultiSelectMode`、`_updateSelectionCount`、`toggleSelectImage`、`clearSelection`、`handleContextAction`、`deleteSelectedImages`、`openMoveModal`、`confirmMove` |
 | `plugins/image-viewer/frontend/js/app-refresh.js` | 缩略图重建进度卡与统一刷新完成后的重载（「校验」控件由壳挂载） | `_onFreshnessChanged`、`refreshView`、`rebuildAll`、`rebuildFolder`、`_startRebuildTask`、`_waitRebuildDone`、`_updateRebuildProgress`、`hideRebuildProgress`、`cancelRebuild`、`refreshSelectedThumbs` |
 | `plugins/image-viewer/frontend/js/app-settings.js` | 设置弹窗读写、通用外观块与灯箱缓存下发 | `openSettingsModal`、`closeSettingsModal`、`saveSettings`、`_saveStep`、`_showSettingsErrors`、`_clearSettingsErrors`、`_applyLightboxCache`、`_syncAppearanceControls`、`_bindAppearanceSettings` |
 | `plugins/image-viewer/frontend/js/app-utils.js` | 缩略图 URL、转义、空态、时间格式化 | `_thumbUrl`、`_escapeHtml`、`_escapeAttr`、`_emptyHtml`、`_timeAgo`、`_monthKey`、`_formatDuration` |
@@ -53,6 +55,7 @@
 | `list_album_images` | `rel_path` | `{images, offset, capped}` | 灯箱用的连续浏览序列；每个作品块恒按文件名自然序 `p0 → pN`，块首即该瓦片的封面（排序设置只决定瓦片顺序，不翻转块内页序） |
 | `list_dir` | `rel_path` | `[{name, path}]` | 目录树（移动目标选择） |
 | `list_albums` | 无 | `{albums, config, changed}` | 相册全树展开 |
+| `list_recent_images` | `page`、`per_page` | `{items, all_images, page, per_page, total, image_total, has_next, has_prev, scanned_dirs, partial}` | 跨目录按最近更新倒序的**更新单元**分页（时间线「按图片」）；单元与 `list_folder_items` 的条目同形：同一作品号的多页、漫画根界定的整本（漫画 / 本子，含多章）合并成 `type: 'album'` 卡（`cover` 为封面、`image_count` / `total_count` 为页数、`mtime` 为组内最新页），其余文件是 `type: 'image'`；`all_images` 是本页单元按序展开的连续浏览序列（封面恒在首位，章按自然序、p0 → pN），第 i 个单元的封面下标 = 前面各单元张数累加；`total` 是单元数、`image_total` 是图片张数；`partial` 为真表示扫描预算用尽，此时 `total` 收敛为本次可列出的单元数 |
 | `create_folder` | `rel_path` | `{success, path}` / `{success, error}` | 新建相册目录 |
 | `delete_folder` | `rel_path` | `{success}` / `{success, error}` | 删除递归无图片的空目录 |
 | `get_album_config` | 无 | `{collapsed, promoted, expanded, visible_empty_dirs}` | 读取相册可见性配置 |
@@ -93,7 +96,7 @@
 - `#app`
   - `.view-body`（旧 embed 回落的内嵌视图定位基准）
     - `.view-content.iv-content.obx-scroll#iv-content`
-      - `#iv-albums`（相册网格与时间线的容器）
+      - `#iv-albums`（相册网格、时间线与时间线顶部的展示切换控件的容器）
       - `#image-grid.iv-image-grid`（Justified 绝对定位卡片容器）
     - `.pagination-bar#pagination`（`createPagination` 的容器）
     - `.extension-view#extension-view.hidden`（仅给不认 native 的旧壳，当前壳不进入这里）
@@ -111,8 +114,8 @@
 - 品牌块：`icon:images`、标题「图片相册」、副标题「Gallery」。
 - 浏览组（`browse`）：`albums` 全部相册、`timeline` 时间线、`latest` 最近添加。
 - 顶栏动作：`back`（返回，初始不可见）、`new-album`（新建相册）、`slideshow`（图片层可见，文案在「幻灯片 / 停止」间切换）、`multi-select`（文案在「开启多选 / 退出多选」间切换）、`selection-count`（`kind: 'text'`，多选且已选时显示「已选 N 项」）、`delete-selected`（`variant: 'danger'`）、`move-selected`、`refresh-thumbs`（三者仅多选态可见，未选中时 `disabled`）、`settings`。
-- 搜索框：占位在相册层为「搜索相册…」、图片层为「搜索当前相册…」；输入经 `omnibox:query` 下发。
-- 状态栏：相册层 `N 个相册 · M 张图片`，图片层 `共 N 张图片` 或 `共 N 项 · M 张图片`。
+- 搜索框：占位在相册层为「搜索相册…」、图片层为「搜索当前相册…」、时间线「按图片」层为「搜索当前页图片…」；输入经 `omnibox:query` 下发。
+- 状态栏：相册层 `N 个相册 · M 张图片`，图片层 `共 N 张图片` 或 `共 N 项 · M 张图片`；时间线「按图片」层按单元数给 `共 N 项 · M 张图片`（全是单图时 `共 N 张图片`），`list_recent_images` 返回 `partial` 时状态点用 `warn` 且文案注明只列出最近扫描到的部分。
 - 扩展入口（`extensions`）：`PluginExtensions` 读取 image-cleaner / pixiv-sync 的 `get_extensions` 渲染；点击由壳打开 `NativePanel`。
 - 统一刷新控件：`freshness.unit` 为「张」，由壳挂载；校验完成的 `omnibox:action: refresh` 回到内容页重载。
 
@@ -122,6 +125,7 @@
 
 - 相册卡片：`.iv-grid`、`.iv-album`、`.iv-album-cover`、`.iv-album-badge`、`.iv-album-info`、`.iv-album-name`、`.iv-album-count`、`.iv-album-menu`、`.iv-album-tag`、`.iv-album-tag-hot`、`.iv-time-badge`、`.iv-cover-fallback`
 - 时间线：`.iv-timeline-section`、`.iv-time-label`
+- 时间线展示切换：`.iv-mode-switch`、`.iv-mode-btn`、`.iv-mode-btn.active`（`#iv-albums` 内首位，图片层里它是 `#iv-albums` 的唯一内容）
 - 图片瓦片：`.iv-image-card`、`.iv-image-card.selected`、`.iv-cover-img`、`.iv-count-badge`（子文件夹瓦片右下角的页数 / 递归张数，数量已知即显示，与排序模式无关）、`.iv-tile-pending`
 - 相册右键菜单：`.iv-context-menu`
 - 空态与加载：`.empty-state`、`.empty-state-icon`、`.empty-state-text`、`.empty-state-hint`、`.loading`

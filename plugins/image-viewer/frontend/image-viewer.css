@@ -173,6 +173,32 @@
 }
 .iv-time-label i { font-style: normal; font-size: 11px; font-weight: 500; color: var(--text-muted); }
 
+/* ===== 时间线展示切换（按相册 / 按图片，本页自绘） =====
+   分段控件挂在内容根下，只用壳 token；图片层里它是 #iv-albums 的唯一内容，
+   位置天然在 justified 网格上方。 */
+#iv-content .iv-mode-switch {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 3px; margin-bottom: 16px;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg-surface);
+}
+#iv-content .iv-mode-switch .iv-mode-btn {
+  appearance: none; border: none; background: transparent;
+  padding: 5px 14px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; color: var(--text-secondary);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+#iv-content .iv-mode-switch .iv-mode-btn:hover {
+  background: var(--bg-hover); color: var(--text-primary);
+}
+#iv-content .iv-mode-switch .iv-mode-btn:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+#iv-content .iv-mode-switch .iv-mode-btn.active {
+  background: var(--accent); color: var(--text-on-accent);
+}
+
 /* ===== v3：相册层级操作 =====
    相册菜单用 ContentUI.card 的 actions/actionsPlacement='top-right'，按钮外观、
    点击隔离与封面角定位都由共享层负责；相册不再私有定位 .cui-actions。 */

@@ -30,6 +30,7 @@ EXPECTED_KEYS = [
     'rebuild_all', 'rebuild_folder', 'rebuild_status', 'rebuild_cancel',
     'get_settings', 'save_settings', 'get_root_dir', 'diagnose',
     'clear_folder_settings', 'list_roots', 'browse_dir', 'delete_folder',
+    'list_recent_images',
 ]
 
 #: 需要绑定到组件的键 → 组件属性名。其余键留在入口类上（诊断、兼容刷新、根目录视图）。
@@ -59,6 +60,7 @@ EXPECTED_OWNER = {
     'rebuild_folder': 'rebuild',
     'rebuild_status': 'rebuild',
     'rebuild_cancel': 'rebuild',
+    'list_recent_images': 'recent',
 }
 
 
