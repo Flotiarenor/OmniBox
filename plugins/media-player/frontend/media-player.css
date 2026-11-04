@@ -1331,6 +1331,7 @@ img.mp-thumb-pending { opacity: 0.45; transition: opacity .3s; }
   transform: translateY(102%);
   transition: transform 0.5s cubic-bezier(0.32, 0.72, 0.28, 1);
   pointer-events: none;
+  overflow: hidden;
 }
 
 .mp-lyrics-page.active {

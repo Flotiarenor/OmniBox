@@ -38,6 +38,7 @@ ffmpeg，且无法稳定构造「部分条目加载失败」。本用例在页�
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import socket
@@ -847,6 +848,84 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
         finally:
             self.driver.execute_cdp_cmd('Emulation.clearDeviceMetricsOverride', {})
             time.sleep(0.3)
+
+    # ------------------------------------------------------------------ 歌词页
+
+    def _bottom_strip_mean(self, rows: int = 2) -> tuple:
+        """视口底部若干行的平均 RGB。
+
+        缺陷的判据就是「底边看起来变黑了」，只有像素能表达：几何上歌词页确实已经移出
+        视口（`getBoundingClientRect().bottom > innerHeight`），任何基于矩形或命中测试的
+        断言都会判成通过 —— 黑带是它的溢出子元素画的，而那些子元素本身就是隐藏状态。
+        """
+        try:
+            from PIL import Image
+        except Exception:   # pragma: no cover - 取决于本机依赖
+            self.skipTest('未安装 Pillow（requirements.txt），跳过像素断言')
+
+        with Image.open(io.BytesIO(self.driver.get_screenshot_as_png())) as image:
+            rgb = image.convert('RGB')
+            width, height = rgb.size
+            pixels = [rgb.getpixel((x, height - depth))
+                      for depth in range(1, rows + 1)
+                      for x in range(0, width, max(1, width // 80))]
+        return tuple(round(sum(px[i] for px in pixels) / len(pixels), 1) for i in range(3))
+
+    def _open_lyrics_page(self) -> None:
+        """展开歌词沉浸页并等展开过渡结束（退出路径各测一次，每次都要先展开）。"""
+        self._click('#btn-fullscreen')
+        self._wait(
+            lambda: bool(self.driver.execute_script(
+                "const p = document.getElementById('lyrics-page');"
+                "return !!p && p.classList.contains('active');")),
+            '歌词沉浸页没有打开（后续测量的是没进过全屏的状态）',
+        )
+        time.sleep(0.8)                     # 展开过渡 0.5s
+
+    def test_lyrics_page_exit_leaves_no_dark_band_at_bottom(self):
+        """进出一次歌词沉浸页之后，视口底边必须与进入前一致，不能留下黑色阴影。
+
+        缺陷背景：`.mp-lyrics-page` 只用 `transform: translateY(102%)` 收起，而它的装饰层
+        **故意**比页面大（`.mp-lyrics-bg` 外扩 40px 让模糊边缘落在页外、`.mp-lyrics-aurora`
+        外扩 12%），页面本身又不裁剪溢出。102% 只把页面移出 2% 高度（749px 视口约 15px），
+        背景层外扩的 40px 里就有约 25px 仍压在底边上；背景层是 `brightness(0.3)` 的暗色
+        渐变，模糊后正好是一条从底边向上淡出的黑带（实测底边一行均值由 243 掉到 61）。
+        背景色只在进入歌词页时由 `MediaLyrics.applyBg` 写上去，所以黑带只在本轮会话里
+        「进出过一次」之后出现，刷新页面就消失。
+
+        断言取「进入前 == 退出后」而不是某个固定色：底边原本是什么由列表内容与主题决定，
+        用户要的是退出后回到原样；判别力来自差值（缺陷时相差 180 左右），与配色无关。
+        """
+        self._open_playlist()
+        self._click_row(0)
+        self._wait_playing(TITLES[0])
+        before = self._bottom_strip_mean()
+
+        # 前提：展开后底边确实是沉底的歌词页
+        self._open_lyrics_page()
+        opened = self._bottom_strip_mean()
+        self.assertLess(
+            sum(opened) / 3, 80,
+            f'歌词页展开后底边应是沉底的歌词页（实测 {opened}），'
+            f'否则本用例没有覆盖「底边被歌词页覆盖」的前提')
+
+        # 两条退出路径（返回按钮 / 键盘 Esc）都要落到同一个结果
+        exits = (
+            ('返回按钮', "document.getElementById('btn-lyrics-back').click();"),
+            ('Esc', "document.dispatchEvent(new KeyboardEvent('keydown',"
+                    " {key: 'Escape', bubbles: true}));"),
+        )
+        for index, (how, script) in enumerate(exits):
+            if index:
+                self._open_lyrics_page()
+            self.driver.execute_script(script)
+            time.sleep(1.2)                 # 收起过渡 0.5s
+            after = self._bottom_strip_mean()
+            diff = max(abs(after[i] - before[i]) for i in range(3))
+            self.assertLessEqual(
+                diff, 8,
+                f'用「{how}」退出歌词页后底边变暗：进入前 {before} → 退出后 {after}'
+                f'（最大通道差 {diff}，允差 8）')
 
 
 if __name__ == '__main__':   # pragma: no cover
