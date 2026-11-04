@@ -22,7 +22,6 @@ import tempfile
 import threading
 import time
 import unittest
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -50,113 +49,66 @@ WRITE_DELAY = 0.02
 
 def _build_client(writes: list, write_delay: float = WRITE_DELAY,
                   images: int = IMAGES_PER_PHOTO):
-    """构造 jmcomic 的最小替身：只实现 `execute_download` 用到的符号与钩子顺序。
+    """构造下载执行器的最小替身：只实现它用到的接口与钩子顺序。
 
     `writes` 追加 `(序号, 写盘完成时刻)`，供用例判断暂停之后是否还有新写入。
+    写盘发生在 `save_image` 里（真实实现是解码 + 落盘），执行器的取消检查点在它之前。
     """
     image_total = images * PHOTO_COUNT
 
-    class _AlbumText:
-        @staticmethod
-        def get_album_cover_url(album_id):
-            return f'https://example.invalid/{album_id}.jpg'
-
-    class _Photo:
+    class _ChapterRef:
         def __init__(self, number):
             self.photo_id = str(number)
             self.name = f'chapter-{number}'
-            self.page_arr = list(range(images))
-            self.from_album = None
+            self.sort = number + 1
+
+    class _Chapter(_ChapterRef):
+        def __init__(self, number):
+            super().__init__(number)
+            self.scramble_id = 220980
+            self.images = [f'{index + 1:05d}.webp' for index in range(images)]
 
         def __len__(self):
-            return len(self.page_arr)
+            return len(self.images)
 
-        def __iter__(self):
-            return iter(self.page_arr)
+        @property
+        def indextitle(self):
+            return f'第{self.sort}話 {self.name}'
 
     class _Album:
         album_id = '123456'
 
         def __init__(self):
-            self.oname = 'test-album'
             self.name = '测试漫画'
             self.author = 'tester'
             self.tags = []
-            self.page_count = image_total
-            self._photos = [_Photo(number) for number in range(PHOTO_COUNT)]
+            self.actors = []
+            self.chapters = [_ChapterRef(number) for number in range(PHOTO_COUNT)]
 
         def __len__(self):
-            return len(self._photos)
+            return len(self.chapters)
 
-        def __iter__(self):
-            return iter(self._photos)
+    class _Client:
+        def album(self, album_id):
+            return _Album()
 
-    class _Option:
-        def __init__(self, base_dir: Path, image_threads: int):
-            self.base_dir = base_dir
-            self.image_threads = image_threads
-            self.dir_rule = None
+        def chapter(self, photo_id):
+            return _Chapter(int(photo_id) % PHOTO_COUNT)
 
-        @staticmethod
-        def construct(option_dict):
-            rule = option_dict['dir_rule']
-            threading_spec = option_dict['download']['threading']
-            return _Option(Path(rule['base_dir']), int(threading_spec['image']))
+        def cover_url(self, album_id):
+            return f'https://example.invalid/{album_id}.jpg'
 
-    class _DirRule:
-        def __init__(self, rule, base_dir):
-            self.rule = rule
-            self.base_dir = base_dir
+        def image_bytes(self, photo_id, name):
+            return b'x' * 1024
 
-    class _Downloader:
-        """与 jmcomic.JmDownloader 同名的调度与钩子，顺序一致。"""
+    def save_image(raw, save_path, *, scramble_id, photo_id, source_name):
+        # 真实实现把图片重排后写到磁盘；这一行的位置就是"落盘"。
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        time.sleep(write_delay)
+        save_path.write_bytes(raw)
+        writes.append((int(save_path.stem), time.time()))
 
-        def __init__(self, option):
-            self.option = option
-            self._album = _Album()
-            self._album_dir = option.base_dir
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc_val, exc_tb):
-            return None
-
-        def before_album(self, album):
-            pass
-
-        def before_photo(self, photo):
-            pass
-
-        def after_image(self, image, img_save_path):
-            pass
-
-        def download_album(self, album_id):
-            album = self._album
-            self._album_dir = self.option.base_dir / album.album_id
-            self.before_album(album)
-            for photo in album:
-                self.download_by_photo_detail(photo)
-            return album
-
-        def download_by_photo_detail(self, photo):
-            self.before_photo(photo)
-            with ThreadPoolExecutor(max_workers=self.option.image_threads) as pool:
-                list(pool.map(self.download_by_image_detail, photo.page_arr))
-
-        def download_by_image_detail(self, image):
-            # 真实 jmcomic 在这里把图片写到磁盘；这一行的位置就是"落盘"。
-            path = self._album_dir / f'{image:05d}.jpg'
-            path.parent.mkdir(parents=True, exist_ok=True)
-            time.sleep(write_delay)
-            path.write_bytes(b'x' * 1024)
-            writes.append((image, time.time()))
-            self.after_image(image, str(path))
-
-    return SimpleNamespace(JmcomicText=_AlbumText,
-                           JmOption=_Option,
-                           DirRule=_DirRule,
-                           JmDownloader=_Downloader)
+    return SimpleNamespace(client=_Client(), save_image=save_image, total=image_total)
 
 
 class DownloadPauseCancelTests(unittest.TestCase):
@@ -181,9 +133,10 @@ class DownloadPauseCancelTests(unittest.TestCase):
         writes = self.writes
 
         def run(task, manga_dir, state_dir, lock, logger):
+            stub = _build_client(writes, images=images)
             return downloader.execute_download(
                 task, manga_dir, state_dir, lock, logger,
-                client_module=_build_client(writes, images=images))
+                client=stub.client, save_image=stub.save_image)
 
         self.plugin.downloads._run_download = run
 
@@ -322,9 +275,10 @@ class DownloadPauseCancelTests(unittest.TestCase):
             attempts['value'] += 1
             if attempts['value'] == 1:
                 raise RuntimeError('假客户端第一次失败')
+            stub = _build_client(writes, images=12)
             return downloader.execute_download(
                 task, manga_dir, state_dir, lock, logger,
-                client_module=_build_client(writes, images=12))
+                client=stub.client, save_image=stub.save_image)
 
         self.plugin.downloads._run_download = run
         result = self.api['download_submit']('123456', concurrency=2)

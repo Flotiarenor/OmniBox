@@ -5,6 +5,9 @@
   "icon": "icon:library",
   "dependencies": [],
   "keepAlive": true,
+  "libs": [
+    "backend/libs"
+  ],
   "backend": {
     "entry": "backend/main.py",
     "class": "MangaLibraryPlugin"

@@ -67,10 +67,8 @@ log = logging.getLogger(__name__)
 # ============================================================
 # 为什么是 JSON 而不是 YAML：这个文件只有四个叶子键，日常使用不看也不改；而仓库里其余
 # 全部持久化（`shell.json`、`.config/plugins/*.json`、各插件状态）都是 JSON。统一一种
-# 格式之后，读、写都落在标准库上（内核不再 import PyYAML —— 它今天仍留在 requirements
-# 里，是 jmcomic 那条链的传递依赖），并且"同一份配置只有一种读法"：迁移前它还有第二套
-# 读法（维护脚本按正则从 app.yaml 里抠 data_root）。旧版落点仍会被读一次并转存，读法见
-# `_read_legacy_config`。
+# 格式之后读、写都落在标准库上，并且"同一份配置只有一种读法"：旧版落点仍会被读一次并
+# 转存，读法见 `_read_legacy_config`。
 CONFIG_FILE_NAME = 'app.json'
 
 DEFAULT_CONFIG = {
@@ -138,8 +136,7 @@ def _unquote(value: str) -> str:
 def _read_legacy_config(path: Path) -> dict | None:
     """读旧版 `app.yaml` / `config.yaml`，返回嵌套 dict；无法解析时返回 None。
 
-    只为一次性迁移存在：内核已不再 import PyYAML（它仍作为 jmcomic 那条链的传递依赖
-    留在 requirements 里，与主配置无关），而老用户的旧文件里可能有自己改过的
+    只为一次性迁移存在：内核不 import PyYAML，而老用户的旧文件里可能有自己改过的
     host / port / trusted_hosts / data_root，直接丢默认值等于把这些设置清掉。
     支持的写法就是旧版默认配置与文档示例用到的全部：
 

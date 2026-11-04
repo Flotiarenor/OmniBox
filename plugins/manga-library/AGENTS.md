@@ -2,7 +2,7 @@
 
 ## 定位与形态
 
-- 职责：把 `root_dir` 下含图片的一级子目录聚合成书架，按章节与图片分层浏览并单页阅读，并在同一数据根内承载 jmcomic 下载任务管理。
+- 职责：把 `root_dir` 下含图片的一级子目录聚合成书架，按章节与图片分层浏览并单页阅读，并在同一数据根内承载禁漫（JM）下载任务管理。
 - 形态：独立页插件，`frontend.route` 为 `/manga-library`；不承载 companion，也不内嵌进其他宿主。
 - 页面 chrome：manifest 声明 `frontend.chrome`，品牌块、左栏导航（漫画库三视图 + 下载中心六个过滤项）、顶栏动作、搜索框、状态栏与侧栏分隔条由壳的 `PluginChrome.vue` 渲染；壳加载内容页时追加 `?content=1`，iframe 内只有内容（书架、下载中心、漫画详情、两个弹窗与阅读器）。
 
@@ -20,14 +20,17 @@
 | `plugins/manga-library/backend/scanner.py` | 目录扫描与封面选择的纯函数 | `IMAGE_EXTS`、`natural_sorted`、`visible_subdirs`、`direct_images`、`has_images`、`load_album_info`、`find_cover`、`scan_manga`、`resolve_safe_path`、`list_pages` |
 | `plugins/manga-library/backend/download_models.py` | 下载任务数据类与两种序列化 | `DownloadTask`、`to_api_dict`、`to_state_dict`、`from_state_dict`、`albumId`、`thumbUrl`、`totalImages`、`completedImages`、`downloadDir`、`startTime`、`completeTime` |
 | `plugins/manga-library/backend/download_state.py` | 任务表 JSON 落盘与恢复 | `save_tasks`、`load_tasks` |
-| `plugins/manga-library/backend/downloader.py` | jmcomic 下载执行、块级取消检查点、进度回调与 `album_info` 组装 | `execute_download`、`_load_client`、`client_module`、`ProgressCallback`、`before_album`、`before_photo`、`after_image`、`_build_album_info`、`_save_album_info_local`、`_save_state_locked`、`ProgressDownloader`、`download_by_photo_detail`、`download_by_image_detail`、`dir_rule`、`Bd / Aid`、`Bd / Aid / Pindextitle` |
+| `plugins/manga-library/backend/downloader.py` | 下载执行、块级取消检查点、章节目录规则、进度回调与 `album_info` 组装（接口客户端与图片解码由入口注入） | `execute_download`、`_download_chapter`、`ProgressCallback`、`chapter_dir`、`_sanitize`、`before_album`、`before_photo`、`after_image`、`finish`、`BYTES_PER_IMAGE`、`STATE_SAVE_EVERY` |
+| `plugins/manga-library/backend/libs/jm_mini.py` | 禁漫精简下载客户端（vendored 形态，与 pixiv-sync 的 `pixiv_mini` 一致）：域名引导、请求签名、响应解密、实体解析、图片字节与乱序重排（移植自 jmcomic，MIT） | `JmClient`、`Album`、`Chapter`、`ChapterRef`、`JmError`、`API_VERSION`、`DOMAIN_SERVERS`、`IMAGE_DOMAINS`、`TOKEN_SECRET`、`TOKEN_SECRET_CONTENT`、`DATA_SECRET`、`DOMAIN_SECRET`、`album`、`chapter`、`scramble_id`、`image_url`、`image_bytes`、`cover_url`、`segmentation_num`、`decode`、`save_image`、`SCRAMBLE_220980`、`SCRAMBLE_268850`、`SCRAMBLE_421926`、`_distinct_chapters`、`_decrypt` |
 | `plugins/manga-library/frontend/index.html` | 内容页入口：内容容器、阅读器与两个弹窗、脚本装载（页面 chrome 不在这里） | `#app`、`.view-body`、`.view-content.ml-content`、`#ml-content`、`#manga-reader-container`、`#ml-add-modal`、`#ml-detail-modal`、`#ml-detail-content` |
 | `plugins/manga-library/frontend/manga-library.css` | 插件全部样式（无 chrome 规则） | `--ml-radius`、`--ml-radius-sm`、`--ml-gradient`、`--ml-accent-soft`、`--ml-hero-bg`、`#app`、`.ml-content`、`.ml-section`、`.ml-section-title`、`.ml-grid`、`.ml-card`、`.ml-cover`、`.ml-cover-fallback`、`.ml-info`、`.ml-card-title`、`.ml-card-sub`、`.ml-fav-star`、`.ml-detail-hero`、`.ml-detail-cover`、`.ml-detail-info`、`.ml-detail-label`、`.ml-detail-title`、`.ml-detail-author`、`.ml-detail-actions`、`.ml-hero-back`、`.ml-info-box`、`.ml-info-item`、`.ml-tag`、`.ml-task`、`.ml-task-thumb`、`.ml-task-main`、`.ml-task-title`、`.ml-task-meta`、`.ml-status`、`.ml-task-progress`、`.ml-progress-track`、`.ml-progress-fill`、`.ml-task-percent`、`.ml-task-actions`、`.ml-no-anim`、`.ml-field`、`.ml-field-row`、`.ml-check`、`.manga-reader`、`.reader-toolbar`、`.reader-close`、`.reader-info`、`.reader-image-wrapper`、`.reader-arrow`、`.reader-prev`、`.reader-next`、`.btn-icon` |
 | `plugins/manga-library/frontend/js/app.js` | 应用主类：与壳的 chrome 消息、视图分发与渲染、下载中心、弹窗、轮询与生命周期 | `MangaLibraryApp`、`currentView`、`downloadFilter`、`tasks`、`_tasksKey`、`reader`、`viewLevel`、`_chapterPath`、`init`、`_postHost`、`_pushChrome`、`_chromeViewId`、`_navPatch`、`_bindHost`、`_applyHostView`、`_applyHostAction`、`_onQuery`、`_updateActions`、`_bindPluginLifecycle`、`_startPoll`、`_stopPoll`、`_bindUI`、`_goBack`、`_closeReader`、`switchView`、`loadView`、`_renderShelfView`、`_emptyHtml`、`_renderGrid`、`_ensureGrid`、`toggleFav`、`openMangaDetail`、`renderChapters`、`renderImages`、`_detailInfoHtml`、`loadTasks`、`updateStats`、`renderDownloads`、`showAddModal`、`closeAddModal`、`confirmAdd`、`showTaskDetail`、`closeDetailModal` |
 | `plugins/manga-library/frontend/js/reader.js` | 沉浸式单页阅读器 | `MangaReader`、`open`、`close`、`isOpen`、`renderPage`、`prev`、`next`、`_bindEvents` |
 | `plugins/manga-library/frontend/js/utils.js` | 转义与封面降级、下载文案格式化 | `MangaUtils`、`escapeHtml`、`coverImg`、`DownloadUtils`、`getStatusText`、`formatSpeed`、`formatTime` |
 
-**落盘产物**：数据根为 `root_dir`（`get_data_root` 返回 `PathLayout.root`）。`<漫画根>/.cache/manga_state.json` 由 `Library` 的 `_load_state`、`_save_state` 读写；`<漫画根>/.jmcomic_state/download_state.json` 由 `load_tasks`、`save_tasks` 读写，落点由 `PathLayout.download_state_dir` 给出（建不出来时回落到用户主目录下的 `.jmcomic_state`），状态目录下 `progress_` 前缀的进度快照由 `downloader` 的 `ProgressCallback._save_state_locked` 写入；`album_info.json` 写在漫画目录内，写入符号为 `DownloadCenter._save_album_info` 与 `downloader` 的 `_save_album_info_local`。
+**落盘产物**：数据根为 `root_dir`（`get_data_root` 返回 `PathLayout.root`）。`<漫画根>/.cache/manga_state.json` 由 `Library` 的 `_load_state`、`_save_state` 读写；`<漫画根>/.jmcomic_state/download_state.json` 由 `load_tasks`、`save_tasks` 读写，落点由 `PathLayout.download_state_dir` 给出（建不出来时回落到用户主目录下的 `.jmcomic_state`），状态目录下 `progress_` 前缀的进度快照由 `downloader` 的 `ProgressCallback._save_state` 写入；`album_info.json` 写在漫画目录内，写入符号为 `DownloadCenter._save_album_info` 与 `ProgressCallback._save_album_info`。
+
+**禁漫下载实现归属**：`backend/libs/jm_mini.py` 是插件的 vendored 依赖（manifest 的 `libs` 声明，加载后端前加入 `sys.path`），与 pixiv-sync 的 `pixiv_mini` 同一形态：移植自 jmcomic 2.6.19（MIT，`Copyright (c) 2023 hect0x7`），只覆盖下载路径，许可与出处见仓库根 `THIRD_PARTY_NOTICES.md`；运行时依赖 `requests`、`pycryptodome`、`Pillow`。多章本子的章节子目录名是 `第{N}話 {标题}`（`Chapter.indextitle`），与既有漫画库的落盘目录逐字一致，不要改措辞。
 
 ## 后端 API 契约
 

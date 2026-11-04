@@ -71,15 +71,12 @@ HIDDEN_IMPORTS = [
     'werkzeug.serving',
     'jinja2.ext',              # Flask 内部依赖
     'markupsafe._native',
-    # PyYAML 由 jmcomic 的 `common`（commonX）在 `common.base.packer` 里硬 import：
-    # 静态分析能跟到 `common`，但 C 加速器要显式点名才会打包。
-    'yaml.cyaml',
     # 插件动态加载的第三方依赖
     'mutagen',
     'PIL',
     'natsort',
     'chardet',
-    # document-reader 的 Markdown 渲染（requirements.txt 里随 rich 一起声明）
+    # document-reader 的 Markdown 渲染（requirements.txt 里与 mdurl 一起声明）
     'markdown_it',
     # document-reader 的正文抽取（documents.py：from html.parser import HTMLParser）
     # 与元数据解析（urllib.parse / xml.etree.ElementTree）。
@@ -94,9 +91,7 @@ HIDDEN_IMPORTS = [
     # document-reader 的朗读引擎：插件后端 importlib 动态加载，静态分析看不到；
     # 漏在这里的表现是"冻结后点朗读报没有可用引擎"（tts_engine 里是函数内 import）
     'edge_tts',
-    'jmcomic',
-    'common',
-    'curl_cffi',
+    # manga-library 的禁漫接口客户端（插件内自带实现）
     'requests',
     'Crypto',
     'Crypto.PublicKey._point',

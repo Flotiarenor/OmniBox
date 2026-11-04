@@ -30,6 +30,11 @@ _dmodels = load_sibling(__file__, 'download_models', 'manga_library_download')
 _dstate = load_sibling(__file__, 'download_state', 'manga_library_download')
 _downloader = load_sibling(__file__, 'downloader', 'manga_library_download')
 
+#: 禁漫精简客户端装在 `backend/libs`（manifest 的 `libs` 声明，PluginManager 与测试
+#: 夹具都会在加载后端前把它加进 sys.path）。它相当于本插件的 vendored 依赖：移植自
+#: jmcomic，与 pixiv-sync 的 `pixiv_mini` 同一形态，不参与插件后端的组件分层规则。
+from jm_mini import JmClient, save_image  # noqa: E402
+
 
 class MangaLibraryPlugin(PluginBase):
     # 设置项声明是纯数据，放在 const.py；壳的设置弹窗与 PluginBase 都从类属性读。
@@ -52,7 +57,18 @@ class MangaLibraryPlugin(PluginBase):
             self.paths, self.library, _scanner.IMAGE_EXTS, self.SHELF_VERSION)
         self.downloads = _downloads.DownloadCenter(
             self.paths, _dmodels.DownloadTask, _dstate.load_tasks,
-            _dstate.save_tasks, _downloader.execute_download)
+            _dstate.save_tasks, self._run_download)
+        #: 禁漫接口客户端：首个下载任务时才构造（域名引导与版本协商要发请求），
+        #: 之后复用同一实例，域名列表与 scramble_id 缓存不会每次重建。
+        self._jm_client: Any = None
+
+    def _run_download(self, task, manga_dir: str, state_dir: str, lock, logger):
+        """把接口客户端与图片解码注进下载执行器（两者是两件事，各自可替换）。"""
+        if self._jm_client is None:
+            self._jm_client = JmClient()
+        return _downloader.execute_download(
+            task, manga_dir, state_dir, lock, logger,
+            client=self._jm_client, save_image=save_image)
 
     def register_api(self) -> dict:
         return {
