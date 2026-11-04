@@ -43,10 +43,8 @@ from shell.backend.paths import (
     resolve_data_root,
 )
 from shell.backend.plugin_manager import PluginManager
-from shell.backend.shell_info import ShellInfo, configure_webview_environment, stored_log_level
+from shell.backend.shell_info import ShellInfo, stored_log_level
 from shell.backend.shell_prefs import ShellPrefs
-from shell.backend.webview_gpu import apply_gpu_preference
-from shell.backend.webview_gpu import install as install_gpu_preference
 from shell.backend.window_state import (
     get_state as window_fullscreen_state,
 )
@@ -556,7 +554,6 @@ def _run_app(config, manager):
         'system_delete_background_image': shell_info.delete_background_image,
         'system_list_background_images': shell_info.list_background_images,
         'system_set_log_level': shell_info.set_log_level,
-        'system_set_webview_high_performance': shell_info.set_webview_high_performance,
         'system_clear_thumb_caches': shell_info.clear_thumb_caches,
         'system_open_log_dir': shell_info.open_log_dir,
         # 壳偏好（启动与窗口 / 外观 / 背景 / 玻璃）：与 file_server 同一份实现
@@ -596,22 +593,6 @@ def _run_desktop_window(config, manager, api, host, port):
         log.warning("[OmniBox] Flask 启动超时")
         return
 
-    # GPU 适配器偏好：这里只登记开关状态，真正的注入发生在 WebView2 控件构造期间
-
-    # GPU 适配器偏好：这里只登记开关状态，真正的注入发生在 WebView2 控件构造期间
-    # （理由见 shell/backend/webview_gpu.py 的模块说明）。放这里而不是 main() 开头，
-    # 是因为 --web-only 不建窗口、不该被这个开关影响。
-    #
-    # 导入必须留在这里、不能提到模块顶层：`webview.platforms.edgechromium` 在导入期
-    # 就执行 `clr.AddReference('System.Windows.Forms')` 并导入 WinForms 类型，非
-    # Windows 平台上 `import main` 会直接抛异常 —— 那会让 Linux 产物与 --web-only
-    # 一起失效（早退发生在导入之后，救不了导入期的失败）。pywebview 自己也只在
-    # Windows 才导入它。
-    if sys.platform == 'win32':
-        from webview.platforms import edgechromium
-
-        install_gpu_preference(edgechromium.EdgeChrome)
-        apply_gpu_preference(configure_webview_environment(str(get_config_dir())))
     webview.create_window('OmniBox', f'http://{host}:{port}', js_api=api, width=1400, height=900, text_select=True)
     # 窗口已建：此后 system_*_window_fullscreen 才有对象可操作（--web-only 不会走到这里，
     # 那条通道因此继续给出"没有桌面窗口"的明确拒绝）

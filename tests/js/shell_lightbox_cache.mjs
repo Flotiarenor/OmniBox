@@ -26,10 +26,33 @@ function check(name, cond, extra = '') {
 }
 
 // ---------- 极简 DOM ----------
+// 事件记录：灯箱的拖动链路把 mousedown 挂在 img、mousemove/mouseup 挂在 document，
+// 回归用例必须能派发这些事件，所以桩要记住监听器（原来直接忽略）。
+function recordListeners(obj) {
+    obj._h = new Map();
+    obj.addEventListener = (type, fn) => {
+        if (!obj._h.has(type)) obj._h.set(type, []);
+        obj._h.get(type).push(fn);
+    };
+    obj.removeEventListener = (type, fn) => {
+        const list = obj._h.get(type);
+        if (!list) return;
+        const i = list.indexOf(fn);
+        if (i >= 0) list.splice(i, 1);
+    };
+    obj.fire = (type, evt = {}) => {
+        const list = (obj._h.get(type) || []).slice();
+        const event = { target: obj, preventDefault() { }, stopPropagation() { }, ...evt };
+        list.forEach((fn) => fn(event));
+    };
+    return obj;
+}
+
 function makeEl(tag = 'div') {
     const el = {
         tagName: tag, className: '', style: {}, dataset: {}, innerHTML: '',
         textContent: '', src: '', currentSrc: '', children: [],
+        offsetWidth: 0, offsetHeight: 0,
         classList: {
             _s: new Set(),
             add(c) { this._s.add(c); },
@@ -37,13 +60,12 @@ function makeEl(tag = 'div') {
             toggle(c, on) { if (on === undefined) { this._s.has(c) ? this._s.delete(c) : this._s.add(c); } else if (on) { this._s.add(c); } else { this._s.delete(c); } },
             contains(c) { return this._s.has(c); },
         },
-        addEventListener() { }, removeEventListener() { },
         querySelector() { return null },
         appendChild(c) { this.children.push(c); return c },
         cloneNode() { const copy = makeEl(tag); copy.src = this.src; copy.currentSrc = this.currentSrc; return copy },
         remove() { },
     };
-    return el;
+    return recordListeners(el);
 }
 
 // 组件先 createElement('div') 再 el.innerHTML = 模板，然后 el.querySelector(...) 取
@@ -63,14 +85,13 @@ function attachQuery(root) {
 }
 
 const sandbox = {
-    window: { addEventListener() { } },
+    window: { addEventListener() { }, innerWidth: 1280, innerHeight: 800 },
     parent: null,
-    document: {
+    document: recordListeners({
         createElement: (tag) => attachQuery(makeEl(tag)),
-        addEventListener() { }, removeEventListener() { },
         querySelector: () => null,
         body: { appendChild() { } },
-    },
+    }),
     console,
     encodeURIComponent, decodeURIComponent, String, Math, Date, JSON, Object, Array, Error, Set, Map,
     setTimeout, clearTimeout,
@@ -157,6 +178,32 @@ check('hide 之后 isOpen() 为 false', isOpenOf(lifecycle) === false);
 check('hide 触发一次 onClose', closeCalls === 1, `closeCalls=${closeCalls}`);
 lifecycle.hide();
 check('未打开时重复 hide 不再触发 onClose', closeCalls === 1, `closeCalls=${closeCalls}`);
+
+// ---------- 场景 7：拖动期间必须去掉 transform 过渡 ----------
+// 背景：base.css 给 `.lightbox img` 挂了 `transition: transform 0.1s ease-out`，
+// 而拖动是每次 mousemove 直接写 `img.style.transform`。过渡挂着时每次写入都会重新
+// 起一段缓动，元素只能追在指针后面 —— 表现是图像落后于鼠标且一顿一顿。
+// 所以按下时置 none、松手恢复（滚轮缩放仍要那一段平滑）。
+console.log('场景 7：拖动期间去掉 transform 过渡');
+const dragBox = createLightbox({ getImageUrl: (item) => item.url });
+dragBox.show(items, 0);
+check('刚打开时过渡为空（走 base.css 默认）', imgEl.style.transition === '',
+    `transition=${imgEl.style.transition}`);
+// 放大态才允许拖：滚轮每次 -0.1 的 deltaY 抬 0.1 倍
+for (let i = 0; i < 15; i += 1) imgEl.fire('wheel', { deltaY: -1 });
+check('滚轮放大后过渡仍为空（缩放要平滑）', imgEl.style.transition === '',
+    `transition=${imgEl.style.transition}`);
+imgEl.fire('mousedown', { clientX: 10, clientY: 10 });
+check('按下开始拖动时过渡被置为 none', imgEl.style.transition === 'none',
+    `transition=${imgEl.style.transition}`);
+const transformBefore = imgEl.style.transform;
+sandbox.document.fire('mousemove', { clientX: 60, clientY: 40 });
+check('拖动写入新的 transform', imgEl.style.transform !== transformBefore,
+    `before=${transformBefore} after=${imgEl.style.transform}`);
+sandbox.document.fire('mouseup', {});
+check('松手后恢复过渡', imgEl.style.transition === '',
+    `transition=${imgEl.style.transition}`);
+dragBox.hide();
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} 项失败`);
 process.exit(failures === 0 ? 0 : 1);

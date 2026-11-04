@@ -21,12 +21,11 @@ OmniBox 的 Python 后端：Flask 应用（`create_app()`）与插件契约。
 | `thumb_cache.py` | 缩略图缓存与维护 | `ThumbCache` `cache_stats` `clear_all_caches` |
 | `tasks.py` | 后台任务 | `BackgroundTask` |
 | `settings_store.py` | 每插件一个 JSON 的设置存储 | `SettingsStore` |
-| `shell_prefs.py` `shell_info.py` | 壳的外观偏好与运行期信息 | `ShellPrefs` `ShellInfo` `configure_webview_environment` |
+| `shell_prefs.py` `shell_info.py` | 壳的外观偏好与运行期信息 | `ShellPrefs` `ShellInfo` |
 | `auth.py` `principal.py` | 访问令牌与主体权限 | `get_or_create_token` `PrincipalStore` `require_admin` `PrincipalScope` |
 | `protected_paths.py` | 受保护路径的归一化与匹配 | `normalize` `matches` `is_protected` |
 | `app_logging.py` | 日志与轮转 | `SafeRotatingFileHandler` `setup_logging` |
 | `window_state.py` | 窗口状态（全屏等） | `get_state` `set_fullscreen` |
-| `webview_gpu.py` | 注入 WebView2 的 GPU 偏好 | `apply_gpu_preference` `install` |
 | `file_dialog.py` | 原生文件 / 目录选择 | `pick_path` |
 
 入口 `main.py` 在仓库根目录，负责启动与装配，不在本目录。

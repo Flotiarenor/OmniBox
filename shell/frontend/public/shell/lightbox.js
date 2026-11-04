@@ -142,7 +142,13 @@ function createLightbox(options = {}) {
     translate.y = Math.min(maxY, Math.max(-maxY, translate.y));
   }
 
-  function resetTransform() { scale = 1; translate = { x: 0, y: 0 }; applyTransform(); }
+  function resetTransform() {
+    scale = 1; translate = { x: 0, y: 0 };
+    // 复位时一并恢复过渡：拖动期间它被置为 none，若在窗口外松手导致 mouseup 未触发，
+    // 残留的 none 会让之后滚轮缩放的平滑消失。
+    img.style.transition = '';
+    applyTransform();
+  }
   function applyTransform() {
     clampTranslate();
     img.style.transform = `translate(${translate.x}px, ${translate.y}px) scale(${scale})`;
@@ -345,6 +351,11 @@ function createLightbox(options = {}) {
     dragStart.x = e.clientX - translate.x;
     dragStart.y = e.clientY - translate.y;
     img.style.cursor = 'grabbing';
+    // 拖动期间必须去掉 `transition: transform`（base.css 的 .lightbox img）。
+    // 拖动是每次 pointermove 直接写 transform，元素挂着过渡时每次写入都会重新起一次
+    // 0.1s 缓动，位置只能追在指针后面，表现为图像落后于鼠标且一顿一顿。
+    // 松手恢复，滚轮缩放仍需那一段平滑。
+    img.style.transition = 'none';
   }
   function onDragMove(e) {
     if (!isDragging) return;
@@ -360,6 +371,8 @@ function createLightbox(options = {}) {
     isDragging = false;
     if (dragDistance > 3) suppressClick = true;
     img.style.cursor = scale > 1 ? 'grab' : 'zoom-out';
+    // 恢复 base.css 里的过渡（拖动期间被置为 none）
+    img.style.transition = '';
   }
 
   overlay.addEventListener('pointerdown', (e) => { if (e.target === overlay) hide(); });

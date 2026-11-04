@@ -48,8 +48,8 @@ from shell.backend.shell_info import SHELL_SETTINGS_NAME, _store
 
 log = logging.getLogger(__name__)
 
-#: `shell.json` 里存放壳偏好的键。日志级别与 WebView2 高性能开关是同一文件里的平级键
-#: （`log_level` / `webview_high_performance`），因此这里只做**局部更新**，绝不整份覆写。
+#: `shell.json` 里存放壳偏好的键。日志级别是同一文件里的平级键（`log_level`），
+#: 因此这里只做**局部更新**，绝不整份覆写。
 PREFS_KEY = 'prefs'
 
 THEMES = ('light', 'dark')

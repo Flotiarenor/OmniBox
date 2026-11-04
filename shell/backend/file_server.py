@@ -544,8 +544,7 @@ def _status_response(code: int, title: str, detail: str, prefs: dict | None = No
 _ADMIN_ONLY_API = frozenset({
     'system_get_config',
     'system_get_plugin_status',
-    # 壳自身的运维端点：磁盘路径 / 日志级别 / WebView2 GPU 偏好 / 清缓存 / 开目录，
-    # 一律管理员专属
+    # 壳自身的运维端点：磁盘路径 / 日志级别 / 清缓存 / 开目录，一律管理员专属
     'system_get_shell_info',
     # 背景图库：导入会把**任意绝对路径**的图片复制进 `<config>/backgrounds`，而该
     # 目录随后由 `/file` 对外发布 —— 不限权等于给每个持令牌者一条"把本机文件搬进
@@ -565,7 +564,6 @@ _ADMIN_ONLY_API = frozenset({
     # 取舍：非管理员仍可**手输**绝对路径保存设置项，只是用不了「浏览…」的目录树。
     'system_browse_dir',
     'system_set_log_level',
-    'system_set_webview_high_performance',
     # 壳偏好（启动页 / 主题 / 背景 / 全屏）：与 system_get_shell_info 同属"描述这台
     # 机器、并决定它下次怎么启动"的壳级事实，写入还会直接写壳自己的配置文件。
     # 读路径是 serve_shell 注入为首屏状态，因此非管理员页面照常拿到生效值。
@@ -867,7 +865,6 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             'system_delete_background_image': shell_info.delete_background_image,
             'system_list_background_images': shell_info.list_background_images,
             'system_set_log_level': shell_info.set_log_level,
-            'system_set_webview_high_performance': shell_info.set_webview_high_performance,
             'system_clear_thumb_caches': shell_info.clear_thumb_caches,
             'system_open_log_dir': shell_info.open_log_dir,
             # 壳偏好（启动与窗口 / 外观 / 背景 / 玻璃）：写路径唯一入口，
