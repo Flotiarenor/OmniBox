@@ -55,7 +55,7 @@
 | `list_album_images` | `rel_path` | `{images, offset, capped}` | 灯箱用的连续浏览序列；每个作品块恒按文件名自然序 `p0 → pN`，块首即该瓦片的封面（排序设置只决定瓦片顺序，不翻转块内页序） |
 | `list_dir` | `rel_path` | `[{name, path}]` | 目录树（移动目标选择） |
 | `list_albums` | 无 | `{albums, config, changed}` | 相册全树展开 |
-| `list_recent_images` | `page`、`per_page` | `{items, all_images, page, per_page, total, image_total, has_next, has_prev, scanned_dirs, partial}` | 跨目录按最近更新倒序的**更新单元**分页（时间线「按图片」）；单元与 `list_folder_items` 的条目同形：同一作品号的多页、漫画根界定的整本（漫画 / 本子，含多章）合并成 `type: 'album'` 卡（`cover` 为封面、`image_count` / `total_count` 为页数、`mtime` 为组内最新页），其余文件是 `type: 'image'`；`all_images` 是本页单元按序展开的连续浏览序列（封面恒在首位，章按自然序、p0 → pN），第 i 个单元的封面下标 = 前面各单元张数累加；`total` 是单元数、`image_total` 是图片张数；`partial` 为真表示扫描预算用尽，此时 `total` 收敛为本次可列出的单元数 |
+| `list_recent_images` | `page`、`per_page` | `{items, all_images, page, per_page, total, reach, image_total, has_next, has_prev, scanned_dirs, partial}` | 跨目录按最近更新倒序的**更新单元**分页（时间线「按图片」）；单元与 `list_folder_items` 的条目同形：同一作品号的多页、漫画根界定的整本（漫画 / 本子，含多章）合并成 `type: 'album'` 卡（`cover` 为封面、`image_count` / `total_count` 为页数、`mtime` 为组内最新页），其余文件是 `type: 'image'`；`all_images` 是本页单元按序展开的连续浏览序列（封面恒在首位，章按自然序、p0 → pN），第 i 个单元的封面下标 = 前面各单元张数累加；`total` 是整库单元数、`reach` 是本次扫描预算内排列出的单元数、`image_total` 是图片张数；`partial` 表示排序依据不完整（未展开的子树里可能有更靠前的单元），`has_next` 只在这次没把本页填满时为假，前端按 `has_next` 给下一页、按 `reach` 提示「仅列出最近 N 项」 |
 | `create_folder` | `rel_path` | `{success, path}` / `{success, error}` | 新建相册目录 |
 | `delete_folder` | `rel_path` | `{success}` / `{success, error}` | 删除递归无图片的空目录 |
 | `get_album_config` | 无 | `{collapsed, promoted, expanded, visible_empty_dirs}` | 读取相册可见性配置 |
@@ -115,7 +115,7 @@
 - 浏览组（`browse`）：`albums` 全部相册、`timeline` 时间线、`latest` 最近添加。
 - 顶栏动作：`back`（返回，初始不可见）、`new-album`（新建相册）、`slideshow`（图片层可见，文案在「幻灯片 / 停止」间切换）、`multi-select`（文案在「开启多选 / 退出多选」间切换）、`selection-count`（`kind: 'text'`，多选且已选时显示「已选 N 项」）、`delete-selected`（`variant: 'danger'`）、`move-selected`、`refresh-thumbs`（三者仅多选态可见，未选中时 `disabled`）、`settings`。
 - 搜索框：占位在相册层为「搜索相册…」、图片层为「搜索当前相册…」、时间线「按图片」层为「搜索当前页图片…」；输入经 `omnibox:query` 下发。
-- 状态栏：相册层 `N 个相册 · M 张图片`，图片层 `共 N 张图片` 或 `共 N 项 · M 张图片`；时间线「按图片」层按单元数给 `共 N 项 · M 张图片`（全是单图时 `共 N 张图片`），`list_recent_images` 返回 `partial` 时状态点用 `warn` 且文案注明只列出最近扫描到的部分。
+- 状态栏：相册层 `N 个相册 · M 张图片`，图片层 `共 N 张图片` 或 `共 N 项 · M 张图片`；时间线「按图片」层按单元数给 `共 N 项 · M 张图片`（全是单图时 `共 N 张图片`），`list_recent_images` 返回 `partial` 时状态点用 `warn`、文案注明「仅列出最近 N 项」。分页在 `has_next` 为真时一次给出后 `IV_RECENT_PAGE_LOOKAHEAD` 页，翻过可达边界时回落到真实最后一页（`reach`），空态分「没有更多图片」与「已到扫描上限」两种。
 - 扩展入口（`extensions`）：`PluginExtensions` 读取 image-cleaner / pixiv-sync 的 `get_extensions` 渲染；点击由壳打开 `NativePanel`。
 - 统一刷新控件：`freshness.unit` 为「张」，由壳挂载；校验完成的 `omnibox:action: refresh` 回到内容页重载。
 

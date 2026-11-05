@@ -81,15 +81,17 @@ class RecentImages:
     def list_recent_images(self, page: int = 1, per_page: int = 40) -> Dict:
         """最近更新的作品 / 单图，按单元 mtime 倒序、同 mtime 按代表 url 升序分页。
 
-        返回 `{items, all_images, page, per_page, total, image_total, has_next,
+        返回 `{items, all_images, page, per_page, total, reach, image_total, has_next,
         has_prev, scanned_dirs, partial}`。`items` 与 `list_folder_items` 的条目同形：
-        作品单元是 `type='album'` 的卡（`cover` 为 p0、`image_count` / `total_count`
+        作品单元是 `type='album'` 的卡（`cover` 为封面、`image_count` / `total_count`
         为页数），单图单元是 `type='image'`，二者都不含物理路径。
 
-        `total` 是更新单元总数（整库），`image_total` 是整库图片数。`partial` 表示本次
-        请求的目录扫描预算用尽、还有更早的子树没展开；**此时 `total` 收敛为本次能排列
-        出的单元数**：再往后的页在同样的预算下必定还是空页，按整库单元数分页只会推出
-        翻不到底的页码。`scanned_dirs` 是本次真正展开的目录数，供诊断"是否退化成扫全树"。
+        `total` 是整库更新单元数，`reach` 是本次预算内真正排列出的单元数，`image_total`
+        是整库图片数。`partial` 表示目录扫描预算用尽、还有更早的子树没展开：此时这一页的
+        排序依据不完整（未展开的子树里可能有更靠前的单元），但**不等于列表已到边界** ——
+        `has_next` 只在这次没把本页填满（`reach` 小于页末）或整库没有更多单元时为假，
+        前端按 `has_next` 给"下一页"，按 `reach` 提示"仅列出最近 N 项"。`scanned_dirs`
+        是本次真正展开的目录数，供诊断"是否退化成扫全树"。
         """
         try:
             page = max(1, int(page))
@@ -105,7 +107,7 @@ class RecentImages:
         if not total:
             return {
                 'items': [], 'all_images': [], 'page': page, 'per_page': per_page,
-                'total': 0, 'image_total': image_total,
+                'total': 0, 'reach': 0, 'image_total': image_total,
                 'has_next': False, 'has_prev': page > 1,
                 'scanned_dirs': 0, 'partial': False,
             }
@@ -139,10 +141,11 @@ class RecentImages:
                 heapq.heappush(queue, (-child_bound, child))
 
         ordered = sorted(picked, key=lambda candidate: (-candidate.mtime, candidate.url))
-        if partial:
-            # 预算所限，这次能排列出的只有已经扫到的这些；再深的分页在同一预算下
-            # 必然返回空页，因此把 total 收敛到可排列的单元数，页码与列表才不会脱节。
-            total = len(ordered)
+        # 本次预算内真正排列出的单元数：`total` 是整库单元数，`reach` 是这次能列出的。
+        # 预算用尽后 `reach` 可能小于 total —— 再深的分页在同一预算下必然返回空页，
+        # 因此 `has_next` 在 partial 时为假，前端据此不再给出"下一页"，也就不会出现
+        # "点得到却打不开"的页码。
+        reach = len(ordered)
         start = (page - 1) * per_page
         units = [candidate.unit for candidate in ordered[start:start + per_page]]
         rows = [row for unit in units for row in unit['pages']]
@@ -160,8 +163,10 @@ class RecentImages:
         return {
             'items': items, 'all_images': all_images,
             'page': page, 'per_page': per_page,
-            'total': total, 'image_total': image_total,
-            'has_next': end < total, 'has_prev': page > 1,
+            'total': total, 'reach': reach, 'image_total': image_total,
+            # 下一页存在与否只看"这一页有没有被预算截断"：填满了（reach >= end）就还能
+            # 往后翻一页，没填满就是列表边界。partial 只表示排序依据不完整，不表示到边界。
+            'has_next': end < total and reach >= end, 'has_prev': page > 1,
             'scanned_dirs': scanned, 'partial': partial,
         }
 

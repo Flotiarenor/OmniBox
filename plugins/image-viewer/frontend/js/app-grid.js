@@ -6,6 +6,10 @@
 // app.js 之后、实例化之前（见 index.html），契约由 tests/js/image_viewer_app_split.mjs 把关。
 // ============================================================
 
+//: 时间线「按图片」层一次给出往后多少页：后端只能保证"这一页填满了"，更远的页要真扫
+//: 一遍才知道能不能排出，所以页码只按这个步长前瞻；翻过头时回到真实最后一页。
+const IV_RECENT_PAGE_LOOKAHEAD = 5;
+
 Object.assign(ImageViewer.prototype, {
 
 
@@ -167,19 +171,47 @@ Object.assign(ImageViewer.prototype, {
                 ? data.image_total
                 : this.currentImages.length;
             const partial = !!(data && data.partial);
+            // reach 是本次扫描预算内真正排列出的单元数：partial 时它才是列表的实际边界，
+            // 页码与提示都以它为准（total 是整库单元数，深页在预算内到不了）。
+            const reach = data && data.reach != null ? data.reach : total;
             // partial 为真表示目录扫描预算用尽：这一页不是全库扫描的结果，必须说出来，
             // 并用 warn 色状态点提示列表不完整。
             const countText = total === imageTotal
                 ? `共 ${total} 张图片`
                 : `共 ${total} 项 · ${imageTotal} 张图片`;
             this._statusText = partial
-                ? `${countText}（仅列出最近扫描到的部分）`
+                ? `${countText}（仅列出最近 ${reach} 项）`
                 : countText;
             this._statusState = partial ? 'warn' : 'ok';
             grid.innerHTML = '';
             if (!this.currentItems.length) {
-                grid.innerHTML = this._emptyHtml('icon:images', '最近没有图片');
+                // 页码比实际能排出的更多：先回落到真实的最后一页（`reach` 是本次预算内
+                // 排列出的单元数，total 是整库单元数），避免停在空页；回落目标等于当前页
+                // 时才显示空态（防御分支）。
+                if (total > 0) {
+                    const lastPage = Math.max(1, Math.ceil(
+                        (partial && reach > 0 ? reach : total) / perPage));
+                    if (lastPage !== page) {
+                        await this.loadRecentImages(lastPage);
+                        return;
+                    }
+                }
+                // 三种空态要分开：空库、页码超出整库、预算用尽后翻过了列表边界
+                if (partial) {
+                    grid.innerHTML = this._emptyHtml(
+                        'icon:images', '已到扫描上限',
+                        `最近的 ${reach} 项已列出，更早的图片未展开；点第 1 页回到最新`);
+                } else if (total > 0) {
+                    grid.innerHTML = this._emptyHtml(
+                        'icon:images', '没有更多图片', '点第 1 页回到最新');
+                } else {
+                    grid.innerHTML = this._emptyHtml('icon:images', '最近没有图片');
+                }
                 grid.style.height = 'auto';
+                if (total > 0) {
+                    const currentPage = (data && data.page) || page;
+                    this.pagination.render(currentPage, Math.max(1, currentPage));
+                }
                 this._pushChrome();
                 return;
             }
@@ -189,10 +221,13 @@ Object.assign(ImageViewer.prototype, {
             } else {
                 this.renderJustifiedLayout(this.currentItems);
             }
-            // 分页按单元数（total）算：按图片张数算会把页数算少。
+            // 分页：`has_next` 表示这一页填满了、还能往后翻，一次给出后 5 页；到边界那一页
+            // （has_next 为假）只给到当前页。翻过头时上面的回落分支会落到真实最后一页。
             if (total > 0) {
                 const currentPage = (data && data.page) || page;
-                this.pagination.render(currentPage, Math.max(1, Math.ceil(total / perPage)));
+                const canNext = !!(data && data.has_next);
+                this.pagination.render(currentPage, Math.max(1,
+                    canNext ? currentPage + IV_RECENT_PAGE_LOOKAHEAD : currentPage));
             }
             this._pushChrome();
         } catch (error) {

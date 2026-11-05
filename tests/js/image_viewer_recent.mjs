@@ -303,7 +303,7 @@ function mixedPayload(page = 1, perPage = 40, overrides = {}) {
         image_total: 6,
         has_next: false,
         has_prev: false,
-        scanned_dirs: ['D:\\图库\\A', 'D:\\图库\\B'],
+        scanned_dirs: 2,
         partial: false,
         ...overrides,
     };
@@ -630,7 +630,7 @@ async function enterRecentLayer(env, iv) {
         JSON.stringify(env.calls.map((call) => call.method)));
 }
 
-// ---- 7. 状态栏：纯单图「共 N 张图片」、partial 的 warn、分页按单元数 ----------
+// ---- 7. 状态栏与分页：纯单图「共 N 张图片」、partial 的可翻阅范围 ----------
 {
     const singleEnv = loadImageViewer({
         list_recent_images: (page, perPage) => singleImagesPayload(page, perPage),
@@ -641,29 +641,111 @@ async function enterRecentLayer(env, iv) {
         singleEnv.chrome().status.text === '共 2 张图片', singleEnv.chrome().status.text);
 
     const partialEnv = loadImageViewer({
-        list_recent_images: (page, perPage) => mixedPayload(page, perPage, { partial: true }),
+        list_recent_images: (page, perPage) => mixedPayload(page, perPage, {
+            partial: true, reach: 3,
+        }),
     });
     const partialIv = makeTimelineViewer(partialEnv);
     await enterRecentLayer(partialEnv, partialIv);
     const partialChrome = partialEnv.chrome();
     check('partial 时状态 state=warn', partialChrome.status.state === 'warn', partialChrome.status.state);
-    check('partial 文案注明只列出最近扫描到的部分',
+    check('partial 文案给出预算内的实际条数',
         partialChrome.status.text.includes('共 3 项 · 6 张图片')
-        && partialChrome.status.text.includes('仅列出最近扫描到的部分'),
+        && partialChrome.status.text.includes('仅列出最近 3 项'),
         partialChrome.status.text);
+    check('has_next 为假时不给「下一页」',
+        partialIv.pagination.pages.length === 1 && partialIv.pagination.pages[0].total === 1,
+        JSON.stringify(partialIv.pagination.pages));
 
+    // partial（排序依据不完整）但这一页填满了：仍给下一页，不能把预算当成列表边界
+    const partialNextEnv = loadImageViewer({
+        list_recent_images: (page, perPage) => mixedPayload(page, perPage, {
+            partial: true, reach: 40, has_next: true,
+        }),
+    });
+    const partialNextIv = makeTimelineViewer(partialNextEnv);
+    await enterRecentLayer(partialNextEnv, partialNextIv);
+    check('partial 但页填满时仍给后续页码',
+        partialNextIv.pagination.pages.length === 1
+        && partialNextIv.pagination.pages[0].total === 6,
+        JSON.stringify(partialNextIv.pagination.pages));
+
+    // 非 partial 且还没到边界：一次给出后 5 页，第 1 页不再是「1 2」两格
     const pagedEnv = loadImageViewer({
-        list_recent_images: (page, perPage) => mixedPayload(page, perPage, { total: 90, image_total: 150 }),
+        list_recent_images: (page, perPage) => mixedPayload(page, perPage, {
+            total: 900, image_total: 1500, page, has_next: true,
+        }),
     });
     const pagedIv = makeTimelineViewer(pagedEnv);
     await enterRecentLayer(pagedEnv, pagedIv);
-    check('分页按单元总数算：total=90 / per_page=40 → 3 页',
-        pagedIv.pagination.pages.length === 1 && pagedIv.pagination.pages[0].total === 3,
+    check('第 1 页一次给出后 5 页（1 → 6）',
+        pagedIv.pagination.pages.length === 1 && pagedIv.pagination.pages[0].total === 6,
         JSON.stringify(pagedIv.pagination.pages));
+
+    // 翻到第 4 页：列表里 90 个单元只有 3 页，第 4 页为空，但空态要说明"没有更多图片"
+    const beyondEnv = loadImageViewer({
+        list_recent_images: (page, perPage) => mixedPayload(page, perPage, {
+            total: 90, image_total: 150, items: [], all_images: [], page,
+        }),
+    });
+    const beyondIv = makeTimelineViewer(beyondEnv);
+    beyondIv._recentActive = true;
+    beyondIv.mode = 'images';
+    beyondIv.currentSettings = { per_page: 40, row_height: 200 };
+    const beyondGrid = beyondEnv.document.getElementById('image-grid');
+    await beyondIv.loadRecentImages(4);
+    check('页码超出整库时是「没有更多图片」而不是「最近没有图片」',
+        beyondGrid.innerHTML.includes('没有更多图片')
+        && !beyondGrid.innerHTML.includes('最近没有图片'),
+        beyondGrid.innerHTML.slice(0, 80));
+
+    // 翻过预算边界：先回落到真实最后一页（有内容），不再停在空页
+    const overEnv = loadImageViewer({
+        list_recent_images: (page, perPage) => (page <= 2
+            ? mixedPayload(page, perPage, { partial: true, reach: 80, page })
+            : mixedPayload(page, perPage, {
+                partial: true, reach: 80, items: [], all_images: [], page,
+            })),
+    });
+    const overIv = makeTimelineViewer(overEnv);
+    overIv._recentActive = true;
+    overIv.mode = 'images';
+    overIv.currentSettings = { per_page: 40, row_height: 200 };
+    const overGrid = overEnv.document.getElementById('image-grid');
+    await overIv.loadRecentImages(3);
+    const overCalls = recentCalls(overEnv).map((call) => call.args[0]);
+    check('超出预算边界时回落到真实最后一页（recovery 请求第 2 页）',
+        overCalls.includes(2) && overCalls[overCalls.length - 1] === 2,
+        JSON.stringify(overCalls));
+    check('回落后的页面有内容', overGrid.children.length === 3, String(overGrid.children.length));
+    check('回落后的分页停在真实最后一页',
+        overIv.pagination.pages.length === 1 && overIv.pagination.pages[0].total === 2,
+        JSON.stringify(overIv.pagination.pages));
+
+    // 防御分支：回落目标也排不出内容时，给出扫描上限而不是空白
+    const overEmptyEnv = loadImageViewer({
+        list_recent_images: (page, perPage) => mixedPayload(page, perPage, {
+            partial: true, reach: 80, items: [], all_images: [], page,
+        }),
+    });
+    const overEmptyIv = makeTimelineViewer(overEmptyEnv);
+    overEmptyIv._recentActive = true;
+    overEmptyIv.mode = 'images';
+    overEmptyIv.currentSettings = { per_page: 40, row_height: 200 };
+    const overEmptyGrid = overEmptyEnv.document.getElementById('image-grid');
+    await overEmptyIv.loadRecentImages(3);
+    check('预算外翻页给「已到扫描上限」并说明实际条数',
+        overEmptyGrid.innerHTML.includes('已到扫描上限')
+        && overEmptyGrid.innerHTML.includes('80'),
+        overEmptyGrid.innerHTML.slice(0, 120));
+    check('预算外空态仍保留分页（可点回第 1 页）',
+        overEmptyIv.pagination.pages.length === 1
+        && overEmptyIv.pagination.pages[0].total === 2,
+        JSON.stringify(overEmptyIv.pagination.pages));
 
     const emptyEnv = loadImageViewer({
         list_recent_images: () => mixedPayload(1, 40, {
-            items: [], all_images: [], total: 0, image_total: 0,
+            items: [], all_images: [], total: 0, image_total: 0, reach: 0,
         }),
     });
     const emptyIv = makeTimelineViewer(emptyEnv);

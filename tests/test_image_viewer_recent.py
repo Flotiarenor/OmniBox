@@ -482,8 +482,41 @@ class RecentImagesTests(unittest.TestCase):
         paths = [album['path'] for album in plugin.albums.list_albums()['albums']]
         self.assertIn('__额外图库/作者', paths)
 
+    def test_partial_page_that_is_full_still_offers_next(self):
+        """预算用尽但本页被填满时仍给"下一页"：`partial` 不等于列表到边界。
+
+        排序依据不完整（未展开的子树里可能有更靠前的单元）由 `partial` 告知；能不能往
+        后翻只看这一页有没有被填满（`reach >= 页末`）。
+        """
+        base = 1_700_000_000.0
+        # mtime 全相同：剪枝判据（剩余上界 < 第 K 名）在这里不生效，预算成为截断原因
+        for index in range(6):
+            _make_image(self.root / f'd{index}' / 'x.png', mtime=base)
+
+        plugin = self._plugin()
+        tight = types.SimpleNamespace(max_recent_dirs=3)
+        recent = self.module._recent.RecentImages(
+            plugin.paths, plugin.albums, plugin.thumbs, plugin.naming,
+            self.module._const.IMAGE_EXTENSIONS, tight, plugin.books)
+
+        data = recent.list_recent_images(1, 2)
+
+        self.assertTrue(data['partial'])
+        self.assertEqual(len(data['items']), 2)     # 根占一次，之后还能展开两个目录
+        self.assertEqual(data['reach'], 2)
+        self.assertTrue(data['has_next'], '本页填满了，应该还能往后翻')
+
+        # 再往前时预算不足以填满这一页：列表到边界，不再给"下一页"
+        far = recent.list_recent_images(2, 2)
+        self.assertGreater(far['scanned_dirs'], 0)
+        self.assertFalse(far['has_next'])
+
     def test_scan_budget_exhausted_marks_partial(self):
-        """扫描预算用尽时 `partial=True`，且 total 收敛为本次能排列出的单元数。"""
+        """扫描预算用尽时 `partial=True`：`total` 仍是整库单元数，`reach` 是本次边界。
+
+        前端据此只保留能打开的页码并提示"仅列出最近 N 项"；同一预算下更深的页必然为空，
+        因此 `has_next` 在 partial 时为假。
+        """
         base = 1_700_000_000.0
         for index in range(3):
             _make_image(self.root / f'd{index}' / 'x.png', mtime=base + index)
@@ -492,23 +525,24 @@ class RecentImagesTests(unittest.TestCase):
         tight = types.SimpleNamespace(max_recent_dirs=3)
         recent = self.module._recent.RecentImages(
             plugin.paths, plugin.albums, plugin.thumbs, plugin.naming,
-            self.module._const.IMAGE_EXTENSIONS, tight)
+            self.module._const.IMAGE_EXTENSIONS, tight, plugin.books)
 
         data = recent.list_recent_images(1, 40)
 
         self.assertTrue(data['partial'])
         self.assertEqual(data['scanned_dirs'], 3)
-        # 预算内的可排列单元数：根目录占一次展开，之后只够展开 d2 / d1
-        self.assertEqual(data['total'], 2)
-        self.assertEqual(data['image_total'], 3)     # 整库图片数不受预算影响
+        self.assertEqual(data['total'], 3)          # 整库单元数照实报
+        self.assertEqual(data['reach'], 2)          # 预算内排列出的单元数
+        self.assertEqual(data['image_total'], 3)    # 整库图片数不受预算影响
         self.assertFalse(data['has_next'], '预算用尽后不该再宣称有下一页')
         self.assertEqual([_representative(item) for item in data['items']],
                          ['d2/x.png', 'd1/x.png'])
-        # 更深的分页在同样预算下必然是空页，页码也不该把它算进去
+        # 更深的分页在同样预算下是空页，但 total / reach 仍然自洽
         deeper = recent.list_recent_images(2, 40)
         self.assertEqual(deeper['items'], [])
-        self.assertEqual(deeper['total'], 2)
+        self.assertEqual((deeper['total'], deeper['reach']), (3, 2))
         self.assertFalse(deeper['has_next'])
+        self.assertTrue(deeper['partial'])
 
 
 if __name__ == '__main__':
