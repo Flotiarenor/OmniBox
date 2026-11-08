@@ -654,18 +654,27 @@
 
   async function cancelTask() {
     state.pending = null;
+    // 乐观取消：点下去立刻就是"已取消"，不等后台线程。后端 `cancel_task` 会
+    // 立刻把任务定稿为 cancelled，在途请求的结果随后被丢弃，所以两边看到的是
+    // 同一个状态；这里先改本地状态是为了让按钮点击反馈不依赖一次网络往返。
+    const task = taskOf();
+    if (task) {
+      task.state = 'cancelled';
+      task.current = '';
+      task.finished_at = task.finished_at || Date.now() / 1000;
+    }
+    state.notice = { tone: 'muted', text: '已取消' };
+    render();
     try {
       const result = await Bridge.call('cancel_task');
       if (result && result.ok === false) {
         state.notice = { tone: 'danger', text: '取消失败：' + (result.error || '未知错误') };
-      } else {
-        state.notice = { tone: 'muted', text: '已请求取消，任务会在下一个检查点停止' };
       }
     } catch (e) {
       state.notice = { tone: 'danger', text: '取消失败：' + errText(e) };
     }
     await loadStatus();
-    restartPoll(STATUS_RUNNING_MS);
+    restartPoll(nextDelay());
   }
 
   async function retryFailed() {

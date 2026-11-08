@@ -13,7 +13,7 @@
 | 文件 | 职责 | 关键符号 |
 | --- | --- | --- |
 | `plugins/pixiv-sync/manifest.json` | 插件清单：入口、依赖、权限、图标 | `name`、`displayName`、`icon`、`dependencies`、`permissions`、`libs`、`backend.entry`、`backend.class`、`frontend.entry`、`frontend.route`、`hidden` |
-| `plugins/pixiv-sync/backend/main.py` | 入口：设置 schema 引用、API 表、壳按名调用的钩子、装配，以及既有模块与用例按实例取用的短委派 | `PixivSyncPlugin`、`settings_schema`、`register_api`、`get_extensions`、`get_cache_dir`、`freshness_spec`、`on_unload`、`on_settings_changed`、`start_oauth`、`finish_oauth`、`_get_host`、`_host_data_root`、`_engine`、`_root`、`_ids_file`、`_tasks_file`、`_artists_file`、`_client`、`_db`、`_load_ids`、`_load_selected_artists`、`_scan_existing_ids`、`_max_download`、`_max_artists`、`_workers`、`_scan_workers`、`_pixiv_client`、`_rate_limiter`、`_thread`、`_cancel_flag` |
+| `plugins/pixiv-sync/backend/main.py` | 入口：设置 schema 引用、API 表、壳按名调用的钩子、装配，以及既有模块与用例按实例取用的短委派 | `PixivSyncPlugin`、`settings_schema`、`register_api`、`get_extensions`、`get_cache_dir`、`freshness_spec`、`on_unload`、`on_settings_changed`、`start_oauth`、`finish_oauth`、`_get_host`、`_host_data_root`、`_engine`、`_root`、`_ids_file`、`_tasks_file`、`_artists_file`、`_client`、`_db`、`_load_ids`、`_load_selected_artists`、`_scan_existing_ids`、`_max_download`、`_max_artists`、`_workers`、`_scan_workers`、`_pixiv_client`、`_rate_limiter`、`_thread`、`_cancel_flag`、`_cancel_event` |
 | `plugins/pixiv-sync/backend/pixiv_sync/const.py` | 纯数据：设置项 schema、扩展入口声明、缓存子目录、刷新基建的扩展名 | `CACHE_SUBDIR`、`FRESHNESS_INCLUDE`、`SETTINGS_SCHEMA`、`extensions` |
 | `plugins/pixiv-sync/backend/pixiv_sync/paths.py` | 下载根与派生路径；任务运行期间固定根 | `CachePaths`、`root`、`begin_task`、`finish_task`、`reset`、`pixiv_root`、`cache_dir`、`ids_file`、`failed_file`、`tasks_file`、`artists_file`、`works_file`、`selected_file` |
 | `plugins/pixiv-sync/backend/pixiv_sync/session.py` | Pixiv 客户端、认证与令牌轮换回写、全局限速与 429 冷却 | `PixivSession`、`client`、`cached_client`、`reset_client`、`authenticate`、`note_rate_limited`、`cooldown_seconds`、`apply_rate_setting` |
@@ -22,7 +22,7 @@
 | `plugins/pixiv-sync/backend/pixiv_sync/workspace.py` | 清单 SQLite 连接、任务状态文件、下载根的固定 | `TaskWorkspace`、`db`、`close_db`、`tasks_file`、`load_task`、`persist_task`、`begin`、`finish` |
 | `plugins/pixiv-sync/backend/pixiv_sync/library.py` | 本地图片树 → 已下载作品集合（统一刷新基建的钩子与按清单对账） | `LocalLibrary`、`cache_dir`、`engine`、`spec`、`state`、`derive`、`prune`、`audit`、`pass_end`、`rebuild`、`engine_keys`、`local_pages`、`sync_ids_from_keys`、`scan_existing_ids` |
 | `plugins/pixiv-sync/backend/pixiv_sync/selection.py` | 画师名单读取（带 mtime 缓存）与模板重写 | `ArtistSelection`、`selected`、`reset`、`open_config`、`read_text_robust` |
-| `plugins/pixiv-sync/backend/pixiv_sync/runner.py` | 同步/刷新任务线程、取消、重试与设置变更编排 | `SyncRunner`、`sync_following`、`sync_bookmarks`、`refresh_following_lists`、`refresh_bookmarks_lists`、`cancel_task`、`retry_failed`、`task_snapshot`、`is_running`、`reset_root_state`、`apply_settings_changed`、`shutdown` |
+| `plugins/pixiv-sync/backend/pixiv_sync/runner.py` | 同步/刷新任务线程、取消、重试与设置变更编排 | `SyncRunner`、`sync_following`、`sync_bookmarks`、`refresh_following_lists`、`refresh_bookmarks_lists`、`cancel_task`、`cancel_event`、`task_snapshot`、`is_running`、`reset_root_state`、`apply_settings_changed`、`shutdown` |
 | `plugins/pixiv-sync/backend/pixiv_sync/maintenance.py` | 显式维护动作：刷新已下载记录、校验本地内容、停止校验 | `Maintenance`、`refresh_downloaded`、`verify_downloaded`、`cancel_verify` |
 | `plugins/pixiv-sync/backend/pixiv_sync/status.py` | `get_status` 聚合：任务、清单统计、账号与本地校验进度 | `StatusReport`、`report` |
 | `plugins/pixiv-sync/backend/pixiv_sync/limiter.py` | 全局请求限速与限流异常 | `RateLimitError`、`RateLimiter`、`RateLimiter.set_rate`、`RateLimiter.wait` |
@@ -39,7 +39,7 @@
 | `plugins/pixiv-sync/tool/pixiv_purge_non_original.py` | 伴侣命令行工具：删除 1200px 缩放图并清除记录以便重下原图 | `THRESHOLD`、`ID_NAME_RE`、`CACHE_SUBDIR`、`image_size`、`scan_works`、`classify`、`prune_empty_dirs`、`main` |
 | `plugins/pixiv-sync/tool/pixiv_unmark_recent.py` | 伴侣命令行工具：把已下载记录改回未下载（只改记录） | `ID_NAME_RE`、`CACHE_SUBDIR`、`collect_ids_in_window`、`collect_missing_ids`、`main` |
 | `plugins/pixiv-sync/tool/cli_support.py` | 两个工具共用：下载根定位、原子改 JSON 记录、重置清单 done | `is_tty`、`data_root_from_json`、`data_root_from_yaml`、`resolve_root`、`strip_ids`、`reset_done_in_db`、`write_json` |
-| `plugins/pixiv-sync/backend/libs/pixiv_mini.py` | 精简的 Pixiv 客户端（vendored 依赖，移植自 pixivpy 3.13.0，The Unlicense）：refresh_token 认证、关注新作、关注列表、用户作品、收藏、下载与翻页 | `PixivClient`、`PixivError`、`JsonDict`、`generate_pkce`、`login_url`、`auth`、`auth_with_code`、`set_auth`、`illust_follow`、`user_following`、`user_illusts`、`user_bookmarks_illust`、`illust_detail`、`ugoira_metadata`、`download`、`parse_qs` |
+| `plugins/pixiv-sync/backend/libs/pixiv_mini.py` | 精简的 Pixiv 客户端（vendored 依赖，移植自 pixivpy 3.13.0，The Unlicense）：refresh_token 认证、关注新作、关注列表、用户作品、收藏、下载与翻页 | `PixivClient`、`PixivError`、`PixivCancelled`、`JsonDict`、`stop_event`、`set_stop_event`、`generate_pkce`、`login_url`、`auth`、`auth_with_code`、`set_auth`、`illust_follow`、`user_following`、`user_illusts`、`user_bookmarks_illust`、`illust_detail`、`ugoira_metadata`、`download`、`parse_qs` |
 | `plugins/pixiv-sync/frontend/native.html` | 原生逻辑页骨架：无样式、无 chrome，只装载统一客户端与业务脚本 | `/shell/native-client.js`、`js/native.js` |
 | `plugins/pixiv-sync/frontend/js/native.js` | 原生面板逻辑：拉状态、按文档式版式编译 schema blocks 与顶栏 toolbar、处理动作、按任务状态轮询 | `state`、`STATUS_IDLE_MS`、`STATUS_RUNNING_MS`、`STATUS_COOLDOWN_MS`、`ACTIVE_STATES`、`TASK_STATES`、`TASK_KINDS`、`client`、`render`、`buildBlocks`、`buildToolbar`、`signature`、`text`、`collect`、`metaText`、`statsBlock`、`alertBlocks`、`taskSection`、`actionsSection`、`accountSection`、`librarySection`、`verifySummary`、`verifyLibrary`、`cancelVerify`、`mainBlocks`、`failureBanner`、`pendingBlock`、`confirmBlock`、`oauthBlocks`、`loadStatus`、`schedulePoll`、`restartPoll`、`tick`、`sentNotice`、`dispose`、`init`、`startTask`、`refreshNow`、`cancelTask`、`retryFailed`、`startOauth`、`finishOauth`、`clearToken`、`openConfig`、`askRetryFailed`、`askLogout`、`handleAction`、`open-settings`、`settings-saved` |
 | `plugins/pixiv-sync/frontend/index.html` | 旧壳回落页：内联 `<style>` 与内联 IIFE 脚本，承载状态栏、操作按钮、进度条、OAuth 弹窗 | 见「前端结构」一节 |
@@ -61,14 +61,14 @@
 | `verify_downloaded` | 无 | `{ok, started, running}`，占用中返回 `{ok: false, error}` | **启动**本地内容校验（后台任务，立即返回）：导入、移除失效、清 0 字节与失败记录，并把缺页作品的 `done` 重置以便下次同步补齐。进度经 `get_status.library` 回传；旧壳无刷新基建时同步走盘并返回 `{finished: true, ...}` |
 | `cancel_verify` | 无 | `{ok}` | 停止正在跑的本地内容校验 |
 | `retry_failed` | 无 | `{ok, cleared, kind}`，占用中返回 `{ok: false, error}` | 清空 `failed_ids.json` 并按最近任务来源重新同步 |
-| `cancel_task` | 无 | `{ok}` | 请求取消当前任务 |
+| `cancel_task` | 无 | `{ok}` | 立刻取消：任务当场定稿为 `cancelled` 并落盘，不等后台线程；线程的写回随后被取消令牌挡住 |
 | `open_config` | 无 | `{ok, file}`，失败返回 `{ok: false, error}` | 重写画师名单模板并打开其所在文件夹 |
 | `start_oauth` | 无 | `{ok, url, challenge}`，失败返回 `{ok: false, error}` | OAuth 第一步：生成 PKCE 挑战并打开登录页 |
 | `finish_oauth` | `code: str` | `{ok, user_id}`，失败返回 `{ok: false, error}` | OAuth 第二步：用授权码换 token 并回写 `refresh_token` |
 | `get_settings` | 无 | `dict`，凭据类键返回掩码 | 继承 `PluginBase`，供壳设置弹窗回填 |
 | `save_settings` | `settings: dict` | `{success, error}` | 继承 `PluginBase`，写入后触发 `on_settings_changed`；`refresh_token` 传空字符串即清除凭据 |
 
-任务对象字段（`tasks.new_task`）：`kind`、`state`、`done`、`total`、`downloaded`、`skipped`、`failed`、`current`、`started_at`、`phase_started_at`、`finished_at`、`error`；`state` 取值为 `queued` / `running` / `done` / `failed` / `cancelled`，`tasks.load_task` 把残留的 `queued` / `running` 归一成 `paused`。`current` 是阶段文案（"正在登录 Pixiv…" / "正在更新关注作品清单…" / "已扫描画师 a/b 位"），由 `SyncRunner._set_phase` 写入并记日志（含上一阶段耗时）；线程一起来就置 `running`，`queued` 只覆盖线程启动前的瞬间。**同步任务不再做本地核对**（每次全盘遍历要几秒），手动放入的作品由 `verify_downloaded` 显式导入，缺页作品的 `done` 也由它重置。
+任务对象字段（`tasks.new_task`）：`kind`、`state`、`done`、`total`、`downloaded`、`skipped`、`failed`、`current`、`started_at`、`phase_started_at`、`finished_at`、`error`；`state` 取值为 `queued` / `running` / `done` / `failed` / `cancelled`，`tasks.load_task` 把残留的 `queued` / `running` 归一成 `paused`。`current` 是阶段文案（"正在登录 Pixiv…" / "正在更新关注作品清单…" / "已扫描画师 a/b 位"），由 `SyncRunner._set_phase` 写入并记日志（含上一阶段耗时）；线程一起来就置 `running`，`queued` 只覆盖线程启动前的瞬间。**同步任务不再做本地核对**（每次全盘遍历要几秒），手动放入的作品由 `verify_downloaded` 显式导入，缺页作品的 `done` 也由它重置。取消是"立刻"的：`SyncRunner.cancel_task` 当场把任务定稿为 `cancelled`、置位本次任务的取消令牌并落盘，`is_running` 随即变为 false；后台线程可能还卡在 socket 上，但它拿到令牌后的全部写回都被丢弃，等它自行退出即可（不需要杀进程）。每次任务一个新令牌，所以取消后可以立刻开始下一次同步，旧线程不会污染新任务。
 
 壳与宿主按名调用的成员如下表。
 

@@ -150,6 +150,11 @@ class PixivSyncPlugin(PluginBase):
     def _cancel_flag(self, value: bool) -> None:
         self.runner.cancel_flag = value
 
+    @property
+    def _cancel_event(self):
+        """本线程所属任务的取消令牌（供限速等待与客户端中断使用）。"""
+        return self.runner.cancel_event
+
     # ---------- 壳按名调用的钩子：一行委派 ----------
 
     def get_cache_dir(self) -> Path:

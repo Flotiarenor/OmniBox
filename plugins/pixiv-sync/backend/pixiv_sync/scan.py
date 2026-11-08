@@ -34,7 +34,7 @@ def fetch_following(p, task: Dict[str, Any] | None = None) -> List[tuple]:
     qs = None
     while not p._cancel_flag:
         try:
-            p._rate_limiter.wait()  # 全局限速
+            p._rate_limiter.wait(getattr(p, "_cancel_event", None))  # 全局限速
             if qs:
                 qs.pop("user_id", None)
                 page = client.user_following(client.user_id, **qs)
@@ -69,7 +69,7 @@ def fetch_artist(p, uid: int, known_ids=None) -> List[Dict[str, Any]]:
     q = None
     while not p._cancel_flag:
         try:
-            p._rate_limiter.wait()  # 全局限速（多线程共享）
+            p._rate_limiter.wait(getattr(p, "_cancel_event", None))  # 全局限速（多线程共享）
             if q:
                 params = dict(q)
                 params.pop("user_id", None)
@@ -232,7 +232,7 @@ def _fetch_follow_stream(p, task, ids, items_by_uid) -> bool:
     saw_full_known_page = False
     while not p._cancel_flag:
         try:
-            p._rate_limiter.wait()
+            p._rate_limiter.wait(getattr(p, "_cancel_event", None))
             if qs:
                 params = dict(qs)
                 params.pop("restrict", None)

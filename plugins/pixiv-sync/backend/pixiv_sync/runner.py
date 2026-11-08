@@ -14,7 +14,7 @@ import threading
 import time
 from typing import Any, Dict, Optional
 
-from pixiv_mini import PixivError
+from pixiv_mini import PixivCancelled, PixivError
 
 from . import download, scan
 from . import tasks as tasks_mod
@@ -45,7 +45,11 @@ class SyncRunner:
         self._task_lock = task_lock    # 保护计数 / ids / failed 集合 / 清单写
         self._thread: Optional[threading.Thread] = None
         self._task: Optional[Dict[str, Any]] = None
-        self._cancel_flag = False
+        # 取消令牌：每次任务一个新的 Event，线程把自己的那个登记到 `_run_tokens`。
+        # 不用单个布尔量是因为"取消后立刻开始下一次同步"时，上一次的线程可能还活着
+        # （在等 socket 超时），它必须看到自己的令牌已置位、从而丢弃全部写回。
+        self._cancel_event = threading.Event()
+        self._run_tokens: Dict[int, threading.Event] = {}
         self._deferred_root_reset = False
         self._deferred_client_reset = False
         self._task = workspace.load_task()
@@ -57,12 +61,20 @@ class SyncRunner:
         return self._thread
 
     @property
+    def cancel_event(self) -> threading.Event:
+        """当前线程所属任务的取消令牌（非任务线程取最近一次任务的令牌）。"""
+        return self._run_tokens.get(threading.get_ident(), self._cancel_event)
+
+    @property
     def cancel_flag(self) -> bool:
-        return self._cancel_flag
+        return self.cancel_event.is_set()
 
     @cancel_flag.setter
     def cancel_flag(self, value: bool) -> None:
-        self._cancel_flag = value
+        if value:
+            self.cancel_event.set()
+        else:
+            self.cancel_event.clear()
 
     def task_snapshot(self) -> Optional[Dict[str, Any]]:
         """当前任务对象的拷贝（状态轮询用，避免读到写入一半的字段）。"""
@@ -70,7 +82,10 @@ class SyncRunner:
             return dict(self._task) if self._task else None
 
     def is_running(self) -> bool:
-        return bool(self._thread and self._thread.is_alive())
+        """用户视角的"任务在跑"：点了取消就不再算在跑，哪怕线程还在收尾。"""
+        return bool(
+            self._thread and self._thread.is_alive() and not self._cancel_event.is_set()
+        )
 
     # ---------- 同步任务 ----------
 
@@ -84,14 +99,17 @@ class SyncRunner:
 
     def _start(self, kind: str) -> Dict:
         with self._lock:
-            if self._thread and self._thread.is_alive():
+            # 已经取消、正在收尾的旧线程不算"在运行"：用户可以立刻开下一次同步，
+            # 旧线程的写回由它自己的令牌挡住（见 `cancel_event`）。
+            if self._thread and self._thread.is_alive() and not self._cancel_event.is_set():
                 return {"ok": False, "error": "已有同步任务在运行"}
             # 校验与同步都会改写"已下载记录"：互斥，避免两边对账互相覆盖。
             if self._library.state().get("busy"):
                 return {"ok": False, "error": "正在校验本地内容，请等它结束再同步"}
-            self._cancel_flag = False
+            self._cancel_event = threading.Event()
+            token = self._cancel_event
             self._thread = threading.Thread(
-                target=self._run_sync, args=(kind,), daemon=True
+                target=self._run_sync, args=(kind, token), daemon=True
             )
             self._thread.start()
         return {"ok": True, "data": {"kind": kind}}
@@ -111,7 +129,9 @@ class SyncRunner:
         self._workspace.persist_task(task)
         log.info("[pixiv-sync] 阶段: %s（上一阶段 %.1fs）", text, since)
 
-    def _run_sync(self, kind: str) -> None:
+    def _run_sync(self, kind: str, token: Optional[threading.Event] = None) -> None:
+        token = token or self._cancel_event
+        self._run_tokens[threading.get_ident()] = token
         self._workspace.begin()
         task = tasks_mod.new_task(kind)
         # 线程已经起来了：先置 running，再用 current 表达阶段。queued 只覆盖线程启动前的瞬间。
@@ -123,10 +143,12 @@ class SyncRunner:
         try:
             self._set_phase(task, "正在登录 Pixiv…")
             self._session.authenticate()
+            # 把令牌挂到客户端上：重试退避与流式下载的分块都靠它中断。
+            self._session.client().set_stop_event(token)
             # 本地已有作品不再在每次同步前全盘核对：那是显式维护动作
             # （refresh_downloaded / verify_downloaded，面板「账号与维护」里的两个按钮）。
             # 同步直接用 downloaded_ids.json 这份记录，避免每次几秒的目录遍历。
-            if self._cancel_flag:
+            if token.is_set():
                 task["state"] = "cancelled"
                 task["current"] = "已取消"
                 return
@@ -143,7 +165,7 @@ class SyncRunner:
             else:
                 items, scan_data = scan.collect_bookmarks_pending(self._operand, task, ids)
             self._workspace.db().save_pending(kind, items, scan_data)
-            if self._cancel_flag:
+            if token.is_set():
                 task["state"] = "cancelled"
                 task["current"] = "已取消"
                 return
@@ -151,11 +173,13 @@ class SyncRunner:
             # 阶段 2：按清单下载
             download.download_pending(self._operand, task, ids, failed, kind)
 
-            task["state"] = "cancelled" if self._cancel_flag else "done"
+            task["state"] = "cancelled" if token.is_set() else "done"
         except RateLimitError as e:
             task["state"] = "failed"
             task["error"] = str(e)
             self._session.note_rate_limited()
+        except PixivCancelled:
+            task["state"] = "cancelled"
         except PixivError as e:
             task["state"] = "failed"
             task["error"] = str(e)
@@ -163,10 +187,19 @@ class SyncRunner:
             task["state"] = "failed"
             task["error"] = f"{type(e).__name__}: {e}"
         finally:
+            try:
+                self._session.client().set_stop_event(None)
+            except Exception:
+                pass
+            self._run_tokens.pop(threading.get_ident(), None)
             task["finished_at"] = time.time()
             task["current"] = ""
             self._records.save_downloaded()
             self._records.save_failed()
+            # 取消后任务已由 `cancel_task` 定稿；这里再写一次是幂等的，但要把
+            # 状态留在 cancelled 上，不能被收尾流程改成 done。
+            if token.is_set():
+                task["state"] = "cancelled"
             self._workspace.persist_task(task)
             self._finish_task_runtime()
 
@@ -186,18 +219,21 @@ class SyncRunner:
 
     def _start_refresh(self, kind: str) -> Dict:
         with self._lock:
-            if self._thread and self._thread.is_alive():
+            if self._thread and self._thread.is_alive() and not self._cancel_event.is_set():
                 return {"ok": False, "error": "已有任务在运行"}
             if self._library.state().get("busy"):
                 return {"ok": False, "error": "正在校验本地内容，请等它结束再刷新名单"}
-            self._cancel_flag = False
+            self._cancel_event = threading.Event()
+            token = self._cancel_event
             self._thread = threading.Thread(
-                target=self._run_refresh, args=(kind,), daemon=True
+                target=self._run_refresh, args=(kind, token), daemon=True
             )
             self._thread.start()
         return {"ok": True}
 
-    def _run_refresh(self, kind: str) -> None:
+    def _run_refresh(self, kind: str, token: Optional[threading.Event] = None) -> None:
+        token = token or self._cancel_event
+        self._run_tokens[threading.get_ident()] = token
         self._workspace.begin()
         task = tasks_mod.new_task(f"refresh_{kind}")
         task["state"] = "running"
@@ -206,6 +242,7 @@ class SyncRunner:
         try:
             self._set_phase(task, "正在登录 Pixiv…")
             self._session.authenticate()
+            self._session.client().set_stop_event(token)
             self._set_phase(task, f"正在更新{'关注' if kind == 'following' else '收藏'}作品清单…")
             ids = self._records.downloaded()
             if kind == "following":
@@ -213,7 +250,7 @@ class SyncRunner:
             else:
                 items, scan_data = scan.collect_bookmarks_pending(self._operand, task, ids)
             self._workspace.db().save_pending(kind, items, scan_data)
-            task["state"] = "cancelled" if self._cancel_flag else "done"
+            task["state"] = "cancelled" if token.is_set() else "done"
             task["total"] = len(items)
             done_cnt = sum(1 for i in items if i.get("done"))
             task["current"] = (
@@ -224,6 +261,8 @@ class SyncRunner:
             task["state"] = "failed"
             task["error"] = str(e)
             self._session.note_rate_limited()
+        except PixivCancelled:
+            task["state"] = "cancelled"
         except PixivError as e:
             task["state"] = "failed"
             task["error"] = str(e)
@@ -231,16 +270,37 @@ class SyncRunner:
             task["state"] = "failed"
             task["error"] = f"{type(e).__name__}: {e}"
         finally:
+            try:
+                self._session.client().set_stop_event(None)
+            except Exception:
+                pass
+            self._run_tokens.pop(threading.get_ident(), None)
             task["finished_at"] = time.time()
+            if token.is_set():
+                task["state"] = "cancelled"
             self._workspace.persist_task(task)
             self._finish_task_runtime()
 
     # ---------- 取消 / 重试 ----------
 
     def cancel_task(self) -> Dict:
+        """立刻取消：界面马上是"已取消"，不等后台线程走到检查点。
+
+        后台线程可能正卡在 socket 上（请求超时最长一个 `api_timeout`）。它拿不到
+        我们想要的结果，也不该再影响用户：令牌置位后它的全部写回都会被挡住，等它
+        自己退出即可——这就是"看起来立刻停了"的实现方式，不需要杀进程。
+        """
         with self._lock:
-            if self._task and self._task.get("state") in ("queued", "running"):
-                self._cancel_flag = True
+            if not self._task or self._task.get("state") not in ("queued", "running"):
+                return {"ok": True}
+            self._cancel_event.set()
+            self._task["state"] = "cancelled"
+            self._task["current"] = ""
+            self._task["finished_at"] = time.time()
+            self._workspace.persist_task(self._task)
+            self._records.save_downloaded()
+            self._records.save_failed()
+            log.info("[pixiv-sync] 取消任务 %s（后台线程收尾中）", self._task.get("kind"))
         return {"ok": True}
 
     def retry_failed(self) -> Dict:
@@ -250,7 +310,7 @@ class SyncRunner:
         清空后失败的清单条目保持未下载状态，会自然回到待下载队列。
         """
         with self._lock:
-            if self._thread and self._thread.is_alive():
+            if self._thread and self._thread.is_alive() and not self._cancel_event.is_set():
                 return {"ok": False, "error": "已有任务在运行"}
             failed = self._records.failed()
             with self._task_lock:
@@ -260,9 +320,10 @@ class SyncRunner:
             t = self._workspace.load_task()
             if t and t.get("kind") in ("following", "bookmarks"):
                 kind = t["kind"]
-            self._cancel_flag = False
+            self._cancel_event = threading.Event()
+            token = self._cancel_event
             self._thread = threading.Thread(
-                target=self._run_sync, args=(kind,), daemon=True
+                target=self._run_sync, args=(kind, token), daemon=True
             )
             self._thread.start()
         return {"ok": True, "cleared": len(failed), "kind": kind}
@@ -320,7 +381,7 @@ class SyncRunner:
         文件被占用时连复制/移动数据目录都会失败。落盘的任务若仍是 running，
         下次 load_task 会归一成 paused 续跑。
         """
-        self._cancel_flag = True
+        self.cancel_flag = True
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=2)  # 协作式取消：给 worker 一个收尾窗口，不强等

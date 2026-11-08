@@ -49,7 +49,7 @@ def collect_bookmarks_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
     client = p._client()
     while not p._cancel_flag:
         try:
-            p._rate_limiter.wait()
+            p._rate_limiter.wait(getattr(p, "_cancel_event", None))
             if qs:
                 params = dict(qs)
                 params.pop("user_id", None)

@@ -377,6 +377,26 @@ async function run() {
     assert(/本地索引 29,534 项/.test(env.block('account-status').text), '账号区显示索引条目数');
   });
 
+  await check('取消是乐观的：点击后界面立刻变，不等后端返回', async () => {
+    const env = setup({
+      ...IDLE_STATUS,
+      token_configured: true,
+      running: true,
+      task: {
+        kind: 'following', state: 'running', done: 3, total: 10,
+        downloaded: 2, skipped: 1, failed: 0, current: '作品 123',
+      },
+    });
+    // 后端永不返回：如果实现是"等 cancel_task 回来再改界面"，进度块就会留在原地。
+    env.bridgeResult('cancel_task', new Promise(() => {}));
+    await env.init();
+    assert(env.block('task-progress'), '取消前有进度块');
+    void env.action('cancel-task');
+    assert(!env.block('task-progress'), '点击后立刻不再显示进度块（乐观取消）');
+    const toast = env.schema().toast;
+    assert(toast && /已取消/.test(toast.text), '点击后立刻给“已取消”的提示');
+  });
+
   await check('settings-saved 由壳回发后重读 get_status', async () => {
     const env = setup({ ...IDLE_STATUS, token_configured: true });
     await env.init();

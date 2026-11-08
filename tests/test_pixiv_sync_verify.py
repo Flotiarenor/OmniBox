@@ -158,6 +158,55 @@ class PixivSyncVerifyTests(unittest.TestCase):
         self.assertEqual(task["failed"], 0)
         self.assertEqual(task["downloaded"], 1)
 
+    def test_cancel_task_takes_effect_immediately(self):
+        """取消立刻定稿：不等后台线程走到下一个检查点。"""
+        runner = self.plugin.runner
+        runner._task = {
+            "kind": "following", "state": "running", "done": 0, "total": 10,
+            "downloaded": 0, "skipped": 0, "failed": 0, "current": "正在下载",
+            "started_at": 0.0, "phase_started_at": 0.0, "finished_at": None, "error": "",
+        }
+
+        result = runner.cancel_task()
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(runner.cancel_event.is_set())
+        self.assertEqual(runner._task["state"], "cancelled")
+        self.assertIsNotNone(runner._task["finished_at"])
+        # 落盘也是立刻的：进程重启后读到的就是已取消，不会回到 running
+        saved = json.loads(self.plugin._tasks_file().read_text(encoding="utf-8"))
+        self.assertEqual(saved["state"], "cancelled")
+
+    def test_cancel_task_is_noop_when_idle(self):
+        runner = self.plugin.runner
+        runner._task = {"kind": "following", "state": "done"}
+        self.assertEqual(runner.cancel_task(), {"ok": True})
+        self.assertEqual(runner._task["state"], "done")
+
+    def test_cancel_during_login_finishes_cancelled(self):
+        """取消发生在登录后：任务走 cancelled 分支，不能抛 AttributeError。
+
+        这条锁住的是取消状态只能经 `cancel_event` / `cancel_flag` 访问；曾经
+        取消改成令牌后 `_run_sync` 里还留着 `self._cancel_flag`，一点取消就
+        `AttributeError` 把任务记成失败。
+        """
+        runner = self.plugin.runner
+
+        def fake_auth():
+            runner.cancel_flag = True
+
+        runner._session.authenticate = fake_auth
+        runner._run_sync("following")
+
+        task = runner.task_snapshot()
+        self.assertEqual(task["state"], "cancelled")
+        self.assertEqual(task["finished_at"] is not None, True)
+
+    def test_runner_source_has_no_removed_cancel_attribute(self):
+        source = (PIXIV_BACKEND / "pixiv_sync" / "runner.py").read_text(encoding="utf-8")
+        self.assertNotIn("self._cancel_flag", source)
+        self.assertIn("self._cancel_event", source)
+
     # ===== 统一刷新基建（同步 / 校验）=====
 
     def _engine(self):

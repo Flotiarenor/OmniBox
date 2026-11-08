@@ -68,6 +68,10 @@ class PixivError(Exception):
         return self.reason
 
 
+class PixivCancelled(PixivError):
+    """用户取消：与真正的失败区分开，调用方据此停止并丢弃本次结果。"""
+
+
 # 图片文件头魔数识别（下载内容真实性校验用）：jpg / png / gif / webp
 def _header_is_image(file: str) -> bool:
     try:
@@ -114,6 +118,10 @@ class PixivClient:
         self.timeout = timeout
         self.api_timeout = api_timeout
         self.api_retries = api_retries
+        # 取消令牌：任务线程把自己的 threading.Event 挂上来，客户端在重试退避与
+        # 流式下载的每个分块上检查它。用户点取消后几百毫秒内就能停住，而不是
+        # 等当前请求超时（30 秒）走完。
+        self.stop_event: threading.Event | None = None
         self.access_token: str | None = None
         self.refresh_token: str | None = None
         self.user_id: int | None = None
@@ -136,6 +144,8 @@ class PixivClient:
         kwargs.setdefault("timeout", self.timeout)
         last_exc: Exception | None = None
         for attempt in range(1, retries + 1):
+            if self._stopped():
+                raise PixivCancelled("已取消")
             try:
                 return self._get_session().request(method, url, **kwargs)
             except (
@@ -146,7 +156,15 @@ class PixivClient:
             ) as e:
                 last_exc = e
                 if attempt < retries:
-                    time.sleep(1.5 * attempt)  # 1.5s / 3s 退避
+                    # 退避也要能被取消打断：`time.sleep` 会让用户等满两秒。
+                    delay = 1.5 * attempt  # 1.5s / 3s 退避
+                    if self.stop_event is not None:
+                        if self.stop_event.wait(delay):
+                            raise PixivCancelled("已取消") from None
+                    else:
+                        time.sleep(delay)
+        if self._stopped():
+            raise PixivCancelled("已取消")
         raise PixivError(f"请求失败（已重试 {retries} 次）: {last_exc}")
 
     # ------------------------------------------------------------------
@@ -239,6 +257,13 @@ class PixivClient:
     # ------------------------------------------------------------------
     # 内部请求
     # ------------------------------------------------------------------
+    def set_stop_event(self, event: threading.Event | None) -> None:
+        """挂上/摘掉本任务的取消令牌（None 表示不响应取消，如命令行工具）。"""
+        self.stop_event = event
+
+    def _stopped(self) -> bool:
+        return self.stop_event is not None and self.stop_event.is_set()
+
     def _api_request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
         """登录与列表/详情接口：短超时 + 少重试，失败要快。
 
@@ -364,7 +389,21 @@ class PixivClient:
                 raise PixivError(f"download HTTP {resp.status_code}: {url}")
             try:
                 with open(file, "wb") as f:
-                    shutil.copyfileobj(resp.raw, f)
+                    # 分块拷贝而不是 copyfileobj：取消时最多等一个块（64 KB），
+                    # 不用等整张图下完或 30 秒超时。
+                    while True:
+                        chunk = resp.raw.read(65536)
+                        if not chunk:
+                            break
+                        if self._stopped():
+                            raise PixivCancelled("已取消")
+                        f.write(chunk)
+            except PixivCancelled:
+                try:
+                    os.remove(file)
+                except OSError:
+                    pass
+                raise
             except Exception:
                 # 流中断：清理半写/空文件，避免残留
                 try:

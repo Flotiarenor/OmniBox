@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urlparse
 
-from pixiv_mini import PixivError
+from pixiv_mini import PixivCancelled, PixivError
 
 from . import artist as artist_mod
 from . import tasks as tasks_mod
@@ -127,7 +127,7 @@ def process_ugoira(p, illust: Dict[str, Any], task: Dict[str, Any], ids: Set[int
 
         client = p._client()
         # 1) 帧时序（app-api，走全局限速；失败=非 404 临时错误，下次重试）
-        p._rate_limiter.wait()
+        p._rate_limiter.wait(getattr(p, "_cancel_event", None))
         try:
             meta = client.ugoira_metadata(iid)
         except PixivError as e:
@@ -208,12 +208,17 @@ def process_illust(p, illust: Dict[str, Any], task: Dict[str, Any], ids: Set[int
         fail = 0
         missing_404 = 0
         for idx, url in enumerate(urls):
+            # 页与页之间也检查取消：一个作品可能有很多页，别让用户等整件下完。
+            if p._cancel_flag:
+                raise PixivCancelled("已取消")
             ext = _safe_ext(url)
             name = f"{iid}{ext}" if len(urls) == 1 else f"{iid}_p{idx}{ext}"
             try:
                 # True=新下载；False=文件已存在（视为已下载）；PixivError=失败
                 p._client().download(url, path=str(target), name=name)
                 ok += 1
+            except PixivCancelled:
+                raise
             except PixivError as e:
                 fail += 1
                 if "HTTP 404" in str(e):
@@ -232,6 +237,9 @@ def process_illust(p, illust: Dict[str, Any], task: Dict[str, Any], ids: Set[int
                 # 只写 failed、不写 ids，这样「重试失败作品」清空后仍可重试。
                 failed.add(iid)
             tasks_mod.persist_task(p._tasks_file(), task)
+    except PixivCancelled:
+        # 取消不是失败：直接解栈，让任务线程按"已取消"收尾。
+        raise
     except Exception as e:
         # 单作品出现未预期异常时也要推进任务计数，避免进度永久卡住。
         log.error(f"[pixiv-sync] 作品 {iid} 下载异常: {e}")
@@ -341,8 +349,12 @@ def download_pending(p, task: Dict[str, Any], ids: Set[int], failed: Set[int], k
                 submit_next()
 
     if p._cancel_flag:
-        task["current"] = "已请求取消，等待在途下载结束"
+        # 已取消：在途任务靠分块检查在一秒内自行退出，这里不再写任何计数，
+        # 也不把清单条目标成 done（否则下次同步会把它们当已下载跳过）。
+        with p._task_lock:
+            task["current"] = ""
         tasks_mod.persist_task(p._tasks_file(), task)
+        return
 
     # 标记清单 done（保留在清单，供统计）
     just_done = {_work_id(i) for i in todo if _work_id(i) in ids}
