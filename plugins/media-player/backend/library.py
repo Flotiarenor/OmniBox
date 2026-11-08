@@ -77,9 +77,11 @@ class MediaLibrary:
             else:
                 album.items.sort(key=lambda item: item.title.lower())
             data = album.to_dict()
-            # 封面懒生成：前端用首个有封面条目的 item id 请求 /thumbs/<id>
-            data['cover_item_id'] = next(
-                (item.id for item in album.items if item.has_cover), '')
+            # 封面懒生成：前端用首个有封面条目的 item id 请求 /thumbs/<id>，
+            # 版本号取该条目记录的封面时刻（目录封面图被替换后它会前进）
+            cover_item = next((item for item in album.items if item.has_cover), None)
+            data['cover_item_id'] = cover_item.id if cover_item is not None else ''
+            data['cover_mtime'] = cover_item.cover_mtime if cover_item is not None else 0.0
             result.append(data)
         result.sort(key=lambda item: item['name'].lower())
         return result

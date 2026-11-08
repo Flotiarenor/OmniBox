@@ -40,6 +40,35 @@ Object.assign(ImageViewer.prototype, {
     // 入口；校验完成或同步发现变化后，壳发 `omnibox:action: refresh`，本页重载相册树与
     // 当前目录的图片。
 
+    /**
+     * 同步一次当前作用域：重新可见时调用（壳侧另有首帧与导航切换的 `autoSync`）。
+     *
+     * 用 `Freshness.sync(plugin, scope)` 而不是控件句柄：控件由壳挂载，句柄在壳手里，
+     * 内容页拿不到。`reload` 为真且报告里确实有变化时才重载 —— 增量同步的报告为空
+     * 表示"什么都没变"，此时重载只是白白重取一遍并打断当前浏览。
+     *
+     * `skip`（引擎忙 / 节流 / 非法作用域）不重载：没有任何变化被确认，交给下一次
+     * 重新可见重试。
+     */
+    async _syncFreshness(reload) {
+        const api = (typeof window !== 'undefined') ? window.Freshness : null;
+        // 旧壳 / 旧版共享运行时没有 `sync`（那时只有挂载控件）：静默跳过
+        if (!api || typeof api.sync !== 'function') return null;
+        let report = null;
+        try {
+            report = await api.sync('image-viewer', this._freshnessScope());
+        } catch (e) {
+            // 被动路径失败不打扰用户：下一次重新可见会重试
+            return null;
+        }
+        if (!report || report.action === 'skip') return report;
+        const changed = !!report.invalidated
+            || [report.added, report.changed, report.removed]
+                .some((value) => (Number(value) || 0) > 0);
+        if (changed && reload) await this._onFreshnessChanged();
+        return report;
+    },
+
     /** 同步/校验发现了变化：重载相册树，图片视图则在当前层重取（目录或最近图片）。 */
     async _onFreshnessChanged() {
         await this.loadAlbums();

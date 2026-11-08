@@ -9,8 +9,8 @@
   <script>
     // 宿主（图片相册的扩展面板）在 embedUrl 上追加 ?embed=1：此时宿主头部已经给了标题、
     // 一行说明与两个操作按钮（本插件用 HostChannel.mountToolbar 挂上去的），本页整条工具栏
-    // 都不再显示（见 CSS 的 html.is-embedded）—— 作用域与根目录改在设置弹窗里说明
-    // （后端 settings_schema 的 root_dir 信息行）。见 docs/plugin-ui-guide.md §3.4。
+    // 隐藏（见 CSS 的 html.is-embedded）—— 作用域与根目录在设置弹窗里说明
+    // （后端 settings_schema 的 root_dir 信息行）。
     if (new URLSearchParams(location.search).has('embed')) {
       document.documentElement.classList.add('is-embedded');
     }

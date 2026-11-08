@@ -17,7 +17,7 @@ OmniBox 的 Python 后端：Flask 应用（`create_app()`）与插件契约。
 | `media_catalog.py` | 统一媒体目录浏览契约（路径安全、面包屑、扩展名分类、目录扫描原语） | `is_safe_path` `resolve_safe_path` `classify_file` `list_directory` `list_system_roots` `scan_directory` `natural_sort_key` `is_hidden_name` `ScanResult` |
 | `json_cache.py` | 插件共享的 JSON 落盘：原子写 + 版本/指纹校验的缓存读取 | `read_json` `write_json` `read_cached_json` `write_cached_json` `CACHE_VERSION_KEY` |
 | `ports.py` | 插件组件与宿主的最小能力契约（Protocol，`PluginBase` 结构化满足） | `SettingsPort` `PersistPort` |
-| `freshness.py` | 同步 / 校验引擎：插件声明规格，壳侧驱动 | `FreshnessSpec` `FreshnessStore` `FreshnessEngine` `FsSource` `engine_for` |
+| `freshness.py` | 同步 / 校验引擎：插件声明规格，壳侧驱动；版本章按目录推进，校验完成才给出可作破坏性判断的键集合；目录集合变化与远端新鲜期各有独立信号 | `FreshnessSpec` `FreshnessStore` `FreshnessEngine` `FsSource` `engine_for` `verified_keys` `on_dirs_changed` `fresh_until` |
 | `thumb_cache.py` | 缩略图缓存与维护 | `ThumbCache` `cache_stats` `clear_all_caches` |
 | `tasks.py` | 后台任务 | `BackgroundTask` |
 | `settings_store.py` | 每插件一个 JSON 的设置存储 | `SettingsStore` |

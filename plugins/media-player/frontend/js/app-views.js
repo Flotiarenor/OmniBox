@@ -21,6 +21,10 @@ Object.assign(MediaPlayerApp.prototype, {
      * 媒体库本地的刷新（同步 / 校验）由壳的 `PluginChrome` 挂载
      * `shell/freshness.js`，这里只保留视图级刷新 —— 两者语义不同：一个重拉
      * 远端数据，一个核对本地磁盘。本地视图上这个动作是空操作（按钮也不可见）。
+     *
+     * 先让壳侧的引擎同步一次网易云插件（`system_freshness_sync` 是壳级方法，
+     * `Bridge.call` 会加上本插件前缀而打不到它），再清本页的在线数据缓存：
+     * 后端缓存与页面缓存一起失效，重拉才真的会回源。
      */
     async _doScan() {
         if (this._scanning) return;
@@ -28,6 +32,13 @@ Object.assign(MediaPlayerApp.prototype, {
         this._scanning = true;
         this._updateActions();
         this._setLoading('正在刷新网易云数据…');
+        try {
+            if (window.Bridge && typeof Bridge.callSystem === 'function') {
+                await Bridge.callSystem('system_freshness_sync', 'netease-music', '');
+            }
+        } catch (e) {
+            // 引擎不可用不影响本页重拉：下面仍会清本地缓存并请求一次
+        }
         this._clearNeteaseCache();
         try {
             await this._loadCurrentView();
@@ -466,9 +477,10 @@ Object.assign(MediaPlayerApp.prototype, {
 
     _findAlbumCover(key) {
         const album = this._lastAlbums.find(a => a.key === key);
-        // 返回 item 形态的封面引用（后端 albums 提供 cover_item_id，前端走 /thumbs）
+        // 返回 item 形态的封面引用（后端 albums 提供 cover_item_id 与 cover_mtime，
+        // 前端走 /thumbs 并用封面文件的 mtime 做版本号）
         if (!album || !album.cover_item_id) return '';
-        return { id: album.cover_item_id, has_cover: true };
+        return { id: album.cover_item_id, has_cover: true, cover_mtime: album.cover_mtime };
     },
 
 });

@@ -695,6 +695,16 @@ class RosterDistributionTest(unittest.TestCase):
         self.assertEqual([r.version for r in reloaded.storage.load_roster_history()], [1])
 
 
+class _EngineSpy:
+    """只记录 `reset_throttle` 的替身引擎（共享项增删应当触发一次）。"""
+
+    def __init__(self) -> None:
+        self.resets = 0
+
+    def reset_throttle(self) -> None:
+        self.resets += 1
+
+
 class ShareLocationTest(unittest.TestCase):
     """共享根是一个**有状态的位置**，而不是共享项里的一个字符串。
 
@@ -816,6 +826,133 @@ class ShareLocationTest(unittest.TestCase):
         self.assertEqual(report['pass_end'].get('shares'), 1)
         self.assertEqual(report['pass_end'].get('used_bytes'), 512)
         self.assertTrue(self.plugin.shares.usage_cache)
+
+    # ===== 用量失效、根集合变化、状态序列化 =====
+
+    def _root_path(self, share_id: str) -> str:
+        """共享根在插件里记录的路径。
+
+        `add_share` 保存的是 `resolve()` 之后的形式，临时目录的短名（`ADMINI~1`）与它
+        不同；事件路径必须用同一个形式，否则比较的是两个字符串而不是两个位置。
+        """
+        return str({item['share_id']: item['path']
+                    for item in self.plugin.get_share_roots()}[share_id])
+
+    def _seed_usage(self, share_id: str, used: int = 10) -> None:
+        self.plugin.shares.usage_cache[share_id] = {
+            'path': self._root_path(share_id), 'used_bytes': used,
+            'truncated': False, 'entries': 1, 'at': 1,
+        }
+
+    def test_usage_invalidates_by_event_path(self):
+        """条目事件带绝对路径：落在共享根下才作废该根的用量。"""
+        self.plugin.identity.init_identity({'name': 'usage-derive'})
+        (self.shared / 'sub').mkdir()
+        (self.shared / 'sub' / 'a.bin').write_bytes(b'x' * 10)
+        self.assertTrue(self._add()['success'])
+        self._seed_usage('docs')
+        root = Path(self._root_path('docs'))
+
+        outside = self.tmp / 'outside' / 'b.bin'
+        self.assertEqual(self.plugin.shares.derive([{'key': 'b.bin', 'path': str(outside)}])['dropped'], 0)
+        self.assertIn('docs', self.plugin.shares.usage_cache)
+
+        dropped = self.plugin.shares.derive([
+            {'key': 'sub/a.bin', 'path': str(root / 'sub' / 'a.bin')}])
+        self.assertEqual(dropped['dropped'], 1)
+        self.assertNotIn('docs', self.plugin.shares.usage_cache)
+
+    def test_nested_shares_invalidate_only_the_innermost(self):
+        """嵌套共享根：事件路径归最内层，外层用量不受影响。"""
+        self.plugin.identity.init_identity({'name': 'usage-nested'})
+        inner = self.shared / 'inner'
+        inner.mkdir()
+        (inner / 'x.bin').write_bytes(b'x' * 4)
+        self.assertTrue(self._add('outer')['success'])
+        self.assertTrue(self.plugin.shares.add_share(
+            {'share_id': 'inner', 'path': str(inner)})['success'])
+        self._seed_usage('outer')
+        self._seed_usage('inner')
+        inner_root = Path(self._root_path('inner'))
+
+        self.plugin.shares.derive([{'key': 'x.bin', 'path': str(inner_root / 'x.bin')}])
+
+        self.assertIn('outer', self.plugin.shares.usage_cache)
+        self.assertNotIn('inner', self.plugin.shares.usage_cache)
+
+    def test_share_changes_reset_sync_throttle(self):
+        """共享根集合变了：下一次同步不该被最小间隔挡掉。"""
+        module = load_plugin_module()
+        original = module.engine_for
+        spy = _EngineSpy()
+
+        def fake_engine(_plugin):
+            return spy
+
+        module.engine_for = fake_engine
+        try:
+            self.plugin.identity.init_identity({'name': 'throttle'})
+            self.assertTrue(self._add()['success'])
+            self.assertTrue(self.plugin.shares.remove_share({'share_id': 'docs'})['success'])
+        finally:
+            module.engine_for = original
+        self.assertEqual(spy.resets, 2, '挂载与移除共享项各应让下一趟同步立即生效')
+
+    def test_share_roots_report_cached_usage_without_scanning(self):
+        """首屏读缓存；用量作废后才由 `share_roots_report` 现算。"""
+        from shell.backend.freshness import engine_for
+
+        self.plugin.identity.init_identity({'name': 'usage-cache'})
+        (self.shared / 'a.bin').write_bytes(b'x' * 512)
+        self.assertTrue(self._add()['success'])
+        engine = engine_for(self.plugin)
+        self.assertIsNotNone(engine)
+        engine.verify()
+
+        (self.shared / 'b.bin').write_bytes(b'y' * 1024)
+        cached = self.plugin.get_share_roots()[0]
+        self.assertEqual(cached['used_bytes'], 512, '首屏不应重新遍历共享根')
+        self.assertFalse(cached['usage_stale'])
+
+        self.plugin.shares.usage_cache.clear()
+        fresh = self.plugin.shares.share_roots_report()[0]
+        self.assertEqual(fresh['used_bytes'], 1536)
+        self.assertGreater(fresh['usage_at'], 0)
+        again = self.plugin.shares.share_roots_report()[0]
+        self.assertEqual(again['used_bytes'], 1536, '算过的用量复用缓存，不重扫')
+
+        self.plugin.shares.derive([
+            {'key': 'b.bin', 'path': str(Path(self._root_path('docs')) / 'b.bin')}])
+        stale = self.plugin.get_share_roots()[0]
+        self.assertIsNone(stale['used_bytes'])
+        self.assertIsNone(stale['entries'])
+        self.assertTrue(stale['usage_stale'])
+
+    def test_status_carries_usage_errors_and_offline_facts(self):
+        """`get_status` 要能被 JSON 序列化，并带上用量与"跑得好不好"。"""
+        from shell.backend.freshness import engine_for
+
+        self.plugin.identity.init_identity({'name': 'status'})
+        (self.shared / 'a.bin').write_bytes(b'x' * 512)
+        self.assertTrue(self._add()['success'])
+        engine = engine_for(self.plugin)
+        self.assertIsNotNone(engine)
+        engine.verify()
+        self.plugin.facts.mark_unreachable(('fe80::1', 47810), '连不上: 超时')
+
+        status = self.plugin.report.get_status()
+        json.dumps(status, ensure_ascii=False)   # 元组键会让序列化直接失败
+
+        share = status['share_roots'][0]
+        self.assertEqual(share['used_bytes'], 512)
+        self.assertEqual(share['entries'], 1)
+        self.assertFalse(share['usage_stale'])
+        self.assertIsInstance(share['usage_at'], int)
+        self.assertEqual(status['shares'][0]['used_bytes'], 512)
+
+        self.assertIsInstance(status['sync']['errors'], list)
+        self.assertEqual(status['sync']['unreachable'],
+                         [{'endpoint': 'fe80::1:47810', 'error': '连不上: 超时'}])
 
 
 class RemoteApiTest(unittest.TestCase):

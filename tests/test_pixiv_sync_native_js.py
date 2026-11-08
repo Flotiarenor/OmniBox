@@ -1,9 +1,8 @@
 """pixiv-sync 原生逻辑页（`frontend/js/native.js`）与 `/shell/native-client.js` 的契约用例。
 
-背景：pixiv-sync 从「内嵌完整页面」改成「逻辑页只提交 schema blocks」，native.js 是
-本次新增的 724 行前端逻辑（`frontend/native.html` 只装载统一客户端）。它自己实现
-OAuth 两步流、任务进度、两步确认、secret 清除与轮询；这些行为没有 Python 侧可测的
-钩子，只能把真实脚本装进 node。
+背景：pixiv-sync 是「逻辑页只提交 schema blocks」的形态，native.js 是它的全部前端逻辑
+（`frontend/native.html` 只装载统一客户端）。它自己实现 OAuth 两步流、任务进度、
+两步确认、secret 清除与轮询；这些行为没有 Python 侧可测的钩子，只能把真实脚本装进 node。
 
 本用例通过临时 harness（Python 写出、node 执行）装载**真实的** native-client.js 与
 native.js，锁住：
@@ -12,9 +11,11 @@ native.js，锁住：
   3. OAuth：start_oauth → form(code) → finish_oauth 参数与回到主视图；
   4. 「清除 Token」两步确认后真的只提交 `{refresh_token: ''}`（清空=清除的契约）；
   5. `settings-saved` 会重读状态；
-  6. 缺 `/shell/native-client.js` 时向壳报 `omnibox:native-error`，而不是静默空白。
+  6. 缺 `/shell/native-client.js` 时向壳报 `omnibox:native-error`，而不是静默空白；
+  7. 本地内容的空闲概要（上次校验 / 索引待更新 / 上次变更计数）与校验进度块。
 
-harness 写成字符串而不是 tests/js/*.mjs：pixiv-sync 的写范围只开放 `tests/test_pixiv_sync*`。
+harness 写成字符串而不是 tests/js/*.mjs：pixiv-sync 的 node 用例统一放在
+`tests/test_pixiv_sync*.py` 里，临时脚本随用例一起生成、用完即删。
 
 无 node 时跳过。
 
@@ -375,6 +376,39 @@ async function run() {
       && /缺页重新入队 2/.test(toast.text), 'Toast 要给出三个业务计数');
     assert(!env.block('library-progress'), '结束后进度块消失');
     assert(/本地索引 29,534 项/.test(env.block('account-status').text), '账号区显示索引条目数');
+  });
+
+  await check('本地内容空闲时保留概要：上次校验、索引待更新与上次变更计数', async () => {
+    const env = setup({
+      ...IDLE_STATUS, token_configured: true,
+      library: {
+        available: true, busy: false, entries: 120, dirs: 30, last_verify_at: 1700000000,
+        version_stale: true, stale_dirs: 4,
+        task: { state: 'done', extra: {
+          total: 120, imported: 2, stale_removed: 1, incomplete: 3, zero_removed: 1 } },
+      },
+    });
+    await env.init();
+    const meta = env.block('library-meta');
+    assert(meta && meta.type === 'text', '空闲时也要给一行索引概要');
+    assert(/已索引 120 项/.test(meta.text), '概要带条目数');
+    assert(/上次校验/.test(meta.text), '概要带上次校验时间');
+    assert(/索引待更新（4 个目录）/.test(meta.text), '版本落后要说明，并给待盖章目录数');
+    assert(/新增 2/.test(meta.text) && /移除失效 1/.test(meta.text)
+      && /缺页重新入队 3/.test(meta.text) && /清 0 字节 1/.test(meta.text),
+      '上次校验的变更计数留在面板上');
+    assert(!env.block('library-progress'), '空闲时没有进度块');
+
+    // 从未索引也从未校验：整块不出现，不给一行空文案。
+    const fresh = setup({
+      ...IDLE_STATUS, token_configured: true,
+      library: {
+        available: true, busy: false, entries: 0, dirs: 0, last_verify_at: 0,
+        version_stale: false, stale_dirs: 0, task: null,
+      },
+    });
+    await fresh.init();
+    assert(!fresh.block('library-meta'), '没有索引也没有校验记录时整块不出现');
   });
 
   await check('取消是乐观的：点击后界面立刻变，不等后端返回', async () => {

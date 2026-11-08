@@ -59,7 +59,7 @@
     statusError: '',
     tokenConfigured: false,
     notice: null,           // {tone, text}：操作结果，走 Toast，不进 blocks
-    libraryBusy: false,     // 上一轮 get_status 里本地校验是否在跑（用于完成时补提示）
+    libraryBusy: false,     // 上一次 get_status 里本地校验是否在跑（用于完成时补提示）
     pending: null,          // {text, confirm, cancel}：可重来的 inline 二次确认
     confirm: null,          // {title, text, confirm, cancel}：不可逆操作的阻断确认
     oauth: { url: '', code: '' },
@@ -350,7 +350,7 @@
       type: 'actions',
       id: 'account-actions',
       actions: [
-        // 本地核对是唯一的维护入口：同步任务本身不再全盘遍历，手动放进目录的图
+        // 本地核对是唯一的维护入口：同步任务不做本地遍历，手动放进目录的图
         // 必须点这里才会并入已下载记录（另一条兼容入口 refresh_downloaded 只做导入）。
         { id: 'verify-library', label: '校验本地内容', size: 'sm', disabled: busy },
         { id: 'logout', label: '清除 Token', variant: 'danger', size: 'sm', disabled: busy },
@@ -787,51 +787,42 @@
     };
   }
 
-  /** 校验本地内容：走盘对齐记录（导入手动作品、移除失效、缺页重新入队）。 */
-  async function verifyLibrary() {
-    try {
-      const result = await Bridge.call('verify_downloaded');
-      if (result && result.ok === false) {
-        state.notice = { tone: 'danger', text: '校验失败：' + (result.error || '未知错误') };
-      } else {
-        const total = num(result && result.total);
-        const imported = num(result && result.imported);
-        const stale = num(result && result.stale_removed);
-        const incomplete = num(result && result.incomplete);
-        const parts = ['本地内容已校验：共 ' + fmt(total) + ' 张'];
-        if (imported) parts.push('新增 ' + fmt(imported));
-        if (stale) parts.push('移除失效 ' + fmt(stale));
-        if (incomplete) parts.push('缺页重新入队 ' + fmt(incomplete));
-        if (parts.length === 1) parts.push('没有变化');
-        state.notice = { tone: 'success', text: parts.join('，') };
-      }
-    } catch (e) {
-      state.notice = { tone: 'danger', text: '校验失败：' + errText(e) };
-    }
-    await loadStatus();
-  }
-
   /**
-   * 本地内容校验的进度块。
+   * 本地内容：索引概要（条目数 / 上次校验 / 是否待更新）与校验进度。
    *
    * 校验是后台任务（几万个文件、几十秒量级），进度由 `get_status.library` 投影过来：
-   * 目录数 processed/total + 当前目录。没有它，用户点完按钮只会看到"什么都没发生"。
+   * 目录数 processed/total + 当前目录。空闲时保留一行概要，否则点完「校验本地内容」
+   * 结果只留在一次性 Toast 里，面板上看不出上次校验过什么、索引是否落后。
    */
   function librarySection() {
     const lib = (state.status && state.status.library) || null;
-    if (!lib || !lib.busy) return null;
-    const task = lib.task || {};
-    const total = num(task.total);
-    const processed = num(task.processed);
-    const detail = [
-      task.current ? '正在处理：' + task.current : '正在遍历目录…',
-      '已处理 ' + fmt(processed) + (total > 0 ? ' / ' + fmt(total) : '') + ' 个目录',
-    ].join(' · ');
-    return {
-      type: 'section',
-      id: 'library-section',
-      title: '本地内容',
-      blocks: [{
+    if (!lib || lib.available === false) return null;
+    const entries = num(lib.entries);
+    const verifiedAt = num(lib.last_verify_at);
+    if (!lib.busy && !entries && !verifiedAt) return null;
+
+    const parts = [];
+    if (entries > 0) parts.push('已索引 ' + fmt(entries) + ' 项');
+    parts.push(verifiedAt > 0 ? '上次校验 ' + timeText(verifiedAt) : '尚未校验');
+    if (lib.version_stale) {
+      const stale = num(lib.stale_dirs);
+      parts.push(stale > 0 ? '索引待更新（' + fmt(stale) + ' 个目录）' : '索引待更新');
+    }
+    if (!lib.busy) {
+      const summary = lastLibrarySummary(lib.task);
+      if (summary) parts.push(summary);
+    }
+
+    const blocks = [text('library-meta', parts.join(' · '))];
+    if (lib.busy) {
+      const task = lib.task || {};
+      const total = num(task.total);
+      const processed = num(task.processed);
+      const detail = [
+        task.current ? '正在处理：' + task.current : '正在遍历目录…',
+        '已处理 ' + fmt(processed) + (total > 0 ? ' / ' + fmt(total) : '') + ' 个目录',
+      ].join(' · ');
+      blocks.push({
         type: 'progress',
         id: 'library-progress',
         value: processed,
@@ -840,8 +831,22 @@
         text: '校验本地内容',
         detail: detail,
         cancel: { id: 'cancel-verify', label: '停止校验', variant: 'link' },
-      }],
-    };
+      });
+    }
+    return { type: 'section', id: 'library-section', title: '本地内容', blocks: blocks };
+  }
+
+  /** 上次校验的变更计数（引擎任务 extra 里的 pass_end 摘要）；没有变化时返回空串。 */
+  function lastLibrarySummary(task) {
+    if (!task || taskActive(task)) return '';
+    if (String(task.state) === 'cancelled') return '上次校验已停止';
+    const extra = task.extra || {};
+    const parts = [];
+    if (num(extra.imported)) parts.push('新增 ' + fmt(extra.imported));
+    if (num(extra.stale_removed)) parts.push('移除失效 ' + fmt(extra.stale_removed));
+    if (num(extra.incomplete)) parts.push('缺页重新入队 ' + fmt(extra.incomplete));
+    if (num(extra.zero_removed)) parts.push('清 0 字节 ' + fmt(extra.zero_removed));
+    return parts.join(' · ');
   }
 
   /** 校验结束时的结果文案；计数来自引擎任务 extra 里的 pass_end 摘要。 */

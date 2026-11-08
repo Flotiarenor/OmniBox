@@ -98,9 +98,18 @@ function createFreshnessDom() {
   return env;
 }
 
-/** 挂一份组件：`state` 是 `system_freshness_state` 的返回，`syncReport` 是同步报告。 */
+/**
+ * 挂一份组件：`state` 是 `system_freshness_state` 的返回，`syncReport` 是同步报告。
+ *
+ * 每份新用例先销毁上一份：`call()` 读的是 `globalThis.Bridge`，而每个用例都会换一份
+ * 假 Bridge；旧控件不销毁的话，它的低频状态重读会打到新用例的桥与调用记录上。
+ */
+let previousCtl = null;
 function setup({ state = { available: true, busy: false, task: null, unit: '张' },
-                 syncReport = null, verifyResult = { started: true, running: true } } = {}) {
+                 syncReport = null, verifyResult = { started: true, running: true },
+                 scope = '', onChange = null, idlePollMs = undefined } = {}) {
+  if (previousCtl && typeof previousCtl.destroy === 'function') previousCtl.destroy();
+  previousCtl = null;
   const { document, makeEl } = createFreshnessDom();
   const host = Object.assign(makeEl('div'), { id: 'host' });
   document.body.appendChild(host);
@@ -132,14 +141,21 @@ function setup({ state = { available: true, busy: false, task: null, unit: '张'
   globalThis.Toast = { info() { }, error() { }, success() { }, warning() { }, show() { } };
 
   const Freshness = new Function(`${readFileSync(SRC, 'utf8')}\nreturn window.Freshness;`)();
-  const ctl = Freshness.mount({ plugin: 'demo', container: host, unit: '张' });
+  const ctl = Freshness.mount({
+    plugin: 'demo', container: host, unit: '张', scope, onChange,
+    ...(idlePollMs === undefined ? {} : { idlePollMs }),
+  });
+  previousCtl = ctl;
   const card = host.querySelector('[data-fr="card"]');
   const count = host.querySelector('[data-fr="count"]');
   const title = host.querySelector('[data-fr="card-title"]');
   return {
-    ctl, calls, host, card, count, title,
+    ctl, calls, host, card, count, title, Freshness,
+    status: host.querySelector('[data-fr="status"]'),
     setState(s) { cur = s; },
     verifyCalls: () => calls.filter((c) => c.method === 'system_freshness_verify'),
+    syncCalls: () => calls.filter((c) => c.method === 'system_freshness_sync'),
+    stateCalls: () => calls.filter((c) => c.method === 'system_freshness_state'),
   };
 }
 
@@ -202,6 +218,136 @@ await check('任务结束：卡片显示完成并在停留后自动隐藏', asyn
 
   await sleep(4200);                           // CARD_HIDE_MS 之后
   assert.ok(env.card.classList.contains('hidden'), '完成卡片到点要自己收掉');
+});
+
+// ---------- 3. 同步通道：Freshness.sync / onChange 报告 ----------
+
+await check('Freshness.sync 直接打到 system_freshness_sync 并返回报告', async () => {
+  const env = setup({ syncReport: { action: 'sync', added: 3, changed: 0, removed: 0 } });
+  const report = await env.Freshness.sync('demo', 'a/b');
+  assert.deepEqual(report, { action: 'sync', added: 3, changed: 0, removed: 0 });
+  assert.equal(env.syncCalls().length, 1, `应恰好同步一次：${env.calls.map((c) => c.method)}`);
+  assert.deepEqual(env.syncCalls()[0].args, ['demo', 'a/b'], '参数必须是 (plugin, scope)');
+});
+
+await check('mount 返回的 sync 与 autoSync 同一通道，可直接拿报告', async () => {
+  const env = setup({ syncReport: { action: 'sync', added: 1 }, scope: 'old/dir' });
+  // 省略 scope 时用挂载时的作用域
+  const first = await env.ctl.sync();
+  assert.deepEqual(env.syncCalls()[0].args, ['demo', 'old/dir']);
+  assert.equal(first.added, 1);
+  // 传 scope 时更新作用域
+  await env.ctl.sync('new/dir');
+  assert.deepEqual(env.syncCalls()[1].args, ['demo', 'new/dir']);
+});
+
+await check('同步报告有变化时 onChange 收到报告本身（不是无参）', async () => {
+  const reports = [];
+  const env = setup({
+    syncReport: { action: 'sync', added: 2, changed: 1, removed: 0 },
+    onChange: (report) => reports.push(report),
+  });
+  env.ctl.autoSync('a/b');
+  await sleep(DEBOUNCE + 150);
+  assert.equal(reports.length, 1, `应通知一次，实际 ${reports.length}`);
+  assert.equal(reports[0].added, 2, '回调参数必须是后端报告');
+  assert.equal(reports[0].changed, 1);
+});
+
+await check('报告里的 invalidated（远端丢弃缓存）也算变化', async () => {
+  const reports = [];
+  const env = setup({
+    syncReport: { action: 'sync', invalidated: true },
+    onChange: (report) => reports.push(report),
+  });
+  env.ctl.autoSync('');
+  await sleep(DEBOUNCE + 150);
+  assert.equal(reports.length, 1, 'invalidated 必须通知内容页重载');
+  assert.equal(reports[0].invalidated, true);
+});
+
+await check('skip（去抖 / 被占用）不触发 onChange', async () => {
+  const reports = [];
+  const env = setup({
+    syncReport: { action: 'skip', reason: 'throttled', retry_after: 3.2 },
+    onChange: (report) => reports.push(report),
+  });
+  env.ctl.autoSync('');
+  await sleep(DEBOUNCE + 150);
+  assert.equal(reports.length, 0, 'skip 不是变化，不该让内容页重载');
+});
+
+await check('同步没有变化（全 0 且无 invalidated）不触发 onChange', async () => {
+  const reports = [];
+  const env = setup({
+    syncReport: { action: 'sync', added: 0, changed: 0, removed: 0 },
+    onChange: (report) => reports.push(report),
+  });
+  env.ctl.autoSync('');
+  await sleep(DEBOUNCE + 150);
+  assert.equal(reports.length, 0, '没有变化就不该打扰内容页');
+});
+
+// ---------- 4. 被跳过的同步要在状态行说出来 ----------
+
+await check('sync 被去抖挡住：状态行给可重试文案', async () => {
+  const env = setup({ syncReport: { action: 'skip', reason: 'throttled', retry_after: 3.2 } });
+  env.ctl.autoSync('');
+  await sleep(DEBOUNCE + 120);
+  assert.match(env.status.textContent, /节流/, `状态行没解释为什么没更新：${env.status.textContent}`);
+  assert.match(env.status.textContent, /稍后重试/, '要给出可重试的说法');
+});
+
+await check('sync 因后台校验被跳过：状态行说明在等校验', async () => {
+  const env = setup({ syncReport: { action: 'skip', reason: 'busy' } });
+  env.ctl.autoSync('');
+  await sleep(DEBOUNCE + 120);
+  assert.match(env.status.textContent, /后台校验/, env.status.textContent);
+});
+
+await check('非法作用域被跳过：状态行说明作用域无效', async () => {
+  const env = setup({ syncReport: { action: 'skip', reason: 'bad_scope', scope: '../etc' } });
+  env.ctl.autoSync('../etc');
+  await sleep(DEBOUNCE + 120);
+  assert.match(env.status.textContent, /作用域无效/, env.status.textContent);
+});
+
+await check('点「校验」会清掉跳过文案（它只解释那一次同步）', async () => {
+  const env = setup({ syncReport: { action: 'skip', reason: 'throttled' } });
+  env.ctl.autoSync('');
+  await sleep(DEBOUNCE + 120);
+  assert.match(env.status.textContent, /稍后重试/);
+  await env.ctl.verify();
+  await sleep(80);
+  assert.doesNotMatch(env.status.textContent, /稍后重试/, '校验已经起跑，旧文案不该留着');
+});
+
+// ---------- 5. 停留期低频重读状态 ----------
+
+await check('没有任务时按低频重读状态（不需用户操作）', async () => {
+  const env = setup({ idlePollMs: 120 });
+  await sleep(60);
+  const first = env.stateCalls().length;
+  assert.ok(first >= 1, '挂载时至少要读一次状态');
+  await sleep(250);
+  assert.ok(env.stateCalls().length > first,
+    `停留期间没有重读状态（仍为 ${env.stateCalls().length} 次）`);
+});
+
+await check('重读到的「有变化 · 需要校验」会自己出现在状态行', async () => {
+  const env = setup({ idlePollMs: 120 });
+  await sleep(60);
+  env.setState({ available: true, busy: false, task: null, entries: 4, version_stale: true });
+  await sleep(250);
+  assert.equal(env.status.textContent, '有变化 · 需要校验', env.status.textContent);
+});
+
+await check('idlePollMs: 0 关闭低频重读', async () => {
+  const env = setup({ idlePollMs: 0 });
+  await sleep(60);
+  const first = env.stateCalls().length;
+  await sleep(250);
+  assert.equal(env.stateCalls().length, first, '显式关闭后不该再读状态');
 });
 
 console.log(failed ? `\n${failed} 例失败` : `\nshell freshness 卡片 ${total} 例通过`);

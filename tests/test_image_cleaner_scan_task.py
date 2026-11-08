@@ -200,9 +200,8 @@ class ScanTaskTests(unittest.TestCase):
     def test_scan_start_is_single_flight(self):
         """并发请求不得各起一个任务：查-建-赋值必须在同一把锁里。
 
-        回归对象：`scan_start` 原先没有锁，Flask 是 threaded=True，两个并发请求
-        可以各起一个后台任务，后一个覆盖前一个的 `_scan_task`（前者仍在跑，取消
-        就再也够不着它）。
+        Flask 是 threaded=True，两个并发请求各起一个后台任务时，后一个会覆盖前一个
+        的 `_scan_task`（前者仍在跑，取消就再也够不着它）。
         """
         cleaner = self._cleaner()
         gate = threading.Event()
@@ -279,7 +278,37 @@ class ScanTaskTests(unittest.TestCase):
         cleaner.on_settings_changed({'threshold'})
 
         self.assertTrue(cleaner.results.get_cached_scan('similar')['stale'],
-                        '改阈值后相似分组必须重算（旧实现看完还是旧分组）')
+                        '改阈值后相似分组必须重算（改完阈值看到的不能还是旧分组）')
+
+    def test_content_version_follows_the_dhash_version(self):
+        """指纹条目版本与引擎的 content_version 是同一个数字，只改 `DHASH_VERSION`。"""
+        cleaner = self._cleaner()
+        spec = cleaner.freshness_spec()
+
+        self.assertEqual(cleaner.hashes.version, self.cleaner_module._const.DHASH_VERSION)
+        self.assertEqual(spec['content_version'], cleaner.hashes.version,
+                         '引擎的整体作废判据必须跟着指纹条目版本走')
+
+    def test_regroup_all_reports_valid_images_for_similar(self):
+        """两条写路径的 `scanned` 同口径：完全重复数文件、相似数有效图片。"""
+        from shell.backend.freshness import engine_for
+
+        _make_image(self.root / 'a.png', (200, 30, 30))
+        _make_image(self.root / 'b.png', (200, 30, 30))
+        (self.root / 'broken.jpg').write_bytes(b'not-an-image')   # 读不出来的图
+        cleaner = self._cleaner()
+        engine = engine_for(cleaner)
+        engine.spec.min_sync_interval = 0.0
+
+        report = engine.verify()
+        self.assertEqual(report['pass_end']['scanned'], 3, '整趟的文件总数')
+        self.assertEqual(cleaner.results.get_cached_scan('dupe')['scanned'], 3,
+                         '完全重复的口径是文件数')
+        self.assertEqual(cleaner.results.get_cached_scan('similar')['scanned'], 2,
+                         '相似的口径是有效图片数（读不出来的图不算）')
+
+        direct = cleaner.pipeline.similar_scan()
+        self.assertEqual(direct['scanned'], 2, '同步入口与校验收尾必须同口径')
 
     def test_abs_for_rel_handles_extra_root_prefix(self):
         """虚拟路径 → 绝对路径：命名空间前缀先匹配，再回落第一根。"""

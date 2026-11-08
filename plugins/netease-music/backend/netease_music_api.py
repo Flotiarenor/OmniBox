@@ -4,21 +4,25 @@
 `FakeMpv`（截获播放地址）。组件之间不互相 import，依赖方向因此只有"入口 → 本组件"。
 
 状态自持：播放地址缓存与 ncm-cli 的配置目录都在这里。地址是**短期**的（外链带时效），
-缓存没有 TTL，一次失败还会把公共外链兜底值一起钉住 —— 统一刷新的「校验」调
-`clear_url_cache()` 把缓存丢掉，下次取地址重新解析。
+因此缓存条目带写入时刻、有效期 `URL_CACHE_TTL_SECONDS`，过期后重新解析；
+`clear_url_cache()` 仍然可以整体丢弃（统一刷新的「校验」用它）。
 """
 
 import json
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 log = logging.getLogger(__name__)
 
 
 class NeteaseMusicAPI:
     """ncm-cli 的薄封装：命令调用 + 输出解析 + 地址缓存。"""
+
+    #: 播放地址缓存的有效期。外链带时效，缓存过久会把过期地址交回播放器。
+    URL_CACHE_TTL_SECONDS: float = 600.0
 
     def __init__(self, runner: Any, parser: Any, fake_mpv: Any,
                  check_install: bool = True, url_cache_size: int = 100) -> None:
@@ -29,7 +33,8 @@ class NeteaseMusicAPI:
         self._preference_file = self._config_dir / "ncm-preference.json"
         self._history_file = self._config_dir / "ncm-history.json"
         self._schedule_file = self._config_dir / "ncm-schedule.json"
-        self._url_cache: Dict[str, str] = {}
+        # 键 -> (播放地址, 写入时刻)。时刻用于过期判定，不参与地址本身。
+        self._url_cache: Dict[str, Tuple[str, float]] = {}
         self._url_cache_size = max(1, url_cache_size)
         # 我们的假 mpv 方案依赖 ncm-cli 使用 mpv 播放器；
         # 直接写入配置可以绕过 ncm-cli 对“真实 mpv 是否安装”的检查。
@@ -84,8 +89,8 @@ class NeteaseMusicAPI:
         """丢弃播放地址缓存，返回丢弃条数。
 
         地址是**短期**的（网易云外链带时效，`resolve_song_url` 也只是"截获当下那次"），
-        缓存没有 TTL，一次失败还会把公共外链兜底值一起钉住。统一刷新的「校验」
-        就调这里：把缓存丢掉，下次取地址重新解析。
+        条目本身还有有效期上限；这里用于登录态变化或手动校验时整体丢弃，
+        下次取地址重新解析。
         """
         count = len(self._url_cache)
         self._url_cache.clear()
@@ -247,9 +252,13 @@ class NeteaseMusicAPI:
     def resolve_song_url(self, song_id: str, original_id: str, timeout: int = 15) -> str:
         public_url = f"https://music.163.com/song/media/outer/url?id={original_id}.mp3"
 
-        # 短期 URL 缓存，最多保留 self._url_cache_size 条
-        if song_id in self._url_cache:
-            return self._url_cache[song_id]
+        # 短期 URL 缓存，最多保留 self._url_cache_size 条；超过有效期一律重新解析。
+        cached = self._url_cache.get(song_id)
+        if cached is not None:
+            cached_url, stored_at = cached
+            if time.time() - stored_at < self.URL_CACHE_TTL_SECONDS:
+                return cached_url
+            self._url_cache.pop(song_id, None)
 
         self._fake_mpv.prepare()
         env = self._fake_mpv.environment()
@@ -271,7 +280,7 @@ class NeteaseMusicAPI:
                 self._url_cache.pop(next(iter(self._url_cache)))
             except Exception:
                 pass
-        self._url_cache[song_id] = url
+        self._url_cache[song_id] = (url, time.time())
         return url
 
     # ===== 播放控制 =====

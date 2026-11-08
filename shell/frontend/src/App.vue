@@ -16,7 +16,7 @@ import {
   reloadedFrameMessages,
   splitByKeepAlive,
 } from './core/plugin-frames'
-import { isPluginChromeMessage, mergeChromeState } from './core/plugin-chrome-protocol'
+import { buildFreshnessEvent, isPluginChromeMessage, mergeChromeState } from './core/plugin-chrome-protocol'
 import SettingsView from './views/SettingsView.vue'
 import StatusView from './views/StatusView.vue'
 import Icon from './components/Icon.vue'
@@ -321,7 +321,7 @@ function onChromeView(name: string, view: string): void {
   postToFrame(name, { type: 'omnibox:view', view })
 }
 
-function onChromeAction(name: string, action: string): void {
+function onChromeAction(name: string, action: string, payload?: unknown): void {
   if (!action) return
   // 设置是页面级弹窗：内容 iframe 内的 `.modal` 盖不住壳侧栏，由壳按插件 schema 渲染。
   // 保存成功后回一条 `settings-saved`，内容页据此重读设置并刷新当前视图。
@@ -329,7 +329,16 @@ function onChromeAction(name: string, action: string): void {
     openPluginSettings(name)
     return
   }
-  postToFrame(name, { type: 'omnibox:action', action })
+  const message: Record<string, unknown> = { type: 'omnibox:action', action }
+  // 统一刷新会把报告附在 `refresh` 上：旧内容页忽略这个字段即回到原来的行为。
+  if (payload !== undefined) message.payload = payload
+  postToFrame(name, message)
+}
+
+/** 统一刷新的富事件：报告与作用域一起交给内容页（浅层合并，不解释业务）。 */
+function onChromeFreshness(name: string, payload: { scope?: unknown; report?: unknown } | null): void {
+  const scope = payload && typeof payload.scope === 'string' ? payload.scope : ''
+  postToFrame(name, buildFreshnessEvent(name, scope, payload ? payload.report : null))
 }
 
 /** 设置弹窗保存成功：关闭后让来源页重读设置（各插件按自己的状态模型收尾）。 */
@@ -662,6 +671,7 @@ watch(
               :native-actions="nativePanel?.host === p.name ? nativePanel.toolbar : []"
               @view="onChromeView(p.name, $event)"
               @action="onChromeAction(p.name, $event)"
+              @freshness="onChromeFreshness(p.name, $event)"
               @query="onChromeQuery(p.name, $event)"
               @native="onChromeNative(p.name, $event)"
               @native-action="onNativeToolbarAction(p.name, $event)"
@@ -712,6 +722,7 @@ watch(
               :native-actions="nativePanel?.host === p.name ? nativePanel.toolbar : []"
               @view="onChromeView(p.name, $event)"
               @action="onChromeAction(p.name, $event)"
+              @freshness="onChromeFreshness(p.name, $event)"
               @query="onChromeQuery(p.name, $event)"
               @native="onChromeNative(p.name, $event)"
               @native-action="onNativeToolbarAction(p.name, $event)"

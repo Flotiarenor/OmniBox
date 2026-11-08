@@ -58,8 +58,10 @@ def freshness_spec(self):
 
 **代价与边界**：原地覆盖写（同名、新内容）不改目录 mtime 也不改名字个数，
 被动同步看不见它——这类陈旧由"派生缓存自己按 mtime/size 失效"兜住，权威结论
-由**校验**给出（全量 stat）。这正是两个动作的分工：同步便宜且基本正确，
-校验慢但彻底。
+由**校验**给出（全量 stat）。目录枚举顺带给出文件大小的平台（Windows）上还会比
+"目录内纳入索引的文件大小之和"，于是同长度之外的替换与"删一个加一个"能在同步
+里被发现；POSIX 上这一步要真 stat 每个文件，与"稳态零 stat"冲突，因此跳过。
+这正是两个动作的分工：同步便宜且基本正确，校验慢但彻底。
 
 其余性能约束：
 
@@ -68,12 +70,23 @@ def freshness_spec(self):
   由调用方转后台校验续完（不阻塞 API 线程）；
 - 广度优先：部分同步也先覆盖浅层，用户马上能看到目录级变化；
 - 单飞：同一插件的同步/校验同时只有一个在跑（现状里"查-建-赋值"无锁，
-  双击按钮就是两趟全盘 walk）；
+  双击按钮就是两趟全盘 walk）；同步进行中 `start_verify` 返回 busy；
+- 版本盖章按目录推进：`content_version` 升级时，越过它的目录不再短路，重算完就带上
+  新版本章（`dirs.version`）；预算用尽的那一趟只盖走到的目录，下一趟跳过已盖章的
+  目录继续，直到全部盖完才写整趟的 meta 章。这样"解析规则变了"不会退化成"每次
+  同步都从头重算同一批目录、永远盖不上章"；
+- 条目键按根命名空间：插件声明 `key_of` 时它只保证**根内**唯一，存储键因此再拼上
+  该根的虚拟前缀；交给 `derive` / `prune` / `on_verified` 的键在调用前还原成插件键；
+- 目录集合变化有独立信号：新增或消失的目录（哪怕没有任何条目变化）会调
+  `on_dirs_changed(report)`，报告里带 `new_dirs` / `vanished_dirs`；
+- 远端来源（`mode='remote'`）同样受去抖与单飞约束，判据只有时间：状态里给
+  `fresh_until`，`invalidate` 收到失效原因（`ttl` / `verify` / `identity`）；
 - 错误进报告（截断保留），不抛给调用方。
 '''
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 import sqlite3
@@ -95,6 +108,9 @@ DEFAULT_MAX_DIRS = 400            # 单次被动同步最多**处理**的目录�
 _VISITED_DIR_FACTOR = 8           # 单次被动同步最多**走过**的目录数 = max_dirs × 该系数
 DEFAULT_SKIP_DIRS = ('.cache',)   # 缓存/数据目录一律不进索引
 _ERROR_CAP = 20                   # 报告里最多保留多少条错误（报告要走 HTTP，与 tasks.py 的 200 条同理）
+#: 目录级短路是否顺带比"目录内文件大小之和"。Windows 上 `DirEntry.stat()` 的字段由
+#: 目录枚举一并给出，读它是零系统调用；POSIX 上要真 stat 每个文件，与稳态零 stat 冲突。
+_STAT_SIZE_IN_SCANDIR = os.name == 'nt'
 
 STATE_SCHEMA = '''
 CREATE TABLE IF NOT EXISTS dirs (
@@ -102,7 +118,8 @@ CREATE TABLE IF NOT EXISTS dirs (
     dir_mtime   REAL NOT NULL DEFAULT 0,
     file_count  INTEGER NOT NULL DEFAULT 0,
     size_sum    INTEGER NOT NULL DEFAULT 0,
-    max_mtime   REAL NOT NULL DEFAULT 0
+    max_mtime   REAL NOT NULL DEFAULT 0,
+    version     INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS entries (
     key      TEXT PRIMARY KEY,
@@ -160,6 +177,30 @@ class FsSource:
         prefix = self.prefixes[index] if index < len(self.prefixes) else ''
         rel = (rel or '').strip('/')
         return f'{prefix}/{rel}' if prefix and rel else (prefix or rel)
+
+    def prefix_of(self, dir_key: str) -> str:
+        """目录键所属根目录的虚拟前缀（第一根为空串）。"""
+        key = (dir_key or '').strip('/')
+        for prefix in sorted((item for item in self.prefixes if item),
+                             key=len, reverse=True):
+            if key == prefix or key.startswith(f'{prefix}/'):
+                return prefix
+        return ''
+
+    def plugin_key(self, key: str, prefix: str = '') -> str:
+        """存储键 → 插件条目键：去掉 `key_of` 声明时拼上的根命名空间前缀。
+
+        `prefix` 已知时（遍历中，按目录算）直接按它剥；不知道时（一次查全库）按
+        前缀表匹配。只有声明了 `key_of` 的插件需要这一步 —— 未声明时存储键就是
+        虚拟路径，前缀本身就是插件键的一部分。
+        """
+        if prefix:
+            return key[len(prefix) + 1:] if key.startswith(f'{prefix}/') else key
+        for candidate in sorted((item for item in self.prefixes if item),
+                                key=len, reverse=True):
+            if key.startswith(f'{candidate}/'):
+                return key[len(candidate) + 1:]
+        return key
 
     def wants(self, name: str) -> bool:
         """该文件是否纳入索引（只看名字，不 stat —— 稳态零系统调用的前提）。"""
@@ -229,6 +270,38 @@ def _as_sequence(value: Any) -> Tuple[Any, ...]:
     return tuple(value)
 
 
+def _accepts_one_positional(fn: Any) -> bool:
+    """该钩子是否接受一个位置参数（给只接受零参的旧钩子保留调用方式）。
+
+    探签名而不是"先带参调、TypeError 再零参调"：钩子内部的 TypeError 会被误判成
+    签名不匹配，于是同一个钩子被调两次（对"丢缓存"这类副作用不是无害的）。
+    """
+    try:
+        parameters = list(inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        return False
+    if any(item.kind is inspect.Parameter.VAR_POSITIONAL for item in parameters):
+        return True
+    return any(item.kind in (inspect.Parameter.POSITIONAL_ONLY,
+                            inspect.Parameter.POSITIONAL_OR_KEYWORD)
+               for item in parameters)
+
+
+def _declared_number(value: Any, default: float) -> float:
+    """声明项 → 数字；未声明或无法解析时用默认值，**显式 0 保留**。
+
+    不能写成 `float(raw or default)`：`min_sync_interval: 0` 表示"不做去抖"，
+    `ttl_seconds: 0` 表示"没有新鲜期"，`max_dirs_per_sync: 0` 表示"被动同步不处理
+    目录"，三者都会在 `or` 里被默认值顶掉。
+    """
+    if value is None or value == '':
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class FreshnessSpec:
     """规范化后的插件声明（由 `freshness_spec()` 的 dict 归一而来）。"""
@@ -247,6 +320,11 @@ class FreshnessSpec:
     # 为什么要它：索引是**单文件**的插件（media-player 的媒体索引 JSON）不能每处理
     # 一个目录就整体重写一遍，需要"这一趟结束了再写"的时机。
     on_pass_end: Optional[Callable[..., Any]] = None
+    # 目录集合变化：本趟出现了新目录或消失的目录时调用（哪怕没有任何条目变化）。
+    # 为什么与 derive / prune 分开：两者都只对**条目**回调，而"新建一个空相册""整个
+    # 目录被移走"在条目层面没有任何变化，插件按目录聚合的缓存却必须作废。
+    # 入参是整趟报告，其中 `new_dirs` / `vanished_dirs` 是这两类目录键。
+    on_dirs_changed: Optional[Callable[..., Any]] = None
     rebuild: Optional[Callable[..., Any]] = None
     # 条目键的算法：入参是**绝对物理路径**，返回插件自己用的条目键。
     # 默认用虚拟路径（`前缀/根内相对路径`），适合"路径就是键"的插件；
@@ -263,6 +341,8 @@ class FreshnessSpec:
     content_version: int = 1
     unit: str = '项'
     min_sync_interval: float = DEFAULT_MIN_SYNC_INTERVAL
+    # 单次被动同步最多处理多少个目录。显式 0 = 被动同步一个目录都不处理（全部交给
+    # 校验），与"未声明用默认值"是两回事。
     max_dirs_per_sync: int = DEFAULT_MAX_DIRS
     # 被动同步是否逐条 stat。False（默认）= 目录级短路，零 stat，代价是看不见
     # "原地写入"（同名、新内容，不改目录 mtime）：只有校验能发现它。目录不大、
@@ -341,15 +421,18 @@ class FreshnessSpec:
             prune=_hook('prune'),
             on_verified=_hook('on_verified'),
             on_pass_end=_hook('on_pass_end'),
+            on_dirs_changed=_hook('on_dirs_changed'),
             rebuild=_hook('rebuild'),
             key_of=_hook('key_of'),
             mode=mode,
-            ttl_seconds=float(raw.get('ttl_seconds') or 0.0),
+            ttl_seconds=_declared_number(raw.get('ttl_seconds'), 0.0),
             invalidate=_hook('invalidate'),
             content_version=int(raw.get('content_version') or 1),
             unit=str(raw.get('unit') or '项'),
-            min_sync_interval=float(raw.get('min_sync_interval') or DEFAULT_MIN_SYNC_INTERVAL),
-            max_dirs_per_sync=int(raw.get('max_dirs_per_sync') or DEFAULT_MAX_DIRS),
+            min_sync_interval=_declared_number(raw.get('min_sync_interval'),
+                                               DEFAULT_MIN_SYNC_INTERVAL),
+            max_dirs_per_sync=int(_declared_number(raw.get('max_dirs_per_sync'),
+                                                   DEFAULT_MAX_DIRS)),
             stat_entries=bool(raw.get('stat_entries')),
         )
 
@@ -376,17 +459,60 @@ class FreshnessStore:
         conn.execute('PRAGMA journal_mode=WAL')
         conn.execute('PRAGMA synchronous=NORMAL')
         conn.executescript(STATE_SCHEMA)
+        self._ensure_version_column(conn)
         return conn
+
+    @staticmethod
+    def _ensure_version_column(conn: sqlite3.Connection) -> None:
+        """给旧库补上 `dirs.version` 列（新库建表即带，这一步是空操作）。
+
+        为什么就地补而不是删库重建：旧库里已有整库的目录指纹，删了会让升级后的第一趟
+        把每个目录都当新目录（派生数据全量重算一遍，图片相册要重建整棵相册树）。补一列
+        只有一次 `ALTER TABLE`，已有行取默认值 0 —— 等价于"这些目录还没按任何
+        content_version 盖过章"，升级后各被重新盖章一次，且只一次。
+        """
+        try:
+            columns = {row[1] for row in conn.execute('PRAGMA table_info(dirs)').fetchall()}
+        except sqlite3.Error:
+            return
+        if 'version' in columns:
+            return
+        try:
+            conn.execute('ALTER TABLE dirs ADD COLUMN version INTEGER NOT NULL DEFAULT 0')
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            # 另一个连接抢先补上了（同步线程与校验线程可能同时建连）：列已在，忽略。
+            try:
+                columns = {row[1] for row in conn.execute('PRAGMA table_info(dirs)').fetchall()}
+            except sqlite3.Error:
+                columns = set()
+            if 'version' not in columns:
+                log.error(f'freshness: 旧指纹库补 dirs.version 失败（{e}）')
 
     # ----- 目录 -----
 
-    def dirs(self, conn: sqlite3.Connection) -> Dict[str, Tuple[float, int, int, float]]:
+    def dirs(self, conn: sqlite3.Connection) -> Dict[str, Tuple[float, int, int, float, int]]:
         try:
             rows = conn.execute(
-                'SELECT key, dir_mtime, file_count, size_sum, max_mtime FROM dirs').fetchall()
+                'SELECT key, dir_mtime, file_count, size_sum, max_mtime, version'
+                ' FROM dirs').fetchall()
         except sqlite3.Error:
             return {}
-        return {r[0]: (float(r[1]), int(r[2]), int(r[3]), float(r[4])) for r in rows}
+        return {r[0]: (float(r[1]), int(r[2]), int(r[3]), float(r[4]), int(r[5]))
+                for r in rows}
+
+    def stale_dirs(self, conn: sqlite3.Connection, version: int) -> int:
+        """还有多少个目录没按 `version` 盖过章（`state()` 的 `stale_dirs`）。
+
+        与 `meta.content_version` 互补：meta 是"整趟是否走完"的章，这里是"逐目录是否
+        都按当前解析规则重算过"。预算用尽的部分遍历只会推进后者，所以两个信号都要看。
+        """
+        try:
+            row = conn.execute('SELECT COUNT(*) FROM dirs WHERE version != ?',
+                               (int(version),)).fetchone()
+        except sqlite3.Error:
+            return 0
+        return int(row[0]) if row else 0
 
     def entries_of(self, conn: sqlite3.Connection, dir_key: str) -> Dict[str, Tuple[float, int]]:
         try:
@@ -398,12 +524,14 @@ class FreshnessStore:
 
     def replace_dir(self, conn: sqlite3.Connection, dir_key: str,
                     fingerprint: Tuple[float, int, int, float],
-                    entries: Sequence[Tuple[str, float, int]]) -> None:
-        """整目录替换（指纹 + 该目录的全部条目）—— 单事务，不留半份状态。"""
+                    entries: Sequence[Tuple[str, float, int]],
+                    version: int = 0) -> None:
+        """整目录替换（指纹 + 该目录的全部条目 + 内容版本章）—— 单事务，不留半份状态。"""
         with conn:
             conn.execute(
-                'INSERT OR REPLACE INTO dirs(key, dir_mtime, file_count, size_sum, max_mtime)'
-                ' VALUES (?,?,?,?,?)', (dir_key, *fingerprint))
+                'INSERT OR REPLACE INTO dirs'
+                '(key, dir_mtime, file_count, size_sum, max_mtime, version)'
+                ' VALUES (?,?,?,?,?,?)', (dir_key, *fingerprint, int(version)))
             conn.execute('DELETE FROM entries WHERE dir_key = ?', (dir_key,))
             conn.executemany(
                 'INSERT OR REPLACE INTO entries(key, dir_key, mtime, size) VALUES (?,?,?,?)',
@@ -479,6 +607,9 @@ class FreshnessEngine:
         self._last_sync_at = 0.0
         self._task: Optional[BackgroundTask] = None
         self._last_report: Optional[dict] = None
+        # 最近一次**整趟成功**校验确认存在的条目键（见 `verified_keys`）。
+        # 刻意只在进程内保存：落盘会带出"上次校验之后文件已删"的陈旧结论。
+        self._verified_keys: Optional[Set[str]] = None
 
     # ----- 对外状态 -----
 
@@ -488,12 +619,14 @@ class FreshnessEngine:
         指纹库还不存在时**不建库**：否则"看一眼状态"就会给每个声明了 spec 的插件
         凭空造出一个空数据库（与 ThumbCache.stats 同一条理由）。
 
-        远端来源没有条目与目录：额外给出 `mode` / `ttl_seconds` / `ttl_remaining`，
-        界面按"数据新鲜期"显示，而不是"已索引 N 项"。
+        远端来源没有条目与目录：额外给出 `mode` / `ttl_seconds` / `fresh_until`
+        （上次取数时间 + TTL）与 `ttl_remaining`，界面按"数据新鲜期"显示，而不是
+        "已索引 N 项"；版本章对远端没有意义，`version_stale` 恒为假。
         """
         with self._lock:
             task = self._task
             busy = self._busy_locked()
+        remote = self.spec.mode == 'remote'
         base = {
             'plugin': self.name,
             'available': True,
@@ -502,13 +635,15 @@ class FreshnessEngine:
             'entries': 0,
             'dirs': 0,
             'content_version': 0,
-            'version_stale': True,
+            'version_stale': not remote,
+            'stale_dirs': 0,
             'last_sync_at': 0.0,
             'last_verify_at': 0.0,
             'unit': self.spec.unit,
             'mode': self.spec.mode,
             'ttl_seconds': float(self.spec.ttl_seconds or 0.0),
             'ttl_remaining': 0.0,
+            'fresh_until': 0.0,
             'last_report': self._last_report,
         }
         if not self.store.db_path.exists():
@@ -520,16 +655,24 @@ class FreshnessEngine:
         try:
             counts = self.store.counts(conn)
             version = int(self.store.meta_get(conn, 'content_version', 0) or 0)
+            stale_dirs = self.store.stale_dirs(conn, self.spec.content_version)
             last_sync = float(self.store.meta_get(conn, 'last_sync_at', 0) or 0)
             ttl = float(self.spec.ttl_seconds or 0.0)
             base.update({
                 'entries': counts['entries'],
                 'dirs': counts['dirs'],
                 'content_version': version,
-                'version_stale': version != self.spec.content_version,
+                # 本地来源看两个章：meta 表示"整趟走过全部根"，dirs.version 表示"该目录
+                # 已按当前解析规则重算过"。预算用尽的部分遍历只推进后者，只看 meta 会
+                # 漏报。远端来源没有这两个章，新鲜度只由时间决定。
+                'version_stale': False if remote else (
+                    version != self.spec.content_version or stale_dirs > 0),
+                'stale_dirs': stale_dirs,
                 'last_sync_at': last_sync,
                 'last_verify_at': float(self.store.meta_get(conn, 'last_verify_at', 0) or 0),
                 'ttl_remaining': (max(0.0, ttl - (time.time() - last_sync)) if ttl > 0 else 0.0),
+                # 远端：下一次"新鲜期"到期的时刻；还没有过取数记录时给 0（不虚构时间点）
+                'fresh_until': ((last_sync + ttl) if (remote and last_sync) else 0.0),
             })
         finally:
             conn.close()
@@ -567,9 +710,37 @@ class FreshnessEngine:
         except sqlite3.Error:
             return set()
         try:
-            return self.store.entry_keys(conn)
+            return self._plugin_key_set(conn)
         finally:
             conn.close()
+
+    def _plugin_key_set(self, conn: sqlite3.Connection) -> Set[str]:
+        """指纹库里的条目键，还原成插件键（`key_of` 声明时去掉根前缀）。"""
+        keys = self.store.entry_keys(conn)
+        if self.spec.key_of is None:
+            return keys
+        source = self.spec.source
+        return {source.plugin_key(key) for key in keys}
+
+    def verified_keys(self) -> Optional[Set[str]]:
+        """最近一次**整趟成功**的全量校验确认存在的条目键；没有这样的结论时返回 `None`。
+
+        与 `valid_keys()` 的差别是"这份结论可不可信"：`valid_keys()` 读的是当前指纹库，
+        它可能来自一趟预算用尽的部分遍历、也可能来自刚启动还没扫过的空库；这里只在
+        "整趟 `audit` 走完、非 partial、无读取错误"之后才有值，之后一旦同步发现了增删改
+        就退回 `None`（那时集合不再是当前有效文件的权威结论）。
+
+        用途是给插件做**破坏性**判断的前置条件：媒体的播放参数只在"条目确实不在集合里"
+        时才清空，绝不能把"索引暂时不完整"当成"文件消失"。
+        """
+        with self._lock:
+            keys = self._verified_keys
+            return set(keys) if keys is not None else None
+
+    def _set_verified_keys(self, keys: Optional[Set[str]]) -> None:
+        """登记/作废 `verified_keys()` 的结论（引擎内部使用）。"""
+        with self._lock:
+            self._verified_keys = set(keys) if keys is not None else None
 
     def reset_throttle(self) -> None:
         """清掉去抖时间戳，让下一次同步立即真扫。
@@ -582,15 +753,16 @@ class FreshnessEngine:
 
     # ----- 同步（被动增量） -----
 
-    def sync(self, scope: str = '', force: bool = False) -> Dict[str, Any]:
+    def sync(self, scope: str = '', force: bool = False,
+             reason: str = 'ttl') -> Dict[str, Any]:
         """被动增量：目录级短路 + 只对变化的目录逐条比对。
 
-        返回动作报告：`action` ∈ `sync`（真扫了）/ `skip`（去抖或非法作用域）/
-        `partial`（预算用尽，剩 `remaining` 个目录交给校验续完）。
-        远端来源（`mode='remote'`）没有文件可扫，走 TTL 判定，见 `_remote_pass`。
+        返回动作报告：`action` ∈ `sync`（真扫了）/ `skip`（去抖、忙碌或非法作用域）/
+        `partial`（预算用尽，剩下的目录交给校验续完）。
+        远端来源（`mode='remote'`）没有文件可扫，走 TTL 判定，见 `_remote_pass`：
+        它同样受去抖与单飞约束，`reason` 原样交给插件的 `invalidate`，用来区分
+        "时间到期"（`ttl`）、"手动校验"（`verify`）与"登录态变化"（`identity`）。
         """
-        if self.spec.mode == 'remote':
-            return self._remote_pass(force=force)
         now = time.time()
         with self._lock:
             if self._busy_locked():
@@ -604,6 +776,8 @@ class FreshnessEngine:
             self._sync_active = True
 
         try:
+            if self.spec.mode == 'remote':
+                return self._remote_pass(force=force, reason=str(reason or 'ttl'))
             if (scope or '').strip().strip('/'):
                 resolved = self.spec.source.resolve_scope(scope)
                 if resolved is None:
@@ -615,27 +789,38 @@ class FreshnessEngine:
             conn = self.store.connect()
             try:
                 known = self.store.dirs(conn)
-                # 解析规则变了 → 本趟把全部条目当"新增"，让插件重算派生数据；
-                # 只有**整趟走完**才盖章，否则下一趟仍会重算未覆盖的部分（幂等）。
-                version = int(self.store.meta_get(conn, 'content_version', 0) or 0)
-                stale_version = version != self.spec.content_version
+                # 解析规则变了 → 逐目录判定"这个目录要按新规则重算"（不是把全部条目
+                # 当新增，也不是整趟 force_all）：每个目录处理完就带上新版本章，预算用
+                # 尽时下一趟接着盖章还没盖的目录，不再从头重算同一批。
                 report = self._pass(conn, start_key, start_dir, known,
                                     max_dirs=self.spec.max_dirs_per_sync, task=None,
-                                    audit=False, force_all=stale_version)
+                                    audit=False)
                 self.store.meta_set(conn, 'last_sync_at', time.time())
-                if stale_version and not report['partial'] and start_dir is None:
-                    # 只有"全部根、整趟走完"才盖章：作用域是子目录时盖章会让其他目录
-                    # 永远等不到重算（版本升级后用户随手点开一个文件夹就会踩到）。
+                if start_dir is None and not report['partial'] and not report['errors']:
+                    # 全部根、整趟走完、无读取错误才盖 meta 章：作用域是子目录时盖章会让
+                    # 其他目录永远等不到重算；有读不到的目录时盖章会把"没覆盖"说成"覆盖了"
+                    # （那些目录的 dirs.version 仍是旧值，`stale_dirs` 会继续报出来）。
                     self.store.meta_set(conn, 'content_version', self.spec.content_version)
             finally:
                 conn.close()
+        except Exception as e:
+            # 引擎自己的失败也走报告，不把 API 线程打挂：指纹库被占用、磁盘掉线、
+            # 插件声明的根在遍历中被删，都曾在真实环境里出现过。
+            log.error(f'[{self.name}] freshness.sync 失败: {e}')
+            return {'action': 'skip', 'reason': 'error', 'error': str(e), 'scope': scope}
         finally:
             with self._lock:
                 self._sync_active = False
                 self._sync_lock.release()
         report['action'] = 'partial' if report['partial'] else 'sync'
         report['scope'] = scope
-        report['force_all'] = bool(stale_version)
+        # `force_all` 是本趟"是否有目录因解析规则落后被整目录重算"的布尔投影，
+        # 数值来自 `_pass` 的 `restamped` 计数。它只说明本趟付了重算的代价，
+        # 不表示条目被当成新增：`added` / `changed` 仍然只报真实变化。
+        report['force_all'] = bool(report.get('restamped'))
+        if report['added'] or report['changed'] or report['removed']:
+            # 文件集合变了 ⇒ 上一次校验给出的键集合不再是当前权威结论
+            self._set_verified_keys(None)
         # `report['reason']` 由 `_pass` 填：`budget`（还有活没干完，值得续跑）/
         # `dir_cap`（只是没走完，不该反复起任务）/ `cancelled` / 空串
         self._last_report = report
@@ -644,8 +829,14 @@ class FreshnessEngine:
     # ----- 校验（手动全量） -----
 
     def start_verify(self) -> Dict[str, Any]:
-        """启动全量校验的后台任务（单飞；已在跑时返回它的状态而不是再起一个）。"""
+        """启动全量校验的后台任务（单飞；同步进行中时返回 busy）。
+
+        与同步互斥：同步正在改指纹库与插件的派生缓存，此时再起一趟全量校验，两趟会
+        同时写同一个库、同一份索引。已在跑的校验返回它的状态而不是再起一个。
+        """
         with self._lock:
+            if self._sync_active:
+                return {'started': False, 'running': True, 'reason': 'busy'}
             task = self._task
             if task is not None and task.state in ('queued', 'running'):
                 return {'started': False, 'running': True, **task.status()}
@@ -665,7 +856,7 @@ class FreshnessEngine:
         远端来源：忽略 TTL，直接丢弃插件的本地缓存（见 `_remote_pass`）。
         """
         if self.spec.mode == 'remote':
-            return self._remote_pass(force=True, task=task)
+            return self._remote_pass(force=True, reason='verify', task=task)
         with self._lock:
             if task is None:
                 if self._busy_locked():
@@ -676,22 +867,29 @@ class FreshnessEngine:
         conn = self.store.connect()
         try:
             known = self.store.dirs(conn)
-            # 解析规则变了 → 全部条目视为"变化"，让插件重算派生数据
-            version = int(self.store.meta_get(conn, 'content_version', 0) or 0)
-            stale_version = version != self.spec.content_version
+            # 解析规则变了：逐目录在 `_pass` 里被判定为"要按新规则重算"，处理完即盖章
             report = self._pass(conn, '', None, known, max_dirs=None, task=task,
-                                audit=True, force_all=stale_version)
+                                audit=True)
             if task.cancelled:
                 report['cancelled'] = True
+                # 取消的校验不构成"整趟确认"，不能留下一个会被当作权威结论的键集合
+                self._set_verified_keys(None)
                 return report
-            if stale_version:
+            if not report['partial']:
                 self.store.meta_set(conn, 'content_version', self.spec.content_version)
             self.store.meta_set(conn, 'last_verify_at', time.time())
+            # `on_verified` 的触发条件与这里一致（整趟走完 + 无读取错误）：只有这时
+            # 指纹库里的键集合才是"当前确实存在的文件"的权威结论。
+            if not report['partial'] and not report['errors']:
+                self._set_verified_keys(self._plugin_key_set(conn))
+            else:
+                self._set_verified_keys(None)
         finally:
             conn.close()
         report['action'] = 'verify'
         report['content_version'] = self.spec.content_version
-        report['force_all'] = stale_version
+        # 本趟有多少目录按新解析规则重算过（版本升级的可见来源）
+        report['force_all'] = bool(report.get('restamped'))
         self._last_report = report
         if task is not None:
             # 任务的 extra 带上整趟摘要：既有通用计数，也有插件 pass_end 钩子返回的
@@ -714,6 +912,8 @@ class FreshnessEngine:
         with self._lock:
             if self._busy_locked():
                 return {'started': False, 'running': True}
+        # 指纹库马上要被清空：上一次校验的键集合不能再被当成权威结论
+        self._set_verified_keys(None)
         cleared: Any = None
         if self.spec.rebuild is not None:
             try:
@@ -731,13 +931,17 @@ class FreshnessEngine:
 
     # ----- 内部 -----
 
-    def _remote_pass(self, *, force: bool, task: Optional[BackgroundTask] = None) -> Dict[str, Any]:
+    def _remote_pass(self, *, force: bool, reason: str = 'ttl',
+                     task: Optional[BackgroundTask] = None) -> Dict[str, Any]:
         """远端来源的一趟：新鲜期内跳过；过期或 `force` 时让插件丢弃本地缓存。
 
-        语义必须在文档里说清：远端数据**发现不了"变化"**，判据只有时间 ——
-        `sync` 是"到时重取"，`verify` 是"立刻重取"（忽略 TTL）。二者都不联网：
-        真正取数由插件在用户进入相应视图时按需做，`invalidate` 只负责让那份取数
-        不再命中旧缓存。
+        远端数据**发现不了"变化"**，判据只有时间 —— `sync` 是"到时重取"，`verify`
+        是"立刻重取"（忽略 TTL）。二者都不联网：真正取数由插件在用户进入相应视图时
+        按需做，`invalidate` 只负责让那份取数不再命中旧缓存。
+
+        `reason` 原样转给 `invalidate`（`ttl` / `verify` / `identity`），只接受零参的
+        旧钩子照旧可用。丢掉本地缓存之后报告带 `changed`，前端据此重载视图 —— 远端
+        的"变化"只能是"缓存已丢弃、下一次读取会重新取数"，没有条目级判据。
         """
         conn = self.store.connect()
         try:
@@ -751,7 +955,7 @@ class FreshnessEngine:
                 if task is not None:
                     task.update(total=1, processed=0, current='丢弃本地缓存')
                 try:
-                    cleared = self.spec.invalidate()
+                    cleared = self._call_invalidate(reason)
                 except Exception as e:
                     log.error(f'[{self.name}] freshness.invalidate 失败: {e}')
                     return {'action': 'error', 'error': str(e)}
@@ -762,11 +966,19 @@ class FreshnessEngine:
         finally:
             conn.close()
         report = {'action': 'verify' if force else 'sync', 'mode': 'remote',
-                  'invalidated': True, 'cleared': cleared, 'ttl_seconds': ttl}
+                  'invalidated': True, 'changed': True,
+                  'invalidate_reason': reason, 'cleared': cleared, 'ttl_seconds': ttl}
         if task is not None:
             task.update(total=1, processed=1, current='', extra={'invalidated': True})
         self._last_report = report
         return report
+
+    def _call_invalidate(self, reason: str) -> Any:
+        """调插件的 `invalidate`，把失效原因交给它（旧钩子只接受零参时退回零参调用）。"""
+        hook = self.spec.invalidate
+        if hook is None:
+            return None
+        return hook(reason) if _accepts_one_positional(hook) else hook()
 
     def _busy_locked(self) -> bool:
         """是否有同步或校验在跑（调用方必须已持有 self._lock）。"""
@@ -774,20 +986,31 @@ class FreshnessEngine:
         return self._sync_active or (task is not None and task.state in ('queued', 'running'))
 
     def _pass(self, conn: sqlite3.Connection, start_key: str, start_dir: Optional[Path],
-              known: Dict[str, Tuple[float, int, int, float]], *, max_dirs: Optional[int],
-              task: Optional[BackgroundTask], audit: bool,
-              force_all: bool = False) -> Dict[str, Any]:
+              known: Dict[str, Tuple[float, int, int, float, int]], *, max_dirs: Optional[int],
+              task: Optional[BackgroundTask], audit: bool) -> Dict[str, Any]:
         """一趟遍历：广度优先，目录级短路，变了才逐条比对。
 
         `max_dirs=None` 表示不限（校验）；否则到预算就停，返回 `partial=True`。
         `audit=True` 时额外做"目录消失"的清理与派生缓存对账（需要整趟走完才算数，
         所以部分遍历不做）。
+
+        内容版本按**目录**推进（`dirs.version`）：某个目录落后于当前
+        `spec.content_version` 就不再走目录级短路，重算它的条目与派生数据并盖上章。
+        于是版本升级不再需要整趟 `force_all` —— 预算用尽的那一趟只盖走到的目录，
+        下一趟跳过已盖章的目录继续，直到全部盖完。落后目录的条目**不算新增**：
+        `added`/`changed` 仍只报真实变化，插件只是额外收到"这些条目要按新规则重算"。
+
+        报告里的 `new_dirs` / `vanished_dirs` 是本趟观察到的新增与消失的目录；两者
+        任一非空时调 `on_dirs_changed`（目录集合变化与条目变化是两件事）。
         """
         source = self.spec.source
+        version = int(self.spec.content_version)
+        mapped = self.spec.key_of is not None
         report: Dict[str, Any] = {'added': 0, 'changed': 0, 'removed': 0, 'dirs': 0,
                                   'skipped_dirs': 0, 'pruned': 0, 'errors': [],
                                   'partial': False, 'reason': '',
-                                  'truncated_errors': 0}
+                                  'truncated_errors': 0, 'restamped': 0,
+                                  'new_dirs': [], 'vanished_dirs': []}
         queue: deque = deque()
         if start_dir is not None:
             queue.append((start_key, start_dir))
@@ -835,6 +1058,7 @@ class FreshnessEngine:
                 with os.scandir(dir_path) as it:
                     subdirs: List[Tuple[str, Path]] = []
                     names: List[str] = []
+                    size_sum: Optional[int] = 0 if _STAT_SIZE_IN_SCANDIR else None
                     for entry in it:
                         try:
                             if entry.is_dir(follow_symlinks=False):
@@ -842,6 +1066,9 @@ class FreshnessEngine:
                                     subdirs.append((entry.name, Path(entry.path)))
                             elif source.wants(entry.name):
                                 names.append(entry.name)
+                                if size_sum is not None:
+                                    # 枚举顺带给出大小（Windows），为零额外系统调用
+                                    size_sum += entry.stat().st_size
                         except OSError:
                             continue
             except OSError as e:
@@ -851,16 +1078,30 @@ class FreshnessEngine:
             for name, path in subdirs:
                 queue.append((f'{dir_key}/{name}' if dir_key else name, path))
 
-            stored = None if force_all else known.get(dir_key)
-            # 目录级短路：mtime 与"纳入索引的名字个数"都没变 → 整目录跳过，零 stat。
+            stored = known.get(dir_key)
+            if stored is None:
+                # 指纹库里没有这个目录：新增目录（空目录也会走到这里，它没有条目）
+                report['new_dirs'].append(dir_key)
+            # 该目录落后于当前解析规则 → 本趟必须重算它的派生数据并重新盖章。
+            # 判定在**目录**粒度上：升级 content_version 不会再让每个目录都被算成
+            # "有活"，也就不会出现"预算永远用尽、永远从头重算前 max_dirs 个目录"。
+            restamp = stored is not None and int(stored[4]) != version
+            if restamp:
+                # 诊断用：本趟有多少目录因为解析规则升级被重算（`force_all` 的判据）
+                report['restamped'] += 1
+            # 目录级短路：目录 mtime、"纳入索引的名字个数"（以及平台能顺带取到时的大小
+            # 之和）都没变，且该目录已按当前 content_version 盖过章 → 整目录跳过。
             # **校验不做短路**（audit=True）：它的定义就是"逐项 stat 一遍"，短路会让
             # 原地写入永远查不出来。stat_entries=True 的插件放弃这条快路。
             if not audit and stored is not None and not self.spec.stat_entries \
-                    and self._unchanged(dir_path, stored, len(names)):
+                    and not restamp and self._unchanged(dir_path, stored, len(names),
+                                                        size_sum):
                 report['skipped_dirs'] += 1
                 continue
 
-            entries, fingerprint, error = self._collect(dir_key, dir_path, names)
+            # 存储键只在插件声明了 key_of 时才需要拼根命名空间
+            prefix = source.prefix_of(dir_key) if mapped else ''
+            entries, fingerprint, error = self._collect(dir_key, dir_path, names, prefix)
             work_dirs += 1        # 这一趟真花了钱：算进预算（短路目录不算）
             if error:
                 self._add_error(report, f'{dir_key}: {error}')
@@ -869,30 +1110,33 @@ class FreshnessEngine:
             added = [k for k in entries if k not in old]
             changed = [k for k in entries if k in old and old[k] != entries[k][1:]]
             gone = [k for k in old if k not in entries]
-            removed_keys.extend(gone)
+            # 存储键带根的命名空间前缀，交给插件前还原成它自己的条目键
+            removed_keys.extend(
+                [source.plugin_key(key, prefix) for key in gone] if mapped else gone)
             report['added'] += len(added)
             report['changed'] += len(changed)
             report['removed'] += len(gone)
-            if not (added or changed or gone):
-                # 指纹变了但条目没变（例如只是 touched / 子目录增删）：只更新指纹
+            if not (added or changed or gone or restamp):
+                # 指纹变了但条目没变（例如只是 touched / 子目录增删）：只更新指纹与章
                 self.store.replace_dir(conn, dir_key, fingerprint,
-                                       [(k, v[1], v[2]) for k, v in entries.items()])
+                                       [(k, v[1], v[2]) for k, v in entries.items()],
+                                       version=version)
                 continue
 
-            if audit:
-                # 校验：逐个差异条目交给插件重算（这是"昂贵解析只发生在变化项"的落点）
-                for key in added + changed:
-                    mtime, size = entries[key][1], entries[key][2]
-                    changed_entries.append({'key': key, 'path': entries[key][0],
-                                            'mtime': mtime, 'size': size, 'dir': dir_key})
-            else:
-                # 同步：本趟只处理当前作用域，把差异交给插件；预算内不落"半份指纹"
-                for key in added + changed:
-                    changed_entries.append({'key': key, 'path': entries[key][0],
-                                            'mtime': entries[key][1], 'size': entries[key][2],
-                                            'dir': dir_key})
+            # 交给插件"重活"的条目：真实新增/变化的项，加上"本目录落后于解析规则"
+            # 时整目录的条目（后者要重算派生数据，但已经计入 added/changed 的不重复给）。
+            dirty: List[str] = added + changed
+            if restamp:
+                reported = set(dirty)
+                dirty = dirty + [k for k in entries if k not in reported]
+            for key in dirty:
+                path, mtime, size = entries[key]
+                changed_entries.append({
+                    'key': source.plugin_key(key, prefix) if mapped else key,
+                    'path': path, 'mtime': mtime, 'size': size, 'dir': dir_key})
             self.store.replace_dir(conn, dir_key, fingerprint,
-                                   [(k, v[1], v[2]) for k, v in entries.items()])
+                                   [(k, v[1], v[2]) for k, v in entries.items()],
+                                   version=version)
 
         # 目录消失：全部根、整趟走完、无读取错误才做。
         # 为什么同步也要做（不只是校验）：目录改名/整目录删除时，新目录的条目是
@@ -904,52 +1148,68 @@ class FreshnessEngine:
             dropped_entries = 0
             for dir_key in vanished:
                 keys = self.store.drop_dir(conn, dir_key)
-                removed_keys.extend(keys)
+                prefix = source.prefix_of(dir_key)
+                removed_keys.extend(
+                    [source.plugin_key(key, prefix) for key in keys] if mapped else keys)
                 dropped_entries += len(keys)
             report['removed'] += dropped_entries
-            report['vanished_dirs'] = len(vanished)
+            report['vanished_dirs'] = list(vanished)
 
         report['pruned'] = self._call_prune(removed_keys)
         report['derived'] = self._call_derive(changed_entries, task)
+        # 目录集合变化：条目级钩子（derive / prune）对"新建空目录""整个目录移走"
+        # 收不到任何信号，而按目录聚合的缓存必须作废。
+        report['dirs_changed'] = self._call_dirs_changed(report)
         # 对账只在"整趟走完且没有读取错误"时做：keys 不完整时按它清孤儿，
         # 会把只是暂时读不到的目录下的有效派生缓存一起删掉。
         if audit and not report['partial'] and not report['errors']:
             report['audited'] = self._call_verified(conn)
-        report['pass_end'] = self._call_pass_end(report, audit)
+        report['pass_end'] = self._call_pass_end(report, audit, task)
         return report
 
-    def _unchanged(self, dir_path: Path, stored: Tuple[float, int, int, float],
-                   name_count: int) -> bool:
-        """目录级短路判据：目录 mtime + 纳入索引的名字个数。
+    def _unchanged(self, dir_path: Path, stored: Tuple[float, int, int, float, int],
+                   name_count: int, size_sum: Optional[int] = None) -> bool:
+        """目录级短路判据：目录 mtime + 纳入索引的名字个数（+ 可选的文件大小之和）。
 
-        不 stat 任何文件 —— 这是稳态开销的全部来源。原地覆盖写（同名、新内容）
-        不改这两项，被动同步看不见它（见模块头部的"代价与边界"）。
+        不 stat 任何文件 —— 这是稳态开销的全部来源。`size_sum` 只在"目录枚举顺带
+        给出文件大小"的平台上可用（见 `_STAT_SIZE_IN_SCANDIR`）；它补上了两条原判据
+        看不见的变化：同名替换（内容等长之外）与"同秒内删一个加一个"。
         """
         try:
             dir_mtime = dir_path.stat().st_mtime
         except OSError:
             return False
-        return abs(dir_mtime - stored[0]) < 0.5 and stored[1] == name_count
+        if abs(dir_mtime - stored[0]) >= 0.5 or stored[1] != name_count:
+            return False
+        return size_sum is None or int(stored[2]) == size_sum
 
-    def _entry_key(self, abs_path: Path, virtual: str) -> str:
-        """条目键：插件的 `key_of(绝对路径)` 优先，默认用虚拟路径。"""
+    def _entry_key(self, abs_path: Path, virtual: str, prefix: str = '') -> str:
+        """条目键：插件的 `key_of(绝对路径)` 优先，默认用虚拟路径。
+
+        `key_of` 只保证**根内**唯一（返回值本身就是相对路径或路径派生的 id），而
+        指纹库里条目键是全局主键：两个根下同相对路径的文件会互相抢行，于是每次同步
+        都把它们判成一增一减、反复重算派生数据。所以存储键再拼上该根的虚拟前缀，
+        交给插件钩子前由 `FsSource.plugin_key` 还原。
+        """
         if self.spec.key_of is None:
             return virtual
         try:
-            return str(self.spec.key_of(str(abs_path)))
+            plugin_key = str(self.spec.key_of(str(abs_path)))
         except Exception as e:
             log.error(f'[{self.name}] freshness.key_of 失败，退回虚拟路径: {e}')
             return virtual
+        return f'{prefix}/{plugin_key}' if prefix and plugin_key else (prefix or plugin_key)
 
-    def _collect(self, dir_key: str, dir_path: Path, names: Sequence[str]
+    def _collect(self, dir_key: str, dir_path: Path, names: Sequence[str],
+                 prefix: str = ''
                  ) -> Tuple[Dict[str, Tuple[str, float, int]], Tuple[float, int, int, float], str]:
         """逐条 stat（只在目录短路失败后发生）。
 
-        键是**插件对外用的条目键**（默认虚拟路径 `目录键/文件名`，或 `key_of()` 的
-        结果）：派生缓存的键（缩略图键、索引键）就是它，用裸文件名会让所有子目录的
-        条目互相覆盖。
+        键是**存储键**：默认就是虚拟路径（`目录键/文件名`），声明了 `key_of` 时是
+        `根前缀/插件键`。用裸文件名会让所有子目录的条目互相覆盖。
+        `prefix` 是该目录所属根的虚拟前缀，只有声明 `key_of` 时参与拼键。
 
-        返回 ({键: (物理路径, mtime, size)}, 目录指纹, 最后一个错误)。
+        返回 ({存储键: (物理路径, mtime, size)}, 目录指纹, 最后一个错误)。
         """
         entries: Dict[str, Tuple[str, float, int]] = {}
         size_sum = 0
@@ -963,7 +1223,7 @@ class FreshnessEngine:
                 error = str(e)
                 continue
             virtual = f'{dir_key}/{name}' if dir_key else name
-            entries[self._entry_key(path, virtual)] = (str(path), st.st_mtime, st.st_size)
+            entries[self._entry_key(path, virtual, prefix)] = (str(path), st.st_mtime, st.st_size)
             size_sum += st.st_size
             max_mtime = max(max_mtime, st.st_mtime)
         try:
@@ -1005,11 +1265,11 @@ class FreshnessEngine:
 
         与 `prune` 的区别：prune 处理"这一趟发现的消失"，对账兜住"插件没运行时
         就被删掉的文件"留下的历史孤儿（media-player 的深度扫描就是这么做的，
-        现在所有插件共用同一条路径）。
+        现在所有插件共用同一条路径）。键已在 `_plugin_key_set` 里还原成插件键。
         """
         if self.spec.on_verified is None:
             return {}
-        keys = self.store.entry_keys(conn)
+        keys = self._plugin_key_set(conn)
         try:
             out = self.spec.on_verified(keys)
         except Exception as e:
@@ -1017,10 +1277,38 @@ class FreshnessEngine:
             return {'error': str(e)}
         return out if isinstance(out, dict) else {}
 
-    def _call_pass_end(self, report: Dict[str, Any], audit: bool) -> Dict[str, Any]:
-        """整趟结束的收尾钩子（同步与校验都会调，含部分遍历）。"""
+    def _call_dirs_changed(self, report: Dict[str, Any]) -> Dict[str, Any]:
+        """目录集合变化：本趟出现新目录或消失目录时调插件的 `on_dirs_changed`。
+
+        与 `derive` / `prune` 的区别是判据的粒度：后两者只看条目，而"新建一个空
+        相册""整个目录被移走"在条目层面没有任何变化 —— 缺少这个信号时，按目录聚合
+        的缓存会一直停在旧状态。部分遍历只报新增目录（没走到不等于消失）。
+        """
+        if self.spec.on_dirs_changed is None:
+            return {}
+        if not report['new_dirs'] and not report['vanished_dirs']:
+            return {}
+        try:
+            out = self.spec.on_dirs_changed(report)
+        except Exception as e:
+            log.error(f'[{self.name}] freshness.on_dirs_changed 失败: {e}')
+            return {'error': str(e)}
+        return out if isinstance(out, dict) else {}
+
+    def _call_pass_end(self, report: Dict[str, Any], audit: bool,
+                       task: Optional[BackgroundTask] = None) -> Dict[str, Any]:
+        """整趟结束的收尾钩子（同步与校验都会调，含部分遍历）。
+
+        钩子跑在目录循环之后，此时进度条已经满了；它的收尾工作（重建索引、落盘单文件
+        索引）可能耗时数秒。没有一句文案，界面看起来就是"进度 100% 却卡住" —— 这应该
+        是基建的默认行为，而不是每个插件记得写。插件自己的 `progress()` 仍可覆盖它。
+        """
         if self.spec.on_pass_end is None:
             return {}
+        if task is not None:
+            status = task.status()
+            if int(status.get('total') or 0) <= int(status.get('processed') or 0):
+                task.update(current='收尾：更新插件派生数据')
         try:
             out = self.spec.on_pass_end(report, audit)
         except Exception as e:

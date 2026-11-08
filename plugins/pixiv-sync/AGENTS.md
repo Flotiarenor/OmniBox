@@ -13,17 +13,17 @@
 | 文件 | 职责 | 关键符号 |
 | --- | --- | --- |
 | `plugins/pixiv-sync/manifest.json` | 插件清单：入口、依赖、权限、图标 | `name`、`displayName`、`icon`、`dependencies`、`permissions`、`libs`、`backend.entry`、`backend.class`、`frontend.entry`、`frontend.route`、`hidden` |
-| `plugins/pixiv-sync/backend/main.py` | 入口：设置 schema 引用、API 表、壳按名调用的钩子、装配，以及既有模块与用例按实例取用的短委派 | `PixivSyncPlugin`、`settings_schema`、`register_api`、`get_extensions`、`get_cache_dir`、`freshness_spec`、`on_unload`、`on_settings_changed`、`start_oauth`、`finish_oauth`、`_get_host`、`_host_data_root`、`_engine`、`_root`、`_ids_file`、`_tasks_file`、`_artists_file`、`_client`、`_db`、`_load_ids`、`_load_selected_artists`、`_scan_existing_ids`、`_max_download`、`_max_artists`、`_workers`、`_scan_workers`、`_pixiv_client`、`_rate_limiter`、`_thread`、`_cancel_flag`、`_cancel_event` |
+| `plugins/pixiv-sync/backend/main.py` | 入口：设置 schema 引用、API 表、壳按名调用的钩子、装配，以及既有模块与用例按实例取用的短委派 | `PixivSyncPlugin`、`settings_schema`、`register_api`、`get_extensions`、`get_cache_dir`、`freshness_spec`、`on_unload`、`on_settings_changed`、`start_oauth`、`finish_oauth`、`_get_host`、`_invalidate_host_derived`、`_host_data_root`、`_engine`、`_root`、`_ids_file`、`_tasks_file`、`_artists_file`、`_client`、`_db`、`_load_ids`、`_load_selected_artists`、`_scan_existing_ids`、`_max_download`、`_max_artists`、`_workers`、`_scan_workers`、`_pixiv_client`、`_rate_limiter`、`_thread`、`_cancel_flag`、`_cancel_event` |
 | `plugins/pixiv-sync/backend/pixiv_sync/const.py` | 纯数据：设置项 schema、扩展入口声明、缓存子目录、刷新基建的扩展名 | `CACHE_SUBDIR`、`FRESHNESS_INCLUDE`、`SETTINGS_SCHEMA`、`extensions` |
 | `plugins/pixiv-sync/backend/pixiv_sync/paths.py` | 下载根与派生路径；任务运行期间固定根 | `CachePaths`、`root`、`begin_task`、`finish_task`、`reset`、`pixiv_root`、`cache_dir`、`ids_file`、`failed_file`、`tasks_file`、`artists_file`、`works_file`、`selected_file` |
 | `plugins/pixiv-sync/backend/pixiv_sync/session.py` | Pixiv 客户端、认证与令牌轮换回写、全局限速与 429 冷却 | `PixivSession`、`client`、`cached_client`、`reset_client`、`authenticate`、`note_rate_limited`、`cooldown_seconds`、`apply_rate_setting` |
 | `plugins/pixiv-sync/backend/pixiv_sync/records.py` | 去重集合与永久跳过集合的内存态与落盘时机 | `IdRecords`、`downloaded`、`save_downloaded`、`failed`、`save_failed`、`clear_failed`、`reset` |
 | `plugins/pixiv-sync/backend/pixiv_sync/limits.py` | 设置项里的数量上限与并发数 | `SettingsLimits`、`max_download`、`max_artists`、`scan_workers`、`workers` |
 | `plugins/pixiv-sync/backend/pixiv_sync/workspace.py` | 清单 SQLite 连接、任务状态文件、下载根的固定 | `TaskWorkspace`、`db`、`close_db`、`tasks_file`、`load_task`、`persist_task`、`begin`、`finish` |
-| `plugins/pixiv-sync/backend/pixiv_sync/library.py` | 本地图片树 → 已下载作品集合（统一刷新基建的钩子与按清单对账） | `LocalLibrary`、`cache_dir`、`engine`、`spec`、`state`、`derive`、`prune`、`audit`、`pass_end`、`rebuild`、`engine_keys`、`local_pages`、`sync_ids_from_keys`、`scan_existing_ids` |
+| `plugins/pixiv-sync/backend/pixiv_sync/library.py` | 本地图片树 → 已下载作品集合（统一刷新基建的钩子与按清单对账）；`state()` 投影带 `version_stale` / `stale_dirs` | `LocalLibrary`、`cache_dir`、`engine`、`spec`、`state`、`derive`、`prune`、`audit`、`pass_end`、`rebuild`、`engine_keys`、`local_pages`、`sync_ids_from_keys`、`scan_existing_ids` |
 | `plugins/pixiv-sync/backend/pixiv_sync/selection.py` | 画师名单读取（带 mtime 缓存）与模板重写 | `ArtistSelection`、`selected`、`reset`、`open_config`、`read_text_robust` |
-| `plugins/pixiv-sync/backend/pixiv_sync/runner.py` | 同步/刷新任务线程、取消、重试与设置变更编排 | `SyncRunner`、`sync_following`、`sync_bookmarks`、`refresh_following_lists`、`refresh_bookmarks_lists`、`cancel_task`、`cancel_event`、`task_snapshot`、`is_running`、`reset_root_state`、`apply_settings_changed`、`shutdown` |
-| `plugins/pixiv-sync/backend/pixiv_sync/maintenance.py` | 显式维护动作：刷新已下载记录、校验本地内容、停止校验 | `Maintenance`、`refresh_downloaded`、`verify_downloaded`、`cancel_verify` |
+| `plugins/pixiv-sync/backend/pixiv_sync/runner.py` | 同步/刷新任务线程、取消、重试与设置变更编排 | `SyncRunner`、`invalidate_host`、`_notify_host_written`、`sync_following`、`sync_bookmarks`、`refresh_following_lists`、`refresh_bookmarks_lists`、`cancel_task`、`cancel_event`、`task_snapshot`、`is_running`、`reset_root_state`、`apply_settings_changed`、`shutdown` |
+| `plugins/pixiv-sync/backend/pixiv_sync/maintenance.py` | 显式维护动作：刷新已下载记录、校验本地内容、停止校验；同步任务运行中两者都拒绝执行 | `Maintenance`、`refresh_downloaded`、`verify_downloaded`、`cancel_verify` |
 | `plugins/pixiv-sync/backend/pixiv_sync/status.py` | `get_status` 聚合：任务、清单统计、账号与本地校验进度 | `StatusReport`、`report` |
 | `plugins/pixiv-sync/backend/pixiv_sync/limiter.py` | 全局请求限速与限流异常 | `RateLimitError`、`RateLimiter`、`RateLimiter.set_rate`、`RateLimiter.wait` |
 | `plugins/pixiv-sync/backend/pixiv_sync/tasks.py` | 任务状态机：创建、原子落盘、重启恢复 | `new_task`、`persist_task`、`load_task` |
@@ -52,7 +52,7 @@
 
 | 方法 | 入参 | 返回 | 用途 |
 | --- | --- | --- | --- |
-| `get_status` | 无 | `{task, root_dir, token_configured, downloaded_total, running, selected_artists, selected_file, following_total, following_done, pending_following, bookmarks_total, bookmarks_done, pending_bookmarks, other_done, failed_skipped, rate_limit_cooldown, library}` | 状态轮询与界面刷新；`library` 是本地内容校验的进度投影（`busy` / `task` / `entries` / `dirs` / `last_verify_at`） |
+| `get_status` | 无 | `{task, root_dir, token_configured, downloaded_total, running, selected_artists, selected_file, following_total, following_done, pending_following, bookmarks_total, bookmarks_done, pending_bookmarks, other_done, failed_skipped, rate_limit_cooldown, library}` | 状态轮询与界面刷新；`library` 是本地内容索引的投影（`busy` / `task` / `entries` / `dirs` / `last_verify_at` / `version_stale` / `stale_dirs`），面板据此画「已索引 N 项 · 上次校验 … · 索引待更新」
 | `sync_following` | 无 | `{ok, data: {kind}}`，占用中返回 `{ok: false, error}` | 启动「同步画师」任务，内部先刷新关注清单再下载 |
 | `sync_bookmarks` | 无 | `{ok, data: {kind}}`，占用中返回 `{ok: false, error}` | 启动「同步喜欢」任务，内部先刷新收藏清单再下载 |
 | `refresh_following_lists` | 无 | `{ok}`，占用中返回 `{ok: false, error}` | 只刷新关注清单、不下载 |

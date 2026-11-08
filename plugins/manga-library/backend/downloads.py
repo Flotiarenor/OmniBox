@@ -7,6 +7,10 @@
 循环里**（`downloader` 模块的块级检查点）—— 只置信号而循环不查，界面显示"已暂停"
 而线程继续写盘，是这条链路原来的缺陷。下载执行器由入口注入，本组件不 import
 兄弟模块（分层门禁 R3）。
+
+完成语义：任务进入 `completed` 时调一次入口注入的回调。本组件不知道"谁需要知道
+下载完了"（书架、刷新引擎的去抖都属于别的组件），所以只发一个「这本写完了」的
+信号，由入口决定怎么失效。
 """
 
 import json
@@ -32,12 +36,15 @@ class DownloadCenter:
     """
 
     def __init__(self, paths: Any, task_cls: Any, load_tasks: Any, save_tasks: Any,
-                 run_download: Any) -> None:
+                 run_download: Any, on_completed: Any = None) -> None:
         self._paths = paths
         self._task_cls = task_cls
         self._load_tasks = load_tasks
         self._save_tasks = save_tasks
         self._run_download = run_download
+        #: 任务进入 `completed` 时调用一次的入口回调（`on_completed(task_id)`）。
+        #: 缺省 None = 旧装配，静默跳过。
+        self._on_completed = on_completed
         self._lock = threading.Lock()
         self._state_file = paths.download_state_file()
         self.tasks: Dict[str, Any] = self._load()
@@ -228,6 +235,7 @@ class DownloadCenter:
             album_info: Optional[Dict] = self._run_download(
                 task, str(self._paths.root), self._paths.download_state_dir(),
                 self._lock, log)
+            completed = False
             with self._lock:
                 task = self.tasks.get(task_id)
                 if task and task._stop_event.is_set():
@@ -238,6 +246,10 @@ class DownloadCenter:
                     self._save()
                     if album_info:
                         self._save_album_info(task, album_info)
+                    completed = True
+            if completed:
+                # 锁外调用：回调会作废书架缓存并清刷新引擎的去抖，不该占着任务表的锁
+                self._notify_completed(task_id)
         except Exception as e:
             log.error(f'下载任务 {task_id} 失败: {e}')
             with self._lock:
@@ -246,6 +258,20 @@ class DownloadCenter:
                     task.status = 'failed'
                     task.error = str(e)
                     self._save()
+
+    def _notify_completed(self, task_id: str) -> None:
+        """任务进入 `completed` 后通知入口一次。
+
+        只在这一处发信号：章节级 / 图片级的进度回调在下载执行器里，那里每写一张图
+        都会调一次，拿它做失效会引起全树重扫风暴。
+        """
+        if self._on_completed is None:
+            return
+        try:
+            self._on_completed(task_id)
+        except Exception as e:
+            # 回调失败不能把已经下完的任务变成 failed：文件已经在盘上了
+            log.error(f'下载完成回调失败 {task_id}: {e}')
 
     def _save_album_info(self, task: Any, album_info: Dict) -> None:
         try:

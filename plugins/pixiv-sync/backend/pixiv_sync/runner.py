@@ -12,7 +12,7 @@
 import logging
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from pixiv_mini import PixivCancelled, PixivError
 
@@ -34,6 +34,7 @@ class SyncRunner:
         selection,
         lock,
         task_lock,
+        invalidate_host: Optional[Callable[[str], None]] = None,
     ) -> None:
         self._operand = operand
         self._records = records
@@ -43,6 +44,7 @@ class SyncRunner:
         self._selection = selection
         self._lock = lock              # 保护任务线程启动/取消
         self._task_lock = task_lock    # 保护计数 / ids / failed 集合 / 清单写
+        self._invalidate_host = invalidate_host   # 写入宿主根之后的通知（入口注入）
         self._thread: Optional[threading.Thread] = None
         self._task: Optional[Dict[str, Any]] = None
         # 取消令牌：每次任务一个新的 Event，线程把自己的那个登记到 `_run_tokens`。
@@ -201,7 +203,13 @@ class SyncRunner:
             if token.is_set():
                 task["state"] = "cancelled"
             self._workspace.persist_task(task)
+            self._notify_host_written()     # 唯一收口：每趟任务一次，不是每张作品一次
             self._finish_task_runtime()
+
+    def _notify_host_written(self) -> None:
+        """同步任务终态：通知宿主下载目录的图片可能变了（入口注入的回调自己吞异常）。"""
+        if self._invalidate_host is not None:
+            self._invalidate_host('pixiv-sync:download')
 
     # ---------- 只刷新名单（不下载） ----------
 

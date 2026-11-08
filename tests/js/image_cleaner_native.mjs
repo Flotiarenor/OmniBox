@@ -1,16 +1,16 @@
 // image-cleaner 原生面板（frontend/js/native.js）的 schema blocks 用例。
 //
-// 本插件的新形态是「逻辑页只提交 blocks，壳的 SchemaRenderer 负责画」：原来的内嵌页
-// （app.js）测试锁定的是 DOM 拼接，native.js 的文件级分页与选中集合没有任何覆盖。
-// 这里装载**真实的 /shell/native-client.js 与 native.js**，用假 window.parent 接收
+// 逻辑页只提交 blocks，壳的 SchemaRenderer 负责画。这里装载**真实的
+// /shell/native-client.js 与 native.js**，用假 window.parent 接收
 // omnibox:schema / omnibox:native-error，用假 Bridge 提供 get_cached_scan / delete_files，
 // 锁住最危险的一条不变量：
 //
 //   * 组内「全选组」与全局「全选」作用于**全部文件**，而不是当前显示的 12 张；
 //     否则用户会以为删掉了整组，实际只删了前 12 张（数据风险）。
 //
-// 同时锁住提交 253f783 的文件级分页契约：每组首屏 12 张、每次展开 24 张、
-// 组头「显示 x/y」、模式切换 / 重读 / 删除后重置、组级「显示更多」保留。
+// 同时锁住文件级分页契约：每组首屏 12 张、每次展开 24 张、组头「显示 x/y」、
+// 模式切换 / 重读 / 删除后重置、组级「显示更多」保留；以及面板打开时的被动同步、
+// 挂载容器与销毁。
 //
 // 用法：node tests/js/image_cleaner_native.mjs
 import assert from 'node:assert/strict';
@@ -58,6 +58,7 @@ function setup({ groups = [], scanned = 0, stale = false, deleted = null, freshn
   const messages = [];
   const listeners = {};
   const bridgeCalls = [];
+  const freshnessLog = { mounts: [], syncs: [], destroyed: 0 };
   const parent = { postMessage: (payload) => messages.push(payload) };
   const fakeWindow = {
     parent,
@@ -66,7 +67,11 @@ function setup({ groups = [], scanned = 0, stale = false, deleted = null, freshn
   };
   const sandbox = {
     window: fakeWindow,
-    document: { createElement: (tag) => ({ tagName: tag }) },
+    document: {
+      getElementById: () => null,
+      createElement: (tag) => ({ tagName: tag, hidden: false }),
+      body: { appendChild: () => { } },
+    },
     Bridge: {
       async call(method, ...args) {
         bridgeCalls.push({ method, args });
@@ -83,12 +88,16 @@ function setup({ groups = [], scanned = 0, stale = false, deleted = null, freshn
       thumbUrl: (rel) => '/thumbs/' + encodeURIComponent(rel),
     },
     Freshness: {
-      mount: () => ({
-        state: () => freshnessState || { busy: false, task: null },
-        verify: async () => { },
-        cancel: async () => { },
-        autoSync: () => { },
-      }),
+      mount: (opts) => {
+        freshnessLog.mounts.push(opts);
+        return {
+          state: () => freshnessState || { busy: false, task: null },
+          verify: async () => { },
+          cancel: async () => { },
+          autoSync: (scope) => { freshnessLog.syncs.push(scope); },
+          destroy: () => { freshnessLog.destroyed += 1; },
+        };
+      },
     },
     setInterval: () => 0,
     clearInterval: () => { },
@@ -129,7 +138,7 @@ function setup({ groups = [], scanned = 0, stale = false, deleted = null, freshn
   const deleteCall = () => bridgeCalls.filter(c => c.method === 'delete_files').at(-1);
 
   return {
-    ctx, parent, messages, listeners, bridgeCalls,
+    ctx, parent, messages, listeners, bridgeCalls, freshnessLog,
     init, action, flush, schema, blocks, toolbar, findBlock, groupsBlock,
     textOf, selectedCount, confirmDelete, deleteCall,
   };
@@ -399,13 +408,23 @@ await check('读取失败时提交 empty 错误块与重试动作，而不是空
   };
   const sandbox = {
     window: fakeWindow,
-    document: { createElement: (tag) => ({ tagName: tag }) },
+    document: {
+      getElementById: () => null,
+      createElement: (tag) => ({ tagName: tag, hidden: false }),
+      body: { appendChild: () => { } },
+    },
     Bridge: {
       async call() { throw new Error('宿主不可达'); },
       thumbUrl: (rel) => '/thumbs/' + rel,
     },
     Freshness: {
-      mount: () => ({ state: () => ({ busy: false }), verify: async () => { }, cancel: async () => { }, autoSync: () => { } }),
+      mount: () => ({
+        state: () => ({ busy: false }),
+        verify: async () => { },
+        cancel: async () => { },
+        autoSync: () => { },
+        destroy: () => { },
+      }),
     },
     setInterval: () => 0,
     clearInterval: () => { },
@@ -424,6 +443,44 @@ await check('读取失败时提交 empty 错误块与重试动作，而不是空
   assert.equal(empty.type, 'empty');
   assert.match(empty.text, /读取结果失败/);
   assert.equal(empty.submit.id, 'reload');
+});
+
+// ============================================================
+// 5. 统一刷新控件：打开面板即同步一次、容器是真实节点、销毁时收尾
+// ============================================================
+
+await check('打开面板时以空作用域同步一次，容器是真实节点，dispose 时销毁控件', async () => {
+  const env = setup({ groups: [makeGroup('a', 2)], scanned: 4 });
+  await env.init();
+
+  assert.equal(env.freshnessLog.mounts.length, 1, '控件只挂载一次');
+  const mount = env.freshnessLog.mounts[0];
+  assert.equal(mount.plugin, 'image-cleaner');
+  assert.equal(mount.unit, '张');
+  assert.equal(typeof mount.onChange, 'function', '同步发现变化时要有重读回调');
+  assert.ok(mount.container, '必须传挂载容器');
+  assert.equal(mount.container.tagName, 'div', '容器是一个真实节点');
+
+  assert.equal(env.freshnessLog.syncs.length, 1, '打开面板时同步一次');
+  assert.equal(env.freshnessLog.syncs[0], '', '作用域是全部根');
+
+  // 文档销毁（pagehide）→ onDispose → 控件 destroy，轮询不再继续。
+  for (const fn of env.listeners.pagehide || []) fn();
+  assert.equal(env.freshnessLog.destroyed, 1, 'dispose 时销毁控件');
+});
+
+await check('同步发现变化时 onChange 重读缓存（外部新增的重复对能被看到）', async () => {
+  const env = setup({ groups: [makeGroup('a', 2)], scanned: 4 });
+  await env.init();
+  const countScans = () => env.bridgeCalls.filter(c => c.method === 'get_cached_scan').length;
+  const before = countScans();
+
+  env.freshnessLog.mounts[0].onChange({ action: 'sync', added: 1 });
+  await env.flush();
+  await env.flush();
+
+  assert.equal(countScans(), before + 1, 'onChange 必须重读一次缓存');
+  assert.equal(env.freshnessLog.mounts.length, 1, '重读不能重新挂载控件');
 });
 
 console.log(failed ? `\n${failed} 例失败` : `\nimage-cleaner 原生面板 ${total} 例通过`);

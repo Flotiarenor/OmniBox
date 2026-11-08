@@ -139,6 +139,21 @@ class ImageViewerBrowserE2ETestCase(unittest.TestCase):
         self.assertNotIn('error', body, f'list_albums 失败: {body}')
         return body.get('result') or {}, ms
 
+    def _wait_freshness_idle(self, timeout: float = 30.0) -> None:
+        """等页面加载触发的那次被动同步跑完。
+
+        壳在内容页首帧会调一次 `autoSync`；同步一旦发现变化会作废目录快照。
+        本用例量的是「索引可用时列相册不走盘」，必须等后台同步先落定，否则
+        快照可能刚被作废，断言就变成在测一次正常的重建。
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            body, _ms = self.server.call('system_freshness_state', b'["image-viewer"]')
+            state = body.get('result') or {}
+            if not state.get('busy'):
+                return
+            time.sleep(0.2)
+
     # ---------- 用例 ----------
 
     def test_list_albums_never_walks_the_tree_when_index_exists(self):
@@ -147,6 +162,11 @@ class ImageViewerBrowserE2ETestCase(unittest.TestCase):
         这是那次 8-25s 卡顿的直接判据 —— 走盘次数不为 0 就说明又回到了
         "每次进相册页重扫 9000 多个目录"。
         """
+        # 页面加载会触发一次被动同步（可能在上一用例的浏览器里还没落定）；等它结束，
+        # 再预热一次让目录快照就位。被测的是"快照已存在时的下一次 list_albums"。
+        self._wait_freshness_idle()
+        self._list_albums()
+        self._wait_freshness_idle()
         before = self._diagnose()
         self.assertTrue(before.get('dirs_cache_file_exists'),
                         '目录快照文件不存在：先跑一次会让它生成（下面的调用就会生成）')

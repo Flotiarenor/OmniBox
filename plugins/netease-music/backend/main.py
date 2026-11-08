@@ -1,7 +1,8 @@
 """网易云音乐 Companion 插件后端。
 
 入口只做装配、API 表与壳钩子：ncm-cli 命令执行、输出解析、假 mpv 截获分别在
-`ncm_cli.py` / `parsing.py` / `fake_mpv.py`，音乐数据接口在 `netease_music_api.py`。
+`ncm_cli.py` / `parsing.py` / `fake_mpv.py`，音乐数据接口在 `netease_music_api.py`，
+远端缓存失效与新鲜期投影在 `remote_cache.py`。
 组件之间不互相 import，依赖一律由这里按构造参数注入。
 """
 
@@ -14,6 +15,7 @@ _ncm = load_sibling(__file__, 'ncm_cli', 'netease_music')
 _parsing = load_sibling(__file__, 'parsing', 'netease_music')
 _fake_mpv = load_sibling(__file__, 'fake_mpv', 'netease_music')
 _api = load_sibling(__file__, 'netease_music_api', 'netease_music')
+_remote = load_sibling(__file__, 'remote_cache', 'netease_music')
 NeteaseMusicAPI = _api.NeteaseMusicAPI
 
 
@@ -25,6 +27,8 @@ class NeteaseMusicPlugin(PluginBase):
         self._runner = _ncm.NcmRunner()
         self._parser = _parsing.OutputParser()
         self._fake_mpv = _fake_mpv.FakeMpv()
+        self.remote_cache = _remote.RemoteCache(
+            self, self._invalidate_caches, self.NETEASE_TTL_SECONDS)
 
     def _get_api(self) -> NeteaseMusicAPI:
         if self._api is None:
@@ -35,7 +39,7 @@ class NeteaseMusicPlugin(PluginBase):
     # ---------- 统一刷新基建（远端来源） ----------
     #
     # 本插件没有本地文件树：数据全部来自 ncm-cli 请求，本地只有一份**播放地址缓存**
-    # （短期地址 + 无 TTL）。因此它是 `mode: 'remote'` 的来源 —— 判据只能是时间，
+    # （短期地址 + 有效期上限）。因此它是 `mode: 'remote'` 的来源 —— 判据只能是时间，
     # 「同步」= TTL 到期才丢弃本地缓存，「校验」= 立刻丢弃（忽略 TTL）。
     # 真正取数仍由各视图按需发起，invalidate 只负责让那份取数不再命中旧缓存。
 
@@ -49,8 +53,12 @@ class NeteaseMusicPlugin(PluginBase):
             'unit': '首',
         }
 
-    def _invalidate_caches(self) -> dict:
-        """丢弃本地派生缓存（播放地址）。取不到 API 实例时也算成功：本来就没缓存。"""
+    def _invalidate_caches(self, reason: str = '') -> dict:
+        """丢弃本地派生缓存（播放地址），返回丢弃条数。
+
+        `reason` 由刷新引擎给出（`ttl` / `verify` / `identity`），引擎把它记在报告的
+        `invalidate_reason` 里；这里只接受它，判定仍只有"整体丢弃"一种。
+        """
         try:
             dropped = self._get_api().clear_url_cache()
         except Exception as e:
@@ -88,6 +96,8 @@ class NeteaseMusicPlugin(PluginBase):
         }
 
     def get_status(self) -> dict:
+        # 远端新鲜期随状态一起给出：宿主按它显示"数据还剩多久"，而不是"已索引 N 项"。
+        freshness = self.remote_cache.state()
         try:
             result = self._get_api()._run_command('--version')
             available = bool(result.get('success'))
@@ -96,9 +106,11 @@ class NeteaseMusicPlugin(PluginBase):
                 'ncm_cli_available': available,
                 'ncm_cli_version': (result.get('stdout') or '').strip() if available else '',
                 'error': result.get('stderr') or '' if not available else '',
+                'freshness': freshness,
             }
         except Exception as e:
-            return {'plugin': self.name, 'ncm_cli_available': False, 'error': str(e)}
+            return {'plugin': self.name, 'ncm_cli_available': False, 'error': str(e),
+                    'freshness': freshness}
 
     def search_song(self, keyword: str) -> dict:
         try:
@@ -164,16 +176,22 @@ class NeteaseMusicPlugin(PluginBase):
             return {'success': False, 'error': str(e), 'data': None}
 
     def check_login(self) -> dict:
+        """登录态查询：判定为已登录时作废远端缓存（换过账号，旧列表与地址都不可信）。"""
         try:
-            return {'success': self._get_api().check_login()}
+            logged_in = bool(self._get_api().check_login())
         except Exception as e:
             return {'success': False, 'error': str(e)}
+        self.remote_cache.note_login_state(logged_in)
+        return {'success': logged_in}
 
     def login(self, background: bool = True) -> dict:
+        """启动登录流程；流程一开始旧账号的数据就不再可信，因此先作废远端缓存。"""
         try:
-            return {'success': True, 'message': self._get_api().login(background=background)}
+            message = self._get_api().login(background=background)
         except Exception as e:
             return {'success': False, 'error': str(e)}
+        self.remote_cache.mark_login_started()
+        return {'success': True, 'message': message}
 
     @staticmethod
     def _song(song) -> dict:

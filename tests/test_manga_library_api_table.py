@@ -164,13 +164,46 @@ class MangaLibraryApiTableTests(unittest.TestCase):
         self.plugin.on_settings_changed({'recent_count'})
         self.assertEqual(library.recent_count, 50)
 
+    def test_get_state_recent_carries_reading_page(self):
+        """最近阅读带上次读到的页码；收藏与 `manga_list` 同形，不带该字段。"""
+        folder = self.root / 'A'
+        folder.mkdir()
+        (folder / '001.jpg').write_bytes(b'\x89PNG\r\n\x1a\n')
+        library = self.plugin.library
+        library.update_recent('A', 3)
+        library.toggle_favorite('A')
+
+        state = library.get_state()
+
+        self.assertEqual([m['folder_name'] for m in state['recent']], ['A'])
+        self.assertEqual(state['recent'][0]['page'], 3)
+        self.assertEqual([m['folder_name'] for m in state['favorites']], ['A'])
+        self.assertNotIn('page', state['favorites'][0])
+
+    def test_get_state_projection_does_not_share_shelf_objects(self):
+        """投影里的 page 不写回书架缓存与状态文件。"""
+        folder = self.root / 'A'
+        folder.mkdir()
+        (folder / '001.jpg').write_bytes(b'\x89PNG\r\n\x1a\n')
+        library = self.plugin.library
+        library.update_recent('A', 5)
+
+        first = library.get_state()
+        first['recent'][0]['page'] = 99
+        first['recent'][0]['title'] = '改名'
+
+        second = library.get_state()
+        self.assertEqual(second['recent'][0]['page'], 5)
+        self.assertEqual(second['recent'][0]['title'], 'A')
+        self.assertEqual(library._state['recent'][0]['page'], 5)
+
     def test_freshness_spec_fields_are_unchanged(self):
         spec = self.plugin.freshness_spec()
         self.assertEqual(
             sorted(spec),
             sorted(['roots', 'include', 'derive', 'prune', 'on_verified', 'rebuild',
                     'content_version', 'unit', 'min_sync_interval', 'stat_entries']))
-        self.assertEqual(spec['unit'], '部')
+        self.assertEqual(spec['unit'], '本')
         self.assertEqual(spec['min_sync_interval'], 5.0)
         self.assertIs(spec['stat_entries'], False)
         self.assertEqual(spec['content_version'], self.plugin.SHELF_VERSION)

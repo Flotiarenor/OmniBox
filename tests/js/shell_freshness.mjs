@@ -4,16 +4,22 @@
 //   未校验 / 校验中 x/y / version_stale / 上次校验（不再断言“已是最新”）/
 //   刚完成且无变化 / 刚完成且有变化 / 超过 7 天建议重新校验。
 //
+// 另外锁住壳挂载型触发面的**输入通道**：`omnibox:chrome` 的 `freshness_scope`
+// （协议在 shell/frontend/src/core/plugin-chrome-protocol.js）。它是壳据以调用
+// `system_freshness_sync` 的作用域，非法值必须在合并状态时就被丢掉。
+//
 // 用法：node tests/js/shell_freshness.mjs
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import { createDom } from './dom_stub.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SRC = join(here, '..', '..', 'shell', 'frontend', 'public', 'shell', 'freshness.js');
+const PROTOCOL = join(here, '..', '..', 'shell', 'frontend', 'src', 'core', 'plugin-chrome-protocol.js');
+const protocol = await import(pathToFileURL(PROTOCOL).href);
 const DAY = 86400;
 
 let failed = 0;
@@ -91,7 +97,12 @@ function createFreshnessDom() {
   return env;
 }
 
+let previousCtl = null;
 function setup(initialState) {
+  // 上一份控件先销毁：`call()` 读的是 `globalThis.Bridge`，旧控件的低频状态重读
+  // 会打到本用例新换上的假 Bridge 与调用记录上。
+  if (previousCtl && typeof previousCtl.destroy === 'function') previousCtl.destroy();
+  previousCtl = null;
   const env = createFreshnessDom();
   const host = Object.assign(env.makeEl('div'), { id: 'host' });
   env.document.body.appendChild(host);
@@ -126,6 +137,7 @@ function setup(initialState) {
 
   const Freshness = new Function(`${readFileSync(SRC, 'utf8')}\nreturn window.Freshness;`)();
   const ctl = Freshness.mount({ plugin: 'demo', container: host, unit: '张' });
+  previousCtl = ctl;
   return {
     ctl,
     host,
@@ -298,6 +310,47 @@ await check('一次状态读取失败不永久禁用校验（错误态可重试�
   await env.ctl.verify();
   await sleep(80);
   assert.equal(env.status.textContent, '校验中 4/10');
+});
+
+// ---------------------------------------------------------------- chrome 协议：freshness_scope
+//
+// 壳侧触发面（PluginChrome 的 `syncFreshness`）读的是内容页上报的
+// `omnibox:chrome.freshness_scope`。它是"当前在哪个目录"的唯一来源，因此必须
+// 在合并状态时归一化：非字符串 / 超长 / 含 `..` 的值一律丢弃（保留旧值），
+// 空串是合法的「全部根」。
+
+await check('freshness_scope：去掉首尾空白后保留', () => {
+  const next = protocol.mergeChromeState({}, { freshness_scope: '  作者/作品  ' });
+  assert.equal(next.freshness_scope, '作者/作品');
+});
+
+await check('freshness_scope：单独的空串是合法的「全部根」', () => {
+  const next = protocol.mergeChromeState({ freshness_scope: 'a/b' }, { freshness_scope: '   ' });
+  assert.equal(next.freshness_scope, '', '有意清空作用域时必须生效');
+});
+
+await check('freshness_scope：非字符串 / 超长 / 含 .. 的值被丢弃并保留旧值', () => {
+  const bad = [
+    5, null, true, {}, [],
+    'y'.repeat(protocol.FRESHNESS_SCOPE_MAX + 1),
+    '../etc',
+    'a/../b',
+  ];
+  for (const value of bad) {
+    const next = protocol.mergeChromeState({ freshness_scope: 'keep/me' },
+      { freshness_scope: value });
+    assert.equal(next.freshness_scope, 'keep/me', `${JSON.stringify(value)} 不该覆盖作用域`);
+  }
+});
+
+await check('freshness_scope：长度上限的边界值被接受', () => {
+  const max = 'z'.repeat(protocol.FRESHNESS_SCOPE_MAX);
+  assert.equal(protocol.mergeChromeState({}, { freshness_scope: max }).freshness_scope, max);
+});
+
+await check('freshness_scope：消息里没提到它时不影响既有状态', () => {
+  const next = protocol.mergeChromeState({ freshness_scope: 'a/b' }, { title: '新标题' });
+  assert.equal(next.freshness_scope, 'a/b');
 });
 
 console.log(failed ? `\n${failed} 例失败` : `\nshell freshness 状态 ${total} 例通过`);

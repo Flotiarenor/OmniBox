@@ -109,12 +109,22 @@ class Library:
                 if kw in m['title'].lower() or kw in m['author'].lower()]
 
     def get_state(self) -> Dict:
-        recent_ids = [r['id'] for r in self._state['recent']]
-        fav_ids = self._state['favorites']
+        """书架三视图的投影：收藏与最近阅读。
+
+        `recent` 的每一项在漫画字段之外带 `page`（上次阅读到第几页，从 0 开始），
+        供阅读器续读；`favorites` 的每一项与 `manga_list` 同形，不带该字段。
+        """
+        favorites = self._state['favorites']
         all_manga = {m['folder_name']: m for m in self.list_manga()}
+        recent: List[Dict] = []
+        for entry in self._state['recent']:
+            manga = all_manga.get(entry['id'])
+            if manga is None:
+                continue
+            recent.append({**manga, 'page': entry.get('page', 0)})
         return {
-            "recent": [all_manga[rid] for rid in recent_ids if rid in all_manga][:self.recent_count],
-            "favorites": [all_manga[fid] for fid in fav_ids if fid in all_manga],
+            "recent": recent[:self.recent_count],
+            "favorites": [all_manga[fid] for fid in favorites if fid in all_manga],
         }
 
     def retain(self, valid_folders) -> List[str]:
@@ -179,6 +189,7 @@ class Library:
     # ===== 详情与页面 =====
 
     def get_detail(self, folder_name: str) -> Dict:
+        """详情：每次调用都按当前磁盘内容重算（读 `album_info.json`、列章节），不缓存。"""
         folder_path = self._scanner.resolve_safe_path(self._paths.root, folder_name)
         if folder_path is None or not folder_path.exists():
             return {}

@@ -24,6 +24,17 @@ Vue 3 + TypeScript + Vite。`src/` 是壳的界面（`components/` `core/` `rout
 
 共享运行时的 8 个脚本是**同一个全局作用域里的普通脚本，顺序即依赖顺序**：`base.js` 在它们最前（其余分段按全局名读 `window.Utils` / `window.Bridge`），`toast.js` 又必须排在 `base.js` 之前。注入顺序的唯一真源是 `shell/backend/file_server.py` 的 `_PLUGIN_BOOTSTRAP_SCRIPT`；新增或调整分段只改那里，不要另抄一份清单。
 
+`freshness.js` 的触发归属是硬契约：`mount` 只渲染控件、不扫盘；内容页自绘控件时自己调
+`autoSync(scope)`，壳渲染骨架时由 `PluginChrome.vue` 在挂载后与 `activeView` /
+`freshness_scope` 变化时调。内容页拿不到壳里的句柄，重新可见时用模块级
+`Freshness.sync(plugin, scope)`。插件门禁会拦住「壳挂载了控件但没有 `autoSync` 调用」的写法。
+
+同步/校验有结论时壳发两条消息：`omnibox:freshness`（`{plugin, scope, report}`）与紧跟其后的
+旧 `omnibox:action: refresh`（`payload` 同报告），内容页只处理一条即可。控件在没有任务时每
+30 秒重读一次状态投影（`idlePollMs` 可调，0 关闭；窗口隐藏时不读），被动同步被跳过
+（去抖 / 正忙 / 作用域无效）时状态行会写一句可重试的原因。壳设置页的「数据与缓存」用
+`system_freshness_overview` 列出各插件状态并提供重建入口。
+
 `toast.js` 是壳页面与插件 iframe 共用的 Toast 唯一实现：两边的引导片段都引它，
 `src/core/toast.ts` 只是给它加类型入口，`base.js` 不再自己定义 `window.Toast`。
 

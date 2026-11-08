@@ -31,7 +31,7 @@ class ShelfFreshness:
             'rebuild': self.rebuild,
             # 扫描规则（收录哪些目录、封面怎么挑）变更时改它：整体作废书架缓存
             'content_version': self._content_version,
-            'unit': '部',
+            'unit': '本',
             'min_sync_interval': 5.0,
             # 与 image-viewer 同一取舍：逐条 stat 会把"进一次书架"变成"给整库每页
             # stat 一次"（实测 6000 张的整树同步从 0.11s 涨到 0.29s，真实磁盘冷缓存

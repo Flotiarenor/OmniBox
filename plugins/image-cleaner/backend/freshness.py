@@ -24,14 +24,12 @@ class FreshnessProvider:
 
     def __init__(self, host: Any, hashes: Any, results: Any,
                  pipeline: Any, extensions: Any,
-                 content_version: int,
                  engine_provider: Callable[[], Optional[Any]]) -> None:
         self._host = host
         self._hashes = hashes
         self._results = results
         self._pipeline = pipeline
         self._extensions = extensions
-        self._content_version = content_version
         self._engine = engine_provider
 
     def spec(self) -> Dict[str, Any]:
@@ -46,9 +44,9 @@ class FreshnessProvider:
             'on_verified': self.audit,
             'on_pass_end': self.pass_end,
             'rebuild': self.rebuild,
-            # 指纹算法版本 = dHash 缓存里的版本标记：规则变了由基建整体作废，
-            # 不再指望"记得清缓存"
-            'content_version': self._content_version,
+            # 指纹算法版本直接取指纹库的条目版本：改算法只动 `const.DHASH_VERSION`，
+            # 指纹条目与引擎的"整体作废"跟着同一个数字走
+            'content_version': self._hashes.version,
             'unit': '张',
             'min_sync_interval': 5.0,
         }
@@ -91,8 +89,7 @@ class FreshnessProvider:
     def audit(self, keys) -> Dict:
         """全量校验后的对账：指纹缓存里只保留磁盘上仍然存在的图片。
 
-        旧实现的指纹库没有上限也没有清理：在资源管理器里删掉的图片，指纹会永久留着
-        （`dhash.json` 只增不减）。
+        `dhash.json` 只增不减时，在资源管理器里删掉的图片会永久留在指纹库里。
         """
         valid = set()
         for rel in keys:

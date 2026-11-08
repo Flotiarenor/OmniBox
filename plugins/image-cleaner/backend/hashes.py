@@ -5,9 +5,8 @@
 直接 `open(w)` 在进程被杀时会留下半截 JSON，指纹库从此永久损坏，而表现只是"扫描变慢"。
 
 **读图失败返回 `None`，与"哈希值恰好是 0"分开**：纯色/近纯色图的 dHash 本来就是 0，
-旧实现让失败也返回 0、调用方又用 `if h:` 过滤，于是纯色图（以及任何 dHash 为 0 的图）
-永远进不了相似分组。失败同样**不写缓存**，否则一次读失败会被缓存钉住（mtime 不变就
-永远不再重算）。
+用 0 表示失败会让它们永远进不了相似分组。失败同样**不写缓存**，否则一次读失败会被
+缓存钉住（mtime 不变就永远不再重算）。
 """
 
 import hashlib
@@ -37,6 +36,14 @@ class DHashStore:
     def path(self) -> Path:
         """指纹库文件路径（每次现算：数据根可能被宿主换掉）。"""
         return self._cache_dir() / DHASH_CACHE_FILE
+
+    @property
+    def version(self) -> int:
+        """条目版本标记（`const.DHASH_VERSION`）：改哈希算法或归一化规则时 +1。
+
+        统一刷新规格的 `content_version` 也取这个值，两处判据因此只有一个来源。
+        """
+        return self._version
 
     @staticmethod
     def key_for_abs(abs_path: str) -> str:

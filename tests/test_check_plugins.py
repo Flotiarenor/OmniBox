@@ -14,7 +14,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from tools.check_plugins import _check_chrome_schema, _check_schema, check_plugins
+from tools.check_plugins import (
+    _check_chrome_schema,
+    _check_schema,
+    _check_shell_freshness_trigger,
+    check_plugins,
+)
 
 
 def _frontend(action: dict) -> dict:
@@ -192,6 +197,50 @@ class SchemaFieldTypeGuardTests(unittest.TestCase):
 
         errors = _check_schema(_Plugin)
         self.assertTrue(any('.type' in error for error in errors), errors)
+
+
+class ShellFreshnessTriggerTests(unittest.TestCase):
+    """壳挂载型统一刷新必须真的触发一次被动同步。
+
+    `Freshness.mount(...)` 只渲染控件并读一次 `system_freshness_state`，它自己不
+    扫盘；被动同步（`system_freshness_sync`）只有 `autoSync(...)` 会发起。漏掉这一句
+    时控件、按钮、状态文案、后端端点全都正常，唯一的现象是"外部新增的文件永远看不到，
+    必须 Ctrl+F5"——所以门禁必须静态拦住"只挂载不触发"。
+
+    正例读的是仓库里真实的 `PluginChrome.vue`：实现被回退时这里先红，而不是等到
+    用户发现界面不更新。反例用临时组件文件，避免为了造一个坏壳去改真实组件。
+    """
+
+    MOUNT_ONLY = "const ctl = Freshness.mount({ plugin: props.plugin.name });\n"
+    MOUNT_AND_SYNC = (
+        "const ctl = Freshness.mount({ plugin: props.plugin.name });\n"
+        "ctl.autoSync(scope);\n"
+    )
+
+    def _component(self, tmp: str, body: str) -> Path:
+        path = Path(tmp) / 'PluginChrome.vue'
+        path.write_text(body, encoding='utf-8')
+        return path
+
+    def test_mount_without_autosync_is_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            errors = _check_shell_freshness_trigger(self._component(tmp, self.MOUNT_ONLY))
+        self.assertTrue(any('autoSync' in error for error in errors), errors)
+
+    def test_mount_with_autosync_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            errors = _check_shell_freshness_trigger(self._component(tmp, self.MOUNT_AND_SYNC))
+        self.assertEqual(errors, [])
+
+    def test_missing_component_is_not_reported_here(self):
+        """组件不存在由挂载检查单独报，这里不重复同一件事。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            errors = _check_shell_freshness_trigger(Path(tmp) / 'absent.vue')
+        self.assertEqual(errors, [])
+
+    def test_real_shell_component_triggers_sync(self):
+        """真实组件必须过：这条是正例，锁住实现不被回退成"只挂载不触发"。"""
+        self.assertEqual(_check_shell_freshness_trigger(), [])
 
 
 if __name__ == '__main__':   # pragma: no cover

@@ -4,25 +4,32 @@
 写完之后调 `state.save()`；条目解析走 `index`，落盘时机与原子性都归 store。
 
 队列与播放参数为什么分开更新：`save_queue` 存 id 列表、`save_playback` 存播放参数，
-一次换曲会先播后存队列。旧实现整体替换 `playback`，于是任何一次换曲都会把队列字段
-清掉 —— 恢复播放时队列退化成单条，表现为重载后「下一首/上一首」不跟列表。
+一次换曲会先播后存队列。整体替换 `playback` 会让任何一次换曲都把队列字段清掉 ——
+恢复播放时队列退化成单条，表现为重载后「下一首/上一首」不跟列表。
 """
 
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 
 #: 「最近播放」在 get_state 里回传的条数（状态文件里仍存 `state.RECENT_LIMIT` 条）。
 RECENT_RETURN = 20
+
+#: 「校验确认存在」的条目键集合的提供方：返回 `set[str]`，没有权威结论时返回 `None`。
+VerifiedKeysProvider = Callable[[], Optional[Set[str]]]
 
 
 class MediaCollections:
     """歌单 / 喜欢 / 最近播放 / 播放状态。"""
 
-    def __init__(self, state: Any, index: Any, queue_limit: int) -> None:
+    def __init__(self, state: Any, index: Any, queue_limit: int,
+                 verified_keys_provider: Optional[VerifiedKeysProvider] = None) -> None:
         self._state = state
         self._index = index
         self._queue_limit = queue_limit
+        #: 可选的「整趟校验已完成」查询。缺省 None = 永远没有权威结论，
+        #: 于是「索引里没有」永远不足以清空用户数据（见 `_playback_item_alive`）。
+        self._verified_keys_provider = verified_keys_provider
 
     @property
     def _data(self) -> Dict[str, Any]:
@@ -170,13 +177,38 @@ class MediaCollections:
         return items
 
     def get_playback(self) -> dict:
+        """播放参数；里面记的条目**确认**消失时才清空并落盘。
+
+        判据不是「索引里有没有」：索引在启动早期可能还是空的、外接盘可能没挂载、
+        首趟扫描可能只跑了一部分（预算用尽）。这些情形下条目不在索引里不代表文件
+        没了，因此只有统一刷新基建给出**整趟校验成功**的结论（`verified_keys()` 非
+        `None`）且条目不在其中时，才清空并落盘；拿不到结论时保留。
+        """
         playback = self._data.get('playback', {})
         item_id = playback.get('item_id', '')
-        if item_id and self._index.get(item_id) is None:
+        if item_id and not self._playback_item_alive(item_id):
             self._data['playback'] = {}
             self._state.save()
             return {}
         return playback
+
+    def _playback_item_alive(self, item_id: str) -> bool:
+        """播放条目是否仍在：索引命中即活；索引未命中时只信校验结论。
+
+        保守方向是「保留」：没有结论（provider 缺省、返回 None、抛异常）一律视为
+        无法判定，不动用户数据。
+        """
+        if self._index.get(item_id) is not None:
+            return True
+        if self._verified_keys_provider is None:
+            return True
+        try:
+            keys = self._verified_keys_provider()
+        except Exception:
+            return True
+        if keys is None:
+            return True
+        return item_id in keys
 
     # ===== 收藏 / 最近的可解析投影 =====
 

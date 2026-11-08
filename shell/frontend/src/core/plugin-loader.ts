@@ -117,6 +117,14 @@ export interface PluginChromeState {
   nav?: Record<string, PluginChromeNavState>
   search?: PluginChromeSearch
   statusItems?: PluginChromeStatusItem[]
+  /**
+   * 内容页当前所在的同步作用域（目录相对路径；空串 = 全部根）。
+   *
+   * 壳据此在挂载后与视图/作用域变化时触发被动同步。取值的归一化在
+   * `core/plugin-chrome-protocol` 的 `normalizeFreshnessScope`：非字符串、超长、
+   * 含 `..` 的值一律丢弃并保留旧值。
+   */
+  freshness_scope?: string
 }
 
 export interface PluginManifest {

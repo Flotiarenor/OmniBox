@@ -107,11 +107,22 @@ function loadImageViewer() {
         removeEventListener() { },
     };
 
+    // 统一刷新控件（`/shell/freshness.js`）的替身：内容是 `Freshness.sync(plugin, scope)`。
+    // 生命周期用例只需要"重新可见会不会同步一次"，报告由每个场景自己排队。
+    const freshness = {
+        syncs: [],
+        reports: [],
+        async sync(plugin, scope) {
+            freshness.syncs.push([plugin, scope]);
+            return freshness.reports.shift() || {};
+        },
+    };
     const sandbox = {
         window: win,
         parent,
         document: doc,
         console,
+        Freshness: freshness,
         Bridge: {
             call: () => Promise.resolve({}),
             callSystem: () => Promise.resolve([]),
@@ -138,6 +149,8 @@ function loadImageViewer() {
     };
     sandbox.Icons = iconsStub;
     win.Icons = iconsStub;
+    // 插件代码读 `window.Freshness`，而沙箱里的 `window` 只是普通对象：两处都挂
+    win.Freshness = freshness;
     // 先注入 Shell 基础运行时（提供 window.PluginLifecycle），再按 index.html 的声明
     // 顺序装载插件自己的全部脚本 —— 不写死单个文件名，这样 app.js 拆成分片后本用例
     // 自动跟着走（顺序或漏挂出错会在装载期直接抛，见 tests/js/script_load_contract.mjs）。
@@ -147,7 +160,7 @@ function loadImageViewer() {
     }
     vm.runInContext('globalThis.__IV = ImageViewer; globalThis.__life = window.PluginLifecycle;', sandbox);
     return {
-        win, doc, getEl, winListeners, messageListeners, chromeMessages,
+        win, doc, getEl, winListeners, messageListeners, chromeMessages, freshness,
         ImageViewer: sandbox.__IV,
         lifecycle: sandbox.__life,
     };
@@ -241,6 +254,61 @@ console.log('场景 4：未注册生命周期运行时（旧壳）不得抛异�
         ok = false;
     }
     check('缺少 PluginLifecycle 时静默跳过（旧壳兼容）', ok);
+}
+
+console.log('场景 5：重新可见时按当前目录同步一次，有变化才重载');
+{
+    const env = loadImageViewer();
+    const iv = new env.ImageViewer();
+    iv.lightbox = { show() { }, hide() { }, navigate() { }, getIndex: () => 3 };
+    iv.mode = 'images';
+    iv.currentPath = 'albumA';
+    iv.currentView = 'albums';
+    iv.currentPage = 2;
+    iv.currentAllImages = [1, 2, 3];
+    iv._slideshowResumeIndex = 1;
+    iv._slideshowWanted = true;
+
+    // 重载的落点用替身记录：相册树与当前视图各重取一次
+    const reloads = [];
+    iv.loadAlbums = async () => { reloads.push('albums'); };
+    iv._reloadCurrentView = async () => { reloads.push('view'); };
+
+    iv._bindPluginLifecycle();
+    // 注册时生命周期若已可见会立刻补一次（首帧同步），之后的"切回"才是本场景要测的
+    env.lifecycle.setVisible(false);
+    env.freshness.reports.push({ action: 'sync', added: 2, changed: 0, removed: 0 });
+    env.lifecycle.setVisible(true);
+    await tick();
+    await tick();
+
+    const calls = env.freshness.syncs;
+    const last = calls[calls.length - 1];
+    check('切回时用当前目录作 scope 同步一次',
+        calls.length >= 2 && last[0] === 'image-viewer' && last[1] === 'albumA',
+        `实际 ${JSON.stringify(calls)}`);
+    check('报告有变化 → 重载相册与当前视图',
+        reloads.join(',') === 'albums,view', `实际 ${JSON.stringify(reloads)}`);
+    check('幻灯片续播保留（报告有变化不影响续播）', iv.slideshowTimer !== null);
+    iv._stopSlideshow();
+
+    // 报告无变化（同步成功但零变更）：只同步、不重载
+    reloads.length = 0;
+    env.lifecycle.setVisible(false);
+    env.freshness.reports.push({ action: 'sync', added: 0, changed: 0, removed: 0 });
+    env.lifecycle.setVisible(true);
+    await tick();
+    await tick();
+    check('零变更的报告不触发重载', reloads.length === 0, `实际 ${JSON.stringify(reloads)}`);
+
+    // skip（引擎忙 / 节流）：不重载
+    reloads.length = 0;
+    env.lifecycle.setVisible(false);
+    env.freshness.reports.push({ action: 'skip', reason: 'busy' });
+    env.lifecycle.setVisible(true);
+    await tick();
+    await tick();
+    check('skip 不触发重载', reloads.length === 0, `实际 ${JSON.stringify(reloads)}`);
 }
 
 console.log(failures === 0 ? '\nimage-viewer 生命周期用例全部通过' : `\nimage-viewer 生命周期用例失败 ${failures} 项`);

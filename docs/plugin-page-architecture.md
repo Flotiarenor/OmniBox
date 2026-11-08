@@ -115,7 +115,10 @@ flowchart LR
 内容归属枚举。
 
 运行期用 `omnibox:chrome` 打补丁：`title` / `subtitle` / `view` / `actions` / `nav` /
-`search` / `status` / `statusItems`。壳只合并声明，不解释业务。
+`search` / `status` / `statusItems` / `freshness_scope`。壳只合并声明，不解释业务。
+`freshness_scope` 是内容页当前所在的同步作用域（目录相对路径，空串 = 全部根），由壳按
+插件记住并传给统一刷新的 `autoSync`；归一化（strip、长度上限、丢弃含 `..` 的值）在
+`core/plugin-chrome-protocol.js` 的 `normalizeFreshnessScope`。
 
 ## 4 消息
 
@@ -127,9 +130,10 @@ flowchart LR
 | 壳 → 内容 | `omnibox:action` | 顶栏动作；可带 `payload`。声明 `frontend.chrome` 的插件，`settings` 由壳接管、不下发 |
 | 壳 → 内容 | `omnibox:action`（`settings-saved`） | 壳内设置弹窗保存成功；内容页重读设置并刷新当前视图 |
 | 壳 → 内容 | `omnibox:query` | 搜索输入（壳侧 250ms 防抖） |
+| 壳 → 内容 | `omnibox:freshness` | 统一刷新的结果：`{plugin, scope, report}`。`report` 是后端同步/校验报告（`action` / `added` / `changed` / `removed` / `invalidated` / 校验任务的 `task`），内容页据此决定重载哪一层；紧随其后还会补一条旧的 `omnibox:action: refresh`，同一次同步只处理一条 |
 | 壳 → 内容 | `omnibox:appearance` | 本插件背景不透明度、是否跟随壳、壳全局值；内容页据此让出底色 |
 | 内容 → 壳 | `omnibox:ready` | 握手，壳补发当前视图 |
-| 内容 → 壳 | `omnibox:chrome` | 标题、视图、动作、导航、搜索、状态补丁；`search.value` 回填输入框，`search.clear`（递增序号）清空 |
+| 内容 → 壳 | `omnibox:chrome` | 标题、视图、动作、导航、搜索、状态补丁；`search.value` 回填输入框，`search.clear`（递增序号）清空；`freshness_scope` 上报当前同步作用域 |
 | 内容 → 壳 | `omnibox:open-settings` | 内容页自己的设置入口请求壳开弹窗（如歌词页右上角）；可选 `title` |
 | 内容 → 壳 | `omnibox:get-plugin-appearance` | 内容页拉取本插件的背景不透明度（设置页打开时） |
 | 内容 → 壳 | `omnibox:set-plugin-alpha` | 内容页写本插件背景不透明度；`follow: true` 表示跟随壳 |
@@ -232,7 +236,14 @@ key 显示到对应输入框。`pixiv-sync` 的 `refresh_token` 是 `secret`，�
 - **分隔条只有一份**：壳持有侧栏分隔条，内容 iframe 的 z-index 不再参与壳文档的层叠。
 - **扩展入口只有一份**：`PluginExtensions` 从后端取入口；宿主不再自建 `#iv-extensions` /
   `#mp-extensions`。
-- **刷新控件只有一份**：`freshness.js` 由壳挂载，内容页通过 `refresh` 动作重载。
+- **刷新控件只有一份**：`freshness.js` 由壳挂载，壳在挂载后与视图/作用域变化时调
+  `autoSync(scope)`；同步/校验有结论时先发 `omnibox:freshness`（带 `scope` 与报告），
+  再补一条旧的 `refresh` 动作，两种内容页都能重载。内容页在重新可见时自己调
+  `Freshness.sync(plugin, scope)`（壳挂载型拿不到控件句柄）。控件在无任务时每 30 秒重读
+  一次状态投影，「有变化 · 需要校验」会自己出现；被动同步被跳过时的原因写在状态行上。
+- **统一刷新的全局视图只有一份**：壳设置页的「数据与缓存」用 `system_freshness_overview`
+  列出各插件的条目数、目录数与状态，并提供重建入口 —— 没有页面骨架的插件（清理器、
+  下载器）由此获得手动刷新入口。
 - **设置弹窗只有一份（除 image-viewer 外）**：声明 `frontend.chrome` 且设置能由
   `settings_schema` 表达的插件，顶栏「设置」由壳打开 `PluginSettingsModal`；内容页只处理保存
   后的 `settings-saved`。`image-cleaner` / `pixiv-sync` 的 native 设置同样走这个弹窗：native
@@ -275,8 +286,8 @@ key 显示到对应输入框。`pixiv-sync` 的 `refresh_token` 是 `secret`，�
 - native 预览使用插件给的缩略图 URL，没有单独的原图字段；需要原图时再扩展 schema。
 - image-cleaner 的根目录在后端仍是 `info` 字段，壳设置弹窗里保存的是图片相册的 `root_dir`；
   多根时只编辑主根，其余根仍到图片相册设置里管理。
-- 设置弹窗、搜索回填与 EQ 尚未纳入 `tools/plugin_ui_audit.py`；本轮用一次性 Selenium
-  探针验收，后续应把这三项写成可重复的门禁。
+- 设置弹窗、搜索回填与 EQ 尚未纳入 `tools/plugin_ui_audit.py`，目前用一次性 Selenium
+  探针验收；这三项应写成可重复的门禁。
 - 迁移前的逐插件 UI e2e 已按壳 chrome 重写（内容页改发 `omnibox:view` / `omnibox:action`，分隔条改量壳侧栏）；CI 不安装 selenium，这些用例会跳过。
 - 新增插件仍按「chrome 声明」「消息」「native 内容」三节手工接入；脚手架与组件预览页尚未接入。
 

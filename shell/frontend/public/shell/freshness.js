@@ -5,8 +5,18 @@
 // 相同。本组件把**界面与编排**收成一份，插件只需要：
 //
 //   const ctl = Freshness.mount({ plugin: 'media-player', container: el, unit: '首',
-//                                 onChange: () => this.reload() });
+//                                 scope: 当前目录, onChange: (report) => this.reload() });
 //   ctl.autoSync('');            // 进视图 / 切目录时调用（组件内部去抖，壳侧再节流）
+//   await Freshness.sync('media-player', '');   // 不经组件、立即同步一次并拿到报告
+//
+// **只挂载不触发 = 永远看不到外部变化**：`mount` 只渲染控件并读一次状态，它不扫盘。
+// 壳挂载型（`PluginChrome` 挂、内容页没有句柄）必须自己调 `autoSync(scope)`，
+// 否则控件「校验」按钮之外没有任何自动入口 —— 门禁 `tools/check_plugins.py`
+// 的壳挂载检查会拦住这种写法。
+//
+// 控件在无任务时每 30 秒重读一次状态投影（只读，不扫盘；`idlePollMs` 可调，
+// 0 关闭），用户停留在页面上时「有变化 · 需要校验」才会自己出现。被动同步被后端
+// 跳过（去抖 / 正在校验 / 作用域无效）时，状态行写一句可重试的原因，不再静默。
 //
 // 三个动作的语义由壳的基建定义（`shell/backend/freshness.py`）：
 //   - **同步**：被动、增量、便宜。由 `autoSync()` 触发，没有按钮。
@@ -21,6 +31,8 @@
 // （media-player 曾单独为此打补丁，见 frontend/js/utils.js 的 `&v=` 注释）。
 window.Freshness = (function () {
   const POLL_MS = 500;        // 校验进行中的轮询间隔（与 media-player 的扫描轮询同档）
+  const IDLE_POLL_MS = 30000; // 没有任务时的状态重读间隔（只读状态投影，不扫盘）
+  const SYNC_NOTE_MS = 6000;  // 同步被跳过时状态行停留时间
   const SYNC_DEBOUNCE_MS = 400;
   const CARD_HIDE_MS = 4000;  // 完成后的进度卡停留时间
   const VERIFY_STALE_MS = 7 * 24 * 60 * 60 * 1000; // 上次校验超过 7 天就提示重新校验
@@ -73,11 +85,14 @@ window.Freshness = (function () {
    *   onChange 每次"真有变化"或校验完成后的回调（插件据此重载自己的视图）
    *   scope    初始作用域（一般传当前目录，"" = 全部）
    *   compact  紧凑模式（工具栏里用）
+   *   idlePollMs 没有任务时重读状态的间隔（毫秒，0 = 关闭；缺省 30 秒）
    */
   function mount(opts) {
     const o = opts || {};
     const plugin = o.plugin || (window.Bridge && Bridge.pluginName) || '';
     const unit = o.unit || '项';
+    const idlePollMs = Number.isFinite(o.idlePollMs) && o.idlePollMs >= 0
+      ? o.idlePollMs : IDLE_POLL_MS;
     const id = 'fr' + (++seq);
 
     const group = document.createElement('div');
@@ -108,7 +123,8 @@ window.Freshness = (function () {
 
     let state = null;
     let scope = o.scope == null ? '' : o.scope;
-    let timer = null;
+    let timer = null;           // 校验进行中的轮询定时器
+    let idleTimer = null;       // 无任务时的低频状态重读
     let syncTimer = null;
     let hideTimer = null;
     let disposed = false;
@@ -124,6 +140,10 @@ window.Freshness = (function () {
     //: 本次校验刚结束的短暂状态（仅用于状态文案，不是后端字段）
     let completion = null;
     let completionTimer = null;
+    //: 最近一次被动同步被后端跳过的原因（`busy` / `throttled` / `bad_scope`）。
+    //: 跳过不是错误，但状态行必须说出来，否则"点了没更新"没有任何线索。
+    let syncNote = null;
+    let syncNoteTimer = null;
 
     // ----- 渲染 -----
 
@@ -188,6 +208,11 @@ window.Freshness = (function () {
         el.status.textContent = total
           ? `校验中 ${done}/${total}`
           : '校验中…';
+        return;
+      }
+      if (syncNote) {
+        // 被动同步被跳过：比"有变化 · 需要校验"更能解释"为什么这次没更新"。
+        el.status.textContent = syncNote.text;
         return;
       }
       if (s.version_stale) {
@@ -269,8 +294,37 @@ window.Freshness = (function () {
 
     // ----- 轮询 -----
 
+    function clearIdleTimer() {
+      if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+    }
+
+    /**
+     * 没有任务时低频重读一次状态。
+     *
+     * 状态投影读一次之后不会自己变：没有这一步，用户停留在页面上时「有变化 · 需要校验」
+     * 永远不会出现，外部新增的文件要等下一次进视图才被提示。这里只读 `state`
+     * （不扫盘、不建库），间隔 30 秒，窗口不可见时不读。
+     */
+    function scheduleIdlePoll() {
+      clearIdleTimer();
+      if (disposed || !supported || !(idlePollMs > 0)) return;
+      if (window.document && window.document.visibilityState === 'hidden') return;
+      idleTimer = setTimeout(() => {
+        idleTimer = null;
+        if (disposed || timer) return;   // 校验轮询在跑时交给它
+        poll();
+      }, idlePollMs);
+    }
+
+    function onVisibilityChange() {
+      if (!window.document || disposed) return;
+      if (window.document.visibilityState === 'hidden') clearIdleTimer();
+      else if (!timer) scheduleIdlePoll();
+    }
+
     async function poll() {
       if (disposed) return;
+      clearIdleTimer();
       try {
         const next = await call('system_freshness_state', plugin);
         if (next && next.available === false) { supported = false; }
@@ -288,6 +342,7 @@ window.Freshness = (function () {
           // 点「校验」只弹卡片、永远不再 poll —— 卡片停在 0 / 0、状态停在旧文案。
           timer = null;
           if (wasBusy) onSettled();
+          scheduleIdlePoll();
         }
       } catch (e) {
         // 一次状态读取失败 ≠ 插件未接入统一刷新：只有后端明确 available === false
@@ -295,17 +350,18 @@ window.Freshness = (function () {
         timer = null;
         stateError = true;
         render();
+        scheduleIdlePoll();
       }
     }
 
     function onSettled() {
       const task = (state && state.task) || {};
+      const extra = task.extra || {};
       if (task.state === 'cancelled') {
         clearCompletion();
         finishCard('校验已取消');
         toast('info', '校验已取消，已完成的指纹保留');
       } else {
-        const extra = task.extra || {};
         const parts = [];
         if (extra.added) parts.push(`新增 ${extra.added}`);
         if (extra.changed) parts.push(`更新 ${extra.changed}`);
@@ -317,7 +373,18 @@ window.Freshness = (function () {
         toast(errors ? 'warning' : 'success',
           `校验完成${parts.length ? '：' + parts.join(' · ') : ''}${errors ? `，${errors} 项失败` : ''}`);
       }
-      if (typeof o.onChange === 'function') o.onChange(state);
+      if (typeof o.onChange === 'function') {
+        // 校验跑完整趟：无论有没有变化都要通知调用方重载当前视图（校验的价值就是
+        // 「现在读到的就是最新的」）。入参与同步报告同形，调用方不必区分两条来源。
+        o.onChange({
+          action: 'verify',
+          added: extra.added || 0,
+          changed: extra.changed || 0,
+          removed: extra.removed || 0,
+          invalidated: !!extra.invalidated,
+          task: task,
+        });
+      }
     }
 
     // ----- 对外动作 -----
@@ -326,6 +393,8 @@ window.Freshness = (function () {
       if (!supported) return;
       const auto = !!(opts2 && opts2.auto);
       clearCompletion();
+      clearSyncNote();
+      clearIdleTimer();
       renderStatus();
       try {
         const res = await call('system_freshness_verify', plugin);
@@ -353,8 +422,41 @@ window.Freshness = (function () {
       } catch (e) { /* 忽略：任务可能刚好结束 */ }
     }
 
+    /** 报告里是否真有变化：`invalidated`（远端来源丢弃缓存）与三个计数同等看待。 */
+    function reportChanged(report) {
+      return !!(report
+        && (report.added || report.changed || report.removed || report.invalidated));
+    }
+
+    function clearSyncNote() {
+      if (syncNoteTimer) { clearTimeout(syncNoteTimer); syncNoteTimer = null; }
+      syncNote = null;
+    }
+
+    const SKIP_TEXT = {
+      busy: '后台校验进行中 · 完成后再同步',
+      throttled: '同步被节流 · 稍后重试',
+      bad_scope: '作用域无效 · 未同步',
+    };
+
     /**
-     * 被动同步：进视图 / 切目录时调用；本地去抖，壳侧还有最小间隔。
+     * 被动同步被后端跳过：状态行说明原因，几秒后恢复常规文案。
+     *
+     * `skip` 不是失败（下一趟会接着做），但"界面没更新"必须有个能读到的原因。
+     */
+    function noteSkipped(report) {
+      clearSyncNote();
+      syncNote = { text: SKIP_TEXT[report && report.reason] || '同步已跳过' };
+      syncNoteTimer = setTimeout(() => {
+        syncNoteTimer = null;
+        syncNote = null;
+        renderStatus();
+      }, SYNC_NOTE_MS);
+      renderStatus();
+    }
+
+    /**
+     * 真跑一次被动同步并返回后端报告（不去抖；失败返回 null）。
      *
      * `partial` 且原因是 `budget`（预算用尽、还有目录要处理）时**真的起一次后台
      * 校验**把剩下的活干完：原先只把卡片弹出来轮询，没有任何任务在跑，卡片就停在
@@ -362,35 +464,66 @@ window.Freshness = (function () {
      * `onSettled` 也不会触发）。`dir_cap`（只是没走完，不代表还有活）不起校验，
      * 否则每次进视图都要跑一趟全量。
      */
+    async function runSync(nextScope, opts2) {
+      if (nextScope != null) scope = nextScope;
+      const quiet = !!(opts2 && opts2.quiet);
+      try {
+        const report = await call('system_freshness_sync', plugin, scope);
+        if (!report) return null;
+        if (report.action === 'skip') {
+          noteSkipped(report);
+        } else if (report.action === 'partial' && report.reason === 'budget') {
+          clearSyncNote();
+          if (!quiet && !(state && state.busy)
+              && Date.now() - lastAutoVerifyAt >= AUTO_VERIFY_COOLDOWN_MS) {
+            lastAutoVerifyAt = Date.now();
+            verify({ auto: true });
+          }
+        } else {
+          clearSyncNote();
+          if (reportChanged(report) && typeof o.onChange === 'function') o.onChange(report);
+        }
+        return report;
+      } catch (e) {
+        // 被动路径失败不打扰用户：下一次进视图 / 视图变化会再试一次
+        return null;
+      }
+    }
+
+    /** 被动同步：进视图 / 切目录时调用；本地去抖，壳侧还有最小间隔。 */
     function autoSync(nextScope, opts2) {
       if (!supported) return;
       if (nextScope != null) scope = nextScope;
-      const quiet = !!(opts2 && opts2.quiet);
       if (syncTimer) clearTimeout(syncTimer);
-      syncTimer = setTimeout(async () => {
+      syncTimer = setTimeout(() => {
         syncTimer = null;
         if (disposed) return;
-        try {
-          const report = await call('system_freshness_sync', plugin, scope);
-          if (!report) return;
-          if (report.action === 'partial' && report.reason === 'budget') {
-            if (quiet || (state && state.busy)) return;
-            if (Date.now() - lastAutoVerifyAt < AUTO_VERIFY_COOLDOWN_MS) return;
-            lastAutoVerifyAt = Date.now();
-            verify({ auto: true });
-          } else if (report.action === 'sync'
-                     && (report.added || report.changed || report.removed)) {
-            if (typeof o.onChange === 'function') o.onChange(report);
-          }
-        } catch (e) { /* 被动路径失败不打扰用户：下一次进视图会重试 */ }
+        void runSync(scope, opts2);
       }, SYNC_DEBOUNCE_MS);
+    }
+
+    /**
+     * 立即同步一次并返回报告（与 `autoSync` 同一套编排，只去掉去抖与异步等待）。
+     *
+     * 给"手里有挂载句柄、但需要报告本身"的调用方：`autoSync` 是 fire-and-forget，
+     * 报告只经 `onChange` 回调出去。
+     */
+    function syncNow(nextScope, opts2) {
+      if (!supported) return Promise.resolve(null);
+      if (syncTimer) { clearTimeout(syncTimer); syncTimer = null; }
+      return runSync(nextScope == null ? scope : nextScope, opts2);
     }
 
     function destroy() {
       disposed = true;
       if (timer) clearTimeout(timer);
+      if (idleTimer) clearTimeout(idleTimer);
       if (syncTimer) clearTimeout(syncTimer);
       if (hideTimer) clearTimeout(hideTimer);
+      if (syncNoteTimer) clearTimeout(syncNoteTimer);
+      if (window.document && window.document.removeEventListener) {
+        window.document.removeEventListener('visibilitychange', onVisibilityChange);
+      }
       clearCompletion();
       if (group.parentNode) group.parentNode.removeChild(group);
     }
@@ -398,6 +531,9 @@ window.Freshness = (function () {
     el.verify.addEventListener('click', verify);
     el.cancel.addEventListener('click', cancel);
     el.hide.addEventListener('click', () => el.card.classList.add('hidden'));
+    if (window.document && window.document.addEventListener) {
+      window.document.addEventListener('visibilitychange', onVisibilityChange);
+    }
 
     render();
     poll();
@@ -407,11 +543,30 @@ window.Freshness = (function () {
       verify,
       cancel,
       autoSync,
+      sync: syncNow,
       destroy,
       state: () => state,
       setScope: (v) => { scope = v == null ? '' : v; },
       get supported() { return supported; },
     };
+  }
+
+  /**
+   * 直接同步一次（不经挂载句柄）：`system_freshness_sync(plugin, scope)`，返回后端报告。
+   *
+   * 报告形状：`action` ∈ `sync`（真扫了）/ `partial`（预算用尽）/ `skip`（去抖、被占用、
+   * 非法作用域）。调用方按 `added` / `changed` / `removed` / `invalidated` 决定是否重载；
+   * `skip` 不是错误，不必提示。失败时抛出（调用方自行决定忽略）。
+   *
+   * 这是**壳级方法**，和 `mount` 内部的同步走同一条 `callSystem` 通道。
+   *
+   * @param {string} plugin 插件名
+   * @param {string} [scope] 同步作用域（目录相对路径，'' = 全部根）
+   * @returns {Promise<Object|null>} 后端报告
+   */
+  async function sync(plugin, scope) {
+    if (!plugin) return null;
+    return await call('system_freshness_sync', plugin, scope == null ? '' : scope);
   }
 
   /**
@@ -428,5 +583,5 @@ window.Freshness = (function () {
     return version ? `${base}&v=${encodeURIComponent(version)}` : base;
   }
 
-  return { mount, assetUrl, timeAgo };
+  return { mount, sync, assetUrl, timeAgo };
 })();

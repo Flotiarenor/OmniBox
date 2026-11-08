@@ -153,7 +153,10 @@ Object.assign(MediaPlayerApp.prototype, {
     _buildAlbumCard(album, index, kind) {
         const isVideo = kind === 'video';
         const icon = isVideo ? 'icon:clapperboard' : 'icon:disc';
-        const coverUrl = album.cover_item_id ? Bridge.thumbUrl(album.cover_item_id) : '';
+        // 专辑封面同样走 coverUrl：它带封面版本号，目录里的封面图被替换后 URL 会前进
+        const coverUrl = album.cover_item_id
+            ? MPUtils.coverUrl({ id: album.cover_item_id, has_cover: true, cover_mtime: album.cover_mtime })
+            : '';
         const card = ContentUI.card({
             className: 'mp-card',
             image: coverUrl ? {

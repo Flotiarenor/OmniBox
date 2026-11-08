@@ -575,6 +575,8 @@ function loadScript(sandbox, file, label) {
  * @param {boolean} options.standalone true = 脱离壳（window.parent === window）
  * @param {boolean} options.noLightbox true = 不注入 createLightbox，走旧 .manga-reader 回退
  * @param {object} options.lightbox  自定义 createLightbox 工厂
+ * @param {(plugin: string, scope: string) => object} options.freshness
+ *       壳注入的 `Freshness.sync` 替身；默认返回一份"零变化"的同步报告
  */
 export function loadManga(options = {}) {
     const { handlers = {}, standalone = false, noLightbox = false } = options;
@@ -585,6 +587,12 @@ export function loadManga(options = {}) {
     const toasts = [];
     const lifecycle = { hide: [], show: [], dispose: [] };
     const lightboxEvents = [];
+    const freshnessCalls = [];
+    const freshness = (plugin, scope) => (
+        options.freshness
+            ? options.freshness(plugin, scope)
+            : { action: 'sync', added: 0, changed: 0, removed: 0 }
+    );
 
     const origin = 'http://127.0.0.1:18080';
     const locationStub = {
@@ -657,6 +665,18 @@ export function loadManga(options = {}) {
             },
             originalUrl: (value) => `/file?path=${encodeURIComponent(value)}`,
             thumbUrl: (value) => `/thumbs/${encodeURIComponent(value)}`,
+        },
+        // 壳注入的 /shell/freshness.js：用例只关心"以什么插件名与作用域同步了一次"
+        // 以及"拿到什么报告"，编排细节由 tests/js/shell_freshness.mjs 自己覆盖。
+        Freshness: {
+            sync(plugin, scope) {
+                freshnessCalls.push({ plugin, scope });
+                try {
+                    return Promise.resolve(freshness(plugin, scope));
+                } catch (error) {
+                    return Promise.reject(error);
+                }
+            },
         },
         innerWidth: 1280,
         innerHeight: 800,
@@ -731,6 +751,7 @@ export function loadManga(options = {}) {
         toasts,
         lifecycle,
         lightboxEvents,
+        freshnessCalls,
         MangaLibraryApp: sandbox.__MangaApp,
         MangaReader: sandbox.__MangaReader,
         chrome() {
@@ -752,8 +773,14 @@ export function loadManga(options = {}) {
             }));
         },
         sendView(view) { env.send({ type: 'omnibox:view', view }); },
+        /** 壳的生命周期通知：`true` 触发 onShow，`false` 触发 onHide。 */
+        setVisible(visible) { sandbox.PluginLifecycle.setVisible(visible); },
         sendAction(action) { env.send({ type: 'omnibox:action', action }); },
         sendQuery(query) { env.send({ type: 'omnibox:query', query }); },
+        /** 壳的统一刷新事件：`omnibox:freshness {plugin, scope, report}`。 */
+        sendFreshness(plugin, report, scope = '') {
+            env.send({ type: 'omnibox:freshness', plugin, scope, report });
+        },
         calls: (method) => bridgeCalls.filter((call) => call.method === method),
         tick: (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms)),
     };

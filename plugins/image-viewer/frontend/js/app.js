@@ -138,8 +138,19 @@ class ImageViewer {
         return true;
     }
 
-    /** 上报 chrome：标题、副标题、视图（'' 表示旧嵌入口、壳取消导航高亮）、顶栏动作
-        显隐/禁用/文案、导航组可见性、搜索占位与状态栏。 */
+    /**
+     * 统一刷新的作用域：图片层给当前目录，相册层与时间线「按图片」层给空串（全根）。
+     *
+     * 时间线「按图片」层的列表来自 `list_recent_images`，不属于任何目录，所以与相册层
+     * 一样按全根同步。壳按插件记住这个值，作为 `autoSync(scope)` 的入参。
+     */
+    _freshnessScope() {
+        if (this.mode !== 'images' || this._recentActive) return '';
+        return this.currentPath || '';
+    }
+
+    /** 上报 chrome：标题、副标题、视图（'' 表示旧嵌入口、壳取消导航高亮）、统一刷新的
+        作用域、顶栏动作显隐/禁用/文案、导航组可见性、搜索占位与状态栏。 */
     _pushChrome() {
         const isImages = this.mode === 'images';
         const isChildren = this.mode === 'children';
@@ -153,6 +164,7 @@ class ImageViewer {
                 : this._chromeTitle,
             subtitle: this._extensionOpen ? this._extensionSub : this._chromeSub,
             view: this._extensionOpen ? '' : this.currentView,
+            freshness_scope: this._freshnessScope(),
             actions: {
                 back: { visible: isImages || isChildren, placement: 'leading' },
                 'new-album': { visible: true },
@@ -375,6 +387,10 @@ class ImageViewer {
             if (this._slideshowWanted && !this.slideshowTimer && this.currentAllImages.length) {
                 this.toggleSlideshow(this._slideshowResumeIndex || 0);
             }
+            // 重新可见是用户切回本插件时唯一可靠的时机：同步一次当前作用域，报告里有
+            // 变化才重载（`_syncFreshness(true)`）。注册时若已可见，生命周期会立刻补一次
+            // —— 那次就是首帧同步，所以 `init()` 不必再单独调。
+            this._syncFreshness(true);
         });
         lifecycle.onDispose(() => {
             this._cancelSlideshow();

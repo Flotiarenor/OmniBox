@@ -54,9 +54,11 @@ class DirScanner:
         direct_units = len(self._naming.work_units(
             [item['name'] for item in result['files']]))
         # 封面：Pixiv 树取作品号最大的一张（p0），其余取文件名自然序第一张；
-        # 相册新旧仍按最新 mtime 计算
+        # 相册新旧仍按最新 mtime 计算。封面自身的 mtime 一并带出去：它是缩略图 URL
+        # 的版本号，替换封面文件（同目录 mtime 不变）时只有它会变。
         newest = max((img['mtime'] for img in images), default=0.0)
         cover = self._naming.pick_cover(images, pixiv)
+        cover_mtime = next((img['mtime'] for img in images if img['rel'] == cover), 0.0)
         root, inner = self._paths.split_virtual(rel_path)
         parent = self._paths.virtual_path(root, '/'.join(inner.split('/')[:-1])) \
             if (root is not None and inner) else None
@@ -68,6 +70,7 @@ class DirScanner:
             'direct_count': len(images),
             'direct_units': direct_units,
             'direct_cover': cover,
+            'direct_cover_mtime': cover_mtime,
             'direct_mtime': newest,
             'pixiv': pixiv,      # 封面挑选依据，缓存复用时要核对（见 AlbumIndex.scan_dir_cached）
             'has_children': len(children) > 0,

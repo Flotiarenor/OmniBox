@@ -57,11 +57,19 @@ const MPUtils = {
         }
         if (item.has_cover && item.id) {
             const base = Bridge.thumbUrl(item.id);
-            // 带源文件 mtime 版本号：视频/音频文件被替换后 mtime 变化 → URL 变化，
-            // 强制浏览器绕过 /thumbs 的 1 天缓存（旧封面最长展示 24h 的问题）
-            return item.mtime ? `${base}&v=${Math.round(item.mtime)}` : base;
+            // 带封面版本号：`/thumbs` 的响应缓存一天，URL 不变就看不到新封面。
+            // 后端给的 `cover_mtime` 是封面文件自身的 mtime（目录里的封面图被替换后
+            // 条目文件可能没动），缺这个字段时退回条目自己的 mtime。
+            const version = MPUtils.coverVersion(item);
+            return version ? `${base}&v=${Math.round(version)}` : base;
         }
         return '';
+    },
+
+    // 封面 URL 的版本号：优先封面文件 mtime，退回条目 mtime；都没有时为 0。
+    coverVersion(item) {
+        if (!item) return 0;
+        return Number(item.cover_mtime) || Number(item.mtime) || 0;
     },
 
     // 封面来源兼容两种形态：远程 URL 字符串（网易云歌单封面）/ 本地 item 对象

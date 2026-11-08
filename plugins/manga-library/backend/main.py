@@ -57,7 +57,7 @@ class MangaLibraryPlugin(PluginBase):
             self.paths, self.library, _scanner.IMAGE_EXTS, self.SHELF_VERSION)
         self.downloads = _downloads.DownloadCenter(
             self.paths, _dmodels.DownloadTask, _dstate.load_tasks,
-            _dstate.save_tasks, self._run_download)
+            _dstate.save_tasks, self._run_download, self._on_download_completed)
         #: 禁漫接口客户端：首个下载任务时才构造（域名引导与版本协商要发请求），
         #: 之后复用同一实例，域名列表与 scramble_id 缓存不会每次重建。
         self._jm_client: Any = None
@@ -69,6 +69,19 @@ class MangaLibraryPlugin(PluginBase):
         return _downloader.execute_download(
             task, manga_dir, state_dir, lock, logger,
             client=self._jm_client, save_image=save_image)
+
+    def _on_download_completed(self, _task_id: str) -> None:
+        """下载完成：图片与 `album_info.json` 已写进漫画根，书架缓存与去抖立即作废。
+
+        下载中心与书架共用同一个数据根却互不 import（分层门禁 R3），"写完该失效
+        什么"由入口编排 —— 与换根编排同一形态。不在这里做全树重扫：书架缓存只置
+        脏，下一次 `manga_list` / 被动同步才付扫描成本。
+        """
+        self.library.reset()
+        engine = engine_for(self)
+        if engine is not None:
+            # 清掉去抖：下一次进书架的被动同步立刻按新目录重扫
+            engine.reset_throttle()
 
     def register_api(self) -> dict:
         return {

@@ -13,7 +13,7 @@
 
 | 文件 | 职责 | 关键符号 |
 | --- | --- | --- |
-| `plugins/image-cleaner/backend/main.py` | 入口（facade）：`settings_schema` 引用、`register_api` 绑定表、壳按名调用的钩子、装配与宿主兼容成员 | `ImageCleanerPlugin`、`settings_schema`、`register_api`、`get_status`、`get_settings`、`get_extensions`、`get_data_root`、`get_file_roots`、`delete_files`、`ensure_thumb`、`get_thumb_data`、`freshness_spec`、`on_settings_changed`、`on_unload`、`_get_host`、`_host_root_listings` |
+| `plugins/image-cleaner/backend/main.py` | 入口（facade）：`settings_schema` 引用、`register_api` 绑定表、壳按名调用的钩子、装配与宿主兼容成员 | `ImageCleanerPlugin`、`settings_schema`、`register_api`、`get_status`、`get_settings`、`get_extensions`、`get_data_root`、`get_file_roots`、`delete_files`、`_notify_host_derived`、`ensure_thumb`、`get_thumb_data`、`freshness_spec`、`on_settings_changed`、`on_unload`、`_get_host`、`_host_root_listings` |
 | `plugins/image-cleaner/backend/const.py` | 设置项 schema、扫描扩展名、dHash 版本、扩展入口条目（纯数据，只有入口加载） | `SETTINGS_SCHEMA`、`ALLOWED_EXTENSIONS`、`DHASH_VERSION`、`SCAN_MODES`、`EXTENSION_ENTRIES`、`extension_entries` |
 | `plugins/image-cleaner/backend/cancel.py` | 后台扫描的取消点（分组与后台任务共用） | `ScanCancelled`、`check_cancel` |
 | `plugins/image-cleaner/backend/host.py` | 宿主适配：根清单与虚拟路径前缀、数据根 / 文件根、缩略图转发 | `HostBridge`、`roots`、`abs_for_rel`、`data_root`、`file_roots`、`name`、`ensure_thumb`、`thumb_data` |
@@ -24,9 +24,9 @@
 | `plugins/image-cleaner/backend/results.py` | 扫描结果缓存：读写、过期标记与失效文件过滤 | `ScanResults`、`SCAN_CACHE_FILE`、`path`、`load`、`save`、`save_result`、`get_cached_scan`、`mark_stale`、`persist_stale`、`clear_stale` |
 | `plugins/image-cleaner/backend/pipeline.py` | 扫描编排：收集 → 分组 → 写结果缓存（同步入口与后台任务共用） | `ScanPipeline`、`collect`、`group`、`duplicate_scan`、`similar_scan`、`regroup_all` |
 | `plugins/image-cleaner/backend/background.py` | 后台扫描任务：单飞、进度投影与取消 | `ScanTaskRunner`、`start`、`worker`、`status`、`cancel`、`shutdown` |
-| `plugins/image-cleaner/backend/freshness.py` | 统一刷新规格与钩子、引擎去抖重置 | `FreshnessProvider`、`spec`、`reset_throttle`、`derive`、`prune`、`audit`、`pass_end`、`rebuild` |
+| `plugins/image-cleaner/backend/freshness.py` | 统一刷新规格与钩子、引擎去抖重置；`content_version` 取指纹库的条目版本（`DHashStore.version`，与 `DHASH_VERSION` 同源） | `FreshnessProvider`、`spec`、`reset_throttle`、`derive`、`prune`、`audit`、`pass_end`、`rebuild` |
 | `plugins/image-cleaner/frontend/native.html` | 原生逻辑页骨架：无样式、无 chrome，只装载统一客户端与业务脚本 | `/shell/native-client.js`、`js/native.js` |
-| `plugins/image-cleaner/frontend/js/native.js` | 原生面板逻辑：拉数据、编译 schema blocks 与顶栏 toolbar、处理动作、轮询校验进度 | `state`、`PAGE_SIZE`、`POLL_MS`、`SCAN_START_TIMEOUT_MS`、`client`、`render`、`buildBlocks`、`buildToolbar`、`groupBlocks`、`emptyBlock`、`snapshotTask`、`syncTaskState`、`refreshAfterScan`、`startPolling`、`mountFreshness`、`loadResults`、`init`、`runVerify`、`cancelScan`、`confirmDelete`、`selectGroup`、`selectAll`、`keepOneAll`、`handleAction`、`open-settings`、`settings-saved` |
+| `plugins/image-cleaner/frontend/js/native.js` | 原生面板逻辑：拉数据、编译 schema blocks 与顶栏 toolbar、处理动作、按任务状态轮询；打开面板时做一次被动同步，`onDispose` 销毁刷新控件 | `state`、`PAGE_SIZE`、`POLL_MS`、`SCAN_START_TIMEOUT_MS`、`client`、`render`、`buildBlocks`、`buildToolbar`、`groupBlocks`、`emptyBlock`、`snapshotTask`、`syncTaskState`、`reloadFromCache`、`refreshAfterScan`、`startPolling`、`mountFreshness`、`loadResults`、`init`、`runVerify`、`cancelScan`、`confirmDelete`、`selectGroup`、`selectAll`、`keepOneAll`、`handleAction`、`open-settings`、`settings-saved` |
 | `plugins/image-cleaner/frontend/index.html` | 旧壳回落的内嵌页骨架、内嵌态标记、脚本装载 | `#app`、`.view-body`、`#cleaner-toolbar`、`.view-toolbar`、`.cleaner-toolbar`、`.toolbar-group`、`.cleaner-meta`、`.cleaner-scope`、`#cleaner-root`、`.cleaner-root`、`#cleaner-actions`、`#btn-settings`、`.btn`、`.btn-sm`、`.view-content`、`.cleaner-content`、`.obx-scroll`、`.cleaner-tabs`、`#tab-dupe`、`#tab-similar`、`#cleaner-scanned`、`.cleaner-scanned`、`#cleaner-freshness`、`.cleaner-freshness`、`#cleaner-results`、`.cleaner-results`、`.cleaner-footer`、`#cleaner-selected`、`.cleaner-selected`、`#btn-keep-one-all`、`#btn-delete`、`.btn-danger`、`is-embedded` |
 | `plugins/image-cleaner/frontend/image-cleaner.css` | 旧内嵌页的全部样式 | `#app`、`.cleaner-toolbar`、`.cleaner-meta`、`.cleaner-scope`、`.cleaner-root`、`.cleaner-content`、`.cleaner-freshness`、`.cleaner-tabs`、`.cleaner-tabs .btn.active`、`.cleaner-results`、`.cleaner-scanned`、`.cleaner-more`、`.cleaner-footer`、`.cleaner-selected`、`.cleaner-group`、`.cleaner-group-head`、`.cleaner-group-head span`、`.cleaner-files`、`.cleaner-file`、`.cleaner-file img`、`.cleaner-file span`、`.cleaner-file input`、`html.is-embedded .cleaner-toolbar`、`--bg-hover`、`--bg-surface`、`--text-primary`、`--text-secondary`、`--text-on-accent`、`--border`、`--accent` |
 | `plugins/image-cleaner/frontend/js/app.js` | 旧内嵌页的单类前端：挂载共享控件与宿主工具栏、读缓存渲染、勾选与删除 | `ImageCleaner`、`mode`、`groups`、`selected`、`pageSize`、`visibleCount`、`lightbox`、`freshness`、`init`、`_bind`、`_mountHostToolbar`、`_mountFreshness`、`openSettings`、`_displayPath`、`updateStatus`、`switchMode`、`_loadResults`、`render`、`keepOneInGroup`、`keepOneForAll`、`_syncCheckboxes`、`showMore`、`updateSelected`、`deleteSelected`、`_escapeHtml`、`_escapeAttr` |
@@ -45,7 +45,7 @@
 | `scan_status` | 无 | `{running, done, success, cancelled, mode, total, processed, current, groups}` | 后台任务状态投影 |
 | `scan_cancel` | 无 | `{success}`；无任务时 `{success, error}` | 取消插件任务或统一校验 |
 | `get_cached_scan` | `mode` | `{groups, scanned, cached, stale, saved_at}` | 读结果缓存 |
-| `delete_files` | `rel_paths` | `{deleted, errors}` | 转发宿主的删除实现 |
+| `delete_files` | `rel_paths` | `{deleted, errors}` | 转发宿主的删除实现；有成功删除时调宿主的 `invalidate_derived('image-cleaner:delete')`（旧宿主用 `getattr` 跳过，失败不影响删除结果） |
 | `get_status` | 无 | `{host, root_dir, roots, scope}` | 扫描范围与宿主名 |
 | `get_settings` | 无 | `threshold`、`root_dir` | 设置值与只读信息行 |
 | `save_settings` | `settings` | `{success}` 或 `{success, error}` | 基类写入设置存储 |
@@ -58,7 +58,7 @@
 | `freshness_spec` | 无 | 规格键 `roots`、`prefixes`、`include`、`derive`、`prune`、`on_verified`、`on_pass_end`、`rebuild`、`content_version`、`unit`、`min_sync_interval` | 声明统一刷新规格；钩子由 `FreshnessProvider` 提供，不经壳按名从入口取 |
 | `on_settings_changed` | `changed_keys` | 无 | 阈值变更作废相似分组并重置引擎去抖 |
 | `on_unload` | 无 | 无 | 取消在跑的扫描任务 |
-| `delete_files` | `rel_paths` | `{deleted, errors}` | 转发宿主的删除实现 |
+| `delete_files` | `rel_paths` | `{deleted, errors}` | 转发宿主的删除实现；有成功删除时调宿主的 `invalidate_derived('image-cleaner:delete')`（旧宿主用 `getattr` 跳过，失败不影响删除结果） |
 | `get_data_root` | 无 | 宿主数据根 `Path` | 本插件的缓存与 `thumb_dir` 从它派生 |
 | `get_file_roots` | 无 | `[Path]` | `/file` 允许访问的根列表（转发宿主） |
 | `ensure_thumb` / `get_thumb_data` | `rel_path` | 无 / `(bytes, mime)` | `/thumbs` 代理宿主的缩略图 |
@@ -105,7 +105,7 @@
 
 - 原生内容：`shell/frontend/src/components/NativePanel.vue` 承载逻辑 iframe（`omnibox:native-ready` / `omnibox:native-init` / `omnibox:native-action`），`shell/frontend/src/components/SchemaRenderer.vue` 渲染 `omnibox:schema` 的 blocks；schema 类型见 `shell/frontend/src/core/plugin-content.ts`。
 - 壳基类 `PluginBase`（`shell/backend/plugin_base.py`）：`settings_schema`、`register_api`、`get_settings`、`save_settings`、`setting`、`get_dependency`、`get_extensions`、`freshness_spec`、`on_settings_changed`、`on_unload`、`get_data_root`、`get_file_roots`、`thumb_dir`、`ensure_thumb`、`get_thumb_data`。
-- 宿主成员（`image-viewer` 实例）：`name`、`get_data_root`、`get_file_roots`、`thumb_dir`、`ensure_thumb`、`get_thumb_data`、`delete_files`、`list_roots`，其中 `list_roots` 的条目键是 `path`、`prefix`。
+- 宿主成员（`image-viewer` 实例）：`name`、`get_data_root`、`get_file_roots`、`thumb_dir`、`ensure_thumb`、`get_thumb_data`、`delete_files`、`invalidate_derived`、`list_roots`，其中 `list_roots` 的条目键是 `path`、`prefix`。
 - 共享后端基建：`shell/backend/tasks.py` 的 `BackgroundTask`（`kind`、`extra`、`start`、`update`、`status`、`cancel`、`cancelled`、`state`）；`shell/backend/freshness.py` 的 `engine_for`、`request_cancel`、`reset_throttle` 与规格键 `content_version`、`min_sync_interval`；`shell/backend/media_catalog.py` 的 `IMAGE_EXTENSIONS`。
 - 共享前端组件（按分段，见 `shell/frontend/AGENTS.md`）：`base.js` 的 `Bridge.call`、`Bridge.callSystem`、`Bridge.thumbUrl`、`Utils.escapeHtml`；`toast.js` 的 `Toast.warning` / `Toast.error` / `Toast.success`；`dialogs.js` 的 `confirmDialog`；`settings.js` 的 `openSettingsModal`；`lightbox.js` 的 `createLightbox`；`host-channel.js` 的 `HostChannel.mountToolbar` / `HostChannel.requestSettings` / `HostChannel.onCallback`；`freshness.js` 的 `Freshness.mount`（返回 `state`、`verify`、`cancel`、`autoSync`）。
 - 预览：原生面板的卡片缩略图由壳的 `NativePanel` 打开遮罩预览（`SchemaRenderer` 的 `preview` 事件），图片地址就是 `Bridge.thumbUrl(...)` 的缩略图；旧内嵌页仍用 `createLightbox` 在本文档内预览，不读宿主窗口上的对象。

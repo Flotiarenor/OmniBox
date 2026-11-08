@@ -798,6 +798,35 @@ FRESHNESS_SPEC_DEF_RE = re.compile(r'def\s+freshness_spec\s*\(')
 FRESHNESS_MOUNT_RE = re.compile(r'\bFreshness\s*\.\s*mount\s*\(')
 # mount({ plugin: '名字' }) —— 名字必须等于插件名
 FRESHNESS_PLUGIN_ARG_RE = re.compile(r"""Freshness\s*\.\s*mount\s*\(\s*\{[^}]*?\bplugin\s*:\s*['"]([^'"]+)['"]""", re.DOTALL)
+# 壳挂载型必须真的触发一次被动同步（mount 只渲染控件与读一次状态，不扫盘）
+FRESHNESS_AUTOSYNC_RE = re.compile(r'\bautoSync\s*\(')
+# 壳渲染插件页面骨架的组件：统一刷新控件在这里挂载
+SHELL_PLUGIN_CHROME = PROJECT_ROOT / 'shell' / 'frontend' / 'src' / 'components' / 'PluginChrome.vue'
+
+
+def _check_shell_freshness_trigger(component: Path | None = None) -> List[str]:
+    """壳挂载型统一刷新必须调 `autoSync(...)` 才算接完线（返回 errors）。
+
+    为什么必须在门禁里拦：`Freshness.mount(...)` 只做三件事 —— 渲染控件、读一次
+    `system_freshness_state`、等用户点「校验」。**它自己不扫盘**：被动同步
+    （`system_freshness_sync`）只有 `autoSync(scope)` 会发起。漏掉这一句时，
+    控件、按钮、状态文案、后端端点全部正常，唯一的现象是"外部新增或删除的文件
+    永远不出现在界面上，必须 Ctrl+F5 或重启"—— 每一处代码单独看都没问题。
+
+    组件缺失（或没挂载）由 `_check_freshness_contract` 单独报，这里不重复。
+    """
+    path = Path(component) if component is not None else SHELL_PLUGIN_CHROME
+    try:
+        text = path.read_text(encoding='utf-8')
+    except OSError:
+        return []
+    if FRESHNESS_AUTOSYNC_RE.search(text):
+        return []
+    return [
+        '壳挂载的统一刷新控件没有 autoSync(...) 调用：Freshness.mount 只渲染控件并读一次'
+        '状态，不发被动同步；缺这一句时外部新增/删除的文件永远不会出现在界面上'
+        '（见 docs/plugin-guide.md「统一刷新（同步 / 校验）」）'
+    ]
 
 
 def _check_freshness_contract(plugin_dir: Path, name: str, *, shell_mounts: bool = False) -> List[str]:
@@ -1203,6 +1232,17 @@ def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -
 
         if isinstance(name, str) and PLUGIN_NAME_RE.fullmatch(name) and name == folder_name:
             discovered.append((plugin_dir, name, data))
+
+    # 壳挂载型的触发面只检查一次（组件是壳的一份，按插件重复报同一句话没有信息量）。
+    shell_freshness_used = False
+    for _plugin_dir, _name, data in discovered:
+        frontend = data.get('frontend')
+        chrome = frontend.get('chrome') if isinstance(frontend, dict) else None
+        if isinstance(chrome, dict) and chrome.get('freshness'):
+            shell_freshness_used = True
+            break
+    if shell_freshness_used:
+        errors.extend(_check_shell_freshness_trigger())
 
     plugin_names = {name for _, name, _ in discovered}
     for _plugin_dir, name, data in discovered:

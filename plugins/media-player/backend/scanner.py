@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, FrozenSet, Optional
 
 #: 索引结构与解析规则的版本。升级它 = 让统一刷新基建整体作废派生数据后重建。
-INDEX_VERSION = 4
+INDEX_VERSION = 5
 
 #: 视频扩展名（音频扩展名以 `metadata.SUPPORTED_EXTS` 为准，构造时取一次）。
 VIDEO_EXTS: FrozenSet[str] = frozenset(
@@ -116,6 +116,21 @@ class MediaScanner:
         """该文件是否有内嵌封面（扫描期与封面失效重算共用，不落盘）。"""
         return bool(self._metadata.MetadataReader.has_embedded_cover(file_path))
 
+    @staticmethod
+    def cover_mtime(folder_cover: Optional[Path], fallback: float) -> float:
+        """封面字节的版本时刻：目录封面图自身的 mtime，没有目录封面时用 `fallback`。
+
+        目录封面被同名替换时，媒体文件与所在目录的 mtime 都可能不变，只有封面文件
+        自己的 mtime 会前进；版本号取自它才能在替换后拿到新图片。没有目录封面时，
+        封面来自内嵌图或视频抽帧，跟着源文件走，因此用条目 mtime。
+        """
+        if folder_cover is not None:
+            try:
+                return folder_cover.stat().st_mtime
+            except OSError:
+                pass
+        return float(fallback or 0.0)
+
     # ===== 构造条目 =====
 
     def build_item(self, full_path: Path, root: Path, namespace: str, rel_dir: str,
@@ -158,6 +173,7 @@ class MediaScanner:
                 duration=float(meta.get('duration') or 0),
                 size=stat.st_size,
                 mtime=stat.st_mtime,
+                cover_mtime=self.cover_mtime(folder_cover, stat.st_mtime),
                 cover_path='',
                 has_cover=has_cover,
                 album_artist=album_artist,
@@ -176,6 +192,7 @@ class MediaScanner:
             duration=self._video_meta.probe_duration(str(full_path)) or 0.0,
             size=stat.st_size,
             mtime=stat.st_mtime,
+            cover_mtime=self.cover_mtime(folder_cover, stat.st_mtime),
             cover_path='',
             # 视频始终可生成封面帧（目录封面图优先，否则按需抽帧）
             has_cover=True,

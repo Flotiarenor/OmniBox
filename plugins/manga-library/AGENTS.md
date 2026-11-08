@@ -11,12 +11,12 @@
 
 | 文件 | 职责 | 关键符号 |
 | --- | --- | --- |
-| `plugins/manga-library/backend/main.py` | 入口（facade）：设置 schema 引用、API 表、壳按名调用的钩子、装配与换根编排（业务都在下面的组件里） | `MangaLibraryPlugin`、`settings_schema`、`SHELF_VERSION`、`register_api`、`get_data_root`、`get_settings`、`on_settings_changed`、`freshness_spec`、`_apply_root_dir` |
+| `plugins/manga-library/backend/main.py` | 入口（facade）：设置 schema 引用、API 表、壳按名调用的钩子、装配与换根编排（业务都在下面的组件里） | `MangaLibraryPlugin`、`settings_schema`、`SHELF_VERSION`、`register_api`、`get_data_root`、`get_settings`、`on_settings_changed`、`freshness_spec`、`_apply_root_dir`、`_on_download_completed` |
 | `plugins/manga-library/backend/const.py` | 纯数据：设置项 schema、书架规则版本、阅读与下载的数值上限、下载状态落点名（只有入口加载） | `SETTINGS_SCHEMA`、`SHELF_VERSION`、`RECENT_LIMIT`、`RECENT_COUNT_MIN`、`RECENT_COUNT_MAX`、`DOWNLOAD_STATE_DIRNAME`、`DOWNLOAD_STATE_FILE` |
 | `plugins/manga-library/backend/paths.py` | 漫画根与派生路径：书架状态文件、下载状态目录（含用户主目录回落） | `PathLayout`、`rebind`、`root`、`state_file`、`download_state_dir`、`download_state_file` |
 | `plugins/manga-library/backend/library.py` | 书架缓存与阅读状态：收藏 / 最近阅读、详情与页面列表 | `Library`、`rebind`、`set_recent_count`、`reset`、`rescan`、`list_manga`、`search`、`get_state`、`retain`、`toggle_favorite`、`update_recent`、`get_detail`、`get_pages` |
 | `plugins/manga-library/backend/freshness.py` | 统一刷新基建的规格声明与钩子（扫描与缓存仍归 `Library`） | `ShelfFreshness`、`spec`、`derive`、`prune`、`audit`、`rebuild` |
-| `plugins/manga-library/backend/downloads.py` | 下载中心：任务表、暂停 / 恢复 / 重试、工作线程与 `album_info.json` 落盘 | `DownloadCenter`、`list_tasks`、`submit`、`pause`、`resume`、`retry`、`delete`、`start_all`、`pause_all`、`clear_completed`、`album_info`、`_start`、`_worker`、`_save_album_info` |
+| `plugins/manga-library/backend/downloads.py` | 下载中心：任务表、暂停 / 恢复 / 重试、工作线程与 `album_info.json` 落盘 | `DownloadCenter`、`on_completed`、`_notify_completed`、`list_tasks`、`submit`、`pause`、`resume`、`retry`、`delete`、`start_all`、`pause_all`、`clear_completed`、`album_info`、`_start`、`_worker`、`_save_album_info` |
 | `plugins/manga-library/backend/scanner.py` | 目录扫描与封面选择的纯函数 | `IMAGE_EXTS`、`natural_sorted`、`visible_subdirs`、`direct_images`、`has_images`、`load_album_info`、`find_cover`、`scan_manga`、`resolve_safe_path`、`list_pages` |
 | `plugins/manga-library/backend/download_models.py` | 下载任务数据类与两种序列化 | `DownloadTask`、`to_api_dict`、`to_state_dict`、`from_state_dict`、`albumId`、`thumbUrl`、`totalImages`、`completedImages`、`downloadDir`、`startTime`、`completeTime` |
 | `plugins/manga-library/backend/download_state.py` | 任务表 JSON 落盘与恢复 | `save_tasks`、`load_tasks` |
@@ -42,9 +42,9 @@
 | `save_settings` | `settings` | `{success}` / `{success, error}` | 基类实现：写设置存储并触发 `on_settings_changed` |
 | `manga_list` | 无 | `List[Dict]` | 书架全部漫画，读内存缓存 |
 | `manga_search` | `keyword` | `List[Dict]` | 在 `title`、`author` 上做小写子串匹配，空关键字等价 `manga_list` |
-| `manga_get_state` | 无 | `{recent, favorites}` | 按 `folder_name` 取回漫画对象，`recent` 截断到 `recent_count` |
+| `manga_get_state` | 无 | `{recent, favorites}` | 按 `folder_name` 取回漫画对象；`recent` 的每一项在漫画字段之外带 `page`（上次阅读页码，0 起），先按书架命中过滤再截断到 `recent_count` |
 | `manga_toggle_favorite` | `folder_name` | `bool` | 切换收藏并返回切换后的状态，非法目录名返回 `False` |
-| `manga_update_recent` | `folder_name`、`page` | `{status}` / `{status, error}` | 去重后插到队首，最多保留 20 条 |
+| `manga_update_recent` | `folder_name`、`page` | `{status}` / `{status, error}` | 去重后插到队首，最多保留 20 条；阅读器开启与关闭时上报当前页码（0 起），`manga_get_state` 的 `recent[].page` 据此续读 |
 | `manga_get_detail` | `folder_name` | `{folder_name, title, author, is_fav, is_multi_chapter, info, chapters}` / `{}` | 路径非法或不存在时返回空字典，`chapters` 每项为 `{name, cover_url, path}` |
 | `manga_get_pages` | `folder_name`、`chapter_path` | `List[str]` | 相对漫画根的 posix 图片路径，越界或不存在返回 `[]` |
 | `download_submit` | `album_id`、`concurrency`、`priority`、`auto_start` | `{taskId, success}` / `{success, error}` | `album_id` 必须纯数字，`concurrency` 夹到 1 至 10 |
@@ -68,7 +68,7 @@
 | `get_data_root` | 无 | `Path` | `/file` 路由的允许根 |
 | `get_settings` | 无 | `Dict` | 设置面板回填值 |
 | `on_settings_changed` | `changed_keys` | 无 | `root_dir` 换根、`recent_count` 夹到 1 至 50 |
-| `freshness_spec` | 无 | `Dict` | 声明 `roots`、`include`、`derive`、`prune`、`on_verified`、`rebuild`、`content_version`、`unit`、`min_sync_interval`、`stat_entries` |
+| `freshness_spec` | 无 | `Dict` | 声明 `roots`、`include`、`derive`、`prune`、`on_verified`、`rebuild`、`content_version`、`unit`（「本」）、`min_sync_interval`、`stat_entries` |
 
 ## 前端结构
 
@@ -106,7 +106,7 @@
   - 内容 → 壳 `omnibox:ready`：握手。壳收到后补发当前视图；内容页在 `init` 末尾主动发一次。
   - 内容 → 壳 `omnibox:chrome`：`title` / `subtitle` / `view` / `actions` / `nav` / `search` / `status`。`view` 在详情与阅读态发空串（清掉导航高亮），下载中心发复合 id；`actions` 上报四个下载动作的 `visible` 与 `disabled`；`nav` 上报漫画库三视图与 `downloads:all` 的徽标并显式声明各导航项可见；`search.enabled` 在下载中心与详情页为 `false`，`search.value` / `search.clear` 在切视图、进详情时清空壳输入框；`status` 为任务统计。
   - 轮询：`loadTasks` 每 2s 拉一次 `download_list`，随后重算并上报 `actions` 的 `visible` / `disabled`，避免壳上的按钮停在旧态。
-- **统一刷新**：`freshness` 由壳的 `PluginChrome` 挂载（`shell/frontend/public/shell/freshness.js` 的 `Freshness.mount`，`plugin` 为 `manga-library`、`unit` 为「本」），内容页不再挂 `#ml-freshness`，也不再调用 `autoSync`；校验完成后的重载经 `omnibox:action: refresh` 回来。
+- **统一刷新**：`freshness` 由壳的 `PluginChrome` 挂载（`shell/frontend/public/shell/freshness.js` 的 `Freshness.mount`，`plugin` 为 `manga-library`、`unit` 为「本」），壳在挂载后与 `activeView` / `freshness_scope` 变化时调 `autoSync(scope)`；内容页不再挂 `#ml-freshness`，也不直接持有控件，`plugin-shown` 时用 `Freshness.sync('manga-library', scope)` 同步一次（scope 为当前漫画目录，书架层为空串）。重载经 `omnibox:freshness` 与兼容的 `omnibox:action: refresh` 进来，阅读器与章节层就地保留；「最近阅读」的 `page` 用于续读。下载任务进入 `completed` 时入口回调 `_on_download_completed` 会 `library.reset()` 并 `engine.reset_throttle()`，下一次 `manga_list` 即可看到新书。
 - **返回层级**：阅读器（共享灯箱或旧 `.manga-reader` 覆盖层）是最内层，`MangaReader.isOpen` 暴露打开状态；壳顶栏 `back` 与左栏导航在阅读器打开时先关闭它（`_closeReader`），下次返回才按 `viewLevel` 退到章节/书架。迁移前返回按钮在内容页、被覆盖层挡住，这条路径不可达，因此不关阅读器时会出现「点返回没反应」。
 - **壳类**：`PluginBase`（`shell/backend/plugin_base.py`），本插件用到的成员为 `setting`、`save_settings`、`settings_schema`、`get_data_root`、`on_settings_changed`。
 - **壳基建**：`engine_for`（`shell/backend/freshness.py`）返回 `FreshnessEngine`，本插件调用其 `reset_throttle`；组件模块由入口用 `load_sibling`（`shell/backend/plugin_utils.py`）加载 —— 只有入口可以，组件之间不互相 import。

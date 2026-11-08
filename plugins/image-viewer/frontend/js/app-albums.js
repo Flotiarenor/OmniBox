@@ -252,7 +252,11 @@ Object.assign(ImageViewer.prototype, {
             className: 'iv-album',
             image: album.cover
                 ? {
-                    src: this._thumbUrl({ url: album.cover, mtime: album.mtime }),
+                    src: this._thumbUrl({
+                        url: album.cover,
+                        mtime: album.mtime,
+                        cover_mtime: album.cover_mtime,
+                    }),
                     alt: '',
                     data: { path: album.path },
                     onError: (event, img) => this._handleAlbumCoverError(img),

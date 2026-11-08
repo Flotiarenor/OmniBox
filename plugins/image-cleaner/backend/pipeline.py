@@ -61,7 +61,11 @@ class ScanPipeline:
         return {'groups': groups, 'scanned': len(valid)}
 
     def regroup_all(self) -> Dict:
-        """用当前指纹缓存重新分组，并写入两个模式的结果缓存（校验趟的收尾）。"""
+        """用当前指纹缓存重新分组，并写入两个模式的结果缓存（校验趟的收尾）。
+
+        `scanned` 与 `group()` 同一口径：完全重复数文件、相似数有效图片 —— 两处写进
+        缓存的数字必须是同一含义，界面的「已扫描 N 张」才不会被读不了的图污染。
+        """
         files = self.collect()
         out: Dict[str, Any] = {'scanned': len(files)}
         threshold = self._similar.resolve_threshold(None)
@@ -69,13 +73,15 @@ class ScanPipeline:
             try:
                 if mode == 'dupe':
                     groups = self._duplicates.groups(files)
+                    scanned = len(files)
                 else:
                     hashes, valid = self._similar.dhash_all(files)
                     groups = self._similar.groups(hashes, valid, threshold)
+                    scanned = len(valid)
             except Exception as e:
                 log.error(f'[{self._name}] 重新分组失败（{mode}）: {e}')
                 out[mode] = {'error': str(e)}
                 continue
-            self._results.save_result(mode, groups, len(files))
+            self._results.save_result(mode, groups, scanned)
             out[mode] = len(groups)
         return out

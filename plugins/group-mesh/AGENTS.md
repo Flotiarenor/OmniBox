@@ -51,16 +51,16 @@
 | `plugins/group-mesh/backend/main.py` | 入口（facade）：设置 schema 引用、API 绑定表、壳按名调用的钩子、装配 | `GroupMeshPlugin`、`settings_schema`、`register_api`、`get_extensions`、`get_data_root`、`get_protected_paths`、`freshness_spec`、`is_content_placeholder`、`ensure_file`、`on_load`、`on_unload`、`on_settings_changed`、`cache_dir`、`downloads_dir` |
 | `plugins/group-mesh/backend/const.py` | 共享常量、设置项 schema 与跨组件纯函数（只有入口加载） | `SETTINGS_SCHEMA`、`DEFAULT_PORT`、`MeshRules`、`RULES`、`opts`、`mtime_ns`、`safe_rel`、`within_root` |
 | `plugins/group-mesh/backend/pulse.py` | 后台同步的脏标志、唤醒/停止事件与间隔 | `SyncPulse`、`interval`、`request`、`clear`、`dirty`、`status`、`wake_event`、`stop_event`、`last_sync_at`、`last_error` |
-| `plugins/group-mesh/backend/peer_facts.py` | 对端的运行期事实：连不上的端点、名单版本、采纳提示 | `PeerFacts`、`reset_unreachable`、`mark_unreachable`、`note_roster`、`notes_snapshot`、`version_list`、`set_notice`、`unreachable`、`roster_notes`、`notice` |
+| `plugins/group-mesh/backend/peer_facts.py` | 对端的运行期事实：连不上的端点、名单版本、采纳提示 | `PeerFacts`、`reset_unreachable`、`mark_unreachable`、`unreachable_list`、`note_roster`、`notes_snapshot`、`version_list`、`set_notice`、`unreachable`、`roster_notes`、`notice` |
 | `plugins/group-mesh/backend/storage.py` | 数据根与派生路径、身份/名单/共享项/手动对端的落盘、用量统计 | `Storage`、`root`、`identity_dir`、`cache_dir`、`downloads_dir`、`remote_cache_dir`、`staging_dir`、`protected_paths`、`tree_usage`、`count_entries`、`load_identity`、`load_roster`、`save_roster`、`roster_history`、`record_roster_history`、`load_roster_history`、`load_shares`、`save_shares`、`load_share_roots`、`save_share_roots`、`share_roots_file`、`load_manual_peers`、`save_manual_peers`、`peers_file` |
 | `plugins/group-mesh/backend/registry.py` | 注册表对象与「设备 → 端点/共享清单」的派生视图 | `MeshRegistry`、`published_seq`、`ensure`、`reload`、`enabled`、`size`、`get`、`add_and_save`、`merge_and_save`、`snapshot_copy`、`device_names`、`peer_endpoints`、`pick_endpoint`、`peer_names`、`bootstrap_endpoints`、`candidates_for` |
 | `plugins/group-mesh/backend/connections.py` | 出站连接：界面侧复用池与后台专用短连接 | `ConnectionPool`、`PROBE_TIMEOUT_SECONDS`、`get`、`release`、`open_dedicated`、`close_all` |
 | `plugins/group-mesh/backend/node.py` | 共享节点启停、注册记录发布、自动启动、监听失败提示 | `Node`、`AUTO_START_RETRY_SECONDS`、`start`、`stop`、`publish`、`refresh_own`、`republish`、`auto_start`、`listen_error`、`status`、`listening`、`on_settings_changed` |
-| `plugins/group-mesh/backend/discovery.py` | 后台同步轮次、候选端点、注册快照并行探测与推送 | `Discovery`、`PROBE_OVERALL_SECONDS`、`SYNC_OVERALL_SECONDS`、`status`、`start`、`stop`、`run_once`、`probe_round`、`sync_candidates`、`push_pending_changes`、`fetch_registries_parallel`、`fetch_registry_from`、`adopt_remote_roster` |
+| `plugins/group-mesh/backend/discovery.py` | 后台同步周期、候选端点、注册快照并行探测与推送 | `Discovery`、`PROBE_OVERALL_SECONDS`、`SYNC_OVERALL_SECONDS`、`status`、`start`、`stop`、`run_once`、`probe_round`、`sync_candidates`、`push_pending_changes`、`fetch_registries_parallel`、`fetch_registry_from`、`adopt_remote_roster` |
 | `plugins/group-mesh/backend/peers.py` | 对端设备与可读共享项、手工登记地址、本机地址串 | `Peers`、`action`、`parse_endpoint`、`my_endpoint`、`list_peers` |
 | `plugins/group-mesh/backend/group.py` | 身份初始化、团体创建与加入、邀请串、成员增减 | `Group`、`init_identity`、`create_group`、`join_group`、`invite_string`、`get_invite`、`get_device_keys`、`add_member` |
-| `plugins/group-mesh/backend/shares.py` | 共享项挂载与移除、用量与条目数、统一刷新声明 | `Shares`、`usage_cache`、`get_share_roots`、`add_share`、`remove_share`、`refresh_share_roots`、`root_state`、`share_roots_report`、`scan_share_usage`、`spec`、`derive`、`prune`、`audit`、`pass_end`、`rebuild` |
-| `plugins/group-mesh/backend/status.py` | 首屏状态汇总 | `StatusReport`、`get_status` |
+| `plugins/group-mesh/backend/shares.py` | 共享项挂载与移除、用量与条目数缓存、统一刷新声明 | `Shares`、`usage_cache`、`get_share_roots`、`share_roots_report`、`add_share`、`remove_share`、`refresh_share_roots`、`root_state`、`scan_share_usage`、`_usage_fields`、`_usage_matches`、`sync_errors`、`spec`、`derive`、`prune`、`audit`、`pass_end`、`rebuild`、`_reset_throttle` |
+| `plugins/group-mesh/backend/status.py` | 首屏状态汇总（`sync` 带共享根读取错误与连不上的对端，`shares` / `share_roots` 带用量） | `StatusReport`、`get_status` |
 | `plugins/group-mesh/backend/remote.py` | 列对端共享项与目录、取回单个文件 | `Remote`、`list_remote`、`download_remote`、`fetch_to` |
 | `plugins/group-mesh/backend/materialize.py` | 远端目录物化、索引缓存与对账 | `Materialize`、`index_cache`、`materialize_remote`、`index_file`、`load_index`、`cached_index`、`invalidate_index`、`save_index`、`walk_remote`、`prune_absent`、`content_changed`、`is_fetched`、`apply_remote_mtime` |
 | `plugins/group-mesh/backend/mirror.py` | 把共享项完整取到用户指定目录 | `Mirror`、`MIRROR_MTIME_WINDOW_NS`、`mirror_share`、`mirror_files`、`mirror_file_current` |
@@ -97,7 +97,7 @@
 
 | 方法 | 入参 | 返回 | 用途 |
 | --- | --- | --- | --- |
-| `get_status` | 无 | `kernel`（`available`、`version`、`package`、`path`）、`data_root`、`identity_dir`、`locations`（`identity`、`downloads`、`downloads_custom`、`cache`、`remote_cache`）、`settings`（`port`、`bind`、`group_name`、`principal_name`、`download_dir`、`sync_interval_seconds`）、`node`、`sync`、`identity`、`roster`、`shares`、`share_roots`、`unsupported` | 首屏状态汇总；必要时自动启动节点 |
+| `get_status` | 无 | `kernel`（`available`、`version`、`package`、`path`）、`data_root`、`identity_dir`、`locations`（`identity`、`downloads`、`downloads_custom`、`cache`、`remote_cache`）、`settings`（`port`、`bind`、`group_name`、`principal_name`、`download_dir`、`sync_interval_seconds`）、`node`、`sync`（含 `errors`：共享根读取失败、`unreachable`：连不上的对端 `[{endpoint, error}]`）、`identity`、`roster`、`shares`、`share_roots`、`unsupported` | 首屏状态汇总；必要时自动启动节点 |
 | `init_identity` | `name` | `success`、`identity`（`name`、`id`、`device_id`） | 创建主体与首台设备 |
 | `get_device_keys` | 无 | `success`、`principal`、`device`、`name` | 导出本机公钥供群主登记 |
 | `create_group` | `group` | `success`、`group`、`version`、`invite` | 创建团体并成为群主 |
@@ -135,7 +135,7 @@
 | `ensure_file` | `path` | `None` | 读取占位文件时按需取回真字节 |
 | `get_protected_paths` | 无 | `List[Path]` | 申报 `identity_dir` 为受保护路径 |
 | `get_extensions` | 无 | `List[dict]` | 注册 placement 值 `network-location` 的扩展 |
-| `freshness_spec` | 无 | `Dict`（`roots`、`include`、`derive`、`prune`、`on_verified`、`on_pass_end`、`rebuild`、`content_version`、`unit`、`min_sync_interval`、`max_dirs_per_sync`） | 参与统一刷新基建 |
+| `freshness_spec` | 无 | `Dict`（`roots`、`include`、`derive`、`prune`、`on_verified`、`on_pass_end`、`rebuild`、`content_version`、`unit`、`min_sync_interval`、`max_dirs_per_sync`） | 参与统一刷新基建；共享根用量由校验趟重算，`add_share` / `remove_share` 后清去抖 |
 | `on_settings_changed` | `changed_keys` | `None` | 设置变更后丢弃连接与自动启动结论 |
 | `on_load` | 无 | `None` | 建数据根、恢复上传任务表、启动后台同步 |
 | `on_unload` | 无 | `None` | 停同步、取消上传、关连接、停节点 |

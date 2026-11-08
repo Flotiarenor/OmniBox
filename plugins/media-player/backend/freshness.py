@@ -255,31 +255,36 @@ class FreshnessProvider:
     # ===== 内部工具 =====
 
     def _refresh_covers(self, items: Dict[str, Any], dirs: set) -> Dict[str, Any]:
-        """重算指定目录下条目的 `has_cover`（封面图加入/替换/删除后）。
+        """重算指定目录下条目的 `has_cover` 与 `cover_mtime`（封面图加入/替换/删除后）。
 
         判据重新走一遍"目录封面图 **或** 内嵌封面"，而不是沿用旧值：沿用的话
         "删掉 folder.jpg" 之后标记仍然是 True，前端会一直请求一个不存在的封面。
+        `cover_mtime` 一起重算同样是为了让替换封面后 URL 上的版本号前进：封面文件的
+        指纹变了才会走到这里，此时不更新版本号就等于继续命中浏览器缓存。
         只对**受影响的目录**做（封面变化是低频事件），不做全库重查。
         """
         if not dirs:
             return items
         wanted = {str(directory) for directory in dirs}
         out: Dict[str, Any] = {}
-        folder_cache: Dict[str, bool] = {}
+        folder_cover: Dict[str, Optional[Path]] = {}
         for key, item in items.items():
             parent = str(Path(item.path).parent)
-            if parent not in wanted or item.kind != 'audio':
+            if parent not in wanted:
                 out[key] = item
                 continue
-            if parent not in folder_cache:
-                folder_cache[parent] = bool(self._scanner.find_cover(Path(parent)))
-            has_cover = folder_cache[parent]
-            if not has_cover:
-                try:
-                    has_cover = self._scanner.has_embedded_cover(Path(item.path))
-                except Exception:
-                    has_cover = False
-            if has_cover != item.has_cover:
-                item.has_cover = has_cover
+            if parent not in folder_cover:
+                folder_cover[parent] = self._scanner.find_cover(Path(parent))
+            cover = folder_cover[parent]
+            if item.kind == 'audio':
+                has_cover = bool(cover)
+                if not has_cover:
+                    try:
+                        has_cover = self._scanner.has_embedded_cover(Path(item.path))
+                    except Exception:
+                        has_cover = False
+                if has_cover != item.has_cover:
+                    item.has_cover = has_cover
+            item.cover_mtime = self._scanner.cover_mtime(cover, item.mtime)
             out[key] = item
         return out

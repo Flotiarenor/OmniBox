@@ -23,6 +23,19 @@ from typing import Any, Callable, Dict, Optional
 log = logging.getLogger(__name__)
 
 
+def _dir_signal(report: Any, key: str) -> int:
+    """从引擎报告里取目录集合变化的规模：计数、目录列表或缺失都归一成整数。"""
+    if not isinstance(report, dict):
+        return 0
+    value = report.get(key)
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return len(value)
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 class FreshnessProvider:
     """向壳声明新鲜度规格，并实现它的三个钩子。"""
 
@@ -52,6 +65,9 @@ class FreshnessProvider:
             'include': tuple(sorted(self._extensions)),
             'derive': self.derive,
             'prune': self.prune,
+            # 目录集合变化（新增 / 消失目录）单独一条信号：条目级失效保住了目录快照，
+            # 而快照正是"有哪些目录"的来源，所以集合变化必须能单独把它作废。
+            'on_dirs_changed': self.dirs_changed,
             'on_verified': self.audit,
             'on_pass_end': self.pass_end,
             'rebuild': self.rebuild,
@@ -82,14 +98,22 @@ class FreshnessProvider:
 
         列表缓存（≤200 条）仍整表清空：它便宜，且键在两种列表里形状不同，清子目录会
         留下父目录的陈旧连续浏览序列。
+
+        **目录快照保留**：条目级失效已经按"变化目录 + 各级父目录"精确丢过，目录集合
+        本身没变，重走全树只会把便宜的一次同步变成一次 6-23 秒的枚举。目录集合真的
+        变了由 `dirs_changed` 单独作废快照。
         """
         self._entries.drop_nodes(items)
         self._listing.clear_cache()
-        self._albums.invalidate()
+        self._albums.invalidate(keep_snapshot=True)
         return {'count': len(items)}
 
     def prune(self, keys) -> int:
-        """条目消失：删缩略图行、丢尺寸元数据、作废所属目录的相册节点。"""
+        """条目消失：删缩略图行、丢尺寸元数据、作废所属目录的相册节点。
+
+        与 `derive` 一样保留目录快照：消失的是文件，目录集合通常仍然存在，是否真有
+        目录消失由 `dirs_changed` 的独立信号决定。
+        """
         pruned = 0
         dirs = []
         for rel in keys:
@@ -103,11 +127,26 @@ class FreshnessProvider:
                 log.warning('[ImageViewer] 清理失效条目失败 %s: %s', rel, exc)
         if dirs:
             self._entries.drop_nodes(dirs)
-            self._albums.invalidate()
+            self._albums.invalidate(keep_snapshot=True)
         if pruned:
             self._thumbs.mark_dirty()
             self._thumbs.flush()
         return pruned
+
+    def dirs_changed(self, report: Any = None) -> Dict[str, Any]:
+        """目录集合发生变化（新增 / 消失目录）：作废目录快照，下一次重建重新枚举。
+
+        引擎在整趟遍历后把目录集合的变化放进报告（`new_dirs` / `vanished_dirs`，
+        计数或目录列表）。没有这条信号时，新目录只能等快照 TTL 到期才可见 —— 因为
+        条目级失效按"文件"定位，新增目录里还没有任何条目。
+        """
+        new = _dir_signal(report, 'new_dirs')
+        vanished = _dir_signal(report, 'vanished_dirs')
+        if not new and not vanished:
+            return {'new_dirs': 0, 'vanished_dirs': 0}
+        self._albums.invalidate()
+        self._listing.clear_cache()
+        return {'new_dirs': new, 'vanished_dirs': vanished}
 
     def pass_end(self, report, verified: bool) -> Dict[str, Any]:
         """整趟结束：**在任务里**把相册索引重建好，"完成"就等于下一帧直接可读。
@@ -153,12 +192,8 @@ class FreshnessProvider:
             report = engine.sync('', force=True)
         self._listing.clear_cache()
         self._albums.reset_index()
+        # 落盘的索引由 invalidate 一并删掉，不必在这里再删一次
         self._albums.invalidate()
-        try:
-            if self._paths.album_cache_file.exists():
-                self._paths.album_cache_file.unlink()
-        except OSError:
-            pass
         return {'success': True, **report}
 
     def rebuild(self, kind: str = 'derived') -> Dict[str, Any]:
@@ -177,9 +212,4 @@ class FreshnessProvider:
         self._albums.reset_index()
         self._listing.clear_cache()
         self._albums.invalidate()
-        try:
-            if self._paths.album_cache_file.exists():
-                self._paths.album_cache_file.unlink()
-        except OSError as exc:
-            cleared['album_error'] = str(exc)
         return cleared

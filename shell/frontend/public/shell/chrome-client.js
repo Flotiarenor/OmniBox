@@ -40,12 +40,14 @@ window.ChromeClient = (function () {
   /**
    * @param {{
    *   onView?: (view: string) => void,
-   *   onAction?: (action: string) => void,
+   *   onAction?: (action: string, payload?: unknown) => void,
    *   onQuery?: (query: string) => void,
    *   onMessage?: (data: Record<string, unknown>) => void,
    * }} [handlers]
    *   业务回调。`onMessage` 收到 view / action / query 之外的类型（例如壳下发的
-   *   `omnibox:appearance`），由插件自己解释。
+   *   `omnibox:appearance`），由插件自己解释。`onAction` 的第二参是消息里的
+   *   `payload`（统一刷新会把 `{plugin, scope, report}` 附在 `refresh` 上）；
+   *   没有 payload 的动作传 `undefined`，忽略第二参的旧回调不受影响。
    */
   function create(handlers) {
     const hooks = handlers || {}
@@ -59,7 +61,7 @@ window.ChromeClient = (function () {
         return
       }
       if (data.type === 'omnibox:action') {
-        if (hooks.onAction) hooks.onAction(data.action)
+        if (hooks.onAction) hooks.onAction(data.action, data.payload)
         return
       }
       if (data.type === 'omnibox:query') {
