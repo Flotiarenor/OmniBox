@@ -14,9 +14,9 @@
 .PARAMETER SkipArchive
 .PARAMETER CleanUserData
     打包前删掉产物目录里的 data/ .config/ logs/。
-    程序把可写数据写在 exe 旁边（见 shell/backend/paths.py），所以在产物目录里跑过
-    一次程序做测试，那些目录里就是**你本机的设置**（媒体目录路径、refresh_token、
-    缩略图缓存）。默认不删也不放行：发现残留直接中止打包。
+    2.0 起默认数据根不在产物目录里（见 shell/backend/paths.py：装好的程序写到用户
+    数据根），保留这项检查是因为两个入口仍会把数据写进产物目录 —— 1.x 旧产物残留、
+    以及便携模式（exe 旁放了 portable.txt）。默认不删也不放行：发现残留直接中止打包。
 .PARAMETER OutputDir
 #>
 

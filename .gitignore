@@ -30,6 +30,8 @@ se-metadata.json
 docs/Releases/*.exe
 docs/Releases/*.7z
 docs/Releases/*.zip
+# Inno Setup 安装器（Windows build job 的 iscc 产物，发布链只从 CI 上传）
+Cubby-Setup-*.exe
 # 发布构建的输出树（PyInstaller 的 onedir 产物，构建时才有）
 docs/Releases/cubby/
 docs/Releases/__pycache__/

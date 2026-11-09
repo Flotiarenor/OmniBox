@@ -65,12 +65,15 @@ for _stream in (sys.stdout, sys.stderr):
 # 名字必须落在这些后缀的文件里才算数。刻意不含 .md：否则另一份文档里的旧名字会替
 # 被删掉的符号背书，"引用即存在"就退化成"某处出现过"。
 CODE_SUFFIXES = frozenset({'.py', '.js', '.mjs', '.cjs', '.ts', '.vue', '.json', '.css', '.sh', '.ps1'})
-# 路径引用允许的后缀比上面宽：文档也会引用 .md / .toml / .yml / .spec。
-PATH_SUFFIXES = CODE_SUFFIXES | {'.md', '.toml', '.yml', '.yaml', '.txt', '.svg', '.spec', '.html'}
+# 路径引用允许的后缀比上面宽：文档也会引用 .md / .toml / .yml / .spec，
+# 以及安装器脚本 .iss（它不是 Python/JS 那样的代码，但确实是仓库里的一份文件）。
+PATH_SUFFIXES = CODE_SUFFIXES | {'.md', '.toml', '.yml', '.yaml', '.txt', '.svg', '.spec', '.html', '.iss'}
 
 # 产物与运行期文件：本来就可能不在仓库里（`Cubby.zip` 在 .gitignore 中，
-# `*.db` 是运行期生成的），一律不当作"引用"。
-ARTIFACT_SUFFIXES = frozenset({'.zip', '.7z', '.db', '.log', '.png', '.jpg', '.webp', '.mp4', '.ico'})
+# `*.db` 是运行期生成的，`Cubby.exe` 是打包产物），一律不当作"引用"。
+# .exe 必须在这里：安装器与发布文档会按名字提到产物可执行文件，而它只存在于
+# 构建输出目录 —— 按"名字必须在代码里出现"去卡它，得到的只是噪声。
+ARTIFACT_SUFFIXES = frozenset({'.zip', '.7z', '.db', '.log', '.png', '.jpg', '.webp', '.mp4', '.ico', '.exe'})
 
 # 不进索引的目录：生成物、依赖、运行期数据、本机缓存。
 #

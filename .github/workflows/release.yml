@@ -275,6 +275,99 @@ jobs:
       - name: 生成校验和
         run: python -c "import hashlib,pathlib,sys; p=pathlib.Path(sys.argv[1]); print(hashlib.sha256(p.read_bytes()).hexdigest(), p.name)" "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
 
+      # ── Windows 安装器（Inno Setup）────────────────────────────────────────
+      # 为什么 per-user（PrivilegesRequired=lowest）：安装位置与用户数据都在
+      # 当前用户目录下（%LOCALAPPDATA%），免管理员权限即可安装与覆盖升级，
+      # 发布链因此不需要任何提权步骤，也不会把文件写进 Program Files。
+      # 为什么放在依赖快照之后编译：安装器铺的是同一个 .build-dist/Cubby，
+      # requirements.lock.txt 在那一步才写进去，这样它与 zip 里的内容一致。
+      - name: 安装 Inno Setup（并定位 iscc）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          # 不能假设 iscc 在 PATH 上：choco 装的是机器级 PATH，当前进程读不到；
+          # choco 的 shim 也可能落在别的目录。先按命令找，再按默认安装位置找，
+          # 都找不到就失败 —— 静默跳过只会得到一个"没编出安装器"的绿。
+          $candidates = @()
+          $cmd = Get-Command iscc -ErrorAction SilentlyContinue
+          if ($cmd) { $candidates += $cmd.Source }
+          $candidates += "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          $candidates += "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          $iscc = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+          if (-not $iscc) {
+            throw "choco 已安装 innosetup，但没有找到 ISCC.exe；试过 PATH、${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe、$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "ISCC: $iscc"
+
+      - name: 编译 Windows 安装器
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $repo = (Get-Location).Path
+          $sourceDir = Join-Path $repo '.build-dist\Cubby'
+          $outputDir = Join-Path $repo '.build-dist'
+          $version = '${{ needs.verify.outputs.version }}'
+          & $env:ISCC "/DAppVersion=$version" "/DSourceDir=$sourceDir" "/O$outputDir" 'docs/Releases/cubby.iss'
+          if ($LASTEXITCODE -ne 0) {
+            throw "ISCC 编译失败（退出码 $LASTEXITCODE）：docs/Releases/cubby.iss"
+          }
+          $setup = Join-Path $outputDir "Cubby-Setup-$version.exe"
+          if (-not (Test-Path $setup)) {
+            throw "ISCC 报告成功，但没有产出 $setup（核对 cubby.iss 的 OutputBaseFilename 与 /O 参数）"
+          }
+          Get-Item $setup | Select-Object Name, Length
+
+      # 与上面的产物校验和同一行命令、同一格式（<hex> <文件名>）。
+      - name: 生成安装器校验和
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python -c "import hashlib,pathlib,sys; p=pathlib.Path(sys.argv[1]); print(hashlib.sha256(p.read_bytes()).hexdigest(), p.name)" ".build-dist/Cubby-Setup-${{ needs.verify.outputs.version }}.exe" > ".build-dist/Cubby-Setup-${{ needs.verify.outputs.version }}.exe.sha256"
+
+      # 为什么必须有冒烟：ISCC 编译通过只证明脚本语法与文件列表成立；
+      # "装完目标目录里有 Cubby.exe""卸载器能静默退出 0"是用户第一步就会踩到的
+      # 路径，只有真机装一次才能证明。失败必须让 job 红，不能只打印。
+      - name: 静默安装 / 卸载冒烟
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = Join-Path (Get-Location).Path ".build-dist\Cubby-Setup-${{ needs.verify.outputs.version }}.exe"
+          $dir = Join-Path $env:RUNNER_TEMP 'cubby-setup-smoke'
+          $log = Join-Path $env:RUNNER_TEMP 'cubby-setup-install.log'
+          if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+          $install = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
+            "/DIR=`"$dir`"", "/LOG=`"$log`""
+          )
+          if ($install.ExitCode -ne 0) {
+            throw "静默安装失败，退出码 $($install.ExitCode)（日志：$log）"
+          }
+          $exe = Join-Path $dir 'Cubby.exe'
+          if (-not (Test-Path $exe)) {
+            throw "静默安装后目标目录里没有 Cubby.exe：$dir"
+          }
+          $uninst = Join-Path $dir 'unins000.exe'
+          if (-not (Test-Path $uninst)) {
+            throw "静默安装后目标目录里没有 unins000.exe：$dir"
+          }
+          $uninstall = Start-Process -FilePath $uninst -Wait -PassThru -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+          )
+          if ($uninstall.ExitCode -ne 0) {
+            throw "静默卸载失败，退出码 $($uninstall.ExitCode)"
+          }
+          # Inno 的卸载器会把自己复制到临时目录再执行，父进程可能先返回 0；
+          # 只认退出码会漏掉"报成功但什么都没删"，所以再等安装目录真的消失。
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Test-Path $exe) -and ((Get-Date) -lt $deadline)) {
+            Start-Sleep -Milliseconds 500
+          }
+          if (Test-Path $exe) {
+            throw "静默卸载返回 0，但安装目录里仍有 Cubby.exe：$dir"
+          }
+          Write-Host '安装 / 卸载冒烟通过'
+
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
@@ -282,6 +375,20 @@ jobs:
           path: |
             ${{ matrix.artifact }}
             ${{ matrix.artifact }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+      # 安装器单独一个 artifact：同一个 upload-artifact 步骤的 path 列表对所有
+      # 平台生效，无法只给 Windows 追加入口；publish job 用 merge-multiple: true
+      # 合并全部 artifact，多一个名字不影响 dist/* 的收集。
+      - name: 上传 Windows 安装器
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cubby-Setup-windows-x64
+          path: |
+            .build-dist/Cubby-Setup-${{ needs.verify.outputs.version }}.exe
+            .build-dist/Cubby-Setup-${{ needs.verify.outputs.version }}.exe.sha256
           if-no-files-found: error
           retention-days: 7
 
@@ -318,10 +425,19 @@ jobs:
           notes="Cubby ${VERSION}
 
           - 版本号：\`${VERSION}\`
-          - 产物：Windows x64（zip）、Linux x64（tar.gz），各自附带 \`.sha256\`
+          - 产物（三类，各自附带 \`.sha256\`）：
+            - Windows 安装器（推荐）：\`Cubby-Setup-${VERSION}.exe\`，按当前用户安装，不需要管理员权限
+            - Windows 便携版：\`Cubby-windows-x64.zip\`，解压即用
+            - Linux 便携版：\`Cubby-linux-x64.tar.gz\`，解压即用
           - 构建来源：${RUN_URL}
 
           校验下载完整性：
+          \`\`\`powershell
+          # Windows：安装器与便携 zip 同理，换成对应文件名即可
+          # 输出的 Hash 应与 .sha256 文件里的十六进制串一致
+          Get-FileHash -Algorithm SHA256 .\Cubby-Setup-${VERSION}.exe
+          \`\`\`
+
           \`\`\`bash
           # Linux
           sha256sum -c Cubby-linux-x64.tar.gz.sha256
