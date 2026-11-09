@@ -14,7 +14,7 @@
      壳按 nav 项 id 查 `ui.badges`，键对不上就是"徽标永远不出现"；
   4. 顶栏动作 id 只有两类：壳代管（`settings`）或内容页处理（`refresh`），
      不允许声明了却没人处理的 id；
-  5. 本插件不声明 `search`，内容页也不处理 `omnibox:query`（声明了却不接会让
+  5. 本插件不声明 `search`，内容页也不处理 `cubby:query`（声明了却不接会让
      搜索框出现但输入无效）。
 
 运行：
@@ -111,8 +111,8 @@ class GroupMeshChromeTests(unittest.TestCase):
     def test_no_search_contract_mismatch(self):
         self.assertNotIn('search', self.chrome,
                          'manifest 没有声明 search，壳才不渲染搜索框')
-        self.assertNotIn('omnibox:query', self.app_js,
-                         '内容页不处理 omnibox:query；manifest 也不应声明 search')
+        self.assertNotIn('cubby:query', self.app_js,
+                         '内容页不处理 cubby:query；manifest 也不应声明 search')
 
     def test_status_and_freshness_contract(self):
         self.assertIs(self.chrome.get('status'), True,

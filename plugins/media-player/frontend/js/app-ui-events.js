@@ -12,7 +12,7 @@ Object.assign(MediaPlayerApp.prototype, {
     // UI 事件绑定
     // ============================================================
     // 页面 chrome（左栏导航、歌单组、顶栏「刷新 / 设置」、搜索框、状态栏）由壳渲染，
-    // 对应交互走 omnibox:view / omnibox:action / omnibox:query（见 app.js）；
+    // 对应交互走 cubby:view / cubby:action / cubby:query（见 app.js）；
     // 这里只绑内容区（舞台、播放条、歌词页、队列 / EQ 浮层与三个内容弹窗）。
     _bindUI() {
         // 播放控制

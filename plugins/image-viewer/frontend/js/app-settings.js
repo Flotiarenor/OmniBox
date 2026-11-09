@@ -32,8 +32,8 @@ Object.assign(ImageViewer.prototype, {
         this._clearSettingsErrors();
         this._bindAppearanceSettings();
         this._syncAppearanceControls();
-        // 向壳取当前插件的背景不透明度（默认跟随壳）；响应通过 omnibox:appearance 回来。
-        this._postHost({ type: 'omnibox:get-plugin-appearance' });
+        // 向壳取当前插件的背景不透明度（默认跟随壳）；响应通过 cubby:appearance 回来。
+        this._postHost({ type: 'cubby:get-plugin-appearance' });
         // 图片文件夹列表由共享组件建立（这里补建是因为设置弹窗可能晚于 init 才打开）
         if (!this.rootsPicker) this._resetRootsList();
         document.getElementById('setting-current-folder-name').textContent = this.currentPath || '根目录';
@@ -173,7 +173,7 @@ Object.assign(ImageViewer.prototype, {
         const isFolderOnly = document.getElementById('setting-apply-to-folder').checked;
         const followShell = document.getElementById('setting-follow-shell').checked;
         this._postHost({
-            type: 'omnibox:set-plugin-alpha',
+            type: 'cubby:set-plugin-alpha',
             follow: followShell,
             alpha: parseInt(document.getElementById('setting-plugin-alpha').value, 10) || 84,
         });

@@ -53,7 +53,7 @@ flowchart LR
   取入口；`NativePanel` 用隐藏逻辑 iframe 提交的 blocks 渲染 native 内容。
 - **插件设置弹窗**：壳的 `PluginSettingsModal` 盖住整个壳文档（含导航栏），schema 与值来自
   `<插件>__get_settings_schema` / `<插件>__get_settings`，保存在 `<插件>__save_settings`；
-  保存成功后壳向内容 iframe 发 `omnibox:action: settings-saved`（native 目标发给隐藏逻辑页）。
+  保存成功后壳向内容 iframe 发 `cubby:action: settings-saved`（native 目标发给隐藏逻辑页）。
   内容页不再自绘设置弹窗。
 - **content iframe**：只保留内容，加载时带 `?content=1`；不得出现
   `.view-sub-sidebar`、`.view-toolbar`、`.sub-sidebar-brand`、`.obx-nav-item`。
@@ -63,7 +63,7 @@ flowchart LR
   [plugin-guide.md](plugin-guide.md) 的「插件是受信代码」。
 - **native 面板**：附属插件声明 `native: {url, title}`；壳把 `NativePanel` 放进宿主
   `PluginChrome` 的内容槽，宿主侧栏/顶栏保留，内容 iframe 用 `v-show` 隐藏但实例不销毁；
-  面板不再画自己的头部，标题与页面级动作（`omnibox:schema.toolbar`）都进宿主顶栏；退出走
+  面板不再画自己的头部，标题与页面级动作（`cubby:schema.toolbar`）都进宿主顶栏；退出走
   左侧导航或再次点当前扩展入口。入口选中态与主导航由 `PluginChrome.activeExtensionId` 统一维护。
 - **侧栏顺序**：`frontend.chrome.sidebarOrder` 用 `nav:<组id>` 与 `extensions` 声明 section 顺序；
   缺省按 nav 数组序、扩展收尾。媒体播放器把 `extensions` 放首位，图片相册放末位；扩展入口与
@@ -104,7 +104,7 @@ flowchart LR
 | `brand` | 品牌图标、标题、副标题与渐变第二色 |
 | `nav` | 分组导航；`id` 是视图标识，`visible` / `badge` 可由运行期覆盖 |
 | `toolbar` | 顶栏动作；`variant`（default/primary/danger）、`kind`（button/text/badge）、`visible` / `disabled` / `active` |
-| `search` | 壳渲染搜索框，输入经 `omnibox:query` 下发；内容页可用 `value` / `clear` 回填或清空输入框 |
+| `search` | 壳渲染搜索框，输入经 `cubby:query` 下发；内容页可用 `value` / `clear` 回填或清空输入框 |
 | `status` | `true` 或 `{kind: dot-text|eq-text, items[]}`（缺省 `dot-text`；`text` 已删除） |
 | `freshness` | 壳挂载统一「同步 / 校验」控件 |
 | `extensions` | 壳渲染扩展入口；native 入口打开面板，view 型入口下发视图 |
@@ -114,7 +114,7 @@ flowchart LR
 `get_extensions()` 是否返回 `native`（决定壳是否渲染 `NativePanel`）。壳不再读取任何
 内容归属枚举。
 
-运行期用 `omnibox:chrome` 打补丁：`title` / `subtitle` / `view` / `actions` / `nav` /
+运行期用 `cubby:chrome` 打补丁：`title` / `subtitle` / `view` / `actions` / `nav` /
 `search` / `status` / `statusItems` / `freshness_scope`。壳只合并声明，不解释业务。
 `freshness_scope` 是内容页当前所在的同步作用域（目录相对路径，空串 = 全部根），由壳按
 插件记住并传给统一刷新的 `autoSync`；归一化在 `core/plugin-chrome-protocol.js` 的
@@ -126,32 +126,31 @@ flowchart LR
 
 ## 4 消息
 
-壳与内容 iframe 之间（同源 `postMessage`）。消息类型统一带 `omnibox:` 前缀；协议前缀沿用历史命名
-omnibox，与品牌无关。
+壳与内容 iframe 之间（同源 `postMessage`）。消息类型统一带 `cubby:` 前缀。
 
 | 方向 | 消息 | 用途 |
 | --- | --- | --- |
-| 壳 → 内容 | `omnibox:view` | 切换视图；复合 id（如 `downloads:all`）由内容自行解释 |
-| 壳 → 内容 | `omnibox:action` | 顶栏动作；可带 `payload`。声明 `frontend.chrome` 的插件，`settings` 由壳接管、不下发 |
-| 壳 → 内容 | `omnibox:action`（`settings-saved`） | 壳内设置弹窗保存成功；内容页重读设置并刷新当前视图 |
-| 壳 → 内容 | `omnibox:query` | 搜索输入（壳侧 250ms 防抖） |
-| 壳 → 内容 | `omnibox:freshness` | 统一刷新的结果：`{plugin, scope, report}`。`report` 是后端同步/校验报告（`action` / `added` / `changed` / `removed` / `invalidated` / 校验任务的 `task` / `scope`），内容页据此决定重载哪一层；紧随其后还会补一条旧的 `omnibox:action: refresh`（`payload` 同报告）。两条都处理的页面按 `payload` 判回声：带 `payload` 的 `refresh` 属于刚到的富事件，只重载一次；没有 `payload` 的 `refresh`（旧壳 / 用户动作）照常处理 |
-| 壳 → 内容 | `omnibox:appearance` | 本插件背景不透明度、是否跟随壳、壳全局值；内容页据此让出底色 |
-| 内容 → 壳 | `omnibox:ready` | 握手，壳补发当前视图 |
-| 内容 → 壳 | `omnibox:chrome` | 标题、视图、动作、导航、搜索、状态补丁；`search.value` 回填输入框，`search.clear`（递增序号）清空；`freshness_scope` 上报当前同步作用域 |
-| 内容 → 壳 | `omnibox:open-settings` | 内容页自己的设置入口请求壳开弹窗（如歌词页右上角）；可选 `title` |
-| 内容 → 壳 | `omnibox:get-plugin-appearance` | 内容页拉取本插件的背景不透明度（设置页打开时） |
-| 内容 → 壳 | `omnibox:set-plugin-alpha` | 内容页写本插件背景不透明度；`follow: true` 表示跟随壳 |
+| 壳 → 内容 | `cubby:view` | 切换视图；复合 id（如 `downloads:all`）由内容自行解释 |
+| 壳 → 内容 | `cubby:action` | 顶栏动作；可带 `payload`。声明 `frontend.chrome` 的插件，`settings` 由壳接管、不下发 |
+| 壳 → 内容 | `cubby:action`（`settings-saved`） | 壳内设置弹窗保存成功；内容页重读设置并刷新当前视图 |
+| 壳 → 内容 | `cubby:query` | 搜索输入（壳侧 250ms 防抖） |
+| 壳 → 内容 | `cubby:freshness` | 统一刷新的结果：`{plugin, scope, report}`。`report` 是后端同步/校验报告（`action` / `added` / `changed` / `removed` / `invalidated` / 校验任务的 `task` / `scope`），内容页据此决定重载哪一层；紧随其后还会补一条旧的 `cubby:action: refresh`（`payload` 同报告）。两条都处理的页面按 `payload` 判回声：带 `payload` 的 `refresh` 属于刚到的富事件，只重载一次；没有 `payload` 的 `refresh`（旧壳 / 用户动作）照常处理 |
+| 壳 → 内容 | `cubby:appearance` | 本插件背景不透明度、是否跟随壳、壳全局值；内容页据此让出底色 |
+| 内容 → 壳 | `cubby:ready` | 握手，壳补发当前视图 |
+| 内容 → 壳 | `cubby:chrome` | 标题、视图、动作、导航、搜索、状态补丁；`search.value` 回填输入框，`search.clear`（递增序号）清空；`freshness_scope` 上报当前同步作用域 |
+| 内容 → 壳 | `cubby:open-settings` | 内容页自己的设置入口请求壳开弹窗（如歌词页右上角）；可选 `title` |
+| 内容 → 壳 | `cubby:get-plugin-appearance` | 内容页拉取本插件的背景不透明度（设置页打开时） |
+| 内容 → 壳 | `cubby:set-plugin-alpha` | 内容页写本插件背景不透明度；`follow: true` 表示跟随壳 |
 
 native 面板：
 
 | 方向 | 消息 | 用途 |
 | --- | --- | --- |
-| 逻辑页 → 壳 | `omnibox:native-ready` | 就绪 |
-| 壳 → 逻辑页 | `omnibox:native-init` | 开始取数并提交 blocks |
-| 逻辑页 → 壳 | `omnibox:schema` | `{blocks, toolbar?, layout?, toast?}` |
-| 壳 → 逻辑页 | `omnibox:native-action` | `{action, payload}`，payload 在发送前做 JSON 克隆 |
-| 逻辑页 → 壳 | `omnibox:native-error` | 内容加载失败 |
+| 逻辑页 → 壳 | `cubby:native-ready` | 就绪 |
+| 壳 → 逻辑页 | `cubby:native-init` | 开始取数并提交 blocks |
+| 逻辑页 → 壳 | `cubby:schema` | `{blocks, toolbar?, layout?, toast?}` |
+| 壳 → 逻辑页 | `cubby:native-action` | `{action, payload}`，payload 在发送前做 JSON 克隆 |
+| 逻辑页 → 壳 | `cubby:native-error` | 内容加载失败 |
 
 ## 5 native 内容
 
@@ -174,7 +173,7 @@ native 面板：
 | `empty` | 空态与错误态；可带 `icon` |
 | `image-grid` | 只读图片网格 |
 
-版式由 `omnibox:schema` 的可选 `layout` 字段声明：`document` 把正文收窄到 960px 居中、组间 24px
+版式由 `cubby:schema` 的可选 `layout` 字段声明：`document` 把正文收窄到 960px 居中、组间 24px
 （`NativeExtension.create(...).render(blocks, toolbar, { layout: 'document' })`）；缺省 `default`
 维持整宽与 14px 间距，未声明 `layout` 的插件渲染结果不变。
 
@@ -243,7 +242,7 @@ key 显示到对应输入框。`pixiv-sync` 的 `refresh_token` 是 `secret`，�
   `#mp-extensions`。
 - **刷新控件只有一份**：`freshness.js` 由壳挂载，壳在挂载后与 `watch([activeView,
   freshnessScope])` 里调 `autoSync(scope)`（native 面板打开期间跳过）；同步/校验有结论时
-  先发 `omnibox:freshness`（带 `scope` 与报告），再补一条带同形 `payload` 的旧 `refresh`
+  先发 `cubby:freshness`（带 `scope` 与报告），再补一条带同形 `payload` 的旧 `refresh`
   动作，两种内容页都能重载——两条都处理的页面按 `payload` 判回声。内容页在重新可见时自己
   调 `Freshness.sync(plugin, scope)`（壳挂载型拿不到控件句柄）。控件在无任务时每 30 秒重读
   一次状态投影，「有变化 · 需要校验」会自己出现；窗口不可见或所在页被 `v-show` 隐藏时不读，
@@ -259,7 +258,7 @@ key 显示到对应输入框。`pixiv-sync` 的 `refresh_token` 是 `secret`，�
   顶栏的「设置」动作由壳拦截，隐藏逻辑页只重读 `settings-saved`。image-viewer 例外，设置仍在
   内容页。壳内设置页与 image-viewer 的内容设置页顶部还有一块通用「外观」：背景不透明度与
   「跟随壳透明度」，值存在壳偏好 `--plugin-glass-<插件名>` 里，不写进插件 `settings_schema`。
-  image-viewer 通过 `omnibox:get-plugin-appearance` / `omnibox:set-plugin-alpha` 读写同一份偏好；
+  image-viewer 通过 `cubby:get-plugin-appearance` / `cubby:set-plugin-alpha` 读写同一份偏好；
   附属插件的 native 面板不显示外观块（它没有自己的页面骨架）。
 - **搜索输入只有一份**：壳持有输入框；内容页切视图、进二级页时用 `search.clear` 复位，
   需要程序化回填时用 `search.value`，不另建搜索框。
@@ -297,7 +296,7 @@ key 显示到对应输入框。`pixiv-sync` 的 `refresh_token` 是 `secret`，�
   多根时只编辑主根，其余根仍到图片相册设置里管理。
 - 设置弹窗、搜索回填与 EQ 尚未纳入 `tools/plugin_ui_audit.py`，目前用一次性 Selenium
   探针验收；这三项应写成可重复的门禁。
-- 迁移前的逐插件 UI e2e 已按壳 chrome 重写（内容页改发 `omnibox:view` / `omnibox:action`，分隔条改量壳侧栏）；CI 不安装 selenium，这些用例会跳过。
+- 迁移前的逐插件 UI e2e 已按壳 chrome 重写（内容页改发 `cubby:view` / `cubby:action`，分隔条改量壳侧栏）；CI 不安装 selenium，这些用例会跳过。
 - 新增插件仍按「chrome 声明」「消息」「native 内容」三节手工接入；脚手架与组件预览页尚未接入。
 
 ## 9 验证

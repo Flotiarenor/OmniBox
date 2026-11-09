@@ -5,7 +5,7 @@
  * 前端不持有任何"谁能做什么"的规则（客户端隐藏按钮不构成授权）。
  *
  * 统一刷新：同步 / 校验控件由壳挂载，内容页在切回前台时按全部共享根同步一次，
- * 壳随后用 `omnibox:freshness`（带报告）或旧的 `refresh` 动作通知重读状态。
+ * 壳随后用 `cubby:freshness`（带报告）或旧的 `refresh` 动作通知重读状态。
  *
  * 页面骨架（品牌块 / 左栏 / 顶栏 / 状态栏 / 分隔条）由壳按 manifest 的
  * `frontend.chrome` 渲染；壳给内容 iframe 追加 `?content=1`，本页只有内容区
@@ -14,7 +14,7 @@
  * v-show"的策略一致，也让所有 id 在任何面板下都存在，渲染函数不必关心当前在哪一页。
  * 面板的标题/副标题写在 index.html 的 `data-title` / `data-sub` 上（单一来源），
  * 新增一个面板 = manifest 的 `chrome.nav` 加一项 + 这里加一个同 id 的
- * `section[data-panel]`（壳点击导航项后发 `omnibox:view`）。
+ * `section[data-panel]`（壳点击导航项后发 `cubby:view`）。
  *
  * 远端分片（设备 → 共享项 → 目录 → 取回/上传）在 js/remote.js，由 init() 注入回调；
  * index.html 里 remote.js 必须排在 app.js 之前（契约见 tests/js/plugin_asset_contract.mjs）。
@@ -36,7 +36,7 @@
 
   function el(id) { return document.getElementById(id); }
 
-  // 壳在 `omnibox:freshness` 之后紧跟一条旧的 `omnibox:action: refresh`，两条属于同一次
+  // 壳在 `cubby:freshness` 之后紧跟一条旧的 `cubby:action: refresh`，两条属于同一次
   // 同步。回声那条靠 **payload** 识别：壳把 `{plugin, scope, report}` 附在 refresh 上，
   // `/shell/chrome-client.js` 的 `onAction(action, payload)` 第二参就是它，因此"带
   // payload 的 refresh"说明富事件已经重载过，跳过即可；没有 payload 的 refresh 是用户
@@ -59,7 +59,7 @@
     if (state.sharesCount) { badges.shares = String(state.sharesCount); }
     if (state.peersCount) { badges.remote = String(state.peersCount); }
     postHost({
-      type: 'omnibox:chrome',
+      type: 'cubby:chrome',
       title: section ? (section.getAttribute('data-title') || '团体组网') : '团体组网',
       subtitle: section ? (section.getAttribute('data-sub') || '') : '',
       badges: badges,
@@ -611,7 +611,7 @@
   // ── 绑定 ────────────────────────────────────────────────────────────────
 
   function bind() {
-    // 顶栏动作由壳渲染，点击后经 omnibox:action 回到这里；这两个按钮只用于
+    // 顶栏动作由壳渲染，点击后经 cubby:action 回到这里；这两个按钮只用于
     // 脱离壳直接打开内容页时的手工调试，不存在时跳过。
     var refreshBtn = el('btn-refresh');
     if (refreshBtn) { refreshBtn.addEventListener('click', refresh); }
@@ -719,7 +719,7 @@
       },
       onAction: applyHostAction,
       onMessage: function (data) {
-        if (!data || data.type !== 'omnibox:freshness') { return; }
+        if (!data || data.type !== 'cubby:freshness') { return; }
         if (data.plugin && data.plugin !== 'group-mesh') { return; }
         if (!freshnessChanged(data.report)) { return; }
         refresh();

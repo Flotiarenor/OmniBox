@@ -7,11 +7,11 @@
 //   下载中心六种过滤（downloads:<filter>，toolbar 动作只在下载中心出现）
 //   漫画详情 / 章节 / 图片，两个内容弹窗与沉浸式阅读器
 //
-// 与壳的通信：壳发 omnibox:view / omnibox:action / omnibox:query 与
-// omnibox:freshness（统一刷新报告），本文件回 omnibox:chrome（标题、副标题、视图、
+// 与壳的通信：壳发 cubby:view / cubby:action / cubby:query 与
+// cubby:freshness（统一刷新报告），本文件回 cubby:chrome（标题、副标题、视图、
 // 动作显隐与禁用、导航徽标、搜索可用性、同步作用域、状态）。
 // 同步 / 校验控件由壳的 PluginChrome 挂载；内容页在切回前台时自己按当前作用域同步，
-// 变化后的重载经 omnibox:freshness 与兼容的 omnibox:action: refresh 进来。壳把同一份
+// 变化后的重载经 cubby:freshness 与兼容的 cubby:action: refresh 进来。壳把同一份
 // 报告附在 refresh 动作的 payload 上，因此"两条消息属于同一次同步"不用靠时间窗猜。
 // ============================================================
 
@@ -97,7 +97,7 @@ class MangaLibraryApp {
         const searchSync = this._searchSync;
         this._searchSync = null;
         this._postHost({
-            type: 'omnibox:chrome',
+            type: 'cubby:chrome',
             title: this._chromeTitle,
             subtitle: this._chromeSub,
             view: this._chromeViewId(),
@@ -167,7 +167,7 @@ class MangaLibraryApp {
             return;
         }
         if (action === 'refresh') {
-            // 新壳在 omnibox:freshness 之后紧跟一条 legacy refresh，并把同一份报告附在
+            // 新壳在 cubby:freshness 之后紧跟一条 legacy refresh，并把同一份报告附在
             // 动作的 payload 上：富事件已经重载过，这条只当回声跳过。没有 payload 的
             // refresh 来自旧壳，按原语义重载。
             if (payload != null) return;
@@ -183,7 +183,7 @@ class MangaLibraryApp {
 
     /** 壳下发的非 view / action / query 消息；目前只消费统一刷新报告。 */
     _onHostMessage(data) {
-        if (!data || data.type !== 'omnibox:freshness') return;
+        if (!data || data.type !== 'cubby:freshness') return;
         if (data.plugin && data.plugin !== 'manga-library') return;
         if (!this._freshnessChanged(data.report)) return;
         void this._reloadAfterFreshness();
@@ -392,7 +392,7 @@ class MangaLibraryApp {
     }
 
     // ============================================================
-    // UI 绑定（chrome 的监听全部换成 omnibox 消息，这里只剩内容弹窗）
+    // UI 绑定（chrome 的监听全部换成 cubby 消息，这里只剩内容弹窗）
     // ============================================================
     _bindUI() {
         document.getElementById('ml-cancel-add').addEventListener('click', () => this.closeAddModal());

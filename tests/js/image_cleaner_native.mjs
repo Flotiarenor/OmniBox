@@ -2,7 +2,7 @@
 //
 // 逻辑页只提交 blocks，壳的 SchemaRenderer 负责画。这里装载**真实的
 // /shell/native-client.js 与 native.js**，用假 window.parent 接收
-// omnibox:schema / omnibox:native-error，用假 Bridge 提供 get_cached_scan / delete_files，
+// cubby:schema / cubby:native-error，用假 Bridge 提供 get_cached_scan / delete_files，
 // 锁住最危险的一条不变量：
 //
 //   * 组内「全选组」与全局「全选」作用于**全部文件**，而不是当前显示的 12 张；
@@ -116,7 +116,7 @@ function setup({ groups = [], scanned = 0, stale = false, deleted = null, freshn
     }
     await flush();
   };
-  const schema = () => messages.filter(m => m.type === 'omnibox:schema').at(-1);
+  const schema = () => messages.filter(m => m.type === 'cubby:schema').at(-1);
   const blocks = () => (schema() && schema().blocks) || [];
   const toolbar = () => (schema() && schema().toolbar) || [];
   const findBlock = (id) => blocks().find(b => b.id === id) || null;
@@ -129,8 +129,8 @@ function setup({ groups = [], scanned = 0, stale = false, deleted = null, freshn
     const match = /已选 (\d+) 张/.exec(textOf('selected-count'));
     return match ? Number(match[1]) : -1;
   };
-  const init = () => send({ type: 'omnibox:native-init' });
-  const action = (name, payload) => send({ type: 'omnibox:native-action', action: name, payload });
+  const init = () => send({ type: 'cubby:native-init' });
+  const action = (name, payload) => send({ type: 'cubby:native-action', action: name, payload });
   const confirmDelete = async () => {
     await action('delete-selected');
     await action('delete-confirm');
@@ -434,10 +434,10 @@ await check('读取失败时提交 empty 错误块与重试动作，而不是空
   vm.runInContext(readFileSync(NATIVE_CLIENT, 'utf8'), ctx);
   vm.runInContext(readFileSync(NATIVE_JS, 'utf8'), ctx);
   for (const fn of listeners.message || []) {
-    await fn({ source: parent, origin: fakeWindow.location.origin, data: { type: 'omnibox:native-init' } });
+    await fn({ source: parent, origin: fakeWindow.location.origin, data: { type: 'cubby:native-init' } });
   }
   await new Promise((resolve) => setTimeout(resolve, 0));
-  const schema = messages.filter(m => m.type === 'omnibox:schema').at(-1);
+  const schema = messages.filter(m => m.type === 'cubby:schema').at(-1);
   const empty = schema.blocks.find(b => b.id === 'empty-error');
   assert.ok(empty, `错误态要提交 empty 块，实际: ${JSON.stringify(schema.blocks.map(b => b.id))}`);
   assert.equal(empty.type, 'empty');

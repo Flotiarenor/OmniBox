@@ -32,7 +32,7 @@ html[data-shell-glass="on"] .search-input {
   background: color-mix(in srgb, var(--bg-surface) var(--plugin-bg-alpha, var(--glass-alpha)), transparent);
 }
 
-/* / 按插件的背景不透明度：壳在 iframe load 后经 omnibox:appearance 下发。
+/* / 按插件的背景不透明度：壳在 iframe load 后经 cubby:appearance 下发。
    内容页的根容器让出底色，面板/工具栏按同一个 alpha 混合；插件自绘的卡片仍可用
    `.obx-glass` 进一步透，壳不猜测业务面板。 */
 html[data-plugin-bg="on"] body,

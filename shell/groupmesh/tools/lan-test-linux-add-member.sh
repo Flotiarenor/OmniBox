@@ -4,10 +4,10 @@
 set -euo pipefail
 
 export LC_ALL=C.UTF-8 PYTHONIOENCODING=utf-8
-PY=/root/OmniBox/venv/bin/python
+PY=/root/Cubby/venv/bin/python
 BASE=/root/gmtest
 
-cd /root/OmniBox
+cd /root/Cubby
 
 "$PY" -m shell.groupmesh.cli roster add --dir "$BASE/node" \
       --principal "$MEMBER_PRINCIPAL" --dev "$MEMBER_DEVICE" --name "$MEMBER_NAME" >/dev/null
@@ -17,7 +17,7 @@ cd /root/OmniBox
 import sys
 from pathlib import Path
 
-sys.path.insert(0, '/root/OmniBox')
+sys.path.insert(0, '/root/Cubby')
 from shell.groupmesh.cli import invite_string, load_roster
 
 roster = load_roster(Path(sys.argv[1]) / 'node')

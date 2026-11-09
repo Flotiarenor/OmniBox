@@ -31,7 +31,6 @@ from typing import List
 from flask import Flask, abort, g, make_response, request, send_file, send_from_directory
 
 from shell.backend.auth import (
-    LEGACY_TOKEN_HEADER,
     TOKEN_COOKIE,
     TOKEN_HEADER,
     get_or_create_token,
@@ -674,8 +673,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
 
         两件事必须在这里一起做，顺序不能反：
 
-        1. 校验凭据（Cookie 或请求头二选一，请求头认 `X-Cubby-Token`，旧
-           `X-Omnibox-Token` 作为别名继续接受）；
+        1. 校验凭据（Cookie 或请求头二选一，请求头认 `X-Cubby-Token`）；
         2. 凭据通过后，把它解析成主体并写入 `CURRENT_PRINCIPAL`。
 
         第 2 步是"受信注入"：主体只从**凭据**得到，
@@ -689,8 +687,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         if request.endpoint in _OPEN_ENDPOINTS:
             return
         supplied = (request.cookies.get(TOKEN_COOKIE, '')
-                    or request.headers.get(TOKEN_HEADER, '')
-                    or request.headers.get(LEGACY_TOKEN_HEADER, ''))
+                    or request.headers.get(TOKEN_HEADER, ''))
         principal = _principals.resolve(supplied)
         if principal is None:
             abort(401)

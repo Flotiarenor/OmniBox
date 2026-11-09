@@ -11,8 +11,8 @@
 //
 // 页面 chrome（品牌块 / 左栏 / 导航 / 扩展入口 / 顶栏 / 搜索 / 状态栏 / 分隔条）由壳按
 // manifest 的 frontend.chrome 渲染；本文件只维护内容与 chrome 数据：
-//   壳 → 内容  omnibox:view（albums / timeline / latest）、omnibox:action、omnibox:query
-//   内容 → 壳  omnibox:chrome（标题、副标题、视图、动作显隐、搜索占位、状态）
+//   壳 → 内容  cubby:view（albums / timeline / latest）、cubby:action、cubby:query
+//   内容 → 壳  cubby:chrome（标题、副标题、视图、动作显隐、搜索占位、状态）
 // ============================================================
 
 class ImageViewer {
@@ -48,7 +48,7 @@ class ImageViewer {
         this.albumSortBy = 'mtime';      // 作者页面二次排序：mtime | name | count（设置项 album_sort_by）
         this.albumSortOrder = 'desc';    // 作者页面二次排序方向（设置项 album_sort_order）
         this._albumSortVisible = false;  // 设置弹窗里是否显示二次排序选项（生效 Pixiv 排序才显示）
-        this.searchQuery = '';           // 壳搜索框下发的关键词（omnibox:query）
+        this.searchQuery = '';           // 壳搜索框下发的关键词（cubby:query）
         this._searchClear = 0;           // 进二级页时递增，通知壳清空搜索框
         this._appearance = { alpha: 84, follow: true, shellAlpha: 84 };
         this._appearanceBound = false;
@@ -158,7 +158,7 @@ class ImageViewer {
         const multi = this.isMultiSelectMode;
         const slideshow = !!this.slideshowTimer;
         this._postHost({
-            type: 'omnibox:chrome',
+            type: 'cubby:chrome',
             title: this._extensionOpen
                 ? (this._extensionTitle || '扩展')
                 : this._chromeTitle,
@@ -202,14 +202,14 @@ class ImageViewer {
 
     /** 壳的握手与反向下发：视图、顶栏动作、搜索输入、背景外观。
         校验、分发与 ready 握手都在 /shell/chrome-client.js（四个内容页共用一份）；
-        `omnibox:appearance` 只有本插件消费，走 onMessage 自己解释。 */
+        `cubby:appearance` 只有本插件消费，走 onMessage 自己解释。 */
     _bindHost() {
         this._chrome = window.ChromeClient.create({
             onView: (view) => this._applyHostView(view),
             onAction: (action) => this._applyHostAction(action),
             onQuery: (query) => this._onQuery(query),
             onMessage: (data) => {
-                if (data.type !== 'omnibox:appearance') return;
+                if (data.type !== 'cubby:appearance') return;
                 this._appearance = {
                     alpha: Number(data.alpha) || 84,
                     follow: data.follow !== false,
@@ -252,7 +252,7 @@ class ImageViewer {
      * 灯箱打开时先关掉它，返回是否真的关了一个。
      *
      * 壳的返回/导航在灯箱之上仍可点击；不关灯箱就会出现“点了返回/导航没反应
-     * （内容在灯箱背后切层）”。关闭后补报一次当前视图：壳在发 omnibox:view 时
+     * （内容在灯箱背后切层）”。关闭后补报一次当前视图：壳在发 cubby:view 时
      * 已把高亮改到目标项，而本次动作被吞掉，不补报会让高亮与内容不一致。
      * 焦点归还在 `createLightbox().hide()` 内部完成（onClose/previousFocus）。
      */

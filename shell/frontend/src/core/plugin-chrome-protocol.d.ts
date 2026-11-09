@@ -1,5 +1,5 @@
 /**
- * 插件 chrome 协议（`omnibox:*`）的类型声明。
+ * 插件 chrome 协议（`cubby:*`）的类型声明。
  *
  * 实现是 plugin-chrome-protocol.js：纯 JS 才能被 Node 直接 import 做无头断言，
  * 且不需要 `--experimental-strip-types`。与 plugin-url.js / plugin-visibility.js
@@ -16,7 +16,7 @@ export declare function isPluginChromeMessage(data: unknown): boolean
 /** 壳 → 内容页的刷新事件类型（带作用域与后端报告） */
 export declare const FRESHNESS_EVENT: string
 
-/** `omnibox:freshness` 的消息体；`report` 是后端报告的透传 */
+/** `cubby:freshness` 的消息体；`report` 是后端报告的透传 */
 export interface FreshnessEvent {
   readonly [key: string]: unknown
   type: string
@@ -25,7 +25,7 @@ export interface FreshnessEvent {
   report: Record<string, unknown> | null
 }
 
-/** 构造一条 `omnibox:freshness` 消息（`report` 非对象时按 null 处理） */
+/** 构造一条 `cubby:freshness` 消息（`report` 非对象时按 null 处理） */
 export declare function buildFreshnessEvent(
   plugin: string,
   scope: string,
@@ -42,7 +42,7 @@ export declare const FRESHNESS_SCOPE_MAX: number
  */
 export declare function normalizeFreshnessScope(value: unknown): string | null
 
-/** 一条 `omnibox:action` 消息；`payload` 只在实际给了值时出现 */
+/** 一条 `cubby:action` 消息；`payload` 只在实际给了值时出现 */
 export interface ActionEvent {
   readonly [key: string]: unknown
   type: string
@@ -50,7 +50,7 @@ export interface ActionEvent {
   payload?: unknown
 }
 
-/** 构造一条 `omnibox:action` 消息（`payload` 为 `undefined` 时不带该字段） */
+/** 构造一条 `cubby:action` 消息（`payload` 为 `undefined` 时不带该字段） */
 export declare function buildActionEvent(action: string, payload?: unknown): ActionEvent
 
 /** 一次被动同步的决策结果：发给谁、用哪个作用域 */
@@ -76,7 +76,7 @@ export declare function freshnessEventScope(report: unknown, fallback: unknown):
 export declare function freshnessOverviewErrorText(error: unknown): string
 
 /**
- * 把一条 `omnibox:chrome` 补丁并进当前状态，返回新状态（不修改入参）：
+ * 把一条 `cubby:chrome` 补丁并进当前状态，返回新状态（不修改入参）：
  * 字符串字段覆盖、badges 整份替换并丢空值、actions/nav/search 按键合并、
  * status 缺省回退、statusItems 只接受数组。
  */

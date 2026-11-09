@@ -1,7 +1,7 @@
 """image-viewer 刷新作用域与重载判定的无头回归（tests/js/image_viewer_refresh.mjs）。
 
 锁住四件事：作用域按层取值（图片层 = 当前目录，相册层与时间线「按图片」层 = 全根）、
-`omnibox:chrome` 带上 `freshness_scope`、报告驱动的重载判定（有变化才重载，目录集合
+`cubby:chrome` 带上 `freshness_scope`、报告驱动的重载判定（有变化才重载，目录集合
 信号 `new_dirs` / `vanished_dirs` 也算变化，`skip` 与零变更都不重载）、以及缩略图版本
 号优先取封面文件自身的 mtime 且精确到毫秒。壳侧的触发时机由 `shell_freshness` 用例覆盖。
 """

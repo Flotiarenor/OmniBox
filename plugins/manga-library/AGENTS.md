@@ -100,13 +100,13 @@
 ## 与壳的契约
 
 - **chrome 消息**（只在壳与内容 iframe 之间，同源 `postMessage`）：
-  - 壳 → 内容 `omnibox:view`：左栏导航项 id。`all` / `favorites` / `recent` 切书架分类；`downloads:<filter>` 切下载中心并把 `<filter>` 设为 `downloadFilter`，取值 `all`、`downloading`、`queued`、`paused`、`completed`、`failed`。
-  - 壳 → 内容 `omnibox:action`：`add-task` 打开内容页的添加任务弹窗；`start-all` / `pause-all` / `clear-completed` 调后端并重载任务；`settings-saved` 在壳内设置弹窗保存成功后重读书架与任务列表（漫画根目录可能已改）；`refresh` 在统一刷新（同步/校验）完成后重读书架与任务列表。设置弹窗由壳的 `PluginSettingsModal` 打开，不再发 `settings`。
-  - 壳 → 内容 `omnibox:query`：搜索输入（壳侧 250ms 防抖），内容页按关键词调 `manga_search` 并在副标题上报「N 个结果」；下载中心与详情页忽略。
-  - 内容 → 壳 `omnibox:ready`：握手。壳收到后补发当前视图；内容页在 `init` 末尾主动发一次。
-  - 内容 → 壳 `omnibox:chrome`：`title` / `subtitle` / `view` / `actions` / `nav` / `search` / `status`。`view` 在详情与阅读态发空串（清掉导航高亮），下载中心发复合 id；`actions` 上报四个下载动作的 `visible` 与 `disabled`；`nav` 上报漫画库三视图与 `downloads:all` 的徽标并显式声明各导航项可见；`search.enabled` 在下载中心与详情页为 `false`，`search.value` / `search.clear` 在切视图、进详情时清空壳输入框；`status` 为任务统计。
+  - 壳 → 内容 `cubby:view`：左栏导航项 id。`all` / `favorites` / `recent` 切书架分类；`downloads:<filter>` 切下载中心并把 `<filter>` 设为 `downloadFilter`，取值 `all`、`downloading`、`queued`、`paused`、`completed`、`failed`。
+  - 壳 → 内容 `cubby:action`：`add-task` 打开内容页的添加任务弹窗；`start-all` / `pause-all` / `clear-completed` 调后端并重载任务；`settings-saved` 在壳内设置弹窗保存成功后重读书架与任务列表（漫画根目录可能已改）；`refresh` 在统一刷新（同步/校验）完成后重读书架与任务列表。设置弹窗由壳的 `PluginSettingsModal` 打开，不再发 `settings`。
+  - 壳 → 内容 `cubby:query`：搜索输入（壳侧 250ms 防抖），内容页按关键词调 `manga_search` 并在副标题上报「N 个结果」；下载中心与详情页忽略。
+  - 内容 → 壳 `cubby:ready`：握手。壳收到后补发当前视图；内容页在 `init` 末尾主动发一次。
+  - 内容 → 壳 `cubby:chrome`：`title` / `subtitle` / `view` / `actions` / `nav` / `search` / `status`。`view` 在详情与阅读态发空串（清掉导航高亮），下载中心发复合 id；`actions` 上报四个下载动作的 `visible` 与 `disabled`；`nav` 上报漫画库三视图与 `downloads:all` 的徽标并显式声明各导航项可见；`search.enabled` 在下载中心与详情页为 `false`，`search.value` / `search.clear` 在切视图、进详情时清空壳输入框；`status` 为任务统计。
   - 轮询：`loadTasks` 每 2s 拉一次 `download_list`，随后重算并上报 `actions` 的 `visible` / `disabled`，避免壳上的按钮停在旧态。
-- **统一刷新**：`freshness` 由壳的 `PluginChrome` 挂载（`shell/frontend/public/shell/freshness.js` 的 `Freshness.mount`，`plugin` 为 `manga-library`、`unit` 为「本」），壳在挂载后与 `activeView` / `freshness_scope` 变化时调 `autoSync(scope)`；内容页不再挂 `#ml-freshness`，也不直接持有控件，`plugin-shown` 时用 `Freshness.sync('manga-library', scope)` 同步一次（scope 为当前漫画目录，书架层为空串）。重载经 `omnibox:freshness` 与兼容的 `omnibox:action: refresh` 进来（后者带 `payload` 时是回声、跳过），阅读器与章节层就地保留；「最近阅读」的 `page` 用于续读。下载任务进入 `completed` 时：入口回调 `_on_download_completed` 会 `library.reset()` 并 `engine.reset_throttle()`；若用户正停在书架视图，`loadTasks` 的 `_hasNewCompleted` 会在这次轮询里 `loadView()` 重读书架（下载目录已写进漫画根），不必切一次视图才看到新书。
+- **统一刷新**：`freshness` 由壳的 `PluginChrome` 挂载（`shell/frontend/public/shell/freshness.js` 的 `Freshness.mount`，`plugin` 为 `manga-library`、`unit` 为「本」），壳在挂载后与 `activeView` / `freshness_scope` 变化时调 `autoSync(scope)`；内容页不再挂 `#ml-freshness`，也不直接持有控件，`plugin-shown` 时用 `Freshness.sync('manga-library', scope)` 同步一次（scope 为当前漫画目录，书架层为空串）。重载经 `cubby:freshness` 与兼容的 `cubby:action: refresh` 进来（后者带 `payload` 时是回声、跳过），阅读器与章节层就地保留；「最近阅读」的 `page` 用于续读。下载任务进入 `completed` 时：入口回调 `_on_download_completed` 会 `library.reset()` 并 `engine.reset_throttle()`；若用户正停在书架视图，`loadTasks` 的 `_hasNewCompleted` 会在这次轮询里 `loadView()` 重读书架（下载目录已写进漫画根），不必切一次视图才看到新书。
 - **返回层级**：阅读器（共享灯箱或旧 `.manga-reader` 覆盖层）是最内层，`MangaReader.isOpen` 暴露打开状态；壳顶栏 `back` 与左栏导航在阅读器打开时先关闭它（`_closeReader`），下次返回才按 `viewLevel` 退到章节/书架。迁移前返回按钮在内容页、被覆盖层挡住，这条路径不可达，因此不关阅读器时会出现「点返回没反应」。
 - **壳类**：`PluginBase`（`shell/backend/plugin_base.py`），本插件用到的成员为 `setting`、`save_settings`、`settings_schema`、`get_data_root`、`on_settings_changed`。
 - **壳基建**：`engine_for`（`shell/backend/freshness.py`）返回 `FreshnessEngine`，本插件调用其 `reset_throttle`；组件模块由入口用 `load_sibling`（`shell/backend/plugin_utils.py`）加载 —— 只有入口可以，组件之间不互相 import。

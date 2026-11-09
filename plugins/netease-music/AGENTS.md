@@ -3,7 +3,7 @@
 ## 定位与形态
 
 - 职责：经本机 `ncm-cli` 命令行取网易云在线音乐数据（搜索、每日推荐、歌单、红心歌曲、歌词、播放地址），把五个入口注册进宿主 `media-player` 的侧栏，音频播放与歌词渲染由宿主承担。
-- 形态：内嵌 Companion 插件，宿主是 `media-player`；入口来自后端 `get_extensions` 返回条目的 `view` 字段。宿主 manifest 的 `frontend.chrome.extensions` 让壳的 `PluginExtensions.vue` 拉取这五个条目并渲染到宿主侧栏，点击后壳向宿主内容页发 `omnibox:view`（`ncm-*`），由宿主内容页渲染对应视图。本插件没有 `frontend.chrome`，也不提供 `native` 面板；`frontend/index.html` 只在本插件被直接打开时使用。
+- 形态：内嵌 Companion 插件，宿主是 `media-player`；入口来自后端 `get_extensions` 返回条目的 `view` 字段。宿主 manifest 的 `frontend.chrome.extensions` 让壳的 `PluginExtensions.vue` 拉取这五个条目并渲染到宿主侧栏，点击后壳向宿主内容页发 `cubby:view`（`ncm-*`），由宿主内容页渲染对应视图。本插件没有 `frontend.chrome`，也不提供 `native` 面板；`frontend/index.html` 只在本插件被直接打开时使用。
 - 本插件不是宿主：`get_extensions` 返回条目的 `host` 全部指向 `media-player`，本插件不承载其他插件的条目。
 - `manifest.json` 的 `hidden` 为 `true`，壳的 `get_frontend_manifests` 把 hidden 插件排除出前端清单，因此 `frontend/index.html` 只在直接打开时渲染；界面上的五个网易云视图由宿主按 `view` 原生渲染。
 
@@ -100,5 +100,5 @@
 - 共享前端组件：`Freshness`（`shell/frontend/public/shell/freshness.js`），`_mountFreshness` 传入 `plugin`、`container`、`unit`、`onChange`，随后调用 `Freshness.autoSync`；未使用 `FolderPicker`、`Splitter`、`createLightbox`、`createPagination`。
 - 跨插件接口：`parent.mediaPlayerApp`（定义在 `plugins/media-player/frontend/index.html`）、`media.core.setQueue`（`MediaPlayerCore.setQueue`，`plugins/media-player/frontend/js/player-core.js`）。
 - 共享后端基建：`PluginBase`、`load_sibling`（`shell/backend/plugin_utils.py`）、`FreshnessEngine` 的 `mode` 为 `remote` 分支（`shell/backend/freshness.py`），`invalidate` 指向 `clear_url_cache`。引擎正忙或异常时绕过引擎直接丢缓存的那条兜底路径由 `RemoteCache._stamp_freshness` 补写 `last_sync_at` / `last_verify_at`，否则状态里的 `fresh_until` 仍指向旧时刻。两份时间要分开看：「同步 / 校验」的 TTL 是整份远端数据的新鲜期，播放地址的 `URL_CACHE_TTL_SECONDS` 只决定单条外链何时重新解析。
-- 宿主集成：壳的 `PluginExtensions.vue` 用 `system_get_plugin_extensions('media-player', 'sidebar')` 取本插件的五条 `view` 条目并渲染入口；点击后壳发 `omnibox:view`（`ncm-daily` / `ncm-playlists` / `ncm-liked` / `ncm-my-playlists` / `ncm-login`），宿主内容页的 `openNeteaseView` 渲染对应视图。宿主前端按名调用 `register_api` 登记的方法，并把歌曲条目映射为 `ncm:` 前缀的媒体条目。旧宿主的 `renderExtensions` / `#mp-extensions` 容器不再使用。
+- 宿主集成：壳的 `PluginExtensions.vue` 用 `system_get_plugin_extensions('media-player', 'sidebar')` 取本插件的五条 `view` 条目并渲染入口；点击后壳发 `cubby:view`（`ncm-daily` / `ncm-playlists` / `ncm-liked` / `ncm-my-playlists` / `ncm-login`），宿主内容页的 `openNeteaseView` 渲染对应视图。宿主前端按名调用 `register_api` 登记的方法，并把歌曲条目映射为 `ncm:` 前缀的媒体条目。旧宿主的 `renderExtensions` / `#mp-extensions` 容器不再使用。
 - 前端样式、共享组件与统一刷新的完整约定见 `docs/plugin-ui-guide.md`。

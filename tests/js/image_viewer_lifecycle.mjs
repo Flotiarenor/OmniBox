@@ -9,7 +9,7 @@
 //   2. onShow 后从原来的位置继续（不是跳回第一张），用户主动停止则不续播；
 //   3. onDispose 摘掉 resize 监听器（监听器可回收，不再是 35 : 0）。
 // 幻灯片按钮在壳里（内容页没有 #btn-slideshow），所以启停状态按上报的
-// omnibox:chrome.actions.slideshow（label / active）断言，而不是读内容页 DOM。
+// cubby:chrome.actions.slideshow（label / active）断言，而不是读内容页 DOM。
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
@@ -180,7 +180,7 @@ console.log('场景 1：onHide 停掉幻灯片定时器（修复前切走后每 
     iv.toggleSlideshow();
     check('启动幻灯片后有定时器', iv.slideshowTimer !== null);
     const slideshowAction = () => {
-        const chrome = env.chromeMessages.filter(m => m.type === 'omnibox:chrome').at(-1);
+        const chrome = env.chromeMessages.filter(m => m.type === 'cubby:chrome').at(-1);
         return chrome && chrome.actions ? chrome.actions.slideshow : null;
     };
     const stopAction = slideshowAction();

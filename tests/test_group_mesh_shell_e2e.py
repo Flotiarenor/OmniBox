@@ -348,7 +348,7 @@ class GroupMeshInShellTest(unittest.TestCase):
         """在壳文档的左栏里点一个导航项，返回点击前的壳标题。
 
         面板入口由壳的 `PluginChrome` 渲染在 `.plugin-nav-item` 上（内容页里没有
-        `#gm-nav`）；点击后壳发 `omnibox:view`，内容页按 id 切面板并把新标题上报。
+        `#gm-nav`）；点击后壳发 `cubby:view`，内容页按 id 切面板并把新标题上报。
         断言壳标题变化，等于同时验证了"入口在壳上"和"内容页接住了这条消息"。
         """
         self.driver.switch_to.default_content()
@@ -389,7 +389,7 @@ class GroupMeshInShellTest(unittest.TestCase):
             lambda: self.driver.execute_script(
                 "const p = document.querySelector('#gm-panels > .gm-panel[data-panel=\"remote\"]');"
                 "return !!p && p.getAttribute('data-active') === 'true';")),
-            '壳发出的 omnibox:view 没有切到「远端共享」面板')
+            '壳发出的 cubby:view 没有切到「远端共享」面板')
         self.assertTrue(self._wait_for(
             lambda: '节点未运行' in text_for(self.driver, 'my-endpoint')
             or ':' in text_for(self.driver, 'my-endpoint')

@@ -482,7 +482,7 @@ watch(() => props.nativeOpen, (open) => {
   if (!open && activeExtensionId.value) activeExtensionId.value = ''
 })
 /**
- * 内容页上报的同步作用域（`omnibox:chrome` 的 `freshness_scope`）。
+ * 内容页上报的同步作用域（`cubby:chrome` 的 `freshness_scope`）。
  *
  * 它随运行期状态到达（`props.state`，由 `mergeChromeState` 归一化），不是 manifest 的
  * `chrome` 声明：清单声明描述"页面长什么样"，作用域描述"内容页当前在哪一层"。

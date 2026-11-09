@@ -158,7 +158,7 @@ window.addEventListener('message', function(event) {
   if (!isMessageFromShell(event)) return;
   var data = event.data;
   if (!data || typeof data.type !== 'string') return;
-  if (data.type === 'omnibox:appearance') {
+  if (data.type === 'cubby:appearance') {
     var alpha = Number(data.alpha);
     if (alpha === alpha) {
       alpha = Math.max(0, Math.min(100, Math.round(alpha)));
@@ -167,20 +167,20 @@ window.addEventListener('message', function(event) {
     }
     return;
   }
-  if (data.type === 'omnibox:settings-changed') {
+  if (data.type === 'cubby:settings-changed') {
     // 壳通知设置已变更：整页重载（插件自身状态由设置重新拉取）
     window.location.href = window.location.href.split('?')[0] + '?_t=' + Date.now();
     return;
   }
-  if (data.type === 'omnibox:plugin-shown') {
+  if (data.type === 'cubby:plugin-shown') {
     window.PluginLifecycle.setVisible(true);
     return;
   }
-  if (data.type === 'omnibox:plugin-hidden') {
+  if (data.type === 'cubby:plugin-hidden') {
     window.PluginLifecycle.setVisible(false);
     return;
   }
-  if (data.type === 'omnibox:plugin-dispose') {
+  if (data.type === 'cubby:plugin-dispose') {
     window.PluginLifecycle.dispose();
   }
 });

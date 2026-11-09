@@ -71,7 +71,7 @@ class ReaderVoicePage {
         this._bind();
         // 朗读设置是**主区的内容切换**（与书架网格、正文同一个位置），不是遮挡页：
         // 壳左栏的"朗读设置"导航项按上报的 view='voice' 保持选中，用户可以随时切回
-        // 书架或正文（壳发 omnibox:view）。
+        // 书架或正文（壳发 cubby:view）。
         dom.page.classList.remove('hidden');
         const shelf = document.getElementById('nr-shelf-view');
         const reader = document.getElementById('nr-reader-view');

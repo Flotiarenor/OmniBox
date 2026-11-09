@@ -243,11 +243,11 @@ function loadImageViewer(handlers = {}) {
         parent, messages, calls, toasts,
         chrome() {
             for (let i = messages.length - 1; i >= 0; i -= 1) {
-                if (messages[i] && messages[i].type === 'omnibox:chrome') return messages[i];
+                if (messages[i] && messages[i].type === 'cubby:chrome') return messages[i];
             }
             return null;
         },
-        chromeCount: () => messages.filter((message) => message && message.type === 'omnibox:chrome').length,
+        chromeCount: () => messages.filter((message) => message && message.type === 'cubby:chrome').length,
         tick,
     };
 }

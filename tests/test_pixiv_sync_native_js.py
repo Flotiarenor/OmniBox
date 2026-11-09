@@ -11,7 +11,7 @@ native.js，锁住：
   3. OAuth：start_oauth → form(code) → finish_oauth 参数与回到主视图；
   4. 「清除 Token」两步确认后真的只提交 `{refresh_token: ''}`（清空=清除的契约）；
   5. `settings-saved` 会重读状态；
-  6. 缺 `/shell/native-client.js` 时向壳报 `omnibox:native-error`，而不是静默空白；
+  6. 缺 `/shell/native-client.js` 时向壳报 `cubby:native-error`，而不是静默空白；
   7. 本地内容的空闲概要（上次校验 / 索引待更新 / 上次变更计数）与校验进度块；
   8. 统一刷新控件：打开面板时挂到隐藏节点并发起一次被动同步，报告有变化时重读
      `get_status`，pagehide 时销毁控件（被动同步不依赖旧回落页）。
@@ -130,7 +130,7 @@ function setup(initialStatus) {
     }
     await flush();
   };
-  const schema = () => messages.filter(m => m.type === 'omnibox:schema').at(-1);
+  const schema = () => messages.filter(m => m.type === 'cubby:schema').at(-1);
   const blocks = () => (schema() && schema().blocks) || [];
   const toolbar = () => (schema() && schema().toolbar) || [];
   // blocks 可被 section 嵌套（文档式版把指标/任务/操作分区），查找必须递归。
@@ -143,8 +143,8 @@ function setup(initialStatus) {
     /** 指定某个 Bridge 方法的返回值（用于维护类接口）。 */
     bridgeResult: (method, value) => { overrides[method] = value; },
     send, schema, blocks, toolbar, block,
-    init: () => send({ type: 'omnibox:native-init' }),
-    action: (name, payload) => send({ type: 'omnibox:native-action', action: name, payload }),
+    init: () => send({ type: 'cubby:native-init' }),
+    action: (name, payload) => send({ type: 'cubby:native-action', action: name, payload }),
     lastCall: (method) => calls.filter(c => c.method === method).at(-1),
     callCount: (method) => calls.filter(c => c.method === method).length,
   };
@@ -166,9 +166,9 @@ const IDLE_STATUS = {
 // 每个 check 都必须 await：早先版本直接串行调用、随后立即 process.exit，
 // 于是所有 async 断言都在退出前没跑完，用例永远"通过"。现在由 run() 顺序 await。
 async function run() {
-  await check('装载即发 omnibox:native-ready；native-init 后提交 schema 与 toolbar', async () => {
+  await check('装载即发 cubby:native-ready；native-init 后提交 schema 与 toolbar', async () => {
     const env = setup(IDLE_STATUS);
-    assert(env.messages.some(m => m.type === 'omnibox:native-ready'), '装载期要发 native-ready');
+    assert(env.messages.some(m => m.type === 'cubby:native-ready'), '装载期要发 native-ready');
     await env.init();
     const schema = env.schema();
     assert(schema, 'native-init 后要提交 schema');
@@ -513,7 +513,7 @@ async function run() {
     };
     const ctx = vm.createContext(sandbox);
     vm.runInContext(fs.readFileSync(NATIVE, 'utf8'), ctx);
-    const error = messages.find(m => m.type === 'omnibox:native-error');
+    const error = messages.find(m => m.type === 'cubby:native-error');
     assert(error, '缺客户端时要报 native-error');
     assert(/native-client\.js/.test(error.error), '错误文案要指出缺哪个文件');
   });

@@ -31,13 +31,13 @@
  * 而壳是直投顶层 iframe 的 —— 内嵌页的 parent 是宿主而不是壳，套那条会全部被拒。
  */
 window.HostChannel = (function() {
-  var REQUEST = 'omnibox:host-request';
-  var REPLY = 'omnibox:host-reply';
-  var PROBE = 'omnibox:host-probe';
-  var MOUNT = 'omnibox:host-mount';
-  var RUN = 'omnibox:host-run';
-  var CALLBACK = 'omnibox:host-callback';
-  var CALLBACK_REPLY = 'omnibox:host-callback-reply';
+  var REQUEST = 'cubby:host-request';
+  var REPLY = 'cubby:host-reply';
+  var PROBE = 'cubby:host-probe';
+  var MOUNT = 'cubby:host-mount';
+  var RUN = 'cubby:host-run';
+  var CALLBACK = 'cubby:host-callback';
+  var CALLBACK_REPLY = 'cubby:host-callback-reply';
   var PROBE_TIMEOUT = 500;
   var MOUNT_TIMEOUT = 2000;    // 挂载是渲染请求，不通就立刻把源按钮放回来，别拖
   var DEFAULT_TIMEOUT = 30000;
@@ -180,7 +180,7 @@ window.HostChannel = (function() {
    *
    * 按钮定义留在子插件（宿主的代码里一个按钮名都不出现）；上层匹配"哪个 iframe 发的"
    * 用 `iframe.src` 与子页 `location.href` 比对，不靠插件名。点击时上层回发
-   * `{type:'omnibox:host-run', id}`，本模块在子页里点那个源按钮 —— 所以处理逻辑
+   * `{type:'cubby:host-run', id}`，本模块在子页里点那个源按钮 —— 所以处理逻辑
    * 仍然只有一份，就在子页里。
    *
    * `selector` 传了的话，挂载成功后把内嵌页里那个源节点藏起来，避免两处重复；

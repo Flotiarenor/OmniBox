@@ -99,8 +99,6 @@ curl -H "X-Cubby-Token: $(cat .config/auth_token.txt)" \
      -X POST http://127.0.0.1:18080/api/system_get_config
 ```
 
-旧的 `X-Omnibox-Token` 请求头仍被接受，已部署的脚本无需立刻改动；Cookie 名也沿用历史命名 `omnibox_token`。
-
 > 需要公网访问时，请经 nginx 之类的反向代理自行加一层 HTTPS 与访问控制；不要把令牌文件和端口直接暴露到不受信任的网络。
 
 ## 安装与卸载插件

@@ -93,7 +93,7 @@
 壳渲染的 chrome（`manifest.json` 的 `frontend.chrome`，由 `PluginChrome.vue` 落 DOM）：
 
 - 品牌块：`icon:book-open`、标题「文档阅读」、副标题「Reader」。
-- 浏览组（`browse`）：`all` 全部文档、`recent` 最近阅读、`marks` 书签、`voice` 朗读设置；运行期徽标 `all` / `marks` 走 `omnibox:chrome.nav`。
+- 浏览组（`browse`）：`all` 全部文档、`recent` 最近阅读、`marks` 书签、`voice` 朗读设置；运行期徽标 `all` / `marks` 走 `cubby:chrome.nav`。
 - 「当前文档」组（`reader-tools`，初始 `visible:false`）：`toc` 目录、`read-settings` 阅读设置；阅读态由内容页把该组显隐上报给壳。
 - 顶栏动作：`back`（返回，初始 `visible:false`，阅读态显示）、`settings`（设置）。
 - 搜索框：占位「搜索书名、作者…」；阅读态与朗读设置页由内容页隐藏。
@@ -125,13 +125,13 @@
 ## 与壳的契约
 
 - 页面 chrome 的消息（只在壳与内容 iframe 之间，同源 `postMessage`）：
-  - 壳 → 内容 `omnibox:view`：左栏导航项 id。`all` / `recent` / `marks` 切书架分类，`voice` 切朗读设置整页，`toc` / `read-settings` 是阅读态入口（打开内容弹窗）。
-  - 壳 → 内容 `omnibox:action`：`back` 返回书架、`refresh` 在统一刷新（同步/校验）完成后重读书架与书签、`settings-saved` 在壳内设置弹窗保存成功后重读阅读偏好并重扫书架。设置弹窗由壳的 `PluginSettingsModal` 打开，不再发 `settings`。
-  - 壳 → 内容 `omnibox:query`：搜索输入（壳侧 250ms 防抖），内容页按关键词过滤书架并在副标题上报「匹配 N / M 本」。
-  - 内容 → 壳 `omnibox:ready`：握手。壳收到后补发当前视图；内容页在 `init` 末尾主动发一次。
-  - 内容 → 壳 `omnibox:chrome`：`title` / `subtitle` / `view`（阅读态发空串清掉导航高亮、朗读设置页发 `voice`）、`actions`（`back.visible`、`settings`）、`nav`（`reader-tools.visible`、`all` / `marks` 徽标）、`search.enabled` 与 `search.value` / `search.clear`（切分类、进阅读态、开朗读设置时清空壳输入框）、`status`（`N 本 · 朗读 <引擎>`）。
+  - 壳 → 内容 `cubby:view`：左栏导航项 id。`all` / `recent` / `marks` 切书架分类，`voice` 切朗读设置整页，`toc` / `read-settings` 是阅读态入口（打开内容弹窗）。
+  - 壳 → 内容 `cubby:action`：`back` 返回书架、`refresh` 在统一刷新（同步/校验）完成后重读书架与书签、`settings-saved` 在壳内设置弹窗保存成功后重读阅读偏好并重扫书架。设置弹窗由壳的 `PluginSettingsModal` 打开，不再发 `settings`。
+  - 壳 → 内容 `cubby:query`：搜索输入（壳侧 250ms 防抖），内容页按关键词过滤书架并在副标题上报「匹配 N / M 本」。
+  - 内容 → 壳 `cubby:ready`：握手。壳收到后补发当前视图；内容页在 `init` 末尾主动发一次。
+  - 内容 → 壳 `cubby:chrome`：`title` / `subtitle` / `view`（阅读态发空串清掉导航高亮、朗读设置页发 `voice`）、`actions`（`back.visible`、`settings`）、`nav`（`reader-tools.visible`、`all` / `marks` 徽标）、`search.enabled` 与 `search.value` / `search.clear`（切分类、进阅读态、开朗读设置时清空壳输入框）、`status`（`N 本 · 朗读 <引擎>`）。
 - 状态栏的引擎名取冒号/左括号前那一段（如 `edge`），因为壳的侧栏状态行只有一行宽。
-- **统一刷新控件由壳的 `PluginChrome` 挂载**（`shell/frontend/public/shell/freshness.js` 的 `Freshness.mount`，`plugin` 为 `document-reader`、`unit` 为「本」），内容页不再挂 `#nr-freshness`；壳在挂载后与 `activeView` / `freshness_scope` 变化时调 `autoSync`，内容页在 `plugin-shown` 时调 `Freshness.sync('document-reader', scope)`。同步/校验结论先到 `omnibox:freshness`；紧跟的旧 `omnibox:action: refresh` 带同一份报告作 `payload`，`_applyHostAction(action, payload)` 据此判回声、跳过（没有 `payload` 的 `refresh` 来自旧壳，照常重读）。阅读态只重读文档与书签、不重绘书架（`_reloadShelf` 的阅读态守卫）：重绘会用书架分类的标题/统计覆盖壳顶栏的书名。
+- **统一刷新控件由壳的 `PluginChrome` 挂载**（`shell/frontend/public/shell/freshness.js` 的 `Freshness.mount`，`plugin` 为 `document-reader`、`unit` 为「本」），内容页不再挂 `#nr-freshness`；壳在挂载后与 `activeView` / `freshness_scope` 变化时调 `autoSync`，内容页在 `plugin-shown` 时调 `Freshness.sync('document-reader', scope)`。同步/校验结论先到 `cubby:freshness`；紧跟的旧 `cubby:action: refresh` 带同一份报告作 `payload`，`_applyHostAction(action, payload)` 据此判回声、跳过（没有 `payload` 的 `refresh` 来自旧壳，照常重读）。阅读态只重读文档与书签、不重绘书架（`_reloadShelf` 的阅读态守卫）：重绘会用书架分类的标题/统计覆盖壳顶栏的书名。
 - 壳布局与组件类（内容 iframe 继续使用）：`.view-body`、`.view-content`、`.obx-scroll`、`.obx-icon`、`.btn`、`.btn-sm`、`.btn-primary`、`.btn-danger`、`.modal`、`.modal-box`、`.modal-body`、`.modal-footer`、`.search-input`、`.hidden`、`.empty-state`、`.empty-state-icon`、`.empty-state-text`、`.empty-state-hint`。
 - 内容页不得再出现 chrome 标记：`.view-sub-sidebar`、`.view-toolbar`、`.sub-sidebar-brand`、`.obx-nav-item`（`tools/plugin_ui_audit.py` 的 `iframe.content-only` 会检查）。
 - 壳 CSS 变量：`--accent`、`--bg-app`、`--bg-surface`、`--bg-hover`、`--border`、`--danger`、`--text-primary`、`--text-secondary`、`--text-muted`、`--shadow-sm`、`--shadow-md`、`--transition-fast`、`--obx-i`。

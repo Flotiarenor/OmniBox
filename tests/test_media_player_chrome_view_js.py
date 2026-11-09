@@ -1,4 +1,4 @@
-"""media-player 与壳的左栏高亮契约（`omnibox:chrome.view`）驱动。
+"""media-player 与壳的左栏高亮契约（`cubby:chrome.view`）驱动。
 
 旧用例 `tests/js/media_player_nav_active.mjs` 在本区间被删除（abffebc）：它断言
 `_setNavActive` 与 `.mp-nav-item`，而侧栏已改由壳渲染。本用例补回行为等价的断言：

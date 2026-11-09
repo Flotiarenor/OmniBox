@@ -20,11 +20,9 @@ Cubby HTTP 数据路由的访问令牌。
 首次启动自动生成；文件缺失或损坏时自动重建。
 
 携带方式二选一（浏览器页面会由服务端自动种下 HttpOnly Cookie，无需手动处理）：
-- Cookie: `omnibox_token=<token>`（页面加载时自动下发，同源请求自动携带）
+- Cookie: `cubby_token=<token>`（页面加载时自动下发，同源请求自动携带）
 - 请求头: `X-Cubby-Token: <token>`（curl / nginx 注入等场景）
-
-旧请求头 `X-Omnibox-Token` 仍然接受（存量脚本与反代配置不必同步改），但不作为
-文档口径：新写的东西一律用 `X-Cubby-Token`。Cookie 名保持 `omnibox_token` 不动。'''
+'''
 
 import hmac
 import os
@@ -32,10 +30,8 @@ import secrets
 from pathlib import Path
 from typing import Dict
 
-TOKEN_COOKIE = 'omnibox_token'
+TOKEN_COOKIE = 'cubby_token'
 TOKEN_HEADER = 'X-Cubby-Token'
-# 旧请求头：只作为被接受的别名保留，不被新代码写入任何响应或文档示例。
-LEGACY_TOKEN_HEADER = 'X-Omnibox-Token'
 TOKEN_FILE_NAME = 'auth_token.txt'
 
 # 进程内缓存：{配置目录: 令牌}。保证同一进程、同一配置目录多次调用返回同一个令牌

@@ -120,7 +120,7 @@ API"）沿用原词，比另造说法更清楚。
 | `fix(release): 本地打包脚本不许把开发机的用户数据打进发行包` | "不许"是情绪不是事实 | `fix(release): 本地打包脚本在压缩前拦截用户数据目录` |
 | `ci(release): 发布改为半自动——tag 触发全量构建并建草稿 Release，Publish 才公开` | 破折号长句 + 口语"才公开"，超长 | `ci(release): tag 触发构建并创建草稿 Release，公开改为人工确认` |
 | `test: 修正只在 Windows 成立的测试，让 ubuntu test job 转绿` | "转绿"是口语，未说明改了什么 | `test: 按平台修正依赖 Windows 语义的断言` |
-| `fix(release): Linux 产物校验用重命名后的 OmniBox，修复首次发布就挂的 bug` | "就挂的 bug"口语 | `fix(release): Linux 产物校验改用重命名后的可执行文件名` |
+| `fix(release): Linux 产物校验用重命名后的可执行文件，修复首次发布就挂的 bug` | "就挂的 bug"口语 | `fix(release): Linux 产物校验改用重命名后的可执行文件名` |
 
 正文对照：
 

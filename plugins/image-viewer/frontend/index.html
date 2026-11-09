@@ -10,8 +10,8 @@
     manifest 的 frontend.chrome 渲染；这里只保留内容（相册卡片、justified 图片网格、分页、
     灯箱、相册右键菜单、三个弹窗与缩略图重建进度卡）。
 
-    视图切换、工具栏动作与搜索经 postMessage 进来（omnibox:view / omnibox:action /
-    omnibox:query），标题/副标题/视图/动作显隐/搜索占位/状态反向上报（omnibox:chrome）。
+    视图切换、工具栏动作与搜索经 postMessage 进来（cubby:view / cubby:action /
+    cubby:query），标题/副标题/视图/动作显隐/搜索占位/状态反向上报（cubby:chrome）。
     附属插件（image-cleaner / pixiv-sync）的 native 面板由壳打开，宿主不再渲染侧栏入口；
     #extension-view 仅给不认 native 的旧壳，当前壳不进入这里。
   -->

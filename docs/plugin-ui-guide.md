@@ -20,13 +20,13 @@ manifest 用 `frontend.chrome` 声明骨架；壳加载内容页时追加 `?cont
 完整字段与消息表在 `docs/plugin-page-architecture.md`；这里只列 UI 侧必须遵守的部分。
 
 - 导航项 id、顶栏动作 id、视图 id 由插件定义，壳只透传；复合 id（如 `downloads:all`）由内容页解释。
-- 内容页用 `omnibox:chrome` 上报 `title` / `subtitle` / `view` / `actions` / `nav` / `search` / `status`；
+- 内容页用 `cubby:chrome` 上报 `title` / `subtitle` / `view` / `actions` / `nav` / `search` / `status`；
   壳只合并，不解释业务。
 - `settings` 动作由壳接管（声明 `frontend.chrome` 且 schema 可表达的插件）；内容页不要重新实现设置弹窗，
   保存后处理 `settings-saved` 即可。
 - 搜索由壳持有输入框。内容页切视图、进二级页时发 `search.clear`（递增序号）复位；需要程序化回填时发
   `search.value`，不要另建搜索框。
-- native 内容用 `omnibox:schema` 提交 blocks；动作只回传标识，payload 发送前做 JSON 克隆。
+- native 内容用 `cubby:schema` 提交 blocks；动作只回传标识，payload 发送前做 JSON 克隆。
 
 ## 组件规范
 
@@ -53,8 +53,8 @@ manifest 用 `frontend.chrome` 声明骨架；壳加载内容页时追加 `?cont
   `role="dialog"` / `aria-modal` / Esc / 焦点归还。
 - 四个壳内设置页与 image-viewer 的内容设置页顶部都有一个「外观」块：背景不透明度滑块 +
   默认勾选的「跟随壳透明度」。它属于壳偏好 `--plugin-glass-<插件名>`，不写进插件
-  `settings_schema`；image-viewer 的内容页设置通过 `omnibox:get-plugin-appearance` /
-  `omnibox:set-plugin-alpha` 使用同一份值。只覆盖页面骨架与内容页公共区域，插件自绘的
+  `settings_schema`；image-viewer 的内容页设置通过 `cubby:get-plugin-appearance` /
+  `cubby:set-plugin-alpha` 使用同一份值。只覆盖页面骨架与内容页公共区域，插件自绘的
   卡片仍按各自样式绘制。
 
 ### 状态与空态
@@ -100,7 +100,7 @@ manifest 用 `frontend.chrome` 声明骨架；壳加载内容页时追加 `?cont
 
 ## 状态与生命周期
 
-- 内容页首次加载先发 `omnibox:ready`，再发一次 `omnibox:chrome`；壳收到 ready 后会补发当前视图。
+- 内容页首次加载先发 `cubby:ready`，再发一次 `cubby:chrome`；壳收到 ready 后会补发当前视图。
 - 视图切换、搜索、动作处理必须幂等；壳可能在路由恢复时重发同一视图。
 - `PluginLifecycle.onHide` 停轮询/停动画/暂停媒体；`onShow` 恢复；`onDispose` 取消未完成请求与定时器。
 - keepAlive 插件离开页面不销毁 iframe：不要假设 `onDispose` 会随路由切换触发。

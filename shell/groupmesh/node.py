@@ -665,7 +665,7 @@ def serve(host: str, port: int, identity: Identity, roster: Optional[Roster],
         # bind/listen 必须在 try 之内：**实测踩到过描述符泄漏** —— 服务重启窗口期
         # 旧进程还占着端口时 bind 抛 EADDRINUSE，而这个 socket 建在 try 之外，
         # 于是它既没被 close() 也没人再引用，却仍以 LISTEN 状态占着端口（`ss` 显示
-        # 该 socket 归 omnibox-web.service 的 cgroup，但当前进程里已经找不到它）。
+        # 该 socket 归 cubby-web.service 的 cgroup，但当前进程里已经找不到它）。
         # 后果是端口**永远显示被占用**：之后每次重试都 EADDRINUSE，节点再也起不来，
         # 只能靠重启整个服务释放。
         listener.bind((host, port))

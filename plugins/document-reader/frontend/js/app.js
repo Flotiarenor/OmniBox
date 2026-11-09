@@ -8,8 +8,8 @@
 //   目录与阅读设置是内容弹窗，朗读设置是覆盖主区的独立页（reader-voice-page.js）
 //   朗读控制是右下角浮动小卡（reader-tts.js），不占正文宽度
 //
-// 与壳的通信：壳发 omnibox:view / omnibox:action / omnibox:query 与
-// omnibox:freshness（统一刷新报告），本文件回 omnibox:chrome（标题、副标题、视图、
+// 与壳的通信：壳发 cubby:view / cubby:action / cubby:query 与
+// cubby:freshness（统一刷新报告），本文件回 cubby:chrome（标题、副标题、视图、
 // 动作显隐、导航补丁、搜索显隐、同步作用域、状态）。
 //
 // 分页 / 测量 / 滚动加载在 reader-engine.js；阅读偏好持久化在 settings.js。
@@ -20,7 +20,7 @@ const nrAppIcon = (name) => (window.Icons && typeof window.Icons.html === 'funct
     ? window.Icons.html(name)
     : '';
 
-// 新壳在 `omnibox:freshness` 之后紧跟一条旧的 `omnibox:action: refresh`，两条属于
+// 新壳在 `cubby:freshness` 之后紧跟一条旧的 `cubby:action: refresh`，两条属于
 // 同一次同步；壳把同一份报告附在动作的 payload 上（`/shell/chrome-client.js` 的
 // `onAction(action, payload)`），所以"回声"按 payload 是否存在判定，不靠时间窗。
 
@@ -115,7 +115,7 @@ class DocumentReader {
         const searchSync = this._searchSync;
         this._searchSync = null;
         this._postHost({
-            type: 'omnibox:chrome',
+            type: 'cubby:chrome',
             title: voice ? '朗读设置' : this._chromeTitle,
             subtitle: voice ? '引擎 / 音色 / 缓存' : this._chromeSub,
             view: voice ? 'voice' : (reading ? '' : this.view),
@@ -155,7 +155,7 @@ class DocumentReader {
         this._chrome.bind();
     }
 
-    /** 壳左栏的导航项都发 omnibox:view：三个书架分类、朗读设置与「当前文档」组的
+    /** 壳左栏的导航项都发 cubby:view：三个书架分类、朗读设置与「当前文档」组的
         目录/阅读设置。后三个是入口而非视图，按动作处理。 */
     _applyHostView(view) {
         if (view === 'toc') { this.openToc(); this._pushChrome(); return; }
@@ -173,7 +173,7 @@ class DocumentReader {
         if (action === 'back') this.returnToShelf();
         else if (action === 'settings-saved') this._reloadSettings();
         else if (action === 'refresh') {
-            // 新壳在 omnibox:freshness 之后紧跟一条 legacy refresh，并把同一份报告附在
+            // 新壳在 cubby:freshness 之后紧跟一条 legacy refresh，并把同一份报告附在
             // 动作的 payload 上：富事件已经重读过，这条只当回声跳过。没有 payload 的
             // refresh 来自旧壳，按原语义重读。
             if (payload != null) return;
@@ -183,7 +183,7 @@ class DocumentReader {
 
     /** 壳下发的非 view / action / query 消息；目前只消费统一刷新报告。 */
     _onHostMessage(data) {
-        if (!data || data.type !== 'omnibox:freshness') return;
+        if (!data || data.type !== 'cubby:freshness') return;
         if (data.plugin && data.plugin !== 'document-reader') return;
         if (!this._freshnessChanged(data.report)) return;
         void this._reloadShelf();
@@ -220,8 +220,8 @@ class DocumentReader {
     // ===== 统一刷新（同步 / 校验）=====
     //
     // 控件由壳的 PluginChrome 挂载（manifest 的 frontend.chrome.freshness）。内容页在
-    // 切回前台时按全部文档根同步一次；壳在同步有变化或校验完成后发 omnibox:freshness
-    // （带报告），旧壳只发 omnibox:action: refresh，两条路径都汇到 `_reloadShelf`。
+    // 切回前台时按全部文档根同步一次；壳在同步有变化或校验完成后发 cubby:freshness
+    // （带报告），旧壳只发 cubby:action: refresh，两条路径都汇到 `_reloadShelf`。
 
     /** 报告里是否真有变化：三个计数与 `invalidated` 同等看待；`skip` 不算。 */
     _freshnessChanged(report) {
@@ -551,7 +551,7 @@ class DocumentReader {
         this._renderShelf(this._searchQuery);
     }
 
-    /** 壳搜索框的输入（omnibox:query；壳侧已去抖 250ms）。 */
+    /** 壳搜索框的输入（cubby:query；壳侧已去抖 250ms）。 */
     _onQuery(query) {
         this._searchQuery = String(query || '').trim();
         this._renderShelf(this._searchQuery);

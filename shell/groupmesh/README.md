@@ -20,7 +20,7 @@ python -m shell.groupmesh.cli selftest
 
 ```bash
 venv/Scripts/python.exe -m shell.groupmesh.cli selftest        # Windows（仓库根）
-/root/OmniBox/venv/bin/python -m shell.groupmesh.cli selftest   # Linux（/root/OmniBox）
+/root/Cubby/venv/bin/python -m shell.groupmesh.cli selftest   # Linux（/root/Cubby）
 ```
 
 ## 两个节点的最小联调
@@ -68,7 +68,7 @@ pwsh -File shell/groupmesh/tools/lan-test.ps1
   真实缺陷：长驻节点若只在启动时读一次名单，新成员会被判为"不在名单里"而拒绝；
 * 注册记录里写入的端点是那个全局 IPv6 地址。
 
-两个脚本都依赖 `~/.ssh/config` 里的 `omnibox-linux` 别名（由 `OmniBox-OneClick.ps1` 维护）。
+两个脚本都依赖 `~/.ssh/config` 里的 `cubby-linux` 别名（由 `Cubby-OneClick.ps1` 维护）。
 
 `shell/groupmesh/tools/interop_fixture.py` 验证两端的确定性：同一种子必须算出相同的密钥与签名。
 

@@ -5,7 +5,7 @@
 //
 //   1. `_freshnessScope()`：图片层给当前目录；相册层、子相册层与时间线「按图片」层给空串
 //      （全根）—— 时间线那一层的列表来自 `list_recent_images`，不属于任何目录。
-//   2. `omnibox:chrome` 带 `freshness_scope`：壳据此记住作用域并作为 `autoSync(scope)`
+//   2. `cubby:chrome` 带 `freshness_scope`：壳据此记住作用域并作为 `autoSync(scope)`
 //      的入参。
 //   3. `_syncFreshness(reload)`：调 `Freshness.sync('image-viewer', scope)`；只有报告里
 //      确实有变化（added / changed / removed / invalidated，或目录集合信号
@@ -130,7 +130,7 @@ function loadImageViewer() {
     return { win, doc, chromeMessages, freshness, sandbox, ImageViewer: sandbox.__IV };
 }
 
-const lastChrome = (env) => env.chromeMessages.filter((m) => m.type === 'omnibox:chrome').at(-1);
+const lastChrome = (env) => env.chromeMessages.filter((m) => m.type === 'cubby:chrome').at(-1);
 
 console.log('场景 1：作用域按层取值（图片层当前目录，其余全根）');
 {
@@ -158,7 +158,7 @@ console.log('场景 1：作用域按层取值（图片层当前目录，其余�
         `实际 ${JSON.stringify(iv._freshnessScope())}`);
 }
 
-console.log('场景 2：omnibox:chrome 上报 freshness_scope');
+console.log('场景 2：cubby:chrome 上报 freshness_scope');
 {
     const env = loadImageViewer();
     const iv = new env.ImageViewer();

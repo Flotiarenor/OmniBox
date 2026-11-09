@@ -124,7 +124,7 @@ window.ShellSplitter = (function () {
         if (window.parent === window) return;
         try {
             window.parent.postMessage(
-                { type: 'omnibox:set-var', key: name, value },
+                { type: 'cubby:set-var', key: name, value },
                 window.location.origin
             );
         } catch (e) {

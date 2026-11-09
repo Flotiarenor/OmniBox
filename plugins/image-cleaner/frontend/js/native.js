@@ -1,7 +1,7 @@
 // 相册清理 native 逻辑页。
 //
 // 本页不渲染界面：它把状态编译成壳的原生内容 blocks（见 shell/frontend/src/core/plugin-content.ts），
-// 由壳的 NativePanel 与 SchemaRenderer 画出来。用户操作以 omnibox:native-action 回到这里，
+// 由壳的 NativePanel 与 SchemaRenderer 画出来。用户操作以 cubby:native-action 回到这里，
 // 这里调后端后重新提交 blocks。宿主能力只走 Bridge，不读宿主窗口上的对象。
 (function () {
   'use strict';

@@ -72,7 +72,7 @@
 | `plugins/group-mesh/backend/uploads.py` | 上传任务表与续传记录（不持有线程、不发请求） | `UploadQueue`、`UPLOAD_KEEP`、`UPLOAD_TASK_FILE`、`register`、`prune`、`persist`、`restore`、`view`、`finish`、`fail`、`cancel_all`、`status`、`cancel`、`upload_key`、`load_records`、`save_record`、`clear_record`、`resume_offset`、`local_stamp` |
 | `plugins/group-mesh/backend/upload.py` | 把本机文件投放到对端：来源校验、任务启动、上传线程 | `Uploader`、`UPLOAD_TIMEOUT_SECONDS`、`upload_remote`、`worker` |
 | `plugins/group-mesh/frontend/index.html` | 内容页入口：五个面板、六个弹窗与脚本装载（页面骨架由壳渲染，不在这里） | `#gm-panels`、`#gm-content`、`#kernel-missing`、`data-panel`、`data-title`、`data-sub`、`data-active` |
-| `plugins/group-mesh/frontend/network-location.html` | 网络位置提供方页面（弹窗 iframe） | `nl-peers`、`nl-shares`、`nl-dest-input`、`nl-dest`、`nl-note`、`nl-pick`、`nl-run`、`nl-cancel`、`nl-item`、`nl-sub`、`nl-path`、`nl-step`、`nl-list`、`nl-actions`、`nl-pick-row`、`is-active`、`MESSAGE_TYPE`、`omnibox:network-location`、`loadPeers`、`selectPeer`、`selectShare`、`pickDestination`、`run`、`reply`、`destinationProblem`、`syncFromInput`、`normalizeDestination`、`applyPickedDestination`、`updateHint`、`updateRunButton`、`FolderPicker.openDirBrowser` |
+| `plugins/group-mesh/frontend/network-location.html` | 网络位置提供方页面（弹窗 iframe） | `nl-peers`、`nl-shares`、`nl-dest-input`、`nl-dest`、`nl-note`、`nl-pick`、`nl-run`、`nl-cancel`、`nl-item`、`nl-sub`、`nl-path`、`nl-step`、`nl-list`、`nl-actions`、`nl-pick-row`、`is-active`、`MESSAGE_TYPE`、`cubby:network-location`、`loadPeers`、`selectPeer`、`selectShare`、`pickDestination`、`run`、`reply`、`destinationProblem`、`syncFromInput`、`normalizeDestination`、`applyPickedDestination`、`updateHint`、`updateRunButton`、`FolderPicker.openDirBrowser` |
 | `plugins/group-mesh/frontend/group-mesh.css` | 插件自有样式：面板栅格、卡片、表格、徽章、远端两栏 | `--gm-radius`、`--gm-radius-sm`、`--gm-accent-soft`、`--gm-success-soft`、`--gm-warn-soft`、`--gm-danger-soft`、`--gm-peers-width`、`.gm-content`、`.gm-panel`、`.gm-grid`、`.gm-card`、`.gm-card-ok`、`.gm-card-warn`、`.gm-card-error`、`.gm-card-muted`、`.gm-card-wide`、`.gm-body`、`.gm-kv`、`.gm-actions`、`.gm-form`、`.gm-table`、`.gm-badge`、`.gm-badge-owner`、`.gm-badge-admin`、`.gm-badge-member`、`.gm-badge-ok`、`.gm-badge-warn`、`.gm-hint`、`.gm-empty`、`.gm-skeleton-line`、`.gm-list`、`.gm-details`、`.gm-address`、`.gm-address-row`、`.gm-address-label`、`.gm-address-value`、`.gm-remote`、`.gm-remote-tools`、`.gm-remote-peers`、`.gm-remote-files`、`.gm-remote-head`、`.gm-remote-peer`、`.gm-remote-peer-head`、`.gm-remote-peer-name`、`.gm-remote-peer-ep`、`.gm-remote-row`、`.gm-remote-item`、`.gm-remote-item-active`、`.gm-remote-badge`、`.gm-remote-note`、`.gm-remote-crumb`、`.gm-remote-progress`、`.gm-remote-progress-error`、`.gm-remote-cache`、`.gm-upload-progress`、`.gm-check`、`.gm-banner`、`.gm-banner-error` |
 | `plugins/group-mesh/frontend/js/app.js` | 状态读取、面板切换、五个面板渲染、弹窗与动作绑定；`refresh` 动作按 `payload` 判回声 | `state`、`el`、`call`、`toast`、`escapeHtml`、`stagger`、`cardOf`、`openModal`、`closeModal`、`roleBadge`、`shortKey`、`button`、`fillActions`、`setPanel`、`render`、`protectionBadge`、`renderIdentity`、`renderRoster`、`renderShares`、`renderNode`、`renderUnsupported`、`renderSideSummary`、`renderLoading`、`showError`、`afterAction`、`applyHostAction`、`refresh`、`showInvite`、`bind`、`init` |
 | `plugins/group-mesh/frontend/js/remote.js` | 「远端共享」分片的取数与渲染、上传轮询、可见性轮询 | `window.GroupMeshRemote`、`state`、`gmIcon`、`el`、`esc`、`renderPeers`、`renderPath`、`renderEntries`、`formatSize`、`renderProgress`、`refreshMyEndpoint`、`copyMyEndpoint`、`updatePeerEndpoint`、`refreshPeers`、`reportPeers`、`refreshCache`、`renderCacheSummary`、`materialize`、`listDirectory`、`download`、`openUpload`、`setUploadRunning`、`renderUploadProgress`、`uploadText`、`stopUploadPolling`、`pollUpload`、`doUpload`、`cancelUpload`、`bind`、`startViewPolling`、`stopViewPolling`、`bindLifecycle`、`init`、`VIEW_POLL_MS`、`viewTimer` |
@@ -154,8 +154,8 @@
 - 品牌块：`icon:network`、标题「团体组网」、副标题「无中心 · IPv6」、`accent` 为 `#22d3ee`。
 - 导航四组：`本机`（`machine` 身份与节点）、`团体`（`group` 名单与成员、`shares` 共享项）、`传输`（`remote` 远端共享）、`关于`（`roadmap` 路线图）。
 - 顶栏动作：`refresh`（刷新状态）、`settings`（设置）；设置由壳的 `PluginSettingsModal` 打开。
-- 搜索：manifest 没有 `search` 声明，壳不渲染搜索框，内容页也不处理 `omnibox:query`。
-- 状态栏与统一刷新：`status: true`，文本由内容页按节点/团体/名单状态上报；统一刷新由壳挂载，`freshness.unit` 为「项」，有结论时先收 `omnibox:freshness`，紧跟的 `omnibox:action: refresh` 带同形 `payload`，`applyHostAction` 据此判回声、只重读一次。
+- 搜索：manifest 没有 `search` 声明，壳不渲染搜索框，内容页也不处理 `cubby:query`。
+- 状态栏与统一刷新：`status: true`，文本由内容页按节点/团体/名单状态上报；统一刷新由壳挂载，`freshness.unit` 为「项」，有结论时先收 `cubby:freshness`，紧跟的 `cubby:action: refresh` 带同形 `payload`，`applyHostAction` 据此判回声、只重读一次。
 
 DOM 结构树（`plugins/group-mesh/frontend/index.html`，内容 iframe 不含页面骨架）：
 
@@ -195,16 +195,16 @@ DOM 结构树（`plugins/group-mesh/frontend/index.html`，内容 iframe 不含�
 - `gm-badge`、`gm-badge-ok`、`gm-badge-warn`、`gm-badge-owner`、`gm-badge-admin`、`gm-badge-member`：`roleBadge` 与 `protectionBadge` 生成的角色与保护状态徽章
 - `gm-skeleton-line`：`renderLoading` 的首屏骨架
 - `gm-remote-item-active`、`gm-remote-progress-error`：远端分片的选中态与错误态
-- `data-state` 取值 `ok`、`warn`、`error`、`idle`：`renderSideSummary` 写进 `state.statusState` 并经 `omnibox:chrome` 上报，壳据此画状态点
+- `data-state` 取值 `ok`、`warn`、`error`、`idle`：`renderSideSummary` 写进 `state.statusState` 并经 `cubby:chrome` 上报，壳据此画状态点
 - `data-remove`、`data-enter`、`data-download`、`data-materialize`、`data-device`、`data-share`：列表项上的动作标记，由 `bind` 与 `renderEntries` 的事件委托读取
 
 ## 与壳的契约
 
 - **chrome 消息**（只在壳与内容 iframe 之间，同源 `postMessage`）：
-  - 壳 → 内容 `omnibox:view`：导航项 id（`machine` / `group` / `shares` / `remote` / `roadmap`），内容页 `setPanel` 切面板。
-  - 壳 → 内容 `omnibox:action`：`refresh` 重读 `get_status`；`settings-saved` 在壳内设置弹窗保存成功后重读状态。设置弹窗由壳的 `PluginSettingsModal` 打开，壳不下发 `settings`。
-  - 内容 → 壳 `omnibox:ready`：握手。
-  - 内容 → 壳 `omnibox:chrome`：`title`、`subtitle`、`badges`（`shares` / `remote` 计数）、`status`（文本与 `ok` / `warn` / `error` / `idle`）。本插件不声明搜索，也不上报 `view` / `nav` / `actions`；导航高亮由壳维护。
+  - 壳 → 内容 `cubby:view`：导航项 id（`machine` / `group` / `shares` / `remote` / `roadmap`），内容页 `setPanel` 切面板。
+  - 壳 → 内容 `cubby:action`：`refresh` 重读 `get_status`；`settings-saved` 在壳内设置弹窗保存成功后重读状态。设置弹窗由壳的 `PluginSettingsModal` 打开，壳不下发 `settings`。
+  - 内容 → 壳 `cubby:ready`：握手。
+  - 内容 → 壳 `cubby:chrome`：`title`、`subtitle`、`badges`（`shares` / `remote` 计数）、`status`（文本与 `ok` / `warn` / `error` / `idle`）。本插件不声明搜索，也不上报 `view` / `nav` / `actions`；导航高亮由壳维护。
 - 内容页不得出现 chrome 标记：`.view-sub-sidebar`、`.view-toolbar`、`.sub-sidebar-brand`、`.obx-nav-item`（`tools/plugin_ui_audit.py` 的 `iframe.content-only` 会检查）。侧栏分隔条由壳持有，本页不含 `data-obx-splitter*`。
 
 壳类（`shell/frontend/public/shell/base.css`，内容 iframe 实际使用的）：`.view-body`、`.view-content`、`.modal`、`.modal.active`、`.empty-state--inline`、`.btn-sm`、`.btn-danger`。

@@ -31,7 +31,7 @@ for _stream in (sys.stdout, sys.stderr):
         _reconfigure(encoding='utf-8', errors='replace')
 
 # 两份 spec 的当前文件名。改名过渡期这里只登记新名：check_specs_exist 对缺失文件
-# 直接判失败，旧名（omnibox*.spec）已被 git mv 掉，登记进来只会让门禁必红；
+# 直接判失败，spec 文件名变更时这里必须同步，否则门禁必红；
 # 旧构建树与旧产物名由 .gitignore、tools/check_docs.py 的白名单继续兜住。
 SPECS = ['cubby.spec', 'cubby-linux.spec']
 

@@ -2,7 +2,7 @@
 
 切回前台按当前作用域同步、报告有变化就地重载（层级不变、阅读器不关）、零变化与
 `skip` 不重载、阅读器页码进入「最近阅读」、2 秒任务轮询只在任务变化时重报 chrome。
-壳的 `omnibox:freshness` 与旧的 `omnibox:action: refresh` 两条通知路径都在用例里覆盖。
+壳的 `cubby:freshness` 与旧的 `cubby:action: refresh` 两条通知路径都在用例里覆盖。
 """
 
 import shutil

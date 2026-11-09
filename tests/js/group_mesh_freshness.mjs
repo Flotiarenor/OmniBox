@@ -2,7 +2,7 @@
 //
 // 守四件事：
 //   1. 切回前台（onShow）按全部共享根同步一次；
-//   2. 同步报告真有变化时才重读后端状态（`omnibox:freshness` 与旧的 `refresh` 动作都覆盖）；
+//   2. 同步报告真有变化时才重读后端状态（`cubby:freshness` 与旧的 `refresh` 动作都覆盖）；
 //   3. 共享项卡片展示用量与条目数（后端刷新钩子算出来的字段，可能只在 `share_roots` 里）；
 //   4. 最近同步失败在节点卡片上可见；字段缺失时静默，不显示 0 或占位符。
 import assert from 'node:assert/strict';
@@ -141,7 +141,7 @@ function loadApp(options = {}) {
         document, sandbox, messages, calls, lifecycle, freshnessCalls,
         chrome() {
             for (let i = messages.length - 1; i >= 0; i -= 1) {
-                if (messages[i] && messages[i].type === 'omnibox:chrome') return messages[i];
+                if (messages[i] && messages[i].type === 'cubby:chrome') return messages[i];
             }
             return null;
         },
@@ -259,32 +259,32 @@ const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
     check('零变化不重读状态', env.statusCalls() === before, `${before} -> ${env.statusCalls()}`);
 }
 
-// ---- 5. omnibox:freshness 与旧 refresh 动作（按 payload 判重） ----
+// ---- 5. cubby:freshness 与旧 refresh 动作（按 payload 判重） ----
 {
     const env = loadApp();
     env.init();
     await env.tick(20);
     const before = env.statusCalls();
 
-    env.send({ type: 'omnibox:freshness', plugin: 'group-mesh', scope: '', report: zero });
+    env.send({ type: 'cubby:freshness', plugin: 'group-mesh', scope: '', report: zero });
     await env.tick(10);
     check('零变化报告不重读', env.statusCalls() === before);
 
-    env.send({ type: 'omnibox:freshness', plugin: 'group-mesh', scope: '', report: { action: 'skip', reason: 'busy' } });
+    env.send({ type: 'cubby:freshness', plugin: 'group-mesh', scope: '', report: { action: 'skip', reason: 'busy' } });
     await env.tick(10);
     check('skip 不重读', env.statusCalls() === before);
 
-    env.send({ type: 'omnibox:freshness', plugin: 'other-plugin', scope: '', report: changed });
+    env.send({ type: 'cubby:freshness', plugin: 'other-plugin', scope: '', report: changed });
     await env.tick(10);
     check('别的插件的报告不重读', env.statusCalls() === before);
 
-    env.send({ type: 'omnibox:freshness', plugin: 'group-mesh', scope: '', report: changed });
+    env.send({ type: 'cubby:freshness', plugin: 'group-mesh', scope: '', report: changed });
     await env.tick(20);
     check('有变化报告重读状态', env.statusCalls() === before + 1, `${before} -> ${env.statusCalls()}`);
 
     // 壳在同一次同步后补发的旧 refresh 带着同一份 payload：富事件已经重读过，跳过。
     env.send({
-        type: 'omnibox:action', action: 'refresh',
+        type: 'cubby:action', action: 'refresh',
         payload: { plugin: 'group-mesh', scope: '', report: changed },
     });
     await env.tick(20);
@@ -292,7 +292,7 @@ const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
         `${before} -> ${env.statusCalls()}`);
 
     // 用户点顶栏「刷新」：动作上没有 payload，必须重读。
-    env.send({ type: 'omnibox:action', action: 'refresh' });
+    env.send({ type: 'cubby:action', action: 'refresh' });
     await env.tick(20);
     check('无 payload 的 refresh（用户点击）正常重读', env.statusCalls() === before + 2,
         `${before} -> ${env.statusCalls()}`);
@@ -306,7 +306,7 @@ const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
     let before = env.statusCalls();
 
     env.send({
-        type: 'omnibox:freshness', plugin: 'group-mesh', scope: '',
+        type: 'cubby:freshness', plugin: 'group-mesh', scope: '',
         report: { action: 'sync', added: 0, changed: 0, removed: 0, new_dirs: ['sub'] },
     });
     await env.tick(20);
@@ -315,7 +315,7 @@ const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
 
     before = env.statusCalls();
     env.send({
-        type: 'omnibox:freshness', plugin: 'group-mesh', scope: '',
+        type: 'cubby:freshness', plugin: 'group-mesh', scope: '',
         report: { action: 'sync', added: 0, changed: 0, removed: 0, vanished_dirs: ['old'] },
     });
     await env.tick(20);
@@ -324,7 +324,7 @@ const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
 
     before = env.statusCalls();
     env.send({
-        type: 'omnibox:freshness', plugin: 'group-mesh', scope: '',
+        type: 'cubby:freshness', plugin: 'group-mesh', scope: '',
         report: { action: 'verify', added: 0, changed: 0, removed: 0, invalidated: false, task: { state: 'done' } },
     });
     await env.tick(20);
@@ -333,7 +333,7 @@ const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
 
     before = env.statusCalls();
     env.send({
-        type: 'omnibox:freshness', plugin: 'group-mesh', scope: '',
+        type: 'cubby:freshness', plugin: 'group-mesh', scope: '',
         report: { action: 'sync', added: 0, changed: 0, removed: 0, new_dirs: [], vanished_dirs: [] },
     });
     await env.tick(20);
@@ -359,7 +359,7 @@ const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
     env.init();
     await env.tick(20);
     const before = env.statusCalls();
-    env.send({ type: 'omnibox:action', action: 'refresh' });
+    env.send({ type: 'cubby:action', action: 'refresh' });
     await env.tick(20);
     check('旧 refresh 动作仍重读状态', env.statusCalls() === before + 1, `${before} -> ${env.statusCalls()}`);
     check('chrome 上报全部根作用域', env.chrome().freshness_scope === '',

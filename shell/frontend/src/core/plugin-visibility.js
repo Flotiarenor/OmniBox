@@ -11,14 +11,14 @@
  * 消息类型在这里集中定义：宿主发给插件的协议串只有一个真源，base.js 按同样的
  * 字面量分发（tests/js/plugin_lifecycle.mjs 与构建产物核对都依赖它）。
  *
- * @typedef {'omnibox:plugin-shown' | 'omnibox:plugin-hidden' | 'omnibox:plugin-dispose'} LifecycleMessage
+ * @typedef {'cubby:plugin-shown' | 'cubby:plugin-hidden' | 'cubby:plugin-dispose'} LifecycleMessage
  */
 
 /** 插件生命周期消息类型（宿主 → 插件 iframe） */
 export const LIFECYCLE_MESSAGES = {
-  shown: 'omnibox:plugin-shown',
-  hidden: 'omnibox:plugin-hidden',
-  dispose: 'omnibox:plugin-dispose',
+  shown: 'cubby:plugin-shown',
+  hidden: 'cubby:plugin-hidden',
+  dispose: 'cubby:plugin-dispose',
 }
 
 /** 每个 frame 的上一次已通知状态：true=已通知可见，false=已通知隐藏（或尚未挂载） */

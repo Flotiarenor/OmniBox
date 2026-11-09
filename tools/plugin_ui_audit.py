@@ -13,7 +13,7 @@
 - 点壳侧导航后内容 panel 没切，或切了但壳标题没跟上；
 - 分隔条 hover 不出 2px 强调色指示线；
 - manifest 声明了 ``chrome.freshness`` 但壳侧没挂上 ``.obx-fresh``；
-- 设置弹窗改值保存后重开没回填、搜索框收不到 ``omnibox:query`` 或切视图后不清空、
+- 设置弹窗改值保存后重开没回填、搜索框收不到 ``cubby:query`` 或切视图后不清空、
   ``status.kind=eq-text`` 播放态没渲染四柱 EQ；
 - 页面与控制台有 ``SEVERE`` 错误。
 
@@ -717,7 +717,7 @@ window.__auditQueries = [];
 if (window.__auditQuerySpy) window.removeEventListener('message', window.__auditQuerySpy);
 window.__auditQuerySpy = (event) => {
   const data = event.data;
-  if (data && data.type === 'omnibox:query') {
+  if (data && data.type === 'cubby:query') {
     window.__auditQueries.push(String(data.query == null ? '' : data.query));
   }
 };
@@ -745,7 +745,7 @@ return {
 
 _EQ_INJECT_JS = r"""
 window.parent.postMessage({
-  type: 'omnibox:chrome',
+  type: 'cubby:chrome',
   status: { text: String(arguments[0]), state: String(arguments[1]) },
 }, window.location.origin);
 return true;
@@ -1490,7 +1490,7 @@ def _query_spy(driver: Any, plugin_name: str) -> list[str] | None:
 
 
 def _check_search_roundtrip(driver: Any, plugin_name: str, timeout: float) -> tuple[str, str]:
-    """搜索回填与清空：内容页收到 ``omnibox:query``，切视图后壳输入框被清空。
+    """搜索回填与清空：内容页收到 ``cubby:query``，切视图后壳输入框被清空。
 
     内容页是否"收到"用注入的消息观察器判断（iframe 里追加一个 ``message`` 监听），
     不依赖某条业务列表的渲染结果；清空走 ``search.clear``：内容页切视图时清空，
@@ -1507,7 +1507,7 @@ def _check_search_roundtrip(driver: Any, plugin_name: str, timeout: float) -> tu
         timeout,
     )
     if not received:
-        return FAIL, '内容页没有收到 omnibox:query（audit-probe）'
+        return FAIL, '内容页没有收到 cubby:query（audit-probe）'
     snapshot = _shell_snapshot(driver, plugin_name)
     nav = [item for item in (snapshot.get('nav') or []) if isinstance(item, dict)]
     active = next((index for index, item in enumerate(nav) if item.get('active')), None)
@@ -1520,7 +1520,7 @@ def _check_search_roundtrip(driver: Any, plugin_name: str, timeout: float) -> tu
     if not cleared:
         current = _shell_search_value(driver, plugin_name)
         return FAIL, f'切换视图后壳搜索框没有清空（仍为 {current!r}）'
-    return PASS, '内容页收到 omnibox:query=audit-probe；切换视图后壳输入框被 search.clear 清空'
+    return PASS, '内容页收到 cubby:query=audit-probe；切换视图后壳输入框被 search.clear 清空'
 
 
 def _status_eq_state(driver: Any, plugin_name: str) -> dict[str, Any] | None:
@@ -1529,7 +1529,7 @@ def _status_eq_state(driver: Any, plugin_name: str) -> dict[str, Any] | None:
 
 
 def _inject_status(driver: Any, plugin_name: str, text: str, state: str) -> bool:
-    """从内容 iframe 发一条 ``omnibox:chrome`` 状态补丁（合成播放/暂停态）。"""
+    """从内容 iframe 发一条 ``cubby:chrome`` 状态补丁（合成播放/暂停态）。"""
     return _in_frame(driver, plugin_name, _EQ_INJECT_JS, text, state) is True
 
 

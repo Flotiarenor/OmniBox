@@ -121,11 +121,11 @@ function onMessage(event: MessageEvent): void {
   if (event.origin !== window.location.origin || !isOwnFrame(event.source)) return
   const data = event.data
   if (!data || typeof data.type !== 'string') return
-  if (data.type === 'omnibox:native-ready') {
-    post({ type: 'omnibox:native-init', plugin: props.plugin })
+  if (data.type === 'cubby:native-ready') {
+    post({ type: 'cubby:native-init', plugin: props.plugin })
     return
   }
-  if (data.type === 'omnibox:schema') {
+  if (data.type === 'cubby:schema') {
     if (Array.isArray(data.blocks)) {
       blocks.value = data.blocks
       error.value = ''
@@ -140,7 +140,7 @@ function onMessage(event: MessageEvent): void {
     }
     return
   }
-  if (data.type === 'omnibox:native-error') {
+  if (data.type === 'cubby:native-error') {
     error.value = String(data.error || '内容加载失败')
   }
 }
@@ -156,7 +156,7 @@ function onAction(payload: { action: string; payload?: unknown }): void {
       plainPayload = undefined
     }
   }
-  post({ type: 'omnibox:native-action', action: payload.action, payload: plainPayload })
+  post({ type: 'cubby:native-action', action: payload.action, payload: plainPayload })
 }
 
 /** 宿主顶栏动作回发给隐藏逻辑页。 */
@@ -169,7 +169,7 @@ function sendAction(action: string, payload?: unknown): void {
       plain = undefined
     }
   }
-  post({ type: 'omnibox:native-action', action, payload: plain })
+  post({ type: 'cubby:native-action', action, payload: plain })
 }
 
 defineExpose({ action: sendAction })

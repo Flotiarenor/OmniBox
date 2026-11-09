@@ -8,14 +8,14 @@
       4. Windows 用名单 v2 连接 Linux 共享节点
       5. 下载 700 KB 文件并**比对 sha256**，再验证越权写入被拒
 
-    依赖：~/.ssh/config 里已有 omnibox-linux 别名（见 OmniBox-OneClick.ps1）。
+    依赖：~/.ssh/config 里已有 cubby-linux 别名（见 Cubby-OneClick.ps1）。
     用法：pwsh -File shell/groupmesh/tools/lan-test.ps1
 #>
 [CmdletBinding()]
 param(
-    [string]$SshAlias = 'omnibox-linux',
-    [string]$LinuxPython = '/root/OmniBox/venv/bin/python',
-    [string]$LinuxRepo = '/root/OmniBox',
+    [string]$SshAlias = 'cubby-linux',
+    [string]$LinuxPython = '/root/Cubby/venv/bin/python',
+    [string]$LinuxRepo = '/root/Cubby',
     [string]$WinDir = '',
     [string]$Target = '192.168.31.16:19443'
 )

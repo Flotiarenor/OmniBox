@@ -126,7 +126,7 @@ check('多个过路插件按注册顺序 dispose', () => {
 // ---------------------------------------------------------------- 重载后的补发通知
 
 check('重载后仍是活动插件且窗口可见：补一条 shown', () => {
-  assert.deepEqual(plan.reloadedFrameMessages(true, true), ['omnibox:plugin-shown']);
+  assert.deepEqual(plan.reloadedFrameMessages(true, true), ['cubby:plugin-shown']);
 });
 
 check('后台重载或窗口不可见时不发 shown（新文档默认认为自己隐藏）', () => {

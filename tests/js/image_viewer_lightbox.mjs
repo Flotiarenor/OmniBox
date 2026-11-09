@@ -1,8 +1,8 @@
 // image-viewer：灯箱打开时壳返回/左栏导航先关灯箱。
 //
 // 背景：灯箱是内容页最内层，壳的返回与左栏导航在灯箱之上仍可点击。`createLightbox`
-// 现在提供 `isOpen()` / `onClose`，插件应当在收到 `omnibox:action: back` 或
-// `omnibox:view` 时先 hide() 并吞掉这次动作；否则内容在灯箱背后切层，用户看到的是
+// 现在提供 `isOpen()` / `onClose`，插件应当在收到 `cubby:action: back` 或
+// `cubby:view` 时先 hide() 并吞掉这次动作；否则内容在灯箱背后切层，用户看到的是
 // "点了返回/导航没反应"，且灯箱停在旧图上。
 //
 // 用例用带 isOpen()/hide() 的灯箱替身驱动真实插件脚本；不复制插件逻辑。
@@ -157,7 +157,7 @@ function loadImageViewer() {
         calls,
         chrome() {
             for (let i = messages.length - 1; i >= 0; i -= 1) {
-                if (messages[i] && messages[i].type === 'omnibox:chrome') return messages[i];
+                if (messages[i] && messages[i].type === 'cubby:chrome') return messages[i];
             }
             return null;
         },
@@ -219,7 +219,7 @@ function makeViewer(env, { open = true, withApi = true } = {}) {
     check('被吞掉的导航不改变壳上报视图', !!chrome && chrome.view === 'albums', chrome && chrome.view);
 }
 
-// ---- 3. omnibox:action: back 路径（_applyHostAction → _handleBack） ----
+// ---- 3. cubby:action: back 路径（_applyHostAction → _handleBack） ----
 {
     const env = loadImageViewer();
     const iv = makeViewer(env, { open: true });

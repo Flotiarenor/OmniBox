@@ -10,14 +10,14 @@
       4. 越权与越界在 IPv6 上同样被拒
       5. **运行中的节点能看到名单更新**（先起节点、后加成员，不应要求重启）
 
-    依赖：~/.ssh/config 里已有 omnibox-linux 别名。
+    依赖：~/.ssh/config 里已有 cubby-linux 别名。
     用法：pwsh -File shell/groupmesh/tools/ipv6-test.ps1
 #>
 [CmdletBinding()]
 param(
-    [string]$SshAlias = 'omnibox-linux',
-    [string]$LinuxPython = '/root/OmniBox/venv/bin/python',
-    [string]$LinuxRepo = '/root/OmniBox',
+    [string]$SshAlias = 'cubby-linux',
+    [string]$LinuxPython = '/root/Cubby/venv/bin/python',
+    [string]$LinuxRepo = '/root/Cubby',
     [int]   $Port = 19444
 )
 

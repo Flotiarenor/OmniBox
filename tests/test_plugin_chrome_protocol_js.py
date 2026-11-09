@@ -1,7 +1,7 @@
-"""壳的插件 chrome 协议（`omnibox:*`）行为用例（tests/js/plugin_chrome_protocol.mjs）。
+"""壳的插件 chrome 协议（`cubby:*`）行为用例（tests/js/plugin_chrome_protocol.mjs）。
 
 原先 tests/test_shell_ui_review.py 用 `function_body` + 正则从 App.vue 的
-`onPluginChromeMessage` 里反推白名单（`data.type !== 'omnibox:x'` 连写）。那种写法
+`onPluginChromeMessage` 里反推白名单（`data.type !== 'cubby:x'` 连写）。那种写法
 有两个方向的失效：把处理器改个写法就红（假红），加一条没有发送方的分支、
 或删掉一条仍在用的分支时，正则与实现一起漂移而仍然是绿的（假绿）。
 

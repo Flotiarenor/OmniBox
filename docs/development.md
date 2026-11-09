@@ -70,7 +70,7 @@ graph TB
 - **设置弹窗归壳**：group-mesh、document-reader、manga-library、media-player 的顶栏「设置」
   打开壳的 `PluginSettingsModal`（schema 来自插件后端，保存后内容页收到 `settings-saved`）；
   image-viewer 的设置按目录作用域读写，仍由内容页的 `openSettingsModal()` 渲染。
-- **搜索框归壳**：壳持有输入框并经 `omnibox:query` 下发；内容页用 `omnibox:chrome` 的
+- **搜索框归壳**：壳持有输入框并经 `cubby:query` 下发；内容页用 `cubby:chrome` 的
   `search.value` / `search.clear` 回填或清空，group-mesh 没有搜索。
 - **native 面板归壳**：附属插件在 `get_extensions()` 里声明 `native: {url, title}`，壳的
   `NativePanel` 在宿主内容槽渲染逻辑页提交的 schema blocks；旧壳回落 `embedUrl` 整页内嵌。
@@ -162,7 +162,6 @@ http://127.0.0.1:18080
 >      -X POST http://127.0.0.1:18080/api/system_get_config
 > ```
 >
-> 旧的 `X-Omnibox-Token` 请求头仍被接受，既有脚本无需立刻改动。
 >
 > 请勿将令牌文件与端口暴露到不受信任的网络；需要公网访问时务必经 nginx 等
 > 反代并自行加一层 HTTPS + 访问控制。

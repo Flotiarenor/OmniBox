@@ -1,7 +1,7 @@
 // 壳的插件 chrome 协议（shell/frontend/src/core/plugin-chrome-protocol.js）行为用例。
 //
 // 为什么不再用源码字符串断言：原先 tests/test_shell_ui_review.py 用
-// `function_body` + `re.findall(r"data.type !== '(omnibox:[a-z-]+)'")` 从 App.vue 的
+// `function_body` + `re.findall(r"data.type !== '(cubby:[a-z-]+)'")` 从 App.vue 的
 // 处理器里反推白名单 —— 加一条分支、删一条分支、或把类型字面量换个写法都可能让
 // 断言与实现一起漂移而仍然是绿的。这里 import 真实实现：白名单是数据，判定是函数。
 //
@@ -33,11 +33,11 @@ function check(name, fn) {
 }
 
 const EXPECTED_TYPES = [
-  'omnibox:ready',
-  'omnibox:chrome',
-  'omnibox:open-settings',
-  'omnibox:get-plugin-appearance',
-  'omnibox:set-plugin-alpha',
+  'cubby:ready',
+  'cubby:chrome',
+  'cubby:open-settings',
+  'cubby:get-plugin-appearance',
+  'cubby:set-plugin-alpha',
 ];
 
 // ---------------------------------------------------------------- 白名单
@@ -67,11 +67,11 @@ check('未登记类型与畸形消息一律拒绝', () => {
     undefined,
     0,
     '',
-    'omnibox:ready',                                  // 字符串本身不是消息体
+    'cubby:ready',                                  // 字符串本身不是消息体
     {},
     { type: null },
-    { type: 'omnibox:ready2' },
-    { type: 'omnibox:close-native' },                 // 全仓库已无发送方的历史协议串
+    { type: 'cubby:ready2' },
+    { type: 'cubby:close-native' },                 // 全仓库已无发送方的历史协议串
   ];
   for (const data of rejected) {
     assert.equal(protocol.isPluginChromeMessage(data), false,

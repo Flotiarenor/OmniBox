@@ -370,7 +370,7 @@ class DocumentReaderBrowserTests(unittest.TestCase):
 
         重构前这里测的是"侧栏目录的高亮跟着滚动走"（目录当时常驻侧栏，靠
         `_syncReaderChrome` 那套节流刷新同步）。现在目录是壳左栏的一项：点击后壳发
-        `omnibox:view: toc`，内容页打开弹窗并按 `engine.currentChapterIndex` 现刷 ——
+        `cubby:view: toc`，内容页打开弹窗并按 `engine.currentChapterIndex` 现刷 ——
         所以校验点跟着搬到"打开弹窗后看到什么"，这也正是用户能看见的那部分。
         """
         self._open_scroll_mode()
@@ -381,7 +381,7 @@ class DocumentReaderBrowserTests(unittest.TestCase):
             el.dispatchEvent(new Event('scroll'));
         """)
         time.sleep(0.6)
-        self.send_host_message({'type': 'omnibox:view', 'view': 'toc'})
+        self.send_host_message({'type': 'cubby:view', 'view': 'toc'})
         opened = self.driver.execute_script("""
             const app = window.documentReader;
             const active = document.querySelector('#nr-toc-list .document-chapter-item.active');
@@ -507,7 +507,7 @@ class DocumentReaderBrowserTests(unittest.TestCase):
 
         self.driver.execute_script('window.documentReader.engine.goToChapter(6, 0.25);')
         time.sleep(1.0)
-        self.send_host_message({'type': 'omnibox:action', 'action': 'back'})
+        self.send_host_message({'type': 'cubby:action', 'action': 'back'})
         self.wait('!window.documentReader._isReaderMode')
         time.sleep(0.6)
         self.assertEqual([call[1] for call in self._progress_calls(base)], [6],
@@ -583,7 +583,7 @@ class DocumentReaderBrowserTests(unittest.TestCase):
         # 壳内弹窗保存后：后端已写入新档位，壳向内容页发 `settings-saved`
         _Handler.state['settings'] = {
             **(dict(_Handler.state.get('settings') or {})), 'reader_bg_mode': 'show'}
-        self.send_host_message({'type': 'omnibox:action', 'action': 'settings-saved'})
+        self.send_host_message({'type': 'cubby:action', 'action': 'settings-saved'})
         self.wait('window.documentReader.bgMode === "show"')
 
         after = self.driver.execute_script("""

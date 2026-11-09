@@ -5,7 +5,7 @@
 
 ```json
 {
-  "format": "omnibox-secret-v1",
+  "format": "cubby-secret-v1",
   "protector": "dpapi" | "keyring" | "passphrase",
   "data": "<base64>",
   ...
@@ -47,36 +47,17 @@ from typing import Any, Dict, Optional
 
 log = logging.getLogger(__name__)
 
-FORMAT = 'omnibox-secret-v1'
-ENTROPY = b'omnibox.group-mesh.secret.v1'
-KEYRING_SERVICE = 'omnibox-group-mesh'
-_KEYRING_PROBE_USER = '__omnibox_probe__'
+FORMAT = 'cubby-secret-v1'
+ENTROPY = b'cubby.group-mesh.secret.v1'
+KEYRING_SERVICE = 'cubby-group-mesh'
+_KEYRING_PROBE_USER = '__cubby_probe__'
 PASSPHRASE_ENV = 'CUBBY_SECRET_KEY'
 PROTECTOR_ENV = 'CUBBY_SECRET_PROTECTOR'
 NO_MIGRATE_ENV = 'CUBBY_SECRET_NO_MIGRATE'
 
-# 旧环境变量：**不读取**，只在检测到时告警一次并指明新名字。两个原因：静默换挡会
-# 让用户以为口令保护/强制 protector/关闭迁移还生效（看起来"什么都没变"，实际保护
-# 级别已经不同），而按旧名兜底读取又会把"旧名还在被支持"写进契约。
-LEGACY_ENVS = {
-    'OMNIBOX_SECRET_KEY': PASSPHRASE_ENV,
-    'OMNIBOX_SECRET_PROTECTOR': PROTECTOR_ENV,
-    'OMNIBOX_SECRET_NO_MIGRATE': NO_MIGRATE_ENV,
-}
-_legacy_warned: set[str] = set()
-
 PROTECTORS = ('dpapi', 'keyring', 'passphrase', 'plain')
 
 _MAX_PASSPHRASE_BYTES = 4096
-
-
-def warn_legacy_env() -> None:
-    """检测到旧环境变量时告警一次，指明对应的新名字（不读取其值）。"""
-    for legacy, current in LEGACY_ENVS.items():
-        if legacy in _legacy_warned or legacy not in os.environ:
-            continue
-        _legacy_warned.add(legacy)
-        log.warning('[group-mesh] 环境变量 %s 已不再读取，请改用 %s', legacy, current)
 
 
 class SecretError(Exception):
@@ -156,7 +137,6 @@ def keyring_available() -> bool:
 def best_protector() -> str:
     """当前应使用的保护级别（可被环境变量覆盖）。"""
     global _best_cache
-    warn_legacy_env()
     forced = _forced_protector()
     if forced is not None:
         return forced
@@ -220,7 +200,7 @@ def _dpapi_call(protect: bool, data: bytes) -> bytes:
 
     if protect:
         fn = crypt32.CryptProtectData
-        descr = ctypes.c_wchar_p('omnibox group-mesh secret')
+        descr = ctypes.c_wchar_p('cubby group-mesh secret')
     else:
         fn = crypt32.CryptUnprotectData
         descr = None
@@ -356,7 +336,6 @@ def migrate_file(path: Path) -> bool:
     只做"升级"：已经受保护或当前只有 plain 可用时不改。任何失败只告警，
     不影响调用方读取旧内容。
     """
-    warn_legacy_env()
     if os.environ.get(NO_MIGRATE_ENV):
         return False
     try:

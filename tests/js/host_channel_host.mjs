@@ -138,7 +138,7 @@ function createHost({ withContainer = true, withFrame = true, frameSrc = '/plugi
       (listeners.message || []).slice().forEach((fn) => fn({ data, source, origin: ORIGIN }));
     },
     mountedButtons: () => container.children.filter((c) => String(c.className).includes('obx-host-action')),
-    lastReply: () => posted.filter((m) => m.type === 'omnibox:host-reply').pop(),
+    lastReply: () => posted.filter((m) => m.type === 'cubby:host-reply').pop(),
   };
 }
 
@@ -154,7 +154,7 @@ const MOUNT_DATA = {
 // ---------- 挂载 ----------
 await check('host-mount 把子插件的按钮渲染进宿主容器，并回 host-reply(ok:true)', () => {
   const h = createHost();
-  h.emit({ type: 'omnibox:host-mount', exchange: 11, data: MOUNT_DATA });
+  h.emit({ type: 'cubby:host-mount', exchange: 11, data: MOUNT_DATA });
   const buttons = h.mountedButtons();
   assert.equal(buttons.length, 2, '应当挂上两个按钮');
   // 有图标的按钮：innerHTML = iconHtml(...) + ' ' + 文本；本 stub 没有 Icons，图标位为空
@@ -171,24 +171,24 @@ await check('host-mount 把子插件的按钮渲染进宿主容器，并回 host
 
 await check('挂载的按钮排在宿主自己的按钮之前（不顶走宿主自带的操作）', () => {
   const h = createHost();
-  h.emit({ type: 'omnibox:host-mount', exchange: 12, data: MOUNT_DATA });
+  h.emit({ type: 'cubby:host-mount', exchange: 12, data: MOUNT_DATA });
   const ids = h.container.children.map((c) => c.id || c.innerHTML.trim());
   assert.equal(ids[ids.length - 1], 'host-own-action', `宿主按钮必须留在最后（实际: ${ids.join(',')}）`);
 });
 
 await check('重挂载先清掉上一批（页面重载后子插件会再发一次）', () => {
   const h = createHost();
-  h.emit({ type: 'omnibox:host-mount', exchange: 13, data: MOUNT_DATA });
-  h.emit({ type: 'omnibox:host-mount', exchange: 14, data: MOUNT_DATA });
+  h.emit({ type: 'cubby:host-mount', exchange: 13, data: MOUNT_DATA });
+  h.emit({ type: 'cubby:host-mount', exchange: 14, data: MOUNT_DATA });
   assert.equal(h.mountedButtons().length, 2, '不能累积成 4 个');
 });
 
 await check('点击挂载出来的按钮回发 host-run，且 event.source 认的是那个 iframe', () => {
   const h = createHost();
-  h.emit({ type: 'omnibox:host-mount', exchange: 15, data: MOUNT_DATA });
+  h.emit({ type: 'cubby:host-mount', exchange: 15, data: MOUNT_DATA });
   const btn = h.mountedButtons()[0];
   btn.handlers.click();
-  const run = h.posted.filter((m) => m.type === 'omnibox:host-run').pop();
+  const run = h.posted.filter((m) => m.type === 'cubby:host-run').pop();
   assert.ok(run, '没有回发 host-run');
   assert.equal(run.id, 'btn-settings');
 });
@@ -196,7 +196,7 @@ await check('点击挂载出来的按钮回发 host-run，且 event.source 认�
 // ---------- 认不出来 / 没容器：必须显式失败 ----------
 await check('宿主认领了这个 iframe、但 src 对不上时回 ok:false/no-frame（子插件把按钮放回自己页里）', () => {
   const h = createHost({ frameSrc: '/plugins/other-plugin/frontend/index.html' });
-  h.emit({ type: 'omnibox:host-mount', exchange: 16, data: MOUNT_DATA });
+  h.emit({ type: 'cubby:host-mount', exchange: 16, data: MOUNT_DATA });
   const reply = h.lastReply();
   assert.equal(reply.ok, false);
   assert.equal(reply.data.error, 'no-frame');
@@ -204,7 +204,7 @@ await check('宿主认领了这个 iframe、但 src 对不上时回 ok:false/no-
 
 await check('容器不存在时回 ok:false 且带 no-container（不是静默成功）', () => {
   const h = createHost({ withContainer: false });
-  h.emit({ type: 'omnibox:host-mount', exchange: 17, data: MOUNT_DATA });
+  h.emit({ type: 'cubby:host-mount', exchange: 17, data: MOUNT_DATA });
   const reply = h.lastReply();
   assert.equal(reply.ok, false);
   assert.match(String(reply.data.error), /no-container/);
@@ -213,7 +213,7 @@ await check('容器不存在时回 ok:false 且带 no-container（不是静默�
 await check('非自己嵌的窗口发来的 host-mount 一律忽略（不渲染、不回信）', () => {
   const h = createHost();
   const before = h.posted.length;
-  h.emit({ type: 'omnibox:host-mount', exchange: 18, data: MOUNT_DATA },
+  h.emit({ type: 'cubby:host-mount', exchange: 18, data: MOUNT_DATA },
     { label: 'stranger', location: { origin: ORIGIN } });
   assert.equal(h.mountedButtons().length, 0, '不该渲染');
   assert.equal(h.posted.length, before, '不该回信');
@@ -239,11 +239,11 @@ await check('ui 设置请求：先回信「我接下了」，再把值交回子�
     },
   });
   h.emit({
-    type: 'omnibox:host-request', exchange: 21, action: 'ui',
+    type: 'cubby:host-request', exchange: 21, action: 'ui',
     data: { kind: 'settings', title: '相册清理设置', schema: [{ key: 'threshold', type: 'range', label: '阈值' }], values: { threshold: 4 } },
   });
   await new Promise((r) => setTimeout(r, 5));
-  const reply = h.posted.filter((m) => m.type === 'omnibox:host-reply').pop();
+  const reply = h.posted.filter((m) => m.type === 'cubby:host-reply').pop();
   assert.ok(reply, '没有回 host-reply');
   assert.deepEqual({ exchange: reply.exchange, ok: reply.ok }, { exchange: 21, ok: true },
     '回信只表示"接下了"');
@@ -253,18 +253,18 @@ await check('ui 设置请求：先回信「我接下了」，再把值交回子�
   assert.equal(typeof commitValues, 'function');
   commitValues({ threshold: 8 });
   await new Promise((r) => setTimeout(r, 5));
-  const callbacks = h.posted.filter((m) => m.type === 'omnibox:host-callback');
+  const callbacks = h.posted.filter((m) => m.type === 'cubby:host-callback');
   assert.equal(callbacks.length, 1, '应当把值作为 callback 交回子插件');
   assert.deepEqual(callbacks[0].data, { threshold: 8 });
   assert.equal(callbacks[0].action, 'ui', 'callback 的 action 与请求同名，子插件按它注册处理器');
   // 子插件处理完回 callback-reply：invoke 的那次回合到此结算（不留下 15s 悬空回合）
-  h.emit({ type: 'omnibox:host-callback-reply', step: callbacks[0].step, ok: true, data: null });
+  h.emit({ type: 'cubby:host-callback-reply', step: callbacks[0].step, ok: true, data: null });
   await new Promise((r) => setTimeout(r, 5));
 });
 
 await check('宿主回信/回调用明确的 targetOrigin（设置值只交给本页 origin）', () => {
   const h = createHost();
-  h.emit({ type: 'omnibox:host-mount', exchange: 31, data: MOUNT_DATA });
+  h.emit({ type: 'cubby:host-mount', exchange: 31, data: MOUNT_DATA });
   assert.ok(h.posted.length > 0, '没有发出任何消息');
   const wrong = h.postedTargets.filter((target) => target !== ORIGIN);
   assert.equal(wrong.length, 0,

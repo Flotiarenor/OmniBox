@@ -25,15 +25,12 @@ Cubby 统一路径基准。
 `get_user_data_dir()` 之下，不能进发行产物（`tools/check_build_tree.py` 的
 `FORBIDDEN_RELATIVE` 已禁止产物出现首层 `.config`）。'''
 
-import logging
 import os
 import sys
 import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import List
-
-log = logging.getLogger(__name__)
 
 
 def is_frozen() -> bool:
@@ -78,34 +75,6 @@ def _can_write_app_dir(candidate: Path) -> bool:
 USER_DATA_DIR_ENV = 'CUBBY_HOME'
 
 
-def _migrate_legacy_user_data_dir(fallback: Path) -> Path:
-    """把旧的 `%APPDATA%/OmniBox` 一次性迁到 `%APPDATA%/Cubby`，返回本次该用的目录。
-
-    语义（顺序即判据）：
-
-    1. 新目录已存在 → 直接用新目录，**不碰**旧目录（用户可能两个都在用）。
-    2. 旧目录不存在 → 直接用新目录（首次启动，没有东西可迁）。
-    3. 旧目录存在、新目录不存在 → `os.replace(旧, 新)`。同卷时它是原子的目录改名，
-       不复制也不删除，用户数据原样搬过去。
-    4. 改名抛 `OSError`（被占用、跨卷、权限不足）→ 本次**继续使用旧目录**并告警：
-       不复制、不删除、不半途丢弃数据，下一次启动再试。
-
-    只在冻结回退到 `%APPDATA%` 的分支里调用，且由 `get_user_data_dir()` 的
-    `lru_cache` 保证整个进程只算一次。
-    """
-    target = fallback / 'Cubby'
-    legacy = fallback / 'OmniBox'
-    if target.exists() or not legacy.exists():
-        return target
-    try:
-        os.replace(legacy, target)
-    except OSError as error:
-        log.warning('[paths] 旧用户目录迁移失败，本次继续使用 %s: %s', legacy, error)
-        return legacy
-    log.info('[paths] 用户目录已迁移: %s → %s', legacy, target)
-    return target
-
-
 @lru_cache(maxsize=1)
 def get_user_data_dir() -> Path:
     """返回可写的用户数据根目录（配置、插件、数据文件都锚定在这里）。
@@ -129,7 +98,7 @@ def get_user_data_dir() -> Path:
     # 程序目录只读时（例如安装在 Program Files 后直接运行），回退到用户目录。
     appdata = os.environ.get('APPDATA')
     fallback = Path(appdata) if appdata else Path.home()
-    return _migrate_legacy_user_data_dir(fallback).resolve()
+    return (fallback / 'Cubby').resolve()
 
 
 def get_config_dir() -> Path:

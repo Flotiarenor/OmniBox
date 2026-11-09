@@ -4,7 +4,7 @@
 //   未校验 / 校验中 x/y / version_stale / 上次校验（不再断言“已是最新”）/
 //   刚完成且无变化 / 刚完成且有变化 / 超过 7 天建议重新校验。
 //
-// 另外锁住壳挂载型触发面的**输入通道**：`omnibox:chrome` 的 `freshness_scope`
+// 另外锁住壳挂载型触发面的**输入通道**：`cubby:chrome` 的 `freshness_scope`
 // （协议在 shell/frontend/src/core/plugin-chrome-protocol.js）。它是壳据以调用
 // `system_freshness_sync` 的作用域，归一化结果必须与引擎 `FsSource.scope_start`
 // 解释成同一个目录（跨语言比对在 tests/test_shell_freshness_js.py）。
@@ -335,7 +335,7 @@ await check('一次状态读取失败不永久禁用校验（错误态可重试�
 // ---------------------------------------------------------------- chrome 协议：freshness_scope
 //
 // 壳侧触发面（PluginChrome 的 `syncFreshness`）读的是内容页上报的
-// `omnibox:chrome.freshness_scope`。它是"当前在哪个目录"的唯一来源，归一化结果必须与
+// `cubby:chrome.freshness_scope`。它是"当前在哪个目录"的唯一来源，归一化结果必须与
 // 引擎 `FsSource.scope_start` 解释成同一个目录：去首尾 `/`、折叠重复 `/`、丢掉 `.` 段；
 // 反斜杠 / 盘符 / UNC / `..` 段 / 超长 / 非字符串一律丢弃。丢弃后落成空串（全部根），
 // **不保留旧值** —— 旧值只会在一个已经不对的目录上同步。

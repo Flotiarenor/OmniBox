@@ -667,7 +667,7 @@ class Browser:
         """等壳侧「同步 / 校验」控件的**自动同步**跑完。
 
         为什么必须等：`freshness.js` 在挂载时被动跑一次增量同步，完成时回调会向内容页发
-        `omnibox:action refresh` —— 插件据此重载自己的视图（document-reader 会退回书架）。
+        `cubby:action refresh` —— 插件据此重载自己的视图（document-reader 会退回书架）。
         拍摄途中撞上这次重载，画面会在中途被换掉，现象却是"点了没反应 / 自己退回去了"，
         从场景表上完全看不出来。
 

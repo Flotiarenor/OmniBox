@@ -1,7 +1,7 @@
 // manga-library 前端逻辑用例的共享装载器。
 //
 // 为什么需要单独一份：插件的 chrome（品牌 / 导航 / 顶栏 / 搜索 / 状态栏）已迁到壳，
-// 内容页只剩书架、下载中心、详情、弹窗与阅读器，行为全部由 `omnibox:*` 消息驱动。
+// 内容页只剩书架、下载中心、详情、弹窗与阅读器，行为全部由 `cubby:*` 消息驱动。
 // 这些分支没有 DOM 就测不了：卡片、搜索空态、下载行、返回链都要真实节点与事件。
 //
 // 这里提供一个只覆盖「渲染 + 事件 + 查询」的最小 DOM（不实现布局、样式计算与冒泡），
@@ -764,11 +764,11 @@ export function loadManga(options = {}) {
         MangaReader: sandbox.__MangaReader,
         chrome() {
             for (let i = messages.length - 1; i >= 0; i -= 1) {
-                if (messages[i] && messages[i].type === 'omnibox:chrome') return messages[i];
+                if (messages[i] && messages[i].type === 'cubby:chrome') return messages[i];
             }
             return null;
         },
-        chromeAll: () => messages.filter((message) => message && message.type === 'omnibox:chrome'),
+        chromeAll: () => messages.filter((message) => message && message.type === 'cubby:chrome'),
         nav: () => {
             const chrome = env.chrome();
             return chrome && chrome.nav ? chrome.nav : {};
@@ -780,16 +780,16 @@ export function loadManga(options = {}) {
                 data,
             }));
         },
-        sendView(view) { env.send({ type: 'omnibox:view', view }); },
+        sendView(view) { env.send({ type: 'cubby:view', view }); },
         /** 壳的生命周期通知：`true` 触发 onShow，`false` 触发 onHide。 */
         setVisible(visible) { sandbox.PluginLifecycle.setVisible(visible); },
         sendAction(action, payload) {
-            env.send({ type: 'omnibox:action', action, payload });
+            env.send({ type: 'cubby:action', action, payload });
         },
-        sendQuery(query) { env.send({ type: 'omnibox:query', query }); },
-        /** 壳的统一刷新事件：`omnibox:freshness {plugin, scope, report}`。 */
+        sendQuery(query) { env.send({ type: 'cubby:query', query }); },
+        /** 壳的统一刷新事件：`cubby:freshness {plugin, scope, report}`。 */
         sendFreshness(plugin, report, scope = '') {
-            env.send({ type: 'omnibox:freshness', plugin, scope, report });
+            env.send({ type: 'cubby:freshness', plugin, scope, report });
         },
         calls: (method) => bridgeCalls.filter((call) => call.method === method),
         tick: (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms)),

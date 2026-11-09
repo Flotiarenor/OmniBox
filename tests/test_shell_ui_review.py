@@ -228,16 +228,16 @@ class ShellSourceContractTests(unittest.TestCase):
         self.assertIn('mergeChromeState(', source)
 
     def test_unsent_close_native_message_is_not_advertised(self) -> None:
-        """``omnibox:close-native`` 全仓库没有发送方，处理分支不能留成"已支持"。
+        """``cubby:close-native`` 全仓库没有发送方，处理分支不能留成"已支持"。
 
-        这条守的是 native 面板通道（``onNativeMessage`` 只认 ``omnibox:open-native``）。
+        这条守的是 native 面板通道（``onNativeMessage`` 只认 ``cubby:open-native``）。
         chrome 白名单那一半已经变成行为断言：``isPluginChromeMessage`` 拒绝未登记类型，
         由 ``tests/js/plugin_chrome_protocol.mjs`` 覆盖；但"App.vue 里不得出现这个字面量"
         只能看源码 —— 它描述的是源码里没有这条分支，不是一个可执行的判定。
         """
         source = read(SRC / 'App.vue')
-        self.assertIn("'omnibox:open-native'", source)
-        self.assertNotIn('omnibox:close-native', source)
+        self.assertIn("'cubby:open-native'", source)
+        self.assertNotIn('cubby:close-native', source)
 
     def test_settings_field_types_are_in_the_shared_contract(self) -> None:
         """插件 ``settings_schema`` 用到的 type 必须都在 SchemaField 的联合里。

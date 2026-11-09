@@ -2,7 +2,7 @@
 //
 // 三个真实场景（都来自迁移后壳驱动的路径）：
 //   1. 慢响应 + 切视图：旧 list_folder_items 返回时不能再把已切走的瀑布流画回来；
-//   2. 慢响应 + 壳首帧补发 omnibox:view：用户已点进相册后，迟到的同视图消息只吞一次；
+//   2. 慢响应 + 壳首帧补发 cubby:view：用户已点进相册后，迟到的同视图消息只吞一次；
 //   3. 相册里点「校验」/保存设置：刷新相册树不能把图片层强制退回相册列表
 //      （`loadAlbums()` 走 `showAlbums()` 会把 mode 改成 albums，随后 `loadImages`
 //       永远不会执行——用户在图片层点刷新会被弹回全部相册）。
@@ -203,7 +203,7 @@ function loadImageViewer(handlers = {}) {
         parent, messages, calls,
         chrome() {
             for (let i = messages.length - 1; i >= 0; i -= 1) {
-                if (messages[i] && messages[i].type === 'omnibox:chrome') return messages[i];
+                if (messages[i] && messages[i].type === 'cubby:chrome') return messages[i];
             }
             return null;
         },

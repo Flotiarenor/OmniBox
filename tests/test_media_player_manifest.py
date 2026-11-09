@@ -2,7 +2,7 @@
 
 `frontend.chrome.content`（`canvas` / `native` / `hybrid`）与 nav 组的 `dynamic`
 从来没有运行时消费方：内容归属由壳按 URL 决定，动态歌单组由内容页通过
-`omnibox:chrome` 的 `nav` 载荷整组替换。两个字段保留在 manifest 里只会让人以为
+`cubby:chrome` 的 `nav` 载荷整组替换。两个字段保留在 manifest 里只会让人以为
 壳会读它们（`tools/check_plugins.py` 的认可清单也将在后续任务删除）。
 
 本用例锁住决定"删除，不实现"之后的最终状态，并顺带防止误删仍在使用的骨架字段：
@@ -40,7 +40,7 @@ class MediaPlayerManifestChromeTests(unittest.TestCase):
         dynamic = [group.get('id') for group in self.chrome.get('nav') or [] if 'dynamic' in group]
         self.assertEqual(
             dynamic, [],
-            'nav[].dynamic 没有运行时消费方；动态歌单组由内容页 omnibox:chrome 的 nav 载荷替换',
+            'nav[].dynamic 没有运行时消费方；动态歌单组由内容页 cubby:chrome 的 nav 载荷替换',
         )
 
     def test_live_chrome_declarations_stay(self):

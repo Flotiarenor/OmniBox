@@ -7,7 +7,7 @@
 //   3. 报告的零变化与 `skip` 不触发重载；
 //   4. 阅读器打开的那一页交给 `manga_update_recent`，2 秒任务轮询只在任务变化时重报 chrome。
 //
-// 壳的 `omnibox:freshness {plugin, scope, report}` 与旧的 `omnibox:action: refresh`
+// 壳的 `cubby:freshness {plugin, scope, report}` 与旧的 `cubby:action: refresh`
 // 两条通知路径都在这里覆盖。
 import assert from 'node:assert/strict';
 import { loadManga, defaultHandlers, createApp } from './manga_library_harness.mjs';
@@ -162,7 +162,7 @@ function makeEnv(options = {}) {
     check('退回书架后高亮恢复', env.chrome().view === 'all', env.chrome().view);
 }
 
-// ---- 5. 旧的 omnibox:action: refresh（无 payload）仍然重载 ----
+// ---- 5. 旧的 cubby:action: refresh（无 payload）仍然重载 ----
 {
     const { env } = makeEnv();
     const app = await createApp(env);

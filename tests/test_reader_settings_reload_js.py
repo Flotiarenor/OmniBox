@@ -1,7 +1,7 @@
 """设置弹窗保存后重读阅读偏好的无头回归（tests/js/reader_settings_reload.mjs）。
 
 缺陷背景：壳的设置弹窗只把值写进后端，既不重载页面也不通知插件页
-（`omnibox:settings-changed` 在壳里只有接收分支，见 docs/plugin-guide.md §4.3）。
+（`cubby:settings-changed` 在壳里只有接收分支，见 docs/plugin-guide.md §4.3）。
 document-reader 的「设置」按钮没有收尾，于是「正文底色 = 透出壳背景」这一项在弹窗里
 改完看不到任何变化；更糟的是页内下一次 save() 会把整份偏好写回后端，内存里的旧值
 把刚保存的新值静默盖掉 —— 表现为"这一项永远不生效"。

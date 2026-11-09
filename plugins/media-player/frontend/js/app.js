@@ -6,8 +6,8 @@
 // manifest 的 frontend.chrome 渲染；本文件只维护内容：播放舞台、播放条、歌词沉浸页、
 // 队列与 EQ 浮层、列表 / 卡片与三个内容弹窗。
 //
-// 与壳的通信：壳发 omnibox:view / omnibox:action / omnibox:query 与
-// omnibox:freshness（统一刷新报告），本文件回 omnibox:chrome（标题、副标题、视图、
+// 与壳的通信：壳发 cubby:view / cubby:action / cubby:query 与
+// cubby:freshness（统一刷新报告），本文件回 cubby:chrome（标题、副标题、视图、
 // 动作显隐、歌单导航组、同步作用域、状态）。
 //
 // 本文件只保留类骨架：构造函数、初始化、宿主消息与扫描轮询。其余方法按职责拆到同目录的
@@ -18,10 +18,10 @@
 // 方法与顺序契约由 tests/js/media_player_app_split.mjs 把关。
 // ============================================================
 
-/** 壳左栏「媒体库」组的六个一级视图；`omnibox:view` 只对它们调 switchView。 */
+/** 壳左栏「媒体库」组的六个一级视图；`cubby:view` 只对它们调 switchView。 */
 const MP_LIBRARY_VIEWS = ['recent', 'audio-albums', 'all-audio', 'video-albums', 'all-video', 'favorites'];
 
-// 新壳在 `omnibox:freshness` 之后紧跟一条旧的 `omnibox:action: refresh`，两条属于
+// 新壳在 `cubby:freshness` 之后紧跟一条旧的 `cubby:action: refresh`，两条属于
 // 同一次同步；壳把同一份报告附在动作的 payload 上（`/shell/chrome-client.js` 的
 // `onAction(action, payload)`），所以"回声"按 payload 是否存在判定，不靠时间窗。
 
@@ -127,7 +127,7 @@ class MediaPlayerApp {
         const searchSync = this._searchSync;
         this._searchSync = null;
         this._postHost({
-            type: 'omnibox:chrome',
+            type: 'cubby:chrome',
             title: this._chromeTitle,
             subtitle: this._chromeSub,
             view: this._chromeViewId(),
@@ -160,7 +160,7 @@ class MediaPlayerApp {
     }
 
     /** 「我的歌单」动态导航组：整组 items 替换为当前歌单列表 + 末尾的「新建歌单」。
-        歌单项 id 是 `playlist:<id>`，与 `omnibox:view` 的载荷共用同一套 id。 */
+        歌单项 id 是 `playlist:<id>`，与 `cubby:view` 的载荷共用同一套 id。 */
     _navPatch() {
         const items = (this.playlists ? this.playlists.playlists : []).map(pl => {
             const count = (pl.item_ids || []).length;
@@ -198,7 +198,7 @@ class MediaPlayerApp {
 
     /** 壳下发的非 view / action / query 消息；目前只消费统一刷新报告。 */
     _onHostMessage(data) {
-        if (!data || data.type !== 'omnibox:freshness') return;
+        if (!data || data.type !== 'cubby:freshness') return;
         if (data.plugin && data.plugin !== 'media-player') return;
         if (!this._freshnessChanged(data.report)) return;
         void this._reloadAfterFreshness();
@@ -231,7 +231,7 @@ class MediaPlayerApp {
         if (action === 'netease-refresh' || action === 'scan') { await this._doScan(); return; }
         if (action === 'settings-saved') { await this._reloadSettings(); return; }
         if (action === 'refresh') {
-            // 新壳在 omnibox:freshness 之后紧跟一条 legacy refresh，并把同一份报告附在
+            // 新壳在 cubby:freshness 之后紧跟一条 legacy refresh，并把同一份报告附在
             // 动作的 payload 上：富事件已经重载过，这条只当回声跳过。没有 payload 的
             // refresh 来自旧壳，按原语义重载。
             if (payload != null) return;
@@ -286,7 +286,7 @@ class MediaPlayerApp {
     /** 内容页自己的设置入口（歌词页右上角）：弹窗归壳渲染，这里只请求壳打开同一份
         设置；打开后歌词页先收起，避免弹窗下面的沉浸页还在滚。 */
     _openSettings(title) {
-        this._postHost({ type: 'omnibox:open-settings', title: title || '' });
+        this._postHost({ type: 'cubby:open-settings', title: title || '' });
     }
 
     /** 壳的设置弹窗保存后重读设置并应用：歌词配色/背景、自动隐藏与播放起点都读的是
@@ -349,7 +349,7 @@ class MediaPlayerApp {
             if (stats && stats.total > 0) { this._setLoading(''); return; }
             // 首次使用（索引为空）：统一刷新组件由壳挂载，内容页拿不到它的实例，
             // 这里走插件自己的兼容入口 `media_scan`（force=False 即一次同步）建立索引。
-            // 后续增量同步 / 全量校验都点壳顶栏的「校验」，完成经 omnibox:action: refresh 回来。
+            // 后续增量同步 / 全量校验都点壳顶栏的「校验」，完成经 cubby:action: refresh 回来。
             this._setLoading('首次使用，正在扫描媒体库…\n大媒体库可能需要一点时间');
             const result = await Bridge.call('media_scan', false);
             if (result && result.success === false) {
@@ -400,7 +400,7 @@ class MediaPlayerApp {
         }
     }
 
-    /** 打开网易云原生视图（壳扩展入口点击后发 `omnibox:view`，view 值以 `ncm-` 开头）。
+    /** 打开网易云原生视图（壳扩展入口点击后发 `cubby:view`，view 值以 `ncm-` 开头）。
         入口本身由壳的 PluginExtensions 渲染，内容页只按 view id 打开对应视图。 */
     openNeteaseView(view) {
         const viewId = typeof view === 'string' ? view : ((view && view.view) || 'ncm-daily');

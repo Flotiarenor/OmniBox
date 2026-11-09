@@ -6,13 +6,13 @@
  */
 
 /** 需要发给插件 iframe 的生命周期通知（完整的 postMessage type） */
-export type LifecycleMessage = 'omnibox:plugin-shown' | 'omnibox:plugin-hidden' | 'omnibox:plugin-dispose'
+export type LifecycleMessage = 'cubby:plugin-shown' | 'cubby:plugin-hidden' | 'cubby:plugin-dispose'
 
 /** 消息类型表：宿主发给插件的协议串单一真源 */
 export declare const LIFECYCLE_MESSAGES: {
-  readonly shown: 'omnibox:plugin-shown'
-  readonly hidden: 'omnibox:plugin-hidden'
-  readonly dispose: 'omnibox:plugin-dispose'
+  readonly shown: 'cubby:plugin-shown'
+  readonly hidden: 'cubby:plugin-hidden'
+  readonly dispose: 'cubby:plugin-dispose'
 }
 
 /** 登记/更新一个 frame 是否已作为活动插件挂载 */

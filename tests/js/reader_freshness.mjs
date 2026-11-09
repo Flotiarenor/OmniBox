@@ -148,7 +148,7 @@ function loadReader(options = {}) {
         parent, messages, calls, toasts, lifecycle, freshnessCalls,
         chrome() {
             for (let i = messages.length - 1; i >= 0; i -= 1) {
-                if (messages[i] && messages[i].type === 'omnibox:chrome') return messages[i];
+                if (messages[i] && messages[i].type === 'cubby:chrome') return messages[i];
             }
             return null;
         },
@@ -247,32 +247,32 @@ const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
     check('阅读态顶栏标题仍是书名', app._chromeTitle === '书名', app._chromeTitle);
 }
 
-// ---- 4. omnibox:freshness：有变化才重读，skip 与别的插件忽略 ----
+// ---- 4. cubby:freshness：有变化才重读，skip 与别的插件忽略 ----
 {
     const env = loadReader();
     const app = makeApp(env);
-    env.send({ type: 'omnibox:freshness', plugin: 'document-reader', scope: '', report: zero });
+    env.send({ type: 'cubby:freshness', plugin: 'document-reader', scope: '', report: zero });
     await tick(10);
     check('零变化报告不重读', env.calls.filter((call) => call.method === 'document_list').length === 0);
 
-    env.send({ type: 'omnibox:freshness', plugin: 'document-reader', scope: '', report: { action: 'skip', reason: 'busy' } });
+    env.send({ type: 'cubby:freshness', plugin: 'document-reader', scope: '', report: { action: 'skip', reason: 'busy' } });
     await tick(10);
     check('skip 不重读', env.calls.filter((call) => call.method === 'document_list').length === 0);
 
-    env.send({ type: 'omnibox:freshness', plugin: 'other-plugin', scope: '', report: changed });
+    env.send({ type: 'cubby:freshness', plugin: 'other-plugin', scope: '', report: changed });
     await tick(10);
     check('别的插件的报告不重读', env.calls.filter((call) => call.method === 'document_list').length === 0);
 
-    env.send({ type: 'omnibox:freshness', plugin: 'document-reader', scope: '', report: changed });
+    env.send({ type: 'cubby:freshness', plugin: 'document-reader', scope: '', report: changed });
     await tick(20);
     check('有变化报告重读文档', env.calls.filter((call) => call.method === 'document_list').length === 1);
 }
 
-// ---- 5. 旧的 omnibox:action: refresh（无 payload）仍重读 ----
+// ---- 5. 旧的 cubby:action: refresh（无 payload）仍重读 ----
 {
     const env = loadReader();
     const app = makeApp(env);
-    env.send({ type: 'omnibox:action', action: 'refresh' });
+    env.send({ type: 'cubby:action', action: 'refresh' });
     await tick(20);
     check('旧 refresh 动作仍重读文档', env.calls.filter((call) => call.method === 'document_list').length === 1);
 }
@@ -281,9 +281,9 @@ const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
 {
     const env = loadReader();
     const app = makeApp(env);
-    env.send({ type: 'omnibox:freshness', plugin: 'document-reader', scope: '', report: changed });
+    env.send({ type: 'cubby:freshness', plugin: 'document-reader', scope: '', report: changed });
     env.send({
-        type: 'omnibox:action', action: 'refresh',
+        type: 'cubby:action', action: 'refresh',
         payload: { plugin: 'document-reader', scope: '', report: changed },
     });
     await tick(20);
@@ -294,9 +294,9 @@ const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
 {
     const env = loadReader();
     const app = makeApp(env);
-    env.send({ type: 'omnibox:freshness', plugin: 'document-reader', scope: '', report: zero });
+    env.send({ type: 'cubby:freshness', plugin: 'document-reader', scope: '', report: zero });
     env.send({
-        type: 'omnibox:action', action: 'refresh',
+        type: 'cubby:action', action: 'refresh',
         payload: { plugin: 'document-reader', scope: '', report: zero },
     });
     await tick(20);
@@ -307,10 +307,10 @@ const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
     const env = loadReader();
     const app = makeApp(env);
     // 回声按 payload 判定，与两条消息的到达间隔无关
-    env.send({ type: 'omnibox:freshness', plugin: 'document-reader', scope: '', report: changed });
+    env.send({ type: 'cubby:freshness', plugin: 'document-reader', scope: '', report: changed });
     await tick(1500);
     env.send({
-        type: 'omnibox:action', action: 'refresh',
+        type: 'cubby:action', action: 'refresh',
         payload: { plugin: 'document-reader', scope: '', report: changed },
     });
     await tick(20);

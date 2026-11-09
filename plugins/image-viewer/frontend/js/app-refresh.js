@@ -37,7 +37,7 @@ Object.assign(ImageViewer.prototype, {
     // ============================================================
     // 「同步状态 + 校验」控件（shell/frontend/public/shell/freshness.js）由壳的
     // PluginChrome 挂载（manifest 的 frontend.chrome.freshness），内容页不再持有点击
-    // 入口；校验完成或同步发现变化后，壳发 `omnibox:action: refresh`，本页重载相册树与
+    // 入口；校验完成或同步发现变化后，壳发 `cubby:action: refresh`，本页重载相册树与
     // 当前目录的图片。
 
     /**

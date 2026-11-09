@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 跨机联调的 Linux 侧准备脚本（由 Windows 侧经 `ssh omnibox-linux bash -s` 喂进来执行）。
+# 跨机联调的 Linux 侧准备脚本（由 Windows 侧经 `ssh cubby-linux bash -s` 喂进来执行）。
 #
 # 做三件事：建身份与团体、挂共享项、把邀请串与校验和写入 /root/gmtest/handoff.txt。
 #
@@ -8,11 +8,11 @@
 set -euo pipefail
 
 export LC_ALL=C.UTF-8 PYTHONIOENCODING=utf-8
-PY=/root/OmniBox/venv/bin/python
+PY=/root/Cubby/venv/bin/python
 BASE=/root/gmtest
 
 # 内核在 shell/groupmesh，按包路径运行，因此工作目录固定为仓库根
-cd /root/OmniBox
+cd /root/Cubby
 
 rm -rf "$BASE"
 mkdir -p "$BASE/shared" "$BASE/node"
@@ -34,7 +34,7 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, '/root/OmniBox')
+sys.path.insert(0, '/root/Cubby')
 from shell.groupmesh.cli import invite_string, load_roster
 from shell.groupmesh.registry import local_addresses
 

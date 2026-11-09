@@ -110,7 +110,7 @@ def show_panel(driver, name: str) -> None:
 
     面板入口在壳的左栏（`plugin_ui_audit` 的 `nav.panel` 覆盖壳这一侧）；本用例直接
     加载内容页、没有壳，因此按内容页 `_bindHost` 实际校验的字段手工构造 `MessageEvent`
-    （`omnibox:view`，`origin` 取本页 origin、`source` 取本窗口），内容页校验通过后调
+    （`cubby:view`，`origin` 取本页 origin、`source` 取本窗口），内容页校验通过后调
     `setPanel`。这样测到的仍是真实的视图切换逻辑，而不是直接改 DOM。
 
     面板是**纯显隐**（`data-active`，不销毁 DOM）。因此断言"某元素可见/可点"之前
@@ -132,7 +132,7 @@ def show_panel(driver, name: str) -> None:
         return
     driver.execute_script(
         "window.dispatchEvent(new MessageEvent('message', {"
-        "  data: {type: 'omnibox:view', view: arguments[0]},"
+        "  data: {type: 'cubby:view', view: arguments[0]},"
         "  origin: location.origin, source: window}));", name)
     assert wait_until(lambda: active() == name), f'切到面板 {name} 失败（当前 {active()}）'
 

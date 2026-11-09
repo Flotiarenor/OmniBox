@@ -4,7 +4,7 @@
 ``tests/js/plugin_frames.mjs`` 跑真实模块覆盖 —— 这里补的是**接线**：
 App.vue 是 SFC，Node 与 Python 都不容易直接驱动，但它必须
 
-- 把状态机的输出真正 postMessage 成 omnibox:plugin-shown / -hidden / -dispose，
+- 把状态机的输出真正 postMessage 成 cubby:plugin-shown / -hidden / -dispose，
   漏掉任何一个，插件就收不到 onShow / onHide / onDispose 三个钩子中对应的那个；
 - 把窗口级事件（visibilitychange / beforeunload / pagehide）真的挂上；
 - 用 core/plugin-frames 的判定分组与拼接 iframe src，而不是在 SFC 里再写一份。
@@ -25,9 +25,9 @@ APP = PROJECT_ROOT / 'shell' / 'frontend' / 'src' / 'App.vue'
 DIST_ASSETS = PROJECT_ROOT / 'shell' / 'frontend' / 'dist' / 'assets'
 
 REQUIRED_MESSAGE_TYPES = (
-    'omnibox:plugin-shown',
-    'omnibox:plugin-hidden',
-    'omnibox:plugin-dispose',
+    'cubby:plugin-shown',
+    'cubby:plugin-hidden',
+    'cubby:plugin-dispose',
 )
 
 

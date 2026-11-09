@@ -1,7 +1,7 @@
 """内容页 ↔ 壳的 chrome 握手客户端（tests/js/chrome_client.mjs）的驱动。
 
-为什么需要：`omnibox:ready` / `omnibox:chrome` / `omnibox:view` / `omnibox:action` /
-`omnibox:query` 这五条消息原先由四个内容页各写一份（document-reader / image-viewer /
+为什么需要：`cubby:ready` / `cubby:chrome` / `cubby:view` / `cubby:action` /
+`cubby:query` 这五条消息原先由四个内容页各写一份（document-reader / image-viewer /
 manga-library / media-player），协议改一处就要同步四处，漏一处只表现为"该插件点了没反应"。
 握手收敛到 `/shell/chrome-client.js` 之后，本用例跑真实实现断言两件在界面上看不出来的事：
 来源校验（只认父窗口 + 同源）与"先监听、再 ready"的顺序；同时核对四份 app.js 确实都走

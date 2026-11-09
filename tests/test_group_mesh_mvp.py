@@ -1871,7 +1871,7 @@ class ServeBindFailureTest(unittest.TestCase):
 
     为什么这条必须有：实测踩到过一个"端口永远被占"的故障 —— 服务重启窗口期旧进程
     还占着端口，`bind` 抛错，而 socket 建在 `try` 之外，于是它既没被 close 也没人
-    再引用，却仍以 LISTEN 状态占着端口（`ss` 显示该 socket 归 omnibox-web.service
+    再引用，却仍以 LISTEN 状态占着端口（`ss` 显示该 socket 归 cubby-web.service
     的 cgroup，当前进程里已经找不到它）。之后每次重试都失败，节点再也起不来，
     只能靠重启整个服务释放 —— 而"重试"正是自动启动在做的动作。
     """

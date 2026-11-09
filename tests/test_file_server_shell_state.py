@@ -188,7 +188,7 @@ class ShellStateInjectionTests(unittest.TestCase):
         self.assertIn('data-theme="light"', body)
         self.assertIn('--accent:#8b5cf6', body)
         # 偏好已不在 localStorage：标记页不得再留一条会自动失效的回退读
-        self.assertNotIn("localStorage.getItem('omni-theme')", body)
+        self.assertNotIn("localStorage.getItem('cubby-theme')", body)
 
     def test_status_page_escapes_injected_values(self):
         self._write_prefs({'colors': {'--bg-app': '"/><script>window.PWNED=1</script>'}})

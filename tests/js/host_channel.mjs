@@ -135,8 +135,8 @@ const rt2 = loadPluginRuntime();
 await check('上层应答 probe 时判为可用（回信对象里读 ok）', async () => {
   const pending = rt2.hc.probe(200);
   const sent = SENT[SENT.length - 1];
-  assert.equal(sent.type, 'omnibox:host-probe');
-  rt2.emit({ type: 'omnibox:host-reply', exchange: 'probe', ok: true });
+  assert.equal(sent.type, 'cubby:host-probe');
+  rt2.emit({ type: 'cubby:host-reply', exchange: 'probe', ok: true });
   assert.equal(await pending, true, '上层回了 ok:true，probe 必须为 true');
 });
 
@@ -145,16 +145,16 @@ await check('上层应答后 requestSettings 拿到 handled:true（设置弹窗�
   // 它自己 catch —— 那正是"取不到字段也要把弹窗交出去"的路径，这里顺带覆盖。
   const pending = rt2.hc.requestSettings('相册清理设置');
   await new Promise((r) => setTimeout(r, 5));
-  const req = SENT.filter((m) => m.type === 'omnibox:host-request').pop();
+  const req = SENT.filter((m) => m.type === 'cubby:host-request').pop();
   assert.equal(req.action, 'ui');
   assert.equal(req.data.kind, 'settings');
-  rt2.emit({ type: 'omnibox:host-reply', exchange: req.exchange, ok: true, data: null });
+  rt2.emit({ type: 'cubby:host-reply', exchange: req.exchange, ok: true, data: null });
   const res = await pending;
   assert.equal(res.handled, true, '上层接下了就得是 handled:true，否则调用方会再弹一个本地弹窗');
 });
 
 await check('发出的 request 形状符合契约（type/exchange/action/data）', () => {
-  const req = SENT.find((m) => m.type === 'omnibox:host-request');
+  const req = SENT.find((m) => m.type === 'cubby:host-request');
   assert.ok(req, '没有发出 host-request');
   assert.equal(typeof req.exchange, 'number');
   assert.equal(req.action, 'ui');
@@ -163,7 +163,7 @@ await check('发出的 request 形状符合契约（type/exchange/action/data）
 
 await check('上层回信后 request 拿到 data', async () => {
   const pending = rt.hc.request('ui', { kind: 'settings' }, 200);
-  rt.emit({ type: 'omnibox:host-reply', exchange: SENT[SENT.length - 1].exchange, ok: true, data: { saved: true } });
+  rt.emit({ type: 'cubby:host-reply', exchange: SENT[SENT.length - 1].exchange, ok: true, data: { saved: true } });
   const res = await pending;
   assert.equal(res.ok, true);
   assert.deepEqual(res.data, { saved: true });
@@ -171,7 +171,7 @@ await check('上层回信后 request 拿到 data', async () => {
 
 await check('非父窗口发来的回信一律忽略（防伪造）', async () => {
   const pending = rt.hc.request('ui', { kind: 'settings' }, T);
-  rt.emit({ type: 'omnibox:host-reply', exchange: SENT[SENT.length - 1].exchange, ok: true, data: { forged: true } },
+  rt.emit({ type: 'cubby:host-reply', exchange: SENT[SENT.length - 1].exchange, ok: true, data: { forged: true } },
     { location: { origin: ORIGIN }, postMessage() { } });   // 不是 window.parent
   const res = await pending;
   assert.equal(res.ok, false, '伪造来源不得被接受');
@@ -181,10 +181,10 @@ await check('上层 callback 把值交给注册的处理器，并回传结果', 
   const got = [];
   rt.hc.onCallback('ui', (values) => { got.push(values); return 'done'; });
   const before = SENT.length;
-  rt.emit({ type: 'omnibox:host-callback', step: 7, action: 'ui', data: { threshold: 8 } });
+  rt.emit({ type: 'cubby:host-callback', step: 7, action: 'ui', data: { threshold: 8 } });
   await new Promise((r) => setTimeout(r, 5));
   assert.deepEqual(got, [{ threshold: 8 }]);
-  const reply = SENT.slice(before).find((m) => m.type === 'omnibox:host-callback-reply');
+  const reply = SENT.slice(before).find((m) => m.type === 'cubby:host-callback-reply');
   assert.ok(reply, '没有回传 callback-reply');
   assert.deepEqual({ step: reply.step, ok: reply.ok, data: reply.data }, { step: 7, ok: true, data: 'done' });
 });
@@ -192,9 +192,9 @@ await check('上层 callback 把值交给注册的处理器，并回传结果', 
 await check('处理器抛错时回传 ok:false 与原因（上层得以保住弹窗）', async () => {
   rt.hc.onCallback('ui', () => { throw new Error('保存失败：磁盘只读'); });
   const before = SENT.length;
-  rt.emit({ type: 'omnibox:host-callback', step: 8, action: 'ui', data: {} });
+  rt.emit({ type: 'cubby:host-callback', step: 8, action: 'ui', data: {} });
   await new Promise((r) => setTimeout(r, 5));
-  const reply = SENT.slice(before).find((m) => m.type === 'omnibox:host-callback-reply');
+  const reply = SENT.slice(before).find((m) => m.type === 'cubby:host-callback-reply');
   assert.ok(reply, '没有回传 callback-reply');
   assert.equal(reply.ok, false);
   assert.match(String(reply.data && reply.data.error), /保存失败/);
@@ -207,7 +207,7 @@ await check('mountToolbar 发出 host-mount（含按钮定义、容器、本页 
     [{ id: 'btn-settings', label: '设置', icon: 'icon:settings' }],
     { container: 'host-toolbar', selector: '#btn-settings' },
   );
-  const mount = SENT.slice(before).find((m) => m.type === 'omnibox:host-mount');
+  const mount = SENT.slice(before).find((m) => m.type === 'cubby:host-mount');
   assert.ok(mount, '没有发出 host-mount');
   assert.deepEqual(mount.data.buttons, [{ id: 'btn-settings', label: '设置', icon: 'icon:settings' }]);
   assert.equal(mount.data.container, 'host-toolbar');
@@ -222,7 +222,7 @@ await check('上层接住后按钮留在上层（源按钮保持隐藏）', asyn
   const pending = SENT[SENT.length - 1];
   const mountPromise = Promise.resolve();
   void mountPromise;
-  rt.emit({ type: 'omnibox:host-reply', exchange: pending.exchange, ok: true, data: null });
+  rt.emit({ type: 'cubby:host-reply', exchange: pending.exchange, ok: true, data: null });
   await new Promise((r) => setTimeout(r, 5));
   assert.equal(rt.sourceButton.style.display, 'none');
 });
@@ -232,20 +232,20 @@ await check('上层没接住时把源按钮放回来（宁可留在本页，也�
   button.style.display = '';
   rt.hc.mountToolbar([{ id: 'btn-settings', label: '设置' }], { selector: '#btn-settings' });
   assert.equal(button.style.display, 'none', '先隐藏');
-  const mount = SENT.filter((m) => m.type === 'omnibox:host-mount').pop();
-  rt.emit({ type: 'omnibox:host-reply', exchange: mount.exchange, ok: false, data: { error: 'no-container:host-toolbar' } });
+  const mount = SENT.filter((m) => m.type === 'cubby:host-mount').pop();
+  rt.emit({ type: 'cubby:host-reply', exchange: mount.exchange, ok: false, data: { error: 'no-container:host-toolbar' } });
   await new Promise((r) => setTimeout(r, 5));
   assert.equal(button.style.display, '', '挂载失败必须放回来');
 });
 
 await check('上层点按钮回发 host-run 时，点的是本页那个源按钮（处理逻辑只留一份）', () => {
   const before = rt.sourceButton.clicked || 0;
-  rt.emit({ type: 'omnibox:host-run', id: 'btn-settings', action: 'click' });
+  rt.emit({ type: 'cubby:host-run', id: 'btn-settings', action: 'click' });
   assert.equal(rt.sourceButton.clicked, before + 1);
 });
 
 await check('host-run 点名了不存在的按钮时静默忽略（不抛错、不误点）', () => {
-  assert.doesNotThrow(() => rt.emit({ type: 'omnibox:host-run', id: 'nope', action: 'click' }));
+  assert.doesNotThrow(() => rt.emit({ type: 'cubby:host-run', id: 'nope', action: 'click' }));
 });
 
 await check('全部出站消息带明确 targetOrigin（不把内容交给任意源）', () => {

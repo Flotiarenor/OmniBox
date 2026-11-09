@@ -89,7 +89,7 @@ class _ShellServer:
             f'{self.base}/api/{method}', data=payload,
             headers={'Content-Type': 'application/json',
                      'X-Cubby-Token': self.token,
-                     'Cookie': f'omnibox_token={self.token}'})
+                     'Cookie': f'cubby_token={self.token}'})
         started = time.perf_counter()
         body: Any
         try:

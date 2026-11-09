@@ -1,4 +1,4 @@
-// media-player 与壳的左栏高亮契约（`omnibox:chrome.view`）用例。
+// media-player 与壳的左栏高亮契约（`cubby:chrome.view`）用例。
 //
 // 迁移后侧栏由壳的 PluginChrome 渲染，内容页不再操作 `.mp-nav-item`：高亮的唯一输入
 // 是内容页上报的 `view`。旧的 `tests/js/media_player_nav_active.mjs` 断言的是
@@ -73,7 +73,7 @@ function setup() {
   };
   app._loadCurrentView = async () => { };
   app._updateStats = async () => { };
-  const chrome = () => messages.filter(m => m.type === 'omnibox:chrome').at(-1);
+  const chrome = () => messages.filter(m => m.type === 'cubby:chrome').at(-1);
   return { app, messages, chrome };
 }
 
@@ -106,7 +106,7 @@ await check('网易云视图上报 ncm-*；切回一级视图后只上报新视�
   assert.equal(chrome().view, 'all-audio', '本地视图要覆盖扩展视图，侧栏不能同时亮两个');
 });
 
-await check('壳下发 omnibox:view 的扩展视图走同一条上报路径', async () => {
+await check('壳下发 cubby:view 的扩展视图走同一条上报路径', async () => {
   const { app, chrome } = setup();
   app._applyHostView('ncm-my-playlists');
   await Promise.resolve();

@@ -49,7 +49,7 @@
     }
 
     function sendReady() {
-      post({ type: 'omnibox:native-ready' });
+      post({ type: 'cubby:native-ready' });
     }
 
     function stopReady() {
@@ -61,7 +61,7 @@
 
     function render(blocks, toolbar, options) {
       var payload = {
-        type: 'omnibox:schema',
+        type: 'cubby:schema',
         blocks: clone(blocks) || [],
         toolbar: Array.isArray(toolbar) ? clone(toolbar) || [] : [],
       };
@@ -83,7 +83,7 @@
     }
 
     function fail(error) {
-      post({ type: 'omnibox:native-error', error: errorText(error) || '内容加载失败' });
+      post({ type: 'cubby:native-error', error: errorText(error) || '内容加载失败' });
     }
 
     async function runInit() {
@@ -123,11 +123,11 @@
       if (!isFromShell(event)) return;
       const data = event.data;
       if (!data || typeof data.type !== 'string') return;
-      if (data.type === 'omnibox:native-init') {
+      if (data.type === 'cubby:native-init') {
         void runInit();
         return;
       }
-      if (data.type === 'omnibox:native-action') {
+      if (data.type === 'cubby:native-action') {
         void runAction(data.action, data.payload);
       }
     });

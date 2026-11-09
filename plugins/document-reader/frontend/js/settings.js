@@ -68,7 +68,7 @@ class ReaderSettingsStore {
     /** 设置弹窗保存后重新读一遍后端并应用。
      *
      * 为什么必须自己收尾：壳的设置弹窗只把值写进后端，既不重载页面也不通知插件页
-     * （`omnibox:settings-changed` 在壳里只有接收分支，见 docs/plugin-guide.md §4.3）。
+     * （`cubby:settings-changed` 在壳里只有接收分支，见 docs/plugin-guide.md §4.3）。
      * 不重读的话正文停在旧配色；更糟的是页内任何一次 `save()` 都会把**整份**偏好写回
      * 后端，刚在弹窗里改的那一项会被内存里的旧值静默盖掉 —— 表现为"这一项设置永远
      * 不生效"。

@@ -1,7 +1,7 @@
 // document-reader 阅读态 / 刷新 / 加载 / 进度轨 / 空态的无头回归。
 //
 // 这里守的是迁移到壳 chrome 之后容易丢的三类状态：
-//   1. 壳顶栏的标题归内容页在阅读态维护；统一刷新（omnibox:action: refresh）会重扫书架，
+//   1. 壳顶栏的标题归内容页在阅读态维护；统一刷新（cubby:action: refresh）会重扫书架，
 //      但重扫不能顺手把顶栏标题改回书架标题 —— `_reloadSettings` 有阅读态守卫，
 //      `_reloadShelf` 以前没有，用户在正文里点「校验」会看到书名变成「全部文档」。
 //   2. 加载提示必须挂在阅读器容器上：engine 换章会清空正文 innerHTML，挂在正文里的
@@ -140,7 +140,7 @@ function loadReader(handlers = {}) {
         parent, messages, calls, toasts,
         chrome() {
             for (let i = messages.length - 1; i >= 0; i -= 1) {
-                if (messages[i] && messages[i].type === 'omnibox:chrome') return messages[i];
+                if (messages[i] && messages[i].type === 'cubby:chrome') return messages[i];
             }
             return null;
         },
@@ -191,7 +191,7 @@ function makeApp(env, handlers = {}) {
     app._loadMarks = async () => { };
     app._bindHost();
     app._pushChrome();
-    env.send({ type: 'omnibox:action', action: 'refresh' });
+    env.send({ type: 'cubby:action', action: 'refresh' });
     await tick(20);
     check('阅读态刷新后顶栏标题仍是书名', app._chromeTitle === '书名', app._chromeTitle);
     check('阅读态刷新后副标题不被书架统计覆盖', app._chromeSub === '', JSON.stringify(app._chromeSub));
@@ -320,7 +320,7 @@ function makeApp(env, handlers = {}) {
     app.currentDocument = { id: 'd1', title: '书名', kind: 'txt' };
     app._chromeTitle = '书名';
     app._bindHost();
-    env.send({ type: 'omnibox:action', action: 'back' });
+    env.send({ type: 'cubby:action', action: 'back' });
     await tick(10);
     check('壳返回退出阅读态', app._isReaderMode === false);
     check('壳返回后上报书架视图', env.chrome().view === 'all', env.chrome().view);

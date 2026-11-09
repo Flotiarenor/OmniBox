@@ -1,10 +1,10 @@
-// 壳的刷新通知面：`omnibox:freshness` 富事件、旧 action 兼容、设置页「数据与缓存」接线。
+// 壳的刷新通知面：`cubby:freshness` 富事件、旧 action 兼容、设置页「数据与缓存」接线。
 //
 // 锁住这几件事：
 //   1. `buildFreshnessEvent` 真的把后端报告原样透传（内容页据此决定重载哪一层），
 //      并且不改写入参；
-//   2. 壳发的是**两条**消息：`omnibox:freshness`（带 scope + report）与旧的
-//      `omnibox:action: refresh`（只认旧协议的内容页仍然工作）；
+//   2. 壳发的是**两条**消息：`cubby:freshness`（带 scope + report）与旧的
+//      `cubby:action: refresh`（只认旧协议的内容页仍然工作）；
 //   3. 内容页侧 `/shell/chrome-client.js` 把 action 消息的 `payload` 原样交给
 //      `onAction` 的第二参（普通动作的第二参是 undefined），富事件走 `onMessage`；
 //   4. 设置页接上了 `system_freshness_overview` / `system_freshness_rebuild`：
@@ -64,15 +64,15 @@ function check(name, fn) {
 
 // ---------------------------------------------------------------- 事件构造
 
-check('事件类型是 omnibox:freshness', () => {
-  assert.equal(protocol.FRESHNESS_EVENT, 'omnibox:freshness');
+check('事件类型是 cubby:freshness', () => {
+  assert.equal(protocol.FRESHNESS_EVENT, 'cubby:freshness');
 });
 
 check('负载正好是 {type, plugin, scope, report}，报告原样透传', () => {
   const report = { action: 'sync', added: 2, changed: 1, removed: 0, scope: 'a/b' };
   const event = protocol.buildFreshnessEvent('image-viewer', 'a/b', report);
   assert.deepEqual(event, {
-    type: 'omnibox:freshness',
+    type: 'cubby:freshness',
     plugin: 'image-viewer',
     scope: 'a/b',
     report: { action: 'sync', added: 2, changed: 1, removed: 0, scope: 'a/b' },
@@ -107,7 +107,7 @@ check('缺插件名时是空串（壳按目标 iframe 名调用，不会传空�
 
 check('PluginChrome 的 onChange 同时发富事件与旧 action', () => {
   assert.match(chromeSource, /onChange:\s*onFreshnessChange/, 'onChange 必须走统一收口');
-  assert.match(chromeSource, /emit\('freshness',\s*payload\)/, '缺少 omnibox:freshness 事件');
+  assert.match(chromeSource, /emit\('freshness',\s*payload\)/, '缺少 cubby:freshness 事件');
   assert.match(chromeSource, /emit\('action',\s*'refresh',\s*payload\)/,
     '缺少旧的 action: refresh（只认旧协议的内容页会收不到刷新）');
   const body = /function onFreshnessChange[\s\S]{0,600}?\n}/.exec(chromeSource);
@@ -186,7 +186,7 @@ check('App.vue 的 @action 绑定把 emit 的全部参数转发给处理器', ()
       `绑定 "${binding}" 丢掉 emit 的第二个参数（payload）`);
     // 交给真实协议函数：内容页最终收到的就是这条消息
     assert.deepEqual(protocol.buildActionEvent(seen[0][1], seen[0][2]),
-      { type: 'omnibox:action', action: 'refresh', payload });
+      { type: 'cubby:action', action: 'refresh', payload });
   }
 });
 
@@ -195,8 +195,8 @@ check('旧 action 消息：有负载带 payload，无负载不带该字段', () 
     'App.vue 必须走 buildActionEvent（payload 字段只在有值时出现）');
   const payload = { plugin: 'p', scope: '', report: { action: 'verify' } };
   assert.deepEqual(protocol.buildActionEvent('refresh', payload),
-    { type: 'omnibox:action', action: 'refresh', payload });
-  assert.deepEqual(protocol.buildActionEvent('back'), { type: 'omnibox:action', action: 'back' });
+    { type: 'cubby:action', action: 'refresh', payload });
+  assert.deepEqual(protocol.buildActionEvent('back'), { type: 'cubby:action', action: 'back' });
   assert.ok(!('payload' in protocol.buildActionEvent('back')), '无负载动作不该多带 payload 字段');
 });
 
@@ -286,7 +286,7 @@ check('chrome-client 把 action 的 payload 交给 onAction 第二参', () => {
   const report = { action: 'sync', added: 2, changed: 1, removed: 0, invalidated: false };
   // 壳在 refresh 动作上附的负载与富事件同形：{plugin, scope, report}
   const payload = { plugin: 'image-viewer', scope: 'a/b', report };
-  env.dispatch({ type: 'omnibox:action', action: 'refresh', payload });
+  env.dispatch({ type: 'cubby:action', action: 'refresh', payload });
 
   assert.equal(seen.length, 1, 'refresh 应触发一次 onAction');
   assert.equal(seen[0].action, 'refresh');
@@ -300,8 +300,8 @@ check('没有 payload 的普通动作：onAction 第二参是 undefined', () => 
   const env = createClientEnv();
   const seen = [];
   env.client.create({ onAction: (...args) => seen.push(args) }).bind();
-  env.dispatch({ type: 'omnibox:action', action: 'back' });
-  env.dispatch({ type: 'omnibox:action', action: 'settings-saved' });
+  env.dispatch({ type: 'cubby:action', action: 'back' });
+  env.dispatch({ type: 'cubby:action', action: 'settings-saved' });
 
   assert.deepEqual(seen.map((args) => args[0]), ['back', 'settings-saved']);
   assert.ok(seen.every((args) => args.length === 2 && args[1] === undefined),
@@ -309,7 +309,7 @@ check('没有 payload 的普通动作：onAction 第二参是 undefined', () => 
   assert.equal(seen[0][1], undefined, '不能把 undefined 变成 null 或空对象');
 });
 
-check('omnibox:freshness 富事件走 onMessage，不冒充 action', () => {
+check('cubby:freshness 富事件走 onMessage，不冒充 action', () => {
   const env = createClientEnv();
   const actions = [];
   const messages = [];
@@ -318,7 +318,7 @@ check('omnibox:freshness 富事件走 onMessage，不冒充 action', () => {
     onMessage: (data) => messages.push(data),
   }).bind();
   env.dispatch({
-    type: 'omnibox:freshness',
+    type: 'cubby:freshness',
     plugin: 'image-viewer',
     scope: 'a/b',
     report: { action: 'verify', added: 0, changed: 0, removed: 0 },
@@ -326,7 +326,7 @@ check('omnibox:freshness 富事件走 onMessage，不冒充 action', () => {
 
   assert.deepEqual(actions, [], '富事件不该触发 onAction');
   assert.equal(messages.length, 1, '富事件由 onMessage 交给内容页');
-  assert.equal(messages[0].type, 'omnibox:freshness');
+  assert.equal(messages[0].type, 'cubby:freshness');
   assert.equal(messages[0].scope, 'a/b');
   assert.equal(messages[0].report.action, 'verify');
 });
@@ -346,8 +346,8 @@ check('两条都处理时：带 payload 的 refresh 回声只处理一次', () =
     onMessage: (data) => messages.push(data),
   }, { dedupeFreshness: true, echoWindowMs: 500 }).bind();
   const payload = { plugin: 'image-viewer', scope: 'a/b', report: { action: 'sync', added: 2 } };
-  env.dispatch({ type: 'omnibox:freshness', plugin: 'image-viewer', scope: 'a/b', report: payload.report });
-  env.dispatch({ type: 'omnibox:action', action: 'refresh', payload });
+  env.dispatch({ type: 'cubby:freshness', plugin: 'image-viewer', scope: 'a/b', report: payload.report });
+  env.dispatch({ type: 'cubby:action', action: 'refresh', payload });
 
   assert.equal(messages.length, 1, '富事件照常交给 onMessage（重载由它负责）');
   assert.deepEqual(actions, [], '回声 refresh 不该再触发一次重载');
@@ -358,7 +358,7 @@ check('没有富事件在前的 refresh 照常处理（旧页面/独立刷新仍
   const actions = [];
   env.client.create({ onAction: (action) => actions.push(action) },
     { dedupeFreshness: true, echoWindowMs: 500 }).bind();
-  env.dispatch({ type: 'omnibox:action', action: 'refresh', payload: { plugin: 'p', report: null } });
+  env.dispatch({ type: 'cubby:action', action: 'refresh', payload: { plugin: 'p', report: null } });
   assert.deepEqual(actions, ['refresh']);
 });
 
@@ -366,8 +366,8 @@ check('默认不去重：只认旧 action 的内容页行为不变', () => {
   const env = createClientEnv();
   const actions = [];
   env.client.create({ onAction: (action) => actions.push(action) }).bind();
-  env.dispatch({ type: 'omnibox:freshness', plugin: 'p', scope: '', report: { action: 'sync' } });
-  env.dispatch({ type: 'omnibox:action', action: 'refresh', payload: { plugin: 'p' } });
+  env.dispatch({ type: 'cubby:freshness', plugin: 'p', scope: '', report: { action: 'sync' } });
+  env.dispatch({ type: 'cubby:action', action: 'refresh', payload: { plugin: 'p' } });
   assert.deepEqual(actions, ['refresh'], '没开启去重时第二条必须照常送达');
 });
 
@@ -376,9 +376,9 @@ check('窗口之外的 refresh 照常处理（回声窗口不能把真动作吞�
   const actions = [];
   env.client.create({ onAction: (action) => actions.push(action) },
     { dedupeFreshness: true, echoWindowMs: 20 }).bind();
-  env.dispatch({ type: 'omnibox:freshness', plugin: 'p', scope: '', report: { action: 'sync' } });
+  env.dispatch({ type: 'cubby:freshness', plugin: 'p', scope: '', report: { action: 'sync' } });
   env.advance(60);
-  env.dispatch({ type: 'omnibox:action', action: 'refresh', payload: { plugin: 'p' } });
+  env.dispatch({ type: 'cubby:action', action: 'refresh', payload: { plugin: 'p' } });
   assert.deepEqual(actions, ['refresh']);
 });
 

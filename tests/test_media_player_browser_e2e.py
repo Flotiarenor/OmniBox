@@ -466,7 +466,7 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
         fragment 用单参数 `#cfg=键:值|键:值`（见 STUB_SCRIPT 注释）。
 
         歌单入口已迁到壳的「我的歌单」导航组，内容页不再渲染 `.mp-playlist-item`；
-        本文件直接加载内容页，因此走壳的同一条消息路径（`omnibox:view:
+        本文件直接加载内容页，因此走壳的同一条消息路径（`cubby:view:
         playlist:<id>`），验证的仍是内容页按 id 打开歌单并上报导航的逻辑。
         """
         type(self)._nav_seq += 1
@@ -479,7 +479,7 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
         )
         self.driver.execute_script(
             "window.dispatchEvent(new MessageEvent('message', {"
-            "  data: {type: 'omnibox:view', view: 'playlist:' + arguments[0]},"
+            "  data: {type: 'cubby:view', view: 'playlist:' + arguments[0]},"
             "  origin: location.origin, source: window}));",
             playlist_id)
         expected = len(TITLES) if playlist_id == 'pl1' else 2
@@ -717,7 +717,7 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
                              f'播放模式 {mode} 下均衡器未打开')
 
     def test_playlist_view_opens_its_own_items(self):
-        """壳发 `omnibox:view: playlist:<id>` 后，打开的是那份歌单自己的条目。
+        """壳发 `cubby:view: playlist:<id>` 后，打开的是那份歌单自己的条目。
 
         歌单行与「⋯」菜单已由壳的「我的歌单」导航组承担（入口是壳上的
         `.plugin-nav-item`，见 `tools/plugin_ui_audit.py` 的用例）；本文件只剩内容页，
@@ -725,7 +725,7 @@ class MediaPlayerBrowserE2ETests(unittest.TestCase):
         """
         self._open_playlist('pls:2', playlist_id='pl2')
         self._wait(lambda: self._current_playlist() == '第二个歌单',
-                   'omnibox:view 没有打开「第二个歌单」')
+                   'cubby:view 没有打开「第二个歌单」')
         self._wait(lambda: self._rows() == list(TITLES[3:]),
                    '第二个歌单的条目与自己的 item_ids 不符')
 

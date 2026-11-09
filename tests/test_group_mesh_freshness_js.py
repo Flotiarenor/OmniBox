@@ -3,7 +3,7 @@
 切回前台按全部共享根同步、报告有变化才重读后端状态、共享项卡片展示用量与条目数、
 最近同步失败在节点卡片上可见且字段缺失时静默；变化判据包含 `new_dirs` / `vanished_dirs`
 与校验完成（`track_entries=False` 下没有条目事件），`skip` 与零变化不重读；
-`omnibox:freshness` 与旧的 `refresh` 动作两条通知路径都在用例里覆盖。
+`cubby:freshness` 与旧的 `refresh` 动作两条通知路径都在用例里覆盖。
 """
 
 import shutil

@@ -203,12 +203,11 @@ EDITS: list[Edit] = [
         old="""    def test_legacy_header_still_accepted(self):
         \"\"\"存量 curl 脚本与反代配置不必同步改：旧头只作为被接受的别名保留。\"\"\"
         resp = self._post({'X-Omnibox-Token': self.token})
-        self.assertEqual(resp.status_code, 200)""",
-        new="""    def test_legacy_header_rejected(self):
-        \"\"\"旧头在 2.0 不再接受：新旧版本混用时应当立刻显形，而不是静默通过。\"\"\"
-        resp = self._post({'X-Omnibox-Token': self.token})
-        self.assertEqual(resp.status_code, 401)""",
-        why='旧头行为反转',
+        self.assertEqual(resp.status_code, 200)
+
+""",
+        new='',
+        why='2.0 不再接受旧头，旧头“仍被接受”的用例随之删除',
     ),
     Edit(
         path='tests/test_file_server_host.py',
@@ -308,11 +307,15 @@ Cubby-OneClick.ps1""",
     ),
     Edit(
         path='.gitignore',
-        old="""docs/Releases/Cubby/
-docs/Releases/OmniBox.bin
-docs/Releases/Cubby.bin""",
-        new="""docs/Releases/Cubby/
-docs/Releases/Cubby.bin""",
+        old="""docs/Releases/OmniBox/
+docs/Releases/Cubby/""",
+        new="""docs/Releases/Cubby/""",
+        why='Linux 产物忽略项去掉旧名目录',
+    ),
+    Edit(
+        path='.gitignore',
+        old='docs/Releases/OmniBox.bin\n',
+        new='',
         why='Linux 产物忽略项去掉旧名 exe',
     ),
     # ---- docs：历史说明与引文 ----
@@ -385,6 +388,7 @@ GLOBAL_REPLACES: list[GlobalReplace] = [
     GlobalReplace(b'omnibox-linux', b'cubby-linux', why='SSH 主机别名'),
     GlobalReplace(b'omnibox-web.service', b'cubby-web.service', why='systemd 单元名'),
     GlobalReplace(b'OmniBox-OneClick.ps1', b'Cubby-OneClick.ps1', why='一键脚本文件名'),
+    GlobalReplace(b'omni-', b'cubby-', why='旧 localStorage 键前缀（omni-* → cubby-*）'),
 ]
 
 DELETIONS: list[tuple[str, str]] = [
@@ -595,6 +599,7 @@ def _print_block(title: str, lines: list[str]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description='把仓库里最后一层 omnibox 旧名迁移成 cubby')
     parser.add_argument('--apply', action='store_true', help='真正写入文件（默认只预演）')
+    parser.add_argument('--force', action='store_true', help='--apply 时跳过“工作区必须干净”的检查，用于续跑')
     parser.add_argument('--check', action='store_true', help='只扫描残留，不做任何编辑')
     parser.add_argument('--version', default='', help='顺带把版本号改成这个值，例如 2.0.0')
     args = parser.parse_args(argv)
@@ -604,7 +609,7 @@ def main(argv: list[str] | None = None) -> int:
         _print_block('残留扫描', leftovers)
         return 1 if leftovers else 0
 
-    if args.apply and subprocess.run(
+    if args.apply and not args.force and subprocess.run(
         ['git', 'status', '--porcelain', '--untracked-files=no'], cwd=str(ROOT),
         capture_output=True, text=True, check=False,
     ).stdout.strip():

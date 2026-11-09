@@ -35,10 +35,10 @@ iframe 以 `?content=1` 只装内容（插件页禁止 `.view-sub-sidebar`、`.v
 
 | 归属 | 谁渲染 | 插件侧做什么 |
 | --- | --- | --- |
-| 品牌 / 导航 / 顶栏 / 搜索 / 状态 / 分隔条 | 壳的 `PluginChrome.vue` | 在 `frontend.chrome` 声明；运行期用 `omnibox:chrome` 上报标题、视图、徽标、动作、搜索词（回填与清空）与状态 |
-| 视图切换 / 顶栏动作 / 搜索输入 | 壳 | 监听 `omnibox:view`、`omnibox:action`、`omnibox:query`；就绪发 `omnibox:ready` |
-| 设置弹窗 | 壳的 `PluginSettingsModal.vue`（`group-mesh`、`document-reader`、`manga-library`、`media-player`，以及 `image-cleaner` / `pixiv-sync` 的 native 面板） | 后端声明 `settings_schema` 并登记 `get_settings` / `save_settings`；保存成功后壳向内容页发 omnibox:action settings-saved（native 目标发给隐藏逻辑页）。image-viewer 例外，设置仍在内容页由 `openSettingsModal()` 渲染 |
-| 插件背景不透明度 | 壳偏好 `--plugin-glass-<插件名>` + 设置页顶部「外观」块 | 默认跟随壳 `--glass-alpha`；image-viewer 用 `omnibox:get-plugin-appearance` / `omnibox:set-plugin-alpha` 读写同一份值。覆盖只作用于页面骨架与内容页公共区域 |
+| 品牌 / 导航 / 顶栏 / 搜索 / 状态 / 分隔条 | 壳的 `PluginChrome.vue` | 在 `frontend.chrome` 声明；运行期用 `cubby:chrome` 上报标题、视图、徽标、动作、搜索词（回填与清空）与状态 |
+| 视图切换 / 顶栏动作 / 搜索输入 | 壳 | 监听 `cubby:view`、`cubby:action`、`cubby:query`；就绪发 `cubby:ready` |
+| 设置弹窗 | 壳的 `PluginSettingsModal.vue`（`group-mesh`、`document-reader`、`manga-library`、`media-player`，以及 `image-cleaner` / `pixiv-sync` 的 native 面板） | 后端声明 `settings_schema` 并登记 `get_settings` / `save_settings`；保存成功后壳向内容页发 cubby:action settings-saved（native 目标发给隐藏逻辑页）。image-viewer 例外，设置仍在内容页由 `openSettingsModal()` 渲染 |
+| 插件背景不透明度 | 壳偏好 `--plugin-glass-<插件名>` + 设置页顶部「外观」块 | 默认跟随壳 `--glass-alpha`；image-viewer 用 `cubby:get-plugin-appearance` / `cubby:set-plugin-alpha` 读写同一份值。覆盖只作用于页面骨架与内容页公共区域 |
 | native 内容 | 壳的 `NativePanel.vue` + `SchemaRenderer.vue` | `get_extensions()` 声明 `native`；逻辑页装载 `/shell/native-client.js`，用 `NativeExtension.create({ onInit, onAction, onDispose })`，只收发 schema blocks 与业务动作；页面级动作通过 `render(blocks, toolbar)` 进宿主顶栏；不自己画标题/关闭 |
 | 旧壳扩展回落 | 宿主内容页 | `embedUrl` 指向完整页面，打开时追加 `?embed=1` |
 

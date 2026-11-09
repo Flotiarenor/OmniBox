@@ -1,8 +1,8 @@
 /**
- * 插件内容页 → 壳的 chrome 协议（`omnibox:*` 消息）的单一真源。
+ * 插件内容页 → 壳的 chrome 协议（`cubby:*` 消息）的单一真源。
  *
  * 为什么单独成模块：白名单与"补丁如何并进当前状态"原先写在 App.vue 的消息处理器里，
- * 而 SFC 无法被 Node 直接驱动，测试只能对源码做正则（`data.type !== 'omnibox:x'`）：
+ * 而 SFC 无法被 Node 直接驱动，测试只能对源码做正则（`data.type !== 'cubby:x'`）：
  * 删掉一个分支、或把一个没有发送方的类型登记进来，都测不出来。抽成函数之后
  * tests/js/plugin_chrome_protocol.mjs 直接 import 真实实现断言行为。
  *
@@ -20,11 +20,11 @@
  * 每一项在 App.vue 里都必须有处理分支；反过来，没有发送方的类型不许出现在这里。
  */
 export const PLUGIN_CHROME_MESSAGE_TYPES = [
-  'omnibox:ready',
-  'omnibox:chrome',
-  'omnibox:open-settings',
-  'omnibox:get-plugin-appearance',
-  'omnibox:set-plugin-alpha',
+  'cubby:ready',
+  'cubby:chrome',
+  'cubby:open-settings',
+  'cubby:get-plugin-appearance',
+  'cubby:set-plugin-alpha',
 ]
 
 /**
@@ -44,14 +44,14 @@ export function isPluginChromeMessage(data) {
 /**
  * 壳 → 内容页的刷新事件：把后端同步 / 校验报告原样交给内容页。
  *
- * 与 `omnibox:action: refresh` 的分工：action 只说"该刷新了"，本事件还带上
+ * 与 `cubby:action: refresh` 的分工：action 只说"该刷新了"，本事件还带上
  * `scope` 与 `report`（`action` / `added` / `changed` / `removed` / `invalidated`），
  * 内容页据此决定重载哪一层。只认旧 action 的内容页仍在，所以两条都要发。
  */
-export const FRESHNESS_EVENT = 'omnibox:freshness';
+export const FRESHNESS_EVENT = 'cubby:freshness';
 
 /**
- * 构造一条 `omnibox:freshness` 消息。
+ * 构造一条 `cubby:freshness` 消息。
  *
  * `report` 原样透传：它来自后端 JSON，可直接被结构化克隆；非对象按 `null` 处理，
  * 免得内容页拿到字符串后去读 `report.added`。`plugin` 与 `scope` 只做类型兜底。
@@ -108,7 +108,7 @@ export function normalizeFreshnessScope(value) {
 }
 
 /**
- * 构造一条 `omnibox:action` 消息。
+ * 构造一条 `cubby:action` 消息。
  *
  * `payload` 只在实际给了值时出现：没有负载的动作（顶栏按钮、返回、设置保存完成）
  * 与旧协议完全一致，内容页的 `if (data.payload)` 一类判断不会被凭空造出的字段干扰。
@@ -118,7 +118,7 @@ export function normalizeFreshnessScope(value) {
  * @returns {{type: string, action: string, payload?: unknown}}
  */
 export function buildActionEvent(action, payload) {
-  const message = { type: 'omnibox:action', action: String(action || '') }
+  const message = { type: 'cubby:action', action: String(action || '') }
   if (payload !== undefined) message.payload = payload
   return message
 }
@@ -176,7 +176,7 @@ export function freshnessOverviewErrorText(error) {
 }
 
 /**
- * 把一条 `omnibox:chrome` 补丁并进当前状态，返回新状态（不修改入参）。
+ * 把一条 `cubby:chrome` 补丁并进当前状态，返回新状态（不修改入参）。
  *
  * 规则来自内容页的用法：
  * - `title` / `subtitle` / `view` 只接受字符串，其它类型忽略（保留旧值）；
@@ -188,7 +188,7 @@ export function freshnessOverviewErrorText(error) {
  * - `statusItems` 只接受数组（不是数组就不是"清空数组"，而是发错了，保持旧值）。
  *
  * @param {Record<string, any>} state 当前 chrome 状态
- * @param {Record<string, any>} data `omnibox:chrome` 消息体
+ * @param {Record<string, any>} data `cubby:chrome` 消息体
  * @returns {Record<string, any>} 合并后的新状态
  */
 export function mergeChromeState(state, data) {

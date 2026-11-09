@@ -1,7 +1,7 @@
 """document-reader 阅读态刷新/加载/进度轨/空态的无头回归（tests/js/reader_refresh_state.mjs）。
 
 迁移到壳页面骨架后，壳顶栏的标题与返回由内容页上报的动作驱动。统一刷新
-（`omnibox:action: refresh`）会重扫书架，但阅读态下不能顺手把顶栏标题改回书架标题；
+（`cubby:action: refresh`）会重扫书架，但阅读态下不能顺手把顶栏标题改回书架标题；
 同文件还锁住加载提示的挂载容器、进度轨显隐、读取失败与空分类的区分。
 """
 

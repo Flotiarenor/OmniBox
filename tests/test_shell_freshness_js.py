@@ -15,10 +15,10 @@
     两种来源（未接入 vs 指纹库瞬时打不开），以及被跳过（`busy` / `throttled` /
     `bad_scope`）时状态行给出的原因与停留期低频状态重读；
   - `shell_freshness.mjs`：状态文案与轮询生命周期（含"同一实例第二次校验仍会轮询"），
-    以及壳挂载型触发面的输入通道 `omnibox:chrome.freshness_scope` 的归一化
+    以及壳挂载型触发面的输入通道 `cubby:chrome.freshness_scope` 的归一化
     （strip、空串合法、超长与含 `..` 的值丢弃）；
   - `shell_freshness_notify.mjs`：刷新通知面 —— `buildFreshnessEvent` 的报告透传、
-    壳同时发 `omnibox:freshness` 与旧的 `omnibox:action: refresh`、
+    壳同时发 `cubby:freshness` 与旧的 `cubby:action: refresh`、
     `/shell/chrome-client.js` 把 action 的 `payload` 交给 `onAction` 第二参
     （富事件走 `onMessage`），以及设置页「数据与缓存」的概览 / 重建接线与错误三分类
     （403 → 权限、404 / 桌面 not-a-function → 旧内核、其余 → 瞬时且可重试）。

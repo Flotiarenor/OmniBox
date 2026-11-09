@@ -3,8 +3,8 @@
  * 插件内容页 ↔ 壳的页面骨架（chrome）握手客户端。
  *
  * 为什么需要：document-reader / image-viewer / manga-library / media-player 各写过一份
- * 同形状的握手 —— 父窗口判空、`origin` + `event.source` 校验、`omnibox:view` /
- * `omnibox:action` / `omnibox:query` 分发、`omnibox:ready` 握手。协议改一处就要同步四处，
+ * 同形状的握手 —— 父窗口判空、`origin` + `event.source` 校验、`cubby:view` /
+ * `cubby:action` / `cubby:query` 分发、`cubby:ready` 握手。协议改一处就要同步四处，
  * 漏一处只表现为"该插件点了没反应"。
  *
  * 只收敛"怎么收发"，不解释业务：收到某条 action / query 该做什么由调用方给的回调决定，
@@ -48,11 +48,11 @@ window.ChromeClient = (function () {
    *   onMessage?: (data: Record<string, unknown>) => void,
    * }} [handlers]
    *   业务回调。`onMessage` 收到 view / action / query 之外的类型（例如壳下发的
-   *   `omnibox:freshness` / `omnibox:appearance`），由插件自己解释。`onAction` 的第二参
+   *   `cubby:freshness` / `cubby:appearance`），由插件自己解释。`onAction` 的第二参
    *   是消息里的 `payload`（统一刷新会把 `{plugin, scope, report}` 附在 `refresh` 上）；
    *   没有 payload 的动作传 `undefined`，忽略第二参的旧回调不受影响。
    * @param {{dedupeFreshness?: boolean, echoWindowMs?: number}} [options]
-   *   `dedupeFreshness`：页面同时处理 `omnibox:freshness` 与旧的 `refresh` 时，
+   *   `dedupeFreshness`：页面同时处理 `cubby:freshness` 与旧的 `refresh` 时，
    *   把紧跟富事件到达、且带 payload 的 `refresh` 当作回声丢掉（只重载一次）。
    *   `echoWindowMs` 是判定窗口（毫秒，缺省 {@link FRESHNESS_ECHO_MS}），仅供用例缩短。
    */
@@ -69,23 +69,23 @@ window.ChromeClient = (function () {
     function onMessage(event) {
       if (!fromShell(event)) return
       const data = event.data || {}
-      if (data.type === 'omnibox:view' && typeof data.view === 'string') {
+      if (data.type === 'cubby:view' && typeof data.view === 'string') {
         if (hooks.onView) hooks.onView(data.view)
         return
       }
-      if (data.type === 'omnibox:action') {
-        // 统一刷新先发 `omnibox:freshness`，再补一条 `refresh`（带同形 payload）：
+      if (data.type === 'cubby:action') {
+        // 统一刷新先发 `cubby:freshness`，再补一条 `refresh`（带同形 payload）：
         // 两条都处理的页面在这个窗口内只处理前一条，避免同一次同步重载两遍。
         if (echoWindow && data.action === 'refresh' && data.payload
             && Date.now() - lastFreshnessAt < echoWindow) return
         if (hooks.onAction) hooks.onAction(data.action, data.payload)
         return
       }
-      if (data.type === 'omnibox:query') {
+      if (data.type === 'cubby:query') {
         if (hooks.onQuery) hooks.onQuery(data.query)
         return
       }
-      if (data.type === 'omnibox:freshness') lastFreshnessAt = Date.now()
+      if (data.type === 'cubby:freshness') lastFreshnessAt = Date.now()
       if (hooks.onMessage) hooks.onMessage(data)
     }
 
@@ -93,13 +93,13 @@ window.ChromeClient = (function () {
       post,
       /** 就绪握手：壳收到后补发当前视图。 */
       ready() {
-        post({ type: 'omnibox:ready' })
+        post({ type: 'cubby:ready' })
       },
       /** 上报 chrome 补丁（title / subtitle / view / actions / nav / search / status …）。 */
       chrome(patch) {
-        post(Object.assign({ type: 'omnibox:chrome' }, patch || {}))
+        post(Object.assign({ type: 'cubby:chrome' }, patch || {}))
       },
-      /** 发一条插件自己定义的消息类型（例如 `omnibox:open-settings`）。 */
+      /** 发一条插件自己定义的消息类型（例如 `cubby:open-settings`）。 */
       send(payload) {
         post(payload)
       },
@@ -111,7 +111,7 @@ window.ChromeClient = (function () {
         if (listener) return
         listener = onMessage
         window.addEventListener('message', listener)
-        post({ type: 'omnibox:ready' })
+        post({ type: 'cubby:ready' })
       },
       /** 解绑（插件目前不在卸载时调用，留给需要重绑的宿主）。 */
       unbind() {

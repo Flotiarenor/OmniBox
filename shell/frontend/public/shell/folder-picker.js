@@ -209,7 +209,7 @@ window.FolderPicker = (function () {
   // 提供方的声明方式（与 image-cleaner 注册侧栏入口同一套宿主/扩展机制）：
   //   get_extensions() -> {'placement': 'network-location', 'label': …, 'embedUrl': …}
   // **刻意不写 `host`**：本组件出现在任意插件的设置里，提供方应当对所有宿主可用。
-  const NETWORK_MESSAGE_TYPE = 'omnibox:network-location';
+  const NETWORK_MESSAGE_TYPE = 'cubby:network-location';
 
   /** 发现"网络位置"提供方：声明了该 placement 且有 embedUrl 的插件扩展。 */
   async function loadNetworkProviders() {

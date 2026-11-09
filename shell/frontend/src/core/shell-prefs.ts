@@ -37,12 +37,12 @@ interface InjectedShellState {
 // 旧版本的键（localStorage）。只在**首次迁移**时读一次：读进来的值一次性上报给后端，
 // 后端接受之后就地删除，此后本模块不再碰 localStorage。
 const LEGACY_KEYS = {
-  startup: 'omni-startup',
-  lastRoute: 'omni-last-route',
-  theme: 'omni-theme',
-  colors: 'omni-custom-colors',
-  background: 'omni-background',
-  glass: 'omni-glass',
+  startup: 'cubby-startup',
+  lastRoute: 'cubby-last-route',
+  theme: 'cubby-theme',
+  colors: 'cubby-custom-colors',
+  background: 'cubby-background',
+  glass: 'cubby-glass',
 }
 
 /** 去抖窗口：设置页的滑块每次 `input` 都要写，合并到窗口末尾一次。 */
@@ -87,7 +87,7 @@ function legacySnapshot(): Record<string, unknown> | null {
     Object.assign(colors, pickStringMap(storedColors))
     found = true
   }
-  // 玻璃的两个变量当年另存在 omni-glass 里，合并进同一张表才不会丢
+  // 玻璃的两个变量当年另存在 cubby-glass 里，合并进同一张表才不会丢
   const glass = readLegacyJson(LEGACY_KEYS.glass)
   if (glass) {
     if (typeof glass.blur === 'number') colors['--glass-blur'] = `${glass.blur}px`

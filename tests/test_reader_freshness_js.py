@@ -1,7 +1,7 @@
 """document-reader 统一刷新接入的无头回归（tests/js/reader_freshness.mjs）。
 
 切回前台按全部文档根同步、报告有变化才重读文档与书签、阅读态不重绘书架（顶栏书名
-不被分类标题覆盖）、零变化与 `skip` 不重读；`omnibox:freshness` 与旧的 `refresh`
+不被分类标题覆盖）、零变化与 `skip` 不重读；`cubby:freshness` 与旧的 `refresh`
 动作两条通知路径都在用例里覆盖。
 """
 

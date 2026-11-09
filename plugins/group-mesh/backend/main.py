@@ -175,7 +175,7 @@ class GroupMeshPlugin(PluginBase):
         约定（见 `shell/frontend/public/shell/folder-picker.js`）：
         * 组件用 `system_get_plugin_extensions(null, 'network-location')` 发现提供方；
         * 提供方页面渲染在弹窗 iframe 里，选中后 `postMessage` 回填一个**本地目录**
-          （`{type:'omnibox:network-location', action:'picked', path, label}`）——
+          （`{type:'cubby:network-location', action:'picked', path, label}`）——
           路径是本地的是关键：所有消费方的后端都只认本地路径。
         """
         return [{

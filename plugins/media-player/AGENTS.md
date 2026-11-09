@@ -5,8 +5,8 @@
 - 职责：统一音频与视频媒体库：扫描媒体文件夹建立单一索引，按专辑 / 目录聚合后以列表、专辑卡与详情页浏览，并在舞台 + 播放栏内播放，附带混编歌单、歌词沉浸页、均衡器与网易云在线视图。
 - 形态：独立页插件，`frontend.route` = `/media-player`；`frontend.chrome` 声明页面骨架，壳加载内容页时追加 `?content=1`。
 - 页面 chrome：manifest 声明 `frontend.chrome`，品牌块、六项主导航、「我的歌单」动态组、顶栏动作、搜索框、状态栏与侧栏分隔条由壳的 `PluginChrome.vue` 渲染；iframe 内只剩内容（播放舞台、播放条、歌词沉浸页、队列与 EQ 浮层、列表 / 卡片与三个内容弹窗）。
-- 网易云入口由壳的 `PluginExtensions.vue` 渲染（`system_get_plugin_extensions` 取 `netease-music` 注册的 sidebar 项）；点击后壳发 `omnibox:view`（取值 `ncm-daily` / `ncm-playlists` / `ncm-liked` / `ncm-my-playlists` / `ncm-login`），内容页按 view id 打开对应视图。本插件不内嵌其他插件 iframe，也不再自建 `#mp-extensions`。
-- 「新建歌单」的取舍：做成「我的歌单」组**组内条目**（id `playlist-new`，排在运行期歌单列表末尾），而不是顶栏动作 —— 入口与它作用的歌单列表在同一组里，空库时也始终可见；顶栏只留「刷新」（网易云视图）与「设置」。组内条目点击后发 `omnibox:view: playlist-new`，内容页打开新建歌单弹窗。
+- 网易云入口由壳的 `PluginExtensions.vue` 渲染（`system_get_plugin_extensions` 取 `netease-music` 注册的 sidebar 项）；点击后壳发 `cubby:view`（取值 `ncm-daily` / `ncm-playlists` / `ncm-liked` / `ncm-my-playlists` / `ncm-login`），内容页按 view id 打开对应视图。本插件不内嵌其他插件 iframe，也不再自建 `#mp-extensions`。
+- 「新建歌单」的取舍：做成「我的歌单」组**组内条目**（id `playlist-new`，排在运行期歌单列表末尾），而不是顶栏动作 —— 入口与它作用的歌单列表在同一组里，空库时也始终可见；顶栏只留「刷新」（网易云视图）与「设置」。组内条目点击后发 `cubby:view: playlist-new`，内容页打开新建歌单弹窗。
 
 
 ## 文件地图
@@ -114,9 +114,9 @@
 
 - 品牌块：`icon:headphones`、标题「媒体库」、副标题「Music · Video」、`accent` 为 `#8b5cf6`。
 - 「媒体库」组（`library`）：`recent` 最近播放、`audio-albums` 音乐专辑、`all-audio` 全部音乐、`video-albums` 视频专辑、`all-video` 全部视频、`favorites` 我的喜欢。
-- 「我的歌单」组（`playlists`）：manifest 只声明「新建歌单」（`playlist-new`）；运行期内容页经 `omnibox:chrome` 的 `nav` 载荷把整组 items 替换为当前歌单（id `playlist:<歌单 id>`，徽标为曲目数）+ 末尾的 `playlist-new`。组内条目是动态的，manifest 不再声明 `dynamic`（该字段没有运行时消费方）。
+- 「我的歌单」组（`playlists`）：manifest 只声明「新建歌单」（`playlist-new`）；运行期内容页经 `cubby:chrome` 的 `nav` 载荷把整组 items 替换为当前歌单（id `playlist:<歌单 id>`，徽标为曲目数）+ 末尾的 `playlist-new`。组内条目是动态的，manifest 不再声明 `dynamic`（该字段没有运行时消费方）。
 - 顶栏动作：`netease-refresh`（刷新，初始 `visible:false`，只在网易云视图出现）、`settings`（设置）。
-- 搜索框：占位「搜索媒体、专辑、艺术家…」；输入经 `omnibox:query` 下发（壳侧 250ms 防抖）。
+- 搜索框：占位「搜索媒体、专辑、艺术家…」；输入经 `cubby:query` 下发（壳侧 250ms 防抖）。
 - 状态栏：`kind` 为 `eq-text`，文本为 `N 音乐 · M 视频 · P 歌单`，`state` 播放中为 `ok`、否则 `idle`；播放中由壳的 `PluginChrome` 渲染四柱迷你 EQ，暂停恢复状态点；统一刷新控件由壳挂载（`freshness.unit` 为「首」）。
 - 扩展入口：`extensions.placement` 为 `sidebar`，标题「网易云音乐」；由壳的 `PluginExtensions.vue` 取 `netease-music` 注册的 sidebar 项渲染，本插件不再自建 `#mp-extensions`。`sidebarOrder` 把 `extensions` 放在 `nav:library` / `nav:playlists` 之前，网易云入口默认位于侧栏最上。
 
@@ -162,17 +162,17 @@
 ## 与壳的契约
 
 - **chrome 消息**（只在壳与内容 iframe 之间，同源 `postMessage`）：
-  - 壳 → 内容 `omnibox:view`：左栏导航项 id 或扩展入口的 view。六个一级视图（`recent` / `audio-albums` / `all-audio` / `video-albums` / `all-video` / `favorites`）切视图；`playlist:<歌单 id>` 打开歌单详情；`playlist-new` 打开新建歌单弹窗；`ncm-*` 打开对应网易云视图（`ncm-daily` / `ncm-playlists` / `ncm-liked` / `ncm-my-playlists` / `ncm-login`）。
-  - 壳 → 内容 `omnibox:action`：`netease-refresh`（网易云视图的「刷新」，重拉在线数据；`scan` 作为旧 id 的别名一并接受）、`settings-saved`（壳内设置弹窗保存成功，内容页重读设置并重载当前视图）、`refresh` 在统一刷新（同步 / 校验）完成后重读统计与当前视图。设置弹窗由壳的 `PluginSettingsModal` 打开，不再发 `settings`。
-  - 壳 → 内容 `omnibox:query`：搜索输入（壳侧 250ms 防抖）。搜索词是全局的：一级视图里查本地媒体（`media_search`）或网易云（`search_song` / `search_playlist`），详情页忽略；标题变「搜索 “…”」。
-  - 内容 → 壳 `omnibox:ready`：握手。壳收到后补发当前视图；内容页在 `init` 里先声明监听再发一次。
-  - 内容 → 壳 `omnibox:chrome`：`title` / `subtitle` / `view` / `actions` / `nav` / `search` / `status`。
+  - 壳 → 内容 `cubby:view`：左栏导航项 id 或扩展入口的 view。六个一级视图（`recent` / `audio-albums` / `all-audio` / `video-albums` / `all-video` / `favorites`）切视图；`playlist:<歌单 id>` 打开歌单详情；`playlist-new` 打开新建歌单弹窗；`ncm-*` 打开对应网易云视图（`ncm-daily` / `ncm-playlists` / `ncm-liked` / `ncm-my-playlists` / `ncm-login`）。
+  - 壳 → 内容 `cubby:action`：`netease-refresh`（网易云视图的「刷新」，重拉在线数据；`scan` 作为旧 id 的别名一并接受）、`settings-saved`（壳内设置弹窗保存成功，内容页重读设置并重载当前视图）、`refresh` 在统一刷新（同步 / 校验）完成后重读统计与当前视图。设置弹窗由壳的 `PluginSettingsModal` 打开，不再发 `settings`。
+  - 壳 → 内容 `cubby:query`：搜索输入（壳侧 250ms 防抖）。搜索词是全局的：一级视图里查本地媒体（`media_search`）或网易云（`search_song` / `search_playlist`），详情页忽略；标题变「搜索 “…”」。
+  - 内容 → 壳 `cubby:ready`：握手。壳收到后补发当前视图；内容页在 `init` 里先声明监听再发一次。
+  - 内容 → 壳 `cubby:chrome`：`title` / `subtitle` / `view` / `actions` / `nav` / `search` / `status`。
     - `view`：一级视图 id、`playlist:<id>` 或 `ncm-*`；专辑详情与网易云歌单详情发空串（二级页，壳取消导航高亮）。
     - `actions`：`netease-refresh` 的 `visible`（仅 `ncm-*` 视图）与 `disabled`（刷新进行中）。
     - `nav`：`playlists` 组整组 items（每个歌单 id `playlist:<id>`、`icon:list-music`、徽标为曲目数）+ 末尾 `playlist-new`；歌单增删改后由 `MediaPlaylistManager.syncNav()` 重报。
     - `search`：始终 `enabled: true`；`search.value` / `search.clear` 在切视图、进二级页时清空壳输入框。`status`：`N 音乐 · M 视频 · P 歌单`，播放中 `state` 为 `ok`（壳据此显示迷你 EQ）。
-- **统一刷新**：`freshness` 由壳的 `PluginChrome` 挂载（`shell/frontend/public/shell/freshness.js` 的 `Freshness.mount`，`plugin` 为 `media-player`、`unit` 为「首」），壳在挂载后与 `activeView` 变化时调 `autoSync`（作用域为空串＝全根）；内容页不再挂 `#mp-freshness`，也没有控件句柄，`plugin-shown` 时用 `Freshness.sync('media-player', '')` 同步一次，收到 `omnibox:freshness`（报告）或兼容的 `omnibox:action: refresh`（带 `payload` 的是前一条的回声，跳过）后按 `currentView` 就地重载：专辑/歌单详情重取条目，不退回一级页；`netease-refresh` 先让壳侧引擎同步 `netease-music` 再清本地缓存重拉。首次使用（索引为空）时内容页调一次兼容入口 `media_scan`（`force=False` 即同步）建索引。`MediaIndex.publish` 只换内存快照、**不清** `restored`；只有 `on_pass_end` 收到全根、非 `partial`、无读取错误、**无不可达根**的报告时才 `mark_authoritative()`，此前 `get()` 继续逐条核对落盘条目是否还在，播放参数的清空只认 `FreshnessEngine.verified_keys()`（整趟校验成功后的键集合，见 `MediaCollections.get_playback`）。索引落盘是原子写并串行在实例锁上（`MediaIndex.save` / `clear_file`），`on_pass_end` 与 `on_unload` 并发调用不会写出截断 JSON。封面 URL 的版本号用毫秒（`MPUtils.coverUrl` 的 `Math.round(秒 * 1000)`，取后端 `cover_mtime`）；封面文件发生变化时 `_refresh_covers` 除了重算 `has_cover`/`cover_mtime`，还会删掉受影响条目的缩略图缓存行 —— `ThumbCache` 只按媒体文件的 mtime/size 失效，替换同名 `folder.jpg` 不改媒体文件，不删行会继续返回旧图。
-- **设置**：顶栏 `settings` 由壳的 `PluginSettingsModal` 打开（schema 单一来源；`media_roots` 是 `directory` 字段，由壳内 `FolderPicker` 目录行选择，未标 `local_only` 时带「网络位置」入口）；内容页的歌词页设置入口发 `omnibox:open-settings`，保存后壳发 `settings-saved`，内容页 `_reloadSettings()` 重读设置、歌词样式与当前视图。
+- **统一刷新**：`freshness` 由壳的 `PluginChrome` 挂载（`shell/frontend/public/shell/freshness.js` 的 `Freshness.mount`，`plugin` 为 `media-player`、`unit` 为「首」），壳在挂载后与 `activeView` 变化时调 `autoSync`（作用域为空串＝全根）；内容页不再挂 `#mp-freshness`，也没有控件句柄，`plugin-shown` 时用 `Freshness.sync('media-player', '')` 同步一次，收到 `cubby:freshness`（报告）或兼容的 `cubby:action: refresh`（带 `payload` 的是前一条的回声，跳过）后按 `currentView` 就地重载：专辑/歌单详情重取条目，不退回一级页；`netease-refresh` 先让壳侧引擎同步 `netease-music` 再清本地缓存重拉。首次使用（索引为空）时内容页调一次兼容入口 `media_scan`（`force=False` 即同步）建索引。`MediaIndex.publish` 只换内存快照、**不清** `restored`；只有 `on_pass_end` 收到全根、非 `partial`、无读取错误、**无不可达根**的报告时才 `mark_authoritative()`，此前 `get()` 继续逐条核对落盘条目是否还在，播放参数的清空只认 `FreshnessEngine.verified_keys()`（整趟校验成功后的键集合，见 `MediaCollections.get_playback`）。索引落盘是原子写并串行在实例锁上（`MediaIndex.save` / `clear_file`），`on_pass_end` 与 `on_unload` 并发调用不会写出截断 JSON。封面 URL 的版本号用毫秒（`MPUtils.coverUrl` 的 `Math.round(秒 * 1000)`，取后端 `cover_mtime`）；封面文件发生变化时 `_refresh_covers` 除了重算 `has_cover`/`cover_mtime`，还会删掉受影响条目的缩略图缓存行 —— `ThumbCache` 只按媒体文件的 mtime/size 失效，替换同名 `folder.jpg` 不改媒体文件，不删行会继续返回旧图。
+- **设置**：顶栏 `settings` 由壳的 `PluginSettingsModal` 打开（schema 单一来源；`media_roots` 是 `directory` 字段，由壳内 `FolderPicker` 目录行选择，未标 `local_only` 时带「网络位置」入口）；内容页的歌词页设置入口发 `cubby:open-settings`，保存后壳发 `settings-saved`，内容页 `_reloadSettings()` 重读设置、歌词样式与当前视图。
 - 壳类与工具：`PluginBase`、`ThumbCache`、`Bridge`（`call`、`callPlugin`、`originalUrl`、`thumbUrl`）、`Toast`、`Utils`、`PluginLifecycle`（`onHide` / `onShow` / `onDispose`）、`ShellSplitter`（按 `data-obx-splitter*` 属性接管内容内的舞台分隔条）、`MPUtils.openModal` / `closeModal` 复用的壳弹窗约定。
 - 内容 iframe 继续使用的壳样式类：`.view-body`、`.view-content`、`.obx-scroll`、`.btn`、`.btn-primary`、`.btn-danger`、`.hidden`、`.empty-state`、`.empty-state-icon`、`.empty-state-text`、`.empty-state-hint`、`.obx-icon`、`.modal`（`#modal-*` 是插件自己的 `.mp-modal`，不复用壳弹窗）。
 - 内容页不得再出现 chrome 标记：`.view-sub-sidebar`、`.view-toolbar`、`.sub-sidebar-brand`、`.obx-nav-item`（`tools/plugin_ui_audit.py` 的 `iframe.content-only` 会检查）。

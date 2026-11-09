@@ -12,8 +12,8 @@
     本地路径，组件的 `getPaths()` 语义也因此完全不变。
 
     回填协议（提供方 → 宿主）：
-      {type: 'omnibox:network-location', action: 'picked', path: '<本地绝对目录>', label: '团体组网 · 设备/共享'}
-      {type: 'omnibox:network-location', action: 'cancelled'}
+      {type: 'cubby:network-location', action: 'picked', path: '<本地绝对目录>', label: '团体组网 · 设备/共享'}
+      {type: 'cubby:network-location', action: 'cancelled'}
     宿主会校验消息来源（必须是它嵌的那个 iframe），所以这里用 '*' 作为 targetOrigin 也安全。
 
     Bridge / Utils / Toast / FolderPicker 由壳注入（`serve_plugin_frontend` 对插件前端的
@@ -90,7 +90,7 @@
   </p>
 
   <script>
-    const MESSAGE_TYPE = 'omnibox:network-location';
+    const MESSAGE_TYPE = 'cubby:network-location';
     const state = { deviceId: '', shareId: '', destination: '', busy: false };
 
     const el = (id) => document.getElementById(id);

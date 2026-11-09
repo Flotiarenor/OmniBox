@@ -186,18 +186,18 @@ await check('零变化报告不重载', async () => {
 
 await check('skip 不重载', async () => {
   const env = setup({ report: () => ({ action: 'skip', reason: 'throttled' }) });
-  env.send({ type: 'omnibox:freshness', plugin: 'media-player', scope: '', report: { action: 'skip', reason: 'throttled' } });
+  env.send({ type: 'cubby:freshness', plugin: 'media-player', scope: '', report: { action: 'skip', reason: 'throttled' } });
   await env.tick(10);
   assert.equal(env.reloads.view, 0);
 });
 
-await check('omnibox:freshness 有变化时重载，别的插件报告忽略', async () => {
+await check('cubby:freshness 有变化时重载，别的插件报告忽略', async () => {
   const env = setup();
   env.app.currentView = 'all-audio';
-  env.send({ type: 'omnibox:freshness', plugin: 'other-plugin', scope: '', report: changed });
+  env.send({ type: 'cubby:freshness', plugin: 'other-plugin', scope: '', report: changed });
   await env.tick(10);
   assert.equal(env.reloads.view, 0, '别的插件的报告不该让本页重载');
-  env.send({ type: 'omnibox:freshness', plugin: 'media-player', scope: '', report: changed });
+  env.send({ type: 'cubby:freshness', plugin: 'media-player', scope: '', report: changed });
   await env.tick(10);
   assert.equal(env.reloads.view, 1);
   assert.equal(env.app.currentView, 'all-audio', '刷新不改变当前视图');
@@ -206,10 +206,10 @@ await check('omnibox:freshness 有变化时重载，别的插件报告忽略', a
 await check('富事件之后紧跟的旧 refresh 动作（带 payload）不重复重载', async () => {
   const env = setup();
   env.app.currentView = 'all-audio';
-  env.send({ type: 'omnibox:freshness', plugin: 'media-player', scope: '', report: changed });
+  env.send({ type: 'cubby:freshness', plugin: 'media-player', scope: '', report: changed });
   // 壳把同一份报告附在动作的 payload 上：这条是回声，不再重载一次
   env.send({
-    type: 'omnibox:action', action: 'refresh',
+    type: 'cubby:action', action: 'refresh',
     payload: { plugin: 'media-player', scope: '', report: changed },
   });
   await env.tick(20);
@@ -219,9 +219,9 @@ await check('富事件之后紧跟的旧 refresh 动作（带 payload）不重�
 await check('零变化富事件后的回声 refresh 也不重载', async () => {
   const env = setup();
   const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
-  env.send({ type: 'omnibox:freshness', plugin: 'media-player', scope: '', report: zero });
+  env.send({ type: 'cubby:freshness', plugin: 'media-player', scope: '', report: zero });
   env.send({
-    type: 'omnibox:action', action: 'refresh',
+    type: 'cubby:action', action: 'refresh',
     payload: { plugin: 'media-player', scope: '', report: zero },
   });
   await env.tick(20);
@@ -231,7 +231,7 @@ await check('零变化富事件后的回声 refresh 也不重载', async () => {
 await check('旧壳只发 refresh 动作（无 payload）时仍然重载', async () => {
   const env = setup();
   env.app.currentView = 'all-audio';
-  env.send({ type: 'omnibox:action', action: 'refresh' });
+  env.send({ type: 'cubby:action', action: 'refresh' });
   await env.tick(20);
   assert.equal(env.reloads.view, 1);
 });
@@ -239,10 +239,10 @@ await check('旧壳只发 refresh 动作（无 payload）时仍然重载', async
 await check('payload 判定不依赖到达时间（README 的时间窗已删除）', async () => {
   const env = setup();
   env.app.currentView = 'all-audio';
-  env.send({ type: 'omnibox:freshness', plugin: 'media-player', scope: '', report: changed });
+  env.send({ type: 'cubby:freshness', plugin: 'media-player', scope: '', report: changed });
   await env.tick(1500);   // 主线程忙了 1.5 秒才处理到后面的回声
   env.send({
-    type: 'omnibox:action', action: 'refresh',
+    type: 'cubby:action', action: 'refresh',
     payload: { plugin: 'media-player', scope: '', report: changed },
   });
   await env.tick(20);

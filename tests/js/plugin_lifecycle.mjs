@@ -9,7 +9,7 @@
 //   1. 三个消息类型各自触发对应钩子，且只发"状态真变化"的通知（不重复触发清理）；
 //   2. 消息来源校验：非父窗口（伪造来源）与跨源消息一律忽略；
 //   3. 钩子注册时机（已可见时立即补一次；隐藏期间注册的 onShow 不立刻跑）；
-//   4. 状态机与消息类型的映射：shown/hidden/dispose ↔ omnibox:plugin-*。
+//   4. 状态机与消息类型的映射：shown/hidden/dispose ↔ cubby:plugin-*。
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -92,39 +92,39 @@ console.log('场景 A：base.js 三个钩子 + 来源校验');
 
     check('注册时初始可见 → onShow 立即补一次', calls.show === 1, `实际 ${calls.show}`);
 
-    fromParent({ type: 'omnibox:plugin-hidden' });
+    fromParent({ type: 'cubby:plugin-hidden' });
     check('hidden 消息触发 onHide', calls.hide === 1, `实际 ${calls.hide}`);
-    fromParent({ type: 'omnibox:plugin-hidden' });
+    fromParent({ type: 'cubby:plugin-hidden' });
     check('重复 hidden 不重复触发（只发状态变化）', calls.hide === 1, `实际 ${calls.hide}`);
 
-    fromParent({ type: 'omnibox:plugin-shown' });
+    fromParent({ type: 'cubby:plugin-shown' });
     check('shown 消息触发 onShow', calls.show === 2, `实际 ${calls.show}`);
-    fromParent({ type: 'omnibox:plugin-shown' });
+    fromParent({ type: 'cubby:plugin-shown' });
     check('重复 shown 不重复触发', calls.show === 2, `实际 ${calls.show}`);
 
-    fromParent({ type: 'omnibox:plugin-dispose' });
+    fromParent({ type: 'cubby:plugin-dispose' });
     check('dispose 消息触发 onDispose', calls.dispose === 1, `实际 ${calls.dispose}`);
-    fromParent({ type: 'omnibox:plugin-shown' });
-    fromParent({ type: 'omnibox:plugin-hidden' });
+    fromParent({ type: 'cubby:plugin-shown' });
+    fromParent({ type: 'cubby:plugin-hidden' });
     check('dispose 后不再触发 show/hide', calls.show === 2 && calls.hide === 1,
         `show=${calls.show} hide=${calls.hide}`);
 
-    fromParent({ type: 'omnibox:plugin-hidden' }, { source: 'other' });
+    fromParent({ type: 'cubby:plugin-hidden' }, { source: 'other' });
     check('非父窗口来源的消息被忽略', calls.hide === 1, `实际 ${calls.hide}`);
-    fromParent({ type: 'omnibox:plugin-hidden' }, { origin: 'http://evil.tld' });
+    fromParent({ type: 'cubby:plugin-hidden' }, { origin: 'http://evil.tld' });
     check('跨源消息被忽略', calls.hide === 1, `实际 ${calls.hide}`);
 
-    fromParent({ type: 'omnibox:settings-changed' });
+    fromParent({ type: 'cubby:settings-changed' });
     check('settings-changed 仍然整页重载', redirects.length === 1 && redirects[0].includes('_t='),
         `实际 ${JSON.stringify(redirects)}`);
-    fromParent({ type: 'omnibox:settings-changed' }, { source: 'other' });
+    fromParent({ type: 'cubby:settings-changed' }, { source: 'other' });
     check('settings-changed 也校验来源', redirects.length === 1, `实际 ${redirects.length}`);
 }
 
 console.log('场景 B：注册时机（插件在隐藏期间才开始注册钩子）');
 {
     const { win, fromParent } = loadPluginRuntime();
-    fromParent({ type: 'omnibox:plugin-hidden' });
+    fromParent({ type: 'cubby:plugin-hidden' });
 
     let shown = 0;
     win.onShow(() => { shown++; });
@@ -134,7 +134,7 @@ console.log('场景 B：注册时机（插件在隐藏期间才开始注册钩�
     win.onHide(() => { hidden++; });
     check('隐藏期间注册 onHide 立即补一次', hidden === 1, `实际 ${hidden}`);
 
-    fromParent({ type: 'omnibox:plugin-shown' });
+    fromParent({ type: 'cubby:plugin-shown' });
     check('之后 shown 正常触发', shown === 1 && hidden === 1, `show=${shown} hide=${hidden}`);
 }
 
@@ -144,7 +144,7 @@ console.log('场景 C：钩子抛异常不影响其他钩子');
     let second = 0;
     win.onHide(() => { throw new Error('插件自身 bug'); });
     win.onHide(() => { second++; });
-    fromParent({ type: 'omnibox:plugin-hidden' });
+    fromParent({ type: 'cubby:plugin-hidden' });
     check('前一个钩子抛异常，后一个仍然执行', second === 1, `实际 ${second}`);
 }
 
@@ -161,8 +161,8 @@ const see = (name, mounted, active, windowVisible) =>
 console.log('场景 D：可见性状态机（挂载 × 活动 × 窗口可见）');
 {
     check('协议串是完整的 postMessage type',
-        M.shown === 'omnibox:plugin-shown' && M.hidden === 'omnibox:plugin-hidden'
-        && M.dispose === 'omnibox:plugin-dispose',
+        M.shown === 'cubby:plugin-shown' && M.hidden === 'cubby:plugin-hidden'
+        && M.dispose === 'cubby:plugin-dispose',
         JSON.stringify(M));
     visibility.disposeFrames();
     check('活动插件首次判定 → shown', JSON.stringify(see('image-viewer', true, true, true)) === SHOWN);

@@ -182,14 +182,14 @@ class ImageCleanerPlugin(PluginBase):
 | 键 | 行为 |
 | --- | --- |
 | `native` | 原生面板型：壳的 `NativePanel.vue` 打开 `{url, title}`，隐藏逻辑页提交 schema blocks（新壳优先走这条） |
-| `view` | 视图型：壳向宿主内容页发 `omnibox:view`，由内容页渲染对应视图 |
+| `view` | 视图型：壳向宿主内容页发 `cubby:view`，由内容页渲染对应视图 |
 | `embedUrl` | 内嵌回落型：在宿主面板里打开 iframe；只给不认 `native` 的旧壳使用 |
 | `route` | 独立路由型：跳转到插件自己的页面 |
 | `method` | 纯后端方法型：`Bridge.callPlugin(ext.plugin, ext.method)` 跨插件调用 |
 
 > 声明了 `frontend.chrome` 的宿主**不用写扩展渲染代码**：`PluginChrome.vue` 里的
 > `PluginExtensions.vue` 自己拉取 `system_get_plugin_extensions(host, 'sidebar')` 并渲染入口，
-> 点击后由壳决定打开 `NativePanel` 还是下发 `omnibox:view`。插件只需要在 `get_extensions()`
+> 点击后由壳决定打开 `NativePanel` 还是下发 `cubby:view`。插件只需要在 `get_extensions()`
 > 里声明条目，不要自己渲染入口或另建扩展容器。`renderExtensions` 已从
 > `shell/frontend/public/shell/base.js` 删除，不再是可调用的共享 API；旧页面/旧壳如需回落，
 > 走条目里的 `embedUrl`。
@@ -248,8 +248,8 @@ torch / onnxruntime 等重依赖**不得**写在插件 `backend/main.py` 顶层 
 - 壳用 `PluginChrome.vue` 渲染骨架，插件 iframe 加载 `frontend/index.html` 时由壳追加 `?content=1`；
 - 内容页只保留内容 DOM，不得出现 `.view-sub-sidebar`、`.view-toolbar`、`.sub-sidebar-brand`、
   `.obx-nav-item`（`tools/plugin_ui_audit.py` 的 `iframe.content-only` 会检查）；
-- 导航点击、顶栏动作、搜索输入由壳以 `omnibox:view` / `omnibox:action` / `omnibox:query` 下发；
-  内容页用 `omnibox:chrome` 上报标题、视图、动作、导航、搜索与状态；
+- 导航点击、顶栏动作、搜索输入由壳以 `cubby:view` / `cubby:action` / `cubby:query` 下发；
+  内容页用 `cubby:chrome` 上报标题、视图、动作、导航、搜索与状态；
 - 设置弹窗、统一刷新控件与扩展入口也归壳（见下文与 `docs/plugin-page-architecture.md`）。
 
 `frontend.chrome` 的字段形状（`brand` / `nav` / `toolbar` / `search` / `status` / `freshness` /
@@ -363,7 +363,7 @@ from shell.backend.plugin_base import PluginBase
 
 class MyPlugin(PluginBase):
     # 声明设置项：声明 frontend.chrome 的插件由壳的 PluginSettingsModal 渲染，
-    # 保存后内容页收到 omnibox:action: settings-saved；SettingsStore 持久化由框架自动处理
+    # 保存后内容页收到 cubby:action: settings-saved；SettingsStore 持久化由框架自动处理
     settings_schema = [
         {"key": "root_dir", "label": "数据根目录", "type": "text",
          "help": "存放数据的根目录"},
@@ -594,7 +594,7 @@ class AudioCoverCache(ThumbCache):
 | 形态 | 控件挂在哪 | 谁触发被动同步 | 内容页做什么 |
 | --- | --- | --- | --- |
 | 内容页自绘 | 插件自己的容器 | 内容页在进视图 / 切目录时调句柄的 `.autoSync(scope)`；重新可见时也可用 `Freshness.sync(plugin, scope)` | 持有 `mount` 返回值；`onChange` 里重载 |
-| 壳渲染骨架（`frontend.chrome`） | 壳的 `PluginChrome` | 壳在挂载后、`watch([activeView, freshnessScope])` 里各调一次句柄的 `.autoSync(scope)` | `omnibox:chrome` 上报 `freshness_scope`；`plugin-shown` 时调 `Freshness.sync(plugin, scope)` |
+| 壳渲染骨架（`frontend.chrome`） | 壳的 `PluginChrome` | 壳在挂载后、`watch([activeView, freshnessScope])` 里各调一次句柄的 `.autoSync(scope)` | `cubby:chrome` 上报 `freshness_scope`；`plugin-shown` 时调 `Freshness.sync(plugin, scope)` |
 
 壳挂载型插件别忘了第二行：内容页拿不到控件句柄，重新可见时只能自己调
 `Freshness.sync(plugin, scope)`（返回报告）。`PluginChrome` 在 native 面板打开期间跳过
@@ -609,12 +609,12 @@ class AudioCoverCache(ThumbCache):
 
 | 消息 | 载荷 | 谁该处理 |
 | --- | --- | --- |
-| `omnibox:freshness` | `{plugin, scope, report}`：`report` 就是后端报告（`action` / `added` / `changed` / `removed` / `invalidated` / 校验任务的 `task`） | 新代码一律处理这条：按 `report` 与 `scope` 决定重载哪一层 |
-| `omnibox:action`（`refresh`） | 同上那份 `payload`，但只认 `action` 的旧页面拿它重载 | 只认旧协议的页面；处理了 `omnibox:freshness` 的页面不要重复重载 |
+| `cubby:freshness` | `{plugin, scope, report}`：`report` 就是后端报告（`action` / `added` / `changed` / `removed` / `invalidated` / 校验任务的 `task`） | 新代码一律处理这条：按 `report` 与 `scope` 决定重载哪一层 |
+| `cubby:action`（`refresh`） | 同上那份 `payload`，但只认 `action` 的旧页面拿它重载 | 只认旧协议的页面；处理了 `cubby:freshness` 的页面不要重复重载 |
 
 两条都发是因为内容页可能只实现了旧协议。`/shell/chrome-client.js` 的 `onAction(action, payload)`
 第二参就是消息里的 `payload`（统一刷新把 `{plugin, scope, report}` 附在那条 `refresh` 上），
-`omnibox:freshness` 则走 `onMessage`。两种写法各自处理一条即可。
+`cubby:freshness` 则走 `onMessage`。两种写法各自处理一条即可。
 
 同一页面两条都处理时**按 `payload` 判回声**，不靠时间窗：收到 `refresh` 且 `payload` 存在，
 说明它是刚才那条富事件补发的旧动作，跳过；`refresh` 没有 `payload` 时（旧壳、或用户点顶栏
@@ -767,7 +767,7 @@ ctl.autoSync('');                     // 进视图；切目录时传新 scope
 ```javascript
 // B. 壳渲染骨架（frontend.chrome.freshness）：控件由 PluginChrome 挂、它负责 autoSync；
 //    内容页拿不到句柄，只需上报作用域并在重新可见时同步一次
-this._postHost({ type: 'omnibox:chrome', /* … */ freshness_scope: this._freshnessScope() });
+this._postHost({ type: 'cubby:chrome', /* … */ freshness_scope: this._freshnessScope() });
 lifecycle.onShow(() => this._syncFreshness(true));
 
 async _syncFreshness(reload) {
@@ -1033,7 +1033,7 @@ manifest 的 `frontend.chrome` 声明品牌、导航、顶栏、搜索、状态�
 - 内容页**不得**再出现 `.view-sub-sidebar`、`.view-toolbar`、`.sub-sidebar-brand`、
   `.obx-nav-item`，也不要在插件 CSS 里复刻品牌块与导航。
 - 标题、副标题、视图高亮、动作显隐、导航徽标、搜索开关与状态行都通过
-  `omnibox:chrome` 上报；壳只合并声明与补丁，不解释业务。
+  `cubby:chrome` 上报；壳只合并声明与补丁，不解释业务。
 - `PluginChrome` 还负责挂载统一刷新控件（`freshness`）、扩展入口（`extensions`）与侧栏分隔条。
 
 ### 4.3 设置弹窗由壳渲染
@@ -1045,7 +1045,7 @@ manifest 的 `frontend.chrome` 声明品牌、导航、顶栏、搜索、状态�
   `shell/frontend/src/components/PluginSettingsModal.vue` 渲染；
 - 弹窗的 schema、初值与保存全部走 `<插件>__get_settings_schema`、`<插件>__get_settings`、
   `<插件>__save_settings`，壳不持有设置语义；保存成功后壳发
-  `omnibox:action`（`settings-saved`），内容页据此重读设置并刷新当前视图；
+  `cubby:action`（`settings-saved`），内容页据此重读设置并刷新当前视图；
 - `settings_schema` 的 `type: "directory"` 字段在壳弹窗里渲染成「路径行 + 选择目录…」，由壳内共享
   `window.FolderPicker`（`shell/frontend/public/shell/folder-picker.js`）提供：可手输绝对路径，
   「浏览…」走 `system_browse_dir`（共享基建 `media_catalog.list_subdirectories`，可看盘符与
@@ -1062,7 +1062,7 @@ manifest 的 `frontend.chrome` 声明品牌、导航、顶栏、搜索、状态�
   `settings-saved`。附属插件的弹窗不显示外观块（它们没有自己的页面骨架）。
 - 四个壳内设置页与 image-viewer 的内容设置页顶部都有通用「外观」块：背景不透明度 +
   「跟随壳透明度」。值存在壳偏好 `--plugin-glass-<插件名>`，不写进插件 `settings_schema`；
-  image-viewer 通过 `omnibox:get-plugin-appearance` / `omnibox:set-plugin-alpha` 读写同一份值。
+  image-viewer 通过 `cubby:get-plugin-appearance` / `cubby:set-plugin-alpha` 读写同一份值。
   默认跟随壳的 `--glass-alpha`，覆盖范围是页面骨架与内容页公共区域，不改变插件自绘卡片。
 
 > 覆写了 `get_settings()` 的插件必须把它登记进 `register_api()`（连同 `save_settings`），
@@ -1124,28 +1124,28 @@ onDispose(() => {
 
 搜索框由壳持有，插件不另建搜索输入：
 
-- 壳的输入经 `omnibox:query` 下发（250ms 防抖）；
-- 内容页在 `omnibox:chrome` 里用 `search.value` 回填输入框、用 `search.clear`（**递增序号**）
+- 壳的输入经 `cubby:query` 下发（250ms 防抖）；
+- 内容页在 `cubby:chrome` 里用 `search.value` 回填输入框、用 `search.clear`（**递增序号**）
   清空。切分类、进二级页、打开整页设置等场景要清空，否则上次搜的词留在框里与列表不一致；
 - `search.enabled` 控制是否显示搜索框；group-mesh 的 manifest 没有 `search` 声明，因此壳不渲染
   搜索框，内容页也不要自己补一个。
 
 ### 4.6 chrome 消息
 
-壳与内容 iframe 之间只通过同源 `postMessage` 通信。消息类型统一带 `omnibox:` 前缀；协议前缀沿用历史命名 omnibox，与品牌无关。
+壳与内容 iframe 之间只通过同源 `postMessage` 通信。消息类型统一带 `cubby:` 前缀。
 
 | 方向 | 消息 | 用途 |
 | --- | --- | --- |
-| 壳 → 内容 | `omnibox:view` | 切换视图；复合 id（如 `downloads:all`）由内容自行解释 |
-| 壳 → 内容 | `omnibox:action` | 顶栏动作，可带 `payload`；声明 `frontend.chrome` 且设置由壳接管的插件不会收到 `settings` |
-| 壳 → 内容 | `omnibox:action`（`settings-saved`） | 壳内设置弹窗保存成功 |
-| 壳 → 内容 | `omnibox:query` | 搜索输入 |
-| 壳 → 内容 | `omnibox:freshness` | 统一刷新的结果 `{plugin, scope, report}`；紧随其后还会补一条旧的 `omnibox:action: refresh`（`payload` 同报告）。两条都处理的页面按 `payload` 判回声：带 `payload` 的 `refresh` 只当一次同步，不重复重载 |
-| 内容 → 壳 | `omnibox:ready` | 握手，壳补发当前视图 |
-| 内容 → 壳 | `omnibox:chrome` | `title` / `subtitle` / `view` / `freshness_scope` / `actions` / `nav` / `search` / `status` / `statusItems` 补丁 |
-| 内容 → 壳 | `omnibox:open-settings` | 内容页自己的设置入口请求壳开弹窗（可选 `title`） |
+| 壳 → 内容 | `cubby:view` | 切换视图；复合 id（如 `downloads:all`）由内容自行解释 |
+| 壳 → 内容 | `cubby:action` | 顶栏动作，可带 `payload`；声明 `frontend.chrome` 且设置由壳接管的插件不会收到 `settings` |
+| 壳 → 内容 | `cubby:action`（`settings-saved`） | 壳内设置弹窗保存成功 |
+| 壳 → 内容 | `cubby:query` | 搜索输入 |
+| 壳 → 内容 | `cubby:freshness` | 统一刷新的结果 `{plugin, scope, report}`；紧随其后还会补一条旧的 `cubby:action: refresh`（`payload` 同报告）。两条都处理的页面按 `payload` 判回声：带 `payload` 的 `refresh` 只当一次同步，不重复重载 |
+| 内容 → 壳 | `cubby:ready` | 握手，壳补发当前视图 |
+| 内容 → 壳 | `cubby:chrome` | `title` / `subtitle` / `view` / `freshness_scope` / `actions` / `nav` / `search` / `status` / `statusItems` 补丁 |
+| 内容 → 壳 | `cubby:open-settings` | 内容页自己的设置入口请求壳开弹窗（可选 `title`） |
 
-`omnibox:chrome` 的 `search` 支持 `value`（回填）与 `clear`（递增序号清空）；`status.kind =
+`cubby:chrome` 的 `search` 支持 `value`（回填）与 `clear`（递增序号清空）；`status.kind =
 eq-text` 且内容页上报 `state: "ok"` 时，壳把状态点换成四柱迷你 EQ（media-player 使用）。消息的
 完整字段与壳端合并规则见 [插件页面架构](./plugin-page-architecture.md)。
 
@@ -1158,11 +1158,11 @@ eq-text` 且内容页上报 `state: "ok"` 时，壳把状态点换成四柱迷�
 
 | 方向 | 消息 | 用途 |
 | --- | --- | --- |
-| 逻辑页 → 壳 | `omnibox:native-ready` | 就绪 |
-| 壳 → 逻辑页 | `omnibox:native-init` | 开始取数并提交 blocks |
-| 逻辑页 → 壳 | `omnibox:schema` | `{blocks, toolbar?, layout?}` |
-| 壳 → 逻辑页 | `omnibox:native-action` | `{action, payload}`，payload 发送前做 JSON 克隆 |
-| 逻辑页 → 壳 | `omnibox:native-error` | 内容加载失败 |
+| 逻辑页 → 壳 | `cubby:native-ready` | 就绪 |
+| 壳 → 逻辑页 | `cubby:native-init` | 开始取数并提交 blocks |
+| 逻辑页 → 壳 | `cubby:schema` | `{blocks, toolbar?, layout?}` |
+| 壳 → 逻辑页 | `cubby:native-action` | `{action, payload}`，payload 发送前做 JSON 克隆 |
+| 逻辑页 → 壳 | `cubby:native-error` | 内容加载失败 |
 
 blocks 的组件词汇（`shell/frontend/src/core/plugin-content.ts`）：`text`、`heading`、`stats`、
 `section`、`banner`、`code`、`kv`、`table`、`list`、`cards`、`checkbox-list`、`form`、`actions`、
@@ -1244,7 +1244,7 @@ Shell 还注入了以下可复用的 UI 组件函数（无需引入，直接使�
 
 ```javascript
 // 仅内容页自绘设置时使用（当前只有 image-viewer）。声明 frontend.chrome 的插件由壳的
-// PluginSettingsModal 打开设置，保存后壳发 omnibox:action: settings-saved，不需要调用它。
+// PluginSettingsModal 打开设置，保存后壳发 cubby:action: settings-saved，不需要调用它。
 // 省略 onSave 时壳的默认实现走 `Bridge.call('save_settings', values)`。
 // **保存后必须自己收尾**：壳只弹一条 Toast。收尾二选一：整页重载，或就地重渲染。
 // 不收尾时设置已经落盘，但界面上仍是旧值。
@@ -1398,8 +1398,8 @@ def resolve_file_path(self, rel_path):
 **访问令牌（v3.1+）**：`/api`、`/file`、`/files`、`/thumbs` 均为**令牌保护路由**：
 
 - 令牌在首次启动时生成并持久化到 `.config/auth_token.txt`（重启不变）；
-- 页面加载时服务端自动种下 HttpOnly Cookie（`omnibox_token`），插件 iframe 与 `<img>` 等**同源请求自动携带，插件前端无需任何改动**；
-- 外部脚本 / curl / nginx 注入用请求头：`X-Cubby-Token: <token>`（旧头 `X-Omnibox-Token` 仍被接受）；
+- 页面加载时服务端自动种下 HttpOnly Cookie（`cubby_token`），插件 iframe 与 `<img>` 等**同源请求自动携带，插件前端无需任何改动**；
+- 外部脚本 / curl / nginx 注入用请求头：`X-Cubby-Token: <token>`；
 - 未携带令牌返回 `401`（`/api` 前缀为 JSON，浏览器路径为标记页）；越权路径返回 `403`；不存在的资源返回 `404`；
 - `/health`（200 JSON）与页面/静态资源不要求令牌；
 - 错误页在浏览器顶层打开时自动跳转到壳内 `/status?code=…` 视图统一展示（见 §7.4）。
@@ -1492,7 +1492,7 @@ def browse_dir(self, path: str = ''):
 | 提供方声明 | `get_extensions()` 返回 `{'placement': 'network-location', 'label', 'icon', 'embedUrl'}`；**不写 `host`**（组件出现在任意插件的设置里，提供方应对所有宿主可用） |
 | 宿主发现 | `system_get_plugin_extensions(null, 'network-location')`；无提供方时按钮提示"需要安装提供该能力的插件" |
 | 提供方界面 | 组件把 `embedUrl` 嵌进弹窗 iframe；子页面同样被注入 BootStrap（`Bridge` / `Utils` / `Toast` / `FolderPicker`） |
-| 回填 | 提供方向父窗口 `postMessage({type:'omnibox:network-location', action:'picked', path, label})`；组件**校验 `event.source` 必须是它嵌的那个 iframe**（否则任何同源页面都能往用户的文件夹列表里塞路径），并校验 `path` 非空。取消用 `action:'cancelled'` |
+| 回填 | 提供方向父窗口 `postMessage({type:'cubby:network-location', action:'picked', path, label})`；组件**校验 `event.source` 必须是它嵌的那个 iframe**（否则任何同源页面都能往用户的文件夹列表里塞路径），并校验 `path` 非空。取消用 `action:'cancelled'` |
 | 产物 | 回填的 `path` 必须是**本地绝对目录**：所有消费方的后端只认本地路径，`getPaths()` 语义因此完全不变 |
 
 两条实现约束（踩过才知道）：
@@ -1568,7 +1568,7 @@ def _get_thumb(self, rel_path: str) -> Path:
 - **状态码语义**：`401`（未授权）/ `403`（越权）/ `404`（不存在）由后端返回，`/api` 前缀为 JSON（`{error, detail}`），浏览器路径为本体风格标记页；
 - **壳内统一展示**：插件 iframe 加载到错误标记页时（标记页 `<html>` 带 `data-status-page="<code>"` 属性），Vue 壳检测后自动跳转壳内建视图 `/status?code=…&from=…` 显示错误卡片（含重试）；浏览器顶层直接访问错误 URL 时标记页 JS 自动跳转同一视图；
 - **调试面板**：`python main.py --status-debug` 启动后，`/status` 视图显示状态调试面板（健康检查 / API 鉴权演示 / 错误跳转演示）；一键调试环境见 `python tools/debug/debug_status_pages.py`；
-- **API 错误 Toast**：HTTP 桥收到 401/403/404/5xx 时派发 `omnibox:api-error` 事件，壳内弹出本体 Toast（插件前端无需处理）。
+- **API 错误 Toast**：HTTP 桥收到 401/403/404/5xx 时派发 `cubby:api-error` 事件，壳内弹出本体 Toast（插件前端无需处理）。
 
 ---
 
@@ -1590,7 +1590,7 @@ def _get_thumb(self, rel_path: str) -> Path:
 
 在插件类中通过 `settings_schema` 声明设置项，框架自动完成持久化，壳按 schema 渲染表单：
 声明 `frontend.chrome` 的插件由壳的 `PluginSettingsModal` 在顶栏「设置」里打开，保存后内容页
-收到 `omnibox:action: settings-saved`；内容页不再自己渲染设置弹窗。image-viewer 是例外：它的设置
+收到 `cubby:action: settings-saved`；内容页不再自己渲染设置弹窗。image-viewer 是例外：它的设置
 按目录作用域读写，仍在内容页调用 `openSettingsModal()`。`image-cleaner` / `pixiv-sync` 的
 native 设置同样由 `PluginSettingsModal` 接管（入口是 native 顶栏的「设置」动作），保存后向
 隐藏逻辑页发 `settings-saved`。
@@ -1936,7 +1936,7 @@ image-viewer 需要在不同文件夹应用不同设置（如行高、排序）�
 5. **检查注入是否成功**：在控制台输入 `typeof Bridge`，应返回 `"object"`；输入 `typeof createTree`，应返回 `"function"`。
 6. **状态调试（--status-debug）**：以 `python main.py --web-only --status-debug` 启动后，访问 `/status` 显示壳内调试面板（健康检查 200 / API 鉴权 401 / 错误跳转演示），用于验证鉴权与错误页行为。
 7. **一键调试环境**：`python tools/debug/debug_status_pages.py` 自动起独立端口调试服务器（注入「坏插件」演示 iframe 404 → 壳内错误卡片链路），并用 requests 打印 11 个 HTTP 场景触发表，浏览器打开 `/status` 即调试面板；Ctrl+C 自动清理。
-8. **HTTP 直连注意**：`/api`、`/file`、`/thumbs` 受令牌保护（见 §7.1），curl 测试需带 `X-Cubby-Token` 头（旧头 `X-Omnibox-Token` 仍接受）或先访问首页拿 Cookie；无 Cookie 客户端访问 `/thumbs/x.png` 会得到 401 而非 404。
+8. **HTTP 直连注意**：`/api`、`/file`、`/thumbs` 受令牌保护（见 §7.1），curl 测试需带 `X-Cubby-Token` 头，或先访问首页拿 Cookie；无 Cookie 客户端访问 `/thumbs/x.png` 会得到 401 而非 404。
 9. **真实浏览器端到端（改壳前端后建议跑）**：
 
    ```bash

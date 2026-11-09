@@ -32,8 +32,8 @@ Vue 3 + TypeScript + Vite。`src/` 是壳的界面（`components/` `core/` `rout
 壳挂载型查 `PluginChrome.vue` 的 `.autoSync(` 与那条 watch；匹配前先去掉 JS 注释、HTML
 注释与字符串内容，注释掉的调用、只定义未调用、模板字符串都不算接线。
 
-同步/校验有结论时壳发两条消息：`omnibox:freshness`（`{plugin, scope, report}`）与紧跟其后的
-旧 `omnibox:action: refresh`（`payload` 同报告）。内容页只处理一条即可；两条都处理的页面
+同步/校验有结论时壳发两条消息：`cubby:freshness`（`{plugin, scope, report}`）与紧跟其后的
+旧 `cubby:action: refresh`（`payload` 同报告）。内容页只处理一条即可；两条都处理的页面
 按 `payload` 判回声（带 payload 的 `refresh` 跳过）。`App.vue` 用 `buildActionEvent` 转发
 `@action` 的全部 emit 参数，`refresh` 才真的带 payload；事件作用域取
 `freshnessEventScope(report, fallback)`（报告自己的 `scope` 优先）。`normalizeFreshnessScope`

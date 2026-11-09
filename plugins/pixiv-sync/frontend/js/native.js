@@ -2,13 +2,13 @@
 //
 // 本页不渲染界面：它把同步状态、任务进度与设置编译成壳的原生内容 blocks（见
 // shell/frontend/src/core/plugin-content.ts），由壳的 NativePanel 与 SchemaRenderer
-// 画出来。用户操作以 omnibox:native-action 回到这里，这里调后端后重新提交 blocks。
+// 画出来。用户操作以 cubby:native-action 回到这里，这里调后端后重新提交 blocks。
 //
 // 三条约束：
 // - 本页在壳里是 display:none 的 iframe，页面内的 Toast / modal 用户看不见，
 //   所以提示与两步确认一律用 banner / actions block 表达，不弹窗；
 // - 不读宿主 DOM，也不读 parent 上的宿主对象；后端能力只走 Bridge.call；
-// - 轮询只在本页进行：重复的 omnibox:native-init 与反复调度都不会叠出第二个定时器，
+// - 轮询只在本页进行：重复的 cubby:native-init 与反复调度都不会叠出第二个定时器，
 //   iframe 被壳移除时（pagehide / beforeunload）停掉定时器。
 //
 // 版式：提交 blocks 时带 `layout: 'document'`，壳据此把正文收窄到 960px、组间放 24px。
@@ -24,7 +24,7 @@
     try {
       if (window.parent && window.parent !== window) {
         window.parent.postMessage({
-          type: 'omnibox:native-error',
+          type: 'cubby:native-error',
           error: 'Pixiv 同步逻辑页缺少 /shell/native-client.js，请重启格子铺后再打开本面板。',
         }, window.location.origin);
       }

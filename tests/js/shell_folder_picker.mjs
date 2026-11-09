@@ -204,7 +204,7 @@ await check('导出含网络位置相关的成员（提供方发现 + 回填协�
     for (const name of ['NETWORK_MESSAGE_TYPE', 'loadNetworkProviders', 'readProviderMessage']) {
         assert.ok(name in FolderPicker, `缺少导出 ${name}`);
     }
-    assert.equal(FolderPicker.NETWORK_MESSAGE_TYPE, 'omnibox:network-location');
+    assert.equal(FolderPicker.NETWORK_MESSAGE_TYPE, 'cubby:network-location');
 });
 
 await check('loadNetworkProviders 只认带 embedUrl 的提供方，宿主接口不可用时返回空表', async () => {

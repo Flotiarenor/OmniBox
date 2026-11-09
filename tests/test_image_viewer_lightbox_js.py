@@ -1,7 +1,7 @@
 """image-viewer 灯箱打开时壳返回/导航先关灯箱（tests/js/image_viewer_lightbox.mjs）。
 
 壳的返回与左栏导航在灯箱之上仍可点击。`createLightbox` 提供 `isOpen()`/`hide()` 后，
-插件在收到 `omnibox:action: back` / `omnibox:view` 时应先关灯箱并吞掉本次动作；
+插件在收到 `cubby:action: back` / `cubby:view` 时应先关灯箱并吞掉本次动作；
 否则内容在灯箱背后切层，表现为“点了没反应”。用例同时锁住灯箱已关（普通返回照常）
 与旧壳灯箱没有 `isOpen()` 的兼容路径。
 """

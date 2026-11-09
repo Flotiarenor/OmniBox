@@ -72,7 +72,7 @@
 - `<body>` 只装载 `/shell/native-client.js` 与 `js/native.js`，不引入样式表；壳的 `NativePanel` 负责可见界面。
 - 刷新控件的挂载点是**隐藏节点**：`mountFreshness` 在 `#cleaner-freshness` 不存在时创建一个 `host.hidden = true` 的 div 挂到 `document.body`（面板本身不占位），只借 `Freshness.mount` 的状态、校验按钮与 `onChange`；每个原生页打开时挂一次，`onDispose` 调句柄的 `destroy()` 收掉。
 - 向壳提交的 blocks 类型：`text`（状态行带 `dot` 语义点）、`banner`（失败常驻 + `notice-dismiss`「知道了」）、`confirm`（删除的阻断确认，壳画成面板内模态层）、`progress`（总数未知时 `indeterminate`）、`actions`、`checkbox-list`、`empty`。反馈分档与 pixiv-sync 一致：成功走消息级 `toast`（`render` 第三个参数），失败留常驻 `banner`，不可逆的删除用 `confirm` 块。
-- 壳消息：逻辑页装载 `/shell/native-client.js`，用 `NativeExtension.create({ onInit, onAction, onDispose })`；客户端负责 `omnibox:native-ready` / `native-init` / `schema` / `native-action` / `native-error` 与 pagehide 清理，本页只实现 `init`、`handleAction` 与 blocks 构造。
+- 壳消息：逻辑页装载 `/shell/native-client.js`，用 `NativeExtension.create({ onInit, onAction, onDispose })`；客户端负责 `cubby:native-ready` / `native-init` / `schema` / `native-action` / `native-error` 与 pagehide 清理，本页只实现 `init`、`handleAction` 与 blocks 构造。
 - 数据来源：`Bridge.call` 的 `get_cached_scan`、`delete_files`；校验进度与取消走 `Freshness.mount` 返回的 `state`、`verify`、`cancel`、`autoSync`；被动同步发现变化或校验收尾时走 `reloadAfterSettle()` —— 只更新结果字段（groups / scanned / cached / stale / error）并**保留勾选与分页**（只把结果里已不存在的文件从选中集合剔除）；切模式、显式重读与 `settings-saved` 走 `loadResults()` 的完整重置路径（清空勾选与分页）。设置由壳的 `PluginSettingsModal` 读写后端 `settings_schema`，保存后逻辑页收 `settings-saved`。
 
 旧内嵌页（`frontend/index.html`，只给不认 `native` 的旧壳）DOM 结构如下。
@@ -104,7 +104,7 @@
 
 ## 与壳的契约
 
-- 原生内容：`shell/frontend/src/components/NativePanel.vue` 承载逻辑 iframe（`omnibox:native-ready` / `omnibox:native-init` / `omnibox:native-action`），`shell/frontend/src/components/SchemaRenderer.vue` 渲染 `omnibox:schema` 的 blocks；schema 类型见 `shell/frontend/src/core/plugin-content.ts`。
+- 原生内容：`shell/frontend/src/components/NativePanel.vue` 承载逻辑 iframe（`cubby:native-ready` / `cubby:native-init` / `cubby:native-action`），`shell/frontend/src/components/SchemaRenderer.vue` 渲染 `cubby:schema` 的 blocks；schema 类型见 `shell/frontend/src/core/plugin-content.ts`。
 - 壳基类 `PluginBase`（`shell/backend/plugin_base.py`）：`settings_schema`、`register_api`、`get_settings`、`save_settings`、`setting`、`get_dependency`、`get_extensions`、`freshness_spec`、`on_settings_changed`、`on_unload`、`get_data_root`、`get_file_roots`、`thumb_dir`、`ensure_thumb`、`get_thumb_data`。
 - 宿主成员（`image-viewer` 实例）：`name`、`get_data_root`、`get_file_roots`、`thumb_dir`、`ensure_thumb`、`get_thumb_data`、`delete_files`、`invalidate_derived`、`list_roots`，其中 `list_roots` 的条目键是 `path`、`prefix`。
 - 共享后端基建：`shell/backend/tasks.py` 的 `BackgroundTask`（`kind`、`extra`、`start`、`update`、`status`、`cancel`、`cancelled`、`state`）；`shell/backend/freshness.py` 的 `engine_for`、`request_cancel`、`reset_throttle` 与规格键 `content_version`、`min_sync_interval`；`shell/backend/media_catalog.py` 的 `IMAGE_EXTENSIONS`。

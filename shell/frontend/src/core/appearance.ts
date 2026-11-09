@@ -19,7 +19,7 @@ export { isValidVarName, isValidVarValue }
  * 所以统一走 `setAppearanceVar()`（读-改-写），并靠这个事件把新值回灌给已挂载的
  * 界面（设置页是 v-show 常驻的，不重挂载）。
  */
-export const APPEARANCE_CHANGED = 'omnibox:appearance-changed'
+export const APPEARANCE_CHANGED = 'cubby:appearance-changed'
 
 /** 写入单个外观变量：改偏好 → 改 html 内联 → 广播。
  *

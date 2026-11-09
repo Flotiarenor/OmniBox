@@ -136,7 +136,7 @@ function onFrameLoad(e: Event, name: string) {
   notifyFrame(name, messages)
   refreshFrameVisibility(name)
   postAppearance(name)
-  // 壳渲染 chrome 的插件：内容页就绪后会发 omnibox:ready，这里是首帧兜底；
+  // 壳渲染 chrome 的插件：内容页就绪后会发 cubby:ready，这里是首帧兜底；
   // 重复发送视图 id 是幂等的，内容页按当前面板重新落一次即可。
   if (chromeViews[name]) {
     window.setTimeout(() => postChromeView(name), 300)
@@ -158,7 +158,7 @@ function pluginAlphaFor(name: string): number {
 
 function postAppearance(name: string): void {
   postToFrame(name, {
-    type: 'omnibox:appearance',
+    type: 'cubby:appearance',
     alpha: pluginAlphaFor(name),
     follow: pluginAlpha(name) === null,
     shellAlpha: getGlass().alpha,
@@ -302,7 +302,7 @@ function postToFrame(name: string, payload: Record<string, unknown>): void {
 function postChromeView(name: string): void {
   const view = chromeViews[name]
   if (!view) return
-  postToFrame(name, { type: 'omnibox:view', view })
+  postToFrame(name, { type: 'cubby:view', view })
 }
 
 function onChromeView(name: string, view: string): void {
@@ -318,7 +318,7 @@ function onChromeView(name: string, view: string): void {
   chromeViews[name] = view
   // 壳点击导航表示回到一级视图：清掉内容页之前设置的阅读态/二级页高亮。
   if (chromeStates[name]) delete chromeStates[name].view
-  postToFrame(name, { type: 'omnibox:view', view })
+  postToFrame(name, { type: 'cubby:view', view })
 }
 
 function onChromeAction(name: string, action: string, payload?: unknown): void {
@@ -350,11 +350,11 @@ function onSettingsSaved(): void {
     nativeRefs.get(panel.host)?.action('settings-saved')
     return
   }
-  postToFrame(panel.host, { type: 'omnibox:action', action: 'settings-saved' })
+  postToFrame(panel.host, { type: 'cubby:action', action: 'settings-saved' })
 }
 
 function onChromeQuery(name: string, query: string): void {
-  postToFrame(name, { type: 'omnibox:query', query })
+  postToFrame(name, { type: 'cubby:query', query })
 }
 
 /** 壳侧扩展入口（PluginExtensions）打开 native 面板。 */
@@ -410,11 +410,11 @@ function onPluginChromeMessage(event: MessageEvent): void {
   if (!isPluginChromeMessage(data)) return
   const name = frameNameForSource(event.source)
   if (!name) return
-  if (data.type === 'omnibox:get-plugin-appearance') {
+  if (data.type === 'cubby:get-plugin-appearance') {
     postAppearance(name)
     return
   }
-  if (data.type === 'omnibox:set-plugin-alpha') {
+  if (data.type === 'cubby:set-plugin-alpha') {
     if (data.follow === true) {
       setPluginAlpha(name, null)
     } else {
@@ -424,19 +424,19 @@ function onPluginChromeMessage(event: MessageEvent): void {
     postAppearance(name)
     return
   }
-  if (data.type === 'omnibox:open-settings') {
+  if (data.type === 'cubby:open-settings') {
     // 内容页自己的设置入口（如歌词页右上角）请求壳打开弹窗：入口在内容里，
     // 弹窗仍然是页面级的，必须由壳渲染。
     openPluginSettings(name, typeof data.title === 'string' ? data.title : '')
     return
   }
-  if (data.type === 'omnibox:ready') {
+  if (data.type === 'cubby:ready') {
     postChromeView(name)
     return
   }
-  // 只剩 omnibox:chrome：标题/视图/角标/动作/导航/搜索的合并规则在
+  // 只剩 cubby:chrome：标题/视图/角标/动作/导航/搜索的合并规则在
   // core/plugin-chrome-protocol（返回新状态，不就地改），tests/js/plugin_chrome_protocol.mjs 覆盖。
-  if (data.type !== 'omnibox:chrome') return
+  if (data.type !== 'cubby:chrome') return
   const st = chromeStates[name]
   if (!st) return
   chromeStates[name] = mergeChromeState(st, data)
@@ -447,7 +447,7 @@ function onPluginChromeMessage(event: MessageEvent): void {
 function onNativeMessage(event: MessageEvent): void {
   if (event.origin !== window.location.origin) return
   const data = event.data
-  if (!data || data.type !== 'omnibox:open-native') return
+  if (!data || data.type !== 'cubby:open-native') return
   const host = frameNameForSource(event.source)
   if (!host) return
   const plugin = String(data.plugin || '')
@@ -487,7 +487,7 @@ function installShellBridgeShims(): void {
 function onSetVarMessage(event: MessageEvent) {
   if (event.origin !== window.location.origin) return
   const data = event.data
-  if (!data || data.type !== 'omnibox:set-var') return
+  if (!data || data.type !== 'cubby:set-var') return
   // 只接受本壳已挂载的 iframe：同源页面之间本来就能互相访问，这里是为了让
   // "谁写的"有答案，出问题时能定位到来源文档而不是一个匿名窗口。
   if (!isRegisteredFrameSource(event.source)) return
@@ -548,7 +548,7 @@ onMounted(async () => {
   })
   fsObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-video-fullscreen'] })
 
-  window.addEventListener('omnibox:api-error', onApiError)
+  window.addEventListener('cubby:api-error', onApiError)
   window.addEventListener('message', onSetVarMessage)
   window.addEventListener('message', onPluginChromeMessage)
   window.addEventListener('message', onNativeMessage)
@@ -560,7 +560,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  window.removeEventListener('omnibox:api-error', onApiError)
+  window.removeEventListener('cubby:api-error', onApiError)
   window.removeEventListener('message', onSetVarMessage)
   window.removeEventListener('message', onPluginChromeMessage)
   window.removeEventListener('message', onNativeMessage)

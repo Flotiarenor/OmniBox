@@ -10,9 +10,9 @@
     状态栏与分隔条由壳按 manifest 的 frontend.chrome 渲染；这里只保留内容
     （书架、下载中心、漫画详情、两个弹窗与阅读器）。
 
-    视图切换与工具栏动作经 postMessage 进来（omnibox:view / omnibox:action /
-    omnibox:query），标题、副标题、动作显隐与禁用、导航徽标、搜索可用性与状态
-    反向上报（omnibox:chrome）。复合导航 id `downloads:<filter>` 表示下载中心的
+    视图切换与工具栏动作经 postMessage 进来（cubby:view / cubby:action /
+    cubby:query），标题、副标题、动作显隐与禁用、导航徽标、搜索可用性与状态
+    反向上报（cubby:chrome）。复合导航 id `downloads:<filter>` 表示下载中心的
     过滤项。
 
     阅读器是内容区内的沉浸层：`position: fixed` 只覆盖本站文档（即内容 iframe
