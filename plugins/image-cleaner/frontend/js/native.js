@@ -284,10 +284,10 @@
   }
 
   /** 重读结果缓存并重绘；同一时刻只跑一次，后到的调用等前一次完成。 */
-  function reloadFromCache() {
+  function reloadFromCache(preserve) {
     if (refreshPromise) return refreshPromise;
     refreshPromise = (async function () {
-      await loadResults();
+      await loadResults(preserve);
       render();
     })().finally(function () {
       refreshPromise = null;
@@ -295,10 +295,20 @@
     return refreshPromise;
   }
 
+  /**
+   * settle（被动同步发现变化 / 校验收尾）后的刷新：保留勾选与分页。
+   *
+   * 这一条与「切模式 / 显式重读」不是同一件事：后台把数据变了，用户可能正在勾选，
+   * 清空选择会让他白勾一遍。只把结果里已经不存在的文件从选中集合里剔掉。
+   */
+  function reloadAfterSettle() {
+    return reloadFromCache(true);
+  }
+
   /** 校验收尾：先重读缓存，再按任务终态给出提示。 */
   async function refreshAfterScan(snap) {
     const task = (snap && snap.task) || state.task || {};
-    await reloadFromCache();
+    await reloadAfterSettle();
     if (task.cancelled) {
       state.notice = { tone: 'muted', text: '校验已取消，已完成的指纹保留' };
     } else if (task.state === 'done' && task.success === false) {
@@ -340,11 +350,13 @@
       container: host,
       unit: '张',
       // 被动同步发现变化时重读缓存：分组结果会因指纹变化被标成过期，状态行要跟着变。
-      onChange: function () { void reloadFromCache(); },
+      // 走 settle 路径，勾选与分页保留（用户可能正在勾选）。
+      onChange: function () { void reloadAfterSettle(); },
     });
   }
 
-  async function loadResults() {
+  async function loadResults(preserve) {
+    let failed = false;
     try {
       const result = await Bridge.call('get_cached_scan', state.mode);
       const groups = result && Array.isArray(result.groups) ? result.groups : [];
@@ -356,16 +368,35 @@
       state.stale = !!(result && result.stale);
       state.error = false;
     } catch (e) {
+      failed = true;
       state.groups = [];
       state.scanned = 0;
       state.cached = false;
       state.stale = false;
       state.error = true;
     }
-    state.selected.clear();
-    state.visibleCount = PAGE_SIZE;
-    state.fileLimits = {};
-    state.pendingDelete = false;
+    if (!preserve) {
+      state.selected.clear();
+      state.visibleCount = PAGE_SIZE;
+      state.fileLimits = {};
+      state.pendingDelete = false;
+      return;
+    }
+    // 保留勾选与分页：只把结果里已经没有的文件从选中集合里剔掉。
+    // 读取失败时同理（此时结果为空，选中集合自然清空）。
+    if (failed) {
+      state.selected.clear();
+      state.pendingDelete = false;
+      return;
+    }
+    const alive = new Set();
+    state.groups.forEach(function (group) {
+      group.files.forEach(function (rel) { alive.add(rel); });
+    });
+    Array.from(state.selected).forEach(function (rel) {
+      if (!alive.has(rel)) state.selected.delete(rel);
+    });
+    if (!state.selected.size) state.pendingDelete = false;
   }
 
   async function init() {

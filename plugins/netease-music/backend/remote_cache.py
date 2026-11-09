@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Callable, Dict, Optional
 
 from shell.backend.freshness import engine_for
@@ -39,10 +40,36 @@ class RemoteCache:
         # 新鲜期同时从这次失效重新起算。
         report = engine.sync('', force=True, reason=reason)
         if not report.get('invalidated'):
-            # 引擎正忙或异常：登录态变化必须立刻生效，绕过去直接丢弃本地缓存。
-            return {'reason': reason, 'cleared': self._invalidate(reason),
+            # 引擎正忙或异常：登录态变化必须立刻生效，绕过去直接丢弃本地缓存；
+            # 新鲜期的时间戳得自己补，否则状态里的 `fresh_until` 仍指向旧时刻。
+            cleared = self._invalidate(reason)
+            self._stamp_freshness()
+            return {'reason': reason, 'cleared': cleared,
                     'engine': str(report.get('reason') or report.get('action') or '')}
         return {'reason': reason, 'cleared': report.get('cleared')}
+
+    def _stamp_freshness(self) -> None:
+        """把「刚刚失效过」写进引擎的时间戳（兜底路径专用）。
+
+        正常路径由引擎在远端那一趟末尾写 `last_sync_at` / `last_verify_at`；绕过引擎
+        直接丢缓存时，这两处不补就会让新鲜期停在旧时刻 —— 界面显示"还剩 N 分钟"，
+        而事实是数据刚刚被作废。写不进去只记日志：缓存已经丢了，状态投影退化成旧值
+        也比把登录流程打挂好。
+        """
+        engine = engine_for(self._plugin)
+        if engine is None:
+            return
+        try:
+            conn = engine.store.connect()
+        except Exception as e:      # 指纹库被占用 / 磁盘掉线
+            log.warning(f'[netease-music] 兜底失效写新鲜期失败: {e}')
+            return
+        try:
+            stamp = time.time()
+            engine.store.meta_set(conn, 'last_sync_at', stamp)
+            engine.store.meta_set(conn, 'last_verify_at', stamp)
+        finally:
+            conn.close()
 
     def note_login_state(self, logged_in: bool) -> Optional[Dict[str, Any]]:
         """登录态转为「已登录」时作废缓存；重复的「已登录」不重复丢弃。"""

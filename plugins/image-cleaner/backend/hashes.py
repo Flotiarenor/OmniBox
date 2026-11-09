@@ -30,6 +30,9 @@ class DHashStore:
         self._version = version
         self._entries: Dict[str, Any] = {}
         self._loaded = False
+        #: 内存里是否有还没落盘的改动。引擎每趟都会调 `save()`（收尾钩子），
+        #: 稳态下这一趟什么都没算，整份重写只会放大 I/O；只有真的改过条目才写。
+        self._dirty = False
 
     # ===== 路径与缓存 =====
 
@@ -97,13 +100,20 @@ class DHashStore:
                 if pixels[row * 9 + col] > pixels[row * 9 + col + 1]:
                     value |= 1
         self._entries[key] = {'v': self._version, 'mtime': mtime, 'hash': value}
+        self._dirty = True
         return value
 
     # ===== 落盘与清理 =====
 
     def save(self) -> None:
-        """把当前条目整份原子落盘；失败只记日志（缓存写不进去不该打断扫描）。"""
+        """把当前条目整份原子落盘；失败只记日志（缓存写不进去不该打断扫描）。
+
+        没有未落盘的改动时直接返回：引擎的收尾钩子每趟都会调它，包括"什么都没变"的
+        被动同步 —— 那种情况重写一份几 MB 的 JSON 没有意义。
+        """
         self._ensure_loaded()
+        if not self._dirty:
+            return
         path = self.path()
         try:
             written = write_json(path, self._entries, indent=None, create_parent=True)
@@ -112,11 +122,16 @@ class DHashStore:
             return
         if not written:
             log.error(f'保存 dHash 缓存失败: {path}')
+            return
+        self._dirty = False
 
     def drop(self, key: str) -> bool:
         """删掉单条指纹；返回是否真的删掉了。"""
         self._ensure_loaded()
-        return self._entries.pop(key, None) is not None
+        removed = self._entries.pop(key, None) is not None
+        if removed:
+            self._dirty = True
+        return removed
 
     def prune(self, valid: Set[str]) -> int:
         """只保留 `valid` 里的条目，返回删除条数（校验趟的对账）。"""
@@ -125,12 +140,16 @@ class DHashStore:
         for key in [k for k in self._entries if k not in valid]:
             self._entries.pop(key, None)
             dropped += 1
+        if dropped:
+            self._dirty = True
         return dropped
 
     def clear(self) -> None:
         """丢弃全部指纹并删除落盘文件（统一刷新的逃生门）。"""
         self._entries = {}
         self._loaded = True
+        # 文件已经删掉，没有需要落盘的内容；之后的 `get()` 会重新把脏标记打开。
+        self._dirty = False
         try:
             path = self.path()
             if path.exists():

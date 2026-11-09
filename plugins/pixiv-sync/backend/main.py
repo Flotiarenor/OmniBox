@@ -86,13 +86,13 @@ class PixivSyncPlugin(PluginBase):
         return engine_for(self)
 
     def _invalidate_host_derived(self, reason: str) -> None:
-        """通知宿主「刚写入了它的图片根」：同步任务终态由 `SyncRunner` 调用一次。
+        """通知宿主「刚写入了它的图片根」：同步任务收尾时、且本趟确有下载才调用一次。
 
         宿主契约是 `invalidate_derived(reason)`；旧宿主没有这个方法时用 `getattr`
         跳过，宿主未加载（依赖缺失、测试里没注入）同样跳过 —— 这条通知只影响宿主
         相册树的缓存，不能反过来影响同步任务的终态。
 
-        **本方法不抛异常**：`SyncRunner._notify_host_written` 在任务收尾处直接调用它，
+        **本方法不抛异常**：`SyncRunner._run_sync` 在任务收尾处直接调用它，
         异常会从 worker 线程的 `finally` 里逃出去。宿主怎么写坏都只留一条 warning。
         """
         try:

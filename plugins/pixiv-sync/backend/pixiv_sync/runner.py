@@ -203,13 +203,13 @@ class SyncRunner:
             if token.is_set():
                 task["state"] = "cancelled"
             self._workspace.persist_task(task)
-            self._notify_host_written()     # 唯一收口：每趟任务一次，不是每张作品一次
+            # 只在**这一趟确有下载**时通知宿主（每趟一次，不是每张作品一次）：未配
+            # token 的失败、清单为空或全部已下的零下载空跑都没改过它的目录，清一次
+            # 相册索引只会让它白重扫。失败/取消前已写出的文件同样要刷新，判据只看
+            # `downloaded`；回调由入口注入、自己吞异常，通知不影响任务终态。
+            if self._invalidate_host is not None and int(task.get("downloaded") or 0) > 0:
+                self._invalidate_host('pixiv-sync:download')
             self._finish_task_runtime()
-
-    def _notify_host_written(self) -> None:
-        """同步任务终态：通知宿主下载目录的图片可能变了（入口注入的回调自己吞异常）。"""
-        if self._invalidate_host is not None:
-            self._invalidate_host('pixiv-sync:download')
 
     # ---------- 只刷新名单（不下载） ----------
 

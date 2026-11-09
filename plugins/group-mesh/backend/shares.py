@@ -1,7 +1,8 @@
 """共享项：挂载 / 移除、可用性与用量、接入壳的统一刷新基建。
 
 状态自持：共享根用量缓存（`usage_cache`）。声明的落盘在 `Storage`，发布新注册记录
-委托给 `Node`，刷新引擎由入口以闭包注入（`engine_for(plugin)` 需要插件实例本身）。
+委托给 `Node`，刷新引擎由入口以闭包注入（`engine_for(plugin)` 需要插件实例本身）；
+路径比较与根指纹是无状态纯函数，由入口把 `share_paths.SharePaths` 注入进来。
 
 用量缓存的写入方是本组件的刷新钩子，读取方是共享项卡片（经 `share_roots_report`），
 因此它只在这里。用量是"某个绝对目录在某个时刻的状态"，所以缓存条目带着路径与时刻：
@@ -11,7 +12,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -23,44 +23,10 @@ from shell.groupmesh.shares import Acl, new_share
 log = logging.getLogger(__name__)
 
 
-def _norm_path(path: str) -> str:
-    """路径比较用的规范形式：绝对化 + 大小写折叠（Windows 上两者等价）。"""
-    return os.path.normcase(os.path.abspath(path)) if path else ''
-
-
-def _root_prefix(root_path: str) -> str:
-    """根路径的"目录前缀"形式：保证以分隔符结尾，盘符根目录本身也适用。"""
-    return root_path if root_path.endswith(os.sep) else root_path + os.sep
-
-
-def _share_of_path(path: str, paths: Dict[str, str]) -> Optional[str]:
-    """绝对路径落在哪个共享根下：嵌套共享时归最内层（最长匹配）。"""
-    target = _norm_path(path)
-    if not target:
-        return None
-    best: Optional[str] = None
-    best_len = -1
-    for share_id, root in paths.items():
-        root_path = _norm_path(root)
-        if not root_path:
-            continue
-        if target != root_path and not target.startswith(_root_prefix(root_path)):
-            continue
-        if len(root_path) > best_len:
-            best, best_len = share_id, len(root_path)
-    return best
-
-
-def _missing_usage() -> Dict[str, Any]:
-    """用量还没算过（或共享根不可用）时的占位值。"""
-    return {'used_bytes': None, 'entries': None, 'truncated': False,
-            'usage_at': None, 'usage_stale': True}
-
-
 class Shares:
     def __init__(self, storage: Any, node: Any, settings: SettingsPort, lock: Any,
                  rules: Any, global_data_root: Path,
-                 engine: Callable[[], Any]) -> None:
+                 engine: Callable[[], Any], paths: Any) -> None:
         self._storage = storage
         self._node = node
         self._settings = settings
@@ -68,7 +34,9 @@ class Shares:
         self._rules = rules
         self._global_data_root = global_data_root
         self._engine = engine
-        # 共享根用量缓存：{share_id: {path, used_bytes, truncated, entries, at}}。
+        # 路径规范 / 嵌套归属 / 根目录指纹（纯函数，入口注入 share_paths.SharePaths）
+        self._paths = paths
+        # 共享根用量缓存：{share_id: {path, used_bytes, truncated, entries, at, root_stamp}}。
         # 由统一刷新基建的校验驱动（见 spec()），共享项卡片读它，
         # `get_status` 不遍历目录。
         self.usage_cache: Dict[str, Dict[str, Any]] = {}
@@ -128,29 +96,44 @@ class Shares:
 
     def _usage_fields(self, share_id: str, state: Dict[str, Any], *,
                       scan: bool) -> Dict[str, Any]:
-        """用量字段：`scan` 为真时缺的现算，为假时只读缓存。"""
+        """用量字段：`scan` 为真时缺的/过期的现算，为假时只读缓存。
+
+        `usage_stale` 的含义是"这份用量不是按当前目录指纹算出来的"：路径换过或者
+        根目录 mtime/大小变过都为真。首屏（`scan=False`）仍把上次的数字给出去，
+        只是明确标成过期，而不是让界面把它当成现状。
+        """
         if not state.get('available'):
-            return _missing_usage()
+            return self._paths.missing_usage()
         cached = self.usage_cache.get(share_id)
-        if not self._usage_matches(cached, state):
+        if not self._usage_matches(cached, state) or (
+                scan and not self._usage_stamp_matches(cached, state)):
             if not scan:
-                return _missing_usage()
+                return self._paths.missing_usage()
             cached = self.scan_share_usage(share_id, state)
         if not isinstance(cached, dict) or 'used_bytes' not in cached:
             reason = str((cached if isinstance(cached, dict) else {}).get('reason') or '')
-            return {**_missing_usage(), 'reason': reason}
+            return {**self._paths.missing_usage(), 'reason': reason}
         return {'used_bytes': int(cached['used_bytes']),
                 'entries': int(cached.get('entries') or 0),
                 'truncated': bool(cached.get('truncated')),
                 'usage_at': cached.get('at'),
-                'usage_stale': False}
+                'usage_stale': not self._usage_stamp_matches(cached, state)}
 
-    @staticmethod
-    def _usage_matches(cached: Any, state: Dict[str, Any]) -> bool:
+    def _usage_matches(self, cached: Any, state: Dict[str, Any]) -> bool:
         """缓存里的用量是否属于当前位置（共享根换过路径时整份作废）。"""
         if not isinstance(cached, dict):
             return False
-        return _norm_path(str(cached.get('path') or '')) == _norm_path(str(state.get('path') or ''))
+        return self._paths.norm(str(cached.get('path') or '')) == self._paths.norm(str(state.get('path') or ''))
+
+    def _usage_stamp_matches(self, cached: Any, state: Dict[str, Any]) -> bool:
+        """用量算出时记下的根指纹是否仍与磁盘一致；没有记录过一律算不一致。"""
+        if not isinstance(cached, dict):
+            return False
+        recorded = cached.get('root_stamp')
+        if not isinstance(recorded, list):
+            return False
+        current = self._paths.root_stamp(Path(str(state.get('path') or '')).expanduser())
+        return current is not None and current == recorded
 
     def scan_share_usage(self, share_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
         """算一个共享根的用量与条目数，写进缓存（同一次刷新同一目录只走一遍）。"""
@@ -165,6 +148,8 @@ class Shares:
             'truncated': truncated,
             'entries': self._storage.count_entries(target),
             'at': int(time.time()),
+            # 这次用量是"按哪个目录算的"：根目录指纹变了，用量就该标成过期。
+            'root_stamp': self._paths.root_stamp(target),
         }
         self.usage_cache[share_id] = usage
         return usage
@@ -289,9 +274,14 @@ class Shares:
         return {
             'roots': lambda: [Path(str(s.path)) for s in self._storage.load_shares().values()
                               if str(s.path or '').strip()],
+            # 本插件只关心目录级事实（用量、条目数），不维护逐条目派生数据。
+            # 声明后引擎不写 `entries` 表，指纹库不再随共享根的文件数线性膨胀；
+            # 引擎支持这个字段之前它是装饰性的（规格归一化忽略未知键）。
+            'track_entries': False,
             'include': (),                 # 用量统计关心全部文件，不筛后缀
             'derive': self.derive,
             'prune': self.prune,
+            'on_dirs_changed': self.dirs_changed,
             'on_verified': self.audit,
             'on_pass_end': self.pass_end,
             'rebuild': self.rebuild,
@@ -300,6 +290,21 @@ class Shares:
             'min_sync_interval': 10.0,     # 共享根可能很大：被动同步间隔放宽
             'max_dirs_per_sync': 200,
         }
+
+    def dirs_changed(self, report: Dict[str, Any]) -> Dict[str, Any]:
+        """目录集合变了：作废用量缓存。
+
+        `track_entries=False` 之后引擎不再维护逐条目事件，目录集合变化是唯一的被动
+        信号；用量本来只在整趟校验里现算，这里整份作废即可 —— 共享根与目录键不是
+        一对一（目录键相对各自根），无法无损归属到单个根。
+        """
+        new_dirs = list(report.get('new_dirs') or [])
+        vanished = list(report.get('vanished_dirs') or [])
+        if not new_dirs and not vanished:
+            return {'cleared': 0}
+        cleared = len(self.usage_cache)
+        self.usage_cache.clear()
+        return {'cleared': cleared, 'dirs_changed': len(new_dirs) + len(vanished)}
 
     def sync_errors(self) -> List[str]:
         """最近一趟同步或校验报告里的读取错误（引擎侧已按上限截断）。"""
@@ -323,7 +328,7 @@ class Shares:
         paths = self._share_paths()
         dropped: List[str] = []
         for item in items:
-            share_id = _share_of_path(str(item.get('path') or ''), paths)
+            share_id = self._paths.share_of(str(item.get('path') or ''), paths)
             if share_id is None or share_id not in self.usage_cache:
                 continue
             self.usage_cache.pop(share_id, None)

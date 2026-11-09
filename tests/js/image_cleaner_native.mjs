@@ -483,5 +483,33 @@ await check('同步发现变化时 onChange 重读缓存（外部新增的重复
   assert.equal(env.freshnessLog.mounts.length, 1, '重读不能重新挂载控件');
 });
 
+await check('被动同步的重读保留勾选、分页与待确认状态，只剔掉已消失的文件', async () => {
+  let current = [makeGroup('a', 30)];
+  const env = setup({ groups: () => current, scanned: 30 });
+  await env.init();
+
+  // 前置：组内展开到全部 30 张，全选并打开删除确认（待确认状态也要被保留）
+  await env.action('show-group-more', { index: 0 });
+  assert.equal(env.groupsBlock().groups[0].items.length, 30);
+  await env.action('select-group', { index: 0 });
+  await env.action('delete-selected');
+  await env.flush();
+  assert.ok(env.findBlock('delete-dialog'), '前置：删除确认层已打开');
+  assert.equal(env.selectedCount(), 30);
+
+  // 被动同步发现一个文件消失：重读结果，但不该清空勾选/分页/确认状态
+  current = [{ files: makeGroup('a', 30).files.filter(f => f !== 'a/5.jpg') }];
+  env.freshnessLog.mounts[0].onChange({ action: 'sync', removed: 1 });
+  await env.flush();
+  await env.flush();
+
+  assert.equal(env.selectedCount(), 29, '勾选保留，只剔掉消失的那一个文件');
+  assert.equal(env.groupsBlock().groups[0].items.length, 29,
+    '分页窗口不能被重置成首屏 12 张（29 张全可见说明组内窗口还是 36）');
+  assert.ok(env.findBlock('delete-dialog'), '待删除的确认状态保留');
+  assert.equal(env.groupsBlock().groups[0].items.find(i => i.value === 'a/5.jpg'), undefined,
+    '消失的文件不再渲染');
+});
+
 console.log(failed ? `\n${failed} 例失败` : `\nimage-cleaner 原生面板 ${total} 例通过`);
 process.exit(failed ? 1 : 0);

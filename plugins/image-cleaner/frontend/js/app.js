@@ -13,6 +13,11 @@ class ImageCleaner {
     this._bind();
     this._mountHostToolbar();
     this._mountFreshness();
+    // 控件只渲染状态并读一次投影，自己不扫盘：挂载后由本页发起一次被动同步，
+    // 外部新增/删除的图片才会让结果缓存被标成过期（删除后那一次见 deleteSelected）。
+    if (this.freshness && typeof this.freshness.autoSync === 'function') {
+      this.freshness.autoSync('');
+    }
     if (typeof createLightbox === 'function') {
       this.lightbox = createLightbox({ getImageUrl: (item) => item.url || item });
     }

@@ -36,11 +36,11 @@
 
   function el(id) { return document.getElementById(id); }
 
-  // 新壳在 `omnibox:freshness` 之后紧跟一条旧的 `omnibox:action: refresh`，两条属于
-  // 同一次同步。内容页拿不到动作上的 payload（握手层只转发 action id），因此按时间窗
-  // 判定：富事件到达后这个窗口内的旧动作不再触发第二次状态重读。
-  var FRESHNESS_ECHO_MS = 1000;
-  var lastFreshnessAt = 0;
+  // 壳在 `omnibox:freshness` 之后紧跟一条旧的 `omnibox:action: refresh`，两条属于同一次
+  // 同步。回声那条靠 **payload** 识别：壳把 `{plugin, scope, report}` 附在 refresh 上，
+  // `/shell/chrome-client.js` 的 `onAction(action, payload)` 第二参就是它，因此"带
+  // payload 的 refresh"说明富事件已经重载过，跳过即可；没有 payload 的 refresh 是用户
+  // 点顶栏「刷新」，照常重读。不用时间窗：那会吞掉紧跟一次同步之后的真实点击。
 
   // ── 与壳的页面骨架通信 ────────────────────────────────────────────────
   // chrome（品牌块/左栏/顶栏/状态栏）由壳渲染；本页只上报标题、徽标与状态。
@@ -371,9 +371,13 @@
         : share;
       var used = usage.used_bytes;
       var entries = usage.entries;
+      // 用量可能是上次统计的数字：`usage_stale` 表示"不是按当前目录指纹算的"（根目录
+      // 换过位置或 mtime 变过）。数字仍显示，但明确标成待更新，不当成现状。
+      var usageStale = usage.usage_stale === true && used !== undefined && used !== null;
       var usageText = used === undefined || used === null
         ? ''
-        : escapeHtml(formatSize(used)) + (usage.truncated ? '+' : '');
+        : escapeHtml(formatSize(used)) + (usage.truncated ? '+' : '')
+          + (usageStale ? '（待更新）' : '');
       var entriesText = entries === undefined || entries === null
         ? '' : escapeHtml(String(entries));
       return '<tr style="--obx-i:' + index + '">' +
@@ -676,6 +680,21 @@
     });
   }
 
+  /**
+   * 顶栏动作分发：`refresh` 可能与统一刷新的富事件同源，按 payload 判重。
+   *
+   * `payload` 存在 = 壳附带的 `{plugin, scope, report}`，同一次同步的富事件已经处理过
+   * （见 `onMessage`），这里不重复重读；无 payload = 用户点顶栏「刷新」或旧壳，正常重载。
+   */
+  function applyHostAction(action, payload) {
+    if (action === 'refresh') {
+      if (payload) { return; }
+      refresh();
+      return;
+    }
+    if (action === 'settings-saved') { refresh(); }
+  }
+
   // 与壳的页面骨架握手：视图切换、顶栏动作、统一刷新报告都从壳发过来；
   // 标题/徽标/状态反向上报。来源校验、消息分发与 ready 握手都在
   // /shell/chrome-client.js（内容页共用一份）。
@@ -685,19 +704,10 @@
         // 空视图按"没有要切的页面"处理，与收敛前的 `data.view` 真假判定一致
         if (name) { setPanel(name); }
       },
-      onAction: function (action) {
-        if (action === 'refresh') {
-          // 富事件已经在前面处理过同一次同步：紧跟着的旧动作不再重读一次。
-          // 没有富事件的（旧壳）仍按"刷新/校验完成"处理。
-          if (Date.now() - lastFreshnessAt < FRESHNESS_ECHO_MS) { return; }
-          refresh();
-        }
-        else if (action === 'settings-saved') { refresh(); }
-      },
+      onAction: applyHostAction,
       onMessage: function (data) {
         if (!data || data.type !== 'omnibox:freshness') { return; }
         if (data.plugin && data.plugin !== 'group-mesh') { return; }
-        lastFreshnessAt = Date.now();
         if (!freshnessChanged(data.report)) { return; }
         refresh();
       }

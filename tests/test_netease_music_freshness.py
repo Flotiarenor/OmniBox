@@ -256,5 +256,45 @@ class RemoteFreshnessStateTests(_PluginFixture):
         json.dumps(status, ensure_ascii=False)
 
 
+class TtlSemanticsTests(_PluginFixture):
+    """两条时间窗不是同一个数：远端新鲜期半小时，播放地址有效期十分钟。"""
+
+    def test_freshness_ttl_is_the_spec_window(self):
+        self.assertEqual(self.plugin.freshness_spec()['ttl_seconds'],
+                         self.plugin.NETEASE_TTL_SECONDS)
+
+    def test_url_cache_ttl_is_not_the_freshness_window(self):
+        api = _load('netease_music_api').NeteaseMusicAPI
+        self.assertLessEqual(api.URL_CACHE_TTL_SECONDS, self.plugin.NETEASE_TTL_SECONDS,
+                             '播放地址的有效期不能长于远端数据的新鲜期')
+        self.assertLess(api.URL_CACHE_TTL_SECONDS, self.plugin.NETEASE_TTL_SECONDS,
+                        '两个 TTL 不是同一个数，注释与常量要能对上')
+
+
+class RemoteCacheFallbackTests(_PluginFixture):
+    """引擎忙/异常时绕过引擎直接丢缓存，但新鲜期必须跟着重新起算。"""
+
+    def test_busy_engine_fallback_still_restarts_the_freshness_window(self):
+        from shell.backend.freshness import engine_for
+
+        engine = engine_for(self.plugin)
+        self.assertIsNotNone(engine)
+        # 真实场景：另一趟同步/校验正在跑，远端那一趟被单飞挡掉
+        engine.sync = lambda *args, **kwargs: {'action': 'skip', 'reason': 'busy'}
+
+        before = time.time()
+        result = self.plugin.remote_cache.invalidate('identity')
+
+        self.assertEqual(result['reason'], 'identity')
+        self.assertEqual(result['cleared'], {'url_cache': 3}, '兜底也要真的丢缓存')
+        self.assertEqual(result['engine'], 'busy')
+
+        state = self.plugin.remote_cache.state()
+        self.assertGreater(state['ttl_remaining'], 0.0, '新鲜期从这次失效重新起算')
+        self.assertGreaterEqual(state['fresh_until'],
+                                before + self.plugin.NETEASE_TTL_SECONDS - 5,
+                                'fresh_until 不能还停在失效之前的旧时刻')
+
+
 if __name__ == '__main__':   # pragma: no cover
     unittest.main()

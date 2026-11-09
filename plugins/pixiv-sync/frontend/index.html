@@ -193,6 +193,8 @@
       const $ = id => document.getElementById(id);
       let polling = false;
       let cooldownUntil = 0;
+      // 共享刷新控件的挂载句柄：进页面与重新可见时由本页触发被动同步
+      let freshness = null;
 
       function renderCooldown() {
         const el = $('psync-cooldown');
@@ -216,19 +218,28 @@
       // ---------- 统一刷新（同步 / 校验）----------
       //
       // 已下载记录是"本地图片树 → 作品集合"的派生数据，由共享组件驱动：
-      // 被动同步在进页面时检查磁盘，手动「校验」全量比对并把失效/缺页的记录移出
-      // （下次同步只补缺的页）。
+      // 控件只渲染状态并读一次投影，**它自己不扫盘** —— 被动同步必须由持有句柄的
+      // 本页发起：挂载后立刻一次，重新可见时再一次。手动「校验」全量比对并把
+      // 失效/缺页的记录移出（下次同步只补缺的页）。
       function mountFreshness() {
         const host = $('psync-freshness');
         if (!host || typeof window.Freshness === 'undefined') { return; }
         try {
-          window.Freshness.mount({
+          freshness = window.Freshness.mount({
             plugin: 'pixiv-sync',
             container: host,
             unit: '张',
             onChange: () => { refreshStatus(); },
           });
-        } catch (e) { /* 组件不可用不影响其余按钮 */ }
+        } catch (e) { return; /* 组件不可用不影响其余按钮 */ }
+        syncFreshness();
+      }
+
+      /** 被动同步一次（去抖由组件与壳侧引擎负责）：挂载后与 onShow 时各调一次。 */
+      function syncFreshness() {
+        if (freshness && typeof freshness.autoSync === 'function') {
+          freshness.autoSync('');
+        }
       }
 
       // ---------- 状态 ----------
@@ -387,6 +398,9 @@
         if (!window.PluginLifecycle) { startTimers(); return; }
         window.PluginLifecycle.onShow(async () => {
           startTimers();
+          // 切回来时再看一眼磁盘：外部新增/删除的图片只有走过一趟同步才会让
+          // 已下载记录跟上（控件本身不扫盘）。
+          syncFreshness();
           const s = await refreshStatus();
           if (s && s.running && !polling) { polling = true; tick(); }
         });

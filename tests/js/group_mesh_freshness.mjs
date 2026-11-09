@@ -187,6 +187,7 @@ const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
     const shares = env.html('shares-body');
     check('共享项表格渲染出用量', shares.includes('1.5 MiB'), shares.slice(0, 200));
     check('共享项表格渲染出条目数', shares.includes('42'), shares.slice(0, 200));
+    check('按当前目录指纹算过的用量不标待更新', !shares.includes('待更新'), shares.slice(0, 200));
     check('共享项表格保留状态与 ACL', shares.includes('可用') && shares.includes('读 group / 写 owner'));
     check('节点卡片展示最近同步失败', env.html('node-body').includes('最近同步失败'));
     check('最近同步失败带原因', env.html('node-body').includes('TransportError: 连接超时'));
@@ -213,14 +214,14 @@ const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
     check('共享项仍正常渲染', shares.includes('s1') && shares.includes('D:/share'));
 }
 
-// ---- 3. 共享项行自身带用量时也认 ----
+// ---- 3. 共享项行自身带用量时也认；过期的用量要标待更新 ----
 {
     const env = loadApp({
         statuses: [baseStatus({
             shares: [{
                 share_id: 's2', path: 'D:/share2', acl: { read: 'group', write: 'owner' },
                 max_bytes: null, available: true, reason: null,
-                used_bytes: 2048, entries: 3, last_error: '共享根不可读',
+                used_bytes: 2048, entries: 3, usage_stale: true, last_error: '共享根不可读',
             }],
             share_roots: [],
         })],
@@ -231,6 +232,7 @@ const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
     check('行内用量优先于 share_roots', shares.includes('2.0 KiB'), shares.slice(0, 200));
     check('行内条目数可见', shares.includes('3'));
     check('共享项自身的最近错误可见', shares.includes('共享根不可读'));
+    check('目录指纹已变的用量标成待更新', shares.includes('待更新'), shares.slice(0, 300));
 }
 
 // ---- 4. onShow 同步全部根，有变化才重读 ----
@@ -257,7 +259,7 @@ const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
     check('零变化不重读状态', env.statusCalls() === before, `${before} -> ${env.statusCalls()}`);
 }
 
-// ---- 5. omnibox:freshness 与旧 refresh 动作 ----
+// ---- 5. omnibox:freshness 与旧 refresh 动作（按 payload 判重） ----
 {
     const env = loadApp();
     env.init();
@@ -280,13 +282,23 @@ const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
     await env.tick(20);
     check('有变化报告重读状态', env.statusCalls() === before + 1, `${before} -> ${env.statusCalls()}`);
 
+    // 壳在同一次同步后补发的旧 refresh 带着同一份 payload：富事件已经重读过，跳过。
+    env.send({
+        type: 'omnibox:action', action: 'refresh',
+        payload: { plugin: 'group-mesh', scope: '', report: changed },
+    });
+    await env.tick(20);
+    check('带 payload 的 refresh（回声）不重复重读', env.statusCalls() === before + 1,
+        `${before} -> ${env.statusCalls()}`);
+
+    // 用户点顶栏「刷新」：动作上没有 payload，必须重读。
     env.send({ type: 'omnibox:action', action: 'refresh' });
     await env.tick(20);
-    check('富事件之后紧跟的旧动作不重复重读', env.statusCalls() === before + 1,
+    check('无 payload 的 refresh（用户点击）正常重读', env.statusCalls() === before + 2,
         `${before} -> ${env.statusCalls()}`);
 }
 
-// ---- 6. 旧壳只发 refresh 动作（没有富事件）时仍重读 ----
+// ---- 6. 旧壳只发 refresh 动作（没有富事件、没有 payload）时仍重读 ----
 {
     const env = loadApp();
     env.init();

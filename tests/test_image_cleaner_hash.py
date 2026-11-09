@@ -229,5 +229,64 @@ class DuplicateScanGroupingTests(unittest.TestCase):
                          '摘要不可信的文件绝不能组成"完全重复"分组（下一步就是删除）')
 
 
+class DHashPersistenceTests(unittest.TestCase):
+    """`save()` 只在条目真的变过时落盘：引擎每趟收尾都会调它（含零变化的被动同步）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+
+    def _store(self):
+        return hashes.DHashStore(lambda: self.dir, 2)
+
+    def _image(self, name: str = 'a.jpg') -> str:
+        from PIL import Image
+        path = self.dir / name
+        Image.new('RGB', (24, 24), (10, 120, 200)).save(path)
+        return str(path)
+
+    def test_no_write_when_nothing_changed(self):
+        store = self._store()
+        with mock.patch.object(hashes, 'write_json', wraps=hashes.write_json) as writer:
+            store.save()
+            self.assertEqual(writer.call_count, 0, '没有改动时收尾钩子不该重写 dhash.json')
+            self.assertFalse(store.path().exists())
+
+            path = self._image()
+            store.get(path, 0.0)
+            store.save()
+            self.assertEqual(writer.call_count, 1, '有改动才落盘')
+
+            store.save()
+            self.assertEqual(writer.call_count, 1, '零变化的第二趟不再落盘')
+            self.assertTrue(store.path().exists())
+
+    def test_drop_marks_dirty(self):
+        store = self._store()
+        path = self._image()
+        key = store.key_for_abs(path)
+        store.get(path, 0.0)
+        store.save()
+
+        with mock.patch.object(hashes, 'write_json', wraps=hashes.write_json) as writer:
+            store.save()
+            self.assertEqual(writer.call_count, 0)
+            self.assertTrue(store.drop(key))
+            store.save()
+            self.assertEqual(writer.call_count, 1, '删掉条目后必须落盘')
+            self.assertEqual(store.entries, {})
+
+    def test_failed_write_keeps_the_dirty_flag(self):
+        store = self._store()
+        store.get(self._image(), 0.0)
+        with mock.patch.object(hashes, 'write_json', return_value=False):
+            store.save()
+
+        with mock.patch.object(hashes, 'write_json', wraps=hashes.write_json) as writer:
+            store.save()
+            self.assertEqual(writer.call_count, 1, '上次没写成功，下一次收尾要重试')
+
+
 if __name__ == '__main__':
     unittest.main()

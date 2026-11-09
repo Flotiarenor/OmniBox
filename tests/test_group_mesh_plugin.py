@@ -912,7 +912,7 @@ class ShareLocationTest(unittest.TestCase):
         (self.shared / 'b.bin').write_bytes(b'y' * 1024)
         cached = self.plugin.get_share_roots()[0]
         self.assertEqual(cached['used_bytes'], 512, '首屏不应重新遍历共享根')
-        self.assertFalse(cached['usage_stale'])
+        self.assertTrue(cached['usage_stale'], '根目录指纹变了：旧用量必须标成待更新')
 
         self.plugin.shares.usage_cache.clear()
         fresh = self.plugin.shares.share_roots_report()[0]
@@ -927,6 +927,56 @@ class ShareLocationTest(unittest.TestCase):
         self.assertIsNone(stale['used_bytes'])
         self.assertIsNone(stale['entries'])
         self.assertTrue(stale['usage_stale'])
+
+    # ===== 用量与目录指纹（E3） =====
+
+    def test_spec_declares_track_entries_false(self):
+        """共享根只关心目录级事实：声明不维护逐条目派生数据，并交出目录事件钩子。"""
+        spec = self.plugin.freshness_spec()
+
+        self.assertIs(spec.get('track_entries'), False)
+        self.assertTrue(callable(spec.get('on_dirs_changed')))
+
+    def test_usage_stale_follows_root_fingerprint(self):
+        """用量标不标待更新只看"是不是按当前根目录指纹算的"。"""
+        from shell.backend.freshness import engine_for
+
+        self.plugin.identity.init_identity({'name': 'usage-stamp'})
+        (self.shared / 'a.bin').write_bytes(b'x' * 512)
+        self.assertTrue(self._add()['success'])
+        engine = engine_for(self.plugin)
+        self.assertIsNotNone(engine)
+        engine.verify()
+
+        fresh = self.plugin.get_share_roots()[0]
+        self.assertEqual(fresh['used_bytes'], 512)
+        self.assertFalse(fresh['usage_stale'], '刚算过的用量与当前目录一致')
+
+        (self.shared / 'later.bin').write_bytes(b'z' * 256)
+        cached = self.plugin.get_share_roots()[0]
+        self.assertEqual(cached['used_bytes'], 512, '首屏不重扫，数字仍是上次的')
+        self.assertTrue(cached['usage_stale'], '根目录指纹变了，数字必须标成待更新')
+
+        rescanned = self.plugin.shares.share_roots_report()[0]
+        self.assertEqual(rescanned['used_bytes'], 768)
+        self.assertFalse(rescanned['usage_stale'], '重算之后又回到与目录一致')
+
+    def test_dirs_changed_drops_usage_cache(self):
+        """目录集合变化是 track_entries=False 之后唯一的被动信号。"""
+        self.plugin.identity.init_identity({'name': 'usage-dirs'})
+        (self.shared / 'sub').mkdir()
+        self.assertTrue(self._add()['success'])
+        self._seed_usage('docs')
+
+        unchanged = self.plugin.shares.dirs_changed({'new_dirs': [], 'vanished_dirs': []})
+        self.assertEqual(unchanged['cleared'], 0)
+        self.assertIn('docs', self.plugin.shares.usage_cache)
+
+        changed = self.plugin.shares.dirs_changed(
+            {'new_dirs': ['sub'], 'vanished_dirs': []})
+        self.assertEqual(changed['cleared'], 1)
+        self.assertEqual(changed['dirs_changed'], 1)
+        self.assertNotIn('docs', self.plugin.shares.usage_cache)
 
     def test_status_carries_usage_errors_and_offline_facts(self):
         """`get_status` 要能被 JSON 序列化，并带上用量与"跑得好不好"。"""

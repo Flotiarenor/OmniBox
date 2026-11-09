@@ -48,6 +48,7 @@ _discovery = load_sibling(__file__, 'discovery', 'group_mesh')
 _peers = load_sibling(__file__, 'peers', 'group_mesh')
 _group = load_sibling(__file__, 'group', 'group_mesh')
 _shares = load_sibling(__file__, 'shares', 'group_mesh')
+_share_paths = load_sibling(__file__, 'share_paths', 'group_mesh')
 _status = load_sibling(__file__, 'status', 'group_mesh')
 _remote = load_sibling(__file__, 'remote', 'group_mesh')
 _materialize = load_sibling(__file__, 'materialize', 'group_mesh')
@@ -99,8 +100,10 @@ class GroupMeshPlugin(PluginBase):
         self.peers = _peers.Peers(self.storage, self.registry_store, self.discovery,
                                   self.node, self.facts, self.pulse, rules)
         self.identity = _group.Group(self.storage, self, rules)
-        self.shares = _shares.Shares(self.storage, self.node, self, shared_lock, rules,
-                                     global_data_root, lambda: engine_for(self))
+        self.shares = _shares.Shares(
+            self.storage, self.node, self, shared_lock, rules,
+            global_data_root, lambda: engine_for(self),
+            paths=_share_paths.SharePaths())
         self.report = _status.StatusReport(self.storage, self.node, self.discovery,
                                            self.pulse, self.shares, self.facts, self,
                                            _const.DEFAULT_PORT)
