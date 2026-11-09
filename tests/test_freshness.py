@@ -453,6 +453,56 @@ class FreshnessEngineTests(unittest.TestCase):
         self.assertEqual(self.plugin.pruned, [])
         self.assertEqual(self._derive_keys(), ['a.jpg'], '落后目录的条目仍交给插件重算')
 
+    def test_restamp_only_entries_carry_the_marker_for_derive(self):
+        """只因为 content_version 升级被重算的条目带 `restamp: True`；真实变化不带。
+
+        插件（image-viewer）据此区分"按新规则重算派生数据"与"文件真的变了"：纯
+        restamp 批次只作废目录节点，不能反复删整份相册索引。预算用尽 + 版本升级
+        是最容易踩到的组合（第一批全是 restamp，第二批才混进真实变化）。
+        """
+        engine = self._fresh_engine()
+        for name in ('d0', 'd1', 'd2'):
+            self._write(f'{name}/a.jpg', b'x' * 8)
+            self._write(f'{name}/b.jpg', b'x' * 8)
+        self._sync()
+        engine.verify()                       # 版本 1 全量盖章
+        batches: list = []
+        engine.spec.derive = lambda items: batches.append([dict(i) for i in items])
+        engine.spec.content_version = 2
+        engine.spec.max_dirs_per_sync = 2
+
+        # ① 预算用尽的第一趟：根部 + d0，d0 里没有任何真实变化 → 全是 restamp-only
+        first = self._sync()
+        self.assertTrue(first['partial'], first)
+        self.assertEqual({item['dir'] for item in batches[0]}, {'d0'}, batches[0])
+        self.assertTrue(all(item.get('restamp') is True for item in batches[0]), batches[0])
+        self.assertEqual(first['changed'], 0, 'restamp 不污染真实变化计数')
+
+        # ② 第二趟：d1 里 a.jpg 真实变化（b.jpg 只是 restamp）→ 混合批次逐个正确
+        batches.clear()
+        (self.root / 'd1' / 'a.jpg').write_bytes(b'y' * 16)
+        second = self._sync()
+        d1 = [item for batch in batches for item in batch if item['dir'] == 'd1']
+        changed_items = [item for item in d1 if item['key'] == 'd1/a.jpg']
+        restamp_items = [item for item in d1 if item['key'] == 'd1/b.jpg']
+        self.assertEqual(len(changed_items), 1, second)
+        self.assertNotIn('restamp', changed_items[0], '真实 changed 不能标 restamp')
+        self.assertEqual(len(restamp_items), 1, second)
+        self.assertIs(restamp_items[0]['restamp'], True)
+        self.assertGreaterEqual(second['changed'], 1)
+
+        # ③ 版本已全部盖章后，真实变化批次完全不带 restamp
+        batches.clear()
+        engine.spec.max_dirs_per_sync = DEFAULT_MAX_DIRS
+        (self.root / 'd2' / 'a.jpg').write_bytes(b'y' * 32)
+        third = self._sync()
+        self.assertEqual(third['changed'], 1, third)
+        self.assertEqual(third['restamped'], 0, third)
+        self.assertTrue(batches, '真实变化必须交给 derive')
+        self.assertTrue(all('restamp' not in item for batch in batches for item in batch),
+                        batches)
+        self.assertEqual([item['key'] for batch in batches for item in batch], ['d2/a.jpg'])
+
     def test_state_exposes_stale_dirs_count(self):
         """`stale_dirs` 是诊断"还有多少目录没按当前规则重算"的直接读数。"""
         engine = self._fresh_engine()
@@ -503,15 +553,27 @@ class FreshnessEngineTests(unittest.TestCase):
         self.assertIsNone(engine.verified_keys())
 
     def test_verified_keys_is_none_after_a_cancelled_verify(self):
+        """取消的校验不构成整趟确认，而且报告与正常路径同形（`action='verify'`）。
+
+        先跑一趟成功的校验把结论建起来，再取消一趟 —— 否则"取消后是 None"是空洞的
+        断言（它本来就是 None，删掉取消分支的实现也照样过）。
+        """
         engine = self._fresh_engine()
+        self._write('a.jpg')
+        engine.verify()
+        self.assertEqual(engine.verified_keys(), {'a.jpg'})
+        self.assertEqual(engine.state()['last_report']['action'], 'verify')
+
         task = BackgroundTask(kind='freshness.test')
         task.cancel()
-        self._write('a.jpg')
         report = engine.verify(task)
 
         self.assertTrue(report['cancelled'])
         self.assertTrue(report['partial'])
+        self.assertEqual(report['action'], 'verify', '取消路径的报告也要能判分支')
+        self.assertEqual(report['content_version'], engine.spec.content_version)
         self.assertIsNone(engine.verified_keys())
+        self.assertEqual(engine.state()['last_report']['action'], 'verify')
 
     def test_verified_keys_is_none_when_the_pass_had_read_errors(self):
         engine = self._fresh_engine()
@@ -897,8 +959,13 @@ class FreshnessEngineTests(unittest.TestCase):
         self.assertEqual(self.plugin.pruned, ['sub/a.jpg'])
         self.assertEqual(report['removed'], 1)
 
-    def test_start_verify_reports_busy_while_a_sync_runs(self):
-        """同步与校验互斥：同步正在改指纹库与派生缓存时不再起一趟全量校验。"""
+    def test_start_verify_reports_not_started_while_a_sync_runs(self):
+        """同步与校验互斥：同步正在改指纹库与派生缓存时不再起一趟全量校验。
+
+        `running` 必须是 False：壳的刷新控件按它判断"任务是不是已经起来了"。报成
+        True 会让它等这一趟同步结束、再按"校验完成"收尾 —— 用户点了一次校验，实际
+        什么都没校验，界面却提示成功。
+        """
         engine = self._fresh_engine()
         self._write('a.jpg')
         seen = []
@@ -911,6 +978,8 @@ class FreshnessEngineTests(unittest.TestCase):
 
         self.assertFalse(seen[0]['started'], seen)
         self.assertEqual(seen[0]['reason'], 'busy')
+        self.assertFalse(seen[0]['running'], seen)
+        self.assertTrue(seen[0]['sync_active'], seen)
 
         started = engine.start_verify()
         self.assertTrue(started['started'], started)
@@ -931,6 +1000,255 @@ class FreshnessEngineTests(unittest.TestCase):
         self.assertFalse(db.exists(), '看一眼状态不该建库')
         self.assertFalse(state['busy'])
         self.assertEqual(state['entries'], 0)
+
+    # ----- 报告给插件的作用域（A8） -----
+
+    def test_report_carries_scope_before_plugin_hooks_run(self):
+        """`scope` / `scoped` 在任何插件钩子之前就写进报告。
+
+        media-player 的 `on_pass_end` 用它判断"这一趟是否覆盖了全部根"：子目录作用域
+        的同步如果被当成整趟，插件会把一份不完整的索引宣布成权威。
+        """
+        seen: list = []
+        plugin = _FakePlugin(Path(self._tmp.name) / '.cache' / 'pass-end-scope', None)
+        plugin._spec = _spec(plugin, self.root,
+                             on_pass_end=lambda report, verified: (
+                                 seen.append((report.get('scope'),
+                                              report.get('scoped'), verified)), {})[1])
+        self._write('sub/a.jpg')
+        self._write('other/b.jpg')
+        engine = _require_engine(plugin)
+
+        engine.sync('', force=True)
+        self.assertEqual(seen[-1], ('', False, False), '全根同步不是子目录作用域')
+
+        engine.sync('sub', force=True)
+        self.assertEqual(seen[-1], ('sub', True, False), '子目录同步要标 scoped=True')
+
+        engine.verify()
+        self.assertEqual(seen[-1], ('', False, True), '校验永远是整趟')
+
+    # ----- rebuild 的单飞与 meta 章（A5） -----
+
+    def test_rebuild_holds_single_flight_and_does_not_prestamp(self):
+        """rebuild 全程占单飞：钩子/清库期间的同步被拒；校验没起来时不预写 meta 章。"""
+        engine = self._fresh_engine()
+        self._write('a.jpg')
+        self._sync()
+        refused = []
+
+        def rebuild_hook(kind):
+            refused.append(engine.sync('', force=True))
+            return {'cleared': True}
+
+        engine.spec.rebuild = rebuild_hook
+        out = engine.rebuild('derived')
+
+        self.assertTrue(out['started'], out)
+        self.assertEqual(refused[0]['reason'], 'busy', refused)
+        deadline = time.time() + 5
+        while time.time() < deadline and engine.state()['busy']:
+            time.sleep(0.02)
+        self.assertIn('a.jpg', self._derive_keys(), '清库后必须重算回来')
+        self.assertFalse(engine.state()['version_stale'])
+
+        # 校验没能起来时：库是空的，就必须仍显示"待校验"，不能预先盖章
+        engine.spec.rebuild = lambda kind: {'cleared': True}
+        with mock.patch.object(engine, 'start_verify',
+                               return_value={'started': False, 'running': True}):
+            failed = engine.rebuild('derived')
+        self.assertFalse(failed['started'], failed)
+        state = engine.state()
+        self.assertEqual(state['entries'], 0)
+        self.assertTrue(state['version_stale'], '清库后不能显示"不待校验"')
+        # 单飞已释放：下一趟同步/校验还能跑
+        self.assertEqual(engine.sync('', force=True)['action'], 'sync')
+        self.assertEqual(engine.verify()['action'], 'verify')
+
+    # ----- 去抖窗口只被真扫消耗（A6①） -----
+
+    def test_bad_scope_does_not_consume_the_throttle_window(self):
+        """被拒的同步（以及引擎自身失败）不该让下一次合法同步落进节流窗口。"""
+        engine = self._fresh_engine()
+        self._write('a.jpg')
+        engine.spec.min_sync_interval = 30.0
+
+        self.assertEqual(engine.sync('../outside')['reason'], 'bad_scope')
+        self.assertEqual(engine.sync('')['action'], 'sync', '刚才没真扫，不该被节流')
+        self.assertEqual(engine.sync('')['reason'], 'throttled', '真扫之后才进入窗口')
+
+        engine.reset_throttle()
+        with mock.patch.object(engine.store, 'connect',
+                               side_effect=sqlite3.OperationalError('locked')):
+            failed = engine.sync('')
+        self.assertEqual(failed['reason'], 'error', failed)
+        self.assertEqual(engine.sync('')['action'], 'sync', '失败的一趟也没真扫')
+
+    # ----- 单文件 stat 失败不是"文件消失"（A6②） -----
+
+    def test_failed_file_stat_keeps_the_entry_and_the_directory_short_circuits(self):
+        """stat 失败不判成消失（不 prune），指纹的名字数用枚举到的个数而不是成功数。"""
+        engine = self._fresh_engine()
+        self._write('a.jpg')
+        self._write('b.jpg')
+        self._sync()
+        self.plugin.pruned.clear()
+        engine.spec.content_version = 2      # 强制这一趟重算该目录
+        real_stat = Path.stat
+
+        def fake_stat(path_self, *args, **kwargs):
+            if Path(path_self).name == 'b.jpg':
+                raise PermissionError('locked')
+            return real_stat(path_self, *args, **kwargs)
+
+        with mock.patch('pathlib.Path.stat', fake_stat):
+            report = engine.sync('', force=True)
+            self.assertTrue(report['errors'], report)
+            self.assertEqual(report['removed'], 0, '读不到 ≠ 没了')
+            self.assertEqual(self.plugin.pruned, [])
+            conn = engine.store.connect()
+            try:
+                self.assertIn('b.jpg', engine.store.entries_of(conn, ''),
+                              '读不到的文件要沿用旧指纹')
+                self.assertEqual(engine.store.dirs(conn)[''][1], 2,
+                                 '指纹的名字数用枚举到的名字数，不用 stat 成功数')
+            finally:
+                conn.close()
+            steady = engine.sync('', force=True)
+            self.assertEqual(steady['skipped_dirs'], steady['dirs'], steady)
+            self.assertEqual(steady['errors'], [])
+
+    # ----- 插件键本身以别根前缀开头（A6③） -----
+
+    def test_prefix_column_keeps_plugin_keys_that_look_like_root_prefixes(self):
+        """首根的插件键恰好以另一根的前缀开头时，不能被剥掉那一段。"""
+        extra = Path(self._tmp.name) / 'extra'
+        extra.mkdir()
+        (extra / 'b.jpg').write_bytes(b'x' * 8)
+        (self.root / 'files').mkdir()
+        (self.root / 'files' / 'a.jpg').write_bytes(b'x' * 8)
+
+        def _key(abs_path: str) -> str:
+            path = Path(abs_path)
+            if path.parent.name == 'files':
+                # 插件键恰好以另一个根的前缀开头（外观与"根内相对路径"同形）
+                return f'__extra/{path.name}'
+            return path.name
+
+        self.plugin._spec = _spec(self.plugin, self.root,
+                                  roots=lambda: [self.root, extra],
+                                  prefixes=('', '__extra'), key_of=_key)
+        self.plugin._freshness_engine = None
+        engine = _require_engine(self.plugin)
+
+        report = engine.sync('', force=True)
+        self.assertEqual(report['added'], 2, report)
+        self.assertEqual(sorted(self._derive_keys()), ['__extra/a.jpg', 'b.jpg'])
+
+        engine.verify()
+        self.assertEqual(self.plugin.audits[-1], {'__extra/a.jpg', 'b.jpg'})
+
+        self.plugin.pruned.clear()
+        (self.root / 'files' / 'a.jpg').unlink()
+        os.utime(self.root / 'files', (time.time(), time.time()))
+        engine.sync('', force=True)
+        self.assertEqual(self.plugin.pruned, ['__extra/a.jpg'], 'prune 收到的也是插件键')
+
+    # ----- 报告里的目录列表截断（A6④） -----
+
+    def test_directory_lists_are_truncated_in_the_report(self):
+        """报告要走 HTTP：new_dirs / vanished_dirs 截断到 50，其余只给计数。"""
+        self._fresh_engine()
+        for index in range(60):
+            self._write(f'd{index:02d}/a.jpg')
+
+        first = self._sync()
+        self.assertEqual(len(first['new_dirs']), 50, first['new_dirs'])
+        self.assertEqual(first['new_dirs_truncated'], 11, '根 + 60 个子目录，共 61 个新目录')
+
+        for index in range(60):
+            (self.root / f'd{index:02d}' / 'a.jpg').unlink()
+            (self.root / f'd{index:02d}').rmdir()
+        os.utime(self.root, (time.time(), time.time()))
+        second = self._sync()
+        self.assertEqual(len(second['vanished_dirs']), 50)
+        self.assertEqual(second['vanished_dirs_truncated'], 10)
+
+    # ----- 远端跳过的报告（A6⑤） -----
+
+    def test_remote_fresh_skip_updates_last_report(self):
+        engine = self._remote_engine(lambda: {'rows': 1})
+        self.assertEqual(engine.sync()['action'], 'sync')
+        skipped = engine.sync()
+        self.assertEqual(skipped['reason'], 'fresh')
+        self.assertEqual(engine.state()['last_report']['reason'], 'fresh')
+
+    # ----- track_entries=False：只维护目录指纹（A7） -----
+
+    def _track_engine(self):
+        calls: dict = {'derive': [], 'prune': [], 'verified': [], 'dirs': []}
+        plugin = _FakePlugin(Path(self._tmp.name) / '.cache' / 'track', None)
+        plugin._spec = _spec(
+            plugin, self.root,
+            track_entries=False,
+            derive=lambda items: calls['derive'].append(list(items)),
+            prune=lambda keys: calls['prune'].append(list(keys)),
+            on_verified=lambda keys: calls['verified'].append(set(keys)),
+            on_dirs_changed=lambda report: calls['dirs'].append(report))
+        return _require_engine(plugin), calls
+
+    def test_track_entries_false_only_keeps_directory_fingerprints(self):
+        """只维护目录指纹：不写 entries、不调条目级钩子，目录变化仍能被发现。"""
+        engine, calls = self._track_engine()
+        self.assertFalse(engine.spec.track_entries)
+        self._write('a.jpg')
+
+        first = engine.sync('', force=True)
+        self.assertEqual(first['added'], 0)
+        self.assertEqual(first['dirs'], 1)
+        self.assertEqual(len(calls['dirs']), 1, '冷启动的根目录也是新目录')
+        self.assertEqual(list(calls['dirs'][0]['new_dirs']), [''])
+        calls['dirs'].clear()
+        conn = engine.store.connect()
+        try:
+            self.assertEqual(engine.store.entry_keys(conn), set(), '不写 entries 行')
+            self.assertEqual(engine.store.dirs(conn)[''][1], 1)
+        finally:
+            conn.close()
+        self.assertEqual(engine.valid_keys(), set())
+        state = engine.state()
+        self.assertEqual(state['entries'], 0)
+        self.assertEqual(state['dirs'], 1)
+
+        # 目录内容变化仍被发现（名字数从 1 变 2），但不产生条目事件
+        self._write('b.jpg')
+        changed = engine.sync('', force=True)
+        self.assertEqual(changed['skipped_dirs'], 0, '目录变了就不能短路')
+        conn = engine.store.connect()
+        try:
+            self.assertEqual(engine.store.dirs(conn)[''][1], 2, '目录指纹要更新')
+            self.assertEqual(engine.store.entry_keys(conn), set())
+        finally:
+            conn.close()
+        self.assertEqual(calls['derive'], [])
+        self.assertEqual(calls['prune'], [])
+        self.assertEqual(calls['verified'], [])
+
+        steady = engine.sync('', force=True)
+        self.assertEqual(steady['skipped_dirs'], steady['dirs'])
+        self.assertEqual(calls['dirs'], [], '稳态不重复触发目录集合信号')
+
+        # 新建子目录 → 目录集合信号；校验不调 on_verified
+        (self.root / 'sub').mkdir()
+        engine.sync('', force=True)
+        self.assertEqual(len(calls['dirs']), 1)
+        self.assertEqual(list(calls['dirs'][0]['new_dirs']), ['sub'])
+
+        report = engine.verify()
+        self.assertNotIn('audited', report)
+        self.assertEqual(calls['verified'], [], '空键集不能交给 on_verified')
+        self.assertIsNone(engine.verified_keys(), '没有条目就没有权威键集合')
+        self.assertEqual(engine.state()['entries'], 0)
 
 
 class FreshnessSpecTests(unittest.TestCase):
@@ -1047,12 +1365,12 @@ class FreshnessStoreTests(unittest.TestCase):
             finally:
                 conn.close()
 
-    def test_old_database_gains_version_column_without_losing_fingerprints(self):
-        """旧库迁移：就地 `ALTER TABLE` 补 `version` 列，已有目录指纹与条目都保留。
+    def test_old_database_gains_new_columns_without_losing_fingerprints(self):
+        """旧库迁移：就地 `ALTER TABLE` 补 `version` / `prefix` 列，已有指纹与条目都保留。
 
         为什么不能删库重建：旧库里是整库的目录指纹，删了会让升级后的第一趟把每个
-        目录都当新目录（派生数据全量重算、相册树重建）。补列后旧行取版本 0，等价于
-        "这些目录还没按任何 content_version 盖过章"，升级后各被重算一次。
+        目录都当新目录（派生数据全量重算、相册树重建）。补列后旧行取版本 0、前缀
+        空串（等价于"第一根 / 还没按任何 content_version 盖过章"），升级后各被重算一次。
         """
         with tempfile.TemporaryDirectory() as td:
             db = Path(td) / 'old.db'
@@ -1080,14 +1398,16 @@ CREATE TABLE entries (
             store = FreshnessStore(db)
             conn = store.connect()
             try:
-                self.assertEqual(store.dirs(conn)['d'], (1.0, 1, 8, 1.0, 0),
-                                 '旧行按版本 0 读回，指纹不丢')
+                self.assertEqual(store.dirs(conn)['d'], (1.0, 1, 8, 1.0, 0, ''),
+                                 '旧行按版本 0、空前缀读回，指纹不丢')
                 self.assertEqual(store.entry_keys(conn), {'d/a.jpg'})
+                self.assertEqual(store.entry_prefix_pairs(conn), [('d/a.jpg', '')])
                 self.assertEqual(store.stale_dirs(conn, 1), 1, '旧行算"还没盖章"')
 
                 store.replace_dir(conn, 'd', (2.0, 1, 8, 2.0), [('d/a.jpg', 2.0, 8)],
-                                  version=1)
-                self.assertEqual(store.dirs(conn)['d'], (2.0, 1, 8, 2.0, 1))
+                                  version=1, prefix='__extra')
+                self.assertEqual(store.dirs(conn)['d'], (2.0, 1, 8, 2.0, 1, '__extra'))
+                self.assertEqual(store.entry_prefix_pairs(conn), [('d/a.jpg', '__extra')])
                 self.assertEqual(store.stale_dirs(conn, 1), 0)
             finally:
                 conn.close()
@@ -1095,7 +1415,7 @@ CREATE TABLE entries (
             # 二次建连不再 ALTER（幂等）
             conn = store.connect()
             try:
-                self.assertEqual(store.dirs(conn)['d'][4], 1)
+                self.assertEqual(store.dirs(conn)['d'][4:], (1, '__extra'))
             finally:
                 conn.close()
 

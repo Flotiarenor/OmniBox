@@ -81,6 +81,12 @@ def freshness_spec(self):
   `on_dirs_changed(report)`，报告里带 `new_dirs` / `vanished_dirs`；
 - 远端来源（`mode='remote'`）同样受去抖与单飞约束，判据只有时间：状态里给
   `fresh_until`，`invalidate` 收到失效原因（`ttl` / `verify` / `identity`）；
+- 键格式有标记：`meta.key_layout` 与当前格式不一致时，声明了 `key_of` 的插件整库指纹
+  作废重扫（不清插件的派生缓存），避免把旧裸键当成"消失"交给 `prune`；
+- 不可达的根（外接盘没挂载、目录被删）只进报告的 `unreachable_roots`，不算读取错误、
+  不清理它的目录行；`state()` 的 `stale_dirs` / `version_stale` 也不把它算进去；
+- `track_entries=False` 的插件只维护目录指纹（不写条目、不调条目级钩子），给"只需要
+  目录级事实"的插件用；
 - 错误进报告（截断保留），不抛给调用方。
 '''
 
@@ -108,6 +114,10 @@ DEFAULT_MAX_DIRS = 400            # 单次被动同步最多**处理**的目录�
 _VISITED_DIR_FACTOR = 8           # 单次被动同步最多**走过**的目录数 = max_dirs × 该系数
 DEFAULT_SKIP_DIRS = ('.cache',)   # 缓存/数据目录一律不进索引
 _ERROR_CAP = 20                   # 报告里最多保留多少条错误（报告要走 HTTP，与 tasks.py 的 200 条同理）
+_DIR_LIST_CAP = 50                # 报告里 new_dirs / vanished_dirs 最多保留多少条（其余只给计数）
+#: 指纹库的条目键格式版本（`meta.key_layout`）。改存储键的算法时必须递增，引擎据此
+#: 在升级后的第一趟把旧格式的指纹作废重扫，而不是把旧键判成"文件消失"。
+_KEY_LAYOUT = '2'
 #: 目录级短路是否顺带比"目录内文件大小之和"。Windows 上 `DirEntry.stat()` 的字段由
 #: 目录枚举一并给出，读它是零系统调用；POSIX 上要真 stat 每个文件，与稳态零 stat 冲突。
 _STAT_SIZE_IN_SCANDIR = os.name == 'nt'
@@ -119,7 +129,8 @@ CREATE TABLE IF NOT EXISTS dirs (
     file_count  INTEGER NOT NULL DEFAULT 0,
     size_sum    INTEGER NOT NULL DEFAULT 0,
     max_mtime   REAL NOT NULL DEFAULT 0,
-    version     INTEGER NOT NULL DEFAULT 0
+    version     INTEGER NOT NULL DEFAULT 0,
+    prefix      TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS entries (
     key      TEXT PRIMARY KEY,
@@ -133,8 +144,26 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 
 
 def _default_prefix(index: int, root: Path) -> str:
-    """第一个根用空前缀（沿用相对路径），其余用 `__<目录名>`（与 image-viewer 的命名空间同形）。"""
-    return '' if index == 0 else f'__{root.name}'
+    """第一个根用空前缀（沿用相对路径），其余用 `__<目录名>`（与 image-viewer 的命名空间同形）。
+
+    目录名取不到（盘符根 `D:\\` 的 `Path.name` 是空串）时用 `__root<序号>`。
+    """
+    if index == 0:
+        return ''
+    return f'__{root.name}' if root.name else f'__root{index}'
+
+
+def _unique_prefix(candidate: str, used: Set[str], index: int) -> str:
+    """把重复的前缀改成唯一：`__Music` → `__Music-<根序号>`（再撞就继续加后缀）。"""
+    if candidate not in used:
+        return candidate
+    suffix = 0
+    while True:
+        tail = f'-{index}' if suffix == 0 else f'-{index}-{suffix}'
+        unique = f'{candidate}{tail}'
+        if unique not in used:
+            return unique
+        suffix += 1
 
 
 # ============================================================================
@@ -163,10 +192,30 @@ class FsSource:
     def __post_init__(self) -> None:
         if self.prefixes and len(self.prefixes) != len(self.roots):
             raise ValueError('prefixes 必须与 roots 一一对应')
-        if not self.prefixes:
+        declared = bool(self.prefixes)
+        if not declared:
             object.__setattr__(
                 self, 'prefixes',
                 tuple(_default_prefix(i, r) for i, r in enumerate(self.roots)))
+        # 前缀必须唯一：目录键与存储键都靠它区分根，重复会让两个根的目录键相撞
+        # （后来者被 `seen` 静默丢弃、`prefix_of` 归属也分不清）。默认前缀按目录名
+        # 生成，同名的两个根一定会撞，因此这里统一去重；声明的前缀重复时额外告警。
+        used: Set[str] = set()
+        prefixes: List[str] = []
+        for index, prefix in enumerate(self.prefixes):
+            if not prefix and '' not in used:
+                # 第一根（或唯一声明为空前缀的根）沿用相对路径
+                prefixes.append('')
+                used.add('')
+                continue
+            candidate = prefix or f'__root{index}'
+            unique = _unique_prefix(candidate, used, index)
+            if unique != prefix and declared:
+                log.warning('freshness: 根前缀 %r 重复，第 %d 个根改用 %r',
+                            prefix, index, unique)
+            used.add(unique)
+            prefixes.append(unique)
+        object.__setattr__(self, 'prefixes', tuple(prefixes))
         object.__setattr__(self, 'include', tuple(x.lower() for x in self.include))
         object.__setattr__(self, 'include_names',
                            frozenset(x.lower() for x in self.include_names))
@@ -187,14 +236,20 @@ class FsSource:
                 return prefix
         return ''
 
-    def plugin_key(self, key: str, prefix: str = '') -> str:
+    def plugin_key(self, key: str, prefix: Optional[str] = None) -> str:
         """存储键 → 插件条目键：去掉 `key_of` 声明时拼上的根命名空间前缀。
 
-        `prefix` 已知时（遍历中，按目录算）直接按它剥；不知道时（一次查全库）按
-        前缀表匹配。只有声明了 `key_of` 的插件需要这一步 —— 未声明时存储键就是
-        虚拟路径，前缀本身就是插件键的一部分。
+        `prefix` 已知时（遍历中按目录算、或从 `dirs.prefix` 列读）**严格**按它剥：
+        空前缀表示第一根、存储键就是插件键，不能再拿前缀表去猜（第一根下恰好有名为
+        `__<他根名>` 的目录时，猜会把真实的插件键前缀误删）。`prefix=None` 才走
+        "按前缀表匹配"的推断路径，只给拿不到归属的旧数据用。
+
+        只有声明了 `key_of` 的插件需要这一步 —— 未声明时存储键就是虚拟路径，前缀
+        本身就是插件键的一部分。
         """
-        if prefix:
+        if prefix is not None:
+            if not prefix:
+                return key
             return key[len(prefix) + 1:] if key.startswith(f'{prefix}/') else key
         for candidate in sorted((item for item in self.prefixes if item),
                                 key=len, reverse=True):
@@ -235,8 +290,13 @@ class FsSource:
                 return (index, scope[len(prefix) + 1:])
         return (0, scope)
 
-    def resolve_scope(self, scope: str) -> Optional[Tuple[str, Path]]:
-        """解析成 (起始目录键, 物理目录)；不存在或逃出根之外返回 None。"""
+    def resolve_scope(self, scope: str) -> Optional[Tuple[str, Path, str]]:
+        """解析成 (起始目录键, 物理目录, 该目录所属根的虚拟前缀)。
+
+        不存在或逃出根之外返回 None。前缀跟着结果一起返回而不是回头用
+        `prefix_of(目录键)` 反推：反推在第一根下存在名为 `__<他根名>` 的目录时会
+        归属错根，条目键就会被剥错前缀。
+        """
         parsed = self.scope_start(scope)
         if parsed is None:
             return None
@@ -249,7 +309,7 @@ class FsSource:
                 return None
         except OSError:
             return None
-        return (self.key_of(index, rel), target)
+        return (self.key_of(index, rel), target, self.prefixes[index])
 
 
 # ============================================================================
@@ -348,6 +408,10 @@ class FreshnessSpec:
     # "原地写入"（同名、新内容，不改目录 mtime）：只有校验能发现它。目录不大、
     # 且"文件被替换"必须立刻反映到派生数据的插件把它设为 True。
     stat_entries: bool = False
+    # 是否维护**逐条目**指纹。False = 只维护目录指纹（mtime / 名字数 / 大小之和）：
+    # 不写 `entries` 行、不调 derive / prune / on_verified，`valid_keys()` 返回空集。
+    # 给"只关心目录级事实"的插件用（例如共享根用量），指纹库不随文件数线性膨胀。
+    track_entries: bool = True
 
     @property
     def source(self) -> FsSource:
@@ -434,6 +498,9 @@ class FreshnessSpec:
             max_dirs_per_sync=int(_declared_number(raw.get('max_dirs_per_sync'),
                                                    DEFAULT_MAX_DIRS)),
             stat_entries=bool(raw.get('stat_entries')),
+            track_entries=(bool(raw['track_entries'])
+                           if 'track_entries' in raw and raw['track_entries'] is not None
+                           else True),
         )
 
 
@@ -459,60 +526,80 @@ class FreshnessStore:
         conn.execute('PRAGMA journal_mode=WAL')
         conn.execute('PRAGMA synchronous=NORMAL')
         conn.executescript(STATE_SCHEMA)
-        self._ensure_version_column(conn)
+        self._ensure_columns(conn)
         return conn
 
     @staticmethod
-    def _ensure_version_column(conn: sqlite3.Connection) -> None:
-        """给旧库补上 `dirs.version` 列（新库建表即带，这一步是空操作）。
+    def _ensure_columns(conn: sqlite3.Connection) -> None:
+        """给旧库补齐后加的列（新库建表即带，这一步是空操作）。
 
         为什么就地补而不是删库重建：旧库里已有整库的目录指纹，删了会让升级后的第一趟
-        把每个目录都当新目录（派生数据全量重算一遍，图片相册要重建整棵相册树）。补一列
-        只有一次 `ALTER TABLE`，已有行取默认值 0 —— 等价于"这些目录还没按任何
-        content_version 盖过章"，升级后各被重新盖章一次，且只一次。
+        把每个目录都当新目录（派生数据全量重算一遍，图片相册要重建整棵相册树）。
+        - `version`：旧行取 0 —— 等价于"这些目录还没按任何 content_version 盖过章"；
+        - `prefix`：该目录所属根的虚拟前缀。补列前它只能靠目录键反推，第一根下存在
+          名为 `__<他根名>` 的目录时会归属错根；新行由遍历时记下，旧行留空串。
         """
+        additions = (
+            ('version', 'ALTER TABLE dirs ADD COLUMN version INTEGER NOT NULL DEFAULT 0'),
+            ('prefix', "ALTER TABLE dirs ADD COLUMN prefix TEXT NOT NULL DEFAULT ''"),
+        )
         try:
             columns = {row[1] for row in conn.execute('PRAGMA table_info(dirs)').fetchall()}
         except sqlite3.Error:
             return
-        if 'version' in columns:
-            return
-        try:
-            conn.execute('ALTER TABLE dirs ADD COLUMN version INTEGER NOT NULL DEFAULT 0')
-            conn.commit()
-        except sqlite3.OperationalError as e:
-            # 另一个连接抢先补上了（同步线程与校验线程可能同时建连）：列已在，忽略。
+        for name, ddl in additions:
+            if name in columns:
+                continue
             try:
-                columns = {row[1] for row in conn.execute('PRAGMA table_info(dirs)').fetchall()}
-            except sqlite3.Error:
-                columns = set()
-            if 'version' not in columns:
-                log.error(f'freshness: 旧指纹库补 dirs.version 失败（{e}）')
+                conn.execute(ddl)
+                conn.commit()
+            except sqlite3.OperationalError as e:
+                # 另一个连接抢先补上了（同步线程与校验线程可能同时建连）：列已在，忽略。
+                try:
+                    columns = {row[1] for row in
+                               conn.execute('PRAGMA table_info(dirs)').fetchall()}
+                except sqlite3.Error:
+                    columns = set()
+                if name not in columns:
+                    log.error(f'freshness: 旧指纹库补 dirs.{name} 失败（{e}）')
+                continue
+            columns.add(name)
 
     # ----- 目录 -----
 
-    def dirs(self, conn: sqlite3.Connection) -> Dict[str, Tuple[float, int, int, float, int]]:
+    def dirs(self, conn: sqlite3.Connection
+             ) -> Dict[str, Tuple[float, int, int, float, int, str]]:
         try:
             rows = conn.execute(
-                'SELECT key, dir_mtime, file_count, size_sum, max_mtime, version'
+                'SELECT key, dir_mtime, file_count, size_sum, max_mtime, version, prefix'
                 ' FROM dirs').fetchall()
         except sqlite3.Error:
             return {}
-        return {r[0]: (float(r[1]), int(r[2]), int(r[3]), float(r[4]), int(r[5]))
+        return {r[0]: (float(r[1]), int(r[2]), int(r[3]), float(r[4]), int(r[5]),
+                       str(r[6] or ''))
                 for r in rows}
 
-    def stale_dirs(self, conn: sqlite3.Connection, version: int) -> int:
+    def stale_dirs(self, conn: sqlite3.Connection, version: int, *,
+                   skip_prefixes: Sequence[str] = (),
+                   prefix_of: Optional[Callable[[str], str]] = None) -> int:
         """还有多少个目录没按 `version` 盖过章（`state()` 的 `stale_dirs`）。
 
         与 `meta.content_version` 互补：meta 是"整趟是否走完"的章，这里是"逐目录是否
         都按当前解析规则重算过"。预算用尽的部分遍历只会推进后者，所以两个信号都要看。
+        归属不可达根的目录不计入（那些目录这一趟根本走不到，算"落后"只会让界面永久
+        提示需要校验）。
         """
         try:
-            row = conn.execute('SELECT COUNT(*) FROM dirs WHERE version != ?',
-                               (int(version),)).fetchone()
+            rows = conn.execute('SELECT key FROM dirs WHERE version != ?',
+                                (int(version),)).fetchall()
         except sqlite3.Error:
             return 0
-        return int(row[0]) if row else 0
+        if not skip_prefixes:
+            return len(rows)
+        skips = set(skip_prefixes)
+        if prefix_of is None:
+            return len(rows)
+        return sum(1 for (key,) in rows if prefix_of(key) not in skips)
 
     def entries_of(self, conn: sqlite3.Connection, dir_key: str) -> Dict[str, Tuple[float, int]]:
         try:
@@ -525,13 +612,14 @@ class FreshnessStore:
     def replace_dir(self, conn: sqlite3.Connection, dir_key: str,
                     fingerprint: Tuple[float, int, int, float],
                     entries: Sequence[Tuple[str, float, int]],
-                    version: int = 0) -> None:
+                    version: int = 0, prefix: str = '') -> None:
         """整目录替换（指纹 + 该目录的全部条目 + 内容版本章）—— 单事务，不留半份状态。"""
         with conn:
             conn.execute(
                 'INSERT OR REPLACE INTO dirs'
-                '(key, dir_mtime, file_count, size_sum, max_mtime, version)'
-                ' VALUES (?,?,?,?,?,?)', (dir_key, *fingerprint, int(version)))
+                '(key, dir_mtime, file_count, size_sum, max_mtime, version, prefix)'
+                ' VALUES (?,?,?,?,?,?,?)',
+                (dir_key, *fingerprint, int(version), str(prefix or '')))
             conn.execute('DELETE FROM entries WHERE dir_key = ?', (dir_key,))
             conn.executemany(
                 'INSERT OR REPLACE INTO entries(key, dir_key, mtime, size) VALUES (?,?,?,?)',
@@ -550,6 +638,21 @@ class FreshnessStore:
             return {r[0] for r in conn.execute('SELECT key FROM entries').fetchall()}
         except sqlite3.Error:
             return set()
+
+    def entry_prefix_pairs(self, conn: sqlite3.Connection) -> List[Tuple[str, str]]:
+        """全部条目：(存储键, 所属根的虚拟前缀)。
+
+        前缀从 `dirs.prefix` 读而不是拿键反推 —— 反推在第一根下存在名为
+        `__<他根名>` 的目录时会剥错。旧库补列前的行前缀是空串（等价于"第一根"），
+        而 `key_of` 插件在键格式迁移时整库已重扫，所以这条路径不会碰到旧裸键。
+        """
+        try:
+            rows = conn.execute(
+                'SELECT e.key, d.prefix FROM entries e'
+                ' LEFT JOIN dirs d ON d.key = e.dir_key').fetchall()
+        except sqlite3.Error:
+            return []
+        return [(str(r[0]), str(r[1] or '')) for r in rows]
 
     def counts(self, conn: sqlite3.Connection) -> Dict[str, int]:
         try:
@@ -614,10 +717,15 @@ class FreshnessEngine:
     # ----- 对外状态 -----
 
     def state(self) -> Dict[str, Any]:
-        """给前端的状态投影（不扫盘，只读指纹库与内存标志）。
+        """给前端的状态投影（只读指纹库与内存标志；不建库、不遍历目录树）。
 
         指纹库还不存在时**不建库**：否则"看一眼状态"就会给每个声明了 spec 的插件
         凭空造出一个空数据库（与 ThumbCache.stats 同一条理由）。
+
+        额外给出 `unreachable_roots`：当前不可达的根（外接盘没挂载、目录被删）。
+        属于它们的目录不计入 `stale_dirs`，也不参与 `version_stale` 判定 —— 那些
+        目录这一趟根本走不到，按"落后"报只会让界面永久提示需要校验；根恢复后下一趟
+        同步自然把它们纳入。
 
         远端来源没有条目与目录：额外给出 `mode` / `ttl_seconds` / `fresh_until`
         （上次取数时间 + TTL）与 `ttl_remaining`，界面按"数据新鲜期"显示，而不是
@@ -627,6 +735,8 @@ class FreshnessEngine:
             task = self._task
             busy = self._busy_locked()
         remote = self.spec.mode == 'remote'
+        source = self._source()
+        unreachable, unreachable_prefixes = self._root_reachability(source)
         base = {
             'plugin': self.name,
             'available': True,
@@ -637,6 +747,7 @@ class FreshnessEngine:
             'content_version': 0,
             'version_stale': not remote,
             'stale_dirs': 0,
+            'unreachable_roots': unreachable,
             'last_sync_at': 0.0,
             'last_verify_at': 0.0,
             'unit': self.spec.unit,
@@ -655,11 +766,14 @@ class FreshnessEngine:
         try:
             counts = self.store.counts(conn)
             version = int(self.store.meta_get(conn, 'content_version', 0) or 0)
-            stale_dirs = self.store.stale_dirs(conn, self.spec.content_version)
+            stale_dirs = self.store.stale_dirs(
+                conn, self.spec.content_version,
+                skip_prefixes=unreachable_prefixes,
+                prefix_of=source.prefix_of if source is not None else None)
             last_sync = float(self.store.meta_get(conn, 'last_sync_at', 0) or 0)
             ttl = float(self.spec.ttl_seconds or 0.0)
             base.update({
-                'entries': counts['entries'],
+                'entries': 0 if not self.spec.track_entries else counts['entries'],
                 'dirs': counts['dirs'],
                 'content_version': version,
                 # 本地来源看两个章：meta 表示"整趟走过全部根"，dirs.version 表示"该目录
@@ -668,6 +782,7 @@ class FreshnessEngine:
                 'version_stale': False if remote else (
                     version != self.spec.content_version or stale_dirs > 0),
                 'stale_dirs': stale_dirs,
+                'unreachable_roots': unreachable,
                 'last_sync_at': last_sync,
                 'last_verify_at': float(self.store.meta_get(conn, 'last_verify_at', 0) or 0),
                 'ttl_remaining': (max(0.0, ttl - (time.time() - last_sync)) if ttl > 0 else 0.0),
@@ -677,6 +792,37 @@ class FreshnessEngine:
         finally:
             conn.close()
         return base
+
+    def _source(self) -> Optional['FsSource']:
+        """现取来源；规格求值失败（根声明非法、设置还没就绪）时返回 None。"""
+        try:
+            return self.spec.source
+        except Exception as e:  # 状态/列目录是附加信息，不该因规格异常打挂
+            log.error(f'[{self.name}] freshness 规格求值失败: {e}')
+            return None
+
+    def _root_reachability(self, source: Optional['FsSource'] = None
+                           ) -> Tuple[List[str], Tuple[str, ...]]:
+        """(不可达根的物理路径, 它们的虚拟前缀)。
+
+        `Path.is_dir()` 每次现查：外接盘拔掉、目录被删都会变成不可达，而不是"读取错误"。
+        """
+        if source is None:
+            source = self._source()
+        if source is None:
+            return [], ()
+        names: List[str] = []
+        prefixes: List[str] = []
+        for index, root in enumerate(source.roots):
+            try:
+                reachable = Path(root).is_dir()
+            except OSError:
+                reachable = False
+            if reachable:
+                continue
+            names.append(str(root))
+            prefixes.append(source.prefixes[index] if index < len(source.prefixes) else '')
+        return names, tuple(prefixes)
 
     def request_cancel(self) -> bool:
         task = self._task
@@ -704,7 +850,10 @@ class FreshnessEngine:
         **整个**键集合反推（哪些作品下全了、哪些缺页），而不是逐个文件回调。
         在 `on_pass_end` 里调用前先看报告：部分遍历（`partial`）或读取有错时集合
         并不完整，据此重算会把没走到的部分当成"消失了"。
+        `track_entries=False` 的插件不维护条目，这里返回空集。
         """
+        if not self.spec.track_entries:
+            return set()
         try:
             conn = self.store.connect()
         except sqlite3.Error:
@@ -715,12 +864,20 @@ class FreshnessEngine:
             conn.close()
 
     def _plugin_key_set(self, conn: sqlite3.Connection) -> Set[str]:
-        """指纹库里的条目键，还原成插件键（`key_of` 声明时去掉根前缀）。"""
-        keys = self.store.entry_keys(conn)
+        """指纹库里的条目键，还原成插件键（`key_of` 声明时去掉根前缀）。
+
+        前缀取 `dirs.prefix` 列（遍历时记下的真实归属），不拿键反推：第一根下存在
+        名为 `__<他根名>` 的目录时，反推会把插件键本身的前缀误删。
+        """
+        if not self.spec.track_entries:
+            return set()
         if self.spec.key_of is None:
-            return keys
-        source = self.spec.source
-        return {source.plugin_key(key) for key in keys}
+            return self.store.entry_keys(conn)
+        source = self._source()
+        if source is None:
+            return set()
+        return {source.plugin_key(key, prefix)
+                for key, prefix in self.store.entry_prefix_pairs(conn)}
 
     def verified_keys(self) -> Optional[Set[str]]:
         """最近一次**整趟成功**的全量校验确认存在的条目键；没有这样的结论时返回 `None`。
@@ -753,6 +910,15 @@ class FreshnessEngine:
 
     # ----- 同步（被动增量） -----
 
+    def _mark_sync_started(self) -> None:
+        """真正进入遍历前才写去抖时间戳。
+
+        提前写会让"被拒绝"的调用也消耗窗口：一次 `bad_scope`（已删除的相册）之后
+        5 秒内的合法同步全部被节流，界面停在旧数据上。异常同理：只有确实扫过才算。
+        """
+        with self._lock:
+            self._last_sync_at = time.time()
+
     def sync(self, scope: str = '', force: bool = False,
              reason: str = 'ttl') -> Dict[str, Any]:
         """被动增量：目录级短路 + 只对变化的目录逐条比对。
@@ -770,36 +936,41 @@ class FreshnessEngine:
             if not force and (now - self._last_sync_at) < self.spec.min_sync_interval:
                 return {'action': 'skip', 'reason': 'throttled',
                         'retry_after': round(self.spec.min_sync_interval - (now - self._last_sync_at), 2)}
-            self._last_sync_at = now
             if not self._sync_lock.acquire(blocking=False):
                 return {'action': 'skip', 'reason': 'busy'}
             self._sync_active = True
 
         try:
             if self.spec.mode == 'remote':
+                self._mark_sync_started()
                 return self._remote_pass(force=force, reason=str(reason or 'ttl'))
             if (scope or '').strip().strip('/'):
                 resolved = self.spec.source.resolve_scope(scope)
                 if resolved is None:
                     return {'action': 'skip', 'reason': 'bad_scope', 'scope': scope}
-                start_key, start_dir = resolved
+                start_key, start_dir, start_prefix = resolved
             else:
                 # 空作用域 = 全部根：交给 _pass 自己播种，不要求第一根此刻存在
-                start_key, start_dir = '', None
+                start_key, start_dir, start_prefix = '', None, ''
             conn = self.store.connect()
             try:
+                self._ensure_key_layout(conn)
                 known = self.store.dirs(conn)
+                self._mark_sync_started()
                 # 解析规则变了 → 逐目录判定"这个目录要按新规则重算"（不是把全部条目
                 # 当新增，也不是整趟 force_all）：每个目录处理完就带上新版本章，预算用
                 # 尽时下一趟接着盖章还没盖的目录，不再从头重算同一批。
                 report = self._pass(conn, start_key, start_dir, known,
                                     max_dirs=self.spec.max_dirs_per_sync, task=None,
-                                    audit=False)
+                                    audit=False, start_prefix=start_prefix,
+                                    scope=scope)
                 self.store.meta_set(conn, 'last_sync_at', time.time())
                 if start_dir is None and not report['partial'] and not report['errors']:
                     # 全部根、整趟走完、无读取错误才盖 meta 章：作用域是子目录时盖章会让
                     # 其他目录永远等不到重算；有读不到的目录时盖章会把"没覆盖"说成"覆盖了"
                     # （那些目录的 dirs.version 仍是旧值，`stale_dirs` 会继续报出来）。
+                    # 不可达的根不算读取错误（见 `_pass` 的 `unreachable_roots`），否则
+                    # 拔掉一块外接盘就会让"需要校验"永久挂着。
                     self.store.meta_set(conn, 'content_version', self.spec.content_version)
             finally:
                 conn.close()
@@ -833,10 +1004,15 @@ class FreshnessEngine:
 
         与同步互斥：同步正在改指纹库与插件的派生缓存，此时再起一趟全量校验，两趟会
         同时写同一个库、同一份索引。已在跑的校验返回它的状态而不是再起一个。
+
+        同步占用时返回 `running=False` —— 这不是"校验已启动"，必须让调用方（壳的
+        刷新控件）能区分：把 `running` 报成 True 会让它以为任务在跑，等同步结束就
+        按"校验完成"收尾，界面会显示一次根本没发生的校验。
         """
         with self._lock:
             if self._sync_active:
-                return {'started': False, 'running': True, 'reason': 'busy'}
+                return {'started': False, 'running': False, 'reason': 'busy',
+                        'sync_active': True}
             task = self._task
             if task is not None and task.state in ('queued', 'running'):
                 return {'started': False, 'running': True, **task.status()}
@@ -866,21 +1042,29 @@ class FreshnessEngine:
                 task = BackgroundTask(kind=f'freshness.{self.name}')
         conn = self.store.connect()
         try:
+            self._ensure_key_layout(conn)
             known = self.store.dirs(conn)
             # 解析规则变了：逐目录在 `_pass` 里被判定为"要按新规则重算"，处理完即盖章
             report = self._pass(conn, '', None, known, max_dirs=None, task=task,
                                 audit=True)
             if task.cancelled:
                 report['cancelled'] = True
+                report['action'] = 'verify'
+                report['content_version'] = self.spec.content_version
+                report['force_all'] = bool(report.get('restamped'))
                 # 取消的校验不构成"整趟确认"，不能留下一个会被当作权威结论的键集合
                 self._set_verified_keys(None)
+                # 与正常路径同形：调用方（插件/调试脚本）按 `action` 判分支，
+                # 缺字段会让"取消"看起来像一次没开始的同步。
+                self._last_report = report
                 return report
             if not report['partial']:
                 self.store.meta_set(conn, 'content_version', self.spec.content_version)
             self.store.meta_set(conn, 'last_verify_at', time.time())
             # `on_verified` 的触发条件与这里一致（整趟走完 + 无读取错误）：只有这时
             # 指纹库里的键集合才是"当前确实存在的文件"的权威结论。
-            if not report['partial'] and not report['errors']:
+            # `track_entries=False` 没有条目键可给，不能拿空集当"文件全没了"。
+            if not report['partial'] and not report['errors'] and self.spec.track_entries:
                 self._set_verified_keys(self._plugin_key_set(conn))
             else:
                 self._set_verified_keys(None)
@@ -908,26 +1092,43 @@ class FreshnessEngine:
 
         为什么保留这个入口：指纹不可信的场景（外部工具保留了 mtime、缓存写入
         被截断）只能靠"重算一遍"解决。但它**不是**工具栏按钮。
+
+        全程占单飞（`_sync_lock` + `_sync_active`）：插件钩子与 `store.clear` 期间
+        到达的同步必须被拒，否则它会先读走 `known`、再在清库后把每个目录当新目录
+        重算，留下一个"清了一半"的指纹库。启动校验前先让出 `_sync_active`（校验要
+        看它），但仍握着 `_sync_lock`，直到 `start_verify` 决定去留。
         """
         with self._lock:
             if self._busy_locked():
                 return {'started': False, 'running': True}
-        # 指纹库马上要被清空：上一次校验的键集合不能再被当成权威结论
-        self._set_verified_keys(None)
-        cleared: Any = None
-        if self.spec.rebuild is not None:
-            try:
-                cleared = self.spec.rebuild(kind)
-            except Exception as e:  # 插件钩子不可信
-                log.error(f'[{self.name}] freshness.rebuild 钩子失败: {e}')
-                return {'started': False, 'error': str(e)}
-        conn = self.store.connect()
+            if not self._sync_lock.acquire(blocking=False):
+                return {'started': False, 'running': True}
+            self._sync_active = True
         try:
-            self.store.clear(conn)
-            self.store.meta_set(conn, 'content_version', self.spec.content_version)
+            # 指纹库马上要被清空：上一次校验的键集合不能再被当成权威结论
+            self._set_verified_keys(None)
+            cleared: Any = None
+            if self.spec.rebuild is not None:
+                try:
+                    cleared = self.spec.rebuild(kind)
+                except Exception as e:  # 插件钩子不可信
+                    log.error(f'[{self.name}] freshness.rebuild 钩子失败: {e}')
+                    return {'started': False, 'error': str(e)}
+            conn = self.store.connect()
+            try:
+                self.store.clear(conn)
+            finally:
+                conn.close()
+            with self._lock:
+                self._sync_active = False
+            # meta 章（content_version）不在这里预写：清库后由校验整趟走完再盖。
+            # 预写会让"已清空但还没重扫"的库显示成"不待校验"。
+            started = self.start_verify()
+            return {'cleared': cleared, **started}
         finally:
-            conn.close()
-        return {'started': True, 'cleared': cleared, **self.start_verify()}
+            with self._lock:
+                self._sync_active = False
+                self._sync_lock.release()
 
     # ----- 内部 -----
 
@@ -949,7 +1150,12 @@ class FreshnessEngine:
             ttl = float(self.spec.ttl_seconds or 0.0)
             left = max(0.0, ttl - (time.time() - last)) if ttl > 0 else 0.0
             if not force and left > 0:
-                return {'action': 'skip', 'reason': 'fresh', 'ttl_remaining': round(left, 1)}
+                skipped = {'action': 'skip', 'reason': 'fresh',
+                           'ttl_remaining': round(left, 1)}
+                # 跳过也是"这一趟的结论"：`last_report` 停在更早的失效趟会让插件
+                # 看到过期报告（pixiv-sync 的维护入口就读它决定要不要重算）。
+                self._last_report = skipped
+                return skipped
             cleared: Any = None
             if self.spec.invalidate is not None:
                 if task is not None:
@@ -958,7 +1164,9 @@ class FreshnessEngine:
                     cleared = self._call_invalidate(reason)
                 except Exception as e:
                     log.error(f'[{self.name}] freshness.invalidate 失败: {e}')
-                    return {'action': 'error', 'error': str(e)}
+                    failed = {'action': 'error', 'error': str(e)}
+                    self._last_report = failed
+                    return failed
             stamp = time.time()
             self.store.meta_set(conn, 'last_sync_at', stamp)
             if force:
@@ -985,9 +1193,35 @@ class FreshnessEngine:
         task = self._task
         return self._sync_active or (task is not None and task.state in ('queued', 'running'))
 
+    def _ensure_key_layout(self, conn: sqlite3.Connection) -> None:
+        """指纹库的条目键格式落后于当前版本时做一次性迁移。
+
+        迁移发生在 sync / verify 取 `known` 之前，目的只有一个：升级后的第一趟不能
+        把旧格式的键当成"文件消失"。旧格式（`meta.key_layout` 缺失）下声明了
+        `key_of` 的插件存的是**裸插件键**（没有根前缀），一旦按新格式比对，非首根的
+        每个条目都会被判成"旧的消失 + 新的新增" —— `prune` 收到旧键，插件据此删
+        派生缓存甚至用户数据（阅读进度）。
+
+        因此这里直接清空指纹库（保留 meta 里的 `content_version` 等业务章），让这一趟
+        按新格式全量重建；**不调用** `prune`。未声明 `key_of` 的插件存储键一直是
+        虚拟路径，格式没变，只补标记。
+        """
+        marker = self.store.meta_get(conn, 'key_layout')
+        if marker == _KEY_LAYOUT:
+            return
+        counts = self.store.counts(conn)
+        if self.spec.key_of is not None and (counts['entries'] or counts['dirs']):
+            with conn:
+                conn.execute('DELETE FROM entries')
+                conn.execute('DELETE FROM dirs')
+            log.info(f'[{self.name}] freshness 键格式升级：指纹库整库重扫'
+                     f'（旧格式 {counts["entries"]} 条目 / {counts["dirs"]} 目录）')
+        self.store.meta_set(conn, 'key_layout', _KEY_LAYOUT)
+
     def _pass(self, conn: sqlite3.Connection, start_key: str, start_dir: Optional[Path],
-              known: Dict[str, Tuple[float, int, int, float, int]], *, max_dirs: Optional[int],
-              task: Optional[BackgroundTask], audit: bool) -> Dict[str, Any]:
+              known: Dict[str, Tuple[float, int, int, float, int, str]], *,
+              max_dirs: Optional[int], task: Optional[BackgroundTask], audit: bool,
+              start_prefix: str = '', scope: str = '') -> Dict[str, Any]:
         """一趟遍历：广度优先，目录级短路，变了才逐条比对。
 
         `max_dirs=None` 表示不限（校验）；否则到预算就停，返回 `partial=True`。
@@ -998,25 +1232,56 @@ class FreshnessEngine:
         `spec.content_version` 就不再走目录级短路，重算它的条目与派生数据并盖上章。
         于是版本升级不再需要整趟 `force_all` —— 预算用尽的那一趟只盖走到的目录，
         下一趟跳过已盖章的目录继续，直到全部盖完。落后目录的条目**不算新增**：
-        `added`/`changed` 仍只报真实变化，插件只是额外收到"这些条目要按新规则重算"。
+        `added`/`changed` 仍只报真实变化，插件只是额外收到"这些条目要按新规则重算"；
+        只因为落后才追加的条目在 `derive` 的入参里带 `restamp: True`，真实增删改不带。
 
-        报告里的 `new_dirs` / `vanished_dirs` 是本趟观察到的新增与消失的目录；两者
-        任一非空时调 `on_dirs_changed`（目录集合变化与条目变化是两件事）。
+        不可达的根（`Path.is_dir()` 为假）只进 `unreachable_roots`，既不算读取错误、
+        也不播种，因此不产生它的目录行；"目录消失"也不会清理属于这些根的目录。
+
+        `track_entries=False` 时不逐条 stat、不写 `entries`：只按目录指纹
+        （mtime / 名字数 / 平台顺带给出的 size_sum）推进，条目级钩子全部不调。
+
+        报告里的 `scope`（本次传给 `sync` 的原始作用域，空串 = 全部根）与
+        `scoped`（是否只走了子目录）在调用任何插件钩子**之前**就已写入：插件的
+        `on_pass_end` 等钩子要靠它判断"这一趟是不是覆盖了全部根"，否则子目录作用域
+        的同步会被当成整趟，宣布自己给出的索引是权威的。
+
+        报告里的 `new_dirs` / `vanished_dirs` 是本趟观察到的新增与消失的目录（各自
+        截断到 `_DIR_LIST_CAP` 条，其余只给 `*_truncated` 计数）；两者任一非空时调
+        `on_dirs_changed`（目录集合变化与条目变化是两件事）。
         """
         source = self.spec.source
         version = int(self.spec.content_version)
         mapped = self.spec.key_of is not None
+        track = bool(self.spec.track_entries)
         report: Dict[str, Any] = {'added': 0, 'changed': 0, 'removed': 0, 'dirs': 0,
                                   'skipped_dirs': 0, 'pruned': 0, 'errors': [],
                                   'partial': False, 'reason': '',
                                   'truncated_errors': 0, 'restamped': 0,
-                                  'new_dirs': [], 'vanished_dirs': []}
+                                  'new_dirs': [], 'vanished_dirs': [],
+                                  'new_dirs_truncated': 0, 'vanished_dirs_truncated': 0,
+                                  'unreachable_roots': [],
+                                  'scope': scope,
+                                  'scoped': start_dir is not None}
         queue: deque = deque()
+        unreachable_prefixes: List[str] = []
         if start_dir is not None:
-            queue.append((start_key, start_dir))
+            queue.append((start_key, start_dir, start_prefix))
         else:
             for index, root in enumerate(source.roots):
-                queue.append((source.key_of(index, ''), Path(root)))
+                root_path = Path(root)
+                try:
+                    reachable = root_path.is_dir()
+                except OSError:
+                    reachable = False
+                if not reachable:
+                    # 根不可达（外接盘没挂载、目录被删）不是读取错误：记进报告，
+                    # 不播种、也不让它的目录行在"目录消失"里被清掉。
+                    report['unreachable_roots'].append(str(root))
+                    unreachable_prefixes.append(
+                        source.prefixes[index] if index < len(source.prefixes) else '')
+                    continue
+                queue.append((source.key_of(index, ''), root_path, source.prefixes[index]))
         seen: Set[str] = set()
         changed_entries: List[Dict[str, Any]] = []
         removed_keys: List[str] = []
@@ -1042,7 +1307,7 @@ class FreshnessEngine:
                 report['partial'] = True
                 report['reason'] = 'dir_cap'
                 break
-            dir_key, dir_path = queue.popleft()
+            dir_key, dir_path, dir_prefix = queue.popleft()
             if dir_key in seen:
                 continue
             seen.add(dir_key)
@@ -1076,12 +1341,15 @@ class FreshnessEngine:
                 continue
 
             for name, path in subdirs:
-                queue.append((f'{dir_key}/{name}' if dir_key else name, path))
+                queue.append((f'{dir_key}/{name}' if dir_key else name, path, dir_prefix))
 
             stored = known.get(dir_key)
             if stored is None:
                 # 指纹库里没有这个目录：新增目录（空目录也会走到这里，它没有条目）
-                report['new_dirs'].append(dir_key)
+                if len(report['new_dirs']) < _DIR_LIST_CAP:
+                    report['new_dirs'].append(dir_key)
+                else:
+                    report['new_dirs_truncated'] += 1
             # 该目录落后于当前解析规则 → 本趟必须重算它的派生数据并重新盖章。
             # 判定在**目录**粒度上：升级 content_version 不会再让每个目录都被算成
             # "有活"，也就不会出现"预算永远用尽、永远从头重算前 max_dirs 个目录"。
@@ -1089,6 +1357,26 @@ class FreshnessEngine:
             if restamp:
                 # 诊断用：本趟有多少目录因为解析规则升级被重算（`force_all` 的判据）
                 report['restamped'] += 1
+
+            if not track:
+                # 只维护目录指纹：没有条目可比，短路判据就是目录 mtime + 名字数
+                # （+ 平台能给的大小之和）。校验这一趟不比条目光，但指纹仍要重算。
+                try:
+                    dir_mtime = dir_path.stat().st_mtime
+                except OSError as e:
+                    self._add_error(report, f'{dir_key}: {e}')
+                    continue
+                if not audit and stored is not None and not restamp \
+                        and self._fingerprint_matches(stored, dir_mtime, len(names),
+                                                      size_sum):
+                    report['skipped_dirs'] += 1
+                    continue
+                work_dirs += 1
+                fingerprint = (dir_mtime, len(names), int(size_sum or 0), 0.0)
+                self.store.replace_dir(conn, dir_key, fingerprint, [],
+                                       version=version, prefix=dir_prefix)
+                continue
+
             # 目录级短路：目录 mtime、"纳入索引的名字个数"（以及平台能顺带取到时的大小
             # 之和）都没变，且该目录已按当前 content_version 盖过章 → 整目录跳过。
             # **校验不做短路**（audit=True）：它的定义就是"逐项 stat 一遍"，短路会让
@@ -1099,20 +1387,19 @@ class FreshnessEngine:
                 report['skipped_dirs'] += 1
                 continue
 
-            # 存储键只在插件声明了 key_of 时才需要拼根命名空间
-            prefix = source.prefix_of(dir_key) if mapped else ''
-            entries, fingerprint, error = self._collect(dir_key, dir_path, names, prefix)
+            old = self.store.entries_of(conn, dir_key) if stored is not None else {}
+            entries, fingerprint, error = self._collect(dir_key, dir_path, names,
+                                                        prefix=dir_prefix, previous=old)
             work_dirs += 1        # 这一趟真花了钱：算进预算（短路目录不算）
             if error:
                 self._add_error(report, f'{dir_key}: {error}')
 
-            old = self.store.entries_of(conn, dir_key) if stored is not None else {}
             added = [k for k in entries if k not in old]
             changed = [k for k in entries if k in old and old[k] != entries[k][1:]]
             gone = [k for k in old if k not in entries]
             # 存储键带根的命名空间前缀，交给插件前还原成它自己的条目键
             removed_keys.extend(
-                [source.plugin_key(key, prefix) for key in gone] if mapped else gone)
+                [source.plugin_key(key, dir_prefix) for key in gone] if mapped else gone)
             report['added'] += len(added)
             report['changed'] += len(changed)
             report['removed'] += len(gone)
@@ -1120,23 +1407,31 @@ class FreshnessEngine:
                 # 指纹变了但条目没变（例如只是 touched / 子目录增删）：只更新指纹与章
                 self.store.replace_dir(conn, dir_key, fingerprint,
                                        [(k, v[1], v[2]) for k, v in entries.items()],
-                                       version=version)
+                                       version=version, prefix=dir_prefix)
                 continue
 
             # 交给插件"重活"的条目：真实新增/变化的项，加上"本目录落后于解析规则"
             # 时整目录的条目（后者要重算派生数据，但已经计入 added/changed 的不重复给）。
+            # 只因为 restamp 追加的条目带 `restamp: True`：插件据此区分"这份派生数据
+            # 要按新规则重算"与"文件真的变了"（image-viewer 的纯 restamp 批次只丢
+            # 目录节点，不删整份相册索引）。同时是真实 changed 的条目不算 restamp-only。
             dirty: List[str] = added + changed
+            restamped_only: List[str] = []
             if restamp:
                 reported = set(dirty)
-                dirty = dirty + [k for k in entries if k not in reported]
-            for key in dirty:
+                restamped_only = [k for k in entries if k not in reported]
+            marked = set(restamped_only)
+            for key in dirty + restamped_only:
                 path, mtime, size = entries[key]
-                changed_entries.append({
-                    'key': source.plugin_key(key, prefix) if mapped else key,
-                    'path': path, 'mtime': mtime, 'size': size, 'dir': dir_key})
+                item: Dict[str, Any] = {
+                    'key': source.plugin_key(key, dir_prefix) if mapped else key,
+                    'path': path, 'mtime': mtime, 'size': size, 'dir': dir_key}
+                if key in marked:
+                    item['restamp'] = True
+                changed_entries.append(item)
             self.store.replace_dir(conn, dir_key, fingerprint,
                                    [(k, v[1], v[2]) for k, v in entries.items()],
-                                   version=version)
+                                   version=version, prefix=dir_prefix)
 
         # 目录消失：全部根、整趟走完、无读取错误才做。
         # 为什么同步也要做（不只是校验）：目录改名/整目录删除时，新目录的条目是
@@ -1144,16 +1439,27 @@ class FreshnessEngine:
         # 却把旧的 3 个永远留在库里。部分遍历（预算用尽）与子目录作用域都不能做：
         # "没见到"不等于"没了"。
         if start_dir is None and not report['partial'] and not report['errors']:
-            vanished = [k for k in known if k not in seen]
+            unreachable = set(unreachable_prefixes)
+            vanished: List[str] = []
+            for key in known:
+                if key in seen:
+                    continue
+                stored_prefix = known[key][5]
+                # 归属不可达根的目录"这一趟没见到"不代表没了：根根本没走进去。
+                # 旧库的行没有 prefix 列（空串），再用目录键反推一次兜底。
+                if stored_prefix in unreachable or source.prefix_of(key) in unreachable:
+                    continue
+                vanished.append(key)
             dropped_entries = 0
             for dir_key in vanished:
                 keys = self.store.drop_dir(conn, dir_key)
-                prefix = source.prefix_of(dir_key)
+                prefix = known[dir_key][5]
                 removed_keys.extend(
                     [source.plugin_key(key, prefix) for key in keys] if mapped else keys)
                 dropped_entries += len(keys)
             report['removed'] += dropped_entries
-            report['vanished_dirs'] = list(vanished)
+            report['vanished_dirs'] = list(vanished[:_DIR_LIST_CAP])
+            report['vanished_dirs_truncated'] = max(0, len(vanished) - _DIR_LIST_CAP)
 
         report['pruned'] = self._call_prune(removed_keys)
         report['derived'] = self._call_derive(changed_entries, task)
@@ -1162,12 +1468,27 @@ class FreshnessEngine:
         report['dirs_changed'] = self._call_dirs_changed(report)
         # 对账只在"整趟走完且没有读取错误"时做：keys 不完整时按它清孤儿，
         # 会把只是暂时读不到的目录下的有效派生缓存一起删掉。
-        if audit and not report['partial'] and not report['errors']:
+        # `track_entries=False` 不维护条目键，空集会被插件当成"文件全没了"。
+        if audit and track and not report['partial'] and not report['errors']:
             report['audited'] = self._call_verified(conn)
         report['pass_end'] = self._call_pass_end(report, audit, task)
         return report
 
-    def _unchanged(self, dir_path: Path, stored: Tuple[float, int, int, float, int],
+    @staticmethod
+    def _fingerprint_matches(stored: Sequence[Any], dir_mtime: float, name_count: int,
+                             size_sum: Optional[int] = None) -> bool:
+        """已有指纹与本次观察是否一致（无 stat 的目录级短路判据）。
+
+        - 目录 mtime 容差 0.5 秒：文件系统的时间戳粒度与"扫描与写入同时发生"；
+        - 名字个数：外部工具还原目录 mtime 时仍能发现新增/删除；
+        - size_sum：只在枚举顺带给出文件大小的平台上可用（Windows），补上
+          "同名替换内容长度变了""同秒内删一个加一个"两类盲区。
+        """
+        if abs(dir_mtime - stored[0]) >= 0.5 or stored[1] != name_count:
+            return False
+        return size_sum is None or int(stored[2]) == size_sum
+
+    def _unchanged(self, dir_path: Path, stored: Sequence[Any],
                    name_count: int, size_sum: Optional[int] = None) -> bool:
         """目录级短路判据：目录 mtime + 纳入索引的名字个数（+ 可选的文件大小之和）。
 
@@ -1179,9 +1500,7 @@ class FreshnessEngine:
             dir_mtime = dir_path.stat().st_mtime
         except OSError:
             return False
-        if abs(dir_mtime - stored[0]) >= 0.5 or stored[1] != name_count:
-            return False
-        return size_sum is None or int(stored[2]) == size_sum
+        return self._fingerprint_matches(stored, dir_mtime, name_count, size_sum)
 
     def _entry_key(self, abs_path: Path, virtual: str, prefix: str = '') -> str:
         """条目键：插件的 `key_of(绝对路径)` 优先，默认用虚拟路径。
@@ -1201,7 +1520,8 @@ class FreshnessEngine:
         return f'{prefix}/{plugin_key}' if prefix and plugin_key else (prefix or plugin_key)
 
     def _collect(self, dir_key: str, dir_path: Path, names: Sequence[str],
-                 prefix: str = ''
+                 prefix: str = '',
+                 previous: Optional[Dict[str, Tuple[float, int]]] = None,
                  ) -> Tuple[Dict[str, Tuple[str, float, int]], Tuple[float, int, int, float], str]:
         """逐条 stat（只在目录短路失败后发生）。
 
@@ -1209,28 +1529,40 @@ class FreshnessEngine:
         `根前缀/插件键`。用裸文件名会让所有子目录的条目互相覆盖。
         `prefix` 是该目录所属根的虚拟前缀，只有声明 `key_of` 时参与拼键。
 
+        单个文件 stat 失败（被独占、被删在枚举与 stat 之间）**不判成"消失"**：
+        有旧指纹就沿用旧值，没有就只报错误 —— 否则插件会按"这个文件没了"丢掉
+        派生缓存。目录指纹的 `file_count` 用"纳入索引的名字个数"而不是 stat
+        成功数：用成功数会让这个目录的指纹永远对不上、每趟都重扫。
+
         返回 ({存储键: (物理路径, mtime, size)}, 目录指纹, 最后一个错误)。
         """
         entries: Dict[str, Tuple[str, float, int]] = {}
+        previous = previous or {}
         size_sum = 0
         max_mtime = 0.0
         error = ''
         for name in names:
             path = dir_path / name
+            virtual = f'{dir_key}/{name}' if dir_key else name
+            key = self._entry_key(path, virtual, prefix)
             try:
                 st = path.stat()
             except OSError as e:
                 error = str(e)
+                kept = previous.get(key)
+                if kept is not None:
+                    entries[key] = (str(path), kept[0], kept[1])
+                    size_sum += kept[1]
+                    max_mtime = max(max_mtime, kept[0])
                 continue
-            virtual = f'{dir_key}/{name}' if dir_key else name
-            entries[self._entry_key(path, virtual, prefix)] = (str(path), st.st_mtime, st.st_size)
+            entries[key] = (str(path), st.st_mtime, st.st_size)
             size_sum += st.st_size
             max_mtime = max(max_mtime, st.st_mtime)
         try:
             dir_mtime = dir_path.stat().st_mtime
         except OSError:
             dir_mtime = 0.0
-        return entries, (dir_mtime, len(entries), size_sum, max_mtime), error
+        return entries, (dir_mtime, len(names), size_sum, max_mtime), error
 
     def _call_derive(self, items: List[Dict[str, Any]],
                      task: Optional[BackgroundTask]) -> Dict[str, Any]:
@@ -1268,6 +1600,9 @@ class FreshnessEngine:
         现在所有插件共用同一条路径）。键已在 `_plugin_key_set` 里还原成插件键。
         """
         if self.spec.on_verified is None:
+            return {}
+        if not self.spec.track_entries:
+            # 没有条目键可用：空集会被插件理解为"文件全没了"，不能调它。
             return {}
         keys = self._plugin_key_set(conn)
         try:
