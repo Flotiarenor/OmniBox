@@ -19,21 +19,32 @@ Vue 3 + TypeScript + Vite。`src/` 是壳的界面（`components/` `core/` `rout
 | --- | --- |
 | 样式 | `variables.css` `shared.css` `base.css` `effects.css` |
 | 组件 | `folder-picker.{css,js}` `freshness.{css,js}` `splitter.{css,js}` `content-ui.{css,js}` |
-| 共享运行时 | `base.js`（`PluginLifecycle` / `Bridge` / `Utils`）、`dialogs.js`（`confirmDialog`、`Shell.dialog`）、`settings.js`（`createSettingsForm`、`openModal`、`openSettingsModal`）、`host-channel.js`（`HostChannel`）、`tree.js`（`createTree`）、`lightbox.js`（`createLightbox`）、`pagination.js`（`createPagination`）、`context-menu.js`（`createContextMenu`） |
+| 共享运行时 | `base.js`（`PluginLifecycle` / `Bridge` / `Utils`）、`dialogs.js`（`confirmDialog`、`Shell.dialog`）、`settings.js`（`createSettingsForm`、`openModal`、`openSettingsModal`）、`host-channel.js`（`HostChannel`）、`tree.js`（`createTree`）、`lightbox.js`（`createLightbox`）、`pagination.js`（`createPagination`）、`context-menu.js`（`createContextMenu`）、`chrome-client.js`（`ChromeClient`） |
 | 脚本 | `toast.js` `native-client.js` `motion.js` `icons.generated.js` |
 
-共享运行时的 8 个脚本是**同一个全局作用域里的普通脚本，顺序即依赖顺序**：`base.js` 在它们最前（其余分段按全局名读 `window.Utils` / `window.Bridge`），`toast.js` 又必须排在 `base.js` 之前。注入顺序的唯一真源是 `shell/backend/file_server.py` 的 `_PLUGIN_BOOTSTRAP_SCRIPT`；新增或调整分段只改那里，不要另抄一份清单。
+共享运行时的 9 个脚本是**同一个全局作用域里的普通脚本，顺序即依赖顺序**：`base.js` 在它们最前（其余分段按全局名读 `window.Utils` / `window.Bridge`），`toast.js` 又必须排在 `base.js` 之前，`chrome-client.js` 在 `context-menu.js` 之后、`folder-picker.js` 之前（它只用 `window` / `location`，不依赖 `base.js`）。注入顺序的唯一真源是 `shell/backend/file_server.py` 的 `_PLUGIN_BOOTSTRAP_SCRIPT`；新增或调整分段只改那里，不要另抄一份清单。
 
 `freshness.js` 的触发归属是硬契约：`mount` 只渲染控件、不扫盘；内容页自绘控件时自己调
-`autoSync(scope)`，壳渲染骨架时由 `PluginChrome.vue` 在挂载后与 `activeView` /
-`freshness_scope` 变化时调。内容页拿不到壳里的句柄，重新可见时用模块级
-`Freshness.sync(plugin, scope)`。插件门禁会拦住「壳挂载了控件但没有 `autoSync` 调用」的写法。
+`.autoSync(scope)`（拿不到句柄时用模块级 `Freshness.sync(plugin, scope)`），壳渲染骨架时由
+`PluginChrome.vue` 的 `freshnessSyncTarget` 在挂载后与 `watch([activeView, freshnessScope])`
+里调，native 面板打开期间跳过（内容 iframe 被 v-show 隐藏）。插件门禁
+`tools/check_plugins.py` 按插件分流：自绘型查插件自己的 `.autoSync(` / `Freshness.sync(`，
+壳挂载型查 `PluginChrome.vue` 的 `.autoSync(` 与那条 watch；匹配前先去掉 JS 注释、HTML
+注释与字符串内容，注释掉的调用、只定义未调用、模板字符串都不算接线。
 
 同步/校验有结论时壳发两条消息：`omnibox:freshness`（`{plugin, scope, report}`）与紧跟其后的
-旧 `omnibox:action: refresh`（`payload` 同报告），内容页只处理一条即可。控件在没有任务时每
-30 秒重读一次状态投影（`idlePollMs` 可调，0 关闭；窗口隐藏时不读），被动同步被跳过
-（去抖 / 正忙 / 作用域无效）时状态行会写一句可重试的原因。壳设置页的「数据与缓存」用
-`system_freshness_overview` 列出各插件状态并提供重建入口。
+旧 `omnibox:action: refresh`（`payload` 同报告）。内容页只处理一条即可；两条都处理的页面
+按 `payload` 判回声（带 payload 的 `refresh` 跳过）。`App.vue` 用 `buildActionEvent` 转发
+`@action` 的全部 emit 参数，`refresh` 才真的带 payload；事件作用域取
+`freshnessEventScope(report, fallback)`（报告自己的 `scope` 优先）。`normalizeFreshnessScope`
+与后端 `scope_start` 的口径对齐：去首尾 `/`、折叠重复 `/`、丢掉 `.` 段，非法值落成空串（不
+保留旧值；后端仍会自己再判一次）。控件在没有任务时每 30 秒重读一次状态投影（`idlePollMs`
+可调，0 关闭）；窗口隐藏或控件所在页被 v-show 隐藏（`offsetParent` 为 null）时不读，切回来
+靠低频轮询自己恢复。被动同步被跳过（去抖 / 正忙 / 作用域无效 / 远端新鲜期内）时状态行在
+已有文案之后补一句原因，有不可达根时显示「部分目录不可达（N）· 挂载后自动同步」。壳设置页
+的「数据与缓存」用 `system_freshness_overview` 列出各插件状态并提供重建入口；有任务在跑时
+1.5 秒轮询概览、离开设置页即停，`freshnessOverviewErrorText` 把 403 / 权限错误与"旧内核不
+提供"分开表述。
 
 `toast.js` 是壳页面与插件 iframe 共用的 Toast 唯一实现：两边的引导片段都引它，
 `src/core/toast.ts` 只是给它加类型入口，`base.js` 不再自己定义 `window.Toast`。

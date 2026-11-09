@@ -117,8 +117,12 @@ flowchart LR
 运行期用 `omnibox:chrome` 打补丁：`title` / `subtitle` / `view` / `actions` / `nav` /
 `search` / `status` / `statusItems` / `freshness_scope`。壳只合并声明，不解释业务。
 `freshness_scope` 是内容页当前所在的同步作用域（目录相对路径，空串 = 全部根），由壳按
-插件记住并传给统一刷新的 `autoSync`；归一化（strip、长度上限、丢弃含 `..` 的值）在
-`core/plugin-chrome-protocol.js` 的 `normalizeFreshnessScope`。
+插件记住并传给统一刷新的 `autoSync`；归一化在 `core/plugin-chrome-protocol.js` 的
+`normalizeFreshnessScope`，结果按引擎 `scope_start` 的解释对齐：去首尾 `/`、折叠重复
+`/`、丢掉 `.` 段，空串表示全部根；非字符串、超长、含 `..` 段、反斜杠 / 盘符 / UNC 判非法
+并落成空串（**不保留旧值** —— 旧值只会在错误的目录上同步，比全根同步更糟）。后端仍会自己
+再判一次（绝对路径、`..` 一律拒绝，并确认解析结果落在根内）。壳生成的刷新事件用
+`freshnessEventScope` 取报告自己的 `scope`，没有才回落到当前作用域。
 
 ## 4 消息
 
@@ -130,7 +134,7 @@ flowchart LR
 | 壳 → 内容 | `omnibox:action` | 顶栏动作；可带 `payload`。声明 `frontend.chrome` 的插件，`settings` 由壳接管、不下发 |
 | 壳 → 内容 | `omnibox:action`（`settings-saved`） | 壳内设置弹窗保存成功；内容页重读设置并刷新当前视图 |
 | 壳 → 内容 | `omnibox:query` | 搜索输入（壳侧 250ms 防抖） |
-| 壳 → 内容 | `omnibox:freshness` | 统一刷新的结果：`{plugin, scope, report}`。`report` 是后端同步/校验报告（`action` / `added` / `changed` / `removed` / `invalidated` / 校验任务的 `task`），内容页据此决定重载哪一层；紧随其后还会补一条旧的 `omnibox:action: refresh`，同一次同步只处理一条 |
+| 壳 → 内容 | `omnibox:freshness` | 统一刷新的结果：`{plugin, scope, report}`。`report` 是后端同步/校验报告（`action` / `added` / `changed` / `removed` / `invalidated` / 校验任务的 `task` / `scope`），内容页据此决定重载哪一层；紧随其后还会补一条旧的 `omnibox:action: refresh`（`payload` 同报告）。两条都处理的页面按 `payload` 判回声：带 `payload` 的 `refresh` 属于刚到的富事件，只重载一次；没有 `payload` 的 `refresh`（旧壳 / 用户动作）照常处理 |
 | 壳 → 内容 | `omnibox:appearance` | 本插件背景不透明度、是否跟随壳、壳全局值；内容页据此让出底色 |
 | 内容 → 壳 | `omnibox:ready` | 握手，壳补发当前视图 |
 | 内容 → 壳 | `omnibox:chrome` | 标题、视图、动作、导航、搜索、状态补丁；`search.value` 回填输入框，`search.clear`（递增序号）清空；`freshness_scope` 上报当前同步作用域 |
@@ -236,11 +240,15 @@ key 显示到对应输入框。`pixiv-sync` 的 `refresh_token` 是 `secret`，�
 - **分隔条只有一份**：壳持有侧栏分隔条，内容 iframe 的 z-index 不再参与壳文档的层叠。
 - **扩展入口只有一份**：`PluginExtensions` 从后端取入口；宿主不再自建 `#iv-extensions` /
   `#mp-extensions`。
-- **刷新控件只有一份**：`freshness.js` 由壳挂载，壳在挂载后与视图/作用域变化时调
-  `autoSync(scope)`；同步/校验有结论时先发 `omnibox:freshness`（带 `scope` 与报告），
-  再补一条旧的 `refresh` 动作，两种内容页都能重载。内容页在重新可见时自己调
-  `Freshness.sync(plugin, scope)`（壳挂载型拿不到控件句柄）。控件在无任务时每 30 秒重读
-  一次状态投影，「有变化 · 需要校验」会自己出现；被动同步被跳过时的原因写在状态行上。
+- **刷新控件只有一份**：`freshness.js` 由壳挂载，壳在挂载后与 `watch([activeView,
+  freshnessScope])` 里调 `autoSync(scope)`（native 面板打开期间跳过）；同步/校验有结论时
+  先发 `omnibox:freshness`（带 `scope` 与报告），再补一条带同形 `payload` 的旧 `refresh`
+  动作，两种内容页都能重载——两条都处理的页面按 `payload` 判回声。内容页在重新可见时自己
+  调 `Freshness.sync(plugin, scope)`（壳挂载型拿不到控件句柄）。控件在无任务时每 30 秒重读
+  一次状态投影，「有变化 · 需要校验」会自己出现；窗口不可见或所在页被 `v-show` 隐藏时不读，
+  切回来时低频轮询自己恢复。被动同步被跳过时原因写在状态行现有文案之后，不顶掉「有变化 ·
+  需要校验」与「部分目录不可达（N）· 挂载后自动同步」；同步进行中再点「校验」不弹进度卡，
+  提示「同步进行中，完成后再试」。
 - **统一刷新的全局视图只有一份**：壳设置页的「数据与缓存」用 `system_freshness_overview`
   列出各插件的条目数、目录数与状态，并提供重建入口 —— 没有页面骨架的插件（清理器、
   下载器）由此获得手动刷新入口。

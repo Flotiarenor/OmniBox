@@ -11,9 +11,10 @@
 
 入口 `plugins/group-mesh/backend/main.py` 是唯一的装配点：它 `load_sibling` 加载
 `const` 与 18 个组件模块（`pulse`、`peer_facts`、`storage`、`registry`、`connections`、
-`node`、`discovery`、`peers`、`group`、`shares`、`status`、`remote`、`materialize`、
-`mirror`、`fetch`、`uploads`、`upload`），构造组件并注入依赖。**组件之间不互相 import**
-（分层门禁 R3），共享的无状态工具（`MeshRules`）与常量放在 `const.py` 由入口传下去。
+`node`、`discovery`、`peers`、`group`、`share_paths`、`shares`、`status`、`remote`、
+`materialize`、`mirror`、`fetch`、`uploads`、`upload`），构造组件并注入依赖。**组件之间不
+互相 import**（分层门禁 R3），共享的无状态工具（`MeshRules`）与常量放在 `const.py` 由入口
+传下去。
 
 装配顺序就是依赖顺序（自下而上）：
 
@@ -29,7 +30,8 @@
 | 发现 | `discovery.Discovery` | 存储、注册表、连接池、脉冲、对端事实、节点 |
 | 对端 | `peers.Peers` | 存储、注册表、发现、节点、对端事实、脉冲、规则 |
 | 团体 | `group.Group` | 存储、设置端口、规则 |
-| 共享项 | `shares.Shares` | 存储、节点、设置端口、共享锁、规则、全局数据根、刷新引擎闭包 |
+| 共享路径 | `share_paths.SharePaths` | 无（纯函数） |
+| 共享项 | `shares.Shares` | 存储、节点、设置端口、共享锁、规则、全局数据根、刷新引擎闭包、`SharePaths` |
 | 状态 | `status.StatusReport` | 存储、节点、发现、脉冲、共享项、对端事实、设置端口 |
 | 远端链 | `remote.Remote`、`materialize.Materialize` | 存储、注册表、连接池、规则 |
 | 镜像 | `mirror.Mirror` | 存储、注册表、连接池、物化、规则、受保护判定 |
@@ -40,7 +42,8 @@
 迁移前它们就是同一把锁，拆开会改变并发行为（后台探测与界面请求的互斥范围）。
 
 **两条刻意保留的注入接缝**：`Shares` 收的是一个 `lambda: engine_for(self)` 闭包
-（刷新引擎按插件实例缓存，需要入口身份）；`Mirror` 收的是 `self.is_protected_path`
+（刷新引擎按插件实例缓存，需要入口身份），以及一个无状态的 `SharePaths`（路径规范、
+嵌套归属、根目录指纹由入口装配一次注入）；`Mirror` 收的是 `self.is_protected_path`
 （受保护判定在基类）。两者都是构造参数注入，不是运行期 `getattr`。
 
 ## 文件地图
@@ -59,7 +62,8 @@
 | `plugins/group-mesh/backend/discovery.py` | 后台同步周期、候选端点、注册快照并行探测与推送 | `Discovery`、`PROBE_OVERALL_SECONDS`、`SYNC_OVERALL_SECONDS`、`status`、`start`、`stop`、`run_once`、`probe_round`、`sync_candidates`、`push_pending_changes`、`fetch_registries_parallel`、`fetch_registry_from`、`adopt_remote_roster` |
 | `plugins/group-mesh/backend/peers.py` | 对端设备与可读共享项、手工登记地址、本机地址串 | `Peers`、`action`、`parse_endpoint`、`my_endpoint`、`list_peers` |
 | `plugins/group-mesh/backend/group.py` | 身份初始化、团体创建与加入、邀请串、成员增减 | `Group`、`init_identity`、`create_group`、`join_group`、`invite_string`、`get_invite`、`get_device_keys`、`add_member` |
-| `plugins/group-mesh/backend/shares.py` | 共享项挂载与移除、用量与条目数缓存、统一刷新声明 | `Shares`、`usage_cache`、`get_share_roots`、`share_roots_report`、`add_share`、`remove_share`、`refresh_share_roots`、`root_state`、`scan_share_usage`、`_usage_fields`、`_usage_matches`、`sync_errors`、`spec`、`derive`、`prune`、`audit`、`pass_end`、`rebuild`、`_reset_throttle` |
+| `plugins/group-mesh/backend/share_paths.py` | 共享根路径的纯函数：规范形式、嵌套归属、根目录指纹与用量占位（无状态，入口装配一次注入） | `SharePaths`、`norm`、`prefix`、`share_of`、`missing_usage`、`root_stamp` |
+| `plugins/group-mesh/backend/shares.py` | 共享项挂载与移除、用量与条目数缓存（`usage_stale` 按根指纹判定）、统一刷新声明（`track_entries=False`、`on_dirs_changed`） | `Shares`、`usage_cache`、`get_share_roots`、`share_roots_report`、`add_share`、`remove_share`、`refresh_share_roots`、`root_state`、`scan_share_usage`、`_usage_fields`、`_usage_matches`、`_usage_stamp_matches`、`dirs_changed`、`sync_errors`、`spec`、`derive`、`prune`、`audit`、`pass_end`、`rebuild`、`_reset_throttle` |
 | `plugins/group-mesh/backend/status.py` | 首屏状态汇总（`sync` 带共享根读取错误与连不上的对端，`shares` / `share_roots` 带用量） | `StatusReport`、`get_status` |
 | `plugins/group-mesh/backend/remote.py` | 列对端共享项与目录、取回单个文件 | `Remote`、`list_remote`、`download_remote`、`fetch_to` |
 | `plugins/group-mesh/backend/materialize.py` | 远端目录物化、索引缓存与对账 | `Materialize`、`index_cache`、`materialize_remote`、`index_file`、`load_index`、`cached_index`、`invalidate_index`、`save_index`、`walk_remote`、`prune_absent`、`content_changed`、`is_fetched`、`apply_remote_mtime` |
@@ -70,7 +74,7 @@
 | `plugins/group-mesh/frontend/index.html` | 内容页入口：五个面板、六个弹窗与脚本装载（页面骨架由壳渲染，不在这里） | `#gm-panels`、`#gm-content`、`#kernel-missing`、`data-panel`、`data-title`、`data-sub`、`data-active` |
 | `plugins/group-mesh/frontend/network-location.html` | 网络位置提供方页面（弹窗 iframe） | `nl-peers`、`nl-shares`、`nl-dest-input`、`nl-dest`、`nl-note`、`nl-pick`、`nl-run`、`nl-cancel`、`nl-item`、`nl-sub`、`nl-path`、`nl-step`、`nl-list`、`nl-actions`、`nl-pick-row`、`is-active`、`MESSAGE_TYPE`、`omnibox:network-location`、`loadPeers`、`selectPeer`、`selectShare`、`pickDestination`、`run`、`reply`、`destinationProblem`、`syncFromInput`、`normalizeDestination`、`applyPickedDestination`、`updateHint`、`updateRunButton`、`FolderPicker.openDirBrowser` |
 | `plugins/group-mesh/frontend/group-mesh.css` | 插件自有样式：面板栅格、卡片、表格、徽章、远端两栏 | `--gm-radius`、`--gm-radius-sm`、`--gm-accent-soft`、`--gm-success-soft`、`--gm-warn-soft`、`--gm-danger-soft`、`--gm-peers-width`、`.gm-content`、`.gm-panel`、`.gm-grid`、`.gm-card`、`.gm-card-ok`、`.gm-card-warn`、`.gm-card-error`、`.gm-card-muted`、`.gm-card-wide`、`.gm-body`、`.gm-kv`、`.gm-actions`、`.gm-form`、`.gm-table`、`.gm-badge`、`.gm-badge-owner`、`.gm-badge-admin`、`.gm-badge-member`、`.gm-badge-ok`、`.gm-badge-warn`、`.gm-hint`、`.gm-empty`、`.gm-skeleton-line`、`.gm-list`、`.gm-details`、`.gm-address`、`.gm-address-row`、`.gm-address-label`、`.gm-address-value`、`.gm-remote`、`.gm-remote-tools`、`.gm-remote-peers`、`.gm-remote-files`、`.gm-remote-head`、`.gm-remote-peer`、`.gm-remote-peer-head`、`.gm-remote-peer-name`、`.gm-remote-peer-ep`、`.gm-remote-row`、`.gm-remote-item`、`.gm-remote-item-active`、`.gm-remote-badge`、`.gm-remote-note`、`.gm-remote-crumb`、`.gm-remote-progress`、`.gm-remote-progress-error`、`.gm-remote-cache`、`.gm-upload-progress`、`.gm-check`、`.gm-banner`、`.gm-banner-error` |
-| `plugins/group-mesh/frontend/js/app.js` | 状态读取、面板切换、五个面板渲染、弹窗与动作绑定 | `state`、`el`、`call`、`toast`、`escapeHtml`、`stagger`、`cardOf`、`openModal`、`closeModal`、`roleBadge`、`shortKey`、`button`、`fillActions`、`setPanel`、`render`、`protectionBadge`、`renderIdentity`、`renderRoster`、`renderShares`、`renderNode`、`renderUnsupported`、`renderSideSummary`、`renderLoading`、`showError`、`afterAction`、`refresh`、`showInvite`、`bind`、`init` |
+| `plugins/group-mesh/frontend/js/app.js` | 状态读取、面板切换、五个面板渲染、弹窗与动作绑定；`refresh` 动作按 `payload` 判回声 | `state`、`el`、`call`、`toast`、`escapeHtml`、`stagger`、`cardOf`、`openModal`、`closeModal`、`roleBadge`、`shortKey`、`button`、`fillActions`、`setPanel`、`render`、`protectionBadge`、`renderIdentity`、`renderRoster`、`renderShares`、`renderNode`、`renderUnsupported`、`renderSideSummary`、`renderLoading`、`showError`、`afterAction`、`applyHostAction`、`refresh`、`showInvite`、`bind`、`init` |
 | `plugins/group-mesh/frontend/js/remote.js` | 「远端共享」分片的取数与渲染、上传轮询、可见性轮询 | `window.GroupMeshRemote`、`state`、`gmIcon`、`el`、`esc`、`renderPeers`、`renderPath`、`renderEntries`、`formatSize`、`renderProgress`、`refreshMyEndpoint`、`copyMyEndpoint`、`updatePeerEndpoint`、`refreshPeers`、`reportPeers`、`refreshCache`、`renderCacheSummary`、`materialize`、`listDirectory`、`download`、`openUpload`、`setUploadRunning`、`renderUploadProgress`、`uploadText`、`stopUploadPolling`、`pollUpload`、`doUpload`、`cancelUpload`、`bind`、`startViewPolling`、`stopViewPolling`、`bindLifecycle`、`init`、`VIEW_POLL_MS`、`viewTimer` |
 
 落盘产物（全部在 `get_data_root()` 值为 `<全局数据根>/group-mesh` 之下）：
@@ -135,7 +139,7 @@
 | `ensure_file` | `path` | `None` | 读取占位文件时按需取回真字节 |
 | `get_protected_paths` | 无 | `List[Path]` | 申报 `identity_dir` 为受保护路径 |
 | `get_extensions` | 无 | `List[dict]` | 注册 placement 值 `network-location` 的扩展 |
-| `freshness_spec` | 无 | `Dict`（`roots`、`include`、`derive`、`prune`、`on_verified`、`on_pass_end`、`rebuild`、`content_version`、`unit`、`min_sync_interval`、`max_dirs_per_sync`） | 参与统一刷新基建；共享根用量由校验趟重算，`add_share` / `remove_share` 后清去抖 |
+| `freshness_spec` | 无 | `Dict`（`roots`、`track_entries`、`include`、`derive`、`prune`、`on_dirs_changed`、`on_verified`、`on_pass_end`、`rebuild`、`content_version`、`unit`、`min_sync_interval`、`max_dirs_per_sync`） | 参与统一刷新基建；`track_entries` 为假时只维护目录指纹（不写条目、不调条目级钩子），目录集合变化由 `on_dirs_changed` 作废用量缓存；共享根用量由校验趟重算，`add_share` / `remove_share` 后清去抖 |
 | `on_settings_changed` | `changed_keys` | `None` | 设置变更后丢弃连接与自动启动结论 |
 | `on_load` | 无 | `None` | 建数据根、恢复上传任务表、启动后台同步 |
 | `on_unload` | 无 | `None` | 停同步、取消上传、关连接、停节点 |
@@ -151,7 +155,7 @@
 - 导航四组：`本机`（`machine` 身份与节点）、`团体`（`group` 名单与成员、`shares` 共享项）、`传输`（`remote` 远端共享）、`关于`（`roadmap` 路线图）。
 - 顶栏动作：`refresh`（刷新状态）、`settings`（设置）；设置由壳的 `PluginSettingsModal` 打开。
 - 搜索：manifest 没有 `search` 声明，壳不渲染搜索框，内容页也不处理 `omnibox:query`。
-- 状态栏与统一刷新：`status: true`，文本由内容页按节点/团体/名单状态上报；统一刷新由壳挂载，`freshness.unit` 为「项」，校验完成后经 `refresh` 动作重读。
+- 状态栏与统一刷新：`status: true`，文本由内容页按节点/团体/名单状态上报；统一刷新由壳挂载，`freshness.unit` 为「项」，有结论时先收 `omnibox:freshness`，紧跟的 `omnibox:action: refresh` 带同形 `payload`，`applyHostAction` 据此判回声、只重读一次。
 
 DOM 结构树（`plugins/group-mesh/frontend/index.html`，内容 iframe 不含页面骨架）：
 
@@ -215,7 +219,7 @@ DOM 结构树（`plugins/group-mesh/frontend/index.html`，内容 iframe 不含�
 
 - `window.Bridge.call`：`/api/<插件>__<方法>` 通道
 - 设置弹窗：由壳的 `PluginSettingsModal` 在顶栏 `settings` 动作里打开；保存成功后壳发 `settings-saved`，本页 `refresh()` 重读状态。内容页不再调用 `window.openSettingsModal`
-- 统一刷新：壳的 `PluginChrome` 用 `window.Freshness.mount({plugin, container, unit, onChange})` 挂载同步/校验按钮，完成后经 `refresh` 动作回到本页；内容页不再挂 `#gm-freshness`
+- 统一刷新：壳的 `PluginChrome` 用 `window.Freshness.mount({plugin, container, unit, onChange})` 挂载同步/校验按钮，挂载后与视图变化时由壳调 `autoSync`，完成后经 `refresh` 动作回到本页；内容页不再挂 `#gm-freshness`。规格声明 `track_entries: False`：引擎只维护目录指纹，不写条目、不调条目级钩子；共享根目录集合变化由 `on_dirs_changed` 作废用量缓存（`dirs_changed`），`usage_stale` 表示"这份用量不是按当前根目录指纹算出来的"——路径换过或根目录 mtime/大小变了都为真，首屏仍把上次的数字给出去并标「待更新」。
 - `window.confirmDialog`：移除共享项前的确认
 - `window.Toast.success`、`window.Toast.error`：提示（唯一实现是 `/shell/toast.js`，壳与插件页共用）
 - `window.Icons.html`：取壳图标集里的 SVG 标记，`icons.generated.js` 提供 sprite
