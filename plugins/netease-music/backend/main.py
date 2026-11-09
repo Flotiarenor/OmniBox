@@ -43,7 +43,7 @@ class NeteaseMusicPlugin(PluginBase):
     # 「同步」= TTL 到期才丢弃本地缓存，「校验」= 立刻丢弃（忽略 TTL）。
     # 真正取数仍由各视图按需发起，invalidate 只负责让那份取数不再命中旧缓存。
 
-    # 远端数据的**新鲜期**（界面按"还剩多久"显示）：半小时。
+    # 远端数据的**新鲜期**（投影给 `get_status.freshness`，界面暂未消费）：半小时。
     # 与播放地址缓存的有效期不是同一个数：地址是更短期的外链（`URL_CACHE_TTL_SECONDS`，
     # 十分钟），过期后单条重新解析；这里的 TTL 决定整份远端数据何时该重新取。
     NETEASE_TTL_SECONDS: ClassVar[float] = 1800.0
@@ -99,7 +99,9 @@ class NeteaseMusicPlugin(PluginBase):
         }
 
     def get_status(self) -> dict:
-        # 远端新鲜期随状态一起给出：宿主按它显示"数据还剩多久"，而不是"已索引 N 项"。
+        # 远端新鲜期随状态一起给出。宿主读 `get_status` 时只消费 `ncm_cli_available`
+        # （决定是否提示安装 ncm-cli），`freshness` 目前仅供状态接口与测试读取，
+        # 界面暂未按它显示任何内容。
         freshness = self.remote_cache.state()
         try:
             result = self._get_api()._run_command('--version')

@@ -42,7 +42,7 @@
 | `get_lyric` | `song_id` | `{success, data}` | 歌词对象，宿主 `lyrics-parser.js` 调用 |
 | `check_login` | 无 | `{success}` | `success` 表示已登录，非调用是否成功 |
 | `login` | `background`，默认 `True` | `{success, message}` | 触发 `login --background`；`message` 取二维码地址或提示文本 |
-| `get_status` | 无 | `{plugin, ncm_cli_available, ncm_cli_version, error, freshness}` | 对 `ncm-cli` 执行 `--version` 探活；`freshness` 是远端新鲜期投影（`mode` / `ttl_seconds` / `ttl_remaining` / `fresh_until`），宿主按它显示「缓存还剩多久」 |
+| `get_status` | 无 | `{plugin, ncm_cli_available, ncm_cli_version, error, freshness}` | 对 `ncm-cli` 执行 `--version` 探活；`freshness` 是远端新鲜期投影（`mode` / `ttl_seconds` / `ttl_remaining` / `fresh_until`），目前只供状态接口与测试读取——宿主读 `get_status` 时只消费 `ncm_cli_available`，界面暂未消费该投影 |
 
 条目形状由 `_song`、`_playlist` 归一，字段取值如下。
 

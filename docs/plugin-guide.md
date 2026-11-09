@@ -780,9 +780,12 @@ async _syncFreshness(reload) {
 ```
 
 `Freshness.sync(plugin, scope)` 是模块级函数（不经挂载句柄），走同一条
-`Bridge.callSystem('system_freshness_sync', …)` 并返回报告；`scope` 的归一化在
-`plugin-chrome-protocol.js` 的 `normalizeFreshnessScope`（非字符串、超长、含 `..`
-一律丢弃并保留旧值）。
+`Bridge.callSystem('system_freshness_sync', …)` 并返回报告。`scope` 在内容页上报
+`freshness_scope` 的那条通道上由 `plugin-chrome-protocol.js` 的 `normalizeFreshnessScope`
+规范化（去首尾 `/`、折叠重复 `/`、丢掉 `.` 段，空串表示全部根）；非字符串、超长、含 `..`
+段、反斜杠 / 盘符 / UNC 一律判非法，落成空串（不保留旧值 —— 旧值只会在错误的目录上同步）。
+`Freshness.sync` 本身原样透传 `scope`，后端 `FsSource.scope_start` / `resolve_scope`
+会再判一次并把逃出根之外的值拒绝。
 
 三条硬约束：
 
@@ -835,7 +838,10 @@ async _syncFreshness(reload) {
   阻止 meta 章推进。`state()` 计算 `stale_dirs` 时排除属于不可达根前缀的目录，`version_stale`
   也因此不被它们顶成真 —— 那些目录这一趟根本走不到，按"落后"报只会让界面永久提示需要校验；
   根恢复后下一趟同步自然把它们纳入。前端在不可达根存在时显示「部分目录不可达（N）· 挂载后
-  自动同步」。
+  自动同步」。**声明根的这一侧也要配合**：`freshness_spec().roots` 要给出"配置里的全部根"
+  （含暂时不存在的），不能先按 `Path.is_dir()` 过滤 —— 过滤掉之后引擎根本不知道这个根存在，
+  `unreachable_roots` 为空，该根的目录行会被当成"消失"清理并交给 `prune`；而 `/file` 允许根
+  这类**安全面**仍只应给出当前存在的根。
 - **`verified_keys()` 只用于破坏性判断**：它返回最近一次**整趟成功**校验确认存在的条目
   键集合（已还原成插件键），没有这样的结论时返回 `None`（空集表示"确实一个都没有"）。
   插件要清用户数据（例如媒体库的播放进度）时只能依据它，不能用"索引里没命中"——索引在
@@ -922,7 +928,8 @@ async _syncFreshness(reload) {
 时刻）与「重建…」按钮（二次确认后调 `system_freshness_rebuild(plugin, 'derived')`）。有任务
 在跑（重建 / 校验）时页面每 1.5 秒重读一次概览，离开设置页或卸载时停掉轮询；概览是管理员
 专属端点，403 / 权限错误显示「需要管理员权限才能查看统一刷新状态」，与"旧内核没有这个
-接口"分开表述。这是没有页面骨架的插件（清理器、下载器）唯一的手动刷新入口，也是"外部
+接口"分开表述；网络抖动、后端重启这类瞬时失败既不是权限也不是旧内核，显示可重试的提示并
+保留轮询。这是没有页面骨架的插件（清理器、下载器）唯一的手动刷新入口，也是"外部
 工具保留了修改时间、缓存被截断"这类无法靠比对发现的变化的逃生门。
 
 ### 3.5 完整 API 列表
