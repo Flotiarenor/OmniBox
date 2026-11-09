@@ -34,6 +34,14 @@ if str(PLUGIN_BACKEND) not in sys.path:
 from shell.backend.plugin_utils import load_sibling
 
 tts = load_sibling(str(PLUGIN_BACKEND / 'tts_engine.py'), 'tts_engine', 'document_reader_tts_test')
+edge = load_sibling(str(PLUGIN_BACKEND / 'tts_edge.py'), 'tts_edge', 'document_reader_tts_test')
+endpoint = load_sibling(str(PLUGIN_BACKEND / 'tts_endpoint.py'), 'tts_endpoint', 'document_reader_tts_test')
+system = load_sibling(str(PLUGIN_BACKEND / 'tts_system.py'), 'tts_system', 'document_reader_tts_test')
+voices = endpoint.VoiceCatalog(edge.voices)
+speech = tts.SpeechEngine(
+    {'edge': edge.synthesize, 'openai': endpoint.synthesize, 'system': system.synthesize},
+    {'edge': edge.available, 'openai': endpoint.available, 'system': system.available},
+    voices.engine_voice_names)
 
 # 一个合法的最小 WAV（44 字节头 + 8 个采样），让"音频字节"这件事可验证
 WAV_BYTES = (
@@ -164,7 +172,7 @@ class VoiceTableTests(unittest.TestCase):
         self.endpoint = _FakeEndpoint()
         self.addCleanup(self.endpoint.close)
         # 音色清单有 TTL 缓存：不清掉，上一个用例问到的名字会漏进下一个
-        tts.clear_voice_cache()
+        voices.clear_cache()
 
     def _plugin(self):
         import importlib.util
@@ -184,7 +192,7 @@ class VoiceTableTests(unittest.TestCase):
         plugin = self._plugin()
         plugin.update_setting('tts_engine', 'openai')
         plugin.update_setting('tts_base_url', self.endpoint.base_url)
-        data = plugin.tts_voices()
+        data = plugin.tts.tts_voices()
         self.assertEqual(data['mode'], 'openai')
         self.assertEqual([t['source'] for t in data['tables']], ['endpoint'])
         self.assertEqual([v['name'] for v in data['tables'][0]['voices']],
@@ -195,7 +203,7 @@ class VoiceTableTests(unittest.TestCase):
         plugin = self._plugin()
         plugin.update_setting('tts_engine', 'auto')
         plugin.update_setting('tts_base_url', self.endpoint.base_url)
-        data = plugin.tts_voices()
+        data = plugin.tts.tts_voices()
         self.assertEqual(data['mode'], 'auto')
         sources = [t['source'] for t in data['tables']]
         self.assertEqual(sources, ['edge', 'endpoint'])
@@ -207,7 +215,7 @@ class VoiceTableTests(unittest.TestCase):
         """系统离线音色不靠名字挑 —— 它不出表。"""
         plugin = self._plugin()
         plugin.update_setting('tts_engine', 'system')
-        self.assertEqual(plugin.tts_voices()['tables'], [])
+        self.assertEqual(plugin.tts.tts_voices()['tables'], [])
 
     def test_endpoint_without_voice_route_reports_unavailable(self):
         """端点没有 /v1/voices 是常态（不是 OpenAI 规范），此时返回 None 而不是报错。
@@ -215,21 +223,21 @@ class VoiceTableTests(unittest.TestCase):
         前端据此把这一档标成"问不到候选，直接填名字也能用"。
         """
         _OpenAIHandler.voice_list = None
-        tts.clear_voice_cache()
-        self.assertIsNone(tts.endpoint_voices(self.endpoint.base_url))
+        voices.clear_cache()
+        self.assertIsNone(voices.endpoint_voices(self.endpoint.base_url))
         # 走的是真实 HTTP：这条路由回 404 时不能抛异常，也不能被当成"一个音色都没有"
         plugin = self._plugin()
         plugin.update_setting('tts_engine', 'openai')
         plugin.update_setting('tts_base_url', self.endpoint.base_url)
-        table = plugin.tts_voices()['tables'][0]
+        table = plugin.tts.tts_voices()['tables'][0]
         self.assertEqual(table['source'], 'endpoint')
         self.assertTrue(table['unavailable'])
         self.assertEqual(table['voices'], [])
 
     def test_endpoint_accepts_openai_style_list(self):
         _OpenAIHandler.voice_list = {'data': [{'id': 'alloy'}, {'id': 'echo'}]}
-        tts.clear_voice_cache()
-        self.assertEqual(tts.endpoint_voices(self.endpoint.base_url), ['alloy', 'echo'])
+        voices.clear_cache()
+        self.assertEqual(voices.endpoint_voices(self.endpoint.base_url), ['alloy', 'echo'])
 
     def test_model_name_is_sent_as_query_and_5xx_falls_back(self):
         """模型名写错时端点可能 5xx（Qwen3-TTS 是 KeyError → 500），要摘掉模型名再问一次。"""
@@ -249,9 +257,9 @@ class VoiceTableTests(unittest.TestCase):
                 return response
             return _Responder()
 
-        tts.clear_voice_cache()
+        voices.clear_cache()
         with mock.patch('requests.get', fake_get):
-            self.assertEqual(tts.endpoint_voices('http://127.0.0.1:9', '', '写着玩的模型名'),
+            self.assertEqual(voices.endpoint_voices('http://127.0.0.1:9', '', '写着玩的模型名'),
                              ['vivian'])
         self.assertEqual(calls, [{'model': '写着玩的模型名'}, {}])
 
@@ -266,18 +274,18 @@ class VoiceTableTests(unittest.TestCase):
         plugin.update_setting('tts_order', 'edge,openai,system')
         plugin.update_setting('tts_base_url', self.endpoint.base_url)
         plugin.update_setting('tts_voice', 'vivian')
-        tts.clear_voice_cache()
+        voices.clear_cache()
         calls = []
 
         def edge_spy(text, params):
             calls.append(1)
             raise RuntimeError('不该轮到 edge')
 
-        with mock.patch.object(tts, 'edge_voices',
+        with mock.patch.object(voices, '_edge_voices',
                                lambda: [{'name': 'zh-CN-XiaoxiaoNeural'}]), \
-                mock.patch.dict(tts._RUNNERS, {'edge': edge_spy}), \
+                mock.patch.dict(speech._runners, {'edge': edge_spy}), \
                 mock.patch.object(tts, 'RETRY_DELAY_SECONDS', 0):
-            result = tts.synthesize('今天下雨了。', plugin._tts_params())
+            result = speech.synthesize('今天下雨了。', plugin.tts.params())
         self.assertEqual(calls, [], 'edge 没有这个音色，不该去试')
         self.assertEqual(result['engine'], 'openai')
 
@@ -287,10 +295,10 @@ class VoiceTableTests(unittest.TestCase):
         端点没实现 `/v1/voices`、或 edge 断网时都属此类 —— 判错会让人彻底读不出声。
         这里把两档的清单都变成"问不到"，顺序里的第一个就应当被尝试。
         """
-        tts.clear_voice_cache()
-        with mock.patch.object(tts, 'engine_voice_names', lambda engine, params: None), \
-                mock.patch.dict(tts._RUNNERS, {'edge': _fake_audio_runner}):
-            result = tts.synthesize('今天下雨了。',
+        voices.clear_cache()
+        with mock.patch.object(speech, '_voice_names', lambda engine, params: None), \
+                mock.patch.dict(speech._runners, {'edge': _fake_audio_runner}):
+            result = speech.synthesize('今天下雨了。',
                                     {'mode': 'auto', 'order': ['edge', 'openai', 'system'],
                                      'voice': 'vivian', 'base_url': self.endpoint.base_url,
                                      'api_key': '', 'model': '', 'rate': 0})
@@ -306,7 +314,7 @@ class EngineDispatchTests(unittest.TestCase):
     def test_openai_engine_posts_expected_payload(self):
         params = {**self.base_params, 'mode': 'openai', 'base_url': self.endpoint.base_url,
                   'api_key': 'sk-test', 'voice': 'alloy'}
-        result = tts.synthesize('今天下雨了。', params)
+        result = speech.synthesize('今天下雨了。', params)
         self.assertEqual(result['engine'], 'openai')
         self.assertEqual(result['audio'], WAV_BYTES)
         self.assertEqual(result['ext'], '.wav')
@@ -317,9 +325,9 @@ class EngineDispatchTests(unittest.TestCase):
         self.assertEqual(sent['authorization'], 'Bearer sk-test')
 
     def test_openai_engine_without_base_url_is_unavailable(self):
-        self.assertFalse(tts.engine_available('openai', {**self.base_params, 'base_url': ''}))
+        self.assertFalse(speech.engine_available('openai', {**self.base_params, 'base_url': ''}))
         with self.assertRaises(RuntimeError):
-            tts.synthesize('随便', {**self.base_params, 'mode': 'openai', 'base_url': ''})
+            speech.synthesize('随便', {**self.base_params, 'mode': 'openai', 'base_url': ''})
 
     def test_openai_engine_rejects_non_http_endpoint(self):
         """端点地址会收到 `Authorization: Bearer <api_key>`，因此只放行 http/https。
@@ -333,35 +341,35 @@ class EngineDispatchTests(unittest.TestCase):
                 params = {**self.base_params, 'mode': 'openai', 'base_url': base,
                           'api_key': 'sk-secret'}
                 with self.assertRaises(RuntimeError):
-                    tts.synthesize('随便', params)
+                    speech.synthesize('随便', params)
         # 正常地址（含本地端点与带路径前缀的反代）必须继续可用
         for base in ('http://127.0.0.1:8880', 'https://api.example.com', 'http://host:1/api'):
             with self.subTest(base=base):
-                self.assertEqual(tts._validated_endpoint_base(base), base)
+                self.assertEqual(endpoint._validated_endpoint_base(base), base)
 
     def test_openai_engine_surfaces_http_error(self):
         params = {**self.base_params, 'mode': 'openai', 'base_url': self.endpoint.base_url}
         with self.assertRaises(RuntimeError) as ctx:
-            tts.synthesize('触发失败', params)
+            speech.synthesize('触发失败', params)
         self.assertIn('500', str(ctx.exception))
 
     def test_auto_mode_falls_back_to_next_engine(self):
         """第一个引擎失败时必须落到下一个，并把最终成功的引擎名报出来。"""
         params = {**self.base_params, 'mode': 'auto', 'order': ['openai', 'system'],
                   'base_url': self.endpoint.base_url}
-        with mock.patch.object(tts, '_RUNNERS', {**tts._RUNNERS}), \
-                mock.patch.dict(tts._RUNNERS, {'openai': _boom}):
-            if not tts.engine_available('system', params):
+        with mock.patch.object(speech, '_runners', {**speech._runners}), \
+                mock.patch.dict(speech._runners, {'openai': _boom}):
+            if not speech.engine_available('system', params):
                 self.skipTest('本机没有系统离线音色（非 Windows）')
-            result = tts.synthesize('今天下雨了。', params)
+            result = speech.synthesize('今天下雨了。', params)
         self.assertEqual(result['engine'], 'system')
 
     def test_auto_mode_reports_every_failure(self):
         params = {**self.base_params, 'mode': 'auto', 'order': ['openai', 'system'],
                   'base_url': ''}
-        with mock.patch.dict(tts._RUNNERS, {'openai': _boom, 'system': _boom}), \
+        with mock.patch.dict(speech._runners, {'openai': _boom, 'system': _boom}), \
                 self.assertRaises(RuntimeError) as ctx:
-            tts.synthesize('随便', params)
+            speech.synthesize('随便', params)
         message = str(ctx.exception)
         self.assertIn('openai', message)
         self.assertIn('system', message)
@@ -369,8 +377,8 @@ class EngineDispatchTests(unittest.TestCase):
     def test_fixed_engine_does_not_silently_switch(self):
         """用户点名了引擎，失败就要如实报错，不能偷偷换一种声音。"""
         params = {**self.base_params, 'mode': 'openai', 'base_url': self.endpoint.base_url}
-        with mock.patch.dict(tts._RUNNERS, {'openai': _boom}), self.assertRaises(RuntimeError) as ctx:
-            tts.synthesize('随便', params)
+        with mock.patch.dict(speech._runners, {'openai': _boom}), self.assertRaises(RuntimeError) as ctx:
+            speech.synthesize('随便', params)
         self.assertIn('boom', str(ctx.exception))
 
     def test_transient_failure_is_retried_before_falling_back(self):
@@ -387,10 +395,10 @@ class EngineDispatchTests(unittest.TestCase):
             return _fake_audio()
 
         params = {**self.base_params, 'mode': 'edge'}
-        with mock.patch.dict(tts._RUNNERS, {'edge': flaky}), \
+        with mock.patch.dict(speech._runners, {'edge': flaky}), \
                 mock.patch.object(tts, 'ENGINE_ATTEMPTS', 3), \
                 mock.patch.object(tts, 'RETRY_DELAY_SECONDS', 0):
-            result = tts.synthesize('今天下雨了。', params)
+            result = speech.synthesize('今天下雨了。', params)
         self.assertEqual(result['engine'], 'edge')
         self.assertEqual(len(calls), 2, '应当在同一引擎上重试一次再成功')
 
@@ -408,19 +416,19 @@ class EngineDispatchTests(unittest.TestCase):
 
         params = {**self.base_params, 'mode': 'auto', 'order': ['edge', 'openai'],
                   'base_url': self.endpoint.base_url, 'voice': ''}
-        with mock.patch.dict(tts._RUNNERS, {'edge': always_fail}), \
+        with mock.patch.dict(speech._runners, {'edge': always_fail}), \
                 mock.patch.object(tts, 'ENGINE_ATTEMPTS', 3), \
                 mock.patch.object(tts, 'RETRY_DELAY_SECONDS', 0):
-            result = tts.synthesize('今天下雨了。', params)
+            result = speech.synthesize('今天下雨了。', params)
         self.assertEqual(result['engine'], 'openai', '重试耗尽后应降级到端点')
         self.assertEqual(len(calls), 3, f'应当重试满 3 次，实际 {len(calls)} 次')
 
     def test_empty_text_rejected(self):
         with self.assertRaises(ValueError):
-            tts.synthesize('   ', {**self.base_params, 'mode': 'auto'})
+            speech.synthesize('   ', {**self.base_params, 'mode': 'auto'})
 
     def test_status_lists_all_engines(self):
-        data = tts.status({**self.base_params, 'base_url': ''})
+        data = speech.status({**self.base_params, 'base_url': ''})
         names = [item['name'] for item in data['engines']]
         self.assertEqual(names, list(tts.ENGINES))
         self.assertEqual(data['order'], list(tts.ENGINES))
@@ -462,7 +470,7 @@ class PluginSpeakDirectTests(unittest.TestCase):
         )
         from shell.backend.settings_store import SettingsStore
         self.plugin._settings_store = SettingsStore(str(Path(self.tmp.name) / 'settings'))
-        tts.clear_voice_cache()
+        voices.clear_cache()
         self.plugin.update_setting('tts_engine', 'openai')
         self.plugin.update_setting('tts_base_url', self.endpoint.base_url)
         self.plugin.update_setting('tts_voice', 'alloy')
@@ -470,15 +478,15 @@ class PluginSpeakDirectTests(unittest.TestCase):
         # 否则会往开发机的 .config 里写，也会与并行跑的用例互相干扰。
         # 给实例挂同名属性即可覆盖类方法，实例销毁后自动失效，无需还原。
         self.cache_dir = Path(self.tmp.name) / 'tts-cache'
-        self.plugin._tts_cache_dir = lambda: self.cache_dir
+        self.plugin.tts._cache.cache_dir = lambda: self.cache_dir
 
     def test_segment_splits_and_preserves(self):
         text = '第一句。第二句！第三句？'
-        result = self.plugin.tts_segment(text)
+        result = self.plugin.tts.tts_segment(text)
         self.assertEqual(''.join(result['segments']), text)
 
     def test_speak_returns_playable_url_and_caches(self):
-        first = self.plugin.tts_speak('今天下雨了。', 'abc123', 0)
+        first = self.plugin.tts.tts_speak('今天下雨了。', 'abc123', 0)
         self.assertNotIn('error', first)
         self.assertEqual(first['engine'], 'openai')
         self.assertIn('/file?path=', first['url'])
@@ -486,9 +494,9 @@ class PluginSpeakDirectTests(unittest.TestCase):
         self.assertEqual(len(_OpenAIHandler.seen), 1)
 
         # 同一段文本第二次必须命中缓存：不再打端点
-        second = self.plugin.tts_speak('今天下雨了。', 'abc123', 0)
+        second = self.plugin.tts.tts_speak('今天下雨了。', 'abc123', 0)
         self.assertTrue(second['cached'])
-        # 两次的 URL 必须逐字相同：首次合成与命中各走一条拼路径（_tts_cache_path / _tts_hit），
+        # 两次的 URL 必须逐字相同：首次合成与命中各走一条拼路径（TtsCache.path / TtsCache.hit），
         # 只把其中一条 resolve 成长名时，同一份缓存会给出两个写法不同、指向同一文件的 URL
         # （Windows 上 8.3 短名尤其明显）。
         self.assertEqual(second['url'], first['url'])
@@ -496,9 +504,9 @@ class PluginSpeakDirectTests(unittest.TestCase):
 
     def test_cache_key_includes_voice(self):
         """换音色必须重新合成，不能拿上一个音色的音频当缓存命中。"""
-        self.plugin.tts_speak('今天下雨了。', 'abc123', 0)
+        self.plugin.tts.tts_speak('今天下雨了。', 'abc123', 0)
         self.plugin.update_setting('tts_voice', 'echo')
-        result = self.plugin.tts_speak('今天下雨了。', 'abc123', 0)
+        result = self.plugin.tts.tts_speak('今天下雨了。', 'abc123', 0)
         self.assertFalse(result['cached'])
         self.assertEqual(len(_OpenAIHandler.seen), 2)
 
@@ -506,12 +514,12 @@ class PluginSpeakDirectTests(unittest.TestCase):
         """0 字节的缓存音频不算命中：写盘写了一半被中断时，它会让这段文字永远读不出声。"""
         # 缓存键现在只接受十六进制指纹（它是文件名前缀，见 test_traversal_cache_key_*），
         # 因此这里用一个合法的十六进制串而不是可读词。
-        first = self.plugin.tts_speak('今天下雨了。', 'e0decafe', 0)
+        first = self.plugin.tts.tts_speak('今天下雨了。', 'e0decafe', 0)
         self.assertFalse(first['cached'])
         path = self._cache_audio_path('e0decafe')
         self.assertTrue(path.is_file(), f'没找到缓存音频: {path}')
         path.write_bytes(b'')                     # 模拟被中断的半成品
-        again = self.plugin.tts_speak('今天下雨了。', 'e0decafe', 0)
+        again = self.plugin.tts.tts_speak('今天下雨了。', 'e0decafe', 0)
         self.assertFalse(again['cached'], '空文件被当成了缓存命中')
         self.assertGreater(len(_OpenAIHandler.seen), 1, '空缓存应当触发重新合成')
         self.assertGreater(path.stat().st_size, 0, '重新合成后应当写回非空音频')
@@ -526,7 +534,7 @@ class PluginSpeakDirectTests(unittest.TestCase):
         """
         outside = Path(self.tmp.name).parent / 'omnibox-tts-traversal-marker'
         evil_key = '../' * 8 + outside.name
-        result = self.plugin.tts_speak('穿越测试。', evil_key, 0)
+        result = self.plugin.tts.tts_speak('穿越测试。', evil_key, 0)
         self.assertNotIn('error', result)
         self.assertFalse(list(Path(self.tmp.name).parent.glob(outside.name + '*')),
                          '缓存文件落到了缓存目录之外')
@@ -542,7 +550,7 @@ class PluginSpeakDirectTests(unittest.TestCase):
         params = {'mode': 'openai', 'voice': 'alloy', 'rate': 0, 'base_url': 'http://x'}
         for key in ('../../etc/passwd', 'a/b', 'a\\b', '..', 'x' * 200, '你好'):
             with self.subTest(key=key):
-                prefix = self.plugin._tts_cache_prefix('文本', key, params, str(self.cache_dir))
+                prefix = self.plugin.tts._cache.prefix('文本', key, params)
                 self.assertRegex(prefix, r'^[0-9a-f]{32}-[0-9a-f]{8}$', prefix)
 
     def test_member_cannot_redirect_tts_endpoint(self):
@@ -572,79 +580,93 @@ class PluginSpeakDirectTests(unittest.TestCase):
         放在 `<config>` 而不是文档根目录：用户找得到、清得掉，换文档根时缓存也不散落。
         """
         from shell.backend.paths import get_plugins_config_dir
-        real_dir = self.module.DocumentReaderPlugin._tts_cache_dir(self.plugin)
+        real_dir = type(self.plugin.tts._cache).cache_dir(self.plugin.tts._cache)
         self.assertTrue(
             real_dir.is_relative_to(get_plugins_config_dir()),
             f'缓存目录不在 <config> 下: {real_dir}')
 
-        self.plugin.tts_speak('今天下雨了。', 'clearme', 0)
-        info = self.plugin.tts_cache_info()
+        self.plugin.tts.tts_speak('今天下雨了。', 'clearme', 0)
+        info = self.plugin.tts.tts_cache_info()
         self.assertGreater(info['files'], 0)
         self.assertEqual(Path(info['path']), self.cache_dir)
         self.assertGreater(info['bytes'], 0)
 
-        cleared = self.plugin.tts_clear_cache()
+        cleared = self.plugin.tts.tts_clear_cache()
         self.assertTrue(cleared['success'])
         self.assertGreater(cleared['removed'], 0)
-        self.assertEqual(self.plugin.tts_cache_info()['files'], 0, '清空后仍有残留文件')
+        self.assertEqual(self.plugin.tts.tts_cache_info()['files'], 0, '清空后仍有残留文件')
 
     def test_clear_cache_on_fresh_install_is_not_an_error(self):
         """从没合成过时清缓存是幂等操作，不是"目录不可读"。"""
-        result = self.plugin.tts_clear_cache()
+        result = self.plugin.tts.tts_clear_cache()
         self.assertTrue(result['success'], result)
         self.assertEqual(result['removed'], 0)
 
-    def test_plugin_class_does_not_shadow_mixin_members(self):
-        """本类（MRO 最前）不得重复定义分片里的方法。
+    def test_api_table_binds_components_and_keeps_hooks_on_entry(self):
+        """注册表的键与绑定目标、壳按名调用的钩子位置：组件化后的实例级契约。
 
-        真实事故：`main.py` 里留着一份旧的 `get_file_roots()`，本类排在 MRO 最前，
-        于是分片里的新版（要包含朗读缓存目录）被静默盖掉 —— `/file` 不认缓存目录，
-        合成成功的音频取回来是 403。常量与 `on_load`（自主覆写并调用基类）除外。
+        组件化之前用例直接调插件实例上的 API 方法，顺带验证了 `register_api` 的绑定；
+        调用点改到组件路径之后，绑定本身就没有覆盖了，所以在这里钉住：
+          * 键名与迁移前逐字一致；
+          * 每个键绑到哪个组件；
+          * 壳按名调用的钩子仍在入口类上；
+          * 入口没有覆写 `PluginBase.get_settings`（基类的脱敏与默认值语义靠它）。
         """
-        cls = self.module.DocumentReaderPlugin
-        mixin_members: set = set()
-        for base in cls.__mro__[1:]:
-            if base.__name__ == 'PluginBase':
-                break
-            mixin_members |= set(base.__dict__)
+        from shell.backend.plugin_base import PluginBase
 
-        allowed = {
-            # 常量：分片与入口各留一份，值必须一致
-            'CACHE_DIR_NAME', 'CACHE_FILE', 'CACHE_VERSION', 'PROGRESS_FILE',
-            'LEGACY_CACHE_DIR', 'LEGACY_CACHE_FILE', 'LEGACY_PROGRESS_FILE',
-            # 生命周期的自主覆写（内部调用 super()）
-            'on_load',
+        expected = {
+            'document_list': ('library', 'list_documents'),
+            'document_get_chapters': ('content', 'get_chapters'),
+            'document_get_content': ('content', 'get_content'),
+            'document_update_progress': ('library', 'update_progress'),
+            'document_open_external': ('content', 'open_external'),
+            'document_cover': ('content', 'document_cover'),
+            'marks_list': ('marks', 'marks_list'),
+            'marks_add': ('marks', 'marks_add'),
+            'marks_remove': ('marks', 'marks_remove'),
+            'get_settings': (None, 'get_settings'),
+            'save_settings': (None, 'save_settings'),
+            'tts_segment': ('tts', 'tts_segment'),
+            'tts_speak': ('tts', 'tts_speak'),
+            'tts_status': ('tts', 'tts_status'),
+            'tts_voices': ('tts', 'tts_voices'),
+            'tts_cache_info': ('tts', 'tts_cache_info'),
+            'tts_clear_cache': ('tts', 'tts_clear_cache'),
+            'tts_open_cache_dir': ('tts', 'tts_open_cache_dir'),
         }
-        shadowed = sorted(
-            name for name in mixin_members
-            if name in cls.__dict__ and not name.startswith('__') and name not in allowed)
-        self.assertEqual(shadowed, [], f'本类重复定义了分片成员，会静默覆盖分片: {shadowed}')
+        api = self.plugin.register_api()
+        self.assertEqual(list(api), list(expected))
+        for name, (component, member) in expected.items():
+            if component is None:
+                target = getattr(PluginBase, member)
+            else:
+                target = getattr(type(getattr(self.plugin, component)), member)
+            bound = api[name]
+            self.assertIs(getattr(bound, '__func__', bound), target,
+                          f'{name} 没有绑到 {component}.{member}')
 
-        # 常量也要真的同值，否则"两份"会漂移
-        for name in allowed & mixin_members:
-            if name == 'on_load':
-                continue
-            own = cls.__dict__[name]
-            for base in cls.__mro__[1:]:
-                if base.__name__ == 'PluginBase':
-                    break
-                if name in base.__dict__:
-                    self.assertEqual(own, base.__dict__[name],
-                                     f'{name} 在入口与分片里取值不同，会以入口为准')
-                    break
+        cls = self.module.DocumentReaderPlugin
+        for hook in ('on_load', 'on_settings_changed', 'get_data_root', 'get_file_roots',
+                     'freshness_spec', 'register_api'):
+            self.assertIn(hook, cls.__dict__, f'壳按名调用的 {hook} 不在入口类上')
+        self.assertNotIn('get_settings', cls.__dict__,
+                         '入口不得覆写 PluginBase.get_settings（会改变脱敏与默认值语义）')
+        bases = [base.__name__ for base in cls.__mro__[1:]]
+        self.assertEqual([name for name in bases if name.endswith('Mixin')], [],
+                         f'入口不得继承任何 Mixin: {bases}')
 
     def test_speak_reports_engine_failure_as_error(self):
         self.plugin.update_setting('tts_base_url', '')  # 端点没了，且只准用 openai
-        result = self.plugin.tts_speak('今天下雨了。', 'k', 0)
+        result = self.plugin.tts.tts_speak('今天下雨了。', 'k', 0)
         self.assertIn('error', result)
         self.assertNotIn('url', result)
 
     def test_speak_rejects_empty_and_oversized_text(self):
-        self.assertIn('error', self.plugin.tts_speak('   ', 'k', 0))
-        self.assertIn('error', self.plugin.tts_speak('啊' * (tts.MAX_CHARS + 1), 'k', 0))
+        self.assertIn('error', self.plugin.tts.tts_speak('   ', 'k', 0))
+        self.assertIn('error', self.plugin.tts.tts_speak('啊' * (tts.MAX_CHARS + 1), 'k', 0))
 
     def test_status_exposes_config(self):
-        data = self.plugin.tts_status()
+        data = self.plugin.tts.tts_status()
         self.assertEqual(data['mode'], 'openai')
         self.assertEqual(data['voice'], 'alloy')
         self.assertEqual(len(data['engines']), 3)
@@ -662,20 +684,20 @@ class PluginSpeakDirectTests(unittest.TestCase):
         for value in (entry['min'], entry['default'], entry['max']):
             with self.subTest(value=value):
                 self.plugin.update_setting('tts_prefetch', value)
-                self.assertEqual(self.plugin.tts_status()['prefetch'], value)
+                self.assertEqual(self.plugin.tts.tts_status()['prefetch'], value)
 
     def test_prefetch_depth_clamps_and_degrades_to_one(self):
         """配置坏了退回 1：端点本来就慢时，再按一个错值并发几路合成是最糟的选择。"""
         entry = self._prefetch_schema()
         self.plugin.update_setting('tts_prefetch', 3)
-        self.assertEqual(self.plugin.tts_status()['prefetch'], 3)
+        self.assertEqual(self.plugin.tts.tts_status()['prefetch'], 3)
         for bad in (0, entry['min'] - 1, entry['max'] + 1, '很多', None):
             with self.subTest(bad=bad):
                 self.plugin.update_setting('tts_prefetch', bad)
-                self.assertEqual(self.plugin.tts_status()['prefetch'], 1)
+                self.assertEqual(self.plugin.tts.tts_status()['prefetch'], 1)
         # 手改 JSON 写成小数：截断后落在范围内就照用（3.7 -> 3）
         self.plugin.update_setting('tts_prefetch', 3.7)
-        self.assertEqual(self.plugin.tts_status()['prefetch'], 3)
+        self.assertEqual(self.plugin.tts.tts_status()['prefetch'], 3)
 
     def test_voices_api_shape(self):
         """音色接口按引擎给表：`mode` 报当前档，`tables` 只含这一档（或自动模式两张）。
@@ -683,7 +705,7 @@ class PluginSpeakDirectTests(unittest.TestCase):
         旧契约返回的是 `{voices, source}` 且**永远问 edge** —— 选了 OpenAI 兼容端点的人
         拿到的仍是 edge 的音色名，填进去会被端点静默换成别人。
         """
-        result = self.plugin.tts_voices()
+        result = self.plugin.tts.tts_voices()
         self.assertIn('tables', result)
         self.assertEqual(result['mode'], 'openai')
         sources = [table['source'] for table in result['tables']]
@@ -698,15 +720,15 @@ class PluginSpeakDirectTests(unittest.TestCase):
     def test_openai_voice_name_not_replaced(self):
         """端点自己的音色名要原样发出去（`alloy` 只替换掉 edge 那一套名字）。"""
         self.plugin.update_setting('tts_voice', 'vivian')
-        self.assertEqual(self.plugin._tts_params()['voice'], 'vivian')
+        self.assertEqual(self.plugin.tts.params()['voice'], 'vivian')
         # 自定义端点自己的名字：带 zh- 前缀但不是 edge 的 ShortName，不许动
         self.plugin.update_setting('tts_voice', 'zh-female-01')
-        self.assertEqual(self.plugin._tts_params()['voice'], 'zh-female-01')
+        self.assertEqual(self.plugin.tts.params()['voice'], 'zh-female-01')
         # edge 的 ShortName 对端点没有意义：换成 OpenAI 的通用名字，由端点自己映射
         self.plugin.update_setting('tts_voice', 'zh-CN-XiaoyiNeural')
-        self.assertEqual(self.plugin._tts_params()['voice'], 'alloy')
+        self.assertEqual(self.plugin.tts.params()['voice'], 'alloy')
         self.plugin.update_setting('tts_voice', '')
-        self.assertEqual(self.plugin._tts_params()['voice'], 'alloy')
+        self.assertEqual(self.plugin.tts.params()['voice'], 'alloy')
 
     def test_reader_preferences_are_declared_and_persist(self):
         """阅读偏好改走后端设置：键必须声明，且能写入读回（跨设备持久化的基础）。"""
@@ -826,7 +848,7 @@ class CachePruneTests(unittest.TestCase):
                 os.utime(audio, (1000 + index, 1000 + index))
             plugin = module.DocumentReaderPlugin(
                 {'name': 'document-reader'}, {'directories': {'data_root': tmp}})
-            plugin._tts_prune(str(cache_dir), keep_bytes=250)
+            plugin.tts._cache.prune(cache_dir, keep_bytes=250)
             left = sorted(p.name for p in cache_dir.iterdir())
             # 只剩最新的两对（音频 + 时间戳），旧的都是成对删掉的
             self.assertEqual(left, ['k3.json', 'k3.mp3', 'k4.json', 'k4.mp3'])

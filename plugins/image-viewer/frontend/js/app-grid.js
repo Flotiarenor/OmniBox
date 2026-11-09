@@ -6,6 +6,10 @@
 // app.js 之后、实例化之前（见 index.html），契约由 tests/js/image_viewer_app_split.mjs 把关。
 // ============================================================
 
+//: 时间线「按图片」层一次给出往后多少页：后端只能保证"这一页填满了"，更远的页要真扫
+//: 一遍才知道能不能排出，所以页码只按这个步长前瞻；翻过头时回到真实最后一页。
+const IV_RECENT_PAGE_LOOKAHEAD = 5;
+
 Object.assign(ImageViewer.prototype, {
 
 
@@ -34,9 +38,12 @@ Object.assign(ImageViewer.prototype, {
         const requestId = ++this._loadSeq;
         const navSeq = this._navSeq;
         // 只允许"最新请求 + 当前导航代次 + 仍在图片层 + 路径未变"的响应写 DOM。
+        // `_recentActive` 互斥：时间线「按图片」层的列表来自 list_recent_images，
+        // 目录列表（list_folder_items）的响应不能再画进这一层。
         const isCurrent = () => requestId === this._loadSeq
             && navSeq === this._navSeq
             && this.mode === 'images'
+            && !this._recentActive
             && this.currentPath === path;
         if (!isCurrent()) return;
         const grid = document.getElementById('image-grid');
@@ -106,6 +113,146 @@ Object.assign(ImageViewer.prototype, {
         }
     },
 
+    /**
+     * 时间线「按图片」层的更新单元列表：后端按最近修改时间跨目录取一页"作品或单图"。
+     *
+     * 条目与 list_folder_items 的 `items` 同形：作品是 `type:'album'` 的瓦片（p0 封面 +
+     * 张数角标），散图是 `type:'image'`；`all_images` 是本页单元按作品 p0→pN 展开的
+     * 连续浏览序列。渲染直接走 renderJustifiedLayout（它已支持 album 瓦片与按张数
+     * 累加的灯箱起点），本方法只负责取数、状态栏与分页。
+     *
+     * 与 loadImages 同一套请求代次守卫：只有"最新请求 + 当前导航代次 + 仍在图片层 +
+     * 仍由「按图片」进入"的响应才能写 DOM，切走后迟到的响应不得重绘。
+     */
+    async loadRecentImages(page = 1) {
+        const requestId = ++this._loadSeq;
+        const navSeq = this._navSeq;
+        const isCurrent = () => requestId === this._loadSeq
+            && navSeq === this._navSeq
+            && this.mode === 'images'
+            && this._recentActive;
+        if (!isCurrent()) return;
+        const grid = document.getElementById('image-grid');
+        const paginationEl = document.getElementById('pagination');
+        grid.innerHTML = '<div class="loading">图片加载中…</div>';
+        grid.style.height = 'auto';
+        paginationEl.innerHTML = '';
+        // 与 loadImages 一致：先取生效设置，保证 per_page / row_height 是当下的值。
+        // 「按图片」层是跨相册视图，不属于任何目录，因此读全局设置而不是上一个目录的。
+        try {
+            const eff = await Bridge.call('get_settings', '');
+            if (!isCurrent()) return;
+            if (eff) {
+                this.currentSettings = eff;
+                this.currentRowHeight = eff.row_height || 200;
+            }
+        } catch (e) { /* 取不到就按现有设置渲染 */ }
+        const perPage = this.currentSettings.per_page || 40;
+        try {
+            const data = await Bridge.call('list_recent_images', page, perPage);
+            if (!isCurrent()) return;
+            this.currentPage = page;
+            this.currentItems = (data && data.items) || [];
+            this.currentImages = this.currentItems.filter(it => it.type !== 'album');
+            // 灯箱序列就是后端给的本页展开序列（作品按 p0→pN 逐张展开）：单元在序列
+            // 里的起始下标由 renderJustifiedLayout 按"前面各单元的张数"累加得出，
+            // 所以偏移恒为 0。
+            this.currentAllImages = (data && data.all_images) || [];
+            this.currentAllOffset = 0;
+            // 最近图片列表没有"容器子目录待展开"的问题：不设 _sequencePath，
+            // 打开灯箱时不会去取 list_album_images。
+            this._sequencePath = null;
+            this._sequenceFull = null;
+            this.filteredSeqIndexes = null;
+            // total 是单元数（作品 + 单图），image_total 才是图片张数：两者不同时必须
+            // 分开说，否则"共 3 张"会让人以为本页只有 3 张图。
+            const total = data && data.total != null ? data.total : this.currentItems.length;
+            const imageTotal = data && data.image_total != null
+                ? data.image_total
+                : this.currentImages.length;
+            const partial = !!(data && data.partial);
+            // reach 是本次扫描预算内真正排列出的单元数：partial 时它才是列表的实际边界，
+            // 页码与提示都以它为准（total 是整库单元数，深页在预算内到不了）。
+            const reach = data && data.reach != null ? data.reach : total;
+            // partial 为真表示目录扫描预算用尽：这一页不是全库扫描的结果，必须说出来，
+            // 并用 warn 色状态点提示列表不完整。
+            const countText = total === imageTotal
+                ? `共 ${total} 张图片`
+                : `共 ${total} 项 · ${imageTotal} 张图片`;
+            this._statusText = partial
+                ? `${countText}（仅列出最近 ${reach} 项）`
+                : countText;
+            this._statusState = partial ? 'warn' : 'ok';
+            grid.innerHTML = '';
+            if (!this.currentItems.length) {
+                // 页码比实际能排出的更多：先回落到真实的最后一页（`reach` 是本次预算内
+                // 排列出的单元数，total 是整库单元数），避免停在空页；回落目标等于当前页
+                // 时才显示空态（防御分支）。
+                if (total > 0) {
+                    const lastPage = Math.max(1, Math.ceil(
+                        (partial && reach > 0 ? reach : total) / perPage));
+                    if (lastPage !== page) {
+                        await this.loadRecentImages(lastPage);
+                        return;
+                    }
+                }
+                // 三种空态要分开：空库、页码超出整库、预算用尽后翻过了列表边界
+                if (partial) {
+                    grid.innerHTML = this._emptyHtml(
+                        'icon:images', '已到扫描上限',
+                        `最近的 ${reach} 项已列出，更早的图片未展开；点第 1 页回到最新`);
+                } else if (total > 0) {
+                    grid.innerHTML = this._emptyHtml(
+                        'icon:images', '没有更多图片', '点第 1 页回到最新');
+                } else {
+                    grid.innerHTML = this._emptyHtml('icon:images', '最近没有图片');
+                }
+                grid.style.height = 'auto';
+                if (total > 0) {
+                    const currentPage = (data && data.page) || page;
+                    this.pagination.render(currentPage, Math.max(1, currentPage));
+                }
+                this._pushChrome();
+                return;
+            }
+            const keyword = this.searchQuery;
+            if (keyword) {
+                this.filterCurrentImages(keyword);
+            } else {
+                this.renderJustifiedLayout(this.currentItems);
+            }
+            // 分页：`has_next` 表示这一页填满了、还能往后翻，一次给出后 5 页；到边界那一页
+            // （has_next 为假）只给到当前页。翻过头时上面的回落分支会落到真实最后一页。
+            if (total > 0) {
+                const currentPage = (data && data.page) || page;
+                const canNext = !!(data && data.has_next);
+                this.pagination.render(currentPage, Math.max(1,
+                    canNext ? currentPage + IV_RECENT_PAGE_LOOKAHEAD : currentPage));
+            }
+            this._pushChrome();
+        } catch (error) {
+            if (!isCurrent()) return;
+            grid.innerHTML = this._emptyHtml('icon:triangle-alert', '图片加载失败');
+            grid.style.height = 'auto';
+            this._statusText = '图片加载失败';
+            this._statusState = 'error';
+            this._pushChrome();
+        }
+    },
+
+    /** 分页回调：按当前图片层的来源分派（最近图片 / 目录图片）。 */
+    _reloadPage(page = 1) {
+        if (this._recentActive) return this.loadRecentImages(page);
+        return this.loadImages(this.currentPath, page);
+    },
+
+    /** 重载当前页（刷新、删除、移动、重建缩略图等操作结束后共用）。 */
+    _reloadCurrentView() {
+        if (this._recentActive) return this.loadRecentImages(this.currentPage || 1);
+        if (this.mode === 'images') return this.loadImages(this.currentPath, this.currentPage || 1);
+        return Promise.resolve();
+    },
+
     renderJustifiedLayout(items) {
         const grid = document.getElementById('image-grid');
         this._resetAlbumTiles();
@@ -132,8 +279,8 @@ Object.assign(ImageViewer.prototype, {
             });
         }
 
-        // 圆圈数量角标：仅在该瓦片对应子文件夹自身生效的排序为「时间+文件名」时显示
-        // （自己没设置则继承父级，后端 use_time_name 已算好）
+        // 圆圈数量角标：子文件夹瓦片一律显示（数量已知时），与排序模式无关。
+        // 原先只在「Pixiv 排序支持」下显示，普通排序下看不出一个作品有几页
 
         cards.forEach((cardData, index) => {
             const item = items[index];
@@ -150,8 +297,13 @@ Object.assign(ImageViewer.prototype, {
                 if (item.cover) {
                     const img = document.createElement('img');
                     img.className = 'iv-cover-img';
-                    // 带 mtime 版本号：缩略图被重建后 URL 才会变（壳的 /thumbs 有一天强缓存）
-                    img.src = this._thumbUrl({ url: item.cover, mtime: item.mtime });
+                    // 版本号优先取封面文件自身的 mtime：缩略图被重建或封面被替换后
+                    // URL 才会变（壳的 /thumbs 有一天强缓存）；目录 mtime 不随替换变
+                    img.src = this._thumbUrl({
+                        url: item.cover,
+                        mtime: item.mtime,
+                        cover_mtime: item.cover_mtime,
+                    });
                     img.loading = 'lazy';
                     img.alt = name;
                     img.onerror = function () {
@@ -172,7 +324,7 @@ Object.assign(ImageViewer.prototype, {
                     card.appendChild(fb);
                 }
                 // 角标：补到计数之前不渲染，避免先亮一个 0（见 _applyAlbumTile）
-                if (item.use_time_name && item.total_count != null) {
+                if (item.total_count != null) {
                     const badge = document.createElement('span');
                     badge.className = 'iv-count-badge';
                     badge.textContent = item.total_count;
@@ -343,8 +495,10 @@ Object.assign(ImageViewer.prototype, {
         if (!tile) return;
         item.pending = false;
         item.cover = tile.cover || '';
+        // 封面版本号跟着补齐的瓦片一起更新：首屏卡片可能没有封面，补上封面后
+        // 只换 src 不换版本号，浏览器会继续拿着上一版的强缓存
+        item.cover_mtime = tile.cover_mtime || 0;
         item.total_count = tile.total_count;
-        item.use_time_name = !!tile.use_time_name;
         if (tile.cover) {
             const img = card.querySelector('img.iv-cover-img')
                 || card.querySelector('.iv-cover-fallback');
@@ -357,12 +511,16 @@ Object.assign(ImageViewer.prototype, {
                     this.outerHTML = '<div class="iv-cover-fallback">'
                         + Icons.html('icon:image-off') + '</div>';
                 };
-                real.src = this._thumbUrl({ url: tile.cover, mtime: tile.mtime });
+                real.src = this._thumbUrl({
+                    url: tile.cover,
+                    mtime: tile.mtime,
+                    cover_mtime: tile.cover_mtime,
+                });
                 img.replaceWith(real);
             }
         }
-        // 角标：Pixiv 排序下显示递归张数；补到之前不显示（避免先亮一个 0）
-        if (item.use_time_name && tile.total_count != null) {
+        // 角标：数量补齐后显示递归张数；补到之前不显示（避免先亮一个 0）
+        if (tile.total_count != null) {
             let badge = card.querySelector('.iv-count-badge');
             if (!badge) {
                 badge = document.createElement('span');
@@ -497,7 +655,7 @@ Object.assign(ImageViewer.prototype, {
             if (result.errors.length) Toast.error(`部分删除失败: ${result.errors.join('; ')}`);
             else Toast.success(`已删除 ${imgs.length} 张图片`);
             this.clearSelection();
-            await this.loadImages(this.currentPath, this.currentPage);
+            await this._reloadCurrentView();
         } catch (e) {
             Toast.error('删除请求失败');
         }
@@ -526,7 +684,7 @@ Object.assign(ImageViewer.prototype, {
             else Toast.success(`已移动 ${imgs.length} 张图片`);
             this.clearSelection();
             this.closeMoveModal();
-            await this.loadImages(this.currentPath, this.currentPage);
+            await this._reloadCurrentView();
         } catch (e) {
             Toast.error('移动请求失败');
         }

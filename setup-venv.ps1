@@ -5,9 +5,9 @@
     OmniBox 虚拟环境统一入口 / pip 管理台
 .DESCRIPTION
     -Install 模式（非交互）:
-        ensure venv 存在 -> 升级 pip -> 从 requirements.txt 安装运行时依赖。
+        ensure venv 存在 -> 校验 Python 版本 -> 升级 pip -> 从 requirements.txt 安装运行时依赖。
         加 -Dev 时再装 requirements-dev.txt（ruff / pyright / pyinstaller）。
-        供 deploy.ps1 / build-release.ps1 及 CI 调用。幂等，可重复执行。
+        供 deploy.ps1 / build-release.ps1 调用。幂等，可重复执行。
 
     默认模式（交互）:
         直接以本仓库 venv 打开 pip 管理控制台（增库/删库/导出等）。
@@ -31,8 +31,38 @@ $ColorError = "Red"
 $ColorInfo = "Cyan"
 $ColorMenu = "White"
 
+# requirements.txt 的 pythonnet 声明 Requires-Python >=3.11,<3.16，而 pyproject.toml
+# 的 requires-python 与 pyrightconfig.json 也写同一区间。版本不合时在装依赖之前
+# 直接给出可读的提示，不要让 pip 在解析 pythonnet 时抛一句"找不到发行版"。
+$MinPython = [version]'3.11'
+$MaxPythonExclusive = [version]'3.16'
+
 $venvDir = Join-Path $ProjectRoot "venv"
 $activatePath = Join-Path $venvDir "Scripts\Activate.ps1"
+$venvPy = Join-Path $venvDir "Scripts\python.exe"
+
+function Get-PythonVersion {
+    param([string]$Exe)
+    if (-not (Test-Path $Exe)) { return $null }
+    $out = & $Exe -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $out) { return $null }
+    $text = ($out | Select-Object -Last 1).Trim()
+    if ($text -notmatch '^\d+\.\d+$') { return $null }
+    return [version]$text
+}
+
+function Assert-PythonVersion {
+    param([string]$Exe)
+    $version = Get-PythonVersion -Exe $Exe
+    if (-not $version) {
+        throw "无法读取 Python 版本: $Exe"
+    }
+    if ($version -lt $MinPython -or $version -ge $MaxPythonExclusive) {
+        $max = "$($MaxPythonExclusive.Major).$($MaxPythonExclusive.Minor - 1)"
+        throw "需要 Python $MinPython 至 $max，当前 $version（$Exe）。该区间由 requirements.txt 的 pythonnet 与 pyproject.toml 共同决定。"
+    }
+    Write-Host "Python 版本: $version" -ForegroundColor $ColorInfo
+}
 
 function Get-DefaultPython {
     if (Get-Command py -ErrorAction SilentlyContinue) {
@@ -64,6 +94,7 @@ function Get-VenvPython {
 function Ensure-Venv {
     if (Test-Path $activatePath) {
         Write-Host "使用现有虚拟环境: $venvDir" -ForegroundColor $ColorInfo
+        Assert-PythonVersion $venvPy
         return
     }
 
@@ -72,11 +103,13 @@ function Ensure-Venv {
         throw "未找到可用的 Python（py 启动器或 python 命令均不可用）"
     }
 
+    Assert-PythonVersion $pythonExecutable
     Write-Host "正在使用 '$pythonExecutable' 创建虚拟环境..." -ForegroundColor $ColorInfo
     & $pythonExecutable -m venv $venvDir
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $activatePath)) {
         throw "虚拟环境创建失败，请检查 Python 版本是否有效。"
     }
+    Assert-PythonVersion $venvPy
     Write-Host "虚拟环境创建成功: $venvDir" -ForegroundColor $ColorSuccess
 }
 
@@ -96,7 +129,6 @@ if ($Install) {
 
     try {
         Ensure-Venv
-        $venvPy = Join-Path $venvDir "Scripts\python.exe"
 
         Write-Host "正在升级 pip..." -ForegroundColor $ColorInfo
         & $venvPy -m pip install --upgrade pip -q
@@ -123,20 +155,20 @@ if ($Install) {
 
 # ======================== 交互式 pip 管理台 ========================
 
-Ensure-Venv
+try {
+    Ensure-Venv
+}
+catch {
+    Write-Host "[错误] $_" -ForegroundColor $ColorError
+    exit 1
+}
 
-if (-not (Test-Path $activatePath)) {
-    Write-Host "[错误] 虚拟环境不存在: $venvDir" -ForegroundColor $ColorError
+if (-not (Test-Path $venvPy)) {
+    Write-Host "[错误] 虚拟环境不完整，缺少解释器: $venvPy" -ForegroundColor $ColorError
     exit 1
 }
 
 try {
-    $restorePolicy = $null
-    if ((Get-ExecutionPolicy) -eq 'Restricted') {
-        Write-Host "当前执行策略为 Restricted，临时切换为 Bypass..." -ForegroundColor $ColorWarning
-        Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
-        $restorePolicy = 'Restricted'
-    }
     . $activatePath
     Write-Host "虚拟环境已激活: $venvDir" -ForegroundColor $ColorSuccess
 }
@@ -155,8 +187,8 @@ function Invoke-PipCommand {
         [Parameter(Mandatory=$true)]
         [string[]]$PipArgs
     )
-    Write-Host "执行: pip $PipArgs" -ForegroundColor $ColorInfo
-    & pip @PipArgs
+    Write-Host "执行: python -m pip $PipArgs" -ForegroundColor $ColorInfo
+    & $venvPy -m pip @PipArgs
     if ($LASTEXITCODE -ne 0) {
         Write-Host "操作失败，退出代码: $LASTEXITCODE" -ForegroundColor $ColorError
     } else {
@@ -183,7 +215,7 @@ function Show-Menu {
 function Show-InstalledPackages {
     Write-Host "`n已安装的库及其版本:" -ForegroundColor $ColorInfo
     Write-Host "----------------------------------------"
-    $packages = pip list --format=freeze
+    $packages = & $venvPy -m pip list --format=freeze
     if (-not $packages) {
         Write-Host "未找到已安装的库" -ForegroundColor $ColorWarning
         return
@@ -272,7 +304,7 @@ while ($true) {
             # 被 pip freeze 覆盖会导致"打包装过什么、项目就依赖什么"。
             $exportPath = Join-Path $parentDir "requirements.lock.txt"
             Write-Host "正在导出依赖快照到 $exportPath ..." -ForegroundColor $ColorInfo
-            pip freeze | Out-File -FilePath $exportPath -Encoding UTF8
+            & $venvPy -m pip freeze | Out-File -FilePath $exportPath -Encoding UTF8
             if ($LASTEXITCODE -eq 0) {
                 Write-Host "依赖快照已导出至 $exportPath" -ForegroundColor $ColorSuccess
             }
@@ -295,8 +327,4 @@ while ($true) {
     do {
         $key = [System.Console]::ReadKey($true)
     } until ($key.Key -eq 'Enter')
-}
-
-if ($restorePolicy) {
-    Set-ExecutionPolicy -Scope Process -ExecutionPolicy $restorePolicy -Force
 }

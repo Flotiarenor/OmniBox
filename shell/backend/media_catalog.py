@@ -1,13 +1,15 @@
 """OmniBox 统一媒体目录浏览契约。
 
 图片、视频、音乐等需要浏览本地媒体目录的插件都可以复用这里的路径安全、
-breadcrumb 生成、目录枚举与**扩展名分类**，避免各自实现一套“文件浏览器”。
+breadcrumb 生成、目录枚举、**扩展名分类**与**目录扫描原语**，避免各自实现一套
+“文件浏览器”。
 """
 
 import os
+import re
 import string
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple, TypedDict
 
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'}
 VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv', '.wmv'}
@@ -259,3 +261,137 @@ def list_directory(root: Path, rel_path: str = '',
         'files': files,
         'breadcrumbs': build_breadcrumbs(root, rel_path),
     }
+
+
+# ===== 目录扫描原语 =====
+#
+# 为什么要有这一节：插件的"扫描一个目录"看起来是一行 `os.scandir`，实际每个插件都
+# 各自重写了一遍，而且每一遍都在不同的地方漏掉同一批细节 —— 跳过点文件、跳过
+# `.cache`、按扩展名过滤、`entry.stat()` 抛 OSError 时不能整趟失败、自然序而不是
+# 字典序（`p10` 排在 `p2` 后面）。这些细节漏一个就是"某个目录里的图片少了几张"或
+# "顺序莫名其妙"，而它们与业务无关，只与"怎样读一个目录才算读对"有关。
+#
+# 这里只提供**读**：返回纯数据的描述（名字 / 绝对路径 / mtime / 体积 / 类型），
+# 不做递归、不做缓存、不做业务富化（封面、尺寸、图标一类留给调用方）。想递归的
+# 调用方在 `dirs` 上自己往下走 —— 递归策略（是否跟随符号链接、是否剪枝、是否限深）
+# 是业务决定，抽进基建只会让每个人都继承一套不对的默认值。
+
+#: 匹配连续数字段。自然序的实现靠它把名字切成「文字 / 数字」交替的片段。
+_NUM_RE = re.compile(r'(\d+)')
+
+
+def is_hidden_name(name: str) -> bool:
+    """该文件名是否应当跳过：点开头的文件与目录（`.cache` 也在其中）。
+
+    判据只有"点开头"一条，没有额外的黑名单：Unix 的点文件约定与 Windows 的
+    `desktop.ini`、`Thumbs.db` 都能被各插件按需再过滤，而在这里硬编码平台黑名单
+    会让"为什么这个文件不出现"变成查不到答案的问题。
+    """
+    return name.startswith('.')
+
+
+def natural_sort_key(text: Any) -> Any:
+    """自然排序键：`p2` 排在 `p10` 前面，`1.jpg` 排在 `10.jpg` 前面。
+
+    优先用 `natsort`（`requirements.txt` 已声明，行为与既有插件一致）；它不可用时
+    回退到内置实现。回退实现刻意返回**同构的 3 元组**而不是
+    `[int(...) if part.isdigit() else part.lower() ...]`：后者在
+    「`1.png` 与 `a.png` 同目录」时会拿 int 和 str 比较，直接抛 `TypeError`，
+    于是"某个目录一排序就崩"。
+    """
+    raw = str(text)
+    try:
+        from natsort import natsort_keygen
+        return natsort_keygen()(raw)
+    except Exception:
+        pass
+    chunks: List[Tuple[int, int, str]] = []
+    for index, part in enumerate(_NUM_RE.split(raw.lower())):
+        if index % 2:
+            chunks.append((0, int(part), ''))
+        elif part:
+            chunks.append((1, 0, part))
+    return tuple(chunks)
+
+
+class DirEntryInfo(TypedDict):
+    """一个子目录的描述。`path` 是 `os.scandir` 给出的路径：目录参数为绝对路径时它才绝对。"""
+
+    name: str
+    path: str
+    mtime: float
+
+
+class FileEntryInfo(TypedDict):
+    """一个文件条目的描述。`kind` 取 `classify_file` 的结果（image / video / audio / other）。"""
+
+    name: str
+    path: str
+    mtime: float
+    size: int
+    kind: str
+
+
+class ScanResult(TypedDict):
+    """一次目录扫描的结果。读不到目录时 `error` 非 None、两个列表为空。"""
+
+    dirs: List[DirEntryInfo]
+    files: List[FileEntryInfo]
+    truncated: bool
+    error: Optional[str]
+
+
+def scan_directory(
+    directory: Path | str,
+    allowed_extensions: Optional[Set[str]] = None,
+    *,
+    limit: Optional[int] = None,
+) -> ScanResult:
+    """扫描一个目录的**直接下级**，按自然序返回子目录与媒体文件。
+
+    - 跳过点开头的条目（见 `is_hidden_name`）；
+    - `allowed_extensions` 为 None 表示收下全部文件，传集合则按小写后缀过滤；
+    - 单个条目 `stat` 失败（权限、竞态删除）只跳过该条目，不整趟失败；
+    - `limit` 限制返回条目总数（目录 + 文件），超出时 `truncated` 为真。
+      它是给"极端目录"（盘符根、十万文件的下载目录）用的护栏，不是分页：
+      需要分页的调用方应当自己按 `limit` 反复扫或用别的索引方式。
+    """
+    dirs: List[DirEntryInfo] = []
+    files: List[FileEntryInfo] = []
+    truncated = False
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if is_hidden_name(entry.name):
+                    continue
+                if limit is not None and (len(dirs) + len(files)) >= limit:
+                    truncated = True
+                    break
+                try:
+                    if entry.is_dir():
+                        dirs.append({
+                            'name': entry.name,
+                            'path': entry.path,
+                            'mtime': entry.stat().st_mtime,
+                        })
+                    elif entry.is_file():
+                        suffix = Path(entry.name).suffix.lower()
+                        if allowed_extensions is not None and suffix not in allowed_extensions:
+                            continue
+                        stat = entry.stat()
+                        files.append({
+                            'name': entry.name,
+                            'path': entry.path,
+                            'mtime': stat.st_mtime,
+                            'size': stat.st_size,
+                            'kind': classify_file(entry.name),
+                        })
+                except OSError:
+                    continue
+    except OSError:
+        return {'dirs': [], 'files': [], 'truncated': False,
+                'error': '无法读取目录（网络盘可能已断开）'}
+
+    dirs.sort(key=lambda item: natural_sort_key(item['name']))
+    files.sort(key=lambda item: natural_sort_key(item['name']))
+    return {'dirs': dirs, 'files': files, 'truncated': truncated, 'error': None}

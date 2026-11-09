@@ -6,7 +6,7 @@
  * 输入是插件给的 blocks，输出是壳的组件；交互只回传 {action, payload}，
  * 不把业务规则带进壳。canvas 内容不走这里。
  */
-import { nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import Icon from './Icon.vue'
 import type {
   SchemaAction,
@@ -19,6 +19,10 @@ import type {
 
 const props = defineProps<{
   blocks: SchemaBlock[]
+  /** `document` 约束正文度量；缺省维持既有排版。 */
+  layout?: 'default' | 'document'
+  /** 嵌套渲染（`section` 内部）：不再产出滚动容器与版式内边距，间距交给父级。 */
+  nested?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -33,6 +37,70 @@ const dirs = ref<Record<string, string[]>>({})
 /** 正在选择目录的字段 key；空串表示没有进行中的选择。 */
 const picking = ref('')
 const pickError = ref('')
+/** 正在显示“已复制”的 code 块键。 */
+const copied = ref('')
+let copyTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * 递归遍历 blocks（`section` 可嵌套）。表单与勾选状态原来只扫顶层，
+ * 加嵌套后必须深度遍历，否则分区里的字段拿不到初值。
+ */
+function walkBlocks(list: SchemaBlock[] | undefined, visit: (block: SchemaBlock) => void): void {
+  for (const block of list || []) {
+    visit(block)
+    if (Array.isArray(block.blocks)) walkBlocks(block.blocks, visit)
+  }
+}
+
+/** 动作按钮的类：danger/primary 沿用旧命名，accent/link 是补充档位。 */
+function actionClass(action: SchemaAction | undefined): string {
+  if (!action) return 'btn'
+  const size = action.size === 'sm' ? ' btn-sm' : ''
+  if (action.variant === 'primary') return 'btn btn-primary' + size
+  if (action.variant === 'danger') return 'btn btn-danger' + size
+  if (action.variant === 'accent') return 'btn btn-accent' + size
+  if (action.variant === 'link') return 'btn btn-link' + size
+  return 'btn' + size
+}
+
+function codeKey(block: SchemaBlock, index: number): string {
+  return block.id || 'code-' + index
+}
+
+/** 复制：优先剪贴板 API；被拒时退回选中 + execCommand（WebView2 下仍然可用）。 */
+async function copyCode(block: SchemaBlock, index: number): Promise<void> {
+  const text = String(block.text == null ? '' : block.text)
+  if (!text) return
+  const key = codeKey(block, index)
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    try {
+      const area = document.createElement('textarea')
+      area.value = text
+      area.setAttribute('readonly', '')
+      area.style.position = 'fixed'
+      area.style.opacity = '0'
+      document.body.appendChild(area)
+      area.select()
+      document.execCommand('copy')
+      document.body.removeChild(area)
+    } catch {
+      return
+    }
+  }
+  copied.value = key
+  if (copyTimer) clearTimeout(copyTimer)
+  copyTimer = setTimeout(() => {
+    if (copied.value === key) copied.value = ''
+    copyTimer = null
+  }, 2000)
+}
+
+onBeforeUnmount(() => {
+  if (copyTimer) clearTimeout(copyTimer)
+  copyTimer = null
+})
 
 interface FolderPickerProvider {
   label?: string
@@ -197,7 +265,7 @@ function initState(): void {
   const nextChecked: Record<string, boolean> = {}
   const nextForm: Record<string, string | number | boolean> = {}
   const nextDirs: Record<string, string[]> = {}
-  for (const block of props.blocks || []) {
+  walkBlocks(props.blocks, (block) => {
     if (block.type === 'checkbox-list') {
       for (const group of block.groups || []) {
         for (const item of group.items || []) {
@@ -220,7 +288,7 @@ function initState(): void {
         }
       }
     }
-  }
+  })
   checked.value = nextChecked
   formValues.value = nextForm
   dirs.value = nextDirs
@@ -268,6 +336,33 @@ function previewItem(item: SchemaItem): void {
   emit('preview', { src, alt: item.title || item.label || '' })
 }
 
+/** 根节点类：顶层是滚动容器（可选 document 版式），嵌套时只是一个普通堆叠容器。 */
+const rootClass = computed(() => {
+  if (props.nested) return 'schema-stack'
+  return props.layout === 'document' ? 'schema-root schema-root--document' : 'schema-root'
+})
+
+/** 嵌套渲染（`section`）时把预览事件继续上抛给 NativePanel。 */
+function forwardPreview(payload: { src: string; alt: string }): void {
+  emit('preview', payload)
+}
+
+/**
+ * 嵌套渲染（`section`）时把动作上抛给 NativePanel。
+ *
+ * 递归组件有自己的 emit 域：子组件的 `emit('action')` 不会自动冒泡到父组件的监听者，
+ * 必须在这一层重新 emit 一次。早期版本把模板写成 `@action="onAction"`（那是 NativePanel
+ * 里的函数名，这里并不存在），结果是 section 内的所有按钮点了都没有任何反应。
+ */
+function forwardAction(payload: { action: string; payload?: unknown }): void {
+  emit('action', payload)
+}
+
+/** 动作按钮的尺寸类；缺省不写，沿用 `.btn` 的默认尺寸。 */
+function actionSizeClass(action: SchemaAction | undefined): string {
+  return action && action.size === 'sm' ? ' btn-sm' : ''
+}
+
 function previewLabel(item: SchemaItem): string {
   const name = item.title || item.label || ''
   return name ? `预览 ${name}` : '预览图片'
@@ -284,16 +379,154 @@ function optionLabel(option: SchemaFieldOption | string): string {
 function groupActions(group: SchemaGroup): SchemaAction[] {
   return group.actions || []
 }
+
+interface FormFieldGroup {
+  key: string
+  title: string
+  description: string
+  fields: SchemaField[]
+}
+
+/**
+ * 表单字段按可选 `section` 元数据分组。
+ *
+ * 与壳内设置弹窗（`PluginSettingsModal.fieldGroups`）同一套规则：`section` 作分组键，
+ * `sectionTitle` / `sectionDescription` 是组标题与说明，`sectionOrder` 与 `order` 决定
+ * 组间与组内次序；没有写 section 的旧 schema 归入无标题组，渲染结果与原来一致。
+ */
+function fieldGroups(block: SchemaBlock): FormFieldGroup[] {
+  const groups = new Map<string, {
+    key: string
+    title: string
+    description: string
+    order: number
+    firstIndex: number
+    fields: Array<{ field: SchemaField; index: number }>
+  }>()
+  ;(block.fields || []).forEach((field, index) => {
+    const key = field.section || ''
+    let group = groups.get(key)
+    if (!group) {
+      group = {
+        key,
+        title: '',
+        description: '',
+        order: Number.POSITIVE_INFINITY,
+        firstIndex: index,
+        fields: [],
+      }
+      groups.set(key, group)
+    }
+    if (!group.title) group.title = field.sectionTitle || field.section || ''
+    if (!group.description) group.description = field.sectionDescription || ''
+    const sectionOrder = Number(field.sectionOrder)
+    group.order = Math.min(group.order, Number.isFinite(sectionOrder) ? sectionOrder : index)
+    group.fields.push({ field, index })
+  })
+  const ordered = Array.from(groups.values()).map(group => ({
+    key: group.key,
+    title: group.title,
+    description: group.description,
+    order: group.order,
+    firstIndex: group.firstIndex,
+    fields: group.fields
+      .slice()
+      .sort((a, b) => {
+        const ao = Number(a.field.order)
+        const bo = Number(b.field.order)
+        const av = Number.isFinite(ao) ? ao : a.index
+        const bv = Number.isFinite(bo) ? bo : b.index
+        return av - bv || a.index - b.index
+      })
+      .map(item => item.field),
+  }))
+  ordered.sort((a, b) => a.order - b.order || a.firstIndex - b.firstIndex)
+  return ordered.map(group => ({
+    key: group.key,
+    title: group.title,
+    description: group.description,
+    fields: group.fields,
+  }))
+}
+
+/** stats 的列数交给 CSS 自适应（`auto-fit`），不提供按块覆盖。 */
 </script>
 
 <template>
-  <div class="schema-root">
+  <div :class="rootClass">
     <template v-for="(block, index) in blocks" :key="block.id || index">
-      <p v-if="block.type === 'text'" class="schema-text" :class="block.tone ? `schema-${block.tone}` : ''">
-        {{ block.text }}
+      <p v-if="block.type === 'text'" class="schema-text" :class="block.tone ? `schema-tone-${block.tone}` : ''">
+        <span v-if="block.dot" class="schema-dot" :class="`schema-dot--${block.dot}`" aria-hidden="true"></span>{{ block.text }}
       </p>
 
       <h2 v-else-if="block.type === 'heading'" class="schema-heading">{{ block.text }}</h2>
+
+      <dl v-else-if="block.type === 'stats'" class="schema-stats">
+        <div v-for="(metric, mi) in block.metrics || []" :key="mi" class="schema-stat">
+          <dt class="schema-stat-label">{{ metric.label }}</dt>
+          <dd class="schema-stat-value" :class="metric.tone ? `schema-tone-${metric.tone}` : ''">
+            {{ metric.value }}
+          </dd>
+          <dd v-if="metric.hint" class="schema-stat-hint">{{ metric.hint }}</dd>
+          <dd v-if="metric.action" class="schema-stat-action">
+            <button type="button" :class="actionClass(metric.action)" :disabled="metric.action.disabled" @click="fire(metric.action)">
+              {{ metric.action.label }}
+            </button>
+          </dd>
+        </div>
+      </dl>
+
+      <section v-else-if="block.type === 'section'" class="schema-section">
+        <div v-if="block.title" class="schema-section-head">
+          <h3 class="schema-section-title">{{ block.title }}</h3>
+        </div>
+        <div class="schema-section-body">
+          <SchemaRenderer
+            v-if="block.blocks && block.blocks.length"
+            :blocks="block.blocks"
+            :layout="layout"
+            nested
+            @action="forwardAction"
+            @preview="forwardPreview"
+          />
+        </div>
+      </section>
+
+      <div
+        v-else-if="block.type === 'banner'"
+        class="schema-banner"
+        :class="block.tone ? `schema-tone-${block.tone}` : 'schema-tone-default'"
+        role="status"
+        aria-live="polite"
+      >
+        <Icon v-if="block.icon" :name="block.icon" class="schema-banner-icon" />
+        <span class="schema-banner-text">{{ block.text }}</span>
+        <button
+          v-if="block.action"
+          type="button"
+          :class="actionClass(block.action)"
+          :disabled="block.action.disabled"
+          @click="fire(block.action)"
+        >
+          {{ block.action.label }}
+        </button>
+      </div>
+
+      <div v-else-if="block.type === 'code'" class="schema-code">
+        <div class="schema-code-head">
+          <span v-if="block.language" class="schema-code-language">{{ block.language }}</span>
+          <button
+            v-if="block.copyable !== false"
+            type="button"
+            class="btn btn-link schema-code-copy"
+            :aria-label="'复制' + (block.language || '文本')"
+            @click="copyCode(block, index)"
+          >
+            {{ copied === codeKey(block, index) ? '已复制' : '复制' }}
+          </button>
+        </div>
+        <pre class="schema-code-body" :class="{ 'is-wrapped': block.wrap !== false }"><code>{{ block.text }}</code></pre>
+      </div>
 
       <dl v-else-if="block.type === 'kv'" class="schema-kv">
         <template v-for="(item, i) in block.items || []" :key="i">
@@ -334,8 +567,7 @@ function groupActions(group: SchemaGroup): SchemaAction[] {
             v-for="action in item.actions || []"
             :key="action.id"
             type="button"
-            class="btn"
-            :class="action.variant === 'danger' ? 'btn-danger' : action.variant === 'primary' ? 'btn-primary' : ''"
+            :class="actionClass(action)"
             :disabled="action.disabled"
             @click="fire(action)"
           >
@@ -424,7 +656,10 @@ function groupActions(group: SchemaGroup): SchemaAction[] {
       </div>
 
       <form v-else-if="block.type === 'form'" class="schema-form" @submit.prevent="submitForm(block)">
-        <label v-for="field in block.fields || []" :key="field.key" class="field">
+        <fieldset v-for="group in fieldGroups(block)" :key="group.key" class="schema-form-section">
+          <legend v-if="group.title" class="schema-form-section-title">{{ group.title }}</legend>
+          <p v-if="group.description" class="schema-form-section-description">{{ group.description }}</p>
+          <label v-for="field in group.fields" :key="field.key" class="field">
           <span>{{ field.label || field.key }}</span>
           <span v-if="field.type === 'directory'" class="schema-directory-list" style="display: flex; flex-direction: column; gap: 8px;">
             <span
@@ -528,7 +763,8 @@ function groupActions(group: SchemaGroup): SchemaAction[] {
             :placeholder="field.placeholder"
           >
           <span v-if="field.hint || field.help" class="field-help">{{ field.hint || field.help }}</span>
-        </label>
+          </label>
+        </fieldset>
         <p v-if="pickError" class="schema-text schema-danger" role="alert">{{ pickError }}</p>
         <div v-if="block.submit" class="schema-actions">
           <button type="submit" class="btn btn-primary">{{ block.submit.label }}</button>
@@ -540,8 +776,7 @@ function groupActions(group: SchemaGroup): SchemaAction[] {
           v-for="action in block.actions || []"
           :key="action.id"
           type="button"
-          class="btn"
-          :class="action.variant === 'danger' ? 'btn-danger' : action.variant === 'primary' ? 'btn-primary' : ''"
+          :class="actionClass(action)"
           :disabled="action.disabled"
           @click="fire(action)"
         >
@@ -552,25 +787,38 @@ function groupActions(group: SchemaGroup): SchemaAction[] {
 
       <div v-else-if="block.type === 'progress'" class="schema-progress">
         <div class="schema-progress-head">
-          <span>{{ block.text || '处理中' }}</span>
-          <span>{{ block.value || 0 }} / {{ block.total || 0 }}</span>
+          <span class="schema-progress-text">{{ block.text || '处理中' }}</span>
+          <span v-if="!block.indeterminate && block.total" class="schema-progress-count">
+            {{ Math.min(100, Math.round((block.value || 0) / block.total * 100)) }}%
+          </span>
         </div>
-        <div class="schema-progress-track">
+        <div
+          class="schema-progress-track"
+          :class="{ 'is-indeterminate': block.indeterminate }"
+          role="progressbar"
+          :aria-label="block.text || '进度'"
+          aria-valuemin="0"
+          :aria-valuemax="block.indeterminate ? undefined : (block.total || 0)"
+          :aria-valuenow="block.indeterminate ? undefined : (block.value || 0)"
+        >
           <div
             class="schema-progress-fill"
-            :style="{ width: block.total ? `${Math.min(100, Math.round((block.value || 0) / block.total * 100))}%` : '30%' }"
+            :style="{ width: block.indeterminate ? undefined : (block.total ? `${Math.min(100, Math.round((block.value || 0) / block.total * 100))}%` : '0%') }"
           ></div>
         </div>
-        <div v-if="block.detail" class="schema-progress-detail">{{ block.detail }}</div>
-        <button v-if="block.cancel" type="button" class="btn btn-sm" @click="fire(block.cancel)">
+        <div v-if="block.detail" class="schema-progress-foot">
+          <span class="schema-progress-detail">{{ block.detail }}</span>
+        </div>
+        <button v-if="block.cancel" type="button" :class="actionClass(block.cancel)" @click="fire(block.cancel)">
           {{ block.cancel.label }}
         </button>
       </div>
 
       <div v-else-if="block.type === 'empty'" class="empty-state">
+        <Icon v-if="block.icon" :name="block.icon" class="empty-state-icon" />
         <div class="empty-state-text">{{ block.text }}</div>
         <div v-if="block.hint" class="empty-state-hint">{{ block.hint }}</div>
-        <button v-if="block.submit" type="button" class="btn" @click="fire(block.submit)">
+        <button v-if="block.submit" type="button" :class="actionClass(block.submit)" @click="fire(block.submit)">
           {{ block.submit.label }}
         </button>
       </div>

@@ -8,8 +8,9 @@
 //   目录与阅读设置是内容弹窗，朗读设置是覆盖主区的独立页（reader-voice-page.js）
 //   朗读控制是右下角浮动小卡（reader-tts.js），不占正文宽度
 //
-// 与壳的通信：壳发 omnibox:view / omnibox:action / omnibox:query，本文件回
-// omnibox:chrome（标题、副标题、视图、动作显隐、导航补丁、搜索显隐、状态）。
+// 与壳的通信：壳发 omnibox:view / omnibox:action / omnibox:query 与
+// omnibox:freshness（统一刷新报告），本文件回 omnibox:chrome（标题、副标题、视图、
+// 动作显隐、导航补丁、搜索显隐、同步作用域、状态）。
 //
 // 分页 / 测量 / 滚动加载在 reader-engine.js；阅读偏好持久化在 settings.js。
 // ============================================================
@@ -18,6 +19,10 @@
 const nrAppIcon = (name) => (window.Icons && typeof window.Icons.html === 'function')
     ? window.Icons.html(name)
     : '';
+
+// 新壳在 `omnibox:freshness` 之后紧跟一条旧的 `omnibox:action: refresh`，两条属于
+// 同一次同步；壳把同一份报告附在动作的 payload 上（`/shell/chrome-client.js` 的
+// `onAction(action, payload)`），所以"回声"按 payload 是否存在判定，不靠时间窗。
 
 class DocumentReader {
     constructor() {
@@ -95,14 +100,14 @@ class DocumentReader {
 
     // ===== 与壳的页面骨架通信 =====
 
-    /** 内容页与壳同源：消息只发给父窗口，脱离壳单独打开时不发。 */
+    /** 内容页与壳同源：消息只发给父窗口，脱离壳单独打开时不发。
+        实现只有一份（/shell/chrome-client.js），这里只是本页的调用出口。 */
     _postHost(payload) {
-        if (window.parent === window) return;
-        try { window.parent.postMessage(payload, location.origin); } catch (e) { /* 非同源父窗口不发 */ }
+        window.ChromeClient.post(payload);
     }
 
     /** 上报 chrome：标题、副标题、视图（'' 表示阅读态、不落导航高亮）、
-        动作显隐、导航组/徽标补丁、搜索显隐与状态栏。 */
+        动作显隐、导航组/徽标补丁、搜索显隐、同步作用域与状态栏。 */
     _pushChrome() {
         const reading = !!this._isReaderMode;
         const voice = !!this._voicePaneOpen;
@@ -125,6 +130,9 @@ class DocumentReader {
             },
             search: { enabled: !reading && !voice, ...(searchSync || {}) },
             status: { text: this._statusText, state: this._statusState },
+            // 文档根目录可以有多个，作用域拼的是第一根内的相对目录：没有可信的
+            // 单一子目录可表达，同步始终覆盖全部根。
+            freshness_scope: '',
         });
     }
 
@@ -135,24 +143,16 @@ class DocumentReader {
         this._searchSync = { value: '', clear: ++this._searchClearSeq };
     }
 
-    /** 壳的握手与反向下发：视图、顶栏动作、搜索输入。 */
+    /** 壳的握手与反向下发：视图、顶栏动作、搜索输入、统一刷新报告。
+        校验、分发与 ready 握手都在 /shell/chrome-client.js（四个内容页共用一份）。 */
     _bindHost() {
-        window.addEventListener('message', (event) => {
-            if (event.origin !== location.origin || event.source !== window.parent) return;
-            const data = event.data || {};
-            if (data.type === 'omnibox:view' && typeof data.view === 'string') {
-                this._applyHostView(data.view);
-                return;
-            }
-            if (data.type === 'omnibox:action') {
-                this._applyHostAction(data.action);
-                return;
-            }
-            if (data.type === 'omnibox:query') {
-                this._onQuery(data.query);
-            }
+        this._chrome = window.ChromeClient.create({
+            onView: (view) => this._applyHostView(view),
+            onAction: (action, payload) => this._applyHostAction(action, payload),
+            onQuery: (query) => this._onQuery(query),
+            onMessage: (data) => this._onHostMessage(data),
         });
-        this._postHost({ type: 'omnibox:ready' });
+        this._chrome.bind();
     }
 
     /** 壳左栏的导航项都发 omnibox:view：三个书架分类、朗读设置与「当前文档」组的
@@ -169,10 +169,24 @@ class DocumentReader {
     }
 
     /** 壳顶栏动作：返回、统一刷新完成后的重载，以及壳设置弹窗保存后的偏好重读。 */
-    _applyHostAction(action) {
+    _applyHostAction(action, payload) {
         if (action === 'back') this.returnToShelf();
         else if (action === 'settings-saved') this._reloadSettings();
-        else if (action === 'refresh') this._reloadShelf();
+        else if (action === 'refresh') {
+            // 新壳在 omnibox:freshness 之后紧跟一条 legacy refresh，并把同一份报告附在
+            // 动作的 payload 上：富事件已经重读过，这条只当回声跳过。没有 payload 的
+            // refresh 来自旧壳，按原语义重读。
+            if (payload != null) return;
+            this._reloadShelf();
+        }
+    }
+
+    /** 壳下发的非 view / action / query 消息；目前只消费统一刷新报告。 */
+    _onHostMessage(data) {
+        if (!data || data.type !== 'omnibox:freshness') return;
+        if (data.plugin && data.plugin !== 'document-reader') return;
+        if (!this._freshnessChanged(data.report)) return;
+        void this._reloadShelf();
     }
 
     /** 朗读设置页：主区内容切换，左栏高亮由壳按 view='voice' 落。 */
@@ -201,6 +215,32 @@ class DocumentReader {
         // `_reloadSettings` 出于同一原因也要在阅读态跳过这一步。
         if (this._isReaderMode) return;
         this._renderShelf(this._searchQuery);
+    }
+
+    // ===== 统一刷新（同步 / 校验）=====
+    //
+    // 控件由壳的 PluginChrome 挂载（manifest 的 frontend.chrome.freshness）。内容页在
+    // 切回前台时按全部文档根同步一次；壳在同步有变化或校验完成后发 omnibox:freshness
+    // （带报告），旧壳只发 omnibox:action: refresh，两条路径都汇到 `_reloadShelf`。
+
+    /** 报告里是否真有变化：三个计数与 `invalidated` 同等看待；`skip` 不算。 */
+    _freshnessChanged(report) {
+        if (!report || report.action === 'skip') return false;
+        return !!(report.added || report.changed || report.removed || report.invalidated);
+    }
+
+    /** 按全部根同步一次，有变化且 `reload` 为真时重读文档与书签。 */
+    async _syncFreshness(reload) {
+        if (!window.Freshness || typeof window.Freshness.sync !== 'function') return null;
+        let report = null;
+        try {
+            report = await window.Freshness.sync('document-reader', '');
+        } catch (e) {
+            // 被动同步失败不打扰用户：下一次切回前台会再试一次
+            return null;
+        }
+        if (reload && this._freshnessChanged(report)) await this._reloadShelf();
+        return report;
     }
 
     // ===== DOM =====
@@ -362,11 +402,16 @@ class DocumentReader {
      * 之前这里写了 `onHide → tts.pause()`，表现就是"一切走朗读就断"。
      * 只保留 dispose：插件真被卸载/刷新时再收尾。
      *
+     * onShow 按全部文档根同步一次：切走期间在目录里放进来的书，回来就该在书架上。
+     *
      * dispose 之前要先存一次进度：iframe 被移除**不会**触发 beforeunload（只有整页
      * 导航才会），而 keepAlive 的插件在设置变更、壳刷新这些路径上会被整个卸掉。
      */
     _bindLifecycle() {
         if (!window.PluginLifecycle) return;
+        window.PluginLifecycle.onShow(() => {
+            void this._syncFreshness(true);
+        });
         window.PluginLifecycle.onDispose(() => {
             this._saveCurrentProgress(false);
             this.tts.stop();
@@ -445,12 +490,6 @@ class DocumentReader {
             if (this._isReaderMode) this._afterPageRender();
         });
     }
-
-    // ===== 统一刷新（同步 / 校验）=====
-    //
-    // 控件由壳的 PluginChrome 挂载（manifest 的 frontend.chrome.freshness），
-    // 校验完成或同步发现变化时壳发 omnibox:action: refresh，本页重读书架与书签
-    // （见 `_applyHostAction` / `_reloadShelf`）。
 
     // ===== 书架 =====
 
@@ -623,7 +662,7 @@ class DocumentReader {
         // （实测显示成"书"），不如让书名自己占满
         this._chromeSub = '';
         // 阅读态由壳按 view='' 清掉左栏导航高亮，并显示返回动作、隐藏搜索；
-        // 搜索框同时复位，离开阅读态后不会带着上一轮的关键词。
+        // 搜索框同时复位，离开阅读态后不会带着上一次的关键词。
         this._clearSearch();
         this._pushChrome();
     }

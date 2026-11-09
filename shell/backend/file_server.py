@@ -80,7 +80,7 @@ _PLUGIN_BOOTSTRAP_SCRIPT = (
     '<link rel="stylesheet" href="/shell/variables.css">'
     # shared.css 是壳页面与插件页共用的组件层，与 variables.css 一起放最前。
     # 它与 base.css 的先后不再影响结果：base.css 里已没有 .btn / .field / .toast /
-    # .obx-nav-item / .obx-icon 这五个族的规则，族内次序只在 shared.css 内部决定。
+    # .modal / .obx-nav-item / .obx-icon 这些族的规则，族内次序只在 shared.css 内部决定。
     '<link rel="stylesheet" href="/shell/shared.css">'
     '<link rel="stylesheet" href="/shell/base.css">'
     '<link rel="stylesheet" href="/shell/folder-picker.css">'
@@ -88,7 +88,30 @@ _PLUGIN_BOOTSTRAP_SCRIPT = (
     '<link rel="stylesheet" href="/shell/effects.css">'
     '<link rel="stylesheet" href="/shell/splitter.css">'
     '<link rel="stylesheet" href="/shell/content-ui.css">'
+    # Toast 的实现只有一份（壳首页引的也是它）：必须排在 base.js 之前 —— 共享运行时
+    # 里用到 Toast 的地方（设置弹窗保存结果）是运行期才读的，但插件自身脚本跟着这些
+    # 共享脚本一起在 <head> 执行，晚加载就会让先跑的插件代码拿不到 window.Toast。
+    '<script src="/shell/toast.js"></script>'
+    # 共享运行时：同一个全局作用域的多个普通脚本，**顺序即依赖顺序**。
+    #   base        生命周期钩子、内核消息接收、Bridge、Utils（其余文件的底座）
+    #   dialogs     焦点/键盘工具、零侵入模态行为、确认对话框
+    #   settings    schema 表单、插件设置弹窗、通用弹窗
+    #   host-channel 内嵌页 → 上层的宿主通道（复用上面的弹窗）
+    #   tree / lightbox / pagination / context-menu  四个按需调用的 UI 组件
+    # folder-picker / freshness / content-ui 按全局名读 window.Utils / window.Bridge /
+    # window.Icons，因此必须排在这批之后。
     '<script src="/shell/base.js"></script>'
+    '<script src="/shell/dialogs.js"></script>'
+    '<script src="/shell/settings.js"></script>'
+    '<script src="/shell/host-channel.js"></script>'
+    '<script src="/shell/tree.js"></script>'
+    '<script src="/shell/lightbox.js"></script>'
+    '<script src="/shell/pagination.js"></script>'
+    '<script src="/shell/context-menu.js"></script>'
+    # 内容页 ↔ 壳的 chrome 握手（ready / chrome / view / action / query）。
+    # 排在共享运行时这一层末尾：它不依赖 base.js，但插件自己的脚本紧跟其后执行，
+    # 晚加载会让插件的 `_bindHost` 找不到 window.ChromeClient。
+    '<script src="/shell/chrome-client.js"></script>'
     '<script src="/shell/folder-picker.js"></script>'
     '<script src="/shell/freshness.js"></script>'
     '<script src="/shell/motion.js"></script>'
@@ -509,7 +532,8 @@ def _status_response(code: int, title: str, detail: str, prefs: dict | None = No
 #
 # 为什么需要这份清单：`/api/<插件>__<方法>` 原先
 # 只校验令牌，任何持令牌者都能拿到壳的完整配置（含绑定地址与数据目录）、
-# 翻看各插件加载状态、改别人的日志级别或一次清空全部缩略图缓存。
+# 翻看各插件加载状态、改别人的日志级别、一次清空全部缩略图缓存，或逐级枚举
+# 宿主任意绝对路径的目录树。
 # 这些不是"某个插件的功能"，而是描述这台机器本身的壳级事实。
 # 判据是 `PrincipalContext.is_admin`；老部署的全局令牌会自举成 owner
 # （见 principal.py），因此本机使用者不受影响。
@@ -520,8 +544,7 @@ def _status_response(code: int, title: str, detail: str, prefs: dict | None = No
 _ADMIN_ONLY_API = frozenset({
     'system_get_config',
     'system_get_plugin_status',
-    # 壳自身的运维端点：磁盘路径 / 日志级别 / WebView2 GPU 偏好 / 清缓存 / 开目录，
-    # 一律管理员专属
+    # 壳自身的运维端点：磁盘路径 / 日志级别 / 清缓存 / 开目录，一律管理员专属
     'system_get_shell_info',
     # 背景图库：导入会把**任意绝对路径**的图片复制进 `<config>/backgrounds`，而该
     # 目录随后由 `/file` 对外发布 —— 不限权等于给每个持令牌者一条"把本机文件搬进
@@ -535,8 +558,12 @@ _ADMIN_ONLY_API = frozenset({
     # 同类（都是"对这台机器的桌面动手"），因此同样只给管理员。任意持令牌者能调它，
     # 就等于能远程往宿主桌面叠模态窗口，并拿到用户选中的绝对路径。
     'system_pick_path',
+    # 目录枚举：返回宿主文件系统的任意绝对路径树（盘符、目录名、"含图片 / 视频 / 音乐"
+    # 提示），是"这台机器上有什么"的直接暴露面 —— 与 system_pick_path 同属"窥探/操作
+    # 这台机器"。原先只校验令牌，任何持局域网令牌的成员都能逐级枚举宿主任意目录。
+    # 取舍：非管理员仍可**手输**绝对路径保存设置项，只是用不了「浏览…」的目录树。
+    'system_browse_dir',
     'system_set_log_level',
-    'system_set_webview_high_performance',
     # 壳偏好（启动页 / 主题 / 背景 / 全屏）：与 system_get_shell_info 同属"描述这台
     # 机器、并决定它下次怎么启动"的壳级事实，写入还会直接写壳自己的配置文件。
     # 读路径是 serve_shell 注入为首屏状态，因此非管理员页面照常拿到生效值。
@@ -777,7 +804,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         # Werkzeug 的英文默认页，用户看不懂也拿不到统一外观。
         return _status_response(400, '请求无效',
                                 '请求的 Host 不在允许列表中，或请求格式不正确。'
-                                '若通过局域网 / 反向代理访问，请在 app.yaml 的 '
+                                '若通过局域网 / 反向代理访问，请在 app.json 的 '
                                 'server.trusted_hosts 中补充你的访问地址。',
                                 _page_prefs())
 
@@ -825,7 +852,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             'system_get_window_fullscreen': window_get_fullscreen,
             # 插件设置弹窗里 type:"directory" 字段的浏览入口（shell/folder-picker.js）：
             # 浏览本机绝对路径，走共享基建（与 image-viewer 的 browse_dir 同一套实现；
-            # 空路径/哨兵 = 盘符层）。
+            # 空路径/哨兵 = 盘符层）。管理员专属，判据见 `_ADMIN_ONLY_API`。
             'system_browse_dir': lambda path='': list_subdirectories(path),
             # 系统文件对话框：与桌面 js_api 注册的是**同一个实现**（见 file_dialog 的
             # 模块说明）。桌面模式下 Flask 就在 pywebview 那个进程里，因此这条 HTTP
@@ -838,7 +865,6 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             'system_delete_background_image': shell_info.delete_background_image,
             'system_list_background_images': shell_info.list_background_images,
             'system_set_log_level': shell_info.set_log_level,
-            'system_set_webview_high_performance': shell_info.set_webview_high_performance,
             'system_clear_thumb_caches': shell_info.clear_thumb_caches,
             'system_open_log_dir': shell_info.open_log_dir,
             # 壳偏好（启动与窗口 / 外观 / 背景 / 玻璃）：写路径唯一入口，
@@ -962,6 +988,32 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         # 断裂符号链接）都按"需要取内容"处理。
         return not full_path.is_dir()
 
+    def _call_content_hook(instance, method: str, argument, plugin_name: str, target=None) -> None:
+        r"""调用插件的按需取内容钩子（`ensure_file` / `ensure_thumb`），失败分两类映射。
+
+        原先这些调用点是 `except Exception: pass`：插件/远端取不到内容与"资源确实不存在"
+        都退化成 404，服务端一行日志都没有 —— 用户只看到一张破图，排障时无从下手。
+
+        分类依据是异常类型，不是"失败了就 5xx"：
+          * `FileNotFoundError` 是插件**明确表示内容不存在**（远端已删、索引里没有这一项），
+            与"文件不存在"同义 → 404，按 info 记录（这是常态，不该当故障刷 warning）；
+          * 其它异常说明失败原因在插件或远端，与"本次请求的资源不存在"不是一回事 → 5xx，
+            并把插件名与路径写进 warning。报成 404 会把上游故障伪装成"文件没有"。
+
+        `argument` 是传给插件的值（`ensure_thumb` 收相对路径），`target` 是日志里更有用的
+        落点（散文件缩略图的绝对路径）；省略时记 `argument`。
+        """
+        shown = argument if target is None else target
+        try:
+            getattr(instance, method)(argument)
+        except FileNotFoundError as e:
+            log.info(f'[File_Server] {plugin_name}.{method}() 报告内容不存在: {shown}（{e}）')
+            abort(404)
+        except Exception as e:
+            log.warning(f'[File_Server] {plugin_name}.{method}() 失败，取不到 {shown}: '
+                        f'{type(e).__name__}: {e}')
+            abort(502)
+
     def serve_media_file(filepath, plugin_name):
         """媒体/文件访问：支持相对路径和绝对路径，并做越权目录校验。"""
         instance = plugin_manager.get_plugin_instance(plugin_name) if plugin_name else None
@@ -1012,11 +1064,9 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
                 # 先校验才不会让它往根之外写。与 /thumbs 的 ensure_thumb 同一顺序。
                 # 判定条件不能只看"文件不存在"：物化出来的占位文件是存在的（0 字节），
                 # 只判 exists 会把占位当正常文件返回（实测踩到：200 + 0 字节）。
+                # 钩子失败的处理（404 / 5xx 与日志）统一在 `_call_content_hook` 里。
                 if instance is not None and _needs_content(instance, full_path):
-                    try:
-                        instance.ensure_file(full_path)
-                    except Exception:
-                        pass
+                    _call_content_hook(instance, 'ensure_file', full_path, plugin_name)
                 if not full_path.is_file():
                     abort(404)
                 return send_file(full_path, conditional=True)
@@ -1044,10 +1094,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
                 if not _match_file_root(full_path, roots, image_only_roots):
                     abort(403)
                 if instance is not None and _needs_content(instance, full_path):
-                    try:
-                        instance.ensure_file(full_path)
-                    except Exception:
-                        pass
+                    _call_content_hook(instance, 'ensure_file', full_path, plugin_name)
                 if not full_path.is_file():
                     abort(404)
                 return send_file(full_path, conditional=True)
@@ -1062,16 +1109,15 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             # 200 + 0 字节，远端内容永远不会被取回（见 `_needs_content` 的说明；
             # `/files/<相对路径>` 这类请求正走这里）。
             if instance is not None and _needs_content(instance, full_path):
-                try:
-                    instance.ensure_file(full_path)
-                except Exception:
-                    pass
+                _call_content_hook(instance, 'ensure_file', full_path, plugin_name)
             if not full_path.is_file():
                 abort(404)
             return send_file(full_path, conditional=True)
         except Exception as e:
+            # 一并放行服务端错误码：插件取不到内容时 `_call_content_hook` 报 5xx，
+            # 只放行 4xx 会把上游故障改写成 400（"请求格式不对"），掩盖真实原因。
             code = getattr(e, 'code', None)
-            if code in (400, 403, 404):
+            if isinstance(code, int) and 400 <= code < 600:
                 abort(code)
             abort(400)
 
@@ -1138,6 +1184,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         # 优先级：本方法命中优先，返回 None
         # 或形状不对时才使用 thumb_dir 散文件布局 —— 否则默认实现会把所有插件的
         # /thumbs 变成 404。
+        byte_failure: Exception | None = None
         if instance is not None:
             try:
                 result = instance.get_thumb_data(filepath)
@@ -1148,13 +1195,23 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
                     resp = send_file(io.BytesIO(data), mimetype=mime, conditional=True)
                     resp.headers['Cache-Control'] = 'private, max-age=86400'
                     return resp
-            except Exception:
-                pass
+            except FileNotFoundError as e:
+                # 插件明确表示"没有这份缩略图字节"：交给散文件布局，两者都没有才是 404。
+                log.info(f'[File_Server-Thumbs] {plugin_name}.get_thumb_data() '
+                         f'报告内容不存在: {full_path}（{e}）')
+            except Exception as e:
+                # 字节分支失败不等于这次请求失败：散文件布局随后还会试一次。记下原因，
+                # 两条路都拿不到时才据此报 5xx（见 _send_thumb_file），否则会漏掉
+                # "缩略图生成本身坏了"这类故障（原先的表现是静默 404，无任何日志）。
+                log.warning(f'[File_Server-Thumbs] {plugin_name}.get_thumb_data() 失败，'
+                            f'回退散文件布局: {full_path} — {type(e).__name__}: {e}')
+                byte_failure = e
 
-        return _send_thumb_file(plugin_name, instance, filepath, thumb_dir, full_path)
+        return _send_thumb_file(plugin_name, instance, filepath, thumb_dir, full_path, byte_failure)
 
     def _send_thumb_file(plugin_name: str, instance, filepath: str,
-                         thumb_dir: Path | None = None, full_path: Path | None = None):
+                         thumb_dir: Path | None = None, full_path: Path | None = None,
+                         byte_failure: Exception | None = None):
         """thumb_dir 散文件布局：默认 数据根/.cache/thumbs，找不到时按需生成再读。"""
         if thumb_dir is None:
             thumb_dir = _thumb_dir_for(plugin_name, instance)
@@ -1166,12 +1223,13 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         # （PluginBase.ensure_thumb 的说明）。散文件已存在时不再回调插件，
         # 避免每次 /thumbs 请求都进入插件代码。
         if instance is not None and not full_path.exists():
-            try:
-                instance.ensure_thumb(filepath)
-            except Exception:
-                pass
+            _call_content_hook(instance, 'ensure_thumb', filepath, plugin_name, full_path)
 
         if not full_path.exists():
+            # 字节分支抛过异常、散文件也没有：失败原因是插件取不到字节，不能报成
+            # "缩略图不存在"（会把插件故障伪装成正常的 404）。
+            if byte_failure is not None:
+                abort(502)
             abort(404)
 
         return send_from_directory(thumb_dir, filepath)

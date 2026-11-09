@@ -11,6 +11,7 @@ import io
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from typing import ClassVar
@@ -19,20 +20,21 @@ from urllib.parse import parse_qs, urlparse
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_BACKEND = PROJECT_ROOT / "plugins" / "pixiv-sync" / "backend"
 PLUGIN_LIBS = PLUGIN_BACKEND / "libs"
-for p in (str(PLUGIN_BACKEND), str(PLUGIN_LIBS)):
+PLUGIN_TOOL = PROJECT_ROOT / "plugins" / "pixiv-sync" / "tool"
+for p in (str(PLUGIN_BACKEND), str(PLUGIN_LIBS), str(PLUGIN_TOOL)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from pixiv_mini import PixivClient, PixivError
+import pixiv_purge_non_original as purge
+from pixiv_mini import PixivCancelled, PixivClient, PixivError
 from pixiv_sync import artist as artist_mod
 from pixiv_sync import download, scan, store
-from pixiv_sync import pixiv_purge_non_original as purge
 from pixiv_sync.db import WorksDB
 from pixiv_sync.download import process_illust
 
 
 class _StaticLimiter:
-    def wait(self):
+    def wait(self, stop_event=None):
         pass
 
 
@@ -236,6 +238,121 @@ class _FakeFollowingClient:
         pages = self.pages_by_uid.get(uid, [])
         cursor = int(params.get("offset", 0))
         return pages[cursor] if cursor < len(pages) else {"illusts": [], "next_url": None}
+
+
+class PixivSyncCancelTests(unittest.TestCase):
+    """取消要能真的打断，而不是等当前请求超时。
+
+    这两条锁住的是"用户点取消后最多等多久"：分块下载按块检查（毫秒级），
+    重试退避用 `Event.wait` 而不是 `time.sleep`（不再等满 1.5 秒）。
+    """
+
+    class _SlowRaw:
+        def __init__(self, chunks, delay=0.01):
+            self.chunks = list(chunks)
+            self.delay = delay
+            self.read_calls = 0
+
+        def read(self, size=-1):
+            if not self.chunks:
+                return b""
+            self.read_calls += 1
+            time.sleep(self.delay)
+            return self.chunks.pop(0)
+
+    class _Resp:
+        def __init__(self, raw, status=200, headers=None):
+            self.raw = raw
+            self.status_code = status
+            self.headers = headers or {
+                "Content-Type": "image/jpeg",
+                "Content-Length": str(1024 * 1024),
+            }
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _Session:
+        def __init__(self, outcome):
+            self.outcome = outcome
+            self.calls = 0
+
+        def request(self, method, url, **kwargs):
+            self.calls += 1
+            if isinstance(self.outcome, Exception):
+                raise self.outcome
+            return self.outcome
+
+    def _client(self, outcome):
+        client = PixivClient()
+        session = self._Session(outcome)
+        # 直接替掉会话工厂：`_local` 是 threading.local，worker 线程拿不到主线程注入的会话。
+        client._get_session = lambda: session  # 注入假传输层
+        return client, session
+
+    def test_download_aborts_within_one_chunk(self):
+        chunk = b"\xff\xd8\xff" + b"x" * 65533
+        raw = self._SlowRaw([chunk] * 200, delay=0.01)  # 全下完要 ~2 秒
+        client, _ = self._client(self._Resp(raw))
+        stop = threading.Event()
+        client.set_stop_event(stop)
+        with tempfile.TemporaryDirectory() as tmp:
+            box = {}
+            started = time.perf_counter()
+
+            def work():
+                try:
+                    client.download("https://i.pximg.net/x.jpg", path=tmp, name="x.jpg")
+                    box["ok"] = True
+                except PixivCancelled:
+                    box["cancelled"] = True
+                except Exception as e:
+                    box["error"] = e
+
+            thread = threading.Thread(target=work, daemon=True)
+            thread.start()
+            time.sleep(0.06)
+            stop.set()
+            thread.join(timeout=3)
+            elapsed = time.perf_counter() - started
+
+            self.assertTrue(box.get("cancelled"), f"应抛 PixivCancelled，实测 {box}")
+            self.assertLess(elapsed, 1.0, f"取消应在 <1 秒内生效，实测 {elapsed:.2f}s")
+            self.assertLess(raw.read_calls, 60, "不该把整张图读完")
+            self.assertFalse((Path(tmp) / "x.jpg").exists(), "半截文件要删掉")
+
+    def test_retry_backoff_is_interruptible(self):
+        import requests
+
+        client, session = self._client(requests.exceptions.ConnectionError("boom"))
+        client.api_retries = 2
+        stop = threading.Event()
+        client.set_stop_event(stop)
+        box = {}
+        started = time.perf_counter()
+
+        def work():
+            try:
+                client.auth("token-whatever")
+                box["ok"] = True
+            except PixivCancelled:
+                box["cancelled"] = True
+            except Exception as e:
+                box["error"] = e
+
+        thread = threading.Thread(target=work, daemon=True)
+        thread.start()
+        time.sleep(0.05)
+        stop.set()
+        thread.join(timeout=3)
+        elapsed = time.perf_counter() - started
+
+        self.assertTrue(box.get("cancelled"), f"应抛 PixivCancelled，实测 {box}")
+        self.assertLess(elapsed, 1.0, f"退避应可被取消打断，实测 {elapsed:.2f}s")
+        self.assertEqual(session.calls, 1, "取消后不再发起下一次尝试")
 
 
 class PixivSyncCoreTests(unittest.TestCase):

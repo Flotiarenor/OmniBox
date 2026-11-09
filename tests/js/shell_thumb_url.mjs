@@ -7,13 +7,9 @@
 //   * 缩略图因此永远加载不出来，删缓存 / 全量重建都不管用（请求没到应用）；
 //   * 原图走 originalUrl() 有 encodeURIComponent，所以点进去能看。
 // 这里锁住「逐段编码、保留 / 分隔符、不重复编码」这三件事。
-import fs from 'node:fs';
-import path from 'node:path';
 import vm from 'node:vm';
-import { fileURLToPath } from 'node:url';
 
-const SHELL_BASE_JS = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
-    '../../shell/frontend/public/shell/base.js');
+import { loadShellRuntime } from './shell_scripts.mjs';
 
 const win = { addEventListener() { } };
 const sandbox = {
@@ -25,7 +21,7 @@ const sandbox = {
     setTimeout, clearTimeout,
 };
 const ctx = vm.createContext(sandbox);
-vm.runInContext(fs.readFileSync(SHELL_BASE_JS, 'utf8'), ctx, { filename: 'shell/base.js' });
+loadShellRuntime(ctx);
 
 const Bridge = win.Bridge;
 Bridge.setPrefix('image-viewer');

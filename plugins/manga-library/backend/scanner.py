@@ -102,6 +102,10 @@ def scan_manga(manga_dir: Path, favorites: List[str]) -> List[Dict]:
         return manga_list
 
     fav_set = set(favorites)
+    # 书架顺序必须与文件系统无关：`os.scandir` 给的是目录项原始顺序，NTFS 与 ext4
+    # 不一样，拷一次文件也可能变。这里先按名字自然排序（第 2 册排在第 10 册前面），
+    # 与章节顺序、页顺序用同一套排序规则。
+    folders: dict[str, str] = {}
     for entry in os.scandir(manga_dir):
         try:
             is_dir = entry.is_dir()
@@ -109,7 +113,9 @@ def scan_manga(manga_dir: Path, favorites: List[str]) -> List[Dict]:
             continue
         if not is_dir or entry.name.startswith('.') or entry.name == 'ai':
             continue
-        folder_path = Path(entry.path)
+        folders[entry.name] = entry.path
+    for name in natural_sorted(folders):
+        folder_path = Path(folders[name])
         # 先看目录里有没有图片，再决定要不要收进书架：漫画根常常就是全局数据根
         # （root_dir 未配置时回落 get_data_root()），那里放着插件自己的数据目录，
         # 只看目录名会把它们变成一部 0 页、无封面的空白漫画
@@ -118,14 +124,14 @@ def scan_manga(manga_dir: Path, favorites: List[str]) -> List[Dict]:
         info = load_album_info(folder_path)
         cover_url = find_cover(folder_path, manga_dir)
         manga_list.append({
-            'comic_id': info.get('album_id', entry.name),
-            'title': info.get('title', entry.name),
+            'comic_id': info.get('album_id', name),
+            'title': info.get('title', name),
             'author': info.get('author', '未知'),
             'tags': info.get('tags', []),
             'page_count': info.get('total_page_count', 0),
             'cover_url': cover_url,
-            'folder_name': entry.name,
-            'is_fav': entry.name in fav_set,
+            'folder_name': name,
+            'is_fav': name in fav_set,
         })
     return manga_list
 

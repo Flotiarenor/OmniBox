@@ -15,6 +15,9 @@ class MangaReader {
         this._mode = null;              // 'lightbox' | 'fallback'
         this._returnFocus = null;       // 旧覆盖层的焦点归还目标
         this._chapterLabel = '';
+        //: 关闭回调：打开态被真正关掉时调一次，参数是最后停留的页码（0 起）。
+        //: 由应用设置 —— 阅读进度只在打开与关闭各写一次，翻阅过程中不落盘。
+        this.onClose = null;
 
         // 点页码卡片时先把焦点交给它：共享灯箱在 show() 时记住当前焦点，
         // 关闭后据此把焦点还回这张卡片（鼠标点 div 本身不会产生焦点）。
@@ -56,7 +59,9 @@ class MangaReader {
     }
 
     close() {
+        if (this._mode === null) return;
         const mode = this._mode;
+        // 先落 _mode：灯箱的 hide() 会回调下面的 `_handleLightboxClose`，重复发布会写两次进度。
         this._mode = null;
         if (mode === 'lightbox' && this._lightbox) {
             try { this._lightbox.hide(); } catch (e) { /* 已经关闭 */ }
@@ -78,6 +83,33 @@ class MangaReader {
         const img = this.container.querySelector('img');
         if (img) img.src = '';
         this.pages = [];
+        this._emitClose(this.currentIndex);
+    }
+
+    /** 灯箱自己关闭（✕ / Esc / 点遮罩）时同步本类状态，并发出一次关闭回调。 */
+    _handleLightboxClose() {
+        if (this._mode !== 'lightbox') return;   // 应用主动 close() 时已经处理过
+        this._mode = null;
+        const lightbox = this._lightbox;
+        if (lightbox && typeof lightbox.getIndex === 'function') {
+            this.currentIndex = lightbox.getIndex();
+        }
+        this.container.style.display = 'none';
+        const img = this.container.querySelector('img');
+        if (img) img.src = '';
+        this.pages = [];
+        this._emitClose(this.currentIndex);
+    }
+
+    /** 把"最后停留的页码"交给应用（0 起）；回调缺失或抛错都不影响关闭。 */
+    _emitClose(page) {
+        if (typeof this.onClose !== 'function') return;
+        const index = Math.max(0, Number(page) || 0);
+        try {
+            this.onClose(index);
+        } catch (e) {
+            console.error('[OmniBox] 阅读器关闭回调抛异常:', e);
+        }
     }
 
     prev() {
@@ -126,6 +158,9 @@ class MangaReader {
                 },
                 getImageUrl: (item) => item.url,
                 infoProvider: (item, index, items) => this._pageInfo(index, items.length),
+                // 灯箱自己的 ✕ / Esc / 点遮罩关闭也要把页码交回应用：否则"关闭即记录
+                // 阅读进度"只在壳顶栏返回那条路径上成立。
+                onClose: () => this._handleLightboxClose(),
             });
         } catch (e) {
             this._lightbox = null;

@@ -189,7 +189,8 @@ html[data-plugin-bg="on"] .search-input {
   cursor: zoom-out; animation: fadeIn 0.2s ease;
 }
 .lightbox.active { display: flex; }
-@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+/* `fadeIn` 由 shared.css 定义（每个加载本文件的文档都先加载了它），这里不再重复一份 ——
+   同名 keyframes 写两处时，改一处不生效的那侧会静默维持旧动画。 */
 .lightbox img {
   max-width: 90vw; max-height: 90vh; width: auto; height: auto; object-fit: contain;
   box-shadow: 0 0 30px rgba(0,0,0,0.5);
@@ -236,28 +237,11 @@ html[data-plugin-bg="on"] .search-input {
 }
 .lightbox-info-item { white-space: nowrap; }
 
-/* 模态框 */
-.modal {
-  position: fixed; inset: 0; background: var(--bg-overlay);
-  display: none; justify-content: center; align-items: center;
-  z-index: 1500; animation: fadeIn 0.15s ease;
-}
-.modal.active { display: flex; }
-.modal-box {
-  background: var(--bg-surface); border-radius: var(--radius);
-  width: 400px; max-height: 80vh; display: flex; flex-direction: column;
-  box-shadow: var(--shadow-lg); animation: slideUp 0.2s ease;
-}
-@keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
-.modal-box h3 {
-  margin: 0; padding: 16px 20px; border-bottom: 1px solid var(--border); font-size: 15px;
-}
-.modal-body { flex: 1; overflow-y: auto; padding: 16px 20px; }
-.modal-footer {
-  padding: 12px 20px; border-top: 1px solid var(--border);
-  text-align: right; display: flex; justify-content: flex-end; gap: 8px;
-}
-.modal-confirm .confirm-message { padding: 8px 0 16px; font-size: 14px; line-height: 1.6; }
+/* ===== 模态框：`.modal` 全族在 shared.css =====
+   壳页面也要用同一份骨架，而它从不加载本文件，所以整族（含 `.modal.active`、
+   `.modal-box`、其标题与页脚，以及 `slideUp` keyframes）都在 shared.css，按原次序排列。
+   本文件仍保留玻璃壳里 `.modal-box` 的底色覆盖（见上方 data-shell-glass / data-plugin-bg
+   两段）—— 那是"让出底色"的策略，不是骨架。 */
 
 /* ===== 设置表单（createSettingsForm 使用） =====
    `.field` / `.field-label` / `.field-help` / `.field-info` / 输入控件 / `.field-checkbox*` /

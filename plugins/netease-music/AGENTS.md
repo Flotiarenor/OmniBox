@@ -12,13 +12,18 @@
 | 文件 | 职责 | 关键符号 |
 | --- | --- | --- |
 | `plugins/netease-music/manifest.json` | 声明依赖宿主、后端入口与类、前端入口与路由、隐藏自身 | `name`、`dependencies`、`backend.entry`、`backend.class`、`frontend.entry`、`frontend.route`、`hidden` |
-| `plugins/netease-music/backend/main.py` | 插件类、扩展条目、API 注册、统一刷新声明、ncm-cli 探活 | `NeteaseMusicPlugin`、`NETEASE_TTL_SECONDS`、`_get_api`、`freshness_spec`、`_invalidate_caches`、`get_extensions`、`register_api`、`get_status`、`search_song`、`search_playlist`、`get_daily_recommend`、`get_liked_songs`、`get_created_playlists`、`get_collected_playlists`、`get_playlist_tracks`、`get_song_url`、`get_lyric`、`check_login`、`login`、`_song`、`_playlist` |
-| `plugins/netease-music/backend/netease_music_api.py` | ncm-cli 调用与输出解析、假 mpv 取流、播放地址缓存 | `Song`、`Playlist`、`Album`、`NeteaseMusicAPI`、`_NCM_PACKAGE_ENTRY`、`_SHELL_META_CHARS`、`_ncm_argv_prefix`、`_reject_shell_meta`、`_ensure_player_mpv_config`、`_run_command`、`_command_success`、`_check_installation`、`check_login`、`clear_url_cache`、`login`、`set_config`、`get_config`、`get_commands`、`run_cli_command`、`search_song`、`search_playlist`、`search_album`、`create_playlist`、`add_to_playlist`、`get_playlist_detail`、`get_playlist_tracks`、`get_created_playlists`、`get_collected_playlists`、`get_my_playlists`、`get_daily_recommend`、`get_user_info`、`get_liked_songs`、`_get_favorite_playlist_id`、`get_song_url`、`resolve_song_url`、`_url_cache`、`_url_cache_size`、`_resident_initialized`、`_private_bin_dir`、`_ensure_fake_mpv`、`play`、`pause`、`resume`、`next_track`、`previous_track`、`set_volume`、`get_playback_status`、`get_lyric`、`analyze_preference`、`_calculate_preference`、`_parse_songs`、`_parse_playlists`、`_parse_albums`、`_parse_single_playlist`、`_playlist_from_dict`、`_parse_json_output`、`_load_json`、`_extract_list` |
+| `plugins/netease-music/backend/main.py` | 入口（facade）：装配命令执行 / 输出解析 / 假 mpv 三个协作者与远端缓存组件，声明扩展条目与 API 表；登录态变化时作废远端缓存。`NETEASE_TTL_SECONDS` 是整份远端数据的**新鲜期**（1800 秒），与播放地址缓存的有效期不是同一个数 | `NeteaseMusicPlugin`、`NETEASE_TTL_SECONDS`、`remote_cache`、`_get_api`、`_runner`、`_parser`、`_fake_mpv`、`freshness_spec`、`_invalidate_caches`、`get_extensions`、`register_api`、`get_status`、`search_song`、`search_playlist`、`get_daily_recommend`、`get_liked_songs`、`get_created_playlists`、`get_collected_playlists`、`get_playlist_tracks`、`get_song_url`、`get_lyric`、`check_login`、`login`、`_song`、`_playlist` |
+| `plugins/netease-music/backend/remote_cache.py` | 远端来源的缓存失效与新鲜期投影：登录态变化时丢弃播放地址缓存并让新鲜期重新起算；绕过引擎的兜底失效会补写时间戳 | `RemoteCache`、`IDENTITY_REASON`、`invalidate`、`_stamp_freshness`、`note_login_state`、`mark_login_started`、`state` |
+| `plugins/netease-music/backend/netease_music_api.py` | 数据接口：命令调用、账号与歌单操作、播放地址缓存（条目带写入时刻与有效期 `URL_CACHE_TTL_SECONDS`，600 秒；过期后单条重新解析）、偏好分析（协作者由入口注入） | `NeteaseMusicAPI`、`URL_CACHE_TTL_SECONDS`、`_ensure_player_mpv_config`、`_run_command`、`_command_success`、`_check_installation`、`check_login`、`clear_url_cache`、`login`、`set_config`、`get_config`、`get_commands`、`run_cli_command`、`search_song`、`search_playlist`、`search_album`、`create_playlist`、`add_to_playlist`、`get_playlist_detail`、`get_playlist_tracks`、`get_created_playlists`、`get_collected_playlists`、`get_my_playlists`、`get_daily_recommend`、`get_user_info`、`get_liked_songs`、`_get_favorite_playlist_id`、`get_song_url`、`resolve_song_url`、`_url_cache`、`_url_cache_size`、`play`、`pause`、`resume`、`next_track`、`previous_track`、`set_volume`、`get_playback_status`、`get_lyric`、`analyze_preference`、`_calculate_preference` |
+| `plugins/netease-music/backend/ncm_cli.py` | ncm-cli 命令定位（绕过 `.cmd` shim）与参数数组执行、cmd 元字符拒绝 | `NcmRunner`、`run`、`ncm_argv_prefix`、`reject_shell_meta`、`_NCM_PACKAGE_ENTRY`、`_SHELL_META_CHARS` |
+| `plugins/netease-music/backend/parsing.py` | ncm-cli 输出的数据结构与解析（JSON 容错、条目归一） | `Song`、`Playlist`、`Album`、`OutputParser`、`json`、`songs`、`playlists`、`albums`、`single_playlist`、`playlist_from_dict`、`extract_list`、`data_of` |
+| `plugins/netease-music/backend/fake_mpv.py` | 假 mpv：私有目录、脚本落盘、残留清理、URL 截获轮询 | `FakeMpv`、`prepare`、`environment`、`wait_url`、`bin_dir`、`captured_path`、`log_path`、`socket_path`、`_private_bin_dir`、`_ensure_fake_mpv` |
 | `plugins/netease-music/frontend/index.html` | 单页骨架、内联样式块、装载 `js/app.js` 与引导脚本 | `#title`、`#ncm-freshness`、`#search-row`、`#keyword`、`#search-btn`、`#content`、`.wrap`、`.item`、`.t`、`.s`、`.empty-state`、`.btn`、`.btn-primary`、`--bg-app`、`--bg-surface`、`--border`、`--text-primary`、`--text-secondary` |
 | `plugins/netease-music/frontend/js/app.js` | `NeteaseApp`：视图分发、Bridge 调用、列表渲染、HTML 转义、挂载统一刷新控件 | `NeteaseApp`、`icon`、`init`、`call`、`_mountFreshness`、`_reloadView`、`loadDaily`、`searchSongs`、`loadLiked`、`loadPlaylists`、`searchPlaylists`、`renderLogin`、`renderSongs`、`renderPlaylists`、`esc`、`Bridge.call`、`Toast.error`、`Freshness.mount`、`Freshness.autoSync`、`parent.mediaPlayerApp`、`media.core.setQueue` |
 
 - `plugins/netease-music/frontend` 下没有样式文件：全部样式写在 `plugins/netease-music/frontend/index.html` 的 `<style>` 内；没有单独的依赖目录，也没有构建步骤。
-- 落盘产物：数据根与 `cache_dir` 下无产出（未覆写 `get_data_root`、`get_cache_dir`）；写入的是 `ncm-preference.json`（`_preference_file`，读写符号 `analyze_preference`、`_calculate_preference`）、`config.json`（`_ensure_player_mpv_config`，位于 `Path.home` 下的 `ncm-cli` 目录）、`mpv.sock`（`resolve_song_url`）、`omnibox-ncm-fake-mpv` 目录下的 `mpv.py`、`mpv.cmd`、`mpv`（`_ensure_fake_mpv`）、`ncm-captured-url.txt` 与 `ncm-fake-mpv.log`（`resolve_song_url`）；`ncm-history.json`（`_history_file`）与 `ncm-schedule.json`（`_schedule_file`）只赋值，无读写符号。
+- 后端结构：入口只做装配（命令执行、输出解析、假 mpv、数据接口），四者之间不互相 import，依赖由入口按构造参数注入（分层门禁的 R2 / R3）。
+- 落盘产物：数据根与 `cache_dir` 下无产出（未覆写 `get_data_root`、`get_cache_dir`）；写入的是 `ncm-preference.json`（`_preference_file`，读写符号 `analyze_preference`、`_calculate_preference`）、`config.json`（`_ensure_player_mpv_config`，位于 `Path.home` 下的 `ncm-cli` 目录）、`mpv.sock`（`FakeMpv.socket_path`，由 `resolve_song_url` 经假 mpv 使用）、`omnibox-ncm-fake-mpv` 目录下的 `mpv.py`、`mpv.cmd`、`mpv`（`FakeMpv._ensure_fake_mpv`）、`ncm-captured-url.txt` 与 `ncm-fake-mpv.log`（`FakeMpv.captured_path` / `log_path` / `wait_url`）；`ncm-history.json`（`_history_file`）与 `ncm-schedule.json`（`_schedule_file`）只赋值，无读写符号。
 
 ## 后端 API 契约
 
@@ -37,7 +42,7 @@
 | `get_lyric` | `song_id` | `{success, data}` | 歌词对象，宿主 `lyrics-parser.js` 调用 |
 | `check_login` | 无 | `{success}` | `success` 表示已登录，非调用是否成功 |
 | `login` | `background`，默认 `True` | `{success, message}` | 触发 `login --background`；`message` 取二维码地址或提示文本 |
-| `get_status` | 无 | `{plugin, ncm_cli_available, ncm_cli_version, error}` | 对 `ncm-cli` 执行 `--version` 探活，宿主在各 ncm 视图加载前调用 |
+| `get_status` | 无 | `{plugin, ncm_cli_available, ncm_cli_version, error, freshness}` | 对 `ncm-cli` 执行 `--version` 探活；`freshness` 是远端新鲜期投影（`mode` / `ttl_seconds` / `ttl_remaining` / `fresh_until`），目前只供状态接口与测试读取——宿主读 `get_status` 时只消费 `ncm_cli_available`，界面暂未消费该投影 |
 
 条目形状由 `_song`、`_playlist` 归一，字段取值如下。
 
@@ -50,7 +55,7 @@
 | --- | --- | --- | --- |
 | `register_api` | 无 | 方法名到可调用对象的字典 | 装载期把方法名登记进 `{name}__{method_name}` 形式的方法表 |
 | `get_extensions` | 无 | 扩展条目列表 | 壳用 `get_plugin_extensions` 聚合后交给宿主渲染；条目字段 `host`、`id`、`label`、`icon`、`view`、`placement`、`scope` |
-| `freshness_spec` | 无 | 新鲜度声明字典 | 接入统一刷新；字段 `mode`、`ttl_seconds`、`invalidate`、`unit` |
+| `freshness_spec` | 无 | 新鲜度声明字典 | 接入统一刷新；字段 `mode`、`ttl_seconds`、`invalidate`（收到 `ttl` / `verify` / `identity` 原因）、`unit` |
 | `settings_schema` | 类属性 | `[]` | 本插件未声明设置项，壳读默认值并登记 `get_settings_schema` 方法名 |
 
 `get_extensions` 的五个条目共享 `host` 为 `media-player`、`placement` 为 `sidebar`、`scope` 为 `all`，逐条取值如下。
@@ -94,6 +99,6 @@
 - 插件自有 CSS 变量前缀：没有，颜色与边框全部直接取壳变量。
 - 共享前端组件：`Freshness`（`shell/frontend/public/shell/freshness.js`），`_mountFreshness` 传入 `plugin`、`container`、`unit`、`onChange`，随后调用 `Freshness.autoSync`；未使用 `FolderPicker`、`Splitter`、`createLightbox`、`createPagination`。
 - 跨插件接口：`parent.mediaPlayerApp`（定义在 `plugins/media-player/frontend/index.html`）、`media.core.setQueue`（`MediaPlayerCore.setQueue`，`plugins/media-player/frontend/js/player-core.js`）。
-- 共享后端基建：`PluginBase`、`load_sibling`（`shell/backend/plugin_utils.py`）、`FreshnessEngine` 的 `mode` 为 `remote` 分支（`shell/backend/freshness.py`），`invalidate` 指向 `clear_url_cache`。
+- 共享后端基建：`PluginBase`、`load_sibling`（`shell/backend/plugin_utils.py`）、`FreshnessEngine` 的 `mode` 为 `remote` 分支（`shell/backend/freshness.py`），`invalidate` 指向 `clear_url_cache`。引擎正忙或异常时绕过引擎直接丢缓存的那条兜底路径由 `RemoteCache._stamp_freshness` 补写 `last_sync_at` / `last_verify_at`，否则状态里的 `fresh_until` 仍指向旧时刻。两份时间要分开看：「同步 / 校验」的 TTL 是整份远端数据的新鲜期，播放地址的 `URL_CACHE_TTL_SECONDS` 只决定单条外链何时重新解析。
 - 宿主集成：壳的 `PluginExtensions.vue` 用 `system_get_plugin_extensions('media-player', 'sidebar')` 取本插件的五条 `view` 条目并渲染入口；点击后壳发 `omnibox:view`（`ncm-daily` / `ncm-playlists` / `ncm-liked` / `ncm-my-playlists` / `ncm-login`），宿主内容页的 `openNeteaseView` 渲染对应视图。宿主前端按名调用 `register_api` 登记的方法，并把歌曲条目映射为 `ncm:` 前缀的媒体条目。旧宿主的 `renderExtensions` / `#mp-extensions` 容器不再使用。
 - 前端样式、共享组件与统一刷新的完整约定见 `docs/plugin-ui-guide.md`。

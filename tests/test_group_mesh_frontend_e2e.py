@@ -152,12 +152,25 @@ def shell_injection() -> str:
     之前这条用例"能过"，只是因为当时弹窗靠 `hidden` 属性控制显隐 —— 属性不依赖
     任何样式表，于是测试在没有壳样式的情况下也碰巧成立。迁移到壳的 `.modal` 之后，
     缺失的注入暴露了出来。
+
+    脚本同理：插件自己的提示已统一到壳注入的 `/shell/toast.js`，页面里不再有自绘提示
+    节点。不注入它，`window.Toast` 就是 undefined，点击后的提示静默消失 —— 用例会报
+    "点击后没有任何反馈"，而那其实是注入缺失。
     """
     parts = []
     for name in ('variables.css', 'shared.css', 'base.css', 'effects.css'):
         path = SHELL_PUBLIC / name
         if path.is_file():
             parts.append(f'<!-- {name} -->\n<style>\n{path.read_text(encoding="utf-8")}\n</style>')
+    toast = SHELL_PUBLIC / 'toast.js'
+    if toast.is_file():
+        parts.append(f'<!-- toast.js -->\n<script>\n{toast.read_text(encoding="utf-8")}\n</script>')
+    # 内容页的 omnibox 握手在 /shell/chrome-client.js：不注入它，`bindHost()` 会直接抛错，
+    # 页面停在「正在加载…」，一整片断言会以"渲染没发生"的形式失败。
+    client = SHELL_PUBLIC / 'chrome-client.js'
+    if client.is_file():
+        parts.append(
+            f'<!-- chrome-client.js -->\n<script>\n{client.read_text(encoding="utf-8")}\n</script>')
     return '\n'.join(parts)
 
 
@@ -504,7 +517,7 @@ class FrontendRenderTest(unittest.TestCase):
                         "window.__stubResults = [];"
                         "document.querySelectorAll('.modal')"
                         ".forEach(function (m) { m.classList.remove('active'); });"
-                        "document.querySelectorAll('.gm-toast').forEach(function (t) { t.remove(); });")
+                        "document.querySelectorAll('.toast').forEach(function (t) { t.remove(); });")
                     driver.execute_script(
                         "document.querySelectorAll(arguments[0])[arguments[1]].click();",
                         panel_selector, index)
@@ -512,10 +525,10 @@ class FrontendRenderTest(unittest.TestCase):
                         "return Array.from(document.querySelectorAll('.modal'))"
                         ".some(function (m) { return m.classList.contains('active'); });")
                     called = driver.execute_script('return window.__stubResults.length') > 0
-                    # 壳提供 Toast 时不会生成 .gm-toast 节点，因此两种情况都算"有提示"
+                    # 提示统一由壳注入的 /shell/toast.js 渲染（本插件不再自绘提示节点）
                     toasted = driver.execute_script(
                         "return Boolean(window.__toastCount)"
-                        " || document.querySelectorAll('.gm-toast').length > 0;")
+                        " || document.querySelectorAll('.toast').length > 0;")
                     self.assertTrue(opened or called or toasted,
                                     f'按钮「{label}」点击后没有任何反馈（未开弹窗、未调后端、无提示）')
         self.assertTrue(checked >= 4, f'动作按钮数量异常（只遍历到 {checked} 个）')

@@ -16,9 +16,12 @@ v1"无从判断，于是这台设备取不到新名单，只能回去找群主�
     {"rosters": [<最新一份>, <次新>, …]}     # 新→旧，去重，最多 keep 份
 
 为什么是单一 JSON 而不是"每份一个文件"：名单是小对象（几 KB），历史深度以十计，
-一次性读写最简单，也不会在磁盘上留下需要回收的一堆小文件。写盘走临时文件 +
-`os.replace`（与注册表、主体凭据表同一套做法）：这个文件被反复重写，
-直接覆盖时被中断会留下半截 JSON。
+一次性读写最简单，也不会在磁盘上留下需要回收的一堆小文件。写盘走唯一临时名
+（`tempfile.mkstemp`）+ `fsync` + `os.replace`：这个文件被反复重写，直接覆盖时被
+中断会留下半截 JSON，而固定的临时名会让两个并发写者抢同一个文件、`os.replace`
+之后磁盘上可能是一份谁都没写完的内容。同一文件的读改写另有**进程内每文件一把锁**
+（见 `_lock_for`）：`record()` 是读-改-写，两个成员并发 push 时后写的会把先写的
+那一份从历史里整段盖掉。
 
 ## 与 `roster.json` 的分工
 
@@ -32,6 +35,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -46,6 +51,25 @@ HISTORY_FILE = 'roster-history.json'
 # "离线一段时间"的场景；再深的链对判定没有额外价值，只会把文件撑大。
 DEFAULT_KEEP = 12
 
+# ── 每文件一把锁 ──────────────────────────────────────────────────────────
+#
+# 锁挂在**文件路径**上而不是实例上：`record_history()` / `load_history()` 每次调用
+# 都新建一个 `RosterHistory`，而插件侧只持有一个长驻实例，两种用法必须互斥。
+# 键的数量等于本进程用过的身份目录数（一个），不需要回收。
+_LOCKS: Dict[str, threading.RLock] = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for(path: Path) -> threading.RLock:
+    """取该历史文件专属的可重入锁（`record()` 内部会再次进入 `load()`）。"""
+    key = os.path.normcase(os.path.abspath(str(path)))
+    with _LOCKS_GUARD:
+        lock = _LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _LOCKS[key] = lock
+        return lock
+
 
 class RosterHistory:
     """一份去重、有界的名单历史（新→旧）。"""
@@ -55,11 +79,17 @@ class RosterHistory:
         self.keep = max(1, int(keep))
         self._rosters: List[Roster] = []
         self._loaded = False
+        self._lock = _lock_for(self.path)
 
     # ── 读 ────────────────────────────────────────────────────────────────
 
     def load(self) -> List[Roster]:
         """读取历史（新→旧）。文件不存在返回空表，损坏时降级为空表 + warning。"""
+        with self._lock:
+            return self._load_locked()
+
+    def _load_locked(self) -> List[Roster]:
+        """`load()` 的实现（调用方已持有该文件的锁）。"""
         if self._loaded:
             return list(self._rosters)
         self._loaded = True
@@ -101,30 +131,58 @@ class RosterHistory:
         去重键是 `content_hash`（只对参与签名的字段求值，因此与"谁转发"无关）。
         **传入的名单必须已经签名完毕**：`content_hash` 是现算的，先入历史再签名会
         让同一份名单以两个哈希各占一格（`Roster.history_chain` 的说明里有同样的坑）。
+
+        整个读-改-写在同一把每文件锁里完成：`record()` 的两个调用方（后台同步收到
+        对端 push、界面侧采纳名单）可能来自不同线程，锁外的"读旧表 → 改 → 写回"
+        会让后写的把先写的那一份从历史里盖掉，表现成"刚采纳的名单下次重启不见了"。
         """
-        current = self.load()
-        # 已有同名（同 content_hash）的先移除：重新并入会把它排到最前面，
-        # 这样"最近被采纳/使用过的"始终在前面；随后统一按版本排序，
-        # 使**内存与磁盘随时一致**（否则 `versions()` 会给出并入顺序而不是版本序）。
-        keep = [item for item in current if item.content_hash != roster.content_hash]
-        merged = self._normalize([roster, *keep])
-        self._rosters = merged
-        self._loaded = True
-        try:
-            self._write(merged)
-        except OSError as exc:
-            # 落盘失败不回滚内存状态：本进程内仍能用新历史判定准入，
-            # 只是重启后丢掉 —— 比"连内存里都不认"好。
-            log.warning(f'[RosterHistory] 历史写盘失败（本次运行内仍有效）: {exc}')
-        return list(merged)
+        with self._lock:
+            current = self._load_locked()
+            # 已有同名（同 content_hash）的先移除：重新并入会把它排到最前面，
+            # 这样"最近被采纳/使用过的"始终在前面；随后统一按版本排序，
+            # 使**内存与磁盘随时一致**（否则 `versions()` 会给出并入顺序而不是版本序）。
+            keep = [item for item in current if item.content_hash != roster.content_hash]
+            merged = self._normalize([roster, *keep])
+            self._rosters = merged
+            self._loaded = True
+            try:
+                self._write(merged)
+            except OSError as exc:
+                # 落盘失败不回滚内存状态：本进程内仍能用新历史判定准入，
+                # 只是重启后丢掉 —— 比"连内存里都不认"好。
+                log.warning(f'[RosterHistory] 历史写盘失败（本次运行内仍有效）: {exc}')
+            return list(merged)
 
     def _write(self, rosters: List[Roster]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {'rosters': [roster.to_dict() for roster in rosters]}
-        tmp = self.path.with_suffix('.json.tmp')
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n',
-                       encoding='utf-8')
-        os.replace(tmp, self.path)
+        """原子落盘：唯一临时名 + `fsync` + `os.replace`。
+
+        临时名由 `tempfile.mkstemp` 生成而不是固定的 `roster-history.json.tmp`：
+        插件进程与 CLI 可能同时写同一个身份目录，固定临时名会让两个写者先后写进
+        同一个文件，`os.replace` 之后留下的是一份谁都没写完的内容。锁只管本进程，
+        mkstemp 管跨进程。
+        """
+        directory = self.path.parent
+        directory.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps({'rosters': [roster.to_dict() for roster in rosters]},
+                             ensure_ascii=False, indent=2) + '\n'
+        fd, tmp_name = tempfile.mkstemp(prefix=f'{self.path.name}.', suffix='.tmp',
+                                        dir=str(directory))
+        try:
+            with os.fdopen(fd, 'wb') as handle:
+                handle.write(payload.encode('utf-8'))
+                handle.flush()
+                # 不 fsync 的话"已写入"只到页缓存：掉电后 os.replace 之后仍可能是
+                # 半份或旧内容，而这份文件正是准入判定的依据。
+                os.fsync(handle.fileno())
+            os.replace(tmp_name, self.path)
+        except BaseException:
+            # 失败时删掉临时文件：`record()` 只把写盘失败当 warning 继续跑，
+            # 留下的临时文件会一直堆在身份目录里，没有人回收。
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
 
     # ── 查询 ──────────────────────────────────────────────────────────────
 

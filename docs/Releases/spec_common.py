@@ -39,15 +39,16 @@ HIDDEN_IMPORTS = [
     # 插件共享基建：只有 image-viewer / media-player 会 import
     'shell.backend.tasks',
     'shell.backend.thumb_cache',
+    # 组件化之后插件后端的共用底座：组件只 import shell.backend（不再互相 load_sibling），
+    # 因此这些模块必须显式声明，否则冻结后组件 import 失败、插件整体不加载。
+    # 迁移配方见 docs/plugin-backend-layout.md。
+    'shell.backend.json_cache',
+    'shell.backend.ports',
     # 统一刷新基建（同步 / 校验）：插件声明 freshness_spec() 由壳侧驱动，
     # 但插件自己的兼容入口会 import 它取引擎（image-viewer 的 refresh()），
     # 将来插件直接声明 FsSource 也要能 import
     'shell.backend.freshness',
     'shell.backend.file_server',
-    # 壳自身的 WebView2 GPU 偏好注入：只被 main.py 导入，而 main.py 是静态入口、
-    # PyInstaller 能自行收集，因此本条并非必需；收进来只为让"壳模块"在清单里齐全，
-    # 避免日后有插件经 importlib 动态加载到它时出现构建产物缺模块。
-    'shell.backend.webview_gpu',
     # ── group-mesh 协议内核（shell/groupmesh）──
     'shell.groupmesh',
     'shell.groupmesh.crypto_prims',
@@ -66,13 +67,12 @@ HIDDEN_IMPORTS = [
     'werkzeug.serving',
     'jinja2.ext',              # Flask 内部依赖
     'markupsafe._native',
-    'yaml.cyaml',
     # 插件动态加载的第三方依赖
     'mutagen',
     'PIL',
     'natsort',
     'chardet',
-    # document-reader 的 Markdown 渲染（requirements.txt 里随 rich 一起声明）
+    # document-reader 的 Markdown 渲染（requirements.txt 里与 mdurl 一起声明）
     'markdown_it',
     # document-reader 的正文抽取（documents.py：from html.parser import HTMLParser）
     # 与元数据解析（urllib.parse / xml.etree.ElementTree）。
@@ -87,9 +87,7 @@ HIDDEN_IMPORTS = [
     # document-reader 的朗读引擎：插件后端 importlib 动态加载，静态分析看不到；
     # 漏在这里的表现是"冻结后点朗读报没有可用引擎"（tts_engine 里是函数内 import）
     'edge_tts',
-    'jmcomic',
-    'common',
-    'curl_cffi',
+    # manga-library 的禁漫接口客户端（插件内自带实现）
     'requests',
     'Crypto',
     'Crypto.PublicKey._point',

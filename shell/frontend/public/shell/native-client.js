@@ -59,12 +59,27 @@
       }
     }
 
-    function render(blocks, toolbar) {
-      post({
+    function render(blocks, toolbar, options) {
+      var payload = {
         type: 'omnibox:schema',
         blocks: clone(blocks) || [],
         toolbar: Array.isArray(toolbar) ? clone(toolbar) || [] : [],
-      });
+      };
+      // 版式（可选）：document 约束正文度量。只透传契约内的取值，未知值一律忽略，
+      // 避免逻辑页一个笔误把壳的排版改坏。
+      var layout = options && options.layout;
+      if (layout === 'document' || layout === 'default') payload.layout = layout;
+      // 瞬时反馈（可选）：操作结果走 Toast，不占 blocks。同样只收契约内的形状。
+      var toast = options && options.toast;
+      if (toast && typeof toast.text === 'string' && toast.text) {
+        var tone = toast.tone;
+        payload.toast = {
+          text: toast.text,
+          tone: (tone === 'success' || tone === 'warning' || tone === 'danger'
+            || tone === 'accent' || tone === 'muted') ? tone : 'default',
+        };
+      }
+      post(payload);
     }
 
     function fail(error) {

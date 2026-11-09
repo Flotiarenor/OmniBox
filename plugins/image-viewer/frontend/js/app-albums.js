@@ -89,6 +89,15 @@ Object.assign(ImageViewer.prototype, {
             return;
         }
 
+        // 时间线的「按图片」层（本次会话记住的选择）：相册卡片不渲染，只保留顶部的
+        // 切换控件，内容换成 list_recent_images 的 justified 网格。清场、标题/副标题/
+        // 状态占位与首屏请求都由 setTimelineMode 一处负责，这里不复制第二份清场逻辑。
+        if (this.currentView === 'timeline' && this.mode === 'albums'
+                && this.timelineMode === 'images') {
+            this.setTimelineMode('images');
+            return;
+        }
+
         if (this.currentView === 'timeline' && this.mode === 'albums') {
             this._renderTimeline(content, albums);
         } else if (this.currentView === 'latest' && this.mode === 'albums') {
@@ -112,10 +121,100 @@ Object.assign(ImageViewer.prototype, {
                 <div class="iv-time-label"><span>${key}</span><i>${list.length} 个相册</i></div>
                 <div class="iv-grid cui-grid" data-group="${gi}"></div>
             </section>`).join('');
+        // 切换控件固定在时间线最上方：重建 sections 后要插回首位（innerHTML 会清掉它）。
+        this._renderTimelineToggle(content);
         content.querySelectorAll('.iv-grid[data-group]').forEach((grid, gi) => {
             const list = [...groups.values()][gi];
             this._renderAlbumCards(grid, list, {});
         });
+    },
+
+    /**
+     * 时间线顶部的「按相册 / 按图片」分段控件（本页自绘，壳不提供同类动作）。
+     *
+     * 结构用 createElement 而不是拼字符串：无头用例可以直接对按钮 click()，
+     * 不必解析 innerHTML。控件插在容器首位，图片层下容器里就只有它。
+     */
+    _renderTimelineToggle(container) {
+        if (!container) return null;
+        const group = document.createElement('div');
+        group.className = 'iv-mode-switch';
+        group.setAttribute('role', 'group');
+        group.setAttribute('aria-label', '时间线展示方式');
+        [
+            { mode: 'albums', label: '按相册' },
+            { mode: 'images', label: '按图片' },
+        ].forEach(({ mode, label }) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'iv-mode-btn';
+            button.textContent = label;
+            const active = this.timelineMode === mode;
+            button.setAttribute('aria-pressed', active ? 'true' : 'false');
+            if (active) button.classList.add('active');
+            button.addEventListener('click', () => this.setTimelineMode(mode));
+            group.appendChild(button);
+        });
+        // `insertBefore` 在空容器里要传 null；部分宿主替身没有 firstChild，走 appendChild 兜底。
+        if (container.firstChild && typeof container.insertBefore === 'function') {
+            container.insertBefore(group, container.firstChild);
+        } else {
+            container.appendChild(group);
+        }
+        return group;
+    },
+
+    /**
+     * 切换时间线的展示方式（幂等）。
+     *
+     * images：进入图片层，铺最近图片（list_recent_images），相册卡片让位给切换控件；
+     * albums：结束图片层，回到按月分组的相册卡片并恢复进入前的滚动位置。
+     * 层级清理沿用 showAlbums / _resetImageListState / _cancelSlideshow，本方法只摆状态。
+     */
+    setTimelineMode(mode) {
+        const next = mode === 'images' ? 'images' : 'albums';
+        this.timelineMode = next;
+        if (next === 'images') {
+            // 已经在「按图片」层：重复点击不重复请求，也不重置滚动位置。
+            if (this.mode === 'images' && this._recentActive) return;
+            // 控件只出现在时间线视图；其它视图下只记住选择，不做层级切换。
+            if (this.currentView !== 'timeline') return;
+            this._navSeq += 1;
+            this._resetImageListState();
+            this._cancelSlideshow();
+            // 先记滚动位置再改布局：清空相册卡片会让内容高度骤降，浏览器会把 scrollTop 夹到新高度。
+            this._rememberScroll();
+            this.mode = 'images';
+            this._recentActive = true;
+            this.currentPath = '';
+            this.navStack = [];
+            this.filteredSeqIndexes = null;
+            this.searchQuery = '';
+            this._searchClear += 1;
+            this.currentPage = 1;
+            this._chromeTitle = '时间线';
+            this._chromeSub = '全部图片按更新时间倒序';
+            this._statusText = '正在读取…';
+            this._statusState = 'idle';
+            const content = document.getElementById('iv-albums');
+            content.innerHTML = '';
+            this._renderTimelineToggle(content);
+            const grid = document.getElementById('image-grid');
+            grid.innerHTML = '';
+            grid.style.height = '0';
+            document.getElementById('pagination').innerHTML = '';
+            this._armViewReplayGuard();
+            this._pushChrome();
+            this.loadRecentImages(1);
+            return;
+        }
+        // 不在「按图片」层时已处于相册层：不重复 showAlbums（那会丢掉当前滚动位置）。
+        if (!(this.mode === 'images' && this._recentActive)) return;
+        this._recentActive = false;
+        this.currentPath = '';
+        this.navStack = [];
+        this.showAlbums();
+        this._restoreScroll();
     },
 
     _renderAlbumCards(container, albums, opts = {}) {
@@ -153,7 +252,11 @@ Object.assign(ImageViewer.prototype, {
             className: 'iv-album',
             image: album.cover
                 ? {
-                    src: this._thumbUrl({ url: album.cover, mtime: album.mtime }),
+                    src: this._thumbUrl({
+                        url: album.cover,
+                        mtime: album.mtime,
+                        cover_mtime: album.cover_mtime,
+                    }),
                     alt: '',
                     data: { path: album.path },
                     onError: (event, img) => this._handleAlbumCoverError(img),
@@ -411,6 +514,9 @@ Object.assign(ImageViewer.prototype, {
         this.currentPath = path;
         this.currentPage = 1;
         this.mode = 'images';
+        // 进入的是具体目录的瀑布流，不再是时间线的「按图片」层：`loadImages` 的代次守卫
+        // 与「按图片」层互斥，这里不复位会让目录图片永远画不出来。
+        this._recentActive = false;
         this.filteredSeqIndexes = null;
         // 进相册层时清掉关键词：壳搜索框没有"让内容页回填输入值"的通道，输入框里
         // 可能还留着上一次的关键词，但过滤从这里重置（已知边界，见 AGENTS.md）。

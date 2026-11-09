@@ -10,13 +10,13 @@
 //   2. 消息来源校验：非父窗口（伪造来源）与跨源消息一律忽略；
 //   3. 钩子注册时机（已可见时立即补一次；隐藏期间注册的 onShow 不立刻跑）；
 //   4. 状态机与消息类型的映射：shown/hidden/dispose ↔ omnibox:plugin-*。
-import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { loadShellRuntime } from './shell_scripts.mjs';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const BASE_JS = path.join(ROOT, 'shell/frontend/public/shell/base.js');
 const VISIBILITY_JS = path.join(ROOT, 'shell/frontend/src/core/plugin-visibility.js');
 
 let failures = 0;
@@ -65,7 +65,7 @@ function loadPluginRuntime({ sameOrientation = true } = {}) {
         encodeURIComponent, decodeURIComponent, String, Math, Date, JSON, Object, Array, Error, Promise,
     };
     vm.createContext(sandbox);
-    vm.runInContext(fs.readFileSync(BASE_JS, 'utf8'), sandbox, { filename: 'shell/base.js' });
+    loadShellRuntime(sandbox);
 
     const fromParent = (data, opts = {}) => {
         const event = {

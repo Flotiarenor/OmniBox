@@ -86,7 +86,7 @@ class ScanTaskTests(unittest.TestCase):
     def _wait(self, plugin, timeout: float = 30.0) -> dict:
         deadline = time.time() + timeout
         while time.time() < deadline:
-            status = plugin.scan_status()
+            status = plugin.scans.status()
             if not status['running']:
                 return status
             time.sleep(0.02)
@@ -101,7 +101,7 @@ class ScanTaskTests(unittest.TestCase):
         _make_image(self.root / 'b.jpg', (9, 9, 9))
         cleaner = self._cleaner()
 
-        started = cleaner.scan_start('dupe')
+        started = cleaner.scans.start('dupe')
         self.assertTrue(started.get('started'), started)
         status = self._wait(cleaner)
         self.assertTrue(status['success'], status)
@@ -110,13 +110,13 @@ class ScanTaskTests(unittest.TestCase):
         self.assertEqual(status['processed'], 3, '全部文件都定论后进度走满')
         self.assertEqual(status['groups'], 1)
 
-        cached = cleaner.get_cached_scan('dupe')
+        cached = cleaner.results.get_cached_scan('dupe')
         self.assertTrue(cached['cached'], '任务结束必须把结果写进扫描缓存')
         self.assertEqual(cached['scanned'], 3)
         self.assertEqual([sorted(g['files']) for g in cached['groups']],
                          [['a.jpg', '副本/a.jpg']],
                          '后台任务与同步入口必须用同一份分组逻辑')
-        self.assertEqual([sorted(g['files']) for g in cleaner.duplicate_scan()['groups']],
+        self.assertEqual([sorted(g['files']) for g in cleaner.pipeline.duplicate_scan()['groups']],
                          [sorted(g['files']) for g in cached['groups']])
 
     def test_similar_scan_task_writes_cache_with_phase_progress(self):
@@ -124,18 +124,18 @@ class ScanTaskTests(unittest.TestCase):
         _make_image(self.root / 'b.jpg', (200, 30, 30))
         cleaner = self._cleaner()
 
-        cleaner.scan_start('similar')
+        cleaner.scans.start('similar')
         status = self._wait(cleaner)
         self.assertTrue(status['success'], status)
         self.assertEqual(status['mode'], 'similar')
         self.assertEqual(status['total'], 2, '第二阶段的分母是有效图片数')
         self.assertEqual(status['processed'], 2)
-        self.assertTrue(cleaner.get_cached_scan('similar')['cached'])
+        self.assertTrue(cleaner.results.get_cached_scan('similar')['cached'])
 
     def test_unknown_mode_falls_back_to_dupe(self):
         _make_image(self.root / 'a.jpg')
         cleaner = self._cleaner()
-        self.assertEqual(cleaner.scan_start('nonsense').get('mode'), 'dupe')
+        self.assertEqual(cleaner.scans.start('nonsense').get('mode'), 'dupe')
         self._wait(cleaner)
 
     # ---------- 2. 不叠第二个任务 ----------
@@ -145,12 +145,12 @@ class ScanTaskTests(unittest.TestCase):
         gate = threading.Event()
         task = BackgroundTask(kind='image-cleaner-scan', extra={'mode': 'dupe'})
         task.start(lambda t: gate.wait(10))
-        cleaner._scan_task = task
+        cleaner.scans._task = task
         try:
-            again = cleaner.scan_start('dupe')
+            again = cleaner.scans.start('dupe')
             self.assertFalse(again.get('started'), '已有任务在跑时不能再起一个')
             self.assertTrue(again.get('running'))
-            self.assertTrue(cleaner.scan_cancel()['success'])
+            self.assertTrue(cleaner.scans.cancel()['success'])
         finally:
             gate.set()
             task.cancel()
@@ -165,9 +165,9 @@ class ScanTaskTests(unittest.TestCase):
         task = BackgroundTask(kind='image-cleaner-scan', extra={'mode': 'dupe'})
         task.cancel()                                    # 未 start 就取消 → cancelled 为真
 
-        cleaner._scan_worker(task, 'dupe', None)
+        cleaner.scans.worker(task, 'dupe', None)
 
-        self.assertFalse(cleaner._load_scan_cache().get('dupe'),
+        self.assertFalse(cleaner.results.load().get('dupe'),
                          '被取消的扫描不能留下任何分组结果')
         self.assertEqual(task.status()['processed'], 0)
 
@@ -175,12 +175,12 @@ class ScanTaskTests(unittest.TestCase):
 
     def test_idle_status_and_cancel_shapes(self):
         cleaner = self._cleaner()
-        status = cleaner.scan_status()
+        status = cleaner.scans.status()
         self.assertFalse(status['running'])
         self.assertFalse(status['done'])
         self.assertEqual(status['total'], 0)
         self.assertEqual(status['mode'], '')
-        cancelled = cleaner.scan_cancel()
+        cancelled = cleaner.scans.cancel()
         self.assertFalse(cancelled['success'])
         self.assertIn('没有正在运行', cancelled['error'])
 
@@ -189,7 +189,7 @@ class ScanTaskTests(unittest.TestCase):
         gate = threading.Event()
         task = BackgroundTask(kind='image-cleaner-scan', extra={'mode': 'dupe'})
         task.start(lambda t: gate.wait(10))
-        cleaner._scan_task = task
+        cleaner.scans._task = task
         try:
             cleaner.on_unload()
             self.assertTrue(task.cancelled, '进程退出要取消正在跑的扫描（结果缓存保留）')
@@ -200,17 +200,16 @@ class ScanTaskTests(unittest.TestCase):
     def test_scan_start_is_single_flight(self):
         """并发请求不得各起一个任务：查-建-赋值必须在同一把锁里。
 
-        回归对象：`scan_start` 原先没有锁，Flask 是 threaded=True，两个并发请求
-        可以各起一个后台任务，后一个覆盖前一个的 `_scan_task`（前者仍在跑，取消
-        就再也够不着它）。
+        Flask 是 threaded=True，两个并发请求各起一个后台任务时，后一个会覆盖前一个
+        的 `_scan_task`（前者仍在跑，取消就再也够不着它）。
         """
         cleaner = self._cleaner()
         gate = threading.Event()
         task = BackgroundTask(kind='image-cleaner-scan', extra={'mode': 'dupe'})
         task.start(lambda t: gate.wait(10))
-        cleaner._scan_task = task
+        cleaner.scans._task = task
         try:
-            second = cleaner.scan_start('dupe')
+            second = cleaner.scans.start('dupe')
             self.assertFalse(second['started'], f'已有任务在跑时不该再起一个: {second}')
             self.assertTrue(second['running'])
         finally:
@@ -234,13 +233,13 @@ class ScanTaskTests(unittest.TestCase):
         report = engine.verify()
 
         self.assertEqual(report['pass_end']['scanned'], 3)
-        dupe = cleaner.get_cached_scan('dupe')
+        dupe = cleaner.results.get_cached_scan('dupe')
         self.assertTrue(dupe['cached'])
         self.assertFalse(dupe['stale'], '校验完的结果不该还是过期的')
         self.assertEqual([sorted(g['files']) for g in dupe['groups']],
                          [['a.jpg', 'b.jpg']])
         # 指纹落盘：旧后台路径从不保存 dhash.json，重启即全量重算
-        self.assertTrue(cleaner._dhash_cache_path().exists(), 'dHash 缓存必须落盘')
+        self.assertTrue(cleaner.hashes.path().exists(), 'dHash 缓存必须落盘')
 
     def test_deleted_file_invalidates_result_and_hash(self):
         from shell.backend.freshness import engine_for
@@ -251,20 +250,20 @@ class ScanTaskTests(unittest.TestCase):
         engine = engine_for(cleaner)
         engine.spec.min_sync_interval = 0.0
         engine.verify()
-        self.assertEqual(len(cleaner.get_cached_scan('dupe')['groups']), 1)
+        self.assertEqual(len(cleaner.results.get_cached_scan('dupe')['groups']), 1)
 
         (self.root / 'b.jpg').unlink()
         engine.spec.min_sync_interval = 0.0
         engine.sync('', force=True)
 
-        self.assertTrue(cleaner.get_cached_scan('dupe')['stale'],
+        self.assertTrue(cleaner.results.get_cached_scan('dupe')['stale'],
                         '磁盘变了之后结果缓存必须标记过期')
         after = engine.verify()
         self.assertEqual(after['audited']['valid_entries'], 1)
-        self.assertEqual(cleaner.get_cached_scan('dupe')['groups'], [],
+        self.assertEqual(cleaner.results.get_cached_scan('dupe')['groups'], [],
                          '重新分组后不该再报已删除文件的重复对')
-        dead = cleaner._dhash_cache_key(str(self.root / 'b.jpg'))
-        self.assertNotIn(dead, cleaner._dhash_cache, '已删除文件的指纹必须清掉')
+        dead = cleaner.hashes.key_for_abs(str(self.root / 'b.jpg'))
+        self.assertNotIn(dead, cleaner.hashes.entries, '已删除文件的指纹必须清掉')
 
     def test_threshold_change_invalidates_similar_result(self):
         from shell.backend.freshness import engine_for
@@ -274,12 +273,42 @@ class ScanTaskTests(unittest.TestCase):
         engine = engine_for(cleaner)
         engine.spec.min_sync_interval = 0.0
         engine.verify()
-        self.assertFalse(cleaner.get_cached_scan('similar')['stale'])
+        self.assertFalse(cleaner.results.get_cached_scan('similar')['stale'])
 
         cleaner.on_settings_changed({'threshold'})
 
-        self.assertTrue(cleaner.get_cached_scan('similar')['stale'],
-                        '改阈值后相似分组必须重算（旧实现看完还是旧分组）')
+        self.assertTrue(cleaner.results.get_cached_scan('similar')['stale'],
+                        '改阈值后相似分组必须重算（改完阈值看到的不能还是旧分组）')
+
+    def test_content_version_follows_the_dhash_version(self):
+        """指纹条目版本与引擎的 content_version 是同一个数字，只改 `DHASH_VERSION`。"""
+        cleaner = self._cleaner()
+        spec = cleaner.freshness_spec()
+
+        self.assertEqual(cleaner.hashes.version, self.cleaner_module._const.DHASH_VERSION)
+        self.assertEqual(spec['content_version'], cleaner.hashes.version,
+                         '引擎的整体作废判据必须跟着指纹条目版本走')
+
+    def test_regroup_all_reports_valid_images_for_similar(self):
+        """两条写路径的 `scanned` 同口径：完全重复数文件、相似数有效图片。"""
+        from shell.backend.freshness import engine_for
+
+        _make_image(self.root / 'a.png', (200, 30, 30))
+        _make_image(self.root / 'b.png', (200, 30, 30))
+        (self.root / 'broken.jpg').write_bytes(b'not-an-image')   # 读不出来的图
+        cleaner = self._cleaner()
+        engine = engine_for(cleaner)
+        engine.spec.min_sync_interval = 0.0
+
+        report = engine.verify()
+        self.assertEqual(report['pass_end']['scanned'], 3, '整趟的文件总数')
+        self.assertEqual(cleaner.results.get_cached_scan('dupe')['scanned'], 3,
+                         '完全重复的口径是文件数')
+        self.assertEqual(cleaner.results.get_cached_scan('similar')['scanned'], 2,
+                         '相似的口径是有效图片数（读不出来的图不算）')
+
+        direct = cleaner.pipeline.similar_scan()
+        self.assertEqual(direct['scanned'], 2, '同步入口与校验收尾必须同口径')
 
     def test_abs_for_rel_handles_extra_root_prefix(self):
         """虚拟路径 → 绝对路径：命名空间前缀先匹配，再回落第一根。"""
@@ -290,18 +319,109 @@ class ScanTaskTests(unittest.TestCase):
         viewer.setting = lambda key, default=None: (
             str(extra) if key == 'extra_roots' else
             (str(self.root) if key == 'root_dir' else default))
-        viewer._rebuild_paths()
+        viewer.paths.invalidate()
         cleaner = self.cleaner_module.ImageCleanerPlugin(
             {'name': 'image-cleaner'}, {'directories': {'data_root': str(self.root)}})
         cleaner._host = viewer
 
-        roots = cleaner._scan_roots()
+        roots = cleaner.host.roots()
         prefix = next(p for _r, p in roots if p)
-        self.assertEqual(Path(cleaner._abs_for_rel(f'{prefix}/a.jpg')).resolve(),
+        self.assertEqual(Path(cleaner.host.abs_for_rel(f'{prefix}/a.jpg')).resolve(),
                          (extra / 'a.jpg').resolve())
-        self.assertEqual(Path(cleaner._abs_for_rel('b.jpg')).resolve(),
+        self.assertEqual(Path(cleaner.host.abs_for_rel('b.jpg')).resolve(),
                          (self.root / 'b.jpg').resolve())
-        self.assertIsNone(cleaner._abs_for_rel(''))
+        self.assertIsNone(cleaner.host.abs_for_rel(''))
+
+
+    # ---------- 6. 收尾重新分组：取消 / 部分遍历 / 读取错误 ----------
+
+    def test_cancelled_verify_does_not_regroup(self):
+        """引擎在取消后仍会调 on_pass_end；收尾不能再做整库重新分组。"""
+        from shell.backend.freshness import engine_for
+
+        _make_image(self.root / 'a.jpg', (200, 30, 30))
+        _make_image(self.root / 'b.jpg', (200, 30, 30))   # 一组真重复：重新分组会写缓存
+        cleaner = self._cleaner()
+        engine = engine_for(cleaner)
+        self.assertIsNotNone(engine)
+        calls = []
+        original = cleaner.pipeline.regroup_all
+        cleaner.pipeline.regroup_all = lambda *a, **k: calls.append(a) or {'scanned': 0}
+        try:
+            task = BackgroundTask(kind='freshness.image-cleaner')
+            task.cancel()          # 未开始就取消 → 这一趟立刻以 partial 收尾
+            assert engine is not None
+            report = engine.verify(task)
+        finally:
+            cleaner.pipeline.regroup_all = original
+
+        self.assertTrue(report['partial'])
+        self.assertEqual(report['reason'], 'cancelled')
+        self.assertEqual(calls, [], '取消的校验不能再整库重新分组')
+        self.assertNotIn('dupe', cleaner.results.load(), '取消的校验不能写任何分组结果')
+
+    def test_partial_or_error_pass_end_only_marks_stale(self):
+        """部分遍历（预算用尽）与读取错误都不是"整趟确认"：只标过期。"""
+        _make_image(self.root / 'a.jpg', (200, 30, 30))
+        _make_image(self.root / 'b.jpg', (200, 30, 30))
+        cleaner = self._cleaner()
+        calls = []
+        cleaner.pipeline.regroup_all = lambda *a, **k: calls.append(a) or {'scanned': 0}
+
+        partial = cleaner.fresh.pass_end(
+            {'partial': True, 'errors': [], 'reason': 'budget'}, True)
+        errors = cleaner.fresh.pass_end(
+            {'partial': False, 'errors': ['a: 拒绝访问']}, True)
+
+        self.assertEqual(calls, [], 'partial / errors 的收尾都不能重新分组')
+        self.assertFalse(partial['regrouped'])
+        self.assertEqual(partial['reason'], 'partial')
+        self.assertFalse(errors['regrouped'])
+        self.assertEqual(errors['reason'], 'errors')
+
+    def test_pass_end_hands_a_cancel_probe_to_regroup(self):
+        """完整校验的收尾要把取消检查点交给重新分组（点了取消能及时返回）。"""
+        _make_image(self.root / 'a.jpg', (200, 30, 30))
+        _make_image(self.root / 'b.jpg', (200, 30, 30))
+        cleaner = self._cleaner()
+        seen = []
+
+        def regroup(cancelled=None):
+            seen.append(cancelled)
+            return {'scanned': 2}
+
+        cleaner.pipeline.regroup_all = regroup
+        result = cleaner.fresh.pass_end({'partial': False, 'errors': []}, True)
+
+        self.assertEqual(result, {'scanned': 2})
+        self.assertEqual(len(seen), 1)
+        self.assertTrue(callable(seen[0]), '收尾重新分组必须拿到可取消检查点')
+
+    def test_regroup_all_returns_immediately_when_already_cancelled(self):
+        _make_image(self.root / 'a.jpg', (200, 30, 30))
+        _make_image(self.root / 'b.jpg', (200, 30, 30))
+        cleaner = self._cleaner()
+
+        out = cleaner.pipeline.regroup_all(lambda: True)
+
+        self.assertTrue(out.get('cancelled'), out)
+        self.assertNotIn('dupe', cleaner.results.load(), '取消时不能写半份分组')
+
+    def test_regroup_all_stops_inside_grouping_when_cancelled(self):
+        """取消发生在分组内部也要停下：检查点进到每张图的循环里，不只停在模式之间。"""
+        for name in ('a.jpg', 'b.jpg', 'c.jpg'):
+            _make_image(self.root / name, (200, 30, 30))
+        cleaner = self._cleaner()
+        state = {'calls': 0}
+
+        def cancelled() -> bool:
+            state['calls'] += 1
+            return state['calls'] > 3      # 前几个检查点通过，取消发生在文件循环里
+
+        out = cleaner.pipeline.regroup_all(cancelled)
+
+        self.assertTrue(out.get('cancelled'), out)
+        self.assertNotIn('dupe', cleaner.results.load(), '分组途中取消不能写结果')
 
 
 if __name__ == '__main__':   # pragma: no cover

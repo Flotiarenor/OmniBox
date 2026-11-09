@@ -100,8 +100,9 @@ class PrivatePathGateTests(unittest.TestCase):
     # ---------- 不应当命中 ----------
 
     def test_generic_hosts_and_placeholders_are_ignored(self):
-        (self.root / '.config' / 'app.yaml').write_text(
-            'server:\n  host: 127.0.0.1\n  base: http://127.0.0.1:18080\n', encoding='utf-8')
+        (self.root / '.config' / 'app.json').write_text(
+            '{"server": {"host": "127.0.0.1", "base": "http://127.0.0.1:18080"}}',
+            encoding='utf-8')
         self._config('alpha.json', {'refresh_token': 'SECRET-TOKEN'})
         targets = [
             self._tracked('a.py', "host = '127.0.0.1'"),

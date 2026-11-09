@@ -51,6 +51,7 @@ import tempfile
 from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
+from typing import Any, cast
 
 from mutagen import File as MutagenFile
 
@@ -124,8 +125,11 @@ TAG_KEYS = ('album', 'albumartist', 'tracknumber')
 
 
 def _utf8_stdout():
+    # sys.stdout 的静态类型是 TextIO，`reconfigure` 只有 TextIOWrapper 才有；
+    # 重定向到管道/文件时确实可能没有，所以既 cast 又保留 AttributeError 兜底。
+    stream = cast(Any, sys.stdout)
     try:
-        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        stream.reconfigure(encoding='utf-8', errors='replace')
     except (AttributeError, ValueError):
         pass
 
@@ -136,6 +140,8 @@ def metadata_reader():
     if not METADATA_PY.is_file():
         sys.exit(f'找不到插件的标签模块：{METADATA_PY}（插件目录结构变了？）')
     spec = importlib.util.spec_from_file_location('media_player_tool_metadata', METADATA_PY)
+    if spec is None or spec.loader is None:
+        sys.exit(f'无法为 {METADATA_PY} 创建加载器')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.MetadataReader

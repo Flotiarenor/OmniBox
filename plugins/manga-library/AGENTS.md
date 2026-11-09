@@ -2,7 +2,7 @@
 
 ## 定位与形态
 
-- 职责：把 `root_dir` 下含图片的一级子目录聚合成书架，按章节与图片分层浏览并单页阅读，并在同一数据根内承载 jmcomic 下载任务管理。
+- 职责：把 `root_dir` 下含图片的一级子目录聚合成书架，按章节与图片分层浏览并单页阅读，并在同一数据根内承载禁漫（JM）下载任务管理。
 - 形态：独立页插件，`frontend.route` 为 `/manga-library`；不承载 companion，也不内嵌进其他宿主。
 - 页面 chrome：manifest 声明 `frontend.chrome`，品牌块、左栏导航（漫画库三视图 + 下载中心六个过滤项）、顶栏动作、搜索框、状态栏与侧栏分隔条由壳的 `PluginChrome.vue` 渲染；壳加载内容页时追加 `?content=1`，iframe 内只有内容（书架、下载中心、漫画详情、两个弹窗与阅读器）。
 
@@ -11,18 +11,26 @@
 
 | 文件 | 职责 | 关键符号 |
 | --- | --- | --- |
-| `plugins/manga-library/backend/main.py` | 插件主类、设置 schema、API 注册、书架缓存与刷新钩子、下载任务编排 | `MangaLibraryPlugin`、`settings_schema`、`SHELF_VERSION`、`register_api`、`get_data_root`、`get_settings`、`on_settings_changed`、`_apply_root_dir`、`_reset_shelf`、`freshness_spec`、`_freshness_derive`、`_freshness_prune`、`_freshness_audit`、`_freshness_rebuild`、`_load_state`、`_save_state`、`_scan_manga`、`list_manga`、`search`、`get_state`、`toggle_favorite`、`_is_valid_folder_name`、`update_recent`、`get_detail`、`get_pages`、`_get_download_state_dir`、`download_list`、`download_submit`、`download_pause`、`download_resume`、`download_retry`、`download_delete`、`download_start_all`、`download_pause_all`、`download_clear_completed`、`download_get_album_info`、`_download_start`、`_download_worker`、`_save_album_info` |
+| `plugins/manga-library/backend/main.py` | 入口（facade）：设置 schema 引用、API 表、壳按名调用的钩子、装配与换根编排（业务都在下面的组件里） | `MangaLibraryPlugin`、`settings_schema`、`SHELF_VERSION`、`register_api`、`get_data_root`、`get_settings`、`on_settings_changed`、`freshness_spec`、`_apply_root_dir`、`_on_download_completed` |
+| `plugins/manga-library/backend/const.py` | 纯数据：设置项 schema、书架规则版本、阅读与下载的数值上限、下载状态落点名（只有入口加载） | `SETTINGS_SCHEMA`、`SHELF_VERSION`、`RECENT_LIMIT`、`RECENT_COUNT_MIN`、`RECENT_COUNT_MAX`、`DOWNLOAD_STATE_DIRNAME`、`DOWNLOAD_STATE_FILE` |
+| `plugins/manga-library/backend/paths.py` | 漫画根与派生路径：书架状态文件、下载状态目录（含用户主目录回落） | `PathLayout`、`rebind`、`root`、`state_file`、`download_state_dir`、`download_state_file` |
+| `plugins/manga-library/backend/library.py` | 书架缓存与阅读状态：收藏 / 最近阅读、详情与页面列表；状态文件原子写、整次写重试（3 次小退避）、读-改-写在实例锁内、加载时清理硬杀残留临时文件 | `Library`、`rebind`、`set_recent_count`、`reset`、`rescan`、`list_manga`、`search`、`get_state`、`retain`、`toggle_favorite`、`update_recent`、`get_detail`、`get_pages`、`_load_state`、`_save_state`、`_clean_stale_temps`、`replace_attempts`、`replace_delay` |
+| `plugins/manga-library/backend/freshness.py` | 统一刷新基建的规格声明与钩子（扫描与缓存仍归 `Library`） | `ShelfFreshness`、`spec`、`derive`、`prune`、`audit`、`rebuild` |
+| `plugins/manga-library/backend/downloads.py` | 下载中心：任务表、暂停 / 恢复 / 重试、工作线程与 `album_info.json` 落盘 | `DownloadCenter`、`on_completed`、`_notify_completed`、`list_tasks`、`submit`、`pause`、`resume`、`retry`、`delete`、`start_all`、`pause_all`、`clear_completed`、`album_info`、`_start`、`_worker`、`_save_album_info` |
 | `plugins/manga-library/backend/scanner.py` | 目录扫描与封面选择的纯函数 | `IMAGE_EXTS`、`natural_sorted`、`visible_subdirs`、`direct_images`、`has_images`、`load_album_info`、`find_cover`、`scan_manga`、`resolve_safe_path`、`list_pages` |
 | `plugins/manga-library/backend/download_models.py` | 下载任务数据类与两种序列化 | `DownloadTask`、`to_api_dict`、`to_state_dict`、`from_state_dict`、`albumId`、`thumbUrl`、`totalImages`、`completedImages`、`downloadDir`、`startTime`、`completeTime` |
 | `plugins/manga-library/backend/download_state.py` | 任务表 JSON 落盘与恢复 | `save_tasks`、`load_tasks` |
-| `plugins/manga-library/backend/downloader.py` | jmcomic 下载执行、进度回调与 `album_info` 组装 | `execute_download`、`ProgressCallback`、`before_album`、`before_photo`、`after_image`、`_build_album_info`、`_save_album_info_local`、`_save_state_locked`、`ProgressDownloader`、`dir_rule`、`Bd / Aid`、`Bd / Aid / Pindextitle` |
+| `plugins/manga-library/backend/downloader.py` | 下载执行、块级取消检查点、章节目录规则、进度回调与 `album_info` 组装（接口客户端与图片解码由入口注入） | `execute_download`、`_download_chapter`、`ProgressCallback`、`chapter_dir`、`_sanitize`、`before_album`、`before_photo`、`after_image`、`finish`、`BYTES_PER_IMAGE`、`STATE_SAVE_EVERY` |
+| `plugins/manga-library/backend/libs/jm_mini.py` | 禁漫精简下载客户端（vendored 形态，与 pixiv-sync 的 `pixiv_mini` 一致）：域名引导、请求签名、响应解密、实体解析、图片字节与乱序重排（移植自 jmcomic，MIT） | `JmClient`、`Album`、`Chapter`、`ChapterRef`、`JmError`、`API_VERSION`、`DOMAIN_SERVERS`、`IMAGE_DOMAINS`、`TOKEN_SECRET`、`TOKEN_SECRET_CONTENT`、`DATA_SECRET`、`DOMAIN_SECRET`、`album`、`chapter`、`scramble_id`、`image_url`、`image_bytes`、`cover_url`、`segmentation_num`、`decode`、`save_image`、`SCRAMBLE_220980`、`SCRAMBLE_268850`、`SCRAMBLE_421926`、`_distinct_chapters`、`_decrypt` |
 | `plugins/manga-library/frontend/index.html` | 内容页入口：内容容器、阅读器与两个弹窗、脚本装载（页面 chrome 不在这里） | `#app`、`.view-body`、`.view-content.ml-content`、`#ml-content`、`#manga-reader-container`、`#ml-add-modal`、`#ml-detail-modal`、`#ml-detail-content` |
 | `plugins/manga-library/frontend/manga-library.css` | 插件全部样式（无 chrome 规则） | `--ml-radius`、`--ml-radius-sm`、`--ml-gradient`、`--ml-accent-soft`、`--ml-hero-bg`、`#app`、`.ml-content`、`.ml-section`、`.ml-section-title`、`.ml-grid`、`.ml-card`、`.ml-cover`、`.ml-cover-fallback`、`.ml-info`、`.ml-card-title`、`.ml-card-sub`、`.ml-fav-star`、`.ml-detail-hero`、`.ml-detail-cover`、`.ml-detail-info`、`.ml-detail-label`、`.ml-detail-title`、`.ml-detail-author`、`.ml-detail-actions`、`.ml-hero-back`、`.ml-info-box`、`.ml-info-item`、`.ml-tag`、`.ml-task`、`.ml-task-thumb`、`.ml-task-main`、`.ml-task-title`、`.ml-task-meta`、`.ml-status`、`.ml-task-progress`、`.ml-progress-track`、`.ml-progress-fill`、`.ml-task-percent`、`.ml-task-actions`、`.ml-no-anim`、`.ml-field`、`.ml-field-row`、`.ml-check`、`.manga-reader`、`.reader-toolbar`、`.reader-close`、`.reader-info`、`.reader-image-wrapper`、`.reader-arrow`、`.reader-prev`、`.reader-next`、`.btn-icon` |
-| `plugins/manga-library/frontend/js/app.js` | 应用主类：与壳的 chrome 消息、视图分发与渲染、下载中心、弹窗、轮询与生命周期 | `MangaLibraryApp`、`currentView`、`downloadFilter`、`tasks`、`_tasksKey`、`reader`、`viewLevel`、`_chapterPath`、`init`、`_postHost`、`_pushChrome`、`_chromeViewId`、`_navPatch`、`_bindHost`、`_applyHostView`、`_applyHostAction`、`_onQuery`、`_updateActions`、`_bindPluginLifecycle`、`_startPoll`、`_stopPoll`、`_bindUI`、`_goBack`、`_closeReader`、`switchView`、`loadView`、`_renderShelfView`、`_emptyHtml`、`_renderGrid`、`_ensureGrid`、`toggleFav`、`openMangaDetail`、`renderChapters`、`renderImages`、`_detailInfoHtml`、`loadTasks`、`updateStats`、`renderDownloads`、`showAddModal`、`closeAddModal`、`confirmAdd`、`showTaskDetail`、`closeDetailModal` |
-| `plugins/manga-library/frontend/js/reader.js` | 沉浸式单页阅读器 | `MangaReader`、`open`、`close`、`isOpen`、`renderPage`、`prev`、`next`、`_bindEvents` |
+| `plugins/manga-library/frontend/js/app.js` | 应用主类：与壳的 chrome 消息、视图分发与渲染、下载中心、弹窗、轮询与生命周期；阅读页码只在打开 / 关闭时各写一次，两次写经 `_readerWrite` 链串行（后写覆盖前写） | `MangaLibraryApp`、`currentView`、`downloadFilter`、`tasks`、`_tasksKey`、`_completedIds`、`_tasksLoaded`、`_readerWrite`、`reader`、`viewLevel`、`_chapterPath`、`init`、`_postHost`、`_pushChrome`、`_chromeViewId`、`_navPatch`、`_bindHost`、`_applyHostView`、`_applyHostAction`、`_onQuery`、`_updateActions`、`_bindPluginLifecycle`、`_startPoll`、`_stopPoll`、`_bindUI`、`_goBack`、`_closeReader`、`_reportReadingPage`、`_writeReadingPage`、`_hasNewCompleted`、`switchView`、`loadView`、`_renderShelfView`、`_emptyHtml`、`_renderGrid`、`_ensureGrid`、`toggleFav`、`openMangaDetail`、`renderChapters`、`renderImages`、`_detailInfoHtml`、`loadTasks`、`updateStats`、`renderDownloads`、`showAddModal`、`closeAddModal`、`confirmAdd`、`showTaskDetail`、`closeDetailModal` |
+| `plugins/manga-library/frontend/js/reader.js` | 沉浸式单页阅读器；打开态被关闭时回调最后页码（`onClose`） | `MangaReader`、`onClose`、`open`、`close`、`isOpen`、`renderPage`、`prev`、`next`、`_bindEvents`、`_handleLightboxClose`、`_emitClose` |
 | `plugins/manga-library/frontend/js/utils.js` | 转义与封面降级、下载文案格式化 | `MangaUtils`、`escapeHtml`、`coverImg`、`DownloadUtils`、`getStatusText`、`formatSpeed`、`formatTime` |
 
-**落盘产物**：数据根为 `root_dir`（`get_data_root` 返回 `self.manga_dir`）。`<漫画根>/.cache/manga_state.json` 由 `_load_state`、`_save_state` 读写；`<漫画根>/.jmcomic_state/download_state.json` 由 `load_tasks`、`save_tasks` 读写，状态目录下 `progress_` 前缀的进度快照由 `_save_state_locked` 写入，状态目录建不出来时回落到用户主目录下的 `.jmcomic_state`；`album_info.json` 写在漫画目录内，写入符号为 `_save_album_info`、`_save_album_info_local`。
+**落盘产物**：数据根为 `root_dir`（`get_data_root` 返回 `PathLayout.root`）。`<漫画根>/.cache/manga_state.json` 由 `Library` 的 `_load_state`、`_save_state` 读写（`_save_state` 按整次写重试 3 次、小退避；`_load_state` 清理硬杀残留的 `.manga_state.json.<随机>.tmp`）；`<漫画根>/.jmcomic_state/download_state.json` 由 `load_tasks`、`save_tasks` 读写，落点由 `PathLayout.download_state_dir` 给出（建不出来时回落到用户主目录下的 `.jmcomic_state`），状态目录下 `progress_` 前缀的进度快照由 `downloader` 的 `ProgressCallback._save_state` 写入；`album_info.json` 写在漫画目录内，写入符号为 `DownloadCenter._save_album_info` 与 `ProgressCallback._save_album_info`。
+
+**禁漫下载实现归属**：`backend/libs/jm_mini.py` 是插件的 vendored 依赖（manifest 的 `libs` 声明，加载后端前加入 `sys.path`），与 pixiv-sync 的 `pixiv_mini` 同一形态：移植自 jmcomic 2.6.19（MIT，`Copyright (c) 2023 hect0x7`），只覆盖下载路径，许可与出处见仓库根 `THIRD_PARTY_NOTICES.md`；运行时依赖 `requests`、`pycryptodome`、`Pillow`。多章本子的章节子目录名是 `第{N}話 {标题}`（`Chapter.indextitle`），与既有漫画库的落盘目录逐字一致，不要改措辞。
 
 ## 后端 API 契约
 
@@ -34,9 +42,9 @@
 | `save_settings` | `settings` | `{success}` / `{success, error}` | 基类实现：写设置存储并触发 `on_settings_changed` |
 | `manga_list` | 无 | `List[Dict]` | 书架全部漫画，读内存缓存 |
 | `manga_search` | `keyword` | `List[Dict]` | 在 `title`、`author` 上做小写子串匹配，空关键字等价 `manga_list` |
-| `manga_get_state` | 无 | `{recent, favorites}` | 按 `folder_name` 取回漫画对象，`recent` 截断到 `recent_count` |
+| `manga_get_state` | 无 | `{recent, favorites}` | 按 `folder_name` 取回漫画对象；只有 `recent` 的每一项在漫画字段之外带 `page`（上次阅读页码，0 起），先按书架命中过滤再截断到 `recent_count`；其它视图与搜索结果不带 `page`，前端据此不用自动打开阅读器 |
 | `manga_toggle_favorite` | `folder_name` | `bool` | 切换收藏并返回切换后的状态，非法目录名返回 `False` |
-| `manga_update_recent` | `folder_name`、`page` | `{status}` / `{status, error}` | 去重后插到队首，最多保留 20 条 |
+| `manga_update_recent` | `folder_name`、`page` | `{status}` / `{status, error}` | 去重后插到队首，最多保留 20 条；阅读器**打开与关闭各写一次**真实页码（0 起，关闭由 `MangaReader.onClose` 发起），浏览图片层不写，`manga_get_state` 的 `recent[].page` 据此续读。前端把两次写串在 `_readerWrite` 链上（快速开关时后写覆盖前写），后端读-改-写在实例锁内、落盘失败整次重试 |
 | `manga_get_detail` | `folder_name` | `{folder_name, title, author, is_fav, is_multi_chapter, info, chapters}` / `{}` | 路径非法或不存在时返回空字典，`chapters` 每项为 `{name, cover_url, path}` |
 | `manga_get_pages` | `folder_name`、`chapter_path` | `List[str]` | 相对漫画根的 posix 图片路径，越界或不存在返回 `[]` |
 | `download_submit` | `album_id`、`concurrency`、`priority`、`auto_start` | `{taskId, success}` / `{success, error}` | `album_id` 必须纯数字，`concurrency` 夹到 1 至 10 |
@@ -60,7 +68,7 @@
 | `get_data_root` | 无 | `Path` | `/file` 路由的允许根 |
 | `get_settings` | 无 | `Dict` | 设置面板回填值 |
 | `on_settings_changed` | `changed_keys` | 无 | `root_dir` 换根、`recent_count` 夹到 1 至 50 |
-| `freshness_spec` | 无 | `Dict` | 声明 `roots`、`include`、`derive`、`prune`、`on_verified`、`rebuild`、`content_version`、`unit`、`min_sync_interval`、`stat_entries` |
+| `freshness_spec` | 无 | `Dict` | 声明 `roots`、`include`、`derive`、`prune`、`on_verified`、`rebuild`、`content_version`、`unit`（「本」）、`min_sync_interval`、`stat_entries` |
 
 ## 前端结构
 
@@ -85,7 +93,7 @@
 - 搜索框：占位「搜索漫画、作者…」；下载中心与详情页由内容页把 `search.enabled` 置 `false`。
 - 状态栏：`任务 N · 下载中 X · 完成 Y · 排队 Z`，`state` 取 `ok` / `warn` / `idle`；统一刷新控件由壳挂载（`freshness.unit` 为「本」）。
 
-**脚本装载顺序**：`index.html` 依次引入 `js/utils.js`、`js/reader.js`、`js/app.js`，随后内联脚本实例化 `MangaLibraryApp` 并调用 `init`，把实例挂到 `window.mangaLibraryApp`。壳注入的 `/shell/base.js`、`/shell/freshness.js`、`/shell/splitter.js` 等引导脚本先于以上三个脚本执行。
+**脚本装载顺序**：`index.html` 依次引入 `js/utils.js`、`js/reader.js`、`js/app.js`，随后内联脚本实例化 `MangaLibraryApp` 并调用 `init`，把实例挂到 `window.mangaLibraryApp`。壳注入的共享运行时（`/shell/base.js` 起的 8 段同作用域普通脚本，顺序即依赖顺序，清单见 `shell/backend/file_server.py` 的 `_PLUGIN_BOOTSTRAP_SCRIPT`）与 `/shell/freshness.js`、`/shell/splitter.js` 等引导脚本先于以上三个脚本执行。
 
 **动态渲染的类名清单**：`.ml-grid`、`.ml-card`、`.ml-fav-star`、`.ml-cover`、`.ml-cover-fallback`、`.ml-cover-fallback-parent`、`.ml-info`、`.ml-card-title`、`.ml-detail-hero`、`.ml-hero-back`、`.ml-detail-cover`、`.ml-detail-info`、`.ml-detail-label`、`.ml-detail-title`、`.ml-detail-author`、`.ml-detail-actions`、`.ml-info-box`、`.ml-info-item`、`.ml-tag`、`.ml-section`、`.ml-section-title`、`.ml-task`、`.ml-task-thumb`、`.ml-task-main`、`.ml-task-title`、`.ml-task-meta`、`.ml-status`、`.ml-task-progress`、`.ml-progress-track`、`.ml-progress-fill`、`.ml-task-percent`、`.ml-task-actions`、`.ml-field`、`.ml-no-anim`、`.empty-state`、`.empty-state-icon`、`.empty-state-text`、`.empty-state-hint`、`.obx-anim-spin`、`.btn-primary`、`.active`、`.danger`，以及按任务状态拼接在 `.ml-status` 上的 `downloading`、`queued`、`paused`、`completed`、`failed`。
 
@@ -98,10 +106,10 @@
   - 内容 → 壳 `omnibox:ready`：握手。壳收到后补发当前视图；内容页在 `init` 末尾主动发一次。
   - 内容 → 壳 `omnibox:chrome`：`title` / `subtitle` / `view` / `actions` / `nav` / `search` / `status`。`view` 在详情与阅读态发空串（清掉导航高亮），下载中心发复合 id；`actions` 上报四个下载动作的 `visible` 与 `disabled`；`nav` 上报漫画库三视图与 `downloads:all` 的徽标并显式声明各导航项可见；`search.enabled` 在下载中心与详情页为 `false`，`search.value` / `search.clear` 在切视图、进详情时清空壳输入框；`status` 为任务统计。
   - 轮询：`loadTasks` 每 2s 拉一次 `download_list`，随后重算并上报 `actions` 的 `visible` / `disabled`，避免壳上的按钮停在旧态。
-- **统一刷新**：`freshness` 由壳的 `PluginChrome` 挂载（`shell/frontend/public/shell/freshness.js` 的 `Freshness.mount`，`plugin` 为 `manga-library`、`unit` 为「本」），内容页不再挂 `#ml-freshness`，也不再调用 `autoSync`；校验完成后的重载经 `omnibox:action: refresh` 回来。
+- **统一刷新**：`freshness` 由壳的 `PluginChrome` 挂载（`shell/frontend/public/shell/freshness.js` 的 `Freshness.mount`，`plugin` 为 `manga-library`、`unit` 为「本」），壳在挂载后与 `activeView` / `freshness_scope` 变化时调 `autoSync(scope)`；内容页不再挂 `#ml-freshness`，也不直接持有控件，`plugin-shown` 时用 `Freshness.sync('manga-library', scope)` 同步一次（scope 为当前漫画目录，书架层为空串）。重载经 `omnibox:freshness` 与兼容的 `omnibox:action: refresh` 进来（后者带 `payload` 时是回声、跳过），阅读器与章节层就地保留；「最近阅读」的 `page` 用于续读。下载任务进入 `completed` 时：入口回调 `_on_download_completed` 会 `library.reset()` 并 `engine.reset_throttle()`；若用户正停在书架视图，`loadTasks` 的 `_hasNewCompleted` 会在这次轮询里 `loadView()` 重读书架（下载目录已写进漫画根），不必切一次视图才看到新书。
 - **返回层级**：阅读器（共享灯箱或旧 `.manga-reader` 覆盖层）是最内层，`MangaReader.isOpen` 暴露打开状态；壳顶栏 `back` 与左栏导航在阅读器打开时先关闭它（`_closeReader`），下次返回才按 `viewLevel` 退到章节/书架。迁移前返回按钮在内容页、被覆盖层挡住，这条路径不可达，因此不关阅读器时会出现「点返回没反应」。
 - **壳类**：`PluginBase`（`shell/backend/plugin_base.py`），本插件用到的成员为 `setting`、`save_settings`、`settings_schema`、`get_data_root`、`on_settings_changed`。
-- **壳基建**：`engine_for`（`shell/backend/freshness.py`）返回 `FreshnessEngine`，本插件调用其 `reset_throttle`；分片模块用 `load_sibling`（`shell/backend/plugin_utils.py`）加载。
+- **壳基建**：`engine_for`（`shell/backend/freshness.py`）返回 `FreshnessEngine`，本插件调用其 `reset_throttle`；组件模块由入口用 `load_sibling`（`shell/backend/plugin_utils.py`）加载 —— 只有入口可以，组件之间不互相 import。
 - **壳 CSS 变量**：`--accent`、`--danger`、`--danger-soft`、`--success`、`--warning`、`--bg-app`、`--bg-surface`、`--bg-hover`、`--border`、`--text-primary`、`--text-secondary`、`--text-muted`、`--transition-fast`、`--obx-shadow-2`、`--obx-i`。
 - **插件自有 CSS 变量前缀**：`--ml-`，具体为 `--ml-radius`、`--ml-radius-sm`、`--ml-gradient`、`--ml-accent-soft`、`--ml-hero-bg`。
 - **共享前端组件**：`Icons.html`（`shell/frontend/public/shell/icons.generated.js`）；设置弹窗由壳的 `PluginSettingsModal` 渲染，`settings_schema` 中 `type` 为 `directory` 的字段用「选择目录…」调壳内共享 `FolderPicker`（本机目录 +「网络位置」入口，来源由安装了 network-location 能力的插件提供；字段声明 `local_only` 时隐藏网络位置）。

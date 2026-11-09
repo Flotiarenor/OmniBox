@@ -1,7 +1,17 @@
-"""远端物化（GroupMeshPlugin 的一个 mixin 分片）。
+"""远端物化：把对端共享项在本地造成目录树 + 索引（字节按需取）。
 
-方法从 main.py 逐字搬来，状态仍由 GroupMeshPlugin.__init__ 持有 —— 分片只把方法
-挂到同一个类上，因此方法与调用点都没有变。
+状态自持：物化索引的进程内缓存（`index_cache`）。索引文件本身落在
+`Storage.remote_cache_dir` 下，候选端点由 `MeshRegistry` 给，连接由
+`ConnectionPool` 给。
+
+「物化」= 在本地 `.cache/remote/<设备ID>/<共享标识>/…` 造出与远端同形的目录树：
+目录真的建出来、文件先放 0 字节占位，真实大小记在 `<共享标识>.index.json` 里；
+字节在**第一次真去读这个文件**时才取回（由 `ensure_file` 钩子驱动）。
+
+为什么必须这样分两步：消费方插件（image-viewer / media-player 等）是按
+"本地路径"工作的 —— 它们 `os.scandir` 建索引、按路径取字节。远端目录如果
+不落地，它们连"有这个文件"都看不到；而如果订阅时就把字节全拉下来，看一个
+共享相册要先下几百张图。
 """
 
 from __future__ import annotations
@@ -11,36 +21,31 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
-from shell.backend.plugin_utils import load_sibling
 from shell.groupmesh import client as mesh_client
 from shell.groupmesh.transport import RemoteError, TransportError
 
 log = logging.getLogger(__name__)
 
-_common = load_sibling(__file__, 'common', 'group_mesh')
-_opts = _common._opts
-_mtime_ns = _common._mtime_ns
 
-class MaterializeMixin:
-    """把对端共享项在本地物化成目录树 + 索引（字节按需取），含远端遍历与对账删除。"""
+class Materialize:
+    def __init__(self, storage: Any, registry: Any, connections: Any, rules: Any) -> None:
+        self._storage = storage
+        self._registry_store = registry
+        self._connections = connections
+        self._rules = rules
+        # 远端物化索引的进程内缓存：`is_content_placeholder()` 每个 /file 请求都要查
+        # 一次，逐次解析 JSON 太贵（见 `cached_index`）。
+        self.index_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
-    # ── 远端：物化与按需取字节 ────────────────────────────────────────────
-    # 「物化」= 在本地 `.cache/remote/<设备ID>/<共享标识>/…` 造出与远端同形的目录树：
-    # 目录真的建出来、文件先放 0 字节占位，真实大小记在 <共享标识>.index.json 里；
-    # 字节在**第一次真去读这个文件**时才取回（由 `ensure_file` 钩子驱动）。
-    #
-    # 为什么必须这样分两步：消费方插件（image-viewer / media-player 等）是按
-    # "本地路径"工作的 —— 它们 `os.scandir` 建索引、按路径取字节。远端目录如果
-    # 不落地，它们连"有这个文件"都看不到；而如果订阅时就把字节全拉下来，看一个
-    # 共享相册要先下几百张图。
+    # ── 索引 ──────────────────────────────────────────────────────────────
 
-    def _remote_index_file(self, device_id: str, share_id: str) -> Path:
-        return self.remote_cache_dir / device_id / f'{share_id}.index.json'
+    def index_file(self, device_id: str, share_id: str) -> Path:
+        return self._storage.remote_cache_dir / device_id / f'{share_id}.index.json'
 
-    def _load_remote_index(self, device_id: str, share_id: str) -> Dict[str, Any]:
-        path = self._remote_index_file(device_id, share_id)
+    def load_index(self, device_id: str, share_id: str) -> Dict[str, Any]:
+        path = self.index_file(device_id, share_id)
         if not path.is_file():
             return {'share': share_id, 'device': device_id, 'entries': {}}
         try:
@@ -51,7 +56,7 @@ class MaterializeMixin:
             data['entries'] = {}
         return data
 
-    def _cached_remote_index(self, device_id: str, share_id: str) -> Dict[str, Any]:
+    def cached_index(self, device_id: str, share_id: str) -> Dict[str, Any]:
         """带缓存的索引读取。
 
         `is_content_placeholder()` 会在**每个** `/file` 请求上被调用，而索引文件
@@ -60,30 +65,32 @@ class MaterializeMixin:
         所以只在这三处清空，不做 TTL。
         """
         key = (device_id, share_id)
-        cached = self._remote_index_cache.get(key)
+        cached = self.index_cache.get(key)
         if cached is not None:
             return cached
-        index = self._load_remote_index(device_id, share_id)
-        self._remote_index_cache[key] = index
+        index = self.load_index(device_id, share_id)
+        self.index_cache[key] = index
         # 简单的上界，免得浏览很多共享项后缓存无限增长
-        if len(self._remote_index_cache) > 32:
-            self._remote_index_cache.pop(next(iter(self._remote_index_cache)))
+        if len(self.index_cache) > 32:
+            self.index_cache.pop(next(iter(self.index_cache)))
         return index
 
-    def _invalidate_remote_index(self, device_id: str = '', share_id: str = '') -> None:
+    def invalidate_index(self, device_id: str = '', share_id: str = '') -> None:
         if not device_id:
-            self._remote_index_cache.clear()
+            self.index_cache.clear()
             return
         if not share_id:
-            for key in [k for k in self._remote_index_cache if k[0] == device_id]:
-                del self._remote_index_cache[key]
+            for key in [k for k in self.index_cache if k[0] == device_id]:
+                del self.index_cache[key]
             return
-        self._remote_index_cache.pop((device_id, share_id), None)
+        self.index_cache.pop((device_id, share_id), None)
 
-    def _save_remote_index(self, device_id: str, share_id: str, index: Dict[str, Any]) -> None:
-        path = self._remote_index_file(device_id, share_id)
+    def save_index(self, device_id: str, share_id: str, index: Dict[str, Any]) -> None:
+        path = self.index_file(device_id, share_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(index, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+    # ── 物化 ──────────────────────────────────────────────────────────────
 
     def materialize_remote(self, opts: Any = None, device_id: str = '', share_id: str = '',
                            path: str = '.', max_depth: int = 4,
@@ -93,7 +100,7 @@ class MaterializeMixin:
         限制深度与条目数是刻意的：远端可能是一个几十万文件的目录，全量遍历既慢又会
         把内存和索引文件撑爆。默认 4 层 / 5000 条，调用方可传更大的值。
         """
-        options = _opts(opts)
+        options = self._rules.opts(opts)
         device_id = str(options.get('device_id') or device_id or '').strip().lower()
         share_id = str(options.get('share_id') or share_id or '')
         try:
@@ -104,18 +111,18 @@ class MaterializeMixin:
         if not share_id:
             return {'success': False, 'error': '必须给出 share_id'}
 
-        identity = self._load_identity()
-        roster = self._load_roster()
+        identity = self._storage.load_identity()
+        roster = self._storage.load_roster()
         if identity is None or roster is None:
             return {'success': False, 'error': '需要先创建身份与团体'}
-        candidates = self._manual_endpoints(device_id, roster)
+        candidates = self._registry_store.candidates_for(device_id, roster)
         if not candidates:
             return {'success': False, 'error': '还没有可用的对端地址（见"添加对端"）'}
 
         last_error = ''
         for endpoint, label in candidates:
             try:
-                connection = self._connect(endpoint, identity, roster)
+                connection = self._connections.get(endpoint, identity, roster)
             except (RemoteError, TransportError, OSError) as e:
                 last_error = f'{label or endpoint[0]}:{endpoint[1]} 连不上: {e}'
                 continue
@@ -123,11 +130,11 @@ class MaterializeMixin:
             # 物化目录必须按**真实设备 ID**建：`ensure_file()` 之后要从路径反解出
             # 设备 ID 去取字节，若这里写成调用方传入的（可能为空）就会落到别的目录，
             # 取字节时找不到对应共享项。
-            root = self.remote_cache_dir / peer_id / share_id
-            index = self._load_remote_index(peer_id, share_id)
+            root = self._storage.remote_cache_dir / peer_id / share_id
+            index = self.load_index(peer_id, share_id)
             previous: Dict[str, Any] = dict(index.get('entries') or {})
             try:
-                walked = self._walk_remote(connection, share_id, path, max_depth, max_entries)
+                walked = self.walk_remote(connection, share_id, path, max_depth, max_entries)
             except RemoteError as e:
                 return {'success': False, 'error': str(e), 'device_id': peer_id,
                         'share_id': share_id, 'path': path}
@@ -135,7 +142,7 @@ class MaterializeMixin:
                 last_error = f'遍历中断: {e}'
                 continue
             finally:
-                self._release(connection)
+                self._connections.release(connection)
 
             # 落盘：目录建出来，文件写 0 字节占位。
             # 占位而不是"什么都不建"：`os.scandir` 能看到条目、消费方插件的索引因此
@@ -145,9 +152,9 @@ class MaterializeMixin:
             invalidated = 0
             entries: Dict[str, Any] = {}
             for rel, info in walked.items():
-                # 纵深防御：walked 的键已由 _walk_remote 过 safe_rel，这里再确认一次
+                # 纵深防御：walked 的键已由 walk_remote 过 safe_rel，这里再确认一次
                 # 拼接结果落在根内 —— 建目录、写占位、unlink 都以 target 为准。
-                target = _common.within_root(root, rel)
+                target = self._rules.within_root(root, rel)
                 if target is None:
                     log.warning(f'[group-mesh] 忽略越界的远端条目: {rel!r}')
                     continue
@@ -161,8 +168,8 @@ class MaterializeMixin:
                     # 取回来了，必须丢掉它 —— 否则"同大小的替换"会永远读到旧内容，
                     # 而缩略图/列表缓存又都以本地 (size, mtime) 为键，看不出任何异常。
                     # 丢掉之后它重新变回占位文件，下次读取按需取回。
-                    if old is not None and self._content_changed(old, info) \
-                            and self._is_fetched(target):
+                    if old is not None and self.content_changed(old, info) \
+                            and self.is_fetched(target):
                         target.unlink()
                         invalidated += 1
                     if not target.is_file():
@@ -170,21 +177,21 @@ class MaterializeMixin:
                         created_files += 1
                     # 占位与已取回的文件都写成对端的 mtime：消费方的缓存失效读的是
                     # **本地**元数据，留着"物化时刻"的时间会让"对端换了图"看起来没变。
-                    self._apply_remote_mtime(target, info.get('mtime_ns'))
+                    self.apply_remote_mtime(target, info.get('mtime_ns'))
                 entries[rel] = {'dir': info['dir'], 'size': info['size'],
                                 'mtime_ns': info.get('mtime_ns')}
 
             truncated = len(walked) >= max_entries
             # 对账（对端已删/改名 → 本地也删）**只在遍历完整时做**：达到条目上限时
             # `walked` 只是一个子集，照着它删会把没遍历到的内容整片抹掉。
-            removed = 0 if truncated else self._prune_absent(root, previous, entries)
+            removed = 0 if truncated else self.prune_absent(root, previous, entries)
 
             index.update({'share': share_id, 'device': peer_id, 'entries': entries,
                           'root': str(root),
                           'materialized_at': int(time.time()),
                           'truncated': truncated})
-            self._save_remote_index(peer_id, share_id, index)
-            self._invalidate_remote_index(peer_id, share_id)
+            self.save_index(peer_id, share_id, index)
+            self.invalidate_index(peer_id, share_id)
             return {'success': True, 'device_id': peer_id, 'name': label,
                     'share_id': share_id, 'root': str(root),
                     'dirs': created_dirs, 'files': created_files,
@@ -194,8 +201,10 @@ class MaterializeMixin:
         return {'success': False, 'error': last_error or '所有候选地址都连不上',
                 'device_id': device_id, 'offline': True}
 
+    # ── 对账与占位判定 ────────────────────────────────────────────────────
+
     @staticmethod
-    def _content_changed(old: Dict[str, Any], new: Dict[str, Any]) -> bool:
+    def content_changed(old: Dict[str, Any], new: Dict[str, Any]) -> bool:
         """对端这一条的内容是否变了（大小或 mtime 任一不同）。
 
         对端没给 mtime（老内核）时只看大小：这正是加入 mtime 之前的能力，
@@ -209,7 +218,7 @@ class MaterializeMixin:
         return int(old_mtime) != int(new_mtime)
 
     @staticmethod
-    def _is_fetched(target: Path) -> bool:
+    def is_fetched(target: Path) -> bool:
         """本机这个物化条目是否已经持有**真字节**（而不是 0 字节占位）。
 
         判据只有"大小非 0"：0 字节的远端文件本来就永远停在占位状态（`ensure_file`
@@ -222,7 +231,7 @@ class MaterializeMixin:
             return False
 
     @staticmethod
-    def _apply_remote_mtime(target: Path, mtime_ns: Optional[int]) -> None:
+    def apply_remote_mtime(target: Path, mtime_ns: Optional[int]) -> None:
         """把对端的 mtime 写到本地这份文件上（占位或已取回的真字节都要写）。
 
         写不进去不是错误：老对端没有该字段、文件系统可能不支持、值可能越界。
@@ -236,8 +245,8 @@ class MaterializeMixin:
         except (OSError, OverflowError, ValueError) as e:
             log.info(f'[group-mesh] 无法把对端 mtime 写到 {target}: {e}')
 
-    def _prune_absent(self, root: Path, previous: Dict[str, Any],
-                      keep: Dict[str, Any]) -> int:
+    def prune_absent(self, root: Path, previous: Dict[str, Any],
+                     keep: Dict[str, Any]) -> int:
         """删掉"索引里有、本次遍历里没有"的条目，返回删掉的文件数。
 
         改动前这里只增不减：对端删掉或改名之后，本地那份会永远留着（界面上表现为
@@ -249,7 +258,7 @@ class MaterializeMixin:
         for rel in gone:
             # `previous` 来自上一次的索引文件，键是"当时对端给的路径"——同样是不可信
             # 输入，删除前必须再确认一次落在根内（审计项 P1-5：越界键会删掉根外文件）。
-            target = _common.within_root(root, rel)
+            target = self._rules.within_root(root, rel)
             if target is None:
                 log.warning(f'[group-mesh] 忽略越界的索引条目，不执行删除: {rel!r}')
                 continue
@@ -264,8 +273,10 @@ class MaterializeMixin:
                 continue
         return removed
 
-    def _walk_remote(self, connection: Any, share_id: str, path: str,
-                     max_depth: int, max_entries: int) -> Dict[str, Dict[str, Any]]:
+    # ── 遍历 ──────────────────────────────────────────────────────────────
+
+    def walk_remote(self, connection: Any, share_id: str, path: str,
+                    max_depth: int, max_entries: int) -> Dict[str, Dict[str, Any]]:
         """广度优先遍历远端目录，返回 `{相对路径: {dir, size, mtime_ns}}`（不含根自身）。
 
         `mtime_ns` 是对端 `stat` 的真实值（纳秒整数），也是本机判定"对端换过没有"
@@ -282,17 +293,17 @@ class MaterializeMixin:
             if not result.get('dir'):
                 # 调用方给的是个文件路径：直接当作单个条目。该路径同样来自对端
                 # （`result['path']`），必须过同一条归一规则。
-                name = _common.safe_rel(str(result.get('path') or current))
+                name = self._rules.safe_rel(str(result.get('path') or current))
                 if name is None:
                     return found
                 found[name] = {'dir': False, 'size': int(result.get('size') or 0),
-                               'mtime_ns': _mtime_ns(result)}
+                               'mtime_ns': self._rules.mtime_ns(result)}
                 continue
             for entry in result.get('entries') or []:
                 # 条目名来自对端，只做"非空、不是 . / .."是不够的：它会被拼成本机
                 # 路径（root / rel），而绝对路径与 `..` 段都能跑出根（审计项 P1-5）。
-                # 归一与拒绝规则集中在 _common.safe_rel，物化与镜像共用同一处。
-                name = _common.safe_rel(entry.get('name'))
+                # 归一与拒绝规则集中在 MeshRules.safe_rel，物化与镜像共用同一处。
+                name = self._rules.safe_rel(entry.get('name'))
                 if name is None:
                     continue
                 rel = name if current in ('.', '') else f"{current.strip('/')}/{name}"
@@ -302,7 +313,7 @@ class MaterializeMixin:
                     return found
                 found[rel] = {'dir': bool(entry.get('dir')),
                               'size': int(entry.get('size') or 0),
-                              'mtime_ns': _mtime_ns(entry)}
+                              'mtime_ns': self._rules.mtime_ns(entry)}
                 if entry.get('dir') and depth + 1 < max_depth:
                     pending.append((rel, depth + 1))
         return found

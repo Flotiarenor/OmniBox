@@ -24,6 +24,12 @@
   animation: obxFloat 4s ease-in-out infinite;
 }
 
+/* 图标走 sprite（svg）时字号线不生效：给矢量图标同样的视觉尺寸 */
+.native-panel .empty-state-icon.obx-icon {
+  width: 44px;
+  height: 44px;
+}
+
 .native-panel .empty-state-text {
   font-size: 15px;
   font-weight: 600;

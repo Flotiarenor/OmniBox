@@ -1,6 +1,7 @@
-"""roots 分片：文档根目录的解析、切换与旧状态迁移。
+"""文档根目录的解析、切换与旧状态迁移。
 
-从 `main.py` 切出来。这一块只关心"书放在哪、状态目录叫什么、旧数据怎么搬"。
+这一块只关心"书放在哪、状态目录叫什么、旧数据怎么搬"。状态自持：根列表、主目录与
+状态目录都在这里，换根走 `rebind()`，由入口编排；其它组件不再随手改别人身上的路径。
 
 三条约定都是踩过坑写下来的：
 
@@ -15,59 +16,55 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, List, Optional
+
+from shell.backend.ports import SettingsPort
 
 log = logging.getLogger(__name__)
 
 
-class RootsMixin:
-    """根目录与状态目录的布局。"""
+class RootLayout:
+    """文档根目录与状态目录的布局。
 
-    CACHE_DIR_NAME = '.document_state'
-    # 改名前的名字：只用于把旧数据搬过来，别拿它们当新写入口
-    LEGACY_CACHE_DIR = '.novel_state'
-    LEGACY_CACHE_FILE = '.novel_cache.json'
-    LEGACY_PROGRESS_FILE = '.novel_progress.json'
-    # 插件改名：旧名下的设置文件里存着用户配置的 root_dir
-    LEGACY_PLUGIN_NAME = 'novel-reader'
+    `names` 是 `const.LayoutNames` 的实例（目录名、文件名、旧名、缓存版本），
+    `default_root` 是入口给的闭包 —— 没有配置根目录时回落到基类的默认数据目录。
+    """
 
-    # 子类（main.py 的插件类）提供：_document_cache 等缓存字典、_load_cache()、
-    #   on_load() 里的设置注入由基类完成
-    document_dir: str
-    _cache_dir: str
-    _roots: List[str]
+    def __init__(self, settings: SettingsPort, default_root: Callable[[], Path],
+                 names: Any, plugin_name: str) -> None:
+        self._settings = settings
+        self._default_root = default_root
+        self._names = names
+        self._plugin_name = plugin_name
+        self.roots: List[str] = []
+        self.document_dir = ''
+        self.cache_dir = Path()
+        self.rebind(settings.setting('root_dir'))
 
     # ===== 文件服务根目录 =====
 
-    def get_data_root(self) -> Path:
+    def data_root(self) -> Path:
         """主目录（第一行）：缓存、EPUB 解包产物与阅读进度都在它下面。"""
         return Path(self.document_dir)
 
-    def get_file_roots(self) -> List[Path]:
+    def file_roots(self, extra: Optional[Path]) -> List[Path]:
         r"""`/file` 允许访问的根。
 
-        除了全部配置的文档目录（EPUB 解包出来的图片按绝对路径引用），还必须包含
-        **朗读缓存目录** —— 音频是经 `/file` 交给 `<audio>` 播放的，不列进来就 403。
-        缓存目录在 `<config>/plugins/<插件名>/tts/`（见 `tts.py`），那里受保护的只有
-        插件设置文件本身，音频不受影响。
+        除了全部配置的文档目录（EPUB 解包出来的图片按绝对路径引用），还要包含
+        **朗读缓存目录**（传入的 `extra`，即 `<config>/plugins/<插件名>`）—— 音频是
+        经 `/file` 交给 `<audio>` 播放的，不列进来就 403。
+
+        **不要用 is_dir() 过滤**：只读调用不会创建缓存目录（见 `TtsCache.cache_dir`），
+        首次合成前它并不存在 —— 过滤掉就会让"合成成功后音频仍取不回来"（403）。
         """
-        roots = [Path(root) for root in self._roots]
-        try:
-            # **不要用 is_dir() 过滤**：只读调用不会创建缓存目录（见 tts.py 的
-            # `_tts_cache_dir`），首次合成前它并不存在 —— 过滤掉就会让"合成成功后
-            # 音频仍取不回来"（403）。多一个暂时不存在的根没有代价：路径不匹配它
-            # 自然判定为越界，匹配时才需要它存在。
-            cache_root = self._tts_cache_dir().parent
-            if cache_root not in roots:
-                roots.append(cache_root)
-        except Exception as e:
-            # 缓存目录解析失败不该让整个文件路由失效：正文里的图片仍然要能取
-            log.warning(f'[{self.name}] 朗读缓存根无法解析，/file 将不含它: {e}')
+        roots = [Path(root) for root in self.roots]
+        if extra is not None and extra not in roots:
+            roots.append(extra)
         return roots
 
     # ===== 根目录解析与切换 =====
 
-    def _parse_roots(self, raw: Any) -> List[str]:
+    def parse(self, raw: Any) -> List[str]:
         """把「文档根目录」解析成有序列表。
 
         值格式与其它插件一致：字符串、每行一个目录（shell 的目录字段 `multi: True`）。
@@ -84,22 +81,31 @@ class RootsMixin:
             try:
                 resolved = str(Path(text).expanduser().resolve())
             except (OSError, ValueError):
-                log.warning(f'[{self.name}] 忽略无法解析的目录: {text}')
+                log.warning(f'[{self._plugin_name}] 忽略无法解析的目录: {text}')
                 continue
             if resolved not in roots:
                 roots.append(resolved)
         if not roots:
-            # 走基类默认数据目录（super() 在这条 MRO 上仍是 PluginBase）
-            roots = [str(Path(super().get_data_root()).resolve())]
+            roots = [str(Path(self._default_root()).resolve())]
         return roots
 
-    def _set_roots(self, roots: List[str]) -> None:
-        self._roots = roots
-        self.document_dir = roots[0]
-        self._cache_dir = os.path.join(self.document_dir, self.CACHE_DIR_NAME)
+    def rebind(self, raw: Any) -> None:
+        """按设置值重建根目录与状态目录（入口在构造与设置变更时调用）。"""
+        self.roots = self.parse(raw)
+        self.document_dir = self.roots[0]
+        self.cache_dir = Path(self.document_dir) / self._names.cache_dir
         # 迁移必须早于 makedirs：新目录一旦建出来，旧目录就搬不过去了
         self._migrate_legacy_state()
-        os.makedirs(self._cache_dir, exist_ok=True)
+        os.makedirs(self.cache_dir, exist_ok=True)
+
+    def cache_path(self, name: str) -> Path:
+        """状态目录里的一个文件（缓存 / 进度 / 书签都从这里派生）。"""
+        return self.cache_dir / name
+
+    def extract_dir(self, document_id: str) -> Path:
+        """EPUB 内嵌图片的解包目录（目录名用哈希，书名里的字符不进路径）。"""
+        import hashlib
+        return self.cache_dir / 'extract' / hashlib.md5(document_id.encode('utf-8')).hexdigest()
 
     def _migrate_legacy_state(self) -> None:
         """把旧插件名下的状态目录/文件搬到新名。
@@ -107,70 +113,68 @@ class RootsMixin:
         状态放在**用户的文档目录**里（`.novel_state/`），改名后新代码找的是
         `.document_state/` —— 不搬就是"升级后所有阅读进度归零"。
         """
-        legacy_dir = os.path.join(self.document_dir, self.LEGACY_CACHE_DIR)
-        if not os.path.isdir(legacy_dir):
+        names = self._names
+        legacy_dir = Path(self.document_dir) / names.legacy_dir
+        if not legacy_dir.is_dir():
             return
         try:
-            if not os.path.isdir(self._cache_dir):
-                os.rename(legacy_dir, self._cache_dir)
-                log.info(f'[{self.name}] 已迁移状态目录 {self.LEGACY_CACHE_DIR} → '
-                         f'{self.CACHE_DIR_NAME}')
+            if not self.cache_dir.is_dir():
+                os.rename(legacy_dir, self.cache_dir)
+                log.info(f'[{self._plugin_name}] 已迁移状态目录 {names.legacy_dir} → '
+                         f'{names.cache_dir}')
             # 目录搬过来后文件名还是旧的，逐个补上（包含解包产物所在子目录，不用动）。
             # 源文件可能在新目录里（刚整体搬过来），也可能还在旧目录里（新目录先建好了）。
-            for old_name, new_name in ((self.LEGACY_CACHE_FILE, self.CACHE_FILE),
-                                       (self.LEGACY_PROGRESS_FILE, self.PROGRESS_FILE)):
-                dst = os.path.join(self._cache_dir, new_name)
-                if os.path.exists(dst):
+            for old_name, new_name in ((names.legacy_cache_file, names.cache_file),
+                                       (names.legacy_progress_file, names.progress_file)):
+                dst = self.cache_path(new_name)
+                if dst.exists():
                     continue
-                for base in (self._cache_dir, legacy_dir):
-                    src = os.path.join(base, old_name)
-                    if os.path.isfile(src):
+                for base in (self.cache_dir, legacy_dir):
+                    src = base / old_name
+                    if src.is_file():
                         os.replace(src, dst)
                         break
         except OSError as e:
             # 迁移失败只影响缓存与进度，不该让插件加载不了
-            log.warning(f'[{self.name}] 旧状态目录迁移失败: {e}')
+            log.warning(f'[{self._plugin_name}] 旧状态目录迁移失败: {e}')
             return
         # 搬空的旧目录不该继续留在用户的文档目录里
         try:
-            if os.path.isdir(legacy_dir) and not os.listdir(legacy_dir):
+            if legacy_dir.is_dir() and not os.listdir(legacy_dir):
                 os.rmdir(legacy_dir)
         except OSError:
             pass
 
-    def _apply_root_dir(self, raw_dir: Any) -> None:
-        """切换根目录：所有缓存都按"根内相对路径"为键，换根必须整体失效。"""
-        self._set_roots(self._parse_roots(raw_dir))
-        self._document_cache = {}
-        self._chapter_cache = {}
-        self._offset_cache = {}
-        self._full_content_cache = {}
-        self._doc_cache = {}
-        self._marks_cache = None
-        self._load_cache()
 
-    def on_settings_changed(self, changed_keys) -> None:
-        if 'root_dir' in changed_keys:
-            self._apply_root_dir(self.setting('root_dir'))
+def migrate_legacy_root_dir(settings: SettingsPort, store: Any, plugin_name: str,
+                            legacy_name: str,
+                            update_setting: Callable[[str, Any], bool]) -> Optional[str]:
+    """把旧插件名（novel-reader）设置里的 `root_dir` 迁到新名下。
 
-    def on_load(self) -> None:
-        """改名迁移：旧插件名（novel-reader）的设置文件里存着用户配置的 root_dir。
+    构造期壳还没有注入 `_settings_store`（`setting()` 那时只能读到启动时预设），
+    所以迁移放在 `on_load`：先补写新名下的设置，再由入口按它重建根目录。
+    迁移只在新区没有值时发生，用户之后自己保存的设置不会被覆盖。
 
-        构造期 `_settings_store` 尚未注入（`setting()` 那时只能读到壳预解析的
-        `_resolved_config`），所以迁移放在 on_load：先补写新名下的设置，再按它重建根目录。
-        迁移只在新区没有 root_dir 时发生，用户之后自己保存的设置不会被覆盖。
-        """
-        if self._settings_store is None or str(self.setting('root_dir') or '').strip():
-            return
-        try:
-            legacy: Dict[str, Any] = self._settings_store.get(self.LEGACY_PLUGIN_NAME) or {}
-        except (TypeError, ValueError) as e:
-            log.warning(f'[{self.name}] 读取旧插件名下的设置失败: {e}')
-            return
-        root_dir = str(legacy.get('root_dir') or '').strip()
-        if not root_dir:
-            return
-        self.update_setting('root_dir', root_dir)
-        log.info(f'[{self.name}] 已从 {self.LEGACY_PLUGIN_NAME} 的设置迁移 root_dir')
-        self._apply_root_dir(root_dir)
-
+    返回迁移过来的 root_dir；没有可迁移的值、或写入失败时返回 None（调用方按
+    "没有迁移"处理，不要回退到旧插件名的根）。
+    """
+    if store is None or str(settings.setting('root_dir') or '').strip():
+        return None
+    try:
+        legacy = store.get(legacy_name) or {}
+    except (TypeError, ValueError) as e:
+        log.warning(f'[{plugin_name}] 读取旧插件名下的设置失败: {e}')
+        return None
+    root_dir = str(legacy.get('root_dir') or '').strip()
+    if not root_dir:
+        return None
+    if not update_setting('root_dir', root_dir):
+        # 写失败绝不能报"已迁移"：返回旧根会让入口 _rebind_roots 按旧插件名的目录跑
+        # （而新名下没落盘，下次启动再迁一次），日志里却写着成功 —— 排障时无从下手。
+        # 返回 None 让入口保持"没有迁移"的状态：本次按默认根/已配置根运行。
+        log.warning(f'[{plugin_name}] 迁移 root_dir 到新插件名失败（设置未写入，'
+                    f'update_setting 返回 False）: key=root_dir, '
+                    f'legacy={legacy_name}, value={root_dir}')
+        return None
+    log.info(f'[{plugin_name}] 已从 {legacy_name} 的设置迁移 root_dir')
+    return root_dir

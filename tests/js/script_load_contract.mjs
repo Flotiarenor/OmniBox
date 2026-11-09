@@ -196,7 +196,7 @@ export function runAssetContract({ label, frontendDir }) {
         `孤立: ${JSON.stringify(orphans)}（新分片必须加进 index.html 或对应的独立入口）`);
 
     // 插件脚本与壳注入的 /shell/*.js 在同一个文档、同一个全局对象里跑：插件顶层声明一个
-    // 同名函数/变量，就等于**把壳的那个替换掉**（`function openModal` 会盖住 base.js 的
+    // 同名函数/变量，就等于**把壳的那个替换掉**（`function openModal` 会盖住共享运行时
     // `openModal`，`const Utils` 则让壳的 `window.Utils` 对后续脚本不可见）。两边都是普通
     // 脚本，谁也拦不住谁，只有在这里按源码查。
     const shell = shellInjectedGlobals();

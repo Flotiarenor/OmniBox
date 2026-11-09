@@ -1,7 +1,7 @@
 {
   "venvPath": ".",
   "venv": "venv",
-  "pythonVersion": "3.10",
+  "pythonVersion": "3.11",
   "include": [
     "main.py",
     "shell",
@@ -18,12 +18,11 @@
     "data",
     "shell/frontend/node_modules",
     "shell/frontend/dist",
-    "**/__pycache__",
-    "plugins/pixiv-sync/backend/libs"
+    "**/__pycache__"
   ],
   "extraPaths": [
     "plugins/pixiv-sync/backend/libs",
-    "docs/Releases"
+    "plugins/manga-library/backend/libs"
   ],
   "reportMissingTypeStubs": false
 }

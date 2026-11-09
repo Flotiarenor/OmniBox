@@ -2,10 +2,17 @@
 
 import json
 import os
-from typing import Dict
+from typing import Dict, Protocol
 
 
-def save_tasks(tasks: Dict[str, object], state_file: str, logger=None) -> None:
+class PersistableTask(Protocol):
+    """`save_tasks` 对任务的唯一要求：能序列化成一个 dict（`DownloadTask.to_state_dict`）。"""
+
+    def to_state_dict(self) -> Dict:
+        ...
+
+
+def save_tasks(tasks: Dict[str, PersistableTask], state_file: str, logger=None) -> None:
     """把任务字典写入隐藏状态目录。"""
     try:
         state = {tid: task.to_state_dict() for tid, task in tasks.items()}

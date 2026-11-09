@@ -7,26 +7,26 @@
 
 import logging
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Set
 
 from pixiv_mini import PixivError
 
 from . import tasks as tasks_mod
+from .bookmarks import collect_bookmarks_pending as collect_bookmarks_pending
 from .download import _work_id
 from .limiter import RateLimitError
+from .scan_items import build_item
+from .scan_items import flatten_items as _flatten_items
+from .scan_items import group_items as _group_items
+from .scan_items import uid_of as _uid_of
 
 log = logging.getLogger(__name__)
 
-def _safe_int(value: Any) -> Optional[int]:
-    """安全转 int：None 或非法值返回 None，合法值返回 int。"""
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        log.info(f"[pixiv_sync-scan]画师id/作品id/tag 缺失/非法: {value}")
-        return None
-    
+# 关注新作聚合流(illust_follow)单轮最多翻页数；超过仍未遇到「整页作品全部已入库」，
+# 说明关注作品积压超出时间流窗口，转入逐画师兜底扫描（见 _fetch_follow_stream）。
+MAX_FOLLOW_PAGES = 40
+
+
 def fetch_following(p, task: Dict[str, Any] | None = None) -> List[tuple]:
     """翻页拉取全部关注画师列表 [(user_id, name)]。"""
     client = p._client()
@@ -34,7 +34,7 @@ def fetch_following(p, task: Dict[str, Any] | None = None) -> List[tuple]:
     qs = None
     while not p._cancel_flag:
         try:
-            p._rate_limiter.wait()  # 全局限速
+            p._rate_limiter.wait(getattr(p, "_cancel_event", None))  # 全局限速
             if qs:
                 qs.pop("user_id", None)
                 page = client.user_following(client.user_id, **qs)
@@ -58,75 +58,6 @@ def fetch_following(p, task: Dict[str, Any] | None = None) -> List[tuple]:
     return following
 
 
-def extract_all_urls(illust: Dict[str, Any]) -> List[str]:
-    """提取全部页原图 URL（original 优先，回退 large），从列表响应中直接取。"""
-    meta_pages = illust.get("meta_pages") or []
-    if meta_pages:
-        urls = []
-        for page in meta_pages:
-            iu = page.get("image_urls") or {}
-            u = iu.get("original") or iu.get("large")
-            if u:
-                urls.append(u)
-        if urls:
-            return urls
-    orig = (illust.get("meta_single_page") or {}).get("original_image_url")
-    if orig:
-        return [orig]
-    u = (illust.get("image_urls") or {}).get("large")
-    return [u] if u else []
-
-
-def build_item(p, illust: Dict[str, Any], ids: Set[int]):
-    """把列表响应中的 illust 精简为清单 item（只存下载/展示所需，含 urls/tags 名）。
-
-    作品 id 缺失/非法时返回 None，调用方跳过，避免把 0/垃圾 id 写进清单。
-    """
-    try:
-        iid = _safe_int(illust.get("id"))
-    except (TypeError, ValueError):
-        return None
-    if iid is None or iid <= 0:
-        return None
-    user = illust.get("user") or {}
-    return {
-        "id": iid,
-        "type": illust.get("type"),
-        "title": illust.get("title"),
-        "page_count": illust.get("page_count"),
-        "create_date": illust.get("create_date"),
-        "user": {"id": user.get("id"), "name": user.get("name")},
-        "urls": extract_all_urls(illust),
-        "tags": [t.get("name") for t in (illust.get("tags") or []) if t.get("name")],
-        "done": iid in ids,
-    }
-
-
-def _uid_of(item: Dict[str, Any]):
-    try:
-        return _safe_int((item.get("user") or {}).get("id"))
-    except (TypeError, ValueError):
-        return None
-
-
-def _flatten_items(
-    items_by_uid: Dict[int, List[Dict[str, Any]]],
-    orphans: List[Dict[str, Any]] | None = None,
-) -> List[Dict[str, Any]]:
-    """按作品创建时间旧→新合并所有画师的 item（同时间按 id 稳定排序）。"""
-    items = [it for group in items_by_uid.values() for it in group]
-    if orphans:
-        items.extend(orphans)
-    items.sort(key=lambda it: ((it.get("create_date") or ""), int(it.get("id", 0))))
-    return items
-
-
-
-# 关注新作聚合流(illust_follow)单轮最多翻页数；超过仍未遇到「整页作品全部已入库」，
-# 说明关注作品积压超出时间流窗口，转入逐画师兜底扫描（见 _fetch_follow_stream）。
-MAX_FOLLOW_PAGES = 40
-
-
 def fetch_artist(p, uid: int, known_ids=None) -> List[Dict[str, Any]]:
     """扫描一个画师的作品（模块级）。
 
@@ -138,7 +69,7 @@ def fetch_artist(p, uid: int, known_ids=None) -> List[Dict[str, Any]]:
     q = None
     while not p._cancel_flag:
         try:
-            p._rate_limiter.wait()  # 全局限速（多线程共享）
+            p._rate_limiter.wait(getattr(p, "_cancel_event", None))  # 全局限速（多线程共享）
             if q:
                 params = dict(q)
                 params.pop("user_id", None)
@@ -167,19 +98,6 @@ def fetch_artist(p, uid: int, known_ids=None) -> List[Dict[str, Any]]:
                 raise RateLimitError("触发 Pixiv 限流（429），任务已停止，请等待冷却后重试") from None
             raise
     return illusts
-
-
-def _group_items(items: List[Dict[str, Any]]):
-    """旧清单按画师分组（无画师的孤儿单独保留）。"""
-    items_by_uid: Dict[int, List[Dict[str, Any]]] = {}
-    orphans: List[Dict[str, Any]] = []
-    for it in items:
-        uid = _uid_of(it)
-        if uid is None:
-            orphans.append(it)
-        else:
-            items_by_uid.setdefault(uid, []).append(it)
-    return items_by_uid, orphans
 
 
 def _scan_artist_window(p, task, ids, uids, items_by_uid, done_uids,
@@ -244,7 +162,7 @@ def _scan_artist_window(p, task, ids, uids, items_by_uid, done_uids,
                 if full_scan:
                     built = []
                     for ill in reversed(illusts):  # 反转：旧作品在前
-                        item = build_item(p, ill, ids)
+                        item = build_item(ill, ids)
                         if item is not None:
                             built.append(item)
                     items_by_uid[uid] = built
@@ -254,7 +172,7 @@ def _scan_artist_window(p, task, ids, uids, items_by_uid, done_uids,
                     old_ids = {_work_id(i) for i in old_items}
                     new_items = []
                     for ill in reversed(illusts):  # 反转：旧作品在前
-                        item = build_item(p, ill, ids)
+                        item = build_item(ill, ids)
                         if item is None or _work_id(item) in old_ids:
                             continue
                         new_items.append(item)
@@ -314,7 +232,7 @@ def _fetch_follow_stream(p, task, ids, items_by_uid) -> bool:
     saw_full_known_page = False
     while not p._cancel_flag:
         try:
-            p._rate_limiter.wait()
+            p._rate_limiter.wait(getattr(p, "_cancel_event", None))
             if qs:
                 params = dict(qs)
                 params.pop("restrict", None)
@@ -331,7 +249,7 @@ def _fetch_follow_stream(p, task, ids, items_by_uid) -> bool:
             iid = _work_id(ill)
             if iid is None or iid in known_ids:
                 continue
-            item = build_item(p, ill, ids)
+            item = build_item(ill, ids)
             if item is None:
                 continue
             uid = _uid_of(item)
@@ -426,84 +344,3 @@ def collect_following_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
     flat = _flatten_items(items_by_uid, orphans)
     return flat, {"done_uids": sorted(done_uids), "complete": complete}
 
-
-
-def collect_bookmarks_pending(p, task: Dict[str, Any], ids: Set[int]) -> tuple:
-    """扫描收藏列表，返回 (items, scan)。
-
-    Pixiv 收藏接口的翻页参数是 max_bookmark_id，因此断点保存完整的 next_qs。
-    上一轮完整扫描完成后，下一轮增量模式：从最新收藏往回翻，遇到上一轮
-    已经见过的作品就停，只拉最新部分。
-    """
-    items, scan = p._db().load_pending("bookmarks")
-    # 完整扫描后的新起一轮，或完整扫描后因单次上限拆出来的续跑，都属于
-    # 增量模式（遇到上一轮完整尾巴就停）。首次全量扫描的续跑不能提前停。
-    incremental = bool(scan and scan.get("complete"))
-    next_qs: Dict[str, Any] | None = None
-    if isinstance(scan, dict):
-        if scan.get("complete"):
-            # 保持旧清单，增量模式从第一页开始，遇到 known_ids 就停。
-            next_qs = None
-        elif "next_qs" in scan:
-            next_qs = dict(scan.get("next_qs") or {})
-            if scan.get("incremental"):
-                incremental = True
-        elif scan.get("offset") is not None:
-            # v0.3 之前误把翻页断点存成 offset，兼容迁移。
-            next_qs = {"offset": scan.get("offset")}
-
-    seen = {_work_id(i) for i in items}  # 复用 download._work_id 的安全取 id
-    known_ids = set(seen)  # 上一轮已入库的作品 id；增量模式下遇到它们就停
-    qs = dict(next_qs) if next_qs else None
-
-    client = p._client()
-    while not p._cancel_flag:
-        try:
-            p._rate_limiter.wait()
-            if qs:
-                params = dict(qs)
-                params.pop("user_id", None)
-                page = client.user_bookmarks_illust(client.user_id, **params)
-            else:
-                page = client.user_bookmarks_illust(client.user_id)
-            batch = page.get("illusts", []) or []
-            for ill in reversed(batch):  # 反转：旧收藏在前
-                iid = _work_id(ill)
-                if iid is None or iid in seen:
-                    continue
-                item = build_item(p, ill, ids)
-                if item is None:
-                    continue
-                items.append(item)
-                seen.add(iid)
-
-            if incremental and known_ids:
-                hit = any(
-                    _work_id(ill) in known_ids
-                    for ill in batch
-                    if _work_id(ill) is not None
-                )
-                if hit:
-                    # 已到上一轮完整扫描的尾巴，后面的旧收藏不会再变化。
-                    p._db().save_pending("bookmarks", items, {"complete": True})
-                    break
-
-            nxt = page.get("next_url")
-            if not nxt:
-                # 最后一页先落盘，避免 main 写库前进程退出丢掉整页。
-                p._db().save_pending("bookmarks", items, {"complete": True})
-                break
-            qs = client.parse_qs(nxt) or {}
-            p._db().save_pending(
-                "bookmarks", items,
-                {"next_qs": dict(qs), "complete": False, "incremental": incremental},
-            )
-        except PixivError as e:
-            if "429" in str(e):
-                raise RateLimitError("触发 Pixiv 限流（429），任务已停止，请等待冷却后重试") from None
-            raise
-
-    task["current"] = f"清单 {len(items)} 条（扫描完成）"
-    task["total"] = len(items)
-    tasks_mod.persist_task(p._tasks_file(), task)
-    return items, {"complete": True}

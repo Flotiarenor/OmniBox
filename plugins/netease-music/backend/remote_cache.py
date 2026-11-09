@@ -1,0 +1,115 @@
+"""远端来源的缓存失效与新鲜期投影。
+
+网易云没有本地文件树：数据全部来自 ncm-cli 请求，本地只有一份播放地址缓存，判据
+只有时间。本组件决定两件事——什么时候丢弃缓存（登录态变化）与把哪段新鲜期投影给
+状态接口；真正的丢弃动作由入口注入（它持有数据接口）。
+
+新鲜期投影（`state`）的消费者目前只有 `get_status` 与测试：宿主的网易云视图读
+`get_status` 时只用 `ncm_cli_available` 决定是否提示安装 ncm-cli，界面暂未按新鲜期
+显示任何内容。投影与 `_stamp_freshness` 保留，作为状态接口的既有 API。
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from typing import Any, Callable, Dict, Optional
+
+from shell.backend.freshness import engine_for
+
+log = logging.getLogger(__name__)
+
+#: 失效原因：登录态变化 —— 另一个账号留下的列表与播放地址都不再可信。
+IDENTITY_REASON = 'identity'
+
+
+class RemoteCache:
+    def __init__(self, plugin: Any, invalidate: Callable[[str], Dict[str, Any]],
+                 ttl_seconds: float) -> None:
+        self._plugin = plugin
+        self._invalidate = invalidate
+        self._ttl_seconds = float(ttl_seconds)
+        #: 上一次已知的登录态；`None` 表示还没判断过。
+        self._logged_in: Optional[bool] = None
+
+    # ----- 失效 -----
+
+    def invalidate(self, reason: str = IDENTITY_REASON) -> Dict[str, Any]:
+        """丢弃远端派生缓存，并让新鲜期从此刻重新起算。"""
+        engine = engine_for(self._plugin)
+        if engine is None:
+            return {'reason': reason, 'cleared': self._invalidate(reason)}
+        log.info(f'[{getattr(self._plugin, "name", "netease-music")}] 丢弃远端缓存: {reason}')
+        # `force=True` 让远端同步忽略 TTL，`reason` 原样交给插件的 invalidate，
+        # 新鲜期同时从这次失效重新起算。
+        report = engine.sync('', force=True, reason=reason)
+        if not report.get('invalidated'):
+            # 引擎正忙或异常：登录态变化必须立刻生效，绕过去直接丢弃本地缓存；
+            # 新鲜期的时间戳得自己补，否则状态里的 `fresh_until` 仍指向旧时刻。
+            cleared = self._invalidate(reason)
+            self._stamp_freshness()
+            return {'reason': reason, 'cleared': cleared,
+                    'engine': str(report.get('reason') or report.get('action') or '')}
+        return {'reason': reason, 'cleared': report.get('cleared')}
+
+    def _stamp_freshness(self) -> None:
+        """把「刚刚失效过」写进引擎的时间戳（兜底路径专用）。
+
+        正常路径由引擎在远端那一趟末尾写 `last_sync_at` / `last_verify_at`；绕过引擎
+        直接丢缓存时，这两处不补就会让投影里的 `fresh_until` 停在旧时刻 —— 状态接口
+        会显示"还剩 N 分钟"，而事实是数据刚刚被作废。写不进去只记日志：缓存已经丢了，
+        状态投影退化成旧值也比把登录流程打挂好。
+        """
+        engine = engine_for(self._plugin)
+        if engine is None:
+            return
+        try:
+            conn = engine.store.connect()
+        except Exception as e:      # 指纹库被占用 / 磁盘掉线
+            log.warning(f'[netease-music] 兜底失效写新鲜期失败: {e}')
+            return
+        try:
+            stamp = time.time()
+            engine.store.meta_set(conn, 'last_sync_at', stamp)
+            engine.store.meta_set(conn, 'last_verify_at', stamp)
+        finally:
+            conn.close()
+
+    def note_login_state(self, logged_in: bool) -> Optional[Dict[str, Any]]:
+        """登录态转为「已登录」时作废缓存；重复的「已登录」不重复丢弃。"""
+        previous = self._logged_in
+        self._logged_in = logged_in
+        if logged_in and previous is not True:
+            return self.invalidate(IDENTITY_REASON)
+        return None
+
+    def mark_login_started(self) -> Dict[str, Any]:
+        """登录流程已开始：旧账号的数据不再可信，随后的 `check_login` 复用这次失效。"""
+        self._logged_in = True
+        return self.invalidate(IDENTITY_REASON)
+
+    # ----- 状态投影 -----
+
+    def state(self) -> Dict[str, Any]:
+        """远端新鲜期：模式、TTL 与到期时刻（投影给 `get_status.freshness`，不是"已索引 N 项"）。
+
+        消费者只有状态接口与测试：宿主界面只读 `ncm_cli_available`，暂未按这个投影
+        显示任何内容（保留它是为了不破坏既有 API）。
+        引擎给出 `fresh_until` 时直接用它；只有 `ttl_remaining` 时按"上次同步时刻 +
+        TTL"折算；两者都拿不到时给 0，表示不清楚。
+        """
+        engine = engine_for(self._plugin)
+        if engine is None:
+            return {'mode': 'remote', 'ttl_seconds': self._ttl_seconds,
+                    'ttl_remaining': 0.0, 'fresh_until': 0.0}
+        engine_state = engine.state() or {}
+        ttl = float(engine_state.get('ttl_seconds') or self._ttl_seconds)
+        last_sync = float(engine_state.get('last_sync_at') or 0.0)
+        until = engine_state.get('fresh_until')
+        if until is None:
+            until = (last_sync + ttl) if (ttl > 0 and last_sync > 0) else 0.0
+        remaining = float(engine_state.get('ttl_remaining') or 0.0)
+        return {'mode': str(engine_state.get('mode') or 'remote'),
+                'ttl_seconds': ttl,
+                'ttl_remaining': round(max(0.0, remaining), 1),
+                'fresh_until': round(float(until), 3)}

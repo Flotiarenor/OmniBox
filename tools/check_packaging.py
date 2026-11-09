@@ -22,8 +22,6 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SPEC_DIR = PROJECT_ROOT / 'docs' / 'Releases'
-if str(SPEC_DIR) not in sys.path:
-    sys.path.insert(0, str(SPEC_DIR))
 
 for _stream in (sys.stdout, sys.stderr):
     # reconfigure 在 Python 3.7+ 的 TextIOWrapper 上存在，但静态类型 TextIO 未声明；
@@ -54,6 +52,23 @@ FORBIDDEN_FRAGMENTS = [
     '/data/',
     '/.config/',
 ]
+
+
+def _spec_common():
+    """按文件路径加载 docs/Releases/spec_common.py。
+
+    `docs/Releases` 是构建暂存目录，不是源码树的一部分（`pyrightconfig.json` 的
+    extraPaths 不再包含它）。用文件路径显式加载，让"目录语义"单一：spec_common 是
+    构建脚本的共享模块，靠路径找到，不靠"某个目录恰好也是源码根"。
+    """
+    path = SPEC_DIR / 'spec_common.py'
+    spec = importlib.util.spec_from_file_location('spec_common', path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f'无法为 {path} 创建加载器')
+    module = importlib.util.module_from_spec(spec)
+    sys.modules['spec_common'] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _fail(errors: list, msg: str) -> None:
@@ -95,12 +110,12 @@ def check_specs_parse_and_share_rules(errors: list) -> None:
         if not imported:
             _fail(errors, f'{name} 的 spec_common 导入为空')
         try:
-            import spec_common
+            spec_module = _spec_common()
         except Exception as e:
             _fail(errors, f'无法导入 spec_common: {e}')
             continue
         for nm in sorted(imported):
-            if not hasattr(spec_common, nm):
+            if not hasattr(spec_module, nm):
                 _fail(errors, f'{name} 从 spec_common 导入了不存在的名字: {nm}')
 
         # spec 必须真的把收集结果用上（datas=collect_data_files(...)）
@@ -146,7 +161,7 @@ def _copy_minimal_project(dest: Path) -> None:
 
 def check_collect_data_files(errors: list) -> None:
     try:
-        from spec_common import collect_data_files
+        collect_data_files = _spec_common().collect_data_files
     except Exception as e:  # pragma: no cover - 导入失败就是硬错误
         _fail(errors, f'无法导入 spec_common.collect_data_files: {e}')
         return
@@ -288,7 +303,7 @@ def _always_importable(mod: str) -> bool:
 
 def check_hidden_imports(errors: list) -> None:
     """插件用到的模块必须在 HIDDEN_IMPORTS 里，且提供它的包必须在 requirements.txt 里。"""
-    from spec_common import HIDDEN_IMPORTS
+    HIDDEN_IMPORTS = _spec_common().HIDDEN_IMPORTS
 
     hidden = set(HIDDEN_IMPORTS)
     hidden_top = {h.split('.')[0] for h in hidden}

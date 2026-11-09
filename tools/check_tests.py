@@ -5,10 +5,10 @@
 文件名匹配 `test_*.py` 时，`unittest discover` 会**导入**它，但导入不等于收集到用例：
 文件里没有 TestCase 子类（或 `test*` 方法）时，discover 收集 0 条、退出码 0 ——
 CI 全绿，这个文件实际什么都没测。仓库里曾有两个这样的手工脚本
-（`tests/test_media_scan_task.py`、`tests/test_parallel_tmp.py`，现在改名为
-`tests/debug_*.py`），它们只在手工执行时才有意义，不属于测试套件。
+（`tests/test_media_scan_task.py`、`tests/test_parallel_tmp.py`），它们只在手工执行时才有意义，
+不属于测试套件。
 
-手工脚本的命名约定：放 `tests/debug_*.py`。
+手工脚本的落脚点：`tools/debug/`（与 `tests/` 分开，`unittest discover` 不会扫到那里）。
 
 判定（逐个 `tests/test_*.py`）
 -----------------------------
@@ -152,7 +152,7 @@ def check_tests(tests_dir: Path) -> list[str]:
         if runnable == 0:
             errors.append(
                 f'{rel}: 没有可被 unittest 收集的用例（无 TestCase 子类，或 test* 方法'
-                f'全部被无条件跳过）—— 手工脚本请改名 tests/debug_*.py'
+                f'全部被无条件跳过）—— 手工脚本请迁到 tools/debug/'
             )
 
     return errors

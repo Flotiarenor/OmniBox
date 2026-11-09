@@ -10,7 +10,7 @@
 2. **作者网格的二次排序持久化**：原先只存在于显示页顶部排序栏的 localStorage，
    设置页没有入口；现在落库到 `album_sort_by` / `album_sort_order`，
    默认"更新时间 / 倒序"，设置页与显示页排序栏共用同一份值。
-3. **全局设置能读回**：`save_folder_settings('')` 走 PluginBase.save_settings()，
+3. **全局设置能读回**：`save_folder_settings('')` 走 PluginBase.settings.save_folder()，
    写的是插件级键，而 get_settings 原先只读 `folders['__global__']`
    （全仓没有写入方），于是"保存到全局"重启后静默回落到硬默认值。
 
@@ -97,7 +97,7 @@ class ImageViewerPixivCoverTestCase(unittest.TestCase):
         return plugin
 
     def _covers(self, config: dict) -> dict:
-        albums = self._plugin(config).list_albums()['albums']
+        albums = self._plugin(config).albums.list_albums()['albums']
         return {a['path']: a['cover'] for a in albums}
 
     # ---------- 封面 ----------
@@ -113,7 +113,7 @@ class ImageViewerPixivCoverTestCase(unittest.TestCase):
         covers = self._covers({'root_dir': str(self.root), 'sort_by': 'time_name'})
         # artistA 的 900.jpg 是单图；换一张多图作品验证同号取 p0
         self.assertEqual(covers['pixiv/artistB'], 'pixiv/artistB/800_title/800_p0.png')
-        pick = self.module._pick_cover(
+        pick = self.module._naming.PixivNaming().pick_cover(
             [{'rel': '500_p10.png'}, {'rel': '500_p0.png'}, {'rel': '500_p1.png'},
              {'rel': '100_p0.png'}],
             True)
@@ -142,8 +142,8 @@ class ImageViewerPixivCoverTestCase(unittest.TestCase):
             # 路径：统一刷新基建的被动同步发现变化 → `_invalidate_albums_cache()`。
             # 不失效就复用索引（相册页因此不必每次等走盘，见 `list_albums`）。
             plugin = self._plugin(config)
-            plugin._invalidate_albums_cache()
-            return {a['path']: a['cover'] for a in plugin.list_albums()['albums']}
+            plugin.albums.invalidate()
+            return {a['path']: a['cover'] for a in plugin.albums.list_albums()['albums']}
 
         try:
             covered = {'root_dir': str(self.root), 'sort_by': 'time_name'}
@@ -166,7 +166,7 @@ class ImageViewerPixivCoverTestCase(unittest.TestCase):
         config = {'root_dir': str(data_root), 'sort_by': 'time_name'}
 
         def covers(cfg):
-            albums = self._plugin(cfg).list_albums()['albums']
+            albums = self._plugin(cfg).albums.list_albums()['albums']
             return {a['path']: a['cover'] for a in albums}
 
         # 先按普通相册扫一遍并落盘索引，再切到 Pixiv 排序（目录 mtime 未变）
@@ -176,9 +176,9 @@ class ImageViewerPixivCoverTestCase(unittest.TestCase):
 
     def test_album_cache_version(self):
         plugin = self._plugin({'root_dir': str(self.root)})
-        plugin.list_albums()
-        self.assertEqual(plugin._album_cache.get('version'),
-                         self.module.ImageViewerPlugin._ALBUM_CACHE_VERSION)
+        plugin.albums.list_albums()
+        self.assertEqual(plugin.albums.cache_version,
+                         self.module._const.LIMITS.album_cache_version)
 
     def test_old_album_cache_version_invalidated(self):
         """带旧封面规则（version 3：自然序第一张）的索引缓存必须作废重扫。"""
@@ -196,36 +196,36 @@ class ImageViewerPixivCoverTestCase(unittest.TestCase):
                 'has_children': False, 'children': [],
             }},
         }), encoding='utf-8')
-        albums = self._plugin({'root_dir': str(data_root), 'sort_by': 'time_name'}).list_albums()['albums']
+        albums = self._plugin({'root_dir': str(data_root), 'sort_by': 'time_name'}).albums.list_albums()['albums']
         self.assertEqual(next(a for a in albums if a['path'] == 'pixiv/artistA')['cover'],
                          'pixiv/artistA/900.jpg')
 
     # ---------- 作者视图二次排序设置 ----------
 
     def test_album_sort_defaults(self):
-        s = self._plugin({'root_dir': str(self.root)}).get_settings('')
+        s = self._plugin({'root_dir': str(self.root)}).settings.for_path('')
         self.assertEqual(s['album_sort_by'], 'mtime')
         self.assertEqual(s['album_sort_order'], 'desc')
 
     def test_album_sort_settings_persist_globally(self):
         """设置页保存的二次排序必须落库并在"重启"（新实例）后读回。"""
         plugin = self._plugin({'root_dir': str(self.root)})
-        result = plugin.save_folder_settings('', {
+        result = plugin.settings.save_folder('', {
             'album_sort_by': 'count',
             'album_sort_order': 'asc',
         })
         self.assertTrue(result.get('success'))
-        self.assertEqual(plugin.get_settings('')['album_sort_by'], 'count')
+        self.assertEqual(plugin.settings.for_path('')['album_sort_by'], 'count')
         # 新实例 = 重启后重新加载，仍能读到（历史缺陷：全局保存写插件级键但读不回来）
         reopened = self._plugin({'root_dir': str(self.root)})
-        s = reopened.get_settings('')
+        s = reopened.settings.for_path('')
         self.assertEqual(s['album_sort_by'], 'count')
         self.assertEqual(s['album_sort_order'], 'asc')
 
     def test_album_sort_is_not_stored_per_folder(self):
         """二次排序是全局偏好，不应出现在文件夹级设置里。"""
         plugin = self._plugin({'root_dir': str(self.root)})
-        plugin.save_folder_settings('pixiv', {'sort_by': 'time_name'})
+        plugin.settings.save_folder('pixiv', {'sort_by': 'time_name'})
         folders = plugin._settings_store.get('image-viewer').get('folders', {})
         self.assertEqual(folders.get('pixiv'), {'sort_by': 'time_name'})
 

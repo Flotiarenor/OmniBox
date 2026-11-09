@@ -4,6 +4,9 @@
  * 只做四件事：读状态、切面板、渲染、把用户动作转成 Bridge.call。所有判定都在后端 ——
  * 前端不持有任何"谁能做什么"的规则（客户端隐藏按钮不构成授权）。
  *
+ * 统一刷新：同步 / 校验控件由壳挂载，内容页在切回前台时按全部共享根同步一次，
+ * 壳随后用 `omnibox:freshness`（带报告）或旧的 `refresh` 动作通知重读状态。
+ *
  * 页面骨架（品牌块 / 左栏 / 顶栏 / 状态栏 / 分隔条）由壳按 manifest 的
  * `frontend.chrome` 渲染；壳给内容 iframe 追加 `?content=1`，本页只有内容区
  * （`.view-body > .view-content`），不再包含 `.view-sub-sidebar` / `.view-toolbar`。
@@ -33,11 +36,17 @@
 
   function el(id) { return document.getElementById(id); }
 
+  // 壳在 `omnibox:freshness` 之后紧跟一条旧的 `omnibox:action: refresh`，两条属于同一次
+  // 同步。回声那条靠 **payload** 识别：壳把 `{plugin, scope, report}` 附在 refresh 上，
+  // `/shell/chrome-client.js` 的 `onAction(action, payload)` 第二参就是它，因此"带
+  // payload 的 refresh"说明富事件已经重载过，跳过即可；没有 payload 的 refresh 是用户
+  // 点顶栏「刷新」，照常重读。不用时间窗：那会吞掉紧跟一次同步之后的真实点击。
+
   // ── 与壳的页面骨架通信 ────────────────────────────────────────────────
   // chrome（品牌块/左栏/顶栏/状态栏）由壳渲染；本页只上报标题、徽标与状态。
+  // 收发规则在 /shell/chrome-client.js（内容页共用一份），这里只是本页的调用出口。
   function postHost(payload) {
-    if (window.parent === window) { return; }
-    try { window.parent.postMessage(payload, location.origin); } catch (e) { /* 壳不在同源时不发 */ }
+    window.ChromeClient.post(payload);
   }
 
   function sectionOf(name) {
@@ -54,21 +63,17 @@
       title: section ? (section.getAttribute('data-title') || '团体组网') : '团体组网',
       subtitle: section ? (section.getAttribute('data-sub') || '') : '',
       badges: badges,
-      status: { text: state.statusText, state: state.statusState }
+      status: { text: state.statusText, state: state.statusState },
+      // 共享根是目录集合而不是当前位置：没有可表达的单一子目录，同步覆盖全部根。
+      freshness_scope: ''
     });
   }
 
   function toast(message, isError) {
-    // 壳提供 Toast；独立打开本页时回退到自绘提示
-    if (window.Toast && typeof window.Toast.success === 'function') {
-      if (isError) { window.Toast.error(message); } else { window.Toast.success(message); }
-      return;
-    }
-    var node = document.createElement('div');
-    node.className = 'gm-toast' + (isError ? ' gm-toast-error' : '');
-    node.textContent = message;
-    document.body.appendChild(node);
-    setTimeout(function () { node.remove(); }, 4200);
+    // 提示只有一份实现：壳注入的 /shell/toast.js（与壳页面共用）。本页其余接口也都要
+    // 走壳的 Bridge，脱离壳直接打开本来就不可用，所以不再保留第二套自绘提示。
+    if (!window.Toast) return;
+    (isError ? window.Toast.error : window.Toast.success)(message);
   }
 
   function call(method) {
@@ -83,6 +88,54 @@
     return String(text === null || text === undefined ? '' : text)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  /** 字节数 → 人读的容量。共享项用量由后端的刷新钩子算出，可能缺失（还没算过）。 */
+  function formatSize(bytes) {
+    var value = Number(bytes);
+    if (!isFinite(value) || value <= 0) { return '0 B'; }
+    var units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+    var index = 0;
+    while (value >= 1024 && index < units.length - 1) {
+      value /= 1024;
+      index += 1;
+    }
+    return (index === 0 ? String(Math.round(value)) : value.toFixed(1)) + ' ' + units[index];
+  }
+
+  /**
+   * 报告里是否真有变化。
+   *
+   * `new_dirs` / `vanished_dirs` 非空也算变化：本插件声明 `track_entries: False`，
+   * 引擎不产出条目事件，目录集合变化（新建空目录、整个目录被移走）是同步能给出的
+   * 唯一新增信号。校验完成（`action === 'verify'`）无论计数如何都要重载：校验是
+   * "现在读到什么就是什么"的权威结论，共享根用量就是靠它重算的。`skip` 不是变化。
+   */
+  function freshnessChanged(report) {
+    if (!report || report.action === 'skip') { return false; }
+    if (report.action === 'verify') { return true; }
+    if (report.added || report.changed || report.removed || report.invalidated) {
+      return true;
+    }
+    return !!(report.new_dirs && report.new_dirs.length)
+      || !!(report.vanished_dirs && report.vanished_dirs.length)
+      || !!(report.new_dirs_truncated) || !!(report.vanished_dirs_truncated);
+  }
+
+  /** 按全部共享根同步一次；有变化且 `reload` 为真时重读状态。 */
+  function syncFreshness(reload) {
+    if (!window.Freshness || typeof window.Freshness.sync !== 'function') {
+      return Promise.resolve(null);
+    }
+    return window.Freshness.sync('group-mesh', '')
+      .then(function (report) {
+        if (reload && freshnessChanged(report)) { return refresh(); }
+        return report;
+      })
+      .catch(function () {
+        // 被动同步失败不打扰用户：下一次切回前台会再试一次
+        return null;
+      });
   }
 
   /** 给刚渲染出来的条目编交错延迟（配合 effects.css 的 `.obx-stagger` 与
@@ -307,6 +360,12 @@
       return;
     }
     cardOf('shares-body', 'gm-card-ok');
+    // 用量与条目数由统一刷新的钩子算进后端缓存：`shares` 行可能带，也可能只在
+    // `share_roots` 里（两者都按 share_id 对齐）。没有这两份数据时留空，不显示 0。
+    var usageById = {};
+    (status.share_roots || []).forEach(function (root) {
+      if (root && root.share_id) { usageById[root.share_id] = root; }
+    });
     var rows = status.shares.map(function (share, index) {
       var acl = share.acl || {};
       var limit = share.max_bytes === null ? '不限制' : Math.round(share.max_bytes / 1048576) + ' MiB';
@@ -315,10 +374,31 @@
       var stateBadge = share.available === false
         ? '<span class="gm-badge gm-badge-warn">' + escapeHtml(share.reason || '不可用') + '</span>'
         : '<span class="gm-badge gm-badge-ok">可用</span>';
+      var shareError = share.last_error || share.error || '';
+      if (shareError) {
+        stateBadge += ' <span class="gm-badge gm-badge-warn" title="' +
+          escapeHtml(shareError) + '">' + escapeHtml(shareError) + '</span>';
+      }
+      var usage = share.used_bytes === undefined || share.used_bytes === null
+        ? (usageById[share.share_id] || {})
+        : share;
+      var used = usage.used_bytes;
+      var entries = usage.entries;
+      // 用量可能是上次统计的数字：`usage_stale` 表示"不是按当前目录指纹算的"（根目录
+      // 换过位置或 mtime 变过）。数字仍显示，但明确标成待更新，不当成现状。
+      var usageStale = usage.usage_stale === true && used !== undefined && used !== null;
+      var usageText = used === undefined || used === null
+        ? ''
+        : escapeHtml(formatSize(used)) + (usage.truncated ? '+' : '')
+          + (usageStale ? '（待更新）' : '');
+      var entriesText = entries === undefined || entries === null
+        ? '' : escapeHtml(String(entries));
       return '<tr style="--obx-i:' + index + '">' +
         '<td><code>' + escapeHtml(share.share_id) + '</code></td>' +
         '<td><code>' + escapeHtml(share.path) + '</code></td>' +
         '<td>' + stateBadge + '</td>' +
+        '<td>' + usageText + '</td>' +
+        '<td>' + entriesText + '</td>' +
         '<td>读 ' + escapeHtml(acl.read) + ' / 写 ' + escapeHtml(acl.write) + '</td>' +
         '<td>' + escapeHtml(limit) + '</td>' +
         '<td><button type="button" class="btn btn-sm btn-danger" data-remove="' +
@@ -326,7 +406,8 @@
         '</tr>';
     }).join('');
     body.innerHTML = '<table class="gm-table"><thead><tr><th>标识</th><th>本机目录</th>' +
-      '<th>状态</th><th>ACL</th><th>容量上限</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>';
+      '<th>状态</th><th>用量</th><th>条目</th><th>ACL</th><th>容量上限</th><th></th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table>';
 
     Array.prototype.forEach.call(body.querySelectorAll('[data-remove]'), function (node) {
       node.addEventListener('click', function () {
@@ -377,6 +458,33 @@
       cardOf('node-body', 'gm-card-warn');
     }
 
+    // 后台同步的最近失败：没有这个位置时，同步一直失败只会表现为"名单/共享项
+    // 停在旧状态"，用户查不到原因。三份来源各自独立，缺哪个就不显示哪一段：
+    // `last_error` 是后台同步本身的失败，`errors` 是共享根读取失败，
+    // `unreachable` 是最近一轮探测连不上的对端。
+    var sync = status.sync || {};
+    var syncNotes = [];
+    if (sync.last_error) { syncNotes.push('最近同步失败：' + String(sync.last_error)); }
+    var readErrors = Array.isArray(sync.errors) ? sync.errors : [];
+    if (readErrors.length) {
+      syncNotes.push('共享根读取失败 ' + readErrors.length + ' 项：'
+        + readErrors.slice(0, 2).join('；'));
+    }
+    var offline = Array.isArray(sync.unreachable) ? sync.unreachable : [];
+    if (offline.length) {
+      syncNotes.push('连不上的对端 ' + offline.length + ' 个：'
+        + offline.slice(0, 2).map(function (item) {
+          var endpoint = (item && item.endpoint) || '';
+          var reason = (item && item.error) ? '（' + item.error + '）' : '';
+          return endpoint + reason;
+        }).join('；'));
+    }
+    var syncNote = syncNotes.length
+      ? '<p class="gm-hint">' + syncNotes.map(function (text) {
+        return '<span class="gm-badge gm-badge-warn">' + escapeHtml(text) + '</span>';
+      }).join(' ') + '</p>'
+      : '';
+
     body.innerHTML = '<dl class="gm-kv">' +
       '<dt>状态</dt><dd>' + (node.running ? '运行中' : '未运行') + ' ' + published + '</dd>' +
       '<dt>监听</dt><dd>' + escapeHtml(node.listening || '-') + '</dd>' +
@@ -384,7 +492,7 @@
       escapeHtml(status.settings.port) + '</dd>' +
       '<dt>下载目录</dt><dd>' + escapeHtml((status.locations || {}).downloads || '-') +
       ((status.locations || {}).downloads_custom ? '' : '（默认）') + '</dd>' +
-      '</dl>' + autoNote +
+      '</dl>' + autoNote + syncNote +
       (node.error ? '<p class="gm-hint"><span class="gm-badge gm-badge-warn">' +
         escapeHtml(node.error) + '</span></p>' : '');
 
@@ -585,23 +693,50 @@
     });
   }
 
-  // 与壳的页面骨架握手：视图切换、顶栏动作都从壳发过来；标题/徽标/状态反向上报。
+  /**
+   * 顶栏动作分发：`refresh` 可能与统一刷新的富事件同源，按 payload 判重。
+   *
+   * `payload` 存在 = 壳附带的 `{plugin, scope, report}`，同一次同步的富事件已经处理过
+   * （见 `onMessage`），这里不重复重读；无 payload = 用户点顶栏「刷新」或旧壳，正常重载。
+   */
+  function applyHostAction(action, payload) {
+    if (action === 'refresh') {
+      if (payload) { return; }
+      refresh();
+      return;
+    }
+    if (action === 'settings-saved') { refresh(); }
+  }
+
+  // 与壳的页面骨架握手：视图切换、顶栏动作、统一刷新报告都从壳发过来；
+  // 标题/徽标/状态反向上报。来源校验、消息分发与 ready 握手都在
+  // /shell/chrome-client.js（内容页共用一份）。
   function bindHost() {
-    window.addEventListener('message', function (event) {
-      if (event.origin !== location.origin || event.source !== window.parent) { return; }
-      var data = event.data || {};
-      if (data.type === 'omnibox:view' && data.view) { setPanel(data.view); return; }
-      if (data.type === 'omnibox:action') {
-        if (data.action === 'refresh') { refresh(); }
-        else if (data.action === 'settings-saved') { refresh(); }
+    window.ChromeClient.create({
+      onView: function (name) {
+        // 空视图按"没有要切的页面"处理，与收敛前的 `data.view` 真假判定一致
+        if (name) { setPanel(name); }
+      },
+      onAction: applyHostAction,
+      onMessage: function (data) {
+        if (!data || data.type !== 'omnibox:freshness') { return; }
+        if (data.plugin && data.plugin !== 'group-mesh') { return; }
+        if (!freshnessChanged(data.report)) { return; }
+        refresh();
       }
-    });
-    postHost({ type: 'omnibox:ready' });
+    }).bind();
+  }
+
+  /** 切回前台：按全部共享根同步一次，共享根的用量/条目数在回来时就能更新。 */
+  function bindLifecycle() {
+    if (!window.PluginLifecycle || typeof window.PluginLifecycle.onShow !== 'function') { return; }
+    window.PluginLifecycle.onShow(function () { syncFreshness(true); });
   }
 
   function init() {
     bind();
     bindHost();
+    bindLifecycle();
     setPanel(state.panel);
     renderLoading();
     // 远端分片（js/remote.js）：把本文件的能力注入进去，它自己不碰后端与提示。

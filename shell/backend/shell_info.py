@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -48,17 +49,6 @@ SHELL_SETTINGS_NAME = 'shell'
 LOG_FILE_NAME = 'omnibox.log'
 # 只留四档：DEBUG 会为每张缩略图记一行，量级与 INFO 差一个数量级，够排查就停。
 LOG_LEVELS = ('DEBUG', 'INFO', 'WARNING', 'ERROR')
-
-# WebView2 高性能 GPU 模式：把 `--force_high_performance_gpu` 交给 WebView2 的 GPU 进程。
-# 按可执行文件走的图形首选项（Windows 设置的「高性能」、NvOptimusEnablement）落的是主进程，
-# 够不到 WebView2 的 GPU 进程，只能走浏览器参数。上游说明：
-# https://github.com/MicrosoftEdge/WebView2Feedback/issues/5072
-# 实际下发在 shell.backend.webview_gpu（必须走 pywebview 的 API）。
-WEBVIEW_HIGH_PERFORMANCE_SETTING = 'webview_high_performance'
-# 逃生口，优先级高于 shell.json：该参数失效时窗口可能无法创建，此时界面不可用，
-# 只有启动前就生效的来源能关掉它。
-WEBVIEW_HIGH_PERFORMANCE_ENV = 'OMNIBOX_WEBVIEW_HIGH_PERFORMANCE'
-_WEBVIEW_HIGH_PERFORMANCE_OFF = ('0', 'false', 'no', 'off')
 
 
 #: 按配置目录复用的 SettingsStore（见 `_store`）。
@@ -90,17 +80,6 @@ def stored_log_level(config_dir: Optional[str] = None) -> int:
     return logging.INFO
 
 
-def stored_webview_high_performance(config_dir: Optional[str] = None) -> bool:
-    """已保存的高性能 GPU 模式；缺失或非布尔时回退**开启**（默认下发该浏览器参数）。
-
-    只认真正的布尔值：手改 shell.json 写成字符串 'false' 不该被 `bool()` 判成真。
-    """
-    value = _store(config_dir).get(SHELL_SETTINGS_NAME).get(WEBVIEW_HIGH_PERFORMANCE_SETTING)
-    if isinstance(value, bool):
-        return value
-    return True
-
-
 # 背景图库：用户选中的图片被**复制**到 `<config_dir>/backgrounds`，壳级 `/file`
 # 请求把这个目录并入允许根（见 file_server.serve_media_file）。
 #
@@ -113,6 +92,11 @@ BACKGROUND_LIBRARY_DIRNAME = 'backgrounds'
 MAX_BACKGROUND_IMAGES = 300
 # 单张上限：选错文件（例如把几十 GB 的视频改名成 .jpg）时不必先整份复制进 .config。
 MAX_BACKGROUND_IMAGE_BYTES = 64 * 1024 * 1024
+# 删除图片时的重试：Windows 上浏览器正在读这张图（刚设为背景、缩略图还在加载）会让
+# `unlink` 报 WinError 32「另一个程序正在使用此文件」。这类占用是毫秒级的，重试几次
+# 等句柄关闭；不重试则「删除当前背景」变成看运气的操作，界面只收到一条删除失败。
+UNLINK_RETRIES = 10
+UNLINK_RETRY_DELAY_SECONDS = 0.1
 # Windows 文件名的保留字符与控制字符：源文件名直接拿来当库内文件名会写不进去。
 _UNSAFE_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
@@ -144,31 +128,6 @@ def _unique_target(folder: Path, name: str) -> Path:
     return candidate
 
 
-def webview_high_performance_enabled(config_dir: Optional[str] = None) -> bool:
-    """最终取值：环境变量优先于 shell.json。
-
-    环境变量只用于关闭，不作开启：只覆盖一个方向，两个来源不会互相翻转。
-    """
-    override = os.environ.get(WEBVIEW_HIGH_PERFORMANCE_ENV)
-    if isinstance(override, str) and override.strip().lower() in _WEBVIEW_HIGH_PERFORMANCE_OFF:
-        return False
-    return stored_webview_high_performance(config_dir)
-
-
-def configure_webview_environment(config_dir: Optional[str] = None) -> bool:
-    """按当前设置决定是否下发 GPU 适配器偏好，返回是否启用。
-
-    这里只管**决策与日志**；真正把参数交给 WebView2 的是
-    `shell.backend.webview_gpu.apply_gpu_preference`（必须走 pywebview 的 API，
-    环境变量在默认启动路径上会被忽略，理由见该模块的说明）。
-    """
-    if not webview_high_performance_enabled(config_dir):
-        log.info('[OmniBox] WebView2 高性能 GPU 模式已关闭'
-                 f'（{WEBVIEW_HIGH_PERFORMANCE_SETTING}=false 或 {WEBVIEW_HIGH_PERFORMANCE_ENV} 置 0）')
-        return False
-    return True
-
-
 class ShellInfo:
     """壳自身信息 / 运维动作的实现（端点注册见 file_server 与 main.py）。"""
 
@@ -187,29 +146,11 @@ class ShellInfo:
             'log_dir': str(log_dir),
             'log_file': str(log_dir / LOG_FILE_NAME),
             'log_level': logging.getLevelName(logging.getLogger().level),
-            # 保存值与**生效值**分开返回：生效值可能被环境变量覆盖为关闭，只回一个
-            # 则界面会显示为已开启而实际未生效，且无依据说明原因。
-            'webview_high_performance': stored_webview_high_performance(str(self._config_dir)),
-            'webview_high_performance_effective': webview_high_performance_enabled(str(self._config_dir)),
-            'webview_high_performance_env': WEBVIEW_HIGH_PERFORMANCE_ENV,
             'caches': caches,
             'cache_total': {
                 'count': sum(item['count'] for item in caches),
                 'bytes': sum(item['bytes'] for item in caches),
             },
-        }
-
-    def set_webview_high_performance(self, enabled) -> dict:
-        """保存高性能 GPU 模式。**下次启动生效** —— 参数只在 WebView2 控件构造时注入。"""
-        if not isinstance(enabled, bool):
-            return {'success': False, 'error': f'取值必须是布尔值，实际是 {type(enabled).__name__}'}
-        self._store.update(SHELL_SETTINGS_NAME, {WEBVIEW_HIGH_PERFORMANCE_SETTING: enabled})
-        log.info(f'[ShellInfo] WebView2 高性能 GPU 模式已保存为 {enabled}，下次启动生效')
-        return {
-            'success': True,
-            'webview_high_performance': enabled,
-            'webview_high_performance_effective': webview_high_performance_enabled(str(self._config_dir)),
-            'restart_required': True,
         }
 
     def set_log_level(self, level) -> dict:
@@ -311,10 +252,21 @@ class ShellInfo:
             return {'success': False, 'error': f'解析路径失败: {e}'}
         if resolved.parent != folder or not resolved.is_file():
             return {'success': False, 'error': f'不在背景图库里: {target}'}
-        try:
-            resolved.unlink()
-        except OSError as e:
-            return {'success': False, 'error': f'删除图片失败: {e}'}
+        for attempt in range(UNLINK_RETRIES):
+            try:
+                resolved.unlink()
+                break
+            except FileNotFoundError:
+                # 并发删除：目标已经被别的请求删掉了，结果与成功一致
+                break
+            except PermissionError as e:
+                # 浏览器短暂占用（见 UNLINK_RETRIES 的说明）：等到最后一次再报错
+                if attempt == UNLINK_RETRIES - 1:
+                    log.warning(f'[ShellInfo] 背景图删除失败（重试 {UNLINK_RETRIES} 次仍被占用）: {e}')
+                    return {'success': False, 'error': f'删除图片失败: {e}'}
+                time.sleep(UNLINK_RETRY_DELAY_SECONDS)
+            except OSError as e:
+                return {'success': False, 'error': f'删除图片失败: {e}'}
         log.info(f'[ShellInfo] 背景图已删除 {resolved.name}')
         return {'success': True, 'name': resolved.name}
 

@@ -59,7 +59,18 @@ def _have_browser() -> bool:
 
 
 STUB_BRIDGE = """
+<script src="/shell/toast.js"></script>
+<!-- 引导片段注入的八段共享运行时：页面里用到 confirmDialog / createContextMenu /
+     openModal，漏装载哪一段都会在真实壳里表现成该功能整块不动。 -->
 <script src="/shell/base.js"></script>
+<script src="/shell/dialogs.js"></script>
+<script src="/shell/settings.js"></script>
+<script src="/shell/host-channel.js"></script>
+<script src="/shell/tree.js"></script>
+<script src="/shell/lightbox.js"></script>
+<script src="/shell/pagination.js"></script>
+<script src="/shell/context-menu.js"></script>
+<script src="/shell/chrome-client.js"></script>
 <script>
 window.__CALLS__ = [];
 window.Bridge = {

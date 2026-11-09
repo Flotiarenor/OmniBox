@@ -13,6 +13,16 @@ Object.assign(ImageViewer.prototype, {
         if (this._closeLightbox()) return;
         if (this.mode === 'images') {
             this._cancelSlideshow();
+            // 时间线「按图片」层是相册层的下钻，返回目标固定是按时分组的相册卡片：
+            // 不消费 navStack（那是混合瀑布流逐层点入的栈），也不动 currentView。
+            if (this._recentActive) {
+                this.timelineMode = 'albums';
+                this._recentActive = false;
+                this.currentPath = '';
+                this.showAlbums();
+                this._restoreScroll();
+                return;
+            }
             if (this.navStack.length) {
                 const prev = this._popNavStack();
                 if (prev === '') {

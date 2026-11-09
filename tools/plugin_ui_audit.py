@@ -17,7 +17,7 @@
   ``status.kind=eq-text`` 播放态没渲染四柱 EQ；
 - 页面与控制台有 ``SEVERE`` 错误。
 
-``tests/debug_nav_style_ui.py`` 只覆盖四个插件的选中态，上面这些都能在它全绿
+``tools/debug/debug_nav_style_ui.py`` 只覆盖四个插件的选中态，上面这些都能在它全绿
 时同时存在。group-mesh pilot 用一次性 Selenium 探针验证过这些断言，但探针把
 插件名、端口与等待时间写死在代码里。本工具把"查哪些插件、查什么"与"怎么开
 浏览器"分开：前者是纯函数，可以用 ``unittest`` 覆盖；后者集中在

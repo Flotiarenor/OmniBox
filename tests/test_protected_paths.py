@@ -261,10 +261,12 @@ class ProtectedPathNormalizationTests(unittest.TestCase):
 
         它们不是凭据，但含绑定地址、可信主机、日志级别，日志里还有本机路径。插件根一旦
         覆盖 `<config>`（开发模式下 `<config>` 与默认数据根是兄弟目录）就会被 `/file`
-        当普通媒体返回 —— 实测 app.yaml 与 logs/omnibox.log 都是 200。
+        当普通媒体返回 —— 实测 app.json 与 logs/omnibox.log 都是 200。
         """
         config = self.tmp / '.config'
         (config / 'logs').mkdir(parents=True)
+        (config / 'app.json').write_text('{"server": {}}', encoding='utf-8')
+        # 迁移期的旧落点（内容同类）同样要挡住
         (config / 'app.yaml').write_text('server: {}\n', encoding='utf-8')
         (config / 'shell.json').write_text('{}', encoding='utf-8')
         (config / 'logs' / 'omnibox.log').write_text('log\n', encoding='utf-8')
@@ -276,7 +278,7 @@ class ProtectedPathNormalizationTests(unittest.TestCase):
         audio.write_bytes(b'ID3')
 
         protected = collect(None, config)
-        for path in (config / 'app.yaml', config / 'shell.json',
+        for path in (config / 'app.json', config / 'app.yaml', config / 'shell.json',
                      config / 'logs', config / 'logs' / 'omnibox.log'):
             with self.subTest(path=path.name):
                 self.assertTrue(matches(path, protected), f'{path} 不在受保护清单里')

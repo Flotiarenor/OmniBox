@@ -16,6 +16,7 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 import { createDom } from './dom_stub.mjs';
+import { loadShellScripts } from './shell_scripts.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..', '..');
@@ -126,6 +127,8 @@ function loadReader(handlers = {}) {
         if (at >= 0) list.splice(at, 1);
     };
     vm.createContext(sandbox);
+    // 内容页的握手在壳注入的 /shell/chrome-client.js 里：按引导片段装载同一份实现。
+    loadShellScripts(sandbox, ['chrome-client.js']);
     for (const rel of ['js/app.js', 'js/app-shelf.js']) {
         vm.runInContext(fs.readFileSync(path.join(FRONTEND, rel), 'utf8'), sandbox,
             { filename: `plugins/document-reader/frontend/${rel}` });

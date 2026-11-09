@@ -1,27 +1,41 @@
-"""缩略图全量重建（BackgroundTask）（ImageViewerPlugin 的一个 mixin 分片）。
+"""缩略图全量 / 定向重建的后台任务。
 
-方法从 main.py 逐字搬来，状态仍由 ImageViewerPlugin.__init__ 持有 ——
-分片只把方法挂到同一个类上，因此方法与调用点都没有变。
+状态自持：`BackgroundTask` 句柄在这里。它是**可选能力**：`/thumbs` 本来就按需生成，
+重建只是给"一次生成整库"留的入口（不再挂在工具栏上），因此取消与退出收尾都由本组件
+负责，入口只把 `on_unload` 委派进来。
+
+`force=True` 的全量重建会清空全部派生缓存（缩略图库、尺寸元数据、相册索引），所以
+破坏面比其余方法大 —— 清在这里、由入口编排，不让其它组件各自记得。
 """
 
 import logging
 import os
 import shutil
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
-from shell.backend.plugin_utils import load_sibling
 from shell.backend.tasks import BackgroundTask
 
 log = logging.getLogger(__name__)
 
-_common = load_sibling(__file__, 'common', 'image_viewer')
-ALLOWED_EXTENSIONS = _common.ALLOWED_EXTENSIONS
 
-class RebuildMixin:
-    """缩略图全量重建（BackgroundTask）。"""
+class RebuildTask:
+    """后台全量 / 增量重建缩略图。"""
 
-    def _collect_all_images(self, rel_path: str = '') -> List[str]:
+    def __init__(self, paths: Any, thumbs: Any, albums: Any, listing: Any,
+                 extensions: Any) -> None:
+        self._paths = paths
+        self._thumbs = thumbs
+        self._albums = albums
+        self._listing = listing
+        self._extensions = extensions
+        self._task: Optional[BackgroundTask] = None
+        #: 最近一次重建领到的单调版本号（见 `ThumbStore.bump_rebuild_version`）
+        self._version = 0
+
+    # ===== 收集 =====
+
+    def collect_all_images(self, rel_path: str = '') -> List[str]:
         """收集整个相册树（或指定子文件夹）下所有需要生成缩略图的图片虚拟路径。
 
         空路径 = 全部根目录；命名空间节点 = 只收集该额外根目录。
@@ -29,31 +43,33 @@ class RebuildMixin:
         rel_path = (rel_path or '').strip().strip('/')
         pairs = []
         if not rel_path:
-            pairs = [(root, '') for root in self._roots()]
+            pairs = [(root, '') for root in self._paths.roots()]
         else:
-            root, inner = self._split_virtual(rel_path)
+            root, inner = self._paths.split_virtual(rel_path)
             if root is not None:
                 pairs = [(root, inner)]
-        images = []
+        images: List[str] = []
         for root, inner in pairs:
             base_dir = root / inner if inner else root
-            prefix = self._virtual_path(root, inner)
+            prefix = self._paths.virtual_path(root, inner)
             try:
                 for current, dir_names, filenames in os.walk(base_dir):
-                    dir_names[:] = [d for d in dir_names
-                                    if not d.startswith('.') and d != '.cache']
+                    dir_names[:] = [name for name in dir_names
+                                    if not name.startswith('.') and name != '.cache']
                     current_path = Path(current)
                     rel_dir = ('' if current_path == base_dir
                                else current_path.relative_to(base_dir).as_posix())
                     for name in filenames:
                         if name.startswith('.'):
                             continue
-                        if Path(name).suffix.lower() in ALLOWED_EXTENSIONS:
-                            parts = [p for p in (prefix, rel_dir, name) if p]
+                        if Path(name).suffix.lower() in self._extensions:
+                            parts = [part for part in (prefix, rel_dir, name) if part]
                             images.append('/'.join(parts))
             except OSError:
                 pass
         return images
+
+    # ===== 任务 =====
 
     def rebuild_all(self, rel_path: str = '', force: bool = True) -> Dict:
         """全量/指定文件夹重建。
@@ -63,67 +79,70 @@ class RebuildMixin:
         - rel_path 为空且 force=False 时：全库增量补齐，跳过已有有效缩略图。
         """
         rel_path = (rel_path or '').strip().strip('/')
-        if rel_path and not self._is_safe(rel_path):
+        if rel_path and not self._paths.is_safe(rel_path):
             return {'started': False, 'success': False, 'error': '非法路径'}
-        if self._rebuild and self._rebuild.state == 'running':
-            return {'started': False, 'running': True, **self.rebuild_status()}
+        if self._task and self._task.state == 'running':
+            return {'started': False, 'running': True, **self.status()}
 
-        self._list_cache.clear()
+        self._listing.clear_cache()
         if not rel_path and force:
-            self._invalidate_albums_cache()
-            self._meta_cache = {}
-            try:
-                if self.meta_file.exists():
-                    self.meta_file.unlink()
-            except OSError:
-                pass
-            self.thumb_cache.clear()
+            self._albums.invalidate()
+            self._thumbs.clear_meta()
+            self._thumbs.cache.clear()
             # 旧版散文件缩略图目录已不再使用，全量重建时一并清理。
             try:
-                if self.thumb_dir.exists():
-                    shutil.rmtree(self.thumb_dir)
+                if self._paths.thumb_dir.exists():
+                    shutil.rmtree(self._paths.thumb_dir)
             except OSError:
                 pass
-            self.thumb_dir.mkdir(parents=True, exist_ok=True)
-            self._album_cache = {'version': self._ALBUM_CACHE_VERSION, 'dirs': {}}
+            self._paths.thumb_dir.mkdir(parents=True, exist_ok=True)
+            self._albums.reset_index()
             try:
-                if self.album_cache_file.exists():
-                    self.album_cache_file.unlink()
+                if self._paths.album_cache_file.exists():
+                    self._paths.album_cache_file.unlink()
             except OSError:
                 pass
 
-        images = self._collect_all_images(rel_path)
+        images = self.collect_all_images(rel_path)
         task = BackgroundTask(kind='rebuild', extra={'rebuild_path': rel_path})
         task.update(total=len(images))
-        task.start(self._rebuild_worker, args=(images,))
-        self._rebuild = task
-        return {'started': True, 'running': True, 'total': len(images)}
+        # 强制重建不改源文件 mtime：领一个单调版本号，让前端能把缩略图 URL 换成新的一版
+        # （否则 `/thumbs` 的一天强缓存会继续显示旧图）。
+        self._version = self._thumbs.bump_rebuild_version()
+        task.start(self._worker, args=(images,))
+        self._task = task
+        return {'started': True, 'running': True, 'total': len(images),
+                'version': self._version}
 
     def rebuild_folder(self, rel_path: str) -> Dict:
         """只重建指定文件夹下的缩略图（增量补齐，不清空已有缓存）。"""
         return self.rebuild_all(rel_path=rel_path, force=False)
 
-    def _rebuild_worker(self, task: BackgroundTask, images: List[str]):
-        """全量重建 worker：批量并行生成缩略图到 ThumbCache。"""
+    def _worker(self, task: BackgroundTask, images: List[str]) -> None:
+        """重建 worker：批量并行生成缩略图到缩略图库。"""
         def progress(processed, total, current, errors):
             task.update(processed=processed, total=total, current=current, errors=errors)
 
         try:
-            items = [(rel, self.root_dir / rel) for rel in images]
-            result = self.thumb_cache.generate_bulk(
+            items = [(rel, self._paths.root / rel) for rel in images]
+            result = self._thumbs.cache.generate_bulk(
                 items,
                 progress_cb=progress,
                 stop_event=task.stop_event,
             )
             task.update(processed=result['processed'], errors=result['errors'])
-        except Exception as e:
-            task.add_error(f'重建异常: {e}')
+        except Exception as exc:
+            task.add_error(f'重建异常: {exc}')
         finally:
             task.update(current='')
 
-    def rebuild_status(self) -> Dict:
-        """返回全量重建后台任务的进度。"""
-        task = self._rebuild
+    def status(self) -> Dict:
+        """返回全量重建后台任务的进度。
+
+        `version` 是这次重建的单调版本号（毫秒）：任务结束后前端把它拼进缩略图 URL，
+        盖过 `/thumbs` 的一天强缓存；没有跑过任务时为 0。
+        """
+        task = self._task
         if not task:
             return {
                 'running': False,
@@ -136,6 +155,7 @@ class RebuildMixin:
                 'current': '',
                 'error_count': 0,
                 'errors': [],
+                'version': 0,
             }
         status = task.status()
         return {
@@ -149,16 +169,17 @@ class RebuildMixin:
             'current': status['current'],
             'error_count': status['error_count'],
             'errors': status['errors'],
+            'version': self._version,
         }
 
-    def rebuild_cancel(self) -> Dict:
+    def cancel(self) -> Dict:
         """请求取消当前全量重建任务；已生成的缩略图会保留。"""
-        if self._rebuild and self._rebuild.state == 'running':
-            self._rebuild.cancel()
+        if self._task and self._task.state == 'running':
+            self._task.cancel()
             return {'success': True}
         return {'success': False, 'error': '没有正在运行的重建任务'}
 
-    def on_unload(self) -> None:
-        """进程退出收尾：取消正在跑的缩略图重建任务（已生成的缩略图保留）。"""
-        if self._rebuild and self._rebuild.state == 'running':
-            self._rebuild.cancel()
+    def shutdown(self) -> None:
+        """进程退出收尾：取消正在跑的重建任务（已生成的缩略图保留）。"""
+        if self._task and self._task.state == 'running':
+            self._task.cancel()

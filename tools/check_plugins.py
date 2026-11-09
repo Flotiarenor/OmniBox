@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib.util
 import json
 import re
@@ -797,12 +798,120 @@ FRESHNESS_SPEC_DEF_RE = re.compile(r'def\s+freshness_spec\s*\(')
 FRESHNESS_MOUNT_RE = re.compile(r'\bFreshness\s*\.\s*mount\s*\(')
 # mount({ plugin: '名字' }) —— 名字必须等于插件名
 FRESHNESS_PLUGIN_ARG_RE = re.compile(r"""Freshness\s*\.\s*mount\s*\(\s*\{[^}]*?\bplugin\s*:\s*['"]([^'"]+)['"]""", re.DOTALL)
+# 被动同步的**调用**形态：控件句柄的 `.autoSync(...)` 或模块级 `Freshness.sync(...)`。
+# 只认带接收者的调用，于是"只定义未调用"（`function autoSync(...)` / `autoSync(...) {}`）
+# 不会被当成触发；注释与字符串里的同名字样由 `_strip_js_noise` 先去掉。
+FRESHNESS_AUTOSYNC_CALL_RE = re.compile(r'\.\s*autoSync\s*\(')
+FRESHNESS_MODULE_SYNC_CALL_RE = re.compile(r'\bFreshness\s*\.\s*sync\s*\(')
+# 壳挂载型还要在视图 / 作用域变化时再同步一次：`mount` 只覆盖首帧
+FRESHNESS_VIEW_WATCH_RE = re.compile(
+    r'watch\s*\(\s*\[\s*activeView\s*,\s*freshnessScope\s*\]')
+# 壳渲染插件页面骨架的组件：统一刷新控件在这里挂载
+SHELL_PLUGIN_CHROME = PROJECT_ROOT / 'shell' / 'frontend' / 'src' / 'components' / 'PluginChrome.vue'
+
+
+def _strip_js_noise(text: str, *, keep_strings: bool = False) -> str:
+    """去掉注释（JS 行/块、HTML）与（可选）字符串内容，用于"这段源码里有没有真的调用"。
+
+    为什么要清洗：触发面检查原先直接在原始文本里找 `autoSync(`，于是下面三行都会被算成
+    "已触发"——门禁绿着，界面却永远不更新：
+
+        // ctl.autoSync(scope)
+        const hint = 'ctl.autoSync(';
+        const tip = `autoSync(scope)`;
+
+    四类假接线里，注释 / 单双引号串 / 模板串三类靠清洗拦住；"只定义未调用"靠只认带
+    接收者的调用拦住（见 `FRESHNESS_AUTOSYNC_CALL_RE`）。
+
+    `keep_strings=True` 只去注释：`Freshness.mount({ plugin: '名字' })` 的名字在字符串里，
+    比对插件名时不能把它抹掉。正则字面量不解析 —— 稳定的调用形态不会写成 `/autoSync\\(/`。
+    """
+    out: List[str] = []
+    index = 0
+    size = len(text)
+    while index < size:
+        char = text[index]
+        pair = text[index:index + 2]
+        if pair == '//':
+            newline = text.find('\n', index)
+            index = size if newline < 0 else newline
+            continue
+        if pair == '/*':
+            end = text.find('*/', index + 2)
+            index = size if end < 0 else end + 2
+            out.append(' ')
+            continue
+        if text.startswith('<!--', index):
+            end = text.find('-->', index + 4)
+            index = size if end < 0 else end + 3
+            out.append(' ')
+            continue
+        if char in '\'"`':
+            cursor = index + 1
+            while cursor < size:
+                current = text[cursor]
+                if current == '\\':
+                    cursor += 2
+                    continue
+                if current == char:
+                    cursor += 1
+                    break
+                cursor += 1
+            out.append(text[index:cursor] if keep_strings else char + char)
+            index = cursor
+            continue
+        out.append(char)
+        index += 1
+    return ''.join(out)
+
+
+def _has_freshness_trigger(text: str) -> bool:
+    """这段前端源码里有没有真的发起被动同步（只认调用形态，不看注释/字符串）。"""
+    cleaned = _strip_js_noise(text)
+    return bool(FRESHNESS_AUTOSYNC_CALL_RE.search(cleaned)
+                or FRESHNESS_MODULE_SYNC_CALL_RE.search(cleaned))
+
+
+def _check_shell_freshness_trigger(component: Path | None = None) -> List[str]:
+    """壳挂载型统一刷新必须真的触发被动同步（返回 errors）。
+
+    为什么必须在门禁里拦：`Freshness.mount(...)` 只做三件事 —— 渲染控件、读一次
+    `system_freshness_state`、等用户点「校验」。**它自己不扫盘**：被动同步
+    （`system_freshness_sync`）只有 `autoSync(scope)` 会发起。漏掉这一句时，
+    控件、按钮、状态文案、后端端点全部正常，唯一的现象是"外部新增或删除的文件
+    永远不出现在界面上，必须 Ctrl+F5 或重启"—— 每一处代码单独看都没问题。
+
+    两处触发都要有：挂载后一次（首帧），以及视图 / 作用域变化时再各一次 ——
+    后者是"切目录 / 从别的插件切回来能看到变化"的唯一入口。
+
+    组件缺失（或没挂载）由 `_check_freshness_contract` 单独报，这里不重复。
+    """
+    path = Path(component) if component is not None else SHELL_PLUGIN_CHROME
+    try:
+        text = path.read_text(encoding='utf-8')
+    except OSError:
+        return []
+    cleaned = _strip_js_noise(text)
+    errors: List[str] = []
+    if not FRESHNESS_AUTOSYNC_CALL_RE.search(cleaned):
+        errors.append(
+            '壳挂载的统一刷新控件没有 autoSync(...) 调用：Freshness.mount 只渲染控件并读一次'
+            '状态，不发被动同步；缺这一句时外部新增/删除的文件永远不会出现在界面上'
+            '（见 docs/plugin-guide.md「统一刷新（同步 / 校验）」）'
+        )
+    if not FRESHNESS_VIEW_WATCH_RE.search(cleaned):
+        errors.append(
+            '壳挂载的统一刷新只在挂载时同步一次，没有在视图 / 作用域变化时再同步：'
+            '缺少 `watch([activeView, freshnessScope], ...)` 时，切目录或从别的插件切回来'
+            '看不到外部变化（挂载只会跑首帧那一次）'
+        )
+    return errors
 
 
 def _check_freshness_contract(plugin_dir: Path, name: str, *, shell_mounts: bool = False) -> List[str]:
     """统一刷新基建（同步 / 校验）的接线检查（返回 errors）。
 
-    三个静默失败，读代码都看不出来：
+    四个静默失败，读代码都看不出来：
 
     1. 后端声明了 `freshness_spec()`，前端却没有 `Freshness.mount(...)`：壳侧的引擎、
        指纹库、`system_freshness_*` 端点全都在，用户界面上却没有入口 —— 现象是
@@ -811,10 +920,14 @@ def _check_freshness_contract(plugin_dir: Path, name: str, *, shell_mounts: bool
        "点了没反应"；
     3. `Freshness.mount({plugin: '...'})` 的名字与 manifest 不一致（复制粘贴留下的）：
        壳按名字找不到实例，同样是"点了没反应"。这条最值得拦，因为它跨后端/前端/清单
-       三处，而三处各自看都对。
+       三处，而三处各自看都对；
+    4. 控件挂上了却没有任何被动同步调用（`.autoSync(...)` / `Freshness.sync(...)`）：
+       mount 只渲染控件并读一次状态、不扫盘，于是"外部变化永远看不见"。这条只有自绘型
+       在这里查 —— 壳挂载型由 `_check_shell_freshness_trigger` 统一查一次
+       （`PluginChrome.vue` 是壳的一份，按插件重复报同一句话没有信息量）。
 
     声明了 `frontend.chrome.freshness` 的插件由壳的 PluginChrome 挂载组件，
-    此时不再要求插件自己的前端出现 `Freshness.mount`，但不能两边都没有。
+    此时不再要求插件自己的前端出现 `Freshness.mount`，也不能两边都没有。
     """
     errors: List[str] = []
     backend_declared = False
@@ -829,23 +942,27 @@ def _check_freshness_contract(plugin_dir: Path, name: str, *, shell_mounts: bool
 
     mount_names: List[str] = []
     mount_called = False
+    trigger_called = False
     _css_files, html_files, js_files = _frontend_files(plugin_dir)
     for path in html_files + js_files:
         try:
             text = path.read_text(encoding='utf-8')
         except Exception:
             continue
-        if FRESHNESS_MOUNT_RE.search(text):
+        # 挂载与触发都必须是**代码**（注释掉的调用不算）；插件名在字符串里，单独保留。
+        code_only = _strip_js_noise(text)
+        if FRESHNESS_MOUNT_RE.search(code_only):
             mount_called = True
-        mount_names.extend(FRESHNESS_PLUGIN_ARG_RE.findall(text))
+        if FRESHNESS_AUTOSYNC_CALL_RE.search(code_only) or FRESHNESS_MODULE_SYNC_CALL_RE.search(code_only):
+            trigger_called = True
+        mount_names.extend(FRESHNESS_PLUGIN_ARG_RE.findall(_strip_js_noise(text, keep_strings=True)))
 
     if shell_mounts:
-        component = PROJECT_ROOT / 'shell' / 'frontend' / 'src' / 'components' / 'PluginChrome.vue'
         try:
-            shell_text = component.read_text(encoding='utf-8')
+            shell_text = SHELL_PLUGIN_CHROME.read_text(encoding='utf-8')
         except OSError:
             shell_text = ''
-        if not FRESHNESS_MOUNT_RE.search(shell_text):
+        if not FRESHNESS_MOUNT_RE.search(_strip_js_noise(shell_text)):
             errors.append(
                 'manifest 声明了 frontend.chrome.freshness，但壳的 PluginChrome.vue '
                 '没有 Freshness.mount(...)：接线断了'
@@ -856,6 +973,12 @@ def _check_freshness_contract(plugin_dir: Path, name: str, *, shell_mounts: bool
             'freshness_spec() 已声明但前端没有 Freshness.mount(...)：壳侧引擎与 '
             'system_freshness_* 端点都在，界面上却没有「校验」入口'
             '（见 docs/plugin-guide.md §3.4「统一刷新（同步 / 校验）」）'
+        )
+    if backend_declared and not shell_mounts and not trigger_called:
+        errors.append(
+            'freshness_spec() 已声明，但插件自己的前端没有发起被动同步'
+            '（`.autoSync(...)` 或 `Freshness.sync(...)`）：Freshness.mount 只渲染控件并'
+            '读一次状态，不扫盘；缺这一句时外部新增/删除的文件永远不会出现在界面上'
         )
     if mount_called and not backend_declared:
         errors.append(
@@ -1203,6 +1326,17 @@ def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -
         if isinstance(name, str) and PLUGIN_NAME_RE.fullmatch(name) and name == folder_name:
             discovered.append((plugin_dir, name, data))
 
+    # 壳挂载型的触发面只检查一次（组件是壳的一份，按插件重复报同一句话没有信息量）。
+    shell_freshness_used = False
+    for _plugin_dir, _name, data in discovered:
+        frontend = data.get('frontend')
+        chrome = frontend.get('chrome') if isinstance(frontend, dict) else None
+        if isinstance(chrome, dict) and chrome.get('freshness'):
+            shell_freshness_used = True
+            break
+    if shell_freshness_used:
+        errors.extend(_check_shell_freshness_trigger())
+
     plugin_names = {name for _, name, _ in discovered}
     for _plugin_dir, name, data in discovered:
         where = f'[{name}]'
@@ -1238,7 +1372,179 @@ def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -
             if not callable(getattr(cls, 'register_api', None)):
                 errors.append(f'{where} 后端类缺少 register_api 方法')
 
+    # 附属插件按实例取宿主成员：名字必须真的存在于宿主实例上（AST 判定，不导入插件）。
+    plugin_index = {name: (plugin_dir, data) for plugin_dir, name, data in discovered}
+    for plugin_dir, name, data in discovered:
+        where = f'[{name}]'
+        errors.extend(
+            f'{where} {message}'
+            for message in _check_companion_host_contract(plugin_dir, data, plugin_index))
+
     return errors, warnings
+
+
+# ===== 附属插件 ↔ 宿主成员契约（AST 判定，不导入插件）=====
+# 真实事故（image-viewer 组件化时）：`delete_files` / `list_roots` 的实现搬进了组件，宿主
+# 实例上就没有这两个成员了；而 image-cleaner 是按实例取的（`host.delete_files(...)` 与
+# `getattr(host, 'list_roots')`）。这类漏掉**不报错**：`getattr` 带默认值，于是静默退回单根，
+# 表现只是"额外图库里的文件不参与扫描"。所以在这里静态核对：附属插件按实例取到的宿主成员名，
+# 必须出现在宿主的 `register_api` 键、宿主入口里定义的函数/类属性、或 `PluginBase` 的成员里。
+HOST_LOOKUP = 'get_dependency'
+
+
+def _parse_python(path: Path) -> ast.Module | None:
+    try:
+        return ast.parse(path.read_text(encoding='utf-8'))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return None
+
+
+def _plugin_base_members() -> set[str]:
+    """`PluginBase` 上按实例可用的成员名：方法、property、类属性、`self.x` 赋值。"""
+    tree = _parse_python(PROJECT_ROOT / 'shell' / 'backend' / 'plugin_base.py')
+    members: set[str] = set()
+    if tree is None:
+        return members
+    for cls in (node for node in ast.walk(tree)
+                if isinstance(node, ast.ClassDef) and node.name == 'PluginBase'):
+        for stmt in cls.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                members.add(stmt.name)
+            elif isinstance(stmt, ast.Assign):
+                members.update(t.id for t in stmt.targets if isinstance(t, ast.Name))
+        for node in ast.walk(cls):
+            if (isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store)
+                    and isinstance(node.value, ast.Name) and node.value.id == 'self'):
+                members.add(node.attr)
+    return members
+
+
+def _host_instance_surface(entry_path: Path) -> set[str]:
+    """宿主按实例暴露的成员：入口定义的函数/类属性、`register_api` 的键、`PluginBase` 成员。"""
+    surface = _plugin_base_members()
+    tree = _parse_python(entry_path)
+    if tree is None:
+        return surface
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            surface.add(node.name)
+        elif isinstance(node, ast.ClassDef):
+            for stmt in node.body:
+                if isinstance(stmt, ast.Assign):
+                    surface.update(t.id for t in stmt.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.Return) and isinstance(node.value, ast.Dict):
+            for key in node.value.keys:
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    surface.add(key.value)
+    return surface
+
+
+def _is_host_expr(node: ast.AST | None, host_attrs: set[str],
+                  host_routines: set[str], aliases: set[str]) -> bool:
+    """这个表达式是否代表"宿主实例"。"""
+    if node is None:
+        return False
+    if isinstance(node, ast.Attribute):
+        return (isinstance(node.value, ast.Name) and node.value.id == 'self'
+                and node.attr in host_attrs)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        func = node.func
+        return (isinstance(func.value, ast.Name) and func.value.id == 'self'
+                and func.attr in host_routines)
+    return isinstance(node, ast.Name) and node.id in aliases
+
+
+def _host_member_accesses(tree: ast.Module) -> list[tuple[str, int]]:
+    """附属插件里"从宿主实例上取成员"的 (名字, 行号)。"""
+    host_attrs: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            func = node.value.func
+            if isinstance(func, ast.Attribute) and func.attr == HOST_LOOKUP:
+                for target in node.targets:
+                    if (isinstance(target, ast.Attribute)
+                            and isinstance(target.value, ast.Name)
+                            and target.value.id == 'self'):
+                        host_attrs.add(target.attr)
+    host_routines = {
+        node.name for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(isinstance(inner, ast.Return)
+                and _is_host_expr(inner.value, host_attrs, set(), set())
+                for inner in ast.walk(node))
+    }
+    # 局部别名（`host = self._get_host()`）可能需要多轮才能追平链式赋值。
+    aliases: set[str] = set()
+    for _ in range(4):
+        found = {
+            target.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and _is_host_expr(node.value, host_attrs, host_routines, aliases)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
+        if found <= aliases:
+            break
+        aliases |= found
+
+    accesses: list[tuple[str, int]] = []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Attribute)
+                and _is_host_expr(node.value, host_attrs, host_routines, aliases)):
+            accesses.append((node.attr, node.lineno))
+        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == 'getattr' and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)
+                and _is_host_expr(node.args[0], host_attrs, host_routines, aliases)):
+            accesses.append((node.args[1].value, node.lineno))
+    return accesses
+
+
+def _rel_path(path: Path) -> str:
+    """消息里一律用仓库相对路径；不在仓库内（用例临时目录）时退回原样。"""
+    try:
+        return path.resolve().relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _check_companion_host_contract(
+    plugin_dir: Path,
+    data: dict,
+    plugin_index: Dict[str, Tuple[Path, dict]],
+) -> List[str]:
+    """声明了 dependencies 的插件，按实例取到的宿主成员必须真的存在。"""
+    problems: List[str] = []
+    dependencies = data.get('dependencies')
+    if not isinstance(dependencies, list):
+        return problems
+    for dep in dependencies:
+        host = plugin_index.get(dep)
+        if host is None:
+            continue
+        host_dir, host_data = host
+        backend = host_data.get('backend') or {}
+        entry = backend.get('entry') if isinstance(backend, dict) else None
+        if not isinstance(entry, str):
+            continue
+        surface = _host_instance_surface(host_dir / entry)
+        if not surface:
+            continue
+        for py_file in sorted((plugin_dir / 'backend').rglob('*.py')):
+            tree = _parse_python(py_file)
+            if tree is None:
+                continue
+            for member, lineno in _host_member_accesses(tree):
+                if member in surface:
+                    continue
+                problems.append(
+                    f'{_rel_path(py_file)} 第 {lineno} 行按实例从宿主 '
+                    f'{dep} 取了 {member}，但宿主没有按实例暴露它（register_api 键 / 入口定义'
+                    f'的成员 / PluginBase 成员里都没有）：这类漏掉不报错，只会静默退化。'
+                    f'要么在宿主入口补一行委派，要么改用宿主已暴露的成员')
+    return problems
 
 
 def main(argv: Iterable[str] | None = None) -> int:

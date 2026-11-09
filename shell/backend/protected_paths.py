@@ -43,7 +43,9 @@ log = logging.getLogger(__name__)
 
 # 壳写在 `<config>` 下的文件与目录（见 collect 的说明）。不放整个 `<config>`：
 # 那里还有插件经 /file 正常播放的运行时产物（如朗读音频）。
-_SHELL_CONFIG_FILES = ('app.yaml', 'config.yaml', 'shell.json')
+# `app.yaml` 与 `config.yaml` 是主配置的历史落点：迁移后会改名为 `.migrated` 留在原处，
+# 内容同样含绑定地址与可信主机，因此在迁移期一并按受保护处理。
+_SHELL_CONFIG_FILES = ('app.json', 'app.yaml', 'config.yaml', 'shell.json')
 _SHELL_CONFIG_DIRS = ('logs',)
 
 # Windows 扩展长度前缀：\\?\C:\x 与 \\?\UNC\server\share 两种形态都要还原
@@ -138,7 +140,7 @@ def collect(plugin_manager=None, config_dir: Optional[Path] = None) -> List[Path
     # 壳自己的配置与日志：内容含绑定地址、可信主机列表、日志级别，日志里还有本机路径。
     # 它们不是凭据，但同属"这台机器的事实"，而插件根一旦覆盖 `<config>`（开发模式下
     # `<config>` 与默认数据根是兄弟目录）就会被 `/file` 当普通媒体返回 —— 审计项 P3-2
-    # 实测 app.yaml 与 logs/omnibox.log 都是 200。
+    # 实测 app.json 与 logs/omnibox.log 都是 200。
     #
     # 为什么**不**把整个 `<config>` 申报为受保护：document-reader 的朗读音频落在
     # `<config>/plugins/<插件名>/tts/`，那是插件经 /file 正常播放的内容，整目录挡掉
@@ -149,7 +151,7 @@ def collect(plugin_manager=None, config_dir: Optional[Path] = None) -> List[Path
         _add(config_root / name, f'解析壳配置目录 {name} 失败')
 
     # 旧版配置的迁移来源：`main.load_config` 读的是 `<user_data>/config.yaml`（开发模式下
-    # 就是仓库根），内容与 app.yaml 同类。它不在 `<config>` 下，因此单独列一条。
+    # 就是仓库根），内容与 `app.yaml` 同类。它不在 `<config>` 下，因此单独列一条。
     try:
         _add(get_user_data_dir() / 'config.yaml', '解析旧版配置文件失败')
     except (OSError, TypeError, ValueError) as exc:

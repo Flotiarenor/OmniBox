@@ -15,14 +15,16 @@ itsdangerous==2.2.0
 blinker==1.9.0
 click==8.3.3
 colorama==0.4.6
-PyYAML==6.0.3
 
 # --- 桌面窗口与 Python/JS 桥接 ---
 pywebview==6.2.1
 bottle==0.13.4
 proxy_tools==0.1.0
-pythonnet==3.0.5
-clr_loader==0.2.10
+# pythonnet 3.2.1 声明 Requires-Python >=3.11,<3.16：本文件因此只支持 Python 3.11–3.15，
+# pyproject.toml 的 requires-python、pyrightconfig、CI 矩阵与 setup-venv 脚本的版本门禁
+# 都按这一区间写死，改这里要一起改。
+pythonnet==3.2.1
+clr_loader==0.3.1
 cffi==2.0.0
 pycparser==3.0
 typing_extensions==4.15.0
@@ -33,30 +35,23 @@ urllib3==2.7.0
 certifi==2026.4.22
 idna==3.18
 charset-normalizer==3.4.7
-curl_cffi==0.15.0
 
 # --- 媒体与内容处理 ---
 pillow==12.2.0
 mutagen==1.48.1
 natsort==8.4.0
+# group-mesh 的 Noise 封装与 manga-library 的接口响应解密共用
 pycryptodome==3.23.0
 # document-reader 用它嗅探 .txt 的编码（HIDDEN_IMPORTS 里也有，缺了会被静默跳过）
 chardet==7.4.3
 
 # --- document-reader 的朗读（TTS）---
 edge-tts==7.2.8
+# Markdown 渲染（backend/markdown.py 用它把章节正文转成可读段落）
+markdown-it-py==4.2.0
+mdurl==0.1.2
 
 # --- group-mesh 协议内核 ---
 noiseprotocol==0.3.1
 cryptography==50.0.1
 keyring==25.7.0
-
-# --- 插件依赖（pixiv-sync 等在同进程内 import） ---
-jmcomic==2.6.19
-commonX==0.6.40
-
-# --- 终端输出（jmcomic / rich 链路） ---
-rich==15.0.0
-markdown-it-py==4.2.0
-mdurl==0.1.2
-Pygments==2.21.0

@@ -25,7 +25,8 @@ class RateLimiter:
         with self._lock:
             self._rate = max(0.5, min(10.0, float(rate)))
 
-    def wait(self):
+    def wait(self, stop_event=None):
+        """按全局速率排队；传入 stop_event 时等待可被取消立刻打断。"""
         with self._lock:
             now = time.time()
             base = 1.0 / self._rate
@@ -35,4 +36,7 @@ class RateLimiter:
             self._last = max(self._last, now) + interval
             wait = max(0.0, self._last - interval - now)
         if wait:
-            time.sleep(wait)
+            if stop_event is not None:
+                stop_event.wait(wait)
+            else:
+                time.sleep(wait)

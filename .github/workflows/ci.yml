@@ -3,13 +3,15 @@ name: ci
 # 门禁总览（每一条都在本地实测过，见 docs/ci-and-release.md）：
 #   changes     —— 变更集判定：算出这次只动了文档还是动了代码，其余 job 靠它的输出决定跑不跑
 #   plugins     —— 从 plugins/*/manifest.json 生成插件矩阵，新增插件不用改本文件
-#   lint        —— ruff 全量 + 插件规范 + 打包规则 + 版本一致性 + 图标 sprite + 测试文件可运行性
-#                  + 文档引用一致性（本地隐私门禁只在开发机跑，runner 上必然 SKIP）
+#   lint        —— ruff 全量 + 插件规范 + 插件后端分层 + 打包规则 + 版本一致性 + 图标 sprite
+#                  + 测试文件可运行性 + 文档引用一致性（本地隐私门禁只在开发机跑，runner 上必然 SKIP）
 #   docs        —— 只在变更集含 .md 时跑：文档引用一致性（AGENTS.md 的名字 / 路径 / 链接）
-#   typecheck   —— pyright（内核零错误硬门禁；不再输出不会失败的插件/测试基线）
+#   typecheck   —— pyright（内核 + 全部插件，零错误硬门禁）
 #   test        —— 构建前端 + 共享测试（tools/plugin_ci.py --core），Windows + Linux 双平台
 #   plugin      —— 每个插件一条 job（tools/plugin_ci.py --plugin <name>），Windows + Linux
 #   frontend    —— 转义一致性门禁 + vue-tsc 类型检查 + vite 构建
+#   shell-e2e   —— 真实浏览器冒烟：真实壳 + 无头 Chrome，跑 tests/test_shell_browser_e2e.py
+#                  （导航渲染 / iframe 挂载 / 生命周期通知 / 控制台零错误），缺环境即失败
 #   package     —— 真实跑一次 PyInstaller 并校验产物内容
 #
 # 已删除的“不会失败”步骤：ruff format --check（continue-on-error）、pyright plugins tests
@@ -185,7 +187,6 @@ jobs:
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
           python -m pip install -r requirements-dev.txt
 
       - name: ruff（全量，含 E9/F 语法与未定义名字）
@@ -193,6 +194,12 @@ jobs:
 
       - name: 插件规范检查
         run: python tools/check_plugins.py
+
+      # 后端分层门禁：禁 Mixin 切分、文件行数上限、只有入口可以加载兄弟模块。
+      # 尚未迁移的插件靠 tools/layering_allowlist/<plugin>.txt 豁免（每个插件一份，
+      # 迁移完成即删除），因此这条步骤在迁移进行中是"逐插件收紧"的棘轮。
+      - name: 插件后端分层检查
+        run: python tools/check_plugin_layering.py
 
       - name: 打包规则检查（spec 与数据收集）
         run: python tools/check_packaging.py
@@ -213,7 +220,7 @@ jobs:
         run: python tools/check_docs.py
 
   typecheck:
-    name: typecheck（pyright，内核硬门禁）
+    name: typecheck（pyright，内核 + 全部插件）
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
@@ -231,13 +238,12 @@ jobs:
       - name: 安装依赖（pyright 需要能解析 flask/PIL/webview）
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
           python -m pip install -r requirements-dev.txt
 
-      # pyright 只保留内核硬门禁；插件/测试的历史基线不再以 continue-on-error 输出，
-      # 那条步骤不会让 CI 失败，留着只会制造“看起来检查过”的噪声。
-      - name: pyright（内核，零错误门禁）
-        run: python -m pyright main.py shell tools
+      # 一条命令覆盖内核与全部插件。插件曾经因为 mixin 分片带来的 603 条伪影被整体排除在
+      # 门禁之外，组件化之后清零，类型检查才重新成为插件代码的真实约束。
+      - name: pyright（内核 + 全部插件，零错误门禁）
+        run: python -m pyright main.py shell tools plugins
 
   test:
     name: test（${{ matrix.os }} / py${{ matrix.python }}）
@@ -248,7 +254,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
-        python: ['3.10', '3.12']
+        python: ['3.11', '3.12']
     steps:
       - uses: actions/checkout@v4
 
@@ -269,7 +275,6 @@ jobs:
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
           python -m pip install -r requirements-dev.txt
 
       # 壳首页（/、/settings、插件路由）由 shell/frontend/dist/index.html 提供，
@@ -358,9 +363,69 @@ jobs:
           path: shell/frontend/dist
           retention-days: 7
 
+  shell-e2e:
+    name: shell-e2e（真实浏览器冒烟）
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    # 只跑 ubuntu：这条门禁验的是壳前端的 DOM / 生命周期链路，与操作系统无关；
+    # Windows 专属路径（PATH 分隔符、文件锁定）由 test / plugin 的 Windows 矩阵覆盖。
+    runs-on: ubuntu-latest
+    # 浏览器卡死时不要拖满默认的 6 小时：一分钟级的门禁，15 分钟足够外部依赖（驱动下载）兜底。
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements-e2e.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: shell/frontend/package-lock.json
+
+      # selenium 只在 requirements-e2e.txt 里（其余 job 不装它），这条 job 是它唯一的消费者。
+      - name: 安装依赖（开发依赖 + selenium）
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt -r requirements-e2e.txt
+
+      # 浏览器驱动缓存：Selenium Manager 优先用缓存/镜像里与 Chrome 版本匹配的驱动，
+      # 命中时不必联网下载。镜像自带的 Chrome 升级后缓存会不匹配，Manager 会自己重下
+      # （cache 失效不影响正确性，只影响速度）。
+      - name: 缓存浏览器驱动（Selenium Manager）
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/selenium
+          key: selenium-${{ runner.os }}-${{ hashFiles('requirements-e2e.txt') }}
+          restore-keys: |
+            selenium-${{ runner.os }}-
+
+      # 壳首页由 shell/frontend/dist/index.html 提供，不构建就 404；此时 e2e 会在启动阶段
+      # 拿不到首页，属于"环境没准备好"，入口会直接以非 0 退出而不是跳过。
+      - name: 构建前端（壳首页的提供来源）
+        run: |
+          npm --prefix shell/frontend ci
+          npm --prefix shell/frontend run build
+
+      # ubuntu-latest 自带 Google Chrome（名字是 google-chrome，不是 harness 认的 chrome），
+      # 入口先按更宽的名字定位，必要时把可执行文件以 chrome 的名字挂进 PATH。
+      # 驱动由 Selenium Manager 解析：优先本地/缓存，缺失才下载；拿不到驱动时 e2e 的
+      # setUpClass 抛 SkipTest，入口把"被跳过"判为失败并以 1 退出，日志里带原因 ——
+      # 外部下载失败只会是"带原因的红"，不会静默变绿。
+      - name: 真实浏览器冒烟（壳整体链路 + 分隔条）
+        run: python tools/shell_e2e_smoke.py
+
   package:
     name: package（PyInstaller 冒烟 + 产物校验，${{ matrix.os }}）
-    needs: [changes, lint, test, plugin, frontend]
+    # shell-e2e 也是前置：壳在真实浏览器里交互坏了就不该产出安装包。
+    needs: [changes, lint, test, plugin, frontend, shell-e2e]
     # 打包不在每次 push / PR 上跑：省掉 Linux + Windows 两个 runner 与约 100s 墙钟。
     # 覆盖率没有丢：
     #   - 改到打包相关文件（docs/Releases/**、requirements*.txt、pyproject.toml、
@@ -419,7 +484,6 @@ jobs:
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
           python -m pip install -r requirements-dev.txt
 
       # spec 现在会在缺少前端产物时硬失败；这里按发布路径真实构建一次前端。

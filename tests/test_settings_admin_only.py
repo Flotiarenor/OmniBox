@@ -233,7 +233,7 @@ class RootRewriteChainTests(unittest.TestCase):
         self.assertNotIn(self.outside.resolve(), self._roots(plugin))
 
         with use_principal(_principal(ROLE_MEMBER)):
-            result = plugin.save_folder_settings('', {'root_dir': str(self.outside)})
+            result = plugin.settings.save_folder('', {'root_dir': str(self.outside)})
 
         self.assertFalse(result.get('success'))
         self.assertIn('管理员', result.get('error', ''))
@@ -244,7 +244,7 @@ class RootRewriteChainTests(unittest.TestCase):
         """限权不能把功能本身弄坏：管理员改根后必须立即生效。"""
         plugin = self._plugin()
         with use_principal(_principal(ROLE_OWNER)):
-            result = plugin.save_folder_settings('', {'root_dir': str(self.outside)})
+            result = plugin.settings.save_folder('', {'root_dir': str(self.outside)})
         self.assertTrue(result.get('success'), result)
         self.assertIn(self.outside.resolve(), self._roots(plugin))
 

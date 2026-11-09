@@ -6,6 +6,9 @@
   <title>Pixiv 同步</title>
 </head>
 <body>
+  <!-- 统一刷新控件的挂载点：本页是隐藏的逻辑页，控件只通过它的 state / verify /
+       cancel / autoSync 使用，不参与可见排版。 -->
+  <div id="pixiv-freshness" hidden></div>
   <script src="/shell/native-client.js"></script>
   <script src="js/native.js"></script>
 </body>

@@ -1,9 +1,11 @@
 [project]
 name = "omnibox"
-version = "1.3.3"
+version = "1.4.0"
 description = "OmniBox — 轻量级、可插拔的桌面应用框架"
 readme = "readme.md"
-requires-python = ">=3.10"
+# 下界是项目自身要求，上界来自 requirements.txt 里 pythonnet 的 Requires-Python
+# （>=3.11,<3.16）；两者的版本门禁见 setup-venv.ps1 / setup-venv.sh。
+requires-python = ">=3.11,<3.16"
 license = { text = "Apache-2.0" }
 
 # 运行时依赖的唯一声明源仍是 requirements.txt（手写，不用 pip freeze 覆盖）。
@@ -14,7 +16,7 @@ dynamic = []
 # Ruff —— 静态检查门禁
 # ══════════════════════════════════════════════════════════════════════
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 120
 
 # 显式列出扫描范围：默认会连 docs/Releases/OmniBox/（PyInstaller 产物）、

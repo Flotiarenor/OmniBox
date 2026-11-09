@@ -36,8 +36,20 @@ def to_display_name(slug: str) -> str:
     return ' '.join(p[:1].upper() + p[1:] for p in re.split(r'[-_]+', slug) if p)
 
 
-def render(text: str, name: str, class_name: str, route: str, display: str) -> str:
+def to_namespace(slug: str) -> str:
+    """`load_sibling` 的模块命名空间：与插件名同源，连字符换成下划线。
+
+    它只用于 `sys.modules` 里的模块名（`<namespace>_<模块名>`），因此必须是合法的
+    标识符形状 —— 插件目录名是 kebab-case，直接拿去当命名空间会让两个插件的同名
+    分片互相覆盖。
+    """
+    return slug.replace('-', '_')
+
+
+def render(text: str, name: str, class_name: str, route: str, display: str,
+           namespace: str | None = None) -> str:
     return (text
+            .replace('__NAMESPACE__', namespace or to_namespace(name))
             .replace('__CLASS__', class_name)
             .replace('__ROUTE__', route)
             .replace('__DISPLAY__', display)

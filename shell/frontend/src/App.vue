@@ -6,11 +6,17 @@ import { loadPlugins, getPlugins, type PluginChromeState } from './core/plugin-l
 import {
   disposeFrames,
   ensureFrame,
-  LIFECYCLE_MESSAGES,
   noteFrameEpoch,
   refreshFrame,
   type LifecycleMessage,
 } from './core/plugin-visibility'
+import {
+  leavingFrames,
+  pluginFrameSrc,
+  reloadedFrameMessages,
+  splitByKeepAlive,
+} from './core/plugin-frames'
+import { buildActionEvent, buildFreshnessEvent, isPluginChromeMessage, mergeChromeState } from './core/plugin-chrome-protocol'
 import SettingsView from './views/SettingsView.vue'
 import StatusView from './views/StatusView.vue'
 import Icon from './components/Icon.vue'
@@ -19,7 +25,7 @@ import PluginSettingsModal from './components/PluginSettingsModal.vue'
 import NativePanel from './components/NativePanel.vue'
 import type { SchemaAction } from './core/plugin-content'
 import { ensureIcons, iconHtml } from './core/icons.generated'
-import { toast, toastError, toastInfo, toastSuccess } from './core/toast'
+import { toastError } from './core/toast'
 import { useBridge } from './core/bridge'
 import { escapeHtml as escapeHtmlText } from '@vue/shared'
 import { rememberLastRoute, resolveStartRoute } from './core/preferences'
@@ -88,9 +94,11 @@ const reloadCounters = reactive<Record<string, number>>({})
 
 // 必须定义在下面的 route watcher 之前：watcher 是 immediate，会在 setup 期同步执行
 const plugins = computed(() => getPlugins())
-const keepAlivePlugins = computed(() => plugins.value.filter(p => p.keepAlive))
-// 默认组：不声明 keepAlive 的插件离开即卸载 iframe，回来是干净重载
-const transientPlugins = computed(() => plugins.value.filter(p => !p.keepAlive))
+// 常驻组（声明了 keepAlive）离开只隐藏 iframe，不保活组离开即卸载 —— 分组极性
+// 与互补性由 core/plugin-frames 判定，tests/js/plugin_frames.mjs 覆盖。
+const pluginGroups = computed(() => splitByKeepAlive(plugins.value))
+const keepAlivePlugins = computed(() => pluginGroups.value.keepAlive)
+const transientPlugins = computed(() => pluginGroups.value.transient)
 const currentPlugin = computed(() => route.meta.pluginName as string || '')
 const isSettings = computed(() => route.path === '/settings')
 const isStatus = computed(() => route.path === '/status')
@@ -123,7 +131,7 @@ function onFrameLoad(e: Event, name: string) {
   frameMounted.set(name, mounted)
   const reloaded = noteFrameEpoch(name, epoch)
   const messages = reloaded
-    ? (mounted && windowVisible.value ? [LIFECYCLE_MESSAGES.shown] : HIDDEN_BY_DEFAULT)
+    ? reloadedFrameMessages(mounted, windowVisible.value)
     : ensureFrame(name, mounted)
   notifyFrame(name, messages)
   refreshFrameVisibility(name)
@@ -136,13 +144,9 @@ function onFrameLoad(e: Event, name: string) {
 }
 
 function pluginSrc(p: { name: string; entryUrl: string; chrome?: unknown }): string {
-  // 有 chrome 声明的插件只加载内容页；骨架由壳渲染。
-  const base = p.chrome
-    ? p.entryUrl + (p.entryUrl.includes('?') ? '&' : '?') + 'content=1'
-    : p.entryUrl
-  const n = reloadCounters[p.name] || 0
-  if (!n) return base
-  return base + (base.includes('?') ? '&' : '?') + '_r=' + n
+  // chrome 插件只加载内容页（带 content=1），骨架由壳渲染；重试计数以 `_r` 追加。
+  // 拼装规则在 core/plugin-frames，tests/js/plugin_frames.mjs 覆盖两种形态。
+  return pluginFrameSrc(p, reloadCounters[p.name] || 0)
 }
 
 /** 单插件背景不透明度：有覆盖用覆盖，否则跟随壳的玻璃不透明度。 */
@@ -176,7 +180,6 @@ const frameMounted = new Map<string, boolean>()
 const frameEpochs = new Map<string, number>()
 // 窗口级可见性：最小化 / 切标签页时为 false
 const windowVisible = ref(true)
-const HIDDEN_BY_DEFAULT: LifecycleMessage[] = []
 
 function setFrameRef(name: string, el: Element | null) {
   const frame = el?.querySelector('iframe')
@@ -216,12 +219,14 @@ function refreshAllFrameVisibility() {
 
 // 不保活组：离开即卸载 iframe，卸载前发一次 dispose
 function disposeLeavingFrames(keepAliveNames: Set<string>) {
-  const leaving = Array.from(frameRefs.keys()).filter(name => {
-    if (keepAliveNames.has(name)) return false
-    if (!frameMounted.get(name)) return false
-    frameMounted.set(name, false)
-    return true
+  const leaving = leavingFrames({
+    registered: frameRefs.keys(),
+    mounted: Array.from(frameMounted).filter(([, mounted]) => mounted).map(([name]) => name),
+    keepAlive: keepAliveNames,
   })
+  if (!leaving.length) return
+  // 先记账再发通知：这些 frame 已不再作为活动插件挂载，同一次切换里不该被重复 dispose
+  leaving.forEach(name => frameMounted.set(name, false))
   disposeFrames(leaving).forEach((message, index) => sendToFrame(leaving[index], message))
 }
 
@@ -316,7 +321,7 @@ function onChromeView(name: string, view: string): void {
   postToFrame(name, { type: 'omnibox:view', view })
 }
 
-function onChromeAction(name: string, action: string): void {
+function onChromeAction(name: string, action: string, payload?: unknown): void {
   if (!action) return
   // 设置是页面级弹窗：内容 iframe 内的 `.modal` 盖不住壳侧栏，由壳按插件 schema 渲染。
   // 保存成功后回一条 `settings-saved`，内容页据此重读设置并刷新当前视图。
@@ -324,7 +329,14 @@ function onChromeAction(name: string, action: string): void {
     openPluginSettings(name)
     return
   }
-  postToFrame(name, { type: 'omnibox:action', action })
+  // 统一刷新会把报告附在 `refresh` 上：旧内容页忽略这个字段即回到原来的行为。
+  postToFrame(name, buildActionEvent(action, payload))
+}
+
+/** 统一刷新的富事件：报告与作用域一起交给内容页（浅层合并，不解释业务）。 */
+function onChromeFreshness(name: string, payload: { scope?: unknown; report?: unknown } | null): void {
+  const scope = payload && typeof payload.scope === 'string' ? payload.scope : ''
+  postToFrame(name, buildFreshnessEvent(name, scope, payload ? payload.report : null))
 }
 
 /** 设置弹窗保存成功：关闭后让来源页重读设置（各插件按自己的状态模型收尾）。 */
@@ -393,13 +405,9 @@ function openNativeSettings(panel: { host: string; plugin: string; title: string
 function onPluginChromeMessage(event: MessageEvent): void {
   if (event.origin !== window.location.origin) return
   const data = event.data
-  if (!data || (
-    data.type !== 'omnibox:ready'
-    && data.type !== 'omnibox:chrome'
-    && data.type !== 'omnibox:open-settings'
-    && data.type !== 'omnibox:get-plugin-appearance'
-    && data.type !== 'omnibox:set-plugin-alpha'
-  )) return
+  // 白名单是协议的唯一真源（core/plugin-chrome-protocol），未登记类型不接；
+  // 每个登记项都必须在 docs/plugin-page-architecture.md 的消息表里有出处。
+  if (!isPluginChromeMessage(data)) return
   const name = frameNameForSource(event.source)
   if (!name) return
   if (data.type === 'omnibox:get-plugin-appearance') {
@@ -426,36 +434,12 @@ function onPluginChromeMessage(event: MessageEvent): void {
     postChromeView(name)
     return
   }
+  // 只剩 omnibox:chrome：标题/视图/角标/动作/导航/搜索的合并规则在
+  // core/plugin-chrome-protocol（返回新状态，不就地改），tests/js/plugin_chrome_protocol.mjs 覆盖。
+  if (data.type !== 'omnibox:chrome') return
   const st = chromeStates[name]
   if (!st) return
-  if (typeof data.title === 'string') st.title = data.title
-  if (typeof data.subtitle === 'string') st.subtitle = data.subtitle
-  if (typeof data.view === 'string') st.view = data.view
-  if (data.badges && typeof data.badges === 'object') {
-    const badges: Record<string, string> = {}
-    Object.entries(data.badges).forEach(([key, value]) => {
-      if (value !== null && value !== undefined && String(value) !== '') badges[key] = String(value)
-    })
-    st.badges = badges
-  }
-  if (data.status && typeof data.status === 'object') {
-    st.status = {
-      text: String(data.status.text || ''),
-      state: String(data.status.state || 'idle'),
-    }
-  }
-  if (data.actions && typeof data.actions === 'object') {
-    st.actions = { ...(st.actions || {}), ...data.actions }
-  }
-  if (data.nav && typeof data.nav === 'object') {
-    st.nav = { ...(st.nav || {}), ...data.nav }
-  }
-  if (data.search && typeof data.search === 'object') {
-    st.search = { ...(st.search || {}), ...data.search }
-  }
-  if (Array.isArray(data.statusItems)) {
-    st.statusItems = data.statusItems
-  }
+  chromeStates[name] = mergeChromeState(st, data)
 }
 
 /** 宿主插件请求打开 native 面板：只接受已挂载 iframe 的同源消息，URL 必须在本仓库插件路径下。
@@ -484,8 +468,9 @@ function onNativeMessage(event: MessageEvent): void {
   }
 }
 
-/** freshness.js 是插件页组件；壳要复用它，先把 Bridge / Utils / Toast 三个入口垫上。
- *  它们只在组件调用时读取，所以安装时机只要早于 PluginChrome 挂载即可。 */
+/** freshness.js 与 folder-picker.js 是插件页组件；壳要复用它们，先把 Bridge / Utils
+ *  两个入口垫上（Toast 由 /shell/toast.js 提供，壳首页与插件引导片段引的是同一份）。
+ *  这几个入口只在组件调用时读取，所以安装时机只要早于 PluginChrome 挂载即可。 */
 function installShellBridgeShims(): void {
   ;(window as any).Bridge = {
     callSystem: (method: string, ...args: unknown[]) => bridge.call(method, ...args),
@@ -495,13 +480,6 @@ function installShellBridgeShims(): void {
     // FolderPicker 在壳文档里渲染目录名/错误文本，需要与插件 iframe 同一套转义；
     // 直接复用 Vue 的共享实现，不在这里复制一份正则。
     escapeHtml: (value: unknown) => escapeHtmlText(value == null ? '' : String(value)),
-  }
-  ;(window as any).Toast = {
-    success: (message: string) => toastSuccess(message),
-    error: (message: string) => toastError(message),
-    info: (message: string) => toastInfo(message),
-    warning: (message: string) => toast(message, 'warning'),
-    show: (message: string, type?: string) => toast(message, (type as any) || 'info'),
   }
   ensureIcons()
 }
@@ -690,7 +668,8 @@ watch(
               :title-override="nativePanel?.host === p.name ? nativePanel.title : ''"
               :native-actions="nativePanel?.host === p.name ? nativePanel.toolbar : []"
               @view="onChromeView(p.name, $event)"
-              @action="onChromeAction(p.name, $event)"
+              @action="(...args) => onChromeAction(p.name, ...args)"
+              @freshness="onChromeFreshness(p.name, $event)"
               @query="onChromeQuery(p.name, $event)"
               @native="onChromeNative(p.name, $event)"
               @native-action="onNativeToolbarAction(p.name, $event)"
@@ -740,7 +719,8 @@ watch(
               :title-override="nativePanel?.host === p.name ? nativePanel.title : ''"
               :native-actions="nativePanel?.host === p.name ? nativePanel.toolbar : []"
               @view="onChromeView(p.name, $event)"
-              @action="onChromeAction(p.name, $event)"
+              @action="(...args) => onChromeAction(p.name, ...args)"
+              @freshness="onChromeFreshness(p.name, $event)"
               @query="onChromeQuery(p.name, $event)"
               @native="onChromeNative(p.name, $event)"
               @native-action="onNativeToolbarAction(p.name, $event)"

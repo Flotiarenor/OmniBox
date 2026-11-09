@@ -68,6 +68,10 @@ class PixivError(Exception):
         return self.reason
 
 
+class PixivCancelled(PixivError):
+    """用户取消：与真正的失败区分开，调用方据此停止并丢弃本次结果。"""
+
+
 # 图片文件头魔数识别（下载内容真实性校验用）：jpg / png / gif / webp
 def _header_is_image(file: str) -> bool:
     try:
@@ -101,13 +105,23 @@ class PixivClient:
         self,
         proxies: dict[str, str] | None = None,
         timeout: int = 30,
+        api_timeout: float = 12,
+        api_retries: int = 2,
     ) -> None:
         # requests.Session 不是线程安全的；插件会在扫描/下载线程池里并发调用
         # 同一个 client，因此这里改为“每个线程一个 Session”，token 等字段仍共享。
         self._proxies = dict(proxies or {})
         self._local = threading.local()
         self.session = self._get_session()
+        # 两档超时：图片下载给足时间（timeout），登录与列表接口正常只要亚秒级，
+        # 用更短的一档（api_timeout）以免网络抖动时把用户按在“正在登录”上干等。
         self.timeout = timeout
+        self.api_timeout = api_timeout
+        self.api_retries = api_retries
+        # 取消令牌：任务线程把自己的 threading.Event 挂上来，客户端在重试退避与
+        # 流式下载的每个分块上检查它。用户点取消后几百毫秒内就能停住，而不是
+        # 等当前请求超时（30 秒）走完。
+        self.stop_event: threading.Event | None = None
         self.access_token: str | None = None
         self.refresh_token: str | None = None
         self.user_id: int | None = None
@@ -130,6 +144,8 @@ class PixivClient:
         kwargs.setdefault("timeout", self.timeout)
         last_exc: Exception | None = None
         for attempt in range(1, retries + 1):
+            if self._stopped():
+                raise PixivCancelled("已取消")
             try:
                 return self._get_session().request(method, url, **kwargs)
             except (
@@ -140,7 +156,15 @@ class PixivClient:
             ) as e:
                 last_exc = e
                 if attempt < retries:
-                    time.sleep(1.5 * attempt)  # 1.5s / 3s 退避
+                    # 退避也要能被取消打断：`time.sleep` 会让用户等满两秒。
+                    delay = 1.5 * attempt  # 1.5s / 3s 退避
+                    if self.stop_event is not None:
+                        if self.stop_event.wait(delay):
+                            raise PixivCancelled("已取消") from None
+                    else:
+                        time.sleep(delay)
+        if self._stopped():
+            raise PixivCancelled("已取消")
         raise PixivError(f"请求失败（已重试 {retries} 次）: {last_exc}")
 
     # ------------------------------------------------------------------
@@ -170,7 +194,7 @@ class PixivClient:
             "redirect_uri": _REDIRECT_URI,
         }
         headers = {"user-agent": "PixivAndroidApp/5.0.234 (Android 11; Pixel 5)"}
-        resp = self._request("POST", f"{_OAUTH_HOST}/auth/token", headers=headers, data=data)
+        resp = self._api_request("POST", f"{_OAUTH_HOST}/auth/token", headers=headers, data=data)
         if resp.status_code not in {200, 301, 302}:
             raise PixivError(
                 f"auth_with_code() failed! HTTP {resp.status_code}: {resp.text[:200]}",
@@ -208,7 +232,7 @@ class PixivClient:
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
         }
-        resp = self._request(
+        resp = self._api_request(
             "POST", f"{_OAUTH_HOST}/auth/token", headers=headers, data=data
         )
         if resp.status_code not in {200, 301, 302}:
@@ -233,6 +257,22 @@ class PixivClient:
     # ------------------------------------------------------------------
     # 内部请求
     # ------------------------------------------------------------------
+    def set_stop_event(self, event: threading.Event | None) -> None:
+        """挂上/摘掉本任务的取消令牌（None 表示不响应取消，如命令行工具）。"""
+        self.stop_event = event
+
+    def _stopped(self) -> bool:
+        return self.stop_event is not None and self.stop_event.is_set()
+
+    def _api_request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        """登录与列表/详情接口：短超时 + 少重试，失败要快。
+
+        图片下载走 `_request` 的默认档（30s × 3 次）——大图慢是正常的，
+        但元数据请求慢通常意味着网络抖了，几秒钟内报错比让用户等一两分钟有用。
+        """
+        kwargs.setdefault("timeout", self.api_timeout)
+        return self._request(method, url, retries=self.api_retries, **kwargs)
+
     def _call(self, path: str, params: dict[str, Any] | None = None) -> JsonDict:
         if not self.access_token:
             raise PixivError("Authentication required! Call auth() or set_auth() first!")
@@ -242,7 +282,7 @@ class PixivClient:
             "app-os": "ios",
             "app-os-version": "14.6",
         }
-        resp = self._request("GET", f"{self.hosts}{path}", headers=headers, params=params)
+        resp = self._api_request("GET", f"{self.hosts}{path}", headers=headers, params=params)
         if resp.status_code != 200:
             raise PixivError(
                 f"GET {path} HTTP {resp.status_code}: {resp.text[:200]}", body=resp.text
@@ -349,7 +389,21 @@ class PixivClient:
                 raise PixivError(f"download HTTP {resp.status_code}: {url}")
             try:
                 with open(file, "wb") as f:
-                    shutil.copyfileobj(resp.raw, f)
+                    # 分块拷贝而不是 copyfileobj：取消时最多等一个块（64 KB），
+                    # 不用等整张图下完或 30 秒超时。
+                    while True:
+                        chunk = resp.raw.read(65536)
+                        if not chunk:
+                            break
+                        if self._stopped():
+                            raise PixivCancelled("已取消")
+                        f.write(chunk)
+            except PixivCancelled:
+                try:
+                    os.remove(file)
+                except OSError:
+                    pass
+                raise
             except Exception:
                 # 流中断：清理半写/空文件，避免残留
                 try:

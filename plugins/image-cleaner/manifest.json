@@ -1,6 +1,6 @@
 {
   "name": "image-cleaner",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "displayName": "相册清理",
   "icon": "icon:paintbrush",
   "description": "image-viewer 的 Companion 插件：扫描全部相册中的重复 / 相似图片",

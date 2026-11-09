@@ -21,6 +21,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from typing import ClassVar, Dict, List
 from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -114,27 +115,27 @@ class PluginContractTest(unittest.TestCase):
 
     def test_upload_status_and_cancel_are_honest_without_a_task(self):
         """没有任务时不能假装成功：进度查询与取消都要给出明确结论。"""
-        self.plugin.init_identity({'name': 'up-status'})
-        self.plugin.create_group({'group': 'up-group'})
-        status = self.plugin.upload_status()
+        self.plugin.identity.init_identity({'name': 'up-status'})
+        self.plugin.identity.create_group({'group': 'up-group'})
+        status = self.plugin.uploads.status()
         self.assertTrue(status['success'])
         self.assertEqual(status['tasks'], [])
-        missing = self.plugin.upload_status({'task_id': 'nope'})
+        missing = self.plugin.uploads.status({'task_id': 'nope'})
         self.assertFalse(missing['success'])
         self.assertIn('没有这个上传任务', missing['error'])
-        cancelled = self.plugin.cancel_upload({'task_id': 'nope'})
+        cancelled = self.plugin.uploads.cancel({'task_id': 'nope'})
         self.assertFalse(cancelled['success'])
-        no_id = self.plugin.cancel_upload({})
+        no_id = self.plugin.uploads.cancel({})
         self.assertFalse(no_id['success'])
         self.assertIn('task_id', no_id['error'])
 
     def test_upload_task_is_persisted_to_disk(self):
         """任务表要落盘：否则插件一重载，用户的上传就"凭空消失"。"""
-        self.plugin.init_identity({'name': 'up-persist'})
-        self.plugin.create_group({'group': 'up-group'})
+        self.plugin.identity.init_identity({'name': 'up-persist'})
+        self.plugin.identity.create_group({'group': 'up-group'})
         source = self.tmp / 'persist.bin'
         source.write_bytes(b'x' * 32)
-        started = self.plugin.upload_remote({'share_id': 'drop', 'local_path': str(source),
+        started = self.plugin.upload.upload_remote({'share_id': 'drop', 'local_path': str(source),
                                              'remote_path': 'persist.bin'})
         self.assertTrue(started['success'], started)
         task_id = started['task_id']
@@ -142,7 +143,7 @@ class PluginContractTest(unittest.TestCase):
         # 没有登记任何对端地址 → 任务很快以 failed 结束（不碰网络）
         task = {}
         for _ in range(100):
-            task = self.plugin.upload_status({'task_id': task_id})['task']
+            task = self.plugin.uploads.status({'task_id': task_id})['task']
             if task['state'] in ('done', 'failed', 'cancelled', 'interrupted'):
                 break
             time.sleep(0.05)
@@ -162,7 +163,7 @@ class PluginContractTest(unittest.TestCase):
         不存在的进度。
         """
         self.plugin.on_load()
-        self.plugin.init_identity({'name': 'up-restore'})
+        self.plugin.identity.init_identity({'name': 'up-restore'})
         path = self.plugin.get_data_root() / 'upload-tasks.json'
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({
@@ -174,7 +175,7 @@ class PluginContractTest(unittest.TestCase):
 
         reloaded = self._reload_plugin()
 
-        tasks = {task['task_id']: task for task in reloaded.upload_status()['tasks']}
+        tasks = {task['task_id']: task for task in reloaded.uploads.status()['tasks']}
         self.assertEqual(tasks['old-done']['state'], 'done')
         self.assertEqual(tasks['cut-off']['state'], 'interrupted')
         self.assertEqual(tasks['cut-off']['sent'], 4096, '已传字节数要保留（界面据此说明续传点）')
@@ -208,7 +209,7 @@ class PluginContractTest(unittest.TestCase):
                         encoding='utf-8')
 
         self.plugin.on_unload()
-        self.plugin._persist_uploads()          # 老线程迟到的落盘
+        self.plugin.uploads.persist()          # 老线程迟到的落盘
 
         self.assertEqual(set(json.loads(path.read_text(encoding='utf-8'))), {'newer'})
 
@@ -231,7 +232,7 @@ class PluginContractTest(unittest.TestCase):
     def test_identity_dir_is_protected(self):
         """设备私钥不导出。插件至少必须申报身份目录，禁止文件服务端出去。"""
         protected = [Path(p) for p in self.plugin.get_protected_paths()]
-        self.assertIn(self.plugin.identity_dir.resolve(),
+        self.assertIn(self.plugin.storage.identity_dir.resolve(),
                       [p.resolve() for p in protected])
 
     def test_settings_schema_shape(self):
@@ -248,7 +249,7 @@ class PluginContractTest(unittest.TestCase):
         self.assertEqual(download['type'], 'directory')
 
     def test_status_before_identity(self):
-        status = self.plugin.get_status()
+        status = self.plugin.report.get_status()
         self.assertIn('kernel', status)
         self.assertIsNone(status['identity'])
         self.assertIsNone(status['roster'])
@@ -274,38 +275,38 @@ class PluginWorkflowTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_init_identity_then_create_group(self):
-        if not self.plugin.get_status()['kernel']['available']:
+        if not self.plugin.report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
 
-        result = self.plugin.init_identity({'name': 'unit-test'})
+        result = self.plugin.identity.init_identity({'name': 'unit-test'})
         self.assertTrue(result['success'], result)
         self.assertEqual(result['identity']['name'], 'unit-test')
 
         # 重复 init 必须被拒（不能静默覆盖私钥）
-        again = self.plugin.init_identity({'name': 'other'})
+        again = self.plugin.identity.init_identity({'name': 'other'})
         self.assertFalse(again['success'])
 
-        created = self.plugin.create_group({'group': 'unit-group'})
+        created = self.plugin.identity.create_group({'group': 'unit-group'})
         self.assertTrue(created['success'], created)
         self.assertEqual(created['group'], 'unit-group')
         self.assertTrue(created['invite'].startswith('gm1:'))
 
-        status = self.plugin.get_status()
+        status = self.plugin.report.get_status()
         self.assertEqual(status['roster']['role'], 'owner')
         self.assertTrue(status['roster']['in_roster'])
 
     def test_positional_and_structured_arguments_agree(self):
         """两种调用形态都必须被接受（`/api` 会展开 args/kwargs）。"""
-        if not self.plugin.get_status()['kernel']['available']:
+        if not self.plugin.report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
-        positional = self.plugin.init_identity(None, 'positional-name')
+        positional = self.plugin.identity.init_identity(None, 'positional-name')
         self.assertTrue(positional['success'], positional)
 
     def test_get_device_keys(self):
-        if not self.plugin.get_status()['kernel']['available']:
+        if not self.plugin.report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
-        self.plugin.init_identity({'name': 'keys'})
-        keys = self.plugin.get_device_keys()
+        self.plugin.identity.init_identity({'name': 'keys'})
+        keys = self.plugin.identity.get_device_keys()
         self.assertTrue(keys['success'])
         self.assertTrue(keys['principal'])
         self.assertTrue(keys['device'])
@@ -313,43 +314,43 @@ class PluginWorkflowTest(unittest.TestCase):
         self.assertNotEqual(keys['principal'], keys['device'])
 
     def test_share_root_must_exist(self):
-        if not self.plugin.get_status()['kernel']['available']:
+        if not self.plugin.report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
-        self.plugin.init_identity({'name': 'shares'})
-        result = self.plugin.add_share({'share_id': 'x', 'path': str(self.tmp / 'nope')})
+        self.plugin.identity.init_identity({'name': 'shares'})
+        result = self.plugin.shares.add_share({'share_id': 'x', 'path': str(self.tmp / 'nope')})
         self.assertFalse(result['success'])
 
     def test_share_root_cannot_be_inside_data_root(self):
         """共享目录必须与程序数据、身份目录分离。"""
-        if not self.plugin.get_status()['kernel']['available']:
+        if not self.plugin.report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
-        self.plugin.init_identity({'name': 'guard'})
+        self.plugin.identity.init_identity({'name': 'guard'})
         inside = self.plugin.get_data_root()
         inside.mkdir(parents=True, exist_ok=True)
-        result = self.plugin.add_share({'share_id': 'bad', 'path': str(inside)})
+        result = self.plugin.shares.add_share({'share_id': 'bad', 'path': str(inside)})
         self.assertFalse(result['success'])
         self.assertIn('不得位于', result['error'])
 
     def test_add_and_remove_share(self):
-        if not self.plugin.get_status()['kernel']['available']:
+        if not self.plugin.report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
-        self.plugin.init_identity({'name': 'share-ok'})
+        self.plugin.identity.init_identity({'name': 'share-ok'})
         shared = self.tmp / 'shared'
         shared.mkdir()
         (shared / 'file.txt').write_text('hi', encoding='utf-8')
 
-        added = self.plugin.add_share({'share_id': 'docs', 'path': str(shared),
+        added = self.plugin.shares.add_share({'share_id': 'docs', 'path': str(shared),
                                        'read': 'group', 'write': 'owner'})
         self.assertTrue(added['success'], added)
-        self.assertEqual(len(self.plugin.get_status()['shares']), 1)
+        self.assertEqual(len(self.plugin.report.get_status()['shares']), 1)
 
         # 共享项声明必须能验签（内核在读取时会复核）
-        reloaded = self.plugin._load_shares()
+        reloaded = self.plugin.storage.load_shares()
         self.assertTrue(reloaded['docs'].declaration.verify_signature())
 
-        removed = self.plugin.remove_share({'share_id': 'docs'})
+        removed = self.plugin.shares.remove_share({'share_id': 'docs'})
         self.assertTrue(removed['success'])
-        self.assertEqual(self.plugin.get_status()['shares'], [])
+        self.assertEqual(self.plugin.report.get_status()['shares'], [])
 
     def test_new_share_has_no_capacity_limit(self):
         """**界面挂载共享项不设容量上限**（按实测放宽，见 shares.DEFAULT_MAX_BYTES）。
@@ -359,89 +360,89 @@ class PluginWorkflowTest(unittest.TestCase):
         它给不出可信保证，却会让人以为有防线。因此默认不设限，且**界面不再发送
         硬编码的 1 GiB**（那既不是用户选的，也挡不住并发）。
         """
-        if not self.plugin.get_status()['kernel']['available']:
+        if not self.plugin.report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
-        self.plugin.init_identity({'name': 'no-cap'})
+        self.plugin.identity.init_identity({'name': 'no-cap'})
         shared = self.tmp / 'shared-nocap'
         shared.mkdir()
 
-        added = self.plugin.add_share({'share_id': 'open', 'path': str(shared)})
+        added = self.plugin.shares.add_share({'share_id': 'open', 'path': str(shared)})
         self.assertTrue(added['success'], added)
         self.assertIsNone(added['max_bytes'], '不传 max_bytes 必须落成"不限制"')
-        self.assertIsNone(self.plugin._load_shares()['open'].max_bytes)
+        self.assertIsNone(self.plugin.storage.load_shares()['open'].max_bytes)
         # 状态载荷里也要是"不限制"，否则界面会显示成 0 MiB
         roots = self.plugin.get_share_roots()
         self.assertIsNone(roots[0]['max_bytes'])
 
         # 显式给 0 / None 同样是"不限制"
-        self.assertIsNone(self.plugin.add_share(
+        self.assertIsNone(self.plugin.shares.add_share(
             {'share_id': 'open0', 'path': str(shared), 'max_bytes': 0})['max_bytes'])
-        self.assertIsNone(self.plugin._load_shares()['open0'].max_bytes)
+        self.assertIsNone(self.plugin.storage.load_shares()['open0'].max_bytes)
 
     def test_explicit_capacity_limit_is_still_honoured(self):
         """保留显式设置上限的通道：它是"尽力而为"的防线，不是不可用的功能。"""
-        if not self.plugin.get_status()['kernel']['available']:
+        if not self.plugin.report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
-        self.plugin.init_identity({'name': 'with-cap'})
+        self.plugin.identity.init_identity({'name': 'with-cap'})
         shared = self.tmp / 'shared-cap'
         shared.mkdir()
 
-        added = self.plugin.add_share({'share_id': 'capped', 'path': str(shared),
+        added = self.plugin.shares.add_share({'share_id': 'capped', 'path': str(shared),
                                        'max_bytes': 2 * 1024 * 1024})
         self.assertTrue(added['success'], added)
         self.assertEqual(added['max_bytes'], 2 * 1024 * 1024)
-        self.assertEqual(self.plugin._load_shares()['capped'].max_bytes, 2 * 1024 * 1024)
+        self.assertEqual(self.plugin.storage.load_shares()['capped'].max_bytes, 2 * 1024 * 1024)
         # 非法取值必须明确拒绝，而不是静默当成"不限制"
-        bad = self.plugin.add_share({'share_id': 'bad-cap', 'path': str(shared),
+        bad = self.plugin.shares.add_share({'share_id': 'bad-cap', 'path': str(shared),
                                      'max_bytes': 'many'})
         self.assertFalse(bad['success'])
         self.assertIn('max_bytes', bad['error'])
 
     def test_bad_share_id_rejected(self):
-        if not self.plugin.get_status()['kernel']['available']:
+        if not self.plugin.report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
-        self.plugin.init_identity({'name': 'bad-id'})
+        self.plugin.identity.init_identity({'name': 'bad-id'})
         shared = self.tmp / 'shared2'
         shared.mkdir()
-        result = self.plugin.add_share({'share_id': '../evil', 'path': str(shared)})
+        result = self.plugin.shares.add_share({'share_id': '../evil', 'path': str(shared)})
         self.assertFalse(result['success'])
 
     def test_node_cannot_start_without_group(self):
-        if not self.plugin.get_status()['kernel']['available']:
+        if not self.plugin.report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
-        self.plugin.init_identity({'name': 'no-group'})
-        result = self.plugin.start_node()
+        self.plugin.identity.init_identity({'name': 'no-group'})
+        result = self.plugin.node.start()
         self.assertFalse(result['success'])
         self.assertIn('团体', result['error'])
 
     def test_node_start_and_stop(self):
         """真实监听一个随机端口，确认启停与状态回报。"""
-        if not self.plugin.get_status()['kernel']['available']:
+        if not self.plugin.report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
-        self.plugin.init_identity({'name': 'node'})
-        self.plugin.create_group({'group': 'node-group'})
+        self.plugin.identity.init_identity({'name': 'node'})
+        self.plugin.identity.create_group({'group': 'node-group'})
         self.assertTrue(self.plugin.update_setting('bind', '127.0.0.1'))
         # port=0 让内核分配空闲端口，避免测试撞上真实占用的 19443
         self.assertTrue(self.plugin.update_setting('port', 0))
 
-        started = self.plugin.start_node()
+        started = self.plugin.node.start()
         self.assertTrue(started['success'], started)
         self.assertTrue(started['node']['running'])
         self.assertIsNotNone(started['node']['listening'])
         self.assertNotIn(':0', started['node']['listening'] or ':0',
                          '监听地址应回报内核实际绑定的端口，而不是设置里的 0')
 
-        stopped = self.plugin.stop_node()
+        stopped = self.plugin.node.stop()
         self.assertTrue(stopped['success'])
         self.assertFalse(stopped['node']['running'])
 
     def test_join_group_rejects_bad_invite(self):
-        if not self.plugin.get_status()['kernel']['available']:
+        if not self.plugin.report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
-        self.plugin.init_identity({'name': 'joiner'})
+        self.plugin.identity.init_identity({'name': 'joiner'})
         for bad in ('', 'not-an-invite', 'gm1:!!!!'):
             with self.subTest(bad=bad):
-                result = self.plugin.join_group({'invite': bad})
+                result = self.plugin.identity.join_group({'invite': bad})
                 self.assertFalse(result['success'])
 
 
@@ -473,18 +474,18 @@ class RosterDistributionTest(unittest.TestCase):
         return plugin
 
     def test_member_can_update_from_v1_to_v2(self):
-        if not self._plugin('probe').get_status()['kernel']['available']:
+        if not self._plugin('probe').report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
 
         owner = self._plugin('owner')
         member = self._plugin('member')
-        owner.init_identity({'name': 'owner'})
-        member.init_identity({'name': 'member'})
+        owner.identity.init_identity({'name': 'owner'})
+        member.identity.init_identity({'name': 'member'})
 
         # 群主创建团体（v1），成员用邀请串加入
-        created = owner.create_group({'group': 'dist-group'})
+        created = owner.identity.create_group({'group': 'dist-group'})
         self.assertTrue(created['success'], created)
-        joined = member.join_group({'invite': created['invite']})
+        joined = member.identity.join_group({'invite': created['invite']})
         self.assertTrue(joined['success'], joined)
         self.assertFalse(joined['updated'], '首次加入不应标记为更新')
         self.assertEqual(joined['version'], 1)
@@ -492,19 +493,19 @@ class RosterDistributionTest(unittest.TestCase):
         self.assertFalse(joined['in_roster'])
 
         # 群主登记成员设备 -> 签发 v2
-        member_keys = member.get_device_keys()
-        added = owner.add_member({'principal': member_keys['principal'],
+        member_keys = member.identity.get_device_keys()
+        added = owner.identity.add_member({'principal': member_keys['principal'],
                                   'device': member_keys['device'],
                                   'name': 'member'})
         self.assertTrue(added['success'], added)
         self.assertEqual(added['version'], 2)
 
         # 成员侧此前看不到自己；拿到 v2 邀请串后才能对上
-        before = member.get_status()
+        before = member.report.get_status()
         self.assertFalse(before['roster']['in_roster'])
         self.assertEqual(before['roster']['version'], 1)
 
-        updated = member.join_group({'invite': added['invite']})
+        updated = member.identity.join_group({'invite': added['invite']})
         self.assertTrue(updated['success'], updated)
         self.assertTrue(updated['updated'], '应标记为"更新"而不是"加入"')
         self.assertEqual(updated['previous_version'], 1)
@@ -512,58 +513,58 @@ class RosterDistributionTest(unittest.TestCase):
         self.assertTrue(updated['in_roster'], 'v2 之后成员应能在名单里看到自己')
         self.assertEqual(updated['role'], 'member')
 
-        after = member.get_status()
+        after = member.report.get_status()
         self.assertEqual(after['roster']['version'], 2)
         self.assertTrue(after['roster']['in_roster'])
         self.assertEqual(after['roster']['member_count'], 2)
 
     def test_stale_invite_is_rejected_with_a_useful_message(self):
         """给出比本机更旧的邀请串时，要明确说明"本机已是 vN"。"""
-        if not self._plugin('probe2').get_status()['kernel']['available']:
+        if not self._plugin('probe2').report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
 
         owner = self._plugin('owner2')
         member = self._plugin('member2')
-        owner.init_identity({'name': 'owner'})
-        member.init_identity({'name': 'member'})
+        owner.identity.init_identity({'name': 'owner'})
+        member.identity.init_identity({'name': 'member'})
 
-        v1_invite = owner.create_group({'group': 'stale-group'})['invite']
-        self.assertTrue(member.join_group({'invite': v1_invite})['success'])
+        v1_invite = owner.identity.create_group({'group': 'stale-group'})['invite']
+        self.assertTrue(member.identity.join_group({'invite': v1_invite})['success'])
 
-        keys = member.get_device_keys()
-        v2_invite = owner.add_member({'principal': keys['principal'],
+        keys = member.identity.get_device_keys()
+        v2_invite = owner.identity.add_member({'principal': keys['principal'],
                                       'device': keys['device'], 'name': 'member'})['invite']
-        self.assertTrue(member.join_group({'invite': v2_invite})['success'])
+        self.assertTrue(member.identity.join_group({'invite': v2_invite})['success'])
 
         # 再贴一次 v1：版本未前进，必须被拒且提示里带上版本号
-        again = member.join_group({'invite': v1_invite})
+        again = member.identity.join_group({'invite': v1_invite})
         self.assertFalse(again['success'])
         self.assertIn('本机已是 v2', again['error'])
 
     def test_roster_update_requires_direct_successor(self):
         """跳版（v1 -> v3）必须被拒：规则 2 要求 prev 指向当前名单哈希。"""
-        if not self._plugin('probe3').get_status()['kernel']['available']:
+        if not self._plugin('probe3').report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
 
         owner = self._plugin('owner3')
         member = self._plugin('member3')
-        owner.init_identity({'name': 'owner'})
-        member.init_identity({'name': 'member'})
-        self.assertTrue(member.join_group(
-            {'invite': owner.create_group({'group': 'chain-group'})['invite']})['success'])
+        owner.identity.init_identity({'name': 'owner'})
+        member.identity.init_identity({'name': 'member'})
+        self.assertTrue(member.identity.join_group(
+            {'invite': owner.identity.create_group({'group': 'chain-group'})['invite']})['success'])
 
-        keys = member.get_device_keys()
-        owner.add_member({'principal': keys['principal'], 'device': keys['device'],
+        keys = member.identity.get_device_keys()
+        owner.identity.add_member({'principal': keys['principal'], 'device': keys['device'],
                           'name': 'member'})
         # 群主再加一个成员 -> v3，跳过 v2
         other = self._plugin('other3')
-        other.init_identity({'name': 'other'})
-        other_keys = other.get_device_keys()
-        v3 = owner.add_member({'principal': other_keys['principal'],
+        other.identity.init_identity({'name': 'other'})
+        other_keys = other.identity.get_device_keys()
+        v3 = owner.identity.add_member({'principal': other_keys['principal'],
                                'device': other_keys['device'], 'name': 'other'})
         self.assertEqual(v3['version'], 3)
 
-        skipped = member.join_group({'invite': v3['invite']})
+        skipped = member.identity.join_group({'invite': v3['invite']})
         self.assertFalse(skipped['success'], '跳版名单不应被接受')
         self.assertIn('prev', skipped['error'])
 
@@ -576,21 +577,21 @@ class RosterDistributionTest(unittest.TestCase):
         为什么必须锁落盘：只更新内存副本的话，插件重载（改设置、升级、壳重启）
         会退回旧名单 —— 表现成"刚升级完又变回去了"。
         """
-        if not self._plugin('probe4').get_status()['kernel']['available']:
+        if not self._plugin('probe4').report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
 
         owner = self._plugin('owner4')
         member = self._plugin('member4')
-        owner.init_identity({'name': 'owner'})
-        member.init_identity({'name': 'member'})
-        created = owner.create_group({'group': 'auto-dist'})
-        self.assertTrue(member.join_group({'invite': created['invite']})['success'])
+        owner.identity.init_identity({'name': 'owner'})
+        member.identity.init_identity({'name': 'member'})
+        created = owner.identity.create_group({'group': 'auto-dist'})
+        self.assertTrue(member.identity.join_group({'invite': created['invite']})['success'])
 
-        keys = member.get_device_keys()
-        added = owner.add_member({'principal': keys['principal'],
+        keys = member.identity.get_device_keys()
+        added = owner.identity.add_member({'principal': keys['principal'],
                                   'device': keys['device'], 'name': 'member'})
         self.assertEqual(added['version'], 2)
-        owner_roster = owner._load_roster()
+        owner_roster = owner.storage.load_roster()
         assert owner_roster is not None
 
         # 成员侧：拉一次"对端名单"，走的就是 `_fetch_registry_from` 里那条自动路径
@@ -603,33 +604,33 @@ class RosterDistributionTest(unittest.TestCase):
                 return {'status': 'ok', 'roster': self.roster.to_dict(),
                         'version': self.roster.version, 'group': self.roster.group}
 
-        member._adopt_remote_roster(_FakeConnection(owner_roster), ('127.0.0.1', 19443))
+        member.discovery.adopt_remote_roster(_FakeConnection(owner_roster), ('127.0.0.1', 19443))
 
-        after = member.get_status()
+        after = member.report.get_status()
         self.assertEqual(after['roster']['version'], 2, '成员应已升到 v2')
         self.assertTrue(after['roster']['in_roster'], 'v2 之后成员能看到自己')
         notice = after['roster']['adopted_notice']
         self.assertIsNotNone(notice, '界面要能显示"已从对方升级名单"')
         self.assertEqual((notice['previous_version'], notice['version']), (1, 2))
         # 落盘：重新读盘仍是 v2（插件重载不会退回旧名单）
-        reloaded = member._load_roster()
+        reloaded = member.storage.load_roster()
         assert reloaded is not None
         self.assertEqual(reloaded.version, 2)
         # 对端名单版本也被记下来，供界面做对照
-        self.assertEqual(member._peer_roster_notes[('127.0.0.1', 19443)]['version'], 2)
+        self.assertEqual(member.facts.roster_notes[('127.0.0.1', 19443)]['version'], 2)
 
     def test_stale_roster_from_a_peer_is_ignored(self):
         """对端报的名单不比本机新时直接跳过：不该白白写盘，也不该把已采纳的清掉。"""
-        if not self._plugin('probe5').get_status()['kernel']['available']:
+        if not self._plugin('probe5').report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
 
         owner = self._plugin('owner5')
         member = self._plugin('member5')
-        owner.init_identity({'name': 'owner'})
-        member.init_identity({'name': 'member'})
-        v1 = owner.create_group({'group': 'stale-dist'})['invite']
-        self.assertTrue(member.join_group({'invite': v1})['success'])
-        v1_roster = owner._load_roster()
+        owner.identity.init_identity({'name': 'owner'})
+        member.identity.init_identity({'name': 'member'})
+        v1 = owner.identity.create_group({'group': 'stale-dist'})['invite']
+        self.assertTrue(member.identity.join_group({'invite': v1})['success'])
+        v1_roster = owner.storage.load_roster()
         assert v1_roster is not None
 
         class _FakeConnection:
@@ -640,8 +641,8 @@ class RosterDistributionTest(unittest.TestCase):
                 return {'status': 'ok', 'roster': self.roster.to_dict(),
                         'version': self.roster.version, 'group': self.roster.group}
 
-        member._adopt_remote_roster(_FakeConnection(v1_roster), ('127.0.0.1', 19443))
-        self.assertIsNone(member.get_status()['roster']['adopted_notice'])
+        member.discovery.adopt_remote_roster(_FakeConnection(v1_roster), ('127.0.0.1', 19443))
+        self.assertIsNone(member.report.get_status()['roster']['adopted_notice'])
 
 
     def test_group_operations_record_roster_history(self):
@@ -651,47 +652,57 @@ class RosterDistributionTest(unittest.TestCase):
         少了任何一处，落后多版的设备就会过不了准入，表现为"我明明被加进去了，
         却拉不到新名单"，而原因藏在另一台机器上。
         """
-        if not self._plugin('probe6').get_status()['kernel']['available']:
+        if not self._plugin('probe6').report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
 
         owner = self._plugin('owner6')
         member = self._plugin('member6')
-        owner.init_identity({'name': 'owner'})
-        member.init_identity({'name': 'member'})
-        created = owner.create_group({'group': 'history-group'})          # v1
-        self.assertEqual([r.version for r in owner._load_roster_history()], [1])
+        owner.identity.init_identity({'name': 'owner'})
+        member.identity.init_identity({'name': 'member'})
+        created = owner.identity.create_group({'group': 'history-group'})          # v1
+        self.assertEqual([r.version for r in owner.storage.load_roster_history()], [1])
 
-        keys = member.get_device_keys()
-        added = owner.add_member({'principal': keys['principal'],
+        keys = member.identity.get_device_keys()
+        added = owner.identity.add_member({'principal': keys['principal'],
                                   'device': keys['device'], 'name': 'member'})   # v2
-        self.assertEqual([r.version for r in owner._load_roster_history()], [2, 1],
+        self.assertEqual([r.version for r in owner.storage.load_roster_history()], [2, 1],
                          '群主签发的新版本必须进历史')
         # 历史落盘：换一个实例（模拟插件重载）仍读得到
         reloaded = self._plugin('owner6')
-        self.assertEqual([r.version for r in reloaded._load_roster_history()], [2, 1])
+        self.assertEqual([r.version for r in reloaded.storage.load_roster_history()], [2, 1])
 
         # 成员用 v1 加入、再用 v2 更新：两次都要进它自己的历史
-        self.assertTrue(member.join_group({'invite': created['invite']})['success'])
-        self.assertEqual([r.version for r in member._load_roster_history()], [1])
-        self.assertTrue(member.join_group({'invite': added['invite']})['success'])
-        self.assertEqual([r.version for r in member._load_roster_history()], [2, 1],
+        self.assertTrue(member.identity.join_group({'invite': created['invite']})['success'])
+        self.assertEqual([r.version for r in member.storage.load_roster_history()], [1])
+        self.assertTrue(member.identity.join_group({'invite': added['invite']})['success'])
+        self.assertEqual([r.version for r in member.storage.load_roster_history()], [2, 1],
                          '成员收到的每个版本都必须进历史')
 
     def test_history_survives_plugin_reload(self):
         """历史落盘：插件重载（改设置、升级、壳重启）后仍然认得出旧版本。"""
-        if not self._plugin('probe7').get_status()['kernel']['available']:
+        if not self._plugin('probe7').report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
 
         owner = self._plugin('owner7')
-        owner.init_identity({'name': 'owner'})
-        owner.create_group({'group': 'reload-group'})
+        owner.identity.init_identity({'name': 'owner'})
+        owner.identity.create_group({'group': 'reload-group'})
         member = self._plugin('member7')
-        member.init_identity({'name': 'member'})
-        self.assertTrue(member.join_group(
-            {'invite': owner.get_invite()['invite']})['success'])
+        member.identity.init_identity({'name': 'member'})
+        self.assertTrue(member.identity.join_group(
+            {'invite': owner.identity.get_invite()['invite']})['success'])
 
         reloaded = self._plugin('member7')
-        self.assertEqual([r.version for r in reloaded._load_roster_history()], [1])
+        self.assertEqual([r.version for r in reloaded.storage.load_roster_history()], [1])
+
+
+class _EngineSpy:
+    """只记录 `reset_throttle` 的替身引擎（共享项增删应当触发一次）。"""
+
+    def __init__(self) -> None:
+        self.resets = 0
+
+    def reset_throttle(self) -> None:
+        self.resets += 1
 
 
 class ShareLocationTest(unittest.TestCase):
@@ -718,7 +729,7 @@ class ShareLocationTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def _add(self, share_id='docs'):
-        return self.plugin.add_share({'share_id': share_id, 'path': str(self.shared),
+        return self.plugin.shares.add_share({'share_id': share_id, 'path': str(self.shared),
                                       'read': 'group', 'write': 'owner'})
 
     def assertSamePath(self, actual, expected, msg=''):
@@ -735,21 +746,21 @@ class ShareLocationTest(unittest.TestCase):
                              os.path.normcase(str(Path(expected).resolve())), msg)
 
     def test_location_is_stored_separately_from_declaration(self):
-        self.plugin.init_identity({'name': 'loc'})
+        self.plugin.identity.init_identity({'name': 'loc'})
         self.assertTrue(self._add()['success'])
-        roots_file = self.plugin.identity_dir / 'share_roots.json'
+        roots_file = self.plugin.storage.identity_dir / 'share_roots.json'
         self.assertTrue(roots_file.is_file(), '位置应写进独立的 share_roots.json')
         roots = json.loads(roots_file.read_text(encoding='utf-8'))['roots']
         self.assertSamePath(roots['docs']['path'], self.shared)
         # 声明文件里不应再持有路径（那是本机事实，不该进签名对象）
-        shares = json.loads((self.plugin.identity_dir / 'shares.json')
+        shares = json.loads((self.plugin.storage.identity_dir / 'shares.json')
                             .read_text(encoding='utf-8'))['shares']
         self.assertIn('declaration', shares['docs'])
         self.assertEqual(shares['docs']['declaration']['acl']['read'], 'group')
 
     def test_location_reports_missing_directory(self):
         """共享根所在磁盘未接入时必须报"不可用"，而不是让对端看到空目录。"""
-        self.plugin.init_identity({'name': 'missing'})
+        self.plugin.identity.init_identity({'name': 'missing'})
         self.assertTrue(self._add()['success'])
         roots = self.plugin.get_share_roots()
         self.assertEqual(len(roots), 1)
@@ -773,15 +784,24 @@ class ShareLocationTest(unittest.TestCase):
                             str(self.plugin.downloads_dir.resolve()))
 
     def test_refresh_reports_usage(self):
-        self.plugin.init_identity({'name': 'usage'})
+        self.plugin.identity.init_identity({'name': 'usage'})
         (self.shared / 'a.bin').write_bytes(b'x' * 1000)
         self.assertTrue(self._add()['success'])
-        result = self.plugin.refresh_share_roots()
-        self.assertTrue(result['success'])
-        item = result['roots'][0]
+        first = self.plugin.shares.refresh_share_roots()
+        self.assertTrue(first['success'])
+        item = first['roots'][0]
         self.assertTrue(item['available'])
         self.assertEqual(item['used_bytes'], 1000)
         self.assertEqual(item['entries'], 1)
+        self.assertGreaterEqual(first['changed'], 1, '冷启动播种根目录也是目录集合变化')
+
+        steady = self.plugin.shares.refresh_share_roots()
+        self.assertEqual(steady['changed'], 0, '稳态没有目录集合变化')
+
+        (self.shared / 'newdir').mkdir()
+        moved = self.plugin.shares.refresh_share_roots()
+        self.assertGreaterEqual(moved['changed'], 1,
+                                '新建目录必须体现在 changed（track_entries=False 的唯一信号）')
 
     def test_tree_usage_flags_lower_bound_when_stopped_early(self):
         """命中配额就停下时数字只是下界，必须标截断（界面据此显示"≥"）。
@@ -791,11 +811,11 @@ class ShareLocationTest(unittest.TestCase):
         """
         (self.shared / 'a.bin').write_bytes(b'x' * 1000)
 
-        used, truncated = self.plugin._tree_usage(self.shared, limit=10)
+        used, truncated = self.plugin.storage.tree_usage(self.shared, limit=10)
 
         self.assertGreaterEqual(used, 10)
         self.assertTrue(truncated, '提前停下必须标截断')
-        full, truncated_full = self.plugin._tree_usage(self.shared)
+        full, truncated_full = self.plugin.storage.tree_usage(self.shared)
         self.assertEqual(full, 1000)
         self.assertFalse(truncated_full)
 
@@ -803,7 +823,7 @@ class ShareLocationTest(unittest.TestCase):
         """用量由统一刷新的「校验」算出来并缓存（旧入口没有任何调用方）。"""
         from shell.backend.freshness import engine_for
 
-        self.plugin.init_identity({'name': 'usage-verify'})
+        self.plugin.identity.init_identity({'name': 'usage-verify'})
         (self.shared / 'b.bin').write_bytes(b'y' * 512)
         self.assertTrue(self._add()['success'])
         engine = engine_for(self.plugin)
@@ -814,7 +834,226 @@ class ShareLocationTest(unittest.TestCase):
 
         self.assertEqual(report['pass_end'].get('shares'), 1)
         self.assertEqual(report['pass_end'].get('used_bytes'), 512)
-        self.assertTrue(self.plugin._usage_cache)
+        self.assertTrue(self.plugin.shares.usage_cache)
+
+    # ===== 用量失效、根集合变化、状态序列化 =====
+
+    def test_dirs_changed_invalidates_only_the_affected_root(self):
+        """目录集合变化按根归属作废：没走到的共享根保留数字。
+
+        生产路径：引擎同步产出 `new_dirs`，`Shares.dirs_changed` 按根前缀还原归属。
+        不再直接调 `shares.derive()` —— 那个钩子在 `track_entries=False` 下不会被引擎
+        调用，直接调它只能证明"方法能跑"，证明不了生产路径会失效。
+        """
+        from shell.backend.freshness import engine_for
+
+        self.plugin.identity.init_identity({'name': 'usage-dirs'})
+        other = self.tmp / 'other'
+        other.mkdir()
+        (self.shared / 'a.bin').write_bytes(b'x' * 512)
+        (other / 'b.bin').write_bytes(b'y' * 256)
+        self.assertTrue(self._add()['success'])
+        self.assertTrue(self.plugin.shares.add_share(
+            {'share_id': 'other', 'path': str(other)})['success'])
+        engine = engine_for(self.plugin)
+        self.assertIsNotNone(engine)
+        engine.verify()
+        before = {item['share_id']: item for item in self.plugin.get_share_roots()}
+        self.assertEqual(before['docs']['used_bytes'], 512)
+        self.assertEqual(before['other']['used_bytes'], 256)
+
+        (self.shared / 'later').mkdir()
+        report = engine.sync('', force=True)
+
+        self.assertIn('later', report.get('new_dirs') or [],
+                      '首根（docs）的目录键不带前缀')
+        after = {item['share_id']: item for item in self.plugin.get_share_roots()}
+        self.assertIsNone(after['docs']['used_bytes'], '受影响根的用量作废（显示占位）')
+        self.assertTrue(after['docs']['usage_stale'])
+        self.assertEqual(after['other']['used_bytes'], 256, '没走到的根不能被清成占位')
+        self.assertEqual(after['other']['entries'], 1)
+        self.assertFalse(after['other']['usage_stale'])
+
+    def test_verify_recomputes_usage_after_nested_change(self):
+        """子目录内容变化不改根目录指纹：整趟校验必须无条件重算用量。
+
+        生产路径：真引擎 `verify()`。同步路径保持廉价（根指纹），校验是权威结论。
+        """
+        from shell.backend.freshness import engine_for
+
+        self.plugin.identity.init_identity({'name': 'usage-nested'})
+        sub = self.shared / 'sub'
+        sub.mkdir()
+        (self.shared / 'a.bin').write_bytes(b'x' * 512)
+        self.assertTrue(self._add()['success'])
+        engine = engine_for(self.plugin)
+        self.assertIsNotNone(engine)
+        engine.verify()
+
+        (sub / 'later.bin').write_bytes(b'y' * 256)      # 只改子目录：根 mtime 不变
+        cached = self.plugin.get_share_roots()[0]
+        self.assertEqual(cached['used_bytes'], 512, '同步路径仍按根指纹，首屏不重扫')
+        self.assertFalse(cached['usage_stale'])
+
+        report = engine.verify()
+
+        self.assertEqual(report['pass_end'].get('used_bytes'), 768,
+                         '校验是权威结论：必须忽略根指纹重算')
+        fresh = self.plugin.get_share_roots()[0]
+        self.assertEqual(fresh['used_bytes'], 768)
+        self.assertFalse(fresh['usage_stale'], '重算之后不应再标待更新')
+
+    def test_entry_hooks_are_not_called_under_track_entries_false(self):
+        """`track_entries=False` 下引擎不调 derive / prune / on_verified。"""
+        from shell.backend.freshness import engine_for
+
+        self.plugin.identity.init_identity({'name': 'usage-hooks'})
+        (self.shared / 'a.bin').write_bytes(b'x' * 512)
+        self.assertTrue(self._add()['success'])
+        seen = []
+        self.plugin.shares.derive = lambda items: seen.append('derive') or {'count': 0}
+        self.plugin.shares.prune = lambda keys: seen.append('prune') or 0
+        self.plugin.shares.audit = lambda keys: seen.append('audit') or {}
+        engine = engine_for(self.plugin)
+        self.assertIsNotNone(engine)
+
+        engine.verify()
+
+        self.assertEqual(seen, [], '没有条目键集合，条目级钩子一个都不该被调用')
+
+    def test_share_changes_reset_sync_throttle(self):
+        """共享根集合变了：下一次同步不该被最小间隔挡掉。"""
+        module = load_plugin_module()
+        original = module.engine_for
+        spy = _EngineSpy()
+
+        def fake_engine(_plugin):
+            return spy
+
+        module.engine_for = fake_engine
+        try:
+            self.plugin.identity.init_identity({'name': 'throttle'})
+            self.assertTrue(self._add()['success'])
+            self.assertTrue(self.plugin.shares.remove_share({'share_id': 'docs'})['success'])
+        finally:
+            module.engine_for = original
+        self.assertEqual(spy.resets, 2, '挂载与移除共享项各应让下一趟同步立即生效')
+
+    def test_share_roots_report_cached_usage_without_scanning(self):
+        """首屏读缓存；用量作废后才由 `share_roots_report` 现算。"""
+        from shell.backend.freshness import engine_for
+
+        self.plugin.identity.init_identity({'name': 'usage-cache'})
+        (self.shared / 'a.bin').write_bytes(b'x' * 512)
+        self.assertTrue(self._add()['success'])
+        engine = engine_for(self.plugin)
+        self.assertIsNotNone(engine)
+        engine.verify()
+
+        (self.shared / 'b.bin').write_bytes(b'y' * 1024)
+        cached = self.plugin.get_share_roots()[0]
+        self.assertEqual(cached['used_bytes'], 512, '首屏不应重新遍历共享根')
+        self.assertTrue(cached['usage_stale'], '根目录指纹变了：旧用量必须标成待更新')
+
+        # 目录集合变化（真路径：引擎同步）让受影响根作废；下一次读取先给占位。
+        (self.shared / 'later').mkdir()
+        engine.sync('', force=True)
+        stale = self.plugin.get_share_roots()[0]
+        self.assertIsNone(stale['used_bytes'])
+        self.assertIsNone(stale['entries'])
+        self.assertTrue(stale['usage_stale'])
+
+        fresh = self.plugin.shares.share_roots_report()[0]
+        self.assertEqual(fresh['used_bytes'], 1536)
+        self.assertGreater(fresh['usage_at'], 0)
+        again = self.plugin.shares.share_roots_report()[0]
+        self.assertEqual(again['used_bytes'], 1536, '算过的用量复用缓存，不重扫')
+
+    # ===== 用量与目录指纹（E3） =====
+
+    def test_spec_declares_track_entries_false(self):
+        """共享根只关心目录级事实：声明不维护逐条目派生数据，并交出目录事件钩子。"""
+        spec = self.plugin.freshness_spec()
+
+        self.assertIs(spec.get('track_entries'), False)
+        self.assertTrue(callable(spec.get('on_dirs_changed')))
+
+    def test_usage_stale_follows_root_fingerprint(self):
+        """用量标不标待更新只看"是不是按当前根目录指纹算的"。"""
+        from shell.backend.freshness import engine_for
+
+        self.plugin.identity.init_identity({'name': 'usage-stamp'})
+        (self.shared / 'a.bin').write_bytes(b'x' * 512)
+        self.assertTrue(self._add()['success'])
+        engine = engine_for(self.plugin)
+        self.assertIsNotNone(engine)
+        engine.verify()
+
+        fresh = self.plugin.get_share_roots()[0]
+        self.assertEqual(fresh['used_bytes'], 512)
+        self.assertFalse(fresh['usage_stale'], '刚算过的用量与当前目录一致')
+
+        (self.shared / 'later.bin').write_bytes(b'z' * 256)
+        cached = self.plugin.get_share_roots()[0]
+        self.assertEqual(cached['used_bytes'], 512, '首屏不重扫，数字仍是上次的')
+        self.assertTrue(cached['usage_stale'], '根目录指纹变了，数字必须标成待更新')
+
+        rescanned = self.plugin.shares.share_roots_report()[0]
+        self.assertEqual(rescanned['used_bytes'], 768)
+        self.assertFalse(rescanned['usage_stale'], '重算之后又回到与目录一致')
+
+    def test_truncated_dirs_change_keeps_other_roots_and_marks_stale(self):
+        """目录列表被截断时无法归属：别的根保留旧数字、只标待更新（不清成占位）。"""
+        from shell.backend.freshness import engine_for
+
+        self.plugin.identity.init_identity({'name': 'usage-truncated'})
+        other = self.tmp / 'other'
+        other.mkdir()
+        (self.shared / 'a.bin').write_bytes(b'x' * 512)
+        (other / 'b.bin').write_bytes(b'y' * 256)
+        self.assertTrue(self._add()['success'])
+        self.assertTrue(self.plugin.shares.add_share(
+            {'share_id': 'other', 'path': str(other)})['success'])
+        engine = engine_for(self.plugin)
+        self.assertIsNotNone(engine)
+        engine.verify()
+
+        for index in range(60):        # 引擎把 new_dirs 截断到 50 条
+            (self.shared / f'bulk{index}').mkdir()
+        report = engine.sync('', force=True)
+        self.assertGreater(report['new_dirs_truncated'], 0)
+
+        after = {item['share_id']: item for item in self.plugin.get_share_roots()}
+        self.assertIsNone(after['docs']['used_bytes'], '可见目录变化落在 docs：其用量作废')
+        self.assertEqual(after['other']['used_bytes'], 256,
+                         '无法归属不等于该清别的根：数字保留')
+        self.assertTrue(after['other']['usage_stale'], '无法确认时只标待更新')
+
+    def test_status_carries_usage_errors_and_offline_facts(self):
+        """`get_status` 要能被 JSON 序列化，并带上用量与"跑得好不好"。"""
+        from shell.backend.freshness import engine_for
+
+        self.plugin.identity.init_identity({'name': 'status'})
+        (self.shared / 'a.bin').write_bytes(b'x' * 512)
+        self.assertTrue(self._add()['success'])
+        engine = engine_for(self.plugin)
+        self.assertIsNotNone(engine)
+        engine.verify()
+        self.plugin.facts.mark_unreachable(('fe80::1', 47810), '连不上: 超时')
+
+        status = self.plugin.report.get_status()
+        json.dumps(status, ensure_ascii=False)   # 元组键会让序列化直接失败
+
+        share = status['share_roots'][0]
+        self.assertEqual(share['used_bytes'], 512)
+        self.assertEqual(share['entries'], 1)
+        self.assertFalse(share['usage_stale'])
+        self.assertIsInstance(share['usage_at'], int)
+        self.assertEqual(status['shares'][0]['used_bytes'], 512)
+
+        self.assertIsInstance(status['sync']['errors'], list)
+        self.assertEqual(status['sync']['unreachable'],
+                         [{'endpoint': 'fe80::1:47810', 'error': '连不上: 超时'}])
 
 
 class RemoteApiTest(unittest.TestCase):
@@ -838,14 +1077,14 @@ class RemoteApiTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_list_peers_needs_identity_and_group(self):
-        result = self.plugin.list_peers(refresh=False)
+        result = self.plugin.peers.list_peers(refresh=False)
         self.assertFalse(result['success'])
         self.assertIn('身份', result['error'])
 
     def test_list_peers_without_registry_is_empty_and_honest(self):
-        self.plugin.init_identity({'name': 'solo'})
-        self.plugin.create_group({'group': 'solo-group'})
-        result = self.plugin.list_peers(refresh=False)
+        self.plugin.identity.init_identity({'name': 'solo'})
+        self.plugin.identity.create_group({'group': 'solo-group'})
+        result = self.plugin.peers.list_peers(refresh=False)
         self.assertTrue(result['success'])
         # 名单里只有自己：本机不作为"对端"列出
         self.assertEqual(result['peers'], [])
@@ -857,8 +1096,8 @@ class RemoteApiTest(unittest.TestCase):
         否则用户会以为"名单里少了个人" —— 而实际只是那台设备没启动过节点。
         """
         owner = self.plugin
-        owner.init_identity({'name': 'owner'})
-        created = owner.create_group({'group': 'peer-group'})
+        owner.identity.init_identity({'name': 'owner'})
+        created = owner.identity.create_group({'group': 'peer-group'})
         self.assertTrue(created['success'])
 
         member_dir = self.tmp / 'member'
@@ -867,12 +1106,12 @@ class RemoteApiTest(unittest.TestCase):
             member_manifest, {'directories': {'data_root': str(member_dir / 'data')}})
         member._settings_store = SettingsStore(str(member_dir / 'settings'))
         self.addCleanup(member.on_unload)
-        member.init_identity({'name': 'member'})
-        keys = member.get_device_keys()
-        self.assertTrue(owner.add_member({'principal': keys['principal'],
+        member.identity.init_identity({'name': 'member'})
+        keys = member.identity.get_device_keys()
+        self.assertTrue(owner.identity.add_member({'principal': keys['principal'],
                                           'device': keys['device'], 'name': 'member'})['success'])
 
-        peers = owner.list_peers(refresh=False)['peers']
+        peers = owner.peers.list_peers(refresh=False)['peers']
         self.assertEqual(len(peers), 1)
         self.assertEqual(peers[0]['name'], 'member')
         self.assertEqual(peers[0]['shares'], [])
@@ -880,17 +1119,17 @@ class RemoteApiTest(unittest.TestCase):
 
     def test_list_remote_without_any_peer_address_is_explained(self):
         """发现必须先有起点：没有任何对端地址时要说清"去哪登记"，而不是空列表。"""
-        self.plugin.init_identity({'name': 'req'})
-        self.plugin.create_group({'group': 'req-group'})
-        result = self.plugin.list_remote({})
+        self.plugin.identity.init_identity({'name': 'req'})
+        self.plugin.identity.create_group({'group': 'req-group'})
+        result = self.plugin.remote.list_remote({})
         self.assertFalse(result['success'])
         self.assertIn('对端', result['error'])
 
     def test_list_remote_unknown_device_needs_an_address(self):
         """注册表里没有这台设备（且没登记过地址）时，错误要给出下一步动作。"""
-        self.plugin.init_identity({'name': 'unknown'})
-        self.plugin.create_group({'group': 'unknown-group'})
-        result = self.plugin.list_remote({'device_id': 'ff' * 32})
+        self.plugin.identity.init_identity({'name': 'unknown'})
+        self.plugin.identity.create_group({'group': 'unknown-group'})
+        result = self.plugin.remote.list_remote({'device_id': 'ff' * 32})
         self.assertFalse(result['success'])
         self.assertIn('地址', result['error'])
 
@@ -899,35 +1138,35 @@ class RemoteApiTest(unittest.TestCase):
 
         用 TEST-NET-1（192.0.2.0/24，RFC 5737 保留给文档用，不会真的有人监听）。
         """
-        self.plugin.init_identity({'name': 'offline'})
-        self.plugin.create_group({'group': 'offline-group'})
-        added = self.plugin.peers({'action': 'add', 'endpoint': '192.0.2.1:19443',
+        self.plugin.identity.init_identity({'name': 'offline'})
+        self.plugin.identity.create_group({'group': 'offline-group'})
+        added = self.plugin.peers.action({'action': 'add', 'endpoint': '192.0.2.1:19443',
                                    'name': 'nowhere'})
         self.assertTrue(added['success'])
-        result = self.plugin.list_remote({})
+        result = self.plugin.remote.list_remote({})
         self.assertFalse(result['success'])
         self.assertTrue(result.get('offline'), result)
         self.assertIn('连不上', result['error'])
 
     def test_peers_endpoint_parsing(self):
         """IPv6 必须写方括号 —— 裸地址里有多个冒号，按最后一个切会得到假合法结果。"""
-        self.plugin.init_identity({'name': 'parse'})
+        self.plugin.identity.init_identity({'name': 'parse'})
         for bad in ('', 'host-only', 'a:b:c', '127.0.0.1:0', '[::1]'):
             with self.subTest(bad=bad):
-                self.assertFalse(self.plugin.peers({'action': 'add', 'endpoint': bad})['success'])
-        good = self.plugin.peers({'action': 'add', 'endpoint': '[2409:8a60::1]:19443'})
+                self.assertFalse(self.plugin.peers.action({'action': 'add', 'endpoint': bad})['success'])
+        good = self.plugin.peers.action({'action': 'add', 'endpoint': '[2409:8a60::1]:19443'})
         self.assertTrue(good['success'], good)
         self.assertEqual(good['peers'][0]['host'], '2409:8a60::1')
         self.assertEqual(good['peers'][0]['port'], 19443)
-        removed = self.plugin.peers({'action': 'remove', 'endpoint': '[2409:8a60::1]:19443'})
+        removed = self.plugin.peers.action({'action': 'remove', 'endpoint': '[2409:8a60::1]:19443'})
         self.assertTrue(removed['success'])
         self.assertEqual(removed['removed'], 1)
 
     def test_download_remote_rejects_traversal_before_connecting(self):
         """对端给的相对路径可能带 `..`：必须在连之前就拒，不能靠对端自觉。"""
-        self.plugin.init_identity({'name': 'trav'})
-        self.plugin.create_group({'group': 'trav-group'})
-        result = self.plugin.download_remote({'device_id': 'ff' * 32, 'share_id': 'x',
+        self.plugin.identity.init_identity({'name': 'trav'})
+        self.plugin.identity.create_group({'group': 'trav-group'})
+        result = self.plugin.remote.download_remote({'device_id': 'ff' * 32, 'share_id': 'x',
                                               'path': '../../escape.bin'})
         self.assertFalse(result['success'])
         self.assertIn('越界', result['error'])
@@ -945,16 +1184,16 @@ class RemoteApiTest(unittest.TestCase):
         """
         import time as _time
 
-        if not self.plugin.get_status()['kernel']['available']:
+        if not self.plugin.report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
-        self.plugin.init_identity({'name': 'probe-budget'})
-        self.plugin.create_group({'group': 'budget-group'})
-        added = self.plugin.peers({'action': 'add', 'endpoint': '192.0.2.11:19443',
+        self.plugin.identity.init_identity({'name': 'probe-budget'})
+        self.plugin.identity.create_group({'group': 'budget-group'})
+        added = self.plugin.peers.action({'action': 'add', 'endpoint': '192.0.2.11:19443',
                                    'name': 'dead'})
         self.assertTrue(added['success'], added)
 
         started = _time.monotonic()
-        result = self.plugin.list_peers({'refresh': True})
+        result = self.plugin.peers.list_peers({'refresh': True})
         elapsed = _time.monotonic() - started
         self.assertTrue(result['success'])
         # 预算 4 秒 + 余量；旧实现（20 秒超时、串行）会远超这个值
@@ -978,12 +1217,12 @@ class RemoteApiTest(unittest.TestCase):
 
         from shell.groupmesh.transport import exchange_hello
 
-        if not self.plugin.get_status()['kernel']['available']:
+        if not self.plugin.report.get_status()['kernel']['available']:
             self.skipTest('协议内核不可用')
-        self.plugin.init_identity({'name': 'stalled'})
-        self.plugin.create_group({'group': 'stalled-group'})
+        self.plugin.identity.init_identity({'name': 'stalled'})
+        self.plugin.identity.create_group({'group': 'stalled-group'})
         self.plugin.update_setting('bind', '127.0.0.1')
-        started = self.plugin.start_node()
+        started = self.plugin.node.start()
         self.assertTrue(started['success'], started)
         host, port = started['node']['listening'].rsplit(':', 1)
         port = int(port)
@@ -995,7 +1234,7 @@ class RemoteApiTest(unittest.TestCase):
         _time.sleep(0.3)
 
         began = _time.monotonic()
-        stopped = self.plugin.stop_node()
+        stopped = self.plugin.node.stop()
         elapsed = _time.monotonic() - began
         self.assertTrue(stopped['success'],
                         f'有僵死连接时停止必须成功，实际: {stopped.get("error")}')
@@ -1004,13 +1243,13 @@ class RemoteApiTest(unittest.TestCase):
         self.assertFalse(stopped['node']['running'])
 
         # 停完必须能立刻重新起（端口真的释放了）
-        again = self.plugin.start_node()
+        again = self.plugin.node.start()
         self.assertTrue(again['success'], f'停止后应当能重新启动: {again.get("error")}')
 
     def test_download_remote_requires_share_and_path(self):
-        self.plugin.init_identity({'name': 'needargs'})
-        self.plugin.create_group({'group': 'needargs-group'})
-        result = self.plugin.download_remote({'device_id': 'ff' * 32})
+        self.plugin.identity.init_identity({'name': 'needargs'})
+        self.plugin.identity.create_group({'group': 'needargs-group'})
+        result = self.plugin.remote.download_remote({'device_id': 'ff' * 32})
         self.assertFalse(result['success'])
         self.assertIn('share_id', result['error'])
 
@@ -1020,31 +1259,31 @@ class RemoteApiTest(unittest.TestCase):
     # 来源不该外传、目标路径越界），不该因为"设备不可达"而改变结论。
 
     def test_upload_remote_requires_share_and_local_path(self):
-        self.plugin.init_identity({'name': 'up-needargs'})
-        self.plugin.create_group({'group': 'up-group'})
-        result = self.plugin.upload_remote({'device_id': 'ff' * 32})
+        self.plugin.identity.init_identity({'name': 'up-needargs'})
+        self.plugin.identity.create_group({'group': 'up-group'})
+        result = self.plugin.upload.upload_remote({'device_id': 'ff' * 32})
         self.assertFalse(result['success'])
         self.assertIn('share_id', result['error'])
-        result = self.plugin.upload_remote({'device_id': 'ff' * 32, 'share_id': 'x'})
+        result = self.plugin.upload.upload_remote({'device_id': 'ff' * 32, 'share_id': 'x'})
         self.assertFalse(result['success'])
         self.assertIn('本机文件', result['error'])
 
     def test_upload_remote_rejects_missing_local_file(self):
-        self.plugin.init_identity({'name': 'up-missing'})
-        self.plugin.create_group({'group': 'up-group'})
-        result = self.plugin.upload_remote({'device_id': 'ff' * 32, 'share_id': 'x',
+        self.plugin.identity.init_identity({'name': 'up-missing'})
+        self.plugin.identity.create_group({'group': 'up-group'})
+        result = self.plugin.upload.upload_remote({'device_id': 'ff' * 32, 'share_id': 'x',
                                             'local_path': str(self.tmp / 'nope.bin')})
         self.assertFalse(result['success'])
         self.assertIn('不存在', result['error'])
 
     def test_upload_remote_rejects_target_traversal(self):
         """目标相对路径带 `..` 或绝对路径必须在连之前拒掉。"""
-        self.plugin.init_identity({'name': 'up-trav'})
-        self.plugin.create_group({'group': 'up-group'})
+        self.plugin.identity.init_identity({'name': 'up-trav'})
+        self.plugin.identity.create_group({'group': 'up-group'})
         source = self.tmp / 'src.bin'
         source.write_bytes(b'x')
         for bad in ('../../escape.bin', '/etc/passwd', 'sub/../../escape.bin', 'sub/'):
-            result = self.plugin.upload_remote({'device_id': 'ff' * 32, 'share_id': 'x',
+            result = self.plugin.upload.upload_remote({'device_id': 'ff' * 32, 'share_id': 'x',
                                                 'local_path': str(source),
                                                 'remote_path': bad})
             self.assertFalse(result['success'], f'{bad} 竟被接受')
@@ -1052,19 +1291,19 @@ class RemoteApiTest(unittest.TestCase):
 
     def test_upload_remote_refuses_identity_and_cache_sources(self):
         """身份目录（明文私钥）与远端物化缓存（别人的数据）都不许传出去。"""
-        self.plugin.init_identity({'name': 'up-guard'})
-        self.plugin.create_group({'group': 'up-group'})
-        secret = self.plugin.identity_dir / 'principal.json'
+        self.plugin.identity.init_identity({'name': 'up-guard'})
+        self.plugin.identity.create_group({'group': 'up-group'})
+        secret = self.plugin.storage.identity_dir / 'principal.json'
         self.assertTrue(secret.is_file(), '前置条件：身份文件存在')
-        result = self.plugin.upload_remote({'device_id': 'ff' * 32, 'share_id': 'x',
+        result = self.plugin.upload.upload_remote({'device_id': 'ff' * 32, 'share_id': 'x',
                                             'local_path': str(secret)})
         self.assertFalse(result['success'])
         self.assertIn('不允许上传', result['error'])
 
-        cached = self.plugin.remote_cache_dir / ('aa' * 16) / 'share' / 'x.bin'
+        cached = self.plugin.storage.remote_cache_dir / ('aa' * 16) / 'share' / 'x.bin'
         cached.parent.mkdir(parents=True, exist_ok=True)
         cached.write_bytes(b'other member data')
-        result = self.plugin.upload_remote({'device_id': 'ff' * 32, 'share_id': 'x',
+        result = self.plugin.upload.upload_remote({'device_id': 'ff' * 32, 'share_id': 'x',
                                             'local_path': str(cached)})
         self.assertFalse(result['success'])
         self.assertIn('不允许上传', result['error'])
@@ -1095,23 +1334,23 @@ class AutoDiscoveryTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def _ready(self):
-        return self.plugin.get_status()['kernel']['available']
+        return self.plugin.report.get_status()['kernel']['available']
 
     def test_node_does_not_start_before_identity_and_group(self):
         """没有身份/团体时不启动：那种状态下节点无法认证对端，起来只会报错。"""
         if not self._ready():
             self.skipTest('协议内核不可用')
-        status = self.plugin.get_status()
+        status = self.plugin.report.get_status()
         self.assertFalse(status['node']['running'])
         self.assertIsNone(status['node']['auto_start_error'])
 
     def test_node_auto_starts_and_publishes_registration(self):
         if not self._ready():
             self.skipTest('协议内核不可用')
-        self.plugin.init_identity({'name': 'auto'})
-        self.plugin.create_group({'group': 'auto-group'})
+        self.plugin.identity.init_identity({'name': 'auto'})
+        self.plugin.identity.create_group({'group': 'auto-group'})
 
-        status = self.plugin.get_status()
+        status = self.plugin.report.get_status()
         node = status['node']
         self.assertTrue(node['running'], f'有身份与团体后节点应自动启动: {node}')
         self.assertIsNone(node['auto_start_error'], node)
@@ -1119,13 +1358,13 @@ class AutoDiscoveryTest(unittest.TestCase):
         self.assertTrue(node['published'], f'节点应发布注册记录: {node}')
         self.assertIsInstance(node['published_seq'], int)
 
-        state_file = self.plugin.identity_dir / 'state.json'
+        state_file = self.plugin.storage.identity_dir / 'state.json'
         self.assertTrue(state_file.is_file(), '发布记录后应留下 state.json（seq 单调性依据）')
         state = json.loads(state_file.read_text(encoding='utf-8'))
         self.assertEqual(state['registration_seq'], node['published_seq'])
         self.assertTrue(state.get('endpoints'), 'state 里应记住本次发布的端点集合')
 
-        registry = json.loads((self.plugin.identity_dir / 'registry.json')
+        registry = json.loads((self.plugin.storage.identity_dir / 'registry.json')
                               .read_text(encoding='utf-8'))
         self.assertEqual(len(registry['records']), 1, '注册表里应有本机那条记录')
         record = registry['records'][0]
@@ -1137,15 +1376,15 @@ class AutoDiscoveryTest(unittest.TestCase):
         """重复取状态不得反复起线程（失败时尤其不能变成死循环重试）。"""
         if not self._ready():
             self.skipTest('协议内核不可用')
-        self.plugin.init_identity({'name': 'once'})
-        self.plugin.create_group({'group': 'once-group'})
-        first = self.plugin.get_status()['node']
+        self.plugin.identity.init_identity({'name': 'once'})
+        self.plugin.identity.create_group({'group': 'once-group'})
+        first = self.plugin.report.get_status()['node']
         self.assertTrue(first['running'])
-        thread = self.plugin._node_thread
+        thread = self.plugin.node._node_thread
         for _ in range(3):
-            again = self.plugin.get_status()['node']
+            again = self.plugin.report.get_status()['node']
             self.assertTrue(again['running'])
-        self.assertIs(self.plugin._node_thread, thread, '不应重建节点线程')
+        self.assertIs(self.plugin.node._node_thread, thread, '不应重建节点线程')
 
     def test_all_published_endpoints_are_tried(self):
         """设备发布了多个端点时必须逐个试，不能在第一个失败后放弃。
@@ -1155,22 +1394,22 @@ class AutoDiscoveryTest(unittest.TestCase):
         """
         if not self._ready():
             self.skipTest('协议内核不可用')
-        self.plugin.init_identity({'name': 'multi-ep'})
-        self.plugin.create_group({'group': 'multi-ep-group'})
+        self.plugin.identity.init_identity({'name': 'multi-ep'})
+        self.plugin.identity.create_group({'group': 'multi-ep-group'})
         # 取一次状态让节点自启并载入注册表对象（_registry 在此之前是 None）
-        self.assertTrue(self.plugin.get_status()['node']['running'])
+        self.assertTrue(self.plugin.report.get_status()['node']['running'])
 
         # 造一条"对端设备"的注册记录：两个端点，第一个一定连不上
         cp = sys.modules['shell.groupmesh.crypto_prims']
         registry_mod = sys.modules['shell.groupmesh.registry']
         peer_priv, peer_pub = cp.generate_sign_keypair()
         endpoints = [('2001:db8::bad', 19443), ('192.0.2.7', 19443)]
-        self.plugin._registry.add(registry_mod.new_registration(
+        self.plugin.registry_store.registry.add(registry_mod.new_registration(
             device_key=peer_pub, device_private_key=peer_priv,
             seq=1, endpoints=endpoints, shares=['pub']))
         # 让这台设备出现在名单里（list_peers 只列名单内成员）
-        me = self.plugin._load_identity()
-        self.plugin.add_member({'principal': base64.b64encode(me.principal.public_key).decode(),
+        me = self.plugin.storage.load_identity()
+        self.plugin.identity.add_member({'principal': base64.b64encode(me.principal.public_key).decode(),
                                 'device': base64.b64encode(peer_pub).decode(), 'name': 'peer'})
 
         attempted: list = []
@@ -1186,8 +1425,8 @@ class AutoDiscoveryTest(unittest.TestCase):
                     raise TransportError('第一个端点刻意失败')
             return 1
 
-        self.plugin._fetch_registry_from = fake_fetch
-        result = self.plugin.list_peers({'refresh': True})
+        self.plugin.discovery.fetch_registry_from = fake_fetch
+        result = self.plugin.peers.list_peers({'refresh': True})
         self.assertTrue(result['success'])
         self.assertEqual(len(peer_attempts), 2,
                          f'对端的两个端点都该被尝试，实际: {peer_attempts}')
@@ -1202,30 +1441,30 @@ class AutoDiscoveryTest(unittest.TestCase):
         """
         if not self._ready():
             self.skipTest('协议内核不可用')
-        self.plugin.init_identity({'name': 'republish'})
-        self.plugin.create_group({'group': 'republish-group'})
-        first_seq = self.plugin.get_status()['node']['published_seq']
+        self.plugin.identity.init_identity({'name': 'republish'})
+        self.plugin.identity.create_group({'group': 'republish-group'})
+        first_seq = self.plugin.report.get_status()['node']['published_seq']
         self.assertIsNotNone(first_seq)
 
         # 模拟"地址变了"：把 state 里记的端点改成别的
-        state_file = self.plugin.identity_dir / 'state.json'
+        state_file = self.plugin.storage.identity_dir / 'state.json'
         state = json.loads(state_file.read_text(encoding='utf-8'))
         state['endpoints'] = [['10.0.0.99', 1]]
         state_file.write_text(json.dumps(state, ensure_ascii=False), encoding='utf-8')
 
-        self.plugin.list_peers(refresh=True)
-        new_seq = self.plugin.get_status()['node']['published_seq']
+        self.plugin.peers.list_peers(refresh=True)
+        new_seq = self.plugin.report.get_status()['node']['published_seq']
         self.assertGreater(new_seq, first_seq, '端点变化后应重新发布并递增 seq')
 
     def test_unchanged_endpoints_do_not_republish(self):
         """端点没变时不做无谓重发（否则每次刷新都递增 seq，对端反复合并）。"""
         if not self._ready():
             self.skipTest('协议内核不可用')
-        self.plugin.init_identity({'name': 'stable'})
-        self.plugin.create_group({'group': 'stable-group'})
-        first_seq = self.plugin.get_status()['node']['published_seq']
-        self.plugin.list_peers(refresh=True)
-        self.assertEqual(self.plugin.get_status()['node']['published_seq'], first_seq)
+        self.plugin.identity.init_identity({'name': 'stable'})
+        self.plugin.identity.create_group({'group': 'stable-group'})
+        first_seq = self.plugin.report.get_status()['node']['published_seq']
+        self.plugin.peers.list_peers(refresh=True)
+        self.assertEqual(self.plugin.report.get_status()['node']['published_seq'], first_seq)
 
 
 class SyncStateTest(unittest.TestCase):
@@ -1249,7 +1488,7 @@ class SyncStateTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_sync_interval_setting_is_reported_and_bounded(self):
-        status = self.plugin.get_status()
+        status = self.plugin.report.get_status()
         self.assertEqual(status['settings']['sync_interval_seconds'], 60)
         self.assertTrue(status['sync']['running'] is False)  # 没走 on_load 时不启线程
         self.plugin.update_setting('sync_interval_seconds', 5)
@@ -1258,41 +1497,41 @@ class SyncStateTest(unittest.TestCase):
         self.assertEqual(self.plugin.get_sync_status()['interval'], 3600)
 
     def test_roster_change_marks_roster_dirty(self):
-        self.plugin.init_identity({'name': 'sync-roster'})
-        self.plugin._clear_sync_dirty(roster=True, registry=True)
-        self.plugin._sync_wake.clear()
+        self.plugin.identity.init_identity({'name': 'sync-roster'})
+        self.plugin.pulse.clear(roster=True, registry=True)
+        self.plugin.pulse.wake_event.clear()
 
-        self.plugin.create_group({'group': 'sync-group'})
+        self.plugin.identity.create_group({'group': 'sync-group'})
 
         sync = self.plugin.get_sync_status()
         self.assertTrue(sync['roster_dirty'], '建团/改名单后应标记待推送')
-        self.assertTrue(self.plugin._sync_wake.is_set(), '应立即唤醒后台循环')
+        self.assertTrue(self.plugin.pulse.wake_event.is_set(), '应立即唤醒后台循环')
 
     def test_share_change_marks_registry_dirty(self):
-        self.plugin.init_identity({'name': 'sync-share'})
-        self.plugin.create_group({'group': 'sync-share-group'})
-        self.plugin._clear_sync_dirty(roster=True, registry=True)
-        self.plugin._sync_wake.clear()
+        self.plugin.identity.init_identity({'name': 'sync-share'})
+        self.plugin.identity.create_group({'group': 'sync-share-group'})
+        self.plugin.pulse.clear(roster=True, registry=True)
+        self.plugin.pulse.wake_event.clear()
 
         shared = self.tmp / 'shared'
         shared.mkdir()
-        result = self.plugin.add_share({'share_id': 'docs', 'path': str(shared)})
+        result = self.plugin.shares.add_share({'share_id': 'docs', 'path': str(shared)})
         self.assertTrue(result['success'], result)
 
         self.assertTrue(self.plugin.get_sync_status()['registry_dirty'],
                         '共享清单变化后应重发注册记录并标记待推送')
-        self.assertTrue(self.plugin._sync_wake.is_set())
+        self.assertTrue(self.plugin.pulse.wake_event.is_set())
 
     def test_push_roster_sends_and_clears_dirty(self):
-        self.plugin.init_identity({'name': 'sync-push'})
-        self.plugin.create_group({'group': 'sync-push-group'})
-        identity = self.plugin._load_identity()
-        roster = self.plugin._load_roster()
+        self.plugin.identity.init_identity({'name': 'sync-push'})
+        self.plugin.identity.create_group({'group': 'sync-push-group'})
+        identity = self.plugin.storage.load_identity()
+        roster = self.plugin.storage.load_roster()
         self.assertIsNotNone(identity)
         self.assertIsNotNone(roster)
-        self.plugin._clear_sync_dirty(roster=True, registry=True)
-        self.plugin._sync_wake.clear()
-        self.plugin._request_sync(roster_dirty=True)
+        self.plugin.pulse.clear(roster=True, registry=True)
+        self.plugin.pulse.wake_event.clear()
+        self.plugin.pulse.request(roster_dirty=True)
 
         endpoint = ('203.0.113.9', 19443)
         calls = []
@@ -1302,16 +1541,16 @@ class SyncStateTest(unittest.TestCase):
             return {'status': 'ok', 'version': pushed_roster.version}
 
         fake_connection = mock.Mock()
-        with mock.patch.object(self.plugin, '_open_dedicated',
+        with mock.patch.object(self.plugin.connections, 'open_dedicated',
                                return_value=fake_connection), \
-                mock.patch.object(self.plugin, '_load_roster_history', return_value=[]), \
+                mock.patch.object(self.plugin.storage, 'load_roster_history', return_value=[]), \
                 mock.patch('shell.groupmesh.client.push_roster', side_effect=fake_push):
-            self.plugin._push_pending_changes(identity, roster, [(endpoint, 'peer')])
+            self.plugin.discovery.push_pending_changes(identity, roster, [(endpoint, 'peer')])
 
         self.assertEqual(len(calls), 1, '应把名单推给对端')
         self.assertEqual(calls[0][1], roster.version)
         self.assertFalse(self.plugin.get_sync_status()['roster_dirty'])
-        self.assertEqual(self.plugin._peer_roster_notes[endpoint]['version'], roster.version)
+        self.assertEqual(self.plugin.facts.roster_notes[endpoint]['version'], roster.version)
 
 
 class BackgroundSyncThreadTest(unittest.TestCase):
@@ -1336,10 +1575,113 @@ class BackgroundSyncThreadTest(unittest.TestCase):
     def test_sync_thread_starts_and_stops_with_lifecycle(self):
         status = self.plugin.get_sync_status()
         self.assertTrue(status['running'])
-        self.assertIsNotNone(self.plugin._sync_thread)
+        self.assertIsNotNone(self.plugin.discovery._thread)
         self.plugin.on_unload()
-        self.assertIsNone(self.plugin._sync_thread)
+        self.assertIsNone(self.plugin.discovery._thread)
         self.assertFalse(self.plugin.get_sync_status()['running'])
+
+
+class ApiTableTest(unittest.TestCase):
+    """`register_api` 的键、顺序与绑定对象在组件化之后必须逐字不变。
+
+    迁移把接口实现从"入口类上的方法"移到了组件，`register_api` 从"绑定自己"变成
+    "绑定组件"。键名或绑定对象写错时，前端经 `Bridge.call` 打到的是 404 或错误方法，
+    而**没有任何静态检查能发现**（表是运行时字典、键是字符串）。迁移前这条路是被隐式
+    覆盖的（用例直接调实例方法）；迁移后必须单独钉住。
+
+    同一张表锁住入口上必须留着的壳钩子：它们不经 `register_api`，由壳按名字取，
+    漏一个不会报错，只会静默退化（占位文件永远不取回、统一刷新不参与）。
+    """
+
+    #: 迁移前的键与顺序（逐字固定）：前端与壳按名字调用，改名即静默 404。
+    EXPECTED_KEYS: ClassVar[List[str]] = [
+        'get_status', 'init_identity', 'get_device_keys', 'create_group', 'join_group',
+        'get_invite', 'add_member', 'add_share', 'remove_share', 'refresh_share_roots',
+        'peers', 'my_endpoint', 'list_peers', 'list_remote', 'download_remote',
+        'upload_remote', 'upload_status', 'cancel_upload', 'materialize_remote',
+        'mirror_share', 'remote_cache', 'clear_remote_cache', 'start_node', 'stop_node',
+        'get_node_status', 'get_settings', 'save_settings',
+    ]
+
+    #: 键 -> 入口上承载它的组件属性名。`get_settings` / `save_settings` 留在入口
+    #: （基类的脱敏与 schema 校验），因此不在这张表里。
+    EXPECTED_OWNER: ClassVar[Dict[str, str]] = {
+        'get_status': 'report',
+        'init_identity': 'identity',
+        'get_device_keys': 'identity',
+        'create_group': 'identity',
+        'join_group': 'identity',
+        'get_invite': 'identity',
+        'add_member': 'identity',
+        'add_share': 'shares',
+        'remove_share': 'shares',
+        'refresh_share_roots': 'shares',
+        'peers': 'peers',
+        'my_endpoint': 'peers',
+        'list_peers': 'peers',
+        'list_remote': 'remote',
+        'download_remote': 'remote',
+        'upload_remote': 'upload',
+        'upload_status': 'uploads',
+        'cancel_upload': 'uploads',
+        'materialize_remote': 'materialize',
+        'mirror_share': 'mirror',
+        'remote_cache': 'fetch',
+        'clear_remote_cache': 'fetch',
+        'start_node': 'node',
+        'stop_node': 'node',
+        'get_node_status': 'node',
+    }
+
+    #: 壳按名从实例上取、又不经 `register_api` 的成员。
+    SHELL_HOOKS: ClassVar[tuple] = ('get_data_root', 'get_protected_paths', 'get_extensions',
+                   'freshness_spec', 'is_content_placeholder', 'ensure_file',
+                   'on_settings_changed', 'on_load', 'on_unload')
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        module = load_plugin_module()
+        manifest = json.loads((PLUGIN_DIR / 'manifest.json').read_text(encoding='utf-8'))
+        config = {'directories': {'data_root': str(self.tmp / 'data')}}
+        self.plugin = module.GroupMeshPlugin(manifest, config)
+        self.api = self.plugin.register_api()
+
+    def tearDown(self):
+        self.plugin.on_unload()
+        self._tmp.cleanup()
+
+    def test_keys_and_order_are_unchanged(self):
+        self.assertEqual(list(self.api), self.EXPECTED_KEYS,
+                         'register_api 的键或顺序变了：前端与壳按名字调用，改名即 404')
+
+    def test_every_entry_is_callable(self):
+        for key, value in self.api.items():
+            self.assertTrue(callable(value), f'{key} 绑定的对象不可调用: {value!r}')
+
+    def test_entries_are_bound_to_their_component(self):
+        for key, component in self.EXPECTED_OWNER.items():
+            owner = self.api[key].__self__
+            self.assertIs(owner, getattr(self.plugin, component),
+                          f'{key} 应绑定到 {component}，实际是 {owner!r}')
+
+    def test_shell_hooks_stay_on_the_entry_class(self):
+        for name in self.SHELL_HOOKS:
+            self.assertTrue(callable(getattr(self.plugin, name, None)),
+                            f'入口类缺少壳按名调用的成员 {name}')
+        # 路径访问器同样按实例读取（壳与用例都按名字取，不经过 API 表）。
+        self.assertEqual(self.plugin.get_data_root(), self.plugin.storage.root)
+        self.assertEqual(self.plugin.cache_dir, self.plugin.storage.cache_dir)
+        self.assertEqual(self.plugin.downloads_dir, self.plugin.storage.downloads_dir)
+        self.assertIn(self.plugin.storage.identity_dir,
+                      [Path(p) for p in self.plugin.get_protected_paths()])
+
+    def test_entry_does_not_override_base_get_settings(self):
+        """入口不能覆盖基类的无参 `get_settings()`：那会改变它的签名与脱敏语义。"""
+        self.assertIs(type(self.plugin).get_settings, PluginBase.get_settings,
+                      '入口覆盖了 PluginBase.get_settings()：基类的脱敏与默认值语义会失效')
+        self.assertEqual(self.plugin.get_settings().get('port'),
+                         self.plugin.settings_schema[0]['default'])
 
 
 if __name__ == '__main__':

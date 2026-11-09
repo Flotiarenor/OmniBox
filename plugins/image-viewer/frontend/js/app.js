@@ -24,6 +24,12 @@ class ImageViewer {
 
         this.mode = 'albums';            // albums | children | images
         this.currentView = 'albums';     // albums | timeline | latest
+        // 时间线视图内的展示方式（本次会话记住，不落盘）：
+        // albums = 按月分组的相册卡片，images = 最近图片（list_recent_images）的 justified 网格。
+        this.timelineMode = 'albums';
+        // 图片层是否由「按图片」进入：为真时图片来自 list_recent_images，currentPath 为空，
+        // 灯箱序列就是本页图片（currentAllImages = currentItems），没有连续浏览序列要补。
+        this._recentActive = false;
         this.childParentPath = '';
         this.fromChildren = false;
         this.currentPath = '';
@@ -94,11 +100,10 @@ class ImageViewer {
     // 与壳的页面骨架通信
     // ============================================================
 
-    /** 内容页与壳同源：消息只发给父窗口，脱离壳单独打开（或沙箱里没有 window）时不发。 */
+    /** 内容页与壳同源：消息只发给父窗口，脱离壳单独打开（或沙箱里没有 window）时不发。
+        实现只有一份（/shell/chrome-client.js），这里只是本页的调用出口。 */
     _postHost(payload) {
-        if (typeof window === 'undefined' || !window.parent || window.parent === window) return;
-        const origin = typeof location !== 'undefined' ? location.origin : '';
-        try { window.parent.postMessage(payload, origin); } catch (e) { /* 非同源父窗口不发 */ }
+        if (typeof window !== 'undefined') window.ChromeClient.post(payload);
     }
 
     /**
@@ -133,8 +138,19 @@ class ImageViewer {
         return true;
     }
 
-    /** 上报 chrome：标题、副标题、视图（'' 表示旧嵌入口、壳取消导航高亮）、顶栏动作
-        显隐/禁用/文案、导航组可见性、搜索占位与状态栏。 */
+    /**
+     * 统一刷新的作用域：图片层给当前目录，相册层与时间线「按图片」层给空串（全根）。
+     *
+     * 时间线「按图片」层的列表来自 `list_recent_images`，不属于任何目录，所以与相册层
+     * 一样按全根同步。壳按插件记住这个值，作为 `autoSync(scope)` 的入参。
+     */
+    _freshnessScope() {
+        if (this.mode !== 'images' || this._recentActive) return '';
+        return this.currentPath || '';
+    }
+
+    /** 上报 chrome：标题、副标题、视图（'' 表示旧嵌入口、壳取消导航高亮）、统一刷新的
+        作用域、顶栏动作显隐/禁用/文案、导航组可见性、搜索占位与状态栏。 */
     _pushChrome() {
         const isImages = this.mode === 'images';
         const isChildren = this.mode === 'children';
@@ -148,6 +164,7 @@ class ImageViewer {
                 : this._chromeTitle,
             subtitle: this._extensionOpen ? this._extensionSub : this._chromeSub,
             view: this._extensionOpen ? '' : this.currentView,
+            freshness_scope: this._freshnessScope(),
             actions: {
                 back: { visible: isImages || isChildren, placement: 'leading' },
                 'new-album': { visible: true },
@@ -173,40 +190,35 @@ class ImageViewer {
             nav: { browse: { visible: true } },
             search: {
                 enabled: !this._extensionOpen,
-                placeholder: isImages ? '搜索当前相册…' : '搜索相册…',
+                // 「按图片」层的图片来自最近图片列表（不是某个目录）：搜索只过滤本页。
+                placeholder: isImages
+                    ? (this._recentActive ? '搜索当前页图片…' : '搜索当前相册…')
+                    : '搜索相册…',
                 clear: this._searchClear,
             },
             status: { text: this._statusText, state: this._statusState },
         });
     }
 
-    /** 壳的握手与反向下发：视图、顶栏动作、搜索输入。 */
+    /** 壳的握手与反向下发：视图、顶栏动作、搜索输入、背景外观。
+        校验、分发与 ready 握手都在 /shell/chrome-client.js（四个内容页共用一份）；
+        `omnibox:appearance` 只有本插件消费，走 onMessage 自己解释。 */
     _bindHost() {
-        window.addEventListener('message', (event) => {
-            if (event.origin !== location.origin || event.source !== window.parent) return;
-            const data = event.data || {};
-            if (data.type === 'omnibox:view' && typeof data.view === 'string') {
-                this._applyHostView(data.view);
-                return;
-            }
-            if (data.type === 'omnibox:action') {
-                this._applyHostAction(data.action);
-                return;
-            }
-            if (data.type === 'omnibox:query') {
-                this._onQuery(data.query);
-                return;
-            }
-            if (data.type === 'omnibox:appearance') {
+        this._chrome = window.ChromeClient.create({
+            onView: (view) => this._applyHostView(view),
+            onAction: (action) => this._applyHostAction(action),
+            onQuery: (query) => this._onQuery(query),
+            onMessage: (data) => {
+                if (data.type !== 'omnibox:appearance') return;
                 this._appearance = {
                     alpha: Number(data.alpha) || 84,
                     follow: data.follow !== false,
                     shellAlpha: Number(data.shellAlpha) || 84,
                 };
                 this._syncAppearanceControls();
-            }
+            },
         });
-        this._postHost({ type: 'omnibox:ready' });
+        this._chrome.bind();
     }
 
     /** 壳左栏的三个浏览项：切视图并清掉二级页（子相册 / 图片层）的返回栈。 */
@@ -226,6 +238,8 @@ class ImageViewer {
         this._navSeq += 1;
         this.currentView = view;
         this.mode = 'albums';
+        // 切视图一律离开「按图片」层：图片来自最近图片列表，不属于任何导航项。
+        this._recentActive = false;
         this.childParentPath = '';
         this.fromChildren = false;
         this.currentPath = '';
@@ -312,7 +326,9 @@ class ImageViewer {
 
         this.lightbox = createLightbox({ getImageUrl: (item) => item.url });
         this.pagination = createPagination(document.getElementById('pagination'), {
-            onPageChange: (page) => this.loadImages(this.currentPath, page)
+            // 翻页按当前图片层的来源分派：相册目录走 list_folder_items 那套，时间线的
+            // 「按图片」层走 list_recent_images（见 app-grid.js 的 _reloadPage）。
+            onPageChange: (page) => this._reloadPage(page)
         });
         this.contextMenu = createContextMenu({
             items: [
@@ -371,6 +387,10 @@ class ImageViewer {
             if (this._slideshowWanted && !this.slideshowTimer && this.currentAllImages.length) {
                 this.toggleSlideshow(this._slideshowResumeIndex || 0);
             }
+            // 重新可见是用户切回本插件时唯一可靠的时机：同步一次当前作用域，报告里有
+            // 变化才重载（`_syncFreshness(true)`）。注册时若已可见，生命周期会立刻补一次
+            // —— 那次就是首帧同步，所以 `init()` 不必再单独调。
+            this._syncFreshness(true);
         });
         lifecycle.onDispose(() => {
             this._cancelSlideshow();

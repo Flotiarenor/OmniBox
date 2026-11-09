@@ -10,6 +10,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Icon from './Icon.vue'
 import PluginExtensions from './PluginExtensions.vue'
 import type { SchemaAction } from '../core/plugin-content'
+import { freshnessEventScope, freshnessSyncTarget } from '../core/plugin-chrome-protocol'
 import type {
   PluginChromeNavItem,
   PluginChromeSpec,
@@ -34,7 +35,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'view', id: string): void
-  (e: 'action', id: string): void
+  (e: 'action', id: string, payload?: unknown): void
+  (e: 'freshness', payload: { plugin: string; scope: string; report: unknown }): void
   (e: 'query', value: string): void
   (e: 'native', payload: { plugin: string; url: string; title: string }): void
   (e: 'native-action', action: { id: string; payload?: unknown }): void
@@ -479,9 +481,56 @@ function selectNav(id: string): void {
 watch(() => props.nativeOpen, (open) => {
   if (!open && activeExtensionId.value) activeExtensionId.value = ''
 })
-const freshness = ref<{ destroy?: () => void } | null>(null)
+/**
+ * 内容页上报的同步作用域（`omnibox:chrome` 的 `freshness_scope`）。
+ *
+ * 它随运行期状态到达（`props.state`，由 `mergeChromeState` 归一化），不是 manifest 的
+ * `chrome` 声明：清单声明描述"页面长什么样"，作用域描述"内容页当前在哪一层"。
+ */
+const freshnessScope = computed(() => {
+  const raw = ui.value.freshness_scope
+  return typeof raw === 'string' ? raw : ''
+})
+
+type FreshnessController = { destroy?: () => void; autoSync?: (scope?: string) => void }
+const freshness = ref<FreshnessController | null>(null)
 type FreshnessComponent = {
-  mount?: (opts: Record<string, unknown>) => { destroy?: () => void }
+  mount?: (opts: Record<string, unknown>) => FreshnessController | null | undefined
+}
+
+/**
+ * 被动同步当前作用域：挂载后与视图 / 作用域变化时各触发一次，不做轮询。
+ *
+ * 这一步是「外部新增的文件能被看到」的唯一自动入口 —— `Freshness.mount` 只渲染控件
+ * 并读一次状态，它自己不扫盘。`autoSync` 内部有去抖，壳侧引擎还有最小间隔。
+ * 决策（控件在不在、要不要跳过）在 `freshnessSyncTarget`，Node 用例直接驱动它。
+ */
+function syncFreshness(): void {
+  const target = freshnessSyncTarget(freshness.value, freshnessScope.value, {
+    // native 面板打开时内容 iframe 被 v-show 隐藏：这期间不扫盘，关闭面板会重新挂载并再同步。
+    blocked: !!props.nativeOpen,
+  })
+  if (!target) return
+  target.controller.autoSync(target.scope)
+}
+
+/**
+ * 统一刷新有了结论：把报告交给内容页。
+ *
+ * 两条都发：`freshness` 带 `scope` 与后端报告，内容页据此决定重载哪一层；
+ * `action: refresh` 是旧协议，只认它的内容页仍然要能重载。同源消息按发送顺序投递，
+ * 富事件先到、旧 action 随后。两条都处理的内容页按到达顺序去重：`refresh` 带着
+ * payload 到达时说明它属于刚刚那条富事件（回声），只重载一次。
+ */
+function onFreshnessChange(report: unknown): void {
+  const payload = {
+    plugin: props.plugin.name,
+    // 报告自己的 `scope` 是这次同步实际用的作用域；用交付时的当前值会在换目录后错层重载。
+    scope: freshnessEventScope(report, freshnessScope.value),
+    report,
+  }
+  emit('freshness', payload)
+  emit('action', 'refresh', payload)
 }
 
 /** 挂载统一「同步 / 校验」控件；挂载点会在 native 面板开/关时被重建。 */
@@ -496,8 +545,12 @@ function mountFreshness(): void {
     plugin: props.plugin.name,
     container,
     unit,
-    onChange: () => emit('action', 'refresh'),
+    scope: freshnessScope.value,
+    onChange: onFreshnessChange,
   }) || null
+  // 挂载即同步一次：首帧内容页通常还没上报 `freshness_scope`，作用域到达时下面的
+  // watch 会再触发一次；两次之间的重复请求由壳侧引擎的去抖挡掉。
+  syncFreshness()
   // Freshness 挂载后才有关闭/校验按钮的真实宽度；首轮测量不能把它当成 0。
   scheduleMeasure()
 }
@@ -514,6 +567,12 @@ watch(freshnessRef, () => {
   dropFreshness()
   mountFreshness()
 }, { flush: 'post' })
+
+// 视图或作用域变化 = 用户换了一层目录、或从别的插件切回来：再被动同步一次。
+// 首次同步由 mountFreshness 负责，所以这里不 immediate；不做轮询。
+watch([activeView, freshnessScope], () => {
+  syncFreshness()
+})
 
 onMounted(() => {
   window.addEventListener('resize', scheduleMeasure)

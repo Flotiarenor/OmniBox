@@ -183,20 +183,20 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
         "完全没有设置"这条分支会暴露它。
         """
         plugin = self._plugin({}, with_store=False)
-        self.assertTrue(_same(plugin.root_dir, self.root), '应当回退到 base 的数据根')
+        self.assertTrue(_same(plugin.paths.root, self.root), '应当回退到 base 的数据根')
         self.assertTrue(_same(plugin.get_data_root(), self.root))
         self.assertTrue(_same(plugin.thumb_dir, self.root / '.cache' / 'thumbs'))
 
     def test_single_root_paths_unchanged(self):
         """只有第一根时，路径/根内相对路径与历史版本一致。"""
         plugin = self._plugin({'root_dir': str(self.root)})
-        root, inner = plugin._split_virtual('')
+        root, inner = plugin.paths.split_virtual('')
         self.assertTrue(_same(root, self.root))
         self.assertEqual(inner, '')
-        root, inner = plugin._split_virtual('作者A/作品1')
+        root, inner = plugin.paths.split_virtual('作者A/作品1')
         self.assertTrue(_same(root, self.root))
         self.assertEqual(inner, '作者A/作品1')
-        self.assertEqual(plugin._virtual_path(self.root, '作者A/作品1'), '作者A/作品1')
+        self.assertEqual(plugin.paths.virtual_path(self.root, '作者A/作品1'), '作者A/作品1')
         self.assertTrue(_same(plugin.get_file_roots()[0], self.root))
         self.assertEqual(len(plugin.get_file_roots()), 1)
 
@@ -206,15 +206,15 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
         # 两个根目录同名（都叫「额外图库」）：按配置顺序得到 `额外图库` 与 `额外图库 (2)`
         ns1 = f'__{self.extra.name}'
         ns2 = f'__{self.extra2.name} (2)'
-        self.assertEqual(plugin._virtual_path(self.root, '作者A'), '作者A')
-        self.assertEqual(plugin._virtual_path(self.extra, '作者A'), f'{ns1}/作者A')
-        self.assertEqual(plugin._virtual_path(self.extra2, '作者C'), f'{ns2}/作者C')
-        root, inner = plugin._split_virtual(f'{ns1}/作者A')
+        self.assertEqual(plugin.paths.virtual_path(self.root, '作者A'), '作者A')
+        self.assertEqual(plugin.paths.virtual_path(self.extra, '作者A'), f'{ns1}/作者A')
+        self.assertEqual(plugin.paths.virtual_path(self.extra2, '作者C'), f'{ns2}/作者C')
+        root, inner = plugin.paths.split_virtual(f'{ns1}/作者A')
         self.assertTrue(_same(root, self.extra))
         self.assertEqual(inner, '作者A')
         # 未知命名空间不落到第一根的物理目录里
-        self.assertEqual(plugin._split_virtual('__不存在/作者A'), (None, ''))
-        self.assertFalse(plugin._is_safe('__不存在/作者A'))
+        self.assertEqual(plugin.paths.split_virtual('__不存在/作者A'), (None, ''))
+        self.assertFalse(plugin.paths.is_safe('__不存在/作者A'))
         self.assertEqual(len(plugin.get_file_roots()), 3)
 
     # ---------- 多根目录：/file 必须能打开额外根的原图 ----------
@@ -280,11 +280,11 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
                 'root_dir': str(self.root),
                 'extra_roots': str(self.extra),
             })
-            self.assertEqual(plugin._namespace(self.extra), '额外图库 (2)')
+            self.assertEqual(plugin.paths.namespace_for(self.extra), '额外图库 (2)')
             # 两个同名根目录按配置顺序继续排号
             both = self._multi()
-            self.assertEqual(both._namespace(self.extra), '额外图库 (2)')
-            self.assertEqual(both._namespace(self.extra2), '额外图库 (3)')
+            self.assertEqual(both.paths.namespace_for(self.extra), '额外图库 (2)')
+            self.assertEqual(both.paths.namespace_for(self.extra2), '额外图库 (3)')
         finally:
             # 必须把本次产生的冲突目录全部清掉：setUpClass 的根目录是共享的，
             # 残留会污染后续用例的命名空间分配
@@ -295,7 +295,7 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
     def test_depth_is_relative_to_own_root(self):
         """额外根下的作者层 depth 与第一根一致（否则作者网格/瀑布流会错层）。"""
         plugin = self._multi()
-        albums = {a['path']: a for a in plugin.list_albums()['albums']}
+        albums = {a['path']: a for a in plugin.albums.list_albums()['albums']}
         ns1 = f'__{self.extra.name}'
         self.assertEqual(albums['作者A']['depth'], 1)
         self.assertEqual(albums[f'{ns1}']['depth'], 0)
@@ -306,7 +306,7 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
     def test_list_albums_covers_all_roots(self):
         """相册树包含全部根：命名空间节点带递归总数与封面。"""
         plugin = self._multi()
-        albums = {a['path']: a for a in plugin.list_albums()['albums']}
+        albums = {a['path']: a for a in plugin.albums.list_albums()['albums']}
         ns1 = f'__{self.extra.name}'
         ns2 = f'__{self.extra2.name} (2)'
         self.assertEqual(albums[ns1]['image_count'], 2)
@@ -322,14 +322,14 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
         """打开命名空间节点：顶层把子目录作为瓦片列出（不会去扫不存在的物理目录）。"""
         plugin = self._multi()
         ns1 = f'__{self.extra.name}'
-        data = plugin.list_folder_items('', 1, 40, 'name', 'asc')
+        data = plugin.listing.list_folder_items('', 1, 40, 'name', 'asc')
         card = next(it for it in data['items'] if it['path'] == ns1)
         self.assertEqual(card['name'], self.extra.name)
         self.assertTrue(card['root_scope'])
         self.assertEqual(card['total_count'], 2)
         self.assertEqual(card['image_count'], 0)      # 命名空间没有直接图片
 
-        inner = plugin.list_folder_items(ns1, 1, 40, 'name', 'asc')
+        inner = plugin.listing.list_folder_items(ns1, 1, 40, 'name', 'asc')
         names = sorted(it['name'] for it in inner['items'])
         self.assertEqual(names, ['作者A', '作者B'])
         # 缩略图/原图 URL 都带命名空间前缀，Shell 侧按 get_file_roots 逐根校验
@@ -338,10 +338,10 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
     def test_collect_all_images_across_roots(self):
         plugin = self._multi()
         ns1 = f'__{self.extra.name}'
-        all_images = plugin._collect_all_images()
+        all_images = plugin.rebuild.collect_all_images()
         self.assertEqual(len(all_images), 6)
         self.assertIn(f'{ns1}/作者B/作品1/1.jpg', all_images)
-        only_extra = plugin._collect_all_images(ns1)
+        only_extra = plugin.rebuild.collect_all_images(ns1)
         self.assertEqual(len(only_extra), 2)
         self.assertTrue(all(p.startswith(ns1) for p in only_extra))
 
@@ -349,18 +349,18 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
         """命名空间节点没有文件夹级设置，直接吃全局值（作为该根的继承源头）。"""
         plugin = self._multi(sort_by='time_name')
         ns1 = f'__{self.extra.name}'
-        self.assertEqual(plugin.get_settings(ns1)['sort_by'], 'time_name')
-        self.assertEqual(plugin.get_settings(f'{ns1}/作者A')['sort_by'], 'time_name')
+        self.assertEqual(plugin.settings.for_path(ns1)['sort_by'], 'time_name')
+        self.assertEqual(plugin.settings.for_path(f'{ns1}/作者A')['sort_by'], 'time_name')
         # 在命名空间下的作者目录上单独配置同样生效
-        plugin.save_folder_settings(f'{ns1}/作者A', {'sort_by': 'name'})
-        self.assertEqual(plugin.get_settings(f'{ns1}/作者A')['sort_by'], 'name')
-        self.assertEqual(plugin.get_settings(f'{ns1}/作者B')['sort_by'], 'time_name')
+        plugin.settings.save_folder(f'{ns1}/作者A', {'sort_by': 'name'})
+        self.assertEqual(plugin.settings.for_path(f'{ns1}/作者A')['sort_by'], 'name')
+        self.assertEqual(plugin.settings.for_path(f'{ns1}/作者B')['sort_by'], 'time_name')
 
     # ---------- 空目录隐藏 + 新建目录保留可见 ----------
 
     def test_empty_dirs_are_marked_unreadable(self):
         plugin = self._plugin({'root_dir': str(self.root)})
-        albums = {a['path']: a for a in plugin.list_albums()['albums']}
+        albums = {a['path']: a for a in plugin.albums.list_albums()['albums']}
         self.assertEqual(albums['空目录']['readable'], 0)
         self.assertEqual(albums['空容器']['readable'], 0)
         self.assertEqual(albums['空容器/深一层']['readable'], 0)
@@ -368,27 +368,27 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
 
     def test_created_folder_kept_visible_until_has_images(self):
         plugin = self._plugin({'root_dir': str(self.root)})
-        result = plugin.create_folder('新相册/子目录')
+        result = plugin.file_ops.create_folder('新相册/子目录')
         self.assertTrue(result['success'])
-        marks = plugin.get_album_config()['visible_empty_dirs']
+        marks = plugin.album_config.get()['visible_empty_dirs']
         self.assertIn('新相册', marks)
         self.assertIn('新相册/子目录', marks)
         # 目录整个删掉后标记被清理
-        self.assertTrue(plugin.delete_folder('新相册')['success'])
+        self.assertTrue(plugin.file_ops.delete_folder('新相册')['success'])
         self.assertFalse((self.root / '新相册').exists())
-        self.assertEqual(plugin.get_album_config()['visible_empty_dirs'], [])
+        self.assertEqual(plugin.album_config.get()['visible_empty_dirs'], [])
 
     def test_delete_folder_refuses_when_images_inside(self):
         plugin = self._plugin({'root_dir': str(self.root)})
-        result = plugin.delete_folder('作者A')
+        result = plugin.file_ops.delete_folder('作者A')
         self.assertFalse(result['success'])
         self.assertTrue((self.root / '作者A').exists())
 
     def test_delete_namespace_root_refused(self):
         plugin = self._multi()
         ns1 = f'__{self.extra.name}'
-        self.assertFalse(plugin.delete_folder(ns1)['success'])
-        self.assertFalse(plugin.create_folder(f'{ns1}/新目录')['success'])
+        self.assertFalse(plugin.file_ops.delete_folder(ns1)['success'])
+        self.assertFalse(plugin.file_ops.create_folder(f'{ns1}/新目录')['success'])
 
     def test_delete_folder_refuses_path_escaping_root(self):
         """`../` 不能把删除带出根目录（这里曾漏掉 `_is_safe`）。
@@ -402,9 +402,9 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
         self.addCleanup(lambda: shutil.rmtree(victim, ignore_errors=True))
 
         plugin = self._plugin({'root_dir': str(self.root)})
-        self.assertFalse(plugin._is_safe('../victim'), '前置条件：校验本会拒绝它')
+        self.assertFalse(plugin.paths.is_safe('../victim'), '前置条件：校验本会拒绝它')
 
-        result = plugin.delete_folder('../victim')
+        result = plugin.file_ops.delete_folder('../victim')
         self.assertFalse(result['success'])
         self.assertTrue(victim.exists(), '根目录外的目录被整棵删掉了')
         self.assertTrue((victim / 'note.txt').exists())
@@ -416,19 +416,19 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
         self.addCleanup(lambda: shutil.rmtree(victim, ignore_errors=True))
 
         plugin = self._plugin({'root_dir': str(self.root)})
-        self.assertFalse(plugin.delete_folder(str(victim))['success'])
+        self.assertFalse(plugin.file_ops.delete_folder(str(victim))['success'])
         self.assertTrue(victim.exists())
 
     def test_delete_folder_refuses_unknown_namespace(self):
         plugin = self._multi()
-        self.assertFalse(plugin.delete_folder('__不存在/作者A')['success'])
+        self.assertFalse(plugin.file_ops.delete_folder('__不存在/作者A')['success'])
         self.assertTrue(self.extra.exists(), '额外根被误删')
 
     def test_delete_folder_still_deletes_empty_folder_inside_root(self):
         """只加校验，不能把正常删除一起改坏。"""
         plugin = self._plugin({'root_dir': str(self.root)})
         (self.root / '待删空相册').mkdir()
-        self.assertTrue(plugin.delete_folder('待删空相册')['success'])
+        self.assertTrue(plugin.file_ops.delete_folder('待删空相册')['success'])
         self.assertFalse((self.root / '待删空相册').exists())
 
     # ---------- 删除/移动：根自身与 Shell 受保护清单 ----------
@@ -454,12 +454,12 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
 
         plugin = self._plugin({'root_dir': str(empty_root)})
         # 前置条件：两种写法都通过 `_is_safe` —— 拦住它们的只能是新增的根自身判定
-        self.assertTrue(plugin._is_safe('.'))
-        self.assertTrue(plugin._is_safe('a/..'))
+        self.assertTrue(plugin.paths.is_safe('.'))
+        self.assertTrue(plugin.paths.is_safe('a/..'))
 
         for rel in ('.', 'a/..', '子目录/..'):
             with self.subTest(rel=rel):
-                self.assertFalse(plugin.delete_folder(rel)['success'], f'{rel} 竟被接受')
+                self.assertFalse(plugin.file_ops.delete_folder(rel)['success'], f'{rel} 竟被接受')
                 self.assertTrue(empty_root.exists(), f'{rel} 删掉了根目录本身')
 
     def test_delete_folder_refuses_protected_directory(self):
@@ -471,7 +471,7 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
 
         plugin = self._with_protected(
             self._plugin({'root_dir': str(self.root)}), [vault])
-        result = plugin.delete_folder('受保护凭据')
+        result = plugin.file_ops.delete_folder('受保护凭据')
         self.assertFalse(result['success'])
         self.assertTrue(vault.exists(), '受保护目录被删掉了')
 
@@ -495,7 +495,7 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
         # 而兄弟目录不受影响 —— 防护不能扩散到整棵树。
         self.assertTrue(plugin.is_protected_path(vault))
         self.assertFalse(plugin.is_protected_path(self.root / '普通相册'))
-        result = plugin.delete_folder('凭据父目录')
+        result = plugin.file_ops.delete_folder('凭据父目录')
         self.assertFalse(result['success'])
         self.assertTrue(secret.exists(), '受保护凭据被随父目录一起删掉了')
 
@@ -511,8 +511,8 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
             'extra_roots': str(extra_parent),
         })
         plugin = self._with_protected(plugin, [vault])
-        rel = plugin._virtual_path(extra_parent, '凭据目录')
-        self.assertFalse(plugin.delete_folder(rel)['success'])
+        rel = plugin.paths.virtual_path(extra_parent, '凭据目录')
+        self.assertFalse(plugin.file_ops.delete_folder(rel)['success'])
         self.assertTrue(vault.exists(), '额外根下的受保护目录被删掉了')
 
     def test_delete_files_refuses_protected_file(self):
@@ -524,7 +524,7 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
 
         plugin = self._with_protected(
             self._plugin({'root_dir': str(self.root)}), [secret])
-        result = plugin.delete_files(['受保护凭据/auth_token.txt'])
+        result = plugin.file_ops.delete_files(['受保护凭据/auth_token.txt'])
         self.assertEqual(result['deleted'], [])
         self.assertTrue(secret.exists(), '受保护文件被删掉了')
         self.assertTrue(any('受保护' in error for error in result['errors']))
@@ -540,7 +540,7 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
 
         plugin = self._with_protected(
             self._plugin({'root_dir': str(self.root)}), [secret])
-        result = plugin.move_files(['受保护凭据/auth_token.txt'], '目标相册')
+        result = plugin.file_ops.move_files(['受保护凭据/auth_token.txt'], '目标相册')
         self.assertEqual(result['moved'], [])
         self.assertTrue(secret.exists(), '受保护文件被移走了')
 
@@ -549,7 +549,7 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
             self._plugin({'root_dir': str(self.root)}), [dest])
         (self.root / '普通图片').mkdir(exist_ok=True)
         (self.root / '普通图片' / 'a.jpg').write_bytes(b'JPEG')
-        result = plugin.move_files(['普通图片/a.jpg'], '目标相册')
+        result = plugin.file_ops.move_files(['普通图片/a.jpg'], '目标相册')
         self.assertEqual(result['moved'], [])
         self.assertTrue((self.root / '普通图片' / 'a.jpg').exists())
 
@@ -557,17 +557,17 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
 
     def test_expand_collapse_tracked_separately(self):
         plugin = self._plugin({'root_dir': str(self.root)})
-        plugin.set_album_config('作者A', 'expand')
-        cfg = plugin.get_album_config()
+        plugin.album_config.set_action('作者A', 'expand')
+        cfg = plugin.album_config.get()
         self.assertEqual(cfg['expanded'], ['作者A'])
         self.assertEqual(cfg['collapsed'], [])
-        plugin.set_album_config('作者A', 'collapse')
-        cfg = plugin.get_album_config()
+        plugin.album_config.set_action('作者A', 'collapse')
+        cfg = plugin.album_config.get()
         self.assertEqual(cfg['expanded'], [])
         self.assertEqual(cfg['collapsed'], ['作者A'])
         # 提升/收回不会清掉其它配置键
-        plugin.set_album_config('作者A/作品1', 'promote')
-        cfg = plugin.get_album_config()
+        plugin.album_config.set_action('作者A/作品1', 'promote')
+        cfg = plugin.album_config.get()
         self.assertEqual(cfg['promoted'], ['作者A/作品1'])
         self.assertEqual(cfg['collapsed'], ['作者A'])
 
@@ -576,23 +576,23 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
     @unittest.skipIf(HAS_NETWORK_DRIVE, '本机有不可达的网络盘，展开盘符会卡 SMB 超时')
     def test_browse_dir_lists_drives_and_subdirs(self):
         plugin = self._plugin({'root_dir': str(self.root)})
-        top = plugin.browse_dir('')
+        top = plugin.paths.browse_dir('')
         self.assertTrue(top['entries'])                      # 盘符/文件系统根
         self.assertIsNone(top['parent'])
-        listed = plugin.browse_dir(str(self.root))
+        listed = plugin.paths.browse_dir(str(self.root))
         names = {e['name'] for e in listed['entries']}
         self.assertIn('作者A', names)
         self.assertIn('空目录', names)
         author = next(e for e in listed['entries'] if e['name'] == '作者A')
         self.assertFalse(author['is_image_dir'])             # 作者目录本身没有直接图片
-        work = next(e for e in plugin.browse_dir(str(self.root / '作者A'))['entries']
+        work = next(e for e in plugin.paths.browse_dir(str(self.root / '作者A'))['entries']
                     if e['name'] == '作品1')
         self.assertTrue(work['is_image_dir'])
         # 上级目录用绝对路径（临时目录在 Windows 上可能是 8.3 短名，比对统一格式）
         self.assertEqual(Path(listed['parent']),
                          Path(str(self.root.parent)).resolve())
         # 不存在的目录给出错误而不是抛异常
-        bad = plugin.browse_dir(str(self.root / '不存在'))
+        bad = plugin.paths.browse_dir(str(self.root / '不存在'))
         self.assertEqual(bad['entries'], [])
         self.assertTrue(bad.get('error'))
 
@@ -600,13 +600,13 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
     def test_browse_dir_drives_sentinel(self):
         """「我的电脑」层：哨兵路径与空路径等价，且没有上级（不会越过顶层）。"""
         plugin = self._plugin({'root_dir': str(self.root)})
-        drives = plugin.browse_dir(DRIVES_SENTINEL)
+        drives = plugin.paths.browse_dir(DRIVES_SENTINEL)
         self.assertEqual([e['path'] for e in drives['entries']],
-                         [e['path'] for e in plugin.browse_dir('')['entries']])
+                         [e['path'] for e in plugin.paths.browse_dir('')['entries']])
         self.assertIsNone(drives['parent'])
         # 盘符根是自己的父目录，所以 parent 为 None；关键是能继续往下浏览
         first = drives['entries'][0]
-        inside = plugin.browse_dir(first['path'])
+        inside = plugin.paths.browse_dir(first['path'])
         self.assertEqual(inside['path'], first['path'])
         self.assertFalse(inside.get('error'))
 
@@ -618,7 +618,7 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
         (media / 'c.mp3').write_bytes(b'not really audio')
         try:
             plugin = self._plugin({'root_dir': str(self.root)})
-            entries = {e['name']: e for e in plugin.browse_dir(str(self.root))['entries']}
+            entries = {e['name']: e for e in plugin.paths.browse_dir(str(self.root))['entries']}
             self.assertEqual(sorted(entries['混合目录']['kinds']),
                              ['audio', 'image', 'video'])
             self.assertTrue(entries['混合目录']['is_image_dir'])
@@ -630,7 +630,7 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
 
     def test_list_roots_reports_namespace(self):
         plugin = self._multi()
-        roots = plugin.list_roots()
+        roots = plugin.paths.list_roots()
         self.assertEqual(len(roots), 3)
         self.assertTrue(roots[0]['is_primary'])
         self.assertEqual(roots[0]['namespace'], '')
@@ -641,7 +641,7 @@ class ImageViewerMultiRootTestCase(unittest.TestCase):
         self.assertEqual(roots[0]['prefix'], '')
         self.assertEqual(roots[1]['prefix'], f'__{self.extra.name}')
         self.assertEqual(roots[2]['prefix'], f'__{self.extra2.name} (2)')
-        self.assertEqual(plugin._virtual_path(self.extra, ''), roots[1]['prefix'])
+        self.assertEqual(plugin.paths.virtual_path(self.extra, ''), roots[1]['prefix'])
 
 
 if __name__ == '__main__':   # pragma: no cover

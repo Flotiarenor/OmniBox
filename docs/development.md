@@ -56,7 +56,7 @@ graph TB
 - **通信**：所有页面同源（`http://127.0.0.1`），插件前端可直接调用 `parent.pywebview.api` 访问后端方法；Web-only 模式下自动使用 HTTP API 桥接。
 - **Web-only 模式**：可通过 `python main.py --web-only` 启动，无需桌面窗口，适合 Linux 服务器 / NAS / 浏览器访问。
 - **插件**：每个插件是一个独立文件夹，包含 `manifest.json`、`backend/`（Python 代码）和 `frontend/`（静态网页资源）。插件可通过 `backend/libs` 携带纯 Python 依赖。
-- **配置**：主程序配置位于 `.config/app.yaml`，插件设置自动持久化到 `.config/plugins/<插件名>.json`（git 忽略）。设置变更后插件自动重载，无需重启应用。
+- **配置**：主程序配置位于 `.config/app.json`，插件设置自动持久化到 `.config/plugins/<插件名>.json`（git 忽略）。设置变更后插件自动重载，无需重启应用。
 
 ### 插件页面骨架与内容
 
@@ -84,7 +84,7 @@ graph TB
 
 ### 设置页
 
-- 左侧分类 + 右侧面板：外观（主题/圆角/导航栏宽度/动效/13 项 CSS 变量颜色）、启动与窗口（首屏页面、启动全屏、WebView2 高性能 GPU 模式）、数据与缓存（数据目录、缩略图缓存占用与清空）、诊断（日志级别与日志目录、插件加载失败清单）、插件（已加载插件清单）、关于（版本/许可/项目主页）。
+- 左侧分类 + 右侧面板：外观（主题/圆角/导航栏宽度/动效/13 项 CSS 变量颜色）、启动与窗口（首屏页面、启动全屏）、数据与缓存（数据目录、缩略图缓存占用与清空）、诊断（日志级别与日志目录、插件加载失败清单）、插件（已加载插件清单）、关于（版本/许可/项目主页）。
 - 插件设置项在插件页面里通过工具栏的「设置」按钮打开：声明 `frontend.chrome` 的插件由壳的 `PluginSettingsModal` 按该插件的 `settings_schema` 渲染（目录字段用壳内共享 `FolderPicker` 浏览与选择本机目录，「网络位置」入口由 `local_only` 决定是否显示），保存成功后壳向内容页发 `settings-saved`，内容页重读设置；image-viewer 仍由内容页的 `openSettingsModal()` 渲染（按目录作用域）。`image-cleaner` / `pixiv-sync` 的 native 设置也由这个壳弹窗接管（入口是 native 顶栏的「设置」动作）。
 
 ### 外观主题
@@ -103,7 +103,7 @@ graph TB
 
 ### 环境要求
 
-- Python 3.10+
+- Python 3.11–3.15（上界由 `requirements.txt` 的 `pythonnet` 决定）
 - Node.js 18+
 - npm 9+
 - Windows：PowerShell 5.1+
@@ -168,7 +168,7 @@ http://127.0.0.1:18080
 > **错误处理与调试**：401/403/404 统一由壳内 `/status` 视图展示（错误卡片 + 重试，
 > 浏览器直接访问错误 URL 也会自动跳转）；`/health` 返回 `200 {"status":"ok"}` 供探活。
 > 以 `python main.py --web-only --status-debug` 启动后，`/status` 会显示状态调试面板
-> （健康检查 / API 鉴权演示）；一键调试环境见 `python tests/debug_status_pages.py`。
+> （健康检查 / API 鉴权演示）；一键调试环境见 `python tools/debug/debug_status_pages.py`。
 
 ### 安装插件
 
@@ -178,15 +178,24 @@ http://127.0.0.1:18080
 
 ### 配置文件
 
-主程序配置位于 `.config/app.yaml`：
+主程序配置位于 `.config/app.json`（缺键按默认值补齐，端口写成字符串也会被归一成整数）：
 
-```yaml
-server:
-  host: "127.0.0.1"
-  port: 18080
-directories:
-  data_root: "./data"
+```json
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 18080,
+    "trusted_hosts": []
+  },
+  "directories": {
+    "data_root": "./data"
+  }
+}
 ```
+
+旧版本的 `.config/app.yaml`（以及更早的 `<用户数据目录>/config.yaml`）会在首次启动时自动
+转存为 `app.json`，旧文件改名为 `<原文件名>.migrated` 保留；转存失败时保留旧文件、本次使用
+默认值，下次启动再试。
 
 插件设置自动保存到 `.config/plugins/` 目录，修改后无需重启应用即可生效。
 

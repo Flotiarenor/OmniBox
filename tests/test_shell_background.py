@@ -230,6 +230,42 @@ class ShellBackgroundLibraryTest(unittest.TestCase):
         self.assertTrue(self.shell_info.delete_background_image(image['name'])['success'])
         self.assertFalse(Path(image['path']).exists())
 
+    def test_delete_retries_transient_windows_lock(self):
+        """浏览器正在读图时 unlink 会短暂报 WinError 32，重试一次应当成功。
+
+        真实故障：真实浏览器用例「删掉当前背景」在整套测试里偶发失败 —— 刚设为背景的
+        图片还被 Chrome 的网络进程持有，后端直接返回「删除图片失败」，界面不刷新。
+        """
+        image = self._import()
+        real_unlink = Path.unlink
+        calls = []
+
+        def flaky_unlink(target, *args, **kwargs):
+            calls.append(target)
+            if len(calls) == 1:
+                raise PermissionError(13, '另一个程序正在使用此文件')
+            return real_unlink(target, *args, **kwargs)
+
+        with mock.patch('pathlib.Path.unlink', flaky_unlink), \
+                mock.patch('shell.backend.shell_info.UNLINK_RETRY_DELAY_SECONDS', 0):
+            result = self.shell_info.delete_background_image(image['path'])
+
+        self.assertTrue(result['success'], result)
+        self.assertEqual(len(calls), 2)
+        self.assertFalse(Path(image['path']).exists())
+
+    def test_delete_reports_persistent_lock(self):
+        """占用一直不释放时仍然返回可读错误，不能无限重试。"""
+        image = self._import()
+        with mock.patch('pathlib.Path.unlink', side_effect=PermissionError(13, '占用')), \
+                mock.patch('shell.backend.shell_info.UNLINK_RETRIES', 2), \
+                mock.patch('shell.backend.shell_info.UNLINK_RETRY_DELAY_SECONDS', 0):
+            result = self.shell_info.delete_background_image(image['path'])
+
+        self.assertFalse(result['success'])
+        self.assertIn('删除图片失败', result['error'])
+        self.assertTrue(Path(image['path']).exists())
+
     def test_delete_refuses_paths_outside_library(self):
         """删除端点不能成为"删除本机任意文件"的入口。"""
         token_file = self.config_dir / 'auth_token.txt'

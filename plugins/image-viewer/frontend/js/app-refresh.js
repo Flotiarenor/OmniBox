@@ -40,12 +40,54 @@ Object.assign(ImageViewer.prototype, {
     // 入口；校验完成或同步发现变化后，壳发 `omnibox:action: refresh`，本页重载相册树与
     // 当前目录的图片。
 
-    /** 同步/校验发现了变化：重载相册树，图片视图则在当前目录上重取。 */
+    /**
+     * 同步一次当前作用域：重新可见时调用（壳侧另有首帧与导航切换的 `autoSync`）。
+     *
+     * 用 `Freshness.sync(plugin, scope)` 而不是控件句柄：控件由壳挂载，句柄在壳手里，
+     * 内容页拿不到。`reload` 为真且报告里确实有变化时才重载 —— 增量同步的报告为空
+     * 表示"什么都没变"，此时重载只是白白重取一遍并打断当前浏览。
+     *
+     * "有变化"包含目录集合信号（`new_dirs` / `vanished_dirs`，引擎给数组、插件的
+     * `dirs_changed` 钩子给计数）：新建一个空目录时条目层没有任何增删，只靠
+     * added/changed/removed 判断会把这次变化整个漏掉，相册层就看不到新目录。
+     *
+     * `skip`（引擎忙 / 节流 / 非法作用域）不重载：没有任何变化被确认，交给下一次
+     * 重新可见重试。
+     */
+    async _syncFreshness(reload) {
+        const api = (typeof window !== 'undefined') ? window.Freshness : null;
+        // 旧壳 / 旧版共享运行时没有 `sync`（那时只有挂载控件）：静默跳过
+        if (!api || typeof api.sync !== 'function') return null;
+        let report = null;
+        try {
+            report = await api.sync('image-viewer', this._freshnessScope());
+        } catch (e) {
+            // 被动路径失败不打扰用户：下一次重新可见会重试
+            return null;
+        }
+        if (!report || report.action === 'skip') return report;
+        const dirSignal = (key) => {
+            let total = 0;
+            [report, report.dirs_changed].forEach((group) => {
+                if (!group || typeof group !== 'object') return;
+                const value = group[key];
+                total += Array.isArray(value) ? value.length : (Number(value) || 0);
+            });
+            return total;
+        };
+        const changed = !!report.invalidated
+            || dirSignal('new_dirs') > 0
+            || dirSignal('vanished_dirs') > 0
+            || [report.added, report.changed, report.removed]
+                .some((value) => (Number(value) || 0) > 0);
+        if (changed && reload) await this._onFreshnessChanged();
+        return report;
+    },
+
+    /** 同步/校验发现了变化：重载相册树，图片视图则在当前层重取（目录或最近图片）。 */
     async _onFreshnessChanged() {
         await this.loadAlbums();
-        if (this.mode === 'images' && this.currentPath) {
-            await this.loadImages(this.currentPath, this.currentPage);
-        }
+        await this._reloadCurrentView();
     },
 
     // ============================================================
@@ -77,13 +119,16 @@ Object.assign(ImageViewer.prototype, {
                 return;
             }
 
+            // 重建不改源文件 mtime：把后端给的单调版本号写进整批 epoch，重新渲染时
+            // `_thumbUrl` 会带上它，`/thumbs` 的一天强缓存才盖得住。
+            this._rememberThumbVersions(null, status.version);
             const result = await Bridge.call('list_albums');
             if (result && result.albums) this.albums = result.albums;
             if (result && result.config) this.albumConfig = result.config;
             this.clearSelection();
             this.filteredSeqIndexes = null;
             if (this.mode === 'images') {
-                this.loadImages(this.currentPath, 1);
+                this._reloadCurrentView();
             } else {
                 this.showAlbums();
             }
@@ -179,8 +224,10 @@ Object.assign(ImageViewer.prototype, {
             const result = await Bridge.call('regenerate_thumbs', imgs);
             if (result.errors.length) Toast.error(`部分失败: ${result.errors.join('; ')}`);
             else Toast.success(`已重新生成 ${imgs.length} 张缩略图`);
+            // 强制重建不改 mtime：记下后端给的单调版本号，重绘时这些路径的 URL 才会变
+            this._rememberThumbVersions(result.regenerated || imgs, result.version);
             this.clearSelection();
-            await this.loadImages(this.currentPath, this.currentPage);
+            await this._reloadCurrentView();
         } catch (e) {
             Toast.error('更新缩略图失败');
         }

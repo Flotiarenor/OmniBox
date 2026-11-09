@@ -1,109 +1,65 @@
-"""group-mesh 插件后端：把协议内核包成 Shell 插件。
+"""group-mesh 插件入口：装配、API 表与壳钩子。
 
-## 分层
+本文件只做三件事：把组件装配起来、声明对壳暴露的 API、把壳按名调用的钩子一行委派
+给组件。业务逻辑不在这里（分层门禁 R2 把入口限制在 250 行以内），常量与设置项 schema
+在 `const.py`，其余按职责拆成组件。
 
-    shell/backend/...           壳（Flask 路由、令牌、设置存储）
-    shell/groupmesh/            协议内核（身份/名单/Noise/传输）
-        └── plugins/group-mesh  本文件：插件 API 与后台节点生命周期
+装配顺序就是依赖顺序：脉冲 → 对端事实 → 存储 → 注册表 → 连接池 → 节点 → 发现 →
+对端 / 团体 / 共享项 → 状态汇总 → 远端取回链 → 上传。反向依赖一律由构造参数注入。
 
-内核是**壳层的一部分**（`shell/groupmesh`），与 `shell/backend`、`shell/frontend`
-并列。它不 import Flask / pywebview，因此可以脱离 GUI 独立运行与跨机联调
-（`python -m shell.groupmesh.cli selftest`）；但它的归属是壳，不是某个插件 ——
-将来文件传输、游戏联机、语音这些 Companion 插件都要通过
-`PluginBase.get_dependency('group-mesh')` 复用它，把内核塞进某个插件的私有目录
-会让它们依赖另一个插件的内部结构。
+接缝说明：`load_sibling` 返回 `ModuleType`，装配出来的组件属性在静态检查里是 `Any`。
+这是有意的取舍 —— 需要检查的东西都在组件里；为了让接缝有类型而把插件目录塞进
+`sys.path` 会换来模块名冲突，代价更大。
 
-## 当前状态
+`get_data_root` / `get_protected_paths` 直接转发给组件，不用 `super()` 之外的东西：
+即使已无 mixin，显式写 `PluginBase.x(self)` 仍是"不依赖 MRO 顺序"的保证。
 
-已接通：身份初始化、团体创建/加入、名单查看与修改、共享项管理、节点启停与状态，
-双向传输（取回、物化、上传含进度/取消/续传，任务表落盘可跨重载），
-名单/注册的后台同步（定时轮询 + 变更时 push，间隔见设置 `sync_interval_seconds`）。
-私钥由 `secret_store` 保护（Windows DPAPI / 桌面 keyring / 口令 AES-GCM）。
-**尚未接通**：内容寻址分块、Android 轻客户端。
-房间/语音/游戏面由未来的 Companion 子插件承担，不在本插件范围内。
+数据布局（全部在 `get_data_root()` 之下，与插件设置文件分离）：
 
-## 壳侧主体上下文
+    <data_root>/group-mesh/
+      identity/               主体与设备私钥（受保护路径，见 get_protected_paths）
+      identity/roster.json    当前团体名单
+      identity/shares.json    本机共享项声明（协议对象，可发给对端）
+      identity/share_roots.json  共享项的本地位置（本机事实，从不发出）
+      identity/registry.json  注册表
+      downloads/              从对端取回的文件（可用 download_dir 改到别处）
+      .cache/                 可重建的派生数据（目录快照、连接待用）
 
-本节要求"凭据到主体的映射"与"插件以受信方式读取主体"。
-壳侧**已经落地**：`shell/backend/principal.py` 在鉴权通过后把主体写入
-`ContextVar`，插件用 `self.current_principal()` / `self.require_principal()`
-读取；请求参数里的 `principal` / `role` 字段影响不了它，后台线程读不到主体
-（后台任务需要显式携带主体，见 `shell/backend/principal.use_principal()`）。
-
-**本插件尚未接入**：下面所有涉及主体的判定仍以**本机主体**为准（本机就是这个
-团体里的一个节点），访问控制只到"有效令牌"这一层。收尾时应在有副作用的方法
-（`add_member` / `add_share` / `start_node` / `stop_node` / `upload_remote` /
-`mirror_share` / `clear_remote_cache` 等）上调用 `require_principal()` 并按角色
-判定。
-
-## 代码布局
-
-本文件只留类骨架与生命周期：常量与纯函数在 `common.py`，方法按职责拆到 12 个 mixin
-分片（storage / status / group / shares / peers / sync / remote / upload /
-materialize / mirror / fetch / node），各分片由 `shell.backend.plugin_utils.load_sibling`
-加载。**mixin 必须排在 PluginBase 之前**：`get_data_root` / `get_protected_paths` /
-`on_settings_changed` 都是对基类的覆写，排在基类后面会被基类实现盖掉。
+**尚未接通**：内容寻址分块、Android 轻客户端；涉及主体的判定仍以本机主体为准
+（访问控制只到"有效令牌"这一层）。
 """
 
-from __future__ import annotations
-
-import logging
-import socket
 import threading
-from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Callable, ClassVar, Dict, List
 
+from shell.backend.freshness import engine_for
 from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_utils import load_sibling
-from shell.groupmesh import roster_history as roster_history_mod
 
-log = logging.getLogger(__name__)
-
+_const = load_sibling(__file__, 'const', 'group_mesh')
+_pulse = load_sibling(__file__, 'pulse', 'group_mesh')
+_peer_facts = load_sibling(__file__, 'peer_facts', 'group_mesh')
 _storage = load_sibling(__file__, 'storage', 'group_mesh')
-_status = load_sibling(__file__, 'status', 'group_mesh')
+_registry = load_sibling(__file__, 'registry', 'group_mesh')
+_connections = load_sibling(__file__, 'connections', 'group_mesh')
+_node = load_sibling(__file__, 'node', 'group_mesh')
+_discovery = load_sibling(__file__, 'discovery', 'group_mesh')
+_peers = load_sibling(__file__, 'peers', 'group_mesh')
 _group = load_sibling(__file__, 'group', 'group_mesh')
 _shares = load_sibling(__file__, 'shares', 'group_mesh')
-_peers = load_sibling(__file__, 'peers', 'group_mesh')
-_sync = load_sibling(__file__, 'sync', 'group_mesh')
+_share_paths = load_sibling(__file__, 'share_paths', 'group_mesh')
+_status = load_sibling(__file__, 'status', 'group_mesh')
 _remote = load_sibling(__file__, 'remote', 'group_mesh')
-_upload = load_sibling(__file__, 'upload', 'group_mesh')
 _materialize = load_sibling(__file__, 'materialize', 'group_mesh')
 _mirror = load_sibling(__file__, 'mirror', 'group_mesh')
 _fetch = load_sibling(__file__, 'fetch', 'group_mesh')
-_node = load_sibling(__file__, 'node', 'group_mesh')
-
-# 常量与纯函数在 common.py：入口只绑定自己用到的那些（分片各自绑定自己用的）
-_common = load_sibling(__file__, 'common', 'group_mesh')
-DEFAULT_PORT = _common.DEFAULT_PORT
+_uploads = load_sibling(__file__, 'uploads', 'group_mesh')
+_upload = load_sibling(__file__, 'upload', 'group_mesh')
 
 
-# 分片顺序即 MRO：覆写基类的方法必须排在 PluginBase 之前。
-class GroupMeshPlugin(
-    _storage.StorageMixin,
-    _status.StatusMixin,
-    _group.GroupMixin,
-    _shares.ShareMixin,
-    _peers.PeerMixin,
-    _sync.SyncMixin,
-    _remote.RemoteMixin,
-    _upload.UploadMixin,
-    _materialize.MaterializeMixin,
-    _mirror.MirrorMixin,
-    _fetch.FetchMixin,
-    _node.NodeMixin,
-    PluginBase,
-):
+class GroupMeshPlugin(PluginBase):
     """团体组网插件。
-
-    数据布局（全部在 `get_data_root()` 之下，与插件设置文件分离）：
-
-        <data_root>/group-mesh/
-          identity/               主体与设备私钥（受保护路径，见 get_protected_paths）
-          identity/roster.json    当前团体名单
-          identity/shares.json    本机共享项声明（协议对象，可发给对端）
-          identity/share_roots.json  共享项的本地位置（本机事实，从不发出）
-          identity/registry.json  注册表
-          downloads/              从对端取回的文件（可用 download_dir 改到别处）
-          .cache/                 可重建的派生数据（目录快照、连接待用）
 
     ## 四种"位置"
 
@@ -120,156 +76,91 @@ class GroupMeshPlugin(
     位置单独存 `share_roots.json`，读回时再与声明合成 `LocalShare`。
     """
 
-    settings_schema: ClassVar[List[Dict[str, Any]]] = [
-        {'key': 'port', 'label': '监听端口', 'type': 'number',
-         'default': DEFAULT_PORT, 'min': 1024, 'max': 65535,
-         'section': 'node', 'sectionTitle': '节点与网络',
-         'sectionDescription': '节点监听地址、同步间隔；修改端口后需要重启节点。',
-         'sectionOrder': 30, 'order': 10,
-         'help': '共享节点对外提供服务的 TCP 端口。修改后需要重启节点。'},
-        {'key': 'bind', 'label': '监听地址', 'type': 'text', 'default': '::',
-         'section': 'node', 'sectionTitle': '节点与网络',
-         'sectionDescription': '节点监听地址、同步间隔；修改端口后需要重启节点。',
-         'sectionOrder': 30, 'order': 20,
-         'help': '默认 :: 同时接受 IPv6 与 IPv4。以公网 IPv6 为目标，'
-                 '只有单个 IPv6 地址时填写该地址。'},
-        {'key': 'group_name', 'label': '团体名称', 'type': 'text', 'default': '',
-         'section': 'identity', 'sectionTitle': '身份',
-         'sectionDescription': '团体名称与本机显示名；加入团体后修改团体名称不会改名。',
-         'sectionOrder': 10, 'order': 10,
-         'help': '创建团体时使用的标识。已加入团体后修改此项不会改名。'},
-        {'key': 'principal_name', 'label': '本机主体名称', 'type': 'text', 'default': '',
-         'section': 'identity', 'sectionTitle': '身份',
-         'sectionDescription': '团体名称与本机显示名；加入团体后修改团体名称不会改名。',
-         'sectionOrder': 10, 'order': 20,
-         'help': '界面显示用的名字。留空时取主机名。'},
-        {'key': 'ttl_days', 'label': '名单有效期（天）', 'type': 'number',
-         'default': 180, 'min': 1, 'max': 3650,
-         'section': 'roster', 'sectionTitle': '名单',
-         'sectionDescription': '团体名单的提示有效期；到期不阻断通信，界面会标注已过期。',
-         'sectionOrder': 20, 'order': 10,
-         'help': '仅作提示：到期不阻断通信，界面会标注已过期。'},
-        # 位置之四：从对端取回的文件落点。留空时回落到 <数据根>/group-mesh/downloads。
-        # 由 Shell 的 FolderPicker 渲染（`directory` 类型），值仍是字符串，
-        # 因此这里不需要为它写任何解析代码。
-        # `local_only`：本字段**只接受本机目录**，不显示「网络位置」按钮 ——
-        # 那是"把远端共享项取回本地"的入口，而这里正是取回后的落点，语义上不能用它
-        # 自己当自己的来源（而且取回的中间目录不是用户想要的下载目录）。
-        {'key': 'download_dir', 'label': '远端下载目录', 'type': 'directory',
-         'local_only': True, 'admin_only': True,
-         'default': '', 'placeholder': '默认：数据根/group-mesh/downloads',
-         'section': 'transfer', 'sectionTitle': '远端取回',
-         'sectionDescription': '从成员取回文件时的落点与单文件上限；下载目录改动需管理员。',
-         'sectionOrder': 40, 'order': 10,
-         'help': '从团体成员那里取回的文件保存在这里。该目录经 /file 对界面可读，'
-                 '但不对团体共享 —— 要共享它请单独挂一个共享项（改动需管理员）。'},
-        {'key': 'max_fetch_mb', 'label': '按需取回单文件上限（MiB）', 'type': 'number',
-         'default': 1024, 'min': 0, 'max': 102400,
-         'section': 'transfer', 'sectionTitle': '远端取回',
-         'sectionDescription': '从成员取回文件时的落点与单文件上限；下载目录改动需管理员。',
-         'sectionOrder': 40, 'order': 20,
-         'help': '浏览远端目录时，超过这个大小的文件不会自动取回（0 表示不限制）。'
-                 '远端目录先物化成目录结构与占位文件，字节在第一次取回时才取 —— '
-                 '这个上限用来避免"点开一个目录就把磁盘写满"。'},
-        {'key': 'sync_interval_seconds', 'label': '后台同步间隔（秒）', 'type': 'number',
-         'default': 60, 'min': 5, 'max': 3600,
-         'section': 'node', 'sectionTitle': '节点与网络',
-         'sectionDescription': '节点监听地址、同步间隔；修改端口后需要重启节点。',
-         'sectionOrder': 30, 'order': 30,
-         'help': '节点运行期间每隔这么久拉取一次注册表与团体名单，并把本机变更推给对端。'
-                 '默认 60 秒；调小更及时，但会更频繁地连接对端。'},
-    ]
+    #: 设置项声明是纯数据，放在 const.py（入口只做装配与委派）。
+    settings_schema: ClassVar[List[Dict[str, Any]]] = _const.SETTINGS_SCHEMA
 
     def __init__(self, manifest: dict, config: dict) -> None:
         super().__init__(manifest, config)
-        self._lock = threading.Lock()
-        # 共享根用量缓存：{share_id: {path, used_bytes, truncated, entries}}。
-        # 由统一刷新基建的校验驱动（见 shares 分片的 freshness_spec），
-        # 共享项卡片读它，`get_status` 不遍历目录。
-        self._usage_cache: Dict[str, Dict[str, Any]] = {}
-        self._node_thread: Optional[threading.Thread] = None
-        self._node_stop = threading.Event()
-        self._listener: Optional[socket.socket] = None
-        self._listening: Optional[tuple] = None
-        self._last_error: Optional[str] = None
-        self._connection_count = 0
-        # 注册表：由 start_node() 载入并交给内核，用于向对端发布本机端点与
-        # 共享清单，以及学习其他设备的端点。None = 本节点未启用注册表。
-        self._registry = None
-        # 本次运行发布的注册记录序号（None = 还没发布成功）。界面据此显示
-        # "本机是否已对其他设备可见" —— 发布失败时节点照常能收发，但别人发现不了。
-        self._published_seq: Optional[int] = None
-        # 自动启动节点的状态：失败只进入冷却，不永久放弃（见 _auto_start_node）。
-        self._auto_start_attempted = False
-        self._auto_start_error: Optional[str] = None
-        self._auto_start_retry_at = 0.0
-        # 远端物化索引的进程内缓存：`is_content_placeholder()` 每个 /file 请求都要查
-        # 一次，逐次解析 JSON 太贵（见 _cached_remote_index）。
-        self._remote_index_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
-        # 按需取字节的按路径锁：并发请求同一个远端文件时只让一个线程去取
-        # （见 _fetch_lock）。键是 (设备ID, 共享标识, 相对路径)。
-        self._fetch_locks: Dict[Tuple[str, str, str], threading.Lock] = {}
-        self._fetch_locks_guard = threading.Lock()
-        # 上一次刷新里连不上的端点 -> 失败原因（手动登记的地址失败时要回报给用户）
-        self._unreachable: Dict[Tuple[str, int], str] = {}
-        # 名单历史（`roster-history.json`）：准入判定要回答"本机认不认得对端手里
-        # 那份"，只有当前名单说明不了"见过它前面的那些"（见 roster_history.py）。
-        # 惰性构造：不是每个实例都会跑节点。
-        self._roster_history_store: Optional[roster_history_mod.RosterHistory] = None
-        # 对端名单版本记录（端点 -> {group, version, hash}）：界面据此做
-        # "本机 v3 / 对方 v2" 的对照（宽限提示与分发可见性）。
-        self._peer_roster_notes: Dict[Tuple[str, int], Dict[str, Any]] = {}
-        # 最近一次自动采纳的新名单（界面提示"你的名单已从对方升级"）。
-        self._roster_notice: Optional[Dict[str, Any]] = None
-        # 已建立的出站连接：(设备公钥 bytes, host, port) -> Connection。
-        # 复用的理由：一次请求就是一次 Noise 握手（多个往返 + 公钥运算），
-        # 逐次建连会让"浏览一个目录"变成几个握手的开销。
-        self._connections: Dict[Tuple[bytes, str, int], Any] = {}
-        # 上传任务表（见 upload_remote）：task_id -> 任务字典（进度、状态、取消标志）。
-        # 后台线程写、界面线程读，因此用一把独立的锁 —— 与 _lock（连接/共享项）分开，
-        # 避免上传线程持锁时把界面请求堵住。
-        self._uploads: Dict[str, Dict[str, Any]] = {}
-        self._upload_order: List[str] = []
-        self._uploads_guard = threading.Lock()
-        # 卸载后老实例的上传线程可能还在收尾（取消要等到分块边界）。它**不得**再写
-        # 任务表：同一个数据根已经交给新实例了，写回去会把新实例刚记下的任务覆盖掉。
-        self._unloading = False
-        # 后台同步：
-        #   - 定时轮询：每 `sync_interval_seconds` 拉一次注册表与名单；
-        #   - 变更时 push：名单/注册变更后立即唤醒循环，把新版本推给对端。
-        # `_sync_lock` 保证"后台同步"与显式 `list_peers(refresh=True)` 不会同时
-        # 探测/合并；`_sync_state_lock` 只保护两个 dirty 标志。
-        self._sync_thread: Optional[threading.Thread] = None
-        self._sync_stop = threading.Event()
-        self._sync_wake = threading.Event()
-        self._sync_lock = threading.Lock()
-        self._sync_state_lock = threading.Lock()
-        # 注册记录的"读 seq → 写注册表 → 写 state.json"必须串行化：节点启动、
-        # 后台同步、共享项变更都会触发发布。
-        self._registration_lock = threading.Lock()
-        self._roster_dirty = False
-        self._registry_dirty = False
-        self._last_sync_at: Optional[int] = None
-        self._last_sync_error = ''
+        rules = _const.RULES
+        # 一把共用的锁：迁移前它就同时保护连接池、注册表合并与共享项读改写，
+        # 拆成多把会改变并发行为（见各组件顶部的说明）。
+        shared_lock = threading.Lock()
+        global_data_root = Path(self.config['directories']['data_root']).resolve()
+        root = global_data_root / self.name
+        self.pulse = _pulse.SyncPulse(self)
+        self.facts = _peer_facts.PeerFacts(shared_lock)
+        self.storage = _storage.Storage(root, self, self.pulse)
+        self.registry_store = _registry.MeshRegistry(self.storage, shared_lock)
+        self.connections = _connections.ConnectionPool(shared_lock)
+        self.node = _node.Node(self.storage, self.registry_store, self.connections,
+                               self.pulse, self, _const.DEFAULT_PORT)
+        self.discovery = _discovery.Discovery(
+            self.storage, self.registry_store, self.connections, self.pulse,
+            self.facts, self.node)
+        self.peers = _peers.Peers(self.storage, self.registry_store, self.discovery,
+                                  self.node, self.facts, self.pulse, rules)
+        self.identity = _group.Group(self.storage, self, rules)
+        self.shares = _shares.Shares(
+            self.storage, self.node, self, shared_lock, rules,
+            global_data_root, lambda: engine_for(self),
+            paths=_share_paths.SharePaths())
+        self.report = _status.StatusReport(self.storage, self.node, self.discovery,
+                                           self.pulse, self.shares, self.facts, self,
+                                           _const.DEFAULT_PORT)
+        self.remote = _remote.Remote(self.storage, self.registry_store, self.connections,
+                                     rules)
+        self.materialize = _materialize.Materialize(
+            self.storage, self.registry_store, self.connections, rules)
+        self.mirror = _mirror.Mirror(self.storage, self.registry_store, self.connections,
+                                     self.materialize, rules, self.is_protected_path)
+        self.fetch = _fetch.Fetch(self.storage, self.materialize, self.remote, self, rules)
+        self.uploads = _uploads.UploadQueue(self.storage, rules)
+        self.upload = _upload.Uploader(self.storage, self.registry_store, self.uploads, rules)
 
-    # ── 生命周期与 API ────────────────────────────────────────────────────
+    def register_api(self) -> Dict[str, Callable]:
+        return {
+            'get_status': self.report.get_status,
+            'init_identity': self.identity.init_identity,
+            'get_device_keys': self.identity.get_device_keys,
+            'create_group': self.identity.create_group,
+            'join_group': self.identity.join_group,
+            'get_invite': self.identity.get_invite,
+            'add_member': self.identity.add_member,
+            'add_share': self.shares.add_share,
+            'remove_share': self.shares.remove_share,
+            'refresh_share_roots': self.shares.refresh_share_roots,
+            'peers': self.peers.action,
+            'my_endpoint': self.peers.my_endpoint,
+            'list_peers': self.peers.list_peers,
+            'list_remote': self.remote.list_remote,
+            'download_remote': self.remote.download_remote,
+            'upload_remote': self.upload.upload_remote,
+            'upload_status': self.uploads.status,
+            'cancel_upload': self.uploads.cancel,
+            'materialize_remote': self.materialize.materialize_remote,
+            'mirror_share': self.mirror.mirror_share,
+            'remote_cache': self.fetch.remote_cache,
+            'clear_remote_cache': self.fetch.clear_remote_cache,
+            'start_node': self.node.start,
+            'stop_node': self.node.stop,
+            'get_node_status': self.node.status,
+            # 前端的「设置」按钮走壳的统一设置弹窗（`frontend/js/app.js` 的
+            # openSettingsModal），它内部用 `Bridge.call('get_settings')` 取值、
+            # `Bridge.call('save_settings')` 落盘，即 `POST /api/group-mesh__<方法>`；
+            # 而 PluginManager 只会额外登记 `<插件>__get_settings_schema`。此前两个都没
+            # 登记，于是弹窗里全是 schema 默认值、点保存必然"保存失败"（与 image-cleaner
+            # 同一类缺陷，守卫见 tools/check_plugins.py 的设置 API 登记检查）。
+            'get_settings': self.get_settings,
+            'save_settings': self.save_settings,
+        }
 
-    def on_load(self) -> None:
-        self.get_data_root().mkdir(parents=True, exist_ok=True)
-        self._unloading = False
-        self._restore_uploads()
-        # 后台同步随插件加载启动；`on_unload` 必须把它停掉，否则重载会留下线程。
-        self._start_sync()
+    # ===== 壳按名调用的钩子：名字与签名与迁移前完全一致 =====
 
-    def on_unload(self) -> None:
-        # 插件卸载必须留不下监听线程、上传线程与出站连接，否则重载会撞端口占用。
-        # 先立起卸载标志：取消是"到分块边界才生效"，而新实例可能已经开始读同一个
-        # 数据根了。
-        self._unloading = True
-        self._stop_sync()
-        self._cancel_all_uploads()
-        self._close_connections()
-        self.stop_node()
+    def get_data_root(self) -> Path:
+        return self.storage.root
+
+    def get_protected_paths(self) -> List[Path]:
+        return self.storage.protected_paths(PluginBase.get_protected_paths(self))
 
     def get_extensions(self) -> List[dict]:
         """把自己注册成"网络位置"提供方（壳共享目录组件的「网络位置」按钮用它）。
@@ -296,39 +187,50 @@ class GroupMeshPlugin(
             'embedUrl': '/plugins/group-mesh/frontend/network-location.html',
         }]
 
-    def register_api(self) -> Dict[str, Callable]:
-        return {
-            'get_status': self.get_status,
-            'init_identity': self.init_identity,
-            'get_device_keys': self.get_device_keys,
-            'create_group': self.create_group,
-            'join_group': self.join_group,
-            'get_invite': self.get_invite,
-            'add_member': self.add_member,
-            'add_share': self.add_share,
-            'remove_share': self.remove_share,
-            'refresh_share_roots': self.refresh_share_roots,
-            'peers': self.peers,
-            'my_endpoint': self.my_endpoint,
-            'list_peers': self.list_peers,
-            'list_remote': self.list_remote,
-            'download_remote': self.download_remote,
-            'upload_remote': self.upload_remote,
-            'upload_status': self.upload_status,
-            'cancel_upload': self.cancel_upload,
-            'materialize_remote': self.materialize_remote,
-            'mirror_share': self.mirror_share,
-            'remote_cache': self.remote_cache,
-            'clear_remote_cache': self.clear_remote_cache,
-            'start_node': self.start_node,
-            'stop_node': self.stop_node,
-            'get_node_status': self.get_node_status,
-            # 前端的「设置」按钮走壳的统一设置弹窗（`frontend/js/app.js` 的
-            # openSettingsModal），它内部用 `Bridge.call('get_settings')` 取值、
-            # `Bridge.call('save_settings')` 落盘，即 `POST /api/group-mesh__<方法>`；
-            # 而 PluginManager 只会额外登记 `<插件>__get_settings_schema`。此前两个都没
-            # 登记，于是弹窗里全是 schema 默认值、点保存必然"保存失败"（与 image-cleaner
-            # 同一类缺陷，守卫见 tools/check_plugins.py 的设置 API 登记检查）。
-            'get_settings': self.get_settings,
-            'save_settings': self.save_settings,
-        }
+    def is_content_placeholder(self, path: Any) -> bool:
+        return self.fetch.is_content_placeholder(path)
+
+    def ensure_file(self, path: Any) -> None:
+        return self.fetch.ensure_file(path)
+
+    def freshness_spec(self) -> Dict[str, Any]:
+        return self.shares.spec()
+
+    def get_node_status(self) -> Dict[str, Any]:
+        return self.node.status()
+
+    def get_sync_status(self) -> Dict[str, Any]:
+        return self.discovery.status()
+
+    def get_share_roots(self) -> List[Dict[str, Any]]:
+        return self.shares.get_share_roots()
+
+    @property
+    def cache_dir(self) -> Path:
+        """可重建派生数据的目录（实例上的路径访问器）。"""
+        return self.storage.cache_dir
+
+    @property
+    def downloads_dir(self) -> Path:
+        """取回文件的落点（实例上的路径访问器）。"""
+        return self.storage.downloads_dir
+
+    def on_settings_changed(self, changed_keys) -> None:
+        self.node.on_settings_changed(changed_keys)
+
+    def on_load(self) -> None:
+        self.storage.root.mkdir(parents=True, exist_ok=True)
+        self.uploads.begin_load()
+        self.uploads.restore()
+        # 后台同步随插件加载启动；`on_unload` 必须把它停掉，否则重载会留下线程。
+        self.discovery.start()
+
+    def on_unload(self) -> None:
+        # 插件卸载必须留不下监听线程、上传线程与出站连接，否则重载会撞端口占用。
+        # 先立起卸载标志：取消是"到分块边界才生效"，而新实例可能已经开始读同一个
+        # 数据根了。
+        self.uploads.begin_unload()
+        self.discovery.stop()
+        self.uploads.cancel_all()
+        self.connections.close_all()
+        self.node.stop()

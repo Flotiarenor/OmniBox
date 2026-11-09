@@ -29,10 +29,10 @@ PLUGIN_GLOB = 'plugins/*/backend/**/*.py'
 ALLOWED = {
     # 日志初始化失败时的兜底：此时 logging 还用不了
     'shell/backend/app_logging.py',
-    # pixiv-sync 的两个伴侣 CLI 工具：交互提示就是产品本身
-    'plugins/pixiv-sync/backend/pixiv_sync/pixiv_purge_non_original.py',
-    'plugins/pixiv-sync/backend/pixiv_sync/pixiv_unmark_recent.py',
 }
+
+# 伴侣命令行工具（交互提示就是产品本身）放在 plugins/<插件>/tool/，不属于运行时后端，
+# 因此不在 PLUGIN_GLOB 的扫描范围里。
 
 
 def _runtime_files():

@@ -109,7 +109,7 @@ class ImageViewerPixivFuzzyTestCase(unittest.TestCase):
             module.ImageViewerPlugin._resolved_config = original
 
     def _names(self, plugin, rel_path='', sort_order='desc') -> list:
-        data = plugin.list_folder_items(rel_path, 1, 40, 'time_name', sort_order)
+        data = plugin.listing.list_folder_items(rel_path, 1, 40, 'time_name', sort_order)
         return [it.get('name') or Path(it['url']).name for it in data['items']]
 
     # ---------- 开关语义 ----------
@@ -118,7 +118,7 @@ class ImageViewerPixivFuzzyTestCase(unittest.TestCase):
         schema = {f['key']: f for f in self.module.ImageViewerPlugin.settings_schema}
         self.assertFalse(schema['pixiv_fuzzy']['default'])
         self.assertEqual(schema['pixiv_fuzzy']['type'], 'checkbox')
-        s = self._plugin({'root_dir': str(self.root)}).get_settings('')
+        s = self._plugin({'root_dir': str(self.root)}).settings.for_path('')
         self.assertFalse(s['pixiv_fuzzy'])
         self.assertFalse(s['pixiv_explicit'])
 
@@ -127,7 +127,7 @@ class ImageViewerPixivFuzzyTestCase(unittest.TestCase):
         plugin = self._plugin({'root_dir': str(self.root), 'pixiv_fuzzy': True})
         self.assertEqual(self._names(plugin, '_artistB/2024-01-01 合集'),
                          ['1.jpg', '2.jpg', '10.jpg', '淡红晕.jpg'])
-        album = next(a for a in plugin.list_albums()['albums'] if a['path'] == 'albumA')
+        album = next(a for a in plugin.albums.list_albums()['albums'] if a['path'] == 'albumA')
         self.assertEqual(album['cover'], 'albumA/a.png')
         self.assertFalse(album['use_time_name'])
 
@@ -164,7 +164,7 @@ class ImageViewerPixivFuzzyTestCase(unittest.TestCase):
         """模糊匹配开启后，非数字命名的作品目录同样按作品号挑封面。"""
         plugin = self._plugin({'root_dir': str(self.root), 'sort_by': 'time_name',
                                'pixiv_fuzzy': True})
-        albums = {a['path']: a for a in plugin.list_albums()['albums']}
+        albums = {a['path']: a for a in plugin.albums.list_albums()['albums']}
         # 作品内部（叶子目录）取作品号最大那张，而不是自然序第一张：
         # 10.jpg 的作品号是 10，1.jpg 是 1
         self.assertEqual(albums['_artistB/2024-01-01 合集']['cover'],
@@ -183,7 +183,7 @@ class ImageViewerPixivFuzzyTestCase(unittest.TestCase):
     def test_no_fuzzy_keeps_existing_cover_rule(self):
         """不勾选模糊匹配（既有行为保持不变）：Pixiv 目录封面取作品号最大那张。"""
         plugin = self._plugin({'root_dir': str(self.root), 'sort_by': 'time_name'})
-        albums = {a['path']: a for a in plugin.list_albums()['albums']}
+        albums = {a['path']: a for a in plugin.albums.list_albums()['albums']}
         self.assertEqual(albums['_artistB/2024-01-01 合集']['cover'],
                          '_artistB/2024-01-01 合集/10.jpg')
         # 多图作品内取自然序第一张（p0 而不是 p1）
@@ -193,7 +193,7 @@ class ImageViewerPixivFuzzyTestCase(unittest.TestCase):
     def test_plain_sort_cover_is_natural_first(self):
         """不开 Pixiv 排序（模糊匹配勾了也无效）：封面仍是文件名自然序第一张。"""
         plugin = self._plugin({'root_dir': str(self.root), 'sort_by': 'mtime'})
-        albums = {a['path']: a for a in plugin.list_albums()['albums']}
+        albums = {a['path']: a for a in plugin.albums.list_albums()['albums']}
         self.assertEqual(albums['_artistB/2024-01-01 合集']['cover'],
                          '_artistB/2024-01-01 合集/1.jpg')
         self.assertFalse(albums['_artistB/2024-01-01 合集']['use_time_name'])
@@ -205,13 +205,13 @@ class ImageViewerPixivFuzzyTestCase(unittest.TestCase):
             'sort_by': 'time_name',
             'folders': {'_artist': {'pixiv_fuzzy': True}},
         })
-        own = plugin.get_settings('_artist')
+        own = plugin.settings.for_path('_artist')
         # 排序方式是从全局继承的，但模糊匹配是自己存的
         self.assertEqual(own['sort_by'], 'time_name')
         self.assertTrue(own['pixiv_fuzzy'])
         self.assertTrue(own['pixiv_explicit'])
         # 子作品目录没有自己的条目：继承生效设置，但不是配置点
-        child = plugin.get_settings('_artist/2024-05-10')
+        child = plugin.settings.for_path('_artist/2024-05-10')
         self.assertTrue(child['pixiv_fuzzy'])
         self.assertFalse(child['pixiv_explicit'])
         # 未开启 Pixiv 排序时，勾了模糊匹配也无效（不改变任何行为）
@@ -219,8 +219,8 @@ class ImageViewerPixivFuzzyTestCase(unittest.TestCase):
             'root_dir': str(self.root),
             'folders': {'_artist': {'pixiv_fuzzy': True}},
         })
-        self.assertFalse(plain._pixiv_mode('_artist'))
-        album = next(a for a in plain.list_albums()['albums'] if a['path'] == '_artistB')
+        self.assertFalse(plain.settings.pixiv_mode('_artist'))
+        album = next(a for a in plain.albums.list_albums()['albums'] if a['path'] == '_artistB')
         self.assertFalse(album['use_time_name'])
 
     # ---------- 配置点与继承 ----------
@@ -232,25 +232,30 @@ class ImageViewerPixivFuzzyTestCase(unittest.TestCase):
             'pixiv_fuzzy': True,
             'folders': {'_artist': {'sort_by': 'time_name', 'pixiv_fuzzy': True}},
         })
-        own = plugin.get_settings('_artist')
+        own = plugin.settings.for_path('_artist')
         self.assertEqual(own['sort_by'], 'time_name')
         self.assertTrue(own['pixiv_fuzzy'])
         self.assertTrue(own['pixiv_explicit'])
-        child = plugin.get_settings('_artist/2024-05-10')
+        child = plugin.settings.for_path('_artist/2024-05-10')
         self.assertTrue(child['pixiv_fuzzy'])
         self.assertFalse(child['pixiv_explicit'])
         # 全局关掉模糊匹配时，未显式配置的目录不启用
         plain = self._plugin({'root_dir': str(self.root)})
-        self.assertFalse(plain.get_settings('_artist')['pixiv_fuzzy'])
+        self.assertFalse(plain.settings.for_path('_artist')['pixiv_fuzzy'])
 
     def test_album_cache_semantics_unchanged(self):
-        """本次改动不动缓存里的封面/标志语义：索引缓存版本保持 4。
+        """模糊匹配不动缓存里的封面/标志语义；版本号由索引 schema 决定。
 
-        模糊匹配只影响配置点判定（`pixiv_explicit`）与同号条目的比较键，
-        缓存的 `direct_cover` / `pixiv` 计算方式与改动前一致，因此不需要
-        升版本作废旧索引（升了等于让所有用户白扫一遍全库）。
+        模糊匹配只影响配置点判定（`pixiv_explicit`）与同号条目的比较键，缓存的
+        `direct_cover` / `pixiv` 计算方式与改动前一致，因此不因它升版本（升了等于让
+        所有用户白扫一遍全库）。当前版本是 8：v5 来自「更新单元数」的 schema 变更
+        （`direct_units` / `total_units`），v6 改成与漫画阅读插件对齐（书的边界由漫画
+        根决定，见 `books.py`），v7 作废 v6 期间按文件名猜页码落下的条目，v8 的条目
+        新增 `direct_cover_mtime` / `total_cover_mtime`（封面版本号，目录 mtime 不变
+        时也必须补上，只能整份作废）；这些都与模糊匹配无关，再改封面/标志语义时才该
+        再一次升版本。
         """
-        self.assertEqual(self.module.ImageViewerPlugin._ALBUM_CACHE_VERSION, 4)
+        self.assertEqual(self.module._const.LIMITS.album_cache_version, 8)
 
 
 if __name__ == '__main__':   # pragma: no cover

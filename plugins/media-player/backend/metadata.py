@@ -1,19 +1,51 @@
-from pathlib import Path
-from typing import Optional
+"""音频标签读取与内嵌 / 目录封面字节提取。
 
-try:
-    from mutagen import File as MutagenFile
-    from mutagen.flac import FLAC
-    from mutagen.id3 import APIC, ID3
-    from mutagen.mp4 import MP4
-    HAS_MUTAGEN = True
-except ImportError:
-    HAS_MUTAGEN = False
+mutagen 是**强制依赖**（`requirements.txt` 固定版本，`HIDDEN_IMPORTS` 已登记），因此
+在模块顶层直接 import：可选依赖的 `try/except ImportError` 会让每个使用点都变成
+"可能未绑定"，静态检查被迫放弃这十来个调用点的类型。`HAS_MUTAGEN` 保留为 True ——
+它是 `MetadataReader.debug_meta()` 对外载荷里的字段名（诊断输出说什么库可用）。
+
+分类读取的兜底策略：mutagen 能读就用它（内嵌标签与时长），读失败或没有标签时退回
+文件名解析（`_read_by_filename`），保证索引里永远有条目。
+"""
+
+from pathlib import Path
+from typing import Any, Optional, cast
+
+from mutagen import File as MutagenFile
+from mutagen.flac import FLAC
+from mutagen.id3 import APIC, ID3
+from mutagen.mp4 import MP4
+
+HAS_MUTAGEN = True
 
 SUPPORTED_EXTS = {'.mp3', '.flac', '.wav', '.aac', '.ogg', '.wma', '.m4a', '.opus', '.ape', '.wv'}
 
-COVER_NAMES = ['cover.jpg', 'cover.png', 'folder.jpg', 'folder.png',
-               'album.jpg', 'album.png', 'front.jpg', 'front.png']
+#: 目录封面图的**唯一**候选名单与优先序（覆盖音频与视频两类常见命名）。
+#: 为什么必须是同一个有序元组：「这个目录的封面是哪个文件」被三处用到 ——
+#: `has_cover`/`cover_mtime` 的判定（scanner）、缩略图字节（本模块）、刷新指纹的
+#: `include_names`。各自维护一份时，一个目录里同时存在 `folder.jpg` 与 `poster.jpg`
+#: 就会出现"版本号来自 A、字节来自 B"，或跨进程随机换封面。
+COVER_NAMES: tuple = ('cover.jpg', 'cover.png', 'folder.jpg', 'folder.png',
+                      'album.jpg', 'album.png', 'front.jpg', 'front.png',
+                      'poster.jpg', 'poster.png', 'fanart.jpg', 'fanart.png',
+                      'thumb.jpg', 'thumb.png', 'backdrop.jpg', 'backdrop.png')
+
+
+def find_folder_cover_path(dir_path: Path, names: Any = None) -> Optional[Path]:
+    """目录里第一个存在的封面图（按 `COVER_NAMES` 的固定顺序）；没有时返回 None。
+
+    封面"是谁"只能有一处判定：`scanner.find_cover`（版本号与 `has_cover`）与
+    `_find_folder_cover`（实际字节）都调它，于是多封面目录里两者永远指向同一个文件。
+    """
+    for name in (names or COVER_NAMES):
+        candidate = Path(dir_path) / name
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
 
 
 def detect_image_mime(data: bytes) -> str:
@@ -123,8 +155,12 @@ class MetadataReader:
                     if audio_raw is not None:
                         if not length and audio_raw.info:
                             length = int(audio_raw.info.length)
-                        if audio_raw.tags:
-                            raw = dict(audio_raw.tags)
+                        # FLAC.tags 的静态类型是 MetadataBlock | VCFLACDict 的联合
+                        # （mutagen 用兼容层同时声明两种标签容器），运行期这里一定是
+                        # dict-like 的 VCFLACDict；cast 到 Any 是为了让下面的迭代可写。
+                        flac_tags = cast(Any, audio_raw.tags)
+                        if flac_tags is not None:
+                            raw = {key: flac_tags[key] for key in flac_tags}
                             title = title or MetadataReader._first_tag(raw, ['TITLE', 'title'])
                             artist = artist or MetadataReader._first_tag(raw, ['ARTIST', 'artist'])
                             album = album or MetadataReader._first_tag(raw, ['ALBUM', 'album'])
@@ -223,7 +259,9 @@ class MetadataReader:
             tags = ID3(str(file_path))
             for tag in tags.values():
                 if isinstance(tag, APIC):
-                    return tag.data
+                    # APIC 的 mime / data / desc 由 _framespec 在运行期生成，静态类型里
+                    # 看不到这些属性（mutagen 的帧字段是声明式描述的），故按契约 cast。
+                    return cast(Any, tag).data
         except Exception:
             pass
         return None
@@ -242,7 +280,9 @@ class MetadataReader:
     def _cover_from_mp4(file_path: Path) -> Optional[bytes]:
         try:
             audio = MP4(str(file_path))
-            covers = audio.tags.get('covr', [])
+            # MP4.tags 是 Optional（无标签的文件返回 None），直接 .get 会漏掉这一点
+            tags = audio.tags
+            covers = tags.get('covr', []) if tags is not None else []
             if covers:
                 return bytes(covers[0])
         except Exception:
@@ -250,15 +290,14 @@ class MetadataReader:
         return None
 
     @staticmethod
-    def _find_folder_cover(dir_path: Path, names: list | None = None) -> Optional[bytes]:
-        for name in (names or COVER_NAMES):
-            cover_file = dir_path / name
-            if cover_file.exists():
-                try:
-                    return cover_file.read_bytes()
-                except Exception:
-                    pass
-        return None
+    def _find_folder_cover(dir_path: Path, names: Any = None) -> Optional[bytes]:
+        cover_file = find_folder_cover_path(dir_path, names)
+        if cover_file is None:
+            return None
+        try:
+            return cover_file.read_bytes()
+        except Exception:
+            return None
 
     @staticmethod
     def _first_tag(tags: dict, keys: list) -> Optional[str]:

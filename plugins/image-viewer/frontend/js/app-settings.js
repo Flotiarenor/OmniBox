@@ -237,7 +237,9 @@ Object.assign(ImageViewer.prototype, {
                 await Bridge.call('refresh');
                 await this.loadAlbums();
             }
-            if (this.mode === 'images') this.loadImages(this.currentPath, 1);
+            // 图片层按来源重载：目录列表走 list_folder_items，时间线「按图片」层走
+            // list_recent_images —— 这里不能用 loadImages(currentPath) 硬编码目录。
+            if (this.mode === 'images') this._reloadCurrentView();
             else this.showAlbums();
         } catch (e) {
             // 后端拒绝保存：不更新内存、不关弹窗、不刷新，留下可读原因供修改。

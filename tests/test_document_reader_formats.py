@@ -122,7 +122,7 @@ class DocumentReaderFormatTests(unittest.TestCase):
         (self.docs / '2024年度-报告.docx').write_bytes(b'PK\x03\x04')
         (self.docs / 'note.log').write_text('x', encoding='utf-8')
 
-        items = {n['id']: n for n in self.plugin.list_documents()['documents']}
+        items = {n['id']: n for n in self.plugin.library.list_documents()['documents']}
         self.assertEqual(set(items), {'a.txt', 'b.md', '2024年度-报告.docx'})
         self.assertEqual(items['b.md']['kind'], 'md')
         self.assertEqual(items['2024年度-报告.docx']['kind'], 'external')
@@ -147,7 +147,7 @@ class DocumentReaderFormatTests(unittest.TestCase):
         (second / '另一本.md').write_text('# 一\n正文\n', encoding='utf-8')
         self.plugin = self._new_plugin([str(self.docs), str(second)])
 
-        items = {n['id']: n for n in self.plugin.list_documents()['documents']}
+        items = {n['id']: n for n in self.plugin.library.list_documents()['documents']}
         self.assertEqual(set(items), {'顶层.txt', '文档/武侠/剑来.epub', '另一本.md'})
         # id 是相对各自根目录的路径，主目录第一层仍是文件名（老进度键不受影响）
         self.assertEqual(items['文档/武侠/剑来.epub']['dir'], '文档/武侠')
@@ -157,7 +157,7 @@ class DocumentReaderFormatTests(unittest.TestCase):
         # 朗读缓存目录（<config>/plugins/<插件名>）也必须在内 —— 音频经 /file 播放。
         roots = [str(path) for path in self.plugin.get_file_roots()]
         self.assertEqual(roots[:2], [str(self.docs.resolve()), str(second.resolve())])
-        self.assertIn(str(self.plugin._tts_cache_dir().parent), roots)
+        self.assertIn(str(self.plugin.tts._cache.cache_dir().parent), roots)
         # 主目录是第一根：缓存与阅读进度存在它下面
         self.assertEqual(str(self.plugin.get_data_root()), str(self.docs.resolve()))
 
@@ -165,11 +165,11 @@ class DocumentReaderFormatTests(unittest.TestCase):
         (self.docs / 'c.pdf').write_bytes(b'%PDF-1.4\n')
         (self.docs / 'd.docx').write_bytes(b'PK\x03\x04')
 
-        kinds = {n['id']: n['kind'] for n in self.plugin.list_documents()['documents']}
+        kinds = {n['id']: n['kind'] for n in self.plugin.library.list_documents()['documents']}
         self.assertEqual(kinds, {'c.pdf': 'pdf', 'd.docx': 'external'})
-        self.assertEqual(self.plugin.get_chapters('c.pdf')['chapters'], [])
-        self.assertEqual(self.plugin.get_chapters('d.docx')['chapters'], [])
-        self.assertEqual(self.plugin.get_content('c.pdf', 0)['error'], '该格式不支持在阅读器内打开')
+        self.assertEqual(self.plugin.content.get_chapters('c.pdf')['chapters'], [])
+        self.assertEqual(self.plugin.content.get_chapters('d.docx')['chapters'], [])
+        self.assertEqual(self.plugin.content.get_content('c.pdf', 0)['error'], '该格式不支持在阅读器内打开')
 
     # ===== Markdown =====
 
@@ -183,12 +183,12 @@ class DocumentReaderFormatTests(unittest.TestCase):
             '- 项目一\n',
             encoding='utf-8',
         )
-        self.plugin.list_documents()
+        self.plugin.library.list_documents()
 
-        chapters = self.plugin.get_chapters('book.md')['chapters']
+        chapters = self.plugin.content.get_chapters('book.md')['chapters']
         self.assertEqual([c['title'] for c in chapters], ['前言', '第一章 起点', '小节'])
 
-        result = self.plugin.get_content('book.md', 1)
+        result = self.plugin.content.get_content('book.md', 1)
         self.assertEqual(result['format'], 'html')
         self.assertIn('<h1>', result['content'])
         self.assertIn('<table>', result['content'])
@@ -200,9 +200,9 @@ class DocumentReaderFormatTests(unittest.TestCase):
         (self.docs / 'pic.png').write_bytes(b'\x89PNG\r\n\x1a\n')
         (self.docs / 'notes.md').write_text('# 一\n\n![图](pic.png)\n\n![外链](https://x/y.png)\n',
                                             encoding='utf-8')
-        self.plugin.list_documents()
+        self.plugin.library.list_documents()
 
-        html = self.plugin.get_content('notes.md', 0)['content']
+        html = self.plugin.content.get_content('notes.md', 0)['content']
         # 图片 URL 用绝对路径：多根目录下相对路径只认第一根
         self.assertIn(f'src="/file?path={quote(str((self.docs / "pic.png").resolve()))}&amp;plugin=document-reader"',
                       html)
@@ -222,13 +222,13 @@ class DocumentReaderFormatTests(unittest.TestCase):
             nav=[('ch1.xhtml', '目录一'), ('ch2.xhtml', '目录二')],
             extra={'OEBPS/Images/pic.png': b'\x89PNG\r\n\x1a\n'},
         )
-        self.plugin.list_documents()
+        self.plugin.library.list_documents()
 
-        chapters = self.plugin.get_chapters('book.epub')['chapters']
+        chapters = self.plugin.content.get_chapters('book.epub')['chapters']
         self.assertEqual([c['title'] for c in chapters], ['目录一', '目录二'])
         self.assertGreater(chapters[0]['word_count'], 0)
 
-        result = self.plugin.get_content('book.epub', 0)
+        result = self.plugin.content.get_content('book.epub', 0)
         self.assertEqual(result['format'], 'html')
         html = result['content']
         self.assertIn('<h1>第一章</h1>', html)
@@ -255,13 +255,13 @@ class DocumentReaderFormatTests(unittest.TestCase):
             nav=[],
             extra={'secret.png': b'outside', 'OEBPS/abs.png': b'abs'},
         )
-        self.plugin.list_documents()
+        self.plugin.library.list_documents()
 
         # nav 为空 → 标题回落到正文里的第一个标题
-        self.assertEqual([c['title'] for c in self.plugin.get_chapters('evil.epub')['chapters']],
+        self.assertEqual([c['title'] for c in self.plugin.content.get_chapters('evil.epub')['chapters']],
                          ['第一章'])
 
-        html = self.plugin.get_content('evil.epub', 0)['content']
+        html = self.plugin.content.get_content('evil.epub', 0)['content']
         self.assertNotIn('<img', html)
         self.assertFalse((self.root / 'secret.png').exists())
         self.assertFalse((self.docs / 'secret.png').exists())
@@ -274,7 +274,7 @@ class DocumentReaderFormatTests(unittest.TestCase):
     def test_cover_from_epub3_properties(self):
         """EPUB3：manifest 上的 properties="cover-image"。封面不在 spine 里，必须单独取。"""
         self._write_cover_epub('epub3.epub', ('properties', 'cover.png'))
-        cover = self.plugin.document_cover('epub3.epub')['cover']
+        cover = self.plugin.content.document_cover('epub3.epub')['cover']
         self.assertTrue(cover, 'EPUB3 的 cover-image 没被取到')
         self.assertIn('/file?path=', cover)
         self.assertIn('plugin=document-reader', cover)
@@ -285,26 +285,26 @@ class DocumentReaderFormatTests(unittest.TestCase):
 
     def test_cover_from_epub2_meta(self):
         self._write_cover_epub('epub2.epub', ('meta', 'cover.png'))
-        self.assertTrue(self.plugin.document_cover('epub2.epub')['cover'])
+        self.assertTrue(self.plugin.content.document_cover('epub2.epub')['cover'])
 
     def test_cover_from_guide_reference(self):
         self._write_cover_epub('old.epub', ('guide', 'cover.png'))
-        self.assertTrue(self.plugin.document_cover('old.epub')['cover'])
+        self.assertTrue(self.plugin.content.document_cover('old.epub')['cover'])
 
     def test_cover_missing_file_is_not_an_error(self):
         """声明了封面但 zip 里没有那个成员：返回空串（前端画生成式封面），不是异常。"""
         _write_epub(self.docs / 'broken.epub',
                     docs=[('ch1.xhtml', '第一章', '<p>正文</p>')],
                     cover=('properties', 'not-there.png'))
-        self.plugin.list_documents()
-        self.assertEqual(self.plugin.document_cover('broken.epub'), {'cover': ''})
+        self.plugin.library.list_documents()
+        self.assertEqual(self.plugin.content.document_cover('broken.epub'), {'cover': ''})
 
     def test_cover_for_non_epub_and_unknown_doc(self):
         (self.docs / 'a.txt').write_text('第一章\n正文\n', encoding='utf-8')
-        self.plugin.list_documents()
+        self.plugin.library.list_documents()
         # txt 没有封面概念；不存在的 id 也不该炸
-        self.assertEqual(self.plugin.document_cover('a.txt'), {'cover': ''})
-        self.assertEqual(self.plugin.document_cover('没有这本书.epub'), {'cover': ''})
+        self.assertEqual(self.plugin.content.document_cover('a.txt'), {'cover': ''})
+        self.assertEqual(self.plugin.content.document_cover('没有这本书.epub'), {'cover': ''})
 
     def _write_cover_epub(self, name: str, cover) -> None:
         _write_epub(
@@ -314,54 +314,54 @@ class DocumentReaderFormatTests(unittest.TestCase):
             cover=cover,
             extra={'OEBPS/cover.png': _PNG_BYTES},
         )
-        self.plugin.list_documents()
+        self.plugin.library.list_documents()
 
     # ===== 书签 =====
 
     def test_marks_add_list_remove(self):
         (self.docs / 'a.txt').write_text('第一章\n正文\n', encoding='utf-8')
-        self.plugin.list_documents()
+        self.plugin.library.list_documents()
 
-        added = self.plugin.marks_add('a.txt', 1, 128, '他忽然想起很多年前', '第三章')
+        added = self.plugin.marks.marks_add('a.txt', 1, 128, '他忽然想起很多年前', '第三章')
         self.assertTrue(added['success'])
         self.assertEqual(len(added['marks']), 1)
         self.assertEqual(added['marks'][0]['char'], 128)
 
-        listed = self.plugin.marks_list('a.txt')['marks']
+        listed = self.plugin.marks.marks_list('a.txt')['marks']
         self.assertEqual(listed[0]['snippet'], '他忽然想起很多年前')
         # 不带 id 时列出全部，并补上 document_id（书架左侧「书签」要用）
-        self.assertEqual(self.plugin.marks_list()['marks'][0]['document_id'], 'a.txt')
+        self.assertEqual(self.plugin.marks.marks_list()['marks'][0]['document_id'], 'a.txt')
 
-        removed = self.plugin.marks_remove('a.txt', 1, 128)
+        removed = self.plugin.marks.marks_remove('a.txt', 1, 128)
         self.assertEqual(removed['marks'], [])
-        self.assertEqual(self.plugin.marks_list('a.txt')['marks'], [])
+        self.assertEqual(self.plugin.marks.marks_list('a.txt')['marks'], [])
 
     def test_marks_same_position_is_idempotent(self):
         (self.docs / 'a.txt').write_text('第一章\n正文\n', encoding='utf-8')
-        self.plugin.list_documents()
-        self.plugin.marks_add('a.txt', 0, 10, '第一段')
-        self.plugin.marks_add('a.txt', 0, 10, '第一段（重复点了一次）')
-        marks = self.plugin.marks_list('a.txt')['marks']
+        self.plugin.library.list_documents()
+        self.plugin.marks.marks_add('a.txt', 0, 10, '第一段')
+        self.plugin.marks.marks_add('a.txt', 0, 10, '第一段（重复点了一次）')
+        marks = self.plugin.marks.marks_list('a.txt')['marks']
         self.assertEqual(len(marks), 1)
         self.assertIn('重复', marks[0]['snippet'])
 
     def test_marks_persist_across_plugin_reload(self):
         (self.docs / 'a.txt').write_text('第一章\n正文\n', encoding='utf-8')
-        self.plugin.list_documents()
-        self.plugin.marks_add('a.txt', 2, 33, '摘录')
+        self.plugin.library.list_documents()
+        self.plugin.marks.marks_add('a.txt', 2, 33, '摘录')
 
         fresh = self._new_plugin()
-        fresh.list_documents()
-        self.assertEqual(fresh.marks_list('a.txt')['marks'][0]['char'], 33)
+        fresh.library.list_documents()
+        self.assertEqual(fresh.marks.marks_list('a.txt')['marks'][0]['char'], 33)
 
     def test_marks_reject_unknown_document_and_bad_position(self):
-        self.assertEqual(self.plugin.marks_add('没有这本书.txt', 0, 0)['success'], False)
+        self.assertEqual(self.plugin.marks.marks_add('没有这本书.txt', 0, 0)['success'], False)
         (self.docs / 'a.txt').write_text('第一章\n正文\n', encoding='utf-8')
-        self.plugin.list_documents()
+        self.plugin.library.list_documents()
         # 位置参数不是数字时给错误，而不是 500
-        self.assertFalse(self.plugin.marks_add('a.txt', 'x', 'y')['success'])
+        self.assertFalse(self.plugin.marks.marks_add('a.txt', 'x', 'y')['success'])
         # 负数与非法章节被夹回合法范围，不产生负偏移
-        added = self.plugin.marks_add('a.txt', -5, -20, 'x')
+        added = self.plugin.marks.marks_add('a.txt', -5, -20, 'x')
         self.assertEqual(added['marks'][0]['chapter'], 0)
         self.assertEqual(added['marks'][0]['char'], 0)
 
@@ -372,13 +372,13 @@ class DocumentReaderFormatTests(unittest.TestCase):
         (self.docs / 'a.txt').write_text('第一章\n正文\n', encoding='utf-8')
         (other / 'a.txt').write_text('第一章\n另一本正文\n', encoding='utf-8')
         plugin = self._new_plugin([str(self.docs), str(other)])
-        ids = sorted(item['id'] for item in plugin.list_documents()['documents'])
+        ids = sorted(item['id'] for item in plugin.library.list_documents()['documents'])
         self.assertEqual(ids, ['a.txt', 'a.txt#2'])
 
-        plugin.marks_add('a.txt', 0, 5, '第一本')
-        plugin.marks_add('a.txt#2', 0, 9, '第二本')
-        self.assertEqual(plugin.marks_list('a.txt')['marks'][0]['snippet'], '第一本')
-        self.assertEqual(plugin.marks_list('a.txt#2')['marks'][0]['char'], 9)
+        plugin.marks.marks_add('a.txt', 0, 5, '第一本')
+        plugin.marks.marks_add('a.txt#2', 0, 9, '第二本')
+        self.assertEqual(plugin.marks.marks_list('a.txt')['marks'][0]['snippet'], '第一本')
+        self.assertEqual(plugin.marks.marks_list('a.txt#2')['marks'][0]['char'], 9)
 
     # ===== 进度键迁移 =====
 
@@ -391,15 +391,15 @@ class DocumentReaderFormatTests(unittest.TestCase):
                        ensure_ascii=False),
             encoding='utf-8',
         )
-        self.plugin._progress_cache = None      # 构造时已读过一次（那时文件还不存在）
+        self.plugin.library._progress_cache = None      # 构造时已读过一次（那时文件还不存在）
 
-        item = next(n for n in self.plugin.list_documents()['documents'] if n['id'] == '旧书.txt')
+        item = next(n for n in self.plugin.library.list_documents()['documents'] if n['id'] == '旧书.txt')
         self.assertEqual(item['last_read_chapter'], 3)
         self.assertEqual(item['encoding'], 'gbk')
 
         # 新写入用完整文件名：旧进度被读到后自然迁移到新键
-        self.plugin._chapter_cache['旧书.txt:txt:gbk'] = [{'index': i} for i in range(4)]
-        self.plugin.update_progress('旧书.txt', 1, 0.0, 'gbk')
+        self.plugin.library._chapter_cache['旧书.txt:txt:gbk'] = [{'index': i} for i in range(4)]
+        self.plugin.library.update_progress('旧书.txt', 1, 0.0, 'gbk')
         saved = json.loads((state / '.document_progress.json').read_text(encoding='utf-8'))
         self.assertIn('旧书.txt', saved)
 
@@ -413,37 +413,37 @@ class DocumentReaderFormatTests(unittest.TestCase):
         """
         body = '第一章 起点\r\n正文一\r\n第二章 终点\r\n正文二\r\n'
         (self.docs / '残卷.txt').write_bytes(body.encode('gbk') + '尾'.encode('gbk')[:1])
-        self.plugin.list_documents()
+        self.plugin.library.list_documents()
 
         for encoding in ('auto', 'gbk', 'gb2312'):
-            chapters = self.plugin.get_chapters('残卷.txt', encoding)['chapters']
+            chapters = self.plugin.content.get_chapters('残卷.txt', encoding)['chapters']
             self.assertEqual([c['title'] for c in chapters], ['第一章 起点', '第二章 终点'],
                              f'{encoding}: 截断结尾的 GBK 文件没解对')
-            content = self.plugin.get_content('残卷.txt', 0, encoding)['content']
+            content = self.plugin.content.get_content('残卷.txt', 0, encoding)['content']
             self.assertIn('正文一', content, f'{encoding}: 正文是乱码')
 
     def test_truncated_utf8_txt_still_reads(self):
         """UTF-8 的文件末尾同样可能被截断：不能因为 gbk / gb18030 也"解得开"就换成乱码。"""
         (self.docs / 'utf8残卷.txt').write_bytes(
             '第一章 起点\n正文一\n'.encode('utf-8') + '尾'.encode('utf-8')[:1])
-        self.plugin.list_documents()
+        self.plugin.library.list_documents()
 
         for encoding in ('auto', 'utf-8'):
-            chapters = self.plugin.get_chapters('utf8残卷.txt', encoding)['chapters']
+            chapters = self.plugin.content.get_chapters('utf8残卷.txt', encoding)['chapters']
             self.assertEqual([c['title'] for c in chapters], ['第一章 起点'],
                              f'{encoding}: 截断结尾的 UTF-8 文件没解对')
-            content = self.plugin.get_content('utf8残卷.txt', 0, encoding)['content']
+            content = self.plugin.content.get_content('utf8残卷.txt', 0, encoding)['content']
             self.assertIn('正文一', content, f'{encoding}: 正文是乱码')
 
     def test_gbk_only_char_reads_under_gb2312_selection(self):
         """选了 gb2312 而正文里有 GBK 扩展字（"玥"不在 GB2312 里）时也要读得出来：
         gb2312 / gbk 都是 gb18030 的子集，按 gb18030 解不会有损失。"""
         (self.docs / '扩展字.txt').write_bytes('第一章 起点\n玥儿登场\n'.encode('gbk'))
-        self.plugin.list_documents()
+        self.plugin.library.list_documents()
 
-        result = self.plugin.get_content('扩展字.txt', 0, 'gb2312')
+        result = self.plugin.content.get_content('扩展字.txt', 0, 'gb2312')
         self.assertIn('玥儿登场', result['content'])
-        self.assertEqual([c['title'] for c in self.plugin.get_chapters('扩展字.txt', 'gb2312')['chapters']],
+        self.assertEqual([c['title'] for c in self.plugin.content.get_chapters('扩展字.txt', 'gb2312')['chapters']],
                          ['第一章 起点'])
 
     # ===== 外部打开 =====
@@ -458,25 +458,25 @@ class DocumentReaderFormatTests(unittest.TestCase):
         far_inside = second / 'b.docx'
         far_inside.write_bytes(b'PK\x03\x04')
         self.plugin = self._new_plugin([str(self.docs), str(second)])
-        self.plugin.list_documents()
+        self.plugin.library.list_documents()
 
         opened = []
-        docs_mod = type(self.plugin).open_external.__globals__['_docs_mod']
-        original = docs_mod.open_with_system
-        self.addCleanup(setattr, docs_mod, 'open_with_system', original)
-        docs_mod.open_with_system = lambda path: opened.append(Path(path))
+        # 外部打开的实现由入口注入（组件不 import 兄弟模块）：替换组件持有的那个可调用
+        original = self.plugin.content._open_with_system
+        self.addCleanup(setattr, self.plugin.content, '_open_with_system', original)
+        self.plugin.content._open_with_system = lambda path: opened.append(Path(path))
 
-        self.assertEqual(self.plugin.open_external('a.docx'), {'success': True})
+        self.assertEqual(self.plugin.content.open_external('a.docx'), {'success': True})
         # 第二个根目录里的文件同样允许（越界判定要逐根比对，不能只看主目录）
-        self.assertEqual(self.plugin.open_external('b.docx'), {'success': True})
+        self.assertEqual(self.plugin.content.open_external('b.docx'), {'success': True})
         self.assertEqual(opened, [inside.resolve(), far_inside.resolve()])
 
         # 越界：把缓存里的路径改成配置目录之外，必须拒绝且不调用外部程序
-        self.plugin._document_cache['a.docx']['file_path'] = str(outside)
-        self.assertIn('越界', self.plugin.open_external('a.docx').get('error', ''))
+        self.plugin.library._document_cache['a.docx']['file_path'] = str(outside)
+        self.assertIn('越界', self.plugin.content.open_external('a.docx').get('error', ''))
         self.assertEqual(len(opened), 2)
 
-        self.assertEqual(self.plugin.open_external('missing.docx'), {'error': '文档不存在'})
+        self.assertEqual(self.plugin.content.open_external('missing.docx'), {'error': '文档不存在'})
 
     # ===== 多目录设置 =====
 
@@ -497,7 +497,7 @@ class DocumentReaderFormatTests(unittest.TestCase):
         self.assertEqual(self.plugin.save_settings({'root_dir': f'{self.docs}\n{second}'}),
                          {'success': True})
 
-        ids = {n['id'] for n in self.plugin.list_documents()['documents']}
+        ids = {n['id'] for n in self.plugin.library.list_documents()['documents']}
         self.assertEqual(ids, {'y.txt', 'x.md'})
         roots = [str(path) for path in self.plugin.get_file_roots()]
         self.assertEqual(roots[:2], [str(self.docs.resolve()), str(second.resolve())],
@@ -529,7 +529,7 @@ class DocumentReaderFormatTests(unittest.TestCase):
         self.assertEqual([str(path) for path in plugin.get_file_roots()][:1],
                          [str(legacy_root.resolve())],
                          '迁移后的第一根应当是旧配置里的目录')
-        self.assertEqual({n['id'] for n in plugin.list_documents()['documents']}, {'x.md'})
+        self.assertEqual({n['id'] for n in plugin.library.list_documents()['documents']}, {'x.md'})
         # 迁移结果写进新名下：下次启动不必再迁一次
         self.assertEqual(store.get('document-reader')['root_dir'], str(legacy_root))
 
@@ -546,7 +546,7 @@ class DocumentReaderFormatTests(unittest.TestCase):
         self.assertFalse((fresh / '.novel_state').exists())
         state = fresh / '.document_state'
         self.assertTrue((state / '.document_progress.json').is_file())
-        item = next(n for n in plugin.list_documents()['documents'] if n['id'] == 'a.txt')
+        item = next(n for n in plugin.library.list_documents()['documents'] if n['id'] == 'a.txt')
         self.assertEqual(item['last_read_chapter'], 2)
 
         # 情况二：新目录已经建出来（插件先加载过一次）→ 逐个文件搬
@@ -560,7 +560,7 @@ class DocumentReaderFormatTests(unittest.TestCase):
         migrated = second / '.document_state' / '.document_cache.json'
         self.assertTrue(migrated.is_file())
         # 旧缓存文件里这个键叫 novels：读得出来，不必全量重解析
-        self.assertIn('a.txt', plugin2._document_cache)
+        self.assertIn('a.txt', plugin2.library._document_cache)
 
     # ===== 章节数缓存 =====
 
@@ -574,14 +574,14 @@ class DocumentReaderFormatTests(unittest.TestCase):
         """
         (self.docs / 'a.txt').write_text('第一章\n正文\n第二章\n正文\n第三章\n正文\n',
                                         encoding='utf-8')
-        self.plugin.list_documents()
-        chapters = self.plugin.get_chapters('a.txt')['chapters']
-        self.plugin.update_progress('a.txt', 2, 0.1)
+        self.plugin.library.list_documents()
+        chapters = self.plugin.content.get_chapters('a.txt')['chapters']
+        self.plugin.library.update_progress('a.txt', 2, 0.1)
         self.plugin.on_unload()
 
         reopened = self._new_plugin()
         self.addCleanup(reopened.on_unload)
-        item = reopened.list_documents()['documents'][0]
+        item = reopened.library.list_documents()['documents'][0]
 
         self.assertEqual(item['chapter_count'], len(chapters))
         self.assertEqual(item['last_read_chapter'], 2)
@@ -595,17 +595,17 @@ class DocumentReaderFormatTests(unittest.TestCase):
         永远是 0 —— 前端就算读它，拿到的也是"没有记录"。
         """
         (self.docs / 'a.txt').write_text('第一章\n正文\n第二章\n正文\n', encoding='utf-8')
-        self.plugin.list_documents()
-        self.plugin.update_progress('a.txt', 1, 0.42)
+        self.plugin.library.list_documents()
+        self.plugin.library.update_progress('a.txt', 1, 0.42)
 
-        item = next(n for n in self.plugin.list_documents()['documents'] if n['id'] == 'a.txt')
+        item = next(n for n in self.plugin.library.list_documents()['documents'] if n['id'] == 'a.txt')
         self.assertAlmostEqual(item['scroll_position'], 0.42, places=3)
 
         # 重启后仍要一致：缓存文件与进度文件都得带着它
         self.plugin.on_unload()
         reopened = self._new_plugin()
         self.addCleanup(reopened.on_unload)
-        item = next(n for n in reopened.list_documents()['documents'] if n['id'] == 'a.txt')
+        item = next(n for n in reopened.library.list_documents()['documents'] if n['id'] == 'a.txt')
         self.assertAlmostEqual(item['scroll_position'], 0.42, places=3,
                                msg='重启后列表里的章内位置丢了')
 
@@ -627,20 +627,20 @@ class DocumentReaderFormatTests(unittest.TestCase):
         report = engine.verify()
 
         self.assertEqual(report['removed'], 1)
-        self.assertEqual([d['id'] for d in self.plugin.list_documents()['documents']],
+        self.assertEqual([d['id'] for d in self.plugin.library.list_documents()['documents']],
                          ['a.txt'])
 
 
     def test_chapter_count_survives_rescan(self):
         """列表里那一行不该永远是 "?"：解析过一次的章节数要活过重新扫描。"""
         (self.docs / 'a.txt').write_text('第一章\n正文\n第二章\n正文\n', encoding='utf-8')
-        self.plugin.list_documents()
-        chapters = self.plugin.get_chapters('a.txt')['chapters']
-        self.plugin._save_cache()          # get_chapters 内部已保存，这里只是明确语义
+        self.plugin.library.list_documents()
+        chapters = self.plugin.content.get_chapters('a.txt')['chapters']
+        self.plugin.library.save_cache()          # get_chapters 内部已保存，这里只是明确语义
 
         # 新增一个文件迫使重新扫描
         (self.docs / 'b.txt').write_text('第一章\n正文\n', encoding='utf-8')
-        items = {n['id']: n for n in self.plugin.list_documents()['documents']}
+        items = {n['id']: n for n in self.plugin.library.list_documents()['documents']}
         self.assertEqual(items['a.txt']['chapter_count'], len(chapters))
         self.assertEqual(items['b.txt']['chapter_count'], 0)   # 还没解析过 → 前端显示体积
 

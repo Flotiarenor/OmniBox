@@ -33,6 +33,9 @@ docs/Releases/*.zip
 docs/Releases/omnibox/
 docs/Releases/__pycache__/
 
+# 构建脚本写出的打包环境依赖快照，仅供审计，不参与安装
+requirements.lock.txt
+
 #linux 启动脚本
 OmniBox-OneClick.ps1
 

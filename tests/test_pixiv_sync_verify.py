@@ -13,6 +13,7 @@ import importlib.util
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -107,13 +108,21 @@ class PixivSyncVerifyTests(unittest.TestCase):
         items, _ = self.plugin._db().load_pending("following")
         return next(i["done"] for i in items if i["id"] == self.WORK_ID)
 
+    def _verify_sync(self):
+        """同步跑一次全量校验。
+
+        `verify_downloaded` 现在启动后台任务（面板上要有进度条），测试里不等线程，
+        直接走引擎的同一条路径拿审计结果——两条路径共用 `on_verified` 钩子。
+        """
+        report = engine_for(self.plugin).verify()
+        return report.get("audited") or {}
+
     def test_verify_requeues_incomplete_work(self):
         """校验内容：缺页作品移出去重集合、done 归 0，本地无文件的失效 id 同样移除。"""
         self.assertTrue(self._done())  # 旧状态：半截下载被当成已下载
 
-        result = self.plugin.verify_downloaded()
+        result = self._verify_sync()
 
-        self.assertTrue(result["ok"])
         self.assertEqual(result["incomplete"], 1)
         self.assertEqual(result["stale_removed"], 1)  # 777 本地无文件
         self.assertEqual(store.load_ids(self.plugin._ids_file()), set())
@@ -121,7 +130,7 @@ class PixivSyncVerifyTests(unittest.TestCase):
 
     def test_sync_import_does_not_take_partial_work_back(self):
         """校验内容之后，同步开始前的旧图导入不会把缺页作品重新认成已下载。"""
-        self.plugin.verify_downloaded()
+        self._verify_sync()
 
         found = self.plugin._scan_existing_ids()
 
@@ -130,7 +139,7 @@ class PixivSyncVerifyTests(unittest.TestCase):
 
     def test_download_fills_only_missing_pages_and_records_again(self):
         """重新入队后同步只补缺的页；补齐后作品重新入去重集合、清单 done 置 1。"""
-        self.plugin.verify_downloaded()
+        self._verify_sync()
         self.plugin._scan_existing_ids()
         client = _FakeImageClient()
         self.plugin._pixiv_client = client
@@ -149,6 +158,55 @@ class PixivSyncVerifyTests(unittest.TestCase):
         self.assertTrue(self._done())
         self.assertEqual(task["failed"], 0)
         self.assertEqual(task["downloaded"], 1)
+
+    def test_cancel_task_takes_effect_immediately(self):
+        """取消立刻定稿：不等后台线程走到下一个检查点。"""
+        runner = self.plugin.runner
+        runner._task = {
+            "kind": "following", "state": "running", "done": 0, "total": 10,
+            "downloaded": 0, "skipped": 0, "failed": 0, "current": "正在下载",
+            "started_at": 0.0, "phase_started_at": 0.0, "finished_at": None, "error": "",
+        }
+
+        result = runner.cancel_task()
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(runner.cancel_event.is_set())
+        self.assertEqual(runner._task["state"], "cancelled")
+        self.assertIsNotNone(runner._task["finished_at"])
+        # 落盘也是立刻的：进程重启后读到的就是已取消，不会回到 running
+        saved = json.loads(self.plugin._tasks_file().read_text(encoding="utf-8"))
+        self.assertEqual(saved["state"], "cancelled")
+
+    def test_cancel_task_is_noop_when_idle(self):
+        runner = self.plugin.runner
+        runner._task = {"kind": "following", "state": "done"}
+        self.assertEqual(runner.cancel_task(), {"ok": True})
+        self.assertEqual(runner._task["state"], "done")
+
+    def test_cancel_during_login_finishes_cancelled(self):
+        """取消发生在登录后：任务走 cancelled 分支，不能抛 AttributeError。
+
+        这条锁住的是取消状态只能经 `cancel_event` / `cancel_flag` 访问；曾经
+        取消改成令牌后 `_run_sync` 里还留着 `self._cancel_flag`，一点取消就
+        `AttributeError` 把任务记成失败。
+        """
+        runner = self.plugin.runner
+
+        def fake_auth():
+            runner.cancel_flag = True
+
+        runner._session.authenticate = fake_auth
+        runner._run_sync("following")
+
+        task = runner.task_snapshot()
+        self.assertEqual(task["state"], "cancelled")
+        self.assertEqual(task["finished_at"] is not None, True)
+
+    def test_runner_source_has_no_removed_cancel_attribute(self):
+        source = (PIXIV_BACKEND / "pixiv_sync" / "runner.py").read_text(encoding="utf-8")
+        self.assertNotIn("self._cancel_flag", source)
+        self.assertIn("self._cancel_event", source)
 
     # ===== 统一刷新基建（同步 / 校验）=====
 
@@ -190,6 +248,41 @@ class PixivSyncVerifyTests(unittest.TestCase):
 
         self.assertFalse(fragment.exists(), "0 字节残片要顺手清掉")
         self.assertNotIn(self.WORK_ID, self.plugin._load_ids())
+
+    # ===== 维护入口的并发保护与状态投影 =====
+
+    def test_refresh_downloaded_refuses_while_sync_runs(self):
+        """同步任务在跑时「刷新记录」直接返回占用：两条路都会就地改同一个集合。"""
+        gate = threading.Event()
+        worker = threading.Thread(target=gate.wait, args=(10,), daemon=True)
+        worker.start()
+        self.plugin.runner._thread = worker
+        self.plugin.runner._cancel_event.clear()
+        try:
+            result = self.plugin.maintenance.refresh_downloaded()
+        finally:
+            gate.set()
+            worker.join(timeout=5)
+            self.plugin.runner._thread = None
+
+        self.assertFalse(result["ok"])
+        self.assertIn("同步任务进行中", result["error"])
+
+    def test_refresh_downloaded_still_works_when_idle(self):
+        """空闲时照常走一遍同步并回报结果（占用判据不能把正常路径也挡掉）。"""
+        result = self.plugin.maintenance.refresh_downloaded()
+
+        self.assertTrue(result["ok"])
+        self.assertIn("stale_removed", result)
+
+    def test_status_projects_index_version_fields(self):
+        """面板要判断「索引是否待更新」，状态里就得有这两个字段。"""
+        library = self.plugin.status.report()["library"]
+
+        self.assertIn("version_stale", library)
+        self.assertIn("stale_dirs", library)
+        self.assertIsInstance(library["version_stale"], bool)
+        self.assertIsInstance(library["stale_dirs"], int)
 
 
 if __name__ == "__main__":

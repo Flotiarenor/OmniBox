@@ -1,4 +1,4 @@
-// 壳的设置表单（createSettingsForm）渲染与提交契约：真实 base.js + 极简 stub DOM。
+// 壳的设置表单（createSettingsForm）渲染与提交契约：真实共享运行时 + 极简 stub DOM。
 //
 // 重点锁 `type: "info"`（只读信息行，image-cleaner 用它显示"相册根目录"）：
 //   1) 值要渲染出来（优先取后端 get_settings() 的 values，其次 schema 里的 value）；
@@ -9,15 +9,10 @@
 //
 // 用法：node tests/js/shell_settings_form.mjs
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
 import vm from 'node:vm';
-import { fileURLToPath } from 'node:url';
 
 import { createDom } from './dom_stub.mjs';
-
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const BASE_JS = path.join(ROOT, 'shell', 'frontend', 'public', 'shell', 'base.js');
+import { loadShellRuntime } from './shell_scripts.mjs';
 
 let failed = 0;
 function check(name, fn) {
@@ -30,7 +25,7 @@ function check(name, fn) {
   }
 }
 
-/** 把真实 base.js 装进 vm，取回 createSettingsForm（顶层函数声明即上下文的全局）。 */
+/** 把共享运行时装进 vm，取回 createSettingsForm（顶层函数声明即上下文的全局）。 */
 function loadShell() {
   const { document, makeEl } = createDom();
   const win = {
@@ -45,7 +40,7 @@ function loadShell() {
     requestAnimationFrame: (fn) => setTimeout(fn, 0),
   };
   vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(BASE_JS, 'utf8'), sandbox, { filename: 'shell/base.js' });
+  loadShellRuntime(sandbox);
   return { createSettingsForm: vm.runInContext('createSettingsForm', sandbox), makeEl, win };
 }
 

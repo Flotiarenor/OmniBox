@@ -57,6 +57,10 @@ flowchart LR
   内容页不再自绘设置弹窗。
 - **content iframe**：只保留内容，加载时带 `?content=1`；不得出现
   `.view-sub-sidebar`、`.view-toolbar`、`.sub-sidebar-brand`、`.obx-nav-item`。
+- **content iframe 与壳同源**：`src` 指向同一个服务上的 `/plugins/<name>/frontend/…`，壳与
+  `NativePanel` 里的 iframe 都没有 `sandbox` 属性，插件脚本因此能读写壳文档的 DOM 与同源状态；
+  消息协议是双方的约定，不构成权限边界。插件按受信代码对待，完整说明见
+  [plugin-guide.md](plugin-guide.md) 的「插件是受信代码」。
 - **native 面板**：附属插件声明 `native: {url, title}`；壳把 `NativePanel` 放进宿主
   `PluginChrome` 的内容槽，宿主侧栏/顶栏保留，内容 iframe 用 `v-show` 隐藏但实例不销毁；
   面板不再画自己的头部，标题与页面级动作（`omnibox:schema.toolbar`）都进宿主顶栏；退出走
@@ -111,7 +115,14 @@ flowchart LR
 内容归属枚举。
 
 运行期用 `omnibox:chrome` 打补丁：`title` / `subtitle` / `view` / `actions` / `nav` /
-`search` / `status` / `statusItems`。壳只合并声明，不解释业务。
+`search` / `status` / `statusItems` / `freshness_scope`。壳只合并声明，不解释业务。
+`freshness_scope` 是内容页当前所在的同步作用域（目录相对路径，空串 = 全部根），由壳按
+插件记住并传给统一刷新的 `autoSync`；归一化在 `core/plugin-chrome-protocol.js` 的
+`normalizeFreshnessScope`，结果按引擎 `scope_start` 的解释对齐：去首尾 `/`、折叠重复
+`/`、丢掉 `.` 段，空串表示全部根；非字符串、超长、含 `..` 段、反斜杠 / 盘符 / UNC 判非法
+并落成空串（**不保留旧值** —— 旧值只会在错误的目录上同步，比全根同步更糟）。后端仍会自己
+再判一次（绝对路径、`..` 一律拒绝，并确认解析结果落在根内）。壳生成的刷新事件用
+`freshnessEventScope` 取报告自己的 `scope`，没有才回落到当前作用域。
 
 ## 4 消息
 
@@ -123,9 +134,10 @@ flowchart LR
 | 壳 → 内容 | `omnibox:action` | 顶栏动作；可带 `payload`。声明 `frontend.chrome` 的插件，`settings` 由壳接管、不下发 |
 | 壳 → 内容 | `omnibox:action`（`settings-saved`） | 壳内设置弹窗保存成功；内容页重读设置并刷新当前视图 |
 | 壳 → 内容 | `omnibox:query` | 搜索输入（壳侧 250ms 防抖） |
+| 壳 → 内容 | `omnibox:freshness` | 统一刷新的结果：`{plugin, scope, report}`。`report` 是后端同步/校验报告（`action` / `added` / `changed` / `removed` / `invalidated` / 校验任务的 `task` / `scope`），内容页据此决定重载哪一层；紧随其后还会补一条旧的 `omnibox:action: refresh`（`payload` 同报告）。两条都处理的页面按 `payload` 判回声：带 `payload` 的 `refresh` 属于刚到的富事件，只重载一次；没有 `payload` 的 `refresh`（旧壳 / 用户动作）照常处理 |
 | 壳 → 内容 | `omnibox:appearance` | 本插件背景不透明度、是否跟随壳、壳全局值；内容页据此让出底色 |
 | 内容 → 壳 | `omnibox:ready` | 握手，壳补发当前视图 |
-| 内容 → 壳 | `omnibox:chrome` | 标题、视图、动作、导航、搜索、状态补丁；`search.value` 回填输入框，`search.clear`（递增序号）清空 |
+| 内容 → 壳 | `omnibox:chrome` | 标题、视图、动作、导航、搜索、状态补丁；`search.value` 回填输入框，`search.clear`（递增序号）清空；`freshness_scope` 上报当前同步作用域 |
 | 内容 → 壳 | `omnibox:open-settings` | 内容页自己的设置入口请求壳开弹窗（如歌词页右上角）；可选 `title` |
 | 内容 → 壳 | `omnibox:get-plugin-appearance` | 内容页拉取本插件的背景不透明度（设置页打开时） |
 | 内容 → 壳 | `omnibox:set-plugin-alpha` | 内容页写本插件背景不透明度；`follow: true` 表示跟随壳 |
@@ -136,7 +148,7 @@ native 面板：
 | --- | --- | --- |
 | 逻辑页 → 壳 | `omnibox:native-ready` | 就绪 |
 | 壳 → 逻辑页 | `omnibox:native-init` | 开始取数并提交 blocks |
-| 逻辑页 → 壳 | `omnibox:schema` | `{blocks}` |
+| 逻辑页 → 壳 | `omnibox:schema` | `{blocks, toolbar?, layout?, toast?}` |
 | 壳 → 逻辑页 | `omnibox:native-action` | `{action, payload}`，payload 在发送前做 JSON 克隆 |
 | 逻辑页 → 壳 | `omnibox:native-error` | 内容加载失败 |
 
@@ -146,15 +158,28 @@ native 面板：
 
 | 组件 | 用途 |
 | --- | --- |
-| `text` / `heading` | 段落与区块标题 |
+| `text` / `heading` | 段落与区块标题；`text` 可带 `dot` 语义色圆点表示状态 |
+| `stats` | 一组同级指标（`metrics`：label / value / hint / tone），渲染成 `<dl>`，数字等宽 |
+| `section` | 分组容器：标题 + 细线 + 子 blocks（可嵌套），承担组内/组间间距 |
+| `banner` | 一条醒目但非模态的提示（tone + 图标 + 可选动作），`aria-live="polite"` |
+| `code` | 等宽文本 + 复制按钮（`copyable` / `wrap`） |
+| `confirm` | 不可逆操作的阻断确认；由 `NativePanel` 画成面板内模态层（遮罩随面板存活） |
 | `kv` / `table` | 只读键值与表格 |
 | `list` / `cards` | 列表行与卡片；支持缩略图、徽标、动作 |
 | `checkbox-list` | 分组复选框文件列表（相册清理、批量选择） |
-| `form` | 设置表单；字段沿用设置 schema 的类型 |
-| `actions` | 动作组 |
-| `progress` | 长任务进度与取消 |
-| `empty` | 空态与错误态 |
+| `form` | 设置表单；字段沿用设置 schema 的类型，字段可按 `section` 分组 |
+| `actions` | 动作组；`variant` 取 `default` / `primary` / `accent` / `danger` / `link`，`size: 'sm'` 压到小号档 |
+| `progress` | 长任务进度与取消；`indeterminate` 表示总数未知 |
+| `empty` | 空态与错误态；可带 `icon` |
 | `image-grid` | 只读图片网格 |
+
+版式由 `omnibox:schema` 的可选 `layout` 字段声明：`document` 把正文收窄到 960px 居中、组间 24px
+（`NativeExtension.create(...).render(blocks, toolbar, { layout: 'document' })`）；缺省 `default`
+维持整宽与 14px 间距，未声明 `layout` 的插件渲染结果不变。
+
+`toast` 是消息级的瞬时反馈（`{text, tone}`），不是块：壳在面板内弹一次 Toast，
+同一段文本会去重。三档反馈的分工（Toast / banner / confirm）写在 [plugin-ui-guide.md](plugin-ui-guide.md)
+的「Native 内容」一节。
 
 规则：native 内容不接收任意 HTML；交互只回传动作标识；需要富文本、画布或视频的内容继续用
 content iframe。附属插件不读宿主窗口上的对象，宿主能力走 Bridge / HostChannel。
@@ -166,9 +191,9 @@ ready 重试、init、schema、action、error 与 pagehide 清理由客户端处
 唯一前端类型是 `shell/frontend/src/core/plugin-content.ts` 的 `SchemaField`（以及
 `SchemaFieldOption` / `SchemaFieldValue` / `SchemaFieldCondition`）。两个壳内渲染路径共用它：
 `PluginSettingsModal` 渲染后端 `settings_schema`，`SchemaRenderer` 渲染 native `form` blocks；
-内容页 `base.js` 的 `createSettingsForm` 也读取同一份字段 JSON，但没有 TypeScript 类型。
+内容页 `settings.js` 的 `createSettingsForm` 也读取同一份字段 JSON，但没有 TypeScript 类型。
 
-| 字段 | 壳弹窗 `PluginSettingsModal` | native `form` / `SchemaRenderer` | 内容页旧表单 `base.js` |
+| 字段 | 壳弹窗 `PluginSettingsModal` | native `form` / `SchemaRenderer` | 内容页旧表单 `settings.js` |
 | --- | --- | --- | --- |
 | `key` / `label` / `type` / `placeholder` / `options` | 使用 | 使用 | 使用 |
 | `value` | 初始值回退（`get_settings` 优先） | 初始值（`value` 优先） | 仅 `info` 使用；普通字段用 `default` |
@@ -181,6 +206,7 @@ ready 重试、init、schema、action、error 与 pagehide 清理由客户端处
 | `multi` / `emptyText` | `multi`、`emptyText` 使用 | `multi` 使用；`emptyText` 不使用 | `FolderPicker` 使用 |
 | `local_only` | `FolderPicker` 隐藏「网络位置」 | `FolderPicker` 隐藏「网络位置」 | `FolderPicker` 隐藏「网络位置」 |
 | `required` | 只加标签样式 | 不判断 | 只加标签样式 |
+| `section` / `sectionTitle` / `sectionDescription` / `sectionOrder` / `order` | 按 section 分组并排序 | 同左（同一套规则） | 不消费 |
 | `info` | 只读展示，不提交 | 只读展示，不提交 | 只读展示，不提交 |
 | `condition` / `save_target` | 不消费 | 不消费 | 不消费 |
 
@@ -192,7 +218,7 @@ ready 重试、init、schema、action、error 与 pagehide 清理由客户端处
 `secret`：`get_settings()` 对非空值返回掩码 `********`；提交掩码 = 不改动，提交空字符串 =
 清除，提交其它非空值 = 覆盖。三个前端入口都能完成清除：`PluginSettingsModal` 打开时把
 secret 输入框置空，并给出「清除已保存的凭据」勾选框，勾选后提交空字符串；未勾选且输入框
-仍为空时省略该键（不改动），填写新值则覆盖。内容页 `base.js` 与 native `form` 没有专用
+仍为空时省略该键（不改动），填写新值则覆盖。内容页 `settings.js` 与 native `form` 没有专用
 清除控件，清空输入框提交空串即清除。清除能力不依赖迁移阶段。
 
 **native 设置已由壳的设置弹窗接管**：`image-cleaner` 与 `pixiv-sync` 的原生面板不再构造
@@ -214,7 +240,18 @@ key 显示到对应输入框。`pixiv-sync` 的 `refresh_token` 是 `secret`，�
 - **分隔条只有一份**：壳持有侧栏分隔条，内容 iframe 的 z-index 不再参与壳文档的层叠。
 - **扩展入口只有一份**：`PluginExtensions` 从后端取入口；宿主不再自建 `#iv-extensions` /
   `#mp-extensions`。
-- **刷新控件只有一份**：`freshness.js` 由壳挂载，内容页通过 `refresh` 动作重载。
+- **刷新控件只有一份**：`freshness.js` 由壳挂载，壳在挂载后与 `watch([activeView,
+  freshnessScope])` 里调 `autoSync(scope)`（native 面板打开期间跳过）；同步/校验有结论时
+  先发 `omnibox:freshness`（带 `scope` 与报告），再补一条带同形 `payload` 的旧 `refresh`
+  动作，两种内容页都能重载——两条都处理的页面按 `payload` 判回声。内容页在重新可见时自己
+  调 `Freshness.sync(plugin, scope)`（壳挂载型拿不到控件句柄）。控件在无任务时每 30 秒重读
+  一次状态投影，「有变化 · 需要校验」会自己出现；窗口不可见或所在页被 `v-show` 隐藏时不读，
+  切回来时低频轮询自己恢复。被动同步被跳过时原因写在状态行现有文案之后，不顶掉「有变化 ·
+  需要校验」与「部分目录不可达（N）· 挂载后自动同步」；同步进行中再点「校验」不弹进度卡，
+  提示「同步进行中，完成后再试」。
+- **统一刷新的全局视图只有一份**：壳设置页的「数据与缓存」用 `system_freshness_overview`
+  列出各插件的条目数、目录数与状态，并提供重建入口 —— 没有页面骨架的插件（清理器、
+  下载器）由此获得手动刷新入口。
 - **设置弹窗只有一份（除 image-viewer 外）**：声明 `frontend.chrome` 且设置能由
   `settings_schema` 表达的插件，顶栏「设置」由壳打开 `PluginSettingsModal`；内容页只处理保存
   后的 `settings-saved`。`image-cleaner` / `pixiv-sync` 的 native 设置同样走这个弹窗：native
@@ -257,8 +294,8 @@ key 显示到对应输入框。`pixiv-sync` 的 `refresh_token` 是 `secret`，�
 - native 预览使用插件给的缩略图 URL，没有单独的原图字段；需要原图时再扩展 schema。
 - image-cleaner 的根目录在后端仍是 `info` 字段，壳设置弹窗里保存的是图片相册的 `root_dir`；
   多根时只编辑主根，其余根仍到图片相册设置里管理。
-- 设置弹窗、搜索回填与 EQ 尚未纳入 `tools/plugin_ui_audit.py`；本轮用一次性 Selenium
-  探针验收，后续应把这三项写成可重复的门禁。
+- 设置弹窗、搜索回填与 EQ 尚未纳入 `tools/plugin_ui_audit.py`，目前用一次性 Selenium
+  探针验收；这三项应写成可重复的门禁。
 - 迁移前的逐插件 UI e2e 已按壳 chrome 重写（内容页改发 `omnibox:view` / `omnibox:action`，分隔条改量壳侧栏）；CI 不安装 selenium，这些用例会跳过。
 - 新增插件仍按「chrome 声明」「消息」「native 内容」三节手工接入；脚手架与组件预览页尚未接入。
 

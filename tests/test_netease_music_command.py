@@ -29,9 +29,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-_MODULE_PATH = PROJECT_ROOT / 'plugins' / 'netease-music' / 'backend' / 'netease_music_api.py'
+_CLI_MODULE_PATH = PROJECT_ROOT / 'plugins' / 'netease-music' / 'backend' / 'ncm_cli.py'
 
-_spec = importlib.util.spec_from_file_location('netease_music_api_under_test', _MODULE_PATH)
+_spec = importlib.util.spec_from_file_location('netease_music_cli_under_test', _CLI_MODULE_PATH)
 ncm = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ncm)
 
@@ -48,10 +48,10 @@ class ShellMetaRejectionTests(unittest.TestCase):
 
     def test_shell_meta_rejected_only_on_fallback_path(self):
         """退化到 .cmd shim 时，元字符必须被拒绝而不是被 cmd.exe 解释。"""
-        self.assertEqual(ncm._reject_shell_meta('plain'), 'plain')
+        self.assertEqual(ncm.reject_shell_meta('plain'), 'plain')
         for bad in ['a"b', 'a & b', 'a|b', 'a>b', 'a%PATH%', 'a!b', 'a\nb']:
             with self.subTest(bad=bad), self.assertRaises(ValueError):
-                ncm._reject_shell_meta(bad)
+                ncm.reject_shell_meta(bad)
 
 
 def _load_plugin_class():
@@ -100,7 +100,10 @@ class RemoteFreshnessTests(unittest.TestCase):
         self.assertEqual(state['mode'], 'remote')
         self.assertGreater(state['ttl_remaining'], 0, '新鲜期内状态行要给出剩余时间')
 
-        # TTL 内再来一次：跳过，不再丢缓存
+        # 远端同步同样受最小间隔约束：紧接着再同步被去抖挡掉，不重复丢缓存
+        self.assertEqual(engine.sync()['reason'], 'throttled')
+        engine.reset_throttle()
+        # 去抖清掉后，新鲜期内的同步跳过，仍不丢缓存
         self.assertEqual(engine.sync()['reason'], 'fresh')
         self.assertEqual(plugin._api.calls, 1)
 
@@ -135,6 +138,8 @@ class NcmCommandTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         npm_dir = Path(self._tmp.name)
+        self.data_root = npm_dir / 'data'
+        self.data_root.mkdir()
 
         # 伪造 npm 全局布局
         (npm_dir / 'ncm-cli.cmd').write_text(_FAKE_SHIM, encoding='utf-8')
@@ -149,9 +154,16 @@ class NcmCommandTests(unittest.TestCase):
     def _restore_path(self):
         os.environ['PATH'] = self._old_path
 
+    def _api(self):
+        """经入口装配出真实的数据接口（命令执行是注入的 `NcmRunner`）。"""
+        cls = _load_plugin_class()
+        plugin = cls({'name': 'netease-music'},
+                     {'directories': {'data_root': str(self.data_root)}})
+        return plugin._get_api()
+
     def test_prefix_avoids_cmd_shim(self):
         """解析结果必须是 node + index.js，而不是 .cmd shim。"""
-        prefix = ncm._ncm_argv_prefix()
+        prefix = ncm.ncm_argv_prefix()
         self.assertFalse(
             prefix[0].lower().endswith(('.cmd', '.bat', '.ps1')),
             f'仍然解析到 shell shim：{prefix[0]}',
@@ -160,7 +172,7 @@ class NcmCommandTests(unittest.TestCase):
         self.assertEqual(prefix[2:], ['--output', 'json'])
 
     def test_keyword_is_passed_as_single_argument(self):
-        api = ncm.NeteaseMusicAPI(check_install=False)
+        api = self._api()
         payload = 'a" & echo INJECTED & "b'
         result = api._run_command(['search', 'song', '--keyword', payload])
 
@@ -174,7 +186,7 @@ class NcmCommandTests(unittest.TestCase):
 
     def test_keyword_with_quotes_and_ampersands_survives(self):
         """带引号/与号的歌名本来搜索就会失败，现在应当能正常传参。"""
-        api = ncm.NeteaseMusicAPI(check_install=False)
+        api = self._api()
         for keyword in ['LOVE"', 'A & B', 'x|y', '%CD%']:
             with self.subTest(keyword=keyword):
                 result = api._run_command(['search', 'song', '--keyword', keyword])
@@ -182,7 +194,7 @@ class NcmCommandTests(unittest.TestCase):
                 self.assertIn(keyword, argv)
 
     def test_constant_command_string_still_supported(self):
-        api = ncm.NeteaseMusicAPI(check_install=False)
+        api = self._api()
         result = api._run_command('playlist list')
         self.assertEqual(json.loads(result['stdout'])[2:], ['playlist', 'list'])
 

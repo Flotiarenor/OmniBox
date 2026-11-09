@@ -55,17 +55,20 @@ class MediaIndexPublishTests(unittest.TestCase):
         self.addCleanup(setattr, mp.MediaPlayerPlugin, '_resolved_config', {})
         self.plugin = mp.MediaPlayerPlugin({'name': 'media-player'}, self.config)
         self.addCleanup(self.plugin.on_unload)
-        self.engine = engine_for(self.plugin)
-        self.assertIsNotNone(self.engine, 'media-player 必须声明 freshness_spec()')
+        engine = engine_for(self.plugin)
+        self.assertIsNotNone(engine, 'media-player 必须声明 freshness_spec()')
+        assert engine is not None      # 供静态检查收窄 Optional（上面已断言）
+        self.engine = engine
 
         self.published = []
-        original = self.plugin._publish_items
+        # 发布点唯一：索引组件的 publish 是"写入条目快照"的唯一入口
+        original = self.plugin.index.publish
 
         def spy(items):
             self.published.append((items, set(items)))
             return original(items)
 
-        self.plugin._publish_items = spy
+        self.plugin.index.publish = spy
 
     def _run_pass(self, verify: bool = False):
         self.engine.spec.min_sync_interval = 0.0
@@ -111,10 +114,10 @@ class MediaIndexPublishTests(unittest.TestCase):
             # 那是测试写法问题，不是被测代码的问题。
             while not stop.is_set():
                 try:
-                    self.plugin.search('t0')
-                    self.plugin.recent(10)
-                    self.plugin.all_audio()
-                    self.plugin.stats()
+                    self.plugin.library.search('t0')
+                    self.plugin.library.recent(10)
+                    self.plugin.library.all_audio()
+                    self.plugin.library.stats()
                 except Exception as e:  # pragma: no cover - 出错即失败
                     errors.append(e)
                     return
@@ -134,25 +137,25 @@ class MediaIndexPublishTests(unittest.TestCase):
         """回归：旧增量扫描只增不减，删除的媒体永久留在索引里。"""
         _write_tracks(self.root / 'd0', 3)
         self._run_pass()
-        self.assertEqual(len(self.plugin._items), 3)
+        self.assertEqual(len(self.plugin.index.items), 3)
 
         (self.root / 'd0' / 't001.mp3').unlink()
         report = self._run_pass(verify=True)
 
         self.assertEqual(report['removed'], 1)
-        self.assertEqual(sorted(Path(i.path).name for i in self.plugin._items.values()),
+        self.assertEqual(sorted(Path(i.path).name for i in self.plugin.index.items.values()),
                          ['t000.mp3', 't002.mp3'])
 
     def test_later_added_folder_cover_refreshes_has_cover(self):
         """回归：后补一张 folder.jpg 只改目录内容，不改任何媒体文件指纹。"""
         _write_tracks(self.root / 'd0', 2)
         self._run_pass()
-        self.assertFalse(any(i.has_cover for i in self.plugin._items.values()))
+        self.assertFalse(any(i.has_cover for i in self.plugin.index.items.values()))
 
         (self.root / 'd0' / 'folder.jpg').write_bytes(b'\xff\xd8\xff' + b'x' * 16)
         self._run_pass()
 
-        self.assertTrue(all(i.has_cover for i in self.plugin._items.values()))
+        self.assertTrue(all(i.has_cover for i in self.plugin.index.items.values()))
 
     def test_index_file_is_written_once_per_pass(self):
         _write_tracks(self.root / 'd0', 2)
@@ -161,8 +164,8 @@ class MediaIndexPublishTests(unittest.TestCase):
 
         self._run_pass()
 
-        self.assertTrue(self.plugin._cache_file.exists(), '整趟结束必须落盘索引')
-        self.assertFalse(self.plugin._index_dirty, '落盘后不应仍标记为脏')
+        self.assertTrue(self.plugin.index.cache_file.exists(), '整趟结束必须落盘索引')
+        self.assertFalse(self.plugin.index.dirty, '落盘后不应仍标记为脏')
 
 
 if __name__ == '__main__':
