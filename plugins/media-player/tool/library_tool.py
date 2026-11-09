@@ -25,8 +25,9 @@
         在临时目录造用例，自检 dups 与 lrc 的判定（不碰媒体库）。
 
 媒体库根目录的解析顺序（命中即打印来源）：--root、CUBBY_HOME、脚本上三级
-（开发模式 = 仓库根）、exe 同级（冻结模式）、%APPDATA%\\Cubby。注意冻结模式下
-用户数据在 exe 旁边而不是打包解包目录，所以不能只按脚本位置推断。
+（开发模式 = 仓库根）、exe 同级（便携模式）、用户数据根（冻结模式的默认位置：
+Windows `%LOCALAPPDATA%\\Cubby`、其他平台 `$XDG_DATA_HOME/cubby`）。注意冻结模式下
+用户数据不在安装目录里（除非放了便携标记），所以不能只按脚本位置推断。
 
 缓存只读、不写回：索引 / 缩略图 / 收藏与播放列表都是插件的职责，外部脚本改它会让
 界面状态错乱。改完标签靠文件 mtime 变化，回播放器点一次「扫描」即可。
@@ -156,10 +157,21 @@ def config_candidates() -> list[Path]:
         candidates.append(Path(home).expanduser() / CONFIG_REL)
     # 开发模式：plugins/media-player/tool/ 往上三级就是仓库根
     candidates.append(PLUGIN_ROOT.parent.parent / CONFIG_REL)
-    # 冻结模式：用户数据在 exe 旁边（打包解包目录是临时目录，不能用来找配置）
+    # 便携模式：数据在 exe 旁边（打包解包目录是临时目录，不能用来找配置）
     candidates.append(Path(sys.executable).resolve().parent / CONFIG_REL)
-    appdata = os.environ.get('APPDATA') or str(Path.home())
-    candidates.append(Path(appdata) / 'Cubby' / CONFIG_REL)
+    # 冻结模式的默认数据根：与安装位置无关。判据与 shell/backend/paths.py 的
+    # default_user_data_dir() 相同，这里刻意不 import 它 —— 本工具要能在装好的机器上
+    # 直接跑，而那里没有 shell/ 源码。
+    if os.name == 'nt':
+        for var in ('LOCALAPPDATA', 'APPDATA'):
+            base = os.environ.get(var, '').strip()
+            if base:
+                candidates.append(Path(base) / 'Cubby' / CONFIG_REL)
+        candidates.append(Path.home() / 'AppData' / 'Local' / 'Cubby' / CONFIG_REL)
+    else:
+        xdg = os.environ.get('XDG_DATA_HOME', '').strip()
+        base = Path(xdg).expanduser() if xdg else Path.home() / '.local' / 'share'
+        candidates.append(base / 'cubby' / CONFIG_REL)
     unique = []
     for candidate in candidates:
         if candidate not in unique:

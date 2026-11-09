@@ -9,7 +9,7 @@
 
 | 模块 | 职责 | 关键符号 |
 | --- | --- | --- |
-| `paths.py` | 用户数据 / 配置 / 插件搜索目录的唯一解析处 | `is_frozen` `get_user_data_dir` `get_config_dir` `get_plugin_search_dirs` `resolve_data_root` |
+| `paths.py` | 用户数据 / 配置 / 插件搜索目录的唯一解析处 | `is_frozen` `is_portable` `get_user_data_dir` `default_user_data_dir` `get_config_dir` `get_plugin_search_dirs` `resolve_data_root` |
 | `plugin_manager.py` | 发现并加载插件，收集受保护路径 | `PluginManager` `collect_protected_paths` |
 | `plugin_base.py` | 插件基类与设置模式下的密钥处理 | `PluginBase` `secret_keys` `admin_only_keys` `mask_secrets` |
 | `plugin_utils.py` | 插件同目录分片模块的加载 | `load_sibling` |
@@ -34,7 +34,7 @@
 
 - **动态导入必须登记**：插件后端由运行时 `importlib` 加载，它 import 的每个 `shell.backend.*` 与第三方模块都要写进 `docs/Releases/spec_common.py` 的 `HIDDEN_IMPORTS`，第三方包同时写进 `requirements.txt`。判定与门禁见 [docs/Releases/AGENTS.md](../../docs/Releases/AGENTS.md)。
 - **插件组件只 import 这里**：插件后端组件不是包、目录不在 `sys.path` 上，组件之间不能互相 import（门禁 `tools/check_plugin_layering.py` 的 R3 会拦）。无状态工具与跨组件契约因此放在本目录，由组件直接 `from shell.backend...` 引入；形态与迁移步骤见 [docs/plugin-backend-layout.md](../../docs/plugin-backend-layout.md)。这里给出的端口（`ports.py`）与工具（`json_cache.py`、`media_catalog.py`）因此成为插件后端的公开契约：改它们的签名等于改插件契约，`pyright main.py shell tools plugins` 会在插件侧把破坏点报出来。
-- **用户数据只写在可执行文件所在目录**（由 `paths.py` 决定）：在产物目录运行过程序后，不要直接压缩发布。
+- **用户数据只写在用户数据根**（由 `paths.py` 的 `get_user_data_dir()` 决定）：安装目录放只读资源，运行时不得往安装目录写文件 —— 否则覆盖升级会踩到旧版本留下的文件。便携模式由 exe 旁的 `PORTABLE_MARKER` 显式声明，不由"目录可写"推断。
 - **设置存储只走原子写入**：`SettingsStore` 用 `tempfile` + `fsync` + `os.replace`，不要改回 `open(w)` 直接覆写。
 - **静态资源的解析顺序属前端**：见 [shell/frontend/AGENTS.md](../frontend/AGENTS.md)。
 
