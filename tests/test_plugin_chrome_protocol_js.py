@@ -17,6 +17,7 @@ actions / nav / search 按键合并、status 回退、不就地修改）都成�
     python -m unittest tests.test_plugin_chrome_protocol_js -v
 """
 
+import re
 import shutil
 import subprocess
 import unittest
@@ -25,15 +26,32 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 HARNESS = PROJECT_ROOT / 'tests' / 'js' / 'plugin_chrome_protocol.mjs'
 MODULE = PROJECT_ROOT / 'shell' / 'frontend' / 'src' / 'core' / 'plugin-chrome-protocol.js'
+DECLARATION = MODULE.with_suffix('.d.ts')
 DOC = PROJECT_ROOT / 'docs' / 'plugin-page-architecture.md'
+# 实现里的导出：`export const X` / `export function X`
+EXPORT_RE = re.compile(r'^export\s+(?:declare\s+)?(?:const|function)\s+(\w+)', re.MULTILINE)
 
 
 @unittest.skipUnless(shutil.which('node'), '未检测到 node，跳过插件 chrome 协议用例')
 class PluginChromeProtocolTest(unittest.TestCase):
     def test_harness_reads_real_sources(self):
-        """用例引用的实现与文档必须真的存在（改名后"全过"不能是空转）。"""
-        for file in (HARNESS, MODULE, DOC):
+        """用例引用的实现、类型声明与文档必须真的存在（改名后"全过"不能是空转）。"""
+        for file in (HARNESS, MODULE, DECLARATION, DOC):
             self.assertTrue(file.is_file(), f'用例引用的文件不存在: {file}')
+
+    def test_declaration_covers_runtime_exports(self):
+        """`.d.ts` 必须声明实现的每个导出。
+
+        实现写成纯 JS 是为了让 Node 直接 import；代价是类型声明要人工跟上，而漏一个的
+        表现是 TS 侧报「没有导出成员」（`vue-tsc` 直接失败）。这条把"跟上了"变成断言，
+        新增导出时不会忘。
+        """
+        names = EXPORT_RE.findall(MODULE.read_text(encoding='utf-8'))
+        self.assertTrue(names, '没有从实现里解析到任何导出')
+        declaration = DECLARATION.read_text(encoding='utf-8')
+        missing = [name for name in names
+                   if not re.search(rf'\b{re.escape(name)}\b', declaration)]
+        self.assertEqual(missing, [], f'.d.ts 未声明的导出: {missing}')
 
     def test_protocol_whitelist_and_state_merge(self):
         proc = subprocess.run(

@@ -74,7 +74,12 @@ class StatusReport:
                 'sync_interval_seconds': self._pulse.interval(),
             },
             'node': self._node.status(),
-            'sync': self._discovery.status(),
+            # `sync` 由两部分组成：后台同步线程自己的状态，以及"最近一次跑得好不好"——
+            # 文件同步的读取错误与最近一轮探测连不上的端点。后者是界面判断"共享根
+            # 读不到/对端离线"的唯一来源，缺了它只能去看日志。
+            'sync': {**self._discovery.status(),
+                     'errors': self._shares.sync_errors(),
+                     'unreachable': self._facts.unreachable_list()},
             'identity': None,
             'roster': None,
             'shares': [],
@@ -121,10 +126,13 @@ class StatusReport:
             status['share_roots'] = self._shares.get_share_roots()
             # 兼容字段：旧的界面按 `shares` 渲染表格（含 path / acl / max_bytes），
             # 保留它可以让前端分两步迁移，而不是一次改动同时打断后端与界面。
+            # 用量字段与 `share_roots` 同源（`null` 表示还没算出）。
             status['shares'] = [
                 {'share_id': root['share_id'], 'path': root['path'], 'acl': root['acl'],
                  'max_bytes': root['max_bytes'], 'available': root['available'],
-                 'reason': root['reason']}
+                 'reason': root['reason'], 'used_bytes': root['used_bytes'],
+                 'entries': root['entries'], 'truncated': root['truncated'],
+                 'usage_at': root['usage_at'], 'usage_stale': root['usage_stale']}
                 for root in status['share_roots']
             ]
         return status

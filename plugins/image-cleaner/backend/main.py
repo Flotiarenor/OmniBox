@@ -15,12 +15,15 @@
 统一刷新；反向依赖一律由构造参数注入。
 """
 
+import logging
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List
 
 from shell.backend.freshness import engine_for
 from shell.backend.plugin_base import PluginBase
 from shell.backend.plugin_utils import load_sibling
+
+log = logging.getLogger(__name__)
 
 _const = load_sibling(__file__, 'const', 'image_cleaner')
 _cancel = load_sibling(__file__, 'cancel', 'image_cleaner')
@@ -59,11 +62,10 @@ class ImageCleanerPlugin(PluginBase):
             _cancel.check_cancel, _cancel.ScanCancelled, lambda: engine_for(self))
         self.fresh = _freshness.FreshnessProvider(
             self.host, self.hashes, self.results, self.pipeline,
-            _const.ALLOWED_EXTENSIONS, _const.DHASH_VERSION,
-            lambda: engine_for(self))
+            _const.ALLOWED_EXTENSIONS, lambda: engine_for(self))
 
     def _get_host(self) -> Any:
-        """宿主实例（`image-viewer`）；未加载时抛错，与迁移前判据一致。
+        """宿主实例（`image-viewer`）；未加载时抛错。
 
         返回类型标 `Any`：宿主在 `PluginBase` 之外还注册了 `list_roots` / `delete_files`，
         按实例取用时的具体形状不是本插件声明的；入口只在这一处承担这个接缝。
@@ -87,12 +89,13 @@ class ImageCleanerPlugin(PluginBase):
         # `get_settings` / `save_settings` **必须登记**：壳的设置弹窗（宿主渲染那条与
         # 本页回落那条）走的都是 `Bridge.call('get_settings')` / `Bridge.call('save_settings')`
         # → `POST /api/image-cleaner__<方法>`，而 `PluginManager` 只会额外登记
-        # `<插件>__get_settings_schema`。此前两个都漏了，表现是"弹窗打得开、root_dir
-        # 信息行空白、阈值恒为默认 8、保存必然失败"，且前端全程无报错。
-        # 回归守卫见 tests/test_image_cleaner_settings.py 与 tests/test_image_cleaner_api_table.py。
+        # `<插件>__get_settings_schema`。漏登记的表现是"弹窗打得开、root_dir 信息行空白、
+        # 阈值恒为默认值、保存失败"，且前端全程无报错。
         return {
             'duplicate_scan': self.pipeline.duplicate_scan,
             'similar_scan': self.pipeline.similar_scan,
+            # scan_* / *_scan：只重算单一模式的兼容入口，两个前端页面都不调用
+            # （它们的扫描入口是共享组件上的「校验」）。
             'scan_start': self.scans.start,
             'scan_status': self.scans.status,
             'scan_cancel': self.scans.cancel,
@@ -128,7 +131,7 @@ class ImageCleanerPlugin(PluginBase):
             settings['root_dir'] = ''
         return settings
 
-    # ===== 壳按名调用的钩子：名字与签名与迁移前完全一致 =====
+    # ===== 壳按名调用的钩子 =====
 
     def get_data_root(self) -> Path:
         return self.host.data_root()
@@ -143,8 +146,35 @@ class ImageCleanerPlugin(PluginBase):
         return self.host.thumb_data(rel_path)
 
     def delete_files(self, rel_paths: List[str]) -> Dict:
-        """复用 image-viewer 的删除接口，保持路径安全与宿主缓存清理一致。"""
-        return self._get_host().delete_files(rel_paths)
+        """复用 image-viewer 的删除接口，保持路径安全与宿主缓存清理一致。
+
+        删掉的是宿主的图片根里的文件，宿主的 `delete_files` 只清列表缓存与缩略图
+        （相册树与目录快照仍按自己的 TTL 报旧计数），所以转发成功之后要显式通知
+        宿主失效派生数据 —— 否则删完回到相册页，卡片数与封面还是旧的。
+
+        删除成功还要重置引擎的去抖窗口：前端删完立刻发起一次 `autoSync('')`，而
+        `min_sync_interval` 是 5 秒，紧跟首屏那次同步时会被 skip:throttled，表现成
+        "删完了面板上还是旧分组"。删除改的是磁盘，属于必须立刻重扫的变更。
+        """
+        result = self._get_host().delete_files(rel_paths)
+        if isinstance(result, dict) and result.get('deleted'):
+            self._notify_host_derived()
+            self.fresh.reset_throttle()
+        return result
+
+    def _notify_host_derived(self) -> None:
+        """通知宿主「刚删掉了你根目录里的文件」。
+
+        宿主契约是 `invalidate_derived(reason)`；旧宿主没有这个方法时用 `getattr`
+        跳过。这条通知只影响宿主的缓存，异常一律吞掉 —— 文件已经删掉，不能因为
+        通知失败把结果报成失败。
+        """
+        try:
+            invalidate = getattr(self._get_host(), 'invalidate_derived', None)
+            if callable(invalidate):
+                invalidate('image-cleaner:delete')
+        except Exception as error:      # 通知是尽力而为：宿主怎么坏都不影响删除结果
+            log.warning('[image-cleaner] 通知宿主失效派生数据失败: %s', error)
 
     def get_extensions(self) -> List[dict]:
         """注册到 image-viewer 左侧栏的通用扩展入口（条目数据在 const.py）。"""
@@ -154,7 +184,7 @@ class ImageCleanerPlugin(PluginBase):
         return self.fresh.spec()
 
     def on_settings_changed(self, changed_keys) -> None:
-        """阈值变化 → 相似分组必须重算（旧实现没有这个钩子，改完阈值看的是旧分组）。"""
+        """阈值变化 → 相似分组必须重算（否则改完阈值看到的还是旧分组）。"""
         if 'threshold' in changed_keys:
             self.results.mark_stale('similar')
             self.results.persist_stale()

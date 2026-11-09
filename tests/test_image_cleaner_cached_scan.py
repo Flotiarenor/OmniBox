@@ -1,4 +1,4 @@
-"""`get_cached_scan` 的失效缓存过滤（提交 2d65cab）回归用例。
+"""`get_cached_scan` 的失效缓存过滤回归用例。
 
 背景：扫描结果缓存保存的是扫描当时的相对路径。用户移动 / 删除图片后，缓存仍指向
 旧路径，原生面板按这些路径请求 `/thumbs` 只会得到 404，整屏缩略图都会裂。修法是
@@ -10,7 +10,8 @@
   2. 不过滤时 `stale` 保持原值（不能每读一次就"脏"一次）；
   3. 过滤是只读的：缓存文件字节不变，用户文件一个不少；
   4. `..` 穿越与绝对路径不会被当成"存在"，即使目标文件真的存在；
-  5. 额外根（`__<命名空间>/…`）里的文件按宿主给自己的前缀解析，不会被误删。
+  5. 额外根（`__<命名空间>/…`）里的文件按宿主给自己的前缀解析，不会被误删；
+  6. 两条写路径（后台扫描任务与引擎收尾）并发写时互不覆盖。
 
 运行：
     python -m unittest tests.test_image_cleaner_cached_scan -v
@@ -20,6 +21,8 @@ import importlib.util
 import json
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -203,10 +206,112 @@ class CachedScanFilterTests(unittest.TestCase):
         cleaner = self._cleaner(extra_roots=str(extra))
 
         result = cleaner.results.get_cached_scan('dupe')
-
         self.assertEqual([g['files'] for g in result['groups']],
                          [[f'{prefix}/x.jpg', f'{prefix}/y.jpg']],
                          '带前缀的路径要按额外根解释，不能按主根判成不存在')
+
+
+class _HostStub:
+    """只提供缓存目录推导所需的数据根（这组用例不碰宿主的其它能力）。"""
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+
+    def get_data_root(self) -> Path:
+        return self._root
+
+    def get_file_roots(self):
+        return [self._root]
+
+
+class ScanCacheWriteLockTests(unittest.TestCase):
+    """结果缓存的两条写路径（后台扫描任务与引擎收尾）不能互相覆盖。
+
+    缓存是单文件、写一次要"读整份 → 改一个键 → 写整份"；两个线程同时写不同的模式时，
+    没有串行化就会出现后写者拿自己读到的旧快照把前一位刚写进去的键整个抹掉。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cleaner_module = _load('plugins/image-cleaner/backend/main.py', 'ic_main_write_lock_test')
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name).resolve() / 'data'
+        self.root.mkdir(parents=True, exist_ok=True)
+        self._settings_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._settings_tmp.cleanup)
+        self.plugin = self.cleaner_module.ImageCleanerPlugin(
+            {'name': 'image-cleaner'},
+            {'directories': {'data_root': str(self.root)}},
+        )
+        self.plugin._host = _HostStub(self.root)
+        self.plugin._settings_store = SettingsStore(str(self._settings_tmp.name))
+        self.results = self.plugin.results
+
+    def test_concurrent_writes_keep_both_modes(self):
+        real_load = self.results.load
+
+        def slow_load():
+            cache = real_load()
+            # 放大"读完到写回"之间的窗口：没有锁时另一个线程会在这段时间里读到同一份
+            # 旧快照，并在写回时把这个线程的键覆盖掉。
+            time.sleep(0.003)
+            return cache
+
+        self.results.load = slow_load
+        errors = []
+
+        def writer(mode, marker):
+            try:
+                for _ in range(8):
+                    self.results.save_result(mode, [{'files': [marker]}], 1)
+            except Exception as error:      # 线程里的异常要带回主线程断言
+                errors.append(error)
+
+        threads = [threading.Thread(target=writer, args=('dupe', 'd.jpg')),
+                   threading.Thread(target=writer, args=('similar', 's.jpg'))]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+            self.assertFalse(thread.is_alive(), '写缓存的线程必须按时结束')
+
+        self.assertEqual(errors, [])
+        cache = real_load()
+        self.assertIn('dupe', cache, '并发写不能丢掉另一个模式的条目')
+        self.assertIn('similar', cache, '并发写不能丢掉另一个模式的条目')
+        self.assertEqual(cache['dupe']['groups'], [{'files': ['d.jpg']}])
+        self.assertEqual(cache['similar']['groups'], [{'files': ['s.jpg']}])
+
+    def test_stale_marking_does_not_drop_a_concurrent_result(self):
+        """`persist_stale` 也是读改写：与 `save_result` 并发时不能把另一个模式的条目丢掉。"""
+        self.results.save_result('dupe', [{'files': ['a.jpg', 'b.jpg']}], 2)
+        real_load = self.results.load
+
+        def slow_load():
+            cache = real_load()
+            time.sleep(0.003)
+            return cache
+
+        self.results.load = slow_load
+        self.results.mark_stale('similar')
+        threads = [
+            threading.Thread(target=self.results.persist_stale),
+            # 另一个模式刚算完：它的结果必须是 fresh（stale=False），且键不能丢。
+            threading.Thread(target=self.results.save_result,
+                             args=('similar', [{'files': ['c.jpg', 'd.jpg']}], 2)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+            self.assertFalse(thread.is_alive())
+
+        cache = real_load()
+        self.assertIn('dupe', cache)
+        self.assertEqual(cache['dupe']['groups'], [{'files': ['a.jpg', 'b.jpg']}])
 
 
 if __name__ == '__main__':   # pragma: no cover

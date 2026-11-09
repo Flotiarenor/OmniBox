@@ -6,8 +6,9 @@
 // manifest 的 frontend.chrome 渲染；本文件只维护内容：播放舞台、播放条、歌词沉浸页、
 // 队列与 EQ 浮层、列表 / 卡片与三个内容弹窗。
 //
-// 与壳的通信：壳发 omnibox:view / omnibox:action / omnibox:query，本文件回
-// omnibox:chrome（标题、副标题、视图、动作显隐、歌单导航组、状态）。
+// 与壳的通信：壳发 omnibox:view / omnibox:action / omnibox:query 与
+// omnibox:freshness（统一刷新报告），本文件回 omnibox:chrome（标题、副标题、视图、
+// 动作显隐、歌单导航组、同步作用域、状态）。
 //
 // 本文件只保留类骨架：构造函数、初始化、宿主消息与扫描轮询。其余方法按职责拆到同目录的
 // app-ui-events / app-views / app-render / app-playback / app-stage 五个分片，
@@ -19,6 +20,10 @@
 
 /** 壳左栏「媒体库」组的六个一级视图；`omnibox:view` 只对它们调 switchView。 */
 const MP_LIBRARY_VIEWS = ['recent', 'audio-albums', 'all-audio', 'video-albums', 'all-video', 'favorites'];
+
+// 新壳在 `omnibox:freshness` 之后紧跟一条旧的 `omnibox:action: refresh`，两条属于
+// 同一次同步；壳把同一份报告附在动作的 payload 上（`/shell/chrome-client.js` 的
+// `onAction(action, payload)`），所以"回声"按 payload 是否存在判定，不靠时间窗。
 
 class MediaPlayerApp {
     constructor() {
@@ -117,7 +122,7 @@ class MediaPlayerApp {
         window.ChromeClient.post(payload);
     }
 
-    /** 上报 chrome：标题、副标题、视图、动作显隐、歌单导航组与状态文本。 */
+    /** 上报 chrome：标题、副标题、视图、动作显隐、歌单导航组、同步作用域与状态文本。 */
     _pushChrome() {
         const searchSync = this._searchSync;
         this._searchSync = null;
@@ -130,6 +135,9 @@ class MediaPlayerApp {
             nav: this._navPatch(),
             search: { enabled: true, ...(searchSync || {}) },
             status: { text: this._statusText, state: this._statusState },
+            // 媒体条目的目录由多个媒体根聚合而来，没有可表达的单一子目录：
+            // 同步始终覆盖全部根。
+            freshness_scope: '',
         });
     }
 
@@ -176,15 +184,24 @@ class MediaPlayerApp {
         };
     }
 
-    /** 壳的握手与反向下发：视图、顶栏动作、搜索输入。
+    /** 壳的握手与反向下发：视图、顶栏动作、搜索输入、统一刷新报告。
         校验、分发与 ready 握手都在 /shell/chrome-client.js（四个内容页共用一份）。 */
     _bindHost() {
         this._chrome = window.ChromeClient.create({
             onView: (view) => this._applyHostView(view),
-            onAction: (action) => this._applyHostAction(action),
+            onAction: (action, payload) => this._applyHostAction(action, payload),
             onQuery: (query) => this._onQuery(query),
+            onMessage: (data) => this._onHostMessage(data),
         });
         this._chrome.bind();
+    }
+
+    /** 壳下发的非 view / action / query 消息；目前只消费统一刷新报告。 */
+    _onHostMessage(data) {
+        if (!data || data.type !== 'omnibox:freshness') return;
+        if (data.plugin && data.plugin !== 'media-player') return;
+        if (!this._freshnessChanged(data.report)) return;
+        void this._reloadAfterFreshness();
     }
 
     /** 壳左栏的导航项：六个一级视图、动态歌单（含「新建歌单」）与扩展入口的 view
@@ -210,15 +227,60 @@ class MediaPlayerApp {
 
     /** 壳顶栏动作：网易云视图的「刷新」、壳设置弹窗保存后的设置重读，以及统一刷新
         （同步 / 校验）完成后的 `refresh` 重载信号（freshness 组件由壳挂载）。 */
-    async _applyHostAction(action) {
+    async _applyHostAction(action, payload) {
         if (action === 'netease-refresh' || action === 'scan') { await this._doScan(); return; }
         if (action === 'settings-saved') { await this._reloadSettings(); return; }
         if (action === 'refresh') {
-            await this.playlists.load();
-            await this._updateStats();
-            await this._loadCurrentView();
-            this._pushChrome();
+            // 新壳在 omnibox:freshness 之后紧跟一条 legacy refresh，并把同一份报告附在
+            // 动作的 payload 上：富事件已经重载过，这条只当回声跳过。没有 payload 的
+            // refresh 来自旧壳，按原语义重载。
+            if (payload != null) return;
+            await this._reloadAfterFreshness();
         }
+    }
+
+    // ============================================================
+    // 统一刷新（同步 / 校验）
+    // ============================================================
+
+    /** 报告里是否真有变化：三个计数与 `invalidated` 同等看待；`skip` 不算。 */
+    _freshnessChanged(report) {
+        if (!report || report.action === 'skip') return false;
+        return !!(report.added || report.changed || report.removed || report.invalidated);
+    }
+
+    /** 按全部根同步一次，有变化且 `reload` 为真时就地重载。 */
+    async _syncFreshness(reload) {
+        if (!window.Freshness || typeof window.Freshness.sync !== 'function') return null;
+        let report = null;
+        try {
+            report = await window.Freshness.sync('media-player', '');
+        } catch (e) {
+            // 被动同步失败不打扰用户：下一次切回前台会再试一次
+            return null;
+        }
+        if (reload && this._freshnessChanged(report)) await this._reloadAfterFreshness();
+        return report;
+    }
+
+    /**
+     * 磁盘有新内容后就地重载：停在哪个视图就重载哪个视图。
+     *
+     * 专辑详情按 `currentAlbum` 重取条目；歌单详情要从后端重读一次歌单本身，
+     * 否则渲染的仍是进详情那一刻的曲目快照。
+     */
+    async _reloadAfterFreshness() {
+        await this.playlists.load();
+        if (this.currentView === 'playlist' && this.currentPlaylist) {
+            const refreshed = await this.playlists.get(this.currentPlaylist.id);
+            if (refreshed) {
+                this.currentPlaylist = refreshed;
+                this.playlists.currentId = refreshed.id;
+            }
+        }
+        await this._updateStats();
+        await this._loadCurrentView();
+        this._pushChrome();
     }
 
     /** 内容页自己的设置入口（歌词页右上角）：弹窗归壳渲染，这里只请求壳打开同一份
@@ -259,7 +321,8 @@ class MediaPlayerApp {
     // ============================================================
     // 本插件声明了 `keepAlive`：切走时 iframe 只被 v-show 隐藏，播放与 2s 进度保存
     // 必须继续（申请保活就是为了这个），所以 onHide 只停**纯视觉**的常驻工作 ——
-    // 歌词页的频谱 rAF。onShow 恢复它；onDispose 在页面卸载前落一次进度并停掉定时器。
+    // 歌词页的频谱 rAF。onShow 恢复它并同步一次媒体索引；onDispose 在页面卸载前
+    // 落一次进度并停掉定时器。
     _bindPluginLifecycle() {
         if (typeof window === 'undefined' || !window.PluginLifecycle) return;
         window.PluginLifecycle.onHide(() => {
@@ -267,6 +330,7 @@ class MediaPlayerApp {
         });
         window.PluginLifecycle.onShow(() => {
             if (this.lyrics) this.lyrics.resume();
+            void this._syncFreshness(true);
         });
         window.PluginLifecycle.onDispose(() => {
             if (!this.core) return;

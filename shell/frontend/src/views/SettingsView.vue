@@ -3,6 +3,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useBridge } from '../core/bridge'
+import { freshnessOverviewErrorText } from '../core/plugin-chrome-protocol'
 import { toastError, toastSuccess } from '../core/toast'
 import Icon from '../components/Icon.vue'
 import {
@@ -425,6 +426,7 @@ async function refreshInfo() {
     // 老版本内核没有这个接口时静默降级，不影响其余信息
     failures.value = []
   }
+  await loadFreshness()
   loading.value = false
 }
 
@@ -468,6 +470,179 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 ** i).toFixed(i ? 1 : 0)} ${units[i]}`
 }
 
+// ==================== 数据与缓存：统一刷新状态 ====================
+// 各插件的「校验」在它自己的工具栏里；没有页面骨架的插件（清理器、下载器）没有那一条
+// 工具栏，这张表就是它们的刷新入口：状态投影 + 重建（丢弃派生缓存后重新全量扫描）。
+interface FreshnessTask { state?: string; total?: number; processed?: number }
+interface FreshnessState {
+  plugin: string
+  available?: boolean
+  busy?: boolean
+  entries?: number
+  dirs?: number
+  unit?: string
+  mode?: string
+  version_stale?: boolean
+  stale_dirs?: number
+  /** 当前挂不上的根数量（盘未挂载 / 目录被移走）：这条与"待校验"是两回事 */
+  unreachable_roots?: number | unknown[]
+  last_sync_at?: number
+  last_verify_at?: number
+  ttl_seconds?: number
+  ttl_remaining?: number
+  task?: FreshnessTask | null
+  error?: string
+}
+
+const freshnessStates = ref<FreshnessState[]>([])
+/** 概览读取失败的原因；'' = 正常。权限与"旧内核不提供"是永久结论，transient 是瞬时故障。 */
+type FreshnessProblem = '' | 'admin' | 'unsupported' | 'transient'
+const freshnessProblem = ref<FreshnessProblem>('')
+const freshnessUnavailable = ref('')
+const FRESHNESS_TRANSIENT_TEXT = '暂时读不到统一刷新状态，可重试。'
+/** 瞬时失败的重试上限：抖动要能自己恢复，持续失败时不能无限每 1.5 秒敲一次。 */
+const FRESHNESS_RETRY_LIMIT = 3
+let freshnessRetries = 0
+const rebuildingPlugin = ref('')
+/** 后台校验进行中时的概览重读定时器（有任务在跑才转，见 scheduleFreshnessPoll）。 */
+const FRESHNESS_POLL_MS = 1500
+let freshnessPollTimer = 0
+
+function stopFreshnessPoll(): void {
+  if (freshnessPollTimer) {
+    window.clearTimeout(freshnessPollTimer)
+    freshnessPollTimer = 0
+  }
+}
+
+/**
+ * 概览读取失败的三分类。
+ *
+ * 概览是管理员专属端点：403 必须说权限，旧内核没有这个方法才说"不提供"，其余（网络
+ * 抖动、后端重启、5xx）是瞬时失败 —— 把后者说成"旧内核"会把人引到错误的排查方向，
+ * 而且会让这张表永久停在错误态。
+ */
+function overviewFailureKind(error: unknown): Exclude<FreshnessProblem, ''> {
+  const message = String((error as { message?: string } | null)?.message || error || '')
+  if (/403|禁止访问|管理员|权限/.test(message)) return 'admin'
+  // 旧内核：HTTP 通道是 404 的「页面不存在」，桌面模式是 "xxx is not a function"。
+  if (/404|页面不存在|不存在|not found|not a function|未知(方法|接口)/i.test(message)) {
+    return 'unsupported'
+  }
+  return 'transient'
+}
+
+/**
+ * 有任务在跑（重建 / 校验）时按 1.5 秒重读概览：没有它，表格会永远停在"校验中…"。
+ *
+ * 瞬时失败也继续重试（有上限）：否则一次网络抖动就把这张表永久停掉；权限 / 旧内核
+ * 结论不再重试（再读也是同一句）。
+ */
+function scheduleFreshnessPoll(): void {
+  stopFreshnessPoll()
+  // 设置页是 v-show 常驻的：不在这一页时不该为一张看不见的表轮询。
+  if (route.path !== '/settings') return
+  const busy = freshnessStates.value.some(item => item.busy)
+  const retrying = freshnessProblem.value === 'transient' && freshnessRetries < FRESHNESS_RETRY_LIMIT
+  if (!busy && !retrying) return
+  freshnessPollTimer = window.setTimeout(async () => {
+    freshnessPollTimer = 0
+    if (freshnessProblem.value === 'transient') freshnessRetries += 1
+    await loadFreshness()
+  }, FRESHNESS_POLL_MS)
+}
+
+async function loadFreshness() {
+  try {
+    const list = await bridge.call('system_freshness_overview')
+    freshnessStates.value = Array.isArray(list) ? list : []
+    freshnessProblem.value = ''
+    freshnessUnavailable.value = ''
+    freshnessRetries = 0
+  } catch (e) {
+    // 整块降级，不影响其余信息。三分类见 overviewFailureKind：权限不足与"旧内核没有
+    // 这个接口"分开说；瞬时失败保留上一份概览（尤其 busy 项），轮询因此不会断。
+    const problem = overviewFailureKind(e)
+    freshnessProblem.value = problem
+    freshnessUnavailable.value = problem === 'transient'
+      ? FRESHNESS_TRANSIENT_TEXT
+      : freshnessOverviewErrorText(e)
+    if (problem !== 'transient') freshnessStates.value = []
+  }
+  scheduleFreshnessPoll()
+}
+
+function unreachableRoots(item: FreshnessState): number {
+  const raw = item.unreachable_roots
+  if (Array.isArray(raw)) return raw.length
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
+}
+
+function pluginLabel(name: string): string {
+  return plugins.value.find(p => p.name === name)?.displayName || name
+}
+
+/** 状态列：一个单元格说清"现在在做什么、还剩多少没做"。 */
+function freshnessStatus(item: FreshnessState): string {
+  if (item.available === false) return item.error ? `不可用：${item.error}` : '不可用'
+  const task = item.task || {}
+  if (item.busy) return task.total ? `校验中 ${task.processed || 0}/${task.total}` : '校验中…'
+  const unreachable = unreachableRoots(item)
+  if (unreachable) {
+    return item.stale_dirs
+      ? `部分目录不可达（${unreachable}）· ${item.stale_dirs} 个目录待重算`
+      : `部分目录不可达（${unreachable}）`
+  }
+  if (item.mode === 'remote' && item.ttl_seconds) {
+    return item.ttl_remaining && item.ttl_remaining > 0
+      ? `缓存 ${Math.ceil(item.ttl_remaining)} 秒后过期`
+      : '缓存已过期'
+  }
+  if (item.version_stale) {
+    return item.stale_dirs ? `待校验 · ${item.stale_dirs} 个目录待重算` : '待校验'
+  }
+  const unit = item.unit || '项'
+  const indexed = item.entries ? `已索引 ${item.entries} ${unit}` : ''
+  const stamp = item.last_verify_at ? `校验于 ${shellTimeAgo(item.last_verify_at)}`
+    : (item.last_sync_at ? `同步于 ${shellTimeAgo(item.last_sync_at)}` : '')
+  return [indexed, stamp || '尚未校验'].filter(Boolean).join(' · ')
+}
+
+/** `Freshness.timeAgo` 由壳首页加载的 `/shell/freshness.js` 提供；取不到时退成日期。 */
+function shellTimeAgo(ts: number): string {
+  const api = (window as unknown as { Freshness?: { timeAgo?: (value: number) => string } }).Freshness
+  if (api && typeof api.timeAgo === 'function') return api.timeAgo(ts)
+  const d = new Date(ts * 1000)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+async function rebuildFreshness(item: FreshnessState) {
+  const label = pluginLabel(item.plugin)
+  const ok = window.confirm(
+    `重建「${label}」的派生缓存？\n`
+    + '会丢弃指纹库与派生索引后重新全量扫描；文件多时需要较长时间。',
+  )
+  if (!ok) return
+  rebuildingPlugin.value = item.plugin
+  try {
+    const result = await bridge.call('system_freshness_rebuild', item.plugin, 'derived')
+    if (result && result.started === false) {
+      if (result.error === 'unsupported') toastError('这个插件没有参与统一刷新')
+      else if (result.running) toastError('已有任务在跑，完成后再试')
+      else toastError(result.error || '重建启动失败')
+    } else {
+      toastSuccess(`已开始重建「${label}」`)
+    }
+  } catch (e: any) {
+    toastError(e.message || '重建失败')
+  } finally {
+    rebuildingPlugin.value = ''
+    await loadFreshness()
+  }
+}
+
 function onAppearanceChanged(event: Event) {
   const detail = (event as CustomEvent).detail
   if (detail && typeof detail.key === 'string') customColors[detail.key] = detail.value
@@ -484,14 +659,21 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener(APPEARANCE_CHANGED, onAppearanceChanged)
+  // 概览轮询不能在页面卸载后继续：定时器持有组件的闭包与 bridge 句柄
+  stopFreshnessPoll()
 })
 
 // 设置页是 v-show 常驻的：每次切回来重新拉一次，缓存占用与插件状态才不会过期；
 // 图片库也可能被别处或手工改动，一并重列（此时已选背景一定在库内，不会再触发导入）。
 watch(() => route.path, (path) => {
   if (path === '/settings') {
+    // 回到设置页是一次新的尝试：瞬时失败的退避预算重置。
+    freshnessRetries = 0
     refreshInfo()
     loadBackgroundImages()
+  } else {
+    // 离开设置页就停掉概览轮询，回来时由 refreshInfo 重新决定要不要转
+    stopFreshnessPoll()
   }
 })
 </script>
@@ -840,6 +1022,55 @@ watch(() => route.path, (path) => {
             </div>
           </template>
           <div v-else class="field-help">{{ loading ? '读取中…' : '暂时读不到系统信息。' }}</div>
+
+          <div class="field">
+            <label class="field-label">统一刷新</label>
+            <p v-if="freshnessUnavailable" class="field-help">
+              {{ freshnessUnavailable }}
+              <button
+                v-if="freshnessProblem === 'transient'"
+                class="btn btn-sm"
+                @click="loadFreshness()"
+              >重试</button>
+            </p>
+            <template v-if="freshnessStates.length">
+              <div class="table-scroll">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>插件</th>
+                      <th class="num">条目</th>
+                      <th class="num">目录</th>
+                      <th>状态</th>
+                      <th class="num"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="item in freshnessStates" :key="item.plugin">
+                      <td :title="item.plugin">{{ pluginLabel(item.plugin) }}</td>
+                      <td class="num">{{ item.entries ?? 0 }}</td>
+                      <td class="num">{{ item.dirs ?? 0 }}</td>
+                      <td>{{ freshnessStatus(item) }}</td>
+                      <td class="num">
+                        <button
+                          class="btn btn-sm"
+                          :disabled="!!item.busy || rebuildingPlugin === item.plugin"
+                          @click="rebuildFreshness(item)"
+                        >重建…</button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p class="field-help">
+                进入插件时自动做增量同步，插件工具栏的「校验」逐项重算并清理已消失的条目。
+                重建是逃生门：丢弃指纹库与派生索引后重新全量扫描，用于外部工具保留了修改时间、
+                缓存被截断这类无法靠比对发现的变化。没有页面工具栏的插件（例如清理器、下载器）
+                也在这张表里。
+              </p>
+            </template>
+            <p v-else-if="!freshnessUnavailable" class="field-help">{{ loading ? '读取中…' : '还没有插件参与统一刷新。' }}</p>
+          </div>
         </div>
       </section>
 

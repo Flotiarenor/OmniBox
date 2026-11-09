@@ -100,7 +100,10 @@ class RemoteFreshnessTests(unittest.TestCase):
         self.assertEqual(state['mode'], 'remote')
         self.assertGreater(state['ttl_remaining'], 0, '新鲜期内状态行要给出剩余时间')
 
-        # TTL 内再来一次：跳过，不再丢缓存
+        # 远端同步同样受最小间隔约束：紧接着再同步被去抖挡掉，不重复丢缓存
+        self.assertEqual(engine.sync()['reason'], 'throttled')
+        engine.reset_throttle()
+        # 去抖清掉后，新鲜期内的同步跳过，仍不丢缓存
         self.assertEqual(engine.sync()['reason'], 'fresh')
         self.assertEqual(plugin._api.calls, 1)
 

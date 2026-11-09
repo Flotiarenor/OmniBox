@@ -19,6 +19,7 @@ import 取组件（本仓库另一套约定是 load_sibling 的兄弟模块加�
 而 pyright 对 libs 的覆盖已经通过类型检查范围达成。
 """
 
+import logging
 import threading
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Set
@@ -38,6 +39,8 @@ from pixiv_sync.workspace import TaskWorkspace
 
 from shell.backend.freshness import FreshnessEngine, engine_for
 from shell.backend.plugin_base import PluginBase
+
+log = logging.getLogger(__name__)
 
 
 class PixivSyncPlugin(PluginBase):
@@ -59,7 +62,8 @@ class PixivSyncPlugin(PluginBase):
                                     self._engine, self._task_lock, const.FRESHNESS_INCLUDE)
         self.selection = ArtistSelection(self.paths)
         self.runner = SyncRunner(self, self.records, self.session, self.workspace,
-                                 self.library, self.selection, self._lock, self._task_lock)
+                                 self.library, self.selection, self._lock, self._task_lock,
+                                 self._invalidate_host_derived)
         self.maintenance = Maintenance(self.records, self.library, self.runner, self._engine)
         self.status = StatusReport(self.paths, self.records, self.selection, self.session,
                                    self.runner, self.workspace, self.library, self)
@@ -80,6 +84,28 @@ class PixivSyncPlugin(PluginBase):
     def _engine(self) -> Optional[FreshnessEngine]:
         """统一刷新引擎（按需创建并缓存在本实例上）。"""
         return engine_for(self)
+
+    def _invalidate_host_derived(self, reason: str) -> None:
+        """通知宿主「刚写入了它的图片根」：同步任务收尾时、且本趟确有下载才调用一次。
+
+        宿主契约是 `invalidate_derived(reason)`；旧宿主没有这个方法时用 `getattr`
+        跳过，宿主未加载（依赖缺失、测试里没注入）同样跳过 —— 这条通知只影响宿主
+        相册树的缓存，不能反过来影响同步任务的终态。
+
+        **本方法不抛异常**：`SyncRunner._run_sync` 在任务收尾处直接调用它，
+        异常会从 worker 线程的 `finally` 里逃出去。宿主怎么写坏都只留一条 warning。
+        """
+        try:
+            host = self._get_host()
+        except RuntimeError:
+            return
+        invalidate = getattr(host, 'invalidate_derived', None)
+        if not callable(invalidate):
+            return
+        try:
+            invalidate(reason)
+        except Exception as error:      # 通知是尽力而为：不改写任务终态
+            log.warning('[pixiv-sync] 通知宿主失效派生数据失败: %s', error)
 
     # ---------- 既有模块与用例按实例取用的成员：短委派，名字不变 ----------
     # scan / download / oauth 的模块函数以插件实例为操作数（迁移前就是这份契约），

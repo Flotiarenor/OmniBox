@@ -21,9 +21,9 @@ CI 不再直接跑全量 `discover`：`tools/plugin_ci.py` 按 `test_<插件名�
 
 | 类别 | 数量 | 说明 |
 | --- | --- | --- |
-| `test_*.py` | 133 | `unittest` 用例，被 `discover` 收集；其中 9 个是下表的 `*_e2e.py`，38 个是 `test_*_js.py`（调用 `tests/js/*.mjs` 的包装器） |
+| `test_*.py` | 150 | `unittest` 用例，被 `discover` 收集；其中 9 个是下表的 `*_e2e.py`，44 个是 `test_*_js.py`（调用 `tests/js/*.mjs` 的包装器） |
 | `*_e2e.py` | 9 | 真实浏览器端到端，需要 `requirements-e2e.txt`（selenium）与 Chrome；其中壳整体链路与分隔条两条进 CI |
-| `tests/js/*.mjs` | 45 | 41 个可独立运行的用例文件（由相关的 `test_*_js.py` 用 node 驱动，**不是一一对应**：一个包装器可以跑多个 mjs，例如 image-viewer 的契约用例遍历多份分片脚本）+ 4 个共享夹具（`dom_stub.mjs` `script_load_contract.mjs` `shell_scripts.mjs` `manga_library_harness.mjs`，只被别的 `.mjs` import、自己不跑断言） |
+| `tests/js/*.mjs` | 52 | 48 个可独立运行的用例文件（由相关的 `test_*_js.py` 用 node 驱动，**不是一一对应**：一个包装器可以跑多个 mjs，例如 image-viewer 的契约用例遍历多份分片脚本）+ 4 个共享夹具（`dom_stub.mjs` `script_load_contract.mjs` `shell_scripts.mjs` `manga_library_harness.mjs`，只被别的 `.mjs` import、自己不跑断言） |
 
 `tests/harness/` 是多实例用例的共享工具（`app_instance.py` `browser_binary.py` `support.py`），不是被测代码，也不被收集。
 

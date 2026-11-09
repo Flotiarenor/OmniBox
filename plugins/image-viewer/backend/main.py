@@ -8,13 +8,13 @@
 有意的取舍 —— 需要检查的东西都在组件里；为让接缝有类型而塞进 `sys.path` 会换来模块名冲突。
 
 装配顺序就是依赖顺序：路径 → 设置 → 缩略图 → 扫描 → 目录快照 → 可见性配置 → 目录条目
-→ 漫画书范围 → 相册索引 → 最近图片 → 瓦片 → 列表 → 文件操作 / 重建 / 刷新；反向依赖一律
-由构造参数注入。
+→ 漫画书范围 → 相册树构建 → 相册索引 → 最近图片 → 瓦片 → 列表 → 文件操作 / 重建 /
+刷新；反向依赖一律由构造参数注入。
 `get_data_root` 直接返回 `paths.root`：已无 mixin 覆写基类方法。
 """
 
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List
+from typing import Any, ClassVar, Dict, List, Optional
 
 from shell.backend.freshness import engine_for
 from shell.backend.plugin_base import PluginBase
@@ -30,6 +30,7 @@ _entries = load_sibling(__file__, 'entries', 'image_viewer')
 _dirs = load_sibling(__file__, 'dirs', 'image_viewer')
 _album_config = load_sibling(__file__, 'album_config', 'image_viewer')
 _albums = load_sibling(__file__, 'albums', 'image_viewer')
+_tree = load_sibling(__file__, 'tree', 'image_viewer')
 _books = load_sibling(__file__, 'books', 'image_viewer')
 _recent = load_sibling(__file__, 'recent', 'image_viewer')
 _tiles = load_sibling(__file__, 'tiles', 'image_viewer')
@@ -65,9 +66,11 @@ class ImageViewerPlugin(PluginBase):
         # 漫画书的边界由漫画阅读插件给（manifest 的 dependencies 声明这条联动）：
         # 组件只拿一个读取函数，插件不在 / 未配置时它返回 None，时间线整体退化成普通图片。
         self.books = _books.MangaBooks(self.paths, self._manga_root, extensions)
+        self.album_tree = _tree.AlbumTreeBuilder(
+            self.paths, self.entries, self.settings, self.naming, self.books)
         self.albums = _albums.AlbumIndex(
-            self.paths, self.dirs_snapshot, self.entries, self.settings,
-            self.album_config, self.naming, limits, self.books)
+            self.paths, self.dirs_snapshot, self.entries, self.album_config,
+            limits, self.album_tree)
         self.recent = _recent.RecentImages(
             self.paths, self.albums, self.thumbs, self.naming, extensions, limits,
             self.books)
@@ -78,13 +81,13 @@ class ImageViewerPlugin(PluginBase):
             self.paths, self.tiles, self.settings, self.thumbs,
             self.naming, extensions, limits)
         self.file_ops = _file_ops.FileOps(
-            self.paths, self.thumbs, self.album_config, self.albums, self.listing,
-            self.is_protected_path, extensions)
+            self.paths, self.thumbs, self.album_config, self.albums,
+            self.is_protected_path, extensions, self.invalidate_derived)
         self.rebuild = _rebuild.RebuildTask(
             self.paths, self.thumbs, self.albums, self.listing, extensions)
         self.freshness = _freshness.FreshnessProvider(
             self.paths, self.thumbs, self.albums, self.entries, self.listing,
-            extensions, limits, lambda: engine_for(self))
+            self.books, extensions, limits, lambda: engine_for(self))
         if self._resolved_config.get('dirs_prewarm'):
             self.dirs_snapshot.prewarm()
 
@@ -185,6 +188,11 @@ class ImageViewerPlugin(PluginBase):
 
     def delete_files(self, rel_paths: List[str]) -> Dict:
         return self.file_ops.delete_files(rel_paths)
+
+    def invalidate_derived(self, reason: str = '', keep_snapshot: bool = False,
+                           dirs: Optional[List[str]] = None) -> Dict[str, Any]:
+        """宿主侧派生数据失效入口（编排见 `freshness.FreshnessProvider.invalidate_derived`）。"""
+        return self.freshness.invalidate_derived(reason, keep_snapshot, dirs)
 
     def freshness_spec(self) -> Dict[str, Any]:
         return self.freshness.spec()

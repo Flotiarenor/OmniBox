@@ -1,12 +1,9 @@
 """本地图片树 → 已下载作品集合（统一刷新基建的插件侧实现）。
 
-为什么需要它：这是本插件唯一的文件系统派生数据。迁移前每次刷新记录/校验内容都全盘
-walk 一遍（`store.scan_local`），而它们并没有共同的失效判据。接入基建后：目录级短路
-决定"要不要重算"，**判据（缺页才算未完成）与语义（谁进/谁出 ids）完全不变** —— 只是
-不再每次都走一遍磁盘。
+为什么需要它：这是本插件唯一的文件系统派生数据。目录级短路决定"要不要重算"，
+**判据（缺页才算未完成）与语义（谁进/谁出 ids）** 保持不变 —— 不是每次都走一遍磁盘。
 
-另一方面，刷新记录与校验内容还有各自的并发缺口（只挡下载线程、自己不占位），现在
-两者都转发到引擎，由引擎的单飞与状态托管；本组件只实现钩子。
+刷新记录与校验内容都转发到引擎，由引擎的单飞与状态托管；本组件只实现钩子。
 
 状态自持：`_local_changed`（本趟看到的本地变化数）与引擎引用都在这里，换根时 reset()。
 """
@@ -71,7 +68,8 @@ class LocalLibrary:
         """引擎进度的投影；引擎不可用时返回"未接入"的空形状。"""
         engine = self._engine()
         empty = {"available": False, "busy": False, "task": None,
-                 "entries": 0, "dirs": 0, "last_verify_at": 0}
+                 "entries": 0, "dirs": 0, "last_verify_at": 0,
+                 "version_stale": False, "stale_dirs": 0}
         if engine is None:
             return empty
         try:
@@ -86,6 +84,10 @@ class LocalLibrary:
             "entries": int(state.get("entries") or 0),
             "dirs": int(state.get("dirs") or 0),
             "last_verify_at": float(state.get("last_verify_at") or 0),
+            # 索引是否落后于当前的解析规则版本，以及还有多少个目录没盖章：
+            # 面板据此提示「索引待更新」而不是把「已索引 N 项」当成新鲜
+            "version_stale": bool(state.get("version_stale")),
+            "stale_dirs": int(state.get("stale_dirs") or 0),
         }
 
     def reset(self) -> None:

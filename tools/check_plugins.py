@@ -798,12 +798,120 @@ FRESHNESS_SPEC_DEF_RE = re.compile(r'def\s+freshness_spec\s*\(')
 FRESHNESS_MOUNT_RE = re.compile(r'\bFreshness\s*\.\s*mount\s*\(')
 # mount({ plugin: '名字' }) —— 名字必须等于插件名
 FRESHNESS_PLUGIN_ARG_RE = re.compile(r"""Freshness\s*\.\s*mount\s*\(\s*\{[^}]*?\bplugin\s*:\s*['"]([^'"]+)['"]""", re.DOTALL)
+# 被动同步的**调用**形态：控件句柄的 `.autoSync(...)` 或模块级 `Freshness.sync(...)`。
+# 只认带接收者的调用，于是"只定义未调用"（`function autoSync(...)` / `autoSync(...) {}`）
+# 不会被当成触发；注释与字符串里的同名字样由 `_strip_js_noise` 先去掉。
+FRESHNESS_AUTOSYNC_CALL_RE = re.compile(r'\.\s*autoSync\s*\(')
+FRESHNESS_MODULE_SYNC_CALL_RE = re.compile(r'\bFreshness\s*\.\s*sync\s*\(')
+# 壳挂载型还要在视图 / 作用域变化时再同步一次：`mount` 只覆盖首帧
+FRESHNESS_VIEW_WATCH_RE = re.compile(
+    r'watch\s*\(\s*\[\s*activeView\s*,\s*freshnessScope\s*\]')
+# 壳渲染插件页面骨架的组件：统一刷新控件在这里挂载
+SHELL_PLUGIN_CHROME = PROJECT_ROOT / 'shell' / 'frontend' / 'src' / 'components' / 'PluginChrome.vue'
+
+
+def _strip_js_noise(text: str, *, keep_strings: bool = False) -> str:
+    """去掉注释（JS 行/块、HTML）与（可选）字符串内容，用于"这段源码里有没有真的调用"。
+
+    为什么要清洗：触发面检查原先直接在原始文本里找 `autoSync(`，于是下面三行都会被算成
+    "已触发"——门禁绿着，界面却永远不更新：
+
+        // ctl.autoSync(scope)
+        const hint = 'ctl.autoSync(';
+        const tip = `autoSync(scope)`;
+
+    四类假接线里，注释 / 单双引号串 / 模板串三类靠清洗拦住；"只定义未调用"靠只认带
+    接收者的调用拦住（见 `FRESHNESS_AUTOSYNC_CALL_RE`）。
+
+    `keep_strings=True` 只去注释：`Freshness.mount({ plugin: '名字' })` 的名字在字符串里，
+    比对插件名时不能把它抹掉。正则字面量不解析 —— 稳定的调用形态不会写成 `/autoSync\\(/`。
+    """
+    out: List[str] = []
+    index = 0
+    size = len(text)
+    while index < size:
+        char = text[index]
+        pair = text[index:index + 2]
+        if pair == '//':
+            newline = text.find('\n', index)
+            index = size if newline < 0 else newline
+            continue
+        if pair == '/*':
+            end = text.find('*/', index + 2)
+            index = size if end < 0 else end + 2
+            out.append(' ')
+            continue
+        if text.startswith('<!--', index):
+            end = text.find('-->', index + 4)
+            index = size if end < 0 else end + 3
+            out.append(' ')
+            continue
+        if char in '\'"`':
+            cursor = index + 1
+            while cursor < size:
+                current = text[cursor]
+                if current == '\\':
+                    cursor += 2
+                    continue
+                if current == char:
+                    cursor += 1
+                    break
+                cursor += 1
+            out.append(text[index:cursor] if keep_strings else char + char)
+            index = cursor
+            continue
+        out.append(char)
+        index += 1
+    return ''.join(out)
+
+
+def _has_freshness_trigger(text: str) -> bool:
+    """这段前端源码里有没有真的发起被动同步（只认调用形态，不看注释/字符串）。"""
+    cleaned = _strip_js_noise(text)
+    return bool(FRESHNESS_AUTOSYNC_CALL_RE.search(cleaned)
+                or FRESHNESS_MODULE_SYNC_CALL_RE.search(cleaned))
+
+
+def _check_shell_freshness_trigger(component: Path | None = None) -> List[str]:
+    """壳挂载型统一刷新必须真的触发被动同步（返回 errors）。
+
+    为什么必须在门禁里拦：`Freshness.mount(...)` 只做三件事 —— 渲染控件、读一次
+    `system_freshness_state`、等用户点「校验」。**它自己不扫盘**：被动同步
+    （`system_freshness_sync`）只有 `autoSync(scope)` 会发起。漏掉这一句时，
+    控件、按钮、状态文案、后端端点全部正常，唯一的现象是"外部新增或删除的文件
+    永远不出现在界面上，必须 Ctrl+F5 或重启"—— 每一处代码单独看都没问题。
+
+    两处触发都要有：挂载后一次（首帧），以及视图 / 作用域变化时再各一次 ——
+    后者是"切目录 / 从别的插件切回来能看到变化"的唯一入口。
+
+    组件缺失（或没挂载）由 `_check_freshness_contract` 单独报，这里不重复。
+    """
+    path = Path(component) if component is not None else SHELL_PLUGIN_CHROME
+    try:
+        text = path.read_text(encoding='utf-8')
+    except OSError:
+        return []
+    cleaned = _strip_js_noise(text)
+    errors: List[str] = []
+    if not FRESHNESS_AUTOSYNC_CALL_RE.search(cleaned):
+        errors.append(
+            '壳挂载的统一刷新控件没有 autoSync(...) 调用：Freshness.mount 只渲染控件并读一次'
+            '状态，不发被动同步；缺这一句时外部新增/删除的文件永远不会出现在界面上'
+            '（见 docs/plugin-guide.md「统一刷新（同步 / 校验）」）'
+        )
+    if not FRESHNESS_VIEW_WATCH_RE.search(cleaned):
+        errors.append(
+            '壳挂载的统一刷新只在挂载时同步一次，没有在视图 / 作用域变化时再同步：'
+            '缺少 `watch([activeView, freshnessScope], ...)` 时，切目录或从别的插件切回来'
+            '看不到外部变化（挂载只会跑首帧那一次）'
+        )
+    return errors
 
 
 def _check_freshness_contract(plugin_dir: Path, name: str, *, shell_mounts: bool = False) -> List[str]:
     """统一刷新基建（同步 / 校验）的接线检查（返回 errors）。
 
-    三个静默失败，读代码都看不出来：
+    四个静默失败，读代码都看不出来：
 
     1. 后端声明了 `freshness_spec()`，前端却没有 `Freshness.mount(...)`：壳侧的引擎、
        指纹库、`system_freshness_*` 端点全都在，用户界面上却没有入口 —— 现象是
@@ -812,10 +920,14 @@ def _check_freshness_contract(plugin_dir: Path, name: str, *, shell_mounts: bool
        "点了没反应"；
     3. `Freshness.mount({plugin: '...'})` 的名字与 manifest 不一致（复制粘贴留下的）：
        壳按名字找不到实例，同样是"点了没反应"。这条最值得拦，因为它跨后端/前端/清单
-       三处，而三处各自看都对。
+       三处，而三处各自看都对；
+    4. 控件挂上了却没有任何被动同步调用（`.autoSync(...)` / `Freshness.sync(...)`）：
+       mount 只渲染控件并读一次状态、不扫盘，于是"外部变化永远看不见"。这条只有自绘型
+       在这里查 —— 壳挂载型由 `_check_shell_freshness_trigger` 统一查一次
+       （`PluginChrome.vue` 是壳的一份，按插件重复报同一句话没有信息量）。
 
     声明了 `frontend.chrome.freshness` 的插件由壳的 PluginChrome 挂载组件，
-    此时不再要求插件自己的前端出现 `Freshness.mount`，但不能两边都没有。
+    此时不再要求插件自己的前端出现 `Freshness.mount`，也不能两边都没有。
     """
     errors: List[str] = []
     backend_declared = False
@@ -830,23 +942,27 @@ def _check_freshness_contract(plugin_dir: Path, name: str, *, shell_mounts: bool
 
     mount_names: List[str] = []
     mount_called = False
+    trigger_called = False
     _css_files, html_files, js_files = _frontend_files(plugin_dir)
     for path in html_files + js_files:
         try:
             text = path.read_text(encoding='utf-8')
         except Exception:
             continue
-        if FRESHNESS_MOUNT_RE.search(text):
+        # 挂载与触发都必须是**代码**（注释掉的调用不算）；插件名在字符串里，单独保留。
+        code_only = _strip_js_noise(text)
+        if FRESHNESS_MOUNT_RE.search(code_only):
             mount_called = True
-        mount_names.extend(FRESHNESS_PLUGIN_ARG_RE.findall(text))
+        if FRESHNESS_AUTOSYNC_CALL_RE.search(code_only) or FRESHNESS_MODULE_SYNC_CALL_RE.search(code_only):
+            trigger_called = True
+        mount_names.extend(FRESHNESS_PLUGIN_ARG_RE.findall(_strip_js_noise(text, keep_strings=True)))
 
     if shell_mounts:
-        component = PROJECT_ROOT / 'shell' / 'frontend' / 'src' / 'components' / 'PluginChrome.vue'
         try:
-            shell_text = component.read_text(encoding='utf-8')
+            shell_text = SHELL_PLUGIN_CHROME.read_text(encoding='utf-8')
         except OSError:
             shell_text = ''
-        if not FRESHNESS_MOUNT_RE.search(shell_text):
+        if not FRESHNESS_MOUNT_RE.search(_strip_js_noise(shell_text)):
             errors.append(
                 'manifest 声明了 frontend.chrome.freshness，但壳的 PluginChrome.vue '
                 '没有 Freshness.mount(...)：接线断了'
@@ -857,6 +973,12 @@ def _check_freshness_contract(plugin_dir: Path, name: str, *, shell_mounts: bool
             'freshness_spec() 已声明但前端没有 Freshness.mount(...)：壳侧引擎与 '
             'system_freshness_* 端点都在，界面上却没有「校验」入口'
             '（见 docs/plugin-guide.md §3.4「统一刷新（同步 / 校验）」）'
+        )
+    if backend_declared and not shell_mounts and not trigger_called:
+        errors.append(
+            'freshness_spec() 已声明，但插件自己的前端没有发起被动同步'
+            '（`.autoSync(...)` 或 `Freshness.sync(...)`）：Freshness.mount 只渲染控件并'
+            '读一次状态，不扫盘；缺这一句时外部新增/删除的文件永远不会出现在界面上'
         )
     if mount_called and not backend_declared:
         errors.append(
@@ -1203,6 +1325,17 @@ def check_plugins(plugins_dir: Path | None = None, load_backends: bool = True) -
 
         if isinstance(name, str) and PLUGIN_NAME_RE.fullmatch(name) and name == folder_name:
             discovered.append((plugin_dir, name, data))
+
+    # 壳挂载型的触发面只检查一次（组件是壳的一份，按插件重复报同一句话没有信息量）。
+    shell_freshness_used = False
+    for _plugin_dir, _name, data in discovered:
+        frontend = data.get('frontend')
+        chrome = frontend.get('chrome') if isinstance(frontend, dict) else None
+        if isinstance(chrome, dict) and chrome.get('freshness'):
+            shell_freshness_used = True
+            break
+    if shell_freshness_used:
+        errors.extend(_check_shell_freshness_trigger())
 
     plugin_names = {name for _, name, _ in discovered}
     for _plugin_dir, name, data in discovered:

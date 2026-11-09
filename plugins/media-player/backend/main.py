@@ -17,7 +17,7 @@
 
 import logging
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple
 
 from shell.backend.freshness import engine_for
 from shell.backend.plugin_base import PluginBase
@@ -64,7 +64,8 @@ class MediaPlayerPlugin(PluginBase):
         self.state.migrate_legacy()
         self.paths.drop_stale_scan_task()
         self.collections = _collections.MediaCollections(
-            self.state, self.index, _const.QUEUE_PERSIST_LIMIT)
+            self.state, self.index, _const.QUEUE_PERSIST_LIMIT,
+            lambda: self._verified_keys())
         self.covers = _covers.CoverStore(self.paths, self.index,
                                          self.scanner.cover_generator)
         self.library = _library.MediaLibrary(self.index, self.state, _models)
@@ -79,9 +80,24 @@ class MediaPlayerPlugin(PluginBase):
         # ffmpeg 可选通道：注入用户设置路径（探测结果缓存，设置变更时刷新）
         _ffmpeg.configure(self.setting('ffmpeg_path') or '')
 
+    def _verified_keys(self) -> Optional[Set[str]]:
+        """整趟校验确认存在的条目键；没有权威结论时返回 None。
+
+        播放状态的清空判据（`MediaCollections.get_playback`）只认这个结论：索引里
+        没有 ≠ 文件没了（启动早期索引为空、外接盘未挂载、首扫预算用尽都会这样）。
+        引擎未接入或引擎还没跑过完整校验时返回 None，调用方据此保留用户数据。
+        """
+        engine = engine_for(self)
+        if engine is None:
+            return None
+        # 引擎的 verified_keys 与入口并行实现：用 getattr 兼容尚未提供该查询的版本
+        return getattr(engine, 'verified_keys', lambda: None)()
+
     def register_api(self) -> dict:
         return {
             'media_scan': self.freshness.scan,
+            # 兼容入口：保留给按旧契约轮询扫描进度的调用方；壳挂载的刷新控件直接读
+            # `system_freshness_state`，当前前端只调 `media_scan` 建索引，不调这两个方法。
             'media_scan_status': self.freshness.status,
             'media_scan_cancel': self.freshness.cancel,
             'media_search': self.library.search,

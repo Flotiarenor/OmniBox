@@ -16,6 +16,9 @@ class MediaItem:
     duration: float = 0
     size: int = 0
     mtime: float = 0
+    #: 封面字节的版本时刻：目录封面图自身的 mtime，没有目录封面时等于 `mtime`。
+    #: 前端把它当 `/thumbs` 的 URL 版本号（同名替换封面时只有它会前进）。
+    cover_mtime: float = 0
     cover_path: str = ""
     has_cover: bool = False
     album_artist: str = ""
@@ -33,6 +36,7 @@ class MediaItem:
             'duration': self.duration,
             'size': self.size,
             'mtime': self.mtime,
+            'cover_mtime': self.cover_mtime,
             'cover_path': self.cover_path,
             'has_cover': self.has_cover,
             'album_artist': self.album_artist,
@@ -52,6 +56,8 @@ class MediaItem:
             duration=data.get('duration', 0),
             size=data.get('size', 0),
             mtime=data.get('mtime', 0),
+            # 旧索引没有该字段：退回条目 mtime，与"没有目录封面"时的取值同形
+            cover_mtime=data.get('cover_mtime', data.get('mtime', 0)),
             cover_path=data.get('cover_path', ''),
             has_cover=data.get('has_cover', False),
             album_artist=data.get('album_artist', ''),

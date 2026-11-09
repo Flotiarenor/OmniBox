@@ -95,12 +95,13 @@ class AlbumTiles:
                 mtime = root.stat().st_mtime
             except OSError:
                 return None
-            total, cover = self._entries.aggregate(root, sub_rel)
+            total, cover, cover_mtime = self._entries.aggregate(root, sub_rel)
             cover_width = cover_height = 1
             if cover:
                 cover_path, _ = self._paths.resolve_path(cover)
                 try:
                     stat = cover_path.stat()
+                    cover_mtime = stat.st_mtime
                     cover_width, cover_height = self._thumbs.get_image_size(
                         str(cover_path), stat.st_mtime)
                 except (OSError, AttributeError):
@@ -108,7 +109,8 @@ class AlbumTiles:
             card = {
                 'type': 'album', 'path': sub_rel,
                 'name': name[len(self._paths.marker):],
-                'cover': cover, 'image_count': 0, 'total_count': total,
+                'cover': cover, 'cover_mtime': cover_mtime,
+                'image_count': 0, 'total_count': total,
                 'has_children': True, 'mtime': mtime,
                 'width': cover_width or 1, 'height': cover_height or 1,
                 'use_time_name': self._settings.pixiv_mode(sub_rel),
@@ -124,6 +126,9 @@ class AlbumTiles:
         pixiv = entry.get('pixiv', False)
         direct_count = entry.get('direct_count', 0)
         cover = entry.get('direct_cover', '')
+        # 封面文件自身的 mtime：前端拿它当缩略图 URL 的版本号。目录 mtime 只反映
+        # "加减了条目"，替换同名封面文件时不变，因此不能用它做版本号。
+        cover_mtime = float(entry.get('direct_cover_mtime') or 0.0)
         has_children = bool(entry.get('has_children'))
         total_count: Optional[int] = direct_count
         # 纯容器子目录（作者文件夹等）：递归计数与封面要从子树里聚合。相册索引的全树
@@ -134,13 +139,14 @@ class AlbumTiles:
         if has_children and not direct_count:
             cached_total = entry.get('total_count')
             cached_mtime = entry.get('total_mtime')
-            # 容差与 `scan_dir_cached` / 全树聚合的 mtime 判定保持一致：同一份 mtime
-            # 可能来自 `os.walk` 的 stat 与 `entry.stat()`，浮点上未必逐位相等
+            # mtime 精确比较：删除/移动后目录 mtime 只前进几毫秒，容差会把刚变过的
+            # 目录当成没变，角标与封面于是沿用旧值。
             if cached_total is not None and cached_mtime is not None \
-                    and abs(float(cached_mtime) - float(mtime)) < 0.5:
+                    and float(cached_mtime) == float(mtime):
                 total_count, cover = cached_total, entry.get('total_cover', '') or ''
+                cover_mtime = float(entry.get('total_cover_mtime') or 0.0)
             elif aggregate:
-                total_count, cover = self._entries.children_total(
+                total_count, cover, cover_mtime = self._entries.children_total(
                     sub_rel, dir_path, mtime, entry)
             else:
                 pending = True
@@ -161,12 +167,14 @@ class AlbumTiles:
                                        'width': width, 'height': height})
                         if url == cover:
                             cover_width, cover_height = width, height
+                            cover_mtime = stat.st_mtime
         except OSError:
             pass
         if cover and (cover_width, cover_height) == (1, 1):
             abs_path, _ = self._paths.resolve_path(cover)
             try:
                 stat = abs_path.stat()
+                cover_mtime = stat.st_mtime
                 cover_width, cover_height = self._thumbs.get_image_size(
                     str(abs_path), stat.st_mtime)
             except (OSError, AttributeError):
@@ -176,6 +184,7 @@ class AlbumTiles:
             'path': sub_rel,
             'name': name,
             'cover': cover,
+            'cover_mtime': cover_mtime,
             'image_count': direct_count,
             'total_count': total_count,
             'has_children': has_children,
@@ -203,11 +212,12 @@ class AlbumTiles:
             cached = self._entries.cached_total(item['path'])
             if cached is None:
                 continue
-            total, cover = cached
+            total, cover, cover_mtime = cached
             item['pending'] = False
             item['total_count'] = total
             if cover and not item.get('cover'):
                 item['cover'] = cover
+                item['cover_mtime'] = cover_mtime
                 card = self.card_cover_size(cover)
                 if card != (1, 1):
                     item['width'], item['height'] = card
@@ -234,8 +244,8 @@ class AlbumTiles:
         占位卡片返回；前端对**进入视口**的瓦片调用本方法，每批十几个目录。已经算过的
         子树走 `children_total` 的缓存，重复请求不重扫磁盘。
 
-        返回 `{'tiles': {path: {cover, total_count, image_count, width, height,
-        use_time_name}}}`；`paths` 里的非法路径或不存在目录直接不出现在结果里。
+        返回 `{'tiles': {path: {cover, cover_mtime, total_count, image_count, width,
+        height, use_time_name}}}`；`paths` 里的非法路径或不存在目录直接不出现在结果里。
         """
         tiles: Dict[str, Dict] = {}
         for rel in paths or []:
@@ -247,6 +257,7 @@ class AlbumTiles:
             total = 0
             direct = 0
             cover = ''
+            cover_mtime = 0.0
             mtime = 0.0
             pixiv = self._settings.pixiv_mode(rel)
             if self._paths.is_namespace_node(rel):
@@ -257,7 +268,7 @@ class AlbumTiles:
                     mtime = root.stat().st_mtime
                 except OSError:
                     continue
-                total, cover = self._entries.aggregate(root, rel)
+                total, cover, cover_mtime = self._entries.aggregate(root, rel)
             else:
                 dir_path, _ = self._paths.resolve_dir(rel)
                 if dir_path is None or not dir_path.is_dir():
@@ -270,19 +281,23 @@ class AlbumTiles:
                 direct = entry.get('direct_count', 0)
                 if direct:
                     total, cover = direct, entry.get('direct_cover', '')
+                    cover_mtime = float(entry.get('direct_cover_mtime') or 0.0)
                 else:
-                    total, cover = self._entries.children_total(rel, dir_path, mtime, entry)
+                    total, cover, cover_mtime = self._entries.children_total(
+                        rel, dir_path, mtime, entry)
             width = height = 1
             if cover:
                 cover_path, _ = self._paths.resolve_path(cover)
                 try:
                     stat = cover_path.stat()
+                    cover_mtime = stat.st_mtime
                     width, height = self._thumbs.get_image_size(str(cover_path), stat.st_mtime)
                 except (OSError, AttributeError):
                     pass
             tiles[rel] = {
                 'path': rel,
                 'cover': cover,
+                'cover_mtime': cover_mtime,
                 'total_count': total,
                 'image_count': direct,
                 'width': width or 1,

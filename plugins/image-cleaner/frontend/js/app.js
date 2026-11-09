@@ -13,6 +13,11 @@ class ImageCleaner {
     this._bind();
     this._mountHostToolbar();
     this._mountFreshness();
+    // 控件只渲染状态并读一次投影，自己不扫盘：挂载后由本页发起一次被动同步，
+    // 外部新增/删除的图片才会让结果缓存被标成过期（删除后那一次见 deleteSelected）。
+    if (this.freshness && typeof this.freshness.autoSync === 'function') {
+      this.freshness.autoSync('');
+    }
     if (typeof createLightbox === 'function') {
       this.lightbox = createLightbox({ getImageUrl: (item) => item.url || item });
     }
@@ -21,12 +26,11 @@ class ImageCleaner {
   }
 
   /**
-   * 挂载共享的「同步状态 + 校验」控件（shell/freshness.js，见 plugin-guide §3.4）。
+   * 挂载共享的「同步状态 + 校验」控件（shell/freshness.js）。
    *
    * 挂在内嵌态也可见的标签行，而不是那条 `html.is-embedded` 下整条隐藏的工具栏：
    * 本插件的主用法是嵌在图片相册的扩展面板里，工具栏那时看不到。
-   * 原先的「重新扫描」按钮与它那一整套进度/轮询/取消（runScan / _waitForScan /
-   * _showScanProgress）随之删除 —— 进度与取消由组件统一负责。
+   * 扫描的进度、轮询与取消都由该组件负责；本页不自行起扫描任务。
    */
   _mountFreshness() {
     const host = document.getElementById('cleaner-freshness');
@@ -133,7 +137,7 @@ class ImageCleaner {
   }
 
   /**
-   * 读结果缓存并渲染（不再自己起扫描任务）。
+   * 读结果缓存并渲染。
    *
    * 扫描/校验由共享组件负责：它调 `system_freshness_verify` → 后端在整趟结束时
    * 重新分组写进缓存 → `onChange` 回调到这里重读。所以本方法只做两件事：
@@ -344,7 +348,7 @@ class ImageCleaner {
   }
 
   // 统一走内核 window.Utils.escapeHtml（转义 &<>"' ，属性场景同样安全），
-  // 并让 null/undefined 与其它插件一样返回空串（以前 String(null) 会得到 "null"）。
+  // 并让 null/undefined 与其它插件一样返回空串（String(null) 得到的是 "null"）。
   _escapeHtml(str) {
     if (window.Utils && typeof window.Utils.escapeHtml === 'function') {
       return window.Utils.escapeHtml(str);

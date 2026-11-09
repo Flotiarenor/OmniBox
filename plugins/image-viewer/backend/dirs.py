@@ -3,17 +3,18 @@
 为什么值得单独一个组件：相册索引按目录名索引，回答不了"有没有新增目录"，而那份答案
 只能靠 `os.walk` 拿 —— 机械盘上 9167 个目录实测 6-23s。所以目录集合被当成一份独立
 的、可落盘复用的快照：进程内用缓存，跨进程用 `dirs_index.json`，两者都靠"根集合一致
-+ 各根 mtime 未变 + TTL 内"三条判据决定能不能复用。
++ 各根 mtime 未变 + 距那次走盘不超过 TTL"三条判据决定能不能复用。
 
 三条缺一不可（缺任何一条都会给出**错**的目录集合）：
 
 * **根集合一致**（含路径本身）：索引/快照可能是别的图库或别的根集合留下的，只看
   mtime 会把"换了个库"当成"没变"；
-* **各根 mtime 未变**：根内增删顶层条目会改根 mtime；
-* 距上次走盘不超过 `dirs_ttl`。
+* **各根 mtime 未变**：根内增删顶层条目会改根 mtime，落盘时记下、读回时比对；
+* 距**那次走盘**不超过 `dirs_ttl`：落盘时记 `walked_at`，重启后从它算起，而不是从
+  读盘时刻重新计时。
 
-目录的增删由统一刷新基建的被动同步负责发现：它一发现就作废本快照（见入口的编排），
-因此常规浏览不会每 30 秒重走一次全树。
+目录的增删由统一刷新基建的目录集合信号与校验负责发现：它们一发现就作废本快照，因此
+常规浏览不会每 30 秒重走一次全树。
 
 状态自持：快照、时间戳、根指纹、锁、诊断计数都在这里。
 """
@@ -50,8 +51,14 @@ class DirSnapshot:
 
     # ===== 落盘快照 =====
 
-    def _load(self) -> Optional[Dict[str, float]]:
-        """读取落盘的全树目录快照；根集合不一致（换库）或版本不符时返回 None。"""
+    def _load(self) -> Optional[Tuple[Dict[str, float], float]]:
+        """读取落盘的全树目录快照，返回 (目录集合, 走盘时刻)；不可复用时返回 None。
+
+        走盘时刻取自**落盘那一刻**，不是读盘时刻：否则每次启动都会把一份可能已经放了
+        很久的快照当成刚走完的，TTL 变成"重启后再信 10 分钟"。落盘时还记下各根的虚拟
+        前缀与 mtime，根内顶层增删会改根 mtime，读到不一致就整份作废 —— 重启后不必
+        等 TTL。
+        """
         payload = read_cached_json(
             self._paths.dirs_cache_file, version=self._version,
             fingerprint={'roots': [str(path) for path in self._paths.roots()]})
@@ -60,15 +67,24 @@ class DirSnapshot:
         dirs = payload.get('dirs')
         if not isinstance(dirs, dict) or not dirs:
             return None
-        return {str(key): float(value or 0.0) for key, value in dirs.items()}
+        walked_at = payload.get('walked_at')
+        if not isinstance(walked_at, (int, float)) or walked_at <= 0:
+            return None
+        saved_roots = payload.get('roots_mtime')
+        if not isinstance(saved_roots, dict) or saved_roots != self.roots_mtime():
+            return None
+        return ({str(key): float(value or 0.0) for key, value in dirs.items()},
+                float(walked_at))
 
     def _restore(self) -> None:
         """进程启动时把落盘快照读回来：有了它，"打开相册页"不必等任何走盘。"""
-        dirs = self._load()
-        if not dirs:
+        loaded = self._load()
+        if loaded is None:
             return
+        dirs, walked_at = loaded
         self._dirs = dirs
-        self._cached_at = time.time()
+        # 复用判据的起点是那次走盘，而不是本次启动
+        self._cached_at = walked_at
         self._roots_fp = self.roots_fingerprint()
         self._root_paths = tuple(str(path) for path in self._paths.roots())
 
@@ -76,7 +92,8 @@ class DirSnapshot:
         """把全树目录快照落盘（原子写）。
 
         为什么值得单独存一份：重启时直接读文件即可 —— "打开相册页"不再需要等待任何
-        走盘（实测读快照 0.08s，重走 6-23s）。
+        走盘（实测读快照 0.08s，重走 6-23s）。走盘时刻与各根 mtime 一起落盘，读回时
+        才能判断这份快照是否仍然可信。
         """
         # 缓存目录已经不在了就别再写：进程正在退出 / 数据根被换掉 / 测试清理临时目录
         # 时，这一笔会把刚删掉的目录重新创建出来（Windows 上 rmtree 会因此报 145）。
@@ -84,7 +101,9 @@ class DirSnapshot:
             return
         if not write_cached_json(
                 self._paths.dirs_cache_file,
-                {'dirs': self._dirs or {}},
+                {'dirs': self._dirs or {},
+                 'walked_at': self._cached_at,
+                 'roots_mtime': self.roots_mtime()},
                 version=self._version,
                 fingerprint={'roots': list(self._root_paths or ())}):
             log.error('[ImageViewer] 保存目录索引失败: %s', self._paths.dirs_cache_file)
@@ -108,6 +127,11 @@ class DirSnapshot:
             except OSError:
                 marks.append((self._paths.virtual_path(root, ''), None))
         return tuple(marks)
+
+    def roots_mtime(self) -> Dict[str, Optional[float]]:
+        """各根的 mtime（键是虚拟前缀），供落盘快照与当前磁盘比对。"""
+        return {prefix: (None if mtime is None else float(mtime))
+                for prefix, mtime in self.roots_fingerprint()}
 
     def snapshot(self, now: float) -> Optional[Dict[str, float]]:
         """可复用的全树目录快照；不可复用返回 None（判据见模块 docstring）。"""
@@ -240,6 +264,7 @@ class DirSnapshot:
             'dirs_cache_file_exists': self._paths.dirs_cache_file.exists(),
             'dirs_cache_entries': self.entries,
             'dirs_snapshot_usable': self.snapshot(time.time()) is not None,
+            'dirs_walked_at': round(self._cached_at, 3),
             'roots_fingerprint': repr(self.roots_fingerprint()),
             'dirs_paths': self.paths,
             'album_dirs_walk_count': self._walk_count,

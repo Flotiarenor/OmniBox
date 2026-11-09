@@ -12,7 +12,7 @@
 import logging
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from pixiv_mini import PixivCancelled, PixivError
 
@@ -34,6 +34,7 @@ class SyncRunner:
         selection,
         lock,
         task_lock,
+        invalidate_host: Optional[Callable[[str], None]] = None,
     ) -> None:
         self._operand = operand
         self._records = records
@@ -43,6 +44,7 @@ class SyncRunner:
         self._selection = selection
         self._lock = lock              # 保护任务线程启动/取消
         self._task_lock = task_lock    # 保护计数 / ids / failed 集合 / 清单写
+        self._invalidate_host = invalidate_host   # 写入宿主根之后的通知（入口注入）
         self._thread: Optional[threading.Thread] = None
         self._task: Optional[Dict[str, Any]] = None
         # 取消令牌：每次任务一个新的 Event，线程把自己的那个登记到 `_run_tokens`。
@@ -201,6 +203,12 @@ class SyncRunner:
             if token.is_set():
                 task["state"] = "cancelled"
             self._workspace.persist_task(task)
+            # 只在**这一趟确有下载**时通知宿主（每趟一次，不是每张作品一次）：未配
+            # token 的失败、清单为空或全部已下的零下载空跑都没改过它的目录，清一次
+            # 相册索引只会让它白重扫。失败/取消前已写出的文件同样要刷新，判据只看
+            # `downloaded`；回调由入口注入、自己吞异常，通知不影响任务终态。
+            if self._invalidate_host is not None and int(task.get("downloaded") or 0) > 0:
+                self._invalidate_host('pixiv-sync:download')
             self._finish_task_runtime()
 
     # ---------- 只刷新名单（不下载） ----------

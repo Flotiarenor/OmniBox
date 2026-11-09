@@ -13,6 +13,7 @@ import importlib.util
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -247,6 +248,41 @@ class PixivSyncVerifyTests(unittest.TestCase):
 
         self.assertFalse(fragment.exists(), "0 字节残片要顺手清掉")
         self.assertNotIn(self.WORK_ID, self.plugin._load_ids())
+
+    # ===== 维护入口的并发保护与状态投影 =====
+
+    def test_refresh_downloaded_refuses_while_sync_runs(self):
+        """同步任务在跑时「刷新记录」直接返回占用：两条路都会就地改同一个集合。"""
+        gate = threading.Event()
+        worker = threading.Thread(target=gate.wait, args=(10,), daemon=True)
+        worker.start()
+        self.plugin.runner._thread = worker
+        self.plugin.runner._cancel_event.clear()
+        try:
+            result = self.plugin.maintenance.refresh_downloaded()
+        finally:
+            gate.set()
+            worker.join(timeout=5)
+            self.plugin.runner._thread = None
+
+        self.assertFalse(result["ok"])
+        self.assertIn("同步任务进行中", result["error"])
+
+    def test_refresh_downloaded_still_works_when_idle(self):
+        """空闲时照常走一遍同步并回报结果（占用判据不能把正常路径也挡掉）。"""
+        result = self.plugin.maintenance.refresh_downloaded()
+
+        self.assertTrue(result["ok"])
+        self.assertIn("stale_removed", result)
+
+    def test_status_projects_index_version_fields(self):
+        """面板要判断「索引是否待更新」，状态里就得有这两个字段。"""
+        library = self.plugin.status.report()["library"]
+
+        self.assertIn("version_stale", library)
+        self.assertIn("stale_dirs", library)
+        self.assertIsInstance(library["version_stale"], bool)
+        self.assertIsInstance(library["stale_dirs"], int)
 
 
 if __name__ == "__main__":

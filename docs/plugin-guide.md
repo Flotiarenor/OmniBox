@@ -585,8 +585,55 @@ class AudioCoverCache(ThumbCache):
 
 | 动作 | 触发 | 成本 | 谁负责 |
 | --- | --- | --- | --- |
-| **同步**（sync） | 被动：进视图 / 切目录 | 目录级短路，稳态每目录一次 `os.scandir`、零 `stat` | 壳（`system_freshness_sync`） |
+| **同步**（sync） | 被动：进视图 / 切目录 / 插件重新可见 | 目录级短路，稳态每目录一次 `os.scandir`、零 `stat` | 壳（`system_freshness_sync`）；触发由壳或内容页发起，见下 |
 | **校验**（verify） | 手动：工具栏唯一按钮 | 全量遍历 + 逐项指纹校验 + 幽灵清理 + 派生缓存对账 | 壳（后台任务，有进度可取消） |
+
+**触发归属是硬契约，不是建议。** `Freshness.mount` 只渲染控件并读一次状态，它**不会扫盘**；
+被动同步只有 `autoSync` / `Freshness.sync` 会发起。谁持有挂载句柄，谁就必须触发：
+
+| 形态 | 控件挂在哪 | 谁触发被动同步 | 内容页做什么 |
+| --- | --- | --- | --- |
+| 内容页自绘 | 插件自己的容器 | 内容页在进视图 / 切目录时调句柄的 `.autoSync(scope)`；重新可见时也可用 `Freshness.sync(plugin, scope)` | 持有 `mount` 返回值；`onChange` 里重载 |
+| 壳渲染骨架（`frontend.chrome`） | 壳的 `PluginChrome` | 壳在挂载后、`watch([activeView, freshnessScope])` 里各调一次句柄的 `.autoSync(scope)` | `omnibox:chrome` 上报 `freshness_scope`；`plugin-shown` 时调 `Freshness.sync(plugin, scope)` |
+
+壳挂载型插件别忘了第二行：内容页拿不到控件句柄，重新可见时只能自己调
+`Freshness.sync(plugin, scope)`（返回报告）。`PluginChrome` 在 native 面板打开期间跳过
+同步（内容 iframe 被 `v-show` 隐藏），关闭面板重新挂载后再同步一次。`tools/check_plugins.py`
+按插件分流拦两类静默失败：自绘型要求插件自己的 html/js 里出现 `.autoSync(...)` 或
+`Freshness.sync(...)`；壳挂载型要求 `PluginChrome.vue` 同时出现 `.autoSync(...)` 调用与
+`watch([activeView, freshnessScope], ...)`。匹配前会先去掉 JS 注释、HTML 注释与字符串
+内容，因此注释掉的调用、只定义未调用、模板字符串里的同名字样都不算接线 —— 这类代码的
+控件、按钮、状态、后端端点全部正常，唯一的现象是外部变化永远不出现在界面上。
+
+**同步/校验有了结论之后，壳发两条消息**（同一次同步，按发送顺序到达）：
+
+| 消息 | 载荷 | 谁该处理 |
+| --- | --- | --- |
+| `omnibox:freshness` | `{plugin, scope, report}`：`report` 就是后端报告（`action` / `added` / `changed` / `removed` / `invalidated` / 校验任务的 `task`） | 新代码一律处理这条：按 `report` 与 `scope` 决定重载哪一层 |
+| `omnibox:action`（`refresh`） | 同上那份 `payload`，但只认 `action` 的旧页面拿它重载 | 只认旧协议的页面；处理了 `omnibox:freshness` 的页面不要重复重载 |
+
+两条都发是因为内容页可能只实现了旧协议。`/shell/chrome-client.js` 的 `onAction(action, payload)`
+第二参就是消息里的 `payload`（统一刷新把 `{plugin, scope, report}` 附在那条 `refresh` 上），
+`omnibox:freshness` 则走 `onMessage`。两种写法各自处理一条即可。
+
+同一页面两条都处理时**按 `payload` 判回声**，不靠时间窗：收到 `refresh` 且 `payload` 存在，
+说明它是刚才那条富事件补发的旧动作，跳过；`refresh` 没有 `payload` 时（旧壳、或用户点顶栏
+「刷新」）照常重载。`ChromeClient.create(handlers, { dedupeFreshness: true })` 是握手层提供的
+可选去重，按到达时间窗判定（默认关闭，缺省 1 秒、`echoWindowMs` 可调），只给"不想自己判
+`payload`"的页面用；内容页自己按 `payload` 判断时不要开它。事件里的 `scope` 取报告自己的
+`scope`（`plugin-chrome-protocol.js` 的 `freshnessEventScope`）：同步是异步的，交付时的当前
+作用域可能已经换了目录，用它会重载错层。
+
+控件在**没有任务时每 30 秒重读一次状态投影**（只读，不扫盘；`mount` 的 `idlePollMs`
+可调，0 关闭），所以「有变化 · 需要校验」会自己出现，不用等下一次进视图。窗口不可见、
+或控件所在页被 `v-show` 隐藏（keepAlive 的插件页仍在 DOM 里，`offsetParent` 为 `null`）时
+不读；隐藏期间只续定时器，切回来时低频轮询自己恢复。被动同步被后端跳过（`skip`：去抖中 /
+后台校验进行中 / 作用域无效 / 远端仍在新鲜期）时，状态行在**已有文案之后**补一句可重试的
+原因并保留几秒 —— 跳过不是失败，但不能顶掉「有变化 · 需要校验」「部分目录不可达（N）·
+挂载后自动同步」这类事实。同步进行中再点「校验」也不弹进度卡：引擎返回
+`started: false, running: false, reason: 'busy'`，控件提示「同步进行中，完成后再试」并把低频
+状态重读接回去 —— 把 `running` 报成真会让界面等同步结束后按"校验完成"收尾，显示一次根本
+没发生的校验。
 
 改动前的实际状况是同一件事被各写了一遍、判据互不相同：目录 mtime、30 秒 TTL、
 "永不失效"、"只增不减"（删除的文件永久留在索引里）、"每次全盘对比"。名字也散成
@@ -620,14 +667,18 @@ class FreshnessProvider:
     def spec(self) -> Dict[str, Any]:
         return {
             'roots': self._paths.roots,       # ① 管哪些文件（可调用 = 跟着设置走）
-            'prefixes': lambda: (...),        #    多根时的虚拟前缀（默认第一根 ''、其余 __<目录名>）
+            'prefixes': lambda: (...),        #    多根时的虚拟前缀（默认第一根 ''、其余 __<目录名>；同名去重）
             'include': ('.jpg', '.png'),      #    关心的后缀（空 = 全部常规文件）
-            'content_version': 4,             # ② 解析规则版本：变了就整体作废派生数据
+            'content_version': 4,             # ② 解析规则版本：变了按目录重算派生数据
             'derive': self.derive,            # ③ 条目新增/变化时做什么（只对变化项调用）
             'prune': self.prune,              #    条目消失时清派生缓存
+            'on_dirs_changed': self.dirs_changed,  # 新增 / 消失目录时作废目录级聚合（可选）
             'on_verified': self.audit,        #    全量校验后按"有效键集合"对账孤儿
-            'rebuild': self.rebuild,          #    逃生门：丢弃派生缓存（设置页入口，管理员）
+            'rebuild': self.rebuild,          # 逃生门：丢弃派生缓存（设置页入口，管理员）
+            'key_of': self.key,               # 可选：绝对路径 → 条目键（如路径的 md5 前 16 位）
+            'track_entries': False,           #    只要目录级事实时关掉逐条目指纹（可选）
             'stat_entries': True,             #    目录不大且"替换要立刻反映"时开（见下）
+            'min_sync_interval': 5.0,         #    去抖秒数；显式 0 = 不做去抖
             'unit': '张',
         }
 ```
@@ -650,60 +701,174 @@ class MyPlugin(PluginBase):
 ```
 
 条目键 = `前缀/根内相对路径`，与插件对外用的路径同形 —— 派生缓存的键（缩略图键、
-索引键）可以直接复用，不需要额外映射表。三个钩子都**只做缓存失效/清理，不做重活**，
-方法体与迁移前一样，只是接收者从 `self` 换成注入进来的组件：
+索引键）可以直接复用，不需要额外映射表。`derive` / `prune` / `on_dirs_changed` /
+`on_verified` 都**只做缓存失效/清理，不做重活**；它们是 `FreshnessProvider` 的方法，依赖由
+入口按构造参数注入：
+
+**默认前缀的唯一规则**：不声明 `prefixes` 时，第一个根用空串，其余用 `__<目录名>`；目录名
+取不到（盘符根 `D:\` 的 `Path.name` 是空串）时用 `__root<根序号>`。同名根按序号去重：
+`__Music` 已被占用时后续根变成 `__Music-<根序号>`，再撞继续追加后缀。声明的前缀重复也按同
+规则去重并记一条 warning（重复的空串只有第一个保留，其余取 `__root<根序号>`）。前缀必须
+唯一：目录键与条目键都靠它区分根，重复会让两个根的行互相覆盖。
+
+**键格式迁移**：指纹库的条目键算法有版本标记（`meta.key_layout`，当前值 `'2'`）。标记与
+引擎当前格式不一致时，声明了 `key_of` 的插件在升级后第一趟同步/校验前**整库清空**指纹
+（`entries` 与 `dirs`，保留 meta 里的 `content_version` 等业务章），然后按新格式全量重建；
+**不调用** `prune` —— 旧格式的裸键不是"文件消失"，把它们交给插件会误删派生缓存甚至用户
+数据。未声明 `key_of` 的插件存储键一直是虚拟路径、格式没变，只补标记。
+
+**目录归属记在 `dirs.prefix` 列**：条目键还原成插件键时按该列剥根前缀，不拿键反推——第一
+根下恰好有名为 `__<他根名>` 的目录时，反推会剥错前缀。
+
+**`track_entries: False`** 给"只关心目录级事实"的插件用（例如共享根用量）：引擎只维护目录
+指纹（mtime / 纳入索引的名字个数 / 平台顺带给出的文件大小之和），不写 `entries` 行、不调
+`derive` / `prune` / `on_verified`，`valid_keys()` 返回空集，`state().entries` 为 0。这类
+插件要感知目录集合变化，只能靠 `on_dirs_changed`。
 
 ```python
-def derive(self, items):          # items: [{key, path, mtime, size, dir}, ...]
+def derive(self, items):          # items: [{key, path, mtime, size, dir, restamp?}, ...]
     self._listing.clear_cache()   # 派生数据按需重算才是最快路径
 def prune(self, keys):
     for rel in keys:
         self._thumbs.delete(rel)
+def dirs_changed(self, report):   # report.new_dirs / report.vanished_dirs（目录键，各自最多 50 条）
+    self._dirs.reset()            # 按目录聚合的缓存：空目录新增也算集合变化
 def audit(self, keys):            # keys: 当前全部有效条目键（整趟无错时才调用）
     return {'rows': self._thumbs.prune(keys)}
 ```
 
-前端挂载共享组件（**不要**自己写按钮与轮询）：
+`derive` 的条目形状是 `{key, path, mtime, size, dir}`；`content_version` 落后、整个目录按新
+解析规则重算时，**只因落后才追加**的条目额外带 `restamp: True`，真实新增/变化的条目不带
+（同时是真实变化的条目不算 restamp-only）。插件据此只丢"要按新规则重算"的派生数据，而不
+把整份索引判成失效 —— 预算分批升级时（例如每趟 400 个目录、共 9000 个目录）不会每趟都白
+删一次相册索引。不识别这个字段的插件按"有变化"处理也不会漏，只是多失效几次。
 
-```html
-<div id="mp-freshness"></div>
-```
+`derive` / `prune` / `on_dirs_changed` / `on_verified` 拿到的键都是**插件自己的条目键**
+（声明 `key_of` 时也一样）：指纹库里存的是"根前缀 + 插件键"，基建在调钩子前剥掉前缀。
+`on_dirs_changed` 是唯一能看见"新建了空目录 / 整个目录被移走"的信号 —— 这两种变化在
+条目层面没有任何增删改。报告里 `new_dirs` / `vanished_dirs` 是目录键列表，各自截断到 50
+条，其余数量在 `new_dirs_truncated` / `vanished_dirs_truncated`；部分遍历只报新增（没走到
+不等于消失）。
+
+前端挂载共享组件（**不要**自己写按钮与轮询）。两种形态按上面的「触发归属」选：
+
 ```javascript
+// A. 内容页自绘控件（没有 frontend.chrome）：句柄在自己手里，必须自己触发
 const ctl = Freshness.mount({
     plugin: 'my-plugin',              // 必须与 manifest.name 一致（门禁会拦）
     container: document.getElementById('mp-freshness'),
     unit: '首',
-    onChange: () => this.reload(),    // 同步发现变化 / 校验完成后重载自己的视图
+    scope: '',                        // 当前同步作用域（目录相对路径；'' = 全部根）
+    onChange: (report) => this.reload(report),  // 同步有变化 / 校验完成后重载
 });
-ctl.autoSync('');                     // 进视图 / 切目录时调用（组件去抖，壳侧再节流）
+ctl.autoSync('');                     // 进视图；切目录时传新 scope
 ```
 
-两条硬约束：
+```javascript
+// B. 壳渲染骨架（frontend.chrome.freshness）：控件由 PluginChrome 挂、它负责 autoSync；
+//    内容页拿不到句柄，只需上报作用域并在重新可见时同步一次
+this._postHost({ type: 'omnibox:chrome', /* … */ freshness_scope: this._freshnessScope() });
+lifecycle.onShow(() => this._syncFreshness(true));
+
+async _syncFreshness(reload) {
+    const report = await Freshness.sync('my-plugin', this._freshnessScope());
+    if (reload && report && report.action !== 'skip'
+        && (report.added || report.changed || report.removed || report.invalidated)) {
+        await this.reload();
+    }
+}
+```
+
+`Freshness.sync(plugin, scope)` 是模块级函数（不经挂载句柄），走同一条
+`Bridge.callSystem('system_freshness_sync', …)` 并返回报告。`scope` 在内容页上报
+`freshness_scope` 的那条通道上由 `plugin-chrome-protocol.js` 的 `normalizeFreshnessScope`
+规范化（去首尾 `/`、折叠重复 `/`、丢掉 `.` 段，空串表示全部根）；非字符串、超长、含 `..`
+段、反斜杠 / 盘符 / UNC 一律判非法，落成空串（不保留旧值 —— 旧值只会在错误的目录上同步）。
+`Freshness.sync` 本身原样透传 `scope`，后端 `FsSource.scope_start` / `resolve_scope`
+会再判一次并把逃出根之外的值拒绝。
+
+三条硬约束：
 
 1. 派生资源（缩略图等）的 URL **必须带版本号**，否则壳的 `/thumbs` 一天不回源：
-   `Freshness.assetUrl(path, Math.round(item.mtime))`。版本号取源文件 mtime 即可
-   （文件被替换 → mtime 变 → URL 变）；指纹没变的强制重建请传单调递增值。
-2. 三种静默失败由 `tools/check_plugins.py` 静态拦下：只声明 `freshness_spec()` 而没挂
-   组件（界面上没有入口）、挂了组件却没声明 spec（点了没反应）、`plugin` 名字与
-   manifest 不一致（壳按名字找不到实例，同样"点了没反应"）。
+   `Freshness.assetUrl(path, version)`。封面优先用后端给的 `cover_mtime`（目录封面文件
+   自身的 mtime；没有目录封面时它等于条目 mtime，封面来自内嵌图或视频抽帧），没有这个
+   字段时退回条目自己的 `mtime`。版本号用**毫秒**（`Math.round(秒 * 1000)`）：下载器或
+   `os.utime` 替换同名文件时两次 mtime 只差几百毫秒，秒级取整会算出同一个版本号。替换同名
+   封面不改目录 mtime，只有 `cover_mtime` 会前进。指纹没变的强制重建请传单调递增值。
+2. 挂了组件就**必须有触发**：内容页自绘时自己在进视图 / 切目录调 `.autoSync(scope)`（或重新
+   可见时调 `Freshness.sync(plugin, scope)`）；壳挂载型由 `PluginChrome` 在挂载后与
+   `watch([activeView, freshnessScope])` 里调。四种静默失败由 `tools/check_plugins.py`
+   静态拦下（先去掉注释、HTML 注释与字符串内容再匹配）：只声明 `freshness_spec()` 而没挂
+   组件、挂了组件却没有任何被动同步调用、壳挂载了控件却没有 `.autoSync(...)` 或缺少
+   视图 / 作用域 watch、`plugin` 名字与 manifest 不一致。
+3. `onChange` 收到的是报告（`added` / `changed` / `removed` / `invalidated` /
+   `action` / 校验任务的 `task`）。**按报告决定重载什么**，不要无条件整页重载：
+   阅读器、专辑详情、相册层级这类界面状态会被打回一级页。报告零变化或
+   `action === 'skip'` 时不要重载；`new_dirs` / `vanished_dirs` 非空也算变化（新建空目录时
+   条目层没有任何增删）。
 
 内部设计要点（写插件时用得上的部分）：
 
 - **同步**：每个目录一次 `os.scandir`，目录 mtime 与"纳入索引的名字个数"都没变就整目录
   跳过（零 `stat`）；变了才逐条比对指纹，只把新增/变化的条目交给 `derive`。
 - **边界**：原地写入（同名、新内容）不改目录 mtime 也不改名字个数，被动同步**看不见**它。
-  派生缓存自己按 mtime/size 失效兜住多数场景，权威结论由校验给出。目录不大、
-  且"文件被替换必须立刻反映"的插件（如 image-viewer 的一个相册几十张）开
+  Windows 上目录枚举顺带给出每个文件的大小，短路判据因此还会比"目录内纳入索引的文件大小
+  之和"，同长度的替换之外的变化能在同步里被发现；POSIX 上这一步要逐个 stat，与"稳态零
+  stat"冲突，故跳过。派生缓存自己按 mtime/size 失效兜住多数场景，权威结论由校验给出。
+  目录不大、且"文件被替换必须立刻反映"的插件（如 image-viewer 的一个相册几十张）开
   `stat_entries: True` 换准确度；十几万条目的大媒体库保持默认 `False`。
+- **条目键与多根**：条目键 = `前缀/根内相对路径`，与插件对外用的路径同形 —— 派生缓存的
+  键（缩略图键、索引键）可以直接复用。声明了 `key_of`（如媒体库用路径的 md5 前 16 位）时，
+  指纹库里的主键再拼上该根的虚拟前缀：`key_of` 只保证根内唯一，两个根下同名的文件否则会
+  互相抢行、每趟都被判成一增一减。交给钩子的键在调用前还原成插件键，归属按遍历时记下的
+  `dirs.prefix` 列剥前缀（不拿目录键反推）。默认前缀与去重规则见上文「默认前缀的唯一规则」；
+  指纹库的条目键格式带 `meta.key_layout` 标记，升级时按上文「键格式迁移」整库重扫一次。
 - **校验**：全量遍历（**不做目录短路**，否则原地写入永远查不出来）+ 逐项 stat；
   消失的条目与目录 → `prune`；整趟走完且**没有读取错误**时 → `on_verified(有效键集合)`，
   用于清理"插件没运行时就被删掉的文件"留下的历史孤儿（缩略图库防膨胀）。
 - **`content_version` 收敛**：把散落的 `INDEX_VERSION` / `_ALBUM_CACHE_VERSION` /
   `parser_version` 传进来，改解析规则时改它，基建负责整体失效 —— 不再依赖"记得手动 +1"。
-- **并发与开销**：单飞（同一插件同时只有一个同步/校验）、去抖（`min_sync_interval`，
-  默认 5 秒；设置变更后调 `engine.reset_throttle()` 让下次同步立刻真扫）、预算
-  （单次被动同步最多 `max_dirs_per_sync` 个目录，超出返回 `partial`，前端会转成一次
-  后台校验续完，用户不必自己点）。
+  盖章按**目录**推进（指纹库 `dirs.version`）：落后于当前版本的目录本趟重算并盖章，
+  预算用尽时下一趟跳过已盖章的目录继续。`state()` 里 `version_stale` 同时看整趟的
+  meta 章与逐目录的 `stale_dirs`；报告里的 `force_all` 表示"本趟确实有目录因版本升级
+  被重算"，不再表示"meta 章落后"。重算交给 `derive` 的条目带 `restamp: True`（见上文），
+  插件可以据此只丢条目、不删整份落盘索引，因此预算分批也不会每趟重建一次相册索引。
+- **不可达的根不算读取错误**：外接盘没挂载、目录被删时，`Path.is_dir()` 为假的根只进报告
+  的 `unreachable_roots`（以及 `state()` 的同名字段），既不播种、也不清理它的目录行，更不
+  阻止 meta 章推进。`state()` 计算 `stale_dirs` 时排除属于不可达根前缀的目录，`version_stale`
+  也因此不被它们顶成真 —— 那些目录这一趟根本走不到，按"落后"报只会让界面永久提示需要校验；
+  根恢复后下一趟同步自然把它们纳入。前端在不可达根存在时显示「部分目录不可达（N）· 挂载后
+  自动同步」。**声明根的这一侧也要配合**：`freshness_spec().roots` 要给出"配置里的全部根"
+  （含暂时不存在的），不能先按 `Path.is_dir()` 过滤 —— 过滤掉之后引擎根本不知道这个根存在，
+  `unreachable_roots` 为空，该根的目录行会被当成"消失"清理并交给 `prune`；而 `/file` 允许根
+  这类**安全面**仍只应给出当前存在的根。
+- **`verified_keys()` 只用于破坏性判断**：它返回最近一次**整趟成功**校验确认存在的条目
+  键集合（已还原成插件键），没有这样的结论时返回 `None`（空集表示"确实一个都没有"）。
+  插件要清用户数据（例如媒体库的播放进度）时只能依据它，不能用"索引里没命中"——索引在
+  启动早期可能为空、外接盘可能没挂载、首扫可能只跑了一部分。同步发现增删改、校验被取消
+  或有读取错误时，基建会把结论退回 `None`。
+- **`on_dirs_changed(report)` 是目录集合的独立信号**：本趟出现新目录（含空目录）或目录消失
+  时调用，`report.new_dirs` / `report.vanished_dirs` 是目录键列表（各自最多 50 条，溢出计数
+  在 `new_dirs_truncated` / `vanished_dirs_truncated`）。被动同步保留目录快照这类缓存时，
+  正是靠它知道"集合变了、该重走一遍"；`derive` / `prune` 只看条目，收不到这类变化。
+  部分遍历只报新增（没走到不等于消失）。`track_entries: False` 的插件没有条目级信号，
+  目录集合变化是它唯一的被动入口。
+- **收尾文案由基建兜底**：`on_pass_end` 跑在目录循环之后，此时进度条已满；基建会在调用
+  钩子前写一句「收尾：更新插件派生数据」，插件自己的 `engine.progress()` 仍可覆盖。
+  没有这句文案时，收尾要几秒的插件看起来像"进度 100% 却卡死"。
+- **并发与开销**：单飞（同一插件同时只有一个同步/校验；同步进行中 `start_verify` 返回
+  `{started: false, running: false, reason: 'busy', sync_active: true}` —— `running` 必须是假，
+  否则控件会以为校验已启动并按"校验完成"收尾；校验进行中 `sync` 返回 `skip`）、去抖
+  （`min_sync_interval`，默认 5 秒，显式写 0 表示不做去抖；设置变更后调
+  `engine.reset_throttle()` 让下次同步立刻真扫）、预算（单次被动同步最多
+  `max_dirs_per_sync` 个目录，超出返回 `partial`，前端会转成一次后台校验续完，用户不必自己点）。
+- **`rebuild` 是逃生门，也占单飞**：丢弃派生缓存 + 清空指纹库期间到达的同步/校验一律被拒；
+  它**不预写** meta 的 `content_version` 章，等重建后的校验整趟走完再盖 —— 预写会让"已清空
+  但还没重扫"的库显示成"不待校验"。壳设置页的「重建…」二次确认后调
+  `system_freshness_rebuild(plugin, 'derived')`，控制器只认这一个入口。
+- **报告的 `scope` / `scoped` 在钩子之前写入**：`scope` 是本趟 `sync` 收到的原始作用域
+  （空串 = 全部根），`scoped` 表示这一趟只走了子目录。`on_pass_end` 这类钩子靠它们判断
+  "这一趟是否覆盖了全部根"，否则子目录作用域的同步会被当成整趟、把局部索引宣布成权威。
 - **`partial` 的两种原因**：被动同步有预算（`max_dirs_per_sync`）。预算按
   **真正干了活的目录**算，走过的短路目录不算 —— 按走过的算会让"目录数 > 预算"的库
   每次进视图都报 `partial`，界面每次都提示"同步未覆盖全部目录"，而稳态下一个目录都
@@ -718,7 +883,8 @@ ctl.autoSync('');                     // 进视图 / 切目录时调用（组件
   卡几秒再出内容"（image-viewer 实测：6000 张 / 1400 目录上，校验结束后第一帧
   重建相册索引 2.7s）。因此**手动校验的收尾重活必须在 `on_pass_end(report,
   verified=True)` 里做完**：宁可让"校验中"多显示这几秒，也不要让"完成"之后再卡。
-  钩子里拿不到任务对象，需要提示当前阶段时调 `engine.progress('重建相册索引')`。
+  钩子里拿不到任务对象，需要提示当前阶段时调 `engine.progress('重建相册索引')`
+  （基建已先写一句通用收尾文案，插件可以覆盖）。
   被动**同步**没有任务可挂（它是一次同步请求），那边的要求相反：同步路径必须便宜，
   重活留给校验或按需重算。
 - **`stat_entries` 只在小目录树打开**：它把"目录级短路"降级成"每个文件 stat 一次"，
@@ -730,9 +896,13 @@ ctl.autoSync('');                     // 进视图 / 切目录时调用（组件
   歌单就是这一类），**没有指纹可用，判据只能是时间**。此时声明 `ttl_seconds` 与
   `invalidate`（丢弃插件自己的本地缓存，例如短期播放地址），不需要 `roots`：
   「同步」= 新鲜期内跳过、过期才 `invalidate`；「校验」= 忽略 TTL 立刻 `invalidate`；
-  状态行按"新鲜期剩余"显示而不是"已索引 N 项"。注意语义边界：`sync` 是"到时重取"，
-  不是"发现变化" —— 远端有没有变，只有真去请求才知道，而取数仍由插件在用户进入
-  相应视图时按需发起，`invalidate` 只负责让那次取数不再命中旧缓存。
+  状态行按"新鲜期剩余"显示而不是"已索引 N 项"。状态投影给 `ttl_seconds` /
+  `ttl_remaining` / `fresh_until`（上次取数时刻 + TTL；还没有取数记录时为 0），版本章
+  对远端没有意义，`version_stale` 恒为假。`invalidate` 收到失效原因：`ttl`（时间到期）、
+  `verify`（手动校验）、`identity`（登录态变化），据此决定要不要把整份缓存一起丢掉。
+  远端同步同样受去抖与单飞约束。注意语义边界：`sync` 是"到时重取"，不是"发现变化" ——
+  远端有没有变，只有真去请求才知道，而取数仍由插件在用户进入相应视图时按需发起，
+  `invalidate` 只负责让那次取数不再命中旧缓存；丢弃缓存后报告带 `changed`，前端据此重载。
 
 壳级端点（插件**不注册**自己的刷新 API）：
 
@@ -746,9 +916,21 @@ ctl.autoSync('');                     // 进视图 / 切目录时调用（组件
 | `system_freshness_overview()` | 全部参与插件的状态快照 | 管理员 |
 
 `scope` 来自前端，按不可信输入处理：`..`、绝对路径、未知命名空间一律拒绝，解析结果
-还要再确认落在该根之内。方法表只有一处定义（`plugin_manager.freshness_api_methods()`），
-HTTP 与桌面 `js_api` 两条通道共用。已接入的实现参考：image-viewer
-（`plugins/image-viewer/backend/freshness.py`）。
+还要再确认落在该根之内。壳侧先按同一套口径规范化（`plugin-chrome-protocol.js` 的
+`normalizeFreshnessScope`）：去首尾 `/`、折叠重复 `/`、丢掉 `.` 段，空串表示全部根；非
+字符串、超长、含 `..` 段、反斜杠 / 盘符 / UNC 一律判非法，落成空串（不保留旧值 —— 旧值
+只会在错误的目录上同步，比全根同步更糟）。方法表只有一处定义
+（`plugin_manager.freshness_api_methods()`），HTTP 与桌面 `js_api` 两条通道共用。已接入的
+实现参考：image-viewer（`plugins/image-viewer/backend/freshness.py`）。
+
+壳的设置页有一块「数据与缓存」，数据来自 `system_freshness_overview()`：按插件列出条目数、
+目录数、当前状态（校验中 / 缓存剩余 / 待校验 + 待重算目录数 / 部分目录不可达 / 上次校验
+时刻）与「重建…」按钮（二次确认后调 `system_freshness_rebuild(plugin, 'derived')`）。有任务
+在跑（重建 / 校验）时页面每 1.5 秒重读一次概览，离开设置页或卸载时停掉轮询；概览是管理员
+专属端点，403 / 权限错误显示「需要管理员权限才能查看统一刷新状态」，与"旧内核没有这个
+接口"分开表述；网络抖动、后端重启这类瞬时失败既不是权限也不是旧内核，显示可重试的提示并
+保留轮询。这是没有页面骨架的插件（清理器、下载器）唯一的手动刷新入口，也是"外部
+工具保留了修改时间、缓存被截断"这类无法靠比对发现的变化的逃生门。
 
 ### 3.5 完整 API 列表
 
@@ -958,8 +1140,9 @@ onDispose(() => {
 | 壳 → 内容 | `omnibox:action` | 顶栏动作，可带 `payload`；声明 `frontend.chrome` 且设置由壳接管的插件不会收到 `settings` |
 | 壳 → 内容 | `omnibox:action`（`settings-saved`） | 壳内设置弹窗保存成功 |
 | 壳 → 内容 | `omnibox:query` | 搜索输入 |
+| 壳 → 内容 | `omnibox:freshness` | 统一刷新的结果 `{plugin, scope, report}`；紧随其后还会补一条旧的 `omnibox:action: refresh`（`payload` 同报告）。两条都处理的页面按 `payload` 判回声：带 `payload` 的 `refresh` 只当一次同步，不重复重载 |
 | 内容 → 壳 | `omnibox:ready` | 握手，壳补发当前视图 |
-| 内容 → 壳 | `omnibox:chrome` | `title` / `subtitle` / `view` / `actions` / `nav` / `search` / `status` / `statusItems` 补丁 |
+| 内容 → 壳 | `omnibox:chrome` | `title` / `subtitle` / `view` / `freshness_scope` / `actions` / `nav` / `search` / `status` / `statusItems` 补丁 |
 | 内容 → 壳 | `omnibox:open-settings` | 内容页自己的设置入口请求壳开弹窗（可选 `title`） |
 
 `omnibox:chrome` 的 `search` 支持 `value`（回填）与 `clear`（递增序号清空）；`status.kind =
@@ -1041,7 +1224,8 @@ Shell 还注入了以下可复用的 UI 组件函数（无需引入，直接使�
 | `createPagination(container, options)`                            | 创建分页组件                              |
 | `createContextMenu(options)`                                      | 创建右键菜单组件                          |
 | `createSettingsForm(container, schema, values)`                   | 按 schema 渲染设置表单                    |
-| `Freshness.mount({plugin, container, unit, onChange})`             | 挂载统一的「同步 / 校验」控件（接入见「统一刷新（同步 / 校验）」）；`autoSync(scope)` / `verify()` / `cancel()` |
+| `Freshness.mount({plugin, container, unit, scope, onChange})`     | 挂载统一的「同步 / 校验」控件（接入见「统一刷新（同步 / 校验）」）；返回 `autoSync(scope)` / `sync(scope)` / `verify()` / `cancel()` / `setScope(v)` / `destroy()`；`onChange(report)` 在同步有变化或校验完成时回调 |
+| `Freshness.sync(plugin, scope)`                                   | 不经控件句柄立即同步一次并返回后端报告；`skip` 不是错误。壳挂载型插件在 `plugin-shown` 时用它 |
 | `Freshness.assetUrl(path, version)`                               | 派生资源 URL + 版本号（绕开 `/thumbs` 的一天强缓存） |
 | `openSettingsModal(options)`                                      | 在**内容页**打开设置弹窗。image-viewer 用它渲染按目录作用域的设置；其余声明 `frontend.chrome` 的插件由壳的 `PluginSettingsModal` 渲染，不需要调用它 |
 | `HostChannel.requestSettings(title)` / `HostChannel.request(action, data)` | 内嵌页请**上层**用它的文档渲染 UI（设置/确认），详见 `docs/plugin-ui-guide.md`；仅旧壳的 embed 回落页使用 |
@@ -1090,9 +1274,11 @@ const ctl = Freshness.mount({
   plugin: 'my-plugin',                    // 必须与 manifest.name 一致
   container: document.getElementById('my-freshness'),
   unit: '首',
-  onChange: () => reloadMyView(),
+  onChange: (report) => reloadMyView(report),  // 同步有变化 / 校验完成
 });
-ctl.autoSync('');                         // 进视图 / 切目录时调用
+ctl.autoSync('');                         // 进视图；切目录时传新 scope
+// 壳挂载型（frontend.chrome）没有句柄，重新可见时直接调：
+// const report = await Freshness.sync('my-plugin', currentDir);
 ```
 
 ### 4.10 插件专属文件

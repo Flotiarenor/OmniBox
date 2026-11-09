@@ -401,9 +401,14 @@ class PluginSpecCheckerTests(unittest.TestCase):
 class FreshnessContractTests(unittest.TestCase):
     """统一刷新基建的接线门禁（tools/check_plugins.py 的 _check_freshness_contract）。
 
-    拦的是三个"三处各自看都对、合起来不工作"的组合：后端漏声明、前端漏挂载、
-    mount 里的插件名与 manifest 不一致。三者都不报错，只表现为"没有刷新功能"
-    或"点了没反应"。
+    拦的是四个"三处各自看都对、合起来不工作"的组合：后端漏声明、前端漏挂载、
+    mount 里的插件名与 manifest 不一致、挂了控件却不发被动同步。四者都不报错，
+    只表现为"没有刷新功能"或"点了没反应"或"外部变化永远看不见"。
+
+    `Freshness.mount` 只渲染控件并读一次状态、**不扫盘**：自绘型插件必须自己调
+    `.autoSync(scope)`（拿不到句柄时用模块级 `Freshness.sync(...)`），所以正例夹具
+    在 mount 之后都带一次触发；负例则各只留一个缺陷，断言指向的那条错误才不会被
+    另一条同类错误掩盖。
     """
 
     SPEC_BACKEND = (
@@ -411,7 +416,11 @@ class FreshnessContractTests(unittest.TestCase):
         '    def freshness_spec(self):\n'
         "        return {'roots': lambda: ['.']}\n"
     )
-    MOUNT_OK = "Freshness.mount({ plugin: 'fr-good', container: el });\n"
+    # 自绘型的完整接线：挂控件 + 被动同步触发（mount 自己不扫盘）
+    MOUNT_OK = (
+        "const ctl = Freshness.mount({ plugin: 'fr-good', container: el });\n"
+        "ctl.autoSync('');\n"
+    )
 
     def _fixture(self, root: Path, name: str, *, backend: str, frontend: str) -> None:
         plugin_dir = _make_plugin(root, name, _manifest(name, f'/{name}'), backend_code=backend)
@@ -424,27 +433,39 @@ class FreshnessContractTests(unittest.TestCase):
             errors, _ = check_plugins(root, load_backends=False)
             self.assertTrue(any('前端没有 Freshness.mount' in e for e in errors), errors)
 
+    def test_mount_without_trigger_is_an_error(self):
+        """挂了控件却没有被动同步：控件、按钮、端点全在，界面永远不更新。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._fixture(root, 'fr-good', backend=self.SPEC_BACKEND,
+                          frontend="const ctl = Freshness.mount({ plugin: 'fr-good' });\n")
+            errors, _ = check_plugins(root, load_backends=False)
+            self.assertTrue(any('没有发起被动同步' in e for e in errors), errors)
+
     def test_mount_without_spec_is_an_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            # 带一次触发，让唯一缺陷是"后端没声明 spec"
             self._fixture(root, 'fr-mount-only', backend='class Plugin:\n    pass\n',
-                          frontend="Freshness.mount({ plugin: 'fr-mount-only' });\n")
+                          frontend=("const ctl = Freshness.mount({ plugin: 'fr-mount-only' });\n"
+                                    "ctl.autoSync('');\n"))
             errors, _ = check_plugins(root, load_backends=False)
             self.assertTrue(any('没有 freshness_spec' in e for e in errors), errors)
 
     def test_mismatched_plugin_name_is_an_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            # 同样带一次触发，让唯一缺陷是"plugin 名不一致"
             self._fixture(root, 'fr-typo', backend=self.SPEC_BACKEND,
-                          frontend="Freshness.mount({ plugin: 'image-viewer', container: el });\n")
+                          frontend=("const ctl = Freshness.mount({ plugin: 'image-viewer', container: el });\n"
+                                    "ctl.autoSync('');\n"))
             errors, _ = check_plugins(root, load_backends=False)
             self.assertTrue(any('与插件名' in e for e in errors), errors)
 
     def test_matched_spec_and_mount_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self._fixture(root, 'fr-good', backend=self.SPEC_BACKEND,
-                          frontend="const ctl = Freshness.mount({ plugin: 'fr-good' });\n")
+            self._fixture(root, 'fr-good', backend=self.SPEC_BACKEND, frontend=self.MOUNT_OK)
             errors, _ = check_plugins(root, load_backends=False)
             self.assertFalse([e for e in errors if 'Freshness' in e or 'freshness_spec' in e], errors)
 

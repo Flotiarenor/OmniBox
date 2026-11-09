@@ -18,22 +18,36 @@
 """
 
 import logging
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 log = logging.getLogger(__name__)
+
+
+def _dir_signal(report: Any, key: str) -> int:
+    """从引擎报告里取目录集合变化的规模：计数、目录列表或缺失都归一成整数。"""
+    if not isinstance(report, dict):
+        return 0
+    value = report.get(key)
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return len(value)
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 class FreshnessProvider:
     """向壳声明新鲜度规格，并实现它的三个钩子。"""
 
     def __init__(self, paths: Any, thumbs: Any, albums: Any, entries: Any,
-                 listing: Any, extensions: Any, limits: Any,
+                 listing: Any, books: Any, extensions: Any, limits: Any,
                  engine_provider: Callable[[], Optional[Any]]) -> None:
         self._paths = paths
         self._thumbs = thumbs
         self._albums = albums
         self._entries = entries
         self._listing = listing
+        self._books = books
         self._extensions = extensions
         self._limits = limits
         self._engine = engine_provider
@@ -43,15 +57,22 @@ class FreshnessProvider:
     def spec(self) -> Dict[str, Any]:
         """声明本插件的新鲜度规格（字段语义见 shell/backend/freshness.py）。"""
         return {
-            # 可调用：额外图片目录能在运行时增删，引擎是长期缓存的对象
-            'roots': self._paths.roots,
+            # 可调用：额外图片目录能在运行时增删，引擎是长期缓存的对象。
+            # 用「配置里的全部根」（含暂时不可达者）：拔盘后引擎只把它记进
+            # `unreachable_roots`，不会把它的目录行、缩略图与相册配置当成「目录被删」；
+            # `/file` 的允许根与 `is_safe` 仍走 `paths.roots()`（只含存在的根）。
+            'roots': self._paths.freshness_roots,
             # 前缀也必须跟着现算：命名空间 token 会因重名加序号，写死会与实际虚拟路径
-            # 不一致（缩略图库的键就全对不上了）
+            # 不一致（缩略图库的键就全对不上了）。token 按配置里的全部根分配，因此
+            # 拔盘/挂载不会改变同一目录的虚拟前缀。
             'prefixes': lambda: tuple(self._paths.virtual_path(root, '')
-                                      for root in self._paths.roots()),
+                                      for root in self._paths.freshness_roots()),
             'include': tuple(sorted(self._extensions)),
             'derive': self.derive,
             'prune': self.prune,
+            # 目录集合变化（新增 / 消失目录）单独一条信号：条目级失效保住了目录快照，
+            # 而快照正是"有哪些目录"的来源，所以集合变化必须能单独把它作废。
+            'on_dirs_changed': self.dirs_changed,
             'on_verified': self.audit,
             'on_pass_end': self.pass_end,
             'rebuild': self.rebuild,
@@ -82,14 +103,31 @@ class FreshnessProvider:
 
         列表缓存（≤200 条）仍整表清空：它便宜，且键在两种列表里形状不同，清子目录会
         留下父目录的陈旧连续浏览序列。
+
+        **目录快照保留**：条目级失效已经按"变化目录 + 各级父目录"精确丢过，目录集合
+        本身没变，重走全树只会把便宜的一次同步变成一次 6-23 秒的枚举。目录集合真的
+        变了由 `dirs_changed` 单独作废快照。
+
+        **纯 restamp 批次只丢条目**：引擎在 `content_version` 落后、按目录重算时会给
+        条目带上 `restamp: True`；那些条目只是按新解析规则重算，文件集合没变。此时不
+        删落盘的相册索引、也不清 TTL 缓存 —— 否则一次 9000 目录的升级会被 400 目录/
+        趟的预算切成二十多趟，每趟都白删一次索引再重建一次。有真实增删改的批次行为
+        不变（整份失效、保留快照）。引擎未带该字段时按"有变化"处理，宁可多失效一次。
         """
-        self._entries.drop_nodes(items)
-        self._listing.clear_cache()
-        self._albums.invalidate()
-        return {'count': len(items)}
+        entries = [item for item in (items or []) if isinstance(item, dict)]
+        restamped = [item for item in entries if item.get('restamp')]
+        self._entries.drop_nodes(entries)
+        if len(restamped) < len(entries):
+            self._listing.clear_cache()
+            self._albums.invalidate(keep_snapshot=True)
+        return {'count': len(entries), 'restamped': len(restamped)}
 
     def prune(self, keys) -> int:
-        """条目消失：删缩略图行、丢尺寸元数据、作废所属目录的相册节点。"""
+        """条目消失：删缩略图行、丢尺寸元数据、作废所属目录的相册节点。
+
+        与 `derive` 一样保留目录快照：消失的是文件，目录集合通常仍然存在，是否真有
+        目录消失由 `dirs_changed` 的独立信号决定。
+        """
         pruned = 0
         dirs = []
         for rel in keys:
@@ -103,11 +141,47 @@ class FreshnessProvider:
                 log.warning('[ImageViewer] 清理失效条目失败 %s: %s', rel, exc)
         if dirs:
             self._entries.drop_nodes(dirs)
-            self._albums.invalidate()
+            self._albums.invalidate(keep_snapshot=True)
         if pruned:
             self._thumbs.mark_dirty()
             self._thumbs.flush()
         return pruned
+
+    def dirs_changed(self, report: Any = None) -> Dict[str, Any]:
+        """目录集合发生变化（新增 / 消失目录）：作废目录快照，下一次重建重新枚举。
+
+        引擎在整趟遍历后把目录集合的变化放进报告（`new_dirs` / `vanished_dirs`，
+        计数或目录列表）。没有这条信号时，新目录只能等快照 TTL 到期才可见 —— 因为
+        条目级失效按"文件"定位，新增目录里还没有任何条目。
+        """
+        new = _dir_signal(report, 'new_dirs')
+        vanished = _dir_signal(report, 'vanished_dirs')
+        if not new and not vanished:
+            return {'new_dirs': 0, 'vanished_dirs': 0}
+        self._albums.invalidate()
+        self._listing.clear_cache()
+        return {'new_dirs': new, 'vanished_dirs': vanished}
+
+    def invalidate_derived(self, reason: str = '', keep_snapshot: bool = False,
+                           dirs: Optional[List[str]] = None) -> Dict[str, Any]:
+        """宿主侧派生数据失效入口：别的插件写完本插件的根之后调用。
+
+        相册索引的 TTL、列表缓存与漫画根解析各有判据，只清一处会留下陈旧窗口。
+        `keep_snapshot=True` 给**只改文件**的写入方（删除 / 移动图片）：目录集合没变，
+        按 `dirs`（动过的目录）精确丢条目，下一次相册重建就不必重走全树（机械盘
+        6-23s）；不知道动过哪些目录时整份丢条目 —— 仍比走全盘枚举便宜。可能增删目录
+        的写入方（新建 / 删除目录、下载器落盘）保持默认 False，让目录快照与命名空间
+        映射一起重来。`reason` 原样回传，供写入方区分来源。
+        """
+        if keep_snapshot:
+            if dirs:
+                self._entries.drop_nodes([{'dir': rel} for rel in dirs])
+            else:
+                self._entries.clear()
+        self._albums.invalidate(keep_snapshot=keep_snapshot)
+        self._listing.clear_cache()
+        self._books.invalidate()
+        return {'reason': reason}
 
     def pass_end(self, report, verified: bool) -> Dict[str, Any]:
         """整趟结束：**在任务里**把相册索引重建好，"完成"就等于下一帧直接可读。
@@ -153,12 +227,8 @@ class FreshnessProvider:
             report = engine.sync('', force=True)
         self._listing.clear_cache()
         self._albums.reset_index()
+        # 落盘的索引由 invalidate 一并删掉，不必在这里再删一次
         self._albums.invalidate()
-        try:
-            if self._paths.album_cache_file.exists():
-                self._paths.album_cache_file.unlink()
-        except OSError:
-            pass
         return {'success': True, **report}
 
     def rebuild(self, kind: str = 'derived') -> Dict[str, Any]:
@@ -177,9 +247,4 @@ class FreshnessProvider:
         self._albums.reset_index()
         self._listing.clear_cache()
         self._albums.invalidate()
-        try:
-            if self._paths.album_cache_file.exists():
-                self._paths.album_cache_file.unlink()
-        except OSError as exc:
-            cleared['album_error'] = str(exc)
         return cleared

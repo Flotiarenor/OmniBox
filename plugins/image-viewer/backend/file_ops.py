@@ -25,15 +25,18 @@ class FileOps:
     """目录与文件的新增、删除、移动，以及定向缩略图重建。"""
 
     def __init__(self, paths: Any, thumbs: Any, config: Any, albums: Any,
-                 listing: Any, is_protected: Callable[[Path], bool],
-                 extensions: Any) -> None:
+                 is_protected: Callable[[Path], bool], extensions: Any,
+                 invalidate_derived: Callable[..., Dict[str, Any]]) -> None:
         self._paths = paths
         self._thumbs = thumbs
         self._config = config
         self._albums = albums
-        self._listing = listing
         self._is_protected = is_protected
         self._extensions = extensions
+        # 动过磁盘之后让派生数据（相册索引 / 列表缓存 / 漫画根解析）失效的宿主入口。
+        # 只清列表缓存不够：相册索引有自己的 TTL，会让"删了图片但相册树计数不变"
+        # 持续到过期为止。删除 / 移动只改文件，传 `keep_snapshot=True` 保住目录快照。
+        self._invalidate_derived = invalidate_derived
 
     # ===== 目录 =====
 
@@ -138,9 +141,14 @@ class FileOps:
                     deleted.append(rel)
             except Exception as exc:
                 errors.append(f'删除失败 {rel}: {exc!s}')
-        # 列表缓存整份清空：键在两种列表里形状不同，按目录挑着删会漏
-        self._listing.clear_cache()
         if deleted:
+            # 删成功就立刻失效派生数据：列表缓存按目录 mtime 自愈，但相册索引另有
+            # 30 秒 TTL，只清列表会让相册树的张数陈旧（下一次 list_albums 要等过期
+            # 或手动校验）。文件级操作**不改目录集合**，目录快照必须保留：整份失效
+            # 换来的是一次全树枚举（机械盘 6-23s），远大于它要修的陈旧窗口。动过的
+            # 目录单独传下去，条目精确作废、递归计数跟着重算。
+            dirs = sorted({str(rel).rpartition('/')[0] for rel in deleted})
+            self._invalidate_derived('image-viewer:delete', keep_snapshot=True, dirs=dirs)
             self._thumbs.flush()
         return {'deleted': deleted, 'errors': errors}
 
@@ -182,8 +190,12 @@ class FileOps:
                     moved.append(rel)
             except Exception as exc:
                 errors.append(f'移动失败 {rel}: {exc!s}')
-        self._listing.clear_cache()
         if moved:
+            # 源与目标是两个目录：整份失效同时覆盖两端（源少一张、目标多一张），
+            # 按目录挑着作废会漏掉父级的递归计数与封面。移动的是文件，目录集合没变
+            # —— 保留目录快照，否则下一次相册重建要重走全树（机械盘 6-23s）。
+            dirs = sorted({str(rel).rpartition('/')[0] for rel in moved} | {str(dest_rel)})
+            self._invalidate_derived('image-viewer:move', keep_snapshot=True, dirs=dirs)
             self._thumbs.flush()
         return {'moved': moved, 'errors': errors}
 
@@ -194,6 +206,10 @@ class FileOps:
 
         用于修复下载丢失/文件被替换后残留的坏缩略图（如黑图、空图）。同时清理该图片
         的尺寸元数据缓存，避免旧尺寸残留。
+
+        返回的 `version` 是这次强制重建的单调版本号（毫秒）：重建不改源文件 mtime，
+        前端只按 mtime 拼 URL 版本号时两次重建得到同一个 URL，`/thumbs` 的一天强缓存
+        会继续显示旧图。调用方（内容页）把它记到这些路径上，URL 才会真的换一版。
         """
         regenerated: List[str] = []
         errors: List[str] = []
@@ -212,6 +228,8 @@ class FileOps:
                     errors.append(f'缩略图生成失败: {rel}')
             except Exception as exc:
                 errors.append(f'缩略图更新失败 {rel}: {exc!s}')
+        version = 0
         if regenerated:
+            version = self._thumbs.bump_rebuild_version()
             self._thumbs.save_meta()
-        return {'regenerated': regenerated, 'errors': errors}
+        return {'regenerated': regenerated, 'errors': errors, 'version': version}

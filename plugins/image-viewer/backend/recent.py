@@ -83,8 +83,9 @@ class RecentImages:
 
         返回 `{items, all_images, page, per_page, total, reach, image_total, has_next,
         has_prev, scanned_dirs, partial}`。`items` 与 `list_folder_items` 的条目同形：
-        作品单元是 `type='album'` 的卡（`cover` 为封面、`image_count` / `total_count`
-        为页数），单图单元是 `type='image'`，二者都不含物理路径。
+        作品单元是 `type='album'` 的卡（`cover` 为封面、`cover_mtime` 为封面文件自身
+        的 mtime、`image_count` / `total_count` 为页数），单图单元是 `type='image'`，
+        二者都不含物理路径。
 
         `total` 是整库更新单元数，`reach` 是本次预算内真正排列出的单元数，`image_total`
         是整库图片数。`partial` 表示目录扫描预算用尽、还有更早的子树没展开：此时这一页的
@@ -282,6 +283,9 @@ class RecentImages:
             'path': unit['path'],
             'name': unit['name'],
             'cover': cover.get('url') or '',
+            # 封面文件自身的 mtime：前端把它当缩略图 URL 的版本号。单元的 `mtime` 是
+            # 组内最新页的时间，替换封面（p0 / 书封面）时它未必变，只有这个字段会变。
+            'cover_mtime': cover.get('mtime') or 0.0,
             'image_count': len(pages),
             'total_count': len(pages),
             # 作品单元是同一目录里的一组页，本身没有下级目录

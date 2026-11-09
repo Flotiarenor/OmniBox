@@ -1,6 +1,6 @@
 """对端的运行期事实：连不上的端点、各对端报的名单版本、最近一次采纳提示。
 
-状态自持：三张表都在这里。写入方是 Discovery（探测与推送轮次），读取方是 Peers
+状态自持：三张表都在这里。写入方是 Discovery（探测与推送周期），读取方是 Peers
 （`list_peers` 的 `errors` 与 `roster_versions`）与 StatusReport（首屏状态）——
 两边都只经由本类的方法读写，因此谁改了什么不需要在两个组件之间对齐。
 
@@ -38,6 +38,15 @@ class PeerFacts:
 
     def mark_unreachable(self, endpoint: Endpoint, reason: str) -> None:
         self.unreachable[endpoint] = reason
+
+    def unreachable_list(self) -> List[Dict[str, str]]:
+        """给界面看的"连不上的端点"列表（按端点排序，形状是 `endpoint` + `error`）。
+
+        不能直接把 `unreachable` 交给界面：它的键是 `(host, port)` 元组，JSON 化时
+        键必须是字符串，序列化会直接失败。
+        """
+        return [{'endpoint': f'{host}:{port}', 'error': reason}
+                for (host, port), reason in sorted(self.unreachable.items())]
 
     # ── 名单版本表 ────────────────────────────────────────────────────────
 

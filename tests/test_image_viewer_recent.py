@@ -8,6 +8,9 @@
 
 - 多页作品合成一个作品单元（`type='album'`，封面 p0、image_count 为页数），其余文件
   各成一个单图单元；
+- 相册单元带 `cover_mtime`（封面文件自身的 mtime，整本取书封面对应文件，取不到为 0.0），
+  与 `list_albums` / `list_folder_items` / `load_album_tiles` 同名字段：替换封面后
+  前端缩略图 URL 的版本号能前进；
 - 连号页码的目录（漫画 / 本子）整本一个单元；页码稀疏（画师目录里平铺的作品号）或
   命名混合（散图）时各张分列，不会被误并；
 - 单元按 mtime 倒序（作品取组内最新页），同 mtime 按代表 url（作品封面 / 单图自身）升序；
@@ -97,13 +100,14 @@ class RecentImagesTests(unittest.TestCase):
         self.assertEqual(len(data['items']), 1)
         card = data['items'][0]
         self.assertEqual(set(card),
-                         {'type', 'path', 'name', 'cover', 'image_count', 'total_count',
-                          'has_children', 'mtime', 'width', 'height', 'use_time_name',
-                          'pending'})
+                         {'type', 'path', 'name', 'cover', 'cover_mtime', 'image_count',
+                          'total_count', 'has_children', 'mtime', 'width', 'height',
+                          'use_time_name', 'pending'})
         self.assertEqual(card['type'], 'album')
         self.assertEqual(card['path'], 'pixiv/artistA/800')
         self.assertEqual(card['name'], '800')
         self.assertEqual(card['cover'], 'pixiv/artistA/800/800_p0.png')
+        self.assertEqual(card['cover_mtime'], base + 10)      # 封面 p0 自身的 mtime
         self.assertEqual((card['image_count'], card['total_count']), (3, 3))
         self.assertFalse(card['has_children'])
         self.assertFalse(card['pending'])
@@ -115,6 +119,39 @@ class RecentImagesTests(unittest.TestCase):
                           'pixiv/artistA/800/800_p2.png'])
         self.assertEqual((data['total'], data['image_total']), (1, 3))
         self.assertEqual(data['scanned_dirs'], 4)            # 根 → pixiv → artistA → 800
+
+    def test_cover_mtime_follows_replaced_cover_file(self):
+        """替换封面文件后 `cover_mtime` 前进：前端据此换缩略图 URL 的版本号。"""
+        base = 1_700_000_000.0
+        for page in range(2):
+            _make_image(self.root / 'works' / '800' / f'800_p{page}.png',
+                        mtime=base + 10 + page)
+
+        plugin = self._plugin()
+        before = plugin.recent.list_recent_images(1, 40)['items'][0]
+        self.assertEqual(before['cover'], 'works/800/800_p0.png')
+        self.assertEqual(before['cover_mtime'], base + 10)
+
+        replaced = base + 500
+        os.utime(self.root / 'works' / '800' / '800_p0.png', (replaced, replaced))
+
+        after = plugin.recent.list_recent_images(1, 40)['items'][0]
+        self.assertEqual(after['cover'], before['cover'])
+        self.assertEqual(after['cover_mtime'], replaced)
+        self.assertGreater(after['cover_mtime'], before['cover_mtime'])
+
+    def test_album_unit_without_cover_time_reports_zero(self):
+        """取不到封面文件的 mtime 时给 0.0：前端回退用单元的 mtime。"""
+        unit = {
+            'type': 'album', 'path': 'x', 'name': 'x', 'mtime': 5.0,
+            'use_time_name': False,
+            'pages': [{'url': 'x/cover.png', 'name': 'cover.png',
+                       'width': 1, 'height': 1}],
+        }
+
+        item = self.module._recent.RecentImages._public_unit(unit)
+
+        self.assertEqual(item['cover_mtime'], 0.0)
 
     def test_flat_singles_stay_separate_image_units(self):
         """画师目录里平铺的单图作品各占一个单图单元，条目只有 image 的字段。"""
@@ -197,6 +234,7 @@ class RecentImagesTests(unittest.TestCase):
         self.assertEqual(card['path'], '本子/1479415')
         self.assertEqual(card['name'], '1479415')
         self.assertEqual(card['cover'], '本子/1479415/00001.jpg')
+        self.assertEqual(card['cover_mtime'], base)        # 封面第一页自身的 mtime
         self.assertEqual((card['image_count'], card['total_count']), (5, 5))
         self.assertEqual(card['mtime'], base + 4)          # 组内最新页
         self.assertEqual([im['url'] for im in data['all_images']],
@@ -224,6 +262,7 @@ class RecentImagesTests(unittest.TestCase):
         self.assertEqual(len(data['items']), 1)
         card = data['items'][0]
         self.assertEqual(card['image_count'], 5)
+        self.assertEqual(card['cover_mtime'], base)   # 书封面 = 第一章第一页
         self.assertEqual([im['url'] for im in data['all_images']], [
             '本子/1479415/第1話 起/00001.jpg',
             '本子/1479415/第1話 起/00002.jpg',
@@ -251,6 +290,7 @@ class RecentImagesTests(unittest.TestCase):
         card = data['items'][0]
         self.assertEqual(card['name'], '标题不是目录名的书')
         self.assertEqual(card['cover'], '本子/1479415/cover.jpg')
+        self.assertEqual(card['cover_mtime'], base + 100)  # 书封面文件自身的 mtime
         self.assertEqual(card['mtime'], base + 100)
         # 封面恒在序列首位：前端按"前面各单元张数累加"定位灯箱起点，否则会打开到别的页
         self.assertEqual(data['all_images'][0]['url'], '本子/1479415/cover.jpg')

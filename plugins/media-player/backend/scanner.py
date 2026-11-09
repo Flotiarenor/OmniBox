@@ -16,19 +16,16 @@ from pathlib import Path
 from typing import Any, FrozenSet, Optional
 
 #: 索引结构与解析规则的版本。升级它 = 让统一刷新基建整体作废派生数据后重建。
-INDEX_VERSION = 4
+INDEX_VERSION = 5
 
 #: 视频扩展名（音频扩展名以 `metadata.SUPPORTED_EXTS` 为准，构造时取一次）。
 VIDEO_EXTS: FrozenSet[str] = frozenset(
     {'.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv', '.wmv'})
 
-#: 目录封面图文件名。与 `metadata.COVER_NAMES` 是两个口径：这里还认海报 / 缩略图类
-#: 命名（视频目录常见），并且要参与指纹（`freshness.include_names`）。
-COVER_NAMES: FrozenSet[str] = frozenset({
-    'cover.jpg', 'cover.png', 'folder.jpg', 'folder.png',
-    'poster.jpg', 'poster.png', 'fanart.jpg', 'fanart.png',
-    'thumb.jpg', 'thumb.png', 'backdrop.jpg', 'backdrop.png',
-})
+#: 目录封面图文件名与优先序的**唯一来源**在 `metadata.COVER_NAMES`：
+#: 它同时决定 `has_cover`/`cover_mtime`（这里）与实际缩略图字节（metadata 读取），
+#: 分两份维护时多封面目录会出现"版本号取自 A、字节取自 B"，且按无序集合迭代会让
+#: 封面选择跨进程改变。实例上的 `cover_names` 在构造时从注入的 metadata 取一次。
 
 
 def item_id(path: str) -> str:
@@ -65,7 +62,7 @@ class MediaScanner:
         self._ffmpeg = ffmpeg
         self.audio_exts: FrozenSet[str] = frozenset(metadata.SUPPORTED_EXTS)
         self.video_exts: FrozenSet[str] = VIDEO_EXTS
-        self.cover_names: FrozenSet[str] = COVER_NAMES
+        self.cover_names = tuple(metadata.COVER_NAMES)
         self.media_exts: FrozenSet[str] = self.audio_exts | self.video_exts
         self.index_version: int = INDEX_VERSION
 
@@ -76,15 +73,15 @@ class MediaScanner:
         return item_id(path)
 
     def find_cover(self, directory: Path) -> Optional[Path]:
-        """目录封面图（与 `cover_generator` 同一组文件名）。"""
+        """目录封面图：与缩略图字节走同一个判定函数（`metadata.find_folder_cover_path`）。
+
+        同一目录里存在多个候选封面文件时，`has_cover`/`cover_mtime` 与实际取到的字节
+        必须来自同一个文件；否则"替换封面"会让版本号和图片各指一个。
+        """
         try:
-            for name in self.cover_names:
-                candidate = directory / name
-                if candidate.is_file():
-                    return candidate
+            return self._metadata.find_folder_cover_path(directory, self.cover_names)
         except OSError:
-            pass
-        return None
+            return None
 
     def cover_generator(self, src_path: Path) -> Optional[tuple]:
         """ThumbCache 自定义生成器：音频内嵌封面 / 视频目录封面图 / ffmpeg 抽帧。
@@ -115,6 +112,21 @@ class MediaScanner:
     def has_embedded_cover(self, file_path: Path) -> bool:
         """该文件是否有内嵌封面（扫描期与封面失效重算共用，不落盘）。"""
         return bool(self._metadata.MetadataReader.has_embedded_cover(file_path))
+
+    @staticmethod
+    def cover_mtime(folder_cover: Optional[Path], fallback: float) -> float:
+        """封面字节的版本时刻：目录封面图自身的 mtime，没有目录封面时用 `fallback`。
+
+        目录封面被同名替换时，媒体文件与所在目录的 mtime 都可能不变，只有封面文件
+        自己的 mtime 会前进；版本号取自它才能在替换后拿到新图片。没有目录封面时，
+        封面来自内嵌图或视频抽帧，跟着源文件走，因此用条目 mtime。
+        """
+        if folder_cover is not None:
+            try:
+                return folder_cover.stat().st_mtime
+            except OSError:
+                pass
+        return float(fallback or 0.0)
 
     # ===== 构造条目 =====
 
@@ -158,6 +170,7 @@ class MediaScanner:
                 duration=float(meta.get('duration') or 0),
                 size=stat.st_size,
                 mtime=stat.st_mtime,
+                cover_mtime=self.cover_mtime(folder_cover, stat.st_mtime),
                 cover_path='',
                 has_cover=has_cover,
                 album_artist=album_artist,
@@ -176,6 +189,7 @@ class MediaScanner:
             duration=self._video_meta.probe_duration(str(full_path)) or 0.0,
             size=stat.st_size,
             mtime=stat.st_mtime,
+            cover_mtime=self.cover_mtime(folder_cover, stat.st_mtime),
             cover_path='',
             # 视频始终可生成封面帧（目录封面图优先，否则按需抽帧）
             has_cover=True,

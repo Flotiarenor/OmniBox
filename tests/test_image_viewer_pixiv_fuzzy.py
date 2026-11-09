@@ -248,12 +248,14 @@ class ImageViewerPixivFuzzyTestCase(unittest.TestCase):
 
         模糊匹配只影响配置点判定（`pixiv_explicit`）与同号条目的比较键，缓存的
         `direct_cover` / `pixiv` 计算方式与改动前一致，因此不因它升版本（升了等于让
-        所有用户白扫一遍全库）。当前版本是 7：v5 来自「更新单元数」的 schema 变更
+        所有用户白扫一遍全库）。当前版本是 8：v5 来自「更新单元数」的 schema 变更
         （`direct_units` / `total_units`），v6 改成与漫画阅读插件对齐（书的边界由漫画
-        根决定，见 `books.py`），v7 作废 v6 期间按文件名猜页码落下的条目；这些都与模糊
-        匹配无关，再改封面/标志语义时才该再一次升版本。
+        根决定，见 `books.py`），v7 作废 v6 期间按文件名猜页码落下的条目，v8 的条目
+        新增 `direct_cover_mtime` / `total_cover_mtime`（封面版本号，目录 mtime 不变
+        时也必须补上，只能整份作废）；这些都与模糊匹配无关，再改封面/标志语义时才该
+        再一次升版本。
         """
-        self.assertEqual(self.module._const.LIMITS.album_cache_version, 7)
+        self.assertEqual(self.module._const.LIMITS.album_cache_version, 8)
 
 
 if __name__ == '__main__':   # pragma: no cover

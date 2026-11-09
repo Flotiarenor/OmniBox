@@ -283,23 +283,36 @@
     }
   }
 
-  function refreshAfterScan(snap) {
+  /**
+   * settle（被动同步发现变化 / 校验收尾）后的刷新：保留勾选与分页。
+   *
+   * 这一条与「切模式 / 显式重读」（`loadResults()`，会清空勾选与分页）不是同一件事：
+   * 后台把数据变了，用户可能正在勾选，清空选择会让他白勾一遍。只把结果里已经不存在
+   * 的文件从选中集合里剔掉。同一时刻只跑一次，后到的调用等前一次完成。
+   */
+  function reloadAfterSettle() {
     if (refreshPromise) return refreshPromise;
-    const task = (snap && snap.task) || state.task || {};
     refreshPromise = (async function () {
-      await loadResults();
-      if (task.cancelled) {
-        state.notice = { tone: 'muted', text: '校验已取消，已完成的指纹保留' };
-      } else if (task.state === 'done' && task.success === false) {
-        state.notice = { tone: 'danger', text: '校验失败，请重试或到状态页查看' };
-      } else {
-        state.notice = { tone: 'default', text: '校验完成，已重新分组' };
-      }
+      await loadResults(true);
       render();
     })().finally(function () {
       refreshPromise = null;
     });
     return refreshPromise;
+  }
+
+  /** 校验收尾：先重读缓存，再按任务终态给出提示。 */
+  async function refreshAfterScan(snap) {
+    const task = (snap && snap.task) || state.task || {};
+    await reloadAfterSettle();
+    if (task.cancelled) {
+      state.notice = { tone: 'muted', text: '校验已取消，已完成的指纹保留' };
+    } else if (task.state === 'done' && task.success === false) {
+      state.notice = { tone: 'danger', text: '校验失败，请重试或到状态页查看' };
+    } else {
+      state.notice = { tone: 'default', text: '校验完成，已重新分组' };
+    }
+    render();
   }
 
   function startPolling() {
@@ -321,11 +334,25 @@
 
   function mountFreshness() {
     if (typeof Freshness === 'undefined' || !Freshness || typeof Freshness.mount !== 'function') return;
-    const host = document.createElement('div');
-    freshness = Freshness.mount({ plugin: 'image-cleaner', container: host, unit: '张' });
+    let host = document.getElementById('cleaner-freshness');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'cleaner-freshness';
+      host.hidden = true;
+      document.body.appendChild(host);
+    }
+    freshness = Freshness.mount({
+      plugin: 'image-cleaner',
+      container: host,
+      unit: '张',
+      // 被动同步发现变化时重读缓存：分组结果会因指纹变化被标成过期，状态行要跟着变。
+      // 走 settle 路径，勾选与分页保留（用户可能正在勾选）。
+      onChange: function () { void reloadAfterSettle(); },
+    });
   }
 
-  async function loadResults() {
+  async function loadResults(preserve) {
+    let failed = false;
     try {
       const result = await Bridge.call('get_cached_scan', state.mode);
       const groups = result && Array.isArray(result.groups) ? result.groups : [];
@@ -337,16 +364,35 @@
       state.stale = !!(result && result.stale);
       state.error = false;
     } catch (e) {
+      failed = true;
       state.groups = [];
       state.scanned = 0;
       state.cached = false;
       state.stale = false;
       state.error = true;
     }
-    state.selected.clear();
-    state.visibleCount = PAGE_SIZE;
-    state.fileLimits = {};
-    state.pendingDelete = false;
+    if (!preserve) {
+      state.selected.clear();
+      state.visibleCount = PAGE_SIZE;
+      state.fileLimits = {};
+      state.pendingDelete = false;
+      return;
+    }
+    // 保留勾选与分页：只把结果里已经没有的文件从选中集合里剔掉。
+    // 读取失败时同理（此时结果为空，选中集合自然清空）。
+    if (failed) {
+      state.selected.clear();
+      state.pendingDelete = false;
+      return;
+    }
+    const alive = new Set();
+    state.groups.forEach(function (group) {
+      group.files.forEach(function (rel) { alive.add(rel); });
+    });
+    Array.from(state.selected).forEach(function (rel) {
+      if (!alive.has(rel)) state.selected.delete(rel);
+    });
+    if (!state.selected.size) state.pendingDelete = false;
   }
 
   async function init() {
@@ -357,6 +403,11 @@
     syncTaskState();
     render();
     startPolling();
+    // 打开面板时做一次被动同步：外部新增/删除的图片只有走过一趟同步才会让结果
+    // 缓存被标成过期，否则「已扫描 N 张」会一直显示打开面板那一刻的结论。
+    if (freshness && typeof freshness.autoSync === 'function') {
+      freshness.autoSync('');
+    }
   }
 
   // ---------- 动作 ----------
@@ -547,7 +598,12 @@
   client = window.NativeExtension.create({
     onInit: init,
     onAction: handleAction,
-    onDispose: function () { if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; } },
+    onDispose: function () {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      // 控件在挂载时就开始轮询状态，文档销毁前把它停掉并摘掉节点。
+      if (freshness && typeof freshness.destroy === 'function') freshness.destroy();
+      freshness = null;
+    },
   });
 
 })();

@@ -21,6 +21,7 @@ import logging
 import os
 import shutil
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -96,6 +97,8 @@ class ThumbStore:
         self._cache = ThumbCache(paths.thumb_db_path)
         self._meta: Dict[str, Any] = read_json(paths.meta_file, default={}) or {}
         self._dirty = False
+        #: 强制重建的单调版本号（毫秒）：见 `bump_rebuild_version`
+        self._rebuild_version = 0
 
     # ===== 生命周期 =====
 
@@ -175,6 +178,21 @@ class ThumbStore:
                 log.error('[ImageViewer] 保存元数据失败: %s', self._paths.meta_file)
                 return
             self._dirty = False
+
+    def bump_rebuild_version(self) -> int:
+        """领一个强制重建的单调版本号（毫秒），同一次重建的条目共用一个。
+
+        为什么需要：强制重建只重写缩略图字节、不动源文件 mtime。前端把 mtime 当缩略图
+        URL 的版本号，于是"重建了缩略图，URL 不变"，壳的 `/thumbs` 一天强缓存让界面
+        继续显示旧图。这个版本号随重建结果交给前端，拼进 URL 才算真的换了一版。
+
+        单调性用「毫秒时间戳与上次+1 取大」保证：同一毫秒内连续两次重建也必须给出不同
+        的值，否则那条回归用例（同 mtime 重建两次 → 版本号不同）会偶发失败。
+        """
+        with self._lock:
+            self._rebuild_version = max(int(time.time() * 1000),
+                                        self._rebuild_version + 1)
+            return self._rebuild_version
 
     def clear_meta(self) -> None:
         """丢掉尺寸元数据（内存 + 落盘文件），缩略图库不动。"""

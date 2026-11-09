@@ -6,10 +6,14 @@
 
 `stale` 只在内存里标记、由 `persist_stale()` 统一落盘：结果缓存是单文件，不能每处理
 一个目录就整体重写一遍。
+
+结果缓存是"读整份 → 改一个键 → 写整份"，而后台扫描任务与引擎的收尾钩子会并发写它；
+两处共用一把锁，避免后写者用自己读到的旧快照把前一位的写入覆盖掉。
 """
 
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Set, Tuple
@@ -32,6 +36,8 @@ class ScanResults:
         self._modes = modes
         #: 结果缓存里哪些 mode 已经过期（内存标记，落盘由 persist_stale() 统一做）
         self._stale: Set[str] = set()
+        #: 串行化"读整份 → 改 → 写整份"的两条写路径（后台扫描任务与引擎收尾钩子）
+        self._write_lock = threading.Lock()
 
     # ===== 路径与读写 =====
 
@@ -57,15 +63,16 @@ class ScanResults:
             log.error(f'保存扫描结果缓存失败: {path}')
 
     def save_result(self, mode: str, groups: list, scanned: int) -> None:
-        cache = self.load()
-        cache[mode] = {
-            'groups': groups,
-            'scanned': scanned,
-            'saved_at': time.time(),
-            'stale': False,
-        }
-        self.save(cache)
-        self._stale.discard(mode)
+        with self._write_lock:
+            cache = self.load()
+            cache[mode] = {
+                'groups': groups,
+                'scanned': scanned,
+                'saved_at': time.time(),
+                'stale': False,
+            }
+            self.save(cache)
+            self._stale.discard(mode)
 
     # ===== 过期标记 =====
 
@@ -80,19 +87,20 @@ class ScanResults:
         self._stale.clear()
 
     def persist_stale(self) -> None:
-        if not self._stale:
-            return
-        cache = self.load()
-        changed = False
-        for mode in self._stale:
-            item = cache.get(mode)
-            if isinstance(item, dict) and not item.get('stale'):
-                item['stale'] = True
-                cache[mode] = item
-                changed = True
-        if changed:
-            self.save(cache)
-        self._stale.clear()
+        with self._write_lock:
+            if not self._stale:
+                return
+            cache = self.load()
+            changed = False
+            for mode in self._stale:
+                item = cache.get(mode)
+                if isinstance(item, dict) and not item.get('stale'):
+                    item['stale'] = True
+                    cache[mode] = item
+                    changed = True
+            if changed:
+                self.save(cache)
+            self._stale.clear()
 
     # ===== 读取（含失效文件过滤） =====
 

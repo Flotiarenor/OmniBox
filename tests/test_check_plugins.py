@@ -14,7 +14,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from tools.check_plugins import _check_chrome_schema, _check_schema, check_plugins
+from tools.check_plugins import (
+    _check_chrome_schema,
+    _check_freshness_contract,
+    _check_schema,
+    _check_shell_freshness_trigger,
+    _strip_js_noise,
+    check_plugins,
+)
 
 
 def _frontend(action: dict) -> dict:
@@ -192,6 +199,203 @@ class SchemaFieldTypeGuardTests(unittest.TestCase):
 
         errors = _check_schema(_Plugin)
         self.assertTrue(any('.type' in error for error in errors), errors)
+
+
+class ShellFreshnessTriggerTests(unittest.TestCase):
+    """壳挂载型统一刷新必须真的触发被动同步，且挂载后与视图 / 作用域变化各一次。
+
+    `Freshness.mount(...)` 只渲染控件并读一次 `system_freshness_state`，它自己不扫盘；
+    被动同步（`system_freshness_sync`）只有 `.autoSync(...)` / `Freshness.sync(...)`
+    会发起。漏掉时控件、按钮、状态文案、后端端点全都正常，唯一的现象是"外部新增的
+    文件永远看不到，必须 Ctrl+F5"——所以门禁必须静态拦住"只挂载不触发"。
+
+    比"文本里出现过 autoSync"更强的三条：
+      * 注释与字符串先被清洗掉（`// ctl.autoSync(...)`、`'autoSync('`、模板串都不算）；
+      * 只认带接收者的**调用**（`.autoSync(`），所以 `function autoSync(...)` 与
+        `autoSync(scope) {}` 这类"只定义未调用"也不算；
+      * 只挂载（首帧）之外还必须 `watch([activeView, freshnessScope])`：删掉这条
+        watch，切目录 / 从别的插件切回来就再也不同步了。
+
+    正例读的是仓库里真实的 `PluginChrome.vue`：实现被回退时这里先红，而不是等到
+    用户发现界面不更新。反例用临时组件文件，避免为了造一个坏壳去改真实组件。
+    """
+
+    WATCH = "watch([activeView, freshnessScope], () => syncFreshness());\n"
+    MOUNT_ONLY = "const ctl = Freshness.mount({ plugin: props.plugin.name });\n" + WATCH
+    OK = (
+        "const ctl = Freshness.mount({ plugin: props.plugin.name });\n"
+        "const target = freshnessSyncTarget(ctl, scope, {});\n"
+        "target.controller.autoSync(target.scope);\n"
+        + WATCH
+    )
+
+    def _component(self, tmp: str, body: str) -> Path:
+        path = Path(tmp) / 'PluginChrome.vue'
+        path.write_text(body, encoding='utf-8')
+        return path
+
+    def _errors(self, body: str) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            return _check_shell_freshness_trigger(self._component(tmp, body))
+
+    def test_mount_without_trigger_is_an_error(self):
+        errors = self._errors(self.MOUNT_ONLY)
+        self.assertTrue(any('autoSync' in error for error in errors), errors)
+
+    def test_trigger_without_view_watch_is_an_error(self):
+        """只挂载时同步一次不够：删掉 watch 必须变红。"""
+        errors = self._errors(
+            "const target = freshnessSyncTarget(ctl, scope, {});\n"
+            "target.controller.autoSync(target.scope);\n")
+        self.assertTrue(any('watch' in error and 'freshnessScope' in error for error in errors), errors)
+
+    def test_commented_out_call_is_an_error(self):
+        """注释掉的调用不算触发（原实现的正则会误判为已接线）。"""
+        errors = self._errors(
+            "const ctl = Freshness.mount({ plugin: 'p' });\n"
+            "// ctl.autoSync(scope)\n"
+            "/* ctl.autoSync(scope) */\n"
+            "<!-- ctl.autoSync(scope) -->\n"
+            + self.WATCH)
+        self.assertTrue(any('autoSync' in error for error in errors), errors)
+
+    def test_string_literals_do_not_count(self):
+        """单 / 双引号串与模板串里的同名字样不算触发。"""
+        errors = self._errors(
+            "const ctl = Freshness.mount({ plugin: 'p' });\n"
+            "const hint = 'ctl.autoSync(scope)';\n"
+            "const other = \"ctl.autoSync(scope)\";\n"
+            "const tip = `ctl.autoSync(scope)`;\n"
+            + self.WATCH)
+        self.assertTrue(any('autoSync' in error for error in errors), errors)
+
+    def test_definition_without_call_is_an_error(self):
+        """只定义未调用（函数声明 / 对象方法）不算触发。"""
+        errors = self._errors(
+            "function autoSync(scope) { return scope; }\n"
+            "const ctl = { autoSync(scope) { return scope; } };\n"
+            "const mount = Freshness.mount({ plugin: 'p' });\n"
+            + self.WATCH)
+        self.assertTrue(any('autoSync' in error for error in errors), errors)
+
+    def test_full_trigger_wiring_passes(self):
+        self.assertEqual(self._errors(self.OK), [])
+
+    def test_missing_component_is_not_reported_here(self):
+        """组件不存在由挂载检查单独报，这里不重复同一件事。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            errors = _check_shell_freshness_trigger(Path(tmp) / 'absent.vue')
+        self.assertEqual(errors, [])
+
+    def test_real_shell_component_triggers_sync(self):
+        """真实组件必须过：这条是正例，锁住实现不被回退成"只挂载不触发"。"""
+        self.assertEqual(_check_shell_freshness_trigger(), [])
+
+
+class StripJsNoiseTests(unittest.TestCase):
+    """清洗函数本身要可断言：注释/字符串被抹掉、代码与换行保留。"""
+
+    def test_comments_and_strings_are_removed(self):
+        source = (
+            "const a = 'ctl.autoSync(1)';\n"
+            "// ctl.autoSync(2)\n"
+            "const b = `ctl.autoSync(3)`;\n"
+            "/* ctl.autoSync(4) */\n"
+            "<!-- ctl.autoSync(5) -->\n"
+            "ctl.autoSync(6);\n"
+        )
+        cleaned = _strip_js_noise(source)
+        self.assertNotIn('autoSync(1', cleaned)
+        self.assertNotIn('autoSync(2', cleaned)
+        self.assertNotIn('autoSync(3', cleaned)
+        self.assertNotIn('autoSync(4', cleaned)
+        self.assertNotIn('autoSync(5', cleaned)
+        self.assertIn('ctl.autoSync(6)', cleaned)
+        self.assertEqual(cleaned.count('\n'), source.count('\n'), '换行必须保留（报错行号才对得上）')
+
+    def test_keep_strings_keeps_plugin_name(self):
+        source = "Freshness.mount({ plugin: 'demo', unit: '首' });\n// 注释"
+        cleaned = _strip_js_noise(source, keep_strings=True)
+        self.assertIn("plugin: 'demo'", cleaned)
+        self.assertNotIn('注释', cleaned)
+
+
+class PluginFreshnessTriggerTests(unittest.TestCase):
+    """自绘型（没有 `frontend.chrome.freshness`）必须在插件自己的前端里触发被动同步。"""
+
+    BACKEND = (
+        "class DemoPlugin:\n"
+        "    def freshness_spec(self):\n"
+        "        return {'roots': []}\n"
+    )
+    MOUNT = (
+        "const ctl = Freshness.mount({ plugin: 'demo', unit: '项' });\n"
+    )
+
+    def _plugin(self, tmp: str, frontend: str, *, name: str = 'demo',
+                script_name: str = 'app.js') -> Path:
+        root = Path(tmp) / name
+        (root / 'backend').mkdir(parents=True)
+        (root / 'backend' / 'main.py').write_text(self.BACKEND, encoding='utf-8')
+        (root / 'frontend' / 'js').mkdir(parents=True)
+        (root / 'frontend' / 'js' / script_name).write_text(frontend, encoding='utf-8')
+        return root
+
+    def _errors(self, frontend: str, *, shell_mounts: bool = False) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._plugin(tmp, frontend)
+            return _check_freshness_contract(root, 'demo', shell_mounts=shell_mounts)
+
+    def test_mount_without_trigger_is_reported(self):
+        errors = self._errors(self.MOUNT)
+        self.assertTrue(any('被动同步' in error for error in errors), errors)
+
+    def test_auto_sync_call_passes(self):
+        self.assertEqual(self._errors(self.MOUNT + "ctl.autoSync('');\n"), [])
+
+    def test_module_level_freshness_sync_passes(self):
+        """内容页拿不到句柄时，`Freshness.sync(plugin, scope)` 是合法触发。"""
+        code = self.MOUNT + "async function go() { await Freshness.sync('demo', ''); }\n"
+        self.assertEqual(self._errors(code), [])
+
+    def test_commented_or_quoted_trigger_is_reported(self):
+        for frontend in (
+            self.MOUNT + "// ctl.autoSync('')\n",
+            self.MOUNT + "const hint = 'ctl.autoSync()';\n",
+            self.MOUNT + "const tip = `Freshness.sync('demo')`;\n",
+            self.MOUNT + "function autoSync(scope) { return scope; }\n",
+        ):
+            with self.subTest(frontend=frontend):
+                errors = self._errors(frontend)
+                self.assertTrue(any('被动同步' in error for error in errors), errors)
+
+    def test_shell_mounted_plugin_is_checked_by_the_shell_component(self):
+        """壳挂载型的触发在 PluginChrome 里查，插件前端不重复要求。"""
+        self.assertEqual(self._errors(self.MOUNT, shell_mounts=True), [])
+
+    def test_real_repo_plugins_pass(self):
+        """真实插件逐个过：自绘型（image-cleaner / netease-music / pixiv-sync）与壳挂载型。
+
+        这条是正例：任一插件的触发被删掉/注释掉时它会红，而不是等用户发现界面不更新。
+        """
+        plugin_roots = sorted(
+            path for path in (PROJECT_ROOT / 'plugins').iterdir()
+            if path.is_dir() and (path / 'manifest.json').is_file())
+        self.assertGreaterEqual(len(plugin_roots), 8, '插件目录数量异常，用例会变成空转')
+        for root in plugin_roots:
+            with self.subTest(plugin=root.name):
+                manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
+                frontend = manifest.get('frontend') or {}
+                chrome = frontend.get('chrome') if isinstance(frontend, dict) else None
+                shell_mounts = bool(isinstance(chrome, dict) and chrome.get('freshness'))
+                backend = ''.join(
+                    path.read_text(encoding='utf-8')
+                    for path in sorted((root / 'backend').rglob('*.py')))
+                if 'def freshness_spec' not in backend:
+                    continue
+                errors = _check_freshness_contract(
+                    root, root.name, shell_mounts=shell_mounts)
+                self.assertEqual(errors, [], f'{root.name}: {errors}')
 
 
 if __name__ == '__main__':   # pragma: no cover

@@ -297,8 +297,13 @@ Object.assign(ImageViewer.prototype, {
                 if (item.cover) {
                     const img = document.createElement('img');
                     img.className = 'iv-cover-img';
-                    // 带 mtime 版本号：缩略图被重建后 URL 才会变（壳的 /thumbs 有一天强缓存）
-                    img.src = this._thumbUrl({ url: item.cover, mtime: item.mtime });
+                    // 版本号优先取封面文件自身的 mtime：缩略图被重建或封面被替换后
+                    // URL 才会变（壳的 /thumbs 有一天强缓存）；目录 mtime 不随替换变
+                    img.src = this._thumbUrl({
+                        url: item.cover,
+                        mtime: item.mtime,
+                        cover_mtime: item.cover_mtime,
+                    });
                     img.loading = 'lazy';
                     img.alt = name;
                     img.onerror = function () {
@@ -490,6 +495,9 @@ Object.assign(ImageViewer.prototype, {
         if (!tile) return;
         item.pending = false;
         item.cover = tile.cover || '';
+        // 封面版本号跟着补齐的瓦片一起更新：首屏卡片可能没有封面，补上封面后
+        // 只换 src 不换版本号，浏览器会继续拿着上一版的强缓存
+        item.cover_mtime = tile.cover_mtime || 0;
         item.total_count = tile.total_count;
         if (tile.cover) {
             const img = card.querySelector('img.iv-cover-img')
@@ -503,7 +511,11 @@ Object.assign(ImageViewer.prototype, {
                     this.outerHTML = '<div class="iv-cover-fallback">'
                         + Icons.html('icon:image-off') + '</div>';
                 };
-                real.src = this._thumbUrl({ url: tile.cover, mtime: tile.mtime });
+                real.src = this._thumbUrl({
+                    url: tile.cover,
+                    mtime: tile.mtime,
+                    cover_mtime: tile.cover_mtime,
+                });
                 img.replaceWith(real);
             }
         }

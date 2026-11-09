@@ -20,6 +20,9 @@
 window.ChromeClient = (function () {
   'use strict'
 
+  /** 富事件之后紧跟的旧 `refresh` 动作属于同一次同步：这个窗口内视为回声。 */
+  const FRESHNESS_ECHO_MS = 1000;
+
   /** 只接受「直接父窗口 + 同源」的消息：伪造来源与跨源消息一律忽略。 */
   function fromShell(event) {
     return event.origin === location.origin && event.source === window.parent
@@ -40,15 +43,27 @@ window.ChromeClient = (function () {
   /**
    * @param {{
    *   onView?: (view: string) => void,
-   *   onAction?: (action: string) => void,
+   *   onAction?: (action: string, payload?: unknown) => void,
    *   onQuery?: (query: string) => void,
    *   onMessage?: (data: Record<string, unknown>) => void,
    * }} [handlers]
    *   业务回调。`onMessage` 收到 view / action / query 之外的类型（例如壳下发的
-   *   `omnibox:appearance`），由插件自己解释。
+   *   `omnibox:freshness` / `omnibox:appearance`），由插件自己解释。`onAction` 的第二参
+   *   是消息里的 `payload`（统一刷新会把 `{plugin, scope, report}` 附在 `refresh` 上）；
+   *   没有 payload 的动作传 `undefined`，忽略第二参的旧回调不受影响。
+   * @param {{dedupeFreshness?: boolean, echoWindowMs?: number}} [options]
+   *   `dedupeFreshness`：页面同时处理 `omnibox:freshness` 与旧的 `refresh` 时，
+   *   把紧跟富事件到达、且带 payload 的 `refresh` 当作回声丢掉（只重载一次）。
+   *   `echoWindowMs` 是判定窗口（毫秒，缺省 {@link FRESHNESS_ECHO_MS}），仅供用例缩短。
    */
-  function create(handlers) {
+  function create(handlers, options) {
     const hooks = handlers || {}
+    const opts = options || {}
+    const echoWindow = opts.dedupeFreshness
+      ? (Number.isFinite(opts.echoWindowMs) && opts.echoWindowMs > 0
+        ? opts.echoWindowMs : FRESHNESS_ECHO_MS)
+      : 0
+    let lastFreshnessAt = 0
     let listener = null
 
     function onMessage(event) {
@@ -59,13 +74,18 @@ window.ChromeClient = (function () {
         return
       }
       if (data.type === 'omnibox:action') {
-        if (hooks.onAction) hooks.onAction(data.action)
+        // 统一刷新先发 `omnibox:freshness`，再补一条 `refresh`（带同形 payload）：
+        // 两条都处理的页面在这个窗口内只处理前一条，避免同一次同步重载两遍。
+        if (echoWindow && data.action === 'refresh' && data.payload
+            && Date.now() - lastFreshnessAt < echoWindow) return
+        if (hooks.onAction) hooks.onAction(data.action, data.payload)
         return
       }
       if (data.type === 'omnibox:query') {
         if (hooks.onQuery) hooks.onQuery(data.query)
         return
       }
+      if (data.type === 'omnibox:freshness') lastFreshnessAt = Date.now()
       if (hooks.onMessage) hooks.onMessage(data)
     }
 
@@ -109,5 +129,5 @@ window.ChromeClient = (function () {
     }
   }
 
-  return { create, post }
+  return { create, post, FRESHNESS_ECHO_MS }
 })()
