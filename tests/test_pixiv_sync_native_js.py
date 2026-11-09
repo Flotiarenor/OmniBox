@@ -12,7 +12,9 @@ native.js，锁住：
   4. 「清除 Token」两步确认后真的只提交 `{refresh_token: ''}`（清空=清除的契约）；
   5. `settings-saved` 会重读状态；
   6. 缺 `/shell/native-client.js` 时向壳报 `omnibox:native-error`，而不是静默空白；
-  7. 本地内容的空闲概要（上次校验 / 索引待更新 / 上次变更计数）与校验进度块。
+  7. 本地内容的空闲概要（上次校验 / 索引待更新 / 上次变更计数）与校验进度块；
+  8. 统一刷新控件：打开面板时挂到隐藏节点并发起一次被动同步，报告有变化时重读
+     `get_status`，pagehide 时销毁控件（被动同步不依赖旧回落页）。
 
 harness 写成字符串而不是 tests/js/*.mjs：pixiv-sync 的 node 用例统一放在
 `tests/test_pixiv_sync*.py` 里，临时脚本随用例一起生成、用完即删。
@@ -68,6 +70,7 @@ function setup(initialStatus) {
   const calls = [];
   const timers = new Map();
   const overrides = {};
+  const freshnessLog = { mounts: [], syncs: [], destroyed: 0 };
   let timerSeq = 0;
   let status = initialStatus;
   const parent = { postMessage: (payload) => messages.push(payload) };
@@ -75,10 +78,28 @@ function setup(initialStatus) {
     parent,
     location: { origin: 'http://127.0.0.1:18080' },
     addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+    // 原生页经 window.Freshness 挂刷新控件（真实页面由 /shell/freshness.js 定义）。
+    Freshness: {
+      mount(opts) {
+        freshnessLog.mounts.push(opts);
+        return {
+          state: () => ({ busy: false, task: null }),
+          verify: async () => { },
+          cancel: async () => { },
+          autoSync: (scope) => { freshnessLog.syncs.push(scope); },
+          destroy: () => { freshnessLog.destroyed += 1; },
+        };
+      },
+    },
   };
   const sandbox = {
     window: fakeWindow,
-    document: {},
+    // 隐藏挂载点：真实页面自带 #pixiv-freshness；这里按"节点不存在"走创建分支。
+    document: {
+      getElementById: () => null,
+      createElement: (tag) => ({ tagName: tag, hidden: false }),
+      body: { appendChild: () => { } },
+    },
     console,
     Bridge: {
       async call(method, ...args) {
@@ -117,7 +138,8 @@ function setup(initialStatus) {
     (acc, item) => acc.concat(item, item.blocks ? flatten(item.blocks) : []), []);
   const block = (id) => flatten(blocks()).find(b => b.id === id) || null;
   return {
-    messages, listeners, calls, timers, status: (next) => { status = next; },
+    messages, listeners, calls, timers, freshnessLog,
+    status: (next) => { status = next; },
     /** 指定某个 Bridge 方法的返回值（用于维护类接口）。 */
     bridgeResult: (method, value) => { overrides[method] = value; },
     send, schema, blocks, toolbar, block,
@@ -437,6 +459,37 @@ async function run() {
     const before = env.callCount('get_status');
     await env.action('settings-saved');
     assert(env.callCount('get_status') > before, '设置保存后要重读状态');
+  });
+
+  await check('原生面板挂载统一刷新控件：打开即被动同步一次，容器是隐藏节点', async () => {
+    const env = setup({ ...IDLE_STATUS, token_configured: true });
+    await env.init();
+    assert(env.freshnessLog.mounts.length === 1, '控件只挂载一次');
+    const mount = env.freshnessLog.mounts[0];
+    assert(mount.plugin === 'pixiv-sync', 'plugin 名要与 manifest 一致');
+    assert(mount.unit === '张', '单位与后端声明一致');
+    assert(typeof mount.onChange === 'function', '报告有变化时要有重读回调');
+    assert(mount.container && mount.container.tagName === 'div', '容器是真实节点');
+    assert(mount.container.hidden === true, '隐藏节点不占面板版面');
+    sameJson(env.freshnessLog.syncs, [''], '打开面板时同步一次，作用域为空串（全部根）');
+  });
+
+  await check('被动同步发现有变化时重读本地内容（get_status）', async () => {
+    const env = setup({ ...IDLE_STATUS, token_configured: true });
+    await env.init();
+    const before = env.callCount('get_status');
+    env.freshnessLog.mounts[0].onChange({ action: 'sync', added: 1 });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert(env.callCount('get_status') > before,
+      'onChange 必须重读一次状态（本地内容索引在 get_status.library 里）');
+    assert(env.freshnessLog.mounts.length === 1, '重读不能重新挂载控件');
+  });
+
+  await check('pagehide 销毁刷新控件（不留轮询与挂载句柄）', async () => {
+    const env = setup(IDLE_STATUS);
+    await env.init();
+    for (const fn of env.listeners.pagehide || []) fn({});
+    assert(env.freshnessLog.destroyed === 1, 'onDispose 要销毁控件');
   });
 
   await check('pagehide 清理轮询定时器（iframe 被移除后不残留 timer）', async () => {

@@ -68,6 +68,7 @@
 
   let pollTimer = null;
   let client = null;
+  let freshness = null;
   let lastSignature = '';
   /** 已经作为 Toast 发出去的通知键，避免同一条结果反复弹。 */
   let sentNotice = '';
@@ -569,6 +570,52 @@
     }
   }
 
+  // ---------- 统一刷新（被动同步 / 校验） ----------
+  //
+  // 已下载记录是"本地图片树 → 作品集合"的派生数据，由共享刷新基建驱动。控件只渲染
+  // 状态并读一次投影，**它自己不扫盘** —— 被动同步必须由持有句柄的本页发起：打开面板
+  // 时一次，之后由 `onChange` 在报告有变化时重读状态。本页是隐藏的逻辑 iframe，
+  // 所以控件挂在隐藏节点上（不占面板版面）。
+
+  /** 挂载刷新控件；`/shell/freshness.js` 缺失时静默跳过，不影响其余动作。 */
+  function mountFreshness() {
+    if (typeof window.Freshness === 'undefined' || !window.Freshness
+        || typeof window.Freshness.mount !== 'function') return;
+    let host = document.getElementById('pixiv-freshness');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'pixiv-freshness';
+      host.hidden = true;
+      document.body.appendChild(host);
+    }
+    try {
+      freshness = window.Freshness.mount({
+        plugin: 'pixiv-sync',
+        container: host,
+        unit: '张',
+        // 被动同步/校验发现本地内容变化：索引条目数与待更新标记都在 get_status.library 里。
+        onChange: function () { void reloadAfterSync(); },
+      });
+    } catch (e) {
+      freshness = null;   // 控件不可用不影响面板其余部分
+    }
+  }
+
+  /** 被动同步一次（去抖与单飞在控件与壳侧引擎里）。 */
+  function syncFreshness() {
+    if (freshness && typeof freshness.autoSync === 'function') {
+      freshness.autoSync('');
+    }
+  }
+
+  /** 报告有变化时重读本地内容：只更新状态，不重建 OAuth 表单里正在输入的值。 */
+  async function reloadAfterSync() {
+    if (state.disposed) return;
+    await loadStatus();
+    if (state.disposed) return;
+    if (isMain() && signature() !== lastSignature) render();
+  }
+
   // ---------- 轮询 ----------
 
   function stopPoll() {
@@ -611,15 +658,22 @@
   function dispose() {
     state.disposed = true;
     stopPoll();
+    // 控件在挂载时就开始轮询状态，文档销毁前把它停掉。
+    if (freshness && typeof freshness.destroy === 'function') freshness.destroy();
+    freshness = null;
   }
 
   async function init() {
     if (state.initialized) return;
     state.initialized = true;
+    mountFreshness();
     await loadStatus();
     if (state.disposed) return;
     render();
     restartPoll(STATUS_RUNNING_MS);
+    // 打开面板时做一次被动同步：外部改动（手动放进下载根、另一个窗口删了文件）
+    // 只有走过一趟同步才会反映到「本地内容」的索引条目数与待更新标记上。
+    syncFreshness();
   }
 
   // ---------- 动作 ----------
