@@ -285,14 +285,25 @@ await check('网易云刷新在引擎同步失败时仍清缓存并重拉', asyn
 // 4. 封面版本
 // ============================================================
 
-await check('封面 URL 优先用后端 cover_mtime，缺字段退回条目 mtime', () => {
+await check('封面 URL 优先用后端 cover_mtime（毫秒），缺字段退回条目 mtime', () => {
   const env = setup();
   const withCover = env.MPUtils.coverUrl({ id: 'v1', has_cover: true, cover_mtime: 111, mtime: 222 });
-  assert.ok(withCover.endsWith('&v=111'), withCover);
+  assert.ok(withCover.endsWith('&v=111000'), withCover);
   const withoutCover = env.MPUtils.coverUrl({ id: 'v1', has_cover: true, mtime: 222 });
-  assert.ok(withoutCover.endsWith('&v=222'), withoutCover);
+  assert.ok(withoutCover.endsWith('&v=222000'), withoutCover);
   const noVersion = env.MPUtils.coverUrl({ id: 'v1', has_cover: true });
   assert.ok(!noVersion.includes('&v='), noVersion);
+});
+
+await check('同一秒内替换封面 → 版本号不同（契约要求毫秒）', () => {
+  // 旧实现按秒取整（Math.round(version)）：1700000000.12 与 .78 会算出同一个版本号，
+  // 浏览器一天不回源，替换后的封面永远看不到。契约 docs/plugin-guide.md 要求毫秒。
+  const env = setup();
+  const before = env.MPUtils.coverUrl({ id: 'v1', has_cover: true, cover_mtime: 1700000000.12 });
+  const after = env.MPUtils.coverUrl({ id: 'v1', has_cover: true, cover_mtime: 1700000000.78 });
+  assert.ok(before.endsWith('&v=1700000000120'), before);
+  assert.ok(after.endsWith('&v=1700000000780'), after);
+  assert.notEqual(before, after, '同秒替换必须产生不同的 URL 版本号');
 });
 
 console.log(failed ? `\n${failed} 例失败` : `\nmedia-player 统一刷新用例 ${total} 例通过`);

@@ -162,12 +162,17 @@ class FreshnessProvider:
 
         索引是单文件，不能每目录重写，所以落盘集中在这一处。`restored` 的清除也必须
         只在这里做，且条件要同时满足：**全根**（`scoped` 为假）、非 `partial`、无读取
-        错误。子目录作用域的同步只走一棵子树，其余根里的条目仍是上次运行读回的观察
-        结果；部分遍历与有读取错误的趟同理 —— 它们按 id 取条目时都要继续核对路径
-        （见 `MediaIndex.get` / `mark_authoritative`）。
+        错误、**没有不可达的根**。子目录作用域的同步只走一棵子树，其余根里的条目仍是
+        上次运行读回的观察结果；部分遍历与有读取错误的趟同理 —— 它们按 id 取条目时
+        都要继续核对路径（见 `MediaIndex.get` / `mark_authoritative`）。
+
+        不可达的根（外接盘没挂载）必须一起排除：引擎既不会遍历它、也不会清理它的
+        目录行（`report['unreachable_roots']`），那些条目不是本次观察的结果；此时宣布
+        权威会让 `get()` 停止核对路径，把指向不存在文件的旧条目重新发给界面。
         """
         if (not report.get('scoped') and not report.get('partial')
-                and not report.get('errors')):
+                and not report.get('errors')
+                and not report.get('unreachable_roots')):
             self._index.mark_authoritative()
         if self._index.dirty:
             self._index.save(time.time())
@@ -265,13 +270,17 @@ class FreshnessProvider:
     # ===== 内部工具 =====
 
     def _refresh_covers(self, items: Dict[str, Any], dirs: set) -> Dict[str, Any]:
-        """重算指定目录下条目的 `has_cover` 与 `cover_mtime`（封面图加入/替换/删除后）。
+        """重算指定目录下条目的 `has_cover` 与 `cover_mtime`，并丢掉它们的封面缓存。
 
         判据重新走一遍"目录封面图 **或** 内嵌封面"，而不是沿用旧值：沿用的话
         "删掉 folder.jpg" 之后标记仍然是 True，前端会一直请求一个不存在的封面。
         `cover_mtime` 一起重算同样是为了让替换封面后 URL 上的版本号前进：封面文件的
         指纹变了才会走到这里，此时不更新版本号就等于继续命中浏览器缓存。
-        只对**受影响的目录**做（封面变化是低频事件），不做全库重查。
+
+        **缓存行也必须一起删**：`ThumbCache` 的失效判据是*媒体文件*的 mtime/size
+        （`CoverStore.get_thumb_data` 传的是 `item.path`），替换同名 `folder.jpg` 不改
+        媒体文件，旧缩略图会被判成有效并原样返回 —— 版本号前进了、浏览器回源了，
+        拿到的还是旧图。只对**受影响的目录**做（封面变化是低频事件），不做全库重查。
         """
         if not dirs:
             return items
@@ -283,6 +292,10 @@ class FreshnessProvider:
             if parent not in wanted:
                 out[key] = item
                 continue
+            try:
+                self._covers.delete(key)
+            except Exception as error:
+                log.warning(f'[MediaPlayer] 失效封面缓存失败 {key}: {error}')
             if parent not in folder_cover:
                 folder_cover[parent] = self._scanner.find_cover(Path(parent))
             cover = folder_cover[parent]

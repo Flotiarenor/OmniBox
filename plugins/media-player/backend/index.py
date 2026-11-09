@@ -49,11 +49,13 @@ class MediaIndex:
         """从索引文件重建条目；结构版本不符或解析失败时发布空索引（下次刷新重建）。
 
         读回成功时记下 `loaded_at` / `loaded_version` 并把 `restored` 置真：这份快照
-        只代表上一次运行看到的文件集合，`get()` 因此会核对路径是否还在。
+        只代表上一次运行看到的文件集合，`get()` 因此会核对路径是否还在。读之前先清掉
+        硬杀留下的临时文件（见 `_clean_stale_temps`）。
         """
         self.loaded_at = 0.0
         self.loaded_version = 0
         self.restored = False
+        self._clean_stale_temps()
         if not self.cache_file.exists():
             return
         try:
@@ -98,11 +100,32 @@ class MediaIndex:
             self.dirty = False
 
     def clear_file(self) -> bool:
-        """删掉索引文件（派生数据重建用）；返回是否真的删掉了。"""
-        if not self.cache_file.exists():
-            return False
-        self.cache_file.unlink()
-        return True
+        """删掉索引文件（派生数据重建用）；返回是否真的删掉了。
+
+        与 `save()` 共用实例锁：重建期间引擎挡住了同步/校验，但进程退出那条路径
+        （`on_unload` → `save`）不在引擎的单飞里，两边同时动同一个文件会互相覆盖。
+        """
+        with self._lock:
+            if not self.cache_file.exists():
+                return False
+            self.cache_file.unlink()
+            return True
+
+    def _clean_stale_temps(self) -> None:
+        """删掉硬杀留下的原子写临时文件（`.<缓存文件名>.<随机>.tmp`）。
+
+        `write_json` 的异常路径会自己删临时文件，但进程被强杀时来不及：这些文件
+        此后没有任何读者，只会随着每次崩溃在 `.cache` 里累积。读取索引前顺手清一次
+        （`load` 只在启动与换根时调用，开销可忽略）。
+        """
+        try:
+            for path in self.cache_file.parent.glob(f'.{self.cache_file.name}.*.tmp'):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+        except OSError:
+            pass
 
     def bind(self, cache_file: Path) -> None:
         """换根后指向新的索引文件（入口随后调 `load()` 重读）。"""

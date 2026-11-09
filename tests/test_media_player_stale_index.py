@@ -22,12 +22,15 @@
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -45,6 +48,8 @@ scanner_module = load_sibling(
     str(PLUGIN_BACKEND / 'scanner.py'), 'scanner', 'media_player_scanner_test')
 models_module = load_sibling(
     str(PLUGIN_BACKEND / 'models.py'), 'models', 'media_player_models_test')
+metadata_module = load_sibling(
+    str(PLUGIN_BACKEND / 'metadata.py'), 'metadata', 'media_player_metadata_test')
 
 MP3_BYTES = b'ID3\x03\x00\x00\x00\x00\x00\x00'
 
@@ -76,8 +81,10 @@ class _PluginFixture(unittest.TestCase):
         self.plugin = self._make_plugin()
         self.engine = self._engine(self.plugin)
 
-    def _make_plugin(self):
-        mp.MediaPlayerPlugin._resolved_config = {'media_roots': str(self.root)}
+    def _make_plugin(self, roots=None):
+        configured = roots if roots is not None else [self.root]
+        mp.MediaPlayerPlugin._resolved_config = {
+            'media_roots': '\n'.join(str(root) for root in configured)}
         self.addCleanup(setattr, mp.MediaPlayerPlugin, '_resolved_config', {})
         plugin = mp.MediaPlayerPlugin(
             {'name': 'media-player'},
@@ -214,6 +221,41 @@ class StaleIndexGhostTests(_PluginFixture):
         self.assertFalse(other.index.restored)
         self.assertTrue(other.index.authoritative)
 
+    def test_unreachable_root_keeps_the_snapshot_unauthoritative(self):
+        """不可达的根里的条目不是本次观察的结果：全根同步也不能宣布索引权威。"""
+        extra = Path(self._tmp.name) / 'media2'
+        _track(self.root, 'd0/a.mp3')
+        _track(extra, 'd0/b.mp3')
+
+        first = self._make_plugin(roots=[self.root, extra])
+        first_engine = engine_for(first)
+        assert first_engine is not None
+        first_engine.spec.min_sync_interval = 0.0
+        first_engine.sync('', force=True)
+        ghost = next(item for item in first.index.items.values() if 'media2' in item.path)
+        first.on_unload()
+
+        # 外接盘拔掉：第二个根整体不可达（引擎不遍历、也不清理它的目录行）
+        shutil.rmtree(extra)
+        other = self._make_plugin(roots=[self.root, extra])
+        other_engine = engine_for(other)
+        assert other_engine is not None
+        other_engine.spec.min_sync_interval = 0.0
+        self.assertTrue(other.index.restored, '新实例先从落盘索引读回条目')
+        self.assertIsNone(other.index.get(ghost.id), '不可达根里的条目还没核对过路径')
+
+        report = other_engine.sync('', force=True)
+
+        unreachable = report.get('unreachable_roots') or []
+        self.assertEqual([Path(root).name for root in unreachable], ['media2'], report)
+        self.assertFalse(report.get('partial'), report)
+        self.assertEqual(report.get('errors'), [], report)
+        self.assertTrue(other.index.restored,
+                        '有不可达的根时这一趟没有覆盖全部条目，不能宣布索引权威')
+        self.assertFalse(other.index.authoritative)
+        self.assertIsNone(other.index.get(ghost.id),
+                          '不可达根里的幽灵条目仍要逐条核对路径')
+
     def test_publish_alone_keeps_restored_until_mark_authoritative(self):
         """`publish` 只换快照，不宣布"整趟走完"；权威由 `mark_authoritative` 单独宣布。"""
         _track(self.root, 'd0/a.mp3')
@@ -343,6 +385,55 @@ class CoverMtimeTests(_PluginFixture):
         self.assertAlmostEqual(reloaded.cover_mtime, expected, places=3)
         self.assertAlmostEqual(reloaded.cover_mtime, cover.stat().st_mtime, places=3)
 
+    def test_replaced_folder_cover_returns_new_thumb_bytes(self):
+        """替换 folder.jpg 后 `/thumbs` 必须重新生成：版本号前进不等于字节更新。
+
+        `ThumbCache` 的失效判据是媒体文件的 mtime/size，同名替换封面不改媒体文件，
+        旧缓存行会被判成有效并原样返回 —— 所以 `_refresh_covers` 要一起删缓存行。
+        """
+        directory = self.root / 'd0'
+        _track(self.root, 'd0/a.mp3')
+        cover = _cover(directory, mtime=1_700_005_000.0)
+        self._sync()
+        [item] = self._items()
+        before_version = item.cover_mtime
+        first = self.plugin.covers.get_thumb_data(item.id)
+        self.assertIsNotNone(first, '前置条件：封面应能生成')
+        assert first is not None
+
+        cover.write_bytes(b'\xff\xd8\xff' + b'B' * 96)
+        os.utime(cover, (1_700_009_000.0, 1_700_009_000.0))
+        # 替换同名文件不改目录 mtime；目录指纹变化才会让本趟真的重扫该目录
+        os.utime(directory, (1_700_009_100.0, 1_700_009_100.0))
+        report = self._sync()
+
+        self.assertGreater(report.get('changed', 0), 0, report)
+        [refreshed] = self._items()
+        self.assertGreater(refreshed.cover_mtime, before_version, '版本号要前进')
+        second = self.plugin.covers.get_thumb_data(refreshed.id)
+        self.assertIsNotNone(second)
+        assert second is not None
+        self.assertNotEqual(second[0], first[0],
+                            '替换目录封面后缩略图缓存必须失效并重新生成')
+
+    def test_removed_folder_cover_drops_the_cached_thumb(self):
+        """删掉 folder.jpg 后缓存行也要失效（否则留着旧图，has_cover 变假也对不上）。"""
+        directory = self.root / 'd0'
+        _track(self.root, 'd0/a.mp3')
+        cover = _cover(directory, mtime=1_700_005_000.0)
+        self._sync()
+        [item] = self._items()
+        self.assertIsNotNone(self.plugin.covers.get_thumb_data(item.id))
+
+        cover.unlink()
+        os.utime(directory, (1_700_009_100.0, 1_700_009_100.0))
+        self._sync()
+
+        [refreshed] = self._items()
+        self.assertFalse(refreshed.has_cover, '没有内嵌封面且目录封面已删，应判定无封面')
+        self.assertIsNone(self.plugin.covers.get_thumb_data(refreshed.id),
+                          '封面已删除时不能继续返回旧缓存')
+
     def test_old_cache_payload_falls_back_to_entry_mtime(self):
         raw = {
             'id': 'abc', 'path': '/x.mp3', 'kind': 'audio', 'title': 't',
@@ -365,6 +456,128 @@ class CoverMtimeHelperTests(unittest.TestCase):
         self.assertAlmostEqual(
             scanner_module.MediaScanner.cover_mtime(None, 1_500_000_000.0),
             1_500_000_000.0, places=3)
+
+
+class CoverSourceConsistencyTests(unittest.TestCase):
+    """同一目录多个候选封面时，`has_cover`/`cover_mtime` 与实际字节必须取同一个文件。"""
+
+    def test_scanner_and_metadata_pick_the_same_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / 'folder.jpg').write_bytes(b'folder-cover')
+            (directory / 'cover.jpg').write_bytes(b'cover-cover')
+            scanner = scanner_module.MediaScanner(models_module, metadata_module, None, None)
+
+            picked = scanner.find_cover(directory)
+            data = metadata_module.MetadataReader._find_folder_cover(
+                directory, scanner.cover_names)
+
+            self.assertIsNotNone(picked)
+            assert picked is not None
+            self.assertEqual(picked.name, 'cover.jpg', '优先序必须固定，不能按无序集合迭代')
+            self.assertEqual(data, picked.read_bytes(),
+                             '版本号的来源与实际字节必须是同一个封面文件')
+
+
+class StaleTempCleanupTests(_PluginFixture):
+    """硬杀留下的 `.<文件名>.<随机>.tmp` 在加载时清掉（异常路径自己会删，硬杀不会）。"""
+
+    def test_index_load_removes_crashed_temp_files(self):
+        index = self.plugin.index
+        index.save(time.time())
+        stale = index.cache_file.with_name(f'.{index.cache_file.name}.crashed.tmp')
+        stale.write_text('{"version": 5, ', encoding='utf-8')
+
+        index.load()
+
+        self.assertFalse(stale.exists())
+        self.assertTrue(index.cache_file.exists())
+
+    def test_state_load_removes_crashed_temp_files(self):
+        self.plugin.state.save()
+        state_file = self.plugin.paths.state_file
+        stale = state_file.with_name(f'.{state_file.name}.crashed.tmp')
+        stale.write_text('{"favorites": [', encoding='utf-8')
+
+        self.plugin.state.load()
+
+        self.assertFalse(stale.exists())
+        self.assertTrue(state_file.exists())
+
+
+class ClearFileLockTests(_PluginFixture):
+    """`clear_file` 与 `save` 共用实例锁：删除必须排在在途写之后。"""
+
+    def test_clear_file_waits_for_inflight_save(self):
+        index = self.plugin.index
+        index.save(time.time())
+        started = threading.Event()
+        release = threading.Event()
+        real_fsync = os.fsync
+
+        def slow_fsync(fd):
+            started.set()
+            release.wait(5)
+            return real_fsync(fd)
+
+        def saver() -> None:
+            index.save(time.time())
+
+        def clearer() -> None:
+            index.clear_file()
+
+        with mock.patch('os.fsync', slow_fsync):
+            writer = threading.Thread(target=saver)
+            writer.start()
+            self.assertTrue(started.wait(5), '保存没有进入写盘阶段')
+            remover = threading.Thread(target=clearer)
+            remover.start()
+            time.sleep(0.1)     # 让 clear_file 真的试着进锁
+            release.set()
+            writer.join(10)
+            remover.join(10)
+
+        self.assertFalse(writer.is_alive() or remover.is_alive(), '线程没有结束')
+        self.assertFalse(index.cache_file.exists(),
+                         'clear_file 必须排在在途写之后：否则写完又把文件建回来了')
+
+
+class CollectionsWriteSerializationTests(_PluginFixture):
+    """一次换曲会从不同桥接线程连发 update_recent：读-改-写必须串行，否则丢条目。"""
+
+    def test_concurrent_update_recent_keeps_both_entries(self):
+        collections = self.plugin.collections
+        module = sys.modules[type(collections).__module__]
+        real_strftime = module.time.strftime
+        barrier = threading.Barrier(2, timeout=0.5)
+        errors: list = []
+
+        def slow_strftime(*args, **kwargs):
+            # 卡在"读旧值之后、赋值之前"的窗口里：另一个线程此时也会读到旧值
+            try:
+                barrier.wait()
+            except threading.BrokenBarrierError:
+                pass
+            return real_strftime(*args, **kwargs)
+
+        def worker(item_id: str) -> None:
+            try:
+                collections.update_recent(item_id)
+            except Exception as error:      # pragma: no cover - 失败时给断言留证据
+                errors.append(error)
+
+        fake_time = types.SimpleNamespace(strftime=slow_strftime)
+        with mock.patch.object(module, 'time', fake_time):
+            threads = [threading.Thread(target=worker, args=(item_id,))
+                       for item_id in ('a', 'b')]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(10)
+
+        self.assertEqual(errors, [])
+        ids = [entry.get('id') for entry in self.plugin.state.data.get('recent', [])]
+        self.assertEqual(sorted(ids), ['a', 'b'], f'并发 update_recent 丢条目：{ids}')
 
 
 class IndexAtomicWriteTests(_PluginFixture):

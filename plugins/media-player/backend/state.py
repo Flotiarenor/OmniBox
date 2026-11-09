@@ -72,9 +72,10 @@ class UserStateStore:
 
         与 `save()` 共用一把锁：Windows 上 `os.replace` 要求目标文件的所有打开句柄都
         允许删除，读者在改名那一瞬间开着它，写者就会拿到 WinError 32。备份损坏文件
-        也在锁内做（`shutil.copy2` 同样要打开它）。
+        也在锁内做（`shutil.copy2` 同样要打开它）。读之前顺手清掉硬杀留下的临时文件。
         """
         with self._lock:
+            self._clean_stale_temps()
             if self.state_file.exists():
                 try:
                     with open(self.state_file, 'r', encoding='utf-8') as handle:
@@ -102,6 +103,22 @@ class UserStateStore:
                     time.sleep(self.replace_delay * (attempt + 1))
             log.error(f"[MediaPlayer] 保存状态失败: {self.state_file}"
                       f"（重试 {self.replace_attempts} 次仍失败）")
+
+    def _clean_stale_temps(self) -> None:
+        """删掉硬杀留下的原子写临时文件（`.media_state.json.<随机>.tmp`）。
+
+        `write_json` 的异常路径会自己删临时文件，进程被强杀时来不及；这些文件此后
+        没有读者，累计下来只是 `.cache/media-player` 里的垃圾。本方法只在持锁的
+        `load()` 里调用，与写者不会交叉。
+        """
+        try:
+            for path in self.state_file.parent.glob(f'.{self.state_file.name}.*.tmp'):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+        except OSError:
+            pass
 
     def _backup_broken(self, error: Exception) -> None:
         stamp = time.strftime('%Y%m%d-%H%M%S')

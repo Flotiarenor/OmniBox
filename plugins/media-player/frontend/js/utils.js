@@ -60,13 +60,16 @@ const MPUtils = {
             // 带封面版本号：`/thumbs` 的响应缓存一天，URL 不变就看不到新封面。
             // 后端给的 `cover_mtime` 是封面文件自身的 mtime（目录里的封面图被替换后
             // 条目文件可能没动），缺这个字段时退回条目自己的 mtime。
+            // 版本号用**毫秒**：替换同名封面时两次 mtime 可能只差几百毫秒，按秒取整会
+            // 算出同一个版本号，浏览器继续用一天前的那份缓存。
             const version = MPUtils.coverVersion(item);
-            return version ? `${base}&v=${Math.round(version)}` : base;
+            return version ? `${base}&v=${Math.round(version * 1000)}` : base;
         }
         return '';
     },
 
-    // 封面 URL 的版本号：优先封面文件 mtime，退回条目 mtime；都没有时为 0。
+    /** 封面 URL 的版本号（秒，取自后端）：优先封面文件 mtime，退回条目 mtime；都没有时为 0。
+        拼 URL 时乘 1000 转毫秒 —— 秒级取整挡不住"同秒内替换封面"。 */
     coverVersion(item) {
         if (!item) return 0;
         return Number(item.cover_mtime) || Number(item.mtime) || 0;

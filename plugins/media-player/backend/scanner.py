@@ -22,13 +22,10 @@ INDEX_VERSION = 5
 VIDEO_EXTS: FrozenSet[str] = frozenset(
     {'.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv', '.wmv'})
 
-#: 目录封面图文件名。与 `metadata.COVER_NAMES` 是两个口径：这里还认海报 / 缩略图类
-#: 命名（视频目录常见），并且要参与指纹（`freshness.include_names`）。
-COVER_NAMES: FrozenSet[str] = frozenset({
-    'cover.jpg', 'cover.png', 'folder.jpg', 'folder.png',
-    'poster.jpg', 'poster.png', 'fanart.jpg', 'fanart.png',
-    'thumb.jpg', 'thumb.png', 'backdrop.jpg', 'backdrop.png',
-})
+#: 目录封面图文件名与优先序的**唯一来源**在 `metadata.COVER_NAMES`：
+#: 它同时决定 `has_cover`/`cover_mtime`（这里）与实际缩略图字节（metadata 读取），
+#: 分两份维护时多封面目录会出现"版本号取自 A、字节取自 B"，且按无序集合迭代会让
+#: 封面选择跨进程改变。实例上的 `cover_names` 在构造时从注入的 metadata 取一次。
 
 
 def item_id(path: str) -> str:
@@ -65,7 +62,7 @@ class MediaScanner:
         self._ffmpeg = ffmpeg
         self.audio_exts: FrozenSet[str] = frozenset(metadata.SUPPORTED_EXTS)
         self.video_exts: FrozenSet[str] = VIDEO_EXTS
-        self.cover_names: FrozenSet[str] = COVER_NAMES
+        self.cover_names = tuple(metadata.COVER_NAMES)
         self.media_exts: FrozenSet[str] = self.audio_exts | self.video_exts
         self.index_version: int = INDEX_VERSION
 
@@ -76,15 +73,15 @@ class MediaScanner:
         return item_id(path)
 
     def find_cover(self, directory: Path) -> Optional[Path]:
-        """目录封面图（与 `cover_generator` 同一组文件名）。"""
+        """目录封面图：与缩略图字节走同一个判定函数（`metadata.find_folder_cover_path`）。
+
+        同一目录里存在多个候选封面文件时，`has_cover`/`cover_mtime` 与实际取到的字节
+        必须来自同一个文件；否则"替换封面"会让版本号和图片各指一个。
+        """
         try:
-            for name in self.cover_names:
-                candidate = directory / name
-                if candidate.is_file():
-                    return candidate
+            return self._metadata.find_folder_cover_path(directory, self.cover_names)
         except OSError:
-            pass
-        return None
+            return None
 
     def cover_generator(self, src_path: Path) -> Optional[tuple]:
         """ThumbCache 自定义生成器：音频内嵌封面 / 视频目录封面图 / ffmpeg 抽帧。
