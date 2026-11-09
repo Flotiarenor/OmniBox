@@ -103,13 +103,16 @@ class AlbumIndex:
     def _save_index(self) -> None:
         """把索引原子落盘（版本号写进同一份 JSON，读取时逐项核对）。
 
-        序列化前先拷贝一份条目字典：`json.dump` 遍历原字典时，另一条线程（API 线程 /
-        被动同步）可能正在增删目录条目，那会在 dump 中途抛 `RuntimeError` 并留下一次
-        失败的落盘。拷贝是浅层的 —— 每个条目是扁平 dict，替换整块而不是原地改。
+        序列化前先整体快照条目字典，再逐条浅拷贝：`json.dump` 遍历原字典时，另一条
+        线程（API 线程 / 被动同步）可能正在写入，遍历活字典会在中途抛
+        `RuntimeError: dictionary changed size during iteration` 并留下一次失败的
+        落盘。`dict(映射)` 在 C 层一次取走键值，之后的遍历只碰这份副本；每个条目是
+        扁平 dict，再按条目拷贝一层，`json.dump` 看到的也是稳定内容。
         """
         if not self._paths.cache_dir.is_dir():
             return
-        snapshot = {key: dict(value) for key, value in self._entries.entries.items()
+        entries = dict(self._entries.entries)
+        snapshot = {key: dict(value) for key, value in entries.items()
                     if isinstance(value, dict)}
         if not write_cached_json(self._paths.album_cache_file,
                                  {'dirs': snapshot},

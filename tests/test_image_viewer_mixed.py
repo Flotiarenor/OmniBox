@@ -19,9 +19,11 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -33,6 +35,7 @@ from PIL import Image
 def _load_plugin_module():
     main_path = PROJECT_ROOT / 'plugins' / 'image-viewer' / 'backend' / 'main.py'
     spec = importlib.util.spec_from_file_location('image_viewer_main_test', str(main_path))
+    assert spec is not None and spec.loader is not None, '无法装载 image-viewer 入口'
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -737,7 +740,8 @@ class DerivedInvalidationTestCase(unittest.TestCase):
     缺陷背景：`delete_files` 原先只清列表缓存，相册索引的 30 秒 TTL 与目录快照照旧
     命中，表现为「删了图片，相册树里的张数还是旧的，要等半分钟或手动校验」；清理器
     与下载器直接写磁盘时更没有任何入口通知宿主。`invalidate_derived` 是这两条路径
-    共用的失效出口：相册索引 + 列表缓存 + 漫画根解析一起作废。
+    共用的失效出口：相册索引 + 列表缓存 + 漫画根解析一起作废。**删除 / 移动只改文件**，
+    传 `keep_snapshot=True` 保住目录快照 —— 整份失效会让下一次相册重建重走全树。
     """
 
     def setUp(self):
@@ -747,9 +751,9 @@ class DerivedInvalidationTestCase(unittest.TestCase):
         for index in range(5):
             _make_image(self.root / 'albumA' / f'img{index}.png', 120, 90)
         _make_image(self.root / 'albumB' / 'base.png', 120, 90)
-        # 目录 mtime 统一倒回一个固定时刻：目录级缓存的命中判据是「mtime 相差 < 0.5 秒」，
-        # 而用例里建完目录马上删除/移动，真实间隔不足 0.5 秒会被当成"没变"。倒回几分钟
-        # 前的时刻，删除/移动后的新 mtime 就与缓存值明确不同，测到的是失效链路本身。
+        # 目录 mtime 统一倒回一个固定时刻：目录条目的命中判据是**精确相等**，而用例里
+        # 建完目录马上删除/移动，倒回几分钟前才能让新旧 mtime 明确不同 —— 测到的是
+        # 失效链路本身，而不是"同一瞬间两次 stat 恰好取到同一个值"。
         base = 1_700_000_000.0
         for path in (self.root / 'albumA', self.root / 'albumB', self.root):
             os.utime(path, (base, base))
@@ -768,31 +772,62 @@ class DerivedInvalidationTestCase(unittest.TestCase):
     def test_delete_files_updates_album_counts_immediately(self):
         self.assertEqual(self._album('albumA')['image_count'], 5)
         self.assertTrue(self.plugin.albums.albums_cached, '先让相册索引进 TTL 缓存')
+        self.assertIsNotNone(self.plugin.dirs_snapshot.snapshot(time.time()))
 
         result = self.plugin.file_ops.delete_files(['albumA/img0.png', 'albumA/img1.png'])
 
         self.assertEqual(len(result['deleted']), 2)
         self.assertEqual(result['errors'], [])
         self.assertFalse(self.plugin.albums.albums_cached, '删除成功后不许再命中旧索引')
+        self.assertIsNotNone(self.plugin.dirs_snapshot.snapshot(time.time()),
+                             '删除图片不改目录集合：目录快照必须保留，否则下一次重建走全树')
         self.assertEqual(self._album('albumA')['image_count'], 3,
                          '删除后立刻重新读相册树：计数必须是新的')
         self.assertEqual(self._album('')['image_count'], 4,
                          '根节点的递归张数同样要跟着变')
 
-    def test_invalidate_derived_clears_album_index_and_dir_snapshot(self):
+    def test_invalidate_derived_keeps_dir_snapshot(self):
+        """文件级失效（删除 / 移动）保留目录快照，只丢动过的目录条目。"""
         self.plugin.albums.list_albums()                     # 建索引缓存 + 目录快照
         self.plugin.listing.list_folder_items('albumA', 1, 40)
         self.assertTrue(self.plugin.albums.albums_cached)
         self.assertIsNotNone(self.plugin.dirs_snapshot.snapshot(time.time()))
         self.assertGreater(self.plugin.listing.cache_entries, 0)
 
-        result = self.plugin.invalidate_derived('image-viewer:test')
+        result = self.plugin.invalidate_derived(
+            'image-viewer:test', keep_snapshot=True, dirs=['albumA'])
 
         self.assertEqual(result, {'reason': 'image-viewer:test'})
-        self.assertFalse(self.plugin.albums.albums_cached)
+        self.assertFalse(self.plugin.albums.albums_cached, '相册索引仍要立即失效')
         # `snapshot(now)` 要显式传时间：它是"这个时刻能否复用快照"的判定
-        self.assertIsNone(self.plugin.dirs_snapshot.snapshot(time.time()))
+        self.assertIsNotNone(self.plugin.dirs_snapshot.snapshot(time.time()),
+                             '文件级失效不能作废目录快照')
+        self.assertNotIn('albumA', self.plugin.entries.entries, '动过的目录要丢条目')
+        self.assertIn('albumB', self.plugin.entries.entries, '没动过的目录继续复用')
         self.assertEqual(self.plugin.listing.cache_entries, 0)
+
+    def test_invalidate_derived_without_dirs_drops_all_entries(self):
+        """不知道动过哪些目录时整份丢条目：仍保留快照（比走全盘枚举便宜）。"""
+        self.plugin.albums.list_albums()
+        self.assertIsNotNone(self.plugin.dirs_snapshot.snapshot(time.time()))
+
+        self.plugin.invalidate_derived('image-viewer:unknown', keep_snapshot=True)
+
+        self.assertEqual(self.plugin.entries.entries, {}, '不知道动过哪些目录就不能复用任何条目')
+        self.assertIsNotNone(self.plugin.dirs_snapshot.snapshot(time.time()),
+                             '整份丢条目时目录快照仍要保留')
+
+    def test_invalidate_derived_default_drops_dir_snapshot(self):
+        """目录级失效（新建 / 删除目录、下载器落盘）保持整份失效。"""
+        self.plugin.albums.list_albums()
+        self.assertIsNotNone(self.plugin.dirs_snapshot.snapshot(time.time()))
+
+        result = self.plugin.invalidate_derived('image-viewer:dirs')
+
+        self.assertEqual(result, {'reason': 'image-viewer:dirs'})
+        self.assertFalse(self.plugin.albums.albums_cached)
+        self.assertIsNone(self.plugin.dirs_snapshot.snapshot(time.time()),
+                          '目录集合可能变化时必须作废目录快照')
 
     def test_move_files_updates_both_ends(self):
         self.assertEqual(self._album('albumA')['image_count'], 5)
@@ -802,6 +837,8 @@ class DerivedInvalidationTestCase(unittest.TestCase):
 
         self.assertEqual(result['moved'], ['albumA/img0.png'])
         self.assertEqual(result['errors'], [])
+        self.assertIsNotNone(self.plugin.dirs_snapshot.snapshot(time.time()),
+                             '移动图片不改目录集合：目录快照必须保留')
         self.assertEqual(self._album('albumA')['image_count'], 4, '源目录少一张')
         self.assertEqual(self._album('albumB')['image_count'], 2, '目标目录多一张')
         src_urls = [item.get('url') for item in
@@ -959,6 +996,45 @@ class DerivedCacheTrustTestCase(unittest.TestCase):
         self.assertEqual(float(built['albumA']['mtime']), near_mtime,
                          '相差不到半秒也算变化：条目要重扫而不是复用')
 
+    def test_save_index_survives_concurrent_entry_inserts(self):
+        """落盘索引与 API 线程的 `entries.scan` 并发：不许抛
+
+        `RuntimeError: dictionary changed size during iteration`。条目存储是
+        `list_albums`（可能跑在引擎的校验线程）与列表分页（API 线程）共用的，
+        `_save_index` 必须先整体快照再遍历。
+        """
+        index = self.plugin.albums
+        index.list_albums()
+        live = self.plugin.entries.entries
+        # 拉长一次遍历的窗口：条目越多，另一条线程在遍历中途插入的概率越大
+        for number in range(2000):
+            live[f'bulk{number}'] = {'path': f'bulk{number}', 'mtime': 1.0}
+        stop = threading.Event()
+        failures = []
+
+        def producer():
+            # 有上限：无界插入会让落盘体积在测试里失控（每次保存都拷贝整份字典）
+            for number in range(20000):
+                if stop.is_set():
+                    return
+                live[f'race{number}'] = {'path': f'race{number}', 'mtime': 1.0}
+
+        thread = threading.Thread(target=producer, name='album-entry-writer', daemon=True)
+        thread.start()
+        try:
+            for _ in range(10):
+                try:
+                    index._save_index()
+                except Exception as exc:            # 竞态命中才会走到
+                    failures.append(exc)
+        finally:
+            stop.set()
+            thread.join(10)
+        self.assertEqual(failures, [], f'并发保存相册索引时抛了异常: {failures[:1]}')
+        payload = json.loads(self._cache_file('albums_index.json').read_text(encoding='utf-8'))
+        self.assertIsInstance(payload.get('dirs'), dict, '落盘的索引必须是完整 JSON')
+        self.assertIn('bulk0', payload['dirs'])
+
 
 class CoverVersionTestCase(unittest.TestCase):
     """封面版本号：相册与瓦片结果都带封面文件自身的 mtime。"""
@@ -1048,7 +1124,7 @@ class FreshnessTimingTestCase(unittest.TestCase):
         )
         from shell.backend.freshness import engine_for
 
-        self.engine = engine_for(self.plugin)
+        self.engine: Any = engine_for(self.plugin)
         self.assertIsNotNone(self.engine, 'image-viewer 必须声明 freshness_spec()')
         self.engine.spec.min_sync_interval = 0.0
 
@@ -1142,6 +1218,148 @@ class FreshnessTimingTestCase(unittest.TestCase):
         self.assertIsNone(self.plugin.dirs_snapshot.snapshot(time.time()))
         self.assertNotIn('albumC',
                          [album['path'] for album in self.plugin.albums.list_albums()['albums']])
+
+
+class RestampBatchTestCase(unittest.TestCase):
+    """纯 restamp 批次（引擎按 `content_version` 重算）不删落盘相册索引。
+
+    预算 400 / 9000 目录时，一次版本升级会被切成二十多趟 sync；每趟都整份作废相册
+    索引，等于把"升级后重建一次"变成"每趟重建一次"。引擎给这类条目带
+    `restamp: True`，插件据此只丢条目、不碰落盘索引；真实增删改仍是整份失效。
+    引擎还没带该字段时按"有变化"处理，宁可多失效一次也不漏。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        for name in ['001_p0.png', '001_p1.png']:
+            _make_image(self.root / 'albumA' / name, 120, 90)
+        _make_image(self.root / 'albumB' / '222_p0.png', 120, 90)
+        self.module = _load_plugin_module()
+        self.module.ImageViewerPlugin._resolved_config = {'root_dir': str(self.root)}
+        self.plugin = self.module.ImageViewerPlugin(
+            {'name': 'image-viewer'},
+            {'directories': {'data_root': str(self.root)}},
+        )
+        self.index_file = self.root / '.cache' / 'albums_index.json'
+
+    def _restamp(self, dirs):
+        self.plugin.freshness.derive([
+            {'dir': name, 'key': f'{name}/001_p0.png', 'restamp': True} for name in dirs])
+
+    def test_restamp_only_batch_keeps_persisted_album_index(self):
+        self.plugin.albums.list_albums()
+        self.assertTrue(self.index_file.exists(), '先让索引落盘')
+        self.assertTrue(self.plugin.albums.albums_cached)
+
+        self._restamp(['albumA'])
+
+        self.assertNotIn('albumA', self.plugin.entries.entries,
+                         '条目要丢：下一次重建按新规则重扫这个目录')
+        self.assertNotIn('', self.plugin.entries.entries, '祖先与合成根要一起丢')
+        self.assertTrue(self.index_file.exists(), '纯 restamp 不许删落盘相册索引')
+        self.assertTrue(self.plugin.albums.albums_cached,
+                        '没有真实文件变化，已算出的相册树可以继续用到 TTL 过期')
+
+    def test_budgeted_restamp_passes_keep_the_index(self):
+        """模拟引擎按预算分趟推进（每趟一批目录）：整个升级期索引都留在盘上。"""
+        self.plugin.albums.list_albums()
+        for batch in (['albumA'], ['albumB']):
+            self._restamp(batch)
+            self.assertTrue(self.index_file.exists(),
+                            f'{batch} 批次后落盘索引被删了：升级期会反复重建')
+        # 升级走完后的重建仍能正常落盘
+        self.plugin.albums.list_albums()
+        self.assertTrue(self.index_file.exists())
+        payload = json.loads(self.index_file.read_text(encoding='utf-8'))
+        self.assertIn('albumA', payload['dirs'], '重扫后条目回到索引里')
+
+    def test_real_change_in_batch_still_invalidates(self):
+        self.plugin.albums.list_albums()
+
+        self.plugin.freshness.derive([
+            {'dir': 'albumA', 'key': 'albumA/001_p0.png', 'restamp': True},
+            {'dir': 'albumB', 'key': 'albumB/new.png'},          # 真实新增
+        ])
+
+        self.assertFalse(self.plugin.albums.albums_cached)
+        self.assertFalse(self.index_file.exists(), '有真实增删改时仍要作废落盘索引')
+
+    def test_engine_without_restamp_field_still_invalidates(self):
+        """引擎还没带 `restamp` 时按"有变化"处理：宁可多失效一次，也不漏。"""
+        self.plugin.albums.list_albums()
+
+        self.plugin.freshness.derive([{'dir': 'albumA', 'key': 'albumA/001_p0.png'}])
+
+        self.assertFalse(self.plugin.albums.albums_cached)
+        self.assertFalse(self.index_file.exists())
+
+
+class MultiRootFreshnessTestCase(unittest.TestCase):
+    """多根（额外图库 `__目录名`）下的作用域解析、条目键还原与目录集合信号。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        base = Path(self._tmp.name)
+        self.primary = base / 'primary'
+        self.extra = base / 'extra_lib'
+        _make_image(self.primary / 'albumA' / '001_p0.png', 120, 90)
+        _make_image(self.extra / 'albumB' / '002_p0.png', 120, 90)
+        self.module = _load_plugin_module()
+        self.module.ImageViewerPlugin._resolved_config = {
+            'root_dir': str(self.primary),
+            'extra_roots': str(self.extra),
+        }
+        self.plugin = self.module.ImageViewerPlugin(
+            {'name': 'image-viewer'},
+            {'directories': {'data_root': str(self.primary)}},
+        )
+        from shell.backend.freshness import engine_for
+
+        self.engine: Any = engine_for(self.plugin)
+        self.assertIsNotNone(self.engine, 'image-viewer 必须声明 freshness_spec()')
+        self.engine.spec.min_sync_interval = 0.0
+        nodes = self.plugin.paths.namespace_nodes()
+        self.assertEqual(len(nodes), 1, f'额外图库应有一个命名空间节点：{nodes}')
+        self.namespace = nodes[0]
+
+    def test_extra_root_scope_resolves_to_physical_dir(self):
+        target, _inner = self.plugin.paths.resolve_dir(f'{self.namespace}/albumB')
+        self.assertIsNotNone(target, '虚拟作用域要能映射到物理目录')
+        self.assertEqual(target.resolve(), (self.extra / 'albumB').resolve())
+        self.assertTrue(self.plugin.paths.is_safe(f'{self.namespace}/albumB'))
+
+    def test_entries_keys_from_extra_root_are_virtual_paths(self):
+        self.engine.sync('', force=True)                 # 铺底：两棵根都进指纹库
+        self.plugin.albums.list_albums()                 # 建条目
+        key = f'{self.namespace}/albumB'
+        self.assertIn(key, self.plugin.entries.entries, '额外根的条目键带命名空间前缀')
+
+        _make_image(self.extra / 'albumB' / '002_p1.png', 120, 90)
+        report = self.engine.sync(key, force=True)
+
+        self.assertEqual(report.get('added'), 1, '作用域要能落到额外图库的子目录')
+        self.assertNotIn(key, self.plugin.entries.entries,
+                         '插件收到的键是虚拟路径（含命名空间前缀），条目按它丢')
+
+    def test_empty_dir_in_extra_root_resets_dir_snapshot(self):
+        self.engine.sync('', force=True)
+        self.plugin.albums.list_albums()
+        self.assertIsNotNone(self.plugin.dirs_snapshot.snapshot(time.time()))
+
+        (self.extra / 'albumC').mkdir()                  # 空目录：条目层没有任何变化
+
+        report = self.engine.sync('', force=True)
+
+        self.assertIn(f'{self.namespace}/albumC', report.get('new_dirs') or [],
+                      '目录集合信号要带命名空间前缀')
+        self.assertIsNone(self.plugin.dirs_snapshot.snapshot(time.time()),
+                          '额外根的空目录新增同样要作废目录快照')
+        self.assertIn(f'{self.namespace}/albumC',
+                      [album['path'] for album in self.plugin.albums.list_albums()['albums']],
+                      '新目录要在这一次重建里就可见')
 
 
 if __name__ == '__main__':

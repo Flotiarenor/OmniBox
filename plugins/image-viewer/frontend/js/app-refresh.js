@@ -47,6 +47,10 @@ Object.assign(ImageViewer.prototype, {
      * 内容页拿不到。`reload` 为真且报告里确实有变化时才重载 —— 增量同步的报告为空
      * 表示"什么都没变"，此时重载只是白白重取一遍并打断当前浏览。
      *
+     * "有变化"包含目录集合信号（`new_dirs` / `vanished_dirs`，引擎给数组、插件的
+     * `dirs_changed` 钩子给计数）：新建一个空目录时条目层没有任何增删，只靠
+     * added/changed/removed 判断会把这次变化整个漏掉，相册层就看不到新目录。
+     *
      * `skip`（引擎忙 / 节流 / 非法作用域）不重载：没有任何变化被确认，交给下一次
      * 重新可见重试。
      */
@@ -62,7 +66,18 @@ Object.assign(ImageViewer.prototype, {
             return null;
         }
         if (!report || report.action === 'skip') return report;
+        const dirSignal = (key) => {
+            let total = 0;
+            [report, report.dirs_changed].forEach((group) => {
+                if (!group || typeof group !== 'object') return;
+                const value = group[key];
+                total += Array.isArray(value) ? value.length : (Number(value) || 0);
+            });
+            return total;
+        };
         const changed = !!report.invalidated
+            || dirSignal('new_dirs') > 0
+            || dirSignal('vanished_dirs') > 0
             || [report.added, report.changed, report.removed]
                 .some((value) => (Number(value) || 0) > 0);
         if (changed && reload) await this._onFreshnessChanged();

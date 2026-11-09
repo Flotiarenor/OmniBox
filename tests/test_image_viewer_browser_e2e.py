@@ -26,6 +26,7 @@ import time
 import unittest
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -36,6 +37,9 @@ if str(PROJECT_ROOT) not in sys.path:
 FIRST_PAINT_BUDGET_S = 6.0
 # 服务端 list_albums 的预算（诊断钩子报的毫秒数）
 LIST_ALBUMS_BUDGET_MS = 1500.0
+# 相册索引的进程内 TTL（`plugins/image-viewer/backend/const.py` 的 `Limits.albums_ttl`）。
+# "稳态重建不许全量重扫"的判据必须先让 TTL 过期，才会发生一次真正的重建。
+ALBUM_INDEX_TTL_S = 30.0
 
 
 def _free_port() -> int:
@@ -87,6 +91,7 @@ class _ShellServer:
                      'X-Omnibox-Token': self.token,
                      'Cookie': f'omnibox_token={self.token}'})
         started = time.perf_counter()
+        body: Any
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 body = json.loads(r.read().decode('utf-8'))
@@ -189,15 +194,31 @@ class ImageViewerBrowserE2ETestCase(unittest.TestCase):
         """索引重建**不许**全量重扫：稳态下重扫目录数必须远小于总目录数。
 
         历史事故：`pixiv` 标记的计算方式与索引里的不一致，于是 9000+ 个目录每次
-        都被当成"变了"而重扫（12.5s）—— 这一步把它拦下来。首次运行（索引尚未
-        由本版本的规则算过）允许全量迁移一次，因此只在"重建过两轮之后"断言。
+        都被当成"变了"而重扫（12.5s）—— 这一步把它拦下来。
+
+        判据读 `last_build_scans`（每次重建都重写、TTL 命中时保留），不读
+        `list_albums_stages_ms`：后者在 TTL 命中分支里是空 dict，`build_scan_count`
+        读出来恒为 0，断言永远成立。先做一次**无缓存重建**的对照，确认这个计数器
+        确实在数。
         """
-        self._list_albums()                  # 第 1 轮：允许全量迁移一次
+        self._wait_freshness_idle()
+        # 对照：清空派生缓存后重建必须把整棵树扫一遍 —— 证明 last_build_scans 不是恒 0
+        self.server.call('image-viewer__refresh')
+        self._list_albums()
+        control = self._diagnose()
+        entries = control['album_index_entries']
+        self.assertGreater(entries, 10, '相册索引条目太少，用例没有意义')
+        control_scans = float(control.get('last_build_scans') or 0)
+        self.assertGreaterEqual(
+            control_scans, entries * 0.9,
+            f'无缓存重建只重扫了 {control_scans:.0f} / {entries} 个目录 —— '
+            f'last_build_scans 没有反映真实工作，稳态断言会恒真')
+
+        # 稳态：TTL 过期后的重建复用条目缓存，重扫数必须远小于条目数
+        time.sleep(ALBUM_INDEX_TTL_S + 2)
         self._list_albums()
         diag = self._diagnose()
-        entries = diag['album_index_entries']
-        self.assertGreater(entries, 10, '相册索引条目太少，用例没有意义')
-        scanned = float((diag.get('list_albums_stages_ms') or {}).get('build_scan_count', 0))
+        scanned = float(diag.get('last_build_scans') or 0)
         self.assertLess(
             scanned, entries * 0.5,
             f'索引重建重扫了 {scanned:.0f} / {entries} 个目录 —— 缓存判定失效了'

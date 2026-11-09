@@ -8,11 +8,13 @@
 //   2. `omnibox:chrome` 带 `freshness_scope`：壳据此记住作用域并作为 `autoSync(scope)`
 //      的入参。
 //   3. `_syncFreshness(reload)`：调 `Freshness.sync('image-viewer', scope)`；只有报告里
-//      确实有 added / changed / removed / invalidated 且 `reload` 为真时才重载；`skip`、
-//      零变更、同步异常都不重载。
+//      确实有变化（added / changed / removed / invalidated，或目录集合信号
+//      `new_dirs` / `vanished_dirs`）且 `reload` 为真时才重载；`skip`、零变更、同步
+//      异常都不重载。空目录新增在条目层没有任何增删，只看计数会漏掉整个变化。
 //
 // 另外锁住缩略图 URL 的版本号优先取封面文件自身的 mtime（相册/瓦片），普通图片仍用
-// 自己的 mtime：`/thumbs` 带一天强缓存，替换同名封面不改目录 mtime，只有版本号能击穿它。
+// 自己的 mtime，且版本号精确到毫秒（同秒替换同名文件也要换 URL）：`/thumbs` 带一天
+// 强缓存，替换同名封面不改目录 mtime，只有版本号能击穿它。
 //
 // 端到端那一段（重新可见 → 同步 → 重载相册与当前视图）由 tests/js/image_viewer_lifecycle.mjs
 // 的「场景 5」用完整 DOM/Bridge 替身驱动；本文件只测本页自己的判定与上报。
@@ -206,6 +208,31 @@ console.log('场景 3：_syncFreshness 的调用参数与重载判定');
     await iv._syncFreshness(true);
     check('skip 不重载', reloads === 0, `实际 ${reloads}`);
 
+    // 目录集合信号：空目录新增时 added/changed/removed 都是 0，只看计数会漏掉整个变化
+    env.freshness.reports.push({ action: 'sync', new_dirs: ['albumC'], vanished_dirs: [] });
+    reloads = 0;
+    await iv._syncFreshness(true);
+    check('新增空目录（new_dirs 数组）算变化 → 重载', reloads === 1, `实际 ${reloads}`);
+
+    env.freshness.reports.push({ action: 'sync', new_dirs: [], vanished_dirs: ['albumC'] });
+    reloads = 0;
+    await iv._syncFreshness(true);
+    check('目录消失（vanished_dirs 数组）算变化 → 重载', reloads === 1, `实际 ${reloads}`);
+
+    env.freshness.reports.push({
+        action: 'sync', added: 0, changed: 0, removed: 0,
+        new_dirs: [], vanished_dirs: [], dirs_changed: { new_dirs: 0, vanished_dirs: 0 },
+    });
+    reloads = 0;
+    await iv._syncFreshness(true);
+    check('目录集合为空且无条目变化 → 不重载', reloads === 0, `实际 ${reloads}`);
+
+    // 插件 `dirs_changed` 钩子返回的是计数而不是数组，同样要认
+    env.freshness.reports.push({ action: 'sync', dirs_changed: { new_dirs: 2, vanished_dirs: 0 } });
+    reloads = 0;
+    await iv._syncFreshness(true);
+    check('dirs_changed 计数也算变化 → 重载', reloads === 1, `实际 ${reloads}`);
+
     env.freshness.sync = async () => { throw new Error('boom'); };
     reloads = 0;
     const failed = await iv._syncFreshness(true);
@@ -217,23 +244,31 @@ console.log('场景 3：_syncFreshness 的调用参数与重载判定');
     check('没有 Freshness.sync 时静默跳过', legacy === null && reloads === 0);
 }
 
-console.log('场景 4：缩略图 URL 的版本号优先取封面文件自身的 mtime');
+console.log('场景 4：缩略图 URL 的版本号优先取封面文件自身的 mtime（毫秒级）');
 {
     const env = loadImageViewer();
     const iv = new env.ImageViewer();
 
     const cover = iv._thumbUrl({ url: 'albumA/001_p0.png', cover_mtime: 1700000100.4, mtime: 1700000000 });
-    check('相册/瓦片封面用 cover_mtime', cover.endsWith('&v=1700000100'), `实际 ${cover}`);
+    check('相册/瓦片封面用 cover_mtime（毫秒版本）', cover.endsWith('&v=1700000100400'),
+        `实际 ${cover}`);
 
     const image = iv._thumbUrl({ url: 'albumA/001_p1.png', mtime: 1700000000.7 });
-    check('普通图片仍用自身 mtime', image.endsWith('&v=1700000001'), `实际 ${image}`);
+    check('普通图片仍用自身 mtime（毫秒版本）', image.endsWith('&v=1700000000700'),
+        `实际 ${image}`);
 
     const fallback = iv._thumbUrl({ url: 'albumA/001_p0.png', cover_mtime: 0, mtime: 1700000000 });
-    check('cover_mtime 为空时回退到 mtime', fallback.endsWith('&v=1700000000'), `实际 ${fallback}`);
+    check('cover_mtime 为空时回退到 mtime', fallback.endsWith('&v=1700000000000'),
+        `实际 ${fallback}`);
 
     const byCoverField = iv._thumbUrl({ cover: 'albumA/001_p0.png', cover_mtime: 1700000100 });
-    check('相册对象只给 cover 字段时同样带版本', byCoverField.endsWith('&v=1700000100'),
+    check('相册对象只给 cover 字段时同样带版本', byCoverField.endsWith('&v=1700000100000'),
         `实际 ${byCoverField}`);
+
+    // 同一秒内的两次 mtime：秒级版本号会算出同一个 URL，毫秒级必须不同
+    const nearA = iv._thumbUrl({ url: 'albumA/001_p0.png', cover_mtime: 1700000000.2 });
+    const nearB = iv._thumbUrl({ url: 'albumA/001_p0.png', cover_mtime: 1700000000.9 });
+    check('同秒替换同名封面 → 版本号不同', nearA !== nearB, `${nearA} vs ${nearB}`);
 
     const noStamp = iv._thumbUrl({ url: 'albumA/001_p0.png' });
     check('没有任何时间戳时不带版本号', !noStamp.includes('&v='), `实际 ${noStamp}`);

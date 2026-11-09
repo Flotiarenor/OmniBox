@@ -18,7 +18,7 @@
 """
 
 import logging
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 log = logging.getLogger(__name__)
 
@@ -40,13 +40,14 @@ class FreshnessProvider:
     """向壳声明新鲜度规格，并实现它的三个钩子。"""
 
     def __init__(self, paths: Any, thumbs: Any, albums: Any, entries: Any,
-                 listing: Any, extensions: Any, limits: Any,
+                 listing: Any, books: Any, extensions: Any, limits: Any,
                  engine_provider: Callable[[], Optional[Any]]) -> None:
         self._paths = paths
         self._thumbs = thumbs
         self._albums = albums
         self._entries = entries
         self._listing = listing
+        self._books = books
         self._extensions = extensions
         self._limits = limits
         self._engine = engine_provider
@@ -102,11 +103,20 @@ class FreshnessProvider:
         **目录快照保留**：条目级失效已经按"变化目录 + 各级父目录"精确丢过，目录集合
         本身没变，重走全树只会把便宜的一次同步变成一次 6-23 秒的枚举。目录集合真的
         变了由 `dirs_changed` 单独作废快照。
+
+        **纯 restamp 批次只丢条目**：引擎在 `content_version` 落后、按目录重算时会给
+        条目带上 `restamp: True`；那些条目只是按新解析规则重算，文件集合没变。此时不
+        删落盘的相册索引、也不清 TTL 缓存 —— 否则一次 9000 目录的升级会被 400 目录/
+        趟的预算切成二十多趟，每趟都白删一次索引再重建一次。有真实增删改的批次行为
+        不变（整份失效、保留快照）。引擎未带该字段时按"有变化"处理，宁可多失效一次。
         """
-        self._entries.drop_nodes(items)
-        self._listing.clear_cache()
-        self._albums.invalidate(keep_snapshot=True)
-        return {'count': len(items)}
+        entries = [item for item in (items or []) if isinstance(item, dict)]
+        restamped = [item for item in entries if item.get('restamp')]
+        self._entries.drop_nodes(entries)
+        if len(restamped) < len(entries):
+            self._listing.clear_cache()
+            self._albums.invalidate(keep_snapshot=True)
+        return {'count': len(entries), 'restamped': len(restamped)}
 
     def prune(self, keys) -> int:
         """条目消失：删缩略图行、丢尺寸元数据、作废所属目录的相册节点。
@@ -147,6 +157,27 @@ class FreshnessProvider:
         self._albums.invalidate()
         self._listing.clear_cache()
         return {'new_dirs': new, 'vanished_dirs': vanished}
+
+    def invalidate_derived(self, reason: str = '', keep_snapshot: bool = False,
+                           dirs: Optional[List[str]] = None) -> Dict[str, Any]:
+        """宿主侧派生数据失效入口：别的插件写完本插件的根之后调用。
+
+        相册索引的 TTL、列表缓存与漫画根解析各有判据，只清一处会留下陈旧窗口。
+        `keep_snapshot=True` 给**只改文件**的写入方（删除 / 移动图片）：目录集合没变，
+        按 `dirs`（动过的目录）精确丢条目，下一次相册重建就不必重走全树（机械盘
+        6-23s）；不知道动过哪些目录时整份丢条目 —— 仍比走全盘枚举便宜。可能增删目录
+        的写入方（新建 / 删除目录、下载器落盘）保持默认 False，让目录快照与命名空间
+        映射一起重来。`reason` 原样回传，供写入方区分来源。
+        """
+        if keep_snapshot:
+            if dirs:
+                self._entries.drop_nodes([{'dir': rel} for rel in dirs])
+            else:
+                self._entries.clear()
+        self._albums.invalidate(keep_snapshot=keep_snapshot)
+        self._listing.clear_cache()
+        self._books.invalidate()
+        return {'reason': reason}
 
     def pass_end(self, report, verified: bool) -> Dict[str, Any]:
         """整趟结束：**在任务里**把相册索引重建好，"完成"就等于下一帧直接可读。

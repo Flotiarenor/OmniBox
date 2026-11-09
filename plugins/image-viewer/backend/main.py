@@ -14,7 +14,7 @@
 """
 
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List
+from typing import Any, ClassVar, Dict, List, Optional
 
 from shell.backend.freshness import engine_for
 from shell.backend.plugin_base import PluginBase
@@ -87,7 +87,7 @@ class ImageViewerPlugin(PluginBase):
             self.paths, self.thumbs, self.albums, self.listing, extensions)
         self.freshness = _freshness.FreshnessProvider(
             self.paths, self.thumbs, self.albums, self.entries, self.listing,
-            extensions, limits, lambda: engine_for(self))
+            self.books, extensions, limits, lambda: engine_for(self))
         if self._resolved_config.get('dirs_prewarm'):
             self.dirs_snapshot.prewarm()
 
@@ -189,17 +189,10 @@ class ImageViewerPlugin(PluginBase):
     def delete_files(self, rel_paths: List[str]) -> Dict:
         return self.file_ops.delete_files(rel_paths)
 
-    def invalidate_derived(self, reason: str = '') -> Dict[str, Any]:
-        """宿主侧派生数据失效入口：别的插件写完本插件的根之后调用。
-
-        三处派生状态各有各的判据，只清一处就会留下陈旧窗口：相册索引 30 秒 TTL、
-        列表缓存按目录 mtime 自愈、漫画根解析另有 30 秒 TTL。相册索引的失效顺带作废
-        目录快照与命名空间映射。`reason` 原样回传，供写入方区分来源。
-        """
-        self.albums.invalidate()
-        self.listing.clear_cache()
-        self.books.invalidate()
-        return {'reason': reason}
+    def invalidate_derived(self, reason: str = '', keep_snapshot: bool = False,
+                           dirs: Optional[List[str]] = None) -> Dict[str, Any]:
+        """宿主侧派生数据失效入口（编排见 `freshness.FreshnessProvider.invalidate_derived`）。"""
+        return self.freshness.invalidate_derived(reason, keep_snapshot, dirs)
 
     def freshness_spec(self) -> Dict[str, Any]:
         return self.freshness.spec()

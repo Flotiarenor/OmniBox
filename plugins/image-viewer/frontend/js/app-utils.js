@@ -78,13 +78,19 @@ Object.assign(ImageViewer.prototype, {
      * 相册与子相册卡片传 `cover_mtime`（封面文件自身的 mtime）：它们的 `mtime` 是
      * 目录或子树里最新文件的 mtime，替换同名封面时不会变，拿它当版本号等于不换 URL。
      * 普通图片没有 `cover_mtime`，仍用 `mtime`。
+     *
+     * 版本号用**毫秒**（`Math.round(秒 * 1000)`）：下载器或 `os.utime` 替换同名文件时
+     * 两次 mtime 只差几百毫秒，秒级取整会算出同一个版本号，一天强缓存于是不换 URL。
+     * 没有时间戳（`cover_mtime` 与 `mtime` 都是 0 / 缺失）时才省略版本号。
      * 组件缺失时（本页脱离壳单独打开）退化成不带版本号的 URL，不影响显示。
      */
     _thumbUrl(item) {
         const path = (item && (item.url || item.cover)) || '';
         if (!path) return '';
-        const stamp = (item && (item.cover_mtime || item.mtime)) || 0;
-        const version = stamp ? Math.round(stamp) : '';
+        const coverStamp = Number(item && item.cover_mtime) || 0;
+        // `cover_mtime` 缺失 / 为 0 时退回条目自身的 mtime（普通图片只有它）
+        const stamp = coverStamp || Number(item && item.mtime) || 0;
+        const version = stamp ? Math.round(stamp * 1000) : '';
         if (window.Freshness && typeof window.Freshness.assetUrl === 'function') {
             return window.Freshness.assetUrl(path, version);
         }

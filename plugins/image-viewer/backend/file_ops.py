@@ -26,16 +26,16 @@ class FileOps:
 
     def __init__(self, paths: Any, thumbs: Any, config: Any, albums: Any,
                  is_protected: Callable[[Path], bool], extensions: Any,
-                 invalidate_derived: Callable[[str], Dict[str, Any]]) -> None:
+                 invalidate_derived: Callable[..., Dict[str, Any]]) -> None:
         self._paths = paths
         self._thumbs = thumbs
         self._config = config
         self._albums = albums
         self._is_protected = is_protected
         self._extensions = extensions
-        # 动过磁盘之后让派生数据（相册索引 / 列表缓存 / 漫画根解析）整体失效的宿主
-        # 入口。只清列表缓存不够：相册索引有自己的 TTL，会让"删了图片但相册树计数
-        # 不变"持续到过期为止。
+        # 动过磁盘之后让派生数据（相册索引 / 列表缓存 / 漫画根解析）失效的宿主入口。
+        # 只清列表缓存不够：相册索引有自己的 TTL，会让"删了图片但相册树计数不变"
+        # 持续到过期为止。删除 / 移动只改文件，传 `keep_snapshot=True` 保住目录快照。
         self._invalidate_derived = invalidate_derived
 
     # ===== 目录 =====
@@ -144,8 +144,11 @@ class FileOps:
         if deleted:
             # 删成功就立刻失效派生数据：列表缓存按目录 mtime 自愈，但相册索引另有
             # 30 秒 TTL，只清列表会让相册树的张数陈旧（下一次 list_albums 要等过期
-            # 或手动校验）。整份失效的代价只是一次必要的目录枚举。
-            self._invalidate_derived('image-viewer:delete')
+            # 或手动校验）。文件级操作**不改目录集合**，目录快照必须保留：整份失效
+            # 换来的是一次全树枚举（机械盘 6-23s），远大于它要修的陈旧窗口。动过的
+            # 目录单独传下去，条目精确作废、递归计数跟着重算。
+            dirs = sorted({str(rel).rpartition('/')[0] for rel in deleted})
+            self._invalidate_derived('image-viewer:delete', keep_snapshot=True, dirs=dirs)
             self._thumbs.flush()
         return {'deleted': deleted, 'errors': errors}
 
@@ -189,8 +192,10 @@ class FileOps:
                 errors.append(f'移动失败 {rel}: {exc!s}')
         if moved:
             # 源与目标是两个目录：整份失效同时覆盖两端（源少一张、目标多一张），
-            # 按目录挑着作废会漏掉父级的递归计数与封面。
-            self._invalidate_derived('image-viewer:move')
+            # 按目录挑着作废会漏掉父级的递归计数与封面。移动的是文件，目录集合没变
+            # —— 保留目录快照，否则下一次相册重建要重走全树（机械盘 6-23s）。
+            dirs = sorted({str(rel).rpartition('/')[0] for rel in moved} | {str(dest_rel)})
+            self._invalidate_derived('image-viewer:move', keep_snapshot=True, dirs=dirs)
             self._thumbs.flush()
         return {'moved': moved, 'errors': errors}
 
