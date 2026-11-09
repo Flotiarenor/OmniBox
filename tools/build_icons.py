@@ -65,7 +65,7 @@ ICON_NAME_RE = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
 
 HEADER = """<!--This product includes software developed by flotiarenor.Copyright 2026 flotiarenor-->
 <!--
-  OmniBox 图标 sprite —— 由 tools/build_icons.py 生成，请勿手工编辑。
+  格子铺（Cubby）图标 sprite —— 由 tools/build_icons.py 生成，请勿手工编辑。
   图标来自 Lucide（{package}），授权 {license}（https://lucide.dev/license）。
   增删图标：tools/fetch_lucide_icons.py --add <名字>，再跑 tools/build_icons.py。
 

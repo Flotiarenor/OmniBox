@@ -24,8 +24,8 @@
     --selftest
         在临时目录造用例，自检 dups 与 lrc 的判定（不碰媒体库）。
 
-媒体库根目录的解析顺序（命中即打印来源）：--root、OMNIBOX_HOME、脚本上三级
-（开发模式 = 仓库根）、exe 同级（冻结模式）、%APPDATA%\\OmniBox。注意冻结模式下
+媒体库根目录的解析顺序（命中即打印来源）：--root、CUBBY_HOME、脚本上三级
+（开发模式 = 仓库根）、exe 同级（冻结模式）、%APPDATA%\\Cubby。注意冻结模式下
 用户数据在 exe 旁边而不是打包解包目录，所以不能只按脚本位置推断。
 
 缓存只读、不写回：索引 / 缩略图 / 收藏与播放列表都是插件的职责，外部脚本改它会让
@@ -147,11 +147,11 @@ def metadata_reader():
     return module.MetadataReader
 
 
-# ===== 媒体库根目录：读 OmniBox 自己的配置，不靠脚本位置猜 =====
+# ===== 媒体库根目录：读格子铺自己的配置，不靠脚本位置猜 =====
 
 def config_candidates() -> list[Path]:
     candidates = []
-    home = os.environ.get('OMNIBOX_HOME', '').strip()
+    home = os.environ.get('CUBBY_HOME', '').strip()
     if home:
         candidates.append(Path(home).expanduser() / CONFIG_REL)
     # 开发模式：plugins/media-player/tool/ 往上三级就是仓库根
@@ -159,7 +159,7 @@ def config_candidates() -> list[Path]:
     # 冻结模式：用户数据在 exe 旁边（打包解包目录是临时目录，不能用来找配置）
     candidates.append(Path(sys.executable).resolve().parent / CONFIG_REL)
     appdata = os.environ.get('APPDATA') or str(Path.home())
-    candidates.append(Path(appdata) / 'OmniBox' / CONFIG_REL)
+    candidates.append(Path(appdata) / 'Cubby' / CONFIG_REL)
     unique = []
     for candidate in candidates:
         if candidate not in unique:
@@ -598,7 +598,7 @@ def main(argv: list[str] | None = None) -> int:
         prog='library_tool.py',
         description='media-player 媒体库维护工具：专辑标签 / 重复文件 / 歌词对照',
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--root', help='媒体库根目录；默认按 OmniBox 配置解析')
+    parser.add_argument('--root', help='媒体库根目录；默认按格子铺配置解析')
     parser.add_argument('--selftest', action='store_true', help='临时目录造用例自检，不碰媒体库')
     sub = parser.add_subparsers(dest='command')
 

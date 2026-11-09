@@ -25,7 +25,7 @@
       if (window.parent && window.parent !== window) {
         window.parent.postMessage({
           type: 'omnibox:native-error',
-          error: 'Pixiv 同步逻辑页缺少 /shell/native-client.js，请重启 OmniBox 后再打开本面板。',
+          error: 'Pixiv 同步逻辑页缺少 /shell/native-client.js，请重启格子铺后再打开本面板。',
         }, window.location.origin);
       }
     } catch (e) {

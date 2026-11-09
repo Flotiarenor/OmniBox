@@ -1,4 +1,4 @@
-# OmniBox 主程序方向：Companion 插件与独立运行环境
+# 格子铺（Cubby）主程序方向：Companion 插件与独立运行环境
 
 > 版本：**v1.0（方向定稿）**
 > 日期：2026-08-21
@@ -9,7 +9,7 @@
 
 ## 1. 目标
 
-让 OmniBox 在「轻量内嵌插件」之外，原生支持两类新能力：
+让格子铺在「轻量内嵌插件」之外，原生支持两类新能力：
 
 1. **Companion 插件**：独立插件作为另一个插件的功能扩展，宿主保持纯净。
 2. **自带 venv / 独立运行环境**：重依赖（torch、onnxruntime 等）在插件自己的环境与进程中运行。
@@ -210,7 +210,7 @@ class AdapterProcessManager:
 > **状态：规划中。** 当前代码中没有 `shell/backend/adapter_process.py`，`PluginBase`
 > 没有 `adapter_*` 方法，`PluginManager` 也不处理 `kind: "local-adapter"`。
 >
-> 适用对象：任何希望作为 OmniBox 插件被接入的**外部大型程序**（独立项目、独立 venv、
+> 适用对象：任何希望作为格子铺插件被接入的**外部大型程序**（独立项目、独立 venv、
 > 独立可运行，如 ALAS、战报识别系统、本地模型推理工具）。参考原型是
 > **AzurLaneAutoScript（ALAS）**——控制台 + 独立引擎进程，以「文件/数据库契约 +
 > 进程生命周期 + 日志流 + 状态轮询」弱耦合，验证了管理类重系统接入无需协议握手。
@@ -223,20 +223,20 @@ class AdapterProcessManager:
 | 术语 | 含义 |
 |------|------|
 | 外部程序 / Server | 被接入的大型程序。独立项目、独立 venv、独立可运行。 |
-| OmniBox / Client | 桌面壳，接入方 |
-| 插件 | OmniBox 内承载外部程序管理控制 UI 的插件 |
+| 格子铺 / Client | 桌面壳，接入方 |
+| 插件 | 格子铺内承载外部程序管理控制 UI 的插件 |
 
 **核心原则（吸收 ALAS 的经验）**：
 
 1. **接入方式跟着外部程序形态走**，不强制一套协议。自带 Web UI 就嵌 UI；只有 DB 就直连 DB；只有 CLI 才考虑进程桥。
-2. **文件/数据即契约**：外部程序保持单一数据源，OmniBox 只读不改（需要改走外部程序自己的机制）。
+2. **文件/数据即契约**：外部程序保持单一数据源，格子铺只读不改（需要改走外部程序自己的机制）。
 3. **无 HTTP 常驻服务约定、无协议握手、无 RPC**。轻量、弱耦合、可随时断开。
-4. **外部程序保持完全独立可运行**；OmniBox 只做「启动/停止 + 读取 + 展示 + 控制」。
+4. **外部程序保持完全独立可运行**；格子铺只做「启动/停止 + 读取 + 展示 + 控制」。
 
 ### 9.2 总体模式
 
 ```
-┌── OmniBox (Client) ────────────────────────────────┐
+┌── 格子铺 (Client) ─────────────────────────────────┐
 │  Vue 3 Shell ← Bridge.call → 插件后端               │
 │    插件后端 → Adapter 三件套：                       │
 │    ├─ 形态适配器（iframe 嵌入 / DB 直连 / 进程桥）    │
@@ -260,7 +260,7 @@ class AdapterProcessManager:
 
 ### 9.3 通用：进程生命周期与日志（所有形态可复用）
 
-借鉴 ALAS `ProcessManager`，OmniBox 侧提供统一的子进程管理，解决「启动、停止、崩溃检测、日志流、退出清理」——这五件事与形态无关。
+借鉴 ALAS `ProcessManager`，格子铺侧提供统一的子进程管理，解决「启动、停止、崩溃检测、日志流、退出清理」——这五件事与形态无关。
 
 #### 2.1 启动
 
@@ -295,14 +295,14 @@ class AdapterProcessManager:
 适用于自带完整 Web 管理界面的外部程序（ALAS、Jellyfin、Portainer、各种自托管服务）。
 
 ```
-插件 iframe 加载 → http://127.0.0.1:<外部端口>  （或经 OmniBox 反代）
+插件 iframe 加载 → http://127.0.0.1:<外部端口>  （或经格子铺反代）
 插件后端        → subprocess 拉起外部程序 Web 服务
 ```
 
 | 项 | 约定 |
 |----|------|
 | 端口来源 | 外部程序自己的配置（ALAS 默认 22267）；插件设置项可选填 |
-| 同源问题 | 跨源 iframe 能显示但不能通信；如需通信，OmniBox Flask 加反向代理路径（注意 WebSocket 需要反代支持） |
+| 同源问题 | 跨源 iframe 能显示但不能通信；如需通信，由格子铺的 Flask 加反向代理路径（注意 WebSocket 需要反代支持） |
 | 生命周期 | 插件后端负责拉起/停止外部程序 Web 服务 |
 | 前置条件 | 外部程序能独立启动其 Web 服务（Docker 或本地进程皆可） |
 
@@ -319,7 +319,7 @@ class AdapterProcessManager:
 | 连接 | 直接 `sqlite3` 连 `<root>/data/*.db`，不经协议 |
 | 只读为主 | 读任意自由；写操作需外部程序开启 WAL + 短事务，并处理 `SQLITE_BUSY`（500ms × 5 次重试），避开其长任务运行期间 |
 | 表结构冻结 | 只允许新增列，不得改名/删列/改类型；列名与语义由外部程序契约文档声明 |
-| 文件服务 | 产物文件（xlsx、png 等）经 OmniBox `/files/`、`/thumbs/` 基于 root 做路径安全服务；DB 文件不走 `/files/` |
+| 文件服务 | 产物文件（xlsx、png 等）经格子铺 `/files/`、`/thumbs/` 基于 root 做路径安全服务；DB 文件不走 `/files/` |
 
 #### 3.3 形态 C：只有 CLI → 子进程桥（兜底）
 
@@ -334,7 +334,7 @@ class AdapterProcessManager:
 | 调用 | 每次任务一个子进程，`cwd = root`，env 含 `PYTHONIOENCODING=utf-8` |
 | 输出 | stdout = 结构化 JSON（单对象或 JSON 行流）；stderr = 人类日志 |
 | 退出码 | 0 成功 / 1 运行时错误 / 2 用法错误（外部程序自定） |
-| 超时 | 单次调用超时（默认 120s）→ 强杀并报 OmniBox 侧错误 |
+| 超时 | 单次调用超时（默认 120s）→ 强杀并报格子铺侧错误 |
 | 长任务 | 若需进度/停止：进度走 stdout JSON 行流；停止走外部程序自身机制（如 `--stop`、配置文件标志），**禁止依赖 SIGTERM 优雅退出**（Windows 为硬杀） |
 
 #### 3.4 形态 D：长驻 Worker（stdio-worker，本地模型推理工具推荐）
@@ -356,7 +356,7 @@ class AdapterProcessManager:
 | 进度 | Worker 输出 `progress` 行；控制器持久化到任务文件，前端轮询 |
 | 取消 | 控制行 `{"type":"cancel","taskId":...}`；Worker 在下一个检查点响应 |
 | 崩溃 | EOF → `ERR_WORKER_CRASH`；重启后按任务断点恢复 |
-| 环境 | `<runtime.venv>` 由部署脚本按 `<runtime.requirements>` 创建；模型文件不进 OmniBox 主包 |
+| 环境 | `<runtime.venv>` 由部署脚本按 `<runtime.requirements>` 创建；模型文件不进格子铺主包 |
 | 超时 | `runtime.timeoutSeconds` 为任务软上限；超时提示但不强制杀（可取消） |
 
 manifest 扩展：
@@ -377,7 +377,7 @@ manifest 扩展：
 
 ---
 
-### 9.5 错误处理（OmniBox 侧补充，不进外部程序错误码表）
+### 9.5 错误处理（格子铺侧补充，不进外部程序错误码表）
 
 | code | 含义 | 触发 |
 |------|------|------|
@@ -400,7 +400,7 @@ manifest 扩展：
 
 ---
 
-### 9.6 OmniBox 侧基建接口（shell/backend/adapter_process.py）
+### 9.6 格子铺侧基建接口（shell/backend/adapter_process.py）
 
 > **状态：未实装。** 本节的 `adapter_process.py`、`PluginBase.adapter_*` 均为规划接口；只有真正开始做进程桥时再创建对应文件。
 
@@ -478,7 +478,7 @@ def adapter_root(self) -> Path                          # 校验过的外部程�
 
 #### 所有形态
 - [ ] 保持自身独立可运行（旧入口不受影响）
-- [ ] 不依赖 OmniBox 的任何常驻服务
+- [ ] 不依赖格子铺的任何常驻服务
 
 ---
 
@@ -526,7 +526,7 @@ def adapter_root(self) -> Path                          # 校验过的外部程�
 
 | 文件 | 归属 | 内容 |
 |------|------|------|
-| 本文档（`docs/core-direction.md` §9–§10） | OmniBox 项目 | 通用接入规范 + 外部程序的接入实例：插件设计、后端 API、设置项 |
+| 本文档（`docs/core-direction.md` §9–§10） | 格子铺项目 | 通用接入规范 + 外部程序的接入实例：插件设计、后端 API、设置项 |
 | `adapter-contract.md` | 战报识别系统项目 | 识别系统侧数据契约（DB schema 等），由识别系统仓库维护，不在本仓库 |
 
 ### 10.1 实例一：ALAS（形态 A — iframe 嵌入）
@@ -534,12 +534,12 @@ def adapter_root(self) -> Path                          # 校验过的外部程�
 #### 1. 总体架构
 
 ```
-┌── OmniBox 插件 alas-manager ──────────────────────────────┐
+┌── 格子铺 插件 alas-manager ───────────────────────────────┐
 │  ┌────────────────────────────────────────────────────┐   │
 │  │ 插件前端（index.html）                                │   │
 │  │  ┌────────────────────────────────────────────┐    │   │
 │  │  │ <iframe src="http://127.0.0.1:22267">      │    │   │  ← ALAS Web UI（PyWebIO）
-│  │  │  （或经 OmniBox 反代 /alas/ 同源嵌入）        │    │   │
+│  │  │  （或经格子铺反代 /alas/ 同源嵌入）           │    │   │
 │  │  └────────────────────────────────────────────┘    │   │
 │  └────────────────────────────────────────────────────┘   │
 │  └ 插件后端（PluginBase）                                   │
@@ -549,7 +549,7 @@ def adapter_root(self) -> Path                          # 校验过的外部程�
 └────────────────────────────────────────────────────────────┘
 ```
 
-**ALAS 侧**：`gui.py` 启动 uvicorn 服务 `module.webui.app:app`，PyWebIO 渲染全部管理界面（多实例、任务配置、日志、启停、更新、远程访问）——**OmniBox 不需要重造任何功能，纯嵌入**。
+**ALAS 侧**：`gui.py` 启动 uvicorn 服务 `module.webui.app:app`，PyWebIO 渲染全部管理界面（多实例、任务配置、日志、启停、更新、远程访问）——**格子铺不需要重造任何功能，纯嵌入**。
 
 #### 2. 插件后端 API
 
@@ -567,7 +567,7 @@ def adapter_root(self) -> Path                          # 校验过的外部程�
     {"key": "root_dir", "label": "ALAS 项目根目录", "type": "directory"},
     {"key": "port", "label": "Web 端口", "type": "number", "default": 22267},
     {"key": "password", "label": "访问密码（--key）", "type": "text"},
-    {"key": "use_proxy", "label": "经 OmniBox 反代同源嵌入", "type": "checkbox", "default": False},
+    {"key": "use_proxy", "label": "经格子铺反代同源嵌入", "type": "checkbox", "default": False},
 ]
 ```
 
@@ -580,10 +580,10 @@ def adapter_root(self) -> Path                          # 校验过的外部程�
 **前端要点**：
 
 - `use_proxy=false`：iframe 直指 `http://127.0.0.1:<port>`（跨源，纯展示，PyWebIO 自管 session）。
-- `use_proxy=true`：OmniBox Flask 增加 `/alas/` 反代到 `127.0.0.1:<port>`，同源嵌入；**注意 PyWebIO 走 WebSocket，反代需支持 WS**（如 Flask-Sock）。
+- `use_proxy=true`：格子铺的 Flask 增加 `/alas/` 反代到 `127.0.0.1:<port>`，同源嵌入；**注意 PyWebIO 走 WebSocket，反代需支持 WS**（如 Flask-Sock）。
 - 插件前端只渲染一个全屏 iframe + 顶部工具条（开始/停止/状态）。
 
-**依赖**：无（不依赖 OmniBox 任何协议）。
+**依赖**：无（不依赖格子铺任何协议）。
 
 ---
 
@@ -592,7 +592,7 @@ def adapter_root(self) -> Path                          # 校验过的外部程�
 #### 3. 总体架构
 
 ```
-┌── OmniBox 插件 battle-report-manager ────────────────┐
+┌── 格子铺 插件 battle-report-manager ─────────────────┐
 │  插件前端（表格/图表/详情弹窗）                          │
 │  插件后端（PluginBase）                                │
 │    ├─ sqlite3 直连 <root>/data/battle_reports.db     │
@@ -655,7 +655,7 @@ CREATE TABLE player_teams (
 #### 5. 文件边界
 
 - 插件 `root_dir` = 识别系统项目根。
-- OmniBox `/files/`、`/thumbs/` 基于 root 做路径安全，可服务：`export` 产物 xlsx、`dashboard_*.png`、`debug/` 等。
+- 格子铺 `/files/`、`/thumbs/` 基于 root 做路径安全，可服务：`export` 产物 xlsx、`dashboard_*.png`、`debug/` 等。
 - DB 文件**不走** `/files/`。
 
 #### 6. 分析数据来源（如果做分析插件）
@@ -710,7 +710,7 @@ CREATE TABLE player_teams (
 > （见 §7 的说明）。当前可执行的只有第 1 步的通用规范部分与第 4 步的回归检查
 > （`tools/check_plugins.py` + `python -m unittest discover -s tests`）。
 
-1. **OmniBox 单测**：`adapter_process.py` 对假项目（含 venv + 假脚本）测启动/停止/存活/`run_once`
+1. **格子铺单测**：`adapter_process.py` 对假项目（含 venv + 假脚本）测启动/停止/存活/`run_once`
 2. **实例一联调**：`alas-manager` 拉起 ALAS Web UI，iframe 显示，启停可控
 3. **实例二联调**：`battle-report-manager` 直连 `battle_reports.db`，列表/详情/图片正常
 4. **回归**：外部程序旧入口（ALAS `gui.py`、识别系统 `pipeline.py`/`web_ui.py`）不受影响

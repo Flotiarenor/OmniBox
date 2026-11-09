@@ -1,6 +1,6 @@
 /**
  * This product includes software developed by flotiarenor.Copyright 2026 flotiarenor
- * OmniBox Shell 通用可拖拽分隔条（splitter）
+ * Cubby Shell 通用可拖拽分隔条（splitter）
  * 配合 /shell/splitter.css 使用：注入所有插件 iframe，壳页面同样引入一份。
  * 用法与契约见 docs/plugin-ui-guide.md。
  *

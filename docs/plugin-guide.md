@@ -1,6 +1,6 @@
-# OmniBox 插件开发指南
+# 格子铺（Cubby）插件开发指南
 
-本指南将带你从零开始创建一个完整的 OmniBox 插件，并说明如何将现有的 `image-viewer` 插件迁移到新架构。
+本指南将带你从零开始创建一个完整的格子铺插件，并说明如何将现有的 `image-viewer` 插件迁移到新架构。
 
 插件分为两类：**常规内嵌插件**（本指南主体）与**独立运行环境插件 / Companion 插件**（见 §2.1、§2.2 及 `docs/core-direction.md` §9 的「外部程序接入规范」）。
 
@@ -1132,7 +1132,7 @@ onDispose(() => {
 
 ### 4.6 chrome 消息
 
-壳与内容 iframe 之间只通过同源 `postMessage` 通信：
+壳与内容 iframe 之间只通过同源 `postMessage` 通信。消息类型统一带 `omnibox:` 前缀；协议前缀沿用历史命名 omnibox，与品牌无关。
 
 | 方向 | 消息 | 用途 |
 | --- | --- | --- |
@@ -1399,7 +1399,7 @@ def resolve_file_path(self, rel_path):
 
 - 令牌在首次启动时生成并持久化到 `.config/auth_token.txt`（重启不变）；
 - 页面加载时服务端自动种下 HttpOnly Cookie（`omnibox_token`），插件 iframe 与 `<img>` 等**同源请求自动携带，插件前端无需任何改动**；
-- 外部脚本 / curl / nginx 注入用请求头：`X-Omnibox-Token: <token>`；
+- 外部脚本 / curl / nginx 注入用请求头：`X-Cubby-Token: <token>`（旧头 `X-Omnibox-Token` 仍被接受）；
 - 未携带令牌返回 `401`（`/api` 前缀为 JSON，浏览器路径为标记页）；越权路径返回 `403`；不存在的资源返回 `404`；
 - `/health`（200 JSON）与页面/静态资源不要求令牌；
 - 错误页在浏览器顶层打开时自动跳转到壳内 `/status?code=…` 视图统一展示（见 §7.4）。
@@ -1936,7 +1936,7 @@ image-viewer 需要在不同文件夹应用不同设置（如行高、排序）�
 5. **检查注入是否成功**：在控制台输入 `typeof Bridge`，应返回 `"object"`；输入 `typeof createTree`，应返回 `"function"`。
 6. **状态调试（--status-debug）**：以 `python main.py --web-only --status-debug` 启动后，访问 `/status` 显示壳内调试面板（健康检查 200 / API 鉴权 401 / 错误跳转演示），用于验证鉴权与错误页行为。
 7. **一键调试环境**：`python tools/debug/debug_status_pages.py` 自动起独立端口调试服务器（注入「坏插件」演示 iframe 404 → 壳内错误卡片链路），并用 requests 打印 11 个 HTTP 场景触发表，浏览器打开 `/status` 即调试面板；Ctrl+C 自动清理。
-8. **HTTP 直连注意**：`/api`、`/file`、`/thumbs` 受令牌保护（见 §7.1），curl 测试需带 `X-Omnibox-Token` 头或先访问首页拿 Cookie；无 Cookie 客户端访问 `/thumbs/x.png` 会得到 401 而非 404。
+8. **HTTP 直连注意**：`/api`、`/file`、`/thumbs` 受令牌保护（见 §7.1），curl 测试需带 `X-Cubby-Token` 头（旧头 `X-Omnibox-Token` 仍接受）或先访问首页拿 Cookie；无 Cookie 客户端访问 `/thumbs/x.png` 会得到 401 而非 404。
 9. **真实浏览器端到端（改壳前端后建议跑）**：
 
    ```bash
@@ -1996,4 +1996,4 @@ image-viewer 需要在不同文件夹应用不同设置（如行高、排序）�
 
 ---
 
-按照本指南，你可以快速创建新插件，或将现有功能迁移到 OmniBox 架构中。快速起步可运行 `python tools/new_plugin.py my-tool` 一键生成骨架（模板见 `tools/examples/hello-world`）；如有疑问，请参考 `image-viewer` 示例插件。
+按照本指南，你可以快速创建新插件，或将现有功能迁移到格子铺架构中。快速起步可运行 `python tools/new_plugin.py my-tool` 一键生成骨架（模板见 `tools/examples/hello-world`）；如有疑问，请参考 `image-viewer` 示例插件。

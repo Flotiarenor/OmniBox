@@ -35,7 +35,7 @@ class Group:
         """创建本机身份（主体 + 首台设备）。身份已存在时拒绝覆盖。"""
         options = self._rules.opts(opts)
         principal_name = (options.get('name') or name or self._settings.setting('principal_name') or
-                          socket.gethostname() or 'omnibox')
+                          socket.gethostname() or 'cubby')
         try:
             identity = Identity.init(self._storage.identity_dir, principal_name,
                                      socket.gethostname())
@@ -55,7 +55,7 @@ class Group:
             return {'success': False,
                     'error': '本机已有团体名单。删除 roster.json 才能重建（会丢掉当前名单链）'}
         group_name = (options.get('group') or group or self._settings.setting('group_name')
-                      or 'omnibox-group')
+                      or 'cubby-group')
         try:
             roster = founding_roster(group_name, identity.principal,
                                      [identity.device.public_key],

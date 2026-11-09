@@ -40,7 +40,7 @@ window.PluginLifecycle = (function() {
       try {
         list[i]();
       } catch (e) {
-        console.error('[OmniBox] on' + label + ' 钩子抛异常:', e);
+        console.error('[Cubby] on' + label + ' 钩子抛异常:', e);
       }
     }
   }
@@ -56,7 +56,7 @@ window.PluginLifecycle = (function() {
     // 注册时若已可见（插件在 onShow 里做"进入即恢复"是常见写法），立刻补一次
     add(hooks.show, fn);
     if (state.visible && !state.disposed && typeof fn === 'function') {
-      try { fn(); } catch (e) { console.error('[OmniBox] onShow 钩子抛异常:', e); }
+      try { fn(); } catch (e) { console.error('[Cubby] onShow 钩子抛异常:', e); }
     }
   }
 
@@ -70,7 +70,7 @@ window.PluginLifecycle = (function() {
   function onHide(fn) {
     add(hooks.hide, fn);
     if (!state.visible && !state.disposed && typeof fn === 'function') {
-      try { fn(); } catch (e) { console.error('[OmniBox] onHide 钩子抛异常:', e); }
+      try { fn(); } catch (e) { console.error('[Cubby] onHide 钩子抛异常:', e); }
     }
   }
 
@@ -84,7 +84,7 @@ window.PluginLifecycle = (function() {
   function onDispose(fn) {
     add(hooks.dispose, fn);
     if (state.disposed && typeof fn === 'function') {
-      try { fn(); } catch (e) { console.error('[OmniBox] onDispose 钩子抛异常:', e); }
+      try { fn(); } catch (e) { console.error('[Cubby] onDispose 钩子抛异常:', e); }
     }
   }
 

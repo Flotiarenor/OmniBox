@@ -84,7 +84,7 @@ def synthesize(text: str, params: Dict[str, Any]) -> Tuple[bytes, str, List[dict
     powershell = shutil.which('powershell.exe') or shutil.which('powershell')
     if not powershell:
         raise RuntimeError('当前平台没有可用的系统语音合成')
-    workdir = Path(tempfile.mkdtemp(prefix='omnibox-tts-'))
+    workdir = Path(tempfile.mkdtemp(prefix='cubby-tts-'))
     text_file = workdir / 'text.txt'
     out_file = workdir / 'out.wav'
     try:

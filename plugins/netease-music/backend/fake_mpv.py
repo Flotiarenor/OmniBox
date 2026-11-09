@@ -29,7 +29,7 @@ class FakeMpv:
 
     def bin_dir(self) -> Path:
         """假 mpv 的目录（跨调用稳定：常驻 daemon 与 ncm-cli 用路径找这个 shim）。"""
-        return Path(tempfile.gettempdir()) / 'omnibox-ncm-fake-mpv'
+        return Path(tempfile.gettempdir()) / 'cubby-ncm-fake-mpv'
 
     def captured_path(self) -> Path:
         return self.bin_dir() / 'ncm-captured-url.txt'

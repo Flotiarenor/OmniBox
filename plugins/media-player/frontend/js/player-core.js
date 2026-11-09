@@ -370,7 +370,7 @@ class MediaPlayerCore {
     set volume(v) {
         this._volume = Math.max(0, Math.min(1, v));
         this._applyVolume();
-        try { localStorage.setItem('omniboxMediaVolume', String(this._volume)); } catch (e) { }
+        try { localStorage.setItem('cubbyMediaVolume', String(this._volume)); } catch (e) { }
         this.app.updateVolumeUI();
         this._debouncedSavePlayback();
     }
@@ -573,7 +573,7 @@ class MediaPlayerCore {
 
             this._eqNodes = filters;
             try {
-                const saved = JSON.parse(localStorage.getItem('omniboxMediaEQ') || 'null');
+                const saved = JSON.parse(localStorage.getItem('cubbyMediaEQ') || 'null');
                 if (Array.isArray(saved)) this.applyEqBands(saved);
             } catch (e) { }
 
@@ -607,7 +607,7 @@ class MediaPlayerCore {
     applyEqBands(bands) {
         this.ensureAudioGraph();
         bands.forEach((gain, i) => this.setEqBand(i, gain));
-        try { localStorage.setItem('omniboxMediaEQ', JSON.stringify(this.getEqBands())); } catch (e) { }
+        try { localStorage.setItem('cubbyMediaEQ', JSON.stringify(this.getEqBands())); } catch (e) { }
     }
 
     // 失败自动跳转：只在「重试后仍失败」时武装一次；任何用户操作都会解除，

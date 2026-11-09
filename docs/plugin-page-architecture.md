@@ -4,7 +4,7 @@
 
 ## 1 结论
 
-OmniBox 的插件页面不再各自实现品牌块、侧栏、导航、顶栏、搜索与状态栏。manifest 声明
+格子铺（Cubby）的插件页面不再各自实现品牌块、侧栏、导航、顶栏、搜索与状态栏。manifest 声明
 `frontend.chrome` 后，壳用 `PluginChrome` 渲染唯一的页面骨架，插件只保留内容；需要复杂自绘的
 页面保留 content iframe，文字/表单/表格/卡片类附属页面用 native schema 由壳渲染。
 
@@ -126,7 +126,8 @@ flowchart LR
 
 ## 4 消息
 
-壳与内容 iframe 之间（同源 `postMessage`）：
+壳与内容 iframe 之间（同源 `postMessage`）。消息类型统一带 `omnibox:` 前缀；协议前缀沿用历史命名
+omnibox，与品牌无关。
 
 | 方向 | 消息 | 用途 |
 | --- | --- | --- |

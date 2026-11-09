@@ -114,7 +114,7 @@ python tools/shoot_readme.py
 | [Nanakoですよni](https://github.com/Flotiarenor) | `05` | `小说/龙骨星云.txt` |
 
 **移除通道**：作者本人或权利人若不同意自己的作品出现在本仓库的截图中，
-请提 [Issue](https://github.com/Flotiarenor/OmniBox/issues) 说明是哪一个槽位（如 `09-pixiv-sort`），
+请提 [Issue](https://github.com/Flotiarenor/Cubby/issues) 说明是哪一个槽位（如 `09-pixiv-sort`），
 维护者会立即撤下对应截图并重拍。
 
 ## 素材红线

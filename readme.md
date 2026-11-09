@@ -1,6 +1,6 @@
 <div align="center">
 
-# OmniBox
+# 格子铺（Cubby）
 
 **一个窗口，装下你的图片、漫画、音乐和文档**
 
@@ -8,17 +8,17 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey.svg)](#下载与安装)
-[![Release](https://img.shields.io/github/v/release/Flotiarenor/OmniBox?color=green)](https://github.com/Flotiarenor/OmniBox/releases)
+[![Release](https://img.shields.io/github/v/release/Flotiarenor/Cubby?color=green)](https://github.com/Flotiarenor/Cubby/releases)
 
 [下载](#下载与安装) · [内置插件](#内置插件) · [常见问题](#常见问题) · [开发者文档](./docs/development.md)
 
-![OmniBox 主界面](./docs/images/readme/01-hero.webp)
+![格子铺主界面](./docs/images/readme/01-hero.webp)
 
 </div>
 
 ## 这是什么
 
-OmniBox 是把散在本机各处的东西收进同一个窗口：图片相册、漫画书架、音乐与视频库、文档阅读器。
+格子铺是把散在本机各处的东西收进同一个窗口：图片相册、漫画书架、音乐与视频库、文档阅读器。
 
 它本体只是一个窗口和插件容器，**能力全部来自插件**——内置 8 个插件随发行包提供，装上即用；无安装需求，插件放进 `plugins/` 就加载。
 
@@ -64,19 +64,19 @@ OmniBox 是把散在本机各处的东西收进同一个窗口：图片相册、
 
 ## 下载与安装
 
-到 [Releases](https://github.com/Flotiarenor/OmniBox/releases/latest) 下载对应平台的压缩包：
+到 [Releases](https://github.com/Flotiarenor/Cubby/releases/latest) 下载对应平台的压缩包：
 
 | 平台 | 产物 | 启动方式 |
 | --- | --- | --- |
-| Windows x64 | `OmniBox-windows-x64.zip` | 解压后双击 `OmniBox.exe` |
-| Linux x64 | `OmniBox-linux-x64.tar.gz` | `tar -xzf` 后 `chmod +x OmniBox && ./OmniBox` |
+| Windows x64 | `Cubby-windows-x64.zip` | 解压后双击 `Cubby.exe` |
+| Linux x64 | `Cubby-linux-x64.tar.gz` | `tar -xzf Cubby-linux-x64.tar.gz` 后 `chmod +x Cubby && ./Cubby` |
 
 每次发布同时提供 `.sha256` 校验文件，可用于核对下载是否完整。
 
 三步走：
 
 1. 下载对应平台的压缩包；
-2. **完整解压**到你有写权限的目录（例如 `D:\OmniBox`、`~/omnibox`）；
+2. **完整解压**到你有写权限的目录（例如 `D:\Cubby`、`~/cubby`）；
 3. 运行可执行文件，浏览器/窗口里打开即用。
 
 两个必须提前知道的事：
@@ -95,9 +95,11 @@ python main.py --web-only        # 默认 http://127.0.0.1:18080
 `/api`、`/file`、`/thumbs` 等数据路由受访问令牌保护：令牌在首次启动时生成并写入 `.config/auth_token.txt`（重启不变），浏览器页面会自动种下 HttpOnly Cookie，外部脚本调用时带上请求头即可：
 
 ```bash
-curl -H "X-Omnibox-Token: $(cat .config/auth_token.txt)" \
+curl -H "X-Cubby-Token: $(cat .config/auth_token.txt)" \
      -X POST http://127.0.0.1:18080/api/system_get_config
 ```
+
+旧的 `X-Omnibox-Token` 请求头仍被接受，已部署的脚本无需立刻改动；Cookie 名也沿用历史命名 `omnibox_token`。
 
 > 需要公网访问时，请经 nginx 之类的反向代理自行加一层 HTTPS 与访问控制；不要把令牌文件和端口直接暴露到不受信任的网络。
 
@@ -151,6 +153,6 @@ curl -H "X-Omnibox-Token: $(cat .config/auth_token.txt)" \
 
 本项目基于 **Apache License 2.0** 开源，详见 [LICENSE](./LICENSE)。
 
-问题与建议请提 [Issue](https://github.com/Flotiarenor/OmniBox/issues)，欢迎 PR。
+问题与建议请提 [Issue](https://github.com/Flotiarenor/Cubby/issues)，欢迎 PR。
 
 文档截图里出现的作品和缩略图版权归各原作者所有，仅作界面演示之用。作者本人或权利人如不希望作品出现在本文档中，提 Issue 说明是哪一张，维护者会立即撤下并重拍；出处登记与移除通道见 [docs/images/README.md](./docs/images/README.md)。

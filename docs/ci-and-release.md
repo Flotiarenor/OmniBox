@@ -1,6 +1,6 @@
 # CI、打包与发布
 
-本文说明 OmniBox 的质量门禁、打包链路与发布流程，以及"下一步该怎么收紧"。
+本文说明格子铺（Cubby）的质量门禁、打包链路与发布流程，以及"下一步该怎么收紧"。
 配套改动见同批提交；命令都在本机 Windows + venv 环境实测过。
 
 ---
@@ -26,7 +26,7 @@
 | 前端依赖漏洞 | `python tools/check_npm_audit.py` | **OK**（硬门禁；脚本内固定官方 registry，见下） |
 | 前端类型+构建 | `npm --prefix shell/frontend run build` | 通过（硬门禁） |
 | 图标 sprite 一致性 | `python tools/build_icons.py --check` | **OK**（硬门禁；校验 `res/icons/icons.svg` 与 `res/icons/icon_data.json` 同步，且模板/manifest 引用的图标全部已冻结） |
-| 打包冒烟 + 产物校验 | `python tools/check_build_tree.py <dist>/OmniBox --expect-exe OmniBox.exe` | 通过（硬门禁；CI 里只在 push main / 手动触发 / 打包路径变更时跑） |
+| 打包冒烟 + 产物校验 | `python tools/check_build_tree.py <dist>/Cubby --expect-exe Cubby.exe` | 通过（硬门禁；CI 里只在 push main / 手动触发 / 打包路径变更时跑） |
 
 > `unittest` 这一行里包含插件前端的脚本契约用例：`tests/test_*_js.py` 包装器调用
 > `tests/js/*.mjs`（无 node 时自动 skip），覆盖 `image_viewer_app_split` /
@@ -266,7 +266,7 @@ spec + `check_build_tree.py` 产物校验。插件矩阵按插件拆分，失败
 ```
 
 - **spec 只有一份收集规则**：`docs/Releases/spec_common.py`。
-  `omnibox.spec`（Windows）与 `omnibox-linux.spec`（Linux）都从它导入
+  `cubby.spec`（Windows）与 `cubby-linux.spec`（Linux）都从它导入
   `collect_data_files()` 与 `HIDDEN_IMPORTS`，避免两边规则漂移。
 - **缺少前端产物必须硬失败**：以前 spec 里是 `if frontend_dist.exists():`，
   干净 clone 上打包会产出一个打开白屏的 exe，而构建日志全绿。现在
@@ -290,7 +290,7 @@ spec + `check_build_tree.py` 产物校验。插件矩阵按插件拆分，失败
   `Module object for struct is NULL!`）。因此 `release.yml` / `ci.yml` /
   `package-smoke.yml` 里**产出二进制**的 job，Linux 分支统一走
   `apt install python3 python3-venv binutils` +
-  `python3 -m venv "$RUNNER_TEMP/omnibox-build-venv"`，再把 venv 的 `bin`
+  `python3 -m venv "$RUNNER_TEMP/cubby-build-venv"`，再把 venv 的 `bin`
   追加到 `GITHUB_PATH`（后续步骤里的 `python` 就是它）。venv 刻意放在工作区
   **外面**：放仓库里会被 ruff 当源码扫（`extend-exclude` 里没有它）。
   Windows 分支照旧用 setup-python；只跑测试/门禁的 job 也不受影响。
@@ -328,8 +328,8 @@ CI 侧本来就有这道闸：`ci.yml` 的 `package`、`package-smoke.yml`、`re
 都会跑 `check_build_tree.py`，这也是 CI 产物一直干净的原因。想验证一个现成压缩包：
 
 ```bash
-unzip -l OmniBox-windows-x64.zip | grep -E '\.config|/data/|auth_token'   # 应为空
-tar -tzf OmniBox-linux-x64.tar.gz | grep -E '^OmniBox/(\.config|data)'    # 应为空
+unzip -l Cubby-windows-x64.zip | grep -E '\.config|/data/|auth_token'   # 应为空
+tar -tzf Cubby-linux-x64.tar.gz | grep -E '^Cubby/(\.config|data)'    # 应为空
 ```
 
 ### 在 Windows 上能构建出 Linux 产物吗？
@@ -361,7 +361,7 @@ tar -tzf OmniBox-linux-x64.tar.gz | grep -E '^OmniBox/(\.config|data)'    # 应�
 
 ## 5. 静态检查配置的两个要点
 
-1. **`include`/`exclude` 必须显式声明**。默认会把 `docs/Releases/OmniBox/`
+1. **`include`/`exclude` 必须显式声明**。默认会把 `docs/Releases/Cubby/`
    （PyInstaller 产物，同一份代码的副本）与 `venv/` 一起分析，产生大量与源码
    无关的重复报错（实测：171 → 96 errors）。
 2. **`venvPath`/`venv` 必须声明**。否则独立跑 pyright 会报

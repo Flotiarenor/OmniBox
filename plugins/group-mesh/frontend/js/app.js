@@ -79,7 +79,7 @@
   function call(method) {
     var args = Array.prototype.slice.call(arguments, 1);
     if (!window.Bridge || typeof window.Bridge.call !== 'function') {
-      return Promise.reject(new Error('Bridge 不可用：请从 OmniBox 壳内打开本页面'));
+      return Promise.reject(new Error('Bridge 不可用：请从格子铺壳内打开本页面'));
     }
     return window.Bridge.call.apply(window.Bridge, [method].concat(args));
   }
@@ -298,7 +298,7 @@
           // 走弹窗让用户**看到并确认**团体名，而不是用 window.confirm：
           // 内嵌 WebView 里原生对话框可能被宿主禁用，点了会毫无反馈。
           var nameInput = el('create-group-name');
-          nameInput.value = (status.settings && status.settings.group_name) || 'omnibox-group';
+          nameInput.value = (status.settings && status.settings.group_name) || 'cubby-group';
           openModal('create-box');
           nameInput.focus();
           nameInput.select();

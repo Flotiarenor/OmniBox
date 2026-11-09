@@ -1,6 +1,6 @@
 // ===== 播放进度本地存储（按媒体 item.id 记忆，兼容旧插件进度） =====
 const MediaProgressStore = {
-    STORAGE_KEY: 'omniboxMediaProgress',
+    STORAGE_KEY: 'cubbyMediaProgress',
     LEGACY_KEYS: ['musicProgress', 'videoProgress'],
 
     _normalize(path) {

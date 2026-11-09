@@ -38,7 +38,7 @@
 
 原因是实测出来的：**外部文件的 `<use>` 在 pywebview 的 WebView2 里不渲染**
 （包围盒恒为 0），而 Chrome 会渲染 —— 直接引用外部文件会出现"浏览器正常、
-OmniBox 窗口里图标全空、DOM 与控制台都干净"。完整对照表见 `tools/build_icons.py` 的文件头。
+Cubby 窗口里图标全空、DOM 与控制台都干净"。完整对照表见 `tools/build_icons.py` 的文件头。
 
 ## 增删图标
 

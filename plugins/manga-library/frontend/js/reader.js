@@ -108,7 +108,7 @@ class MangaReader {
         try {
             this.onClose(index);
         } catch (e) {
-            console.error('[OmniBox] 阅读器关闭回调抛异常:', e);
+            console.error('[Cubby] 阅读器关闭回调抛异常:', e);
         }
     }
 

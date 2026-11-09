@@ -9,7 +9,7 @@ const MediaFrameExtractor = (function () {
     const RAF_TIMEOUT = 3000;          // rAF 挂起超时（iframe 不可见时 rAF 不触发）
     const MAX_QUEUE = 100;             // 队列上限：超出丢弃队尾，防止快速滚动压爆解码队列
     const FAIL_BACKOFF_MS = 10 * 60 * 1000;  // 坏文件退避：硬失败后 10 分钟内不再空转
-    const LOCK_KEY = 'omniboxMediaExtractLock';
+    const LOCK_KEY = 'cubbyMediaExtractLock';
     const LOCK_TTL = 60 * 1000;        // 跨标签页抽帧锁 TTL（防止双标签页并发抽同一视频）
 
     const videos = [];                 // video 元素池

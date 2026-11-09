@@ -59,7 +59,7 @@ class TtsCache:
             cache_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             log.warning(f'[{self._plugin_name}] 朗读缓存目录不可写（{e}），改用临时目录')
-            cache_dir = (Path(tempfile.gettempdir()) / 'omnibox-tts'
+            cache_dir = (Path(tempfile.gettempdir()) / 'cubby-tts'
                          / self._subdir / 'tts')
             cache_dir.mkdir(parents=True, exist_ok=True)
         return cache_dir

@@ -1,5 +1,5 @@
 // ============================================================
-// OmniBox 媒体播放器 — 均衡器、歌词 / 视频模式、全屏与快捷键
+// 格子铺媒体播放器 — 均衡器、歌词 / 视频模式、全屏与快捷键
 //
 // 本文件是 MediaPlayerApp.prototype 的一个分片：类骨架与构造函数在 app.js，
 // 这里用 Object.assign 把方法扩回同一个原型。**加载顺序是硬约束** —— 必须在
@@ -69,7 +69,7 @@ Object.assign(MediaPlayerApp.prototype, {
                 const valueEl = container.querySelector(`[data-eq-val="${idx}"]`);
                 if (valueEl) valueEl.textContent = (gain > 0 ? '+' + gain : gain) + 'dB';
                 try {
-                    localStorage.setItem('omniboxMediaEQ', JSON.stringify(this.core.getEqBands()));
+                    localStorage.setItem('cubbyMediaEQ', JSON.stringify(this.core.getEqBands()));
                 } catch (e) { }
             });
         });

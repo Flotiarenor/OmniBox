@@ -1,10 +1,10 @@
-# OmniBox 开发文档
+# 格子铺（Cubby）开发文档
 
 > 本文件面向**开发者与贡献者**：架构、运行与调试、插件机制、打包与 CI。
 > 面向使用者的介绍、下载与截图见仓库根目录的 [readme.md](../readme.md)。
 > 内容原为仓库根目录 `readme.md`，移入 `docs/` 时仅调整了相对链接与入口。
 
-**OmniBox** 是一个轻量级、可扩展的桌面应用框架。它本身不包含任何业务功能，所有能力均由可插拔的插件提供。你可以像安装浏览器扩展一样，自由添加、移除功能模块。
+**格子铺** 是一个轻量级、可扩展的桌面应用框架。它本身不包含任何业务功能，所有能力均由可插拔的插件提供。你可以像安装浏览器扩展一样，自由添加、移除功能模块。
 
 ---
 
@@ -114,8 +114,8 @@ graph TB
 项目提供了 `deploy.ps1` 脚本，可自动完成虚拟环境创建、Python 依赖安装以及前端壳的构建。环境与依赖的统一入口为 `setup-venv.ps1`（`deploy.ps1` 及发布构建脚本都会复用该入口，不再各自内联依赖管理）。
 
 ```powershell
-git clone https://github.com/Flotiarenor/OmniBox.git
-cd OmniBox
+git clone https://github.com/Flotiarenor/Cubby.git
+cd Cubby
 .\deploy.ps1
 ```
 
@@ -134,8 +134,8 @@ cd OmniBox
 ### Linux / Web-only 运行
 
 ```bash
-git clone https://github.com/Flotiarenor/OmniBox.git
-cd OmniBox
+git clone https://github.com/Flotiarenor/Cubby.git
+cd Cubby
 
 bash setup-venv.sh           # 统一环境入口：创建 venv + 安装依赖
 
@@ -158,9 +158,11 @@ http://127.0.0.1:18080
 > HttpOnly Cookie，无需手动处理；外部脚本 / curl / nginx 注入请携带请求头：
 >
 > ```bash
-> curl -H "X-Omnibox-Token: $(cat .config/auth_token.txt)" \
+> curl -H "X-Cubby-Token: $(cat .config/auth_token.txt)" \
 >      -X POST http://127.0.0.1:18080/api/system_get_config
 > ```
+>
+> 旧的 `X-Omnibox-Token` 请求头仍被接受，既有脚本无需立刻改动。
 >
 > 请勿将令牌文件与端口暴露到不受信任的网络；需要公网访问时务必经 nginx 等
 > 反代并自行加一层 HTTPS + 访问控制。
@@ -231,8 +233,8 @@ bash docs/Releases/build-release.sh
 
 - 会自动构建前端
 - 自动通过 `setup-venv.sh --dev` 准备虚拟环境与依赖（含 PyInstaller），再用项目 venv 的 Python 执行 PyInstaller
-- 输出到 `docs/Releases/OmniBox/`
-- 并生成 `OmniBox_日期.tar.gz`
+- 输出到 `docs/Releases/Cubby/`
+- 并生成 `Cubby_日期.tar.gz`
 
 > 构建脚本与部署脚本共享统一环境入口（`setup-venv.ps1` / `setup-venv.sh`），依赖管理不再各自内联。
 
@@ -273,7 +275,7 @@ tag 必须写成 `v<version>`（不一致时发布流程会在第一步失败）
 本项目基于 **Apache License 2.0** 开源。详见 [LICENSE](../LICENSE) 文件。
 
 ```
-Copyright 2025 OmniBox Contributors
+Copyright 2025 Cubby Contributors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -298,5 +300,5 @@ limitations under the License.
 
 ## 联系方式
 
-- 项目主页：[https://github.com/Flotiarenor/OmniBox](https://github.com/Flotiarenor/OmniBox)
-- 问题反馈：[Issues](https://github.com/Flotiarenor/OmniBox/issues)
+- 项目主页：[https://github.com/Flotiarenor/Cubby](https://github.com/Flotiarenor/Cubby)
+- 问题反馈：[Issues](https://github.com/Flotiarenor/Cubby/issues)

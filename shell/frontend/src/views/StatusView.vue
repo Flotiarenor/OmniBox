@@ -1,5 +1,5 @@
 <!--
-  OmniBox 壳内建状态视图（与 /settings 同级的基础视图）：
+  格子铺壳内建状态视图（与 /settings 同级的基础视图）：
   - 错误模式：/status?code=404&from=/xxx —— 插件加载失败时由壳跳转至此，显示本体风格错误卡片
   - 调试模式：--status-debug 启动 —— 显示调试面板（健康检查 200 / API 鉴权 401 / 标记页链接）
   - 普通模式：直接访问 /status —— 提示调试模式未开启
@@ -78,7 +78,7 @@ async function apiDemo(mode: 'none' | 'cookie' | 'bad') {
   try {
     let r: Response
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-    if (mode === 'bad') headers['X-Omnibox-Token'] = 'bad-token'
+    if (mode === 'bad') headers['X-Cubby-Token'] = 'bad-token'
     r = await fetch('/api/system_get_config', {
       method: 'POST',
       headers,
@@ -110,7 +110,7 @@ async function apiDemo(mode: 'none' | 'cookie' | 'bad') {
     <div v-if="pluginFailures.length" class="status-plugin-failures">
       <div class="status-error-title"><svg class="obx-icon"><use href="#circle-x"></use></svg> 有 {{ pluginFailures.length }} 个插件加载失败</div>
       <div class="status-error-detail">
-        这些插件不会出现在侧边栏里。原因如下（完整日志见 &lt;配置目录&gt;/logs/omnibox.log）：
+        这些插件不会出现在侧边栏里。原因如下（完整日志见 &lt;配置目录&gt;/logs/cubby.log）：
       </div>
       <ul class="status-plugin-failure-list">
         <li v-for="item in pluginFailures" :key="item.name">

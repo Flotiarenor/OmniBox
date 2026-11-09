@@ -296,7 +296,7 @@ function createLightbox(options = {}) {
       try {
         options.onClose();
       } catch (e) {
-        console.error('[OmniBox] 灯箱 onClose 回调抛异常:', e);
+        console.error('[Cubby] 灯箱 onClose 回调抛异常:', e);
       }
     }
   }

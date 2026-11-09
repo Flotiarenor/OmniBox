@@ -1,5 +1,5 @@
 /**
- * OmniBox Shell 通用动效辅助（自动注入所有插件 iframe）
+ * Cubby Shell 通用动效辅助（自动注入所有插件 iframe）
  * 配合 /shell/effects.css 使用。
  */
 window.Motion = (function () {

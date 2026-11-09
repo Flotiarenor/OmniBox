@@ -529,7 +529,7 @@ onMounted(async () => {
       router.replace(resolveStartRoute(plugins.map(p => p.route)))
     }
     // 供插件 iframe 内通用扩展入口调用：跳转到某个插件路由
-    ;(window as any).__omniboxNavigate = (path: string) => router.push(path)
+    ;(window as any).__cubbyNavigate = (path: string) => router.push(path)
 
     isReady.value = true
 
@@ -627,7 +627,7 @@ watch(
       data-obx-splitter-max="320"
       data-obx-splitter-default="200"
     >
-      <div class="logo">OmniBox</div>
+      <div class="logo">格子铺</div>
       <nav v-if="isReady">
         <template v-if="plugins.length > 0">
           <div

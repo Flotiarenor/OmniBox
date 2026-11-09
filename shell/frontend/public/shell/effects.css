@@ -1,5 +1,5 @@
 /* ============================================================
-   OmniBox Shell 通用动效库（自动注入所有插件 iframe）
+   Cubby Shell 通用动效库（自动注入所有插件 iframe）
    使用方式：
    - 直接给元素加类：obx-anim-fade-up / obx-anim-pop / obx-anim-scale ...
    - 列表批量交错入场：容器加 .obx-stagger，JS 调用

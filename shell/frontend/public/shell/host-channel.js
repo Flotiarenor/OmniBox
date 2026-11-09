@@ -147,7 +147,7 @@ window.HostChannel = (function() {
         try { el = document.querySelector(data.id); } catch (e) { el = null; }
       }
       if (el) el.click();
-      else console.warn('[OmniBox] 上层点了按钮但本页找不到它:', data.id);
+      else console.warn('[Cubby] 上层点了按钮但本页找不到它:', data.id);
       return;
     }
     if (data.type === CALLBACK) {
@@ -206,7 +206,7 @@ window.HostChannel = (function() {
     ).then(function(res) {
       if (res.ok) return;
       if (toHide) toHide.style.display = toHide.__obxDisplay || '';
-      console.warn('[OmniBox] 上层没有可挂载的工具栏，按钮留在本页:', res.data && res.data.error);
+      console.warn('[Cubby] 上层没有可挂载的工具栏，按钮留在本页:', res.data && res.data.error);
     });
   }
 
@@ -326,7 +326,7 @@ window.HostChannel = (function() {
       values = await Bridge.call('get_settings');
     } catch (e) {
       // 取不到字段清单就让上层弹"暂无设置项"：比在本页弹一个字段不对的强
-      console.error('[OmniBox] 读取设置字段失败:', e);
+      console.error('[Cubby] 读取设置字段失败:', e);
     }
     var res = await request('ui', {
       kind: 'settings',
@@ -429,7 +429,7 @@ window.HostChannel = (function() {
             // 保存的成败由子插件回传；抛错时 openModal 会保住弹窗并提示原因
             onSave: function(values) { return commit(values); },
           }).catch(function(err) {
-            console.error('[OmniBox] 宿主弹窗渲染失败:', err);
+            console.error('[Cubby] 宿主弹窗渲染失败:', err);
             if (window.Toast) Toast.error('设置弹窗打开失败');
           });
         }, 0);

@@ -23,7 +23,7 @@
 
 - `plugins/netease-music/frontend` 下没有样式文件：全部样式写在 `plugins/netease-music/frontend/index.html` 的 `<style>` 内；没有单独的依赖目录，也没有构建步骤。
 - 后端结构：入口只做装配（命令执行、输出解析、假 mpv、数据接口），四者之间不互相 import，依赖由入口按构造参数注入（分层门禁的 R2 / R3）。
-- 落盘产物：数据根与 `cache_dir` 下无产出（未覆写 `get_data_root`、`get_cache_dir`）；写入的是 `ncm-preference.json`（`_preference_file`，读写符号 `analyze_preference`、`_calculate_preference`）、`config.json`（`_ensure_player_mpv_config`，位于 `Path.home` 下的 `ncm-cli` 目录）、`mpv.sock`（`FakeMpv.socket_path`，由 `resolve_song_url` 经假 mpv 使用）、`omnibox-ncm-fake-mpv` 目录下的 `mpv.py`、`mpv.cmd`、`mpv`（`FakeMpv._ensure_fake_mpv`）、`ncm-captured-url.txt` 与 `ncm-fake-mpv.log`（`FakeMpv.captured_path` / `log_path` / `wait_url`）；`ncm-history.json`（`_history_file`）与 `ncm-schedule.json`（`_schedule_file`）只赋值，无读写符号。
+- 落盘产物：数据根与 `cache_dir` 下无产出（未覆写 `get_data_root`、`get_cache_dir`）；写入的是 `ncm-preference.json`（`_preference_file`，读写符号 `analyze_preference`、`_calculate_preference`）、`config.json`（`_ensure_player_mpv_config`，位于 `Path.home` 下的 `ncm-cli` 目录）、`mpv.sock`（`FakeMpv.socket_path`，由 `resolve_song_url` 经假 mpv 使用）、`cubby-ncm-fake-mpv` 目录下的 `mpv.py`、`mpv.cmd`、`mpv`（`FakeMpv._ensure_fake_mpv`）、`ncm-captured-url.txt` 与 `ncm-fake-mpv.log`（`FakeMpv.captured_path` / `log_path` / `wait_url`）；`ncm-history.json`（`_history_file`）与 `ncm-schedule.json`（`_schedule_file`）只赋值，无读写符号。
 
 ## 后端 API 契约
 

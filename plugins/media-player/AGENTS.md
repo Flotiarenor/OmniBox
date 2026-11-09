@@ -157,7 +157,7 @@
 - 由脚本切换的状态类名：`active`、`hidden`、`show`、`playing`、`paused`、`glow`、`no-cover`、`img-broken`、`fav-active`、`wide-active`、`wide-mode`、`video-on`、`fs-on`、`controls-hidden`、`has-content`、`selected`、`mp-thumb-pending`、`spinning`
 - 由脚本设置的内联 CSS 变量：`--i`、`--range-val`、`--hero-bg`、`--mp-pop-bottom`、`--lyrics-blur`、`--lyrics-brightness`、`--lyrics-font-color`、`--lyrics-font-color-active`、`--lyrics-font-color-hover`、`--lyrics-glow-color`
 - 脚本使用的 `data-*` 钩子：`data-id`、`data-idx`、`data-key`、`data-kind`、`data-mp-action`、`data-mp-thumb-id`、`data-mp-busy`、`data-fallback`、`data-icon`、`data-hero-action`、`data-lyric-idx`、`data-lyric-time`、`data-eq-idx`、`data-eq-val`、`data-pl-id`、`data-queue-idx`、`data-remove-idx`、`data-menu-act`
-- localStorage 键：`omniboxMediaProgress`、`omniboxMediaVolume`、`omniboxMediaEQ`、`ncmCache_`、`ncmSyncCollected`、`ncmExportMissing`；旧键 `musicProgress`、`videoProgress`
+- localStorage 键：`cubbyMediaProgress`、`cubbyMediaVolume`、`cubbyMediaEQ`、`ncmCache_`、`ncmSyncCollected`、`ncmExportMissing`；旧键 `musicProgress`、`videoProgress`
 
 ## 与壳的契约
 

@@ -396,7 +396,7 @@ async function toggleFullscreen() {
 
 // ==================== 数据与缓存 / 诊断 / 插件 / 关于 ====================
 const LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR']
-const REPO_URL = 'https://github.com/Flotiarenor/OmniBox'
+const REPO_URL = 'https://github.com/Flotiarenor/Cubby'
 const RELEASES_URL = `${REPO_URL}/releases/latest`
 
 const plugins = ref<PluginInfo[]>([])
@@ -1152,7 +1152,7 @@ watch(() => route.path, (path) => {
         <div class="settings-panel-body">
           <div class="info-row">
             <span class="info-label">版本</span>
-            <span class="info-value">OmniBox {{ appVersion }}</span>
+            <span class="info-value">格子铺 Cubby v{{ appVersion }}</span>
           </div>
           <div class="info-row">
             <span class="info-label">许可</span>
