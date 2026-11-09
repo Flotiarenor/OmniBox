@@ -39,8 +39,11 @@ window.Freshness = (function () {
   const SYNC_DEBOUNCE_MS = 400;
   const CARD_HIDE_MS = 4000;  // 完成后的进度卡停留时间
   const VERIFY_STALE_MS = 7 * 24 * 60 * 60 * 1000; // 上次校验超过 7 天就提示重新校验
-
-  let seq = 0;                // 版本号自增源（同一页面内单调）
+  // 状态行的三种"没读到"各有原因，文案不能混：读状态失败 / 校验启动失败 / 状态暂不可用。
+  // 混用会把用户引到错误的排查方向（例如一次校验启动失败被当成状态投影坏了）。
+  const STATE_ERROR_TEXT = '状态读取失败，可重试';
+  const VERIFY_ERROR_TEXT = '校验启动失败，可重试';
+  const STATE_UNAVAILABLE_TEXT = '状态暂不可用，可重试';
 
   function icon(name) {
     return (window.Utils && Utils.iconHtml) ? Utils.iconHtml('icon:' + name) : '';
@@ -96,7 +99,6 @@ window.Freshness = (function () {
     const unit = o.unit || '项';
     const idlePollMs = Number.isFinite(o.idlePollMs) && o.idlePollMs >= 0
       ? o.idlePollMs : IDLE_POLL_MS;
-    const id = 'fr' + (++seq);
 
     const group = document.createElement('div');
     group.className = 'obx-fresh' + (o.compact ? ' obx-fresh-compact' : '');
@@ -135,6 +137,11 @@ window.Freshness = (function () {
     //: 最近一次"读取任务状态"失败（瞬时错误）。只影响状态文案与按钮可用性，
     //: 不能据此认定插件未接入统一刷新 —— 那会让一次 5xx / 超时永久禁用校验。
     let stateError = false;
+    //: stateError 时状态行显示哪一句（三种原因见文件头的常量）。
+    let stateErrorText = STATE_ERROR_TEXT;
+    //: 刚发起一次校验、还没读到能判定收尾的状态。收尾不能只看"上一份 state 是 busy"：
+    //: 发起时必然不是 busy，而任务可能在第一次读取之前就结束（空根 / 小库只需几毫秒）。
+    let verifyPending = false;
     //: 卡片是否处于"已完成、正在自动隐藏"的状态（此时没有任务在跑，但不该立刻收掉）
     let cardSettled = false;
     //: 上次"替用户自动起校验"的时间：预算型 partial 可能每次进视图都出现，得限流
@@ -209,8 +216,8 @@ window.Freshness = (function () {
         return;
       }
       if (stateError) {
-        // 后端只是这一次没读到，不是"插件未接入"：给可重试的提示，按钮保持可点。
-        el.status.textContent = '状态读取失败，可重试';
+        // 三种来源（读状态 / 启动校验 / 指纹库瞬时打不开）各说各的，不再一律报"状态读取失败"。
+        el.status.textContent = stateErrorText;
         return;
       }
       if (s.busy && task.state === 'running') {
@@ -350,13 +357,35 @@ window.Freshness = (function () {
       else if (!timer) scheduleIdlePoll();
     }
 
+    /**
+     * `available:false` 是"插件确实没接入统一刷新"，还是读指纹库时的瞬时失败？
+     *
+     * 后端两处都会返回 `available:false`：`plugin_manager.freshness_state`（未加载 /
+     * 未声明 `freshness_spec`，带"未参与统一刷新"的错误）与 `FreshnessEngine.state`
+     * （sqlite 打不开，例如库被占用、盘掉线）。后者重试就能好；把它当成"未接入"会
+     * 永久禁用控件（状态行空白、按钮禁用），比一次可重试的失败更糟。
+     */
+    function unsupportedState(next) {
+      const error = String((next && next.error) || '');
+      return !error || error === 'unsupported' || error.includes('未参与统一刷新');
+    }
+
     async function poll() {
       if (disposed) return;
       clearIdleTimer();
       try {
         const next = await call('system_freshness_state', plugin);
-        if (next && next.available === false) { supported = false; }
-        stateError = false;
+        const unavailable = !!(next && next.available === false);
+        if (unavailable && unsupportedState(next)) {
+          supported = false;
+        } else if (unavailable) {
+          // 瞬时：保留 supported，状态行给可重试的原因，按钮保持可点。
+          stateError = true;
+          stateErrorText = STATE_UNAVAILABLE_TEXT;
+        } else {
+          stateError = false;
+          stateErrorText = STATE_ERROR_TEXT;
+        }
         const wasBusy = !!(state && state.busy);
         state = next || state;
         // 新一轮任务开始后，上一次“校验完成”不再成立。
@@ -369,14 +398,21 @@ window.Freshness = (function () {
           // "现在没有轮询在跑"，旧的（已经 fire 过的）定时器 id 为真会让第二次
           // 点「校验」只弹卡片、永远不再 poll —— 卡片停在 0 / 0、状态停在旧文案。
           timer = null;
-          if (wasBusy) onSettled();
+          // 收尾看两件事：这一趟观察到了 busy → 正常结算；或者本次校验是我们刚发起的
+          // （`verifyPending`）却一次 busy 都没看到 —— 任务在第一次读取之前就跑完了，
+          // 不结算就没有完成文案、也没有 onChange（内容页不会重载）。
+          const settle = wasBusy || verifyPending;
+          verifyPending = false;
+          if (settle) onSettled();
           scheduleIdlePoll();
         }
       } catch (e) {
         // 一次状态读取失败 ≠ 插件未接入统一刷新：只有后端明确 available === false
         // 才置 supported=false。这里保留 supported，给出可重试的状态与按钮。
+        // `verifyPending` 也保留：下一次读到终态时仍要把这次校验结算掉。
         timer = null;
         stateError = true;
+        stateErrorText = STATE_ERROR_TEXT;
         render();
         scheduleIdlePoll();
       }
@@ -444,11 +480,16 @@ window.Freshness = (function () {
           return;
         }
         stateError = false;
+        stateErrorText = STATE_ERROR_TEXT;
+        // 从这里开始：这一趟校验归我们结算，即使第一次读取时它已经结束（见 poll 的收尾条件）。
+        verifyPending = true;
         showCard(auto ? '正在校验（同步未覆盖全部目录）' : '正在校验');
         if (!timer) poll();
       } catch (e) {
         hideCard();
         stateError = true;
+        // 启动失败与状态读取失败是两件事：混用同一句会把人引到错误的排查方向。
+        stateErrorText = VERIFY_ERROR_TEXT;
         render();
         // 这次没起来不代表以后不行：把低频状态重读接回去，否则"需要校验"再也不出现。
         scheduleIdlePoll();
@@ -462,10 +503,34 @@ window.Freshness = (function () {
       } catch (e) { /* 忽略：任务可能刚好结束 */ }
     }
 
-    /** 报告里是否真有变化：`invalidated`（远端来源丢弃缓存）与三个计数同等看待。 */
+    /**
+     * 报告里"目录集合变了"的数量。
+     *
+     * `new_dirs` / `vanished_dirs` 是引擎给的目录键数组（各自最多 50 条），
+     * `new_dirs_truncated` / `vanished_dirs_truncated` 是溢出计数。`dirs_changed` 是
+     * 插件钩子的返回值（无钩子或没有目录变化时恒为 `{}`），不能当判据。
+     */
+    function dirSignalCount(report) {
+      if (!report || typeof report !== 'object') return 0;
+      let total = 0;
+      ['new_dirs', 'vanished_dirs'].forEach((key) => {
+        if (Array.isArray(report[key])) total += report[key].length;
+      });
+      ['new_dirs_truncated', 'vanished_dirs_truncated'].forEach((key) => {
+        total += Number(report[key]) || 0;
+      });
+      return total;
+    }
+
+    /**
+     * 报告里是否真有变化：`invalidated`（远端来源丢弃缓存）、三个条目计数，以及
+     * **目录集合信号**。新建空目录 / 整个目录被移走时条目层没有任何增删，只看
+     * added/changed/removed 会把这类变化整个漏掉 —— 内容页也就看不到新目录。
+     */
     function reportChanged(report) {
       return !!(report
-        && (report.added || report.changed || report.removed || report.invalidated));
+        && (report.added || report.changed || report.removed || report.invalidated
+          || dirSignalCount(report) > 0));
     }
 
     function clearSyncNote() {
@@ -516,6 +581,9 @@ window.Freshness = (function () {
           noteSkipped(report);
         } else if (report.action === 'partial' && report.reason === 'budget') {
           clearSyncNote();
+          // 这一趟已经走到的目录里可能真有变化（含目录集合变化）：先把结论交给内容页，
+          // 再替用户把剩下的目录校验完。两件事不互斥，只是分属两个阶段。
+          if (reportChanged(report) && typeof o.onChange === 'function') o.onChange(report);
           if (!quiet && !(state && state.busy)
               && Date.now() - lastAutoVerifyAt >= AUTO_VERIFY_COOLDOWN_MS) {
             lastAutoVerifyAt = Date.now();

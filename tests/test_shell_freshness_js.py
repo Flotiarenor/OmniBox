@@ -8,7 +8,11 @@
 三个 harness 分别守：
   - `shell_freshness_card.mjs`：进度卡片的动作编排（自动同步 / 启动校验 / 取消），
     同步通道本身（`Freshness.sync` 打到 `system_freshness_sync`、挂载句柄的 `sync`
-    与 `autoSync` 同源、`onChange` 收到的是报告），以及被跳过（`busy` / `throttled` /
+    与 `autoSync` 同源、`onChange` 收到的是报告），报告的变化判据（条目计数、
+    `invalidated`、以及**目录集合信号** `new_dirs` / `vanished_dirs` / `*_truncated`），
+    预算型 `partial` 里"先通知已发现的变化、再续跑校验"，校验完成的两条收尾路径
+    （观察到 busy 之后结束 / 任务在第一次状态读取之前就结束），`available:false` 的
+    两种来源（未接入 vs 指纹库瞬时打不开），以及被跳过（`busy` / `throttled` /
     `bad_scope`）时状态行给出的原因与停留期低频状态重读；
   - `shell_freshness.mjs`：状态文案与轮询生命周期（含"同一实例第二次校验仍会轮询"），
     以及壳挂载型触发面的输入通道 `omnibox:chrome.freshness_scope` 的归一化
@@ -16,7 +20,8 @@
   - `shell_freshness_notify.mjs`：刷新通知面 —— `buildFreshnessEvent` 的报告透传、
     壳同时发 `omnibox:freshness` 与旧的 `omnibox:action: refresh`、
     `/shell/chrome-client.js` 把 action 的 `payload` 交给 `onAction` 第二参
-    （富事件走 `onMessage`），以及设置页「数据与缓存」的概览 / 重建接线。
+    （富事件走 `onMessage`），以及设置页「数据与缓存」的概览 / 重建接线与错误三分类
+    （403 → 权限、404 / 桌面 not-a-function → 旧内核、其余 → 瞬时且可重试）。
 后者曾漏接线：文件存在、内容正确，但没有任何 `test_*_js.py` 引用，等于从未执行。
 
 环境无 node 时跳过（前端构建本身依赖 node，CI 上不会真的缺）。

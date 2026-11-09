@@ -44,7 +44,8 @@ Vue 3 + TypeScript + Vite。`src/` 是壳的界面（`components/` `core/` `rout
 已有文案之后补一句原因，有不可达根时显示「部分目录不可达（N）· 挂载后自动同步」。壳设置页
 的「数据与缓存」用 `system_freshness_overview` 列出各插件状态并提供重建入口；有任务在跑时
 1.5 秒轮询概览、离开设置页即停，`freshnessOverviewErrorText` 把 403 / 权限错误与"旧内核不
-提供"分开表述。
+提供"分开表述；网络抖动、后端重启这类瞬时失败按可重试处理（保留已有概览、有限次退避重试、
+行内给重试按钮），不清空表格也不停轮询。
 
 `toast.js` 是壳页面与插件 iframe 共用的 Toast 唯一实现：两边的引导片段都引它，
 `src/core/toast.ts` 只是给它加类型入口，`base.js` 不再自己定义 `window.Toast`。

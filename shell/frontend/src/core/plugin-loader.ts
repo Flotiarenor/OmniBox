@@ -122,7 +122,8 @@ export interface PluginChromeState {
    *
    * 壳据此在挂载后与视图/作用域变化时触发被动同步。取值的归一化在
    * `core/plugin-chrome-protocol` 的 `normalizeFreshnessScope`：非字符串、超长、
-   * 含 `..` 的值一律丢弃并保留旧值。
+   * 含 `..` 段、反斜杠 / 盘符 / UNC 判非法，落成空串（不保留旧值 —— 旧值只会在
+   * 一个已经不对的目录上同步）。
    */
   freshness_scope?: string
 }

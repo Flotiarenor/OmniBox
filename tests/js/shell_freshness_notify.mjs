@@ -431,6 +431,33 @@ check('概览：403 说权限、旧内核才说"不提供"，不可达根也要�
   assert.match(settingsSource, /unreachableRoots\(item\)/, '概览要显示不可达根');
 });
 
+check('概览：瞬时失败说"可重试"、保留上一份数据并继续重试，不停在错误态', () => {
+  // 三分类：403 → 权限；404 / 桌面 "not a function" → 旧内核；其余 → 瞬时。
+  assert.match(settingsSource, /function overviewFailureKind/, '没有三分类函数');
+  assert.match(settingsSource, /return 'admin'/, '缺权限分支');
+  assert.match(settingsSource, /return 'unsupported'/, '缺旧内核分支');
+  assert.match(settingsSource, /return 'transient'/, '缺瞬时失败分支');
+  assert.match(settingsSource, /页面不存在/, 'HTTP 通道的旧内核 404 文案要认得');
+  assert.match(settingsSource, /not a function/, '桌面通道的旧内核错误要认得');
+  assert.match(settingsSource, /暂时读不到统一刷新状态，可重试。/, '缺瞬时失败文案');
+
+  const catchBlock = /catch \(e\) \{[\s\S]*?scheduleFreshnessPoll\(\)/.exec(settingsSource);
+  assert.ok(catchBlock, '没有找到 loadFreshness 的错误分支');
+  assert.match(catchBlock[0], /if \(problem !== 'transient'\) freshnessStates\.value = \[\]/,
+    '只有永久结论才清空表格');
+  assert.doesNotMatch(catchBlock[0], /^\s*freshnessStates\.value = \[\]$/m,
+    '无条件清空表格会让 busy 项消失、轮询随之停掉');
+
+  // 瞬时失败继续重试（有上限），离开设置页仍然停；回来重置预算。
+  assert.match(settingsSource,
+    /freshnessProblem\.value === 'transient' && freshnessRetries < FRESHNESS_RETRY_LIMIT/,
+    '瞬时失败要进入重试');
+  assert.match(settingsSource, /if \(!busy && !retrying\) return/, '重试与 busy 两条路径都要保留');
+  assert.match(settingsSource, /freshnessRetries = 0/, '成功后 / 回页时重置重试预算');
+  assert.match(settingsSource, /v-if="freshnessProblem === 'transient'"/, '瞬时失败要给重试入口');
+  assert.match(settingsSource, /@click="loadFreshness\(\)"/, '重试按钮要真的重新读取');
+});
+
 check('隐藏插件没有工具栏，概览表就是它们唯一的入口', () => {
   // 表格按插件逐行渲染并以插件名显示；不依赖 getPlugins() 的可见清单
   assert.match(settingsSource, /v-for="item in freshnessStates"/, '没有逐插件渲染');

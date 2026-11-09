@@ -495,8 +495,14 @@ interface FreshnessState {
 }
 
 const freshnessStates = ref<FreshnessState[]>([])
-const freshnessAvailable = ref(true)
+/** 概览读取失败的原因；'' = 正常。权限与"旧内核不提供"是永久结论，transient 是瞬时故障。 */
+type FreshnessProblem = '' | 'admin' | 'unsupported' | 'transient'
+const freshnessProblem = ref<FreshnessProblem>('')
 const freshnessUnavailable = ref('')
+const FRESHNESS_TRANSIENT_TEXT = '暂时读不到统一刷新状态，可重试。'
+/** 瞬时失败的重试上限：抖动要能自己恢复，持续失败时不能无限每 1.5 秒敲一次。 */
+const FRESHNESS_RETRY_LIMIT = 3
+let freshnessRetries = 0
 const rebuildingPlugin = ref('')
 /** 后台校验进行中时的概览重读定时器（有任务在跑才转，见 scheduleFreshnessPoll）。 */
 const FRESHNESS_POLL_MS = 1500
@@ -509,14 +515,39 @@ function stopFreshnessPoll(): void {
   }
 }
 
-/** 有任务在跑（重建 / 校验）时按 1.5 秒重读概览：没有它，表格会永远停在"校验中…"。 */
+/**
+ * 概览读取失败的三分类。
+ *
+ * 概览是管理员专属端点：403 必须说权限，旧内核没有这个方法才说"不提供"，其余（网络
+ * 抖动、后端重启、5xx）是瞬时失败 —— 把后者说成"旧内核"会把人引到错误的排查方向，
+ * 而且会让这张表永久停在错误态。
+ */
+function overviewFailureKind(error: unknown): Exclude<FreshnessProblem, ''> {
+  const message = String((error as { message?: string } | null)?.message || error || '')
+  if (/403|禁止访问|管理员|权限/.test(message)) return 'admin'
+  // 旧内核：HTTP 通道是 404 的「页面不存在」，桌面模式是 "xxx is not a function"。
+  if (/404|页面不存在|不存在|not found|not a function|未知(方法|接口)/i.test(message)) {
+    return 'unsupported'
+  }
+  return 'transient'
+}
+
+/**
+ * 有任务在跑（重建 / 校验）时按 1.5 秒重读概览：没有它，表格会永远停在"校验中…"。
+ *
+ * 瞬时失败也继续重试（有上限）：否则一次网络抖动就把这张表永久停掉；权限 / 旧内核
+ * 结论不再重试（再读也是同一句）。
+ */
 function scheduleFreshnessPoll(): void {
   stopFreshnessPoll()
   // 设置页是 v-show 常驻的：不在这一页时不该为一张看不见的表轮询。
   if (route.path !== '/settings') return
-  if (!freshnessStates.value.some(item => item.busy)) return
+  const busy = freshnessStates.value.some(item => item.busy)
+  const retrying = freshnessProblem.value === 'transient' && freshnessRetries < FRESHNESS_RETRY_LIMIT
+  if (!busy && !retrying) return
   freshnessPollTimer = window.setTimeout(async () => {
     freshnessPollTimer = 0
+    if (freshnessProblem.value === 'transient') freshnessRetries += 1
     await loadFreshness()
   }, FRESHNESS_POLL_MS)
 }
@@ -525,14 +556,18 @@ async function loadFreshness() {
   try {
     const list = await bridge.call('system_freshness_overview')
     freshnessStates.value = Array.isArray(list) ? list : []
-    freshnessAvailable.value = true
+    freshnessProblem.value = ''
     freshnessUnavailable.value = ''
+    freshnessRetries = 0
   } catch (e) {
-    // 整块降级，不影响其余信息。权限不足与"旧内核没有这个接口"必须分开说：
-    // 概览是管理员专属端点，403 报成"内核不提供"会把人引到错误的排查方向。
-    freshnessStates.value = []
-    freshnessAvailable.value = false
-    freshnessUnavailable.value = freshnessOverviewErrorText(e)
+    // 整块降级，不影响其余信息。三分类见 overviewFailureKind：权限不足与"旧内核没有
+    // 这个接口"分开说；瞬时失败保留上一份概览（尤其 busy 项），轮询因此不会断。
+    const problem = overviewFailureKind(e)
+    freshnessProblem.value = problem
+    freshnessUnavailable.value = problem === 'transient'
+      ? FRESHNESS_TRANSIENT_TEXT
+      : freshnessOverviewErrorText(e)
+    if (problem !== 'transient') freshnessStates.value = []
   }
   scheduleFreshnessPoll()
 }
@@ -632,6 +667,8 @@ onUnmounted(() => {
 // 图片库也可能被别处或手工改动，一并重列（此时已选背景一定在库内，不会再触发导入）。
 watch(() => route.path, (path) => {
   if (path === '/settings') {
+    // 回到设置页是一次新的尝试：瞬时失败的退避预算重置。
+    freshnessRetries = 0
     refreshInfo()
     loadBackgroundImages()
   } else {
@@ -988,10 +1025,15 @@ watch(() => route.path, (path) => {
 
           <div class="field">
             <label class="field-label">统一刷新</label>
-            <template v-if="!freshnessAvailable">
-              <p class="field-help">{{ freshnessUnavailable }}</p>
-            </template>
-            <template v-else-if="freshnessStates.length">
+            <p v-if="freshnessUnavailable" class="field-help">
+              {{ freshnessUnavailable }}
+              <button
+                v-if="freshnessProblem === 'transient'"
+                class="btn btn-sm"
+                @click="loadFreshness()"
+              >重试</button>
+            </p>
+            <template v-if="freshnessStates.length">
               <div class="table-scroll">
                 <table class="data-table">
                   <thead>
@@ -1027,7 +1069,7 @@ watch(() => route.path, (path) => {
                 也在这张表里。
               </p>
             </template>
-            <p v-else class="field-help">{{ loading ? '读取中…' : '还没有插件参与统一刷新。' }}</p>
+            <p v-else-if="!freshnessUnavailable" class="field-help">{{ loading ? '读取中…' : '还没有插件参与统一刷新。' }}</p>
           </div>
         </div>
       </section>
