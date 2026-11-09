@@ -57,12 +57,16 @@ class FreshnessProvider:
     def spec(self) -> Dict[str, Any]:
         """声明本插件的新鲜度规格（字段语义见 shell/backend/freshness.py）。"""
         return {
-            # 可调用：额外图片目录能在运行时增删，引擎是长期缓存的对象
-            'roots': self._paths.roots,
+            # 可调用：额外图片目录能在运行时增删，引擎是长期缓存的对象。
+            # 用「配置里的全部根」（含暂时不可达者）：拔盘后引擎只把它记进
+            # `unreachable_roots`，不会把它的目录行、缩略图与相册配置当成「目录被删」；
+            # `/file` 的允许根与 `is_safe` 仍走 `paths.roots()`（只含存在的根）。
+            'roots': self._paths.freshness_roots,
             # 前缀也必须跟着现算：命名空间 token 会因重名加序号，写死会与实际虚拟路径
-            # 不一致（缩略图库的键就全对不上了）
+            # 不一致（缩略图库的键就全对不上了）。token 按配置里的全部根分配，因此
+            # 拔盘/挂载不会改变同一目录的虚拟前缀。
             'prefixes': lambda: tuple(self._paths.virtual_path(root, '')
-                                      for root in self._paths.roots()),
+                                      for root in self._paths.freshness_roots()),
             'include': tuple(sorted(self._extensions)),
             'derive': self.derive,
             'prune': self.prune,

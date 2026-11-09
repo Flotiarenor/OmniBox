@@ -1096,6 +1096,51 @@ class CoverVersionTestCase(unittest.TestCase):
         self.assertGreater(after, before)
         self.assertAlmostEqual(after, newer, places=3)
 
+    def test_regenerate_thumbs_returns_monotonic_version(self):
+        """强制重建不改源文件 mtime：两次重建必须给出不同的单调版本号。"""
+        mtime = (self.root / 'albumA' / '001_p0.png').stat().st_mtime
+
+        first = self.plugin.file_ops.regenerate_thumbs(['albumA/001_p0.png'])
+        second = self.plugin.file_ops.regenerate_thumbs(['albumA/001_p0.png'])
+
+        self.assertEqual(first['errors'], [])
+        self.assertEqual(second['errors'], [])
+        self.assertEqual((self.root / 'albumA' / '001_p0.png').stat().st_mtime, mtime,
+                         '前提：重建不动源文件 mtime（所以 URL 版本号必须靠这个字段）')
+        self.assertGreater(first['version'], 0)
+        self.assertGreater(second['version'], first['version'],
+                           '同一 mtime 的两次强制重建要给不同版本号，否则 URL 不变')
+        # 没有真的重建任何东西时不发版本号（前端据此不做整批换 URL）
+        self.assertEqual(self.plugin.file_ops.regenerate_thumbs([])['version'], 0)
+        failed = self.plugin.file_ops.regenerate_thumbs(['../evil.png'])
+        self.assertTrue(failed['errors'])
+        self.assertEqual(failed['version'], 0)
+
+    def test_rebuild_status_carries_the_forced_version(self):
+        """全量/文件夹重建也领一个单调版本号，随 `rebuild_status` 交给前端。"""
+        started = self.plugin.rebuild.rebuild_all()
+        self.assertTrue(started.get('started'))
+        version = int(started.get('version') or 0)
+        self.assertGreater(version, 0)
+        status = {}
+        for _ in range(300):
+            status = self.plugin.rebuild.status()
+            if status.get('done'):
+                break
+            time.sleep(0.02)
+        self.assertTrue(status.get('done'))
+        self.assertTrue(status.get('success'))
+        self.assertEqual(status.get('version'), version,
+                         '任务结束后的状态里仍要带同一个版本号')
+        # 第二次重建领到更大的版本号（单调）
+        again = self.plugin.rebuild.rebuild_folder('albumA')
+        self.assertTrue(again.get('started'))
+        self.assertGreater(int(again.get('version') or 0), version)
+        for _ in range(300):                         # 等第二次任务结束再清理临时目录
+            if self.plugin.rebuild.status().get('done'):
+                break
+            time.sleep(0.02)
+
 
 class FreshnessTimingTestCase(unittest.TestCase):
     """统一刷新接入后的两个时序契约（都是实测出来的用户可见卡顿）。
@@ -1360,6 +1405,139 @@ class MultiRootFreshnessTestCase(unittest.TestCase):
         self.assertIn(f'{self.namespace}/albumC',
                       [album['path'] for album in self.plugin.albums.list_albums()['albums']],
                       '新目录要在这一次重建里就可见')
+
+
+class UnreachableRootTestCase(unittest.TestCase):
+    """额外根暂时不可达（外接盘没挂载）：规格仍声明它，引擎只记 `unreachable_roots`。
+
+    缺陷背景：`PathLayout.extra_roots()` 只收 `is_dir()` 的根，拔盘后该根从统一刷新的
+    规格里消失，引擎只能把它当"目录被删"：目录行/缩略图行被清、目录快照作废，而
+    `AlbumConfig.prune()` 还会把该根"保留可见"标记永久删掉。修法是把"配置里的根"
+    与"当前可用的根"分开：规格用前者，`/file` 允许根与 `is_safe` 继续只用后者。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        base = Path(self._tmp.name)
+        self.primary = base / 'primary'
+        self.extra = base / 'extra_lib'
+        self.offline = base / 'extra_lib_off'
+        _make_image(self.primary / 'albumA' / '001_p0.png', 120, 90)
+        _make_image(self.extra / 'albumB' / '002_p0.png', 120, 90)
+        self.module = _load_plugin_module()
+        self.module.ImageViewerPlugin._resolved_config = {
+            'root_dir': str(self.primary),
+            'extra_roots': str(self.extra),
+        }
+        self.plugin = self.module.ImageViewerPlugin(
+            {'name': 'image-viewer'},
+            {'directories': {'data_root': str(self.primary)}},
+        )
+        from shell.backend.freshness import engine_for
+
+        self.engine: Any = engine_for(self.plugin)
+        self.assertIsNotNone(self.engine, 'image-viewer 必须声明 freshness_spec()')
+        self.engine.spec.min_sync_interval = 0.0
+        nodes = self.plugin.paths.namespace_nodes()
+        self.assertEqual(len(nodes), 1, f'额外图库应有一个命名空间节点：{nodes}')
+        self.namespace = nodes[0]
+        # 铺底：两个根都进指纹库与相册索引，再给额外根记一个"保留可见"标记
+        self.engine.sync('', force=True)
+        self.plugin.albums.list_albums()
+        self.plugin.album_config.mark_visible(f'{self.namespace}/albumB')
+        self.marks = self.plugin.album_config.visible_marks()
+        self.assertIn(f'{self.namespace}/albumB', self.marks)
+
+    def _unmount(self):
+        os.rename(self.extra, self.offline)
+        # 任何一次索引作废都会重算根集合缓存；之后"哪些根在磁盘上"按现状判断
+        self.plugin.albums.invalidate()
+
+    def _remount(self):
+        os.rename(self.offline, self.extra)
+        self.plugin.albums.invalidate()
+
+    def _extra_path(self):
+        """额外根的规范绝对路径（`Path.resolve()` 可能展开 8.3 短名）。"""
+        return str(self.extra.resolve())
+
+    def _config_marks_on_disk(self):
+        payload = json.loads(
+            (self.primary / '.cache' / 'albums_config.json').read_text(encoding='utf-8'))
+        return payload.get('visible_empty_dirs') or []
+
+    def test_spec_declares_missing_root_but_security_surface_does_not(self):
+        self._unmount()
+        missing = self._extra_path()
+
+        spec = self.plugin.freshness_spec()
+        roots = [str(path) for path in spec['roots']()]
+        self.assertIn(missing, roots,
+                      '统一刷新的规格必须包含配置里的全部根（含暂时不可达者）')
+        self.assertIn(self.namespace, tuple(spec['prefixes']()),
+                      '缺失根的虚拟前缀仍要可解析，否则引擎认不出它属于哪个根')
+
+        self.assertNotIn(missing, [str(path) for path in self.plugin.paths.roots()],
+                         '/file 允许根与走盘只收当前存在的根')
+        self.assertFalse(self.plugin.paths.is_safe(f'{self.namespace}/albumB'),
+                         '不可达根的路径不能通过 is_safe（安全面不放松）')
+        self.assertIsNone(self.plugin.paths.resolve_file_path(
+            f'{self.namespace}/albumB/002_p0.png'))
+        self.assertTrue(self.plugin.paths.virtual_dir_exists(f'{self.namespace}/albumB'),
+                        '根不可达时不能断言目录已消失（否则标记会被 prune）')
+
+    def test_unreachable_primary_root_also_skips_missing_marks(self):
+        """主根同样可能不可达（数据根是移动盘）：那时也不能断言它的目录已消失。"""
+        offline = Path(self._tmp.name) / 'primary_off'
+        os.rename(self.primary, offline)
+        try:
+            self.assertTrue(self.plugin.paths.virtual_dir_exists('albumA'),
+                            '所属根不可达时不能按"目录已消失"清理标记')
+        finally:
+            os.rename(offline, self.primary)
+
+    def test_sync_reports_unreachable_root_and_keeps_config(self):
+        self._unmount()
+        missing = self._extra_path()
+
+        report = self.engine.sync('', force=True)
+
+        self.assertIn(missing, report.get('unreachable_roots') or [],
+                      '不可达根只进 unreachable_roots')
+        self.assertEqual(report['removed'], 0, '不可达不等于目录被删：不许清目录行/条目')
+        self.assertEqual(report.get('vanished_dirs'), [])
+        self.assertIn(missing, self.engine.state().get('unreachable_roots') or [])
+
+        self.plugin.albums.list_albums()
+        self.assertEqual(self.plugin.album_config.visible_marks(), self.marks,
+                         '相册配置的"保留可见"标记不能被当成消失的目录清掉')
+        self.assertEqual(self._config_marks_on_disk(), self.marks, '标记也不能被落盘成空')
+
+    def test_verify_keeps_rows_and_recovery_does_not_reprune(self):
+        self.engine.verify()                             # 整趟校验：不可达根同样受保护
+        self.plugin.albums.list_albums()
+        self.assertEqual(self.plugin.album_config.visible_marks(), self.marks)
+
+        self._unmount()
+        missing = self._extra_path()
+        away = self.engine.verify()
+        self.assertIn(missing, away.get('unreachable_roots') or [])
+        self.assertEqual(away['removed'], 0)
+        self.plugin.albums.list_albums()
+        self.assertEqual(self.plugin.album_config.visible_marks(), self.marks)
+
+        self._remount()
+        back = self.engine.sync('', force=True)
+
+        self.assertEqual(back['removed'], 0, '根恢复后不该再按"消失"清一遍')
+        self.assertEqual(back.get('new_dirs'), [], '目录行在拔盘期间被保住，恢复后不算新目录')
+        self.assertNotIn(missing, back.get('unreachable_roots') or [])
+        self.assertTrue(self.plugin.paths.is_safe(f'{self.namespace}/albumB'))
+        self.assertEqual(self.plugin.album_config.visible_marks(), self.marks)
+        self.assertIn(f'{self.namespace}/albumB',
+                      [album['path'] for album in self.plugin.albums.list_albums()['albums']],
+                      '根恢复后额外图库要重新出现在相册树里')
 
 
 if __name__ == '__main__':

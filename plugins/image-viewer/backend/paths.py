@@ -64,6 +64,7 @@ class PathLayout:
         self._extensions = extensions
         self.root = root
         self._extra_cache: Optional[List[Path]] = None
+        self._extra_all_cache: Optional[List[Path]] = None
         self._first_dir_names: Optional[set] = None
         self._token_cache: Optional[Dict[str, str]] = None
         self._index_cache: Optional[Dict[str, Path]] = None
@@ -89,19 +90,22 @@ class PathLayout:
     def invalidate(self) -> None:
         """丢弃"按设置/按目录集合算出来"的缓存（根集合、第一根目录名、命名空间映射）。"""
         self._extra_cache = None
+        self._extra_all_cache = None
         self._first_dir_names = None
         self._token_cache = None
         self._index_cache = None
 
     # ===== 根集合 =====
 
-    def extra_roots(self) -> List[Path]:
-        """额外图片目录（设置项 `extra_roots`，每行一个）。
+    def _configured_extra_roots(self) -> List[Path]:
+        """设置里写下的额外根：**不过滤能否读到现在的内容**，按设置顺序去重。
 
-        只收当前存在的目录：设置里写下的路径可能已被删除或改成文件，此时它不该
-        继续出现在 `/file` 的允许根与相册树里。结果按设置代次缓存。
+        与 `extra_roots()` 分家：统一刷新的规格必须看见「配置里的全部根」，否则拔掉
+        外接盘后那个根会从声明里消失，引擎只能把它当成「目录被删」去清理指纹与派生
+        数据。可达性由引擎每趟现查 `Path.is_dir()`，不可达的只进 `unreachable_roots`
+        （不播种、不清理它的目录行）。
         """
-        if self._extra_cache is None:
+        if self._extra_all_cache is None:
             raw = self._settings.setting('extra_roots') or ''
             roots: List[Path] = []
             for line in str(raw).splitlines():
@@ -112,14 +116,39 @@ class PathLayout:
                     path = Path(line).expanduser().resolve()
                 except Exception:
                     continue
-                if path.is_dir() and not same_path(path, self.root) and path not in roots:
+                if not same_path(path, self.root) and path not in roots:
                     roots.append(path)
-            self._extra_cache = roots
+            self._extra_all_cache = roots
+        return list(self._extra_all_cache)
+
+    def extra_roots(self) -> List[Path]:
+        """当前**存在**的额外图片目录（设置项 `extra_roots`，每行一个）。
+
+        只收当前存在的目录：这份列表是 `/file` 的允许根与 `is_safe` 的依据，包含
+        拿不到内容的路径没有意义。统一刷新的声明用 `freshness_roots()`（配置里的
+        全部根，含暂时不可达者）。结果按设置代次缓存。
+        """
+        if self._extra_cache is None:
+            self._extra_cache = [path for path in self._configured_extra_roots()
+                                 if path.is_dir()]
         return list(self._extra_cache)
 
     def roots(self) -> List[Path]:
-        """全部根目录：`root` 恒为第一个（虚拟路径的默认根）。"""
+        """全部根目录：`root` 恒为第一个（虚拟路径的默认根）。
+
+        只含**当前存在**的根（供 `/file` 允许根、`is_safe`、全树走盘与展示用）；
+        统一刷新用 `freshness_roots()`。
+        """
         return [self.root, *self.extra_roots()]
+
+    def freshness_roots(self) -> List[Path]:
+        """统一刷新声明用的根：配置里的全部根（含暂时不可达者），第一根恒在首位。
+
+        不可达的根由引擎按 `Path.is_dir()` 现查后只记进 `unreachable_roots`：不播种、
+        不清理它的目录行，拔盘不会把它的指纹、缩略图与「保留可见」标记当成「目录被
+        删」。根恢复后下一趟同步自然重新纳入，不必重新播种整棵树。
+        """
+        return [self.root, *self._configured_extra_roots()]
 
     def is_primary(self, root: Path) -> bool:
         """该根是不是第一根（第一根不加命名空间前缀）。"""
@@ -159,9 +188,15 @@ class PathLayout:
         return {str(root): remaining[i] for i, root in enumerate(roots)}
 
     def token_map(self) -> Dict[str, str]:
-        """当前额外根的 `{根路径: token}`；缓存命中时不碰磁盘。"""
+        """当前配置里额外根的 `{根路径: token}`；缓存命中时不碰磁盘。
+
+        按**配置里的全部根**分配（含暂时不可达者）：token 不随拔盘/挂载改变，否则同
+        一个根在不同可达状态下会拿到不同虚拟前缀，相册配置、缩略图键与统一刷新的
+        指纹键全部跟着漂。哪些 token 能解析到物理目录由 `roots_index()` 决定（只含
+        存在根，安全面不动）。
+        """
         if self._token_cache is None:
-            self._token_cache = self._token_map_for(self.extra_roots())
+            self._token_cache = self._token_map_for(self._configured_extra_roots())
         return dict(self._token_cache)
 
     def roots_index(self) -> Dict[str, Path]:
@@ -256,11 +291,38 @@ class PathLayout:
         return head.startswith(NAMESPACE_MARKER) and len(head) > len(NAMESPACE_MARKER)
 
     def virtual_dir_exists(self, rel_path: str) -> bool:
-        """虚拟目录是否存在（供「保留可见的空目录」标记清理时判断）。"""
+        """虚拟目录是否存在（供「保留可见的空目录」标记清理时判断）。
+
+        根当前不可达（外接盘没挂载）时**不能断言目录不存在**：那时它的内容根本没读到，
+        按「不存在」清掉「保留可见」标记等于把用户的相册配置永久删掉。这类路径按
+        「存在」处理，等根恢复后下一趟重建再按真实磁盘结果判定。
+        """
         if self.is_namespace_node(rel_path):
             return True
-        target, _ = self.resolve_dir(rel_path)
-        return bool(target and target.is_dir())
+        root, inner = self.split_virtual(rel_path)
+        if root is None:
+            return self._in_unreachable_namespace(rel_path)
+        try:
+            if not root.is_dir():
+                # 所属根当前不可达（拔盘 / 根目录被删）：同样不能断言目录已消失
+                return True
+        except OSError:
+            return True
+        target = root / inner if inner else root
+        return target.is_dir()
+
+    def _in_unreachable_namespace(self, rel_path: str) -> bool:
+        """路径是否落在「已配置但当前不可达」的额外根下（判断见 `virtual_dir_exists`）。
+
+        token 取自 `token_map()`（配置里的全部根）：`roots_index()` 只映射存在根，
+        所以缺根下的路径在 `split_virtual` 里解析不到物理目录 —— 这里补上"它属于一个
+        配置里仍在的根，只是眼下读不到"。
+        """
+        head = (rel_path or '').strip('/').partition('/')[0]
+        if not head.startswith(NAMESPACE_MARKER) or len(head) <= len(NAMESPACE_MARKER):
+            return False
+        token = head[len(NAMESPACE_MARKER):]
+        return token in set(self.token_map().values())
 
     def is_safe(self, rel_path: str) -> bool:
         """虚拟路径是否安全落在它所属的根内（未知命名空间一律拒绝）。"""

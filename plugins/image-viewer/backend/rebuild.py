@@ -30,6 +30,8 @@ class RebuildTask:
         self._listing = listing
         self._extensions = extensions
         self._task: Optional[BackgroundTask] = None
+        #: 最近一次重建领到的单调版本号（见 `ThumbStore.bump_rebuild_version`）
+        self._version = 0
 
     # ===== 收集 =====
 
@@ -104,9 +106,13 @@ class RebuildTask:
         images = self.collect_all_images(rel_path)
         task = BackgroundTask(kind='rebuild', extra={'rebuild_path': rel_path})
         task.update(total=len(images))
+        # 强制重建不改源文件 mtime：领一个单调版本号，让前端能把缩略图 URL 换成新的一版
+        # （否则 `/thumbs` 的一天强缓存会继续显示旧图）。
+        self._version = self._thumbs.bump_rebuild_version()
         task.start(self._worker, args=(images,))
         self._task = task
-        return {'started': True, 'running': True, 'total': len(images)}
+        return {'started': True, 'running': True, 'total': len(images),
+                'version': self._version}
 
     def rebuild_folder(self, rel_path: str) -> Dict:
         """只重建指定文件夹下的缩略图（增量补齐，不清空已有缓存）。"""
@@ -131,7 +137,11 @@ class RebuildTask:
             task.update(current='')
 
     def status(self) -> Dict:
-        """返回全量重建后台任务的进度。"""
+        """返回全量重建后台任务的进度。
+
+        `version` 是这次重建的单调版本号（毫秒）：任务结束后前端把它拼进缩略图 URL，
+        盖过 `/thumbs` 的一天强缓存；没有跑过任务时为 0。
+        """
         task = self._task
         if not task:
             return {
@@ -145,6 +155,7 @@ class RebuildTask:
                 'current': '',
                 'error_count': 0,
                 'errors': [],
+                'version': 0,
             }
         status = task.status()
         return {
@@ -158,6 +169,7 @@ class RebuildTask:
             'current': status['current'],
             'error_count': status['error_count'],
             'errors': status['errors'],
+            'version': self._version,
         }
 
     def cancel(self) -> Dict:

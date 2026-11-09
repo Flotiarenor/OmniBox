@@ -14,7 +14,9 @@
 //
 // 另外锁住缩略图 URL 的版本号优先取封面文件自身的 mtime（相册/瓦片），普通图片仍用
 // 自己的 mtime，且版本号精确到毫秒（同秒替换同名文件也要换 URL）：`/thumbs` 带一天
-// 强缓存，替换同名封面不改目录 mtime，只有版本号能击穿它。
+// 强缓存，替换同名封面不改目录 mtime，只有版本号能击穿它。强制重建（「更新缩略图」
+// 与「重建」）不改源文件 mtime，由后端给一个单调版本号，页面记进 `_thumbVersions`
+// 或 `_thumbEpoch` 后拼进 URL —— 场景 5 单独锁这一条。
 //
 // 端到端那一段（重新可见 → 同步 → 重载相册与当前视图）由 tests/js/image_viewer_lifecycle.mjs
 // 的「场景 5」用完整 DOM/Bridge 替身驱动；本文件只测本页自己的判定与上报。
@@ -110,6 +112,8 @@ function loadImageViewer() {
             thumbUrl: (target) => '/thumbs/' + target,
         },
         Toast: { info() { }, error() { }, success() { }, warning() { } },
+        // 「更新缩略图」会先二次确认；本用例只关心版本号是否进入 URL。
+        confirmDialog: async () => true,
         Utils: { escapeHtml: (s) => String(s == null ? '' : s), debounce: (fn) => fn },
         Icons: { html: () => '' },
         setTimeout, clearTimeout, setInterval, clearInterval,
@@ -123,7 +127,7 @@ function loadImageViewer() {
         vm.runInContext(source, sandbox, { filename: `plugins/image-viewer/frontend/${rel}` });
     }
     vm.runInContext('globalThis.__IV = ImageViewer;', sandbox);
-    return { win, doc, chromeMessages, freshness, ImageViewer: sandbox.__IV };
+    return { win, doc, chromeMessages, freshness, sandbox, ImageViewer: sandbox.__IV };
 }
 
 const lastChrome = (env) => env.chromeMessages.filter((m) => m.type === 'omnibox:chrome').at(-1);
@@ -265,15 +269,66 @@ console.log('场景 4：缩略图 URL 的版本号优先取封面文件自身的
     check('相册对象只给 cover 字段时同样带版本', byCoverField.endsWith('&v=1700000100000'),
         `实际 ${byCoverField}`);
 
-    // 同一秒内的两次 mtime：秒级版本号会算出同一个 URL，毫秒级必须不同
-    const nearA = iv._thumbUrl({ url: 'albumA/001_p0.png', cover_mtime: 1700000000.2 });
-    const nearB = iv._thumbUrl({ url: 'albumA/001_p0.png', cover_mtime: 1700000000.9 });
+    // 同一秒内的两次 mtime：秒级版本号会算出同一个 URL，毫秒级必须不同。
+    // 取同一侧的两个值（0.1 / 0.2）：跨 0.5 的值在秒级取整下本来就会得到不同的整数，
+    // 那种取法测不出"毫秒"这件事。
+    const nearA = iv._thumbUrl({ url: 'albumA/001_p0.png', cover_mtime: 1700000000.1 });
+    const nearB = iv._thumbUrl({ url: 'albumA/001_p0.png', cover_mtime: 1700000000.2 });
     check('同秒替换同名封面 → 版本号不同', nearA !== nearB, `${nearA} vs ${nearB}`);
 
     const noStamp = iv._thumbUrl({ url: 'albumA/001_p0.png' });
     check('没有任何时间戳时不带版本号', !noStamp.includes('&v='), `实际 ${noStamp}`);
 
     check('没有封面路径时返回空串', iv._thumbUrl({ cover: '' }) === '');
+}
+
+console.log('场景 5：强制重建（不改 mtime）也要换 URL 版本号');
+{
+    const env = loadImageViewer();
+    const iv = new env.ImageViewer();
+    const item = { url: 'albumA/001_p0.png', mtime: 1700000000 };
+
+    const before = iv._thumbUrl(item);
+    check('未重建时不带强制版本', !before.includes('-'), before);
+
+    iv._rememberThumbVersions(['albumA/001_p0.png'], 1700000000123);
+    const once = iv._thumbUrl(item);
+    check('定向重建的版本号进入 URL', once !== before && once.endsWith('-1700000000123'),
+        `${before} → ${once}`);
+
+    iv._rememberThumbVersions(['albumA/001_p0.png'], 1700000000456);
+    const twice = iv._thumbUrl(item);
+    check('同一 mtime 强制重建两次 → URL 版本号不同',
+        twice !== once && twice.endsWith('-1700000000456'), `${once} vs ${twice}`);
+
+    const touched = iv._thumbUrl({ url: 'albumA/001_p0.png', mtime: 1700000001 });
+    check('强制版本不吞掉 mtime 变化：之后替换文件仍换 URL',
+        touched !== twice && touched.endsWith('1700000001000-1700000000456'), touched);
+
+    // 全量 / 文件夹重建不知道具体文件列表：走整批 epoch，作用于所有条目
+    iv._rememberThumbVersions(null, 1700000000999);
+    check('整批重建的 epoch 作用于未逐条记录的条目',
+        iv._thumbUrl({ url: 'albumB/002.png', mtime: 1700000000 }).endsWith('-1700000000999'),
+        iv._thumbUrl({ url: 'albumB/002.png', mtime: 1700000000 }));
+    check('逐条记录的版本优先于整批 epoch',
+        iv._thumbUrl(item).endsWith('-1700000000456'), iv._thumbUrl(item));
+    check('版本号为 0 时不写任何记录',
+        (() => {
+            const other = new env.ImageViewer();
+            other._rememberThumbVersions(['x.png'], 0);
+            other._rememberThumbVersions(null, 0);
+            return !other._thumbUrl({ url: 'x.png', mtime: 1700000000 }).includes('-');
+        })());
+
+    // 集成：`regenerate_thumbs` 返回的 version 经 refreshSelectedThumbs 记到对应条目
+    env.sandbox.Bridge.call = async (method) => (method === 'regenerate_thumbs'
+        ? { regenerated: ['albumA/001_p0.png'], errors: [], version: 1700000000700 }
+        : {});
+    const app = new env.ImageViewer();
+    app.selectedImages = new Set(['albumA/001_p0.png']);
+    await app.refreshSelectedThumbs();
+    check('regenerate_thumbs 的 version 让该条 URL 换新',
+        app._thumbUrl(item).endsWith('-1700000000700'), app._thumbUrl(item));
 }
 
 console.log(failures === 0

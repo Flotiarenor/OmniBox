@@ -119,6 +119,9 @@ Object.assign(ImageViewer.prototype, {
                 return;
             }
 
+            // 重建不改源文件 mtime：把后端给的单调版本号写进整批 epoch，重新渲染时
+            // `_thumbUrl` 会带上它，`/thumbs` 的一天强缓存才盖得住。
+            this._rememberThumbVersions(null, status.version);
             const result = await Bridge.call('list_albums');
             if (result && result.albums) this.albums = result.albums;
             if (result && result.config) this.albumConfig = result.config;
@@ -221,6 +224,8 @@ Object.assign(ImageViewer.prototype, {
             const result = await Bridge.call('regenerate_thumbs', imgs);
             if (result.errors.length) Toast.error(`部分失败: ${result.errors.join('; ')}`);
             else Toast.success(`已重新生成 ${imgs.length} 张缩略图`);
+            // 强制重建不改 mtime：记下后端给的单调版本号，重绘时这些路径的 URL 才会变
+            this._rememberThumbVersions(result.regenerated || imgs, result.version);
             this.clearSelection();
             await this._reloadCurrentView();
         } catch (e) {

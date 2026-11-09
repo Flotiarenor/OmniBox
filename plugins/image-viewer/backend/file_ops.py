@@ -206,6 +206,10 @@ class FileOps:
 
         用于修复下载丢失/文件被替换后残留的坏缩略图（如黑图、空图）。同时清理该图片
         的尺寸元数据缓存，避免旧尺寸残留。
+
+        返回的 `version` 是这次强制重建的单调版本号（毫秒）：重建不改源文件 mtime，
+        前端只按 mtime 拼 URL 版本号时两次重建得到同一个 URL，`/thumbs` 的一天强缓存
+        会继续显示旧图。调用方（内容页）把它记到这些路径上，URL 才会真的换一版。
         """
         regenerated: List[str] = []
         errors: List[str] = []
@@ -224,6 +228,8 @@ class FileOps:
                     errors.append(f'缩略图生成失败: {rel}')
             except Exception as exc:
                 errors.append(f'缩略图更新失败 {rel}: {exc!s}')
+        version = 0
         if regenerated:
+            version = self._thumbs.bump_rebuild_version()
             self._thumbs.save_meta()
-        return {'regenerated': regenerated, 'errors': errors}
+        return {'regenerated': regenerated, 'errors': errors, 'version': version}
