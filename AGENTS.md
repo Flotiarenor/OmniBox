@@ -62,6 +62,10 @@ selenium / Chrome / 前端产物、有用例被跳过、用例数少于预期，
 
 项目方向 [docs/core-direction.md](docs/core-direction.md)；本地开发 [docs/development.md](docs/development.md)；CI 与发布 [docs/ci-and-release.md](docs/ci-and-release.md)；安装与更新 [docs/install-and-update.md](docs/install-and-update.md)。
 
+安装与更新的三份专题设计：[update-check.md](docs/update-check.md)（应用内检查更新）、
+[distribution-channels.md](docs/distribution-channels.md)（winget / Scoop）、
+[linux-distribution.md](docs/linux-distribution.md)（install.sh / systemd / 容器镜像）。
+
 插件页面骨架（壳渲染 chrome、内容 iframe 只装内容、native 面板）见 [docs/plugin-page-architecture.md](docs/plugin-page-architecture.md)；
 界面规范见 [docs/plugin-ui-guide.md](docs/plugin-ui-guide.md)。改插件页面后可用
 `venv/Scripts/python.exe tools/plugin_ui_audit.py` 做真实壳验收（需已构建的 `shell/frontend/dist`、

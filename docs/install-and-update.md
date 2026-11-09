@@ -4,6 +4,10 @@
 它只写方案与判据；门禁与流水线细节见 [CI、打包与发布](./ci-and-release.md)，
 本地运行见[开发文档](./development.md)，面向使用者的下载与安装见 [readme.md](../readme.md)。
 
+三份专题设计承接本文没有展开的细节：[update-check.md](./update-check.md)（应用内检查更新）、
+[distribution-channels.md](./distribution-channels.md)（winget / Scoop）、
+[linux-distribution.md](./linux-distribution.md)（`install.sh` / systemd / 容器镜像）。
+
 > 范围声明：本文描述 2.0 的目标形态。已实装与未实装在文末的「落地状态表」逐项标注；
 > 正文提到"后续"的条目都是**计划，不是现状**。
 
@@ -110,8 +114,10 @@ Release tag 与界面上显示的版本都从这一处派生。链路分三步�
    `格子铺 Cubby v{{ appVersion }}`，`appVersion` 来自 `__APP_VERSION__`。
 
 后端目前**没有**运行期版本接口：`system_get_shell_info` 返回的是数据目录、日志与
-缓存占用，不含版本号。做检查更新时再定是直接读前端的 `__APP_VERSION__`，还是补一个
-后端接口；两种取法拿到的是同一个数，因为来源只有 `pyproject.toml` 一处。
+缓存占用，不含版本号。检查更新时直接读前端的 `__APP_VERSION__`、由前端把版本传给
+后端（不再另造一份后端版本副本），理由与接口契约见
+[update-check.md](./update-check.md)。两种取法拿到的是同一个数，因为来源只有
+`pyproject.toml` 一处。
 
 「关于」段当前写着"更新需要手动下载安装，应用本身不会联网检查或自动更新"。在检查
 更新落地（§5）之前这句话是准确的，不要提前改掉。
@@ -159,9 +165,10 @@ zip 与安装器的分工：
 
 ### 3.3 winget / Scoop
 
-两者都依赖安装器产物，因此排在安装器之后：**当前未实装**。
-后续要做的只是把 `Cubby-Setup-<版本>.exe` 与校验值登记进清单，不改变本文的
-数据根与目录约定（见 §8）。
+两者都依赖安装器产物，因此排在安装器之后：**设计已定稿、尚未实装**。要做的事是把
+`Cubby-Setup-<版本>.exe` 与校验值登记进清单与 bucket，不改变本文的数据根与目录约定。
+清单字段、ARP 对齐、凭据与自动更新时序见
+[distribution-channels.md](./distribution-channels.md)。
 
 ## 4. Linux 分发
 
@@ -183,7 +190,10 @@ python main.py --web-only        # 默认 http://127.0.0.1:18080
 `Cubby/Cubby --web-only`（压缩包根目录是 `Cubby/`，可执行文件是其中的 `Cubby`），
 用浏览器访问。它与 1.x 的差别只在数据位置（§2.1 的 Linux 默认数据根）。
 
-### 4.3 后续：`install.sh` 与容器镜像（均未实装）
+### 4.3 后续：`install.sh` 与容器镜像（设计已定稿，尚未实装）
+
+布局、参数、升级回滚、systemd unit、镜像与多架构的完整设计见
+[linux-distribution.md](./linux-distribution.md)；本节只留方向。
 
 - **`install.sh`**：解压到 `~/.local/lib/cubby`，在 `~/.local/bin` 放启动器，
   附一份 systemd unit 模板（用户级服务，`--web-only`），卸载脚本删除程序目录、
@@ -195,16 +205,17 @@ python main.py --web-only        # 默认 http://127.0.0.1:18080
 
 ## 5. 更新检查（未实装，先定边界）
 
-应用内检查更新尚未实装。先把边界写死，避免实现时顺手做成"静默自动升级"。
+应用内检查更新尚未实装。完整的接口契约、失败分类、形态判定、状态机与落地拆分见
+[update-check.md](./update-check.md)；本节只定不能越过的边界，避免实现时顺手做成
+"静默自动升级"。
 
 **接口**：`GET https://api.github.com/repos/Flotiarenor/Cubby/releases/latest`。
 GitHub 的匿名调用限流是**每小时 60 次**（按来源 IP），这个数值决定了下面几条。
 
 **版本比较**：取响应的 `tag_name`，去掉前缀 `v`，与运行期能拿到的版本比较。运行期
-版本目前只在前端（`__APP_VERSION__`，见 §2.4）；届时要么让前端发一次请求、要么补一个
-后端接口，二者都从 `pyproject.toml` 派生，比出来的结果一致。tag 由
-`tools/check_version.py` 在发布时强制与 `pyproject.toml` 一致，所以比较两串版本号
-就够，不需要再查文件。
+版本只在前端（`__APP_VERSION__`，见 §2.4），决定由前端把它传给后端、由后端执行检查
+（不另造后端版本副本）。tag 由 `tools/check_version.py` 在发布时强制与 `pyproject.toml`
+一致，所以比较两串版本号就够，不需要再查文件。
 
 **四条边界**：
 
@@ -313,12 +324,13 @@ profile，以及本机访问令牌与设备身份；漫游目录会在每次登�
 | 步骤 | 状态 | 依据 | 下一步 |
 | --- | --- | --- | --- |
 | M1：数据根与安装目录解耦（`CUBBY_HOME` / 开发模式 / 便携 marker / 默认数据根） | **已实装** | [paths.py](../shell/backend/paths.py)、`tests/test_paths_user_data.py` | 由发布说明告知用户"升级不需要搬数据" |
-| M2：Windows Inno Setup 安装器与发布链接入 | **已实装** | [cubby.iss](Releases/cubby.iss)、[release.yml](../.github/workflows/release.yml) 的 Windows build（安装 + 冒烟 + `.sha256`） | 在真实 Windows 机器上做一次覆盖安装验证 |
-| winget 清单 | 未实装 | 依赖 M2 的安装器产物 | 先有稳定版本号与资产，再提交清单 |
-| Scoop 清单 | 未实装 | 同上 | 同上 |
-| 应用内检查更新 | 未实装 | §5 的边界已定，无代码 | 先做"检查 + 提示 + 跳转下载"，updater 另立 |
-| Linux `install.sh`（`~/.local/lib/cubby`、`~/.local/bin` 启动器、systemd unit 模板） | 未实装 | §4.3，无脚本 | 以 tar.gz 的目录结构为输入 |
-| `ghcr.io` 容器镜像 | 未实装 | §4.3，无工作流步骤 | 以 `--web-only` 为入口 |
+| M2：Windows Inno Setup 安装器与发布链接入 | **已实装**（本机实测编译、静默安装与卸载） | [cubby.iss](Releases/cubby.iss)、[release.yml](../.github/workflows/release.yml) 的 Windows build（安装 + 冒烟 + `.sha256`） | CI 首跑确认 iscc 定位与冒烟；再做一次跨版本覆盖安装 |
+| 应用内检查更新（A 检查与提示 / B 下载与校验） | 设计定稿，未实装 | [update-check.md](./update-check.md)，Lead 已定 2.0 只做 A、B | 按该文档 §12 的 A、B 两步落地 |
+| 应用内一键升级（安装器路径 / zip 自替换） | 设计定稿，排到 2.1 | [update-check.md](./update-check.md) §7、§12 的 C、D | 先在真机验证覆盖安装与目录改名 |
+| winget 清单 | 设计定稿，未实装 | [distribution-channels.md](./distribution-channels.md) | 先在临时机器用 `winget install --manifest` 试装 |
+| Scoop bucket | 设计定稿，未实装 | [distribution-channels.md](./distribution-channels.md) §4 | 建 `Flotiarenor/scoop-cubby` 并试装 |
+| Linux `install.sh` / systemd / `ghcr.io` 镜像 | 设计定稿，未实装 | [linux-distribution.md](./linux-distribution.md) | 按该文档 §8 的 A–E 段验收 |
+| Linux 产物的 glibc 基线 | **2.0 发布阻断项** | [linux-distribution.md](./linux-distribution.md) §9 | 改为 `debian:12` 容器构建（`python3.11`，glibc 2.36），并在 Debian 12 / Ubuntu 24.04 上验证 |
 
-「已实装」指代码与发布链在同一次改动里落地；「未实装」指只有约定、没有代码，
-不要按现状阅读。
+「已实装」指代码与发布链在同一次改动里落地；「设计定稿」指方案与判据已写进对应文档、
+还没有代码；「未实装」指只有约定、没有代码，不要按现状阅读。
