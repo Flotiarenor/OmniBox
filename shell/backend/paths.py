@@ -13,24 +13,27 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-OmniBox 统一路径基准。
+Cubby 统一路径基准。
 
 - 开发模式：所有相对路径都锚定到项目根目录，不再依赖 os.getcwd()。
 - 打包模式：可写数据（.config、plugins、data）放在可执行文件旁边；
   只读资源（shell、内置插件）仍从 PyInstaller 的 _MEIPASS 读取。
-  如果可执行文件所在目录不可写，则回退到 %APPDATA%/OmniBox。
+  如果可执行文件所在目录不可写，则回退到 %APPDATA%/Cubby。
 
 `.config/webview` 是 WebView2 的 UserDataFolder（浏览器 profile 与 HTTP 缓存）。
 它与 `.config` 下的其它内容同等对待：属于用户数据，必须落在
 `get_user_data_dir()` 之下，不能进发行产物（`tools/check_build_tree.py` 的
 `FORBIDDEN_RELATIVE` 已禁止产物出现首层 `.config`）。'''
 
+import logging
 import os
 import sys
 import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import List
+
+log = logging.getLogger(__name__)
 
 
 def is_frozen() -> bool:
@@ -55,7 +58,7 @@ def _can_write_app_dir(candidate: Path) -> bool:
     try:
         probe_dir = candidate / '.config'
         probe_dir.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(prefix='.omnibox-write-test-', dir=str(probe_dir))
+        fd, tmp_name = tempfile.mkstemp(prefix='.cubby-write-test-', dir=str(probe_dir))
         os.close(fd)
         Path(tmp_name).unlink()
         return True
@@ -72,14 +75,42 @@ def _can_write_app_dir(candidate: Path) -> bool:
 # 与 `.config/`（同一份设备私钥、同一份注册表、同一份插件设置），表现是"两个实例
 # 其实是同一台设备"；而且会在工作区里留下用户数据（AGENTS.md 明令不许进产物）。
 # 环境变量在进程边界上生效，天然按实例隔离；未设置时行为与以前完全一致。
-USER_DATA_DIR_ENV = 'OMNIBOX_HOME'
+USER_DATA_DIR_ENV = 'CUBBY_HOME'
+
+
+def _migrate_legacy_user_data_dir(fallback: Path) -> Path:
+    """把旧的 `%APPDATA%/OmniBox` 一次性迁到 `%APPDATA%/Cubby`，返回本次该用的目录。
+
+    语义（顺序即判据）：
+
+    1. 新目录已存在 → 直接用新目录，**不碰**旧目录（用户可能两个都在用）。
+    2. 旧目录不存在 → 直接用新目录（首次启动，没有东西可迁）。
+    3. 旧目录存在、新目录不存在 → `os.replace(旧, 新)`。同卷时它是原子的目录改名，
+       不复制也不删除，用户数据原样搬过去。
+    4. 改名抛 `OSError`（被占用、跨卷、权限不足）→ 本次**继续使用旧目录**并告警：
+       不复制、不删除、不半途丢弃数据，下一次启动再试。
+
+    只在冻结回退到 `%APPDATA%` 的分支里调用，且由 `get_user_data_dir()` 的
+    `lru_cache` 保证整个进程只算一次。
+    """
+    target = fallback / 'Cubby'
+    legacy = fallback / 'OmniBox'
+    if target.exists() or not legacy.exists():
+        return target
+    try:
+        os.replace(legacy, target)
+    except OSError as error:
+        log.warning('[paths] 旧用户目录迁移失败，本次继续使用 %s: %s', legacy, error)
+        return legacy
+    log.info('[paths] 用户目录已迁移: %s → %s', legacy, target)
+    return target
 
 
 @lru_cache(maxsize=1)
 def get_user_data_dir() -> Path:
     """返回可写的用户数据根目录（配置、插件、数据文件都锚定在这里）。
 
-    设了环境变量 `OMNIBOX_HOME`（`USER_DATA_DIR_ENV`）就整体挪到那个目录，供多实例
+    设了环境变量 `CUBBY_HOME`（`USER_DATA_DIR_ENV`）就整体挪到那个目录，供多实例
     与端到端测试使用。注意它是**进程级**覆盖：值在首次调用时读入并缓存，之后改
     环境变量不会生效 —— 覆盖必须发生在任何 `get_config_dir()` 调用之前，入口
     `main()` 把它放在第一行就是这个原因。
@@ -98,7 +129,7 @@ def get_user_data_dir() -> Path:
     # 程序目录只读时（例如安装在 Program Files 后直接运行），回退到用户目录。
     appdata = os.environ.get('APPDATA')
     fallback = Path(appdata) if appdata else Path.home()
-    return (fallback / 'OmniBox').resolve()
+    return _migrate_legacy_user_data_dir(fallback).resolve()
 
 
 def get_config_dir() -> Path:

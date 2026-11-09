@@ -171,7 +171,7 @@ console.log('场景 1：A 播完后自动跳 B，A 的进度存储应保持为�
     audioEl.dispatch('ended');
     await tick();
     check('ended 后进度记录为空', MediaProgressStore.get(A) === 0,
-        `实际 ${JSON.stringify(memory.get('omniboxMediaProgress'))}`);
+        `实际 ${JSON.stringify(memory.get('cubbyMediaProgress'))}`);
     check('已切到 B', core.currentItem && core.currentItem.id === 'b');
 }
 
@@ -248,7 +248,7 @@ console.log('场景 6：播放到剩余不足 5s 时，进度保存不应留下�
     audioEl._currentTime = 96;
     core._saveProgress();
     check('剩余 4s 不落盘', MediaProgressStore.get(A) === 0,
-        `实际 ${JSON.stringify(memory.get('omniboxMediaProgress'))}`);
+        `实际 ${JSON.stringify(memory.get('cubbyMediaProgress'))}`);
     audioEl._currentTime = 80;
     core._saveProgress();
     check('剩余 20s 正常落盘', MediaProgressStore.get(A) === 80);
@@ -267,7 +267,7 @@ console.log('场景 7：视频条目走同一套规则');
     videoEl.dispatch('ended');
     await tick();
     check('视频播完后不写回末尾', MediaProgressStore.get(V) === 0,
-        `实际 ${JSON.stringify(memory.get('omniboxMediaProgress'))}`);
+        `实际 ${JSON.stringify(memory.get('cubbyMediaProgress'))}`);
     MediaProgressStore.save('v', 299);
     core.playIndex(0, true);
     await tick();

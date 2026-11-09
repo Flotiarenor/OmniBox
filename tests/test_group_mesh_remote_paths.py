@@ -119,8 +119,8 @@ class WalkRemoteTests(unittest.TestCase):
     def test_malicious_entry_names_are_dropped(self):
         self._patch({'dir': True, 'entries': [
             {'name': '正常.jpg', 'dir': False, 'size': 3, 'mtime_ns': 1},
-            {'name': '../../../tmp/omnibox_pwn', 'dir': False, 'size': 3},
-            {'name': '/tmp/omnibox_abs', 'dir': False, 'size': 3},
+            {'name': '../../../tmp/cubby_pwn', 'dir': False, 'size': 3},
+            {'name': '/tmp/cubby_abs', 'dir': False, 'size': 3},
             {'name': '..', 'dir': True},
             {'name': 'C:/evil.txt', 'dir': False, 'size': 3},
         ]})

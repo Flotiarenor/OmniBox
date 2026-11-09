@@ -37,9 +37,9 @@ Linux / macOS:
     venv/bin/python tools/debug/debug_media_player_popups.py
 
 环境变量：
-    OMNIBOX_HEADLESS=1      用无头 Chrome（默认 0：带界面真实窗口，便于肉眼复核）
-    OMNIBOX_CHROME_BINARY / OMNIBOX_CHROMEDRIVER   指定 Chrome / chromedriver 路径
-    OMNIBOX_KEEP_OPEN=1     跑完不关闭浏览器（留在最后一个状态供人工观察）
+    CUBBY_HEADLESS=1      用无头 Chrome（默认 0：带界面真实窗口，便于肉眼复核）
+    CUBBY_CHROME_BINARY / CUBBY_CHROMEDRIVER   指定 Chrome / chromedriver 路径
+    CUBBY_KEEP_OPEN=1     跑完不关闭浏览器（留在最后一个状态供人工观察）
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# 复用回归用例里的浏览器探测与端口 / 健康检查（同一套 OMNIBOX_* 环境变量）与桩数据
+# 复用回归用例里的浏览器探测与端口 / 健康检查（同一套 CUBBY_* 环境变量）与桩数据
 from tests.test_media_player_browser_e2e import (  # noqa: E402
     STARTUP_TIMEOUT,
     STUB_SCRIPT,
@@ -358,7 +358,7 @@ def main() -> int:
     _LOG_FILE = log_path.open('w', encoding='utf-8')
     _log(f'日志：{log_path}')
     if _chrome_binary() is None:
-        _log('未检测到 Chrome/Edge：可用 OMNIBOX_CHROME_BINARY 指定可执行文件路径')
+        _log('未检测到 Chrome/Edge：可用 CUBBY_CHROME_BINARY 指定可执行文件路径')
         return 2
     try:
         import selenium  # noqa: F401  # pyright: ignore[reportMissingImports]
@@ -370,7 +370,7 @@ def main() -> int:
     from selenium.webdriver.chrome.options import Options  # pyright: ignore[reportMissingImports]
     from selenium.webdriver.chrome.service import Service  # pyright: ignore[reportMissingImports]
 
-    headless = os.environ.get('OMNIBOX_HEADLESS', '0') not in ('', '0', 'false', 'False')
+    headless = os.environ.get('CUBBY_HEADLESS', '0') not in ('', '0', 'false', 'False')
     port = _free_port()
     base = f'http://127.0.0.1:{port}'
     server = subprocess.Popen(
@@ -832,14 +832,14 @@ def main() -> int:
             _log('结论：本次运行没有失败项 —— 图标落点、重复点击、交替点击、视图与播放模式'
                  '切换后，均衡器 / 队列 / 歌单入口都能打开。')
 
-        if os.environ.get('OMNIBOX_KEEP_OPEN'):
+        if os.environ.get('CUBBY_KEEP_OPEN'):
             _log('')
-            _log('按 OMNIBOX_KEEP_OPEN=1 保留浏览器窗口：人工复核后按 Ctrl+C 结束')
+            _log('按 CUBBY_KEEP_OPEN=1 保留浏览器窗口：人工复核后按 Ctrl+C 结束')
             while True:
                 time.sleep(1)
         return 0
     finally:
-        if not os.environ.get('OMNIBOX_KEEP_OPEN'):
+        if not os.environ.get('CUBBY_KEEP_OPEN'):
             try:
                 driver.quit()
             except Exception:

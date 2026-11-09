@@ -23,7 +23,7 @@ def same_path(left, right) -> bool:
 def cleanup_tree(path: Path, attempts: int = 6) -> None:
     """删除临时目录；Windows 上子进程刚退出时文件句柄可能还没释放，重试几次。
 
-    实测现象：`PermissionError: [WinError 32] …\\.config\\logs\\omnibox.log`。它有两种
+    实测现象：`PermissionError: [WinError 32] …\\.config\\logs\\cubby.log`。它有两种
     来源，都真实踩到过：① 实例进程没被杀干净（见 `AppInstance._terminate_tree`），
     握着日志与 SQLite；② 杀毒/索引服务对刚写完的文件短暂占用。重试覆盖第二种，
     第一种由停机用例单独守（`tests/test_multi_instance_fixture.py`）。

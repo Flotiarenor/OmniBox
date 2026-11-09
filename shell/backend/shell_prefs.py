@@ -19,7 +19,7 @@ limitations under the License.
 为什么不放 localStorage：桌面窗口的 localStorage 在 WebView2 profile 的 LevelDB 里，
 日志一旦被强杀截断，Chromium 会在坏记录处停止回放，其后的全部写入在下次启动都读不到
 （表现为"设置存得进、重启就忘"，且没有任何报错）。壳偏好的读路径因此改为服务端注入
-（`file_server.serve_shell` 返回 index.html 时写 `window.__OMNIBOX_SHELL_STATE__`），
+（`file_server.serve_shell` 返回 index.html 时写 `window.__CUBBY_SHELL_STATE__`），
 写路径走 `system_set_shell_prefs`。
 
 校验分三层：

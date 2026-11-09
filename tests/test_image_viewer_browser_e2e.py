@@ -88,7 +88,7 @@ class _ShellServer:
         req = urllib.request.Request(
             f'{self.base}/api/{method}', data=payload,
             headers={'Content-Type': 'application/json',
-                     'X-Omnibox-Token': self.token,
+                     'X-Cubby-Token': self.token,
                      'Cookie': f'omnibox_token={self.token}'})
         started = time.perf_counter()
         body: Any

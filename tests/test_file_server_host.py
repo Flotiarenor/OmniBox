@@ -1,7 +1,7 @@
 """Host 头白名单的回归测试（防 DNS rebinding）。
 
 攻击链是"攻击者域名解析到
-127.0.0.1 → 浏览器认为与 OmniBox 同源 → 自动带上令牌 Cookie 读走数据"，
+127.0.0.1 → 浏览器认为与 Cubby 同源 → 自动带上令牌 Cookie 读走数据"，
 所以这里断言的核心只有一条：**未列入白名单的 Host 拿不到任何数据，
 有没有令牌都一样。**
 
@@ -140,8 +140,8 @@ class TrustedHostTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 400)
 
     def test_explicit_trusted_hosts_entry_allowed(self):
-        client = _make_client(host='127.0.0.1', trusted_hosts=['omnibox.lan'])
-        resp = client.get('/health', base_url='http://omnibox.lan:18080')
+        client = _make_client(host='127.0.0.1', trusted_hosts=['cubby.lan'])
+        resp = client.get('/health', base_url='http://cubby.lan:18080')
         self.assertEqual(resp.status_code, 200)
         # 未在列表里的域名依然被拒
         resp = client.get('/health', base_url='http://other.lan:18080')
@@ -406,6 +406,30 @@ class ShellAssetResolutionTests(unittest.TestCase):
                     self.assertNotIn('[project]', resp.get_data(as_text=True))
                 finally:
                     resp.close()
+
+
+class TokenHeaderTests(unittest.TestCase):
+    """鉴权头：新名 `X-Cubby-Token` 生效，旧名 `X-Omnibox-Token` 仍被接受。"""
+
+    def setUp(self):
+        self.client = _make_client()
+        self.token = get_or_create_token(get_config_dir())
+
+    def _post(self, headers):
+        return self.client.post('/api/system_get_config', headers=headers)
+
+    def test_new_header_accepted(self):
+        self.assertEqual(self._post({TOKEN_HEADER: self.token}).status_code, 200)
+
+    def test_legacy_header_still_accepted(self):
+        """存量 curl 脚本与反代配置不必同步改：旧头只作为被接受的别名保留。"""
+        resp = self._post({'X-Omnibox-Token': self.token})
+        self.assertEqual(resp.status_code, 200)
+
+    def test_wrong_token_rejected_on_both_headers(self):
+        for header in (TOKEN_HEADER, 'X-Omnibox-Token'):
+            with self.subTest(header=header):
+                self.assertEqual(self._post({header: 'bad-token'}).status_code, 401)
 
 
 if __name__ == '__main__':

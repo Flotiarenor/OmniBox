@@ -17,7 +17,7 @@
 | protector | 平台 / 条件 | 保护来源 | 明文落盘吗 |
 | --- | --- | --- | --- |
 | `dpapi` | Windows | 当前 Windows 用户的 DPAPI | 否 |
-| `passphrase` | 设了 `OMNIBOX_SECRET_KEY` | scrypt(passphrase) + AES-256-GCM | 否 |
+| `passphrase` | 设了 `CUBBY_SECRET_KEY` | scrypt(passphrase) + AES-256-GCM | 否 |
 | `keyring` | 有可用 OS keyring（桌面 Linux / macOS） | 随机 32 字节密钥存 OS keyring，文件用 AES-256-GCM | 否 |
 | `plain` | 以上都不可用 | 无 | **是**（保留旧行为并告警） |
 
@@ -29,9 +29,9 @@
   保护；已经保护的文件不会被降级重写（避免一次 keyring 故障把私钥写成明文）。
 * **`plain` 不伪造安全感**：不写 `format` 信封，直接保留旧 JSON，`describe()`
   会如实报告 `active == "plain"`，插件状态页据此显示警告。
-* **显式覆盖**：`OMNIBOX_SECRET_PROTECTOR` 可强制指定
-  `dpapi|keyring|passphrase|plain`，用于排障与用例；`OMNIBOX_SECRET_KEY` 提供
-  passphrase；`OMNIBOX_SECRET_NO_MIGRATE=1` 关闭自动迁移。
+* **显式覆盖**：`CUBBY_SECRET_PROTECTOR` 可强制指定
+  `dpapi|keyring|passphrase|plain`，用于排障与用例；`CUBBY_SECRET_KEY` 提供
+  passphrase；`CUBBY_SECRET_NO_MIGRATE=1` 关闭自动迁移。
 """
 
 from __future__ import annotations
@@ -51,13 +51,32 @@ FORMAT = 'omnibox-secret-v1'
 ENTROPY = b'omnibox.group-mesh.secret.v1'
 KEYRING_SERVICE = 'omnibox-group-mesh'
 _KEYRING_PROBE_USER = '__omnibox_probe__'
-PASSPHRASE_ENV = 'OMNIBOX_SECRET_KEY'
-PROTECTOR_ENV = 'OMNIBOX_SECRET_PROTECTOR'
-NO_MIGRATE_ENV = 'OMNIBOX_SECRET_NO_MIGRATE'
+PASSPHRASE_ENV = 'CUBBY_SECRET_KEY'
+PROTECTOR_ENV = 'CUBBY_SECRET_PROTECTOR'
+NO_MIGRATE_ENV = 'CUBBY_SECRET_NO_MIGRATE'
+
+# 旧环境变量：**不读取**，只在检测到时告警一次并指明新名字。两个原因：静默换挡会
+# 让用户以为口令保护/强制 protector/关闭迁移还生效（看起来"什么都没变"，实际保护
+# 级别已经不同），而按旧名兜底读取又会把"旧名还在被支持"写进契约。
+LEGACY_ENVS = {
+    'OMNIBOX_SECRET_KEY': PASSPHRASE_ENV,
+    'OMNIBOX_SECRET_PROTECTOR': PROTECTOR_ENV,
+    'OMNIBOX_SECRET_NO_MIGRATE': NO_MIGRATE_ENV,
+}
+_legacy_warned: set[str] = set()
 
 PROTECTORS = ('dpapi', 'keyring', 'passphrase', 'plain')
 
 _MAX_PASSPHRASE_BYTES = 4096
+
+
+def warn_legacy_env() -> None:
+    """检测到旧环境变量时告警一次，指明对应的新名字（不读取其值）。"""
+    for legacy, current in LEGACY_ENVS.items():
+        if legacy in _legacy_warned or legacy not in os.environ:
+            continue
+        _legacy_warned.add(legacy)
+        log.warning('[group-mesh] 环境变量 %s 已不再读取，请改用 %s', legacy, current)
 
 
 class SecretError(Exception):
@@ -137,6 +156,7 @@ def keyring_available() -> bool:
 def best_protector() -> str:
     """当前应使用的保护级别（可被环境变量覆盖）。"""
     global _best_cache
+    warn_legacy_env()
     forced = _forced_protector()
     if forced is not None:
         return forced
@@ -336,6 +356,7 @@ def migrate_file(path: Path) -> bool:
     只做"升级"：已经受保护或当前只有 plain 可用时不改。任何失败只告警，
     不影响调用方读取旧内容。
     """
+    warn_legacy_env()
     if os.environ.get(NO_MIGRATE_ENV):
         return False
     try:

@@ -133,10 +133,10 @@ class SettingsStoreTests(unittest.TestCase):
         越界的后果是任意 JSON 写入（例如 Linux 的 ~/.config/autostart/、
         Windows 的启动目录）——这是一条真实的写入原语，不只是"参数没校验"。
         """
-        outside = self.dir.parent / 'omnibox-escape-probe'
+        outside = self.dir.parent / 'cubby-escape-probe'
         for bad in (
-            '../omnibox-escape-probe',
-            '..\\omnibox-escape-probe',
+            '../cubby-escape-probe',
+            '..\\cubby-escape-probe',
             'a/b',
             'a\\b',
             '..',

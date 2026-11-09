@@ -2,7 +2,7 @@
 
 为什么要有这一步
 ----------------
-OmniBox 是本地桌面应用，运行期不能依赖 CDN，也不该为了几个图标把图标包加进
+Cubby 是本地桌面应用，运行期不能依赖 CDN，也不该为了几个图标把图标包加进
 `shell/frontend/package.json` —— sprite 是运行时静态资源，不参与 JS 构建，加依赖只会
 连带影响打包收集规则（`docs/Releases/spec_common.py`、`tools/check_packaging.py`）。
 

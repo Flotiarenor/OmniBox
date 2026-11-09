@@ -48,7 +48,7 @@ class MaterializedDirectoryTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls._root = Path(tempfile.mkdtemp(prefix='omnibox-materialize-'))
+        cls._root = Path(tempfile.mkdtemp(prefix='cubby-materialize-'))
         cls.addClassCleanup(cleanup_tree, cls._root)
 
         cls.original = bytes(range(256)) * 4
@@ -207,7 +207,7 @@ class PlaceholderAgainstImageViewerTest(unittest.TestCase):
         # ImportError（error），而不是按设计 skip。
         from PIL import Image
 
-        cls._root = Path(tempfile.mkdtemp(prefix='omnibox-viewer-'))
+        cls._root = Path(tempfile.mkdtemp(prefix='cubby-viewer-'))
         cls.addClassCleanup(cleanup_tree, cls._root)
 
         cls.shared = cls._root / 'shared'

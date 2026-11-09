@@ -88,7 +88,7 @@ class ShellBackgroundBrowserE2ETests(unittest.TestCase):
 
         cls._tmp = tempfile.TemporaryDirectory()
         root = Path(cls._tmp.name)
-        # `OMNIBOX_HOME` 隔离（见 tests/harness/app_instance.py）：导入的图片会写进
+        # `CUBBY_HOME` 隔离（见 tests/harness/app_instance.py）：导入的图片会写进
         # `<user_data>/.config/backgrounds`，不隔离就会往开发机的真实配置目录里复制。
         cls.instance = AppInstance('background', root).start()
         cls.source_image = root / 'pattern.png'

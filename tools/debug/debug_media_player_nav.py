@@ -27,13 +27,13 @@ Linux / macOS:
     venv/bin/python tools/debug/debug_media_player_nav.py
 
 可选环境变量：
-    OMNIBOX_CHROME_BINARY / OMNIBOX_CHROMEDRIVER  指定 Chrome / chromedriver 路径
-    OMNIBOX_DEBUG_STEPS                            每个方向最多走几步（默认 8）
-    OMNIBOX_DEBUG_VIEW                             指定左侧导航项名称（默认「媒体播放器」）
+    CUBBY_CHROME_BINARY / CUBBY_CHROMEDRIVER  指定 Chrome / chromedriver 路径
+    CUBBY_DEBUG_STEPS                            每个方向最多走几步（默认 8）
+    CUBBY_DEBUG_VIEW                             指定左侧导航项名称（默认「媒体播放器」）
 
 注意：脚本会在真实媒体库上静音播放曲目，更新插件的「最近播放」与播放状态，并在播放模式不是
 顺序播放时把它切到顺序播放（随机/单曲循环下列表顺序不是参照）；如需保留原模式，设置
-OMNIBOX_DEBUG_KEEP_MODE=1。
+CUBBY_DEBUG_KEEP_MODE=1。
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# 复用回归用例里的浏览器探测与端口/健康检查（同一套 OMNIBOX_* 环境变量）
+# 复用回归用例里的浏览器探测与端口/健康检查（同一套 CUBBY_* 环境变量）
 from tests.test_media_player_browser_e2e import (  # noqa: E402
     STARTUP_TIMEOUT,
     _chrome_binary,
@@ -59,7 +59,7 @@ from tests.test_media_player_browser_e2e import (  # noqa: E402
 
 PLUGIN_ENTRY = '/plugins/media-player/frontend/index.html'
 STEP_TIMEOUT = 15.0
-MAX_STEPS = int(os.environ.get('OMNIBOX_DEBUG_STEPS') or 8)
+MAX_STEPS = int(os.environ.get('CUBBY_DEBUG_STEPS') or 8)
 
 
 def _log(message: str) -> None:
@@ -68,7 +68,7 @@ def _log(message: str) -> None:
 
 def main() -> int:
     if _chrome_binary() is None:
-        _log('未检测到 Chrome/Edge：可用 OMNIBOX_CHROME_BINARY 指定可执行文件路径')
+        _log('未检测到 Chrome/Edge：可用 CUBBY_CHROME_BINARY 指定可执行文件路径')
         return 2
     try:
         import selenium  # noqa: F401  # pyright: ignore[reportMissingImports]
@@ -117,14 +117,14 @@ def main() -> int:
     try:
         driver.get(base)
         _wait(driver, "return document.querySelectorAll('.nav-item').length > 0;", '壳导航未渲染')
-        target = (os.environ.get('OMNIBOX_DEBUG_VIEW') or '媒体播放器').strip()
+        target = (os.environ.get('CUBBY_DEBUG_VIEW') or '媒体播放器').strip()
         clicked = driver.execute_script(
             "const t = arguments[0];"
             "const hit = Array.from(document.querySelectorAll('.nav-item'))"
             ".find(e => e.textContent.includes(t));"
             "if (hit) { hit.click(); return true; } return false;", target)
         if not clicked:
-            _log(f'壳导航里找不到「{target}」：请用 OMNIBOX_DEBUG_VIEW 指定其他名称')
+            _log(f'壳导航里找不到「{target}」：请用 CUBBY_DEBUG_VIEW 指定其他名称')
             return 2
 
         frame = _wait_iframe(driver)
@@ -146,8 +146,8 @@ def main() -> int:
         if mode_state['playMode'] != 0:
             _log('  说明：随机播放下列表顺序不是参照 —— 下一首/上一首都会随机取条目（可跳到任意位置）；'
                  '单曲循环下「下一首」重播当前条目。')
-            if os.environ.get('OMNIBOX_DEBUG_KEEP_MODE'):
-                _log('  按 OMNIBOX_DEBUG_KEEP_MODE 保持该模式继续比较（结果必然与列表顺序不符）')
+            if os.environ.get('CUBBY_DEBUG_KEEP_MODE'):
+                _log('  按 CUBBY_DEBUG_KEEP_MODE 保持该模式继续比较（结果必然与列表顺序不符）')
             else:
                 _normalize_mode(driver, container)
 

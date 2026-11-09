@@ -166,7 +166,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print('[setup] --prepare-only：未启动实例。')
         return 0
 
-    env = {**os.environ, 'OMNIBOX_HOME': str(home),
+    env = {**os.environ, 'CUBBY_HOME': str(home),
            'PYTHONUNBUFFERED': '1', 'PYTHONIOENCODING': 'utf-8'}
     url = f'http://127.0.0.1:{args.port}/'
     if args.web_only:
@@ -175,8 +175,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             webbrowser.open(url)
         command = [sys.executable, 'main.py', '--web-only', '--port', str(args.port)]
     else:
-        # 桌面窗口：不传 --web-only，main.py 会 create_window('OmniBox', ...)。
-        # 隔离靠 OMNIBOX_HOME —— 窗口里改的一切都落在 <home>，仓库 .config 不动。
+        # 桌面窗口：不传 --web-only，main.py 会 create_window('格子铺', ...)。
+        # 隔离靠 CUBBY_HOME —— 窗口里改的一切都落在 <home>，仓库 .config 不动。
         print(f'[setup] 桌面窗口已启动（隔离实例，内部服务端口 {args.port}）。'
               f'关掉窗口或 Ctrl+C 结束。')
         command = [sys.executable, 'main.py', '--port', str(args.port)]

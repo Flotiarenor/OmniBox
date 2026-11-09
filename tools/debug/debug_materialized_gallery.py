@@ -5,9 +5,9 @@
 `--headless=new`，所以"0 字节占位会让网格退化成什么样"始终只是读码推断 —— 实测结论
 确实与推断不同，这里把它变成可以盯着看的东西。
 
-它做四件事（每步之间停顿 `OMNIBOX_DEMO_PAUSE` 秒，默认 2.5）
+它做四件事（每步之间停顿 `CUBBY_DEMO_PAUSE` 秒，默认 2.5）
 ----------------------------------------------------------------
-1. 起两个**空白实例**（各自一份 OMNIBOX_HOME，见 tests/harness/app_instance.py），
+1. 起两个**空白实例**（各自一份 CUBBY_HOME，见 tests/harness/app_instance.py），
    建团、共享一个含 6 张不同长宽比 JPEG 的目录、起节点、登记对端、物化。左窗口是
    「看图的那台设备」，右窗口是「提供图片的那台设备」。
 2. 在左窗口进「图片相册」，点进物化目录那个顶层节点 → **看那一屏**：宽高 0×0 让
@@ -16,7 +16,7 @@
    而取字节的钩子属于 group-mesh，所以**点照片也不会把字节取回来**。
 4. 用 group-mesh 自己的根把 6 张图取回来，再点「刷新」→ 同一屏恢复正常。
 
-截图落在 `OMNIBOX_DEMO_OUT`（默认 `.build/demo-materialized/`），一步步对应上面的阶段。
+截图落在 `CUBBY_DEMO_OUT`（默认 `.build/demo-materialized/`），一步步对应上面的阶段。
 
 运行
 ----
@@ -25,17 +25,17 @@
 
 可选环境变量
 ------------
-    OMNIBOX_DEMO_PAUSE     每步停顿秒数（默认 2.5；设 0 可以快速跑一遍）
-    OMNIBOX_DEMO_HOLD      演示结束后保持浏览器打开秒数（默认 300；设 0 立即关）
-    OMNIBOX_DEMO_OUT       截图输出目录
-    OMNIBOX_DEMO_NO_OWNER  设为 1 则不开右窗口（只开看图那台）
-    OMNIBOX_CHROME_BINARY / OMNIBOX_CHROMEDRIVER   同其它 e2e 脚本
+    CUBBY_DEMO_PAUSE     每步停顿秒数（默认 2.5；设 0 可以快速跑一遍）
+    CUBBY_DEMO_HOLD      演示结束后保持浏览器打开秒数（默认 300；设 0 立即关）
+    CUBBY_DEMO_OUT       截图输出目录
+    CUBBY_DEMO_NO_OWNER  设为 1 则不开右窗口（只开看图那台）
+    CUBBY_CHROME_BINARY / CUBBY_CHROMEDRIVER   同其它 e2e 脚本
 
 注意
 ----
 * 它会真的打开可见的 Chrome 窗口并在你桌面上点击；演示期间不要手动操作那两个窗口
   （会打乱脚本的元素定位）。
-* 结束时保持打开一段时间，方便自己点点看；按 `OMNIBOX_DEMO_HOLD=0` 可立刻收工。
+* 结束时保持打开一段时间，方便自己点点看；按 `CUBBY_DEMO_HOLD=0` 可立刻收工。
 """
 
 from __future__ import annotations
@@ -104,8 +104,8 @@ def env_float(name: str, default: float) -> float:
         return default
 
 
-PAUSE = env_float('OMNIBOX_DEMO_PAUSE', 2.5)
-HOLD = env_float('OMNIBOX_DEMO_HOLD', 300.0)
+PAUSE = env_float('CUBBY_DEMO_PAUSE', 2.5)
+HOLD = env_float('CUBBY_DEMO_HOLD', 300.0)
 
 
 def say(message: str) -> None:
@@ -288,16 +288,16 @@ def main() -> int:
         return 2
     binary = _chrome_binary()
     if binary is None:
-        print('未检测到 Chrome / Edge（可用 OMNIBOX_CHROME_BINARY 指定）')
+        print('未检测到 Chrome / Edge（可用 CUBBY_CHROME_BINARY 指定）')
         return 2
 
-    out_dir = Path(os.environ.get('OMNIBOX_DEMO_OUT')
+    out_dir = Path(os.environ.get('CUBBY_DEMO_OUT')
                    or (PROJECT_ROOT / '.build' / 'demo-materialized'))
     if out_dir.exists():
         shutil.rmtree(out_dir, ignore_errors=True)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    workdir = Path(tempfile.mkdtemp(prefix='omnibox-demo-'))
+    workdir = Path(tempfile.mkdtemp(prefix='cubby-demo-'))
     shared = build_shared_dir(workdir)
 
     say(f'准备两台空白实例（临时目录 {workdir}）')
@@ -348,7 +348,7 @@ def main() -> int:
     driver.set_page_load_timeout(60)
     owner_driver = None
     try:
-        if not os.environ.get('OMNIBOX_DEMO_NO_OWNER'):
+        if not os.environ.get('CUBBY_DEMO_NO_OWNER'):
             try:
                 owner_driver = make_driver('1500,0')
                 owner_driver.get(owner.base_url)
@@ -471,9 +471,9 @@ def main() -> int:
                     pass
         cluster.stop()
         # 演示的临时实例目录里是**一次性的身份私钥**，没有保留价值；留着只会在 %TEMP%
-        # 里越堆越多。要看就设 OMNIBOX_DEMO_KEEP=1。
-        if os.environ.get('OMNIBOX_DEMO_KEEP'):
-            say(f'按 OMNIBOX_DEMO_KEEP 保留临时目录：{workdir}')
+        # 里越堆越多。要看就设 CUBBY_DEMO_KEEP=1。
+        if os.environ.get('CUBBY_DEMO_KEEP'):
+            say(f'按 CUBBY_DEMO_KEEP 保留临时目录：{workdir}')
         else:
             shutil.rmtree(workdir, ignore_errors=True)
     return 0

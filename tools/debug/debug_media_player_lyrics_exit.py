@@ -21,9 +21,9 @@
     venv\\Scripts\\python.exe tools\\debug\\debug_media_player_lyrics_exit.py
 
 环境变量：
-    OMNIBOX_HEADLESS=1                             用无头 Chrome（默认 0）
-    OMNIBOX_CHROME_BINARY / OMNIBOX_CHROMEDRIVER   指定 Chrome / chromedriver 路径
-    OMNIBOX_CHROME_SIZE                            窗口尺寸，形如 1184x749（默认 1400,900）
+    CUBBY_HEADLESS=1                             用无头 Chrome（默认 0）
+    CUBBY_CHROME_BINARY / CUBBY_CHROMEDRIVER   指定 Chrome / chromedriver 路径
+    CUBBY_CHROME_SIZE                            窗口尺寸，形如 1184x749（默认 1400,900）
 
 产物：截图与 JSON 快照写在 `.build/lyrics-exit/`（已忽略，不进版本库）。
 """
@@ -155,7 +155,7 @@ def _log(message: str = '') -> None:
 
 
 def _window_size() -> tuple:
-    raw = (os.environ.get('OMNIBOX_CHROME_SIZE') or '').strip()
+    raw = (os.environ.get('CUBBY_CHROME_SIZE') or '').strip()
     width, _, height = raw.partition('x')
     if width.isdigit() and height.isdigit():
         return int(width), int(height)
@@ -228,7 +228,7 @@ def _wait_playing(driver: Any, timeout: float = 20.0) -> bool:
 def main() -> int:
     chrome = _chrome_binary()
     if chrome is None:
-        _log('未检测到 Chrome：可用 OMNIBOX_CHROME_BINARY 指定可执行文件路径')
+        _log('未检测到 Chrome：可用 CUBBY_CHROME_BINARY 指定可执行文件路径')
         return 2
     try:
         import selenium  # noqa: F401  # pyright: ignore[reportMissingImports]
@@ -240,7 +240,7 @@ def main() -> int:
     from selenium.webdriver.chrome.options import Options  # pyright: ignore[reportMissingImports]
     from selenium.webdriver.chrome.service import Service  # pyright: ignore[reportMissingImports]
 
-    headless = os.environ.get('OMNIBOX_HEADLESS', '0') not in ('', '0', 'false', 'False')
+    headless = os.environ.get('CUBBY_HEADLESS', '0') not in ('', '0', 'false', 'False')
     width, height = _window_size()
     port = _free_port()
     base = f'http://127.0.0.1:{port}'

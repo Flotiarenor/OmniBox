@@ -143,7 +143,7 @@ class ResolveLibraryTest(unittest.TestCase):
             library = tool.resolve_library(tmp)
         self.assertEqual(Path(tmp).resolve(), library['root'])
         self.assertEqual([Path(tmp).resolve()], library['roots'])
-        self.assertIsNone(library['config'], '--root 时不该去读 OmniBox 配置')
+        self.assertIsNone(library['config'], '--root 时不该去读 Cubby 配置')
 
     def test_missing_dir_exits(self):
         with self.assertRaises(SystemExit):

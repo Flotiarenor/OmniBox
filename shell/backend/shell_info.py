@@ -46,7 +46,7 @@ log = logging.getLogger(__name__)
 
 # 壳自身设置的文件名（SettingsStore 会拼成 <config_dir>/shell.json）
 SHELL_SETTINGS_NAME = 'shell'
-LOG_FILE_NAME = 'omnibox.log'
+LOG_FILE_NAME = 'cubby.log'
 # 只留四档：DEBUG 会为每张缩略图记一行，量级与 INFO 差一个数量级，够排查就停。
 LOG_LEVELS = ('DEBUG', 'INFO', 'WARNING', 'ERROR')
 

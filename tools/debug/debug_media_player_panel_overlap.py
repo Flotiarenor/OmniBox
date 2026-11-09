@@ -16,9 +16,9 @@
     venv\\Scripts\\python tools\\debug\\debug_media_player_panel_overlap.py
 
 环境变量：
-    OMNIBOX_HEADLESS=1                             用无头 Chrome（默认 0）
-    OMNIBOX_CHROME_BINARY / OMNIBOX_CHROMEDRIVER   指定 Chrome / chromedriver 路径
-    OMNIBOX_SIZES                                  自定义尺寸，形如 1400x900,1184x749,1024x600
+    CUBBY_HEADLESS=1                             用无头 Chrome（默认 0）
+    CUBBY_CHROME_BINARY / CUBBY_CHROMEDRIVER   指定 Chrome / chromedriver 路径
+    CUBBY_SIZES                                  自定义尺寸，形如 1400x900,1184x749,1024x600
 """
 
 from __future__ import annotations
@@ -85,7 +85,7 @@ def _log(message: str = '') -> None:
 
 
 def _sizes() -> list:
-    raw = (os.environ.get('OMNIBOX_SIZES') or '').strip()
+    raw = (os.environ.get('CUBBY_SIZES') or '').strip()
     if not raw:
         return list(DEFAULT_SIZES)
     out = []
@@ -98,7 +98,7 @@ def _sizes() -> list:
 
 def main() -> int:
     if _chrome_binary() is None:
-        _log('未检测到 Chrome/Edge：可用 OMNIBOX_CHROME_BINARY 指定可执行文件路径')
+        _log('未检测到 Chrome/Edge：可用 CUBBY_CHROME_BINARY 指定可执行文件路径')
         return 2
     try:
         import selenium  # noqa: F401  # pyright: ignore[reportMissingImports]
@@ -110,7 +110,7 @@ def main() -> int:
     from selenium.webdriver.chrome.options import Options  # pyright: ignore[reportMissingImports]
     from selenium.webdriver.chrome.service import Service  # pyright: ignore[reportMissingImports]
 
-    headless = os.environ.get('OMNIBOX_HEADLESS', '0') not in ('', '0', 'false', 'False')
+    headless = os.environ.get('CUBBY_HEADLESS', '0') not in ('', '0', 'false', 'False')
     port = _free_port()
     base = f'http://127.0.0.1:{port}'
     server = subprocess.Popen(

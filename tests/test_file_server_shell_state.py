@@ -2,7 +2,7 @@
 
 为什么这几条必须锁住：
 
-- 壳偏好不再放 localStorage，而是由 `serve_shell` 注入 `window.__OMNIBOX_SHELL_STATE__`。
+- 壳偏好不再放 localStorage，而是由 `serve_shell` 注入 `window.__CUBBY_SHELL_STATE__`。
   注入点必须早于模块脚本（否则首帧会先画默认色再跳到用户主题），并且**必须转义**
   `<` 与 `&` —— 颜色值是用户输入，一个 `</script>` 会直接闭合脚本块；
 - index.html 现在是动态响应：一旦被缓存，用户改过的主题与启动页会按旧值发出来，
@@ -101,8 +101,8 @@ class ShellStateInjectionTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         body = resp.get_data(as_text=True)
         match = re.search(
-            r'<script>window\.__OMNIBOX_SHELL_STATE__=(.*?);</script>', body, re.DOTALL)
-        self.assertIsNotNone(match, '首页里没有注入 __OMNIBOX_SHELL_STATE__')
+            r'<script>window\.__CUBBY_SHELL_STATE__=(.*?);</script>', body, re.DOTALL)
+        self.assertIsNotNone(match, '首页里没有注入 __CUBBY_SHELL_STATE__')
         assert match is not None
         return resp, body, match
 
@@ -121,7 +121,7 @@ class ShellStateInjectionTests(unittest.TestCase):
         entry = re.search(r'<script type="module"[^>]*src="([^"]+)"', body)
         self.assertIsNotNone(entry, f'首页里找不到模块入口脚本: {body[:200]}')
         assert entry is not None
-        self.assertLess(body.index('__OMNIBOX_SHELL_STATE__'), entry.start())
+        self.assertLess(body.index('__CUBBY_SHELL_STATE__'), entry.start())
 
     def test_stored_prefs_are_injected(self):
         self._write_prefs({'theme': 'light', 'colors': {'--accent': '#8b5cf6'},
@@ -142,7 +142,7 @@ class ShellStateInjectionTests(unittest.TestCase):
         self.assertIn('\\u003c', match.group(1), '`<` 必须转义成 \\u003c')
         # 转义后它只是一段字符串数据，不再是可执行的脚本标签
         self.assertEqual(
-            len(re.findall(r'<script>window\.__OMNIBOX_SHELL_STATE__=', match.group(0))), 1)
+            len(re.findall(r'<script>window\.__CUBBY_SHELL_STATE__=', match.group(0))), 1)
 
     def test_ampersand_is_escaped(self):
         self._write_prefs({'colors': {'--bg-app': 'a&b'}})

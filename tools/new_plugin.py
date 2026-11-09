@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OmniBox 插件脚手架。
+"""Cubby 插件脚手架。
 
 从模板 tools/examples/hello-world 生成一个可运行的新插件，
 免去手写 manifest.json 与骨架的仪式。
@@ -98,12 +98,12 @@ def new_plugin(name: str, route: str | None = None, display: str | None = None,
 
     print(f'[new_plugin] 已生成插件: {target}')
     print(f'[new_plugin] 路由: {route}  后端类: {class_name}  显示名: {display}')
-    print('[new_plugin] 重启 OmniBox 后即可在导航栏看到它。')
+    print('[new_plugin] 重启 Cubby 后即可在导航栏看到它。')
     return 0
 
 
 def interactive(plugins_dir: str | Path | None = None) -> int:
-    print('OmniBox 插件脚手架（交互模式）\n')
+    print('Cubby 插件脚手架（交互模式）\n')
     while True:
         name = input('插件名（kebab-case slug，如 my-tool）: ').strip()
         if not name:
@@ -125,7 +125,7 @@ def interactive(plugins_dir: str | Path | None = None) -> int:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description='生成 OmniBox 插件骨架')
+    parser = argparse.ArgumentParser(description='生成 Cubby 插件骨架')
     parser.add_argument('name', nargs='?', help='插件名（kebab-case slug，如 my-tool）；缺省进入交互模式')
     parser.add_argument('--route', help='前端路由，默认 /<name>')
     parser.add_argument('--display', help='导航栏显示名，默认由 name 推导')

@@ -13,7 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-OmniBox 的**主体（principal）上下文**：把"请求带来的凭据"映射成"谁在调用"。
+Cubby 的**主体（principal）上下文**：把"请求带来的凭据"映射成"谁在调用"。
 
 ## 为什么需要它
 
@@ -113,7 +113,7 @@ class PrincipalContext:
 # 异步扩展放到不同线程上执行，而 ContextVar 跟随的是**执行上下文**；
 # 同时它天然不跨线程继承，恰好就是我们要的"后台线程没有主体"。
 CURRENT_PRINCIPAL: contextvars.ContextVar[Optional[PrincipalContext]] = \
-    contextvars.ContextVar('omnibox_principal', default=None)
+    contextvars.ContextVar('cubby_principal', default=None)
 
 
 def current_principal() -> Optional[PrincipalContext]:

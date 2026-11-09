@@ -14,11 +14,11 @@ from shell.backend.ports import SettingsPort
 
 
 class Greeter:
-    def __init__(self, settings: SettingsPort, default: str = 'Hello, OmniBox!') -> None:
+    def __init__(self, settings: SettingsPort, default: str = 'Hello, Cubby!') -> None:
         self._settings = settings
         self._default = default
 
     def greet(self, name: Optional[str] = None) -> str:
         greeting = self._settings.setting('greeting', self._default)
-        who = name or 'OmniBox'
+        who = name or 'Cubby'
         return f'{greeting} （来自后端 {who} 的问候）'

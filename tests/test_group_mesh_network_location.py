@@ -37,7 +37,7 @@ class NetworkLocationTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls._root = Path(tempfile.mkdtemp(prefix='omnibox-mirror-'))
+        cls._root = Path(tempfile.mkdtemp(prefix='cubby-mirror-'))
         cls.addClassCleanup(cleanup_tree, cls._root)
         cls.shared = cls._root / 'shared'
         cls.files = {

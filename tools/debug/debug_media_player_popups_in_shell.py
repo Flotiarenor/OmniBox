@@ -19,9 +19,9 @@ Windows:
     venv\\Scripts\\python tools\\debug\\debug_media_player_popups_in_shell.py
 
 环境变量：
-    OMNIBOX_HEADLESS=1     用无头 Chrome（默认 0：带界面，便于肉眼复核）
-    OMNIBOX_CHROME_BINARY / OMNIBOX_CHROMEDRIVER   指定 Chrome / chromedriver 路径
-    OMNIBOX_DEBUG_VIEW     左侧导航项名称（默认「媒体播放器」）
+    CUBBY_HEADLESS=1     用无头 Chrome（默认 0：带界面，便于肉眼复核）
+    CUBBY_CHROME_BINARY / CUBBY_CHROMEDRIVER   指定 Chrome / chromedriver 路径
+    CUBBY_DEBUG_VIEW     左侧导航项名称（默认「媒体播放器」）
 """
 
 from __future__ import annotations
@@ -110,7 +110,7 @@ def main() -> int:
     _LOG_FILE = log_path.open('w', encoding='utf-8')
     _log(f'日志：{log_path}')
     if _chrome_binary() is None:
-        _log('未检测到 Chrome/Edge：可用 OMNIBOX_CHROME_BINARY 指定可执行文件路径')
+        _log('未检测到 Chrome/Edge：可用 CUBBY_CHROME_BINARY 指定可执行文件路径')
         return 2
     try:
         import selenium  # noqa: F401  # pyright: ignore[reportMissingImports]
@@ -122,7 +122,7 @@ def main() -> int:
     from selenium.webdriver.chrome.options import Options  # pyright: ignore[reportMissingImports]
     from selenium.webdriver.chrome.service import Service  # pyright: ignore[reportMissingImports]
 
-    headless = os.environ.get('OMNIBOX_HEADLESS', '0') not in ('', '0', 'false', 'False')
+    headless = os.environ.get('CUBBY_HEADLESS', '0') not in ('', '0', 'false', 'False')
     port = _free_port()
     base = f'http://127.0.0.1:{port}'
     server = subprocess.Popen(
@@ -159,7 +159,7 @@ def main() -> int:
         _log(f'浏览器：{"无头" if headless else "带界面"} Chrome，入口 {base}（真实壳 → 插件 iframe）')
         driver.get(base)
         _wait(driver, "return document.querySelectorAll('.nav-item').length > 0;", '壳导航未渲染')
-        target = (os.environ.get('OMNIBOX_DEBUG_VIEW') or '媒体播放器').strip()
+        target = (os.environ.get('CUBBY_DEBUG_VIEW') or '媒体播放器').strip()
         entered = driver.execute_script("""
             const item = Array.from(document.querySelectorAll('.nav-item'))
                 .find(e => e.textContent.includes(arguments[0]));
@@ -168,7 +168,7 @@ def main() -> int:
             return true;
         """, target)
         if not entered:
-            _log(f'壳导航里找不到「{target}」：可用 OMNIBOX_DEBUG_VIEW 指定其他名称')
+            _log(f'壳导航里找不到「{target}」：可用 CUBBY_DEBUG_VIEW 指定其他名称')
             return 2
 
         frame = None

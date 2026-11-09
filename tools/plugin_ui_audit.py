@@ -94,7 +94,7 @@ WINDOW_SIZE = (1440, 960)
 INTERACTIVE_PLUGIN = 'media-player'
 #: 让壳把整个用户数据根放到临时目录，交互验收不污染真实配置。
 #: 与 shell/backend/paths.py 的 USER_DATA_DIR_ENV 保持一致（用例会断言两者相等）。
-HOME_ENV = 'OMNIBOX_HOME'
+HOME_ENV = 'CUBBY_HOME'
 
 PASS = 'PASS'
 FAIL = 'FAIL'
@@ -863,7 +863,7 @@ def _terminate_tree(process: subprocess.Popen[Any]) -> None:
 class ShellServer:
     """临时壳服务：``main.py --web-only --port <空闲端口>``，退出时 kill。
 
-    ``home`` 非空时通过 ``OMNIBOX_HOME`` 把整个用户数据根（配置、插件设置、data）
+    ``home`` 非空时通过 ``CUBBY_HOME`` 把整个用户数据根（配置、插件设置、data）
     指到该目录，供"会写设置"的交互验收使用；不传则保持与人工运行时一致的数据根。
     """
 
@@ -1356,7 +1356,7 @@ def _check_console(
 
 
 # ===== 交互验收：设置弹窗保存往返 / 搜索回填与清空 / mini EQ =====
-# 三项都在隔离实例（临时 OMNIBOX_HOME）里跑：设置往返会写插件设置，不能碰用户配置。
+# 三项都在隔离实例（临时 CUBBY_HOME）里跑：设置往返会写插件设置，不能碰用户配置。
 
 def _settings_modal_open(driver: Any) -> bool:
     return driver.execute_script(_SETTINGS_OPEN_JS) is True
@@ -1563,10 +1563,10 @@ def _check_mini_eq(driver: Any, plugin_name: str, timeout: float) -> tuple[str, 
 
 
 class InteractiveChecks:
-    """交互验收用的隔离壳：临时 OMNIBOX_HOME，不读写用户的插件设置。"""
+    """交互验收用的隔离壳：临时 CUBBY_HOME，不读写用户的插件设置。"""
 
     def __init__(self) -> None:
-        self._home = tempfile.TemporaryDirectory(prefix='omnibox-ui-audit-', ignore_cleanup_errors=True)
+        self._home = tempfile.TemporaryDirectory(prefix='cubby-ui-audit-', ignore_cleanup_errors=True)
         self._server = ShellServer(home=Path(self._home.name))
         self.driver: Any = None
 

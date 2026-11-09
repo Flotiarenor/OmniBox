@@ -1,7 +1,7 @@
 // shell/frontend/src/core/bridge.ts
 
 // 在普通浏览器（无 PyWebView）中，将后端 API 映射为 HTTP 请求。
-// 这样 OmniBox 的前端也可以通过 nginx/SSL 部署到局域网浏览器访问。
+// 这样 Cubby 的前端也可以通过 nginx/SSL 部署到局域网浏览器访问。
 function createHttpApi(): PyWebViewAPI {
   const httpApi: Record<string, (...args: any[]) => Promise<any>> = {}
 

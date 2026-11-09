@@ -90,7 +90,7 @@ def _resolve_chrome() -> str | None:
     if found is not None:
         return found
 
-    override = os.environ.get('OMNIBOX_CHROME_BINARY', '').strip()
+    override = os.environ.get('CUBBY_CHROME_BINARY', '').strip()
     if override and Path(override).is_file():
         return override
 
@@ -117,7 +117,7 @@ def _expose_to_harness(binary: str) -> Path | None:
     if browser_binary() is not None:
         return None
 
-    shim_dir = Path(tempfile.mkdtemp(prefix='omnibox-chrome-shim-'))
+    shim_dir = Path(tempfile.mkdtemp(prefix='cubby-chrome-shim-'))
     shim = shim_dir / ('chrome.exe' if os.name == 'nt' else 'chrome')
     if os.name == 'nt':
         try:
@@ -179,7 +179,7 @@ def main() -> int:
 
     binary = _resolve_chrome()
     if binary is None:
-        return _fail('找不到 Chrome/Chromium（设 OMNIBOX_CHROME_BINARY 或装一个）'
+        return _fail('找不到 Chrome/Chromium（设 CUBBY_CHROME_BINARY 或装一个）'
                      '——门禁不能跳过')
 
     print(f'shell_e2e_smoke: 浏览器 {binary}', flush=True)

@@ -5,7 +5,7 @@
 // Chromium 会在坏记录处停止回放，其后的写入在下次启动全部读不到 —— 表现为"设置存得进、
 // 重启就忘"，且没有任何报错。
 //
-// 读：`serve_shell` 在 index.html 里注入 `window.__OMNIBOX_SHELL_STATE__`，
+// 读：`serve_shell` 在 index.html 里注入 `window.__CUBBY_SHELL_STATE__`，
 //     本模块在**首帧之前**同步读它，因此主题与配色不会闪一下默认值。
 // 写：`system_set_shell_prefs(patch)` 局部更新，去抖合并（滑块每次 `input` 都写一次
 //     会让后端每次 fsync + os.replace）。
@@ -51,7 +51,7 @@ const FLUSH_DELAY_MS = 300
 const RETRY_DELAY_MS = 2000
 
 function readInjected(): InjectedShellState | null {
-  const raw = (window as any).__OMNIBOX_SHELL_STATE__
+  const raw = (window as any).__CUBBY_SHELL_STATE__
   return raw && typeof raw === 'object' ? raw as InjectedShellState : null
 }
 

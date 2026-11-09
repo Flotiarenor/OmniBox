@@ -31,6 +31,7 @@ from typing import List
 from flask import Flask, abort, g, make_response, request, send_file, send_from_directory
 
 from shell.backend.auth import (
+    LEGACY_TOKEN_HEADER,
     TOKEN_COOKIE,
     TOKEN_HEADER,
     get_or_create_token,
@@ -387,7 +388,7 @@ def _build_trusted_hosts(config: dict) -> list:
     """计算允许的 Host 白名单（端口不参与匹配）。
 
     存在的意义是阻断 DNS rebinding：攻击者把 evil.tld 的 DNS 先指向自己、
-    再翻成 127.0.0.1，浏览器便会认为 evil.tld:18080 与 OmniBox 同源，
+    再翻成 127.0.0.1，浏览器便会认为 evil.tld:18080 与 Cubby 同源，
     自动带上 HttpOnly 令牌 Cookie。此时 Host 头是攻击者域名 → 直接拒绝。
 
     白名单来源：
@@ -419,14 +420,14 @@ _OPEN_ENDPOINTS = {'health', 'serve_shell', 'serve_shell_assets', 'serve_res_ass
 # ===== 状态标记页 =====
 # 401/403/404 等错误在浏览器中返回可读的标记页（/api 前缀返回 JSON，
 # 便于前端 fetch 解析）；避免 SPA fallback 把错误路径吞成空白 index.html。
-# 页面直接复用 OmniBox 本体样式（/shell/variables.css + shared.css + base.css），
+# 页面直接复用 Cubby 本体样式（/shell/variables.css + shared.css + base.css），
 # 主题与自定义颜色的取值由**服务端**从壳偏好注入 —— 偏好已经不在 localStorage 里。
 _STATUS_PAGE_TPL = '''<!DOCTYPE html>
 <html lang="zh" data-theme="{theme}" data-status-page="{code}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{code} {title} - OmniBox</title>
+<title>{code} {title} - 格子铺</title>
 {shell_style}
 <script>
 try {{
@@ -467,7 +468,7 @@ try {{
 </head>
 <body class="view-body">
   <div class="view-toolbar">
-    <span style="font-weight:600;font-size:14px;">OmniBox</span>
+    <span style="font-weight:600;font-size:14px;">格子铺</span>
     <span style="color:var(--text-secondary);font-size:13px;">&nbsp;·&nbsp;{code} {title}</span>
   </div>
   <div class="status-view">
@@ -648,7 +649,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             abort(403)
 
     # Host 头白名单：不加这行，攻击者域名（DNS rebinding 指向 127.0.0.1）
-    # 就能与 OmniBox 同源、自动带上令牌 Cookie 读走全部数据。
+    # 就能与 Cubby 同源、自动带上令牌 Cookie 读走全部数据。
     app.config['TRUSTED_HOSTS'] = _build_trusted_hosts(config)
 
     @app.before_request
@@ -673,7 +674,8 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
 
         两件事必须在这里一起做，顺序不能反：
 
-        1. 校验凭据（Cookie 或 `X-Omnibox-Token` 头二选一）；
+        1. 校验凭据（Cookie 或请求头二选一，请求头认 `X-Cubby-Token`，旧
+           `X-Omnibox-Token` 作为别名继续接受）；
         2. 凭据通过后，把它解析成主体并写入 `CURRENT_PRINCIPAL`。
 
         第 2 步是"受信注入"：主体只从**凭据**得到，
@@ -686,7 +688,9 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         """
         if request.endpoint in _OPEN_ENDPOINTS:
             return
-        supplied = request.cookies.get(TOKEN_COOKIE, '') or request.headers.get(TOKEN_HEADER, '')
+        supplied = (request.cookies.get(TOKEN_COOKIE, '')
+                    or request.headers.get(TOKEN_HEADER, '')
+                    or request.headers.get(LEGACY_TOKEN_HEADER, ''))
         principal = _principals.resolve(supplied)
         if principal is None:
             abort(401)
@@ -812,7 +816,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
     def _err_401(e):
         return _status_response(401, '未授权',
                                 '访问该资源需要访问令牌（页面 Cookie 或 '
-                                'X-Omnibox-Token 请求头）。请通过首页进入应用。',
+                                'X-Cubby-Token 请求头）。请通过首页进入应用。',
                                 _page_prefs())
 
     @app.errorhandler(403)
@@ -868,7 +872,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
             'system_clear_thumb_caches': shell_info.clear_thumb_caches,
             'system_open_log_dir': shell_info.open_log_dir,
             # 壳偏好（启动与窗口 / 外观 / 背景 / 玻璃）：写路径唯一入口，
-            # 读路径是 serve_shell 注入的 __OMNIBOX_SHELL_STATE__（零往返）。
+            # 读路径是 serve_shell 注入的 __CUBBY_SHELL_STATE__（零往返）。
             'system_get_shell_prefs': shell_prefs.read,
             'system_set_shell_prefs': shell_prefs.apply_patch,
         })
@@ -905,7 +909,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         """读壳的 index.html 并注入首屏状态。
 
         壳偏好不再放 localStorage，而是由这里在**首帧之前**写好：前端同步读
-        `window.__OMNIBOX_SHELL_STATE__`，因此主题与自定义色不会闪一下默认色。
+        `window.__CUBBY_SHELL_STATE__`，因此主题与自定义色不会闪一下默认色。
         """
         dist_index = frontend_dist / 'index.html'
         if not dist_index.exists():
@@ -927,7 +931,7 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         payload = (json.dumps(state, ensure_ascii=False)
                    .replace('<', '\\u003c')
                    .replace('&', '\\u0026'))
-        script = f'<script>window.__OMNIBOX_SHELL_STATE__={payload};</script>'
+        script = f'<script>window.__CUBBY_SHELL_STATE__={payload};</script>'
         # 插在 <head> 的第一个子节点位置：内联脚本必须早于 /src/main.ts 执行
         # （模块脚本是延后执行的，但同文档里"越早写越好"仍是唯一稳妥的写法），
         # 而它不能被后面的任何东西挤掉 —— 找不到 <head> 就整段前置。

@@ -7,7 +7,7 @@
 
 两者都不能省，因为桩 Bridge 会掩盖真实环境的三类问题：
 
-  1. **鉴权**：`/api/*` 需要 `X-Omnibox-Token`。不带令牌时壳连插件列表都拉不到，
+  1. **鉴权**：`/api/*` 需要 `X-Cubby-Token`。不带令牌时壳连插件列表都拉不到，
      导航与 iframe 都不会出现 —— 表现为"页面一片空白"，而桩测试完全看不到。
   2. **`Bridge` 的真实来源**：browser 模式下 `core/bridge.ts` 会安装
      `window.pywebview.api` 的 HTTP 垫片；直接打开插件 index.html 是拿不到的

@@ -13,7 +13,7 @@
   `data_root` 读成半截字符串会把数据根悄悄换到别处；
 * 手改配置写坏（不是 JSON、类型不对）不能拦住启动：回退默认值或就地纠正，且不覆写文件。
 
-规模说明：这些用例直接调 `main.load_config`，用 `OMNIBOX_HOME` 把用户数据目录指到临时
+规模说明：这些用例直接调 `main.load_config`，用 `CUBBY_HOME` 把用户数据目录指到临时
 目录。`get_user_data_dir()` 是 `lru_cache` 的进程级缓存，所以每个用例都要 `cache_clear()`，
 顺序反过来（缓存命中旧目录）会让断言看起来莫名其妙地失败。
 """
@@ -104,7 +104,7 @@ class ConfigLoadTests(unittest.TestCase):
     def test_invalid_field_types_are_corrected(self):
         """端口不是数字、白名单写成单个字符串、host 为空：就地纠正而不是让启动失败。"""
         self._write(self.config_file, json.dumps({
-            'server': {'host': '  ', 'port': 'abc', 'trusted_hosts': 'omnibox.lan'},
+            'server': {'host': '  ', 'port': 'abc', 'trusted_hosts': 'cubby.lan'},
             'directories': {'data_root': ''},
         }))
 
@@ -112,7 +112,7 @@ class ConfigLoadTests(unittest.TestCase):
 
         self.assertEqual(config['server']['host'], '127.0.0.1')
         self.assertEqual(config['server']['port'], 18080)
-        self.assertEqual(config['server']['trusted_hosts'], ['omnibox.lan'])
+        self.assertEqual(config['server']['trusted_hosts'], ['cubby.lan'])
         self.assertEqual(Path(config['directories']['data_root']),
                          (self.home / 'data').resolve())
 
@@ -137,7 +137,7 @@ class ConfigLoadTests(unittest.TestCase):
             '  port: 19080\n'
             '  trusted_hosts:\n'
             '  - 192.168.1.10\n'
-            '  - omnibox.lan\n'
+            '  - cubby.lan\n'
             'directories:\n'
             '  data_root: ./媒体库\n'
         ))
@@ -146,7 +146,7 @@ class ConfigLoadTests(unittest.TestCase):
 
         self.assertEqual(config['server']['host'], '0.0.0.0')
         self.assertEqual(config['server']['port'], 19080)
-        self.assertEqual(config['server']['trusted_hosts'], ['192.168.1.10', 'omnibox.lan'])
+        self.assertEqual(config['server']['trusted_hosts'], ['192.168.1.10', 'cubby.lan'])
         self.assertEqual(Path(config['directories']['data_root']),
                          (self.home / '媒体库').resolve())
         self.assertTrue(self.config_file.is_file(), '迁移没有写出 app.json')

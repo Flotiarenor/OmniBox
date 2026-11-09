@@ -532,7 +532,7 @@ class PluginSpeakDirectTests(unittest.TestCase):
         `/tmp/x-<stamp>.mp3`）。修复是"只接受十六进制指纹，否则回落按文本现算"，
         外加落盘前的包含判定。
         """
-        outside = Path(self.tmp.name).parent / 'omnibox-tts-traversal-marker'
+        outside = Path(self.tmp.name).parent / 'cubby-tts-traversal-marker'
         evil_key = '../' * 8 + outside.name
         result = self.plugin.tts.tts_speak('穿越测试。', evil_key, 0)
         self.assertNotIn('error', result)

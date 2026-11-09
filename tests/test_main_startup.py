@@ -31,7 +31,7 @@ def _load_main():
     不能直接 `import main`：其他用例会把插件 backend 目录插到 `sys.path`（其中有同名
     main.py），`unittest discover` 的导入顺序会让这里的 `import main` 命中插件模块。
     """
-    spec = importlib.util.spec_from_file_location('omnibox_main_under_test',
+    spec = importlib.util.spec_from_file_location('cubby_main_under_test',
                                                   PROJECT_ROOT / 'main.py')
     if spec is None or spec.loader is None:
         raise ImportError('无法为 main.py 创建模块加载器')

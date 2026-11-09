@@ -32,7 +32,7 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-LOGGER_ROOT = 'omnibox'
+LOGGER_ROOT = 'cubby'
 _LOG_FORMAT = '%(asctime)s %(levelname)-7s [%(name)s] %(message)s'
 _DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
 _MAX_BYTES = 2 * 1024 * 1024
@@ -45,7 +45,7 @@ class SafeRotatingFileHandler(RotatingFileHandler):
     """滚动日志：**不重命名当前文件**，因此不会因文件被占用而报错。
 
     标准库的 `RotatingFileHandler.doRollover()` 走的是
-    `os.rename(omnibox.log, omnibox.log.1)`。Windows 上这一步会因为"文件被别的
+    `os.rename(cubby.log, cubby.log.1)`。Windows 上这一步会因为"文件被别的
     进程持有句柄"而抛 PermissionError（WinError 32）—— 本仓库里这是常态：应用在跑，
     同时又开着 `--web-only` 实例、e2e 用例或某个正在读这份日志的编辑器/杀软实时扫描。
     logging 把它当 handler 异常打到 stderr（就是用户看到的 "--- Logging error ---"
@@ -110,7 +110,7 @@ def setup_logging(config_dir, level: int = logging.INFO, console: bool = True) -
     global _configured
     root = logging.getLogger()
     if _configured:
-        return getattr(root, '_omnibox_log_file', None)
+        return getattr(root, '_cubby_log_file', None)
 
     root.setLevel(level)
     formatter = logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT)
@@ -119,7 +119,7 @@ def setup_logging(config_dir, level: int = logging.INFO, console: bool = True) -
     try:
         log_dir = get_log_dir(config_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = log_dir / 'omnibox.log'
+        log_file = log_dir / 'cubby.log'
         file_handler = SafeRotatingFileHandler(
             log_file, maxBytes=_MAX_BYTES, backupCount=_BACKUP_COUNT, encoding='utf-8'
         )
@@ -141,7 +141,7 @@ def setup_logging(config_dir, level: int = logging.INFO, console: bool = True) -
     if not root.handlers:
         root.addHandler(logging.NullHandler())
 
-    root._omnibox_log_file = log_file  # type: ignore[attr-defined]
+    root._cubby_log_file = log_file  # type: ignore[attr-defined]
     _configured = True
     return log_file
 
@@ -161,6 +161,6 @@ def reset_for_tests() -> None:
             handler.close()
         except Exception:
             pass
-    if hasattr(root, '_omnibox_log_file'):
-        delattr(root, '_omnibox_log_file')
+    if hasattr(root, '_cubby_log_file'):
+        delattr(root, '_cubby_log_file')
     _configured = False

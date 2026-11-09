@@ -18,7 +18,7 @@ async function bootstrap() {
   // 画布就绪后再接上"偏好变化即重画"，避免启动期把同一份状态画两遍
   onShellPrefsChanged(applyStoredAppearance)
   onShellPrefsChanged(applyBackground)
-  // 壳偏好由后端在 index.html 里注入（`window.__OMNIBOX_SHELL_STATE__`），对齐之后
+  // 壳偏好由后端在 index.html 里注入（`window.__CUBBY_SHELL_STATE__`），对齐之后
   // 立刻画一遍，保证插件 iframe 首次加载就能同步到主题与自定义色。
   applyStoredAppearance()
   applyBackground()

@@ -1747,7 +1747,7 @@ class TargetParsingTest(unittest.TestCase):
         self.assertEqual(self._parse('192.168.31.16:19443'), ('192.168.31.16', 19443))
 
     def test_hostname_form(self):
-        self.assertEqual(self._parse('omnibox.local:19443'), ('omnibox.local', 19443))
+        self.assertEqual(self._parse('cubby.local:19443'), ('cubby.local', 19443))
 
     def test_ipv6_bracketed_form(self):
         host, port = self._parse('[2409:8a60:2abf:f5c0:94b8:7fff:fe0a:e9f0]:19444')

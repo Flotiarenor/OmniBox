@@ -16,7 +16,7 @@
 
 私钥保护的要求是"设备私钥不导出，由操作系统提供的密钥存储保存（Windows 为 DPAPI，
 Android 为 Keystore）"。本模块把私钥文件交给 `secret_store` 保护：Windows 用
-DPAPI，桌面 Linux / macOS 用 OS keyring，设置 `OMNIBOX_SECRET_KEY` 时用口令派生
+DPAPI，桌面 Linux / macOS 用 OS keyring，设置 `CUBBY_SECRET_KEY` 时用口令派生
 的 AES-256-GCM；三者都不可用时才回落到旧版明文，并在插件状态里如实标记。
 密钥文件同时申报为受保护路径（不给文件服务端出去）。旧版明文文件会在首次
 读取时**单向升级**成当前可用的最强保护，不会反向降级。

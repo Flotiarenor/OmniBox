@@ -83,7 +83,7 @@ class ShellPrefsBrowserE2ETests(unittest.TestCase):
 
         cls._tmp = tempfile.TemporaryDirectory()
         root = Path(cls._tmp.name)
-        # `OMNIBOX_HOME` 隔离：壳偏好会写进 `<user_data>/.config/shell.json`，
+        # `CUBBY_HOME` 隔离：壳偏好会写进 `<user_data>/.config/shell.json`，
         # 不隔离就会把开发机上的真实偏好改掉。
         cls.instance = AppInstance('prefs', root).start()
 
@@ -162,8 +162,8 @@ class ShellPrefsBrowserE2ETests(unittest.TestCase):
 
     def test_injected_state_reaches_the_document(self):
         """注入的状态必须真的到了页面（壳页面唯一的数据源）。"""
-        state = self._js("return window.__OMNIBOX_SHELL_STATE__ || null;")
-        self.assertIsInstance(state, dict, 'index.html 里没有注入 __OMNIBOX_SHELL_STATE__')
+        state = self._js("return window.__CUBBY_SHELL_STATE__ || null;")
+        self.assertIsInstance(state, dict, 'index.html 里没有注入 __CUBBY_SHELL_STATE__')
         self.assertIn('prefs', state)
         self.assertIn('theme', state['prefs'])
         self.assertIn('stored', state, '注入里缺少"盘上有没有偏好段"的标记')
@@ -234,7 +234,7 @@ class ShellPrefsBrowserE2ETests(unittest.TestCase):
         self.driver.get(self.instance.base_url)
         self.assertTrue(self._wait_for(lambda: bool(self._js(
             "return document.querySelectorAll('.nav-item').length > 0;")), STARTUP_TIMEOUT))
-        state = self._js("return window.__OMNIBOX_SHELL_STATE__;")
+        state = self._js("return window.__CUBBY_SHELL_STATE__;")
         self.assertIs(state.get('stored'), True, '重启后盘上应当已有偏好段')
         self.assertEqual(state['prefs']['theme'], 'light')
         self.assertEqual(state['prefs']['colors']['--restart-probe'], '200px')

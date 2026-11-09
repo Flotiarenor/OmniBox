@@ -51,7 +51,7 @@ const SCHEMA = [
   { key: 'threshold', label: '相似判定阈值', type: 'range', min: 0, max: 16, default: 8 },
   { key: 'note', label: '备注', type: 'text', default: '' },
 ];
-const VALUES = { root_dir: 'D:\\omnibox\\data', threshold: 4 };
+const VALUES = { root_dir: 'D:\\cubby\\data', threshold: 4 };
 
 function render(schema = SCHEMA, values = VALUES) {
   const container = makeEl('div');
@@ -72,7 +72,7 @@ check('info 字段渲染出后端给的值与 label，且不含输入控件', ()
   const label = wrap.querySelector('.field-label');
   const info = wrap.querySelector('.field-info');
   assert.equal(label.textContent, '相册根目录');
-  assert.equal(info.textContent, 'D:\\omnibox\\data');
+  assert.equal(info.textContent, 'D:\\cubby\\data');
   assert.equal(wrap.querySelectorAll('input').length, 0, 'info 行不该出现输入控件');
   assert.equal(wrap.querySelector('.field-help').textContent, '扫描范围取自「图片相册」的根目录');
 });
@@ -101,7 +101,7 @@ check('setValues 跳过 info 字段（它没有控件可回填），其余字段
   const { container, form } = render();
   form.setValues({ root_dir: '换一个目录', threshold: 9, note: 'hello' });
   assert.equal(container.children.find((c) => c.dataset.key === 'root_dir')
-    .querySelector('.field-info').textContent, 'D:\\omnibox\\data', 'info 行显示的是后端值，不被 setValues 改写');
+    .querySelector('.field-info').textContent, 'D:\\cubby\\data', 'info 行显示的是后端值，不被 setValues 改写');
   assert.equal(fieldWrap(container, 'threshold').querySelector('input').value, 9);
   assert.equal(fieldWrap(container, 'note').querySelector('input').value, 'hello');
 });

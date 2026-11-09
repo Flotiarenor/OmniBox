@@ -18,7 +18,7 @@ from pathlib import Path
 
 FAKE_MPV_LOG = Path("/tmp/ncm-fake-mpv.log")
 CAPTURED_URL_FILE = Path("/tmp/ncm-captured-url.txt")
-FAKE_BIN_DIR = Path("/tmp/omnibox-fake-mpv")
+FAKE_BIN_DIR = Path("/tmp/cubby-fake-mpv")
 
 
 def make_fake_mpv(bin_dir: Path) -> Path:

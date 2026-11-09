@@ -1,6 +1,6 @@
 # shell/backend
 
-OmniBox 的 Python 后端：Flask 应用（`create_app()`）与插件契约。
+格子铺的 Python 后端：Flask 应用（`create_app()`）与插件契约。
 根 [AGENTS.md](../../AGENTS.md) 的全局约定仍然适用。
 
 ## 模块地图

@@ -18,7 +18,7 @@ _greeting = load_sibling(__file__, 'greeting', '__NAMESPACE__')
 class __CLASS__(PluginBase):
     settings_schema: ClassVar[List[Dict[str, Any]]] = [
         {"key": "greeting", "label": "问候语", "type": "text",
-         "default": "Hello, OmniBox!"},
+         "default": "Hello, Cubby!"},
     ]
 
     def __init__(self, manifest: dict, config: dict) -> None:

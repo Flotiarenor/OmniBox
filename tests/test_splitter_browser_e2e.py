@@ -16,7 +16,7 @@
 
 做法
 ----
-起隔离实例（`OMNIBOX_HOME` 指向临时目录，不碰开发机的偏好）+ 无头 Chrome，用 CDP 的
+起隔离实例（`CUBBY_HOME` 指向临时目录，不碰开发机的偏好）+ 无头 Chrome，用 CDP 的
 `Input.dispatchMouseEvent` 投递**一次连续手势**：WebDriver 的 Actions 分批 `perform()`
 就不是一次手势了，无法在手势中间读值。页面侧在拖动期间用 rAF 逐帧采样，手势结束后
 读回整条宽度序列。

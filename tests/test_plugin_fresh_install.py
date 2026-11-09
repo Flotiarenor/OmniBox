@@ -42,7 +42,7 @@ class FreshInstallPluginLoadTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.root = Path(tempfile.mkdtemp(prefix='omnibox-fresh-'))
+        cls.root = Path(tempfile.mkdtemp(prefix='cubby-fresh-'))
         cls.instance = AppInstance('fresh', cls.root).start()
 
     @classmethod

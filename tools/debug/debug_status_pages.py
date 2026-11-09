@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""触发并展示 OmniBox 各类 HTTP 状态页 / 应用内错误区域，便于调试。
+"""触发并展示 Cubby 各类 HTTP 状态页 / 应用内错误区域，便于调试。
 
 用法:
     python tools/debug/debug_status_pages.py [--port 18089] [--no-open]
@@ -131,7 +131,7 @@ def probe_all(port: int) -> None:
     show(1, 'GET /health', requests.get(base + '/health', timeout=5))
     show(2, 'POST /api/system_get_config (无令牌)', requests.post(base + '/api/system_get_config', json={}, timeout=5))
     show(3, 'POST /api/system_get_config (错误令牌)', requests.post(
-        base + '/api/system_get_config', json={}, headers={'X-Omnibox-Token': 'bad'}, timeout=5))
+        base + '/api/system_get_config', json={}, headers={'X-Cubby-Token': 'bad'}, timeout=5))
     show(4, 'POST /api/system_get_config (带Cookie)', s.post(base + '/api/system_get_config', json={}, timeout=5))
     show(5, 'POST /api/no_such_method (带Cookie, 404)', s.post(base + '/api/no_such_method', json={}, timeout=5))
     show(6, 'GET /thumbs/x.png (无令牌, 401页)', requests.get(base + '/thumbs/x.png', timeout=5))
@@ -159,7 +159,7 @@ def main():
         if callable(_reconfigure):
             _reconfigure(line_buffering=True)
 
-    parser = argparse.ArgumentParser(description='触发并展示 OmniBox 状态页/错误区域（调试用）')
+    parser = argparse.ArgumentParser(description='触发并展示 Cubby 状态页/错误区域（调试用）')
     parser.add_argument('--port', type=int, default=18089, help='调试服务器端口（默认 18089）')
     parser.add_argument('--no-open', action='store_true', help='不自动打开浏览器')
     args = parser.parse_args()

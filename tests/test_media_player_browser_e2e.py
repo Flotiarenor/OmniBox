@@ -29,8 +29,8 @@ ffmpeg，且无法稳定构造「部分条目加载失败」。本用例在页�
 依赖：selenium 4.6+ 与本机 Chrome / Edge（selenium 自带 driver 管理）。
 如需指定浏览器或驱动路径（例如 Linux 上使用解压后的 Chrome for Testing）：
 
-    OMNIBOX_CHROME_BINARY=/opt/cft/chrome-linux64/chrome \
-    OMNIBOX_CHROMEDRIVER=/opt/cft/chromedriver-linux64/chromedriver \
+    CUBBY_CHROME_BINARY=/opt/cft/chrome-linux64/chrome \
+    CUBBY_CHROMEDRIVER=/opt/cft/chromedriver-linux64/chromedriver \
     venv/bin/python -m unittest tests.test_media_player_browser_e2e -v
 
 未安装 selenium 或未检测到浏览器时用例自动跳过，不会让 `unittest discover` 变红。
@@ -218,7 +218,7 @@ def _chrome_binary() -> str | None:
     `unrecognized Chrome version: Edg/...` 失败。把 Edge 当候选只会让"环境不具备"伪装成
     "用例失败"。仓库内那份 chrome-for-testing 由 `_local_chrome()` 负责先找。
     """
-    override = (os.environ.get('OMNIBOX_CHROME_BINARY') or '').strip()
+    override = (os.environ.get('CUBBY_CHROME_BINARY') or '').strip()
     if override and Path(override).is_file():
         return override
     for exe in ('chrome', 'chrome.exe', 'chromium', 'chromium-browser'):
@@ -235,7 +235,7 @@ def _chrome_binary() -> str | None:
 
 
 def _chromedriver_path() -> str | None:
-    override = (os.environ.get('OMNIBOX_CHROMEDRIVER') or '').strip()
+    override = (os.environ.get('CUBBY_CHROMEDRIVER') or '').strip()
     return override if override and Path(override).is_file() else None
 
 

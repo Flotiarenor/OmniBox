@@ -2,7 +2,7 @@
 
 它把这条链完整走一遍，让人看着它点：
 
-1. 起两台空白实例（各自一份 OMNIBOX_HOME），建团、共享一个含真实 JPEG 的目录、起节点、登记对端；
+1. 起两台空白实例（各自一份 CUBBY_HOME），建团、共享一个含真实 JPEG 的目录、起节点、登记对端；
 2. 在「图片相册」的设置弹窗里点「网络位置」→ 壳的共享目录组件按 placement 发现提供方
    （group-mesh 的 `get_extensions()`）→ 弹窗里嵌入提供方页面；
 3. 提供方页面里：选设备 → 选共享项 → 填本地落地目录 → 取回（`mirror_share`：**完整取字节**，
@@ -23,8 +23,8 @@
 ----
     venv\\Scripts\\python tools\\debug\\debug_network_location.py
 
-可选环境变量：OMNIBOX_DEMO_PAUSE（每步停顿秒数，默认 2.5）、OMNIBOX_DEMO_HOLD
-（结束后保持浏览器打开秒数，默认 300）、OMNIBOX_DEMO_OUT（截图目录）。
+可选环境变量：CUBBY_DEMO_PAUSE（每步停顿秒数，默认 2.5）、CUBBY_DEMO_HOLD
+（结束后保持浏览器打开秒数，默认 300）、CUBBY_DEMO_OUT（截图目录）。
 """
 
 from __future__ import annotations
@@ -85,16 +85,16 @@ def main() -> int:
         return 2
     binary = _chrome_binary()
     if binary is None:
-        print('未检测到 Chrome / Edge（可用 OMNIBOX_CHROME_BINARY 指定）')
+        print('未检测到 Chrome / Edge（可用 CUBBY_CHROME_BINARY 指定）')
         return 2
 
-    out_dir = Path(os.environ.get('OMNIBOX_DEMO_OUT')
+    out_dir = Path(os.environ.get('CUBBY_DEMO_OUT')
                    or (PROJECT_ROOT / '.build' / 'demo-network-location'))
     if out_dir.exists():
         shutil.rmtree(out_dir, ignore_errors=True)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    workdir = Path(tempfile.mkdtemp(prefix='omnibox-netloc-'))
+    workdir = Path(tempfile.mkdtemp(prefix='cubby-netloc-'))
     shared = build_shared(workdir)
 
     say('准备两台空白实例并组网')
@@ -249,9 +249,9 @@ def main() -> int:
             pass
         cluster.stop()
         # 演示的临时实例目录里是**一次性的身份私钥**，没有保留价值；留着只会在 %TEMP%
-        # 里越堆越多（实测：跑几轮就攒了 11 个）。要看就设 OMNIBOX_DEMO_KEEP=1。
-        if os.environ.get('OMNIBOX_DEMO_KEEP'):
-            say(f'按 OMNIBOX_DEMO_KEEP 保留临时目录：{workdir}')
+        # 里越堆越多（实测：跑几轮就攒了 11 个）。要看就设 CUBBY_DEMO_KEEP=1。
+        if os.environ.get('CUBBY_DEMO_KEEP'):
+            say(f'按 CUBBY_DEMO_KEEP 保留临时目录：{workdir}')
         else:
             shutil.rmtree(workdir, ignore_errors=True)
     return 0

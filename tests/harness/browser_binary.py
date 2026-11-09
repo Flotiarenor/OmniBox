@@ -11,7 +11,7 @@
 ----
 1. 仓库内 `.build/cft/chrome-win64/chrome.exe`：chrome-for-testing 的免安装包，
    与项目在 Linux CI 里用的东西同源（见 `tests/test_media_player_browser_e2e.py`
-   模块文档里的 OMNIBOX_CHROME_BINARY 用法）。`.build/` 在 `.gitignore` 里，
+   模块文档里的 CUBBY_CHROME_BINARY 用法）。`.build/` 在 `.gitignore` 里，
    因此这份是可选的本地便利，不是仓库内容。
 2. PATH（`chrome` / `chrome.exe`）与两个常见安装位置。
 

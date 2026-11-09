@@ -42,7 +42,7 @@ js_api 回调"在独立线程里执行"）。WinForms 的通用文件对话框�
 线程上会抛 `ThreadStateException` —— 而 pywebview 把该异常吞进自己的 logger 并
 `return None`，本函数只能把它当成"用户取消"（`success=True` + 空 `path`）。
 因此这一点在真实窗口里确认一次：桌面模式点「选择图片…」，同时看
-`<config_dir>/logs/omnibox.log` 有没有 pywebview 记的 `Error invoking ... dialog`。
+`<config_dir>/logs/cubby.log` 有没有 pywebview 记的 `Error invoking ... dialog`。
 若有，需要的是把调用切到 GUI 线程（pywebview 没有公开入口，得走平台层），而不是
 继续排查前端的调用链。
 '''

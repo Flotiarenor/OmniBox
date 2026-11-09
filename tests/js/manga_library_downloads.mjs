@@ -1,7 +1,7 @@
 // manga-library 下载中心迁移回归：过滤视图、任务行、行内动作、空态与添加任务弹窗。
 //
 // 下载中心的导航项是复合 id（`downloads:<filter>`），顶栏四个动作只在下载中心可见、
-// 按任务状态置 disabled；这些都由内容页通过 omnibox 消息上报。迁移把按钮搬到了壳，
+// 按任务状态置 disabled；这些都由内容页通过 cubby 消息上报。迁移把按钮搬到了壳，
 // 所以断言看的是上报的 actions / view，而不是内容页里是否还有壳 DOM。
 import assert from 'node:assert/strict';
 import { loadManga, defaultHandlers, createApp } from './manga_library_harness.mjs';

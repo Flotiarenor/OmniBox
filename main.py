@@ -218,9 +218,9 @@ def _retire_legacy_config(path: Path) -> None:
         try:
             path.rename(target)
         except OSError as error:
-            log.warning(f"[OmniBox] 旧配置已迁移，但改名失败（可手动删除 {path}）: {error}")
+            log.warning(f"[Cubby] 旧配置已迁移，但改名失败（可手动删除 {path}）: {error}")
             return
-        log.info(f"[OmniBox] 旧配置已改名保留: {target}")
+        log.info(f"[Cubby] 旧配置已改名保留: {target}")
         return
 
 
@@ -260,7 +260,7 @@ def _coerce_host_list(value: object) -> list[str]:
     elif isinstance(value, (list, tuple)):
         items = list(value)
     else:
-        log.warning(f"[OmniBox] server.trusted_hosts 不是列表，已忽略: {value!r}")
+        log.warning(f"[Cubby] server.trusted_hosts 不是列表，已忽略: {value!r}")
         return []
     return [str(item).strip() for item in items if str(item).strip()]
 
@@ -280,7 +280,7 @@ def _normalize_config(config: dict) -> dict:
     server = config.get('server')
     if not isinstance(server, dict):
         if server is not None:
-            log.error("[OmniBox] 配置项 server 格式错误，已重置为默认值")
+            log.error("[Cubby] 配置项 server 格式错误，已重置为默认值")
         server = {}
     config['server'] = server
 
@@ -289,12 +289,12 @@ def _normalize_config(config: dict) -> dict:
         if isinstance(host, str) and host.strip():
             server['host'] = host.strip()
         else:
-            log.warning(f"[OmniBox] server.host 无效，已使用默认值: {host!r}")
+            log.warning(f"[Cubby] server.host 无效，已使用默认值: {host!r}")
             server['host'] = defaults['server']['host']
     if 'port' in server:
         port = _coerce_port(server['port'])
         if port is None:
-            log.warning(f"[OmniBox] server.port 无效，已使用默认值: {server['port']!r}")
+            log.warning(f"[Cubby] server.port 无效，已使用默认值: {server['port']!r}")
             server['port'] = defaults['server']['port']
         else:
             server['port'] = port
@@ -306,7 +306,7 @@ def _normalize_config(config: dict) -> dict:
     directories = config.get('directories')
     if not isinstance(directories, dict):
         if directories is not None:
-            log.error("[OmniBox] 配置项 directories 格式错误，已重置为默认值")
+            log.error("[Cubby] 配置项 directories 格式错误，已重置为默认值")
         directories = {}
     config['directories'] = directories
     if 'data_root' in directories:
@@ -314,7 +314,7 @@ def _normalize_config(config: dict) -> dict:
         if isinstance(data_root, str) and data_root.strip():
             directories['data_root'] = data_root.strip()
         else:
-            log.warning(f"[OmniBox] directories.data_root 无效，已使用默认值: {data_root!r}")
+            log.warning(f"[Cubby] directories.data_root 无效，已使用默认值: {data_root!r}")
             directories['data_root'] = defaults['directories']['data_root']
     for key, value in defaults['directories'].items():
         directories.setdefault(key, value)
@@ -333,13 +333,13 @@ def _migrate_legacy_config(cfg_path: Path) -> tuple[bool, dict | None]:
             continue
         legacy = _read_legacy_config(old_path)
         if legacy is None:
-            log.error(f"[OmniBox] 旧版配置无法解析，本次使用默认值（旧文件保留，下次启动再试）: {old_path}")
+            log.error(f"[Cubby] 旧版配置无法解析，本次使用默认值（旧文件保留，下次启动再试）: {old_path}")
             return True, None
         migrated = _normalize_config(legacy)
         if not write_json(cfg_path, migrated, create_parent=True):
-            log.error(f"[OmniBox] 旧配置迁移写入失败，本次沿用旧配置值: {cfg_path}")
+            log.error(f"[Cubby] 旧配置迁移写入失败，本次沿用旧配置值: {cfg_path}")
         else:
-            log.info(f"[OmniBox] 配置已迁移: {old_path} → {cfg_path}")
+            log.info(f"[Cubby] 配置已迁移: {old_path} → {cfg_path}")
             _retire_legacy_config(old_path)
         return True, migrated
     return False, None
@@ -353,7 +353,7 @@ def load_config() -> dict:
         config = _read_config_file(cfg_path)
         if config is None:
             # 文件在但读不出来：不覆写用户文件（可能只是改到一半），本次用默认值
-            log.error(f"[OmniBox] 配置文件无法解析，本次使用默认配置: {cfg_path}")
+            log.error(f"[Cubby] 配置文件无法解析，本次使用默认配置: {cfg_path}")
             config = deepcopy(DEFAULT_CONFIG)
     else:
         found, migrated = _migrate_legacy_config(cfg_path)
@@ -363,9 +363,9 @@ def load_config() -> dict:
             config = deepcopy(DEFAULT_CONFIG)
             # 发现旧文件却读不出来时不落盘：留给下次启动重试（原因已在上面记过）
             if not found and not write_json(cfg_path, config, create_parent=True):
-                log.error(f"[OmniBox] 默认配置写入失败: {cfg_path}")
+                log.error(f"[Cubby] 默认配置写入失败: {cfg_path}")
             elif not found:
-                log.info(f"[OmniBox] 创建默认配置: {cfg_path}")
+                log.info(f"[Cubby] 创建默认配置: {cfg_path}")
 
     config = _normalize_config(config)
     # 相对路径 data_root 统一锚定到用户数据目录
@@ -432,7 +432,7 @@ def _commit_last_route():
     try:
         ShellPrefs(str(get_config_dir())).commit_last_route()
     except Exception as e:
-        log.error(f"[OmniBox] 提交上次页面失败: {e}")
+        log.error(f"[Cubby] 提交上次页面失败: {e}")
 
 
 def _unload_plugins(manager):
@@ -444,7 +444,7 @@ def _unload_plugins(manager):
     try:
         manager.unload_all()
     except Exception as e:
-        log.error(f"[OmniBox] 卸载插件时出错: {e}")
+        log.error(f"[Cubby] 卸载插件时出错: {e}")
 
 
 def _toggle_fullscreen():
@@ -465,7 +465,7 @@ def _resolve_port(config) -> int:
     try:
         return int(override)
     except ValueError:
-        log.warning(f"[OmniBox] --port 不是整数，按配置端口 {port} 启动: {override!r}")
+        log.warning(f"[Cubby] --port 不是整数，按配置端口 {port} 启动: {override!r}")
         return port
 
 
@@ -489,22 +489,22 @@ def _webview_storage_dir() -> str:
         probe.write_text('', encoding='utf-8')
         probe.unlink()
     except OSError as e:
-        log.warning(f'[OmniBox] WebView2 缓存目录不可用（{target}: {e}），'
+        log.warning(f'[Cubby] WebView2 缓存目录不可用（{target}: {e}），'
                     f'本次启动不启用持久缓存')
         return ''
-    log.info(f'[OmniBox] WebView2 缓存目录: {target}')
+    log.info(f'[Cubby] WebView2 缓存目录: {target}')
     return str(target)
 
 
 def _run_app(config, manager):
     """启动应用（Web-only 或桌面窗口），阻塞到用户退出。"""
     # Web-only 模式：不启动 PyWebView 桌面窗口，只运行 Flask 服务。
-    # 适用于通过 nginx/SSH 隧道在浏览器中访问 OmniBox UI。
+    # 适用于通过 nginx/SSH 隧道在浏览器中访问 Cubby UI。
     if '--web-only' in sys.argv:
         app = create_app(config, manager)
         host = config['server']['host']
         port = _resolve_port(config)
-        log.info(f"[OmniBox] Web-only 模式启动: http://{host}:{port}")
+        log.info(f"[Cubby] Web-only 模式启动: http://{host}:{port}")
         try:
             # threaded=True：单线程下大文件媒体流会阻塞所有请求（无法跳转/元数据读取/API），
             # 流媒体（Range 请求）与后台扫描任务都需要并发处理。
@@ -590,10 +590,10 @@ def _run_desktop_window(config, manager, api, host, port):
     # threaded=True：媒体流/Range 请求与后台扫描任务需要并发，见 --web-only 分支注释
     threading.Thread(target=lambda: app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True), daemon=True).start()
     if not wait_for_server(host, port):
-        log.warning("[OmniBox] Flask 启动超时")
+        log.warning("[Cubby] Flask 启动超时")
         return
 
-    webview.create_window('OmniBox', f'http://{host}:{port}', js_api=api, width=1400, height=900, text_select=True)
+    webview.create_window('格子铺', f'http://{host}:{port}', js_api=api, width=1400, height=900, text_select=True)
     # 窗口已建：此后 system_*_window_fullscreen 才有对象可操作（--web-only 不会走到这里，
     # 那条通道因此继续给出"没有桌面窗口"的明确拒绝）
     register_desktop_window()
@@ -620,11 +620,11 @@ def main():
     # 级别取集中设置页保存过的那一档（未设置/非法时回退 INFO）。
     log_file = setup_logging(get_config_dir(), level=stored_log_level(str(get_config_dir())))
     if log_file:
-        log.info(f"[OmniBox] 日志文件: {log_file}")
+        log.info(f"[Cubby] 日志文件: {log_file}")
 
     config = load_config()
     # 数据根覆盖：不传时行为不变；传相对路径仍锚定到本实例的用户数据目录
-    # （resolve_data_root 的既有语义），因此夹具可以只给一个空的 OMNIBOX_HOME。
+    # （resolve_data_root 的既有语义），因此夹具可以只给一个空的 CUBBY_HOME。
     data_root_override = _argv_value('--data-root')
     if data_root_override:
         config['directories']['data_root'] = str(resolve_data_root(data_root_override))
@@ -636,9 +636,9 @@ def main():
     config['debug']['status_debug'] = '--status-debug' in sys.argv
 
     # 数据路由（/api /file /thumbs）的访问令牌：首次启动生成并持久化。
-    # 浏览器页面会自动种下 Cookie；外部脚本可用 X-Omnibox-Token 头携带。
+    # 浏览器页面会自动种下 Cookie；外部脚本可用 X-Cubby-Token 头携带。
     get_or_create_token(get_config_dir())
-    log.info(f"[OmniBox] API 访问令牌: {get_token_file(get_config_dir())}"
+    log.info(f"[Cubby] API 访问令牌: {get_token_file(get_config_dir())}"
           f"（/api /file /thumbs 路由需携带，启动时若缺失将自动生成）")
 
     plugin_search_dirs = get_plugin_search_dirs()
@@ -647,8 +647,8 @@ def main():
             plugin_dir.mkdir(parents=True, exist_ok=True)
         except OSError:
             pass
-    log.info(f"[OmniBox] 用户数据目录: {get_user_data_dir()}")
-    log.info(f"[OmniBox] 插件搜索目录: {', '.join(str(p) for p in plugin_search_dirs)}")
+    log.info(f"[Cubby] 用户数据目录: {get_user_data_dir()}")
+    log.info(f"[Cubby] 插件搜索目录: {', '.join(str(p) for p in plugin_search_dirs)}")
     manager = PluginManager([str(p) for p in plugin_search_dirs], config=config)
     # atexit 必须在 load_all() 之前注册：插件 on_load() 里抛 SystemExit /
     # KeyboardInterrupt（Ctrl+C 打断启动）会穿透 load_all，此时若还没注册钩子，

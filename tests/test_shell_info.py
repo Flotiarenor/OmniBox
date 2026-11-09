@@ -100,7 +100,7 @@ class ShellInfoTests(unittest.TestCase):
         info = self.info.get_info()
         self.assertEqual(info['data_root'], str(self.dir / 'data'))
         self.assertEqual(info['config_dir'], str(self.dir))
-        self.assertTrue(info['log_file'].endswith('omnibox.log'))
+        self.assertTrue(info['log_file'].endswith('cubby.log'))
         self.assertIn(info['log_level'], LOG_LEVELS)
         self.assertEqual(info['cache_total']['count'], sum(c['count'] for c in info['caches']))
 

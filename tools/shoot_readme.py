@@ -162,7 +162,7 @@ class Server:
         self._proc: Optional[subprocess.Popen[bytes]] = None
 
     def start(self) -> 'Server':
-        env = {**os.environ, 'OMNIBOX_HOME': str(self.home),
+        env = {**os.environ, 'CUBBY_HOME': str(self.home),
                'PYTHONUNBUFFERED': '1', 'PYTHONIOENCODING': 'utf-8'}
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.log_path, 'w', encoding='utf-8') as log:
@@ -364,19 +364,19 @@ class Browser:
         self.driver.get(f'{self.base_url}{path}')
 
     def navigate(self, path: str) -> None:
-        """切到某个路由，走壳暴露的 `window.__omniboxNavigate`。
+        """切到某个路由，走壳暴露的 `window.__cubbyNavigate`。
 
         **不能**直接 `goto(插件路由)`：插件路由是 `App.vue` 在 `loadPlugins()` 之后才
         `router.addRoute` 注册的，深链接会在注册之前就被 vue-router 解析掉 —— 结果是
         "没有匹配的路由"，主区空白、插件 iframe 根本不挂（实测日志：`GET /image-viewer`
-        之后浏览器再没请求过 `/plugins/.../index.html`）。`__omniboxNavigate` 在
+        之后浏览器再没请求过 `/plugins/.../index.html`）。`__cubbyNavigate` 在
         `addRoute` 之后才挂上 window，等到它就说明路由表已就绪。
         """
         ready = wait_until(lambda: bool(self.driver.execute_script(
-            "return typeof window.__omniboxNavigate === 'function'")), UI_TIMEOUT)
+            "return typeof window.__cubbyNavigate === 'function'")), UI_TIMEOUT)
         if not ready:
-            raise ShootError('壳没有暴露 __omniboxNavigate，插件路由可能没注册成功')
-        self.driver.execute_script('window.__omniboxNavigate(arguments[0]);', path)
+            raise ShootError('壳没有暴露 __cubbyNavigate，插件路由可能没注册成功')
+        self.driver.execute_script('window.__cubbyNavigate(arguments[0]);', path)
         if not wait_until(lambda: self.driver.current_url.rstrip('/').endswith(path.rstrip('/')),
                           UI_TIMEOUT):
             raise ShootError(f'路由没有切到 {path}（当前 {self.driver.current_url}）')
@@ -1127,7 +1127,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         # 用 mkdtemp 而不是 TemporaryDirectory：后者的析构器在进程退出时无条件删目录，
         # `--keep` 会因此变成空操作（保留目录是为了排查失败场景，那时最需要它）。
-        temporary = tempfile.mkdtemp(prefix='omnibox-shoot-')
+        temporary = tempfile.mkdtemp(prefix='cubby-shoot-')
         home = Path(temporary) / 'home'
         if args.blank:
             write_minimal_home(home, args.library)

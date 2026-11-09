@@ -3,7 +3,7 @@
 本脚本在**界面**上（两个真实浏览器窗口）验证两台设备之间的连接与共享访问是否可用，
 不以终端断言代替观察：
 
-1. 起两台空白实例（各自一份 `OMNIBOX_HOME`，见 `tests/harness/app_instance.py`）：
+1. 起两台空白实例（各自一份 `CUBBY_HOME`，见 `tests/harness/app_instance.py`）：
    `owner`（提供共享项那台）与 `member`（访问那台）。建团、owner 共享一个含三份真实
    文件的目录、两台都起共享节点；
 2. 把两台设备**真实的监听地址程序化登记**进各自的手工对端（`MeshCluster.link()`）——
@@ -17,7 +17,7 @@
 6. 结论以**字节**为准：脚本对两侧文件取 sha256 做对比，并逐项打印设备发现（双向）、
    列目录、取回一致、上传一致的结论。
 
-每个阶段之间停顿 `OMNIBOX_DEMO_PAUSE` 秒；结束时保持浏览器打开 `OMNIBOX_DEMO_HOLD` 秒。
+每个阶段之间停顿 `CUBBY_DEMO_PAUSE` 秒；结束时保持浏览器打开 `CUBBY_DEMO_HOLD` 秒。
 
 运行
 ----
@@ -26,12 +26,12 @@
 
 可选环境变量
 ------------
-    OMNIBOX_DEMO_PAUSE     每步停顿秒数（默认 2.0；设 0 可以快速跑一遍）
-    OMNIBOX_DEMO_HOLD      演示结束后保持浏览器打开秒数（默认 300；设 0 立即关）
-    OMNIBOX_DEMO_OUT       截图输出目录（默认 .build/demo-connection/）
-    OMNIBOX_DEMO_UPLOAD    设 0 则跳过第 4 步（只看连接、发现与取回）
-    OMNIBOX_DEMO_KEEP      设 1 则保留临时实例目录（内含本次的一次性身份私钥）
-    OMNIBOX_CHROME_BINARY / OMNIBOX_CHROMEDRIVER   同其它 e2e 脚本
+    CUBBY_DEMO_PAUSE     每步停顿秒数（默认 2.0；设 0 可以快速跑一遍）
+    CUBBY_DEMO_HOLD      演示结束后保持浏览器打开秒数（默认 300；设 0 立即关）
+    CUBBY_DEMO_OUT       截图输出目录（默认 .build/demo-connection/）
+    CUBBY_DEMO_UPLOAD    设 0 则跳过第 4 步（只看连接、发现与取回）
+    CUBBY_DEMO_KEEP      设 1 则保留临时实例目录（内含本次的一次性身份私钥）
+    CUBBY_CHROME_BINARY / CUBBY_CHROMEDRIVER   同其它 e2e 脚本
 
 注意
 ----
@@ -39,7 +39,7 @@
   （会打乱脚本的元素定位）。两个窗口都开着同一个插件页，靠窗口标题下的地址区分：
   `owner` 在右上、`member` 在左上。
 * 演示用的临时实例目录结束时会被删掉（里面是一次性的身份私钥）；要看就设
-  `OMNIBOX_DEMO_KEEP=1`。
+  `CUBBY_DEMO_KEEP=1`。
 """
 
 from __future__ import annotations
@@ -227,16 +227,16 @@ def main() -> int:
         return 2
     binary = _local_chrome()
     if binary is None:
-        print('未检测到 Chrome / Edge（可用 OMNIBOX_CHROME_BINARY 指定）')
+        print('未检测到 Chrome / Edge（可用 CUBBY_CHROME_BINARY 指定）')
         return 2
 
-    out_dir = Path(os.environ.get('OMNIBOX_DEMO_OUT')
+    out_dir = Path(os.environ.get('CUBBY_DEMO_OUT')
                    or (PROJECT_ROOT / '.build' / 'demo-connection'))
     if out_dir.exists():
         shutil.rmtree(out_dir, ignore_errors=True)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    workdir = Path(tempfile.mkdtemp(prefix='omnibox-conn-'))
+    workdir = Path(tempfile.mkdtemp(prefix='cubby-conn-'))
     shared = workdir / 'shared'
     _write_shared(shared)
 
@@ -375,8 +375,8 @@ def main() -> int:
                         say(f'  没找到取回的文件：{local}')
 
                 # ── 5. member → owner 上传（进度 / 提交 / 目录刷新）──────────────
-                if os.environ.get('OMNIBOX_DEMO_UPLOAD') == '0':
-                    say('按 OMNIBOX_DEMO_UPLOAD=0 跳过上传演示')
+                if os.environ.get('CUBBY_DEMO_UPLOAD') == '0':
+                    say('按 CUBBY_DEMO_UPLOAD=0 跳过上传演示')
                 elif not wait_for(member_driver, lambda: len(member_driver.find_elements(
                         By.ID, 'btn-remote-upload')) > 0):
                     say('没看到「上传文件到此处」按钮，上传演示跳过')
@@ -447,8 +447,8 @@ def main() -> int:
                 pass
         cluster.stop()
         # 临时实例目录里是**一次性的身份私钥**，没有保留价值；留着只会在 %TEMP% 里越堆越多。
-        if os.environ.get('OMNIBOX_DEMO_KEEP'):
-            say(f'按 OMNIBOX_DEMO_KEEP 保留临时目录：{workdir}')
+        if os.environ.get('CUBBY_DEMO_KEEP'):
+            say(f'按 CUBBY_DEMO_KEEP 保留临时目录：{workdir}')
         else:
             shutil.rmtree(workdir, ignore_errors=True)
     return 0

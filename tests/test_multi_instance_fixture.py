@@ -1,7 +1,7 @@
 """多实例夹具本身的用例：实例隔离、跨实例握手/取字节、停机不泄漏。
 
 `tests/harness/app_instance.py` 让同一台机器上能起多台**空白**实例（各自一份
-`OMNIBOX_HOME`），于是"两台设备互相发现、按需取字节"这条链在 CI 与本机都能验，
+`CUBBY_HOME`），于是"两台设备互相发现、按需取字节"这条链在 CI 与本机都能验，
 不必再搬一台 Linux 机器并手工同步代码。
 
 运行：
@@ -51,7 +51,7 @@ class BackendErrorReportTest(unittest.TestCase):
     """
 
     def _instance_with_log(self, text: str) -> tuple[AppInstance, Path]:
-        root = Path(tempfile.mkdtemp(prefix='omnibox-bootlog-'))
+        root = Path(tempfile.mkdtemp(prefix='cubby-bootlog-'))
         self.addCleanup(shutil.rmtree, root, True)
         instance = AppInstance('probe', root)
         log = root / 'probe.boot.log'
@@ -88,7 +88,7 @@ class BackendErrorReportTest(unittest.TestCase):
 
     def test_missing_log_is_not_an_error(self):
         """没有日志文件（实例没起来 / 已被清掉）时返回 False，不能把收尾流程带下水。"""
-        root = Path(tempfile.mkdtemp(prefix='omnibox-bootlog-'))
+        root = Path(tempfile.mkdtemp(prefix='cubby-bootlog-'))
         self.addCleanup(shutil.rmtree, root, True)
         self.assertFalse(AppInstance('probe', root).report_backend_errors())
 
@@ -105,7 +105,7 @@ class InstanceShutdownTest(unittest.TestCase):
     """
 
     def test_stop_releases_the_port_and_leaves_a_deletable_directory(self):
-        root = Path(tempfile.mkdtemp(prefix='omnibox-shutdown-'))
+        root = Path(tempfile.mkdtemp(prefix='cubby-shutdown-'))
         self.addClassCleanup(cleanup_tree, root)
         instance = AppInstance('solo', root)
         instance.start()
@@ -116,7 +116,7 @@ class InstanceShutdownTest(unittest.TestCase):
         self.assertFalse(instance.alive, 'stop() 之后实例仍标记为存活')
         self.assertTrue(wait_until(lambda: port_is_free(port), PORT_RELEASE_TIMEOUT),
                         f'端口 {port} 仍被占用：有孤儿实例活着（只杀了启动器？）')
-        # 孤儿会把 `.config/logs/omnibox.log` 与 SQLite 握在手里，于是整个目录删不掉。
+        # 孤儿会把 `.config/logs/cubby.log` 与 SQLite 握在手里，于是整个目录删不掉。
         # 这就是"有孤儿"最直接的用户可见后果，也是夹具清理路径上真正要保证的事。
         cleanup_tree(root, attempts=3)
         self.assertFalse(root.exists(), f'实例目录删不掉，多半有孤儿进程握着里面的文件: {root}')
@@ -140,7 +140,7 @@ class MultiInstanceMeshTest(unittest.TestCase):
     def setUpClass(cls):
         # 用 mkdtemp 而不是 TemporaryDirectory：后者的清理在 GC 时还会再跑一次，
         # 与下面"重试删除"的清理互相干扰；这里只留一份清理逻辑。
-        cls._root = Path(tempfile.mkdtemp(prefix='omnibox-mesh-'))
+        cls._root = Path(tempfile.mkdtemp(prefix='cubby-mesh-'))
         cls.addClassCleanup(cleanup_tree, cls._root)
         root = cls._root
 
@@ -471,7 +471,7 @@ class BackgroundSyncPropagationTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls._root = Path(tempfile.mkdtemp(prefix='omnibox-sync-'))
+        cls._root = Path(tempfile.mkdtemp(prefix='cubby-sync-'))
         cls.addClassCleanup(cleanup_tree, cls._root)
         root = cls._root
         cls.shared = root / 'shared'

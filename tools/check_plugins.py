@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OmniBox 插件规范检查器。
+"""Cubby 插件规范检查器。
 
 检查项：
 - manifest.json 可解析、name 与目录名一致、frontend/backend 声明完整
@@ -996,7 +996,7 @@ def _check_freshness_contract(plugin_dir: Path, name: str, *, shell_mounts: bool
 
 def _load_backend_class(plugin_dir: Path, entry: str, class_name: str, lib_dirs=None):
     module_path = (plugin_dir / entry).resolve()
-    module_name = f"omnibox_spec_{re.sub(r'[^0-9A-Za-z_]', '_', plugin_dir.name)}"
+    module_name = f"cubby_spec_{re.sub(r'[^0-9A-Za-z_]', '_', plugin_dir.name)}"
     spec = importlib.util.spec_from_file_location(module_name, str(module_path))
     if spec is None or spec.loader is None:
         raise RuntimeError('无法为后端模块创建 importlib spec')
@@ -1548,7 +1548,7 @@ def _check_companion_host_contract(
 
 
 def main(argv: Iterable[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description='校验 OmniBox 插件是否符合 manifest/代码规范')
+    parser = argparse.ArgumentParser(description='校验 Cubby 插件是否符合 manifest/代码规范')
     parser.add_argument('--plugins-dir', type=Path, default=DEFAULT_PLUGINS_DIR)
     parser.add_argument('--no-load', action='store_true', help='只做静态检查，不导入插件后端')
     args = parser.parse_args(list(argv) if argv is not None else None)
