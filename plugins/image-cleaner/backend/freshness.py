@@ -14,9 +14,15 @@
 """
 
 import logging
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 log = logging.getLogger(__name__)
+
+#: 收尾重新分组时向引擎问"取消了吗"的最小间隔（秒）。
+#: 分组循环每张图问一次，直接查引擎状态会把一次 SQLite 查询塞进最内层循环；
+#: 0.25 秒的判定粒度对"点取消后及时返回"足够。
+CANCEL_POLL_SECONDS = 0.25
 
 
 class FreshnessProvider:
@@ -31,6 +37,9 @@ class FreshnessProvider:
         self._pipeline = pipeline
         self._extensions = extensions
         self._engine = engine_provider
+        # 取消询问的缓存（时间戳, 结果）：见 `_cancel_requested`
+        self._cancel_seen_at = 0.0
+        self._cancel_seen = False
 
     def spec(self) -> Dict[str, Any]:
         return {
@@ -101,12 +110,42 @@ class FreshnessProvider:
         return {'dropped_hashes': dropped, 'valid_entries': len(valid)}
 
     def pass_end(self, report, verified: bool) -> Dict:
-        """整趟结束：落盘指纹；校验这一趟顺便把两个模式的结果重新分组写盘。"""
+        """整趟结束：落盘指纹；只有完整无错的校验才重新分组。
+
+        取消、预算用尽与读取错误都会让报告的 `partial` / `errors` 非空。此时指纹集合
+        不完整，按它重新分组会把没走到的图片当成"没有重复"；而且整库重新分组要读全树、
+        补算全部 dHash，用户点的却是「取消」。这种情况只把结果缓存标成过期，等下一次
+        完整校验再分组。引擎在取消/预算用尽后仍会调本钩子，所以判据必须在这里。
+        """
         self._hashes.save()
-        if verified:
-            return self._pipeline.regroup_all()
+        partial = bool(report.get('partial'))
+        errors = bool(report.get('errors'))
+        if verified and not partial and not errors:
+            return self._pipeline.regroup_all(self._cancel_requested)
         self._results.persist_stale()
-        return {'hashes': self._hashes.count(), 'verified': False}
+        return {'hashes': self._hashes.count(), 'verified': False, 'regrouped': False,
+                'reason': 'partial' if partial else ('errors' if errors else 'unverified')}
+
+    def _cancel_requested(self) -> bool:
+        """收尾阶段「用户已经点了取消吗」。
+
+        `on_pass_end` 拿不到任务对象（壳只传报告与是否校验），所以按引擎的状态投影
+        问一次。分组的最内层循环每张图都会问，结果缓存 `CANCEL_POLL_SECONDS` 秒：
+        直接查引擎状态意味着一次 SQLite 查询/张，会把收尾拖得比不检查还慢。
+        """
+        now = time.monotonic()
+        if now - self._cancel_seen_at < CANCEL_POLL_SECONDS:
+            return self._cancel_seen
+        self._cancel_seen_at = now
+        self._cancel_seen = False
+        engine = self._engine()
+        if engine is not None:
+            try:
+                task = (engine.state() or {}).get('task') or {}
+                self._cancel_seen = bool(task.get('cancelled'))
+            except Exception as e:      # 状态读不出来按"没取消"处理，不能把收尾打挂
+                log.warning('[image-cleaner] 读取取消状态失败: %s', e)
+        return self._cancel_seen
 
     def rebuild(self, kind: str = 'derived') -> Dict:
         """逃生门：丢弃逐图指纹与分组结果（不动相册本身）。"""

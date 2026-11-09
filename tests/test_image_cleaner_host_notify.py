@@ -36,13 +36,19 @@ def _load(rel_path: str, name: str):
 class FakeHost:
     """替身宿主：删除行为与真实宿主同形，另记录 `invalidate_derived` 的调用。"""
 
-    def __init__(self, deleted=None, invalidate_error=None, with_method=True):
+    def __init__(self, deleted=None, invalidate_error=None, with_method=True,
+                 data_root=None):
         self.calls = []
         self.delete_calls = []
         self._deleted = deleted
         self._invalidate_error = invalidate_error
+        self._data_root = data_root
         if with_method:
             self.invalidate_derived = self._record_invalidate
+
+    def get_data_root(self):
+        """宿主的数据根：引擎按它推导扫描根（旧版宿主没有 `list_roots` 时按单根处理）。"""
+        return self._data_root
 
     def delete_files(self, rel_paths):
         self.delete_calls.append(list(rel_paths))
@@ -76,7 +82,7 @@ class ImageCleanerHostNotifyTests(unittest.TestCase):
         return plugin
 
     def test_delete_notifies_host_once(self):
-        host = FakeHost()
+        host = FakeHost(data_root=self.root)
         result = self._plugin(host).delete_files(['album1/a.jpg'])
 
         self.assertEqual(result, {'deleted': ['album1/a.jpg'], 'errors': []},
@@ -88,7 +94,7 @@ class ImageCleanerHostNotifyTests(unittest.TestCase):
 
     def test_no_notification_when_nothing_deleted(self):
         """宿主一个都没删掉（全被拒）时根没有变化，不该让宿主重扫一遍。"""
-        host = FakeHost(deleted=[])
+        host = FakeHost(deleted=[], data_root=self.root)
         result = self._plugin(host).delete_files(['../越界.jpg'])
 
         self.assertEqual(result['deleted'], [])
@@ -96,7 +102,7 @@ class ImageCleanerHostNotifyTests(unittest.TestCase):
 
     def test_notification_failure_does_not_change_result(self):
         """宿主失效实现抛错时，删除结果必须原样返回（文件已经删掉了）。"""
-        host = FakeHost(invalidate_error=RuntimeError('宿主缓存坏了'))
+        host = FakeHost(invalidate_error=RuntimeError('宿主缓存坏了'), data_root=self.root)
 
         result = self._plugin(host).delete_files(['a.jpg'])
 
@@ -107,12 +113,37 @@ class ImageCleanerHostNotifyTests(unittest.TestCase):
 
     def test_old_host_without_the_method_is_tolerated(self):
         """旧宿主没有 `invalidate_derived`：用 getattr 跳过，删除照常返回。"""
-        host = FakeHost(with_method=False)
+        host = FakeHost(with_method=False, data_root=self.root)
 
         result = self._plugin(host).delete_files(['a.jpg'])
 
         self.assertEqual(result, {'deleted': ['a.jpg'], 'errors': []})
         self.assertFalse(hasattr(host, 'invalidate_derived'))
+
+    def test_delete_resets_throttle_so_next_autosync_runs(self):
+        """删除成功后下一次 autoSync 必须真跑，不能被 5 秒去抖 skip 掉。
+
+        前端删完立刻发起 `autoSync('')`，而引擎的 `min_sync_interval` 是 5 秒：
+        紧跟首屏那次同步时它会返回 `skip:throttled`，表现成"删完了面板上还是旧分组"。
+        """
+        from shell.backend.freshness import engine_for
+
+        host = FakeHost(data_root=self.root)
+        plugin = self._plugin(host)
+        engine = engine_for(plugin)
+        self.assertIsNotNone(engine, 'image-cleaner 必须声明 freshness_spec()')
+        assert engine is not None
+
+        self.assertEqual(engine.sync('', force=True)['action'], 'sync',
+                         '首屏同步：写下 5 秒去抖窗口')
+        self.assertEqual(engine.sync('').get('reason'), 'throttled',
+                         '前提：去抖窗口确实会挡掉紧跟的 autoSync')
+
+        plugin.delete_files(['a.jpg'])
+
+        report = engine.sync('')
+        self.assertNotEqual(report.get('reason'), 'throttled',
+                            '删除成功后下一次 autoSync 必须真跑（重置去抖）')
 
 
 if __name__ == '__main__':

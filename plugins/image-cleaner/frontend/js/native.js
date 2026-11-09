@@ -283,26 +283,22 @@
     }
   }
 
-  /** 重读结果缓存并重绘；同一时刻只跑一次，后到的调用等前一次完成。 */
-  function reloadFromCache(preserve) {
+  /**
+   * settle（被动同步发现变化 / 校验收尾）后的刷新：保留勾选与分页。
+   *
+   * 这一条与「切模式 / 显式重读」（`loadResults()`，会清空勾选与分页）不是同一件事：
+   * 后台把数据变了，用户可能正在勾选，清空选择会让他白勾一遍。只把结果里已经不存在
+   * 的文件从选中集合里剔掉。同一时刻只跑一次，后到的调用等前一次完成。
+   */
+  function reloadAfterSettle() {
     if (refreshPromise) return refreshPromise;
     refreshPromise = (async function () {
-      await loadResults(preserve);
+      await loadResults(true);
       render();
     })().finally(function () {
       refreshPromise = null;
     });
     return refreshPromise;
-  }
-
-  /**
-   * settle（被动同步发现变化 / 校验收尾）后的刷新：保留勾选与分页。
-   *
-   * 这一条与「切模式 / 显式重读」不是同一件事：后台把数据变了，用户可能正在勾选，
-   * 清空选择会让他白勾一遍。只把结果里已经不存在的文件从选中集合里剔掉。
-   */
-  function reloadAfterSettle() {
-    return reloadFromCache(true);
   }
 
   /** 校验收尾：先重读缓存，再按任务终态给出提示。 */

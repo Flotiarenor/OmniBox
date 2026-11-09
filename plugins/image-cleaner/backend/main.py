@@ -151,10 +151,15 @@ class ImageCleanerPlugin(PluginBase):
         删掉的是宿主的图片根里的文件，宿主的 `delete_files` 只清列表缓存与缩略图
         （相册树与目录快照仍按自己的 TTL 报旧计数），所以转发成功之后要显式通知
         宿主失效派生数据 —— 否则删完回到相册页，卡片数与封面还是旧的。
+
+        删除成功还要重置引擎的去抖窗口：前端删完立刻发起一次 `autoSync('')`，而
+        `min_sync_interval` 是 5 秒，紧跟首屏那次同步时会被 skip:throttled，表现成
+        "删完了面板上还是旧分组"。删除改的是磁盘，属于必须立刻重扫的变更。
         """
         result = self._get_host().delete_files(rel_paths)
         if isinstance(result, dict) and result.get('deleted'):
             self._notify_host_derived()
+            self.fresh.reset_throttle()
         return result
 
     def _notify_host_derived(self) -> None:

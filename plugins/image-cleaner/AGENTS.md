@@ -22,11 +22,11 @@
 | `plugins/image-cleaner/backend/duplicates.py` | 完全重复分组：尺寸分桶 → 首尾 64KB 快速指纹 → 整文件 MD5 | `DuplicateFinder`、`groups`、`_file_quick_hash`、`_file_full_hash` |
 | `plugins/image-cleaner/backend/similar.py` | 视觉相似分组：dHash 与汉明距离并查集、阈值解析 | `SimilarFinder`、`resolve_threshold`、`dhash_all`、`groups` |
 | `plugins/image-cleaner/backend/results.py` | 扫描结果缓存：读写、过期标记与失效文件过滤 | `ScanResults`、`SCAN_CACHE_FILE`、`path`、`load`、`save`、`save_result`、`get_cached_scan`、`mark_stale`、`persist_stale`、`clear_stale` |
-| `plugins/image-cleaner/backend/pipeline.py` | 扫描编排：收集 → 分组 → 写结果缓存（同步入口与后台任务共用） | `ScanPipeline`、`collect`、`group`、`duplicate_scan`、`similar_scan`、`regroup_all` |
+| `plugins/image-cleaner/backend/pipeline.py` | 扫描编排：收集 → 分组 → 写结果缓存（同步入口与后台任务共用）；`regroup_all` 接收可选的取消检查点，取消时不写任何模式的结果 | `ScanPipeline`、`collect`、`group`、`duplicate_scan`、`similar_scan`、`regroup_all` |
 | `plugins/image-cleaner/backend/background.py` | 后台扫描任务：单飞、进度投影与取消 | `ScanTaskRunner`、`start`、`worker`、`status`、`cancel`、`shutdown` |
-| `plugins/image-cleaner/backend/freshness.py` | 统一刷新规格与钩子、引擎去抖重置；`content_version` 取指纹库的条目版本（`DHashStore.version`，与 `DHASH_VERSION` 同源） | `FreshnessProvider`、`spec`、`reset_throttle`、`derive`、`prune`、`audit`、`pass_end`、`rebuild` |
+| `plugins/image-cleaner/backend/freshness.py` | 统一刷新规格与钩子、引擎去抖重置；`pass_end` 只在完整无错的校验趟重新分组（取消 / 预算用尽 / 读取错误只把结果标为过期）；`content_version` 取指纹库的条目版本（`DHashStore.version`，与 `DHASH_VERSION` 同源） | `FreshnessProvider`、`spec`、`reset_throttle`、`derive`、`prune`、`audit`、`pass_end`、`rebuild` |
 | `plugins/image-cleaner/frontend/native.html` | 原生逻辑页骨架：无样式、无 chrome，只装载统一客户端与业务脚本 | `/shell/native-client.js`、`js/native.js` |
-| `plugins/image-cleaner/frontend/js/native.js` | 原生面板逻辑：拉数据、编译 schema blocks 与顶栏 toolbar、处理动作、按任务状态轮询；打开面板时做一次被动同步，settle 后刷新保留勾选与分页，`onDispose` 销毁刷新控件 | `state`、`PAGE_SIZE`、`POLL_MS`、`SCAN_START_TIMEOUT_MS`、`client`、`render`、`buildBlocks`、`buildToolbar`、`groupBlocks`、`emptyBlock`、`snapshotTask`、`syncTaskState`、`reloadFromCache`、`reloadAfterSettle`、`refreshAfterScan`、`startPolling`、`mountFreshness`、`loadResults`、`init`、`runVerify`、`cancelScan`、`confirmDelete`、`selectGroup`、`selectAll`、`keepOneAll`、`handleAction`、`open-settings`、`settings-saved` |
+| `plugins/image-cleaner/frontend/js/native.js` | 原生面板逻辑：拉数据、编译 schema blocks 与顶栏 toolbar、处理动作、按任务状态轮询；打开面板时做一次被动同步，settle 后刷新保留勾选与分页，`onDispose` 销毁刷新控件 | `state`、`PAGE_SIZE`、`POLL_MS`、`SCAN_START_TIMEOUT_MS`、`client`、`render`、`buildBlocks`、`buildToolbar`、`groupBlocks`、`emptyBlock`、`snapshotTask`、`syncTaskState`、`reloadAfterSettle`、`refreshAfterScan`、`startPolling`、`mountFreshness`、`loadResults`、`init`、`runVerify`、`cancelScan`、`confirmDelete`、`selectGroup`、`selectAll`、`keepOneAll`、`handleAction`、`open-settings`、`settings-saved` |
 | `plugins/image-cleaner/frontend/index.html` | 旧壳回落的内嵌页骨架、内嵌态标记、脚本装载 | `#app`、`.view-body`、`#cleaner-toolbar`、`.view-toolbar`、`.cleaner-toolbar`、`.toolbar-group`、`.cleaner-meta`、`.cleaner-scope`、`#cleaner-root`、`.cleaner-root`、`#cleaner-actions`、`#btn-settings`、`.btn`、`.btn-sm`、`.view-content`、`.cleaner-content`、`.obx-scroll`、`.cleaner-tabs`、`#tab-dupe`、`#tab-similar`、`#cleaner-scanned`、`.cleaner-scanned`、`#cleaner-freshness`、`.cleaner-freshness`、`#cleaner-results`、`.cleaner-results`、`.cleaner-footer`、`#cleaner-selected`、`.cleaner-selected`、`#btn-keep-one-all`、`#btn-delete`、`.btn-danger`、`is-embedded` |
 | `plugins/image-cleaner/frontend/image-cleaner.css` | 旧内嵌页的全部样式 | `#app`、`.cleaner-toolbar`、`.cleaner-meta`、`.cleaner-scope`、`.cleaner-root`、`.cleaner-content`、`.cleaner-freshness`、`.cleaner-tabs`、`.cleaner-tabs .btn.active`、`.cleaner-results`、`.cleaner-scanned`、`.cleaner-more`、`.cleaner-footer`、`.cleaner-selected`、`.cleaner-group`、`.cleaner-group-head`、`.cleaner-group-head span`、`.cleaner-files`、`.cleaner-file`、`.cleaner-file img`、`.cleaner-file span`、`.cleaner-file input`、`html.is-embedded .cleaner-toolbar`、`--bg-hover`、`--bg-surface`、`--text-primary`、`--text-secondary`、`--text-on-accent`、`--border`、`--accent` |
 | `plugins/image-cleaner/frontend/js/app.js` | 旧内嵌页的单类前端：挂载共享控件与宿主工具栏、读缓存渲染、勾选与删除；挂载后由本页发起一次被动同步 | `ImageCleaner`、`mode`、`groups`、`selected`、`pageSize`、`visibleCount`、`lightbox`、`freshness`、`init`、`_bind`、`_mountHostToolbar`、`_mountFreshness`、`openSettings`、`_displayPath`、`updateStatus`、`switchMode`、`_loadResults`、`render`、`keepOneInGroup`、`keepOneForAll`、`_syncCheckboxes`、`showMore`、`updateSelected`、`deleteSelected`、`_escapeHtml`、`_escapeAttr` |
@@ -45,7 +45,7 @@
 | `scan_status` | 无 | `{running, done, success, cancelled, mode, total, processed, current, groups}` | 后台任务状态投影 |
 | `scan_cancel` | 无 | `{success}`；无任务时 `{success, error}` | 取消插件任务或统一校验 |
 | `get_cached_scan` | `mode` | `{groups, scanned, cached, stale, saved_at}` | 读结果缓存 |
-| `delete_files` | `rel_paths` | `{deleted, errors}` | 转发宿主的删除实现；有成功删除时调宿主的 `invalidate_derived('image-cleaner:delete')`（旧宿主用 `getattr` 跳过，失败不影响删除结果） |
+| `delete_files` | `rel_paths` | `{deleted, errors}` | 转发宿主的删除实现；有成功删除时调宿主的 `invalidate_derived('image-cleaner:delete')` 并重置引擎去抖（删完的 `autoSync('')` 不被 5 秒窗口挡掉），旧宿主用 `getattr` 跳过，失败不影响删除结果 |
 | `get_status` | 无 | `{host, root_dir, roots, scope}` | 扫描范围与宿主名 |
 | `get_settings` | 无 | `threshold`、`root_dir` | 设置值与只读信息行 |
 | `save_settings` | `settings` | `{success}` 或 `{success, error}` | 基类写入设置存储 |
@@ -58,7 +58,7 @@
 | `freshness_spec` | 无 | 规格键 `roots`、`prefixes`、`include`、`derive`、`prune`、`on_verified`、`on_pass_end`、`rebuild`、`content_version`、`unit`、`min_sync_interval` | 声明统一刷新规格；钩子由 `FreshnessProvider` 提供，不经壳按名从入口取 |
 | `on_settings_changed` | `changed_keys` | 无 | 阈值变更作废相似分组并重置引擎去抖 |
 | `on_unload` | 无 | 无 | 取消在跑的扫描任务 |
-| `delete_files` | `rel_paths` | `{deleted, errors}` | 转发宿主的删除实现；有成功删除时调宿主的 `invalidate_derived('image-cleaner:delete')`（旧宿主用 `getattr` 跳过，失败不影响删除结果） |
+| `delete_files` | `rel_paths` | `{deleted, errors}` | 转发宿主的删除实现；有成功删除时调宿主的 `invalidate_derived('image-cleaner:delete')` 并重置引擎去抖（删完的 `autoSync('')` 不被 5 秒窗口挡掉），旧宿主用 `getattr` 跳过，失败不影响删除结果 |
 | `get_data_root` | 无 | 宿主数据根 `Path` | 本插件的缓存与 `thumb_dir` 从它派生 |
 | `get_file_roots` | 无 | `[Path]` | `/file` 允许访问的根列表（转发宿主） |
 | `ensure_thumb` / `get_thumb_data` | `rel_path` | 无 / `(bytes, mime)` | `/thumbs` 代理宿主的缩略图 |
@@ -73,7 +73,7 @@
 - 刷新控件的挂载点是**隐藏节点**：`mountFreshness` 在 `#cleaner-freshness` 不存在时创建一个 `host.hidden = true` 的 div 挂到 `document.body`（面板本身不占位），只借 `Freshness.mount` 的状态、校验按钮与 `onChange`；每个原生页打开时挂一次，`onDispose` 调句柄的 `destroy()` 收掉。
 - 向壳提交的 blocks 类型：`text`（状态行带 `dot` 语义点）、`banner`（失败常驻 + `notice-dismiss`「知道了」）、`confirm`（删除的阻断确认，壳画成面板内模态层）、`progress`（总数未知时 `indeterminate`）、`actions`、`checkbox-list`、`empty`。反馈分档与 pixiv-sync 一致：成功走消息级 `toast`（`render` 第三个参数），失败留常驻 `banner`，不可逆的删除用 `confirm` 块。
 - 壳消息：逻辑页装载 `/shell/native-client.js`，用 `NativeExtension.create({ onInit, onAction, onDispose })`；客户端负责 `omnibox:native-ready` / `native-init` / `schema` / `native-action` / `native-error` 与 pagehide 清理，本页只实现 `init`、`handleAction` 与 blocks 构造。
-- 数据来源：`Bridge.call` 的 `get_cached_scan`、`delete_files`；校验进度与取消走 `Freshness.mount` 返回的 `state`、`verify`、`cancel`、`autoSync`；被动同步发现变化或校验收尾时走 `reloadAfterSettle` —— 只更新结果字段（groups / scanned / cached / stale / error）并**保留勾选与分页**（只把结果里已不存在的文件从选中集合剔除）；切模式与显式重读仍走 `reloadFromCache` 的完整重置路径。设置由壳的 `PluginSettingsModal` 读写后端 `settings_schema`，保存后逻辑页收 `settings-saved`。
+- 数据来源：`Bridge.call` 的 `get_cached_scan`、`delete_files`；校验进度与取消走 `Freshness.mount` 返回的 `state`、`verify`、`cancel`、`autoSync`；被动同步发现变化或校验收尾时走 `reloadAfterSettle()` —— 只更新结果字段（groups / scanned / cached / stale / error）并**保留勾选与分页**（只把结果里已不存在的文件从选中集合剔除）；切模式、显式重读与 `settings-saved` 走 `loadResults()` 的完整重置路径（清空勾选与分页）。设置由壳的 `PluginSettingsModal` 读写后端 `settings_schema`，保存后逻辑页收 `settings-saved`。
 
 旧内嵌页（`frontend/index.html`，只给不认 `native` 的旧壳）DOM 结构如下。
 
