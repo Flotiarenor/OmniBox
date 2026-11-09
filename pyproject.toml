@@ -1,6 +1,6 @@
 [project]
 name = "omnibox"
-version = "1.3.3"
+version = "1.4.0"
 description = "OmniBox — 轻量级、可插拔的桌面应用框架"
 readme = "readme.md"
 # 下界是项目自身要求，上界来自 requirements.txt 里 pythonnet 的 Requires-Python
