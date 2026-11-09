@@ -18,9 +18,11 @@
 """
 
 import json
+import logging
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -213,50 +215,175 @@ class MangaLibraryApiTableTests(unittest.TestCase):
                      if path.name.startswith(f'.{state_file.name}.')]
         self.assertEqual(leftovers, [], '原子写不留下临时文件')
 
-    def test_concurrent_state_writes_never_leave_broken_json(self):
-        """打开 / 关闭阅读器与切换收藏由不同桥接线程发起，会同时写同一份状态文件。"""
+    # ===== 阅读状态文件：零丢写、重试、临时文件清理、并发读改写 =====
+
+    def _library_module(self):
+        """`Library` 所在的已加载模块（`load_sibling` 的模块名，用于打桩/挂日志捕获）。"""
+        return sys.modules[type(self.plugin.library).__module__]
+
+    @staticmethod
+    def _capture_errors(logger: logging.Logger) -> tuple:
+        """给 logger 挂一个只收 ERROR 的捕获器；返回 (records, handler)。"""
+        records: list = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record) -> None:      # pragma: no cover - 直接转发
+                records.append(record)
+
+        handler = _Capture(level=logging.ERROR)
+        logger.addHandler(handler)
+        return records, handler
+
+    def test_concurrent_state_writes_lose_nothing(self):
+        """打开 / 关闭阅读器与切换收藏由不同桥接线程发起，会同时写同一份状态文件。
+
+        旧实现里 `write_json` 把"目标文件正被别的句柄打开"的 `os.replace` 失败吞成
+        `False`，`_save_state` 只记一条日志 —— 实测 4 写线程 × 15 次丢约 43% 的写，
+        而用例当时只断言 JSON 可解析，仍然通过。这里用一个**有界**的外部占用
+        （持有句柄 200ms）触发瞬时冲突，断言**零丢写**：不得出现保存失败日志，
+        全部写结束后落盘内容必须等于内存状态（最后一次写已落盘）。
+        """
         library = self.plugin.library
+        module = self._library_module()
         state_file = self.plugin.paths.state_file
         library.update_recent('A', 1)
         errors: list = []
-        broken: list = []
-        stop = threading.Event()
+        held = threading.Event()
+        release = threading.Event()
+        records, handler = self._capture_errors(module.log)
+
+        def squatter() -> None:
+            """模拟杀毒 / 同步盘短暂占住状态文件：持有句柄期间改名会失败。"""
+            try:
+                with open(state_file, encoding='utf-8') as handle:
+                    handle.read()
+                    held.set()
+                    release.wait(5)
+            except OSError:
+                held.set()
 
         def writer(offset: int) -> None:
             try:
+                held.wait(5)
                 for page in range(15):
                     library.update_recent('A', offset * 100 + page)
             except Exception as error:      # pragma: no cover - 失败时给断言留证据
                 errors.append(error)
 
-        def reader() -> None:
-            while not stop.is_set():
-                try:
-                    text = state_file.read_text(encoding='utf-8')
-                except OSError:
-                    continue    # 换名那一瞬间目标文件可能短暂不可读（Windows）
-                try:
-                    json.loads(text)
-                except ValueError as error:
-                    broken.append(error)
+        try:
+            squatter_thread = threading.Thread(target=squatter)
+            squatter_thread.start()
+            self.assertTrue(held.wait(5), '占用方没有拿到状态文件句柄')
+            writers = [threading.Thread(target=writer, args=(index,))
+                       for index in range(4)]
+            for thread in writers:
+                thread.start()
+            time.sleep(0.2)         # 占用窗口：这段时间内的写只能靠重试追平
+            release.set()
+            for thread in writers:
+                thread.join(10)
+            squatter_thread.join(10)
+        finally:
+            release.set()
+            module.log.removeHandler(handler)
 
-        watcher = threading.Thread(target=reader)
-        watcher.start()
-        writers = [threading.Thread(target=writer, args=(index,)) for index in range(4)]
-        for thread in writers:
-            thread.start()
-        for thread in writers:
-            thread.join(10)
-        stop.set()
-        watcher.join(10)
-
+        failures = [record.getMessage() for record in records
+                    if '保存阅读状态失败' in record.getMessage()]
         self.assertEqual(errors, [])
-        self.assertEqual(broken, [], '读者不该读到半份 JSON')
-        payload = json.loads(state_file.read_text(encoding='utf-8'))
+        self.assertEqual(failures, [], '每一次状态写都必须最终成功（不允许静默丢写）')
+        try:
+            payload = json.loads(state_file.read_text(encoding='utf-8'))
+        except ValueError as error:
+            self.fail(f'状态文件不是完整 JSON：{error}')
+        self.assertEqual(payload, library._state,
+                         '全部写结束后，落盘内容必须与内存状态一致')
         self.assertEqual(payload['recent'][0]['id'], 'A')
         leftovers = [path.name for path in state_file.parent.iterdir()
                      if path.name.startswith(f'.{state_file.name}.')]
         self.assertEqual(leftovers, [], '并发写不留下临时文件')
+
+    def test_state_write_retries_transient_failures(self):
+        """`write_json` 把瞬时冲突吞成 False：用户数据必须整次重试到成功。"""
+        library = self.plugin.library
+        module = self._library_module()
+        state_file = self.plugin.paths.state_file
+        real_write_json = module.write_json
+        calls = {'count': 0}
+        records, handler = self._capture_errors(module.log)
+
+        def flaky_write_json(*args, **kwargs):
+            calls['count'] += 1
+            if calls['count'] <= 2:
+                return False        # 前两次模拟 WinError 5（目标文件被占用）
+            return real_write_json(*args, **kwargs)
+
+        module.write_json = flaky_write_json
+        try:
+            library.update_recent('A', 7)
+        finally:
+            module.write_json = real_write_json
+            module.log.removeHandler(handler)
+
+        self.assertEqual(calls['count'], 3, '前两次失败后必须重试到成功')
+        failures = [record.getMessage() for record in records
+                    if '保存阅读状态失败' in record.getMessage()]
+        self.assertEqual(failures, [], '重试成功时不该报保存失败')
+        payload = json.loads(state_file.read_text(encoding='utf-8'))
+        self.assertEqual(payload['recent'][0]['page'], 7)
+
+    def test_stale_temp_files_are_cleaned_on_load(self):
+        """硬杀留下的 `.manga_state.json.<随机>.tmp` 在加载时清掉。"""
+        library = self.plugin.library
+        library.update_recent('A', 1)
+        state_file = self.plugin.paths.state_file
+        stale = state_file.with_name(f'.{state_file.name}.crashed.tmp')
+        stale.write_text('{"favorites": [', encoding='utf-8')
+
+        library.rebind()
+
+        self.assertFalse(stale.exists(), '硬杀留下的临时文件要在加载时清掉')
+        self.assertTrue(state_file.exists(), '清理不能动已落盘的状态文件')
+
+    def test_concurrent_update_recent_keeps_both_books(self):
+        """读-改-写整体在锁内：两个桥接线程同时更新不同漫画时不丢条目。"""
+        library = self.plugin.library
+        module = self._library_module()
+        real_datetime = module.datetime
+        barrier = threading.Barrier(2, timeout=0.5)
+        errors: list = []
+
+        class _SlowDatetime:
+            @staticmethod
+            def now():
+                # 卡在"读旧列表之后、赋值之前"：另一个线程此时也会读到旧列表
+                try:
+                    barrier.wait()
+                except threading.BrokenBarrierError:
+                    pass
+                return real_datetime.now()
+
+        def worker(folder_name: str) -> None:
+            try:
+                library.update_recent(folder_name, 3)
+            except Exception as error:      # pragma: no cover - 失败时给断言留证据
+                errors.append(error)
+
+        module.datetime = _SlowDatetime
+        try:
+            threads = [threading.Thread(target=worker, args=(name,))
+                       for name in ('A', 'B')]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(10)
+        finally:
+            module.datetime = real_datetime
+
+        self.assertEqual(errors, [])
+        ids = [entry['id'] for entry in library._state['recent']]
+        self.assertEqual(sorted(ids), ['A', 'B'], f'并发 update_recent 丢条目：{ids}')
+        payload = json.loads(self.plugin.paths.state_file.read_text(encoding='utf-8'))
+        self.assertEqual(sorted(entry['id'] for entry in payload['recent']), ['A', 'B'])
 
     def test_freshness_spec_fields_are_unchanged(self):
         spec = self.plugin.freshness_spec()

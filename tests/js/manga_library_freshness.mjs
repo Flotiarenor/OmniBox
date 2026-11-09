@@ -284,6 +284,54 @@ function makeEnv(options = {}) {
     check('关闭写的是最后停留的页码', last && last.args[1] === 2, JSON.stringify(last && last.args));
 }
 
+// ---- 6d. 快速开关：打开与关闭的两次写串行发出，后写（关闭页码）覆盖前写 ----
+{
+    const gates = [];
+    const env = loadManga({
+        handlers: defaultHandlers({
+            manga_list: () => [{ folder_name: 'A', title: '漫画A', author: '', page_count: 2, cover_url: '', is_fav: false }],
+            manga_get_detail: () => multiDetail(),
+            manga_get_pages: () => ['pages/1.jpg', 'pages/2.jpg', 'pages/3.jpg'],
+            // 每次写都挂起，由用例决定何时落地 —— 模拟宿主线程的异步执行
+            manga_update_recent: (folder, page) => new Promise((resolve) => {
+                gates.push({ folder, page, done: () => resolve({ status: 'ok' }) });
+            }),
+        }),
+    });
+    const app = await createApp(env);
+    await app.openMangaDetail('A');
+    app.viewLevel = 'images';
+    app._chapterPath = 'ch1';
+    await app.loadView();
+    await env.tick();
+
+    const cards = env.document.getElementById('ml-pages').querySelectorAll('.ml-card');
+    cards[0].click();                       // 打开：第 0 页 → 第一次写（挂起）
+    await env.tick(0);
+    check('打开时的写已发出', env.calls('manga_update_recent').length === 1,
+        JSON.stringify(env.calls('manga_update_recent').map(call => call.args)));
+    check('打开写的是进入的页码', gates[0] && gates[0].page === 0,
+        JSON.stringify(gates[0] && gates[0].page));
+
+    app.reader.next();
+    app.reader.next();                      // 用户翻到第 2 页
+    app.reader.close();                     // 立刻关闭（灯箱 ✕ 路径）
+    await env.tick(0);
+    check('关闭的写不并发发出（串行排在前一次之后）',
+        env.calls('manga_update_recent').length === 1,
+        JSON.stringify(env.calls('manga_update_recent').map(call => call.args)));
+
+    gates[0].done();                        // 前一次写落地
+    await env.tick(10);
+    const recent = env.calls('manga_update_recent');
+    check('前一次落地后关闭的写才发出', recent.length === 2,
+        JSON.stringify(recent.map(call => call.args)));
+    check('后写是关闭时停留的页码', recent[1] && recent[1].args[0] === 'A' && recent[1].args[1] === 2,
+        JSON.stringify(recent[1] && recent[1].args));
+    gates[1].done();
+    await env.tick(10);
+}
+
 // ---- 7. 2 秒轮询：任务没变就不重报 chrome ----
 {
     let tasks = [];

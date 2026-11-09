@@ -13,6 +13,7 @@
 import json
 import logging
 import threading
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -27,6 +28,13 @@ class Library:
     状态自持：书架缓存与脏标记、收藏/最近阅读列表、状态文件的读写都在这里。
     换根由入口先 `PathLayout.rebind()`，再调本类的 `rebind()` 重读状态。
     """
+
+    #: 整次写调用的重试次数与单次等待。`write_json` 面向"随时可以重算的缓存"，
+    #: 把目标文件被占用（Windows 上 `os.replace` 报 WinError 5/32）吞成 False；
+    #: 用户数据不能这样丢，因此在返回值层面重试（与 media-player 的 UserStateStore
+    #: 同一套参数与理由）。总等待 ≈300ms，远低于"这一次改动没落盘"的代价。
+    replace_attempts = 3
+    replace_delay = 0.05
 
     def __init__(self, paths: Any, scanner: Any, recent_count: int,
                  recent_limit: int, recent_min: int, recent_max: int) -> None:
@@ -50,9 +58,10 @@ class Library:
         """读 `manga_state.json`；缺失或损坏时退回空收藏与空最近阅读。
 
         与 `_save_state` 共用一把锁：写者用 `os.replace` 换名，读者在改名那一瞬间开着
-        目标文件时，Windows 上会让写者拿到 WinError 32。
+        目标文件时，Windows 上会让写者拿到 WinError 32。读之前先清掉硬杀留下的临时文件。
         """
         with self._lock:
+            self._clean_stale_temps()
             return self._read_state_locked()
 
     def _read_state_locked(self) -> Dict:
@@ -75,18 +84,42 @@ class Library:
         return defaults
 
     def _save_state(self) -> None:
-        """原子写阅读状态（收藏 / 最近阅读）。
+        """原子写阅读状态（收藏 / 最近阅读），**整次写带重试**。
 
         用 `shell.backend.json_cache.write_json`（同目录临时文件 + flush + fsync +
         os.replace，与媒体播放器的状态文件同一份机制）：`open('w')` 直接覆写时，写到一半
         被强杀会留下截断的 JSON，下次启动 `_load_state` 退回空表 —— 收藏与最近阅读整体
         丢失。写入还串行化在实例锁上：打开 / 关闭阅读器与切换收藏由不同桥接线程发起。
+
+        重试按**整次写调用**重来而不是只重试改名：`write_json` 把"目标文件正被别的
+        句柄打开"这类瞬时冲突吞成 `False`（缓存类文件丢一次只是重算，用户数据不是）。
+        全部失败时补一条带路径的错误日志。
         """
         with self._lock:
             state_file = self._paths.state_file
-            if write_json(state_file, self._state, indent=2, create_parent=True):
-                return
-            log.error(f'[MangaLibrary] 保存阅读状态失败: {state_file}')
+            for attempt in range(self.replace_attempts + 1):
+                if write_json(state_file, self._state, indent=2, create_parent=True):
+                    return
+                if attempt < self.replace_attempts:
+                    time.sleep(self.replace_delay * (attempt + 1))
+            log.error(f'[MangaLibrary] 保存阅读状态失败: {state_file}'
+                      f'（重试 {self.replace_attempts} 次仍失败）')
+
+    def _clean_stale_temps(self) -> None:
+        """删掉硬杀留下的原子写临时文件（`.manga_state.json.<随机>.tmp`）。
+
+        `write_json` 的异常路径会自己删临时文件，进程被强杀时来不及；这些文件此后
+        没有读者，累计下来只是 `.cache` 里的垃圾。只在持锁的 `_load_state` 里调用。
+        """
+        state_file = self._paths.state_file
+        try:
+            for path in state_file.parent.glob(f'.{state_file.name}.*.tmp'):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+        except OSError:
+            pass
 
     def rebind(self) -> None:
         """换根后重读阅读状态并作废书架缓存（由入口编排）。"""
@@ -175,14 +208,17 @@ class Library:
         """
         if not self._is_valid_folder_name(folder_name):
             return False
-        favs = self._state['favorites']
-        if folder_name in favs:
-            favs.remove(folder_name)
-            is_fav = False
-        else:
-            favs.append(folder_name)
-            is_fav = True
-        self._save_state()
+        # 读-改-写整体在锁内：桥接调用各起一条线程，"读旧列表 → 改 → 赋值"交错时
+        # 后一次赋值会吞掉前一次（收藏切换后卡片状态与状态文件对不上）。
+        with self._lock:
+            favs = self._state['favorites']
+            if folder_name in favs:
+                favs.remove(folder_name)
+                is_fav = False
+            else:
+                favs.append(folder_name)
+                is_fav = True
+            self._save_state()
         # 书架卡片带 is_fav：收藏变了必须重建列表（缓存由基建之外的因素失效）
         self.reset()
         return is_fav
@@ -201,12 +237,14 @@ class Library:
             page = max(0, int(page))
         except (TypeError, ValueError):
             page = 0
-        recent = self._state['recent']
-        recent = [r for r in recent if r['id'] != folder_name]
-        recent.insert(0, {"id": folder_name, "page": page,
-                          "time": datetime.now().isoformat()})
-        self._state['recent'] = recent[:self._recent_limit]
-        self._save_state()
+        # 读-改-写整体在锁内：打开与关闭阅读器各写一次，两次写由不同桥接线程执行，
+        # 交错时后一次赋值可能把前一次（更新的页码）覆盖回旧值。
+        with self._lock:
+            recent = [entry for entry in self._state['recent'] if entry['id'] != folder_name]
+            recent.insert(0, {"id": folder_name, "page": page,
+                              "time": datetime.now().isoformat()})
+            self._state['recent'] = recent[:self._recent_limit]
+            self._save_state()
         return {"status": "ok"}
 
     # ===== 详情与页面 =====

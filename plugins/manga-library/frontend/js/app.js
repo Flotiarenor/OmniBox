@@ -28,8 +28,10 @@ class MangaLibraryApp {
         // 重载书架（下载中心与书架共用同一个数据根）。
         this._completedIds = new Set();
         this._tasksLoaded = false;
-        // 最近一次"写阅读页码"的桥调用；打开阅读器时 await 它，关闭时 await 关闭回调
-        // 产生的那一次（`MangaReader.onClose`）。
+        // 最近一次"写阅读页码"的桥调用。打开与关闭各写一次，两次写必须**串行**：
+        // 同一次快速开关里，打开那次写还没落地就发出关闭那次写，两条桥调用由宿主各起
+        // 一条线程执行，落地顺序不确定 —— 于是"关闭时最后停留的页码"可能被打开时的
+        // 页码覆盖回去。这里把每次写串在上一次的后面（见 `_reportReadingPage`）。
         this._readerWrite = null;
         // 从「最近阅读」进入时还待定位的页码；null 表示没有续读意图
         this._resumePage = null;
@@ -63,9 +65,10 @@ class MangaLibraryApp {
 
         this.reader = new MangaReader();
         // 阅读进度只在"打开"与"关闭"各写一次：关闭路径（灯箱自己的 ✕ / Esc / 壳顶栏
-        // 返回）都汇到 `onClose`，翻阅过程中不落盘。
+        // 返回）都汇到 `onClose`，翻阅过程中不落盘。两次写经 `_reportReadingPage`
+        // 串行化，后写覆盖前写。
         this.reader.onClose = (page) => {
-            this._readerWrite = this._reportReadingPage(page);
+            this._reportReadingPage(page);
         };
         this._bindUI();
         this._updateActions();
@@ -218,15 +221,31 @@ class MangaLibraryApp {
         return wasOpen;
     }
 
-    /** 把阅读页码写回「最近阅读」（后端按 0 起）。失败只影响续读位置，不打断看图。 */
-    async _reportReadingPage(page) {
+    /** 把阅读页码写回「最近阅读」（后端按 0 起）。
+
+    页码与漫画目录在**调用时**取定，再把这次写串到上一次写之后：打开与关闭各写一次，
+    快速开关时若两次桥调用并发落地，关闭时的最后页码可能被打开时的页码顶掉。返回值
+    是这次写（含之前排队的写）的 Promise，`_closeReader` 据此等它落定。
+
+    失败只影响续读位置，不打断看图：`_writeReadingPage` 内部吞掉桥调用异常。
+     */
+    _reportReadingPage(page) {
         const folder = this.currentFolderName;
-        if (!folder) return;
+        if (!folder) return Promise.resolve();
         const index = Math.max(0, Number(page) || 0);
+        const previous = this._readerWrite || Promise.resolve();
+        const next = previous.catch(() => { }).then(
+            () => this._writeReadingPage(folder, index));
+        this._readerWrite = next;
+        return next;
+    }
+
+    /** 真正发出一次 `manga_update_recent`；失败静默（下次打开会重新记录）。 */
+    async _writeReadingPage(folder, index) {
         try {
             await Bridge.call('manga_update_recent', folder, index);
         } catch (e) {
-            // 阅读已经打开：记录页码失败不影响看图，下一次打开会重新记录
+            // 记录页码失败不影响看图
         }
     }
 
