@@ -34,6 +34,7 @@
 | `bench_gallery.py` | 相册性能探针：在真实图库上量 image-viewer 各阶段耗时（只读，不生成缩略图） |
 | `shoot_readme.py` `shoot_readme_setup.py` | README 配图抓取（隔离实例 + 有头 Chrome，截视口后转 WebP） |
 | `test_fake_mpv.py` | 验证"假 mpv 截获 ncm-cli 播放 URL"的方案 |
+| `migrate_cubby_2.py` | 2.0 迁移：把仓库里最后一层旧产品名换成 cubby —— 协议族、鉴权 Cookie 与请求头、密钥存储标识、产物门禁白名单、历史数据迁移代码、服务器侧脚本引用。默认只预演，`--apply` 落盘（要求工作区无未提交改动），`--check` 只扫残留，`--version X.Y.Z` 顺带改版本号；每处编辑都断言命中次数，跑完自查残留 |
 
 `examples/` 是插件模板，`scenes/` 与 `readme_scenes.json` 是配图场景表。
 
