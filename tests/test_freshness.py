@@ -458,7 +458,10 @@ class FreshnessEngineTests(unittest.TestCase):
 
         插件（image-viewer）据此区分"按新规则重算派生数据"与"文件真的变了"：纯
         restamp 批次只作废目录节点，不能反复删整份相册索引。预算用尽 + 版本升级
-        是最容易踩到的组合（第一批全是 restamp，第二批才混进真实变化）。
+        是最容易踩到的组合（一部分批次全是 restamp，另一批才混进真实变化）。
+
+        目录枚举顺序由文件系统决定（NTFS / ext4 不同），因此不绑定"第一批是哪个
+        目录"：先写入 d1 的真实变化，再按预算连续同步到整趟走完，逐批检查标记。
         """
         engine = self._fresh_engine()
         for name in ('d0', 'd1', 'd2'):
@@ -470,26 +473,34 @@ class FreshnessEngineTests(unittest.TestCase):
         engine.spec.derive = lambda items: batches.append([dict(i) for i in items])
         engine.spec.content_version = 2
         engine.spec.max_dirs_per_sync = 2
-
-        # ① 预算用尽的第一趟：根部 + d0，d0 里没有任何真实变化 → 全是 restamp-only
-        first = self._sync()
-        self.assertTrue(first['partial'], first)
-        self.assertEqual({item['dir'] for item in batches[0]}, {'d0'}, batches[0])
-        self.assertTrue(all(item.get('restamp') is True for item in batches[0]), batches[0])
-        self.assertEqual(first['changed'], 0, 'restamp 不污染真实变化计数')
-
-        # ② 第二趟：d1 里 a.jpg 真实变化（b.jpg 只是 restamp）→ 混合批次逐个正确
-        batches.clear()
+        # 目录枚举顺序随文件系统（NTFS / ext4）而异，所以不假设"第一趟轮到 d0"：
+        # 升级前先写下 d1 的真实变化，再按预算连续同步到整趟走完，逐批检查标记。
         (self.root / 'd1' / 'a.jpg').write_bytes(b'y' * 16)
-        second = self._sync()
-        d1 = [item for batch in batches for item in batch if item['dir'] == 'd1']
-        changed_items = [item for item in d1 if item['key'] == 'd1/a.jpg']
-        restamp_items = [item for item in d1 if item['key'] == 'd1/b.jpg']
-        self.assertEqual(len(changed_items), 1, second)
-        self.assertNotIn('restamp', changed_items[0], '真实 changed 不能标 restamp')
-        self.assertEqual(len(restamp_items), 1, second)
-        self.assertIs(restamp_items[0]['restamp'], True)
-        self.assertGreaterEqual(second['changed'], 1)
+
+        reports: list = []
+        for _ in range(6):
+            reports.append(self._sync())
+            if not reports[-1]['partial']:
+                break
+        else:
+            self.fail(f'预算内应能走完全部目录: {reports}')
+        self.assertTrue(reports[0]['partial'], reports[0])
+        self.assertEqual(reports[0]['reason'], 'budget', reports[0])
+        self.assertEqual(sum(report['added'] for report in reports), 0,
+                         '版本升级不是"新增"，不能污染变化计数')
+        self.assertEqual(sum(report['changed'] for report in reports), 1,
+                         '只有 d1/a.jpg 是真实变化')
+        self.assertEqual(sum(report['restamped'] for report in reports), 4,
+                         '合成根 + d0/d1/d2 各因版本落后被重算一次')
+
+        items = [item for batch in batches for item in batch]
+        self.assertEqual({item['dir'] for item in items}, {'d0', 'd1', 'd2'}, items)
+        real = [item for item in items if item['key'] == 'd1/a.jpg']
+        self.assertEqual(len(real), 1, items)
+        self.assertNotIn('restamp', real[0], '真实 changed 不能标 restamp')
+        restamped = [item for item in items if item['key'] != 'd1/a.jpg']
+        self.assertEqual(len(restamped), 5, items)
+        self.assertTrue(all(item.get('restamp') is True for item in restamped), restamped)
 
         # ③ 版本已全部盖章后，真实变化批次完全不带 restamp
         batches.clear()
