@@ -68,20 +68,21 @@ CODE_SUFFIXES = frozenset({'.py', '.js', '.mjs', '.cjs', '.ts', '.vue', '.json',
 # 路径引用允许的后缀比上面宽：文档也会引用 .md / .toml / .yml / .spec。
 PATH_SUFFIXES = CODE_SUFFIXES | {'.md', '.toml', '.yml', '.yaml', '.txt', '.svg', '.spec', '.html'}
 
-# 产物与运行期文件：本来就可能不在仓库里（`OmniBox.zip` 在 .gitignore 中，
+# 产物与运行期文件：本来就可能不在仓库里（`Cubby.zip` 在 .gitignore 中，
 # `*.db` 是运行期生成的），一律不当作"引用"。
 ARTIFACT_SUFFIXES = frozenset({'.zip', '.7z', '.db', '.log', '.png', '.jpg', '.webp', '.mp4', '.ico'})
 
 # 不进索引的目录：生成物、依赖、运行期数据、本机缓存。
 #
-# `OmniBox` / `omnibox` 是发布构建的输出树（docs/Releases/OmniBox/）：它带着
-# plugins/ 的副本，其中包含插件的 AGENTS.md。那些副本的引用是相对**源码树**写的
-# （../AGENTS.md、../docs/…），放进索引后会被当成损坏引用报出来 —— 门禁因此
+# `OmniBox` / `omnibox` 与 `Cubby` / `cubby` 都是发布构建的输出树（docs/Releases/）：
+# 它带着 plugins/ 的副本，其中包含插件的 AGENTS.md。那些副本的引用是相对**源码树**
+# 写的（../AGENTS.md、../docs/…），放进索引后会被当成损坏引用报出来 —— 门禁因此
 # 变成"工作区没构建过才通过"，与它自己的用途相反。
+# 改名过渡期两套名字都保留：本机还留着旧名的构建树，删早了门禁就红。
 SKIP_DIRS = frozenset({
     '.git', '.build', '.build-linux', '.build-work', '.build-dist', '.ruff_cache',
     '.dsh', 'venv', 'node_modules', 'dist', 'chromedriver', '__pycache__',
-    'OmniBox', 'omnibox',
+    'OmniBox', 'omnibox', 'Cubby', 'cubby',
 })
 
 # 生成物 / 运行期目录：文档引用它们是说明"产物落在哪"，不是"仓库里有这个文件"。
@@ -92,9 +93,10 @@ GENERATED_PREFIXES = (
     # 两个 job 不构建前端 —— 文档引用它说的是"首页从哪来"，不是"仓库里有这个文件"。
     'shell/frontend/dist/',
 )
-# 精确到某一份产物（不按前缀匹配）：`OmniBox/` 是 PyInstaller 的输出树，
+# 精确到某一份产物（不按前缀匹配）：`Cubby/`（旧名 `OmniBox/`）是 PyInstaller 的输出树，
 # `docs/Releases/AGENTS.md` 的产物表按该目录内的相对路径写它，真跑过构建才有。
-GENERATED_NAMES = frozenset({'__pycache__', 'se-metadata.json', 'OmniBox/'})
+# 过渡期两套名字都保留，理由同 SKIP_DIRS。
+GENERATED_NAMES = frozenset({'__pycache__', 'se-metadata.json', 'OmniBox/', 'Cubby/'})
 
 # 插件自己的文档：按 docs/plugin-doc-spec.md 描述界面契约，不做名字/路径检查。
 PLUGIN_INTERFACE_DOC = re.compile(r'^plugins/[^/]+/AGENTS\.md$')

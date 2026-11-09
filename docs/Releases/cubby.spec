@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""OmniBox PyInstaller spec（Windows）
+"""Cubby PyInstaller spec（Windows）
 
 策略：--onedir（目录模式）+ 隐藏导入声明 + 可选 UPX，最后用 7z/zip 打包为便携压缩包。
 收集规则见同目录 spec_common.py（两个平台共用一份，避免规则漂移）。
@@ -42,7 +42,7 @@ exe = EXE(
     a.scripts,              # 只包含启动脚本
     [],
     [],
-    name='OmniBox',
+    name='Cubby',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -66,5 +66,5 @@ coll = COLLECT(
     strip=False,            # 关键：不剥离 python312.dll 等二进制
     upx=True,
     upx_exclude=['python*.dll', '*.pyd'],
-    name='OmniBox',
+    name='Cubby',
 )

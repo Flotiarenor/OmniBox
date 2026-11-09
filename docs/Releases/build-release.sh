@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# OmniBox Linux 一键发布构建脚本
+# Cubby Linux 一键发布构建脚本
 #
 # 功能：
 #   1. 构建 Vue 前端
@@ -30,7 +30,7 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-SPEC_FILE="$SCRIPT_DIR/omnibox-linux.spec"
+SPEC_FILE="$SCRIPT_DIR/cubby-linux.spec"
 BUILD_DIR="$PROJECT_ROOT/.build-linux"
 DIST_DIR="$SCRIPT_DIR"
 VENV_DIR="$PROJECT_ROOT/venv"
@@ -127,7 +127,7 @@ fi
 
 # ── 4. PyInstaller 打包 ───────────────────────────────────────────
 info "PyInstaller 打包 Linux 版本..."
-rm -rf "$BUILD_DIR" "$DIST_DIR/OmniBox"
+rm -rf "$BUILD_DIR" "$DIST_DIR/Cubby"
 "$PY" -m PyInstaller \
     --workpath "$BUILD_DIR" \
     --distpath "$DIST_DIR" \
@@ -135,8 +135,8 @@ rm -rf "$BUILD_DIR" "$DIST_DIR/OmniBox"
     --log-level WARN \
     "$SPEC_FILE"
 
-BIN_TMP="$DIST_DIR/OmniBox/OmniBox.bin"
-BIN="$DIST_DIR/OmniBox/OmniBox"
+BIN_TMP="$DIST_DIR/Cubby/Cubby.bin"
+BIN="$DIST_DIR/Cubby/Cubby"
 if [ ! -f "$BIN_TMP" ]; then
     error "PyInstaller 输出不存在: $BIN_TMP"
     exit 1
@@ -144,16 +144,16 @@ fi
 mv "$BIN_TMP" "$BIN"
 chmod +x "$BIN"
 # PyInstaller 会在 COLLECT 外留下一个多余的可执行文件，清理掉
-rm -f "$DIST_DIR/OmniBox.bin"
+rm -f "$DIST_DIR/Cubby.bin"
 
-SIZE_MB=$(du -sm "$DIST_DIR/OmniBox" | cut -f1)
-success "PyInstaller 打包完成：$DIST_DIR/OmniBox/ (${SIZE_MB}MB)"
+SIZE_MB=$(du -sm "$DIST_DIR/Cubby" | cut -f1)
+success "PyInstaller 打包完成：$DIST_DIR/Cubby/ (${SIZE_MB}MB)"
 
 # ── 4.5 打包前把关：产物目录里绝不能带用户数据 ─────────────────────
 # 程序把可写数据写在 exe 旁边（shell/backend/paths.py），所以在产物目录里跑过
 # 一次程序做测试，data/ 与 .config/ 里就是你本机的设置（目录路径、refresh_token、
 # 缓存）。以前这些会被原样压进发行包，用户装完看到的是开发机的路径。
-DIST_TREE="$DIST_DIR/OmniBox"
+DIST_TREE="$DIST_DIR/Cubby"
 if [ "$CLEAN_USER_DATA" -eq 1 ]; then
     for d in .config data logs; do
         if [ -e "$DIST_TREE/$d" ]; then
@@ -175,14 +175,14 @@ if [ "$leftover" -eq 1 ]; then
     exit 1
 fi
 info "产物校验（tools/check_build_tree.py）..."
-"$PY" "$PROJECT_ROOT/tools/check_build_tree.py" "$DIST_TREE" --expect-exe OmniBox
+"$PY" "$PROJECT_ROOT/tools/check_build_tree.py" "$DIST_TREE" --expect-exe Cubby
 
 # ── 5. 压缩为 tar.gz ──────────────────────────────────────────────
 info "创建 tar.gz 压缩包..."
 DATE=$(date +%Y%m%d)
-ARCHIVE="$DIST_DIR/OmniBox_${DATE}.tar.gz"
+ARCHIVE="$DIST_DIR/Cubby_${DATE}.tar.gz"
 rm -f "$ARCHIVE"
-tar -C "$DIST_DIR" -czf "$ARCHIVE" OmniBox
+tar -C "$DIST_DIR" -czf "$ARCHIVE" Cubby
 
 ARCHIVE_MB=$(du -sm "$ARCHIVE" | cut -f1)
 success "压缩完成：$ARCHIVE (${ARCHIVE_MB}MB)"
@@ -191,6 +191,6 @@ echo
 echo -e "${ColorSuccess}==============================================${ColorReset}"
 echo -e "${ColorSuccess}  BUILD COMPLETE${ColorReset}"
 echo -e "${ColorSuccess}==============================================${ColorReset}"
-echo "输出目录: $DIST_DIR/OmniBox/"
+echo "输出目录: $DIST_DIR/Cubby/"
 echo "压缩包  : $ARCHIVE"
 echo

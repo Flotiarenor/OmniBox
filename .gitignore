@@ -30,17 +30,23 @@ se-metadata.json
 docs/Releases/*.exe
 docs/Releases/*.7z
 docs/Releases/*.zip
+# 发布构建的输出树：改名过渡期满工作区里两套名字都可能存在（旧名构建树还没删），
+# 大小写两套都忽略，收尾提交时再删旧名。
 docs/Releases/omnibox/
+docs/Releases/cubby/
 docs/Releases/__pycache__/
 
 # 构建脚本写出的打包环境依赖快照，仅供审计，不参与安装
 requirements.lock.txt
 
-#linux 启动脚本
+#linux 启动脚本（过渡期旧名与新名都忽略）
 OmniBox-OneClick.ps1
+Cubby-OneClick.ps1
 
 # Linux 构建产物
 .build-linux/
 docs/Releases/OmniBox/
+docs/Releases/Cubby/
 docs/Releases/OmniBox.bin
+docs/Releases/Cubby.bin
 docs/Releases/*.tar.gz

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    OmniBox 一键发布构建脚本
+    Cubby 一键发布构建脚本
 .DESCRIPTION
     1. 构建 Vue 前端
     2. PyInstaller 打包（onedir + UPX）
@@ -42,12 +42,12 @@ $ColorWarning = "Yellow"
 $ColorError   = "Red"
 
 $ProjectRoot  = Resolve-Path "$PSScriptRoot/../.."
-$SpecFile     = "$PSScriptRoot/omnibox.spec"
+$SpecFile     = "$PSScriptRoot/cubby.spec"
 $BuildDir     = "$ProjectRoot/.build"
 $DistDir      = "$OutputDir"
 
 Write-Host ("=" * 46) -ForegroundColor $ColorInfo
-Write-Host "  OmniBox Build Script v1.0" -ForegroundColor $ColorInfo
+Write-Host "  Cubby Build Script v1.0" -ForegroundColor $ColorInfo
 Write-Host ("=" * 46) -ForegroundColor $ColorInfo
 Write-Host "Project : $ProjectRoot"  -ForegroundColor $ColorInfo
 Write-Host "Output  : $DistDir"      -ForegroundColor $ColorInfo
@@ -57,7 +57,7 @@ $hasNonAscii = [regex]::Match($ProjectRoot, '[^\x00-\x7F]').Success
 if ($hasNonAscii -and -not $UseCleanPath) {
     Write-Host "`n[WARN] 项目路径包含非 ASCII 字符（中文），运行 exe 时会报错:" -ForegroundColor $ColorWarning
     Write-Host "  'Failed to load Python DLL ... 内存位置访问无效'" -ForegroundColor $ColorWarning
-    Write-Host "  方案 A: 解压后将 OmniBox/ 移到纯英文路径（如 D:\OmniBox）" -ForegroundColor $ColorWarning
+    Write-Host "  方案 A: 解压后将 Cubby/ 移到纯英文路径（如 D:\Cubby）" -ForegroundColor $ColorWarning
     Write-Host "  方案 B: 用 -UseCleanPath 参数自动复制到 Temp 目录构建" -ForegroundColor $ColorWarning
     Write-Host ""
 }
@@ -126,7 +126,7 @@ if (-not $SkipPyInstaller) {
 
     # UseCleanPath: copy to ASCII temp dir for PyInstaller
     if ($UseCleanPath -and $hasNonAscii) {
-        $cleanTempDir = Join-Path $env:TEMP "OmniBox_Build_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+        $cleanTempDir = Join-Path $env:TEMP "Cubby_Build_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
         Write-Host "  -> Copying to ASCII path: $cleanTempDir" -ForegroundColor $ColorWarning
         $excludeList = @('venv', '.git', 'node_modules', '.cache', '__pycache__', '.build')
         New-Item -ItemType Directory -Path $cleanTempDir -Force | Out-Null
@@ -137,12 +137,12 @@ if (-not $SkipPyInstaller) {
         }
         $ProjectRoot = Resolve-Path $cleanTempDir
         $BuildDir = "$cleanTempDir/.build"
-        $SpecFile = "$cleanTempDir/docs/Releases/omnibox.spec"
+        $SpecFile = "$cleanTempDir/docs/Releases/cubby.spec"
         $DistDir = "$cleanTempDir/dist"
         Write-Host "     -> Build will run in: $cleanTempDir" -ForegroundColor $ColorInfo
     }
 
-    $oldDistDir = "$DistDir/OmniBox"
+    $oldDistDir = "$DistDir/Cubby"
     if (Test-Path $oldDistDir) { Remove-Item -Recurse -Force $oldDistDir }
 
     Write-Host "  -> Running PyInstaller..." -ForegroundColor $ColorWarning
@@ -157,22 +157,22 @@ if (-not $SkipPyInstaller) {
         Write-Host "ERROR: PyInstaller failed" -ForegroundColor $ColorError; exit 1
     }
 
-    $exePath = "$DistDir/OmniBox/OmniBox.exe"
+    $exePath = "$DistDir/Cubby/Cubby.exe"
     if (-not (Test-Path $exePath)) {
         Write-Host "ERROR: Output not found at $exePath" -ForegroundColor $ColorError; exit 1
     }
 
     # PyInstaller leaves a stray executable outside the COLLECT folder; remove it
-    $strayExe = "$DistDir/OmniBox.exe"
+    $strayExe = "$DistDir/Cubby.exe"
     if (Test-Path $strayExe) {
         Remove-Item -Force $strayExe
         Write-Host "  [OK] Removed stray exe: $strayExe" -ForegroundColor $ColorSuccess
     }
 
-    $size = (Get-ChildItem -Recurse "$DistDir/OmniBox" | Measure-Object -Property Length -Sum).Sum
+    $size = (Get-ChildItem -Recurse "$DistDir/Cubby" | Measure-Object -Property Length -Sum).Sum
     $sizeMB = [math]::Round($size / 1MB, 2)
     Write-Host "  [OK] PyInstaller done" -ForegroundColor $ColorSuccess
-    Write-Host "       Output: $DistDir/OmniBox/" -ForegroundColor $ColorSuccess
+    Write-Host "       Output: $DistDir/Cubby/" -ForegroundColor $ColorSuccess
     Write-Host "       Size: ${sizeMB}MB" -ForegroundColor $ColorSuccess
 } else {
     Write-Host "[2/3] Skipping PyInstaller" -ForegroundColor $ColorWarning
@@ -196,7 +196,7 @@ if (-not $SkipArchive) {
 
     $useZip = $null -eq $sevenZip
 
-    $sourceDir  = "$DistDir/OmniBox"
+    $sourceDir  = "$DistDir/Cubby"
 
     # ── 打包前把关：产物目录里绝不能带用户数据 ──
     # 踩过的坑：在产物目录里跑过程序做测试（可写数据写在 exe 旁边，见
@@ -222,14 +222,14 @@ if (-not $SkipArchive) {
     $gatePy = "$ProjectRoot/venv/Scripts/python.exe"
     if (-not (Test-Path $gatePy)) { $gatePy = "python" }
     Write-Host "  -> 产物校验 (tools/check_build_tree.py)..." -ForegroundColor $ColorWarning
-    & $gatePy "$ProjectRoot/tools/check_build_tree.py" $sourceDir --expect-exe "OmniBox.exe"
+    & $gatePy "$ProjectRoot/tools/check_build_tree.py" $sourceDir --expect-exe "Cubby.exe"
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: 产物校验未通过，已中止打包（详见上面的报告）" -ForegroundColor $ColorError
         exit 1
     }
 
     $version    = (Get-Date -Format "yyyyMMdd")
-    $archiveName = "OmniBox_${version}"
+    $archiveName = "Cubby_${version}"
 
     if (-not $useZip) {
         $archiveFile = "$OutputDir/${archiveName}.7z"
@@ -268,8 +268,8 @@ Write-Host ("=" * 46) -ForegroundColor $ColorSuccess
 if ($hasNonAscii -and -not $UseCleanPath) {
     Write-Host "`n[IMPORTANT] Path has non-ASCII chars. To run the exe:" -ForegroundColor $ColorWarning
     Write-Host "  1. Extract the 7z archive" -ForegroundColor $ColorWarning
-    Write-Host "  2. Move OmniBox/ folder to an ASCII path, e.g.:" -ForegroundColor $ColorWarning
-    Write-Host "     D:\OmniBox\OmniBox.exe" -ForegroundColor $ColorInfo
+    Write-Host "  2. Move Cubby/ folder to an ASCII path, e.g.:" -ForegroundColor $ColorWarning
+    Write-Host "     D:\Cubby\Cubby.exe" -ForegroundColor $ColorInfo
 }
 if (-not $upxFound) {
     Write-Host "`n[TIP] Install UPX for smaller binary: https://github.com/upx/upx/releases" -ForegroundColor $ColorWarning

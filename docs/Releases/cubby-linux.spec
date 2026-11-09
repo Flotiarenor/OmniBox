@@ -1,8 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""OmniBox PyInstaller spec（Linux）
+"""Cubby PyInstaller spec（Linux）
 
-与 omnibox.spec 的唯一实质差异是可执行文件名（OmniBox.bin，由 build-release.sh
-重命名为 OmniBox）。收集规则与隐藏导入都来自同目录 spec_common.py。
+与 cubby.spec 的唯一实质差异是可执行文件名（Cubby.bin，由 build-release.sh
+重命名为 Cubby）。收集规则与隐藏导入都来自同目录 spec_common.py。
 """
 
 import sys
@@ -40,7 +40,7 @@ exe = EXE(
     a.scripts,
     [],
     [],
-    name='OmniBox.bin',
+    name='Cubby.bin',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -64,5 +64,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=['python*.dll', '*.pyd'],
-    name='OmniBox',
+    name='Cubby',
 )

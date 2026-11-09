@@ -1,5 +1,5 @@
 #Requires -Version 5.1
-# OmniBox Windows 一键部署脚本
+# Cubby Windows 一键部署脚本
 # 用法：
 #   .\deploy.ps1
 #   .\deploy.ps1 -NoPause        # 不等待按键（自动化 / CI 调用）
@@ -84,7 +84,7 @@ function Build-VueFrontend {
 # ========== 主流程 ==========
 
 Write-Host "========================================" -ForegroundColor $ColorMenu
-Write-Host "    OmniBox 一键部署脚本      " -ForegroundColor $ColorMenu
+Write-Host "    Cubby 一键部署脚本        " -ForegroundColor $ColorMenu
 Write-Host "========================================" -ForegroundColor $ColorMenu
 
 $ProjectRoot = $PSScriptRoot

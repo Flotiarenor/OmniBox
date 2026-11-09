@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# OmniBox Linux 环境统一入口
+# Cubby Linux 环境统一入口
 #
 # 功能：
 #   - 确保项目 venv 存在（不存在则用 python3 创建）

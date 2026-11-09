@@ -1,7 +1,7 @@
-# OmniBox 运行时依赖
+# Cubby 运行时依赖
 #
 # 本文件是【手写】的运行时依赖声明，不是 pip freeze 快照：
-#   - 只列运行 OmniBox 本体与插件真正需要的东西；
+#   - 只列运行 Cubby 本体与插件真正需要的东西；
 #   - 开发/构建工具（ruff / pyright / pyinstaller 等）在 requirements-dev.txt；
 #   - 构建脚本的 pip freeze 快照写到 requirements.lock.txt（仅用于审计打包环境）。
 # 请勿用 pip freeze 覆盖本文件。

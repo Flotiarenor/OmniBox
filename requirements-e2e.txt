@@ -1,4 +1,4 @@
-# OmniBox 端到端（浏览器）测试依赖
+# Cubby 端到端（浏览器）测试依赖
 #
 # 谁用它：
 #   - CI 的 shell-e2e job（.github/workflows/ci.yml）：真实浏览器冒烟门禁，跑

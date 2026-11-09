@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """两个 PyInstaller spec 共享的收集逻辑（Windows / Linux）。
 
-为什么单独抽一个文件：omnibox.spec 与 omnibox-linux.spec 原本各自复制了一份
+为什么单独抽一个文件：cubby.spec 与 cubby-linux.spec 原本各自复制了一份
 `collect_data_files()` / `HIDDEN_IMPORTS`，任何一处改动都容易只改一半（实际已经
 出现过：两份的插件收集逻辑都缺过滤）。抽出来后规则只有一份。
 

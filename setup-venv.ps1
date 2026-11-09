@@ -2,7 +2,7 @@
 
 <#
 .SYNOPSIS
-    OmniBox 虚拟环境统一入口 / pip 管理台
+    Cubby 虚拟环境统一入口 / pip 管理台
 .DESCRIPTION
     -Install 模式（非交互）:
         ensure venv 存在 -> 校验 Python 版本 -> 升级 pip -> 从 requirements.txt 安装运行时依赖。

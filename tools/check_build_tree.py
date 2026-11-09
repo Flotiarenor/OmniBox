@@ -4,7 +4,7 @@
 "真正跑完 PyInstaller 之后，产物里到底有没有该有的东西"。
 
 用法：
-    python tools/check_build_tree.py <产物目录> [--expect-exe OmniBox.exe]
+    python tools/check_build_tree.py <产物目录> [--expect-exe Cubby.exe]
 
 退出码 0 = 通过，1 = 失败。
 """

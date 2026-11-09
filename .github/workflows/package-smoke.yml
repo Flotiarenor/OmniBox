@@ -44,11 +44,11 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            spec: docs/Releases/omnibox.spec
-            expect_exe: OmniBox.exe
+            spec: docs/Releases/cubby.spec
+            expect_exe: Cubby.exe
           - os: ubuntu-latest
-            spec: docs/Releases/omnibox-linux.spec
-            expect_exe: OmniBox.bin
+            spec: docs/Releases/cubby-linux.spec
+            expect_exe: Cubby.bin
     steps:
       - uses: actions/checkout@v4
 
@@ -74,8 +74,8 @@ jobs:
           sudo apt-get install -y -qq python3 python3-venv python3-pip binutils
           # venv 放在工作区**外面**：放进仓库会被 ruff 之类的工具当成源码扫到
           # （extend-exclude 里没有 .venv-build，实测 verify 的 ruff 直接炸掉）。
-          python3 -m venv "$RUNNER_TEMP/omnibox-build-venv"
-          echo "$RUNNER_TEMP/omnibox-build-venv/bin" >> "$GITHUB_PATH"
+          python3 -m venv "$RUNNER_TEMP/cubby-build-venv"
+          echo "$RUNNER_TEMP/cubby-build-venv/bin" >> "$GITHUB_PATH"
 
       - uses: actions/setup-node@v4
         with:
@@ -108,12 +108,12 @@ jobs:
       - name: 校验产物内容
         run: >-
           python tools/check_build_tree.py
-          .build-dist/OmniBox
+          .build-dist/Cubby
           --expect-exe ${{ matrix.expect_exe }}
 
       - name: 上传产物供人工验证
         uses: actions/upload-artifact@v4
         with:
           name: package-smoke-${{ matrix.os }}
-          path: .build-dist/OmniBox
+          path: .build-dist/Cubby
           retention-days: 7

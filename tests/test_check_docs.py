@@ -88,7 +88,7 @@ class CheckDocsGateTests(unittest.TestCase):
         self.assertEqual(self._errors(), [])
 
     def test_placeholder_and_artifact_names_are_not_reported(self):
-        self._write('AGENTS.md', '# 根\n\n版本号写成 `x.y.z`；产物是 `OmniBox.zip`。\n')
+        self._write('AGENTS.md', '# 根\n\n版本号写成 `x.y.z`；产物是 `Cubby.zip`。\n')
 
         self.assertEqual(self._errors(), [])
 
@@ -138,8 +138,8 @@ class CheckDocsGateTests(unittest.TestCase):
         self.assertEqual(self._errors(), [])
 
     def test_release_output_tree_is_generated(self):
-        """`OmniBox/`：PyInstaller 的输出树，产物表按 docs/Releases 内的相对路径写它。"""
-        self._write('docs/Releases/AGENTS.md', '# Releases\n\n打包产物是 `OmniBox/`。\n')
+        """`Cubby/`：PyInstaller 的输出树，产物表按 docs/Releases 内的相对路径写它。"""
+        self._write('docs/Releases/AGENTS.md', '# Releases\n\n打包产物是 `Cubby/`。\n')
 
         self.assertEqual(self._errors(), [])
 
@@ -147,8 +147,9 @@ class CheckDocsGateTests(unittest.TestCase):
         """仓库文档里指向构建产物的引用必须继续落在"生成物"分支。
 
         否则同一条门禁在本机（构建过）通过、在 CI（没构建）红色 —— 它的价值反过来变成噪声。
+        两套名字都在：改名过渡期旧名的构建树还留在本机工作区里。
         """
-        for token in ('shell/frontend/dist/index.html', 'OmniBox/'):
+        for token in ('shell/frontend/dist/index.html', 'OmniBox/', 'Cubby/'):
             with self.subTest(token=token):
                 self.assertTrue(_is_generated(token), token)
 
@@ -245,15 +246,16 @@ class CheckDocsGateTests(unittest.TestCase):
         self.assertEqual(result.errors, [])
 
     def test_release_build_tree_is_not_scanned(self):
-        """发布构建的输出树（docs/Releases/OmniBox/）带插件文档副本，不参与门禁。
+        """发布构建的输出树（docs/Releases/OmniBox/ 与 Cubby/）带插件文档副本，不参与门禁。
 
         真实事故：本机构建过一次 release 后，这个目录里的 plugins/*/AGENTS.md 被
         当作仓库文档扫描，报出 488 条引用缺失；同一棵树在 CI 上不存在，于是门禁在
-        本机与 CI 上给出相反结论。
+        本机与 CI 上给出相反结论。改名过渡期两套名字都要兜住。
         """
-        self._write('docs/Releases/OmniBox/plugins/AGENTS.md',
-                    '# 打包副本\n\n`RUNTIME_FIELD_READERS`\n\n见 [根](../AGENTS.md)。\n')
-        self._write('docs/Releases/OmniBox/plugins/alpha/backend/main.py', 'x = 1\n')
+        for tree in ('OmniBox', 'Cubby'):
+            self._write(f'docs/Releases/{tree}/plugins/AGENTS.md',
+                        '# 打包副本\n\n`RUNTIME_FIELD_READERS`\n\n见 [根](../AGENTS.md)。\n')
+            self._write(f'docs/Releases/{tree}/plugins/alpha/backend/main.py', 'x = 1\n')
 
         result = scan(self.root)
 

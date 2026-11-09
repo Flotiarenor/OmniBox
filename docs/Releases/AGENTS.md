@@ -7,9 +7,9 @@ PyInstaller 打包、产物校验与发布脚本。根 [AGENTS.md](../../AGENTS.
 | 文件 | 用途 |
 | --- | --- |
 | `build-release.ps1` `build-release.sh` | 本地打包脚本（Windows / Linux） |
-| `omnibox.spec` `omnibox-linux.spec` | 两份 PyInstaller 规格 |
+| `cubby.spec` `cubby-linux.spec` | 两份 PyInstaller 规格 |
 | `spec_common.py` | 两份 spec 共享的唯一一份收集逻辑与 `HIDDEN_IMPORTS` |
-| `OmniBox*.7z` `OmniBox.zip` `OmniBox/` | 产物，均在 `.gitignore` 中，不提交 |
+| `Cubby*.7z` `Cubby.zip` `Cubby/` | 产物，均在 `.gitignore` 中，不提交 |
 
 ## 规则
 

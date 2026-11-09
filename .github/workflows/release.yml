@@ -83,8 +83,8 @@ jobs:
           sudo apt-get install -y -qq python3 python3-venv python3-pip binutils
           # venv 放在工作区**外面**：放进仓库会被 ruff 之类的工具当成源码扫到
           # （extend-exclude 里没有 .venv-build，实测 verify 的 ruff 直接炸掉）。
-          python3 -m venv "$RUNNER_TEMP/omnibox-build-venv"
-          echo "$RUNNER_TEMP/omnibox-build-venv/bin" >> "$GITHUB_PATH"
+          python3 -m venv "$RUNNER_TEMP/cubby-build-venv"
+          echo "$RUNNER_TEMP/cubby-build-venv/bin" >> "$GITHUB_PATH"
 
       - uses: actions/setup-node@v4
         with:
@@ -173,16 +173,16 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            spec: docs/Releases/omnibox.spec
-            artifact: OmniBox-windows-x64.zip
-            expect_exe: OmniBox.exe
+            spec: docs/Releases/cubby.spec
+            artifact: Cubby-windows-x64.zip
+            expect_exe: Cubby.exe
           - os: ubuntu-latest
-            spec: docs/Releases/omnibox-linux.spec
-            artifact: OmniBox-linux-x64.tar.gz
-            # 注意：发布产物统一叫 OmniBox —— 下面的 Linux 步骤会把 PyInstaller 产出的
-            # OmniBox.bin 重命名掉，所以这里校验的是重命名后的名字（此前写成
-            # OmniBox.bin，导致校验必然失败）。
-            expect_exe: OmniBox
+            spec: docs/Releases/cubby-linux.spec
+            artifact: Cubby-linux-x64.tar.gz
+            # 注意：发布产物统一叫 Cubby —— 下面的 Linux 步骤会把 PyInstaller 产出的
+            # Cubby.bin 重命名掉，所以这里校验的是重命名后的名字（此前写成
+            # Cubby.bin，导致校验必然失败）。
+            expect_exe: Cubby
     steps:
       # 与 verify 一致：产物必须来自 tag 指向的提交。
       - uses: actions/checkout@v4
@@ -213,8 +213,8 @@ jobs:
           sudo apt-get install -y -qq python3 python3-venv python3-pip binutils
           # venv 放在工作区**外面**：放进仓库会被 ruff 之类的工具当成源码扫到
           # （extend-exclude 里没有 .venv-build，实测 verify 的 ruff 直接炸掉）。
-          python3 -m venv "$RUNNER_TEMP/omnibox-build-venv"
-          echo "$RUNNER_TEMP/omnibox-build-venv/bin" >> "$GITHUB_PATH"
+          python3 -m venv "$RUNNER_TEMP/cubby-build-venv"
+          echo "$RUNNER_TEMP/cubby-build-venv/bin" >> "$GITHUB_PATH"
 
       - uses: actions/setup-node@v4
         with:
@@ -245,31 +245,31 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          test -f .build-dist/OmniBox/OmniBox.bin
-          mv .build-dist/OmniBox/OmniBox.bin .build-dist/OmniBox/OmniBox
-          chmod +x .build-dist/OmniBox/OmniBox
+          test -f .build-dist/Cubby/Cubby.bin
+          mv .build-dist/Cubby/Cubby.bin .build-dist/Cubby/Cubby
+          chmod +x .build-dist/Cubby/Cubby
 
       - name: 校验产物内容
         run: >-
           python tools/check_build_tree.py
-          .build-dist/OmniBox
+          .build-dist/Cubby
           --expect-exe ${{ matrix.expect_exe }}
 
       - name: 生成依赖快照（审计用）
         continue-on-error: true
-        run: python -m pip freeze > .build-dist/OmniBox/requirements.lock.txt
+        run: python -m pip freeze > .build-dist/Cubby/requirements.lock.txt
 
       - name: 打包（Windows → zip）
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path .build-dist/OmniBox/* -DestinationPath "${{ matrix.artifact }}" -CompressionLevel Optimal
+          Compress-Archive -Path .build-dist/Cubby/* -DestinationPath "${{ matrix.artifact }}" -CompressionLevel Optimal
           Get-Item "${{ matrix.artifact }}" | Select-Object Name, Length
 
       - name: 打包（Linux → tar.gz）
         if: runner.os == 'Linux'
         run: |
-          tar -C .build-dist -czf "${{ matrix.artifact }}" OmniBox
+          tar -C .build-dist -czf "${{ matrix.artifact }}" Cubby
           ls -lh "${{ matrix.artifact }}"
 
       - name: 生成校验和
@@ -315,7 +315,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          notes="OmniBox ${VERSION}
+          notes="Cubby ${VERSION}
 
           - 版本号：\`${VERSION}\`
           - 产物：Windows x64（zip）、Linux x64（tar.gz），各自附带 \`.sha256\`
@@ -324,7 +324,7 @@ jobs:
           校验下载完整性：
           \`\`\`bash
           # Linux
-          sha256sum -c OmniBox-linux-x64.tar.gz.sha256
+          sha256sum -c Cubby-linux-x64.tar.gz.sha256
           \`\`\`
           "
           state="$(gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null || echo missing)"
