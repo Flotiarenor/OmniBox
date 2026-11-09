@@ -79,25 +79,100 @@ export function buildFreshnessEvent(plugin, scope, report) {
 export const FRESHNESS_SCOPE_MAX = 256;
 
 /**
- * 归一化 `freshness_scope`；非法值返回 `undefined`（调用方保留旧值，不落盘）。
+ * 归一化 `freshness_scope` → 后端 `FsSource.scope_start` 认得的相对路径；非法返回 `null`。
  *
- * 规则：
- * - 非字符串 → 丢弃（数字 / null / 对象都不当作用域）；
- * - 去掉首尾空白；空串是合法值，表示「全部根」；
- * - 长度超过 {@link FRESHNESS_SCOPE_MAX} → 丢弃；
- * - 含 `..` → 丢弃：作用域会被拼进后端的目录解析，路径穿越不该从消息通道进来
- *   （后端仍会自己判一次，这里是通道侧的过滤）。
+ * 规则必须与引擎的 `scope_start` 对齐，否则壳会拿一个后端解释成**别的目录**的值去同步
+ * （`/a/b` 被后端当作根内 `a/b`；`a//b`、`a/./b` 解析到同一物理目录、但拼出的目录键
+ * 与遍历时的键不同形，会被当成新目录）。因此这一层做规范化，而不是只做"像不像路径"：
+ * - 非字符串 → `null`（数字 / null / 对象都不当作用域）；
+ * - 反斜杠、盘符（`C:`）、UNC（`//host/share`）→ `null`：作用域是 `/` 分隔的相对路径，
+ *   这几种写法只会被后端解释成另一个位置；
+ * - 长度超过 {@link FRESHNESS_SCOPE_MAX} → `null`；
+ * - 去首尾 `/`、折叠重复 `/`、丢掉 `.` 段；任何一段是 `..` → `null`（路径穿越不该
+ *   从消息通道进来；后端仍会自己判一次，这里是通道侧的过滤）。
+ *
+ * 合法结果里不含首尾 `/`、重复 `/`、`.` 段与空串以外的空路径：`''` 表示「全部根」。
  *
  * @param {unknown} value
- * @returns {string|undefined}
+ * @returns {string|null}
  */
 export function normalizeFreshnessScope(value) {
-  if (typeof value !== 'string') return undefined;
-  const scope = value.trim();
-  if (!scope) return '';
-  if (scope.length > FRESHNESS_SCOPE_MAX) return undefined;
-  if (scope.includes('..')) return undefined;
-  return scope;
+  if (typeof value !== 'string') return null;
+  const raw = value.trim();
+  if (!raw) return '';
+  if (raw.length > FRESHNESS_SCOPE_MAX) return null;
+  if (raw.includes('\\') || /^[A-Za-z]:/.test(raw) || raw.startsWith('//')) return null;
+  const segments = raw.split('/').filter((part) => part !== '' && part !== '.');
+  if (segments.includes('..')) return null;
+  return segments.join('/');
+}
+
+/**
+ * 构造一条 `omnibox:action` 消息。
+ *
+ * `payload` 只在实际给了值时出现：没有负载的动作（顶栏按钮、返回、设置保存完成）
+ * 与旧协议完全一致，内容页的 `if (data.payload)` 一类判断不会被凭空造出的字段干扰。
+ *
+ * @param {string} action 动作 id
+ * @param {unknown} [payload] 负载；`undefined` 表示没有
+ * @returns {{type: string, action: string, payload?: unknown}}
+ */
+export function buildActionEvent(action, payload) {
+  const message = { type: 'omnibox:action', action: String(action || '') }
+  if (payload !== undefined) message.payload = payload
+  return message
+}
+
+/**
+ * 一次被动同步该发给谁、用什么作用域（返回 `null` 表示这次不发）。
+ *
+ * 抽成函数是为了让"挂载后、视图变化、作用域变化各同步一次"这件事可以被 Node 用例
+ * 直接驱动：SFC 里的 `syncFreshness` 只做"取决策 → 调 `autoSync`"，不再自己判断。
+ *
+ * @param {unknown} controller `Freshness.mount` 的返回值
+ * @param {unknown} scope 内容页上报的 `freshness_scope`
+ * @param {{blocked?: boolean}} [options] `blocked`：native 面板打开时内容 iframe 隐藏
+ * @returns {{controller: {autoSync: (scope?: string) => void}, scope: string}|null}
+ */
+export function freshnessSyncTarget(controller, scope, options) {
+  const opts = options || {}
+  if (!controller || typeof controller.autoSync !== 'function') return null
+  if (opts.blocked) return null
+  return { controller, scope: typeof scope === 'string' ? scope : '' }
+}
+
+/**
+ * 刷新事件该带哪个作用域：优先报告自己的 `scope`，没有才回落到当前值。
+ *
+ * 同步是异步的：用户可能在同步途中又换了一层目录。报告里的 `scope` 是**这次同步**
+ * 实际用的作用域，内容页据此决定重载哪一层；用交付时的当前值会让它重载错层
+ * （例如把新目录当成刚同步完的目录）。
+ *
+ * @param {unknown} report 后端报告
+ * @param {unknown} fallback 当前作用域
+ * @returns {string}
+ */
+export function freshnessEventScope(report, fallback) {
+  const own = report && typeof report === 'object' ? report.scope : undefined
+  if (typeof own === 'string') return own
+  return typeof fallback === 'string' ? fallback : ''
+}
+
+/**
+ * 「拿不到统一刷新概览」时该说哪句话。
+ *
+ * 概览端点属于壳的管理员专属接口（`_ADMIN_ONLY_API`）：浏览器模式下的 403 会回
+ * `error: '禁止访问'`，桌面模式是 `AdminRequired` 的中文消息。把这两种都报成
+ * "内核不提供"会让使用者以为是旧版本，实际是权限不够。
+ *
+ * @param {unknown} error 调用抛出的错误
+ * @returns {string}
+ */
+export function freshnessOverviewErrorText(error) {
+  const message = String((error && error.message) || error || '')
+  return /403|禁止访问|管理员|权限/.test(message)
+    ? '需要管理员权限才能查看统一刷新状态。'
+    : '当前内核不提供统一刷新状态。'
 }
 
 /**
@@ -105,7 +180,8 @@ export function normalizeFreshnessScope(value) {
  *
  * 规则来自内容页的用法：
  * - `title` / `subtitle` / `view` 只接受字符串，其它类型忽略（保留旧值）；
- * - `freshness_scope` 先按 {@link normalizeFreshnessScope} 归一化，非法值忽略；
+ * - `freshness_scope` 先按 {@link normalizeFreshnessScope} 归一化；非法值落成空串
+ *   （=「全部根」）而**不保留旧值**：旧值只在错误的目录上同步，比全根同步更糟；
  * - `badges` 整份替换并丢掉空值 —— 内容页靠"发一个空值"来清除某个角标；
  * - `actions` / `nav` / `search` 按键合并，内容页只发变化的那几项；
  * - `status` 缺失字段回退成空文本与 `idle`；
@@ -120,8 +196,10 @@ export function mergeChromeState(state, data) {
   if (typeof data.title === 'string') next.title = data.title
   if (typeof data.subtitle === 'string') next.subtitle = data.subtitle
   if (typeof data.view === 'string') next.view = data.view
-  const scope = normalizeFreshnessScope(data.freshness_scope)
-  if (scope !== undefined) next.freshness_scope = scope
+  if (Object.prototype.hasOwnProperty.call(data, 'freshness_scope')) {
+    const scope = normalizeFreshnessScope(data.freshness_scope)
+    next.freshness_scope = scope === null ? '' : scope
+  }
   if (data.badges && typeof data.badges === 'object') {
     const badges = {}
     Object.entries(data.badges).forEach(([key, value]) => {

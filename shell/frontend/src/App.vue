@@ -16,7 +16,7 @@ import {
   reloadedFrameMessages,
   splitByKeepAlive,
 } from './core/plugin-frames'
-import { buildFreshnessEvent, isPluginChromeMessage, mergeChromeState } from './core/plugin-chrome-protocol'
+import { buildActionEvent, buildFreshnessEvent, isPluginChromeMessage, mergeChromeState } from './core/plugin-chrome-protocol'
 import SettingsView from './views/SettingsView.vue'
 import StatusView from './views/StatusView.vue'
 import Icon from './components/Icon.vue'
@@ -329,10 +329,8 @@ function onChromeAction(name: string, action: string, payload?: unknown): void {
     openPluginSettings(name)
     return
   }
-  const message: Record<string, unknown> = { type: 'omnibox:action', action }
   // 统一刷新会把报告附在 `refresh` 上：旧内容页忽略这个字段即回到原来的行为。
-  if (payload !== undefined) message.payload = payload
-  postToFrame(name, message)
+  postToFrame(name, buildActionEvent(action, payload))
 }
 
 /** 统一刷新的富事件：报告与作用域一起交给内容页（浅层合并，不解释业务）。 */
@@ -670,7 +668,7 @@ watch(
               :title-override="nativePanel?.host === p.name ? nativePanel.title : ''"
               :native-actions="nativePanel?.host === p.name ? nativePanel.toolbar : []"
               @view="onChromeView(p.name, $event)"
-              @action="onChromeAction(p.name, $event)"
+              @action="(...args) => onChromeAction(p.name, ...args)"
               @freshness="onChromeFreshness(p.name, $event)"
               @query="onChromeQuery(p.name, $event)"
               @native="onChromeNative(p.name, $event)"
@@ -721,7 +719,7 @@ watch(
               :title-override="nativePanel?.host === p.name ? nativePanel.title : ''"
               :native-actions="nativePanel?.host === p.name ? nativePanel.toolbar : []"
               @view="onChromeView(p.name, $event)"
-              @action="onChromeAction(p.name, $event)"
+              @action="(...args) => onChromeAction(p.name, ...args)"
               @freshness="onChromeFreshness(p.name, $event)"
               @query="onChromeQuery(p.name, $event)"
               @native="onChromeNative(p.name, $event)"

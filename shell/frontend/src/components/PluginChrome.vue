@@ -10,6 +10,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Icon from './Icon.vue'
 import PluginExtensions from './PluginExtensions.vue'
 import type { SchemaAction } from '../core/plugin-content'
+import { freshnessEventScope, freshnessSyncTarget } from '../core/plugin-chrome-protocol'
 import type {
   PluginChromeNavItem,
   PluginChromeSpec,
@@ -502,13 +503,15 @@ type FreshnessComponent = {
  *
  * 这一步是「外部新增的文件能被看到」的唯一自动入口 —— `Freshness.mount` 只渲染控件
  * 并读一次状态，它自己不扫盘。`autoSync` 内部有去抖，壳侧引擎还有最小间隔。
+ * 决策（控件在不在、要不要跳过）在 `freshnessSyncTarget`，Node 用例直接驱动它。
  */
 function syncFreshness(): void {
-  const ctl = freshness.value
-  if (!ctl || typeof ctl.autoSync !== 'function') return
-  // native 面板打开时内容 iframe 被 v-show 隐藏：这期间不扫盘，关闭面板会重新挂载并再同步。
-  if (props.nativeOpen) return
-  ctl.autoSync(freshnessScope.value)
+  const target = freshnessSyncTarget(freshness.value, freshnessScope.value, {
+    // native 面板打开时内容 iframe 被 v-show 隐藏：这期间不扫盘，关闭面板会重新挂载并再同步。
+    blocked: !!props.nativeOpen,
+  })
+  if (!target) return
+  target.controller.autoSync(target.scope)
 }
 
 /**
@@ -516,10 +519,16 @@ function syncFreshness(): void {
  *
  * 两条都发：`freshness` 带 `scope` 与后端报告，内容页据此决定重载哪一层；
  * `action: refresh` 是旧协议，只认它的内容页仍然要能重载。同源消息按发送顺序投递，
- * 富事件先到、旧 action 随后；两条都处理的内容页按 action 是否带 `payload` 去重。
+ * 富事件先到、旧 action 随后。两条都处理的内容页按到达顺序去重：`refresh` 带着
+ * payload 到达时说明它属于刚刚那条富事件（回声），只重载一次。
  */
 function onFreshnessChange(report: unknown): void {
-  const payload = { plugin: props.plugin.name, scope: freshnessScope.value, report }
+  const payload = {
+    plugin: props.plugin.name,
+    // 报告自己的 `scope` 是这次同步实际用的作用域；用交付时的当前值会在换目录后错层重载。
+    scope: freshnessEventScope(report, freshnessScope.value),
+    report,
+  }
   emit('freshness', payload)
   emit('action', 'refresh', payload)
 }

@@ -15,8 +15,11 @@
 // 的壳挂载检查会拦住这种写法。
 //
 // 控件在无任务时每 30 秒重读一次状态投影（只读，不扫盘；`idlePollMs` 可调，
-// 0 关闭），用户停留在页面上时「有变化 · 需要校验」才会自己出现。被动同步被后端
-// 跳过（去抖 / 正在校验 / 作用域无效）时，状态行写一句可重试的原因，不再静默。
+// 0 关闭），用户停留在页面上时「有变化 · 需要校验」才会自己出现。窗口不可见、
+// 或控件所在页被 `v-show` 隐藏（keepAlive 的插件页仍在 DOM 里）时不读。
+// 被动同步被后端跳过（去抖 / 正在校验 / 作用域无效）时，状态行在**已有文案之后**
+// 补一句可重试的原因：跳过只解释"这一次为什么没扫"，不能顶掉"是否需要校验"或
+// "部分目录不可达"这类事实。
 //
 // 三个动作的语义由壳的基建定义（`shell/backend/freshness.py`）：
 //   - **同步**：被动、增量、便宜。由 `autoSync()` 触发，没有按钮。
@@ -176,6 +179,14 @@ window.Freshness = (function () {
       renderStatus();
     }
 
+    /** `unreachable_roots` 是数量（旧字段形状不确定时也接受数组）。 */
+    function unreachableRoots(s) {
+      const raw = s && s.unreachable_roots;
+      if (Array.isArray(raw)) return raw.length;
+      const n = Number(raw);
+      return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+    }
+
     function renderStatus() {
       if (!supported) {
         el.status.textContent = '';
@@ -210,26 +221,25 @@ window.Freshness = (function () {
           : '校验中…';
         return;
       }
-      if (syncNote) {
-        // 被动同步被跳过：比"有变化 · 需要校验"更能解释"为什么这次没更新"。
-        el.status.textContent = syncNote.text;
-        return;
-      }
-      if (s.version_stale) {
-        el.status.textContent = '有变化 · 需要校验';
-        return;
-      }
-      if (s.last_verify_at) {
+      let text;
+      const unreachable = unreachableRoots(s);
+      if (unreachable) {
+        // 有根没挂上：新增文件看不见是"盘不在"而不是"需要校验"，说清原因比催校验有用。
+        text = `部分目录不可达（${unreachable}）· 挂载后自动同步`;
+      } else if (s.version_stale) {
+        text = '有变化 · 需要校验';
+      } else if (s.last_verify_at) {
         const verifiedAt = Number(s.last_verify_at) * 1000;
         const stale = Number.isFinite(verifiedAt) && (Date.now() - verifiedAt > VERIFY_STALE_MS);
-        el.status.textContent = `上次校验 ${timeAgo(s.last_verify_at)}${stale ? ' · 建议重新校验' : ''}`;
-        return;
+        text = `上次校验 ${timeAgo(s.last_verify_at)}${stale ? ' · 建议重新校验' : ''}`;
+      } else if (s.entries) {
+        text = `已索引 ${s.entries} ${unit} · 尚未校验`;
+      } else {
+        text = '尚未校验';
       }
-      if (s.entries) {
-        el.status.textContent = `已索引 ${s.entries} ${unit} · 尚未校验`;
-        return;
-      }
-      el.status.textContent = '尚未校验';
+      // 跳过原因只解释"这一次为什么没扫"，不能顶掉"是否需要校验 / 目录不可达"这类事实，
+      // 否则快速切几个目录之后，用户就再也看不到真正需要注意的那一条了。
+      el.status.textContent = syncNote ? `${text} · ${syncNote.text}` : text;
     }
 
     function renderCard() {
@@ -299,11 +309,23 @@ window.Freshness = (function () {
     }
 
     /**
+     * 控件此刻该不该做低频状态重读。
+     *
+     * 两个"看不见"都要挡住：整个窗口不可见，以及 keepAlive 的插件页被 `v-show` 隐藏后
+     * 控件仍留在 DOM 里（`offsetParent === null` 就是没有布局盒）。两者都不该继续
+     * 每 30 秒问一次后端。
+     */
+    function idleBlocked() {
+      if (window.document && window.document.visibilityState === 'hidden') return true;
+      return !!group && group.offsetParent === null;
+    }
+
+    /**
      * 没有任务时低频重读一次状态。
      *
      * 状态投影读一次之后不会自己变：没有这一步，用户停留在页面上时「有变化 · 需要校验」
      * 永远不会出现，外部新增的文件要等下一次进视图才被提示。这里只读 `state`
-     * （不扫盘、不建库），间隔 30 秒，窗口不可见时不读。
+     * （不扫盘、不建库），间隔 30 秒；不可见时见 {@link idleBlocked}。
      */
     function scheduleIdlePoll() {
       clearIdleTimer();
@@ -312,6 +334,12 @@ window.Freshness = (function () {
       idleTimer = setTimeout(() => {
         idleTimer = null;
         if (disposed || timer) return;   // 校验轮询在跑时交给它
+        if (idleBlocked()) {
+          // 隐藏期间只续定时、不发请求：切回来（v-show 重新显示）时没有事件可听，
+          // 只能靠这个低频定时器自己恢复。
+          scheduleIdlePoll();
+          return;
+        }
         poll();
       }, idlePollMs);
     }
@@ -400,9 +428,19 @@ window.Freshness = (function () {
         const res = await call('system_freshness_verify', plugin);
         // 只有后端**明确**说"不支持"才永久禁用；其他失败都按可重试处理。
         if (res && res.error === 'unsupported') { supported = false; renderStatus(); return; }
+        // 同步正在进行（引擎单飞）：没有任务可轮询，弹卡片只会停在静态占位符上，
+        // 而这一趟同步本身会把变化经 onChange 送回来。
+        if (res && res.started === false && !res.running
+            && (res.reason === 'busy' || res.sync_active)) {
+          hideCard();
+          if (!auto) toast('info', '同步进行中，完成后再试');
+          scheduleIdlePoll();
+          return;
+        }
         if (res && res.started === false && !res.running) {
           if (!auto) toast('error', (res && res.error) || '校验启动失败');
           hideCard();
+          scheduleIdlePoll();
           return;
         }
         stateError = false;
@@ -412,6 +450,8 @@ window.Freshness = (function () {
         hideCard();
         stateError = true;
         render();
+        // 这次没起来不代表以后不行：把低频状态重读接回去，否则"需要校验"再也不出现。
+        scheduleIdlePoll();
         if (!auto) toast('error', '校验启动失败：' + ((e && e.message) || e));
       }
     }
@@ -437,6 +477,8 @@ window.Freshness = (function () {
       busy: '后台校验进行中 · 完成后再同步',
       throttled: '同步被节流 · 稍后重试',
       bad_scope: '作用域无效 · 未同步',
+      // 远端来源在新鲜期内本来就不该重取：不是"被跳过"的事故，只是说明。
+      fresh: '缓存仍在新鲜期内 · 无需同步',
     };
 
     /**

@@ -36,10 +36,44 @@ export declare function buildFreshnessEvent(
 export declare const FRESHNESS_SCOPE_MAX: number
 
 /**
- * 归一化内容页上报的同步作用域：trim、空串合法、超长与含 `..` 的值返回
- * `undefined`（调用方保留旧值）。
+ * 归一化内容页上报的同步作用域，结果与引擎 `FsSource.scope_start` 解释一致：
+ * 去首尾 `/`、折叠重复 `/`、丢掉 `.` 段，空串表示全部根；非字符串、超长、
+ * 含 `..` 段、反斜杠 / 盘符 / UNC 返回 `null`（非法值由调用方落成空串，不保留旧值）。
  */
-export declare function normalizeFreshnessScope(value: unknown): string | undefined
+export declare function normalizeFreshnessScope(value: unknown): string | null
+
+/** 一条 `omnibox:action` 消息；`payload` 只在实际给了值时出现 */
+export interface ActionEvent {
+  readonly [key: string]: unknown
+  type: string
+  action: string
+  payload?: unknown
+}
+
+/** 构造一条 `omnibox:action` 消息（`payload` 为 `undefined` 时不带该字段） */
+export declare function buildActionEvent(action: string, payload?: unknown): ActionEvent
+
+/** 一次被动同步的决策结果：发给谁、用哪个作用域 */
+export interface FreshnessSyncTarget {
+  controller: { autoSync: (scope?: string) => void }
+  scope: string
+}
+
+/**
+ * 计算一次被动同步的目标；`controller` 不可用或 `options.blocked` 时返回 `null`
+ * （`blocked` 用于 native 面板打开、内容 iframe 被隐藏的时段）。
+ */
+export declare function freshnessSyncTarget(
+  controller: unknown,
+  scope: unknown,
+  options?: { blocked?: boolean },
+): FreshnessSyncTarget | null
+
+/** 刷新事件的作用域：优先报告自己的 `scope`，否则回落到当前值 */
+export declare function freshnessEventScope(report: unknown, fallback: unknown): string
+
+/** 「拿不到统一刷新概览」的说明文案：403 / 管理员错误与旧内核分开表述 */
+export declare function freshnessOverviewErrorText(error: unknown): string
 
 /**
  * 把一条 `omnibox:chrome` 补丁并进当前状态，返回新状态（不修改入参）：

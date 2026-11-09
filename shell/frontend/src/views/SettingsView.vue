@@ -3,6 +3,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useBridge } from '../core/bridge'
+import { freshnessOverviewErrorText } from '../core/plugin-chrome-protocol'
 import { toastError, toastSuccess } from '../core/toast'
 import Icon from '../components/Icon.vue'
 import {
@@ -483,6 +484,8 @@ interface FreshnessState {
   mode?: string
   version_stale?: boolean
   stale_dirs?: number
+  /** 当前挂不上的根数量（盘未挂载 / 目录被移走）：这条与"待校验"是两回事 */
+  unreachable_roots?: number | unknown[]
   last_sync_at?: number
   last_verify_at?: number
   ttl_seconds?: number
@@ -493,18 +496,52 @@ interface FreshnessState {
 
 const freshnessStates = ref<FreshnessState[]>([])
 const freshnessAvailable = ref(true)
+const freshnessUnavailable = ref('')
 const rebuildingPlugin = ref('')
+/** 后台校验进行中时的概览重读定时器（有任务在跑才转，见 scheduleFreshnessPoll）。 */
+const FRESHNESS_POLL_MS = 1500
+let freshnessPollTimer = 0
+
+function stopFreshnessPoll(): void {
+  if (freshnessPollTimer) {
+    window.clearTimeout(freshnessPollTimer)
+    freshnessPollTimer = 0
+  }
+}
+
+/** 有任务在跑（重建 / 校验）时按 1.5 秒重读概览：没有它，表格会永远停在"校验中…"。 */
+function scheduleFreshnessPoll(): void {
+  stopFreshnessPoll()
+  // 设置页是 v-show 常驻的：不在这一页时不该为一张看不见的表轮询。
+  if (route.path !== '/settings') return
+  if (!freshnessStates.value.some(item => item.busy)) return
+  freshnessPollTimer = window.setTimeout(async () => {
+    freshnessPollTimer = 0
+    await loadFreshness()
+  }, FRESHNESS_POLL_MS)
+}
 
 async function loadFreshness() {
   try {
     const list = await bridge.call('system_freshness_overview')
     freshnessStates.value = Array.isArray(list) ? list : []
     freshnessAvailable.value = true
-  } catch {
-    // 老内核没有这个接口：整块降级，不影响其余信息
+    freshnessUnavailable.value = ''
+  } catch (e) {
+    // 整块降级，不影响其余信息。权限不足与"旧内核没有这个接口"必须分开说：
+    // 概览是管理员专属端点，403 报成"内核不提供"会把人引到错误的排查方向。
     freshnessStates.value = []
     freshnessAvailable.value = false
+    freshnessUnavailable.value = freshnessOverviewErrorText(e)
   }
+  scheduleFreshnessPoll()
+}
+
+function unreachableRoots(item: FreshnessState): number {
+  const raw = item.unreachable_roots
+  if (Array.isArray(raw)) return raw.length
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
 }
 
 function pluginLabel(name: string): string {
@@ -516,6 +553,12 @@ function freshnessStatus(item: FreshnessState): string {
   if (item.available === false) return item.error ? `不可用：${item.error}` : '不可用'
   const task = item.task || {}
   if (item.busy) return task.total ? `校验中 ${task.processed || 0}/${task.total}` : '校验中…'
+  const unreachable = unreachableRoots(item)
+  if (unreachable) {
+    return item.stale_dirs
+      ? `部分目录不可达（${unreachable}）· ${item.stale_dirs} 个目录待重算`
+      : `部分目录不可达（${unreachable}）`
+  }
   if (item.mode === 'remote' && item.ttl_seconds) {
     return item.ttl_remaining && item.ttl_remaining > 0
       ? `缓存 ${Math.ceil(item.ttl_remaining)} 秒后过期`
@@ -581,6 +624,8 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener(APPEARANCE_CHANGED, onAppearanceChanged)
+  // 概览轮询不能在页面卸载后继续：定时器持有组件的闭包与 bridge 句柄
+  stopFreshnessPoll()
 })
 
 // 设置页是 v-show 常驻的：每次切回来重新拉一次，缓存占用与插件状态才不会过期；
@@ -589,6 +634,9 @@ watch(() => route.path, (path) => {
   if (path === '/settings') {
     refreshInfo()
     loadBackgroundImages()
+  } else {
+    // 离开设置页就停掉概览轮询，回来时由 refreshInfo 重新决定要不要转
+    stopFreshnessPoll()
   }
 })
 </script>
@@ -941,7 +989,7 @@ watch(() => route.path, (path) => {
           <div class="field">
             <label class="field-label">统一刷新</label>
             <template v-if="!freshnessAvailable">
-              <p class="field-help">当前内核不提供统一刷新状态。</p>
+              <p class="field-help">{{ freshnessUnavailable }}</p>
             </template>
             <template v-else-if="freshnessStates.length">
               <div class="table-scroll">

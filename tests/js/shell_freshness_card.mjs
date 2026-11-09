@@ -107,6 +107,7 @@ function createFreshnessDom() {
 let previousCtl = null;
 function setup({ state = { available: true, busy: false, task: null, unit: '张' },
                  syncReport = null, verifyResult = { started: true, running: true },
+                 verifyThrows = false,
                  scope = '', onChange = null, idlePollMs = undefined } = {}) {
   if (previousCtl && typeof previousCtl.destroy === 'function') previousCtl.destroy();
   previousCtl = null;
@@ -115,6 +116,7 @@ function setup({ state = { available: true, busy: false, task: null, unit: '张'
   document.body.appendChild(host);
 
   const calls = [];
+  const toasts = [];
   let cur = state;
   const bridge = {
     async callSystem(method, ...args) {
@@ -122,6 +124,7 @@ function setup({ state = { available: true, busy: false, task: null, unit: '张'
       if (method === 'system_freshness_state') return cur;
       if (method === 'system_freshness_sync') return syncReport;
       if (method === 'system_freshness_verify') {
+        if (verifyThrows) throw new Error('网络错误');
         // 真实链路里 `start_verify` 会先把任务登记进引擎再返回，因此紧接着的状态
         // 查询就能看到 running（这里照样模拟，否则卡片会被"没有任务"立刻收掉）
         if (verifyResult && verifyResult.started !== false) {
@@ -135,10 +138,19 @@ function setup({ state = { available: true, busy: false, task: null, unit: '张'
     },
   };
 
+  const toastStub = {
+    info(text) { toasts.push({ kind: 'info', text }); },
+    error(text) { toasts.push({ kind: 'error', text }); },
+    success(text) { toasts.push({ kind: 'success', text }); },
+    warning(text) { toasts.push({ kind: 'warning', text }); },
+    show(text) { toasts.push({ kind: 'show', text }); },
+  };
+
   globalThis.document = document;
-  globalThis.window = { Bridge: bridge };
+  // 组件先看 `window.Toast`（真实浏览器里 window 就是全局对象，这里必须显式挂上）
+  globalThis.window = { Bridge: bridge, Toast: toastStub };
   globalThis.Bridge = bridge;
-  globalThis.Toast = { info() { }, error() { }, success() { }, warning() { }, show() { } };
+  globalThis.Toast = toastStub;
 
   const Freshness = new Function(`${readFileSync(SRC, 'utf8')}\nreturn window.Freshness;`)();
   const ctl = Freshness.mount({
@@ -150,12 +162,15 @@ function setup({ state = { available: true, busy: false, task: null, unit: '张'
   const count = host.querySelector('[data-fr="count"]');
   const title = host.querySelector('[data-fr="card-title"]');
   return {
-    ctl, calls, host, card, count, title, Freshness,
+    ctl, calls, host, card, count, title, Freshness, toasts,
     status: host.querySelector('[data-fr="status"]'),
     setState(s) { cur = s; },
     verifyCalls: () => calls.filter((c) => c.method === 'system_freshness_verify'),
     syncCalls: () => calls.filter((c) => c.method === 'system_freshness_sync'),
     stateCalls: () => calls.filter((c) => c.method === 'system_freshness_state'),
+    /** 模拟 keepAlive 插件页被 v-show 隐藏（控件仍在 DOM 里但没有布局盒）。 */
+    hide() { ctl.el.offsetParent = null; },
+    show() { ctl.el.offsetParent = {}; },
   };
 }
 
@@ -348,6 +363,141 @@ await check('idlePollMs: 0 关闭低频重读', async () => {
   const first = env.stateCalls().length;
   await sleep(250);
   assert.equal(env.stateCalls().length, first, '显式关闭后不该再读状态');
+});
+
+// ---------- 6. 同步进行中的校验（引擎单飞的 busy） ----------
+//
+// 引擎在同步进行时对 `system_freshness_verify` 回 `{started:false, running:false,
+// reason:'busy', sync_active:true}`：没有任务可轮询。旧实现只看 `!res.running`，
+// 于是分支走到"启动失败"，而卡片/轮询这两件事在这一支上都是错的。
+
+const SYNC_BUSY = { started: false, running: false, reason: 'busy', sync_active: true };
+
+await check('同步进行中的校验：不弹卡片、不轮询、不通知内容页', async () => {
+  const reports = [];
+  const env = setup({ verifyResult: SYNC_BUSY, onChange: (r) => reports.push(r), idlePollMs: 0 });
+  await sleep(40);
+  const before = env.stateCalls().length;
+  await env.ctl.verify();
+  await sleep(700);
+
+  assert.ok(env.card.classList.contains('hidden'), '没有任务可轮询，卡片必须收着');
+  assert.equal(env.stateCalls().length, before, '不能进入校验轮询');
+  assert.equal(reports.length, 0, '没有确认任何变化，不该通知内容页重载');
+  assert.match(env.toasts.map((t) => t.text).join('|'), /同步进行中，完成后再试/,
+               `没有给出可读的提示：${JSON.stringify(env.toasts)}`);
+});
+
+await check('同步进行中的校验保留低频状态重读', async () => {
+  const env = setup({ verifyResult: SYNC_BUSY, idlePollMs: 100 });
+  await sleep(60);
+  await env.ctl.verify();
+  const after = env.stateCalls().length;
+  await sleep(280);
+  assert.ok(env.stateCalls().length > after, 'busy 早退不能把 idle 轮询关掉');
+});
+
+// ---------- 7. 不可达根（盘没挂上） ----------
+
+await check('部分目录不可达：说原因，不显示"有变化 · 需要校验"', async () => {
+  const env = setup({ state: {
+    available: true, busy: false, task: null, unit: '张',
+    entries: 4, version_stale: true, unreachable_roots: 2,
+  } });
+  await sleep(40);
+  assert.match(env.status.textContent, /部分目录不可达（2）/);
+  assert.match(env.status.textContent, /挂载后自动同步/);
+  assert.doesNotMatch(env.status.textContent, /有变化/);
+});
+
+await check('不可达根也接受数组形状（条数与列表的一并兜住）', async () => {
+  const env = setup({ state: {
+    available: true, busy: false, task: null, unit: '张',
+    entries: 4, version_stale: false, unreachable_roots: ['/mnt/a', '/mnt/b'],
+  } });
+  await sleep(40);
+  assert.match(env.status.textContent, /部分目录不可达（2）/);
+});
+
+await check('不可达根为 0：回到常规文案', async () => {
+  const env = setup({ state: {
+    available: true, busy: false, task: null, unit: '张',
+    entries: 4, version_stale: true, unreachable_roots: 0,
+  } });
+  await sleep(40);
+  assert.equal(env.status.textContent, '有变化 · 需要校验');
+});
+
+// ---------- 8. 跳过提示的优先级 ----------
+
+await check('节流提示不顶掉"有变化 · 需要校验"', async () => {
+  const env = setup({
+    state: { available: true, busy: false, task: null, unit: '张', entries: 2, version_stale: true },
+    syncReport: { action: 'skip', reason: 'throttled', retry_after: 3.2 },
+  });
+  await sleep(40);
+  env.ctl.autoSync('');
+  await sleep(DEBOUNCE + 120);
+  assert.match(env.status.textContent, /有变化 · 需要校验/, env.status.textContent);
+  assert.match(env.status.textContent, /同步被节流/, env.status.textContent);
+});
+
+await check('节流提示也不顶掉"部分目录不可达"', async () => {
+  const env = setup({
+    state: { available: true, busy: false, task: null, unit: '张', unreachable_roots: 1 },
+    syncReport: { action: 'skip', reason: 'throttled' },
+  });
+  await sleep(40);
+  env.ctl.autoSync('');
+  await sleep(DEBOUNCE + 120);
+  assert.match(env.status.textContent, /部分目录不可达（1）/, env.status.textContent);
+  assert.match(env.status.textContent, /同步被节流/, env.status.textContent);
+});
+
+await check('远端新鲜期内的 skip 有自己的说明（不是笼统的"已跳过"）', async () => {
+  const env = setup({
+    state: { available: true, busy: false, task: null, unit: '首', mode: 'remote', ttl_seconds: 600 },
+    syncReport: { action: 'skip', reason: 'fresh', ttl_remaining: 420 },
+  });
+  await sleep(40);
+  env.ctl.autoSync('');
+  await sleep(DEBOUNCE + 120);
+  assert.match(env.status.textContent, /新鲜期/, env.status.textContent);
+});
+
+// ---------- 9. 校验早退后 idle 轮询必须接回去 ----------
+
+await check('校验启动抛错后，低频状态重读继续', async () => {
+  const env = setup({ verifyThrows: true, idlePollMs: 100 });
+  await sleep(60);
+  await env.ctl.verify();
+  assert.match(env.status.textContent, /状态读取失败/, env.status.textContent);
+  const after = env.stateCalls().length;
+  await sleep(320);
+  assert.ok(env.stateCalls().length > after, '早退路径丢了 idle 轮询：之后"需要校验"不会再出现');
+});
+
+await check('校验报 {started:false, running:false} 后，低频状态重读继续', async () => {
+  const env = setup({ verifyResult: { started: false, running: false, error: '忙' }, idlePollMs: 100 });
+  await sleep(60);
+  await env.ctl.verify();
+  const after = env.stateCalls().length;
+  await sleep(320);
+  assert.ok(env.stateCalls().length > after, '这条早退也必须恢复 idle 轮询');
+});
+
+// ---------- 10. 隐藏的控件不做低频重读（keepAlive 页切走后仍在 DOM 里） ----------
+
+await check('控件被 v-show 隐藏时不做低频重读，重新可见后自己恢复', async () => {
+  const env = setup({ idlePollMs: 100 });
+  await sleep(60);
+  env.hide();
+  const hiddenAt = env.stateCalls().length;
+  await sleep(350);
+  assert.equal(env.stateCalls().length, hiddenAt, '隐藏期间不该再问后端');
+  env.show();
+  await sleep(260);
+  assert.ok(env.stateCalls().length > hiddenAt, '重新可见后要自己恢复（没有事件可听）');
 });
 
 console.log(failed ? `\n${failed} 例失败` : `\nshell freshness 卡片 ${total} 例通过`);

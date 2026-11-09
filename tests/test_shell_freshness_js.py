@@ -21,10 +21,18 @@
 
 环境无 node 时跳过（前端构建本身依赖 node，CI 上不会真的缺）。
 
+另外这里守**双端一致性**：`freshness_scope` 由壳归一化后交给引擎，两边对同一个
+字符串必须解析成同一个目录（去首尾 `/`、折叠 `//`、丢掉 `.` 段），而前端判非法的
+形状（`..` 段、反斜杠、盘符、UNC、超长）不许被后端解释成另一个位置。用例驱动
+`shell_freshness.mjs --scope-cases` 拿到真实归一化结果，再与引擎的
+`FsSource.scope_start` 逐条比对 —— 两边各维护一份输入表迟早会漂。
+
 运行：
     python -m unittest tests.test_shell_freshness_js -v
 """
 
+import json
+import os
 import shutil
 import subprocess
 import unittest
@@ -36,6 +44,7 @@ HARNESSES = [
     PROJECT_ROOT / 'tests' / 'js' / 'shell_freshness.mjs',
     PROJECT_ROOT / 'tests' / 'js' / 'shell_freshness_notify.mjs',
 ]
+SCOPE_HARNESS = HARNESSES[1]
 
 
 @unittest.skipUnless(shutil.which('node'), '未检测到 node，跳过共享组件用例')
@@ -58,6 +67,72 @@ class ShellFreshnessCardJsTest(unittest.TestCase):
         if proc.returncode != 0:
             self.fail(f'共享组件用例失败（{harness.name}，exit={proc.returncode}）\n'
                       f'--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}')
+
+
+def _scope_rejected(raw: object, limit: int) -> bool:
+    """契约为"前端判非法"的形状（与实现在**同一份文档规则**上独立判一遍）。"""
+    if not isinstance(raw, str):
+        return True
+    text = raw.strip()
+    if not text:
+        return False
+    if len(text) > limit or '\\' in text or text.startswith('//'):
+        return True
+    if len(text) >= 2 and text[1] == ':' and text[0].isalpha():
+        return True
+    return '..' in [part for part in text.split('/') if part not in ('', '.')]
+
+
+def _norm_rel(value: str) -> str:
+    """目录相对路径的平台无关规范化（`a//b` / `a/./b` 与 `a/b` 视为同一目录）。"""
+    return os.path.normpath(value).replace('\\', '/')
+
+
+@unittest.skipUnless(shutil.which('node'), '未检测到 node，跳过作用域一致性用例')
+class FreshnessScopeContractTest(unittest.TestCase):
+    """`normalizeFreshnessScope` 与引擎 `FsSource.scope_start` 必须解释成同一个目录。"""
+
+    @classmethod
+    def setUpClass(cls):
+        proc = subprocess.run(
+            ['node', str(SCOPE_HARNESS), '--scope-cases'],
+            cwd=str(PROJECT_ROOT), capture_output=True, text=True,
+            encoding='utf-8', errors='replace', timeout=120,
+        )
+        if proc.returncode != 0:
+            raise AssertionError(f'作用域用例导出失败（exit={proc.returncode}）\n'
+                                 f'--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}')
+        payload = json.loads(proc.stdout.strip().splitlines()[-1])
+        cls.limit = payload['max']
+        cls.cases = payload['cases']
+
+    def test_cases_are_not_empty(self):
+        self.assertGreater(len(self.cases), 20, '作用域用例表被清空，这条会变成空转')
+
+    def test_invalid_shapes_are_dropped(self):
+        from shell.backend.freshness import FsSource
+
+        source = FsSource(roots=(PROJECT_ROOT / 'tests',))
+        for case in self.cases:
+            raw, got = case['raw'], case['normalized']
+            with self.subTest(raw=raw):
+                if _scope_rejected(raw, self.limit):
+                    self.assertIsNone(got, f'{raw!r} 必须被前端判非法')
+                    continue
+                self.assertIsInstance(got, str, f'{raw!r} 不该被丢弃')
+                # 归一化结果必须自洽（不再含首尾 `/`、重复 `/`、`.` 段）
+                self.assertEqual(got, got.strip().strip('/'))
+                self.assertNotIn('//', got)
+                self.assertNotIn('/./', f'/{got}/')
+                # 与引擎对原始值的解释落到同一个目录
+                want = source.scope_start(raw)
+                have = source.scope_start(got)
+                if want is None or have is None:
+                    self.fail(f'{raw!r} → {got!r} 有一侧引擎解析失败'
+                              f'（raw={want!r}, normalized={have!r}）')
+                self.assertEqual(want[0], have[0], f'{raw!r} 的根序号不一致')
+                self.assertEqual(_norm_rel(want[1]), _norm_rel(have[1]),
+                                 f'{raw!r} 与归一化结果 {got!r} 落到不同目录')
 
 
 if __name__ == '__main__':   # pragma: no cover
