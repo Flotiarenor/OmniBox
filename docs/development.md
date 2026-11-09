@@ -171,15 +171,41 @@ http://127.0.0.1:18080
 > 以 `python main.py --web-only --status-debug` 启动后，`/status` 会显示状态调试面板
 > （健康检查 / API 鉴权演示）；一键调试环境见 `python tools/debug/debug_status_pages.py`。
 
+### 运行与数据目录
+
+用户数据根由 `shell/backend/paths.py` 的 `get_user_data_dir()` 一处解析，命中即停：
+
+| 情形 | 数据根 |
+| --- | --- |
+| 环境变量 `CUBBY_HOME`（`USER_DATA_DIR_ENV`）非空 | 该变量的值；启动参数 `--user-data-dir` 等价于设置它 |
+| 从源码运行（开发模式，`is_frozen()` 为假） | 项目根目录：`.config/`、`data/` 就在仓库里（`.gitignore` 已忽略），调试时直接看得见 |
+| 打包产物 + 可执行文件旁存在 `portable.txt`（`PORTABLE_MARKER`） | 可执行文件所在目录；目录不可写时退回默认根并记一条告警 |
+| 其余打包产物（安装版） | Windows `%LOCALAPPDATA%\Cubby`；Linux `$XDG_DATA_HOME/cubby`，未设置时 `~/.local/share/cubby` |
+
+要点：
+
+- **安装目录只放只读资源**。打包后内置插件与前端产物从 `_MEIPASS` 读，用户数据写到
+  数据根；因此升级只替换程序，不需要搬 `.config/` 与 `data/`。设计理由与取舍见
+  [安装与更新](./install-and-update.md)。
+- **数据根下的布局**：`.config/`（`app.json`、`shell.json`、`auth_token.txt`、
+  插件设置 `plugins/`、WebView 的 `webview/`、日志 `logs/`）、`data/`（`data_root`
+  指向的索引与缓存，默认 `./data`）、`plugins/`（用户自装插件，优先级高于内置插件）。
+- **`CUBBY_HOME` 是进程级覆盖**：值在 `get_user_data_dir()` 首次调用时读入并缓存，
+  之后改环境变量不生效；`main()` 把它放在最前面处理。多实例与浏览器用例都靠它隔离，
+  见 `tests/harness/app_instance.py`。
+- **便携是显式声明**：只有在冻结产物旁放了 `portable.txt` 才把数据放在程序目录，
+  不由"目录是否可写"推断。
+
 ### 安装插件
 
 1. 将插件文件夹放入项目根目录下的 `plugins/` 目录。
 2. 重启应用，插件将自动出现在导航栏中。
-3. 打包版还可以把插件放入可执行文件旁的 `plugins/` 目录，或用户数据目录下的 `plugins/`。
+3. 打包版把插件放进数据根下的 `plugins/`（跨版本保留）；便携模式下它就是可执行文件
+   旁的 `plugins/`。
 
 ### 配置文件
 
-主程序配置位于 `.config/app.json`（缺键按默认值补齐，端口写成字符串也会被归一成整数）：
+主程序配置位于数据根下的 `.config/app.json`（缺键按默认值补齐，端口写成字符串也会被归一成整数）：
 
 ```json
 {

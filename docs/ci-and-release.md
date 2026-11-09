@@ -197,7 +197,7 @@ spec + `check_build_tree.py` 产物校验。插件矩阵按插件拆分，失败
 ### `release.yml` —— 半自动发布（自动构建，人工公开）
 
 ```
-推 v* tag → 校验版本 + 全量门禁 → 双平台构建 → 建【草稿】Release
+推 v* tag → 校验版本 + 全量门禁 → 双平台构建（Windows 另出安装器）→ 建【草稿】Release
                                                       │
                                 你在 Releases 页面核对 → 点 Publish → 才对外可见
 ```
@@ -207,7 +207,8 @@ spec + `check_build_tree.py` 产物校验。插件矩阵按插件拆分，失败
 - **自动做完**：版本一致性校验（tag ↔ pyproject ↔ package.json ↔ package-lock.json）、ruff / 插件规范 /
   打包规则 / 图标 sprite 一致性 / 测试文件可运行性 / 全量单测 / 前端转义门禁、
   双平台 PyInstaller 构建、`check_build_tree.py` 产物校验、打 zip / tar.gz、
-  生成 `.sha256`、建**草稿** Release 并挂上产物。
+  Windows 用 Inno Setup 打 `Cubby-Setup-<版本>.exe` 并做一次静默安装/卸载冒烟、
+  生成各产物的 `.sha256`、建**草稿** Release 并挂上产物。
 - **留给人**：只有"公开"这一下。草稿不进 Releases 列表、不产生 `latest`、不发通知，
   只有对仓库有写权限的人能看到。核对后点 **Publish release**
   即可（或 `gh release edit <tag> --draft=false`）。
@@ -306,23 +307,41 @@ bash docs/Releases/build-release.sh
 
 ### 产物目录里绝不能有你自己的用户数据
 
-程序的可写数据（`.config`、`data`、`logs`）就放在**可执行文件旁边**（见
-`shell/backend/paths.py`：打包模式下 exe 目录可写就用它）。所以在产物目录里跑过
-一次程序做测试之后，那个目录里就是**你本机的状态**：
+判据没有变：产物目录的根层不许出现 `data` 与 `.config`（日志在 `.config/logs`，一并
+被拦），也不许出现 `__pycache__` / `.pyc`。`tools/check_build_tree.py` 的
+`FORBIDDEN_RELATIVE` 与 `build-release.*` 的压缩前检查查的都是这一条。
+
+变的只是**风险从哪来**。1.x 把可写数据（`.config`、`data`、日志）放在可执行文件旁边，
+因此在产物目录里跑过一次程序做测试，那个目录里就是本机的状态：
 
 - `.config/plugins/*.json`：各插件设置，含媒体目录路径（`D:\图库`、`D:\音频\音乐`…）
   和 `pixiv-sync` 的 `refresh_token`、代理地址
 - `.config/auth_token.txt`：本机访问令牌
+- `.config/webview/`：WebView2 的 profile 与 HTTP 缓存
 - `data/`：缩略图缓存、下载状态等（体积还不小）
 - `plugins/**/__pycache__`：跑测试留下的字节码
 
+2.0 起"跑过就带本机状态"不再成立：运行时把用户数据写到独立的数据根，安装目录只放
+只读资源（解析顺序见 [install-and-update.md](install-and-update.md)）。新的构建在产物
+目录里跑再压缩**不会**引入本机状态。检查之所以保留，是因为还有两个入口能把数据带回
+产物目录：
+
+1. **旧版本产物残留**。目录里若是 1.x 的构建，跑过就可能有上面那些东西；
+2. **便携模式**。exe 旁放了 `portable.txt` 时数据根就是程序目录，这是唯一允许的形态，
+   也意味着"便携目录跑过之后不能直接分发"。
+
 以前 `build-release.*` 会把这些原样压进 7z/zip/tar.gz（用 `-SkipPyInstaller`
 在测过之后重新压缩时最容易中招），用户装完打开设置页看到的就是开发机的路径。
-现在两个脚本在压缩前都会把关：
+两个脚本因此在压缩前都会把关：
 
 1. 发现 `.config` / `data` / `logs` 残留就**直接中止**，并提示删掉或改用
    `-CleanUserData` / `--clean-user-data` 让脚本自动清理；
 2. 跑一遍 `tools/check_build_tree.py`（同时拦 `__pycache__` / `.pyc` 与缺文件）。
+
+**安装器与 zip 的分工**：两者打的是同一棵产物树，都从 `check_build_tree.py` 校验过的
+`Cubby/` 目录出包，不各打一份。Windows 安装器（Inno Setup，见 §9）把这棵树装进
+`%LOCALAPPDATA%\Programs\Cubby`；zip 便携版仍是"用户自己解压"，数据位置由
+`portable.txt` 决定。因此产物目录的判据对两者同时成立。
 
 CI 侧本来就有这道闸：`ci.yml` 的 `package`、`package-smoke.yml`、`release.yml`
 都会跑 `check_build_tree.py`，这也是 CI 产物一直干净的原因。想验证一个现成压缩包：
@@ -519,9 +538,16 @@ RUF100（未使用的 noqa）会把这些标注判为冗余并删除——它们
    ```
    触发 `release.yml`：版本一致性 + 全量门禁 + 双平台构建 + 产物校验 + 建**草稿** Release。
    校验版本没对上、或 tag 不在 `main` 上，这一步就会失败，什么都不会产出。
-3. 等运行结束，去 **Releases** 页面找到那份 **Draft**：
-   - 想先在自己机器上验证，就从该次运行页面下载 artifact（Windows `zip` / Linux `tar.gz`，
-     7 天内有效）。Windows 本机造不出 Linux 产物，见 §4。
+3. 等运行结束，去 **Releases** 页面找到那份 **Draft**。核对这几样：
+   - **三类产物齐全**：`Cubby-Setup-<版本>.exe`、`Cubby-windows-x64.zip`、
+     `Cubby-linux-x64.tar.gz`，并且每个都有各自的 `.sha256`。安装器与 zip 出自同一棵
+     `check_build_tree.py` 校验过的产物树（见 §4）。
+   - **安装器冒烟在 Windows build job 里跑过**：`release.yml` 的 Windows 分支会用
+     `/VERYSILENT` 装到一个临时目录（`/DIR` 覆盖默认位置）、确认 `Cubby.exe` 与
+     `unins000.exe` 就位、再静默卸载并等目录消失。冒烟失败会让构建 job 直接失败，
+     安装器与草稿 Release 都不会产出 —— 不需要再到本机验证"装得上、卸得掉"。
+   - **想先在自己机器上验证**，就从该次运行页面下载 artifact（Windows `zip` /
+     `tar.gz` / `Setup.exe`，7 天内有效）。Windows 本机造不出 Linux 产物，见 §4。
    - 只想构建不想建草稿的场景，用手动触发 + 勾 `dry_run`。
 4. 核对产物与说明无误后点 **Publish release** —— 这一刻才对外可见。
 5. 发布后如需修正：重新构建用 `release.yml` 重跑（草稿状态会覆盖刷新；
