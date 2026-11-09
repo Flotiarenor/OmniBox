@@ -45,7 +45,15 @@
 ; 同一个程序。不要改这个值——改了等于让每个用户并存两份，旧的那份不会自动消失。
 AppId={{8C6E4A4F-3B1D-4A7E-9F52-0D2C7B5A6E13}
 AppName=Cubby
+; AppVerName 决定卸载项里的 DisplayName：默认值会写成 "Cubby version 1.4.0"，
+; 而"应用和功能"与 winget 清单都按 DisplayName 认这个程序，所以这里固定成产品名。
+AppVerName=Cubby
 AppVersion={#AppVersion}
+; Publisher 会写进卸载项；缺省时"应用和功能"发布者一栏为空，包管理器也无从核对。
+AppPublisher=Flotiarenor
+AppPublisherURL=https://github.com/Flotiarenor/Cubby
+AppSupportURL=https://github.com/Flotiarenor/Cubby/issues
+AppUpdatesURL=https://github.com/Flotiarenor/Cubby/releases
 DefaultDirName={localappdata}\Programs\Cubby
 DefaultGroupName=Cubby
 DisableProgramGroupPage=yes
@@ -58,6 +66,12 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayIcon={app}\Cubby.exe
+; 安装器自身的文件属性：属性页里能看到产品名与版本，而不是空白的内嵌默认值。
+VersionInfoVersion={#AppVersion}
+VersionInfoCompany=Flotiarenor
+VersionInfoDescription=Cubby Windows 安装器
+VersionInfoProductName=Cubby
+VersionInfoProductVersion={#AppVersion}
 ; 升级时由 Setup 提示关闭正在运行的应用（默认行为），装完不自动把旧实例拉起来：
 ; 新版界面由用户自己启动，避免刚覆盖的文件被旧进程继续占用。
 CloseApplications=yes
