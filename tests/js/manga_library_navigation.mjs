@@ -54,7 +54,10 @@ function makeEnv(detail = multiDetail) {
     check('图片层仍是二级页高亮为空', chrome.view === '');
     check('图片层保留壳返回', chrome.actions.back.visible === true);
     check('图片层加载页面图片', env.calls('manga_get_pages').length === 1);
-    check('看图时记录到「最近阅读」', env.calls('manga_update_recent').length === 1);
+    // 阅读进度只在打开 / 关闭阅读器时写：浏览图片层本身不落盘（否则"看一眼"就把
+    // 上次读到的页码覆盖成 0）。
+    check('浏览图片层不写阅读进度', env.calls('manga_update_recent').length === 0,
+        JSON.stringify(env.calls('manga_update_recent')));
 
     env.sendAction('back');
     await env.tick();

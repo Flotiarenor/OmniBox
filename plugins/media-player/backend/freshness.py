@@ -158,7 +158,17 @@ class FreshnessProvider:
         return {'dropped_items': len(dropped), 'thumb_rows_removed': removed_rows}
 
     def pass_end(self, report, verified: bool) -> Dict[str, Any]:
-        """整趟结束：落盘一次索引 + 更新进度计数（索引是单文件，不能每目录重写）。"""
+        """整趟结束：宣布索引权威（仅全根整趟走完时）+ 落盘一次索引 + 更新进度计数。
+
+        索引是单文件，不能每目录重写，所以落盘集中在这一处。`restored` 的清除也必须
+        只在这里做，且条件要同时满足：**全根**（`scoped` 为假）、非 `partial`、无读取
+        错误。子目录作用域的同步只走一棵子树，其余根里的条目仍是上次运行读回的观察
+        结果；部分遍历与有读取错误的趟同理 —— 它们按 id 取条目时都要继续核对路径
+        （见 `MediaIndex.get` / `mark_authoritative`）。
+        """
+        if (not report.get('scoped') and not report.get('partial')
+                and not report.get('errors')):
+            self._index.mark_authoritative()
         if self._index.dirty:
             self._index.save(time.time())
         audio = sum(1 for item in self._index.items.values() if item.kind == 'audio')

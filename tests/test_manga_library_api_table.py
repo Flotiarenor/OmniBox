@@ -17,8 +17,10 @@
     python -m unittest tests.test_manga_library_api_table -v
 """
 
+import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -196,6 +198,65 @@ class MangaLibraryApiTableTests(unittest.TestCase):
         self.assertEqual(second['recent'][0]['page'], 5)
         self.assertEqual(second['recent'][0]['title'], 'A')
         self.assertEqual(library._state['recent'][0]['page'], 5)
+
+    def test_state_file_is_written_atomically(self):
+        """阅读状态走原子写：落盘后是完整 JSON，且不残留临时文件。"""
+        library = self.plugin.library
+        library.update_recent('A', 3)
+        library.toggle_favorite('A')
+        state_file = self.plugin.paths.state_file
+
+        payload = json.loads(state_file.read_text(encoding='utf-8'))
+        self.assertEqual(payload['recent'][0]['id'], 'A')
+        self.assertEqual(payload['favorites'], ['A'])
+        leftovers = [path.name for path in state_file.parent.iterdir()
+                     if path.name.startswith(f'.{state_file.name}.')]
+        self.assertEqual(leftovers, [], '原子写不留下临时文件')
+
+    def test_concurrent_state_writes_never_leave_broken_json(self):
+        """打开 / 关闭阅读器与切换收藏由不同桥接线程发起，会同时写同一份状态文件。"""
+        library = self.plugin.library
+        state_file = self.plugin.paths.state_file
+        library.update_recent('A', 1)
+        errors: list = []
+        broken: list = []
+        stop = threading.Event()
+
+        def writer(offset: int) -> None:
+            try:
+                for page in range(15):
+                    library.update_recent('A', offset * 100 + page)
+            except Exception as error:      # pragma: no cover - 失败时给断言留证据
+                errors.append(error)
+
+        def reader() -> None:
+            while not stop.is_set():
+                try:
+                    text = state_file.read_text(encoding='utf-8')
+                except OSError:
+                    continue    # 换名那一瞬间目标文件可能短暂不可读（Windows）
+                try:
+                    json.loads(text)
+                except ValueError as error:
+                    broken.append(error)
+
+        watcher = threading.Thread(target=reader)
+        watcher.start()
+        writers = [threading.Thread(target=writer, args=(index,)) for index in range(4)]
+        for thread in writers:
+            thread.start()
+        for thread in writers:
+            thread.join(10)
+        stop.set()
+        watcher.join(10)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(broken, [], '读者不该读到半份 JSON')
+        payload = json.loads(state_file.read_text(encoding='utf-8'))
+        self.assertEqual(payload['recent'][0]['id'], 'A')
+        leftovers = [path.name for path in state_file.parent.iterdir()
+                     if path.name.startswith(f'.{state_file.name}.')]
+        self.assertEqual(leftovers, [], '并发写不留下临时文件')
 
     def test_freshness_spec_fields_are_unchanged(self):
         spec = self.plugin.freshness_spec()

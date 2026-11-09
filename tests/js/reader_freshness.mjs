@@ -268,7 +268,7 @@ const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
     check('有变化报告重读文档', env.calls.filter((call) => call.method === 'document_list').length === 1);
 }
 
-// ---- 5. 旧的 omnibox:action: refresh 仍重读 ----
+// ---- 5. 旧的 omnibox:action: refresh（无 payload）仍重读 ----
 {
     const env = loadReader();
     const app = makeApp(env);
@@ -277,14 +277,17 @@ const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
     check('旧 refresh 动作仍重读文档', env.calls.filter((call) => call.method === 'document_list').length === 1);
 }
 
-// ---- 5b. 新壳两条都发：富事件 + 紧随其后的旧动作只重读一次 ----
+// ---- 5b. 新壳两条都发：富事件 + 紧随其后的回声 refresh（带 payload）只重读一次 ----
 {
     const env = loadReader();
     const app = makeApp(env);
     env.send({ type: 'omnibox:freshness', plugin: 'document-reader', scope: '', report: changed });
-    env.send({ type: 'omnibox:action', action: 'refresh' });
+    env.send({
+        type: 'omnibox:action', action: 'refresh',
+        payload: { plugin: 'document-reader', scope: '', report: changed },
+    });
     await tick(20);
-    check('富事件之后的旧动作不重复重读',
+    check('富事件之后的回声动作不重复重读',
         env.calls.filter((call) => call.method === 'document_list').length === 1,
         String(env.calls.filter((call) => call.method === 'document_list').length));
 }
@@ -292,10 +295,28 @@ const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
     const env = loadReader();
     const app = makeApp(env);
     env.send({ type: 'omnibox:freshness', plugin: 'document-reader', scope: '', report: zero });
-    env.send({ type: 'omnibox:action', action: 'refresh' });
+    env.send({
+        type: 'omnibox:action', action: 'refresh',
+        payload: { plugin: 'document-reader', scope: '', report: zero },
+    });
     await tick(20);
-    check('零变化 + 旧动作也不重读',
+    check('零变化 + 回声动作也不重读',
         env.calls.filter((call) => call.method === 'document_list').length === 0);
+}
+{
+    const env = loadReader();
+    const app = makeApp(env);
+    // 回声按 payload 判定，与两条消息的到达间隔无关
+    env.send({ type: 'omnibox:freshness', plugin: 'document-reader', scope: '', report: changed });
+    await tick(1500);
+    env.send({
+        type: 'omnibox:action', action: 'refresh',
+        payload: { plugin: 'document-reader', scope: '', report: changed },
+    });
+    await tick(20);
+    check('回声判定与到达间隔无关',
+        env.calls.filter((call) => call.method === 'document_list').length === 1,
+        String(env.calls.filter((call) => call.method === 'document_list').length));
 }
 
 // ---- 6. chrome 上报同步作用域 ----

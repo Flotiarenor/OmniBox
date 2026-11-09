@@ -11,13 +11,9 @@
 // omnibox:freshness（统一刷新报告），本文件回 omnibox:chrome（标题、副标题、视图、
 // 动作显隐与禁用、导航徽标、搜索可用性、同步作用域、状态）。
 // 同步 / 校验控件由壳的 PluginChrome 挂载；内容页在切回前台时自己按当前作用域同步，
-// 变化后的重载经 omnibox:freshness 与兼容的 omnibox:action: refresh 进来。
+// 变化后的重载经 omnibox:freshness 与兼容的 omnibox:action: refresh 进来。壳把同一份
+// 报告附在 refresh 动作的 payload 上，因此"两条消息属于同一次同步"不用靠时间窗猜。
 // ============================================================
-
-// 新壳在 `omnibox:freshness` 之后紧跟一条旧的 `omnibox:action: refresh`，两条属于
-// 同一次同步。内容页拿不到动作上的 payload（握手层只转发 action id），因此按时间窗
-// 判定：富事件到达后这个窗口内的旧动作不再触发第二次重载。
-const FRESHNESS_ECHO_MS = 1000;
 
 class MangaLibraryApp {
     constructor() {
@@ -28,8 +24,13 @@ class MangaLibraryApp {
         this._tasksKey = '';   // 上一次渲染所依据的任务快照，用于跳过无变化的重渲染
         // 上一次任务轮询得到的快照签名：2 秒一次轮询里任务没变就不重报 chrome
         this._tasksSignature = '';
-        // 最近一次收到 omnibox:freshness 的时刻（用于去重紧随其后的旧 refresh 动作）
-        this._freshnessEventAt = 0;
+        // 已见过的 completed 任务 id 与"是否已经轮询过一次"：轮询里发现新完成的任务时
+        // 重载书架（下载中心与书架共用同一个数据根）。
+        this._completedIds = new Set();
+        this._tasksLoaded = false;
+        // 最近一次"写阅读页码"的桥调用；打开阅读器时 await 它，关闭时 await 关闭回调
+        // 产生的那一次（`MangaReader.onClose`）。
+        this._readerWrite = null;
         // 从「最近阅读」进入时还待定位的页码；null 表示没有续读意图
         this._resumePage = null;
         this.reader = null;
@@ -61,6 +62,11 @@ class MangaLibraryApp {
         this._initialized = true;
 
         this.reader = new MangaReader();
+        // 阅读进度只在"打开"与"关闭"各写一次：关闭路径（灯箱自己的 ✕ / Esc / 壳顶栏
+        // 返回）都汇到 `onClose`，翻阅过程中不落盘。
+        this.reader.onClose = (page) => {
+            this._readerWrite = this._reportReadingPage(page);
+        };
         this._bindUI();
         this._updateActions();
         await this.loadView();
@@ -131,7 +137,7 @@ class MangaLibraryApp {
     _bindHost() {
         this._chrome = window.ChromeClient.create({
             onView: (view) => this._applyHostView(view),
-            onAction: (action) => this._applyHostAction(action),
+            onAction: (action, payload) => this._applyHostAction(action, payload),
             onQuery: (query) => this._onQuery(query),
             onMessage: (data) => this._onHostMessage(data),
         });
@@ -148,8 +154,8 @@ class MangaLibraryApp {
     }
 
     /** 壳顶栏动作：返回、下载中心的四个动作、统一刷新的重载信号，以及壳设置弹窗保存后的重载。 */
-    async _applyHostAction(action) {
-        if (action === 'back') { this._goBack(); return; }
+    async _applyHostAction(action, payload) {
+        if (action === 'back') { await this._goBack(); return; }
         if (action === 'add-task') { this.showAddModal(); return; }
         if (action === 'settings-saved') {
             // 漫画根目录可能被改过：书架与下载任务都按新根重读一次。
@@ -158,10 +164,10 @@ class MangaLibraryApp {
             return;
         }
         if (action === 'refresh') {
-            // 新壳在 omnibox:freshness 之后还会补一条旧动作，而动作上的 payload 到
-            // 不了内容页：紧跟在富事件之后到达的这条属于同一次同步，不再重载一次。
-            // 没有先到富事件的（旧壳）仍然按"校验完成就重载"处理。
-            if (Date.now() - this._freshnessEventAt < FRESHNESS_ECHO_MS) return;
+            // 新壳在 omnibox:freshness 之后紧跟一条 legacy refresh，并把同一份报告附在
+            // 动作的 payload 上：富事件已经重载过，这条只当回声跳过。没有 payload 的
+            // refresh 来自旧壳，按原语义重载。
+            if (payload != null) return;
             await this._reloadAfterFreshness();
             return;
         }
@@ -176,16 +182,14 @@ class MangaLibraryApp {
     _onHostMessage(data) {
         if (!data || data.type !== 'omnibox:freshness') return;
         if (data.plugin && data.plugin !== 'manga-library') return;
-        // 记下富事件的到达时刻：紧随其后的旧 refresh 动作据此判定为同一次同步。
-        this._freshnessEventAt = Date.now();
         if (!this._freshnessChanged(data.report)) return;
         void this._reloadAfterFreshness();
     }
 
     /** 壳左侧返回：阅读器 → 图片 → 章节（多章时）或书架；章节/详情 → 书架。 */
-    _goBack() {
+    async _goBack() {
         // 阅读器是全屏覆盖层，比图片层更内层：壳返回先关它，层级不变。
-        if (this._closeReader()) return;
+        if (await this._closeReader()) return;
         if (this.viewLevel === 'images') {
             if (this.isMultiChapter) {
                 this.viewLevel = 'chapters';
@@ -198,13 +202,32 @@ class MangaLibraryApp {
         if (this.viewLevel === 'chapters') this.switchView('all');
     }
 
-    /** 关闭阅读器并返回是否真的关了一个：没有打开的阅读器时返回 false。 */
-    _closeReader() {
-        if (!this.reader || typeof this.reader.isOpen !== 'function' || !this.reader.isOpen()) {
-            return false;
+    /** 关闭阅读器并返回是否真的关了一个：没有打开的阅读器时返回 false。
+        关闭会把最后停留的页码写回「最近阅读」（由阅读器的 `onClose` 发起，灯箱自己的
+        ✕ / Esc 也走这条），这里等那次写入落定再返回，避免紧接着的视图切换与它抢同一
+        份状态文件。灯箱已经自己关掉时（`isOpen()` 为假）仍要等那次待写入。 */
+    async _closeReader() {
+        const wasOpen = !!this.reader && typeof this.reader.isOpen === 'function'
+            && this.reader.isOpen();
+        if (wasOpen) this.reader.close();
+        if (this._readerWrite) {
+            const pending = this._readerWrite;
+            this._readerWrite = null;
+            await pending;
         }
-        this.reader.close();
-        return true;
+        return wasOpen;
+    }
+
+    /** 把阅读页码写回「最近阅读」（后端按 0 起）。失败只影响续读位置，不打断看图。 */
+    async _reportReadingPage(page) {
+        const folder = this.currentFolderName;
+        if (!folder) return;
+        const index = Math.max(0, Number(page) || 0);
+        try {
+            await Bridge.call('manga_update_recent', folder, index);
+        } catch (e) {
+            // 阅读已经打开：记录页码失败不影响看图，下一次打开会重新记录
+        }
     }
 
     /** 独立打开本页时保留内容内返回；壳内（content=1）返回由壳左侧按钮承担。 */
@@ -368,7 +391,9 @@ class MangaLibraryApp {
     switchView(view, dlFilter = 'all') {
         // 左栏导航是页面级跳转：阅读器盖在内容上时先关掉它，否则用户会看到
         // 「点了导航但画面没变」。返回动作由 `_goBack` 自己先关阅读器。
-        this._closeReader();
+        // 关闭时的页码写入在 `_closeReader` 里 await，这里不等：导航必须立刻生效，
+        // 那一次状态写入与本次视图渲染互不影响。
+        void this._closeReader();
         const filter = view === 'downloads' ? (dlFilter || 'all') : 'all';
         // 只有上下文真的变了才清搜索框：壳在加载/握手时会重发当前视图。
         const changed = this.currentView !== view || this.downloadFilter !== filter
@@ -494,8 +519,13 @@ class MangaLibraryApp {
         const author = manga.author || '';
         const coverUrl = manga.cover_url ? Bridge.originalUrl(manga.cover_url) : '';
         // 「最近阅读」的条目带上次读到第几页（后端按 0 起记）；从这一层打开时
-        // 直接定位到那一页，其它视图没有这个字段，也就没有续读意图。
-        const resumePage = this.currentView === 'recent' ? Number(manga.page) || 0 : null;
+        // 直接定位到那一页，其它视图没有这个字段，也就没有续读意图。搜索结果来自
+        // `manga_search`，不带 `page`：缺字段一律按"没有续读意图"处理，否则一本
+        // 从没读过的书会被自动打开到第 1 页。
+        const resumePage = this.currentView === 'recent' && manga.page !== undefined
+            && manga.page !== null
+            ? Math.max(0, Number(manga.page) || 0)
+            : null;
 
         // 收藏星交给共享 actions + actionsPlacement('top-right')：位置、按钮
         // 外观与「操作区不激活卡片」的判定都在 ContentUI 内部，插件不再定位。
@@ -680,7 +710,6 @@ class MangaLibraryApp {
                 grid.innerHTML = this._emptyHtml('icon:images', '无图片');
                 return;
             }
-            Bridge.call('manga_update_recent', this.currentFolderName, 0);
             grid.innerHTML = pages.map((url, i) => `
                 <div class="ml-card" data-page="${i}" style="--obx-i:${Math.min(i, 32)}">
                     <div class="ml-cover" style="padding-top:140%;">${MangaUtils.coverImg(Bridge.originalUrl(url), 'icon:images')}</div>
@@ -698,17 +727,14 @@ class MangaLibraryApp {
         }
     }
 
-    /** 从指定页打开阅读器，并把页码交给「最近阅读」——下次接着读的是这一页。 */
+    /** 从指定页打开阅读器，并把页码交给「最近阅读」——下次接着读的是这一页。
+        打开与关闭各写一次（关闭由 `MangaReader.onClose` 发起），浏览图片层本身不写。 */
     async _openReaderAt(pages, index) {
         const total = Array.isArray(pages) ? pages.length : 0;
         if (!total) return;
         const page = Math.max(0, Math.min(Number(index) || 0, total - 1));
         this.reader.open(pages, page);
-        try {
-            await Bridge.call('manga_update_recent', this.currentFolderName, page);
-        } catch (e) {
-            // 阅读已经打开：记录页码失败不影响看图，下一次进入会重新记
-        }
+        await this._reportReadingPage(page);
     }
 
     _detailInfoHtml(info) {
@@ -740,6 +766,9 @@ class MangaLibraryApp {
             // 否则壳那边每 2 秒收到一份完全相同的动作/状态补丁。
             const changed = signature !== this._tasksSignature;
             this._tasksSignature = signature;
+            // 有任务刚从别的状态变成 completed：下载目录已经写进漫画根，书架缓存已由
+            // 后端作废，停在书架视图时这里把列表重读一遍（否则新书要切一次视图才出现）。
+            const finished = this._hasNewCompleted();
             this.updateStats();
             this._updateActions();
             // 数据没变就不重渲染：整段 innerHTML 重建会让每个 .ml-task 的入场动画
@@ -750,9 +779,25 @@ class MangaLibraryApp {
             // 轮询到新的任务状态后，顶栏按钮的 visible/disabled 必须一起刷新，
             // 否则壳上的按钮会停在旧态（例如没有任务可暂停时仍可点）。
             if (changed) this._pushChrome();
+            if (finished && this.viewLevel === 'home' && this.currentView !== 'downloads') {
+                await this.loadView();
+            }
         } catch (e) {
             console.error('加载下载任务失败:', e);
         }
+    }
+
+    /** 本次轮询里是否出现了新的 completed 任务；顺带更新已见集合。
+        首次轮询只登记不重载：应用刚启动时书架已经读过一次，历史任务不算"刚下完"。 */
+    _hasNewCompleted() {
+        const completed = new Set(
+            this.tasks.filter(task => task.status === 'completed').map(task => task.id));
+        const wasLoaded = this._tasksLoaded;
+        this._tasksLoaded = true;
+        const finished = wasLoaded
+            && Array.from(completed).some(id => !this._completedIds.has(id));
+        this._completedIds = completed;
+        return finished;
     }
 
     updateStats() {

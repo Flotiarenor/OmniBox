@@ -162,7 +162,7 @@ function makeEnv(options = {}) {
     check('退回书架后高亮恢复', env.chrome().view === 'all', env.chrome().view);
 }
 
-// ---- 5. 旧的 omnibox:action: refresh 仍然重载 ----
+// ---- 5. 旧的 omnibox:action: refresh（无 payload）仍然重载 ----
 {
     const { env } = makeEnv();
     const app = await createApp(env);
@@ -175,7 +175,7 @@ function makeEnv(options = {}) {
     check('旧 refresh 动作不改变层级', app.viewLevel === 'chapters', app.viewLevel);
 }
 
-// ---- 5b. 新壳两条都发：富事件 + 紧随其后的旧动作只重载一次 ----
+// ---- 5b. 新壳两条都发：富事件 + 紧随其后的回声动作（带 payload）只重载一次 ----
 {
     const { env } = makeEnv();
     const app = await createApp(env);
@@ -183,9 +183,9 @@ function makeEnv(options = {}) {
     await env.tick();
     const detailCalls = env.calls('manga_get_detail').length;
     env.sendFreshness('manga-library', { action: 'sync', changed: 1 });
-    env.sendAction('refresh');
+    env.sendAction('refresh', { plugin: 'manga-library', scope: '', report: { action: 'sync', changed: 1 } });
     await env.tick(30);
-    check('富事件之后的旧动作不重复重载', env.calls('manga_get_detail').length === detailCalls + 1,
+    check('富事件之后的回声动作不重复重载', env.calls('manga_get_detail').length === detailCalls + 1,
         String(env.calls('manga_get_detail').length - detailCalls));
 }
 {
@@ -195,9 +195,23 @@ function makeEnv(options = {}) {
     await env.tick();
     const detailCalls = env.calls('manga_get_detail').length;
     env.sendFreshness('manga-library', { action: 'sync', added: 0, changed: 0, removed: 0 });
-    env.sendAction('refresh');
+    env.sendAction('refresh', { plugin: 'manga-library', scope: '', report: { action: 'sync' } });
     await env.tick(30);
-    check('零变化 + 旧动作也不重载', env.calls('manga_get_detail').length === detailCalls);
+    check('零变化 + 回声动作也不重载', env.calls('manga_get_detail').length === detailCalls);
+}
+{
+    const { env } = makeEnv();
+    const app = await createApp(env);
+    await app.openMangaDetail('A');
+    await env.tick();
+    const detailCalls = env.calls('manga_get_detail').length;
+    // 回声按 payload 判定，与两条消息的到达间隔无关
+    env.sendFreshness('manga-library', { action: 'sync', changed: 1 });
+    await env.tick(1500);
+    env.sendAction('refresh', { plugin: 'manga-library', scope: '', report: { action: 'sync', changed: 1 } });
+    await env.tick(30);
+    check('回声判定与到达间隔无关', env.calls('manga_get_detail').length === detailCalls + 1,
+        String(env.calls('manga_get_detail').length - detailCalls));
 }
 
 // ---- 6. 阅读器页码交给 manga_update_recent ----
@@ -229,6 +243,47 @@ function makeEnv(options = {}) {
         JSON.stringify(last && last.args));
 }
 
+// ---- 6b. 浏览图片层本身不写阅读进度 ----
+{
+    const { env } = makeEnv();
+    const app = await createApp(env);
+    await app.openMangaDetail('A');
+    app.viewLevel = 'images';
+    app._chapterPath = 'ch1';
+    await app.loadView();
+    await env.tick();
+
+    check('浏览图片层不写阅读进度', env.calls('manga_update_recent').length === 0,
+        JSON.stringify(env.calls('manga_update_recent')));
+}
+
+// ---- 6c. 灯箱自己的 ✕ / Esc 关闭也写一次最后停留的页码 ----
+{
+    const { env } = makeEnv();
+    const app = await createApp(env);
+    await app.openMangaDetail('A');
+    app.viewLevel = 'images';
+    app._chapterPath = 'ch1';
+    await app.loadView();
+    await env.tick();
+
+    const cards = env.document.getElementById('ml-pages').querySelectorAll('.ml-card');
+    cards[0].click();
+    await env.tick(10);
+    app.reader.next();
+    app.reader.next();
+    const beforeClose = env.calls('manga_update_recent').length;
+
+    app.reader._lightbox.hide();      // 用户点灯箱自己的关闭按钮
+    await env.tick(10);
+
+    check('灯箱关闭后阅读器状态同步', app.reader.isOpen() === false);
+    check('关闭写一次页码', env.calls('manga_update_recent').length === beforeClose + 1,
+        `${beforeClose} -> ${env.calls('manga_update_recent').length}`);
+    const last = env.calls('manga_update_recent').slice(-1)[0];
+    check('关闭写的是最后停留的页码', last && last.args[1] === 2, JSON.stringify(last && last.args));
+}
+
 // ---- 7. 2 秒轮询：任务没变就不重报 chrome ----
 {
     let tasks = [];
@@ -251,6 +306,24 @@ function makeEnv(options = {}) {
         `${before} -> ${env.chromeAll().length}`);
     check('重报的状态同步了新任务', env.chrome().status.text.includes('任务 1'),
         env.chrome().status.text);
+}
+
+// ---- 7b. 有任务刚完成：停在书架时重读书架（下载中心与书架共用数据根）----
+{
+    let tasks = [{ id: 't0', status: 'completed', title: '旧任务', totalImages: 1, completedImages: 1 }];
+    const env = loadManga({ handlers: defaultHandlers({ download_list: () => ({ tasks }) }) });
+    const app = await createApp(env);
+    await env.tick();
+    const listCalls = env.calls('manga_list').length;
+
+    tasks = tasks.concat([
+        { id: 't1', status: 'completed', title: '新书', totalImages: 2, completedImages: 2 },
+    ]);
+    await app.loadTasks();
+    await env.tick(10);
+
+    check('新完成任务后重读书架', env.calls('manga_list').length === listCalls + 1,
+        `${listCalls} -> ${env.calls('manga_list').length}`);
 }
 
 // ---- 8. 从「最近阅读」进入：按后端记下的页码续读 ----
@@ -323,6 +396,38 @@ function makeEnv(options = {}) {
     await env.tick(30);
     check('点进章节后停留在图片层', app.viewLevel === 'images', app.viewLevel);
     check('记录的单页页码不被用到别的章节', opened.length === 0, JSON.stringify(opened));
+}
+
+// ---- 9b. 最近阅读里搜索：搜索结果不带 page，不自动打开阅读器 ----
+{
+    const env = loadManga({
+        handlers: defaultHandlers({
+            manga_search: () => [{
+                folder_name: 'S', title: '单章漫画', author: '', page_count: 3,
+                cover_url: '', is_fav: false,
+            }],
+            manga_get_detail: () => singleDetail(),
+            manga_get_pages: () => ['pages/1.jpg', 'pages/2.jpg', 'pages/3.jpg'],
+        }),
+    });
+    const app = await createApp(env);
+    env.sendView('recent');
+    await env.tick();
+    env.sendQuery('单章');
+    await env.tick(10);
+
+    const opened = [];
+    app.reader = {
+        isOpen: () => false,
+        close() { },
+        open(pages, start) { opened.push(start); },
+    };
+    const cards = env.document.getElementById('ml-content').querySelectorAll('.ml-shelf-card');
+    check('搜索后书架渲染出结果', cards.length === 1, String(cards.length));
+    cards[0].click();
+    await env.tick(30);
+
+    check('搜索结果不自动打开阅读器', opened.length === 0, JSON.stringify(opened));
 }
 
 console.log('manga-library 统一刷新用例全部通过');

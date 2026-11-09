@@ -12,8 +12,11 @@
 
 import json
 import logging
+import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+
+from shell.backend.json_cache import write_json
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +36,9 @@ class Library:
         self._recent_limit = recent_limit
         self._recent_min = recent_min
         self._recent_max = recent_max
+        #: 状态文件的读写串行化：桥接调用各起一条线程，打开 / 关闭阅读器与切换收藏
+        #: 会同时走到 `_save_state`（见它的 docstring）。
+        self._lock = threading.RLock()
         # 书架列表缓存：由统一刷新基建驱动失效（见 freshness 组件）。
         self._shelf: Optional[List[Dict]] = None
         self._shelf_dirty = True
@@ -41,7 +47,16 @@ class Library:
     # ===== 阅读状态（收藏 / 最近阅读）=====
 
     def _load_state(self) -> Dict:
-        """读 `manga_state.json`；缺失或损坏时退回空收藏与空最近阅读。"""
+        """读 `manga_state.json`；缺失或损坏时退回空收藏与空最近阅读。
+
+        与 `_save_state` 共用一把锁：写者用 `os.replace` 换名，读者在改名那一瞬间开着
+        目标文件时，Windows 上会让写者拿到 WinError 32。
+        """
+        with self._lock:
+            return self._read_state_locked()
+
+    def _read_state_locked(self) -> Dict:
+        """已持锁的读实现（`_load_state` 的唯一调用方）。"""
         defaults: Dict[str, List] = {"favorites": [], "recent": []}
         state_file = self._paths.state_file
         if state_file.exists():
@@ -60,10 +75,18 @@ class Library:
         return defaults
 
     def _save_state(self) -> None:
-        state_file = self._paths.state_file
-        state_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(state_file, 'w', encoding='utf-8') as handle:
-            json.dump(self._state, handle, ensure_ascii=False, indent=2)
+        """原子写阅读状态（收藏 / 最近阅读）。
+
+        用 `shell.backend.json_cache.write_json`（同目录临时文件 + flush + fsync +
+        os.replace，与媒体播放器的状态文件同一份机制）：`open('w')` 直接覆写时，写到一半
+        被强杀会留下截断的 JSON，下次启动 `_load_state` 退回空表 —— 收藏与最近阅读整体
+        丢失。写入还串行化在实例锁上：打开 / 关闭阅读器与切换收藏由不同桥接线程发起。
+        """
+        with self._lock:
+            state_file = self._paths.state_file
+            if write_json(state_file, self._state, indent=2, create_parent=True):
+                return
+            log.error(f'[MangaLibrary] 保存阅读状态失败: {state_file}')
 
     def rebind(self) -> None:
         """换根后重读阅读状态并作废书架缓存（由入口编排）。"""

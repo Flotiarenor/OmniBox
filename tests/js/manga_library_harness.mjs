@@ -696,7 +696,15 @@ export function loadManga(options = {}) {
                     open = true;
                     lightboxEvents.push({ type: 'show', count: items.length, index });
                 },
-                hide() { open = false; lightboxEvents.push({ type: 'hide' }); },
+                hide() {
+                    const wasOpen = open;
+                    open = false;
+                    lightboxEvents.push({ type: 'hide' });
+                    // 与真实灯箱一致：只有"从打开态关闭"才回调 onClose（✕ / Esc / 点遮罩）。
+                    if (wasOpen && typeof lightboxOptions.onClose === 'function') {
+                        lightboxOptions.onClose();
+                    }
+                },
                 navigate(dir) { index += dir; lightboxEvents.push({ type: 'navigate', index }); },
                 getIndex: () => index,
                 getCount: () => items.length,
@@ -775,7 +783,9 @@ export function loadManga(options = {}) {
         sendView(view) { env.send({ type: 'omnibox:view', view }); },
         /** 壳的生命周期通知：`true` 触发 onShow，`false` 触发 onHide。 */
         setVisible(visible) { sandbox.PluginLifecycle.setVisible(visible); },
-        sendAction(action) { env.send({ type: 'omnibox:action', action }); },
+        sendAction(action, payload) {
+            env.send({ type: 'omnibox:action', action, payload });
+        },
         sendQuery(query) { env.send({ type: 'omnibox:query', query }); },
         /** 壳的统一刷新事件：`omnibox:freshness {plugin, scope, report}`。 */
         sendFreshness(plugin, report, scope = '') {

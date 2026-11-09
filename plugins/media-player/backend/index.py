@@ -8,14 +8,18 @@
 "dictionary changed size during iteration"（前端扫描期间 500ms 轮询会放大暴露）。
 
 索引是单文件：整趟刷新只在结束（`on_pass_end`）与退出时落盘一次，中间用 `dirty`
-标记攒改动；每处理一个目录就整体重写会把大库的扫描拖成写盘瓶颈。
+标记攒改动；每处理一个目录就整体重写会把大库的扫描拖成写盘瓶颈。两次落盘的调用来自
+不同线程（校验线程与卸载调用方），因此写入串行化在实例锁上，并且是原子写。
 """
 
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+from shell.backend.json_cache import write_json
 
 log = logging.getLogger(__name__)
 
@@ -33,9 +37,11 @@ class MediaIndex:
         #: 读回的条目是上一次运行留下的观察结果，文件在两次运行之间可能被删除或移动。
         self.loaded_at = 0.0
         self.loaded_version = 0
-        #: 当前快照是否来自落盘文件且尚未被本次运行的遍历覆盖。为真时 `get()`
-        #: 会核对条目路径是否仍然存在；同步/校验发布新快照后置假。
+        #: 当前快照是否来自落盘文件且本进程还没跑过一趟**完整**遍历。为真时 `get()`
+        #: 会核对条目路径是否仍然存在（见 `mark_authoritative`）。
         self.restored = False
+        #: 落盘串行化：`on_pass_end`（每趟结束）与 `on_unload`（退出）来自不同线程。
+        self._lock = threading.Lock()
 
     # ===== 读写 =====
 
@@ -72,16 +78,24 @@ class MediaIndex:
             self.publish({})
 
     def save(self, updated: float) -> None:
-        """把当前条目快照整体写盘（整趟结束 / 退出时各一次）。"""
+        """把当前条目快照整体写盘（整趟结束 / 退出时各一次）。
+
+        原子写（同目录临时文件 + `flush` + `fsync` + `os.replace`，实现复用
+        `shell.backend.json_cache.write_json`）：直接 `open('w')` 覆写时写到一半被杀会留下
+        截断的 JSON，下次启动解析失败退化成空索引、整库重建一遍。写入还串行化在实例锁上：
+        `on_pass_end`（每趟结束，校验线程）与 `on_unload`（退出，调用方线程）都会走到这里。
+        写失败时保留 `dirty`，下一趟收尾再试一次。
+        """
         payload = {
             'version': self._version,
             'items': [item.to_dict() for item in self.items.values()],
             'updated': updated,
         }
-        self.cache_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.cache_file, 'w', encoding='utf-8') as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
-        self.dirty = False
+        with self._lock:
+            if not write_json(self.cache_file, payload, indent=2, create_parent=True):
+                log.error(f'[MediaPlayer] 保存媒体索引失败: {self.cache_file}')
+                return
+            self.dirty = False
 
     def clear_file(self) -> bool:
         """删掉索引文件（派生数据重建用）；返回是否真的删掉了。"""
@@ -100,10 +114,18 @@ class MediaIndex:
     def publish(self, items: Dict[str, Any]) -> None:
         """把索引换成一份**新的**快照字典（唯一的写入入口）。
 
-        发布的条目来自刚刚完成的一次遍历，因此同时清掉 `restored`：之后的查询直接
-        返回内存条目，不再逐条核对文件是否存在。
+        **不碰 `restored`**：发布只说明"这份条目来自某次遍历"，不说明"整趟遍历走完了"。
+        预算用尽的部分遍历只覆盖一部分目录，其余目录的条目仍是上次运行留下的观察结果，
+        按 id 取它们时仍要核对路径。整趟走完由 `mark_authoritative()` 宣布。
         """
         self.items = items
+
+    def mark_authoritative(self) -> None:
+        """宣布当前快照是本进程一趟**完整**遍历的结果（整趟、非 `partial`、无读取错误）。
+
+        由插件 `freshness_spec` 的 `on_pass_end` 在报告满足条件时调用：此后 `get()` 不再
+        逐条核对路径 —— 没走到的目录已在同一趟里被对账掉，剩下的条目都来自本次观察。
+        """
         self.restored = False
 
     def touch(self) -> None:
@@ -112,15 +134,15 @@ class MediaIndex:
 
     @property
     def authoritative(self) -> bool:
-        """当前快照是否来自本次运行的实际遍历（False = 只是上次运行读回的）。"""
+        """当前快照是否来自本进程的实际遍历（False = 仍含上次运行读回的条目）。"""
         return not self.restored
 
     def get(self, item_id: str) -> Optional[Any]:
         """按 id 取条目；来自落盘快照、路径已不存在的条目返回 None。
 
-        `restored` 为真表示这份快照是上次运行读回来的，而本次运行还没同步过：文件可能
+        `restored` 为真表示这份快照来自上次运行、本进程还没跑完一趟完整遍历：文件可能
         已被删除或移动，这类条目不再回给调用方（否则界面会拿到指向不存在文件的条目）。
-        同步/校验发布新快照后 `restored` 变假，查询回到纯内存字典查找。
+        只有 `mark_authoritative()` 能把 `restored` 变假，查询才回到纯内存字典查找。
         """
         item = self.items.get(item_id)
         if item is None or not self.restored:

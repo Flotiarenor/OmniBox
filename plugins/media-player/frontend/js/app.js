@@ -22,9 +22,8 @@
 const MP_LIBRARY_VIEWS = ['recent', 'audio-albums', 'all-audio', 'video-albums', 'all-video', 'favorites'];
 
 // 新壳在 `omnibox:freshness` 之后紧跟一条旧的 `omnibox:action: refresh`，两条属于
-// 同一次同步。内容页拿不到动作上的 payload（握手层只转发 action id），因此按时间窗
-// 判定：富事件到达后这个窗口内的旧动作不再触发第二次重载。
-const MP_FRESHNESS_ECHO_MS = 1000;
+// 同一次同步；壳把同一份报告附在动作的 payload 上（`/shell/chrome-client.js` 的
+// `onAction(action, payload)`），所以"回声"按 payload 是否存在判定，不靠时间窗。
 
 class MediaPlayerApp {
     constructor() {
@@ -57,8 +56,6 @@ class MediaPlayerApp {
         this._currentListOpts = {};
         this._scanning = false;
         this._loadSeq = 0;
-        // 最近一次收到 omnibox:freshness 的时刻（用于去重紧随其后的旧 refresh 动作）
-        this._freshnessEventAt = 0;
         this._ncmCache = {};
         this._thumbObserver = null;      // 视频封面预取观察器
         this._thumbPrefetchSeen = new Set();
@@ -192,7 +189,7 @@ class MediaPlayerApp {
     _bindHost() {
         this._chrome = window.ChromeClient.create({
             onView: (view) => this._applyHostView(view),
-            onAction: (action) => this._applyHostAction(action),
+            onAction: (action, payload) => this._applyHostAction(action, payload),
             onQuery: (query) => this._onQuery(query),
             onMessage: (data) => this._onHostMessage(data),
         });
@@ -203,8 +200,6 @@ class MediaPlayerApp {
     _onHostMessage(data) {
         if (!data || data.type !== 'omnibox:freshness') return;
         if (data.plugin && data.plugin !== 'media-player') return;
-        // 记下富事件的到达时刻：紧随其后的旧 refresh 动作据此判定为同一次同步。
-        this._freshnessEventAt = Date.now();
         if (!this._freshnessChanged(data.report)) return;
         void this._reloadAfterFreshness();
     }
@@ -232,13 +227,14 @@ class MediaPlayerApp {
 
     /** 壳顶栏动作：网易云视图的「刷新」、壳设置弹窗保存后的设置重读，以及统一刷新
         （同步 / 校验）完成后的 `refresh` 重载信号（freshness 组件由壳挂载）。 */
-    async _applyHostAction(action) {
+    async _applyHostAction(action, payload) {
         if (action === 'netease-refresh' || action === 'scan') { await this._doScan(); return; }
         if (action === 'settings-saved') { await this._reloadSettings(); return; }
         if (action === 'refresh') {
-            // 新壳在 omnibox:freshness 之后还会补一条旧动作，而动作上的 payload 到
-            // 不了内容页：紧跟在富事件之后到达的这条属于同一次同步，不再重载一次。
-            if (Date.now() - this._freshnessEventAt < MP_FRESHNESS_ECHO_MS) return;
+            // 新壳在 omnibox:freshness 之后紧跟一条 legacy refresh，并把同一份报告附在
+            // 动作的 payload 上：富事件已经重载过，这条只当回声跳过。没有 payload 的
+            // refresh 来自旧壳，按原语义重载。
+            if (payload != null) return;
             await this._reloadAfterFreshness();
         }
     }
