@@ -787,12 +787,21 @@ class ShareLocationTest(unittest.TestCase):
         self.plugin.identity.init_identity({'name': 'usage'})
         (self.shared / 'a.bin').write_bytes(b'x' * 1000)
         self.assertTrue(self._add()['success'])
-        result = self.plugin.shares.refresh_share_roots()
-        self.assertTrue(result['success'])
-        item = result['roots'][0]
+        first = self.plugin.shares.refresh_share_roots()
+        self.assertTrue(first['success'])
+        item = first['roots'][0]
         self.assertTrue(item['available'])
         self.assertEqual(item['used_bytes'], 1000)
         self.assertEqual(item['entries'], 1)
+        self.assertGreaterEqual(first['changed'], 1, '冷启动播种根目录也是目录集合变化')
+
+        steady = self.plugin.shares.refresh_share_roots()
+        self.assertEqual(steady['changed'], 0, '稳态没有目录集合变化')
+
+        (self.shared / 'newdir').mkdir()
+        moved = self.plugin.shares.refresh_share_roots()
+        self.assertGreaterEqual(moved['changed'], 1,
+                                '新建目录必须体现在 changed（track_entries=False 的唯一信号）')
 
     def test_tree_usage_flags_lower_bound_when_stopped_early(self):
         """命中配额就停下时数字只是下界，必须标截断（界面据此显示"≥"）。
@@ -829,56 +838,88 @@ class ShareLocationTest(unittest.TestCase):
 
     # ===== 用量失效、根集合变化、状态序列化 =====
 
-    def _root_path(self, share_id: str) -> str:
-        """共享根在插件里记录的路径。
+    def test_dirs_changed_invalidates_only_the_affected_root(self):
+        """目录集合变化按根归属作废：没走到的共享根保留数字。
 
-        `add_share` 保存的是 `resolve()` 之后的形式，临时目录的短名（`ADMINI~1`）与它
-        不同；事件路径必须用同一个形式，否则比较的是两个字符串而不是两个位置。
+        生产路径：引擎同步产出 `new_dirs`，`Shares.dirs_changed` 按根前缀还原归属。
+        不再直接调 `shares.derive()` —— 那个钩子在 `track_entries=False` 下不会被引擎
+        调用，直接调它只能证明"方法能跑"，证明不了生产路径会失效。
         """
-        return str({item['share_id']: item['path']
-                    for item in self.plugin.get_share_roots()}[share_id])
+        from shell.backend.freshness import engine_for
 
-    def _seed_usage(self, share_id: str, used: int = 10) -> None:
-        self.plugin.shares.usage_cache[share_id] = {
-            'path': self._root_path(share_id), 'used_bytes': used,
-            'truncated': False, 'entries': 1, 'at': 1,
-        }
-
-    def test_usage_invalidates_by_event_path(self):
-        """条目事件带绝对路径：落在共享根下才作废该根的用量。"""
-        self.plugin.identity.init_identity({'name': 'usage-derive'})
-        (self.shared / 'sub').mkdir()
-        (self.shared / 'sub' / 'a.bin').write_bytes(b'x' * 10)
+        self.plugin.identity.init_identity({'name': 'usage-dirs'})
+        other = self.tmp / 'other'
+        other.mkdir()
+        (self.shared / 'a.bin').write_bytes(b'x' * 512)
+        (other / 'b.bin').write_bytes(b'y' * 256)
         self.assertTrue(self._add()['success'])
-        self._seed_usage('docs')
-        root = Path(self._root_path('docs'))
-
-        outside = self.tmp / 'outside' / 'b.bin'
-        self.assertEqual(self.plugin.shares.derive([{'key': 'b.bin', 'path': str(outside)}])['dropped'], 0)
-        self.assertIn('docs', self.plugin.shares.usage_cache)
-
-        dropped = self.plugin.shares.derive([
-            {'key': 'sub/a.bin', 'path': str(root / 'sub' / 'a.bin')}])
-        self.assertEqual(dropped['dropped'], 1)
-        self.assertNotIn('docs', self.plugin.shares.usage_cache)
-
-    def test_nested_shares_invalidate_only_the_innermost(self):
-        """嵌套共享根：事件路径归最内层，外层用量不受影响。"""
-        self.plugin.identity.init_identity({'name': 'usage-nested'})
-        inner = self.shared / 'inner'
-        inner.mkdir()
-        (inner / 'x.bin').write_bytes(b'x' * 4)
-        self.assertTrue(self._add('outer')['success'])
         self.assertTrue(self.plugin.shares.add_share(
-            {'share_id': 'inner', 'path': str(inner)})['success'])
-        self._seed_usage('outer')
-        self._seed_usage('inner')
-        inner_root = Path(self._root_path('inner'))
+            {'share_id': 'other', 'path': str(other)})['success'])
+        engine = engine_for(self.plugin)
+        self.assertIsNotNone(engine)
+        engine.verify()
+        before = {item['share_id']: item for item in self.plugin.get_share_roots()}
+        self.assertEqual(before['docs']['used_bytes'], 512)
+        self.assertEqual(before['other']['used_bytes'], 256)
 
-        self.plugin.shares.derive([{'key': 'x.bin', 'path': str(inner_root / 'x.bin')}])
+        (self.shared / 'later').mkdir()
+        report = engine.sync('', force=True)
 
-        self.assertIn('outer', self.plugin.shares.usage_cache)
-        self.assertNotIn('inner', self.plugin.shares.usage_cache)
+        self.assertIn('later', report.get('new_dirs') or [],
+                      '首根（docs）的目录键不带前缀')
+        after = {item['share_id']: item for item in self.plugin.get_share_roots()}
+        self.assertIsNone(after['docs']['used_bytes'], '受影响根的用量作废（显示占位）')
+        self.assertTrue(after['docs']['usage_stale'])
+        self.assertEqual(after['other']['used_bytes'], 256, '没走到的根不能被清成占位')
+        self.assertEqual(after['other']['entries'], 1)
+        self.assertFalse(after['other']['usage_stale'])
+
+    def test_verify_recomputes_usage_after_nested_change(self):
+        """子目录内容变化不改根目录指纹：整趟校验必须无条件重算用量。
+
+        生产路径：真引擎 `verify()`。同步路径保持廉价（根指纹），校验是权威结论。
+        """
+        from shell.backend.freshness import engine_for
+
+        self.plugin.identity.init_identity({'name': 'usage-nested'})
+        sub = self.shared / 'sub'
+        sub.mkdir()
+        (self.shared / 'a.bin').write_bytes(b'x' * 512)
+        self.assertTrue(self._add()['success'])
+        engine = engine_for(self.plugin)
+        self.assertIsNotNone(engine)
+        engine.verify()
+
+        (sub / 'later.bin').write_bytes(b'y' * 256)      # 只改子目录：根 mtime 不变
+        cached = self.plugin.get_share_roots()[0]
+        self.assertEqual(cached['used_bytes'], 512, '同步路径仍按根指纹，首屏不重扫')
+        self.assertFalse(cached['usage_stale'])
+
+        report = engine.verify()
+
+        self.assertEqual(report['pass_end'].get('used_bytes'), 768,
+                         '校验是权威结论：必须忽略根指纹重算')
+        fresh = self.plugin.get_share_roots()[0]
+        self.assertEqual(fresh['used_bytes'], 768)
+        self.assertFalse(fresh['usage_stale'], '重算之后不应再标待更新')
+
+    def test_entry_hooks_are_not_called_under_track_entries_false(self):
+        """`track_entries=False` 下引擎不调 derive / prune / on_verified。"""
+        from shell.backend.freshness import engine_for
+
+        self.plugin.identity.init_identity({'name': 'usage-hooks'})
+        (self.shared / 'a.bin').write_bytes(b'x' * 512)
+        self.assertTrue(self._add()['success'])
+        seen = []
+        self.plugin.shares.derive = lambda items: seen.append('derive') or {'count': 0}
+        self.plugin.shares.prune = lambda keys: seen.append('prune') or 0
+        self.plugin.shares.audit = lambda keys: seen.append('audit') or {}
+        engine = engine_for(self.plugin)
+        self.assertIsNotNone(engine)
+
+        engine.verify()
+
+        self.assertEqual(seen, [], '没有条目键集合，条目级钩子一个都不该被调用')
 
     def test_share_changes_reset_sync_throttle(self):
         """共享根集合变了：下一次同步不该被最小间隔挡掉。"""
@@ -914,19 +955,19 @@ class ShareLocationTest(unittest.TestCase):
         self.assertEqual(cached['used_bytes'], 512, '首屏不应重新遍历共享根')
         self.assertTrue(cached['usage_stale'], '根目录指纹变了：旧用量必须标成待更新')
 
-        self.plugin.shares.usage_cache.clear()
+        # 目录集合变化（真路径：引擎同步）让受影响根作废；下一次读取先给占位。
+        (self.shared / 'later').mkdir()
+        engine.sync('', force=True)
+        stale = self.plugin.get_share_roots()[0]
+        self.assertIsNone(stale['used_bytes'])
+        self.assertIsNone(stale['entries'])
+        self.assertTrue(stale['usage_stale'])
+
         fresh = self.plugin.shares.share_roots_report()[0]
         self.assertEqual(fresh['used_bytes'], 1536)
         self.assertGreater(fresh['usage_at'], 0)
         again = self.plugin.shares.share_roots_report()[0]
         self.assertEqual(again['used_bytes'], 1536, '算过的用量复用缓存，不重扫')
-
-        self.plugin.shares.derive([
-            {'key': 'b.bin', 'path': str(Path(self._root_path('docs')) / 'b.bin')}])
-        stale = self.plugin.get_share_roots()[0]
-        self.assertIsNone(stale['used_bytes'])
-        self.assertIsNone(stale['entries'])
-        self.assertTrue(stale['usage_stale'])
 
     # ===== 用量与目录指纹（E3） =====
 
@@ -961,22 +1002,32 @@ class ShareLocationTest(unittest.TestCase):
         self.assertEqual(rescanned['used_bytes'], 768)
         self.assertFalse(rescanned['usage_stale'], '重算之后又回到与目录一致')
 
-    def test_dirs_changed_drops_usage_cache(self):
-        """目录集合变化是 track_entries=False 之后唯一的被动信号。"""
-        self.plugin.identity.init_identity({'name': 'usage-dirs'})
-        (self.shared / 'sub').mkdir()
+    def test_truncated_dirs_change_keeps_other_roots_and_marks_stale(self):
+        """目录列表被截断时无法归属：别的根保留旧数字、只标待更新（不清成占位）。"""
+        from shell.backend.freshness import engine_for
+
+        self.plugin.identity.init_identity({'name': 'usage-truncated'})
+        other = self.tmp / 'other'
+        other.mkdir()
+        (self.shared / 'a.bin').write_bytes(b'x' * 512)
+        (other / 'b.bin').write_bytes(b'y' * 256)
         self.assertTrue(self._add()['success'])
-        self._seed_usage('docs')
+        self.assertTrue(self.plugin.shares.add_share(
+            {'share_id': 'other', 'path': str(other)})['success'])
+        engine = engine_for(self.plugin)
+        self.assertIsNotNone(engine)
+        engine.verify()
 
-        unchanged = self.plugin.shares.dirs_changed({'new_dirs': [], 'vanished_dirs': []})
-        self.assertEqual(unchanged['cleared'], 0)
-        self.assertIn('docs', self.plugin.shares.usage_cache)
+        for index in range(60):        # 引擎把 new_dirs 截断到 50 条
+            (self.shared / f'bulk{index}').mkdir()
+        report = engine.sync('', force=True)
+        self.assertGreater(report['new_dirs_truncated'], 0)
 
-        changed = self.plugin.shares.dirs_changed(
-            {'new_dirs': ['sub'], 'vanished_dirs': []})
-        self.assertEqual(changed['cleared'], 1)
-        self.assertEqual(changed['dirs_changed'], 1)
-        self.assertNotIn('docs', self.plugin.shares.usage_cache)
+        after = {item['share_id']: item for item in self.plugin.get_share_roots()}
+        self.assertIsNone(after['docs']['used_bytes'], '可见目录变化落在 docs：其用量作废')
+        self.assertEqual(after['other']['used_bytes'], 256,
+                         '无法归属不等于该清别的根：数字保留')
+        self.assertTrue(after['other']['usage_stale'], '无法确认时只标待更新')
 
     def test_status_carries_usage_errors_and_offline_facts(self):
         """`get_status` 要能被 JSON 序列化，并带上用量与"跑得好不好"。"""

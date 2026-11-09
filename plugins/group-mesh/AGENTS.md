@@ -62,8 +62,8 @@
 | `plugins/group-mesh/backend/discovery.py` | 后台同步周期、候选端点、注册快照并行探测与推送 | `Discovery`、`PROBE_OVERALL_SECONDS`、`SYNC_OVERALL_SECONDS`、`status`、`start`、`stop`、`run_once`、`probe_round`、`sync_candidates`、`push_pending_changes`、`fetch_registries_parallel`、`fetch_registry_from`、`adopt_remote_roster` |
 | `plugins/group-mesh/backend/peers.py` | 对端设备与可读共享项、手工登记地址、本机地址串 | `Peers`、`action`、`parse_endpoint`、`my_endpoint`、`list_peers` |
 | `plugins/group-mesh/backend/group.py` | 身份初始化、团体创建与加入、邀请串、成员增减 | `Group`、`init_identity`、`create_group`、`join_group`、`invite_string`、`get_invite`、`get_device_keys`、`add_member` |
-| `plugins/group-mesh/backend/share_paths.py` | 共享根路径的纯函数：规范形式、嵌套归属、根目录指纹与用量占位（无状态，入口装配一次注入） | `SharePaths`、`norm`、`prefix`、`share_of`、`missing_usage`、`root_stamp` |
-| `plugins/group-mesh/backend/shares.py` | 共享项挂载与移除、用量与条目数缓存（`usage_stale` 按根指纹判定）、统一刷新声明（`track_entries=False`、`on_dirs_changed`） | `Shares`、`usage_cache`、`get_share_roots`、`share_roots_report`、`add_share`、`remove_share`、`refresh_share_roots`、`root_state`、`scan_share_usage`、`_usage_fields`、`_usage_matches`、`_usage_stamp_matches`、`dirs_changed`、`sync_errors`、`spec`、`derive`、`prune`、`audit`、`pass_end`、`rebuild`、`_reset_throttle` |
+| `plugins/group-mesh/backend/share_paths.py` | 共享根路径与用量缓存：规范形式、嵌套归属、目录键归属、根目录指纹、用量占位与 `UsageCache`（入口装配一次注入） | `SharePaths`、`norm`、`prefix`、`share_of`、`prefix_owner`、`affected_shares`、`root_owners`、`usage_matches`、`usage_stamp_matches`、`dirs_change_count`、`missing_usage`、`root_stamp`、`usage_cache`、`UsageCache`、`fields`、`scan`、`invalidate`、`drop`、`mark_stale`、`clear` |
+| `plugins/group-mesh/backend/shares.py` | 共享项挂载与移除、可用性与用量（同步按根指纹、校验强制重算）、统一刷新声明（`track_entries=False`、`on_dirs_changed` 按根作废） | `Shares`、`usage_cache`、`get_share_roots`、`share_roots_report`、`add_share`、`remove_share`、`refresh_share_roots`、`root_state`、`scan_share_usage`、`dirs_changed`、`_dir_owners`、`sync_errors`、`spec`、`derive`、`prune`、`audit`、`pass_end`、`rebuild`、`_drop_usage`、`_reset_throttle` |
 | `plugins/group-mesh/backend/status.py` | 首屏状态汇总（`sync` 带共享根读取错误与连不上的对端，`shares` / `share_roots` 带用量） | `StatusReport`、`get_status` |
 | `plugins/group-mesh/backend/remote.py` | 列对端共享项与目录、取回单个文件 | `Remote`、`list_remote`、`download_remote`、`fetch_to` |
 | `plugins/group-mesh/backend/materialize.py` | 远端目录物化、索引缓存与对账 | `Materialize`、`index_cache`、`materialize_remote`、`index_file`、`load_index`、`cached_index`、`invalidate_index`、`save_index`、`walk_remote`、`prune_absent`、`content_changed`、`is_fetched`、`apply_remote_mtime` |
@@ -110,7 +110,7 @@
 | `add_member` | `principal`、`device`、`name` | `success`、`action`、`version`、`invite` | 群主或管理员增添成员与设备 |
 | `add_share` | `share_id`、`path`、`read`、`write`、`max_bytes` | `success`、`share_id`、`path`、`acl`、`max_bytes` | 挂载本机共享项 |
 | `remove_share` | `share_id` | `success`、`share_id` | 取消本机共享项 |
-| `refresh_share_roots` | 无 | `success`、`roots`、`scanned_at`、`action`、`changed` | 重扫共享根，返回用量与条目数 |
+| `refresh_share_roots` | 无 | `success`、`roots`、`scanned_at`、`action`、`changed` | 重扫共享根并**现算**用量与条目数（引擎同步一遍指纹落盘，用量无条件重算）；`changed` 是这一趟的目录集合变化数（`track_entries=False` 下没有条目事件，这是唯一的"变没变"信号） |
 | `peers` | `action`（`list`、`add`、`update`、`remove`）、`endpoint`、`name`、`device_id` | `success`、`peers`、`existed`、`message`、`replaced`、`removed` | 手工登记、更新或移除对端地址 |
 | `my_endpoint` | 无 | `success`、`text`、`endpoints`、`device_id`、`name`、`running`、`published` | 生成可粘贴给对方的本机地址串 |
 | `list_peers` | `refresh` | `success`、`peers`（`device_id`、`name`、`endpoints`、`endpoint`、`shares`、`seq`、`last_seen`、`online`、`note`）、`errors`、`registry_enabled`、`registry_size`、`roster_versions`、`roster_adopted` | 列出对端设备与可读共享项 |
@@ -139,7 +139,7 @@
 | `ensure_file` | `path` | `None` | 读取占位文件时按需取回真字节 |
 | `get_protected_paths` | 无 | `List[Path]` | 申报 `identity_dir` 为受保护路径 |
 | `get_extensions` | 无 | `List[dict]` | 注册 placement 值 `network-location` 的扩展 |
-| `freshness_spec` | 无 | `Dict`（`roots`、`track_entries`、`include`、`derive`、`prune`、`on_dirs_changed`、`on_verified`、`on_pass_end`、`rebuild`、`content_version`、`unit`、`min_sync_interval`、`max_dirs_per_sync`） | 参与统一刷新基建；`track_entries` 为假时只维护目录指纹（不写条目、不调条目级钩子），目录集合变化由 `on_dirs_changed` 作废用量缓存；共享根用量由校验趟重算，`add_share` / `remove_share` 后清去抖 |
+| `freshness_spec` | 无 | `Dict`（`roots`、`track_entries`、`include`、`derive`、`prune`、`on_dirs_changed`、`on_verified`、`on_pass_end`、`rebuild`、`content_version`、`unit`、`min_sync_interval`、`max_dirs_per_sync`） | 参与统一刷新基建；`track_entries=False` 时引擎只维护目录指纹：**不会调用** `derive` / `prune` / `on_verified`（保留公共方法给将来改回逐条目模式），目录集合变化由 `on_dirs_changed` 按根作废用量缓存。`on_pass_end(verified=True)` 无条件重算全部共享根用量（校验是权威结论），同步路径仍只按根指纹判断、不遍历；`add_share` / `remove_share` 后清去抖 |
 | `on_settings_changed` | `changed_keys` | `None` | 设置变更后丢弃连接与自动启动结论 |
 | `on_load` | 无 | `None` | 建数据根、恢复上传任务表、启动后台同步 |
 | `on_unload` | 无 | `None` | 停同步、取消上传、关连接、停节点 |
@@ -219,7 +219,7 @@ DOM 结构树（`plugins/group-mesh/frontend/index.html`，内容 iframe 不含�
 
 - `window.Bridge.call`：`/api/<插件>__<方法>` 通道
 - 设置弹窗：由壳的 `PluginSettingsModal` 在顶栏 `settings` 动作里打开；保存成功后壳发 `settings-saved`，本页 `refresh()` 重读状态。内容页不再调用 `window.openSettingsModal`
-- 统一刷新：壳的 `PluginChrome` 用 `window.Freshness.mount({plugin, container, unit, onChange})` 挂载同步/校验按钮，挂载后与视图变化时由壳调 `autoSync`，完成后经 `refresh` 动作回到本页；内容页不再挂 `#gm-freshness`。规格声明 `track_entries: False`：引擎只维护目录指纹，不写条目、不调条目级钩子；共享根目录集合变化由 `on_dirs_changed` 作废用量缓存（`dirs_changed`），`usage_stale` 表示"这份用量不是按当前根目录指纹算出来的"——路径换过或根目录 mtime/大小变了都为真，首屏仍把上次的数字给出去并标「待更新」。
+- 统一刷新：壳的 `PluginChrome` 用 `window.Freshness.mount({plugin, container, unit, onChange})` 挂载同步/校验按钮，挂载后与视图变化时由壳调 `autoSync`，完成后经 `refresh` 动作回到本页；内容页不再挂 `#gm-freshness`。内容页的变化判据（`freshnessChanged`）把 `new_dirs` / `vanished_dirs` 非空与 `action === 'verify'` 都算变化：规格声明 `track_entries: False`，引擎不产出条目事件，目录集合变化与"校验完成"是仅有的两个可见信号。`usage_stale` 表示"这份用量不是按当前根目录指纹算出来的，或者已知磁盘在它之后变过"——路径换过、根目录 mtime/大小变了、目录集合变化无法归属、校验被取消都为真；首屏仍把上次的数字给出去并标「待更新」。整趟校验无条件重算全部共享根用量（子目录里的变化只有它能看见），同步路径保持廉价。
 - `window.confirmDialog`：移除共享项前的确认
 - `window.Toast.success`、`window.Toast.error`：提示（唯一实现是 `/shell/toast.js`，壳与插件页共用）
 - `window.Icons.html`：取壳图标集里的 SVG 标记，`icons.generated.js` 提供 sprite

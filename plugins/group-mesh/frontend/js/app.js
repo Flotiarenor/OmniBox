@@ -103,10 +103,23 @@
     return (index === 0 ? String(Math.round(value)) : value.toFixed(1)) + ' ' + units[index];
   }
 
-  /** 报告里是否真有变化：三个计数与 `invalidated` 同等看待；`skip` 不算。 */
+  /**
+   * 报告里是否真有变化。
+   *
+   * `new_dirs` / `vanished_dirs` 非空也算变化：本插件声明 `track_entries: False`，
+   * 引擎不产出条目事件，目录集合变化（新建空目录、整个目录被移走）是同步能给出的
+   * 唯一新增信号。校验完成（`action === 'verify'`）无论计数如何都要重载：校验是
+   * "现在读到什么就是什么"的权威结论，共享根用量就是靠它重算的。`skip` 不是变化。
+   */
   function freshnessChanged(report) {
     if (!report || report.action === 'skip') { return false; }
-    return !!(report.added || report.changed || report.removed || report.invalidated);
+    if (report.action === 'verify') { return true; }
+    if (report.added || report.changed || report.removed || report.invalidated) {
+      return true;
+    }
+    return !!(report.new_dirs && report.new_dirs.length)
+      || !!(report.vanished_dirs && report.vanished_dirs.length)
+      || !!(report.new_dirs_truncated) || !!(report.vanished_dirs_truncated);
   }
 
   /** 按全部共享根同步一次；有变化且 `reload` 为真时重读状态。 */

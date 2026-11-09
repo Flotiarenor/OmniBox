@@ -298,6 +298,61 @@ const zero = { action: 'sync', added: 0, changed: 0, removed: 0 };
         `${before} -> ${env.statusCalls()}`);
 }
 
+// ---- 5b. 目录集合变化与校验完成也算变化（track_entries=False 下仅有的两个信号） ----
+{
+    const env = loadApp();
+    env.init();
+    await env.tick(20);
+    let before = env.statusCalls();
+
+    env.send({
+        type: 'omnibox:freshness', plugin: 'group-mesh', scope: '',
+        report: { action: 'sync', added: 0, changed: 0, removed: 0, new_dirs: ['sub'] },
+    });
+    await env.tick(20);
+    check('new_dirs 报告重读状态', env.statusCalls() === before + 1,
+        `${before} -> ${env.statusCalls()}`);
+
+    before = env.statusCalls();
+    env.send({
+        type: 'omnibox:freshness', plugin: 'group-mesh', scope: '',
+        report: { action: 'sync', added: 0, changed: 0, removed: 0, vanished_dirs: ['old'] },
+    });
+    await env.tick(20);
+    check('vanished_dirs 报告重读状态', env.statusCalls() === before + 1,
+        `${before} -> ${env.statusCalls()}`);
+
+    before = env.statusCalls();
+    env.send({
+        type: 'omnibox:freshness', plugin: 'group-mesh', scope: '',
+        report: { action: 'verify', added: 0, changed: 0, removed: 0, invalidated: false, task: { state: 'done' } },
+    });
+    await env.tick(20);
+    check('校验完成（零计数）也重读状态', env.statusCalls() === before + 1,
+        `${before} -> ${env.statusCalls()}`);
+
+    before = env.statusCalls();
+    env.send({
+        type: 'omnibox:freshness', plugin: 'group-mesh', scope: '',
+        report: { action: 'sync', added: 0, changed: 0, removed: 0, new_dirs: [], vanished_dirs: [] },
+    });
+    await env.tick(20);
+    check('目录数组为空时仍算零变化', env.statusCalls() === before,
+        `${before} -> ${env.statusCalls()}`);
+}
+
+{
+    // 同一条判据也用于切回前台的被动同步：只有目录变化时也要重读。
+    const env = loadApp({ report: () => ({ action: 'sync', added: 0, changed: 0, removed: 0, new_dirs: ['sub'] }) });
+    env.init();
+    await env.tick(20);
+    const before = env.statusCalls();
+    env.show();
+    await env.tick(20);
+    check('onShow 只有目录变化也重读状态', env.statusCalls() === before + 1,
+        `${before} -> ${env.statusCalls()}`);
+}
+
 // ---- 6. 旧壳只发 refresh 动作（没有富事件、没有 payload）时仍重读 ----
 {
     const env = loadApp();
