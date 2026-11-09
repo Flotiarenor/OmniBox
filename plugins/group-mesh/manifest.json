@@ -1,6 +1,6 @@
 {
   "name": "group-mesh",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "displayName": "团体组网",
   "icon": "icon:network",
   "description": "无中心团体组网：身份、团体名单、共享节点与加密传输（协议内核见 shell/groupmesh）",
