@@ -502,17 +502,19 @@ class FreshnessEngineTests(unittest.TestCase):
         self.assertEqual(len(restamped), 5, items)
         self.assertTrue(all(item.get('restamp') is True for item in restamped), restamped)
 
-        # ③ 版本已全部盖章后，真实变化批次完全不带 restamp
+        # ③ 版本已全部盖章后，真实变化批次完全不带 restamp。
+        # 用"新增文件"而不是原文件改内容：原地写入不改目录 mtime，POSIX 上被动同步
+        # 按设计看不见它（只有校验能发现），换成新增文件后两个平台口径一致。
         batches.clear()
         engine.spec.max_dirs_per_sync = DEFAULT_MAX_DIRS
-        (self.root / 'd2' / 'a.jpg').write_bytes(b'y' * 32)
+        self._write('d2/c.jpg', b'y' * 32)
         third = self._sync()
-        self.assertEqual(third['changed'], 1, third)
+        self.assertEqual(third['added'], 1, third)
         self.assertEqual(third['restamped'], 0, third)
         self.assertTrue(batches, '真实变化必须交给 derive')
         self.assertTrue(all('restamp' not in item for batch in batches for item in batch),
                         batches)
-        self.assertEqual([item['key'] for batch in batches for item in batch], ['d2/a.jpg'])
+        self.assertEqual([item['key'] for batch in batches for item in batch], ['d2/c.jpg'])
 
     def test_state_exposes_stale_dirs_count(self):
         """`stale_dirs` 是诊断"还有多少目录没按当前规则重算"的直接读数。"""
