@@ -371,6 +371,7 @@ jobs:
             - Windows 便携版：\`Cubby-windows-x64.zip\`，解压即用
             - Linux 便携版：\`Cubby-linux-x64.tar.gz\`，解压即用
           - 构建来源：${RUN_URL}
+          - 升级：下载 migrate-to-2.0 放到旧版本目录旁运行（默认只预演，加 --apply 落盘）
 
           校验下载完整性：
           \`\`\`powershell
@@ -400,4 +401,7 @@ jobs:
               gh release create "$TAG" dist/* --draft --title "$TAG" --notes "$notes"
               ;;
           esac
+          # 1.4.0 → 2.0 的迁移脚本作为独立资产挂在同一个 Release 上：草稿与新建两条分支
+          # 都会走到这里；已发布分支在上面的 case 里已经 exit 1，照旧拒绝覆盖。
+          gh release upload "$TAG" docs/Releases/migrate-to-2.0.cmd docs/Releases/migrate-to-2.0.ps1 --clobber
           echo "本次运行的产物同时留在 workflow artifact 里（7 天），需要先人工验证可从该运行页面下载。"

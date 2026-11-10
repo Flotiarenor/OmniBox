@@ -171,6 +171,58 @@ zip 与安装器的分工：
 清单字段、ARP 对齐、凭据与自动更新时序见
 [distribution-channels.md](./distribution-channels.md)。
 
+### 3.4 从 1.4.0 迁移数据
+
+1.4.0 的产物是旧名 `OmniBox-windows-x64.zip`，解压到哪里都行；它的可写数据放在**可执行文件旁边**：
+
+| 1.4.0（旧，程序目录旁） | 2.0（默认数据根） | 是否迁移 |
+| --- | --- | --- |
+| `.config/app.json` 或 `.config/app.yaml` | `%LOCALAPPDATA%\Cubby\.config\` | 是 |
+| `.config/auth_token.txt`、`principals.json`、`shell.json`、`plugins/*.json` | 同上 | 是 |
+| `.config/webview/` | 同上 | 否（WebView2 的 profile 与 HTTP 缓存，2.0 自己重建） |
+| `.config/logs/` | 同上 | 默认否，`--include-logs` 才带 |
+| `data/`（索引、`.cache`、`group-mesh/identity`） | `%LOCALAPPDATA%\Cubby\data\` | 是 |
+| `plugins/`（内置插件副本 + 用户自装插件） | `%LOCALAPPDATA%\Cubby\plugins\` | 默认否，`--include-plugins` 才带 |
+| 媒体库原文件 | 用户自己选的目录 | 不迁移、不移动 |
+
+1.x 的数据**不会被 2.0 自动读取**：2.0 只看数据根，因此换版本后要跑一次迁移。脚本随每个
+Release 提供两个文件：[migrate-to-2.0.cmd](Releases/migrate-to-2.0.cmd)（双击入口）与
+[migrate-to-2.0.ps1](Releases/migrate-to-2.0.ps1)（主体）。下载后放进旧版本目录或它的旁边，
+双击 `.cmd` 即可，不需要安装别的东西。
+
+**默认只预演。** 不加 `--apply` 时脚本只打印"将要复制什么、多大体积、哪些目标已有同名文件"，
+一个文件都不写；确认清单后带 `--apply` 再跑一次。
+
+| 参数 | 行为 |
+| --- | --- |
+| `--source <目录>` | 旧安装目录（含 `.config` 或 `data` 的那一层）；不给时依次试探脚本所在目录、它的上一级，都不像就报错并打印用法 |
+| `--dest <目录>` | 目标数据根，默认 `%LOCALAPPDATA%\Cubby`；数据根由 `CUBBY_HOME` 覆盖过时，把它指到同一路径 |
+| `--apply` | 真正写盘；不加只预演 |
+| `--include-logs` | 连 `.config/logs/` 一起搬 |
+| `--include-plugins` | 连旧 `plugins/` 一起搬（理由见下） |
+| `--force` | 目标已有同名文件时先备份再覆盖 |
+| `--move` | 迁移完成后删除**已迁移**的源文件（隐含 `--apply`）；默认不搬的 `.config/webview` 与 `.config/logs` 会保留，不会被顺手删掉 |
+
+退出码 `0` 成功（含预演）、`1` 参数或前置检查失败（源目录不对、`Cubby` / `OmniBox` 还开着、
+目标盘空间不足）、`2` 有复制失败项；日志写在 `%TEMP%\cubby-migrate-<时间戳>.log`。
+
+**默认不搬 `plugins/`。** 1.4.0 的 `plugins/` 是"内置插件副本 + 用户自装插件"混在一起的一层；
+2.0 的插件搜索顺序是 `<数据根>/plugins` 优先、`<_MEIPASS>/plugins` 其次（由 `paths.py` 的
+`get_plugin_search_dirs` 决定）。整目录复制过去会让 1.4.0 的内置插件盖掉 2.0 自带的那一份，
+症状是插件界面照常出现、后端接口对不上。脚本默认只列出旧 `plugins/` 的内容；确实要带用户自装
+插件时才加 `--include-plugins`，并在复制后删掉与 2.0 内置插件同名的目录。
+
+**`--force` 先备份。** 目标已有同名文件时默认跳过并计数，重复运行只补缺失项，因此可以反复跑；
+加 `--force` 才覆盖，覆盖前把目标文件复制到 `<dest>\.pre-migrate-backup-<yyyyMMdd-HHmmss>\`，
+保留原来的层级，需要时按同样的相对路径取回。
+
+**媒体库原文件不动。** 脚本只搬数据根里的状态（设置、令牌、索引、设备身份）。媒体目录在设置里
+按绝对路径记录，原文件留在用户自己选的目录里，不迁移、不移动、不复制。
+
+**迁移后校验。** 脚本结束时检查目标 `.config` 下存在 `app.json` 或 `app.yaml`，缺了会警告（说明
+源里本来就没有设置，2.0 会按首次运行处理）。落盘后启动 2.0：它只读数据根，旧目录可以整个删掉；
+卸载 2.0 默认保留 `%LOCALAPPDATA%\Cubby`。
+
 ## 4. Linux 分发
 
 ### 4.1 为什么这次不做 AppImage
@@ -262,6 +314,10 @@ Windows 构建（[release.yml](../.github/workflows/release.yml) 的 Windows bui
    打 tag。
 5. Linux 分支改为在 `debian:12` 容器里构建（glibc 2.36），并在同一镜像里起一次
    `--web-only` 探 `/health`；宿主的 setup-python 只服务工具脚本，不用于构建。
+6. publish job 在创建或刷新草稿 Release 之后，用
+   `gh release upload "$TAG" docs/Releases/migrate-to-2.0.cmd docs/Releases/migrate-to-2.0.ps1 --clobber`
+   把 1.4.0 → 2.0 的迁移脚本挂到同一个 Release 上；已发布过的 Release 在更早的分支里已经
+   报错退出，因此不会覆盖。
 
 冒烟与 `tools/check_build_tree.py` 的分工：后者校验的是 PyInstaller 产物目录
 （必需文件、禁止内容、`HIDDEN_IMPORTS`），安装器打的是同一棵树，因此
@@ -276,6 +332,7 @@ Windows 构建（[release.yml](../.github/workflows/release.yml) 的 Windows bui
 | `Cubby-windows-x64.zip` | Windows 便携版 | `Cubby-windows-x64.zip.sha256` |
 | `Cubby-linux-x64.tar.gz` | Linux 服务端形态（`--web-only`） | `Cubby-linux-x64.tar.gz.sha256` |
 | `Cubby-Setup-<版本>.exe` | Windows per-user 安装器 | `Cubby-Setup-<版本>.exe.sha256` |
+| `migrate-to-2.0.cmd` `migrate-to-2.0.ps1` | 1.4.0 → 2.0 数据迁移脚本（不随主压缩包打包，由 publish job 单独上传） | — |
 
 zip 与 tar.gz 的名字**不含版本号**，因此有稳定入口：
 
@@ -337,6 +394,7 @@ profile，以及本机访问令牌与设备身份；漫游目录会在每次登�
 | Scoop bucket | 设计定稿，未实装 | [distribution-channels.md](./distribution-channels.md) §4 | 建 `Flotiarenor/scoop-cubby` 并试装 |
 | Linux `install.sh` / systemd / `ghcr.io` 镜像 | 设计定稿，未实装 | [linux-distribution.md](./linux-distribution.md) | 按该文档 §8 的 A–E 段验收 |
 | Linux 产物的 glibc 基线 | **已实装** | [linux-distribution.md](./linux-distribution.md) §9、[ci-and-release.md](./ci-and-release.md) 的打包链路 | 首个用容器构建的 tar.gz 发布后，在 Debian 12 上实跑一次 |
+| 1.4.0 → 2.0 数据迁移脚本 | **已实装**（本机按七类场景实测过） | [migrate-to-2.0.ps1](Releases/migrate-to-2.0.ps1)、[migrate-to-2.0.cmd](Releases/migrate-to-2.0.cmd)、[release.yml](../.github/workflows/release.yml) 的 publish job | 在一台真装过 1.4.0 的机器上先预演再落盘，确认 2.0 读到设置与索引 |
 
 「已实装」指代码与发布链在同一次改动里落地；「设计定稿」指方案与判据已写进对应文档、
 还没有代码；「未实装」指只有约定、没有代码，不要按现状阅读。

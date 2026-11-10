@@ -555,6 +555,8 @@ RUF100（未使用的 noqa）会把这些标注判为冗余并删除——它们
    - **三类产物齐全**：`Cubby-Setup-<版本>.exe`、`Cubby-windows-x64.zip`、
      `Cubby-linux-x64.tar.gz`，并且每个都有各自的 `.sha256`。安装器与 zip 出自同一棵
      `check_build_tree.py` 校验过的产物树（见 §4）。
+   - **迁移脚本在**：`migrate-to-2.0.cmd` 与 `migrate-to-2.0.ps1` 由 publish job 在
+     建/刷新草稿之后单独上传（不在 `dist/*` 里），确认它们挂在同一份 Release 上。
    - **安装器冒烟在 Windows build job 里跑过**：`release.yml` 的 Windows 分支会用
      `/VERYSILENT` 装到一个临时目录（`/DIR` 覆盖默认位置）、确认 `Cubby.exe` 与
      `unins000.exe` 就位、再静默卸载并等目录消失。冒烟失败会让构建 job 直接失败，
