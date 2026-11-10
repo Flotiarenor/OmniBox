@@ -256,6 +256,11 @@ Windows 构建（[release.yml](../.github/workflows/release.yml) 的 Windows bui
    卸载，并等安装目录真的消失。冒烟失败让 job 直接红，而不是只打印日志。
 3. 安装器与 zip / tar.gz 分别上传 artifact，publish job 用 `merge-multiple: true`
    合并后按 `dist/*` 挂进草稿 Release。
+4. 安装器的编译与冒烟（第 1、2 步）抽在 `.github/actions/windows-installer` 里，
+   `package-smoke.yml` 调用同一份 —— 改 `docs/Releases/**` 时就会真编一次，不必等到
+   打 tag。
+5. Linux 分支改为在 `debian:12` 容器里构建（glibc 2.36），并在同一镜像里起一次
+   `--web-only` 探 `/health`；宿主的 setup-python 只服务工具脚本，不用于构建。
 
 冒烟与 `tools/check_build_tree.py` 的分工：后者校验的是 PyInstaller 产物目录
 （必需文件、禁止内容、`HIDDEN_IMPORTS`），安装器打的是同一棵树，因此
@@ -330,7 +335,7 @@ profile，以及本机访问令牌与设备身份；漫游目录会在每次登�
 | winget 清单 | 设计定稿，未实装 | [distribution-channels.md](./distribution-channels.md) | 先在临时机器用 `winget install --manifest` 试装 |
 | Scoop bucket | 设计定稿，未实装 | [distribution-channels.md](./distribution-channels.md) §4 | 建 `Flotiarenor/scoop-cubby` 并试装 |
 | Linux `install.sh` / systemd / `ghcr.io` 镜像 | 设计定稿，未实装 | [linux-distribution.md](./linux-distribution.md) | 按该文档 §8 的 A–E 段验收 |
-| Linux 产物的 glibc 基线 | **2.0 发布阻断项** | [linux-distribution.md](./linux-distribution.md) §9 | 改为 `debian:12` 容器构建（`python3.11`，glibc 2.36），并在 Debian 12 / Ubuntu 24.04 上验证 |
+| Linux 产物的 glibc 基线 | **已实装** | [linux-distribution.md](./linux-distribution.md) §9、[ci-and-release.md](./ci-and-release.md) 的打包链路 | 首个用容器构建的 tar.gz 发布后，在 Debian 12 上实跑一次 |
 
 「已实装」指代码与发布链在同一次改动里落地；「设计定稿」指方案与判据已写进对应文档、
 还没有代码；「未实装」指只有约定、没有代码，不要按现状阅读。

@@ -191,8 +191,11 @@ spec + `check_build_tree.py` 产物校验。插件矩阵按插件拆分，失败
 
 ### `package-smoke.yml` —— 打包链路冒烟
 
-只在 `docs/Releases/**`、`requirements*.txt`、`pyproject.toml` 等打包相关文件
-变动时触发，目的是让"打包坏了"在 PR 阶段暴露，而不是等到打 tag。
+只在 `docs/Releases/**`、`requirements*.txt`、`pyproject.toml`、`.github/actions/**` 等
+打包相关文件变动时触发，目的是让"打包坏了"在 PR 阶段暴露，而不是等到打 tag。
+两条判据与发版完全一致：Windows 分支编译一次安装器并做静默安装/卸载冒烟（与
+`release.yml` 共用 `.github/actions/windows-installer`），Linux 分支在 `debian:12`
+容器里构建、并在同一镜像里起一次 `--web-only` 探 `/health`。
 
 ### `release.yml` —— 半自动发布（自动构建，人工公开）
 
@@ -283,18 +286,21 @@ spec + `check_build_tree.py` 产物校验。插件矩阵按插件拆分，失败
   （含字节码与用户数据目录），并且会**解析产物 exe 里的 PYZ**，确认
   `HIDDEN_IMPORTS` 声明的纯 Python 模块真的打进去了 —— 插件是动态加载的，
   PyInstaller 找不到时只打一条 warning 就跳过，必须靠这道检查兜住。
-- **CI 里 Linux 构建必须用发行版 Python**（不能用 `actions/setup-python`）：
-  后者那份 libpython 与我们的 spec 不兼容，产物启动即报
+- **Linux 产物在 `debian:12` 容器里构建**：PyInstaller 不打包 glibc，产物继承构建机的
+  基线。runner 是 `ubuntu-latest`（24.04，glibc 2.39），在它上面构建出的 tar.gz 到
+  Debian 12 / Synology DSM 7 / TrueNAS SCALE（glibc 2.36）上会报
+  `version 'GLIBC_2.36' not found`（本机实测）。因此 `release.yml` 与
+  `package-smoke.yml` 的 Linux 分支用 `docker run ... debian:12` 跑 PyInstaller：
+  容器里装发行版 `python3`（3.11，满足 `requires-python`）+ venv，前端由宿主机构建后
+  经挂载点带进容器，产物基线因此是 2.36；再用同一个镜像起一次 `--web-only` 探
+  `/health`，证明它真的能跑，而不是只"文件齐全"。
+- **宿主机上的 `actions/setup-python` 只服务工具脚本**（`check_build_tree.py`、
+  `sha256`、`pip freeze`），不用于构建：那份 libpython 与我们的 spec 不兼容，产物启动即报
   `Failed to load Python shared library .../libpython3.12.so.1.0`（它会让
   PyInstaller 把 `_struct`/`_zlib` 嵌进 exe，bootloader 于是按 onefile 去
   `/tmp/_MEIxxx` 找 libpython；即便找到，初始化 `struct` 也会报
-  `Module object for struct is NULL!`）。因此 `release.yml` / `ci.yml` /
-  `package-smoke.yml` 里**产出二进制**的 job，Linux 分支统一走
-  `apt install python3 python3-venv binutils` +
-  `python3 -m venv "$RUNNER_TEMP/cubby-build-venv"`，再把 venv 的 `bin`
-  追加到 `GITHUB_PATH`（后续步骤里的 `python` 就是它）。venv 刻意放在工作区
-  **外面**：放仓库里会被 ruff 当源码扫（`extend-exclude` 里没有它）。
-  Windows 分支照旧用 setup-python；只跑测试/门禁的 job 也不受影响。
+  `Module object for struct is NULL!`）。`ci.yml` 的 `package` job 只做冒烟、不产出
+  发布物，仍在宿主机上构建。
 
 本地发布构建（沿用原脚本，已加严格模式）：
 
@@ -366,15 +372,22 @@ tar -tzf Cubby-linux-x64.tar.gz | grep -E '^Cubby/(\.config|data)'    # 应为�
    不占本地环境，且产物出自干净的 Linux 环境。
 2. **WSL2**（Windows 自带）：`wsl --install -d Ubuntu`，在发行版里
    `bash docs/Releases/build-release.sh`（需要 `python3-venv`、`node`/`npm`、`binutils`）。
-3. **Docker Desktop**：
+3. **Docker Desktop（与 CI 同一条路）**：在 `debian:12` 里跑 PyInstaller，前端先在宿主机构建：
    ```bash
-   docker run --rm -v "$PWD":/src -w /src ubuntu:22.04 bash -lc \
-     "apt-get update && apt-get install -y python3 python3-venv python3-pip nodejs npm binutils && bash docs/Releases/build-release.sh"
+   docker run --rm -v "$PWD:/src" -w /src debian:12 bash -lc '
+     apt-get update -qq && apt-get install -y -qq python3 python3-venv python3-pip binutils
+     python3 -m venv /tmp/venv && /tmp/venv/bin/pip install -q -r requirements-dev.txt
+     /tmp/venv/bin/python -m PyInstaller --workpath .build-work --distpath .build-dist \
+       --noconfirm --log-level WARN docs/Releases/cubby-linux.spec
+     mv -f .build-dist/Cubby/Cubby.bin .build-dist/Cubby/Cubby'
    ```
+   本机实测：产物在 `debian:12` 里正常启动并通过 `/health`，在 `ubuntu:22.04`
+   （glibc 2.35）里报 `version 'GLIBC_2.36' not found`。
 
-**glibc 基线**：PyInstaller **不**打包 glibc，产物只对新版 glibc 前向兼容。
-因此要在"你想支持的最旧发行版"上构建（WSL/Docker 里优先选 `ubuntu:22.04`，
-而不是最新版），否则老系统用户会遇到动态链接错误。CI 的 `ubuntu-latest` 同理。
+**glibc 基线**：PyInstaller **不**打包 glibc，产物只对新版 glibc 前向兼容，所以要在
+"你想支持的最旧发行版"上构建。发布用的 Linux 产物统一在 `debian:12` 容器里构建
+（glibc 2.36），覆盖 Debian 12、Synology DSM 7、TrueNAS SCALE 这些 NAS 目标；
+Ubuntu 22.04（2.35）不在范围内 —— 它的 `python3` 也只有 3.10，装不上 `pythonnet`。
 
 ---
 

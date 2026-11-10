@@ -19,7 +19,7 @@ PyInstaller 打包、产物校验与发布脚本。根 [AGENTS.md](../../AGENTS.
 - **不打运行时数据**：`data/`、`.config/`、`logs/` 属于用户数据，不进发行包。
 - **`HIDDEN_IMPORTS` 必须齐全**：插件源码里出现的每一个 `shell.backend.*` 与第三方模块都要登记，第三方包同时写进 `requirements.txt`。漏登记的表现是"构建全绿、装好后那个插件整个不出现"；门禁是 `python tools/check_packaging.py`，设计理由见 `spec_common.py` 顶部注释。
 - **用户数据不在安装目录**：非便携安装的数据根是 `%LOCALAPPDATA%\Cubby`（Linux 上是 `$XDG_DATA_HOME/cubby`），安装目录只放只读资源；便携模式由可执行文件旁的 portable.txt 显式声明，此时数据才落在可执行文件所在目录，便携产物运行过后不要直接压缩发布。
-- **安装器只在 CI 的 Windows build job 里编译**：`cubby.iss` 由 iscc 编译，本地不需要安装 Inno Setup；升级靠固定 AppId 覆盖同一安装目录，用户数据在 `%LOCALAPPDATA%\Cubby`（不在安装目录里），因此升级不迁移数据，卸载默认保留它。
+- **安装器只在 CI 里编译**：`cubby.iss` 由 iscc 编译，本地不需要安装 Inno Setup。编译、校验和与静默安装/卸载冒烟抽在 [`.github/actions/windows-installer`](../../.github/actions/windows-installer/action.yml) 里，`release.yml` 与 `package-smoke.yml` 共用同一份：改 `docs/Releases/**` 时打包冒烟就会真编一次，不必等到打 tag。升级靠固定 AppId 覆盖同一安装目录，用户数据在 `%LOCALAPPDATA%\Cubby`（不在安装目录里），因此升级不迁移数据，卸载默认保留它。
 
 ## 何时必须追加一次真实构建
 

@@ -189,32 +189,18 @@ jobs:
         with:
           ref: ${{ needs.verify.outputs.tag }}
 
-      # Windows 走 setup-python；Linux 刻意改用发行版 python3 + venv（原因见下一段）。
+      # 两个平台都用 setup-python：Linux 的**构建**在容器里做（见下面的 PyInstaller 步骤），
+      # 宿主这份 Python 只服务工具脚本（check_build_tree / sha256 / pip freeze）。
+      # 历史约束仍在：不能用 setup-python 那份 libpython 去构建 Linux 产物 —— 产物启动报
+      # "Failed to load Python shared library .../libpython3.12.so.1.0"，因为 PyInstaller
+      # 会把 _struct/_zlib 嵌进 exe，bootloader 按 onefile 去找 libpython。
       - uses: actions/setup-python@v5
-        if: runner.os == 'Windows'
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
-
-      # Linux 构建必须用发行版 Python：setup-python 那份 libpython 与本 spec 不兼容，
-      # 产物启动即失败（Failed to load Python shared library .../libpython3.12.so.1.0）。
-      # 成因：那份 Python 会让 PyInstaller 把 _struct/_zlib 嵌进 exe，bootloader 于是按
-      # onefile 去 /tmp/_MEIxxx 找 libpython；即使找到，libpython 初始化 struct 也会
-      # 报 "Module object for struct is NULL!"。发行版 python3.12 + venv 实测产物正常。
-      # 把 venv 的 bin 追加到 GITHUB_PATH，后续步骤里的 `python` 自动就是它。
-      - name: Linux 构建前置（发行版 Python + venv + binutils）
-        if: runner.os == 'Linux'
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq python3 python3-venv python3-pip binutils
-          # venv 放在工作区**外面**：放进仓库会被 ruff 之类的工具当成源码扫到
-          # （extend-exclude 里没有 .venv-build，实测 verify 的 ruff 直接炸掉）。
-          python3 -m venv "$RUNNER_TEMP/cubby-build-venv"
-          echo "$RUNNER_TEMP/cubby-build-venv/bin" >> "$GITHUB_PATH"
 
       - uses: actions/setup-node@v4
         with:
@@ -232,7 +218,8 @@ jobs:
           npm --prefix shell/frontend ci
           npm --prefix shell/frontend run build
 
-      - name: PyInstaller 打包
+      - name: PyInstaller 打包（Windows）
+        if: runner.os == 'Windows'
         run: >-
           python -m PyInstaller
           --workpath .build-work
@@ -241,13 +228,28 @@ jobs:
           --log-level WARN
           ${{ matrix.spec }}
 
-      - name: Linux：重命名可执行文件
+      # Linux 产物在 debian:12 容器里构建：PyInstaller 不打包 glibc，产物继承构建机的
+      # 基线。ubuntu-latest 是 24.04（glibc 2.39），在它上面构建出的 tar.gz 到
+      # Debian 12 / DSM 7 / TrueNAS SCALE（glibc 2.36）上会报
+      # "version `GLIBC_2.36' not found"（已实测）。debian:12 的 python3 是 3.11，
+      # 满足 requires-python；前端在宿主机构建后经挂载点进容器，容器里不需要 node。
+      - name: PyInstaller 打包（Linux，debian:12 容器）
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          test -f .build-dist/Cubby/Cubby.bin
-          mv .build-dist/Cubby/Cubby.bin .build-dist/Cubby/Cubby
-          chmod +x .build-dist/Cubby/Cubby
+          docker run --rm -v "$PWD:/src" -w /src debian:12 bash -lc '
+            set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq python3 python3-venv python3-pip binutils
+            python3 -m venv /tmp/venv
+            /tmp/venv/bin/pip install -q --upgrade pip
+            /tmp/venv/bin/pip install -q -r requirements-dev.txt
+            /tmp/venv/bin/python -m PyInstaller --workpath .build-work --distpath .build-dist --noconfirm --log-level WARN docs/Releases/cubby-linux.spec
+            mv -f .build-dist/Cubby/Cubby.bin .build-dist/Cubby/Cubby
+            chmod +x .build-dist/Cubby/Cubby
+            /tmp/venv/bin/pip freeze > .build-dist/Cubby/requirements.lock.txt
+          '
 
       - name: 校验产物内容
         run: >-
@@ -255,7 +257,34 @@ jobs:
           .build-dist/Cubby
           --expect-exe ${{ matrix.expect_exe }}
 
-      - name: 生成依赖快照（审计用）
+      # 只断言"文件齐全"证明不了动态链接：真的在目标发行版里起一次 --web-only，
+      # 探到 /health 才算过。它在 _OPEN_ENDPOINTS 里，不需要令牌。
+      - name: Linux 产物在 debian:12 里起得来
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/.build-dist/Cubby:/srv/Cubby:ro" -e CUBBY_HOME=/tmp/cubby-home debian:12 bash -lc '
+            set -euo pipefail
+            /srv/Cubby/Cubby --web-only --port 18080 >/tmp/cubby.log 2>&1 &
+            pid=$!
+            ok=0
+            for _ in $(seq 1 40); do
+              if (exec 3<>/dev/tcp/127.0.0.1/18080) 2>/dev/null; then ok=1; break; fi
+              sleep 0.5
+            done
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            if [ "$ok" != 1 ]; then
+              echo "::error::产物在 debian:12 里没有起来"
+              tail -20 /tmp/cubby.log
+              exit 1
+            fi
+            echo "产物在 debian:12 里启动并通过 /health"
+          '
+
+      # Windows 的依赖快照写在宿主；Linux 那份由构建容器写（记录的才是真正的构建环境）。
+      - name: 生成依赖快照（Windows）
+        if: runner.os == 'Windows'
         continue-on-error: true
         run: python -m pip freeze > .build-dist/Cubby/requirements.lock.txt
 
@@ -276,98 +305,24 @@ jobs:
         run: python -c "import hashlib,pathlib,sys; p=pathlib.Path(sys.argv[1]); print(hashlib.sha256(p.read_bytes()).hexdigest(), p.name)" "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
 
       # ── Windows 安装器（Inno Setup）────────────────────────────────────────
-      # 为什么 per-user（PrivilegesRequired=lowest）：安装位置与用户数据都在
-      # 当前用户目录下（%LOCALAPPDATA%），免管理员权限即可安装与覆盖升级，
-      # 发布链因此不需要任何提权步骤，也不会把文件写进 Program Files。
-      # 为什么放在依赖快照之后编译：安装器铺的是同一个 .build-dist/Cubby，
+      # 编译、校验和与静默安装/卸载冒烟都在 .github/actions/windows-installer 里，
+      # 与 package-smoke.yml 共用同一份：安装器的参数与冒烟判据只能有一个出处，
+      # 否则"发布链改了、冒烟没改"要等到打 tag 才暴露。
+      # 为什么放在依赖快照之后：安装器铺的是同一个 .build-dist/Cubby，
       # requirements.lock.txt 在那一步才写进去，这样它与 zip 里的内容一致。
-      - name: 安装 Inno Setup（并定位 iscc）
+      - name: 构建 Windows 安装器
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          choco install innosetup --no-progress -y
-          # 不能假设 iscc 在 PATH 上：choco 装的是机器级 PATH，当前进程读不到；
-          # choco 的 shim 也可能落在别的目录。先按命令找，再按默认安装位置找，
-          # 都找不到就失败 —— 静默跳过只会得到一个"没编出安装器"的绿。
-          $candidates = @()
-          $cmd = Get-Command iscc -ErrorAction SilentlyContinue
-          if ($cmd) { $candidates += $cmd.Source }
-          $candidates += "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          $candidates += "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
-          $iscc = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
-          if (-not $iscc) {
-            throw "choco 已安装 innosetup，但没有找到 ISCC.exe；试过 PATH、${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe、$env:ProgramFiles\Inno Setup 6\ISCC.exe"
-          }
-          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "ISCC: $iscc"
+        uses: ./.github/actions/windows-installer
+        with:
+          version: ${{ needs.verify.outputs.version }}
+          source-dir: .build-dist/Cubby
+          output-dir: .build-dist
+          artifact-name: Cubby-Setup-windows-x64
 
-      - name: 编译 Windows 安装器
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $repo = (Get-Location).Path
-          $sourceDir = Join-Path $repo '.build-dist\Cubby'
-          $outputDir = Join-Path $repo '.build-dist'
-          $version = '${{ needs.verify.outputs.version }}'
-          & $env:ISCC "/DAppVersion=$version" "/DSourceDir=$sourceDir" "/O$outputDir" 'docs/Releases/cubby.iss'
-          if ($LASTEXITCODE -ne 0) {
-            throw "ISCC 编译失败（退出码 $LASTEXITCODE）：docs/Releases/cubby.iss"
-          }
-          $setup = Join-Path $outputDir "Cubby-Setup-$version.exe"
-          if (-not (Test-Path $setup)) {
-            throw "ISCC 报告成功，但没有产出 $setup（核对 cubby.iss 的 OutputBaseFilename 与 /O 参数）"
-          }
-          Get-Item $setup | Select-Object Name, Length
-
-      # 与上面的产物校验和同一行命令、同一格式（<hex> <文件名>）。
-      - name: 生成安装器校验和
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: python -c "import hashlib,pathlib,sys; p=pathlib.Path(sys.argv[1]); print(hashlib.sha256(p.read_bytes()).hexdigest(), p.name)" ".build-dist/Cubby-Setup-${{ needs.verify.outputs.version }}.exe" > ".build-dist/Cubby-Setup-${{ needs.verify.outputs.version }}.exe.sha256"
-
-      # 为什么必须有冒烟：ISCC 编译通过只证明脚本语法与文件列表成立；
-      # "装完目标目录里有 Cubby.exe""卸载器能静默退出 0"是用户第一步就会踩到的
-      # 路径，只有真机装一次才能证明。失败必须让 job 红，不能只打印。
-      - name: 静默安装 / 卸载冒烟
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $setup = Join-Path (Get-Location).Path ".build-dist\Cubby-Setup-${{ needs.verify.outputs.version }}.exe"
-          $dir = Join-Path $env:RUNNER_TEMP 'cubby-setup-smoke'
-          $log = Join-Path $env:RUNNER_TEMP 'cubby-setup-install.log'
-          if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
-          $install = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
-            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
-            "/DIR=`"$dir`"", "/LOG=`"$log`""
-          )
-          if ($install.ExitCode -ne 0) {
-            throw "静默安装失败，退出码 $($install.ExitCode)（日志：$log）"
-          }
-          $exe = Join-Path $dir 'Cubby.exe'
-          if (-not (Test-Path $exe)) {
-            throw "静默安装后目标目录里没有 Cubby.exe：$dir"
-          }
-          $uninst = Join-Path $dir 'unins000.exe'
-          if (-not (Test-Path $uninst)) {
-            throw "静默安装后目标目录里没有 unins000.exe：$dir"
-          }
-          $uninstall = Start-Process -FilePath $uninst -Wait -PassThru -ArgumentList @(
-            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
-          )
-          if ($uninstall.ExitCode -ne 0) {
-            throw "静默卸载失败，退出码 $($uninstall.ExitCode)"
-          }
-          # Inno 的卸载器会把自己复制到临时目录再执行，父进程可能先返回 0；
-          # 只认退出码会漏掉"报成功但什么都没删"，所以再等安装目录真的消失。
-          $deadline = (Get-Date).AddSeconds(60)
-          while ((Test-Path $exe) -and ((Get-Date) -lt $deadline)) {
-            Start-Sleep -Milliseconds 500
-          }
-          if (Test-Path $exe) {
-            throw "静默卸载返回 0，但安装目录里仍有 Cubby.exe：$dir"
-          }
-          Write-Host '安装 / 卸载冒烟通过'
-
+      # zip / tar.gz 走各自的 artifact；安装器由上面那个 composite action 单独上传
+      # （同一个 upload-artifact 步骤的 path 列表对所有平台生效，无法只给 Windows
+      # 追加入口）。publish job 用 merge-multiple: true 合并全部 artifact 再按
+      # dist/* 收集，多一个名字不影响。
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
@@ -375,20 +330,6 @@ jobs:
           path: |
             ${{ matrix.artifact }}
             ${{ matrix.artifact }}.sha256
-          if-no-files-found: error
-          retention-days: 7
-
-      # 安装器单独一个 artifact：同一个 upload-artifact 步骤的 path 列表对所有
-      # 平台生效，无法只给 Windows 追加入口；publish job 用 merge-multiple: true
-      # 合并全部 artifact，多一个名字不影响 dist/* 的收集。
-      - name: 上传 Windows 安装器
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: Cubby-Setup-windows-x64
-          path: |
-            .build-dist/Cubby-Setup-${{ needs.verify.outputs.version }}.exe
-            .build-dist/Cubby-Setup-${{ needs.verify.outputs.version }}.exe.sha256
           if-no-files-found: error
           retention-days: 7
 

@@ -1,0 +1,145 @@
+name: Windows 安装器（Inno Setup）
+description: >-
+  把已构建好的产物目录用 docs/Releases/cubby.iss 打成 per-user 安装器，生成同名
+  .sha256，并做一次静默安装 / 卸载冒烟。release.yml 与 package-smoke.yml 共用这一份：
+  安装器的编译参数与冒烟判据只能有一个出处，否则"发布链改了、冒烟没改"这类漂移
+  要等到打 tag 才暴露。
+
+inputs:
+  source-dir:
+    description: 产物目录（仓库相对路径，例如 .build-dist/Cubby）
+    required: true
+  output-dir:
+    description: 安装器输出目录（仓库相对路径，例如 .build-dist）
+    required: true
+  version:
+    description: 安装器版本号；留空则取 tools/check_version.py --print
+    required: false
+    default: ''
+  artifact-name:
+    description: 上传的 artifact 名；留空则不上传
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # 版本号只有一个来源（pyproject.toml 的 [project].version）：调用方可以传，
+    # 不传就用发布链同一个脚本取，两条路径得到的是同一个值。
+    - name: 解析版本号
+      shell: pwsh
+      run: |
+        $version = '${{ inputs.version }}'.Trim()
+        if (-not $version) {
+          $version = ((& python tools/check_version.py --print) | Select-Object -First 1).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $version) {
+            throw '拿不到版本号：python tools/check_version.py --print 失败或输出为空'
+          }
+        }
+        "CUBBY_SETUP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        Write-Host "安装器版本: $version"
+
+    # 不能假设 iscc 在 PATH 上：choco 装的是机器级 PATH，当前进程读不到；choco 的
+    # shim 也可能落在别的目录。先按命令找，再按默认安装位置找，都找不到就失败 ——
+    # 静默跳过只会得到一个"没编出安装器"的绿。
+    - name: 安装 Inno Setup（并定位 iscc）
+      shell: pwsh
+      run: |
+        choco install innosetup --no-progress -y
+        $candidates = @()
+        $cmd = Get-Command iscc -ErrorAction SilentlyContinue
+        if ($cmd) { $candidates += $cmd.Source }
+        $candidates += "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+        $candidates += "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+        $iscc = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+        if (-not $iscc) {
+          throw "choco 已安装 innosetup，但没有找到 ISCC.exe；试过 PATH、${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe、$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+        }
+        "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        Write-Host "ISCC: $iscc"
+
+    - name: 编译安装器
+      shell: pwsh
+      run: |
+        $repo = (Get-Location).Path
+        $sourceDir = Join-Path $repo '${{ inputs.source-dir }}'
+        $outputDir = Join-Path $repo '${{ inputs.output-dir }}'
+        if (-not (Test-Path $sourceDir)) {
+          throw "产物目录不存在：$sourceDir（先跑 PyInstaller 与 check_build_tree.py）"
+        }
+        New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+        $version = $env:CUBBY_SETUP_VERSION
+        & $env:ISCC "/DAppVersion=$version" "/DSourceDir=$sourceDir" "/O$outputDir" 'docs/Releases/cubby.iss'
+        if ($LASTEXITCODE -ne 0) {
+          throw "ISCC 编译失败（退出码 $LASTEXITCODE）：docs/Releases/cubby.iss"
+        }
+        $setup = Join-Path $outputDir "Cubby-Setup-$version.exe"
+        if (-not (Test-Path $setup)) {
+          throw "ISCC 报告成功，但没有产出 $setup（核对 cubby.iss 的 OutputBaseFilename 与 /O 参数）"
+        }
+        Get-Item $setup | Select-Object Name, Length
+
+    # 与 release.yml 里其它产物校验和同一行命令、同一格式（<hex> <文件名>）。
+    - name: 生成安装器校验和
+      shell: pwsh
+      run: |
+        $version = $env:CUBBY_SETUP_VERSION
+        $setup = Join-Path '${{ inputs.output-dir }}' "Cubby-Setup-$version.exe"
+        python -c "import hashlib,pathlib,sys; p=pathlib.Path(sys.argv[1]); print(hashlib.sha256(p.read_bytes()).hexdigest(), p.name)" "$setup" > "$setup.sha256"
+        Get-Content "$setup.sha256"
+
+    # 为什么必须有冒烟：ISCC 编译通过只证明脚本语法与文件列表成立；
+    # "装完目标目录里有 Cubby.exe""卸载器能静默退出 0"是用户第一步就会踩到的路径，
+    # 只有真机装一次才能证明。失败必须让 job 红，不能只打印。
+    - name: 静默安装 / 卸载冒烟
+      shell: pwsh
+      run: |
+        $version = $env:CUBBY_SETUP_VERSION
+        $setup = Join-Path (Join-Path (Get-Location).Path '${{ inputs.output-dir }}') "Cubby-Setup-$version.exe"
+        $dir = Join-Path $env:RUNNER_TEMP 'cubby-setup-smoke'
+        $log = Join-Path $env:RUNNER_TEMP 'cubby-setup-install.log'
+        if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+        $install = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
+          '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
+          "/DIR=`"$dir`"", "/LOG=`"$log`""
+        )
+        if ($install.ExitCode -ne 0) {
+          throw "静默安装失败，退出码 $($install.ExitCode)（日志：$log）"
+        }
+        $exe = Join-Path $dir 'Cubby.exe'
+        if (-not (Test-Path $exe)) {
+          throw "静默安装后目标目录里没有 Cubby.exe：$dir"
+        }
+        $uninst = Join-Path $dir 'unins000.exe'
+        if (-not (Test-Path $uninst)) {
+          throw "静默安装后目标目录里没有 unins000.exe：$dir"
+        }
+        $uninstall = Start-Process -FilePath $uninst -Wait -PassThru -ArgumentList @(
+          '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+        )
+        if ($uninstall.ExitCode -ne 0) {
+          throw "静默卸载失败，退出码 $($uninstall.ExitCode)"
+        }
+        # Inno 的卸载器会把自己复制到临时目录再执行，父进程可能先返回 0；只认退出码
+        # 会漏掉"报成功但什么都没删"，所以再等安装目录真的消失。
+        $deadline = (Get-Date).AddSeconds(60)
+        while ((Test-Path $exe) -and ((Get-Date) -lt $deadline)) {
+          Start-Sleep -Milliseconds 500
+        }
+        if (Test-Path $exe) {
+          throw "静默卸载返回 0，但安装目录里仍有 Cubby.exe：$dir"
+        }
+        Write-Host '安装 / 卸载冒烟通过'
+
+    - name: 上传安装器
+      if: inputs.artifact-name != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        # 用通配而不是拼版本号：artifact 路径里避免依赖前面步骤写在 GITHUB_ENV 里的
+        # 值，少一处"表达式取不到就传空"的失败面；一次运行只会产出一个版本。
+        path: |
+          ${{ inputs.output-dir }}/Cubby-Setup-*.exe
+          ${{ inputs.output-dir }}/Cubby-Setup-*.exe.sha256
+        if-no-files-found: error
+        retention-days: 7

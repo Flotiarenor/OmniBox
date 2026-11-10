@@ -284,14 +284,13 @@ E 段另有两项人工判据：浏览器打开 `http://127.0.0.1:18080` 要能�
 
 ## 9. 风险与取舍
 
-- **glibc 基线（2.0 发布阻断项）**：tar.gz 由 `ubuntu-latest`（Ubuntu 24.04，glibc 2.39）构建，产物要求
-  目标机 glibc ≥ 构建机的 glibc —— Debian 12（2.36）、Synology DSM 7、TrueNAS SCALE 这些 NAS 目标全会
-  动态链接失败，而它们正是 Linux 的主要用户。机制选**容器化构建**：在 `ubuntu-latest` 上跑 `debian:12`
-  容器（`python3` 是 3.11，满足 `requires-python`），前端仍在宿主机构建、把 `dist` 挂进容器，再用容器里
-  的 venv 跑 PyInstaller，产物由挂载点回到工作区，基线降到 2.36。不能用"把 job 换到 `ubuntu-22.04`"（它的
-  3.10 装不上 `pythonnet`），也不推荐只在 `install.sh` 里比对 `getconf GNU_LIBC_VERSION`（提示只能解释
-  失败）。落位前要单独验证一次：产物在 Debian 12 与 Ubuntu 24.04 上都起得来，`install.sh` 的启动冒烟照样
-  通过。
+- **glibc 基线（已实装）**：发布用的 Linux 产物在 `debian:12` 容器里构建（`python3.11`、
+  glibc 2.36），覆盖 Debian 12 / Synology DSM 7 / TrueNAS SCALE。原因与证据：在
+  `ubuntu-latest`（24.04，glibc 2.39）上构建出的 tar.gz 到那些机器上会报
+  `version 'GLIBC_2.36' not found`；改用容器后，产物在 `debian:12` 里启动并通过
+  `/health`，在 `ubuntu:22.04`（2.35）里仍失败 —— 该发行版的 `python3` 是 3.10，本来
+  也不满足 `requires-python`。构建与冒烟步骤在 `release.yml` 与 `package-smoke.yml` 的
+  Linux 分支，机制见 [ci-and-release.md](./ci-and-release.md) 的打包链路一节。
 - **无签名**：`.sha256` + HTTPS 是唯一凭据，脚本与镜像都不验 GPG 签名，发布账号被接管时校验值也会一起被换；与 Windows 侧同一风险，脚本无法消除。
 - **镜像体积**：slim 基镜像 + 全量 `requirements.txt`（含 Linux 用不到的 `pywebview` / `pythonnet`）+ 前端 dist；瘦身要新增依赖文件，属独立改动。
 - **多架构维护成本**：每加一个架构就多一份要验收的运行时与本地无法复现的调试路径；本期只做 amd64。
