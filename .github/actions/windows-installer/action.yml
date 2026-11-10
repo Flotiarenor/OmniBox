@@ -87,6 +87,12 @@ runs:
         $setup = Join-Path '${{ inputs.output-dir }}' "Cubby-Setup-$version.exe"
         python -c "import hashlib,pathlib,sys; p=pathlib.Path(sys.argv[1]); print(hashlib.sha256(p.read_bytes()).hexdigest(), p.name)" "$setup" > "$setup.sha256"
         Get-Content "$setup.sha256"
+        # 复制到工作区根目录供上传：upload-artifact v4 默认排除隐藏路径，而
+        # .build-dist 是点开头的目录 —— 通配符形式（.build-dist/Cubby-Setup-*.exe）
+        # 会在隐藏目录段上被过滤，表现为"文件明明存在却 No files were found"。
+        # 放到根目录与 zip 的落点一致，也不依赖那个过滤语义。
+        Copy-Item -Path $setup, "$setup.sha256" -Destination (Get-Location).Path -Force
+        Get-ChildItem -Path (Get-Location).Path -Filter 'Cubby-Setup-*' | Select-Object Name, Length
 
     # 为什么必须有冒烟：ISCC 编译通过只证明脚本语法与文件列表成立；
     # "装完目标目录里有 Cubby.exe""卸载器能静默退出 0"是用户第一步就会踩到的路径，
@@ -136,10 +142,10 @@ runs:
       uses: actions/upload-artifact@v4
       with:
         name: ${{ inputs.artifact-name }}
-        # 用通配而不是拼版本号：artifact 路径里避免依赖前面步骤写在 GITHUB_ENV 里的
-        # 值，少一处"表达式取不到就传空"的失败面；一次运行只会产出一个版本。
+        # 从工作区根目录取：上一步已把安装器与 .sha256 复制到那里，避开
+        # upload-artifact 对隐藏路径（.build-dist）的默认过滤。一次运行只会产出一个版本。
         path: |
-          ${{ inputs.output-dir }}/Cubby-Setup-*.exe
-          ${{ inputs.output-dir }}/Cubby-Setup-*.exe.sha256
+          Cubby-Setup-*.exe
+          Cubby-Setup-*.exe.sha256
         if-no-files-found: error
         retention-days: 7
