@@ -119,8 +119,9 @@ Release tag 与界面上显示的版本都从这一处派生。链路分三步�
 [update-check.md](./update-check.md)。两种取法拿到的是同一个数，因为来源只有
 `pyproject.toml` 一处。
 
-「关于」段当前写着"更新需要手动下载安装，应用本身不会联网检查或自动更新"。在检查
-更新落地（§5）之前这句话是准确的，不要提前改掉。
+「关于」段现在有「检查更新」：由用户点击触发，只提示与下载校验，不自动安装；一键安装属于
+2.1（见 [update-check.md](./update-check.md) 的 §7）。版本比较、资产选择与安装形态判定都在
+[update_check.py](../shell/backend/update_check.py)，前端只把返回的 `code` 投影成一段状态行。
 
 ## 3. Windows 安装方式
 
@@ -203,11 +204,11 @@ python main.py --web-only        # 默认 http://127.0.0.1:18080
 
 两者都还没有仓库内的脚本或工作流步骤，状态见 §8。暂不做 AppImage 的理由同 §4.1。
 
-## 5. 更新检查（未实装，先定边界）
+## 5. 更新检查（A / B 已实装）
 
-应用内检查更新尚未实装。完整的接口契约、失败分类、形态判定、状态机与落地拆分见
-[update-check.md](./update-check.md)；本节只定不能越过的边界，避免实现时顺手做成
-"静默自动升级"。
+应用内检查更新的 A（检查与提示）与 B（下载与校验）已实装；完整的接口契约、失败分类、
+形态判定、状态机与落地拆分见 [update-check.md](./update-check.md)，C（调起安装器）与
+D（zip 自替换）排到 2.1。下面四条是不能越过的边界，避免实现时顺手做成"静默自动升级"。
 
 **接口**：`GET https://api.github.com/repos/Flotiarenor/Cubby/releases/latest`。
 GitHub 的匿名调用限流是**每小时 60 次**（按来源 IP），这个数值决定了下面几条。
@@ -330,7 +331,7 @@ profile，以及本机访问令牌与设备身份；漫游目录会在每次登�
 | --- | --- | --- | --- |
 | M1：数据根与安装目录解耦（`CUBBY_HOME` / 开发模式 / 便携 marker / 默认数据根） | **已实装** | [paths.py](../shell/backend/paths.py)、`tests/test_paths_user_data.py` | 由发布说明告知用户"升级不需要搬数据" |
 | M2：Windows Inno Setup 安装器与发布链接入 | **已实装**（本机实测编译、静默安装与卸载） | [cubby.iss](Releases/cubby.iss)、[release.yml](../.github/workflows/release.yml) 的 Windows build（安装 + 冒烟 + `.sha256`） | CI 首跑确认 iscc 定位与冒烟；再做一次跨版本覆盖安装 |
-| 应用内检查更新（A 检查与提示 / B 下载与校验） | 设计定稿，未实装 | [update-check.md](./update-check.md)，Lead 已定 2.0 只做 A、B | 按该文档 §12 的 A、B 两步落地 |
+| 应用内检查更新（A 检查与提示 / B 下载与校验） | **已实装** | [update-check.md](./update-check.md)、`shell/backend/update_check.py`、`tests/test_update_check.py` | 真机点一次，确认 `cubby.log` 有一行检查结果 |
 | 应用内一键升级（安装器路径 / zip 自替换） | 设计定稿，排到 2.1 | [update-check.md](./update-check.md) §7、§12 的 C、D | 先在真机验证覆盖安装与目录改名 |
 | winget 清单 | 设计定稿，未实装 | [distribution-channels.md](./distribution-channels.md) | 先在临时机器用 `winget install --manifest` 试装 |
 | Scoop bucket | 设计定稿，未实装 | [distribution-channels.md](./distribution-channels.md) §4 | 建 `Flotiarenor/scoop-cubby` 并试装 |
