@@ -470,6 +470,22 @@ def _resolve_port(config) -> int:
         return port
 
 
+def _brand_icon_path() -> str:
+    """窗口图标（默认配色）。
+
+    为什么必须显式传：不传时 pywebview 的 winforms 后端用 `ExtractIconW` 从
+    `sys.executable` 取图标 —— 打包后那是 Cubby.exe（构建期已带图标，没问题），
+    但开发态那是 python.exe，窗口会顶着 Python 的图标。传一份 `.ico` 让两者一致。
+
+    为什么是 `.ico` 而不是 `.png`：winforms 后端用 `System.Drawing.Icon(path)` 读取，
+    该类型只认 ICO。
+
+    冻结形态下 `res/` 由 spec 收集到 `_MEIPASS`，与仓库里同构。
+    """
+    root = Path(getattr(sys, '_MEIPASS', '')) if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
+    return str(root / 'res' / 'brand' / 'cubby-blue.ico')
+
+
 def _webview_storage_dir() -> str:
     """WebView2 的持久化 UserDataFolder；不可用时返回空串（退回 pywebview 默认）。
 
@@ -601,7 +617,8 @@ def _run_desktop_window(config, manager, api, host, port):
     # 那条通道因此继续给出"没有桌面窗口"的明确拒绝）
     register_desktop_window()
     webview.start(debug=not getattr(sys, 'frozen', False), http_server=True,
-                  private_mode=False, storage_path=str(_webview_storage_dir()))
+                  private_mode=False, storage_path=str(_webview_storage_dir()),
+                  icon=_brand_icon_path())
     # 这一行必须留在 `webview.start()` **之后**：它返回即"用户正常关窗退出"。
     # 异常展开（启动失败 / 崩溃）会跳过这里，进程被强杀同样不会执行 —— 「上次离开的
     # 页面」只记安全退出的值，正是要靠这个位置来保证。浏览器与

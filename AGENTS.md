@@ -18,6 +18,7 @@ venv/bin/python tools/check_version.py
 venv/bin/python tools/check_plugins.py
 venv/bin/python tools/check_plugin_layering.py
 venv/bin/python tools/build_icons.py --check
+venv/bin/python tools/build_brand.py --check
 venv/bin/python tools/check_packaging.py
 venv/bin/python tools/check_npm_audit.py
 venv/bin/python tools/check_private_paths.py

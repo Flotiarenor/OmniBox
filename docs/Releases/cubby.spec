@@ -43,6 +43,9 @@ exe = EXE(
     [],
     [],
     name='Cubby',
+    # 可执行文件的图标：不设时是 PyInstaller 的默认图标——任务栏、标题栏、Alt+Tab
+    # 与资源管理器里看到的都会是它。这个文件由 tools/build_brand.py 生成。
+    icon=str(PROJECT_ROOT / 'res' / 'brand' / 'cubby-blue.ico'),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

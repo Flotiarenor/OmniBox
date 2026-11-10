@@ -210,6 +210,9 @@ jobs:
       - name: 图标 sprite 一致性（sprite ↔ icon_data ↔ 引用）
         run: python tools/build_icons.py --check
 
+      - name: 应用图标与安装器图一致性（res/brand ↔ 生成脚本）
+        run: python tools/build_brand.py --check
+
       - name: 测试文件可运行性（tests/test_*.py 必须真的有用例）
         run: python tools/check_tests.py
 

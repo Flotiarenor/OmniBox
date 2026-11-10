@@ -76,13 +76,18 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayIcon={app}\Cubby.exe
+; 安装器自身的图标；不设时用的是 Inno Setup 的内置图标。
+SetupIconFile=..\..\res\brand\cubby-blue.ico
 
-; 品牌：左侧大图 164×314、右上角小图 55×55，都是入仓 PNG（Inno Setup 6.5.2 起支持
-; PNG）。两张图的底色与 WizardImageBackColor 相同，图片被按比例留边时不露白框。
-WizardImageFile=installer-banner.png
-WizardSmallImageFile=installer-small.png
-WizardImageBackColor=#121218
-WizardSmallImageBackColor=#121218
+; 品牌：向导左侧大图与右上角小图都是入仓 PNG（Inno Setup 6.5.2 起支持 PNG），
+; 由 tools/build_brand.py 生成，构建期不重新画、不依赖字体。每个位置给三档 DPI，
+; Setup 会挑最接近当前 DPI 的那一份，避免被拉伸糊掉（6.6 起 100% DPI 的图像区
+; 是 202×386，更早的版本才是 164×314）。图片底色与 *BackColor 完全一致，
+; 比例留边时不露色差。
+WizardImageFile=installer-banner-100.png,installer-banner-125.png,installer-banner-150.png
+WizardSmallImageFile=installer-small-100.png,installer-small-125.png,installer-small-150.png
+WizardImageBackColor=#1B1E27
+WizardSmallImageBackColor=#1B1E27
 
 ; 安装前说明页。文件按 UTF-8 with BOM 保存：不依赖编译器的无 BOM 探测，
 ; 中文在哪个 Inno Setup 版本上都不会被按 ANSI 代码页解释成乱码。
