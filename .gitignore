@@ -28,10 +28,15 @@ chromedriver/
 se-metadata.json
 
 docs/Releases/*.exe
+docs/Releases/*.exe.sha256
 docs/Releases/*.7z
 docs/Releases/*.zip
+docs/Releases/*.zip.sha256
+docs/Releases/*.tar.gz
+docs/Releases/*.tar.gz.sha256
 # Inno Setup 安装器（Windows build job 的 iscc 产物，发布链只从 CI 上传）
 Cubby-Setup-*.exe
+Cubby-Setup-*.exe.sha256
 # 发布构建的输出树（PyInstaller 的 onedir 产物，构建时才有）
 docs/Releases/cubby/
 docs/Releases/__pycache__/
@@ -46,4 +51,3 @@ Cubby-OneClick.ps1
 .build-linux/
 docs/Releases/Cubby/
 docs/Releases/Cubby.bin
-docs/Releases/*.tar.gz
