@@ -28,6 +28,18 @@
     搬什么：
       `.config/`（不含 webview，默认不含 logs）与 `data/` 整个目录。
 
+    另外重封装的（不是复制）：
+      `data/group-mesh/identity/principal.json` 与 `devices/*.json` 在 1.4.0 里用旧格式
+      标识与旧 DPAPI 熵保护，2.0 只认新的，原样搬过去的表现是"身份读不出来"：日志报
+      「字段 name 缺失或不是字符串」，界面显示未初始化，点初始化又因为目录里已有
+      principal.json 被拒绝覆盖私钥。脚本在复制之后把目标数据根里的这类文件逐层剥开、
+      按当前格式重新封装，并在收尾校验"身份真的能解出来"；原文件先备份到
+      `<dest>\.pre-migrate-backup-<时间戳>\`。
+
+      这一步依赖 DPAPI，而 DPAPI 的密文与 Windows 用户绑定：必须用**建立身份的那个
+      用户**在本机运行。换用户或换机器都解不开（脚本会报"解保护失败"并保留原文件，
+      不会静默跳过）。keyring / passphrase 保护的文件同样报出来交人工处理。
+
     不搬什么：
       `.config/webview/`   WebView2 的浏览器 profile 与 HTTP 缓存，2.0 会重建。
       `.config/logs/`      默认不搬，要留历史日志时加 --include-logs。
@@ -78,6 +90,10 @@ $script:UsageLines = @(
     '  --move             迁移完成后删除已迁移的源文件（隐含 --apply；未迁移的 webview/logs 保留）',
     '  --help             打印这段说明',
     '',
+    '另外：data\group-mesh\identity 下的密钥文件会从 1.4.0 的信封重封装成 2.0 的格式',
+    '      （DPAPI，需在同一台机器上用建立身份的那个 Windows 用户运行；原文件备份在',
+    '      <dest>\.pre-migrate-backup-<时间戳>\）',
+    '',
     '退出码：0 成功（含预演）；1 参数或前置检查失败；2 有复制失败项'
 )
 
@@ -101,6 +117,164 @@ function Format-Size {
     if ($Bytes -ge 1MB) { return ('{0:N2} MB' -f ($Bytes / 1MB)) }
     if ($Bytes -ge 1KB) { return ('{0:N1} KB' -f ($Bytes / 1KB)) }
     return ([string]$Bytes + ' B')
+}
+
+# ── 身份密钥信封（1.4.0 → 2.0）───────────────────────────────────────────────
+# 1.4.0 的 principal.json 与 devices/*.json 是"旧格式标识 + 旧 DPAPI 熵"的信封，
+# 2.0 的 secret_store 只认新标识与新熵。判据与重封装都收在下面几个函数里，预演与
+# 落盘用同一份实现，避免两边给出不同结论。
+$script:DpapiLoadError = ''
+try {
+    # Windows PowerShell 5.1 不自动加载 System.Security，ProtectedData 需要显式引入；
+    # PowerShell 7 已内置该类型。先按类型名探测，避免每次都触发一次程序集加载。
+    if ($null -eq ('System.Security.Cryptography.ProtectedData' -as [type])) {
+        Add-Type -AssemblyName System.Security -ErrorAction Stop
+    }
+} catch {
+    $script:DpapiLoadError = $_.Exception.Message
+}
+
+$script:LegacySecretFormat = 'omnibox-secret-v1'
+$script:CurrentSecretFormat = 'cubby-secret-v1'
+$script:LegacySecretEntropy = 'omnibox.group-mesh.secret.v1'
+$script:CurrentSecretEntropy = 'cubby.group-mesh.secret.v1'
+$script:IdentityFailures = 0
+$script:RewrappedKeys = 0
+
+# 只列身份目录里**受保护**的那两个落点：principal.json 与 devices/*.json。
+# roster / shares / registry 等是明文 JSON，不是信封，不能当密文重写。
+function Get-IdentityKeyFiles {
+    param([string]$DataRoot)
+
+    $files = New-Object System.Collections.ArrayList
+    $identityDir = Join-Path (Join-Path (Join-Path $DataRoot 'data') 'group-mesh') 'identity'
+    if (-not (Test-Path -LiteralPath $identityDir -PathType Container)) { return @() }
+
+    $principal = Join-Path $identityDir 'principal.json'
+    if (Test-Path -LiteralPath $principal -PathType Leaf) {
+        [void]$files.Add(@{
+            Rel = 'data\group-mesh\identity\principal.json'
+            Path = $principal
+        })
+    }
+
+    $devicesDir = Join-Path $identityDir 'devices'
+    if (Test-Path -LiteralPath $devicesDir -PathType Container) {
+        foreach ($entry in @(Get-ChildItem -LiteralPath $devicesDir -Filter '*.json' -File -Force -ErrorAction SilentlyContinue)) {
+            [void]$files.Add(@{
+                Rel = ('data\group-mesh\identity\devices\' + $entry.Name)
+                Path = $entry.FullName
+            })
+        }
+    }
+    return @($files)
+}
+
+# 逐层剥开信封，返回真身字节、层数与是否见过旧格式。只支持 dpapi：keyring /
+# passphrase 在 PowerShell 侧没有对应实现，遇到就明确报出来交人工处理。
+# 判据与重封装收在同一个函数组里，预演与落盘用同一份实现。
+function Get-EnvelopeInfo {
+    param([string]$Path)
+
+    $result = @{
+        Error = ''
+        Layers = 0
+        SawLegacy = $false
+        Plain = [byte[]]@()
+    }
+
+    $current = [System.IO.File]::ReadAllBytes($Path)
+    $result.Plain = $current
+
+    if ($script:DpapiLoadError -ne '') {
+        $result.Error = ('当前 PowerShell 加载不了 System.Security.Cryptography.ProtectedData：' + $script:DpapiLoadError + '（请改用 Windows PowerShell 5.1 或 PowerShell 7）')
+        return $result
+    }
+
+    while ($true) {
+        $obj = $null
+        try {
+            $obj = ([System.Text.Encoding]::UTF8.GetString($current) | ConvertFrom-Json -ErrorAction Stop)
+        } catch {
+            break
+        }
+        if ($null -eq $obj) { break }
+        $formatProp = $obj.PSObject.Properties['format']
+        $dataProp = $obj.PSObject.Properties['data']
+        if ($null -eq $formatProp -or $null -eq $dataProp) { break }
+
+        $format = [string]$formatProp.Value
+        $protectorProp = $obj.PSObject.Properties['protector']
+        $protector = ''
+        if ($null -ne $protectorProp) { $protector = [string]$protectorProp.Value }
+        if ($protector -ne 'dpapi') {
+            $result.Error = ('信封用 ' + $protector + ' 保护，本脚本只处理 dpapi')
+            return $result
+        }
+        if ($format -eq $script:LegacySecretFormat) {
+            $entropy = $script:LegacySecretEntropy
+            $result.SawLegacy = $true
+        } elseif ($format -eq $script:CurrentSecretFormat) {
+            $entropy = $script:CurrentSecretEntropy
+        } else {
+            $result.Error = ('信封格式标识不认识：' + $format)
+            return $result
+        }
+
+        try {
+            $blob = [Convert]::FromBase64String([string]$dataProp.Value)
+            $current = [System.Security.Cryptography.ProtectedData]::Unprotect(
+                $blob,
+                [System.Text.Encoding]::UTF8.GetBytes($entropy),
+                [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+        } catch {
+            $result.Error = ('解保护失败（DPAPI 密文与 Windows 用户绑定，换用户或换机器都解不开）：' + $_.Exception.Message)
+            return $result
+        }
+
+        $result.Layers++
+        $result.Plain = $current
+        if ($result.Layers -gt 4) {
+            $result.Error = '信封层数超过 4 层，拒绝继续处理'
+            return $result
+        }
+    }
+
+    return $result
+}
+
+# 按当前格式重新封装：写回"一层新信封 + 原本的真身字节"，因此多层嵌套（旧信封被
+# 上一版脚本二次包过）也会被压平成一层。JSON 交给 ConvertTo-Json 序列化，值不变。
+function Set-KeyEnvelope {
+    param([string]$Path, [byte[]]$Plain)
+
+    $blob = [System.Security.Cryptography.ProtectedData]::Protect(
+        $Plain,
+        [System.Text.Encoding]::UTF8.GetBytes($script:CurrentSecretEntropy),
+        [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+    $envelope = [ordered]@{
+        format = $script:CurrentSecretFormat
+        protector = 'dpapi'
+        data = [Convert]::ToBase64String($blob)
+    }
+    [System.IO.File]::WriteAllText($Path, (($envelope | ConvertTo-Json -Compress) + "`r`n"), $script:Utf8NoBom)
+}
+
+# 回读校验：能解出来、是 JSON、带 name 字段，才算 2.0 读得懂。空字符串表示通过。
+function Test-KeyEnvelopeReadable {
+    param([string]$Path)
+
+    $info = Get-EnvelopeInfo -Path $Path
+    if ($info.Error -ne '') { return $info.Error }
+    if ($info.Layers -eq 0) { return '' }
+    $obj = $null
+    try {
+        $obj = ([System.Text.Encoding]::UTF8.GetString($info.Plain) | ConvertFrom-Json -ErrorAction Stop)
+    } catch {
+        return '解出来的内容不是 JSON'
+    }
+    if ($null -eq $obj -or $null -eq $obj.PSObject.Properties['name']) { return '解出来的内容没有 name 字段' }
+    return ''
 }
 
 function Resolve-AbsolutePath {
@@ -473,7 +647,35 @@ if ($hasPlugins -and -not $includePlugins) {
     Write-Log '      只想要用户自装插件时，复制后手工删掉与 2.0 内置插件同名的目录。' 'Yellow'
 }
 
-# ── 8. 执行或结束预演 ───────────────────────────────────────────────────────
+# ── 8. 身份密钥信封：预演报告 ───────────────────────────────────────────────
+# 这一段只读判断哪些文件需要在落盘时重封装。预演按源目录判断（那是 1.4.0 写的
+# 位置），落盘时按目标数据根执行 —— 2.0 读的是目标数据根。
+$identityScan = @(Get-IdentityKeyFiles -DataRoot $source)
+$legacyCount = 0
+Write-Log ''
+Write-Log ('[身份密钥] ' + $source) 'Cyan'
+if ($identityScan.Count -eq 0) {
+    Write-Log '      源里没有 data\group-mesh\identity，没有需要重封装的身份（首次安装属正常）' 'DarkGray'
+} else {
+    foreach ($target in $identityScan) {
+        $info = Get-EnvelopeInfo -Path $target.Path
+        if ($info.Error -ne '') {
+            Write-Log ('      [问题] ' + $target.Rel + '：' + $info.Error) 'Red'
+        } elseif ($info.Layers -eq 0) {
+            Write-Log ('      [明文] ' + $target.Rel + '：2.0 加载时会自行升级为受保护格式') 'DarkYellow'
+        } elseif (-not $info.SawLegacy -and $info.Layers -eq 1) {
+            Write-Log ('      [无需处理] ' + $target.Rel + '：已是当前信封') 'DarkGray'
+        } else {
+            $legacyCount++
+            Write-Log ('      [重封装] ' + $target.Rel + '：' + $info.Layers + ' 层旧信封 → ' + $script:CurrentSecretFormat) 'Yellow'
+        }
+    }
+    if ($legacyCount -gt 0) {
+        Write-Log ('      落盘时处理目标数据根里的同名文件，原文件先备份到 ' + $dest + '\.pre-migrate-backup-<时间戳>\') 'DarkGray'
+    }
+}
+
+# ── 9. 执行或结束预演 ───────────────────────────────────────────────────────
 if (-not $apply) {
     Write-Log ''
     Write-Log ('预演结束：没有改动任何文件。确认无误后加 --apply 再跑一次：') 'Green'
@@ -557,11 +759,84 @@ foreach ($item in $plan) {
     Write-Log ('  完成：复制 ' + $item.Copied + ' 个、跳过 ' + $item.Skipped + ' 个、失败 ' + $item.Failed + ' 个') 'Gray'
 }
 
-# ── 9. --move：删源 ─────────────────────────────────────────────────────────
+# ── 10. 身份密钥信封：对目标数据根重封装 ────────────────────────────────────
+# 复制只搬字节、改不了信封，而 2.0 读的正是目标数据根里的那一份，所以这一步在
+# 复制之后、以目标为准。重封装失败会阻止 --move 删源：源文件是唯一的原始副本。
+if ($apply) {
+    Write-Log ''
+    Write-Log ('身份密钥信封 [' + $dest + '] ...') 'Cyan'
+    $identityTargets = @(Get-IdentityKeyFiles -DataRoot $dest)
+    if ($identityTargets.Count -eq 0) {
+        Write-Log '  没有 data\group-mesh\identity，跳过（首次安装属正常）' 'DarkGray'
+    }
+    foreach ($target in $identityTargets) {
+        $info = Get-EnvelopeInfo -Path $target.Path
+        if ($info.Error -ne '') {
+            $script:IdentityFailures++
+            Write-Log ('  ' + $target.Rel + '：' + $info.Error) 'Red'
+            continue
+        }
+        if ($info.Layers -eq 0) {
+            Write-Log ('  ' + $target.Rel + '：明文，2.0 加载时会自行升级') 'DarkYellow'
+            continue
+        }
+        if (-not $info.SawLegacy -and $info.Layers -eq 1) {
+            Write-Log ('  ' + $target.Rel + '：已是当前信封，无需处理') 'DarkGray'
+            continue
+        }
+
+        if ($script:BackupRoot -eq '') {
+            $script:BackupRoot = Join-Path $dest ('.pre-migrate-backup-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+            Write-Log ('  备份目录：' + $script:BackupRoot) 'Yellow'
+        }
+        $backupPath = Join-Path $script:BackupRoot $target.Rel
+        $backupParent = Split-Path -Parent $backupPath
+        try {
+            if (-not (Test-Path -LiteralPath $backupParent)) {
+                New-Item -ItemType Directory -Path $backupParent -Force -ErrorAction Stop | Out-Null
+            }
+            Copy-Item -LiteralPath $target.Path -Destination $backupPath -Force -ErrorAction Stop
+            $script:BackedUpFiles++
+        } catch {
+            $script:IdentityFailures++
+            Write-Log ('  备份失败，未改写：' + $target.Rel + '（' + $_.Exception.Message + '）') 'Red'
+            continue
+        }
+
+        try {
+            Set-KeyEnvelope -Path $target.Path -Plain ([byte[]]$info.Plain)
+        } catch {
+            $script:IdentityFailures++
+            Write-Log ('  重封装失败：' + $target.Rel + '（' + $_.Exception.Message + '）') 'Red'
+            continue
+        }
+
+        $problem = Test-KeyEnvelopeReadable -Path $target.Path
+        if ($problem -ne '') {
+            $script:IdentityFailures++
+            Write-Log ('  回读校验失败：' + $target.Rel + '（' + $problem + '）') 'Red'
+            continue
+        }
+        $script:RewrappedKeys++
+        Write-Log ('  ' + $target.Rel + '：' + $info.Layers + ' 层旧信封 → ' + $script:CurrentSecretFormat + '（原文件已备份）') 'Green'
+    }
+    Write-Log ('  完成：重封装 ' + $script:RewrappedKeys + ' 个、失败 ' + $script:IdentityFailures + ' 个') 'Gray'
+    if ($script:IdentityFailures -gt 0) {
+        $script:Failures++
+        Write-Log '  身份有文件没能迁移成功：2.0 启动后仍会显示未初始化，按上面的红字处理后重跑一次' 'Red'
+    }
+}
+
+# ── 11. --move：删源 ────────────────────────────────────────────────────────
 if ($move) {
     Write-Log ''
     Write-Log '清理源目录（--move）' 'Yellow'
     foreach ($item in $plan) {
+        if ($script:IdentityFailures -gt 0) {
+            # 身份没迁移成功时源目录是唯一的原始副本，一个文件都不删。
+            Write-Log ('  保留 ' + $item.Source + '：身份密钥信封有 ' + $script:IdentityFailures + ' 个未迁移成功') 'Red'
+            continue
+        }
         if ($item.Failed -gt 0) {
             Write-Log ('  保留 ' + $item.Source + '：有 ' + $item.Failed + ' 个文件没有成功复制') 'Yellow'
             continue
@@ -621,7 +896,7 @@ if ($move) {
     }
 }
 
-# ── 10. 迁移后校验与收尾 ────────────────────────────────────────────────────
+# ── 12. 迁移后校验与收尾 ────────────────────────────────────────────────────
 Write-Log ''
 $appJson = Join-Path (Join-Path $dest '.config') 'app.json'
 $appYaml = Join-Path (Join-Path $dest '.config') 'app.yaml'
@@ -631,6 +906,29 @@ if ((Test-Path -LiteralPath $appJson -PathType Leaf) -or (Test-Path -LiteralPath
     Write-Log ('警告：' + (Join-Path $dest '.config') + ' 下没有 app.json / app.yaml。2.0 会按首次运行处理（设置需要重选）') 'Yellow'
 }
 
+# 身份能不能被解析，是"2.0 真的能用这份数据"与"文件都在、插件却报未初始化"的分界。
+# 设备文件在重封装时已逐个回读校验，这里只验 principal.json。
+$identityPrincipal = Join-Path $dest 'data\group-mesh\identity\principal.json'
+if (Test-Path -LiteralPath $identityPrincipal -PathType Leaf) {
+    $identityProblem = Test-KeyEnvelopeReadable -Path $identityPrincipal
+    if ($identityProblem -ne '') {
+        Write-Log ('警告：身份仍不可读（' + $identityProblem + '）：' + $identityPrincipal) 'Red'
+        if ($script:IdentityFailures -eq 0) { $script:Failures++ }
+    } else {
+        $principalName = ''
+        $principalInfo = Get-EnvelopeInfo -Path $identityPrincipal
+        if ($principalInfo.Error -eq '' -and $principalInfo.Layers -ge 1) {
+            try {
+                $principalRecord = ([System.Text.Encoding]::UTF8.GetString($principalInfo.Plain) | ConvertFrom-Json -ErrorAction Stop)
+                $principalName = [string]$principalRecord.name
+            } catch {
+                $principalName = ''
+            }
+        }
+        Write-Log ('校验：身份可读（主体 ' + $principalName + '）：' + $identityPrincipal) 'Green'
+    }
+}
+
 Write-Log ''
 Write-Log ('=' * 62) 'Cyan'
 Write-Log '  结果' 'Cyan'
@@ -638,6 +936,9 @@ Write-Log ('  复制      : ' + $script:CopiedFiles + ' 个文件 / ' + (Format-
 Write-Log ('  跳过      : ' + $script:SkippedFiles + ' 个（目标已有同名文件；--force 可覆盖，覆盖前会备份）') 'Cyan'
 if ($script:BackedUpFiles -gt 0) {
     Write-Log ('  备份      : ' + $script:BackedUpFiles + ' 个 → ' + $script:BackupRoot) 'Cyan'
+}
+if ($script:RewrappedKeys -gt 0) {
+    Write-Log ('  身份重封装: ' + $script:RewrappedKeys + ' 个文件 → ' + $script:CurrentSecretFormat + '（原信封已备份）') 'Cyan'
 }
 if ($script:Failures -gt 0) {
     Write-Log ('  失败      : ' + $script:Failures + ' 个（详见上面的红色行与日志）') 'Red'
