@@ -470,6 +470,563 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 ** i).toFixed(i ? 1 : 0)} ${units[i]}`
 }
 
+// ==================== 关于：检查更新 ====================
+// 版本比较、资产选择、形态判定全在后端；这里只把返回的 code 投影成一段状态行。
+// 失败一律写状态行，不弹 toast、不弹框 —— 用户是来看结果的，飘走的提示等于没反应。
+type UpdateForm = 'installer' | 'zip' | 'portable' | 'dev' | 'platform'
+type UpdateState =
+  | 'idle' | 'checking' | 'up_to_date' | 'update_available'
+  | 'downloading' | 'ready' | 'error' | 'disabled'
+type UpdateJobState = 'idle' | 'downloading' | 'verifying' | 'ready' | 'error' | 'cancelled'
+
+interface UpdateAsset { name: string; size: number | null }
+interface UpdateResult {
+  ok: boolean
+  code: string
+  current: string
+  latest: string
+  form: UpdateForm
+  download_allowed: boolean
+  asset: UpdateAsset | null
+  html_url: string
+  retry_after_seconds: number
+  message: string
+  checked_at: number
+  cached: boolean
+}
+interface UpdateJob {
+  state: UpdateJobState
+  version: string
+  asset: string
+  received: number
+  total: number
+  percent: number
+  path: string
+  code: string
+  message: string
+}
+interface UpdateStatus {
+  form: UpdateForm
+  enabled: boolean
+  download_allowed: boolean
+  reason: string
+  job: UpdateJob | null
+}
+
+/** 段末那句保留在每种状态下都成立的话：检查只由用户点击触发，应用不自动装。 */
+const UPDATE_TAIL = '由你点击触发检查，只提示，不自动安装。'
+/** 有新版时按形态写清"将要发生什么"；dev / platform 不下载，不在这张表里。 */
+const UPDATE_FORM_HELP: Partial<Record<UpdateForm, string>> = {
+  installer: '安装器会关闭 Cubby 并覆盖安装，数据不受影响。',
+  zip: '将替换程序目录，数据在默认位置不受影响。',
+  portable: '请解压覆盖到同一目录，数据在程序目录（不可写时在默认数据根）。',
+}
+/** 不检查更新的原因；判据来自后端的形态判定，前端不自己推断。 */
+const UPDATE_DISABLED_HELP: Partial<Record<UpdateForm, string>> = {
+  dev: '开发模式不检查更新。',
+  platform: 'Linux 版请在发布页手动下载。',
+}
+/** 下载/校验期间的重读间隔：进度要跟手，又不能把一次慢请求叠成多个定时器。 */
+const UPDATE_POLL_MS = 500
+
+const updateState = ref<UpdateState>('idle')
+const updateForm = ref<UpdateForm | ''>('')
+/** 后端说这个形态不检查更新时不再渲染检查按钮（没有可做的事）。 */
+const updateEnabled = ref(true)
+const updateDownloadAllowed = ref(true)
+const updateResult = ref<UpdateResult | null>(null)
+const updateJob = ref<UpdateJob | null>(null)
+const updateErrorText = ref('')
+/** 取消 / 打开下载位置 / 信息过期这类一次性结论，附在状态行后面。 */
+const updateNotice = ref('')
+/** 取不到更新状态时的说明（旧内核没有这个方法，或非管理员被拒）。 */
+const updateUnavailable = ref('')
+const updateReason = ref('')
+/** 形态与 enabled 已经对齐过一次：在此之前不渲染检查按钮，避免 dev / Linux 上闪一下。 */
+const updateStatusLoaded = ref(false)
+/** 限流倒计时的剩余秒数；> 0 时检查按钮禁用。 */
+const retryLeft = ref(0)
+const checkingUpdate = ref(false)
+const startingDownload = ref(false)
+const cancellingDownload = ref(false)
+let updatePollTimer = 0
+let updateCountdownTimer = 0
+
+/** 有新版且当前形态允许自动下载：安装器与 zip 才有「下载并校验」。 */
+const canStartDownload = computed(() => (
+  updateEnabled.value
+  && updateDownloadAllowed.value
+  && !!updateResult.value?.asset
+  && updateResult.value?.code === 'update_available'
+))
+
+/** 检查按钮：失败时改叫「重试」；`bad_version` 只留发布页链接，不再给重试。 */
+const showCheckButton = computed(() => (
+  updateStatusLoaded.value
+  && updateState.value !== 'disabled'
+  && updateResult.value?.code !== 'bad_version'
+))
+const checkUpdateLabel = computed(() => {
+  if (updateState.value === 'checking') return '正在检查…'
+  if (updateState.value === 'error') return '重试'
+  return '检查更新'
+})
+const checkUpdateDisabled = computed(() => (
+  checkingUpdate.value
+  || updateState.value === 'checking'
+  || updateState.value === 'downloading'
+  || retryLeft.value > 0
+))
+
+const showReleasesLink = computed(() => (
+  updateState.value === 'disabled'
+  || (updateState.value === 'update_available' && !canStartDownload.value)
+  || (updateState.value === 'error' && updateResult.value?.code === 'bad_version')
+))
+
+/** 形态说明只在"真的会下载/已经装好"时出现，平时只留段末那句。 */
+const updateFormHelp = computed(() => {
+  const form = updateForm.value
+  const base = form ? UPDATE_FORM_HELP[form] || '' : ''
+  const relevant = base && (
+    updateState.value === 'update_available'
+    || updateState.value === 'downloading'
+    || updateState.value === 'ready'
+  )
+  return relevant ? `${base}${UPDATE_TAIL}` : UPDATE_TAIL
+})
+
+const updateDisabledText = computed(() => {
+  const form = updateForm.value
+  const known = form ? UPDATE_DISABLED_HELP[form] || '' : ''
+  if (known) return known
+  if (updateUnavailable.value) return updateUnavailable.value
+  return updateReason.value ? `检查更新不可用：${updateReason.value}` : '检查更新不可用。'
+})
+
+const updateStatusBase = computed(() => {
+  const result = updateResult.value
+  const job = updateJob.value
+  switch (updateState.value) {
+    case 'checking':
+      return '正在检查…'
+    case 'up_to_date':
+      return `已是最新版本（v${result?.latest || appVersion}）`
+    case 'update_available': {
+      const version = result?.latest || ''
+      if (!result?.asset) {
+        return `发现新版本 v${version}，这一版没有可下载的安装包，请打开发布页查看。`
+      }
+      if (!updateDownloadAllowed.value) {
+        return `发现新版本 v${version}，当前形态不提供自动下载，请打开发布页手动下载。`
+      }
+      const size = result.asset.size ? `，${formatBytes(result.asset.size)}` : ''
+      return `发现新版本 v${version}（当前 v${appVersion}）：${result.asset.name}${size}。`
+    }
+    case 'downloading': {
+      const total = job?.total || 0
+      if (job?.state === 'verifying') {
+        return `正在校验 ${job?.asset || '安装包'}…`
+      }
+      const received = job?.received || 0
+      const percent = total > 0
+        ? Math.floor((received / total) * 100)
+        : Math.round(job?.percent || 0)
+      const size = total > 0 ? formatBytes(total) : '大小未知'
+      return `正在下载 ${job?.asset || '安装包'}：${formatBytes(received)} / ${size}（${percent}%）`
+    }
+    case 'ready': {
+      const path = job?.path ? `：${job.path}` : '。'
+      return `已下载并通过校验${path}一键安装将在 2.1 提供，当前可到该文件夹手动运行安装器。`
+    }
+    case 'error': {
+      if (retryLeft.value > 0) {
+        const minutes = Math.ceil(retryLeft.value / 60)
+        return retryLeft.value >= 60
+          ? `GitHub 限流，请 ${minutes} 分钟后重试（剩余 ${retryLeft.value} 秒）`
+          : `GitHub 限流，请 ${retryLeft.value} 秒后重试`
+      }
+      return updateErrorText.value || '检查失败'
+    }
+    case 'disabled':
+      return updateDisabledText.value
+    default:
+      return updateStatusLoaded.value ? '还没有检查过。' : '正在读取更新状态…'
+  }
+})
+
+const updateStatusText = computed(() => {
+  const base = updateStatusBase.value
+  const notice = updateNotice.value
+  if (!notice) return base
+  if (updateState.value === 'checking' || updateState.value === 'disabled') return base
+  // idle 下没有别的结论可写，状态行直接就是这条提示（例如"信息已过期，请重新检查"）
+  if (updateState.value === 'idle') return notice
+  return `${base}（${notice}）`
+})
+
+function stopUpdatePoll(): void {
+  if (updatePollTimer) {
+    window.clearTimeout(updatePollTimer)
+    updatePollTimer = 0
+  }
+}
+
+function stopUpdateCountdown(): void {
+  if (updateCountdownTimer) {
+    window.clearTimeout(updateCountdownTimer)
+    updateCountdownTimer = 0
+  }
+}
+
+/** 限流倒计时：每秒自排一次，到 0 停（`retryLeft` 归零后按钮自然可用）。 */
+function tickUpdateCountdown(): void {
+  stopUpdateCountdown()
+  if (retryLeft.value <= 0 || route.path !== '/settings') return
+  updateCountdownTimer = window.setTimeout(() => {
+    updateCountdownTimer = 0
+    retryLeft.value = Math.max(0, retryLeft.value - 1)
+    tickUpdateCountdown()
+  }, 1000)
+}
+
+/**
+ * 下载 / 校验期间按 500 ms 重读一次进度。
+ *
+ * 用自排的 setTimeout 而不是 setInterval：一次慢请求会让 setInterval 的触发叠在一起，
+ * 自排则"这一次读完了才排下一次"。看不见这一页（切到别的分区、离开设置页）就不排。
+ */
+function scheduleUpdatePoll(): void {
+  stopUpdatePoll()
+  if (route.path !== '/settings' || active.value !== 'about') return
+  if (updateState.value !== 'downloading') return
+  updatePollTimer = window.setTimeout(async () => {
+    updatePollTimer = 0
+    await refreshUpdateState()
+  }, UPDATE_POLL_MS)
+}
+
+async function refreshUpdateState(): Promise<void> {
+  try {
+    const status = (await bridge.call('system_get_update_state')) as UpdateStatus | null
+    applyUpdateStatus(status)
+  } catch {
+    // 轮询失败不打断下载：下一次轮询或用户手动检查会重新对齐，不往状态行写瞬时错误
+  }
+  scheduleUpdatePoll()
+}
+
+function applyUpdateStatus(status: UpdateStatus | null): void {
+  if (!status) return
+  if (status.form) updateForm.value = status.form
+  if (typeof status.download_allowed === 'boolean') {
+    updateDownloadAllowed.value = status.download_allowed
+  }
+  updateReason.value = String(status.reason || '')
+  if (status.enabled === false) {
+    updateEnabled.value = false
+    updateState.value = 'disabled'
+    stopUpdatePoll()
+    stopUpdateCountdown()
+    retryLeft.value = 0
+    return
+  }
+  updateEnabled.value = true
+  if (updateState.value === 'disabled') updateState.value = 'idle'
+  const job = status.job
+  if (!job || job.state === 'idle') return
+  applyUpdateJob(job)
+}
+
+function applyUpdateJob(job: UpdateJob): void {
+  updateJob.value = job
+  switch (job.state) {
+    case 'downloading':
+    case 'verifying':
+      updateState.value = 'downloading'
+      updateErrorText.value = ''
+      scheduleUpdatePoll()
+      return
+    case 'ready':
+      updateState.value = 'ready'
+      updateErrorText.value = ''
+      stopUpdatePoll()
+      return
+    case 'error':
+      updateState.value = 'error'
+      updateErrorText.value = downloadFailureText(job)
+      stopUpdatePoll()
+      return
+    case 'cancelled':
+      stopUpdatePoll()
+      if (updateState.value === 'downloading') {
+        updateState.value = canStartDownload.value ? 'update_available' : 'idle'
+      }
+      return
+    default:
+      return
+  }
+}
+
+/** 下载失败的一行原因：`job.message` 里的异常串只在末选，能分类的先分类。 */
+function downloadFailureText(job: UpdateJob): string {
+  switch (job.code) {
+    case 'network':
+      return '下载失败：连不上 GitHub'
+    case 'digest_mismatch':
+      return '安装包校验不通过，已删除，请重试'
+    case 'timeout':
+      return '下载超时，已中止，请重试'
+    case 'too_large':
+      return '安装包超过允许的大小上限'
+    case 'io_error':
+      return '写出安装包失败，请检查磁盘空间'
+    default:
+      return job.message || '下载失败'
+  }
+}
+
+/** 进入「关于」段时对齐形态、是否可检查、以及可能仍在跑的下载。 */
+async function loadUpdateState(): Promise<void> {
+  if (route.path !== '/settings') return
+  try {
+    const status = (await bridge.call('system_get_update_state')) as UpdateStatus | null
+    applyUpdateStatus(status)
+    updateUnavailable.value = ''
+  } catch (e: any) {
+    // 冻结契约里失败也是 `ok=false` 的信封；走到这里说明接口不存在或通道断了
+    const message = String((e as { message?: string } | null)?.message || e || '')
+    updateEnabled.value = false
+    updateState.value = 'disabled'
+    updateUnavailable.value = /403|禁止访问|管理员|权限/.test(message)
+      ? '只有管理员可以检查更新。'
+      : '这个版本没有提供检查更新。'
+  }
+  if (retryLeft.value > 0) tickUpdateCountdown()
+  updateStatusLoaded.value = true
+  scheduleUpdatePoll()
+}
+
+function applyUpdateResult(result: UpdateResult | null): void {
+  if (!result) {
+    updateState.value = 'error'
+    updateErrorText.value = '检查失败'
+    return
+  }
+  updateResult.value = result
+  if (result.form) updateForm.value = result.form
+  if (typeof result.download_allowed === 'boolean') {
+    updateDownloadAllowed.value = result.download_allowed
+  }
+  switch (result.code) {
+    case 'update_available':
+      updateState.value = 'update_available'
+      return
+    case 'no_asset':
+      updateState.value = 'update_available'
+      return
+    case 'up_to_date':
+      updateState.value = 'up_to_date'
+      return
+    case 'disabled':
+      updateEnabled.value = false
+      updateState.value = 'disabled'
+      return
+    case 'rate_limited':
+      updateState.value = 'error'
+      // 倒计时期间状态行显示"请 N 分钟后重试"，到期后落到这句
+      updateErrorText.value = 'GitHub 限流，请稍后重试'
+      retryLeft.value = Math.max(0, Math.round(Number(result.retry_after_seconds) || 0))
+      tickUpdateCountdown()
+      return
+    case 'forbidden':
+      updateState.value = 'error'
+      updateErrorText.value = /管理员|禁止访问|403/.test(result.message || '')
+        ? '只有管理员可以检查更新'
+        : '检查失败：没有权限访问 GitHub'
+      return
+    case 'network':
+      updateState.value = 'error'
+      updateErrorText.value = '检查失败：连不上 GitHub'
+      return
+    case 'not_found':
+      updateState.value = 'error'
+      updateErrorText.value = '没找到发布信息'
+      return
+    case 'bad_version':
+      updateState.value = 'error'
+      updateErrorText.value = '版本号无法比较，请到发布页手动查看'
+      return
+    default:
+      updateState.value = 'error'
+      updateErrorText.value = '检查失败'
+  }
+}
+
+async function checkUpdate(): Promise<void> {
+  if (checkingUpdate.value || retryLeft.value > 0) return
+  if (updateState.value === 'downloading') return
+  checkingUpdate.value = true
+  updateNotice.value = ''
+  updateErrorText.value = ''
+  updateState.value = 'checking'
+  stopUpdatePoll()
+  try {
+    const result = (await bridge.call('system_check_update', appVersion)) as UpdateResult | null
+    applyUpdateResult(result)
+  } catch (e: any) {
+    // 后端不抛异常；这里接住的是通道级失败（非管理员 403、方法不存在）
+    const message = String((e as { message?: string } | null)?.message || e || '')
+    updateState.value = 'error'
+    updateErrorText.value = /403|禁止访问|管理员|权限/.test(message)
+      ? '只有管理员可以检查更新'
+      : '检查失败：接口不可用'
+  } finally {
+    checkingUpdate.value = false
+  }
+}
+
+function enterDownloading(version: string, assetName: string, total: number): void {
+  const current = updateJob.value
+  updateJob.value = {
+    state: 'downloading',
+    version,
+    asset: assetName || current?.asset || '',
+    received: current?.received || 0,
+    total: total || current?.total || 0,
+    percent: current?.percent || 0,
+    path: '',
+    code: '',
+    message: '',
+  }
+  updateState.value = 'downloading'
+  updateErrorText.value = ''
+  updateNotice.value = ''
+  scheduleUpdatePoll()
+}
+
+function applyStartResult(started: any, version: string, asset: UpdateAsset): void {
+  if (started?.started) {
+    enterDownloading(version, asset.name, Number(started.total) || Number(asset.size) || 0)
+    return
+  }
+  // 已有下载在跑：不新开一份，跟上它的进度
+  if (started?.running) {
+    enterDownloading(version, asset.name, 0)
+    return
+  }
+  // 上一次的产物还通过校验，直接进 ready
+  if (started?.ready) {
+    updateJob.value = {
+      state: 'ready',
+      version,
+      asset: asset.name,
+      received: Number(asset.size) || 0,
+      total: Number(asset.size) || 0,
+      percent: 100,
+      path: String(started.path || ''),
+      code: '',
+      message: '',
+    }
+    updateState.value = 'ready'
+    updateErrorText.value = ''
+    updateNotice.value = ''
+    stopUpdatePoll()
+    return
+  }
+  switch (started?.error) {
+    case 'stale':
+      updateResult.value = null
+      updateJob.value = null
+      updateState.value = 'idle'
+      updateNotice.value = '信息已过期，请重新检查'
+      return
+    case 'not_allowed':
+      updateState.value = 'error'
+      updateErrorText.value = '当前形态不能自动下载，请打开发布页手动下载'
+      return
+    case 'busy':
+      updateState.value = 'error'
+      updateErrorText.value = '已有升级动作在进行，请稍后再试'
+      return
+    case 'too_large':
+      updateState.value = 'error'
+      updateErrorText.value = '安装包超过允许的大小上限'
+      return
+    case 'no_result':
+      updateState.value = 'error'
+      updateErrorText.value = '没有可用的检查结果，请重新检查'
+      return
+    default:
+      updateState.value = 'error'
+      updateErrorText.value = '下载没有结果，请重试'
+  }
+}
+
+async function startDownload(): Promise<void> {
+  if (startingDownload.value) return
+  const result = updateResult.value
+  const asset = result?.asset
+  if (!result || !asset || !canStartDownload.value) return
+  startingDownload.value = true
+  try {
+    const started = await bridge.call('system_start_update_download', result.latest, asset.name)
+    applyStartResult(started, result.latest, asset)
+  } catch {
+    updateState.value = 'error'
+    updateErrorText.value = '启动下载失败'
+  } finally {
+    startingDownload.value = false
+  }
+}
+
+async function cancelDownload(): Promise<void> {
+  if (cancellingDownload.value) return
+  cancellingDownload.value = true
+  try {
+    const result = await bridge.call('system_cancel_update_download')
+    if (result && (result.cancelled || result.running === false)) {
+      stopUpdatePoll()
+      updateState.value = canStartDownload.value ? 'update_available' : 'idle'
+      updateNotice.value = result.cancelled ? '下载已取消' : ''
+    }
+  } catch {
+    updateNotice.value = '取消失败，下载仍在进行'
+  } finally {
+    cancellingDownload.value = false
+  }
+}
+
+async function openUpdateDir(): Promise<void> {
+  try {
+    const result = await bridge.call('system_open_update_dir')
+    if (result && result.success === false) {
+      updateNotice.value = result.error || '打开下载位置失败'
+    } else {
+      updateNotice.value = ''
+    }
+  } catch {
+    updateNotice.value = '打开下载位置失败'
+  }
+}
+
+/** 离开设置页 / 卸载组件：状态只在内存里，回来当作没检查过。 */
+function resetUpdateState(): void {
+  stopUpdatePoll()
+  stopUpdateCountdown()
+  // 不可检查的形态保持 disabled：否则返回时检查按钮会闪一下再被状态快照收回
+  updateState.value = updateEnabled.value ? 'idle' : 'disabled'
+  updateResult.value = null
+  updateJob.value = null
+  updateErrorText.value = ''
+  updateNotice.value = ''
+  updateUnavailable.value = ''
+  retryLeft.value = 0
+  checkingUpdate.value = false
+  startingDownload.value = false
+  cancellingDownload.value = false
+}
+
 // ==================== 数据与缓存：统一刷新状态 ====================
 // 各插件的「校验」在它自己的工具栏里；没有页面骨架的插件（清理器、下载器）没有那一条
 // 工具栏，这张表就是它们的刷新入口：状态投影 + 重建（丢弃派生缓存后重新全量扫描）。
@@ -661,6 +1218,8 @@ onUnmounted(() => {
   window.removeEventListener(APPEARANCE_CHANGED, onAppearanceChanged)
   // 概览轮询不能在页面卸载后继续：定时器持有组件的闭包与 bridge 句柄
   stopFreshnessPoll()
+  // 检查更新的轮询与限流倒计时同理：状态只在内存里，卸载即回 idle
+  resetUpdateState()
 })
 
 // 设置页是 v-show 常驻的：每次切回来重新拉一次，缓存占用与插件状态才不会过期；
@@ -671,10 +1230,24 @@ watch(() => route.path, (path) => {
     freshnessRetries = 0
     refreshInfo()
     loadBackgroundImages()
+    // 「关于」段可能停在别的分区之外：只有正看着它才需要重新对齐更新状态
+    if (active.value === 'about') loadUpdateState()
   } else {
     // 离开设置页就停掉概览轮询，回来时由 refreshInfo 重新决定要不要转
     stopFreshnessPoll()
+    // 检查更新的状态只在内存里：离开设置页即清定时器、清倒计时、回 idle
+    resetUpdateState()
   }
+})
+
+// 分区是 v-if 切换的：进入「关于」才取一次形态与 job，离开就不再为看不见的状态行轮询。
+watch(active, (section) => {
+  if (section === 'about' && route.path === '/settings') {
+    loadUpdateState()
+    return
+  }
+  stopUpdatePoll()
+  stopUpdateCountdown()
 })
 </script>
 
@@ -1166,7 +1739,46 @@ watch(() => route.path, (path) => {
             <span class="info-label">新版本</span>
             <a class="info-value" :href="RELEASES_URL" target="_blank" rel="noopener">{{ RELEASES_URL }}</a>
           </div>
-          <p class="field-help">更新需要手动下载安装，应用本身不会联网检查或自动更新。</p>
+          <div class="field">
+            <label class="field-label">检查更新</label>
+            <div class="field-inline">
+              <button
+                v-if="showCheckButton"
+                id="settings-check-update"
+                class="btn"
+                :disabled="checkUpdateDisabled"
+                @click="checkUpdate"
+              >{{ checkUpdateLabel }}</button>
+              <button
+                v-if="updateState === 'update_available' && canStartDownload"
+                id="settings-start-update"
+                class="btn btn-primary"
+                :disabled="startingDownload"
+                @click="startDownload"
+              >下载并校验</button>
+              <button
+                v-if="updateState === 'downloading'"
+                id="settings-cancel-update"
+                class="btn"
+                :disabled="cancellingDownload"
+                @click="cancelDownload"
+              >取消</button>
+              <button
+                v-if="updateState === 'ready'"
+                id="settings-open-update-dir"
+                class="btn"
+                @click="openUpdateDir"
+              >打开下载位置</button>
+              <a
+                v-if="showReleasesLink"
+                id="settings-open-releases"
+                class="info-value"
+                :href="RELEASES_URL" target="_blank" rel="noopener"
+              >打开发布页</a>
+            </div>
+            <p id="settings-update-status" class="field-help">{{ updateStatusText }}</p>
+            <p class="field-help">{{ updateFormHelp }}</p>
+          </div>
         </div>
       </section>
     </div>
