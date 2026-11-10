@@ -28,6 +28,7 @@ from pathlib import Path
 import requests
 import webview
 
+from shell.backend import update_check
 from shell.backend.app_logging import setup_logging
 from shell.backend.auth import get_or_create_token, get_token_file
 from shell.backend.file_dialog import pick_path
@@ -561,6 +562,8 @@ def _run_app(config, manager):
         'system_set_shell_prefs': shell_prefs.apply_patch,
     }
     shell_methods.update(manager.freshness_api_methods())
+    # 应用内检查更新：与 HTTP 通道同一张方法表（唯一来源 update_check.api_methods()）
+    shell_methods.update(update_check.api_methods())
     shell_methods.update(manager.get_api_methods())
     # 桌面模式**不**套 `guard_admin_methods`，理由必须写在代码里，否则下一个人会
     # 把它当成"漏了一处"补上、然后所有管理员端点在桌面模式全部拒绝：

@@ -151,11 +151,14 @@ def require_admin(fn: Callable) -> Callable:
     """包一层：当前主体必须是管理员，否则抛 `AdminRequired`。
 
     为什么需要这个包装，而不是把 `if not principal.is_admin` 抄在每个端点里：
-    同一批壳级端点在**两条通道**上暴露 —— HTTP 的 `/api/<方法>`（file_server）与
-    桌面模式的 pywebview `js_api`（main.py）。判定原先只写在 HTTP 路径里，桌面模式
-    因此完全不判角色：插件 iframe 经 `Bridge.callSystem` 沿 parent 链取到
-    `pywebview.api` 就能直接调用 `system_get_config` 一类端点（审计项 P1-8 / P2-3）。
-    判定下沉到方法本身、由两条通道共用同一份包装，就不会再出现"加了一处、漏了另一处"。
+    同一批壳级端点在**不同通道**上暴露 —— HTTP 的 `/api/<方法>`（file_server 的
+    `api_proxy`，由 `guard_admin_methods` 套上本包装）与桌面模式的 pywebview `js_api`
+    （main.py）。**只有 HTTP 通道套用**：桌面 js_api 由 pywebview 反射调用，不经过
+    Flask 的 `before_request`，执行上下文里没有主体（`CURRENT_PRINCIPAL` 只在
+    `file_server._require_token` 里设置），在那里判定只会把管理员端点全部拒绝；而窗口
+    页面本身就是 owner 令牌的持有者，同源的插件前端与壳分不开（理由写在 main.py 的
+    `_run_app`）。判定下沉到方法上、由 `guard_admin_methods` 一处包，就不会出现
+    "给某个端点加了一处、漏了另一处"。
     """
     @functools.wraps(fn)
     def guarded(*args: Any, **kwargs: Any) -> Any:

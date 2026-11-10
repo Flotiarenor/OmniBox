@@ -78,9 +78,17 @@ PORTABLE_MARKER = 'portable.txt'
 USER_DATA_DIR_ENV = 'CUBBY_HOME'
 
 
-def _exe_dir() -> Path:
-    """冻结产物所在目录。只在 `is_frozen()` 为真时有意义。"""
-    return Path(sys.executable).resolve().parent
+def get_install_dir() -> Path:
+    """程序所在的目录：只读资源与"这台机器上装的是什么"的判定基准。
+
+    - 冻结产物：`sys.executable` 所在目录（便携标记、安装器的 `unins000.exe` 都在这
+      里面判定）；
+    - 开发模式：项目根目录。刻意不返回 `sys.executable` 的目录 —— 那会是 venv 里的
+      Python 目录，形态判定读到的就成了解释器自己的文件，与"这份程序装在哪"无关。
+    """
+    if is_frozen():
+        return Path(sys.executable).resolve().parent
+    return get_project_root()
 
 
 def is_portable() -> bool:
@@ -88,7 +96,7 @@ def is_portable() -> bool:
 
     开发模式恒为 False（数据在项目根目录）；标记文件只对冻结产物起作用。
     """
-    return is_frozen() and (_exe_dir() / PORTABLE_MARKER).is_file()
+    return is_frozen() and (get_install_dir() / PORTABLE_MARKER).is_file()
 
 
 def _can_write_dir(candidate: Path) -> bool:
@@ -148,7 +156,7 @@ def get_user_data_dir() -> Path:
         return get_project_root()
 
     if is_portable():
-        exe_dir = _exe_dir()
+        exe_dir = get_install_dir()
         if _can_write_dir(exe_dir):
             return exe_dir
         # 便携标记写在了不可写目录里（例如 Program Files）：退回用户数据根，既不让

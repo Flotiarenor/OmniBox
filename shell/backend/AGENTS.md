@@ -9,7 +9,7 @@
 
 | 模块 | 职责 | 关键符号 |
 | --- | --- | --- |
-| `paths.py` | 用户数据 / 配置 / 插件搜索目录的唯一解析处 | `is_frozen` `is_portable` `get_user_data_dir` `default_user_data_dir` `get_config_dir` `get_plugin_search_dirs` `resolve_data_root` |
+| `paths.py` | 用户数据 / 配置 / 插件搜索目录的唯一解析处 | `is_frozen` `is_portable` `get_user_data_dir` `default_user_data_dir` `get_config_dir` `get_plugin_search_dirs` `resolve_data_root` `get_install_dir` |
 | `plugin_manager.py` | 发现并加载插件，收集受保护路径 | `PluginManager` `collect_protected_paths` |
 | `plugin_base.py` | 插件基类与设置模式下的密钥处理 | `PluginBase` `secret_keys` `admin_only_keys` `mask_secrets` |
 | `plugin_utils.py` | 插件同目录分片模块的加载 | `load_sibling` |
@@ -22,6 +22,7 @@
 | `tasks.py` | 后台任务 | `BackgroundTask` |
 | `settings_store.py` | 每插件一个 JSON 的设置存储 | `SettingsStore` |
 | `shell_prefs.py` `shell_info.py` | 壳的外观偏好与运行期信息 | `ShellPrefs` `ShellInfo` |
+| `update_check.py` | 应用内检查更新：查 GitHub 最新发布、版本比较、安装形态判定、下载安装包并校验摘要；下载进度与取消走 `BackgroundTask`，落点 `<数据根>/updates/`，重定向逐跳校验 | `UpdateService` `api_methods` `get_updates_dir` `install_form` |
 | `auth.py` `principal.py` | 访问令牌与主体权限 | `get_or_create_token` `PrincipalStore` `require_admin` `PrincipalScope` |
 | `protected_paths.py` | 受保护路径的归一化与匹配 | `normalize` `matches` `is_protected` |
 | `app_logging.py` | 日志与轮转 | `SafeRotatingFileHandler` `setup_logging` |

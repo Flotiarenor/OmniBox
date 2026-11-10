@@ -30,6 +30,7 @@ from typing import List
 
 from flask import Flask, abort, g, make_response, request, send_file, send_from_directory
 
+from shell.backend import update_check
 from shell.backend.auth import (
     TOKEN_COOKIE,
     TOKEN_HEADER,
@@ -571,6 +572,14 @@ _ADMIN_ONLY_API = frozenset({
     'system_set_shell_prefs',
     'system_clear_thumb_caches',
     'system_open_log_dir',
+    # 应用内检查更新：会联网访问 GitHub、把安装包写进 `<数据根>/updates/`，并且（后续版本）
+    # 会启动安装器替换程序目录 —— 与 `system_pick_path` / `system_open_log_dir` 同属"对这台
+    # 机器动手"。桌面 js_api 不套这个判定，见 main.py `_run_app` 的说明。
+    'system_check_update',
+    'system_start_update_download',
+    'system_get_update_state',
+    'system_cancel_update_download',
+    'system_open_update_dir',
     # 统一刷新基建：校验只读盘、可被本插件的工具栏按钮触发，因此不设限；
     # **重建**是"丢弃派生缓存"的破坏性操作（与 system_clear_thumb_caches 同类），
     # 且能指定任意插件 —— 不设限就等于让一个插件 iframe 有权清掉别的插件的缓存。
@@ -585,10 +594,12 @@ _ADMIN_ONLY_API = frozenset({
 def guard_admin_methods(api_methods: dict) -> dict:
     """给方法表里属于 `_ADMIN_ONLY_API` 的项套上管理员判定，返回新表。
 
-    包装本身在 `principal.require_admin`（判定只写一处）。本函数被**两条通道**共用：
-    HTTP 的 `api_proxy` 与桌面模式的 `main._run_app`（pywebview `js_api`）。原先判定
-    只写在 HTTP 路径里，桌面模式不判角色 —— 插件 iframe 经 `Bridge.callSystem` 沿
-    parent 链就能调到 `system_get_config`（审计项 P1-8 / P2-3）。
+    包装本身在 `principal.require_admin`（判定只写一处）。**只有 HTTP 通道套用**本函数：
+    `api_proxy` 在方法表上调用它。桌面模式的 pywebview `js_api` **不套**，理由写在
+    `main.py` 的 `_run_app` 里 —— js_api 由 pywebview 反射调用，不经过 Flask 的
+    `before_request`，执行上下文里没有主体（`CURRENT_PRINCIPAL` 只在
+    `file_server._require_token` 里设置），判定挂上去只会把所有管理员端点在桌面模式下
+    一律拒绝；而窗口页面本身就是 owner 令牌的持有者，同源的插件前端与它分不开。
     """
     return {name: (require_admin(fn) if name in _ADMIN_ONLY_API else fn)
             for name, fn in api_methods.items()}
@@ -876,15 +887,20 @@ def create_app(config: dict, plugin_manager: PluginManager) -> Flask:
         # 统一刷新基建（同步 / 校验）：方法表来自 plugin_manager 一处定义，
         # 桌面模式的 ShellAPI 更新同一张表（见 freshness_api_methods 的说明）
         api_methods.update(plugin_manager.freshness_api_methods())
-        # 管理员判定包在方法本身上：HTTP 与桌面 js_api 共用同一份（见 guard_admin_methods）
+        # 应用内检查更新（A 检查与提示 + B 下载与校验）：方法表同样只有一处定义
+        # （update_check.api_methods()），桌面模式在 main.py 的 ShellAPI 更新同一张表。
+        api_methods.update(update_check.api_methods())
+        # 管理员判定包在方法本身上（见 guard_admin_methods）。**只有这条 HTTP 通道套用**：
+        # 桌面 js_api 不套，理由见 main.py `_run_app`。
         api_methods = guard_admin_methods(api_methods)
 
         fn = api_methods.get(method)
         if fn is None:
             abort(404)
 
-        # 管理员专属端点（见 _ADMIN_ONLY_API）：判定包在方法上（guard_admin_methods，
-        # 与桌面模式的 js_api 通道共用）。令牌有效但角色不够时返回 403 而不是 401 ——
+        # 管理员专属端点（见 _ADMIN_ONLY_API）：判定包在方法上（guard_admin_methods），
+        # 且只有 HTTP 这条通道能真正判定（桌面 js_api 不套，见 main.py `_run_app`）。
+        # 令牌有效但角色不够时返回 403 而不是 401 ——
         # 401 的意思是"你没登录"，会让前端把人踢回登录流程。
         try:
             payload = request.get_json(silent=True) or {}

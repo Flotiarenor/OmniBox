@@ -1,6 +1,9 @@
 # 应用内检查更新（设计）
 
-> 状态：计划中（设计定稿，无代码）。
+> 状态：A（检查与提示）与 B（下载与校验）已实装（2.0，代码在
+> [update_check.py](../shell/backend/update_check.py)，用例在
+> [test_update_check.py](../tests/test_update_check.py)）；C（调起安装器）与 D（zip 自替换）
+> 仍为计划中（2.1）。
 >
 > 已由 Lead 拍板的三条前置决定，本设计据此定稿：① 检查更新由后端执行，运行期版本由前端把
 > `__APP_VERSION__` 作为入参传入 —— 不为后端另造一份构建期版本副本；② 2.0 只做 A（检查与提示）
@@ -61,13 +64,15 @@
 
 **匿名限流与 `User-Agent`**：匿名请求每小时 60 次、按来源 IP 计；GitHub 要求请求带
 `User-Agent`，不带会被拒。`X-RateLimit-Remaining` 与 `X-RateLimit-Reset`（epoch 秒）既用于区分
-失败原因，也用于算"还需等多久"。检查由用户点击触发、同一次运行内 60 秒不重复请求，60 次对
-正常使用宽裕。失败分类与用户可见结果（一律只写一行日志，不抛到 `api_proxy` 的 500 分支）：
+失败原因，也用于算"还需等多久"。**429 与"403 且 `X-RateLimit-Remaining` 为 `0`"同等处理**：
+两者都是限流，其余 403（remaining 不为 `0`）仍按"拒绝访问"处理。要等多久优先取 `Retry-After`，
+没有该头再退回 `X-RateLimit-Reset - now`。检查由用户点击触发、同一次运行内 60 秒不重复请求，
+60 次对正常使用宽裕。失败分类与用户可见结果（一律只写一行日志，不抛到 `api_proxy` 的 500 分支）：
 
 | 情况 | 判据 | 后端 | 界面 |
 | --- | --- | --- | --- |
 | 网络不可达 / DNS 失败 / 超时 | `requests.ConnectionError`、`Timeout` | `network` | 「检查失败：连不上 GitHub」+ 重试 |
-| 限流 | 403 且 `X-RateLimit-Remaining` 为 `0` | `rate_limited`、`retry_after_seconds` | 「GitHub 限流，请 N 分钟后重试」，按钮禁用至到期 |
+| 限流 | 状态码 429，或 403 且 `X-RateLimit-Remaining` 为 `0` | `rate_limited`、`retry_after_seconds` | 「GitHub 限流，请 N 分钟后重试」，按钮禁用至到期 |
 | 其它 401/403 | 状态码 401/403 但不是限流 | `forbidden` | 「检查失败」，日志带状态码 |
 | 找不到发布 | 404 | `not_found` | 「没找到发布信息」 |
 | JSON 形状变化 | 200 但 `tag_name` 非字符串、`assets` 非数组 | `bad_response` | 「检查失败」，日志写清字段与实际类型 |
@@ -116,6 +121,11 @@
 恢复。所以便携形态只给手动步骤：解压新 zip **覆盖到同一个目录** —— 数据不在 zip 里，覆盖不会
 删掉它们，旧版本删掉的文件会留成可接受的残留。
 
+**便携标记写在不可写目录时**（例如把便携版解压进了 `Program Files`）：`is_portable()` 仍为真，
+但 `get_user_data_dir()` 会退回默认数据根并记一条告警（[paths.py](../shell/backend/paths.py) 的
+可写性探测）。这类机器上"下载落点"与 `ready` 状态都在默认数据根，因此
+界面文案统一写"数据在程序目录（不可写时在默认数据根）"，不要断言"数据一定在程序目录"。
+
 ## 6. 下载与完整性
 
 **决定**：下载到 `<数据根>/updates/`（可随时删除的临时区），校验通过才保留；没有代码签名时，
@@ -126,14 +136,18 @@
 - **权威来源**：同一个 Release 里的 `<资产名>.sha256` 资产，内容 `<十六进制摘要> <文件名>`
   （[release.yml](../.github/workflows/release.yml) 的生成命令就是 `print(hexdigest, name)`），不依赖
   响应里的其它摘要字段：`.sha256` 由发布链保证一定在，其它字段不保证。
-- **校验步骤**：先下 `.sha256`（上限 4 KiB）→ 解析摘要与文件名 → 文件名必须等于资产名 → 分块算
-  SHA-256 → 比较（忽略大小写）；不一致即删除文件并返回 `digest_mismatch`，不留半成品。
+- **校验步骤**：先下 `.sha256`（最多读 4097 字节）→ 解析摘要与文件名。摘要不是 64 位十六进制、
+  没有文件名、或文件名不等于资产名，都判 `bad_response` —— 那是发布链或传输出了问题；只有"算出来
+  的摘要与声明的摘要不相等"才是 `digest_mismatch`。两种失败都删除半成品、不留文件；比较摘要时
+  忽略大小写。
 - **上限、超时**：`MAX_UPDATE_BYTES = 512 MiB`，同时对 `assets[].size` 预检；每写一块检查累计字节，
   超出即中止并删除。下载 `timeout=(10, 60)`，另加累计墙钟上限 900 秒，避免慢速滴流把界面永远
   卡在"下载中"。
-- **HTTPS 与重定向**：起始地址必须 `https://`；跟随重定向但最终地址也必须是 `https://`，主机只能
-  是 `github.com` 或 `*.githubusercontent.com`；跳去 `http://` / `file://` 判 `bad_redirect` 并删除
-  已下载部分。
+- **HTTPS 与重定向**：起始地址与**每一跳**都必须是 `https://`，主机只能是 `github.com` 或
+  `*.githubusercontent.com`；跳去 `http://` / `file://`、或超过 5 跳，判 `bad_redirect` 并删除
+  已下载部分。重定向**手动逐跳跟随**（`allow_redirects=False`，逐跳用 `urlsplit` 校验 scheme 与
+  主机）：自动跟随对 `file://` 抛 `InvalidSchema`，而它不是 `ConnectionError` 的子类，会被错误
+  分类成"连不上"；同时自动跟随不给逐跳检查主机名的机会，资产被转到别家 CDN 就悄悄发生了。
 - **清理与单动作**：失败、取消、安装结束（成功或失败）都清 `updates/` 下的对应文件；`Cubby.new`
   与 `Cubby.old` 只在交换流程内出现（§7.2）；下载与安装共用进程内锁，第二个请求直接返回"已有
   升级动作在进行"。
@@ -241,8 +255,8 @@ used by another process`。
 不自动安装"。
 
 状态只在内存里，离开设置页即重置；只有 `pending.json` / `apply.json` 落盘（§7）。限流时后端把
-`retry_after_seconds`（由 `X-RateLimit-Reset` 算出）一并返回供前端倒计时；同一次运行内 60 秒内的
-重复点击直接复用上一次结果，不发第二次请求。权限：这些端点做的是"对这台机器动手"（下载、启动
+`retry_after_seconds`（`Retry-After` 优先，其次由 `X-RateLimit-Reset` 算出）一并返回供前端倒计时；
+同一次运行内 60 秒内的重复点击直接复用上一次结果，不发第二次请求。权限：这些端点做的是"对这台机器动手"（下载、启动
 安装器、换目录），与 `system_pick_path`、`system_open_log_dir` 同类，**必须**同时登记进
 [file_server.py](../shell/backend/file_server.py) 的 `_ADMIN_ONLY_API`；非管理员调用返回 403，界面
 提示"只有管理员可以检查更新"。
@@ -267,20 +281,23 @@ used by another process`。
 进 CI 的 test job、两个平台都跑），用本地假 HTTP 服务覆盖分支；不真下载发布资产，不在 CI 里跑
 安装器。假服务沿用仓库已有写法 `ThreadingHTTPServer(('127.0.0.1', 0), handler)` +
 `BaseHTTPRequestHandler`，见 [tests/test_document_reader_tts.py](../tests/test_document_reader_tts.py)；
-被测函数接受"API 基地址"参数（默认是常量），这是为可测性留的唯一注入点。
+被测函数接受一个 `UpdateTransport`（API 基地址、检查 / 下载超时、字节上限、允许的协议与主机；
+默认值就是生产常量），这是为可测性留的唯一注入点 —— 用例借此把上限调到几百字节、把超时调到
+几百毫秒，并允许假服务所在的 `127.0.0.1`。
 
 | 分支 | 假服务怎么造 | 断言 |
 | --- | --- | --- |
 | 有新版本 | 200 + `tag_name: v9.9.9` + 两个资产 | `update_available`，选中资产名正确 |
 | 无新版本 | `tag_name` 等于当前版本 | `up_to_date` |
-| 限流 | 403 + `X-RateLimit-Remaining: 0` + `X-RateLimit-Reset` | `rate_limited` 且 `retry_after_seconds` 合理 |
+| 限流 | 403 + `X-RateLimit-Remaining: 0` + `X-RateLimit-Reset`，或 429 + `Retry-After` | `rate_limited` 且 `retry_after_seconds` 合理（429 优先取 `Retry-After`） |
 | 超时 | 处理器 sleep 超过读超时 | `network`，一行日志，不抛异常 |
-| 摘要不符 | `.sha256` 与文件内容不符 | 文件被删除，`digest_mismatch` |
+| 摘要不符 | `.sha256` 的摘要与文件内容不符 | 文件被删除，`digest_mismatch` |
+| `.sha256` 形状坏 | 摘要不是 64 位十六进制，或文件名不等于资产名 | 文件被删除，`bad_response` |
 | 资产缺失 | `assets` 里没有该平台资产，或没有 `.sha256` | `no_asset`，不发起下载 |
 | JSON 形状变化 | `{}`、`assets` 是对象、`tag_name` 是数字 | `bad_response`，不抛异常 |
 | 版本串不可解析 | `tag_name: 'nightly'` | `bad_version`，不提示升级 |
-| 下载超上限 | `Content-Length` 超过上限 | 中止并删除半成品 |
-| 重定向到非 https | 302 跳到 `http://` 或 `file://` | `bad_redirect` |
+| 下载超上限 | `assets[].size` 超过上限 / `Content-Length` 超过上限 / 流式写到超限 | 预检拦住的连资产请求都不发；其余中止并删除半成品 |
+| 重定向到非 https | 302 跳到 `http://` 或 `file://`，以及跳到允许主机的 302 | 前者 `bad_redirect`，后者能下完 |
 
 必须真机或 e2e：安装器覆盖安装（N → N+1）—— [release.yml](../.github/workflows/release.yml) 的冒烟
 只证明"装得上、卸得掉"，升级要在真机跑一次，确认数据根不变、插件设置保留、`cubby.log` 出现
