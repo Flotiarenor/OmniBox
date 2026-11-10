@@ -64,10 +64,12 @@ for _stream in (sys.stdout, sys.stderr):
 
 # 名字必须落在这些后缀的文件里才算数。刻意不含 .md：否则另一份文档里的旧名字会替
 # 被删掉的符号背书，"引用即存在"就退化成"某处出现过"。
-CODE_SUFFIXES = frozenset({'.py', '.js', '.mjs', '.cjs', '.ts', '.vue', '.json', '.css', '.sh', '.ps1'})
+# .iss 是安装器的脚本（Inno Setup Pascal），里面的指令名（InfoBeforeFile 之类）与
+# Python/JS 的函数一样会被文档引用，因此也算代码。
+CODE_SUFFIXES = frozenset({'.py', '.js', '.mjs', '.cjs', '.ts', '.vue', '.json', '.css', '.sh', '.ps1', '.iss'})
 # 路径引用允许的后缀比上面宽：文档也会引用 .md / .toml / .yml / .spec，
-# 以及安装器脚本 .iss（它不是 Python/JS 那样的代码，但确实是仓库里的一份文件）。
-PATH_SUFFIXES = CODE_SUFFIXES | {'.md', '.toml', '.yml', '.yaml', '.txt', '.svg', '.spec', '.html', '.iss'}
+# 以及安装器脚本 .iss 与语言包 .isl（它们不是 Python/JS 那样的代码，但确实是仓库里的文件）。
+PATH_SUFFIXES = CODE_SUFFIXES | {'.md', '.toml', '.yml', '.yaml', '.txt', '.svg', '.spec', '.html', '.isl'}
 
 # 产物与运行期文件：本来就可能不在仓库里（`Cubby.zip` 在 .gitignore 中，
 # `*.db` 是运行期生成的，`Cubby.exe` 是打包产物），一律不当作"引用"。

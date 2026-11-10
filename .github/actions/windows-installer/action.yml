@@ -97,7 +97,7 @@ runs:
     # 为什么必须有冒烟：ISCC 编译通过只证明脚本语法与文件列表成立；
     # "装完目标目录里有 Cubby.exe""卸载器能静默退出 0"是用户第一步就会踩到的路径，
     # 只有真机装一次才能证明。失败必须让 job 红，不能只打印。
-    - name: 静默安装 / 卸载冒烟
+    - name: 静默安装 / 升级 / 卸载冒烟
       shell: pwsh
       run: |
         $version = $env:CUBBY_SETUP_VERSION
@@ -105,6 +105,14 @@ runs:
         $dir = Join-Path $env:RUNNER_TEMP 'cubby-setup-smoke'
         $log = Join-Path $env:RUNNER_TEMP 'cubby-setup-install.log'
         if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+
+        # 用户数据哨兵：安装、覆盖安装、卸载三步之后它都必须还在。
+        # 只测"装得上、卸得掉"漏掉的是升级路径动到 %LOCALAPPDATA%\Cubby 的回归。
+        $dataDir = Join-Path $env:LOCALAPPDATA 'Cubby'
+        $sentinel = Join-Path $dataDir 'installer-smoke-sentinel.txt'
+        New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+        Set-Content -Path $sentinel -Value 'keep me' -Encoding utf8
+
         $install = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
           '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
           "/DIR=`"$dir`"", "/LOG=`"$log`""
@@ -120,6 +128,21 @@ runs:
         if (-not (Test-Path $uninst)) {
           throw "静默安装后目标目录里没有 unins000.exe：$dir"
         }
+        if (-not (Test-Path $sentinel)) {
+          throw "首次安装后用户数据根里的哨兵文件不见了：$sentinel"
+        }
+
+        # 覆盖安装（升级路径）：同一个目录再装一次，数据根不得被动过。
+        $upgrade = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
+          '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$dir`""
+        )
+        if ($upgrade.ExitCode -ne 0) {
+          throw "覆盖安装失败，退出码 $($upgrade.ExitCode)"
+        }
+        if (-not (Test-Path $sentinel)) {
+          throw "覆盖安装后用户数据根里的哨兵文件不见了（升级不应搬动数据）：$sentinel"
+        }
+
         $uninstall = Start-Process -FilePath $uninst -Wait -PassThru -ArgumentList @(
           '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
         )
@@ -135,7 +158,11 @@ runs:
         if (Test-Path $exe) {
           throw "静默卸载返回 0，但安装目录里仍有 Cubby.exe：$dir"
         }
-        Write-Host '安装 / 卸载冒烟通过'
+        if (-not (Test-Path $sentinel)) {
+          throw "静默卸载没有保留用户数据：$sentinel"
+        }
+        Remove-Item -Recurse -Force $dataDir -ErrorAction SilentlyContinue
+        Write-Host '安装 / 覆盖安装 / 卸载冒烟通过（用户数据全程保留）'
 
     - name: 上传安装器
       if: inputs.artifact-name != ''
