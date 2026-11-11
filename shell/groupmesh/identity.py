@@ -317,6 +317,10 @@ def _read_private(path: Path) -> Dict[str, Any]:
 
     旧版明文（没有 `format` 信封）照常读；如果当前环境能提供更强的保护，
     `migrate_file()` 会把它单向升级，失败只告警、不影响本次读取。
+
+    1.4.0 的信封（`omnibox-secret-v1`）不在这条路径上：`unprotect()` 直接抛
+    `SecretError`，于是这里在解析 payload **之前**就失败，`migrate_file()` 不会
+    被调用 —— 旧信封不会被当成明文再封装一层，原文件字节保持不变。
     """
     try:
         raw = path.read_bytes()

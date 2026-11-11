@@ -27,6 +27,11 @@
   `SecretError`，绝不把密文当明文继续解析 —— 后者会生成一个"看起来正常"的空身份。
 * **迁移是单向的**：`migrate_file()` 只把"未保护的旧文件"升级成当前可用的最强
   保护；已经保护的文件不会被降级重写（避免一次 keyring 故障把私钥写成明文）。
+* **1.4.0 的信封不当作明文**：`LEGACY_FORMAT`（`omnibox-secret-v1`，DPAPI 旧熵
+  `omnibox.group-mesh.secret.v1`）是上一代的受保护文件。`unprotect()` 命中它时
+  直接报错要求先跑迁移脚本，**不回退成明文、也不重写文件** —— 若把它当明文，
+  上层只会得到一句"字段 name 缺失"，而 `migrate_file()` 会把旧信封再封装一层，
+  让本来还能被迁移脚本剥开的密钥多绕一层。
 * **`plain` 不伪造安全感**：不写 `format` 信封，直接保留旧 JSON，`describe()`
   会如实报告 `active == "plain"`，插件状态页据此显示警告。
 * **显式覆盖**：`CUBBY_SECRET_PROTECTOR` 可强制指定
@@ -48,6 +53,9 @@ from typing import Any, Dict, Optional
 log = logging.getLogger(__name__)
 
 FORMAT = 'cubby-secret-v1'
+#: 1.4.0 的信封标识：2.0 不解这个格式（DPAPI 熵也从旧值换成了 `ENTROPY`），
+#: 命中时明确报错要求先跑 Release 里的 1.4.0 → 2.0 迁移脚本。**不**把它当明文。
+LEGACY_FORMAT = 'omnibox-secret-v1'
 ENTROPY = b'cubby.group-mesh.secret.v1'
 KEYRING_SERVICE = 'cubby-group-mesh'
 _KEYRING_PROBE_USER = '__cubby_probe__'
@@ -280,14 +288,46 @@ def protect(raw: bytes, protector: Optional[str] = None) -> bytes:
     return (json.dumps(envelope, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
 
 
+def envelope_format(raw: bytes) -> Optional[str]:
+    """文件信封的 `format` 字段；不是 JSON 对象或没有字符串形 format 时返回 None。"""
+    try:
+        envelope = json.loads(raw.decode('utf-8'))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    value = envelope.get('format')
+    return value if isinstance(value, str) else None
+
+
+def is_legacy_envelope(raw: bytes) -> bool:
+    """是否是 1.4.0 的密钥信封（`LEGACY_FORMAT`）。
+
+    只用于"识别并拒绝"：2.0 不去解密它，也绝不对它做 `protect()` 重封装。
+    """
+    return envelope_format(raw) == LEGACY_FORMAT
+
+
 def unprotect(raw: bytes) -> bytes:
-    """解出原始 JSON 字节。旧版明文 JSON（没有 `format` 字段）原样返回。"""
+    """解出原始 JSON 字节。旧版明文 JSON（没有 `format` 字段）原样返回。
+
+    1.4.0 的受保护信封不算"旧版明文"：命中 `LEGACY_FORMAT` 时抛 `SecretError`，
+    让调用方把"需要先跑迁移脚本"原样报给用户，而不是拿信封本身当 JSON 继续解析。
+    """
     try:
         envelope = json.loads(raw.decode('utf-8'))
     except (UnicodeDecodeError, json.JSONDecodeError):
         return raw  # 非 JSON：交给上层报"文件损坏"，不在这一层猜
-    if not isinstance(envelope, dict) or envelope.get('format') != FORMAT:
-        return raw  # 迁移前的旧明文 JSON
+    if not isinstance(envelope, dict):
+        return raw  # 顶层不是对象：同样交给上层报"文件损坏"
+    file_format = envelope.get('format')
+    if file_format == LEGACY_FORMAT:
+        raise SecretError(
+            '该文件是 1.4.0 的密钥信封（omnibox-secret-v1），2.0 不解这个格式：'
+            '请先跑 Release 里的 1.4.0 → 2.0 迁移脚本；本次读取没有改动文件'
+        )
+    if file_format != FORMAT:
+        return raw  # 迁移前的旧明文 JSON（没有 format 字段）
 
     protector = envelope.get('protector')
     data = envelope.get('data')
@@ -333,8 +373,8 @@ def is_protected(raw: bytes) -> bool:
 def migrate_file(path: Path) -> bool:
     """把未保护的旧文件升级成当前可用的最强保护；返回是否发生改写。
 
-    只做"升级"：已经受保护或当前只有 plain 可用时不改。任何失败只告警，
-    不影响调用方读取旧内容。
+    只做"升级"：已经受保护、是 1.4.0 的旧信封（`LEGACY_FORMAT`，要由迁移脚本
+    重封装）或当前只有 plain 可用时都不改。任何失败只告警，不影响调用方读取旧内容。
     """
     if os.environ.get(NO_MIGRATE_ENV):
         return False
@@ -343,6 +383,10 @@ def migrate_file(path: Path) -> bool:
     except OSError:
         return False
     if is_protected(raw):
+        return False
+    if is_legacy_envelope(raw):
+        # 绝不对旧信封做 protect()：那会把它当明文再包一层，迁移脚本要多剥一层。
+        log.warning('[group-mesh] %s 是 1.4.0 的密钥信封，跳过保护升级（先跑迁移脚本）', path.name)
         return False
     try:
         chosen = best_protector()

@@ -22,6 +22,7 @@ from unittest import mock
 from shell.groupmesh import crypto_prims as cp
 from shell.groupmesh import secret_store
 from shell.groupmesh.identity import Identity
+from shell.groupmesh.records import RecordError
 
 
 class _FakeKeyring:
@@ -64,6 +65,22 @@ class SecretStoreTest(unittest.TestCase):
     def test_legacy_plaintext_json_is_accepted(self):
         raw = json.dumps({'name': 'old', 'private_key': 'AAAA'}).encode('utf-8')
         self.assertEqual(secret_store.unprotect(raw), raw)
+
+    def test_legacy_envelope_is_reported_instead_of_read_as_plaintext(self):
+        """1.4.0 的信封不是"旧版明文"：命中时明确报错，绝不把信封本身返回给上层。"""
+        legacy = json.dumps({
+            'format': secret_store.LEGACY_FORMAT,
+            'protector': 'dpapi',
+            'data': 'AAAA',
+        }).encode('utf-8')
+        self.assertFalse(secret_store.is_protected(legacy))
+        self.assertTrue(secret_store.is_legacy_envelope(legacy))
+        self.assertEqual(secret_store.envelope_format(legacy), 'omnibox-secret-v1')
+        with self.assertRaises(secret_store.SecretError) as ctx:
+            secret_store.unprotect(legacy)
+        message = str(ctx.exception)
+        self.assertIn('omnibox-secret-v1', message)
+        self.assertIn('迁移脚本', message)
 
     def test_passphrase_roundtrip_and_tamper(self):
         with self._force('passphrase'), mock.patch.dict(
@@ -167,6 +184,34 @@ class IdentitySecretTest(unittest.TestCase):
                 self.assertFalse(secret_store.migrate_file(principal_file))
             self.assertEqual(principal_file.read_bytes(), before)
             self.assertTrue(secret_store.is_protected(principal_file.read_bytes()))
+
+    def test_migrate_never_rewraps_a_legacy_envelope(self):
+        """旧信封若被当成明文重封装，迁移脚本就要多剥一层：这里钉住它不被改写。"""
+        with tempfile.TemporaryDirectory() as tmp, self._passphrase('pw'):
+            principal_file = Path(tmp) / 'principal.json'
+            legacy = json.dumps({
+                'format': secret_store.LEGACY_FORMAT,
+                'protector': 'dpapi',
+                'data': 'AAAA',
+            }).encode('utf-8')
+            principal_file.write_bytes(legacy)
+            self.assertFalse(secret_store.migrate_file(principal_file))
+            self.assertEqual(principal_file.read_bytes(), legacy)
+
+    def test_identity_with_legacy_envelope_is_not_rewritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            principal_file = Path(tmp) / 'principal.json'
+            legacy = json.dumps({
+                'format': secret_store.LEGACY_FORMAT,
+                'protector': 'dpapi',
+                'data': 'AAAA',
+            }).encode('utf-8')
+            principal_file.write_bytes(legacy)
+            with self.assertRaises(RecordError) as ctx:
+                Identity.load(Path(tmp))
+            self.assertIn('迁移脚本', str(ctx.exception))
+            self.assertEqual(principal_file.read_bytes(), legacy,
+                             '读取失败不得改动旧信封（更不能把它当明文再包一层）')
 
     @staticmethod
     def _passphrase(value: str):
