@@ -12,10 +12,7 @@
 
 本文定"点一下能不能知道自己是不是最新版、要不要让它替你装"的方案与判据。数据根与安装目录的
 关系、安装器、资产清单见 [安装与更新](./install-and-update.md)；发布链路与门禁见
-[CI、打包与发布](./ci-and-release.md)，已有的段落不在此复述。现状（供对照）：后端没有运行期
-版本接口（[shell_info.py](../shell/backend/shell_info.py) 的 `get_info` 只返回路径、日志与缓存占用）；
-「关于」段只有版本、许可与两个链接，文案写的是"应用本身不会联网检查或自动更新"，本文落地前
-保持原样。
+[CI、打包与发布](./ci-and-release.md)，已有的段落不在此复述。
 
 ## 1. 目标与不做的事
 
@@ -66,8 +63,9 @@
 `User-Agent`，不带会被拒。`X-RateLimit-Remaining` 与 `X-RateLimit-Reset`（epoch 秒）既用于区分
 失败原因，也用于算"还需等多久"。**429 与"403 且 `X-RateLimit-Remaining` 为 `0`"同等处理**：
 两者都是限流，其余 403（remaining 不为 `0`）仍按"拒绝访问"处理。要等多久优先取 `Retry-After`，
-没有该头再退回 `X-RateLimit-Reset - now`。检查由用户点击触发、同一次运行内 60 秒不重复请求，
-60 次对正常使用宽裕。失败分类与用户可见结果（一律只写一行日志，不抛到 `api_proxy` 的 500 分支）：
+没有该头再退回 `X-RateLimit-Reset - now`。检查由用户点击触发、同一次运行内 60 秒内复用**成功**
+结果（失败不进这份缓存，重试要真的重发请求），60 次对正常使用宽裕。失败分类与用户可见结果
+（一律只写一行日志，不抛到 `api_proxy` 的 500 分支）：
 
 | 情况 | 判据 | 后端 | 界面 |
 | --- | --- | --- | --- |
@@ -141,16 +139,18 @@
   的摘要与声明的摘要不相等"才是 `digest_mismatch`。两种失败都删除半成品、不留文件；比较摘要时
   忽略大小写。
 - **上限、超时**：`MAX_UPDATE_BYTES = 512 MiB`，同时对 `assets[].size` 预检；每写一块检查累计字节，
-  超出即中止并删除。下载 `timeout=(10, 60)`，另加累计墙钟上限 900 秒，避免慢速滴流把界面永远
-  卡在"下载中"。
+  超出即中止并删除。下载 `timeout=(10, 60)`，另加累计墙钟上限 900 秒（取摘要与取资产共用这一份
+  预算，两段都是网络流），避免慢速滴流把界面永远卡在"下载中"。
 - **HTTPS 与重定向**：起始地址与**每一跳**都必须是 `https://`，主机只能是 `github.com` 或
   `*.githubusercontent.com`；跳去 `http://` / `file://`、或超过 5 跳，判 `bad_redirect` 并删除
   已下载部分。重定向**手动逐跳跟随**（`allow_redirects=False`，逐跳用 `urlsplit` 校验 scheme 与
   主机）：自动跟随对 `file://` 抛 `InvalidSchema`，而它不是 `ConnectionError` 的子类，会被错误
   分类成"连不上"；同时自动跟随不给逐跳检查主机名的机会，资产被转到别家 CDN 就悄悄发生了。
-- **清理与单动作**：失败、取消、安装结束（成功或失败）都清 `updates/` 下的对应文件；`Cubby.new`
-  与 `Cubby.old` 只在交换流程内出现（§7.2）；下载与安装共用进程内锁，第二个请求直接返回"已有
-  升级动作在进行"。
+- **清理与单动作**：失败、取消、安装结束（成功或失败）都清 `updates/` 下的对应文件；已校验完成
+  但不再需要的旧安装包在**下一次检查成功或开始新下载时**清掉，只保留当前 `ready` 的那一份 ——
+  只清下载产物（`Cubby-Setup-*.exe` 与 `Cubby-windows-x64.zip`），`.part` 残骸按年龄单独清，
+  journal（`pending.json` / `apply.json`）与其它文件不动；`Cubby.new` 与 `Cubby.old` 只在交换
+  流程内出现（§7.2）；下载与安装共用进程内锁，第二个请求直接返回"已有升级动作在进行"。
 
 为什么摘要是唯一凭据：仓库没有代码签名（[install-and-update.md](./install-and-update.md) §7），OS
 层面没有东西能证明"这个 exe 来自本仓库"；HTTPS 只保护传输，换不了"发布页上挂的是什么"。而
@@ -163,7 +163,7 @@
 ### 7.1 安装器形态：调起已下载的 `Cubby-Setup-<版本>.exe`
 
 **决定**：应用在**退出阶段**启动安装器，然后自行退出；装完由用户重新打开。参数
-`/SILENT /NORESTART /LOG=<数据根>/logs/setup-<版本>.log`，`cwd` 设为 `updates/`，
+`/SILENT /NORESTART /LOG=<数据根>/.config/logs/setup-<版本>.log`，`cwd` 设为 `updates/`，
 `creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP`，使子进程在父
 进程退出后继续。不用 `/VERYSILENT`：用户刚点过"立即升级"，看不到窗口会被当成没反应；不加
 `/SUPPRESSMSGBOXES`：真失败时让安装器把原因报出来。
@@ -240,23 +240,26 @@ used by another process`。
 | --- | --- | --- | --- |
 | `idle` | 打开设置页 | 现有版本行 + 「检查更新」 | 检查 |
 | `checking` | 点击后 | 「正在检查…」，按钮禁用 | 无 |
-| `up_to_date` | `latest == current` | 「已是最新版本（X.Y.Z）」 | 60 秒后再检查 |
-| `update_available` | `latest > current` 且有对应资产 | 目标版本、资产名、大小；安装器/zip 形态给「下载并升级」，便携与无资产形态给发布页链接 | 下载 / 取消 |
-| `downloading` | 下载中 | 进度百分比（按 `assets[].size`） | 取消 |
-| `ready` | 下载并通过 `.sha256` | 「已下载并通过校验」+「立即退出并安装」+「稍后」 | 安装 / 稍后 |
+| `up_to_date` | `latest <= current`（相等即最新；远端更低不提示降级） | 「已是最新版本（X.Y.Z）」 | 60 秒后再检查 |
+| `update_available` | `latest > current`；发布里有该形态资产时后端给 `update_available`（可下载），缺资产 / 缺 `.sha256` 时后端给 `no_asset` 但界面仍按"有新版、这一版没有可下载的安装包"展示 | 目标版本、资产名、大小；可下载形态给「下载并校验」，便携与无资产形态只给发布页链接 | 下载 / 取消（不可下载时只检查） |
+| `downloading` | 下载中 | 进度百分比（按 `assets[].size`，缺省时按 `Content-Length`） | 取消 |
+| `verifying` | 资产下完、正在比对 `.sha256` | 「正在校验…」 | 无（取消只在下一个分块处生效，校验阶段不中断） |
+| `ready` | 下载并通过 `.sha256` | 「已下载并通过校验」+ 文件路径 + 「打开下载位置」；2.0 **不**自动安装，一键安装属 2.1（C） | 打开下载位置（2.1 起：安装 / 稍后） |
 | `error` | 任一类失败 | 一行原因 + 「重试」；`rate_limited` 显示"请 N 分钟后重试"并禁用按钮至到期 | 重试 |
 | `disabled` | 开发模式 / Linux | 说明为什么不检查 | 打开发布页 |
 
 文案要求：成功与失败都用段内状态行、不用 toast（用户是来看结果的，toast 会飘走；`toastError` 只
 用于"按钮动作抛错"，与设置页既有写法一致）；失败不弹阻塞框、不影响其它设置项，只 `log.warning`
-一行；「有新版」必须写清将要发生什么 —— 安装器形态写"安装器会关闭 Cubby 并覆盖安装，数据不受
-影响"，zip 形态写"将替换程序目录，数据在默认位置不受影响"，便携形态写"请解压覆盖到同一目录，
-数据在程序目录里"；落地时把那句"应用本身不会联网检查或自动更新"改成"由你点击触发检查，只提示，
-不自动安装"。
+一行；2.0 的「有新版」必须写清将要发生什么 —— 安装器与 zip 形态写"会下载安装包并通过校验，
+之后到下载位置手动运行，数据不受影响"，便携形态写"请解压覆盖到同一目录，数据在程序目录里"，
+不能承诺自动安装或替换目录（那是 2.1 的 C/D）；落地时把那句"应用本身不会联网检查或自动更新"
+改成"由你点击触发检查，只提示，不自动安装"。
 
-状态只在内存里，离开设置页即重置；只有 `pending.json` / `apply.json` 落盘（§7）。限流时后端把
-`retry_after_seconds`（`Retry-After` 优先，其次由 `X-RateLimit-Reset` 算出）一并返回供前端倒计时；
-同一次运行内 60 秒内的重复点击直接复用上一次结果，不发第二次请求。权限：这些端点做的是"对这台机器动手"（下载、启动
+状态只在内存里，离开设置页即重置（后端只保留当前下载任务与当前 `ready` 的那份成品）；2.0 落盘的
+只有 `<数据根>/updates/` 下的下载产物，`pending.json` / `apply.json` 属 2.1 的 C/D（§7）。限流时
+后端把 `retry_after_seconds`（`Retry-After` 优先，其次由 `X-RateLimit-Reset` 算出）一并返回供前端
+倒计时；同一次运行内 60 秒内**成功**的检查结果会被复用，失败（网络、限流、形状变化…）不复用 ——
+「重试」必须真的重发请求。权限：这些端点做的是"对这台机器动手"（下载、启动
 安装器、换目录），与 `system_pick_path`、`system_open_log_dir` 同类，**必须**同时登记进
 [file_server.py](../shell/backend/file_server.py) 的 `_ADMIN_ONLY_API`；非管理员调用返回 403，界面
 提示"只有管理员可以检查更新"。
@@ -298,10 +301,13 @@ used by another process`。
 | 版本串不可解析 | `tag_name: 'nightly'` | `bad_version`，不提示升级 |
 | 下载超上限 | `assets[].size` 超过上限 / `Content-Length` 超过上限 / 流式写到超限 | 预检拦住的连资产请求都不发；其余中止并删除半成品 |
 | 重定向到非 https | 302 跳到 `http://` 或 `file://`，以及跳到允许主机的 302 | 前者 `bad_redirect`，后者能下完 |
+| 生产白名单 | 默认 `UpdateTransport()`（不注入替身） | 只放行 `https://github.com` / `*.githubusercontent.com`；http、`file://`、跨域主机、带 userinfo 的地址一律拒绝 |
+| 失败不复用缓存 | 500 / 403 限流后再检查一次 | 第二次仍然发请求（`cached == false`），限流倒计时重新计算 |
+| 旧安装包清理 | `updates/` 里放旧成品、`.part` 与 journal，再做一次成功检查 / 开始新下载 | 旧成品被删；当前 `ready` 的、`.part` 与 `pending.json` 保留 |
 
 必须真机或 e2e：安装器覆盖安装（N → N+1）—— [release.yml](../.github/workflows/release.yml) 的冒烟
-只证明"装得上、卸得掉"，升级要在真机跑一次，确认数据根不变、插件设置保留、`cubby.log` 出现
-"升级完成"；zip 自替换 —— 目录改名在真机上的行为（杀软、索引服务、长路径）、回滚后旧版本仍能
+只证明"装得上、卸得掉"，升级要在真机跑一次，确认数据根不变、插件设置保留、`<数据根>/.config/logs/cubby.log`
+出现"升级完成"；zip 自替换 —— 目录改名在真机上的行为（杀软、索引服务、长路径）、回滚后旧版本仍能
 启动；便携形态 —— 放一个 `portable.txt` 确认界面不出现「下载并升级」。
 
 不测：不真下载大文件（用几 KB 的假文件）；不在 CI 里启动安装器（需要交互式桌面）；不测 GitHub
@@ -313,7 +319,7 @@ used by another process`。
 
 | 步骤 | 范围 | 验收（可执行或可观察） | 进 2.0 |
 | --- | --- | --- | --- |
-| A 检查与提示 | 后端 `shell/backend/update_check.py`（检查 + 版本比较 + 资产选择 + 形态判定）；方法表注册两处（[file_server.py](../shell/backend/file_server.py) 的 `api_proxy` 与 [main.py](../main.py) 的 `shell_methods`）；登记 `_ADMIN_ONLY_API`；前端「关于」段状态机（`idle`/`checking`/`update_available`/`up_to_date`/`error`/`disabled`），不碰下载 | `python -m unittest tests.test_update_check -v` 通过；开发模式点击显示"开发模式不检查更新"；真机点击后 `cubby.log` 出现一行检查结果；「关于」段文案已替换 | 是 |
+| A 检查与提示 | 后端 `shell/backend/update_check.py`（检查 + 版本比较 + 资产选择 + 形态判定）；方法表注册两处（[file_server.py](../shell/backend/file_server.py) 的 `api_proxy` 与 [main.py](../main.py) 的 `shell_methods`）；登记 `_ADMIN_ONLY_API`；前端「关于」段状态机（`idle`/`checking`/`update_available`/`up_to_date`/`error`/`disabled`），不碰下载 | `python -m unittest tests.test_update_check -v` 通过；开发模式点击显示"开发模式不检查更新"；真机点击后 `<数据根>/.config/logs/cubby.log` 出现一行检查结果；「关于」段文案已替换 | 是 |
 | B 下载与校验 | `<数据根>/updates/`、`.sha256` 校验、大小与超时上限、失败清理、`ready` 状态 | 假服务用例覆盖摘要不符/超上限/重定向；下载成功后 `updates/` 里只有通过校验的包；取消与失败后不留半成品 | 是 |
 | C 安装器路径 | 启动安装器、`atexit` 时序、`pending.json`、下次启动的完成/未完成判定 | 真机 N → N+1 后数据根不变、设置保留、日志出现"升级完成"；中途杀掉安装器后下次启动显示"上次升级未完成" | 否，2.1 |
 | D zip 自替换 | `--apply-update` 分支、`Cubby.new` 解压与路径校验、目录交换、回滚、`Cubby.old` 清理 | 真机（zip 解压、无 `portable.txt`）升级成功且数据仍在默认数据根；把 `Cubby.new` 弄成只读制造交换失败，回滚后旧版本仍可启动；有 `portable.txt` 时只给发布页链接 | 否，2.1 |

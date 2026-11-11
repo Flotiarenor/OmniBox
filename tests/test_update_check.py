@@ -154,7 +154,7 @@ class _Handler(BaseHTTPRequestHandler):
     routes: ClassVar[Dict[str, Callable]] = {}
     seen: ClassVar[List[Dict[str, Any]]] = []
 
-    def log_message(self, *args: Any) -> None:
+    def log_message(self, format: str, *args: Any) -> None:
         pass
 
     def do_GET(self) -> None:
@@ -349,15 +349,13 @@ class InstallFormTests(unittest.TestCase):
 class ParseSha256Tests(unittest.TestCase):
     def test_parses_digest_and_name(self):
         line = _sha_line(b'data', 'Cubby-Setup-1.5.0.exe')
-        digest, name = update_check.parse_sha256(line.decode('utf-8'))
-        self.assertEqual(digest, hashlib.sha256(b'data').hexdigest())
-        self.assertEqual(name, 'Cubby-Setup-1.5.0.exe')
+        parsed = update_check.parse_sha256(line.decode('utf-8'))
+        self.assertEqual(parsed, (hashlib.sha256(b'data').hexdigest(), 'Cubby-Setup-1.5.0.exe'))
 
     def test_accepts_binary_marker_and_upper_case(self):
         digest = hashlib.sha256(b'data').hexdigest().upper()
         parsed = update_check.parse_sha256(f'{digest} *Cubby.zip\n')
-        self.assertIsNotNone(parsed)
-        self.assertEqual(parsed[1], 'Cubby.zip')
+        self.assertEqual(parsed, (digest.lower(), 'Cubby.zip'))
 
     def test_rejects_other_shapes(self):
         for text in ('', '   ', 'not-a-digest Cubby.zip', 'a' * 63 + ' Cubby.zip',
@@ -371,6 +369,9 @@ class ParseSha256Tests(unittest.TestCase):
 
 class _ServerTest(unittest.TestCase):
     """起一个假服务 + 一个临时用户数据根；每个用例都从干净状态开始。"""
+
+    #: 子类在 `setUp` 里创建；基类只共享 helper（类型标注给 pyright 看）。
+    service: update_check.UpdateService
 
     def setUp(self) -> None:
         _Handler.routes = {}
@@ -436,12 +437,14 @@ class CheckTests(_ServerTest):
         self.assertTrue(result['ok'], result)
         self.assertEqual(result['code'], 'up_to_date')
         self.assertIsNone(result['asset'])
+        self.assertFalse(result['download_allowed'], '没有可下载目标时不许说能下载')
 
     def test_remote_lower_does_not_offer_a_downgrade(self):
         self.serve_release(tag='v1.3.9')
         result = self.service.check('1.4.0')
         self.assertEqual(result['code'], 'up_to_date')
         self.assertIsNone(result['asset'])
+        self.assertFalse(result['download_allowed'])
 
     def test_portable_form_only_hints(self):
         self.form = 'portable'
@@ -563,6 +566,43 @@ class CheckTests(_ServerTest):
         self.assertTrue(second['cached'], '第二次请求应当复用缓存结果')
         self.assertEqual(second['code'], first['code'])
         self.assertEqual(len(_Handler.seen), 1, '60 秒内不该发第二次请求')
+
+    def test_failures_are_not_reused_for_sixty_seconds(self):
+        """失败必须让「重试」真的重发请求：失败信封不进缓存。"""
+        _Handler.routes[update_check.RELEASES_PATH] = _json_route({}, status=500)
+        first = self.service.check('1.4.0')
+        second = self.service.check('1.4.0')
+        self.assertFalse(first['ok'])
+        self.assertFalse(second['ok'])
+        self.assertFalse(second['cached'], '失败不该被 60 秒缓存复用')
+        self.assertEqual(len(_Handler.seen), 2, '重试应当真的发出第二次请求')
+
+    def test_a_failure_after_a_success_clears_the_cache(self):
+        self.service.check('1.4.0')  # 成功，写入缓存
+        _Handler.routes[update_check.RELEASES_PATH] = _json_route({}, status=500)
+        # 换 current 绕开缓存命中，模拟"同一进程里先成功后失败"
+        failed = self.service.check('1.4.1')
+        self.assertEqual(failed['code'], 'unexpected')
+        self.assertFalse(failed['cached'])
+        # 失败已清空缓存：再查同一版本不能拿到上一次的成功结果
+        again = self.service.check('1.4.1')
+        self.assertEqual(again['code'], 'unexpected')
+        self.assertFalse(again['cached'])
+        self.assertEqual(len(_Handler.seen), 3)
+
+    def test_rate_limited_is_not_reused_either(self):
+        reset = int(time.time()) + 120
+        _Handler.routes[update_check.RELEASES_PATH] = _json_route(
+            {'message': 'API rate limit exceeded'},
+            status=403,
+            headers={'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': str(reset)},
+        )
+        first = self.service.check('1.4.0')
+        second = self.service.check('1.4.0')
+        self.assertEqual(first['code'], 'rate_limited')
+        self.assertEqual(second['code'], 'rate_limited')
+        self.assertFalse(second['cached'], '限流结果也要重算，不能复用旧倒计时')
+        self.assertEqual(len(_Handler.seen), 2)
 
     def test_request_path_and_headers(self):
         self.service.check('1.4.0')
@@ -810,13 +850,77 @@ class DownloadTests(_ServerTest):
         self.assertFalse(state['download_allowed'])
         self.assertIn('开发模式', state['reason'])
 
+    def test_sha256_fetch_has_a_wall_clock_limit(self):
+        """`.sha256` 也是网络流：墙钟到点要中止，不能把任务永远留在"下载中"。"""
+        self.serve_release()
+        self.serve_asset(_setup_name(), SETUP_BODY)
+        with mock.patch.object(update_check, 'DOWNLOAD_WALL_SECONDS', -1.0):
+            self.start()
+            job = self.wait_settled()
+        self.assertEqual(job['state'], 'error')
+        self.assertEqual(job['code'], 'timeout')
+        self.assertFalse([p for p in self.served_paths() if p == f'/dl/{_setup_name()}'],
+                         '摘要阶段就超时，不该再请求资产')
+        self.assertEqual(list(self.updates.iterdir()), [])
+
+    def test_old_completed_packages_are_pruned_on_a_successful_check(self):
+        self.setUpDownload()
+        self.start()
+        ready = self.wait_settled()
+        self.assertEqual(ready['state'], 'ready')
+        stale = self.updates / 'Cubby-Setup-1.4.0.exe'
+        stale.write_bytes(b'old')
+        # 换 current 绕开 60 秒缓存，让这次检查真的走一次"成功 → 清理"
+        result = self.service.check('1.5.0')
+        self.assertEqual(result['code'], 'up_to_date')
+        self.assertFalse(stale.exists(), '已完成的旧安装包应在下一次检查时清掉')
+        self.assertTrue((self.updates / _setup_name()).is_file(), '当前 ready 的那份要保留')
+
+    def test_start_download_prunes_previous_packages(self):
+        self.setUpDownload()
+        self.assertEqual(self.service.check('1.4.0')['code'], 'update_available')
+        self.updates.mkdir(parents=True, exist_ok=True)
+        stale = self.updates / 'Cubby-Setup-1.3.0.exe'
+        stale.write_bytes(b'old')
+        self.assertTrue(self.service.start_download('1.5.0', _setup_name())['started'])
+        self.assertFalse(stale.exists(), '开始新下载前应清掉旧成品')
+        self.wait_settled()
+
+
+class PruneUpdatesDirTests(_ServerTest):
+    def test_keeps_named_files_partials_and_journals(self):
+        self.updates.mkdir(parents=True, exist_ok=True)
+        keep = self.updates / 'Cubby-Setup-1.5.0.exe'
+        keep.write_bytes(b'keep')
+        stale = self.updates / 'Cubby-Setup-1.4.0.exe'
+        stale.write_bytes(b'old')
+        stale_zip = self.updates / update_check.ZIP_ASSET_NAME
+        stale_zip.write_bytes(b'old-zip')
+        partial = self.updates / 'Cubby-Setup-1.4.0.exe.1234.part'
+        partial.write_bytes(b'part')
+        journal = self.updates / 'pending.json'
+        journal.write_text('{}', encoding='utf-8')
+
+        update_check._prune_updates_dir(['Cubby-Setup-1.5.0.exe'])
+
+        self.assertTrue(keep.is_file(), '当前 ready 的那份要保留')
+        self.assertFalse(stale.exists())
+        self.assertFalse(stale_zip.exists())
+        self.assertTrue(partial.is_file(), '.part 归 _cleanup_stale_parts 按年龄处理')
+        self.assertTrue(journal.is_file(), 'journal 等非下载产物不能被顺手删掉')
+
+    def test_missing_directory_is_not_created(self):
+        update_check._prune_updates_dir()
+        self.assertFalse(self.updates.exists(), '没有 updates/ 时不该顺手建一个')
+
 
 class OpenUpdatesDirTests(_ServerTest):
     def test_creates_the_directory_before_opening(self):
         service = update_check.UpdateService(_transport(self.server))
         opened: List[str] = []
-        with mock.patch.object(update_check.os, 'startfile', lambda path: opened.append(path),
-                               create=True):
+        with mock.patch.object(update_check, 'current_form', lambda: 'installer'), \
+                mock.patch.object(update_check.os, 'startfile', lambda path: opened.append(path),
+                                  create=True):
             result = service.open_updates_dir()
         self.assertEqual(result, {'success': True})
         self.assertTrue(self.updates.is_dir())
@@ -824,11 +928,72 @@ class OpenUpdatesDirTests(_ServerTest):
 
     def test_reports_failure_instead_of_raising(self):
         service = update_check.UpdateService(_transport(self.server))
-        with mock.patch.object(update_check.os, 'startfile',
-                               side_effect=OSError('没有文件管理器'), create=True):
+        with mock.patch.object(update_check, 'current_form', lambda: 'installer'), \
+                mock.patch.object(update_check.os, 'startfile',
+                                  side_effect=OSError('没有文件管理器'), create=True):
             result = service.open_updates_dir()
         self.assertFalse(result['success'])
         self.assertIn('没有文件管理器', result['error'])
+
+    def test_development_form_refuses_without_creating_a_directory(self):
+        """开发模式的数据根是项目根：不能因为"打开下载位置"在工作区里 mkdir。"""
+        service = update_check.UpdateService(_transport(self.server))
+        opened: List[str] = []
+        with mock.patch.object(update_check, 'current_form', lambda: 'dev'), \
+                mock.patch.object(update_check.os, 'startfile', lambda path: opened.append(path),
+                                  create=True):
+            result = service.open_updates_dir()
+        self.assertFalse(result['success'])
+        self.assertIn('开发模式', result['error'])
+        self.assertEqual(opened, [])
+        self.assertFalse(self.updates.exists())
+
+
+# ===== 生产传输常量 =====
+
+
+class ProductionTransportTests(unittest.TestCase):
+    """生产 `UpdateTransport` 的白名单必须真的拦住 http 与跨域主机。
+
+    其余用例都注入 `('http','https') + 127.0.0.1` 的替身（假服务只能这么起），
+    因此这里单独钉住默认值：把 `ALLOWED_SCHEMES` / `ALLOWED_HOSTS` 改宽时，
+    必须至少有一条用例变红。
+    """
+
+    def setUp(self) -> None:
+        self.transport = update_check.UpdateTransport()
+
+    def test_defaults_are_the_module_constants(self):
+        self.assertEqual(self.transport.api_base, update_check.API_BASE)
+        self.assertEqual(self.transport.allowed_schemes, ('https',))
+        self.assertEqual(self.transport.allowed_hosts, update_check.ALLOWED_HOSTS)
+        self.assertEqual(self.transport.max_bytes, update_check.MAX_UPDATE_BYTES)
+        self.assertEqual(self.transport.download_timeout, update_check.DOWNLOAD_TIMEOUT)
+        self.assertEqual(self.transport.api_timeout, update_check.API_TIMEOUT)
+
+    def test_https_github_hosts_are_allowed(self):
+        for url in (
+            'https://github.com/Flotiarenor/Cubby/releases/download/v2.0.0/Cubby-Setup-2.0.0.exe',
+            'https://objects.githubusercontent.com/signed/path?token=1',
+            'https://release-assets.githubusercontent.com/x',
+        ):
+            with self.subTest(url=url):
+                self.assertIsNone(update_check._url_problem(url, self.transport))
+
+    def test_http_and_foreign_hosts_are_rejected(self):
+        bad = (
+            'http://github.com/Flotiarenor/Cubby/releases/download/v2.0.0/x.exe',
+            'http://objects.githubusercontent.com/x',
+            'file:///C:/Windows/notepad.exe',
+            'ftp://github.com/x',
+            'https://evil.example.com/x.exe',
+            'https://github.com.evil.example/x.exe',
+            'https://evil-githubusercontent.com/x.exe',
+            'https://github.com@evil.example/x.exe',
+        )
+        for url in bad:
+            with self.subTest(url=url):
+                self.assertIsNotNone(update_check._url_problem(url, self.transport))
 
 
 # ===== 注册与守卫 =====
@@ -842,7 +1007,8 @@ class RegistrationTests(unittest.TestCase):
         """两条通道都通过 `service()` 取实例：它必须是同一个，测试钩子要能换掉它。"""
         first = update_check.service()
         self.assertIs(update_check.service(), first)
-        self.assertIs(update_check.api_methods()['system_check_update'].__self__, first)
+        bound = update_check.api_methods()['system_check_update']
+        self.assertIs(getattr(bound, '__self__', None), first)
         update_check.reset_for_tests()
         self.assertIsNot(update_check.service(), first)
 

@@ -47,7 +47,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, Optional, Sequence, Tuple
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
@@ -71,8 +71,8 @@ RELEASES_PATH = '/repos/Flotiarenor/Cubby/releases/latest'
 RELEASES_PAGE_URL = 'https://github.com/Flotiarenor/Cubby/releases/latest'
 PROJECT_URL = 'https://github.com/Flotiarenor/Cubby'
 
-#: 同一次运行内复用检查结果的时长（秒）。限流额度是每小时 60 次、按来源 IP 计，
-#: 重复点击没有必要再花一次。
+#: 同一次运行内复用**成功**检查结果的时长（秒）。限流额度是每小时 60 次、按来源 IP 计，
+#: 重复点击没有必要再花一次。失败结果不进缓存：用户点「重试」必须真的重发请求。
 CHECK_CACHE_SECONDS = 60.0
 
 #: 连接 / 读取超时。检查用短的：用户点完按钮在等结果。
@@ -99,6 +99,10 @@ ALLOWED_HOSTS: Tuple[str, ...] = ('github.com', '.githubusercontent.com')
 UNINSTALLER_NAME = 'unins000.exe'
 ZIP_ASSET_NAME = 'Cubby-windows-x64.zip'
 INSTALLER_ASSET_TEMPLATE = 'Cubby-Setup-{version}.exe'
+#: 安装器材资产名的前后缀，从模板派生：判断"`updates/` 里哪些文件是下载产物"时用，
+#: 避免模板改了而清理规则还认旧前缀。
+_INSTALLER_PREFIX = INSTALLER_ASSET_TEMPLATE.partition('{')[0]
+_INSTALLER_SUFFIX = INSTALLER_ASSET_TEMPLATE.rpartition('}')[2]
 SHA256_SUFFIX = '.sha256'
 
 #: 下载中的半成品后缀（前面还有 pid，见 `_download_worker`）。
@@ -442,6 +446,47 @@ def _cleanup_stale_parts() -> None:
         log.warning(f'[update] 清理残留下载失败: {exc}')
 
 
+def _is_update_artifact(name: str) -> bool:
+    """`updates/` 里的"下载产物"文件名：只有这类文件会被清理。
+
+    刻意按名字限定，不用"删掉所有不是 keep 的文件"：`updates/` 还会放 journal
+    （2.1 的 `pending.json` / `apply.json`）与用户的其它东西，它们不能被一次检查顺手删掉。
+    `.part` 半成品也不匹配这里的两个形状（名字结尾不是 `.exe`/`.zip`），由
+    `_cleanup_stale_parts` 按年龄处理。
+    """
+    return name == ZIP_ASSET_NAME or (name.startswith(_INSTALLER_PREFIX)
+                                      and name.endswith(_INSTALLER_SUFFIX))
+
+
+def _prune_updates_dir(keep_names: Iterable[str] = ()) -> None:
+    """删掉 `updates/` 里已完成的旧安装包，只保留 `keep_names` 里的文件名。
+
+    为什么需要：`updates/` 是"可随时删除的临时区"，但校验通过的成品会跨重启留下
+    （`ready` 要能重新打开）；不清理的话每跳过一个版本就多一份几十 MB 的安装包。
+    只删 `_is_update_artifact()` 认的下载产物：journal 与 `.part` 都不动。
+    """
+    keep = {str(name) for name in keep_names if name}
+    try:
+        folder = get_updates_dir()
+        if not folder.is_dir():
+            return
+        removed = 0
+        for path in folder.iterdir():
+            try:
+                if not path.is_file() or path.name in keep:
+                    continue
+                if not _is_update_artifact(path.name):
+                    continue
+                if _remove_file(path):
+                    removed += 1
+            except OSError:
+                continue
+        if removed:
+            log.info(f'[update] 清理 {removed} 个旧的已下载安装包')
+    except OSError as exc:
+        log.warning(f'[update] 清理旧安装包失败: {exc}')
+
+
 def _idle_job() -> Dict[str, Any]:
     return {
         'state': 'idle',
@@ -523,20 +568,40 @@ class UpdateService:
 
         self._ua_version = current or 'unknown'
         envelope, candidate = self._fetch_release(form, current, parsed_current)
+        ok = bool(envelope.get('ok'))
         with self._lock:
-            self._cache_envelope = dict(envelope)
-            self._cache_current = current
-            self._cache_at = time.monotonic()
+            # 只缓存成功结果：失败（网络、限流、形状变化…）必须让「重试」真的重发请求，
+            # 否则 60 秒内点重试拿到的是同一份失败，倒计时还会从旧值重新开始。
+            if ok:
+                self._cache_envelope = dict(envelope)
+                self._cache_current = current
+                self._cache_at = time.monotonic()
+            else:
+                self._cache_envelope = None
+                self._cache_current = ''
+                self._cache_at = 0.0
             self._candidate = dict(candidate) if candidate is not None else None
+        if ok:
+            # 检查成功说明"要不要升级"已有结论：顺手清掉上次下载留下的旧安装包，
+            # 当前 ready 的那一份由 `_keep_names()` 保住。
+            _prune_updates_dir(self._keep_names())
         return envelope
 
+    def _keep_names(self) -> Tuple[str, ...]:
+        """`updates/` 里要保留的文件名：当前 ready 的那份成品。"""
+        with self._lock:
+            job = dict(self._job)
+        if job['state'] == 'ready' and job['path']:
+            return (Path(job['path']).name,)
+        return ()
+
     def _cached(self, current: str) -> Optional[Dict[str, Any]]:
-        """60 秒内、且当前版本没变时，直接复用上一次的信封。"""
+        """60 秒内、且当前版本没变时，直接复用上一次的**成功**信封。"""
         with self._lock:
             cached = self._cache_envelope
             same_version = self._cache_current == current
             fresh = time.monotonic() - self._cache_at < CHECK_CACHE_SECONDS
-        if cached is None or not same_version or not fresh:
+        if cached is None or not cached.get('ok') or not same_version or not fresh:
             return None
         envelope = dict(cached)
         envelope['cached'] = True
@@ -642,10 +707,11 @@ class UpdateService:
 
         if parsed_latest <= parsed_current:
             # 相等 = 已是最新；远端更低 = 用户在测试更新的版本，不提示"降级"。
+            # 没有可下载的目标，`download_allowed` 因此是 False（与 update_available 区分开）。
             log.info(f'[update] 已是最新（当前 {current}，远端 {latest_text}）')
             envelope = _envelope(form=form, current=current)
             envelope.update({'ok': True, 'code': 'up_to_date', 'latest': latest_text,
-                             'html_url': html_url, 'download_allowed': form in _DOWNLOAD_FORMS})
+                             'html_url': html_url, 'download_allowed': False})
             return envelope, None
 
         candidate = select_asset(form, assets, latest_text)
@@ -675,7 +741,7 @@ class UpdateService:
     # ===== 状态 =====
 
     def state(self) -> Dict[str, Any]:
-        """当前形态 + 下载任务快照（前端每秒轮询这一份）。"""
+        """当前形态 + 下载任务快照（前端每 500 ms 轮询这一份）。"""
         form = current_form()
         with self._lock:
             job = dict(self._job)
@@ -729,6 +795,9 @@ class UpdateService:
                 return {'started': False, 'running': True}
             return {'started': False, 'error': 'busy'}
 
+        # 拿到单飞锁后、写新文件之前清旧成品：当前 ready 的那份要留着（用户可能还没装）。
+        _prune_updates_dir(self._keep_names())
+
         task = BackgroundTask(kind='update-download')
         with self._lock:
             self._task = task
@@ -777,7 +846,12 @@ class UpdateService:
         路径固定为 `get_updates_dir()`，不接受调用方传入 —— 一旦能打开任意路径，
         这个端点就成了"用受信任的壳去启动任意程序 / 目录"的入口（与
         `ShellInfo.open_log_dir` 同一取舍）。
+
+        开发模式直接拒绝：那时数据根就是项目根，"打开更新目录"会在工作区里
+        `mkdir updates/`（该目录不在 `.gitignore` 里），而开发模式本来也不下载。
         """
+        if current_form() == FORM_DEV:
+            return {'success': False, 'error': '开发模式不提供更新目录'}
         path = get_updates_dir()
         try:
             path.mkdir(parents=True, exist_ok=True)
@@ -831,9 +905,14 @@ class UpdateService:
     def _download_verified(self, task: BackgroundTask, url: str, sha_url: str,
                            asset_name: str, part_path: Path, final_path: Path,
                            total: int) -> None:
-        """真正下载并校验；任何预期失败都抛 `_UpdateError`。"""
+        """真正下载并校验；任何预期失败都抛 `_UpdateError`。
+
+        取摘要与取资产共用同一个累计墙钟预算：两段都是网络流，慢速滴流不能靠
+        "每次读都不超时"把任务无限期留在 downloading。
+        """
+        deadline = time.monotonic() + DOWNLOAD_WALL_SECONDS
         with self._new_session() as session:
-            digest = self._fetch_sha256(session, sha_url, asset_name)
+            digest = self._fetch_sha256(task, session, sha_url, asset_name, deadline)
             log.info(f'[update] 下载资产: {_safe_url(url)}')
             response = self._open(session, url, self.transport.download_timeout, stream=True)
             try:
@@ -852,7 +931,6 @@ class UpdateService:
 
                 received = 0
                 hasher = hashlib.sha256()
-                started = time.monotonic()
                 with open(part_path, 'wb') as handle:
                     for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_BYTES):
                         if not chunk:
@@ -865,7 +943,7 @@ class UpdateService:
                                 'too_large',
                                 f'下载超过上限 {self.transport.max_bytes} 字节，已中止',
                             )
-                        if time.monotonic() - started > DOWNLOAD_WALL_SECONDS:
+                        if time.monotonic() > deadline:
                             raise _UpdateError(
                                 'timeout',
                                 f'下载超过 {int(DOWNLOAD_WALL_SECONDS)} 秒仍未完成，已中止',
@@ -891,14 +969,26 @@ class UpdateService:
             task.update(processed=received, total=received)
             log.info(f'[update] 下载完成并通过校验: {asset_name}（{received} 字节）')
 
-    def _fetch_sha256(self, session: requests.Session, sha_url: str, asset_name: str) -> str:
-        """取 `.sha256` 并解析出摘要；形状错或文件名不符归 `bad_response`。"""
+    def _fetch_sha256(self, task: BackgroundTask, session: requests.Session, sha_url: str,
+                      asset_name: str, deadline: float) -> str:
+        """取 `.sha256` 并解析出摘要；形状错或文件名不符归 `bad_response`。
+
+        `.sha256` 也是网络流，因此读循环与资产下载一样检查取消标记与累计墙钟：
+        只靠单次读超时挡不住"每次读都不超时"的滴流。
+        """
         response = self._open(session, sha_url, self.transport.download_timeout, stream=True)
         try:
             raw = b''
             for chunk in response.iter_content(chunk_size=512):
                 if not chunk:
                     continue
+                if task.cancelled:
+                    raise _UpdateError('cancelled', '已取消下载')
+                if time.monotonic() > deadline:
+                    raise _UpdateError(
+                        'timeout',
+                        f'下载超过 {int(DOWNLOAD_WALL_SECONDS)} 秒仍未完成，已中止',
+                    )
                 raw += chunk[:MAX_SHA256_BYTES + 1 - len(raw)]
                 if len(raw) > MAX_SHA256_BYTES:
                     break
