@@ -128,6 +128,39 @@ class PixivSyncVerifyTests(unittest.TestCase):
         self.assertEqual(store.load_ids(self.plugin._ids_file()), set())
         self.assertFalse(self._done())
 
+    def test_imported_work_is_marked_done_in_the_list(self):
+        """导入的作品在清单里要变成已下载，而不是被两边各算一次。
+
+        回归：导入只改 ids、不写清单 done，面板会把同一件作品同时算进「关注待下」
+        （按清单 done 统计）与「其他作品」（按 ids 统计），待下永远不归零。
+        """
+        extra = self.root / "pixiv" / "B" / "556.jpg"
+        extra.parent.mkdir(parents=True)
+        extra.write_bytes(b"x")
+        self.plugin._db().save_pending(
+            "bookmarks",
+            [{
+                "id": 556,
+                "type": "illust",
+                "title": "manual",
+                "page_count": 1,
+                "create_date": "2026-01-02T00:00:00+09:00",
+                "user": {"id": 2, "name": "B"},
+                "urls": ["u"],
+                "tags": [],
+                "done": False,
+            }],
+            {"complete": True},
+        )
+
+        result = self._verify_sync()
+        report = self.plugin.status.report()
+
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(report["bookmarks_done"], 1)
+        self.assertEqual(report["pending_bookmarks"], 0)
+        self.assertEqual(report["other_done"], 0)
+
     def test_sync_import_does_not_take_partial_work_back(self):
         """校验内容之后，同步开始前的旧图导入不会把缺页作品重新认成已下载。"""
         self._verify_sync()

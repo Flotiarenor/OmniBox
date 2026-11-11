@@ -252,9 +252,10 @@ def process_illust(p, illust: Dict[str, Any], task: Dict[str, Any], ids: Set[int
 def download_pending(p, task: Dict[str, Any], ids: Set[int], failed: Set[int], kind: str) -> None:
     """从清单下载待下载部分（画师/喜欢共用逻辑）。
 
-    注意：works.done 只是扫描时保存的快照，真正的“是否已下载”以
-    downloaded_ids.json（ids）和 failed_ids.json（failed）为准；否则用户
-    手动删图后即使点过「刷新记录/校验内容」，done=1 仍会阻止重下。
+    注意：works.done 只供展示统计，下载筛选一律以 downloaded_ids.json（ids）和
+    failed_ids.json（failed）为准；否则用户手动删图后即使点过「刷新记录/校验
+    内容」，done=1 仍会阻止重下。本函数每完成一批下载就把对应的 done 写回，
+    面板上的「关注待下」才会随下载推进而减少（见 `flush_done`）。
     """
     items, _ = p._db().load_pending(kind)
     if not items:
@@ -312,6 +313,17 @@ def download_pending(p, task: Dict[str, Any], ids: Set[int], failed: Set[int], k
         artist_mod.save_cache(p._artists_file(), artist_cache)
 
     workers = p._workers()
+    # 清单 done 是状态面板「关注待下 / 其他作品」的唯一来源（见 status.report）：
+    # 每完成一批就写回，别攒到整段下载结束。攒着写的时候 ids 一路增长而 done 不动，
+    # 面板会显示「关注待下」不降、「其他作品」反涨，直到任务收尾才一起修正。
+    newly_done: Set[int] = set()
+
+    def flush_done() -> None:
+        if not newly_done:
+            return
+        p._db().mark_done(kind, newly_done)
+        newly_done.clear()
+
     with ThreadPoolExecutor(max_workers=workers) as pool:
         it = iter(pending)
         running = {}
@@ -331,7 +343,7 @@ def download_pending(p, task: Dict[str, Any], ids: Set[int], failed: Set[int], k
         while running:
             done, _ = wait(running, return_when=FIRST_COMPLETED)
             for future in done:
-                running.pop(future)
+                illust = running.pop(future)
                 # process_illust 内部已兜底计数；这里再兜底一次以防御提交阶段异常。
                 try:
                     future.result()
@@ -341,6 +353,11 @@ def download_pending(p, task: Dict[str, Any], ids: Set[int], failed: Set[int], k
                         task["failed"] += 1
                         task["done"] += 1
                         tasks_mod.persist_task(p._tasks_file(), task)
+                # 整件作品全部页就位才进 ids；进了 ids 才是真的已下载。
+                iid = _work_id(illust)
+                if iid is not None and iid in ids and iid not in failed:
+                    newly_done.add(iid)
+            flush_done()
             if p._cancel_flag:
                 break
             for _ in done:
@@ -348,15 +365,15 @@ def download_pending(p, task: Dict[str, Any], ids: Set[int], failed: Set[int], k
                     break
                 submit_next()
 
+    # 收尾再对一遍：在途任务在退出线程池时才结束，`wait` 之外完成的作品也在其中。
+    # 已下到的都要算已下载，取消也一样；ids 里没有的不会被标记。
+    just_done = {_work_id(i) for i in todo if _work_id(i) in ids}
+    newly_done.update(iid for iid in just_done if iid is not None)
+    flush_done()
+
     if p._cancel_flag:
-        # 已取消：在途任务靠分块检查在一秒内自行退出，这里不再写任何计数，
-        # 也不把清单条目标成 done（否则下次同步会把它们当已下载跳过）。
+        # 已取消：在途任务靠分块检查在一秒内自行退出，这里不再推进任何计数。
         with p._task_lock:
             task["current"] = ""
         tasks_mod.persist_task(p._tasks_file(), task)
         return
-
-    # 标记清单 done（保留在清单，供统计）
-    just_done = {_work_id(i) for i in todo if _work_id(i) in ids}
-    if just_done:
-        p._db().mark_done(kind, just_done)

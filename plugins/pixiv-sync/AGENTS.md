@@ -20,7 +20,7 @@
 | `plugins/pixiv-sync/backend/pixiv_sync/records.py` | 去重集合与永久跳过集合的内存态与落盘时机 | `IdRecords`、`downloaded`、`save_downloaded`、`failed`、`save_failed`、`clear_failed`、`reset` |
 | `plugins/pixiv-sync/backend/pixiv_sync/limits.py` | 设置项里的数量上限与并发数 | `SettingsLimits`、`max_download`、`max_artists`、`scan_workers`、`workers` |
 | `plugins/pixiv-sync/backend/pixiv_sync/workspace.py` | 清单 SQLite 连接、任务状态文件、下载根的固定 | `TaskWorkspace`、`db`、`close_db`、`tasks_file`、`load_task`、`persist_task`、`begin`、`finish` |
-| `plugins/pixiv-sync/backend/pixiv_sync/library.py` | 本地图片树 → 已下载作品集合（统一刷新基建的钩子与按清单对账）；`state()` 投影带 `version_stale` / `stale_dirs` | `LocalLibrary`、`cache_dir`、`engine`、`spec`、`state`、`derive`、`prune`、`audit`、`pass_end`、`rebuild`、`engine_keys`、`local_pages`、`sync_ids_from_keys`、`scan_existing_ids` |
+| `plugins/pixiv-sync/backend/pixiv_sync/library.py` | 本地图片树 → 已下载作品集合（统一刷新基建的钩子与按清单对账，含清单 done 同步）；`state()` 投影带 `version_stale` / `stale_dirs` | `LocalLibrary`、`cache_dir`、`engine`、`spec`、`state`、`derive`、`prune`、`audit`、`pass_end`、`rebuild`、`engine_keys`、`local_pages`、`sync_ids_from_keys`、`scan_existing_ids` |
 | `plugins/pixiv-sync/backend/pixiv_sync/selection.py` | 画师名单读取（带 mtime 缓存）与模板重写 | `ArtistSelection`、`selected`、`reset`、`open_config`、`read_text_robust` |
 | `plugins/pixiv-sync/backend/pixiv_sync/runner.py` | 同步/刷新任务线程、取消、重试与设置变更编排；任务收尾只在 `downloaded > 0` 时通知宿主 | `SyncRunner`、`invalidate_host`、`_run_sync`、`sync_following`、`sync_bookmarks`、`refresh_following_lists`、`refresh_bookmarks_lists`、`cancel_task`、`cancel_event`、`task_snapshot`、`is_running`、`reset_root_state`、`apply_settings_changed`、`shutdown` |
 | `plugins/pixiv-sync/backend/pixiv_sync/maintenance.py` | 显式维护动作：刷新已下载记录、校验本地内容、停止校验；同步任务运行中两者都拒绝执行 | `Maintenance`、`refresh_downloaded`、`verify_downloaded`、`cancel_verify` |
@@ -28,12 +28,12 @@
 | `plugins/pixiv-sync/backend/pixiv_sync/limiter.py` | 全局请求限速与限流异常 | `RateLimitError`、`RateLimiter`、`RateLimiter.set_rate`、`RateLimiter.wait` |
 | `plugins/pixiv-sync/backend/pixiv_sync/tasks.py` | 任务状态机：创建、原子落盘、重启恢复 | `new_task`、`persist_task`、`load_task` |
 | `plugins/pixiv-sync/backend/pixiv_sync/store.py` | 去重与失败跳过记录的读写、本地图片扫描、应有页数判据 | `ID_NAME_RE`、`expected_pages`、`load_ids`、`save_ids`、`load_failed_ids`、`save_failed_ids`、`scan_local`、`_parse_ids`、`_raw_ids` |
-| `plugins/pixiv-sync/backend/pixiv_sync/db.py` | 待下载清单 SQLite（`works` / `tags` / `work_tags` / `meta` 表）与完整性判据 | `WorksDB`、`conn`、`close`、`save_pending`、`save_pending_preserve`、`replace_artist`、`load_pending`、`counts`、`mark_done`、`reset_done_ids`、`work_page_counts`、`incomplete_ids`、`importable_ids`、`_insert_work_row`、`_work_to_item`、`_item_to_work_value`、`_save_scan` |
+| `plugins/pixiv-sync/backend/pixiv_sync/db.py` | 待下载清单 SQLite（`works` / `tags` / `work_tags` / `meta` 表）与完整性判据 | `WorksDB`、`conn`、`close`、`save_pending`、`save_pending_preserve`、`replace_artist`、`load_pending`、`counts`、`mark_done`、`mark_done_ids`、`reset_done_ids`、`work_page_counts`、`incomplete_ids`、`importable_ids`、`_insert_work_row`、`_work_to_item`、`_item_to_work_value`、`_save_scan` |
 | `plugins/pixiv-sync/backend/pixiv_sync/artist.py` | 画师目录解析：名字清洗、id→名字缓存、改名迁移与同名消歧 | `sanitize`、`load_cache`、`save_cache`、`artist_dir`、`_disambiguate`、`_other_dir_names`、`_WINDOWS_RESERVED` |
 | `plugins/pixiv-sync/backend/pixiv_sync/scan.py` | 关注清单：画师级断点（`done_uids`）+ `illust_follow` 聚合增量 + 逐画师兜底 | `fetch_following`、`fetch_artist`、`collect_following_pending`、`_scan_artist_window`、`_fetch_follow_stream`、`MAX_FOLLOW_PAGES` |
 | `plugins/pixiv-sync/backend/pixiv_sync/scan_items.py` | 清单条目构造：列表响应 → 待下载 item（关注与收藏共用） | `safe_int`、`extract_all_urls`、`build_item`、`uid_of`、`flatten_items`、`group_items` |
 | `plugins/pixiv-sync/backend/pixiv_sync/bookmarks.py` | 收藏清单：`next_qs` 翻页断点与增量尾巴 | `collect_bookmarks_pending` |
-| `plugins/pixiv-sync/backend/pixiv_sync/download.py` | 按清单并行下载、404 永久跳过、ugoira 分流、画师目录归属 | `download_pending`、`process_illust`、`process_ugoira`、`all_image_urls`、`_work_id`、`_safe_int`、`_safe_ext` |
+| `plugins/pixiv-sync/backend/pixiv_sync/download.py` | 按清单并行下载、404 永久跳过、ugoira 分流、画师目录归属、清单 `done` 随每批下载写回（面板统计读这一列） | `download_pending`、`process_illust`、`process_ugoira`、`all_image_urls`、`_work_id`、`_safe_int`、`_safe_ext` |
 | `plugins/pixiv-sync/backend/pixiv_sync/ugoira.py` | ugoira zip 帧序列 → 动画 WebP：帧时序解析与体积上限 | `parse_metadata`、`convert`、`_load_pil_image`、`DEFAULT_DELAY_MS`、`WEBP_QUALITY`、`MAX_FRAMES`、`MAX_FILE_BYTES`、`MAX_TOTAL_PIXELS` |
 | `plugins/pixiv-sync/backend/pixiv_sync/oauth.py` | 内置 OAuth PKCE 向导：生成登录地址与用授权码换 token | `start`、`finish` |
 | `plugins/pixiv-sync/tool/pixiv_purge_non_original.py` | 伴侣命令行工具：删除 1200px 缩放图并清除记录以便重下原图 | `THRESHOLD`、`ID_NAME_RE`、`CACHE_SUBDIR`、`image_size`、`scan_works`、`classify`、`prune_empty_dirs`、`main` |

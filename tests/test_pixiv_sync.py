@@ -410,6 +410,55 @@ class PixivSyncCoreTests(unittest.TestCase):
             self.assertEqual(task["downloaded"], 1)
             self.assertTrue((tmp / "pixiv" / "A" / "124.jpg").exists())
 
+    def test_list_done_is_written_while_downloading(self):
+        """清单 done 随每批下载写回：任务运行期间「关注待下」就该减少。
+
+        回归：done 原先只在整段下载收尾时写一次，运行期间 ids 一路增长而 done
+        不动；状态面板的 `pending_following`（清单统计）与 `other_done`（按 ids
+        计算）读的是两处不同步的数据，于是显示成「关注待下不降、其他作品反涨」，
+        直到任务结束才一起修正。
+        """
+        with _fake_env() as (tmp, p):
+            entered = threading.Event()
+            release = threading.Event()
+            calls: list = []
+
+            class _BlockingClient:
+                def download(self, url, path=".", name=None):
+                    calls.append(name)
+                    if len(calls) == 2:  # 第二件卡住，第一件此时已完成
+                        entered.set()
+                        release.wait(10)
+                    target = Path(path) / str(name)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(b"x")
+                    return True
+
+            p.client = _BlockingClient()
+            p._db_wrapper.save_pending(
+                "following", [_work_item(201), _work_item(202)], {"complete": True}
+            )
+            ids: set = set()
+            failed: set = set()
+            task = _new_task()
+            worker = threading.Thread(
+                target=download.download_pending,
+                args=(p, task, ids, failed, "following"),
+                daemon=True,
+            )
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(10), "第二件作品没有开始下载")
+                self.assertEqual(p._db_wrapper.counts("following"), 2)
+                self.assertEqual(p._db_wrapper.counts("following", 1), 1)
+                self.assertEqual(task["downloaded"], 1)
+            finally:
+                release.set()
+                worker.join(10)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(p._db_wrapper.counts("following", 1), 2)
+            self.assertEqual(ids, {201, 202})
+
     def test_requeued_incomplete_work_refetches_only_missing_pages(self):
         """「校验内容」把缺页作品移出去重集合后，同步只补缺的页。"""
         with _fake_env() as (tmp, p):

@@ -245,6 +245,35 @@ class WorksDB:
                 conn.rollback()
                 log.error(f"[pixiv-sync] 更新清单 done 失败: {e}")
 
+    def mark_done_ids(self, ids) -> int:
+        """把清单中这些作品标记为已下载，返回更新的行数（不区分 kind）。
+
+        本地导入（刷新记录 / 校验内容）拿到的是「本地有哪些作品」的集合，不知道每件
+        作品当初进了哪个清单；而 `works.id` 是唯一主键，按 id 更新即可。分块是因为
+        参数个数有上限，整库几万条记录不能塞进一条语句。
+        """
+        values = sorted({int(i) for i in ids})
+        if not values:
+            return 0
+        conn = self.conn()
+        updated = 0
+        with self._lock:
+            try:
+                for start in range(0, len(values), 900):
+                    chunk = values[start:start + 900]
+                    placeholders = ",".join("?" * len(chunk))
+                    cur = conn.execute(
+                        f"UPDATE works SET done=1 WHERE done=0 AND id IN ({placeholders})",
+                        tuple(chunk),
+                    )
+                    updated += cur.rowcount
+                conn.commit()
+                return updated
+            except Exception as e:
+                conn.rollback()
+                log.error(f"[pixiv-sync] 按已下载记录更新清单 done 失败: {e}")
+                return 0
+
     def reset_done_ids(self, ids) -> int:
         """把指定作品在清单中的 done 标记重置为 0（用于「刷新记录/校验内容」）。
 

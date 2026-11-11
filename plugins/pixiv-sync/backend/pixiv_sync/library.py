@@ -198,6 +198,10 @@ class LocalLibrary:
                     failed.discard(iid)
                 self._records.save_failed()
         reset = sorted(set(stale) | set(incomplete))
+        # 清单 done 必须跟着 ids 走：导入的作品若在清单里而 done 仍是 0，状态面板会
+        # 把它同时算进「关注待下」（按清单 done 统计）与「其他作品」（按 ids 统计）。
+        if recorded:
+            self._db().mark_done_ids(recorded)
         if reset_done and reset:
             self._db().reset_done_ids(reset)
         return {
@@ -230,9 +234,13 @@ class LocalLibrary:
             _ids, _zero, pages = store.scan_local(self._paths.pixiv_root())
         ids = self._records.downloaded()
         before = len(ids)
-        ids |= self._db().importable_ids(pages)
+        imported = self._db().importable_ids(pages)
+        ids |= imported
         found = len(ids) - before
         if found:
             with self._lock:
                 self._records.save_downloaded()
+        # 导入的作品若在清单里，done 要一起更新，否则面板会同时算进待下与其他作品
+        if imported:
+            self._db().mark_done_ids(imported)
         return found
