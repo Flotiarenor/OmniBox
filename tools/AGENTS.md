@@ -12,7 +12,7 @@
 | `check_packaging.py` | PyInstaller spec 的数据收集规则（不需要真跑 PyInstaller） | 改 spec、收集规则或依赖 |
 | `check_build_tree.py` | 真正跑完 PyInstaller 之后，产物目录里有没有该有的东西 | 真跑过构建之后 |
 | `build_icons.py` | 由 `res/icons/icon_data.json` 生成 sprite 与注入函数，`--check` 校验一致性 | 改图标或图标相关代码 |
-| `build_brand.py` | 生成应用图标（`res/brand/`，6 套配色 × 9 档 ICO + PNG）与安装器向导图（`docs/Releases/installer-*.png`，各 3 档 DPI），`--check` 校验一致 | 改品牌图、改 `.iss` 的向导图/图标、改图标配色表 |
+| `build_brand.py` | 生成应用图标（`res/brand/`，6 套配色 × 9 档 ICO + PNG）与安装器向导图（`docs/Releases/installer-*.png`，各 3 档 DPI）。`--check-icons` 逐字节校验图标（平台无关）；`--check-banners` 校验向导图存在、可解码且尺寸正确（不读字体）；`--check` 两者都做且逐字节比对向导图，需要 Windows 系统字体，只在本地提交前跑 | 改品牌图、改 `.iss` 的向导图/图标、改图标配色表 |
 | `check_tests.py` | `tests/test_*.py` 必须真的产出 `unittest` 用例 | 新增测试文件 |
 | `check_docs.py` | 每个 `AGENTS.md` 里引用的名字、路径与 Markdown 链接都还存在（插件界面文档只查链接与命令里的路径，理由见脚本头部） | 改任何 `AGENTS.md`、函数改名、文件挪位置 |
 | `check_private_paths.py` | 从**未跟踪**的本地配置提取真实路径与令牌，扫被跟踪文件里有没有被复制进去 | 开发机上每次提交前 |
@@ -35,7 +35,6 @@
 | `bench_gallery.py` | 相册性能探针：在真实图库上量 image-viewer 各阶段耗时（只读，不生成缩略图） |
 | `shoot_readme.py` `shoot_readme_setup.py` | README 配图抓取（隔离实例 + 有头 Chrome，截视口后转 WebP） |
 | `test_fake_mpv.py` | 验证"假 mpv 截获 ncm-cli 播放 URL"的方案 |
-| `migrate_cubby_2.py` | 2.0 迁移：把仓库里最后一层旧产品名换成 cubby —— 协议族、鉴权 Cookie 与请求头、密钥存储标识、产物门禁白名单、历史数据迁移代码、服务器侧脚本引用。默认只预演，`--apply` 落盘（要求工作区无未提交改动），`--check` 只扫残留，`--version X.Y.Z` 顺带改版本号；每处编辑都断言命中次数，跑完自查残留 |
 
 `examples/` 是插件模板，`scenes/` 与 `readme_scenes.json` 是配图场景表。
 
