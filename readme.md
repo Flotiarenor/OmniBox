@@ -23,7 +23,7 @@
 它本体只是一个窗口和插件容器，**能力全部来自插件**——内置 8 个插件随发行包提供，装上即用；第三方插件放进用户数据目录下的 `plugins/` 就加载。
 
 - **文件留在你自己机器上**：程序默认只监听 `127.0.0.1`，本身不需要任何账号；除你主动使用的在线功能（网易云音乐、Pixiv 同步、文档朗读的 edge-tts 端点、团体组网的公网 IPv6 文件共享）外，不向外部服务器发送数据。
-- **升级不用搬数据**：配置、索引与缓存在独立的用户数据目录（Windows `%LOCALAPPDATA%\Cubby`、Linux `~/.local/share/cubby`），程序目录只放只读资源；换版本只替换程序，数据留在原处。要带着数据走时用便携版，并在程序旁放一个 `portable.txt`。
+- **升级不用搬数据**：配置、索引与缓存在独立的用户数据目录（Windows `%LOCALAPPDATA%\Cubby`、Linux `$XDG_DATA_HOME/cubby`（未设置时为 `~/.local/share/cubby`）），程序目录只放只读资源；换版本只替换程序，数据留在原处。要带着数据走时用便携版，并在程序旁放一个 `portable.txt`。
 
 ## 内置插件
 
@@ -103,7 +103,7 @@ sha256sum -c Cubby-linux-x64.tar.gz.sha256
 
 两个必须提前知道的事：
 
-- 程序把配置、索引与缓存写在**用户数据目录**（Windows `%LOCALAPPDATA%\Cubby`、Linux `~/.local/share/cubby`），不在安装目录里，所以升级或换版本不用搬数据。**别把跑过便携模式或从源码运行的目录再打包发给别人**——那里会有你的配置和数据。
+- 程序把配置、索引与缓存写在**用户数据目录**（Windows `%LOCALAPPDATA%\Cubby`、Linux `$XDG_DATA_HOME/cubby`（未设置时为 `~/.local/share/cubby`）），不在安装目录里，所以升级或换版本不用搬数据。**别把跑过便携模式或从源码运行的目录再打包发给别人**——那里会有你的配置和数据。
 - 可执行文件与安装器均未做代码签名，Windows 首次运行可能被 SmartScreen 拦下：点「更多信息」→「仍要运行」。
 
 ### 从 1.4.0 升级
@@ -152,7 +152,7 @@ curl -H "X-Cubby-Token: $(cat .config/auth_token.txt)" \
 相册、漫画、媒体库、文档阅读都是纯本地功能，断网可用。联网只发生在你主动使用在线功能时：网易云音乐与 Pixiv 同步访问各自的在线服务，文档朗读把待读文本发往 edge-tts 语音端点等。
 
 **我的数据存在哪里？怎么备份或迁移？**
-配置在 `.config/`、索引与缓存在 `data/`，两者都在**用户数据目录**下：Windows 是 `%LOCALAPPDATA%\Cubby`，Linux 是 `~/.local/share/cubby`。安装目录里没有你的数据，升级不用搬。
+配置在 `.config/`、索引与缓存在 `data/`，两者都在**用户数据目录**下：Windows 是 `%LOCALAPPDATA%\Cubby`，Linux 是 `$XDG_DATA_HOME/cubby`（未设置时为 `~/.local/share/cubby`）。安装目录里没有你的数据，升级不用搬。
 
 - **备份**：关掉程序，把整个数据目录拷走。`.config/` 内含本机访问令牌，分享给别人前先删掉。
 - **迁移到另一台机器**：把数据目录放到同样的位置，或用环境变量 `CUBBY_HOME` 指向它。

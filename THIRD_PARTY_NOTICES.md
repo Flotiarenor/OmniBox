@@ -10,9 +10,10 @@
 - 出处：Inno Setup 官方源码仓库 `jrsoftware/issrc`，标签 `is-6_7_3`，路径
   `Files/Languages/Unofficial/ChineseSimplified.isl`
 - 许可：Inno Setup License（Jordan Russell / Martijn Laan），全文见下
-- 使用方式：**原样包含**。该文件是 Inno Setup 的简体中文消息表，编译器在打包
-  Windows 安装器时读取它；Inno Setup 自带的 `Languages\` 目录没有中文，所以它随
-  仓库走。仓库只做 vendor，不在此逐条修改译文。
+- 使用方式：许可正文与上游文件内的版权头**逐字保留**；`.isl` 顶部另有仓库加的十几行
+  来源说明（出处、为何入仓、不手改译文），从上游重新取回后要补回这段说明。该文件是
+  Inno Setup 的简体中文消息表，编译器在打包 Windows 安装器时读取它；Inno Setup 自带的
+  `Languages\` 目录没有中文，所以它随仓库走。仓库只做 vendor，不在此逐条修改译文。
 - 义务：源码再分发必须保留文件内的版权声明与下方的许可条件原文，见许可第 1 条。
 
 ```

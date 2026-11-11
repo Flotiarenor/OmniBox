@@ -10,10 +10,10 @@ PyInstaller 打包、产物校验与发布脚本。根 [AGENTS.md](../../AGENTS.
 | `cubby.spec` `cubby-linux.spec` | 两份 PyInstaller 规格 |
 | `spec_common.py` | 两份 spec 共享的唯一一份收集逻辑与 `HIDDEN_IMPORTS` |
 | `cubby.iss` | Windows 安装器（Inno Setup 6）：把 `.build-dist/Cubby` 打成 per-user 安装包；CI 传 `/DAppVersion=<版本>` `/DSourceDir=<产物目录>` `/O<输出目录>`，产物是 `Cubby-Setup-<版本>.exe` |
-| `ChineseSimplified.isl` | vendor 的 Inno Setup 官方简体中文语言包：Inno 自带的 `Languages\` 没有中文，向导与卸载器的中文全靠它。升 Inno 大版本时从上游同路径重新取，不要手改译文 |
+| `ChineseSimplified.isl` | vendor 的 Inno Setup 官方简体中文语言包：Inno 自带的 `Languages\` 没有中文，向导与卸载器的中文全靠它。升 Inno 大版本时从上游同路径重新取，取回后补回文件顶部的来源说明，不要手改译文 |
 | `installer-banner-100.png` `-125` `-150` 与 `installer-small-100.png` `-125` `-150` | 向导图：由 `tools/build_brand.py` 生成的 3 档 DPI（100% 的图像区是 202×386 与 58×58，125%/150% 按 Inno 的缩放表）；入仓成品，构建期不重新生成、不依赖字体 |
 | `installer-notes.txt` | 安装前的说明页（`InfoBeforeFile`）：数据根在哪、1.4.0 升级要先跑迁移脚本、卸载默认保留数据；UTF-8 with BOM |
-| `migrate-to-2.0.cmd` `migrate-to-2.0.ps1` | 1.4.0 → 2.0 的用户数据迁移脚本，作为 Release 资产发布：默认只预演，`--apply` 才落盘；旧 `plugins/` 默认不搬（里面混着内置插件副本，搬过去会盖掉 2.0 的内置插件） |
+| `migrate-to-2.0.cmd` `migrate-to-2.0.ps1` | 1.4.0 → 2.0 的用户数据迁移脚本，作为 Release 资产发布：默认只预演，`--apply` 才落盘；源目录按 1.4.0 特征识别（至少两项）；`--move` 须显式 `--source`，且只有整次运行零失败零跳过时才删源，删前整份备份；旧 `plugins/` 默认不搬（里面混着内置插件副本，搬过去会盖掉 2.0 的内置插件） |
 | `Cubby*.7z` `Cubby.zip` `Cubby/` | 产物，均在 `.gitignore` 中，不提交 |
 
 ## 规则
