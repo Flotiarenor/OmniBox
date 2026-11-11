@@ -18,6 +18,8 @@ opencode.json
 data/
 .config/
 .build/
+.build-dist/
+.build-work/
 
 # 脚本
 scripts/
@@ -38,7 +40,6 @@ docs/Releases/*.tar.gz.sha256
 Cubby-Setup-*.exe
 Cubby-Setup-*.exe.sha256
 # 发布构建的输出树（PyInstaller 的 onedir 产物，构建时才有）
-docs/Releases/cubby/
 docs/Releases/__pycache__/
 
 # 构建脚本写出的打包环境依赖快照，仅供审计，不参与安装

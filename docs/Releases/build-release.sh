@@ -150,9 +150,9 @@ SIZE_MB=$(du -sm "$DIST_DIR/Cubby" | cut -f1)
 success "PyInstaller 打包完成：$DIST_DIR/Cubby/ (${SIZE_MB}MB)"
 
 # ── 4.5 打包前把关：产物目录里绝不能带用户数据 ─────────────────────
-# 程序把可写数据写在 exe 旁边（shell/backend/paths.py），所以在产物目录里跑过
-# 一次程序做测试，data/ 与 .config/ 里就是你本机的设置（目录路径、refresh_token、
-# 缓存）。以前这些会被原样压进发行包，用户装完看到的是开发机的路径。
+# 2.0 起默认数据根本不在产物目录里（shell/backend/paths.py 把数据放到用户数据根），
+# 但两处入口仍会往产物目录写东西：1.x 遗留的 data/ 与 .config/，以及便携模式
+# （exe 旁放了 portable.txt）跑过一次之后。这里因此继续把关。
 DIST_TREE="$DIST_DIR/Cubby"
 if [ "$CLEAN_USER_DATA" -eq 1 ]; then
     for d in .config data logs; do

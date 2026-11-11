@@ -30,9 +30,8 @@ for _stream in (sys.stdout, sys.stderr):
     if callable(_reconfigure):
         _reconfigure(encoding='utf-8', errors='replace')
 
-# 两份 spec 的当前文件名。改名过渡期这里只登记新名：check_specs_exist 对缺失文件
-# 直接判失败，spec 文件名变更时这里必须同步，否则门禁必红；
-# 旧构建树与旧产物名由 .gitignore、tools/check_docs.py 的白名单继续兜住。
+# 两份 spec 的当前文件名。仓库里已没有旧名，这里只登记新名：check_specs_exist
+# 对缺失文件直接判失败，spec 文件名再变时必须同步，否则门禁必红。
 SPECS = ['cubby.spec', 'cubby-linux.spec']
 
 # 打包时必须带上的关键路径（相对项目根）
