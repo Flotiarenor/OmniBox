@@ -92,6 +92,32 @@ class CheckDocsGateTests(unittest.TestCase):
 
         self.assertEqual(self._errors(), [])
 
+    def test_iss_file_counts_as_code_for_names(self):
+        """`.iss` 是安装器脚本（Inno Pascal），里面的指令名与函数名一样可为文档背书。"""
+        self._write('AGENTS.md', '# 根\n\n安装器用 `InfoBeforeFile` 引用安装前说明页。\n')
+        self._write('docs/Releases/cubby.iss', 'InfoBeforeFile=installer-notes.txt\n')
+
+        self.assertEqual(self._errors(), [])
+
+    def test_isl_path_must_exist(self):
+        """`.isl` 是仓库里的文件：按路径引用它时同样要求真实存在。"""
+        self._write('AGENTS.md', '# 根\n\n中文文案在 `docs/Releases/ChineseSimplified.isl`。\n')
+
+        errors = self._errors()
+
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn('ChineseSimplified.isl', errors[0])
+
+    def test_exe_names_are_exempt_as_artifacts(self):
+        """`.exe` 按后缀豁免：产物名只存在于构建输出里。
+
+        代价是拼错的产物名也查不出来 —— 这条用例把这个已知缺口钉住，改动判据时
+        必须是有意为之并同步这里。
+        """
+        self._write('AGENTS.md', '# 根\n\n安装包是 `Cubby-Setup-1.4.0.exe` 与 `Cubby-Setupe.exe`。\n')
+
+        self.assertEqual(self._errors(), [])
+
     def test_external_name_is_allowed(self):
         self._write('AGENTS.md', '# 根\n\n由 `git_commit` 在写库前校验。\n')
 
