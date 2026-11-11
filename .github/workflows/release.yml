@@ -42,8 +42,11 @@ on:
         default: false
         type: boolean
 
+# 权限最小化：整条工作流只需要读仓库；唯一写仓库的动作是 publish job 里建/刷新
+# Release，写权限写在那一个 job 上（verify 与 build 会跑 pip install / npm ci /
+# PyInstaller，不给它们可推送 contents 的 token）。
 permissions:
-  contents: write
+  contents: read
 
 env:
   PYTHON_VERSION: '3.12'
@@ -99,9 +102,12 @@ jobs:
 
       - name: 本次发布 tag
         id: ref
+        # dispatch 的输入不拼进脚本：经 env 传，tag 里带引号/$(...) 也只是数据。
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="${{ inputs.tag }}"
+            tag="$DISPATCH_TAG"
           else
             tag="${GITHUB_REF_NAME}"
           fi
@@ -111,21 +117,24 @@ jobs:
       # 只给"已进主干"的提交发版：分支上随手打的 tag 在这里就拦住，
       # 避免出现"用户装到的版本比 main 更超前/没跑过 CI"。
       - name: guard：tag 必须落在 main 上
+        env:
+          TAG: ${{ steps.ref.outputs.tag }}
         run: |
           set -euo pipefail
-          tag="${{ steps.ref.outputs.tag }}"
           # 显式 refspec：不依赖 remote.origin.fetch 的配置，确保 origin/main 一定存在。
           git fetch --quiet origin "+refs/heads/main:refs/remotes/origin/main"
-          target="$(git rev-list -n1 "refs/tags/${tag}")"
+          target="$(git rev-list -n1 "refs/tags/${TAG}")"
           if git merge-base --is-ancestor "$target" refs/remotes/origin/main; then
-            echo "OK：${tag}（${target}）在 main 上"
+            echo "OK：${TAG}（${target}）在 main 上"
           else
-            echo "::error::tag ${tag}（${target}）不在 main 上：先合并进 main 再发版"
+            echo "::error::tag ${TAG}（${target}）不在 main 上：先合并进 main 再发版"
             exit 1
           fi
 
       - name: 版本一致性（tag ↔ pyproject ↔ package.json）
-        run: python tools/check_version.py "${{ steps.ref.outputs.tag }}"
+        env:
+          TAG: ${{ steps.ref.outputs.tag }}
+        run: python tools/check_version.py "$TAG"
 
       - name: 输出版本号
         id: version
@@ -145,6 +154,12 @@ jobs:
 
       - name: 图标 sprite 一致性
         run: python tools/build_icons.py --check
+
+      # 图标是逐字节比对（不读字体，ubuntu 上可跑），与 lint 一致。
+      # 向导图的逐字节比对要 Windows 系统字体，且不同镜像渲染出的字节不同，因此不在 CI 里做：
+      # 形态（存在 / 可解码 / 尺寸）由 lint 的 --check-banners 负责，逐字节留给本地 --check。
+      - name: 应用图标一致性（不读字体）
+        run: python tools/build_brand.py --check-icons
 
       - name: 测试文件可运行性
         run: python tools/check_tests.py
@@ -258,28 +273,36 @@ jobs:
           --expect-exe ${{ matrix.expect_exe }}
 
       # 只断言"文件齐全"证明不了动态链接：真的在目标发行版里起一次 --web-only，
-      # 探到 /health 才算过。它在 _OPEN_ENDPOINTS 里，不需要令牌。
-      - name: Linux 产物在 debian:12 里起得来
+      # 再由容器内的 python3 发一次 HTTP GET /health 并等 200 才算过（它在
+      # _OPEN_ENDPOINTS 里，不需要令牌）。debian:12 基础镜像没有 curl，所以先装 python3。
+      # 只连端口不算数：服务绑上了端口但 /health 返回 500 也是坏的。
+      - name: Linux 产物在 debian:12 里起得来且 /health 返回 200
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
           docker run --rm -v "$PWD/.build-dist/Cubby:/srv/Cubby:ro" -e CUBBY_HOME=/tmp/cubby-home debian:12 bash -lc '
             set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq >/dev/null
+            apt-get install -y -qq python3 >/dev/null
             /srv/Cubby/Cubby --web-only --port 18080 >/tmp/cubby.log 2>&1 &
             pid=$!
             ok=0
             for _ in $(seq 1 40); do
-              if (exec 3<>/dev/tcp/127.0.0.1/18080) 2>/dev/null; then ok=1; break; fi
+              # 真的发 HTTP GET：连得上端口只说明进程在听，/health 返回非 2xx 同样算失败。
+              if python3 -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen(sys.argv[1], timeout=2).status == 200 else 1)" "http://127.0.0.1:18080/health" >/tmp/health.log 2>&1; then ok=1; break; fi
               sleep 0.5
             done
             kill "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
             if [ "$ok" != 1 ]; then
-              echo "::error::产物在 debian:12 里没有起来"
+              echo "::error::产物在 debian:12 里没有起来，或 /health 没有返回 200"
               tail -20 /tmp/cubby.log
+              echo "--- /health 探测输出 ---"
+              tail -5 /tmp/health.log 2>/dev/null || true
               exit 1
             fi
-            echo "产物在 debian:12 里启动并通过 /health"
+            echo "产物在 debian:12 里启动，且 /health 返回 200"
           '
 
       # Windows 的依赖快照写在宿主；Linux 那份由构建容器写（记录的才是真正的构建环境）。
@@ -339,9 +362,15 @@ jobs:
     # dry_run 只构建不发：产物留在本次运行的 artifact 里，连草稿都不建。
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
+    # 整条工作流只读；写仓库是这一个 job 的事（gh release create/edit/upload）。
+    permissions:
+      contents: write
     steps:
+      # 与 build 一致：上传的仓库内文件（migrate-to-2.0.*）必须取自这次发布的 tag，
+      # 不能取默认分支 HEAD —— workflow_dispatch 时两者可能不是一个提交。
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.verify.outputs.tag }}
           fetch-depth: 0
 
       - name: 下载全部构建产物

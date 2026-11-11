@@ -5,25 +5,48 @@ name: package-smoke
 #
 # 触发条件刻意收窄（只在与打包相关的文件变动时跑），避免每次改文档都烧 20 分钟
 # 的 Windows runner；release.yml 里还有一份完整的双平台构建。
+#
+# 这里的 paths 是**真正的构建输入**，不是整个 docs/Releases/：改
+# docs/Releases/AGENTS.md 之类的文档不该触发双平台真构建；而这两个 workflow 自身
+# 与安装器 composite action 改坏了，必须在这里跑一次才能发现。
 on:
   pull_request:
     paths:
-      - 'docs/Releases/**'
+      - 'docs/Releases/*.iss'
+      - 'docs/Releases/*.isl'
+      - 'docs/Releases/installer-*.png'
+      - 'docs/Releases/installer-notes.txt'
+      - 'docs/Releases/cubby.spec'
+      - 'docs/Releases/cubby-linux.spec'
+      - 'docs/Releases/spec_common.py'
+      - 'docs/Releases/migrate-*'
+      - 'docs/Releases/build-release.*'
       - 'requirements*.txt'
       - 'pyproject.toml'
       - 'tools/check_packaging.py'
       - 'tools/check_build_tree.py'
       - '.github/actions/**'
       - '.github/workflows/package-smoke.yml'
+      - '.github/workflows/release.yml'
   push:
     branches: [main, develop]
     paths:
-      - 'docs/Releases/**'
+      - 'docs/Releases/*.iss'
+      - 'docs/Releases/*.isl'
+      - 'docs/Releases/installer-*.png'
+      - 'docs/Releases/installer-notes.txt'
+      - 'docs/Releases/cubby.spec'
+      - 'docs/Releases/cubby-linux.spec'
+      - 'docs/Releases/spec_common.py'
+      - 'docs/Releases/migrate-*'
+      - 'docs/Releases/build-release.*'
       - 'requirements*.txt'
       - 'pyproject.toml'
       - 'tools/check_packaging.py'
       - 'tools/check_build_tree.py'
       - '.github/actions/**'
+      - '.github/workflows/package-smoke.yml'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
 
 concurrency:
@@ -119,32 +142,40 @@ jobs:
           .build-dist/Cubby
           --expect-exe ${{ matrix.expect_exe }}
 
-      # 与 release.yml 同一条判据：在 debian:12 里真起一次 --web-only 并探 /health。
-      - name: Linux 产物在 debian:12 里起得来
+      # 与 release.yml 同一条判据：在 debian:12 里真起一次 --web-only，再由容器内的
+      # python3 发 HTTP GET /health 并等 200。连得上端口不算数（服务绑上了端口但
+      # /health 返回 500 也是坏的）；debian:12 基础镜像没有 curl，所以先装 python3。
+      - name: Linux 产物在 debian:12 里起得来且 /health 返回 200
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
           docker run --rm -v "$PWD/.build-dist/Cubby:/srv/Cubby:ro" -e CUBBY_HOME=/tmp/cubby-home debian:12 bash -lc '
             set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq >/dev/null
+            apt-get install -y -qq python3 >/dev/null
             /srv/Cubby/Cubby --web-only --port 18080 >/tmp/cubby.log 2>&1 &
             pid=$!
             ok=0
             for _ in $(seq 1 40); do
-              if (exec 3<>/dev/tcp/127.0.0.1/18080) 2>/dev/null; then ok=1; break; fi
+              # 真的发 HTTP GET：连得上端口只说明进程在听，/health 返回非 2xx 同样算失败。
+              if python3 -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen(sys.argv[1], timeout=2).status == 200 else 1)" "http://127.0.0.1:18080/health" >/tmp/health.log 2>&1; then ok=1; break; fi
               sleep 0.5
             done
             kill "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
             if [ "$ok" != 1 ]; then
-              echo "::error::产物在 debian:12 里没有起来"
+              echo "::error::产物在 debian:12 里没有起来，或 /health 没有返回 200"
               tail -20 /tmp/cubby.log
+              echo "--- /health 探测输出 ---"
+              tail -5 /tmp/health.log 2>/dev/null || true
               exit 1
             fi
-            echo "产物在 debian:12 里启动并通过 /health"
+            echo "产物在 debian:12 里启动，且 /health 返回 200"
           '
 
       # 安装器只在 Windows 上有；它与 release.yml 共用同一个 composite action，
-      # 所以改 docs/Releases/** 时这里就会真编译一次 iscc 并做静默安装/卸载冒烟 ——
+      # 所以改安装器的构建输入时这里就会真编译一次 iscc 并做静默安装/卸载冒烟 ——
       # 不必等到打 tag 才知道安装器坏了。版本号由 action 内部按 pyproject 取。
       - name: 构建 Windows 安装器
         if: runner.os == 'Windows'
@@ -159,4 +190,10 @@ jobs:
         with:
           name: package-smoke-${{ matrix.os }}
           path: .build-dist/Cubby
+          # 产物在 .build-dist/ 下，而 upload-artifact v4 默认把"点开头的目录里的文件"
+          # 当隐藏文件排除（include-hidden-files 默认 false）：不加这一行会得到 0 个文件，
+          # 只打印一条 warning 就交出一个空 artifact。if-no-files-found 再兜一层，
+          # 让"路径写错/过滤语义变化"变成红的，而不是静默的空包。
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 7

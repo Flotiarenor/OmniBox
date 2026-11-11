@@ -210,8 +210,15 @@ jobs:
       - name: 图标 sprite 一致性（sprite ↔ icon_data ↔ 引用）
         run: python tools/build_icons.py --check
 
-      - name: 应用图标与安装器图一致性（res/brand ↔ 生成脚本）
-        run: python tools/build_brand.py --check
+      # 图标是逐字节比对：只有几何绘制、不读字体，所以这一条能跑在 Linux 的 lint 上。
+      - name: 应用图标一致性（res/brand ↔ 生成脚本，逐字节、不读字体）
+        run: python tools/build_brand.py --check-icons
+
+      # 向导图只做形态校验（存在 / 可解码 / 尺寸对得上三档 DPI）：向导图要用 Windows
+      # 系统字体渲染，而 runner 上没有那套字体、Server 镜像的字体版本也不同，逐字节
+      # 比对只会在 CI 上红。逐字节那一份留给本地提交前的 --check（见 AGENTS.md）。
+      - name: 安装器向导图形态（存在 / 可解码 / 尺寸，不读字体）
+        run: python tools/build_brand.py --check-banners
 
       - name: 测试文件可运行性（tests/test_*.py 必须真的有用例）
         run: python tools/check_tests.py
@@ -515,4 +522,10 @@ jobs:
         with:
           name: cubby-preview-${{ matrix.os }}
           path: ${{ matrix.dist }}/Cubby
+          # 产物在 .build-dist/ 下，而 upload-artifact v4 默认把"点开头的目录里的文件"
+          # 当隐藏文件排除（include-hidden-files 默认 false）：不加这一行会得到 0 个文件，
+          # 只打印一条 warning 就交出一个空 artifact。if-no-files-found 再兜一层，
+          # 让"路径写错/过滤语义变化"变成红的，而不是静默的空包。
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 7

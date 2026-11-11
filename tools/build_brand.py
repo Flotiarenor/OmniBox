@@ -24,10 +24,27 @@ Inno Setup 6.6 起，100% DPI 的向导图区是 202×386（更早的版本是 1
 左侧大图在每一页都出现，作用是"让用户记住这个标"，不是讲产品；文案属于右侧说明页。
 所以它只有：标、三张插件卡、产品名，没有第三行字。
 
+为什么校验分三档、深浅不同
+--------------------------
+图标（`res/brand/**`）只有几何绘制，不读字体，任何平台逐字节可复现；向导图里有
+"格子铺 / Cubby"文字，用 `C:/Windows/Fonts` 下的系统字体（微软雅黑 / Segoe UI）渲染。
+没有这些字体的机器上 `ImageFont.truetype` 直接抛 `OSError: cannot open resource`；
+而且不同 Windows 版本 / Server 镜像自带的字体版本不同，同一份脚本渲染出的 PNG 字节
+也会不同 —— "逐字节比对向导图"因此只在生成它们的机器上有意义，不能当 CI 门禁：
+
+- `--check-icons`：逐字节比对图标；不读字体，任何平台都能跑（CI 的 lint 用这条）；
+- `--check-banners`：向导图的**形态**校验 —— 每份文件存在、能解码、尺寸等于
+  `BANNER_DPI` / `SMALL_DPI` 里登记的值；不读字体、不比对内容，所以 Linux 上也能跑
+  （CI 的 lint 用这条）。它兜的是"文件被删 / 改名 / 换错档位 / 截断"这类打包事故；
+- `--check`：图标与向导图都逐字节比对。向导图那一半要读系统字体，只在本机
+  （Windows）提交前跑。
+
 用法
 ----
-    venv/Scripts/python tools/build_brand.py           # 生成
-    venv/Scripts/python tools/build_brand.py --check   # 只校验，不写文件（门禁用）
+    venv/Scripts/python tools/build_brand.py                   # 生成全部产物（要 Windows 字体）
+    venv/Scripts/python tools/build_brand.py --check           # 逐字节校验全部（本地提交前，Windows）
+    venv/Scripts/python tools/build_brand.py --check-icons     # 逐字节校验图标（不读字体，任何平台）
+    venv/Scripts/python tools/build_brand.py --check-banners   # 向导图形态：存在/可解码/尺寸（不读字体）
 """
 from __future__ import annotations
 
@@ -35,6 +52,7 @@ import argparse
 import io
 import struct
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -256,7 +274,11 @@ def render_banner(w: int, h: int, theme: str = DEFAULT_THEME) -> Image.Image:
     return img.resize((w, h), Image.Resampling.LANCZOS)
 
 
-def build_outputs() -> dict[Path, bytes]:
+def build_icon_outputs() -> dict[Path, bytes]:
+    """图标产物：6 套配色 ×（1 份多尺寸 ICO + 8 份 PNG）。
+
+    只用几何绘制，不读字体，任何平台逐字节可复现 —— 所以可以挂在 Linux 的 lint 上。
+    """
     outputs: dict[Path, bytes] = {}
     for theme in THEMES:
         outputs[BRAND_DIR / f'cubby-{theme}.ico'] = _ico_bytes(theme)
@@ -264,6 +286,16 @@ def build_outputs() -> dict[Path, bytes]:
             buf = io.BytesIO()
             render_icon(size, theme).save(buf, format='PNG')
             outputs[PNG_DIR / f'cubby-{theme}-{size}.png'] = buf.getvalue()
+    return outputs
+
+
+def build_banner_outputs() -> dict[Path, bytes]:
+    """安装器向导图：3 档 DPI 的大图与小图。
+
+    大图里的"格子铺 / Cubby"由 `render_banner()` 用系统字体渲染，离开 Windows 字体
+    就没有可用的字形（`ImageFont.truetype` 抛 OSError）：这一支只在 Windows 上跑。
+    """
+    outputs: dict[Path, bytes] = {}
     for tag, (w, h) in BANNER_DPI.items():
         buf = io.BytesIO()
         render_banner(w, h).save(buf, format='PNG')
@@ -275,24 +307,111 @@ def build_outputs() -> dict[Path, bytes]:
     return outputs
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description='生成应用图标与安装器向导图')
-    parser.add_argument('--check', action='store_true', help='只校验不写文件（门禁用）')
-    args = parser.parse_args()
+def build_outputs() -> dict[Path, bytes]:
+    """全部产物（生成模式用；`--check` 也等价于分别校验上面两组）。"""
+    outputs = build_icon_outputs()
+    outputs.update(build_banner_outputs())
+    return outputs
+
+
+def _label(path: Path) -> str:
+    """消息里的路径用仓库相对形式；不在仓库里（临时目录 / 用例）时退回绝对路径。"""
+    try:
+        return path.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _check_outputs(build: Callable[[], dict[Path, bytes]], what: str) -> int:
+    """逐字节比对一组产物与生成脚本；0 = 一致，1 = 有差异（不写文件）。"""
+    outputs = build()
+    stale = [path for path, data in outputs.items()
+             if not path.is_file() or path.read_bytes() != data]
+    if stale:
+        for path in stale:
+            print(f'[error] {_label(path)} 与生成脚本不一致', file=sys.stderr)
+        print('        运行 venv/Scripts/python tools/build_brand.py 重新生成', file=sys.stderr)
+        return 1
+    print(f'brand: OK（{what}：{len(outputs)} 份产物均与脚本一致）')
+    return 0
+
+
+def _png_shape_error(path: Path, expected: tuple[int, int]) -> str | None:
+    """一份向导图的形态问题：不存在 / 解不开 / 尺寸不对时返回一句可读的错误。"""
+    rel = _label(path)
+    if not path.is_file():
+        return f'缺少向导图：{rel}'
+    try:
+        with Image.open(path) as image:
+            size = image.size
+            image.verify()
+    except Exception as exc:  # Pillow 对坏文件抛 OSError / ValueError / UnidentifiedImageError
+        return f'向导图无法解码：{rel}（{type(exc).__name__}: {exc}）'
+    if size != expected:
+        return (f'向导图尺寸不对：{rel} 是 {size[0]}×{size[1]}，'
+                f'应为 {expected[0]}×{expected[1]}')
+    return None
+
+
+def _check_banner_shape() -> int:
+    """向导图形态校验：存在、可解码、尺寸正确。不读字体、不比对内容，任何平台都能跑。"""
+    problems: list[str] = []
+    count = 0
+    for tag, (w, h) in BANNER_DPI.items():
+        count += 1
+        problem = _png_shape_error(RELEASE_DIR / f'installer-banner-{tag}.png', (w, h))
+        if problem:
+            problems.append(problem)
+    for tag, (w, h) in SMALL_DPI.items():
+        count += 1
+        problem = _png_shape_error(RELEASE_DIR / f'installer-small-{tag}.png', (w, h))
+        if problem:
+            problems.append(problem)
+    if problems:
+        for problem in problems:
+            print(f'[error] {problem}', file=sys.stderr)
+        print('        重新生成：venv/Scripts/python tools/build_brand.py', file=sys.stderr)
+        return 1
+    print(f'brand: OK（安装器向导图：{count} 份文件存在、可解码、尺寸正确）')
+    return 0
+
+
+def _check_banner_bytes() -> int:
+    """逐字节比对向导图：读系统字体，只在生成它们的机器（Windows）上有意义。"""
+    try:
+        return _check_outputs(build_banner_outputs, '安装器向导图')
+    except OSError as exc:
+        print('[error] 打不开渲染向导图用的系统字体：'
+              f'{FONT_CN} / {FONT_CN_BOLD} / {FONT_LATIN}（{exc}）\n'
+              '        --check 的向导图那一半只在本机（Windows）提交前跑；'
+              'CI 用 --check-banners 做形态校验，不需要字体。',
+              file=sys.stderr)
+        return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description='生成应用图标与安装器向导图；--check* 只校验、不写文件')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--check', action='store_true',
+                      help='逐字节校验全部产物（图标 + 向导图）；向导图读系统字体，仅本机 Windows')
+    mode.add_argument('--check-icons', action='store_true',
+                      help='逐字节校验图标（不读字体，任何平台都能跑；CI 的 lint 用这条）')
+    mode.add_argument('--check-banners', action='store_true',
+                      help='校验安装器向导图的形态：存在、可解码、尺寸正确（不读字体；CI 的 lint 用这条）')
+    args = parser.parse_args(argv)
+
+    if args.check_icons:
+        return _check_outputs(build_icon_outputs, '图标')
+    if args.check_banners:
+        return _check_banner_shape()
+    if args.check:
+        code = _check_outputs(build_icon_outputs, '图标')
+        if code:
+            return code
+        return _check_banner_bytes()
 
     outputs = build_outputs()
-    if args.check:
-        stale = [path for path, data in outputs.items()
-                 if not path.is_file() or path.read_bytes() != data]
-        if stale:
-            for path in stale:
-                print(f'[error] {path.relative_to(PROJECT_ROOT).as_posix()} 与生成脚本不一致',
-                      file=sys.stderr)
-            print('        运行 venv/Scripts/python tools/build_brand.py 重新生成', file=sys.stderr)
-            return 1
-        print(f'brand: OK（{len(THEMES)} 套配色，{len(outputs)} 份产物均与脚本一致）')
-        return 0
-
     for path, data in outputs.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)

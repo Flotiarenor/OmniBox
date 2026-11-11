@@ -26,6 +26,7 @@
 | 前端依赖漏洞 | `python tools/check_npm_audit.py` | **OK**（硬门禁；脚本内固定官方 registry，见下） |
 | 前端类型+构建 | `npm --prefix shell/frontend run build` | 通过（硬门禁） |
 | 图标 sprite 一致性 | `python tools/build_icons.py --check` | **OK**（硬门禁；校验 `res/icons/icons.svg` 与 `res/icons/icon_data.json` 同步，且模板/manifest 引用的图标全部已冻结） |
+| 图标与安装器图一致性 | 本地 `python tools/build_brand.py --check`（逐字节）；CI lint 跑 `--check-icons`（逐字节）与 `--check-banners`（形态：存在 / 可解码 / 尺寸） | **OK**（硬门禁；`res/brand/**` 的 6 套配色与 `docs/Releases/installer-*.png` 都要与 `tools/build_brand.py` 对得上。为什么 CI 不逐字节比对向导图：向导图里的中文用 `C:/Windows/Fonts` 的系统字体渲染，runner 上没有那套字体、Windows Server 镜像的字体版本也与开发机不同，同一份脚本渲染出的字节会不同 —— 逐字节只在生成它们的机器上有意义，因此留在本地 `--check`；CI 的 `--check-banners` 只查存在/可解码/尺寸三档 DPI） |
 | 打包冒烟 + 产物校验 | `python tools/check_build_tree.py <dist>/Cubby --expect-exe Cubby.exe` | 通过（硬门禁；CI 里只在 push main / 手动触发 / 打包路径变更时跑） |
 
 > `unittest` 这一行里包含插件前端的脚本契约用例：`tests/test_*_js.py` 包装器调用
@@ -109,7 +110,7 @@ node tools/check_frontend_escape.cjs
 | --- | --- | --- |
 | `changes` | ubuntu | 变更集判定：算出这次只动了文档还是动了代码，其余 job 靠它的输出决定跑不跑 |
 | `plugins` | ubuntu | 从 `plugins/*/manifest.json` 读出插件名，输出 JSON 矩阵；不维护第二份插件清单 |
-| `lint` | ubuntu | ruff + 插件规范 + 插件后端分层 + 打包规则 + 版本一致性 + 图标 sprite + 测试文件可运行性 + 文档引用一致性 |
+| `lint` | ubuntu | ruff + 插件规范 + 插件后端分层 + 打包规则 + 版本一致性 + 图标 sprite + 应用图标一致性（`build_brand.py --check-icons`，逐字节、不读字体）+ 安装器向导图形态（`--check-banners`：存在 / 可解码 / 尺寸）+ 测试文件可运行性 + 文档引用一致性 |
 | `docs` | ubuntu | **只在变更集含 `.md` 时跑**：文档引用一致性（`tools/check_docs.py`） |
 | `typecheck` | windows | pyright 内核 + 全部插件（零错误硬门禁） |
 | `test` | windows + ubuntu，py3.11 + 3.12 | 共享测试（`tools/plugin_ci.py --core`，不含插件专属测试） |
@@ -191,11 +192,16 @@ spec + `check_build_tree.py` 产物校验。插件矩阵按插件拆分，失败
 
 ### `package-smoke.yml` —— 打包链路冒烟
 
-只在 `docs/Releases/**`、`requirements*.txt`、`pyproject.toml`、`.github/actions/**` 等
-打包相关文件变动时触发，目的是让"打包坏了"在 PR 阶段暴露，而不是等到打 tag。
+只在真正的打包输入变动时触发 — `docs/Releases/` 下的 `*.iss` `*.isl` `installer-*.png`
+`installer-notes.txt` 两份 spec `spec_common.py` `migrate-*` `build-release.*`，加上
+`requirements*.txt`、`pyproject.toml`、`tools/check_packaging.py`、`tools/check_build_tree.py`、
+`.github/actions/**` 与本文件 / `release.yml`。改 `docs/Releases/AGENTS.md` 这类文档不触发
+（那是"每次改文档烧 20 分钟"的来源）。目的是让"打包坏了"在 PR 阶段暴露，而不是等到打 tag。
 两条判据与发版完全一致：Windows 分支编译一次安装器并做静默安装/卸载冒烟（与
 `release.yml` 共用 `.github/actions/windows-installer`），Linux 分支在 `debian:12`
-容器里构建、并在同一镜像里起一次 `--web-only` 探 `/health`。
+容器里构建，并在同一镜像里起一次 `--web-only`、由容器内的 `python3` 发一次
+HTTP `GET /health`、等到 200 才算过（只连端口不算数：端口通但 `/health` 返回 500
+同样是坏的）。
 
 ### `release.yml` —— 半自动发布（自动构建，人工公开）
 
@@ -208,10 +214,12 @@ spec + `check_build_tree.py` 产物校验。插件矩阵按插件拆分，失败
 - **触发**：`push: tags: ['v*']`。打 tag 就是"我决定发这个版本"的声明；
   `workflow_dispatch` 保留作手动兜底（重跑某次发布、或只跑 `dry_run` 取产物）。
 - **自动做完**：版本一致性校验（tag ↔ pyproject ↔ package.json ↔ package-lock.json）、ruff / 插件规范 /
-  打包规则 / 图标 sprite 一致性 / 测试文件可运行性 / 全量单测 / 前端转义门禁、
-  双平台 PyInstaller 构建、`check_build_tree.py` 产物校验、打 zip / tar.gz、
+  打包规则 / 图标 sprite 一致性 / 应用图标一致性（`build_brand.py --check-icons`）/ 测试文件可运行性 /
+  全量单测 / 前端转义门禁、双平台 PyInstaller 构建、`check_build_tree.py` 产物校验、打 zip / tar.gz、
   Windows 用 Inno Setup 打 `Cubby-Setup-<版本>.exe` 并做一次静默安装/卸载冒烟、
   生成各产物的 `.sha256`、建**草稿** Release 并挂上产物。
+  （向导图的逐字节比对不在发布链里：它要 Windows 系统字体，不同镜像渲染出的字节不同；
+  发布链靠 ISCC 编译 `.iss` 时校验向导图文件在位，逐字节留给本地 `--check`。）
 - **留给人**：只有"公开"这一下。草稿不进 Releases 列表、不产生 `latest`、不发通知，
   只有对仓库有写权限的人能看到。核对后点 **Publish release**
   即可（或 `gh release edit <tag> --draft=false`）。
@@ -225,6 +233,9 @@ spec + `check_build_tree.py` 产物校验。插件矩阵按插件拆分，失败
 
 > 首次使用需确认仓库 `Settings → Actions → General → Workflow permissions`
 > 为 **Read and write permissions**（创建 Release 需要）。
+> 工作流自身已经按最小权限声明：顶层 `contents: read`，只有 publish job 声明
+> `contents: write`；`verify` 与 `build` 会跑 `pip install` / `npm ci` / PyInstaller，
+> 不给它们能推送 contents 的 token。
 > `workflow_dispatch` 的入口只在**默认分支**（`main`）上渲染，所以这个文件改完
 > 要让 `main` 也带上，Actions 页面才看得到 Run workflow 按钮。
 
@@ -292,8 +303,10 @@ spec + `check_build_tree.py` 产物校验。插件矩阵按插件拆分，失败
   `version 'GLIBC_2.36' not found`（本机实测）。因此 `release.yml` 与
   `package-smoke.yml` 的 Linux 分支用 `docker run ... debian:12` 跑 PyInstaller：
   容器里装发行版 `python3`（3.11，满足 `requires-python`）+ venv，前端由宿主机构建后
-  经挂载点带进容器，产物基线因此是 2.36；再用同一个镜像起一次 `--web-only` 探
-  `/health`，证明它真的能跑，而不是只"文件齐全"。
+  经挂载点带进容器，产物基线因此是 2.36；再用同一个镜像起一次 `--web-only`，
+  由容器内的 `python3` 发一次 HTTP `GET /health` 并等到 200，证明它真的能跑，
+  而不是只"文件齐全"。只连端口不算判据：服务绑上了端口但 `/health` 返回 500
+  同样是坏的（debian:12 基础镜像没有 curl，探针先 `apt-get install python3`）。
 - **宿主机上的 `actions/setup-python` 只服务工具脚本**（`check_build_tree.py`、
   `sha256`、`pip freeze`），不用于构建：那份 libpython 与我们的 spec 不兼容，产物启动即报
   `Failed to load Python shared library .../libpython3.12.so.1.0`（它会让
@@ -561,6 +574,8 @@ RUF100（未使用的 noqa）会把这些标注判为冗余并删除——它们
      `/VERYSILENT` 装到一个临时目录（`/DIR` 覆盖默认位置）、确认 `Cubby.exe` 与
      `unins000.exe` 就位、再静默卸载并等目录消失。冒烟失败会让构建 job 直接失败，
      安装器与草稿 Release 都不会产出 —— 不需要再到本机验证"装得上、卸得掉"。
+     编译用的 Inno Setup 版本固定在 `.github/actions/windows-installer` 里
+     （`choco install innosetup --version=…`），不取"最新"，否则安装器行为会随上游漂移。
    - **想先在自己机器上验证**，就从该次运行页面下载 artifact（Windows `zip` /
      `tar.gz` / `Setup.exe`，7 天内有效）。Windows 本机造不出 Linux 产物，见 §4。
    - 只想构建不想建草稿的场景，用手动触发 + 勾 `dry_run`。

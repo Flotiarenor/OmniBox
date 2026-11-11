@@ -42,18 +42,28 @@ runs:
     # 不能假设 iscc 在 PATH 上：choco 装的是机器级 PATH，当前进程读不到；choco 的
     # shim 也可能落在别的目录。先按命令找，再按默认安装位置找，都找不到就失败 ——
     # 静默跳过只会得到一个"没编出安装器"的绿。
+    #
+    # 版本固定：cubby.iss 按 Inno Setup 6.7 编写（向导图 PNG 要 6.5.2+，202×386 的
+    # 图像区是 6.6+ 的默认值），取"最新"会让安装器的行为随上游漂移。这里固定到
+    # 6.7.1 —— choco 社区源目前发布到的最高版（6.7.2 / 6.7.3 上游有、包没有，
+    # 指定不存在的版本会让这一步直接失败）。候选目录同时列 6 与 7：包一旦把主版本
+    # 升到 7，固定版本装不上时还有一个落点，而不是抛一句"没找到 ISCC.exe"。
     - name: 安装 Inno Setup（并定位 iscc）
       shell: pwsh
+      env:
+        INNO_SETUP_VERSION: '6.7.1'
       run: |
-        choco install innosetup --no-progress -y
+        choco install innosetup --version=$env:INNO_SETUP_VERSION --allow-downgrade --no-progress -y
         $candidates = @()
         $cmd = Get-Command iscc -ErrorAction SilentlyContinue
         if ($cmd) { $candidates += $cmd.Source }
-        $candidates += "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-        $candidates += "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+        foreach ($major in @('7', '6')) {
+          $candidates += "${env:ProgramFiles(x86)}\Inno Setup $major\ISCC.exe"
+          $candidates += "$env:ProgramFiles\Inno Setup $major\ISCC.exe"
+        }
         $iscc = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
         if (-not $iscc) {
-          throw "choco 已安装 innosetup，但没有找到 ISCC.exe；试过 PATH、${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe、$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          throw "choco 已安装 innosetup $env:INNO_SETUP_VERSION，但没有找到 ISCC.exe；试过 PATH 与 Program Files 下的 Inno Setup 6/7 目录"
         }
         "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
         Write-Host "ISCC: $iscc"
