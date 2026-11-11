@@ -16,7 +16,6 @@ import { useBridge } from './bridge'
 import { isStorableVarValue, isValidVarName } from './var-rules'
 import {
   clampGlassValue, DEFAULT_PREFS, GLASS_LIMITS, mergePatch, normalizePrefs,
-  pickStringMap,
   type BackgroundFit, type BackgroundPrefs, type ShellPrefs, type StartPage,
   type StartupPrefs, type Theme,
 } from './prefs-model'
@@ -30,19 +29,6 @@ export {
 /** 后端返回的、在 index.html 里注入的首屏状态。 */
 interface InjectedShellState {
   prefs?: Partial<ShellPrefs>
-  /** 盘上是否已有偏好段（false 时旧 localStorage 的值还有迁移价值） */
-  stored?: boolean
-}
-
-// 旧版本的键（localStorage）。只在**首次迁移**时读一次：读进来的值一次性上报给后端，
-// 后端接受之后就地删除，此后本模块不再碰 localStorage。
-const LEGACY_KEYS = {
-  startup: 'cubby-startup',
-  lastRoute: 'cubby-last-route',
-  theme: 'cubby-theme',
-  colors: 'cubby-custom-colors',
-  background: 'cubby-background',
-  glass: 'cubby-glass',
 }
 
 /** 去抖窗口：设置页的滑块每次 `input` 都要写，合并到窗口末尾一次。 */
@@ -55,84 +41,12 @@ function readInjected(): InjectedShellState | null {
   return raw && typeof raw === 'object' ? raw as InjectedShellState : null
 }
 
-function readLegacyJson(key: string): Record<string, unknown> | null {
-  try {
-    const raw = localStorage.getItem(key)
-    if (!raw) return null
-    const parsed = JSON.parse(raw)
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown> : null
-  } catch {
-    return null
-  }
-}
-
-/** 旧 localStorage 的取值（存在时才是"需要迁移"）。
- *
- * 返回**原始**形状而不是 `Partial<ShellPrefs>`：这些值是上一版前端写下的 JSON，
- * 字段缺失或类型漂移都要按"缺省用 base"处理，交给同一个 `normalizePrefs()` 收敛。
- */
-function legacySnapshot(): Record<string, unknown> | null {
-  let found = false
-  const snapshot: Record<string, unknown> = {}
-  const colors: Record<string, string> = {}
-
-  const theme = localStorage.getItem(LEGACY_KEYS.theme)
-  if (theme === 'light' || theme === 'dark') {
-    snapshot.theme = theme
-    found = true
-  }
-  const storedColors = readLegacyJson(LEGACY_KEYS.colors)
-  if (storedColors) {
-    Object.assign(colors, pickStringMap(storedColors))
-    found = true
-  }
-  // 玻璃的两个变量当年另存在 cubby-glass 里，合并进同一张表才不会丢
-  const glass = readLegacyJson(LEGACY_KEYS.glass)
-  if (glass) {
-    if (typeof glass.blur === 'number') colors['--glass-blur'] = `${glass.blur}px`
-    if (typeof glass.alpha === 'number') colors['--glass-alpha'] = `${glass.alpha}%`
-    found = true
-  }
-  if (Object.keys(colors).length) snapshot.colors = colors
-  const background = readLegacyJson(LEGACY_KEYS.background)
-  if (background) {
-    snapshot.background = background
-    found = true
-  }
-  const startup = readLegacyJson(LEGACY_KEYS.startup)
-  if (startup) {
-    snapshot.startup = startup
-    found = true
-  }
-  const lastRoute = localStorage.getItem(LEGACY_KEYS.lastRoute)
-  if (lastRoute) {
-    snapshot.last_route = lastRoute
-    found = true
-  }
-  return found ? snapshot : null
-}
-
-function dropLegacyKeys(): void {
-  Object.values(LEGACY_KEYS).forEach(key => {
-    try {
-      localStorage.removeItem(key)
-    } catch {
-      // 隐私模式下 localStorage 可能不可用：迁移失败不该影响启动
-    }
-  })
-}
-
 // ===== 状态 =====
 
 const injected = readInjected()
 
 /** 当前生效的壳偏好（进程内唯一的可变副本，改动即生效）。 */
 const state: ShellPrefs = normalizePrefs(injected?.prefs, DEFAULT_PREFS)
-
-// 后端盘上还没有偏好段时，旧 localStorage 的值还有迁移价值：等 loadShellPrefs()
-// 一次性导入，导入后立刻删旧键。
-let needsLegacyImport = injected ? injected.stored !== true : true
 
 let dirty = false
 let pendingPatch: Record<string, unknown> = {}
@@ -178,7 +92,7 @@ export function patchShellPrefs(patch: Record<string, unknown>): void {
   pendingPatch = mergePatch(pendingPatch, patch)
   dirty = true
   redraw()
-  if (!needsLegacyImport) schedule(FLUSH_DELAY_MS)
+  schedule(FLUSH_DELAY_MS)
 }
 
 /** 立刻把待发送的偏好写回后端（切路由 / 松手 / 退出前调用）。 */
@@ -244,7 +158,7 @@ if (typeof window !== 'undefined') {
   window.addEventListener('beforeunload', flushOnExit)
 }
 
-// ===== 启动：迁移 + 应用 =====
+// ===== 启动：与后端对齐 =====
 
 /** 与后端对齐一次：拉回权威的偏好，并丢弃照旧状态算出来的待发送补丁。
  *
@@ -287,38 +201,8 @@ function adoptServerPrefs(prefs: unknown): void {
   redraw()
 }
 
-/** 首次迁移：后端没有偏好段时把旧 localStorage 值一次性导入，然后删旧键。
- *
- * 导入前先把旧值套到当前状态上（`normalizePrefs(legacy, state)`）：这样即使这次上报
- * 失败（后端版本旧、网络问题），本次会话用的仍是用户原来的主题与启动页，
- * 而不是"搬家搬到一半，界面回到默认色"。
- */
-async function migrateLegacy(): Promise<void> {
-  const legacy = needsLegacyImport ? legacySnapshot() : null
-  if (!legacy) {
-    // 没有旧值可导：这次启动不需要迁移（与后端对齐由 reconcileWithServer 负责）
-    needsLegacyImport = false
-    return
-  }
-  Object.assign(state, normalizePrefs(legacy, state))
-  redraw()
-  try {
-    const result = await useBridge().call('system_set_shell_prefs', legacy, 'import')
-    // imported === false 表示后端已经有偏好（典型情形是后端在页面加载之后重启过）：
-    // 此时同样以后端那份为准，旧值只当候选。
-    if (result?.prefs) adoptServerPrefs(result.prefs)
-    // 两种结果都说明"旧的 localStorage 不再是数据源"，因此都清键。
-    dropLegacyKeys()
-    needsLegacyImport = false
-  } catch (e: any) {
-    // 后端不支持 / 暂时失败：保留旧键，下次启动再试。界面继续用当前（旧的）取值。
-    console.warn('[ShellPrefs] 旧偏好迁移失败，保留原键待下次启动重试:', e?.message || e)
-  }
-}
-
-/** 启动第二步：迁移旧值 + 与后端对齐，然后才解析首屏路由。 */
+/** 启动：与后端对齐，然后才解析首屏路由。 */
 export async function loadShellPrefs(): Promise<void> {
-  await migrateLegacy()
   // 注入值是"页面被服务端渲染出来的那一刻"的快照。后端可能在那之后重启过，
   // 因此再做一次对齐；等待中的补丁（用户已经改过东西）时不覆盖本地状态。
   await reconcileWithServer()

@@ -39,7 +39,7 @@
 | `plugins/media-player/frontend/js/utils.js` | 工具层：URL、封面降级、图标、格式化、弹窗开关、网易云 ↔ 本地匹配、音量映射；封面 URL 的版本号用毫秒（`Math.round(秒 * 1000)`） | `MPUtils`、`formatTime`、`debounce`、`escapeHtml`、`itemIcon`、`mediaUrl`、`coverUrl`、`coverVersion`、`coverSrc`、`coverImg`、`fallbackCover`、`heroBg`、`icon`、`timeAgo`、`fmtDuration`、`setRangePercent`、`openModal`、`closeModal`、`normNcmText`、`ncmArtistTokens`、`matchNeteaseToLocal`、`VolumeMapper`、`linearToActual`、`actualToLinear`、`MPCoverFail` |
 | `plugins/media-player/frontend/js/frame-extractor.js` | 视频封面前端 canvas 抽帧队列 | `MediaFrameExtractor`、`request`、`pump`、`extractOne`、`extractOnce`、`pickSeekPositions`、`frameIsBlack`、`mainPlayerFor`、`isBlocked`、`settle` |
 | `plugins/media-player/frontend/js/lyrics-parser.js` | LRC 解析与歌词沉浸页、canvas 频谱 | `LyricsParser`、`parse`、`MediaLyrics`、`applyStyleVars`、`applyBg`、`loadForItem`、`update`、`_findLineIndex`、`_render`、`_highlightLine`、`_startViz`、`_stopViz`、`_drawViz`、`show`、`hide`、`toggle`、`isVisible`、`suspend`、`resume` |
-| `plugins/media-player/frontend/js/progress-store.js` | 播放进度的 localStorage 记忆与旧键迁移 | `MediaProgressStore`、`STORAGE_KEY`、`LEGACY_KEYS`、`get`、`save`、`clear`、`_legacyValue` |
+| `plugins/media-player/frontend/js/progress-store.js` | 播放进度的 localStorage 记忆 | `MediaProgressStore`、`STORAGE_KEY`、`get`、`save`、`clear` |
 | `plugins/media-player/frontend/js/player-core.js` | 播放内核：队列、模式、音视频元素切换、进度保存、Web Audio EQ 链 | `MediaPlayerCore`、`setQueue`、`playIndex`、`playItem`、`_loadItem`、`next`、`prev`、`stop`、`seekTo`、`seekDelta`、`cyclePlayMode`、`togglePlay`、`toggleMute`、`setVideoMode`、`setResumeMode`、`_buildShuffleOrder`、`_stepShuffle`、`_syncShuffleCursor`、`_saveProgress`、`_startProgressSaver`、`_stopProgressSaver`、`saveQueueState`、`restorePlayback`、`ensureAudioGraph`、`getAnalyser`、`setEqBand`、`getEqBands`、`applyEqBands`、`resetEq`、`EQ_FREQS` |
 | `plugins/media-player/frontend/js/playlist-manager.js` | 歌单 CRUD 与「我的歌单」导航组上报 | `MediaPlaylistManager`、`load`、`create`、`rename`、`delete`、`get`、`addItems`、`removeItem`、`updateItemIds`、`syncNav` |
 | `plugins/media-player/frontend/js/app.js` | `MediaPlayerApp` 类骨架：构造、初始化、生命周期、与壳的 chrome 消息、设置重读、首建索引、网易云视图切换 | `MediaPlayerApp`、`init`、`_bindPluginLifecycle`、`_postHost`、`_pushChrome`、`_clearSearch`、`_chromeViewId`、`_navPatch`、`_updateActions`、`_bindHost`、`_applyHostView`、`_applyHostAction`、`_openSettings`、`_reloadSettings`、`_onQuery`、`_ensureIndex`、`_restorePlayback`、`_updateStats`、`openNeteaseView`、`MP_LIBRARY_VIEWS` |
@@ -157,7 +157,7 @@
 - 由脚本切换的状态类名：`active`、`hidden`、`show`、`playing`、`paused`、`glow`、`no-cover`、`img-broken`、`fav-active`、`wide-active`、`wide-mode`、`video-on`、`fs-on`、`controls-hidden`、`has-content`、`selected`、`mp-thumb-pending`、`spinning`
 - 由脚本设置的内联 CSS 变量：`--i`、`--range-val`、`--hero-bg`、`--mp-pop-bottom`、`--lyrics-blur`、`--lyrics-brightness`、`--lyrics-font-color`、`--lyrics-font-color-active`、`--lyrics-font-color-hover`、`--lyrics-glow-color`
 - 脚本使用的 `data-*` 钩子：`data-id`、`data-idx`、`data-key`、`data-kind`、`data-mp-action`、`data-mp-thumb-id`、`data-mp-busy`、`data-fallback`、`data-icon`、`data-hero-action`、`data-lyric-idx`、`data-lyric-time`、`data-eq-idx`、`data-eq-val`、`data-pl-id`、`data-queue-idx`、`data-remove-idx`、`data-menu-act`
-- localStorage 键：`cubbyMediaProgress`、`cubbyMediaVolume`、`cubbyMediaEQ`、`ncmCache_`、`ncmSyncCollected`、`ncmExportMissing`；旧键 `musicProgress`、`videoProgress`
+- localStorage 键：`cubbyMediaProgress`、`cubbyMediaVolume`、`cubbyMediaEQ`、`ncmCache_`、`ncmSyncCollected`、`ncmExportMissing`
 
 ## 与壳的契约
 
