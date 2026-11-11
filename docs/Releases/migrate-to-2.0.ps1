@@ -4,7 +4,8 @@
 
 .DESCRIPTION
     1.4.0 把可写数据放在可执行文件旁边（`.config/` 与 `data/`），2.0 把数据根改成
-    %LOCALAPPDATA%\Cubby。换版本后旧数据不会被自动读取，需要搬一次。
+    %LOCALAPPDATA%\Cubby 或 `CUBBY_HOME` 指向的位置。换版本后旧数据不会被自动读取，
+    需要搬一次。
 
     用法（`--` 与 `-` 前缀等价）：
 
@@ -13,16 +14,24 @@
                              [--force] [--move]
 
     参数：
-      --source <目录>    旧安装目录：含 `.config` 或 `data` 的那一层。不给时依次试探
-                         脚本所在目录、它的上一级；都不像旧安装目录就报错。
-      --dest <目录>      目标数据根。默认 %LOCALAPPDATA%\Cubby。
+      --source <目录>    旧安装目录。必须是"像 1.4.0 安装目录"的那一层：脚本按四项特征
+                         计分，至少命中两项才接受 —— `OmniBox.exe`、`.config/app.json`
+                         或 `.config/app.yaml`、`.config/auth_token.txt`、
+                         `data/group-mesh/identity/`。不给时依次试探脚本所在目录与它的
+                         上一级，两处都不够分就报错。`--move` 必须显式给出本参数。
+      --dest <目录>      目标数据根。不给时按 2.0 自己的判据取：先看环境变量
+                         `CUBBY_HOME`，其次 `%LOCALAPPDATA%\Cubby`（缺 LOCALAPPDATA
+                         时用 `%APPDATA%\Cubby`）。输出里写明这一次用的是哪个来源。
       --apply            真正写盘。不加时只预演，不改任何文件。
       --include-logs     连 `.config/logs/` 一起搬。默认不搬（诊断信息，2.0 会重写）。
       --include-plugins  连旧 `plugins/` 一起搬。默认不搬，理由见下。
       --force            目标已有同名文件时，先备份到
                          <dest>\.pre-migrate-backup-<yyyyMMdd-HHmmss>\ 再覆盖；
                          不加时同名文件跳过并计数。
-      --move             迁移完成后删除已迁移的源文件（隐含 --apply；未迁移的 webview/logs 保留）。
+      --move             迁移完成后删除源文件（隐含 --apply）。只有本次运行"零失败、
+                         零跳过、身份密钥全部重封装成功"时才删；删之前把计划内的源文件
+                         整份备份到 <dest>\.pre-migrate-backup-<时间戳>\source\ 并打印位置。
+                         默认不搬的 webview/logs 保留。必须显式给 --source。
       --help             打印这段说明。
 
     搬什么：
@@ -40,6 +49,10 @@
       用户**在本机运行。换用户或换机器都解不开（脚本会报"解保护失败"并保留原文件，
       不会静默跳过）。keyring / passphrase 保护的文件同样报出来交人工处理。
 
+      判断"是不是明文"只认一种情形：文件能解析成 JSON 且没有 `format` / `data` 字段。
+      解析不了（被截断、损坏、非 JSON）一律算失败：预演与落盘都报红、计入失败项、
+      退出码为 2，不会当成"2.0 会自行升级的明文"放过。收尾校验要求 `name` 字段真能读出来。
+
     不搬什么：
       `.config/webview/`   WebView2 的浏览器 profile 与 HTTP 缓存，2.0 会重建。
       `.config/logs/`      默认不搬，要留历史日志时加 --include-logs。
@@ -53,7 +66,15 @@
       默认只列出旧 `plugins/` 的内容供你判断，确实要带用户自装插件时才加
       --include-plugins（复制后请手工删掉与 2.0 内置插件同名的目录）。
 
-    退出码：0 成功（含预演）；1 参数或前置检查失败；2 有复制失败项。
+    已知限制：
+      路径总长超过 260 字符时，Windows PowerShell 5.1 调用的 .NET 文件 API 复制不了；
+      这类文件会计入失败项（源文件保留），清单阶段会提前告警。遇到时把数据根换到较短的
+      路径再迁移。
+      旧配置里的 `directories.data_root` 被改成非默认值时，索引与身份可能不在 `data/` 下；
+      脚本只搬默认位置的 `data/`，检测到这种配置会告警，需要手工处理。
+
+    退出码：0 成功（含预演）；1 参数或前置检查失败；2 有失败项（复制、备份、
+            身份密钥重封装、身份校验任一项失败）。
 
     日志：%TEMP%\cubby-migrate-<时间戳>.log。
 
@@ -73,28 +94,34 @@ $script:Failures = 0
 $script:CopiedFiles = 0
 $script:CopiedBytes = [int64]0
 $script:SkippedFiles = 0
+$script:VerifiedFiles = 0
 $script:BackedUpFiles = 0
 $script:BackupRoot = ''
+$script:DestRoot = ''
 
 $script:UsageLines = @(
     '用法：',
     '  powershell -NoProfile -ExecutionPolicy Bypass -File migrate-to-2.0.ps1 [参数]',
     '',
     '参数（-- 与 - 前缀等价）：',
-    '  --source <目录>    旧安装目录（含 .config 或 data 的那一层）；默认按脚本位置推断',
-    '  --dest <目录>      目标数据根；默认 %LOCALAPPDATA%\Cubby',
+    '  --source <目录>    旧安装目录；需命中至少两项 1.4.0 特征（OmniBox.exe、',
+    '                     .config/app.json 或 app.yaml、.config/auth_token.txt、',
+    '                     data/group-mesh/identity）；默认按脚本位置推断',
+    '  --dest <目录>      目标数据根；默认 CUBBY_HOME，其次 %LOCALAPPDATA%\Cubby',
     '  --apply            真正写盘；不加时只预演',
     '  --include-logs     连 .config/logs 一起搬（默认不搬）',
     '  --include-plugins  连旧 plugins 一起搬（默认不搬：会盖住 2.0 的内置插件）',
     '  --force            目标同名文件先备份到 <dest>\.pre-migrate-backup-<时间戳>\ 再覆盖',
-    '  --move             迁移完成后删除已迁移的源文件（隐含 --apply；未迁移的 webview/logs 保留）',
+    '  --move             迁移完成后删除源文件（隐含 --apply；必须显式给 --source）',
+    '                     只有本次运行零失败零跳过才删，删前把计划内的源文件备份到',
+    '                     <dest>\.pre-migrate-backup-<时间戳>\source\ 并打印位置',
     '  --help             打印这段说明',
     '',
     '另外：data\group-mesh\identity 下的密钥文件会从 1.4.0 的信封重封装成 2.0 的格式',
     '      （DPAPI，需在同一台机器上用建立身份的那个 Windows 用户运行；原文件备份在',
-    '      <dest>\.pre-migrate-backup-<时间戳>\）',
+    '      <dest>\.pre-migrate-backup-<时间戳>\；损坏或解不开的文件报红并计入失败）',
     '',
-    '退出码：0 成功（含预演）；1 参数或前置检查失败；2 有复制失败项'
+    '退出码：0 成功（含预演）；1 参数或前置检查失败；2 有失败项'
 )
 
 function Write-Log {
@@ -117,6 +144,137 @@ function Format-Size {
     if ($Bytes -ge 1MB) { return ('{0:N2} MB' -f ($Bytes / 1MB)) }
     if ($Bytes -ge 1KB) { return ('{0:N1} KB' -f ($Bytes / 1KB)) }
     return ([string]$Bytes + ' B')
+}
+
+# ── 1.4.0 安装目录识别 ──────────────────────────────────────────────────────
+# 只看"有没有 .config 或 data"会把任何带 data 目录的目录当成旧安装目录：配上 --move
+# 就是把无关文件复制走再删掉。这里按 1.4.0 安装目录的四项特征计分，至少两项才算。
+function Get-LegacyRootEvidence {
+    param([string]$Path)
+
+    $found = New-Object System.Collections.ArrayList
+    if ([string]::IsNullOrWhiteSpace($Path)) { return @{ Found = @(); Count = 0 } }
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return @{ Found = @(); Count = 0 }
+    }
+
+    # 1. 旧可执行文件（Windows 文件系统大小写不敏感，一个名字就够）
+    if (Test-Path -LiteralPath (Join-Path $Path 'OmniBox.exe') -PathType Leaf) {
+        [void]$found.Add('OmniBox.exe')
+    }
+    # 2. 主配置（json 与 yaml 是同一项的两种存量写法，只算一项）
+    $configDir = Join-Path $Path '.config'
+    foreach ($name in @('app.json', 'app.yaml')) {
+        if (Test-Path -LiteralPath (Join-Path $configDir $name) -PathType Leaf) {
+            [void]$found.Add('.config\' + $name)
+            break
+        }
+    }
+    # 3. 鉴权令牌：跑过一次就会有
+    if (Test-Path -LiteralPath (Join-Path $configDir 'auth_token.txt') -PathType Leaf) {
+        [void]$found.Add('.config\auth_token.txt')
+    }
+    # 4. 团体组网身份：2.0 需要重封装的就是这里
+    $identityDir = Join-Path (Join-Path (Join-Path $Path 'data') 'group-mesh') 'identity'
+    if (Test-Path -LiteralPath $identityDir -PathType Container) {
+        [void]$found.Add('data\group-mesh\identity')
+    }
+    return @{ Found = @($found); Count = $found.Count }
+}
+
+function Format-LegacyEvidence {
+    param($Evidence)
+    if ($null -eq $Evidence) { return '（无 1.4.0 特征）' }
+    $found = @($Evidence.Found)
+    if ($found.Count -eq 0) { return '（无 1.4.0 特征）' }
+    return ($found -join '、')
+}
+
+# 旧配置把 directories.data_root 改成非默认值时，索引与身份可能不在 `data/` 下：
+# 脚本只搬默认位置，检测到就告警（不改变行为，避免"猜"出一套路径）。
+function Get-LegacyDataRootOverride {
+    param([string]$Path)
+
+    $configDir = Join-Path $Path '.config'
+    $jsonPath = Join-Path $configDir 'app.json'
+    if (Test-Path -LiteralPath $jsonPath -PathType Leaf) {
+        try {
+            $config = ([System.IO.File]::ReadAllText($jsonPath) | ConvertFrom-Json -ErrorAction Stop)
+            $directories = $config.PSObject.Properties['directories']
+            if ($null -ne $directories) {
+                $dataRoot = $directories.Value.PSObject.Properties['data_root']
+                if ($null -ne $dataRoot) { return [string]$dataRoot.Value }
+            }
+        } catch {
+            return ''
+        }
+        return ''
+    }
+    $yamlPath = Join-Path $configDir 'app.yaml'
+    if (Test-Path -LiteralPath $yamlPath -PathType Leaf) {
+        try {
+            foreach ($line in [System.IO.File]::ReadAllLines($yamlPath)) {
+                if ($line -match '^\s*data_root\s*:\s*(.+?)\s*$') {
+                    return $Matches[1].Trim('"', "'")
+                }
+            }
+        } catch {
+            return ''
+        }
+    }
+    return ''
+}
+
+function Test-DefaultDataRoot {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $true }
+    $normalized = $Value.Trim().Replace('/', '\')
+    if ($normalized.StartsWith('.\')) { $normalized = $normalized.Substring(2) }
+    return ($normalized -ieq 'data')
+}
+
+# 备份目录：一次运行只建一个；时间戳后缀冲突时递增，避免同一秒跑两次把上一份覆盖。
+function Get-BackupRoot {
+    if ($script:BackupRoot -ne '') { return $script:BackupRoot }
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $candidate = Join-Path $script:DestRoot ('.pre-migrate-backup-' + $stamp)
+    $suffix = 1
+    while (Test-Path -LiteralPath $candidate) {
+        $suffix++
+        if ($suffix -gt 99) { Fail ('备份目录名冲突过多：' + $candidate) }
+        $candidate = Join-Path $script:DestRoot ('.pre-migrate-backup-' + $stamp + '-' + $suffix)
+    }
+    New-Item -ItemType Directory -Path $candidate -Force -ErrorAction Stop | Out-Null
+    $script:BackupRoot = $candidate
+    Write-Log ('  备份目录：' + $script:BackupRoot) 'Yellow'
+    return $script:BackupRoot
+}
+
+# --move 删源前的整份备份：把计划内的源文件按同样相对路径复制到 <备份目录>\source\。
+# 只备份计划内的文件 —— 默认不搬的 webview/logs 不在计划里，也不会被删，无需备份。
+function Save-ItemSourceBackup {
+    param($Item)
+
+    $root = Get-BackupRoot
+    $base = Join-Path $root 'source'
+    foreach ($file in $Item.Files) {
+        $target = Join-Path $base $file.Rel
+        $parent = Split-Path -Parent $target
+        try {
+            if (-not (Test-Path -LiteralPath $parent)) {
+                New-Item -ItemType Directory -Path $parent -Force -ErrorAction Stop | Out-Null
+            }
+            Copy-Item -LiteralPath $file.Src -Destination $target -Force -ErrorAction Stop
+            if ((Get-Item -LiteralPath $file.Src).Length -ne (Get-Item -LiteralPath $target).Length) {
+                throw ('备份长度不一致：' + $file.Rel)
+            }
+            $script:BackedUpFiles++
+        } catch {
+            Write-Log ('  源备份失败：' + $file.Rel + '（' + $_.Exception.Message + '）') 'Red'
+            return ''
+        }
+    }
+    return $base
 }
 
 # ── 身份密钥信封（1.4.0 → 2.0）───────────────────────────────────────────────
@@ -186,19 +344,26 @@ function Get-EnvelopeInfo {
     $current = [System.IO.File]::ReadAllBytes($Path)
     $result.Plain = $current
 
+    if ($current.Length -eq 0) {
+        $result.Error = '文件是空的（0 字节）'
+        return $result
+    }
+
     if ($script:DpapiLoadError -ne '') {
         $result.Error = ('当前 PowerShell 加载不了 System.Security.Cryptography.ProtectedData：' + $script:DpapiLoadError + '（请改用 Windows PowerShell 5.1 或 PowerShell 7）')
         return $result
     }
 
+    $parseFailed = $false
     while ($true) {
         $obj = $null
         try {
             $obj = ([System.Text.Encoding]::UTF8.GetString($current) | ConvertFrom-Json -ErrorAction Stop)
         } catch {
+            $parseFailed = $true
             break
         }
-        if ($null -eq $obj) { break }
+        if ($null -eq $obj) { $parseFailed = $true; break }
         $formatProp = $obj.PSObject.Properties['format']
         $dataProp = $obj.PSObject.Properties['data']
         if ($null -eq $formatProp -or $null -eq $dataProp) { break }
@@ -240,6 +405,15 @@ function Get-EnvelopeInfo {
         }
     }
 
+    # 解析不了 = 文件坏了或内容不是 JSON。只有"能解析成 JSON 且没有 format/data 字段"
+    # 这一种情形才算 1.4.0 的明文（交给 2.0 自行升级）；其余一律算失败，不能静默放过。
+    if ($parseFailed) {
+        if ($result.Layers -eq 0) {
+            $result.Error = '文件不是合法 JSON（可能被截断或损坏），2.0 读不了它'
+        } else {
+            $result.Error = '信封解出来的内容不是合法 JSON（密文里的内容已损坏）'
+        }
+    }
     return $result
 }
 
@@ -261,15 +435,17 @@ function Set-KeyEnvelope {
 }
 
 # 回读校验：能解出来、是 JSON、带 name 字段，才算 2.0 读得懂。空字符串表示通过。
+# 明文（Layers==0）同样要过这一关：2.0 只在内容真的是身份 JSON 时才认它。
 function Test-KeyEnvelopeReadable {
     param([string]$Path)
 
     $info = Get-EnvelopeInfo -Path $Path
     if ($info.Error -ne '') { return $info.Error }
-    if ($info.Layers -eq 0) { return '' }
+    $plain = [byte[]]$info.Plain
+    if ($plain.Length -eq 0) { return '内容是空的（0 字节）' }
     $obj = $null
     try {
-        $obj = ([System.Text.Encoding]::UTF8.GetString($info.Plain) | ConvertFrom-Json -ErrorAction Stop)
+        $obj = ([System.Text.Encoding]::UTF8.GetString($plain) | ConvertFrom-Json -ErrorAction Stop)
     } catch {
         return '解出来的内容不是 JSON'
     }
@@ -288,13 +464,33 @@ function Resolve-AbsolutePath {
     return $full
 }
 
-function Test-LegacyDataRoot {
-    param([string]$Path)
-    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
-    if (Test-Path -LiteralPath (Join-Path $Path '.config') -PathType Container) { return $true }
-    if (Test-Path -LiteralPath (Join-Path $Path 'data') -PathType Container) { return $true }
-    return $false
+# 预演用的身份报告：对给定数据根逐文件分类并打印。预演把"源"与"目标"两处都过一遍，
+# 避免出现"预演说重封装、落盘说无需处理"的两种结论。
+function Write-IdentityReport {
+    param([string]$DataRoot, [string]$Label)
+
+    $items = @(Get-IdentityKeyFiles -DataRoot $DataRoot)
+    if ($items.Count -eq 0) {
+        Write-Log ('      ' + $Label + '：没有 data\group-mesh\identity，没有需要重封装的身份（首次安装属正常）') 'DarkGray'
+        return @{ Legacy = 0; Problems = 0 }
+    }
+    $legacy = 0
+    $problems = 0
+    foreach ($target in $items) {
+        $info = Get-EnvelopeInfo -Path $target.Path
+        if ($info.Error -ne '') {
+            $problems++
+            Write-Log ('      [问题] ' + $Label + ' ' + $target.Rel + '：' + $info.Error) 'Red'
+        } elseif ($info.Layers -eq 0) {
+            Write-Log ('      [明文] ' + $Label + ' ' + $target.Rel + '：2.0 加载时会自行升级为受保护格式') 'DarkYellow'
+        } elseif (-not $info.SawLegacy -and $info.Layers -eq 1) {
+            Write-Log ('      [无需处理] ' + $Label + ' ' + $target.Rel + '：已是当前信封') 'DarkGray'
+        } else {
+            $legacy++
+            Write-Log ('      [重封装] ' + $Label + ' ' + $target.Rel + '：' + $info.Layers + ' 层旧信封 → ' + $script:CurrentSecretFormat) 'Yellow'
+        }
+    }
+    return @{ Legacy = $legacy; Problems = $problems }
 }
 
 # 把一个数据根下的子项（.config / data / plugins）枚举成"逐文件计划"。
@@ -347,13 +543,21 @@ function New-PlanItem {
             # 表面上复制成功、实际上落错了地方。这里按存在/是目录分开记，
             # 预演与落盘才对同一种状态给出同一个结论（冲突项预演时就报出来）。
             $isDir = Test-Path -LiteralPath $destPath -PathType Container
+            $exists = Test-Path -LiteralPath $destPath
+            # 目标已存在时记下它的大小：预演据此提前分辨"长度一致的跳过"与"上次没复制完
+            # 的不一致"，让预演与落盘对同一种状态给出同一个结论。
+            $destSize = [int64]-1
+            if ($exists -and -not $isDir) {
+                try { $destSize = (Get-Item -LiteralPath $destPath).Length } catch { $destSize = [int64]-1 }
+            }
             [void]$files.Add(@{
                 Rel = ($Name + '\' + $rel)
                 Src = $entry.FullName
                 Dest = $destPath
                 Size = [int64]$entry.Length
-                Exists = (Test-Path -LiteralPath $destPath)
+                Exists = $exists
                 IsDir = $isDir
+                DestSize = $destSize
             })
         }
     }
@@ -376,6 +580,8 @@ function Get-FileAction {
     if ($File.IsDir) { return '冲突' }
     if (-not $File.Exists) { return '复制' }
     if ($Force) { return '覆盖' }
+    # 目标已存在但长度不同：上一次没复制完留下的残件。落盘时计为失败，不是"跳过"。
+    if ($File.DestSize -ge 0 -and $File.DestSize -ne $File.Size) { return '不一致' }
     return '跳过'
 }
 
@@ -401,29 +607,43 @@ while ($pos -lt $rawArgs.Count) {
 
     $name = $token
     $inline = ''
+    $hasInline = $false
     $eqIndex = $token.IndexOf('=')
     if ($eqIndex -gt 0) {
         $name = $token.Substring(0, $eqIndex)
         $inline = $token.Substring($eqIndex + 1)
+        $hasInline = $true
     }
     if ($name.StartsWith('--')) { $name = $name.Substring(2) } else { $name = $name.Substring(1) }
     $key = $name.ToLowerInvariant()
 
     switch ($key) {
         { $_ -eq 'source' } {
-            if ($inline -ne '') { $options.Source = $inline }
-            else {
+            if ($hasInline) {
+                if ($inline -eq '') { Fail '--source= 后面要跟一个目录' }
+                $options.Source = $inline
+            } else {
                 if ($pos + 1 -ge $rawArgs.Count) { Fail '--source 后面要跟一个目录' }
                 $pos++
-                $options.Source = [string]$rawArgs[$pos]
+                $next = [string]$rawArgs[$pos]
+                if ([string]::IsNullOrWhiteSpace($next) -or $next.StartsWith('-')) {
+                    Fail ('--source 后面要跟一个目录，实际给的是：' + $next)
+                }
+                $options.Source = $next
             }
         }
         { $_ -eq 'dest' } {
-            if ($inline -ne '') { $options.Dest = $inline }
-            else {
+            if ($hasInline) {
+                if ($inline -eq '') { Fail '--dest= 后面要跟一个目录' }
+                $options.Dest = $inline
+            } else {
                 if ($pos + 1 -ge $rawArgs.Count) { Fail '--dest 后面要跟一个目录' }
                 $pos++
-                $options.Dest = [string]$rawArgs[$pos]
+                $next = [string]$rawArgs[$pos]
+                if ([string]::IsNullOrWhiteSpace($next) -or $next.StartsWith('-')) {
+                    Fail ('--dest 后面要跟一个目录，实际给的是：' + $next)
+                }
+                $options.Dest = $next
             }
         }
         { $_ -eq 'apply' } { $options.Apply = $true }
@@ -456,37 +676,68 @@ $includeLogs = [bool]$options.IncludeLogs
 $includePlugins = [bool]$options.IncludePlugins
 
 # ── 1. 源目录 ────────────────────────────────────────────────────────────────
+# 必须有指向 1.4.0 安装目录的正向证据（至少两项特征）。只看"有没有 .config/data"
+# 会把无关目录当成旧安装目录，配上 --move 就是把别人的文件搬走再删掉。
+if ($move -and $options.Source -eq '') {
+    Fail '--move 会删除源文件，必须显式给出 --source（脚本不再自动推断要删的目录）'
+}
+
 if ($options.Source -ne '') {
     $source = Resolve-AbsolutePath $options.Source
     if (-not (Test-Path -LiteralPath $source -PathType Container)) {
         Fail ('源目录不存在：' + $source)
     }
-    if (-not (Test-LegacyDataRoot $source)) {
-        Fail ('源目录里既没有 .config 也没有 data，不像 1.4.0 的数据位置：' + $source)
+    $evidence = Get-LegacyRootEvidence $source
+    if (@($evidence.Found).Count -lt 2) {
+        Fail ('源目录不像 1.4.0 安装目录：' + $source + '。检测到的特征：' + (Format-LegacyEvidence $evidence) +
+              '（需要至少两项：OmniBox.exe、.config/app.json 或 app.yaml、.config/auth_token.txt、data\group-mesh\identity）')
     }
+    $sourceEvidenceLabel = Format-LegacyEvidence $evidence
 } else {
     $scriptDir = $PSScriptRoot
     if ([string]::IsNullOrEmpty($scriptDir)) { $scriptDir = (Get-Location).Path }
     $parentDir = Split-Path -Parent $scriptDir
-    if (Test-LegacyDataRoot $scriptDir) {
+    $scriptEvidence = Get-LegacyRootEvidence $scriptDir
+    $parentEvidence = Get-LegacyRootEvidence $parentDir
+    if (@($scriptEvidence.Found).Count -ge 2) {
         $source = Resolve-AbsolutePath $scriptDir
-    } elseif (Test-LegacyDataRoot $parentDir) {
+        $sourceEvidenceLabel = Format-LegacyEvidence $scriptEvidence
+    } elseif (@($parentEvidence.Found).Count -ge 2) {
         $source = Resolve-AbsolutePath $parentDir
+        $sourceEvidenceLabel = Format-LegacyEvidence $parentEvidence
     } else {
-        Fail ('没有 --source，并且脚本所在目录（' + $scriptDir + '）与它的上一级都不含 .config/data。请用 --source 指到旧安装目录')
+        Fail ('没有 --source，并且脚本所在目录（' + $scriptDir + '，特征：' + (Format-LegacyEvidence $scriptEvidence) +
+              '）与它的上一级（特征：' + (Format-LegacyEvidence $parentEvidence) +
+              '）都不像 1.4.0 安装目录。请用 --source 指到旧安装目录（含 OmniBox.exe 与 .config 的那一层）')
     }
 }
 
 # ── 2. 目标数据根 ───────────────────────────────────────────────────────────
+# 判据与 2.0 的 get_user_data_dir() 一致：先 CUBBY_HOME，再 %LOCALAPPDATA%\Cubby
+# （缺 LOCALAPPDATA 时退 %APPDATA%\Cubby）。来源要写进输出，免得搬错地方。
+$destSourceLabel = ''
 if ($options.Dest -ne '') {
     $dest = Resolve-AbsolutePath $options.Dest
+    $destSourceLabel = '--dest 参数'
+} elseif (-not [string]::IsNullOrWhiteSpace($env:CUBBY_HOME)) {
+    $dest = Resolve-AbsolutePath $env:CUBBY_HOME
+    $destSourceLabel = 'CUBBY_HOME 环境变量（与 2.0 的判据一致）'
 } else {
     $base = $env:LOCALAPPDATA
     if ([string]::IsNullOrWhiteSpace($base)) { $base = $env:APPDATA }
     if ([string]::IsNullOrWhiteSpace($base)) {
-        Fail '读不到 %LOCALAPPDATA% 与 %APPDATA%，请用 --dest 指定数据根'
+        Fail '读不到 CUBBY_HOME / %LOCALAPPDATA% / %APPDATA%，请用 --dest 指定数据根'
     }
     $dest = Resolve-AbsolutePath (Join-Path $base 'Cubby')
+    $destSourceLabel = '默认数据根（%LOCALAPPDATA%\Cubby）'
+}
+$script:DestRoot = $dest
+
+# 旧配置把 directories.data_root 改过时，索引与身份可能不在 data\ 下：只告警，不猜路径。
+$legacyDataRoot = Get-LegacyDataRootOverride $source
+if (-not (Test-DefaultDataRoot $legacyDataRoot)) {
+    Write-Log ('  注意          : 旧配置把 directories.data_root 改成了 "' + $legacyDataRoot +
+               '"，索引与身份可能不在默认的 data\ 下；本脚本只搬默认位置，这部分需要手工处理') 'Yellow'
 }
 
 if ($dest -ieq $source) {
@@ -503,13 +754,15 @@ Write-Log ('=' * 62) 'Cyan'
 Write-Log '  Cubby 1.4.0 → 2.0 数据迁移' 'Cyan'
 Write-Log ('=' * 62) 'Cyan'
 Write-Log ('  旧数据（源）  : ' + $source) 'Cyan'
+Write-Log ('  源目录特征    : ' + $sourceEvidenceLabel) 'Gray'
 Write-Log ('  数据根（目标）: ' + $dest) 'Cyan'
+Write-Log ('  目标根来源    : ' + $destSourceLabel) 'Gray'
 if ($apply) {
     Write-Log '  模式          : 落盘（--apply）' 'Yellow'
 } else {
     Write-Log '  模式          : 预演（dry-run，不改任何文件；加 --apply 才落盘）' 'Yellow'
 }
-if ($moveImpliedApply) { Write-Log '  注意          : --move 隐含 --apply，迁移完成后删除源目录里的对应内容' 'Yellow' }
+if ($moveImpliedApply) { Write-Log '  注意          : --move 隐含 --apply；删源前会整份备份计划内的源文件' 'Yellow' }
 Write-Log ('  日志          : ' + $script:LogPath) 'DarkGray'
 
 # ── 3. 前置检查：进程 ───────────────────────────────────────────────────────
@@ -540,6 +793,18 @@ foreach ($item in $plan) { $totalFiles += $item.Files.Count }
 if ($totalFiles -eq 0) {
     Write-Log ''
     Write-Log '源目录里没有可迁移的文件（.config 可能只有 webview/logs 这类缓存）。' 'Yellow'
+}
+
+# Windows PowerShell 5.1 的 .NET 文件 API 在路径总长超过 260 字符时失败：提前告警。
+# 落盘时这类文件会计入失败项（源文件保留、不参与 --move 删源），不会静默丢内容。
+$longPathFiles = 0
+foreach ($item in $plan) {
+    foreach ($file in $item.Files) {
+        if ($file.Src.Length -ge 240 -or $file.Dest.Length -ge 240) { $longPathFiles++ }
+    }
+}
+if ($longPathFiles -gt 0) {
+    Write-Log ('  长路径告警    : ' + $longPathFiles + ' 个文件路径长度 ≥ 240 字符，可能会在 Windows PowerShell 5.1 下复制失败（失败会计入结果，源文件保留）') 'DarkYellow'
 }
 
 # 体积分两本账：待写的字节（决定磁盘空间），以及目标已有、默认要跳过的字节。
@@ -587,10 +852,14 @@ foreach ($item in $plan) {
     $willCopy = 0
     $willSkip = 0
     $willConflict = 0
+    $willMismatch = 0
     foreach ($file in $item.Files) {
         $action = Get-FileAction $file $force
         if ($action -eq '跳过') {
             $willSkip++
+            $skipBytes += $file.Size
+        } elseif ($action -eq '不一致') {
+            $willMismatch++
             $skipBytes += $file.Size
         } elseif ($action -eq '冲突') {
             $willConflict++
@@ -607,6 +876,9 @@ foreach ($item in $plan) {
     Write-Log ('      ' + $verb + ' ' + $willCopy + ' 个文件 / ' + (Format-Size $writeBytes) + '；跳过 ' + $willSkip + ' 个 / ' + (Format-Size $skipBytes) + '（目标已有同名文件，--force 才覆盖）') 'Gray'
     if ($willConflict -gt 0) {
         Write-Log ('      冲突 ' + $willConflict + ' 个：目标位置是目录，无法覆盖，需先删除或改名') 'Red'
+    }
+    if ($willMismatch -gt 0) {
+        Write-Log ('      长度不一致 ' + $willMismatch + ' 个：目标已存在但大小不同（可能是上次没复制完），落盘时计为失败；加 --force 覆盖') 'Red'
     }
     if ($item.Excluded.Count -gt 0) {
         Write-Log ('      不搬：' + ($item.Excluded -join '、') + '（webview 是浏览器缓存；logs 要保留请加 --include-logs）') 'DarkYellow'
@@ -648,31 +920,20 @@ if ($hasPlugins -and -not $includePlugins) {
 }
 
 # ── 8. 身份密钥信封：预演报告 ───────────────────────────────────────────────
-# 这一段只读判断哪些文件需要在落盘时重封装。预演按源目录判断（那是 1.4.0 写的
-# 位置），落盘时按目标数据根执行 —— 2.0 读的是目标数据根。
-$identityScan = @(Get-IdentityKeyFiles -DataRoot $source)
-$legacyCount = 0
+# 两处都看并写明：源目录（1.4.0 写的位置，复制后会成为目标里的文件）与目标数据根
+# （如果已经存在）。落盘时对目标数据根执行 —— 2.0 读的是目标数据根。
 Write-Log ''
-Write-Log ('[身份密钥] ' + $source) 'Cyan'
-if ($identityScan.Count -eq 0) {
-    Write-Log '      源里没有 data\group-mesh\identity，没有需要重封装的身份（首次安装属正常）' 'DarkGray'
-} else {
-    foreach ($target in $identityScan) {
-        $info = Get-EnvelopeInfo -Path $target.Path
-        if ($info.Error -ne '') {
-            Write-Log ('      [问题] ' + $target.Rel + '：' + $info.Error) 'Red'
-        } elseif ($info.Layers -eq 0) {
-            Write-Log ('      [明文] ' + $target.Rel + '：2.0 加载时会自行升级为受保护格式') 'DarkYellow'
-        } elseif (-not $info.SawLegacy -and $info.Layers -eq 1) {
-            Write-Log ('      [无需处理] ' + $target.Rel + '：已是当前信封') 'DarkGray'
-        } else {
-            $legacyCount++
-            Write-Log ('      [重封装] ' + $target.Rel + '：' + $info.Layers + ' 层旧信封 → ' + $script:CurrentSecretFormat) 'Yellow'
-        }
-    }
-    if ($legacyCount -gt 0) {
-        Write-Log ('      落盘时处理目标数据根里的同名文件，原文件先备份到 ' + $dest + '\.pre-migrate-backup-<时间戳>\') 'DarkGray'
-    }
+Write-Log ('[身份密钥] 源 ' + $source) 'Cyan'
+$sourceIdentity = Write-IdentityReport -DataRoot $source -Label '源'
+$destIdentity = $null
+if (Test-Path -LiteralPath $dest -PathType Container) {
+    Write-Log ('[身份密钥] 目标 ' + $dest) 'Cyan'
+    $destIdentity = Write-IdentityReport -DataRoot $dest -Label '目标'
+}
+$legacyCount = $sourceIdentity.Legacy
+if ($null -ne $destIdentity) { $legacyCount += $destIdentity.Legacy }
+if ($legacyCount -gt 0) {
+    Write-Log ('      落盘时处理目标数据根里的同名文件，原文件先备份到 ' + $dest + '\.pre-migrate-backup-<时间戳>\') 'DarkGray'
 }
 
 # ── 9. 执行或结束预演 ───────────────────────────────────────────────────────
@@ -712,18 +973,33 @@ foreach ($item in $plan) {
         }
 
         if ($file.Exists -and -not $force) {
-            $item.Skipped++
-            $script:SkippedFiles++
-            Write-Log ('  跳过（目标已存在）：' + $file.Rel) 'DarkYellow'
+            # 目标已存在不等于已迁移成功：上次中断的复制会留下截断的文件。长度不一致
+            # 时按失败计（并阻止 --move 删源），不能当成"跳过"放过。
+            $srcBytes = -1
+            $dstBytes = -1
+            try {
+                $srcBytes = (Get-Item -LiteralPath $file.Src).Length
+                $dstBytes = (Get-Item -LiteralPath $file.Dest).Length
+            } catch {
+                $srcBytes = -1
+                $dstBytes = -1
+            }
+            if ($srcBytes -eq $dstBytes -and $srcBytes -ge 0) {
+                $item.Skipped++
+                $script:SkippedFiles++
+                Write-Log ('  跳过（目标已存在，长度一致）：' + $file.Rel) 'DarkYellow'
+            } else {
+                $item.Failed++
+                $script:Failures++
+                Write-Log ('  目标已存在但长度不一致：' + $file.Rel + '（源 ' + $srcBytes + ' / 目标 ' + $dstBytes +
+                           ' 字节；可能是上次没复制完，加 --force 覆盖或先删掉目标那份）') 'Red'
+            }
             continue
         }
 
         if ($file.Exists) {
-            # --force：先把目标那一份备份出来，再覆盖。备份目录用时间戳，多次运行不会互相覆盖。
-            if ($script:BackupRoot -eq '') {
-                $script:BackupRoot = Join-Path $dest ('.pre-migrate-backup-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
-                Write-Log ('  备份目录：' + $script:BackupRoot) 'Yellow'
-            }
+            # --force：先把目标那一份备份出来，再覆盖。
+            $script:BackupRoot = Get-BackupRoot
             $backupFile = Join-Path $script:BackupRoot $file.Rel
             $backupParent = Split-Path -Parent $backupFile
             try {
@@ -746,17 +1022,28 @@ foreach ($item in $plan) {
                 New-Item -ItemType Directory -Path $parent -Force -ErrorAction Stop | Out-Null
             }
             Copy-Item -LiteralPath $file.Src -Destination $file.Dest -Force -ErrorAction Stop
+            # 复制没抛异常不等于落对了：逐文件比较长度，不一致算失败并删掉坏副本，
+            # 这样下一次运行才会重试，而不是把截断的文件当成"已迁移"跳过。
+            $srcBytes = (Get-Item -LiteralPath $file.Src).Length
+            $dstBytes = (Get-Item -LiteralPath $file.Dest).Length
+            if ($srcBytes -ne $dstBytes) {
+                throw ('复制后长度不一致：源 ' + $srcBytes + ' 字节，目标 ' + $dstBytes + ' 字节')
+            }
             $item.Copied++
             $script:CopiedFiles++
             $script:CopiedBytes += $file.Size
+            $script:VerifiedFiles++
         } catch {
             $item.Failed++
             $script:Failures++
+            if (Test-Path -LiteralPath $file.Dest) {
+                Remove-Item -LiteralPath $file.Dest -Force -ErrorAction SilentlyContinue
+            }
             Write-Log ('  复制失败：' + $file.Rel + '（' + $_.Exception.Message + '）') 'Red'
         }
     }
 
-    Write-Log ('  完成：复制 ' + $item.Copied + ' 个、跳过 ' + $item.Skipped + ' 个、失败 ' + $item.Failed + ' 个') 'Gray'
+    Write-Log ('  完成：复制 ' + $item.Copied + ' 个（长度已校验）、跳过 ' + $item.Skipped + ' 个、失败 ' + $item.Failed + ' 个') 'Gray'
 }
 
 # ── 10. 身份密钥信封：对目标数据根重封装 ────────────────────────────────────
@@ -786,8 +1073,7 @@ if ($apply) {
         }
 
         if ($script:BackupRoot -eq '') {
-            $script:BackupRoot = Join-Path $dest ('.pre-migrate-backup-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
-            Write-Log ('  备份目录：' + $script:BackupRoot) 'Yellow'
+            $script:BackupRoot = Get-BackupRoot
         }
         $backupPath = Join-Path $script:BackupRoot $target.Rel
         $backupParent = Split-Path -Parent $backupPath
@@ -831,7 +1117,23 @@ if ($apply) {
 if ($move) {
     Write-Log ''
     Write-Log '清理源目录（--move）' 'Yellow'
+
+    # 全局前置：只有本次运行"零失败、零跳过、身份全部成功"时才删源。任何一个文件没搬
+    # 干净（或身份重封装失败）就一个都不删 —— 源目录是唯一还能确认状态的原始副本。
+    $moveFailed = 0
+    $moveSkipped = 0
     foreach ($item in $plan) {
+        $moveFailed += $item.Failed
+        $moveSkipped += $item.Skipped
+    }
+    $moveBlocked = ($script:IdentityFailures -gt 0) -or ($moveFailed -gt 0) -or ($moveSkipped -gt 0)
+    if ($moveBlocked) {
+        Write-Log ('  本次不删除任何源文件：复制失败 ' + $moveFailed + ' 个、跳过 ' + $moveSkipped + ' 个、身份未迁移成功 ' + $script:IdentityFailures + ' 个') 'Red'
+        Write-Log '  源目录完整保留；按上面的红字处理后重跑，确认要删源时再带 --move' 'Yellow'
+    }
+
+    foreach ($item in $plan) {
+        if ($moveBlocked) { continue }
         if ($script:IdentityFailures -gt 0) {
             # 身份没迁移成功时源目录是唯一的原始副本，一个文件都不删。
             Write-Log ('  保留 ' + $item.Source + '：身份密钥信封有 ' + $script:IdentityFailures + ' 个未迁移成功') 'Red'
@@ -845,6 +1147,15 @@ if ($move) {
             Write-Log ('  保留 ' + $item.Source + '：有 ' + $item.Skipped + ' 个文件因目标已存在被跳过，加 --force 覆盖后再删') 'Yellow'
             continue
         }
+
+        # 删源前先把计划内的源文件整份备份一份；备份失败则一个都不删。
+        $sourceBackup = Save-ItemSourceBackup -Item $item
+        if ($sourceBackup -eq '') {
+            $script:Failures++
+            Write-Log ('  保留 ' + $item.Source + '：源备份失败，未删除任何文件') 'Red'
+            continue
+        }
+        Write-Log ('  已整份备份源文件到：' + $sourceBackup) 'DarkGray'
 
         # 只删"确实已经迁移过去"的源文件，再自底向上清空目录。
         # 不整目录删除：默认不搬的 webview / logs 就在 .config 里，整目录删会把
@@ -917,9 +1228,10 @@ if (Test-Path -LiteralPath $identityPrincipal -PathType Leaf) {
     } else {
         $principalName = ''
         $principalInfo = Get-EnvelopeInfo -Path $identityPrincipal
-        if ($principalInfo.Error -eq '' -and $principalInfo.Layers -ge 1) {
+        # 明文（Layers==0）也要能读出 name：2.0 只会把合法身份 JSON 当成可升级的明文。
+        if ($principalInfo.Error -eq '' -and ([byte[]]$principalInfo.Plain).Length -gt 0) {
             try {
-                $principalRecord = ([System.Text.Encoding]::UTF8.GetString($principalInfo.Plain) | ConvertFrom-Json -ErrorAction Stop)
+                $principalRecord = ([System.Text.Encoding]::UTF8.GetString([byte[]]$principalInfo.Plain) | ConvertFrom-Json -ErrorAction Stop)
                 $principalName = [string]$principalRecord.name
             } catch {
                 $principalName = ''
@@ -933,9 +1245,13 @@ Write-Log ''
 Write-Log ('=' * 62) 'Cyan'
 Write-Log '  结果' 'Cyan'
 Write-Log ('  复制      : ' + $script:CopiedFiles + ' 个文件 / ' + (Format-Size $script:CopiedBytes)) 'Cyan'
-Write-Log ('  跳过      : ' + $script:SkippedFiles + ' 个（目标已有同名文件；--force 可覆盖，覆盖前会备份）') 'Cyan'
+Write-Log ('  校验      : ' + $script:VerifiedFiles + ' 个文件复制后源/目标长度一致') 'Cyan'
+Write-Log ('  跳过      : ' + $script:SkippedFiles + ' 个（目标已有同名文件且长度一致；--force 可覆盖，覆盖前会备份）') 'Cyan'
 if ($script:BackedUpFiles -gt 0) {
     Write-Log ('  备份      : ' + $script:BackedUpFiles + ' 个 → ' + $script:BackupRoot) 'Cyan'
+}
+if ($move -and $script:BackupRoot -ne '') {
+    Write-Log ('  源备份    : ' + (Join-Path $script:BackupRoot 'source') + '（--move 删源前的整份副本）') 'Cyan'
 }
 if ($script:RewrappedKeys -gt 0) {
     Write-Log ('  身份重封装: ' + $script:RewrappedKeys + ' 个文件 → ' + $script:CurrentSecretFormat + '（原信封已备份）') 'Cyan'
@@ -947,7 +1263,7 @@ Write-Log ''
 Write-Log '  下次启动预期' 'Cyan'
 Write-Log ('    数据根：' + $dest) 'Gray'
 Write-Log '    1.4.0 不会读取这个位置；请安装 2.0 后从开始菜单或 Cubby.exe 启动，设置、令牌与索引都在数据根里。' 'Gray'
-Write-Log '    想换到别的位置（比如便携用法）：设 CUBBY_HOME 或加 --dest 指向同一目录，再迁移一次。' 'Gray'
+Write-Log '    想换到别的位置（比如便携用法）：把 CUBBY_HOME 设成那个目录，再跑一次这个脚本 —— 它会把 CUBBY_HOME 当成默认目标根。' 'Gray'
 Write-Log ''
 Write-Log '  卸载与数据' 'Cyan'
 Write-Log '    卸载 2.0 默认保留数据根；卸载程序的询问里选“是”才会删除。' 'Gray'

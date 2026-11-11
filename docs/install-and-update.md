@@ -129,7 +129,7 @@ Release tag 与界面上显示的版本都从这一处派生。链路分三步�
 
 | 项 | 值 |
 | --- | --- |
-| 安装器 | Inno Setup 6.3 或更新，脚本 [cubby.iss](Releases/cubby.iss) |
+| 安装器 | Inno Setup 6.7 或更新，脚本 [cubby.iss](Releases/cubby.iss)（PNG 向导图自 6.5.2 起支持，202×386 的图像区是 6.6 起的默认值） |
 | 安装范围 | 当前用户（per-user，`PrivilegesRequired=lowest`），不需要管理员权限 |
 | 默认安装目录 | `%LOCALAPPDATA%\Programs\Cubby` |
 | AppId | 固定 GUID，升级时覆盖同一个安装目录 |
@@ -190,21 +190,26 @@ Release 提供两个文件：[migrate-to-2.0.cmd](Releases/migrate-to-2.0.cmd)�
 [migrate-to-2.0.ps1](Releases/migrate-to-2.0.ps1)（主体）。下载后放进旧版本目录或它的旁边，
 双击 `.cmd` 即可，不需要安装别的东西。
 
+脚本先核对源目录确实是 1.4.0 的安装目录：`OmniBox.exe`、`.config/app.json` 或 `app.yaml`、
+`.config/auth_token.txt`、`data/group-mesh/identity/` 四项特征里**至少命中两项**才继续，否则
+拒绝并打印用法 —— 只凭"目录里有 `data/`"就搬会误伤同名的普通目录。
+
 **默认只预演。** 不加 `--apply` 时脚本只打印"将要复制什么、多大体积、哪些目标已有同名文件"，
 一个文件都不写；确认清单后带 `--apply` 再跑一次。
 
 | 参数 | 行为 |
 | --- | --- |
-| `--source <目录>` | 旧安装目录（含 `.config` 或 `data` 的那一层）；不给时依次试探脚本所在目录、它的上一级，都不像就报错并打印用法 |
-| `--dest <目录>` | 目标数据根，默认 `%LOCALAPPDATA%\Cubby`；数据根由 `CUBBY_HOME` 覆盖过时，把它指到同一路径 |
+| `--source <目录>` | 旧安装目录。按上面四项特征计分，至少命中两项才接受；不给时依次试探脚本所在目录与它的上一级。`--move` 必须显式给出本参数 |
+| `--dest <目录>` | 目标数据根；不给时先看环境变量 `CUBBY_HOME`，其次 `%LOCALAPPDATA%\Cubby`（缺 `LOCALAPPDATA` 时 `%APPDATA%\Cubby`），输出里写明来源（与 2.0 的 `get_user_data_dir()` 判据一致） |
 | `--apply` | 真正写盘；不加只预演 |
 | `--include-logs` | 连 `.config/logs/` 一起搬 |
 | `--include-plugins` | 连旧 `plugins/` 一起搬（理由见下） |
-| `--force` | 目标已有同名文件时先备份再覆盖 |
-| `--move` | 迁移完成后删除**已迁移**的源文件（隐含 `--apply`）；默认不搬的 `.config/webview` 与 `.config/logs` 会保留，不会被顺手删掉 |
+| `--force` | 目标已有同名文件时先备份再覆盖；同一秒内重复运行不会覆盖上一份备份（目录名带递增后缀） |
+| `--move` | 迁移完成后删除源文件（隐含 `--apply`，必须显式给 `--source`）。只有本次运行零失败、零跳过且身份密钥全部重封装成功时才删；删之前把计划内的源文件整份备份到 `<dest>\.pre-migrate-backup-<时间戳>\source\` 并打印位置。默认不搬的 `.config/webview` 与 `.config/logs` 会保留 |
 
-退出码 `0` 成功（含预演）、`1` 参数或前置检查失败（源目录不对、`Cubby` / `OmniBox` 还开着、
-目标盘空间不足）、`2` 有复制失败项；日志写在 `%TEMP%\cubby-migrate-<时间戳>.log`。
+退出码 `0` 成功（含预演）、`1` 参数或前置检查失败（源目录不像 1.4.0、`Cubby` / `OmniBox` 还
+开着、目标盘空间不足、`--move` 没给 `--source`）、`2` 有失败项（复制、备份、身份密钥重封装、
+身份校验任一项）；日志写在 `%TEMP%\cubby-migrate-<时间戳>.log`。
 
 **默认不搬 `plugins/`。** 1.4.0 的 `plugins/` 是"内置插件副本 + 用户自装插件"混在一起的一层；
 2.0 的插件搜索顺序是 `<数据根>/plugins` 优先、`<_MEIPASS>/plugins` 其次（由 `paths.py` 的
@@ -212,16 +217,31 @@ Release 提供两个文件：[migrate-to-2.0.cmd](Releases/migrate-to-2.0.cmd)�
 症状是插件界面照常出现、后端接口对不上。脚本默认只列出旧 `plugins/` 的内容；确实要带用户自装
 插件时才加 `--include-plugins`，并在复制后删掉与 2.0 内置插件同名的目录。
 
-**`--force` 先备份。** 目标已有同名文件时默认跳过并计数，重复运行只补缺失项，因此可以反复跑；
-加 `--force` 才覆盖，覆盖前把目标文件复制到 `<dest>\.pre-migrate-backup-<yyyyMMdd-HHmmss>\`，
-保留原来的层级，需要时按同样的相对路径取回。
+**`--force` 先备份。** 目标已有同名文件时默认跳过并计数，重复运行只补缺失项，因此可以反复跑，
+但只有长度与源一致才算"已迁移"：长度不同（上次没复制完）按失败计，加 `--force` 才覆盖；覆盖前
+把目标文件复制到 `<dest>\.pre-migrate-backup-<yyyyMMdd-HHmmss>\`，保留原来的层级，需要时按同样
+的相对路径取回。
 
 **媒体库原文件不动。** 脚本只搬数据根里的状态（设置、令牌、索引、设备身份）。媒体目录在设置里
 按绝对路径记录，原文件留在用户自己选的目录里，不迁移、不移动、不复制。
 
-**迁移后校验。** 脚本结束时检查目标 `.config` 下存在 `app.json` 或 `app.yaml`，缺了会警告（说明
-源里本来就没有设置，2.0 会按首次运行处理）。落盘后启动 2.0：它只读数据根，旧目录可以整个删掉；
-卸载 2.0 默认保留 `%LOCALAPPDATA%\Cubby`。
+**已知限制。** 规划清单里路径总长超过 260 字符时 Windows PowerShell 5.1 的文件 API 复制不了，
+这类文件计入失败项（源文件保留），脚本会在清单阶段提前告警；旧配置把 `directories.data_root`
+改成非默认值时，索引与身份可能不在 `data/` 下，脚本会告警、需要手工处理。
+
+**壳偏好与播放进度不迁移。** 2.0 只读数据根里的 `shell.json` 与 `cubby*` 键，1.x 早期写在浏览器
+localStorage 里的旧偏好与播放进度不再读取 —— 这类设置丢失不影响设置、令牌、索引与设备身份。
+
+**Linux 用户没有对应脚本。** 1.4.0 的 Linux 产物把数据放在 tar 解压目录旁，2.0 的数据根是
+`$XDG_DATA_HOME/cubby`（未设置时 `~/.local/share/cubby`）：把旧目录的 `.config/` 与 `data/` 手工
+移到该路径即可。Linux 上的身份密钥由 keyring / 口令保护，2.0 读不出 1.x 的旧信封，需要时重新
+初始化身份。
+
+**迁移后校验。** 脚本结束时检查目标 `.config` 下有 `app.json` 或 `app.yaml`（缺了警告：源里本来
+就没有设置，2.0 按首次运行处理），并要求 `data/group-mesh/identity/principal.json` 的 `name` 真能
+解出来；解不出、或文件不是合法 JSON（被截断/损坏）时预演与落盘都报红、计入失败项、退出码 2。
+只有"能解析成 JSON 且没有 `format` / `data` 字段"的文件才算明文，交给 2.0 自行升级。落盘后启动
+2.0：它只读数据根，旧目录可以整个删掉；卸载 2.0 默认保留 `%LOCALAPPDATA%\Cubby`。
 
 ## 4. Linux 分发
 
@@ -305,8 +325,10 @@ Windows 构建（[release.yml](../.github/workflows/release.yml) 的 Windows bui
    随后用与 zip 相同的命令生成同名 `.sha256`。安装器排在依赖快照之后编译，
    因此它铺的文件与 zip 里的内容一致。
 2. **安装冒烟**：以 `/VERYSILENT` 装到一个临时目录（`/DIR` 覆盖默认位置，不污染
-   runner 的默认安装位置），确认 `Cubby.exe` 与 `unins000.exe` 就位；再用卸载器静默
-   卸载，并等安装目录真的消失。冒烟失败让 job 直接红，而不是只打印日志。
+   runner 的默认安装位置），确认 `Cubby.exe` 与 `unins000.exe` 就位；在
+   `%LOCALAPPDATA%\Cubby` 放一个哨兵文件，用同一 `/DIR` 再覆盖安装一次并断言哨兵仍在
+   （升级不该搬动数据根），最后静默卸载、等安装目录真的消失、再断言哨兵仍在。
+   冒烟失败让 job 直接红，而不是只打印日志。
 3. 安装器与 zip / tar.gz 分别上传 artifact，publish job 用 `merge-multiple: true`
    合并后按 `dist/*` 挂进草稿 Release。
 4. 安装器的编译与冒烟（第 1、2 步）抽在 `.github/actions/windows-installer` 里，

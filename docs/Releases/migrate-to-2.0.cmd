@@ -18,10 +18,16 @@ rem user or machine cannot decrypt it - the script reports the failure and keeps
 rem the original files instead of skipping silently.
 rem
 rem The original files are backed up under <dest>\.pre-migrate-backup-<stamp>\.
+rem
+rem --move deletes the source files, so it requires an explicit --source and only
+rem runs after a run with zero failures and zero skips; the planned source files
+rem are copied to <dest>\.pre-migrate-backup-<stamp>\source\ before anything is
+rem deleted.
 setlocal
 chcp 65001 >nul 2>nul
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0migrate-to-2.0.ps1" %*
 set "RC=%ERRORLEVEL%"
 echo.
-pause
+rem Pause only on a double-click (no arguments); scripted calls must not block.
+if "%~1"=="" pause
 exit /b %RC%
