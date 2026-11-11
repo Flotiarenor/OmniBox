@@ -517,8 +517,8 @@ interface UpdateStatus {
 const UPDATE_TAIL = '由你点击触发检查，只提示，不自动安装。'
 /** 有新版时按形态写清"将要发生什么"；dev / platform 不下载，不在这张表里。 */
 const UPDATE_FORM_HELP: Partial<Record<UpdateForm, string>> = {
-  installer: '安装器会关闭 Cubby 并覆盖安装，数据不受影响。',
-  zip: '将替换程序目录，数据在默认位置不受影响。',
+  installer: '将下载安装器；2.0 只下载与校验，一键覆盖安装属 2.1。',
+  zip: '将下载 zip 包；2.0 只下载与校验，替换程序目录属 2.1。',
   portable: '请解压覆盖到同一目录，数据在程序目录（不可写时在默认数据根）。',
 }
 /** 不检查更新的原因；判据来自后端的形态判定，前端不自己推断。 */
@@ -528,6 +528,8 @@ const UPDATE_DISABLED_HELP: Partial<Record<UpdateForm, string>> = {
 }
 /** 下载/校验期间的重读间隔：进度要跟手，又不能把一次慢请求叠成多个定时器。 */
 const UPDATE_POLL_MS = 500
+/** 后端 60 秒内复用上一次检查结果；这段时间里的重复点击不发请求，只给一行说明。 */
+const UPDATE_CACHE_SECONDS = 60
 
 const updateState = ref<UpdateState>('idle')
 const updateForm = ref<UpdateForm | ''>('')
@@ -549,8 +551,14 @@ const retryLeft = ref(0)
 const checkingUpdate = ref(false)
 const startingDownload = ref(false)
 const cancellingDownload = ref(false)
+/** 失败来源：`download` 时「重试」重下安装包，`check` 时重新检查。 */
+const updateRetryKind = ref<'check' | 'download' | ''>('')
 let updatePollTimer = 0
 let updateCountdownTimer = 0
+/** 上一次检查结果落地的时刻（毫秒）：60 秒内的重复点击由 `cached` 判据拦在前面。 */
+let updateCheckedAt = 0
+/** 组件已卸载：在途的读取回来之后不得再写状态、也不得再排定时器。 */
+let updateDisposed = false
 
 /** 有新版且当前形态允许自动下载：安装器与 zip 才有「下载并校验」。 */
 const canStartDownload = computed(() => (
@@ -568,11 +576,15 @@ const showCheckButton = computed(() => (
 ))
 const checkUpdateLabel = computed(() => {
   if (updateState.value === 'checking') return '正在检查…'
-  if (updateState.value === 'error') return '重试'
+  if (updateState.value === 'error') {
+    // 文案与动作必须一致：下载失败时点它要真的重下，不能只是重新检查一遍
+    return updateRetryKind.value === 'download' ? '重试下载' : '重试'
+  }
   return '检查更新'
 })
 const checkUpdateDisabled = computed(() => (
   checkingUpdate.value
+  || startingDownload.value
   || updateState.value === 'checking'
   || updateState.value === 'downloading'
   || retryLeft.value > 0
@@ -588,12 +600,18 @@ const showReleasesLink = computed(() => (
 const updateFormHelp = computed(() => {
   const form = updateForm.value
   const base = form ? UPDATE_FORM_HELP[form] || '' : ''
-  const relevant = base && (
-    updateState.value === 'update_available'
-    || updateState.value === 'downloading'
-    || updateState.value === 'ready'
+  const state = updateState.value
+  const relevant = !!base && (
+    state === 'downloading'
+    || state === 'ready'
+    // 有新版但这一版没有可用安装包时不能承诺"安装器会覆盖安装"
+    || (state === 'update_available'
+      && !!updateResult.value?.asset
+      && updateDownloadAllowed.value)
   )
-  return relevant ? `${base}${UPDATE_TAIL}` : UPDATE_TAIL
+  if (relevant) return `${base}${UPDATE_TAIL}`
+  // 不检查更新的形态（开发模式 / Linux）连"由你点击触发检查"都不成立
+  return state === 'disabled' ? '' : UPDATE_TAIL
 })
 
 const updateDisabledText = computed(() => {
@@ -636,7 +654,7 @@ const updateStatusBase = computed(() => {
       return `正在下载 ${job?.asset || '安装包'}：${formatBytes(received)} / ${size}（${percent}%）`
     }
     case 'ready': {
-      const path = job?.path ? `：${job.path}` : '。'
+      const path = job?.path ? `：${job.path}。` : '。'
       return `已下载并通过校验${path}一键安装将在 2.1 提供，当前可到该文件夹手动运行安装器。`
     }
     case 'error': {
@@ -691,6 +709,16 @@ function tickUpdateCountdown(): void {
 }
 
 /**
+ * 这一页还在用户看得见的位置：未卸载、仍在设置页、仍停在「关于」段。
+ *
+ * 在途的读取回来之后要按它判一次 —— 否则 `resetUpdateState()` 刚刚收回的状态会被
+ * 迟到的响应写回来，卸载之后也还会再排一个定时器。
+ */
+function updateViewVisible(): boolean {
+  return !updateDisposed && route.path === '/settings' && active.value === 'about'
+}
+
+/**
  * 下载 / 校验期间按 500 ms 重读一次进度。
  *
  * 用自排的 setTimeout 而不是 setInterval：一次慢请求会让 setInterval 的触发叠在一起，
@@ -698,7 +726,7 @@ function tickUpdateCountdown(): void {
  */
 function scheduleUpdatePoll(): void {
   stopUpdatePoll()
-  if (route.path !== '/settings' || active.value !== 'about') return
+  if (!updateViewVisible()) return
   if (updateState.value !== 'downloading') return
   updatePollTimer = window.setTimeout(async () => {
     updatePollTimer = 0
@@ -709,7 +737,7 @@ function scheduleUpdatePoll(): void {
 async function refreshUpdateState(): Promise<void> {
   try {
     const status = (await bridge.call('system_get_update_state')) as UpdateStatus | null
-    applyUpdateStatus(status)
+    if (updateViewVisible()) applyUpdateStatus(status)
   } catch {
     // 轮询失败不打断下载：下一次轮询或用户手动检查会重新对齐，不往状态行写瞬时错误
   }
@@ -734,7 +762,17 @@ function applyUpdateStatus(status: UpdateStatus | null): void {
   updateEnabled.value = true
   if (updateState.value === 'disabled') updateState.value = 'idle'
   const job = status.job
-  if (!job || job.state === 'idle') return
+  if (!job || job.state === 'idle') {
+    // 后端已经没有升级动作（进程重启、状态被清）：本地不能停在「下载中」，
+    // 否则会每 500 ms 读一次、界面上却没有任何可点的动作。
+    if (updateState.value === 'downloading') {
+      stopUpdatePoll()
+      updateJob.value = null
+      updateState.value = canStartDownload.value ? 'update_available' : 'idle'
+      updateNotice.value = '下载状态已重置，请重新开始'
+    }
+    return
+  }
   applyUpdateJob(job)
 }
 
@@ -755,6 +793,7 @@ function applyUpdateJob(job: UpdateJob): void {
     case 'error':
       updateState.value = 'error'
       updateErrorText.value = downloadFailureText(job)
+      updateRetryKind.value = 'download'
       stopUpdatePoll()
       return
     case 'cancelled':
@@ -791,9 +830,11 @@ async function loadUpdateState(): Promise<void> {
   if (route.path !== '/settings') return
   try {
     const status = (await bridge.call('system_get_update_state')) as UpdateStatus | null
+    if (updateDisposed) return
     applyUpdateStatus(status)
     updateUnavailable.value = ''
   } catch (e: any) {
+    if (updateDisposed) return
     // 冻结契约里失败也是 `ok=false` 的信封；走到这里说明接口不存在或通道断了
     const message = String((e as { message?: string } | null)?.message || e || '')
     updateEnabled.value = false
@@ -802,6 +843,7 @@ async function loadUpdateState(): Promise<void> {
       ? '只有管理员可以检查更新。'
       : '这个版本没有提供检查更新。'
   }
+  if (updateDisposed) return
   if (retryLeft.value > 0) tickUpdateCountdown()
   updateStatusLoaded.value = true
   scheduleUpdatePoll()
@@ -811,9 +853,14 @@ function applyUpdateResult(result: UpdateResult | null): void {
   if (!result) {
     updateState.value = 'error'
     updateErrorText.value = '检查失败'
+    updateRetryKind.value = 'check'
     return
   }
   updateResult.value = result
+  updateCheckedAt = Date.now()
+  // 检查本身失败才会走到下面的 error 分支；下载失败在 applyUpdateJob / applyStartResult
+  // 里单独登记为 `download`，两处不能混。
+  updateRetryKind.value = 'check'
   if (result.form) updateForm.value = result.form
   if (typeof result.download_allowed === 'boolean') {
     updateDownloadAllowed.value = result.download_allowed
@@ -827,6 +874,9 @@ function applyUpdateResult(result: UpdateResult | null): void {
       return
     case 'up_to_date':
       updateState.value = 'up_to_date'
+      if (result.cached) {
+        updateNotice.value = `刚刚检查过，${UPDATE_CACHE_SECONDS} 秒内复用上次结果`
+      }
       return
     case 'disabled':
       updateEnabled.value = false
@@ -841,9 +891,9 @@ function applyUpdateResult(result: UpdateResult | null): void {
       return
     case 'forbidden':
       updateState.value = 'error'
-      updateErrorText.value = /管理员|禁止访问|403/.test(result.message || '')
-        ? '只有管理员可以检查更新'
-        : '检查失败：没有权限访问 GitHub'
+      // 「GitHub 拒绝访问」与「当前使用者不是管理员」是两回事：后者是通道级 403，
+      // 只由 checkUpdate / loadUpdateState 的 catch 分支处理，这里不看 message。
+      updateErrorText.value = '检查失败：没有权限访问 GitHub'
       return
     case 'network':
       updateState.value = 'error'
@@ -866,6 +916,13 @@ function applyUpdateResult(result: UpdateResult | null): void {
 async function checkUpdate(): Promise<void> {
   if (checkingUpdate.value || retryLeft.value > 0) return
   if (updateState.value === 'downloading') return
+  // 后端 60 秒内复用上一次结果，这段时间里再点一次不会真的发请求：
+  // 必须有可见的反馈，否则按钮看起来像坏了。
+  if (updateState.value === 'up_to_date'
+      && Date.now() - updateCheckedAt < UPDATE_CACHE_SECONDS * 1000) {
+    updateNotice.value = `刚刚检查过，${UPDATE_CACHE_SECONDS} 秒内不会重复请求`
+    return
+  }
   checkingUpdate.value = true
   updateNotice.value = ''
   updateErrorText.value = ''
@@ -873,17 +930,29 @@ async function checkUpdate(): Promise<void> {
   stopUpdatePoll()
   try {
     const result = (await bridge.call('system_check_update', appVersion)) as UpdateResult | null
+    if (updateDisposed) return
     applyUpdateResult(result)
   } catch (e: any) {
+    if (updateDisposed) return
     // 后端不抛异常；这里接住的是通道级失败（非管理员 403、方法不存在）
     const message = String((e as { message?: string } | null)?.message || e || '')
     updateState.value = 'error'
+    updateRetryKind.value = 'check'
     updateErrorText.value = /403|禁止访问|管理员|权限/.test(message)
       ? '只有管理员可以检查更新'
       : '检查失败：接口不可用'
   } finally {
     checkingUpdate.value = false
   }
+}
+
+/** 重试按失败来源分派：下载失败重下安装包，检查失败重新检查。 */
+async function retryUpdate(): Promise<void> {
+  if (updateRetryKind.value === 'download' && canStartDownload.value) {
+    await startDownload()
+    return
+  }
+  await checkUpdate()
 }
 
 function enterDownloading(version: string, assetName: string, total: number): void {
@@ -943,22 +1012,28 @@ function applyStartResult(started: any, version: string, asset: UpdateAsset): vo
       return
     case 'not_allowed':
       updateState.value = 'error'
+      updateRetryKind.value = 'check'
       updateErrorText.value = '当前形态不能自动下载，请打开发布页手动下载'
       return
     case 'busy':
       updateState.value = 'error'
+      updateRetryKind.value = 'download'
       updateErrorText.value = '已有升级动作在进行，请稍后再试'
       return
     case 'too_large':
       updateState.value = 'error'
+      // 重下拿到的还是同一个超限资产，只能重新检查
+      updateRetryKind.value = 'check'
       updateErrorText.value = '安装包超过允许的大小上限'
       return
     case 'no_result':
       updateState.value = 'error'
+      updateRetryKind.value = 'check'
       updateErrorText.value = '没有可用的检查结果，请重新检查'
       return
     default:
       updateState.value = 'error'
+      updateRetryKind.value = 'download'
       updateErrorText.value = '下载没有结果，请重试'
   }
 }
@@ -971,9 +1046,12 @@ async function startDownload(): Promise<void> {
   startingDownload.value = true
   try {
     const started = await bridge.call('system_start_update_download', result.latest, asset.name)
+    if (updateDisposed) return
     applyStartResult(started, result.latest, asset)
   } catch {
+    if (updateDisposed) return
     updateState.value = 'error'
+    updateRetryKind.value = 'download'
     updateErrorText.value = '启动下载失败'
   } finally {
     startingDownload.value = false
@@ -1021,6 +1099,8 @@ function resetUpdateState(): void {
   updateErrorText.value = ''
   updateNotice.value = ''
   updateUnavailable.value = ''
+  updateRetryKind.value = ''
+  updateCheckedAt = 0
   retryLeft.value = 0
   checkingUpdate.value = false
   startingDownload.value = false
@@ -1218,7 +1298,9 @@ onUnmounted(() => {
   window.removeEventListener(APPEARANCE_CHANGED, onAppearanceChanged)
   // 概览轮询不能在页面卸载后继续：定时器持有组件的闭包与 bridge 句柄
   stopFreshnessPoll()
-  // 检查更新的轮询与限流倒计时同理：状态只在内存里，卸载即回 idle
+  // 检查更新的轮询与限流倒计时同理：状态只在内存里，卸载即回 idle。
+  // 先置 disposed 再复位：在途的那一次读取回来时就不许再写状态、也不许再排定时器。
+  updateDisposed = true
   resetUpdateState()
 })
 
@@ -1747,7 +1829,7 @@ watch(active, (section) => {
                 id="settings-check-update"
                 class="btn"
                 :disabled="checkUpdateDisabled"
-                @click="checkUpdate"
+                @click="retryUpdate"
               >{{ checkUpdateLabel }}</button>
               <button
                 v-if="updateState === 'update_available' && canStartDownload"
@@ -1776,8 +1858,13 @@ watch(active, (section) => {
                 :href="RELEASES_URL" target="_blank" rel="noopener"
               >打开发布页</a>
             </div>
-            <p id="settings-update-status" class="field-help">{{ updateStatusText }}</p>
-            <p class="field-help">{{ updateFormHelp }}</p>
+            <p
+              id="settings-update-status"
+              class="field-help"
+              role="status"
+              aria-live="polite"
+            >{{ updateStatusText }}</p>
+            <p v-if="updateFormHelp" class="field-help">{{ updateFormHelp }}</p>
           </div>
         </div>
       </section>
