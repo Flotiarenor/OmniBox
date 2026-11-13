@@ -120,15 +120,20 @@ def check_specs_parse_and_share_rules(errors: list) -> None:
             if not hasattr(spec_module, nm):
                 _fail(errors, f'{name} 从 spec_common 导入了不存在的名字: {nm}')
 
-        # spec 必须真的把收集结果用上（datas=collect_data_files(...)）
-        uses_datas = any(
-            isinstance(node, ast.keyword) and node.arg == 'datas'
-            and isinstance(node.value, ast.Call)
-            and getattr(node.value.func, 'id', '') == 'collect_data_files'
-            for node in ast.walk(tree)
+        # spec 必须真的把收集结果用上：datas 里既有 collect_data_files(...)，
+        # 也有本平台的 web-only 启动器（少了它发布包里就没有"只跑 HTTP 服务"的入口）
+        datas_value = next(
+            (node.value for node in ast.walk(tree)
+             if isinstance(node, ast.keyword) and node.arg == 'datas'),
+            None,
         )
-        if not uses_datas:
+        if datas_value is None:
+            _fail(errors, f'{name} 的 Analysis 没有 datas')
+        elif not _contains_call(datas_value, 'collect_data_files'):
             _fail(errors, f'{name} 未把 collect_data_files() 作为 Analysis 的 datas')
+        elif not _contains_call(datas_value, 'web_only_launchers'):
+            _fail(errors, f'{name} 的 datas 没有加 web_only_launchers()'
+                          f'（发布包里会缺"只跑 HTTP 服务"的启动器）')
 
 
 def _copy_minimal_project(dest: Path) -> None:
@@ -359,19 +364,257 @@ def check_hidden_imports(errors: list) -> None:
                           f'干净环境里装不出来，PyInstaller 只会打 warning 然后跳过这个 hidden import')
 
 
+# ── Linux 桌面窗口的打包规则 ────────────────────────────────────────
+# 背景：Linux 产物要能开 GTK 窗口，必须把 Python 绑定 gi 冻结进去；而 GTK /
+# WebKitGTK / glib / girepository 一律由系统提供。PyInstaller 的 gi 钩子一旦被
+# gi.repository.Gtk 之类的节点触发，就会按 typelib 里的 shared-library 收集
+# libgtk-3 / libwebkit2gtk 与整条依赖链（pango / harfbuzz / X11 …），还会把构建
+# 容器里的 typelib 一起打进产物 —— 既越过"只带绑定"的边界，也会让构建机的 typelib
+# 去驱动用户系统里版本不同的库。下面把这件事固化成断言：Linux spec 必须用
+# gi_hidden_imports() 声明绑定、用 GI_REPOSITORY_EXCLUDES 挡住 gi.repository.*
+# 节点、用 filter_system_libraries() 剔掉系统库；Windows spec 一条都不引入
+# （Windows 走 edgechromium 后端，产物维持原样）。
+# 这些库必须从产物里剔除：打进去会与系统 WebKitGTK 依赖的那份同时进进程。
+SYSTEM_LIBS_MUST_GO = [
+    'libgirepository-1.0.so.1',
+    'libglib-2.0.so.0',
+    'libgobject-2.0.so.0',
+    'libgio-2.0.so.0',
+    'libgmodule-2.0.so.0',
+    'libgthread-2.0.so.0',
+    'libffi.so.8',
+    'libgtk-3.so.0',
+    'libgdk-3.so.0',
+    'libwebkit2gtk-4.1.so.0',
+    'libjavascriptcoregtk-4.1.so.0',
+    'libsoup-3.0.so.0',
+]
+# 这些必须留在产物里：过滤规则只能命中系统 GUI 库，不能误伤解释器与加密库。
+SYSTEM_LIBS_MUST_STAY = [
+    '_gi.cpython-311-x86_64-linux-gnu.so',
+    'libcairo.so.2',
+    'libpython3.11.so.1.0',
+    'libssl.so.3',
+]
+# gi.repository.* 里至少这些命名空间要被排除（pywebview GTK 后端导入的，
+# 以及 gi.overrides.Gdk 老分支会碰到、会把 cairo typelib 与 libcairo 带进来的）
+GI_EXCLUDES_REQUIRED = [
+    'gi.repository.Gtk',
+    'gi.repository.WebKit2',
+    'gi.repository.Soup',
+    'gi.repository.cairo',
+]
+GI_BINDING_MODULES = ['gi', 'gi.repository', 'gi.overrides']
+
+
+def _contains_call(node: ast.AST, func_name: str) -> bool:
+    """AST 子树里是否调用了 func_name()（不关心调用点写在哪一层表达式里）。"""
+    return any(
+        isinstance(inner, ast.Call) and getattr(inner.func, 'id', '') == func_name
+        for inner in ast.walk(node)
+    )
+
+
+def check_linux_window_packaging(errors: list) -> None:
+    """Linux 窗口绑定进包、系统 GTK/glib 库不进包，且 Windows spec 不受影响。"""
+    try:
+        spec_module = _spec_common()
+    except Exception as e:  # pragma: no cover - 导入失败就是硬错误
+        _fail(errors, f'无法导入 spec_common（Linux 窗口规则）: {e}')
+        return
+
+    for name in ('gi_hidden_imports', 'filter_system_libraries', 'filter_system_data',
+                 'GI_REPOSITORY_EXCLUDES'):
+        if not hasattr(spec_module, name):
+            _fail(errors, f'spec_common 缺少 Linux 桌面窗口规则所需的 {name}')
+    if errors:
+        return
+
+    # 过滤行为：系统库全剔，其它二进制原样保留
+    toc = [
+        (name, f'/usr/lib/x86_64-linux-gnu/{name}', 'BINARY')
+        for name in SYSTEM_LIBS_MUST_GO + SYSTEM_LIBS_MUST_STAY
+    ]
+    kept = {str(entry[0]) for entry in spec_module.filter_system_libraries(toc)}
+    for name in SYSTEM_LIBS_MUST_GO:
+        if name in kept:
+            _fail(errors, f'spec_common.filter_system_libraries 没有剔除系统库 {name}'
+                          f'（它必须由系统提供，否则会与系统那份 glib 同时进进程）')
+    for name in SYSTEM_LIBS_MUST_STAY:
+        if name not in kept:
+            _fail(errors, f'spec_common.filter_system_libraries 误删了 {name}（它必须随产物分发）')
+
+    # typelib 数据：gi 钩子收集进来的 gi_typelibs/ 必须剔除，其他数据原样保留
+    datas = [
+        ('gi_typelibs/cairo-1.0.typelib', '/usr/lib/girepository-1.0/cairo-1.0.typelib', 'DATA'),
+        ('shell/frontend/dist/index.html',
+         '/src/shell/frontend/dist/index.html', 'DATA'),
+    ]
+    kept_data = [str(entry[0]) for entry in spec_module.filter_system_data(datas)]
+    if any(name.startswith('gi_typelibs/') for name in kept_data):
+        _fail(errors, 'spec_common.filter_system_data 没有剔除 gi_typelibs/ 下的 typelib'
+                      '（构建机的 typelib 会去驱动用户系统里版本不同的库）')
+    if 'shell/frontend/dist/index.html' not in kept_data:
+        _fail(errors, 'spec_common.filter_system_data 误删了前端产物')
+
+    # 绑定只在构建环境真的装了 PyGObject 时才声明
+    binding_modules = spec_module.gi_hidden_imports()
+    if importlib.util.find_spec('gi') is None:
+        if binding_modules:
+            _fail(errors, f'本机没有 PyGObject 时 gi_hidden_imports() 应为空，实际 {binding_modules}')
+    else:
+        for name in GI_BINDING_MODULES:
+            if name not in binding_modules:
+                _fail(errors, f'gi_hidden_imports() 缺少 {name}')
+
+    excludes = list(spec_module.GI_REPOSITORY_EXCLUDES)
+    for name in GI_EXCLUDES_REQUIRED:
+        if name not in excludes:
+            _fail(errors, f'GI_REPOSITORY_EXCLUDES 缺少 {name}：它的 gi 钩子会把 GTK/WebKitGTK '
+                          f'的 typelib 与共享库链打进产物')
+
+    # Linux spec 必须真的用上这三条规则（改了 spec 却没接入会静默失效）
+    linux_path = SPEC_DIR / 'cubby-linux.spec'
+    windows_path = SPEC_DIR / 'cubby.spec'
+    if linux_path.is_file():
+        linux_source = linux_path.read_text(encoding='utf-8')
+        try:
+            linux_tree = ast.parse(linux_source)
+        except SyntaxError as e:
+            _fail(errors, f'cubby-linux.spec 语法错误: {e}')
+            linux_tree = None
+        if linux_tree is not None:
+            hiddenimports_ok = any(
+                isinstance(node, ast.keyword) and node.arg == 'hiddenimports'
+                and _contains_call(node.value, 'gi_hidden_imports')
+                for node in ast.walk(linux_tree)
+            )
+            if not hiddenimports_ok:
+                _fail(errors, 'cubby-linux.spec 的 hiddenimports 没有接入 gi_hidden_imports()'
+                              '（Linux 产物会开不了窗口）')
+            filter_ok = any(
+                isinstance(node, ast.Assign)
+                and any(
+                    isinstance(target, ast.Attribute) and target.attr == 'binaries'
+                    and isinstance(target.value, ast.Name) and target.value.id == 'a'
+                    for target in node.targets
+                )
+                and _contains_call(node.value, 'filter_system_libraries')
+                for node in ast.walk(linux_tree)
+            )
+            if not filter_ok:
+                _fail(errors, 'cubby-linux.spec 没有用 filter_system_libraries() 过滤 a.binaries'
+                              '（系统 glib/GTK 会被打进产物）')
+            datas_ok = any(
+                isinstance(node, ast.Assign)
+                and any(
+                    isinstance(target, ast.Attribute) and target.attr == 'datas'
+                    and isinstance(target.value, ast.Name) and target.value.id == 'a'
+                    for target in node.targets
+                )
+                and _contains_call(node.value, 'filter_system_data')
+                for node in ast.walk(linux_tree)
+            )
+            if not datas_ok:
+                _fail(errors, 'cubby-linux.spec 没有用 filter_system_data() 过滤 a.datas'
+                              '（构建机的 typelib 会被打进产物）')
+        if 'GI_REPOSITORY_EXCLUDES' not in linux_source:
+            _fail(errors, 'cubby-linux.spec 没有用 GI_REPOSITORY_EXCLUDES 作为 excludes'
+                          '（gi 钩子会把 GTK/WebKitGTK 的 typelib 与共享库链打进产物）')
+    if windows_path.is_file():
+        windows_source = windows_path.read_text(encoding='utf-8')
+        for name in ('gi_hidden_imports', 'filter_system_libraries', 'filter_system_data',
+                     'GI_REPOSITORY_EXCLUDES'):
+            if name in windows_source:
+                _fail(errors, f'cubby.spec（Windows）引入了 {name}：Windows 走 edgechromium，'
+                              f'产物必须保持不引入 GTK 绑定')
+
+
+# ── 发布包里的 web-only 启动器 ──────────────────────────────────────
+# `Cubby-Web.cmd` / `cubby-web.sh` 是"只跑 HTTP 服务"的入口，内容只有一行 exec，
+# 不在运行时被 Python import —— 构建链漏收它们不会有任何测试变红（只是用户找不到
+# 无头入口）。所以这里把存在性、平台归属、行尾与"只透传参数"的边界固化成断言。
+WEB_ONLY_DIR = SPEC_DIR / 'web-only'
+WEB_ONLY_CMD = WEB_ONLY_DIR / 'Cubby-Web.cmd'
+WEB_ONLY_SH = WEB_ONLY_DIR / 'cubby-web.sh'
+
+
+def check_web_only_launchers(errors: list) -> None:
+    """两个启动器存在、行尾正确、只 exec 主程序，且 spec_common 按平台给出正确那份。"""
+    for path in (WEB_ONLY_CMD, WEB_ONLY_SH):
+        if not path.is_file():
+            _fail(errors, f'缺少 web-only 启动器: {path.relative_to(PROJECT_ROOT)}')
+    if not (WEB_ONLY_CMD.is_file() and WEB_ONLY_SH.is_file()):
+        return
+
+    cmd_bytes = WEB_ONLY_CMD.read_bytes()
+    sh_bytes = WEB_ONLY_SH.read_bytes()
+    cmd_text = cmd_bytes.decode('utf-8')
+    sh_text = sh_bytes.decode('utf-8')
+
+    # 行尾：cmd.exe 只可靠处理 CRLF；sh 带 CR 会在 Linux 上报 "not found"
+    if b'\r\n' not in cmd_bytes or cmd_bytes.replace(b'\r\n', b'').count(b'\n'):
+        _fail(errors, 'Cubby-Web.cmd 不是纯 CRLF 行尾')
+    if b'\r' in sh_bytes:
+        _fail(errors, 'cubby-web.sh 含 CR（CRLF 的 shell 脚本在 Linux 上无法执行）')
+
+    # 边界：只允许"找同目录的主程序 + 透传参数 + --web-only"，不复制探测/降级逻辑
+    for needle in ('--web-only', '%~dp0'):
+        if needle not in cmd_text:
+            _fail(errors, f'Cubby-Web.cmd 缺少 {needle}（要用脚本所在目录找 Cubby.exe）')
+    if not sh_text.startswith('#!/bin/sh\n'):
+        _fail(errors, "cubby-web.sh 首行必须是 '#!/bin/sh'")
+    for needle in ('exec', '--web-only', 'dirname'):
+        if needle not in sh_text:
+            _fail(errors, f'cubby-web.sh 缺少 {needle}')
+    for text, name in ((cmd_text, 'Cubby-Web.cmd'), (sh_text, 'cubby-web.sh')):
+        # 便携模式靠可执行文件旁的 portable.txt 判定，cwd 必须保持调用方语义
+        if 'cd ' in text:
+            _fail(errors, f'{name} 里出现 cd：会改变调用方的 cwd（便携模式靠 exe 旁的 portable.txt）')
+
+    # spec_common.web_only_launchers() 必须按平台给出对应的那一份
+    try:
+        getter = _spec_common().web_only_launchers
+    except Exception as e:  # pragma: no cover - 导入/属性缺失都是硬错误
+        _fail(errors, f'spec_common 缺少 web_only_launchers(): {e}')
+        return
+
+    current = WEB_ONLY_CMD if sys.platform.startswith('win') else WEB_ONLY_SH
+    for platform_name, expected in (('win32', WEB_ONLY_CMD), ('linux', WEB_ONLY_SH),
+                                    (None, current)):
+        try:
+            entries = getter(platform_name) if platform_name is not None else getter()
+        except Exception as e:
+            _fail(errors, f'web_only_launchers({platform_name!r}) 调用失败: {e}')
+            continue
+        # 目标目录必须是 '.'：PyInstaller 6 用 `.` 表示产物根目录，空串会被
+        # `Invalid (SRC, DEST_DIR) tuple` 直接拒绝（真实构建里踩过）。
+        if len(entries) != 1 or str(entries[0][1]) != '.':
+            _fail(errors, f'web_only_launchers({platform_name!r}) 应只返回一项且目标目录为 "."，'
+                          f'实际 {entries}')
+            continue
+        source = Path(str(entries[0][0]))
+        if not source.is_file() or source.resolve() != expected.resolve():
+            _fail(errors, f'web_only_launchers({platform_name!r}) 应指向 '
+                          f'{expected.relative_to(PROJECT_ROOT)}，实际 {entries[0][0]}')
+
+
 def main() -> int:
     errors: list = []
     check_specs_exist(errors)
     check_specs_parse_and_share_rules(errors)
     check_collect_data_files(errors)
     check_hidden_imports(errors)
+    check_linux_window_packaging(errors)
+    check_web_only_launchers(errors)
 
     if errors:
         print('check_packaging: FAILED')
         for e in errors:
             print(f'  - {e}')
         return 1
-    print(f'check_packaging: OK（{len(SPECS)} 份 spec + 收集规则 + HIDDEN_IMPORTS 覆盖）')
+    print(f'check_packaging: OK（{len(SPECS)} 份 spec + 收集规则 + HIDDEN_IMPORTS 覆盖 + '
+          f'Linux 窗口绑定/系统库规则 + web-only 启动器）')
     return 0
 
 

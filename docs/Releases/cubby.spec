@@ -13,7 +13,7 @@ _SPEC_DIR = Path(SPECPATH).resolve()
 if str(_SPEC_DIR) not in sys.path:
     sys.path.insert(0, str(_SPEC_DIR))
 
-from spec_common import HIDDEN_IMPORTS, collect_data_files, project_root
+from spec_common import HIDDEN_IMPORTS, collect_data_files, project_root, web_only_launchers
 
 PROJECT_ROOT = project_root(SPECPATH)
 DIST_DIR = PROJECT_ROOT / 'docs' / 'Releases'
@@ -26,7 +26,8 @@ a = Analysis(
     [str(PROJECT_ROOT / 'main.py')],
     pathex=[],
     binaries=[],
-    datas=collect_data_files(PROJECT_ROOT),
+    # 通用收集规则之外，再把本平台的「只跑 HTTP 服务」启动器放到可执行文件同目录
+    datas=[*collect_data_files(PROJECT_ROOT), *web_only_launchers()],
     hiddenimports=HIDDEN_IMPORTS,
     hookspath=[],
     hooksconfig={},

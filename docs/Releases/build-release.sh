@@ -103,6 +103,59 @@ bash "$PROJECT_ROOT/setup-venv.sh" --dev
 PY="$VENV_DIR/bin/python"
 success "Python 环境就绪"
 
+# ── 2.4 桌面窗口的 Python 绑定（PyGObject）───────────────────────────
+# 窗口由 pywebview 的 GTK 后端提供，它 import 的 gi 是 Python 绑定：绑定必须打进
+# 产物，GTK / WebKitGTK / glib / girepository 则由运行时的系统提供（见
+# cubby-linux.spec 与 spec_common.py 的剔除规则）。PyGObject 只发源码包，要在本机
+# 编译，所以除 pip 之外还要 C 工具链、ninja、gobject-introspection 与 cairo 的开发包。
+# 版本要与发布链一致（.github/workflows/release.yml 同一个 pin）：bookworm 的 glib
+# 是 2.74、gobject-introspection 是 1.74，只支持到 3.48.x；3.50 起改用
+# girepository-2.0（已并入 glib，要求 glib >= 2.80），在那里编不过。
+PYGOBJECT_VERSION="3.48.2"
+
+pygobject_system_deps=()
+if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
+    pygobject_system_deps+=(build-essential)
+fi
+command -v ninja >/dev/null 2>&1 || pygobject_system_deps+=(ninja-build)
+if ! command -v pkg-config >/dev/null 2>&1; then
+    # 没有 pkg-config 就无法判断下面两个开发包在不在，一并补上
+    pygobject_system_deps+=(pkg-config libgirepository1.0-dev libcairo2-dev)
+else
+    pkg-config --exists gobject-introspection-1.0 || pygobject_system_deps+=(libgirepository1.0-dev)
+    pkg-config --exists cairo || pygobject_system_deps+=(libcairo2-dev)
+fi
+PY_INCLUDE=$("$PY" -c 'import sysconfig; print(sysconfig.get_paths()["include"])')
+if [ ! -f "$PY_INCLUDE/Python.h" ]; then
+    pygobject_system_deps+=(python3-dev)
+fi
+
+if [ "${#pygobject_system_deps[@]}" -gt 0 ]; then
+    if [ "$(id -u)" -eq 0 ] && command -v apt-get >/dev/null 2>&1; then
+        info "安装 PyGObject 的编译依赖: ${pygobject_system_deps[*]}"
+        apt-get update -qq
+        apt-get install -y -qq "${pygobject_system_deps[@]}" gir1.2-gtk-3.0 gir1.2-webkit2-4.1
+    else
+        error "缺少 PyGObject 的编译依赖: ${pygobject_system_deps[*]}"
+        error "gi 是产物里唯一的窗口绑定，缺它打出来的包在任何机器上都开不了窗。"
+        error "Debian/Ubuntu 先执行：sudo apt-get install ${pygobject_system_deps[*]} gir1.2-gtk-3.0 gir1.2-webkit2-4.1"
+        error "Fedora/Arch 装同名开发包（gobject-introspection-devel、cairo-devel、gtk3、webkit2gtk-4.1）后重试。"
+        exit 1
+    fi
+fi
+
+info "安装 PyGObject $PYGOBJECT_VERSION（窗口的 Python 绑定）..."
+"$PY" -m pip install "PyGObject==$PYGOBJECT_VERSION"
+if ! "$PY" -c "import gi" >/dev/null 2>&1; then
+    error "PyGObject 安装后仍 import 失败：产物不会含 gi，桌面窗口起不来"
+    exit 1
+fi
+if ! "$PY" -c "import gi; gi.require_version('Gtk', '3.0'); from gi.repository import Gtk" >/dev/null 2>&1; then
+    warn "本机缺 GTK typelib（Debian/Ubuntu: gir1.2-gtk-3.0）：产物仍能打出，"
+    warn "但只在装了 GTK/WebKitGTK 的系统上开窗（发布产物同样如此）"
+fi
+success "PyGObject 就绪"
+
 # ── 2.5 记录依赖快照（仅用于审计；requirements.txt 是手写声明，绝不被覆盖） ──
 info "生成依赖快照 requirements.lock.txt..."
 "$PY" -m pip freeze > "$PROJECT_ROOT/requirements.lock.txt"
@@ -143,6 +196,16 @@ if [ ! -f "$BIN_TMP" ]; then
 fi
 mv "$BIN_TMP" "$BIN"
 chmod +x "$BIN"
+
+# 「只跑 HTTP 服务」的启动器：spec 里由 spec_common.web_only_launchers() 收集，
+# datas 拷贝不保留可执行位（与 CI 打包步骤做同一件事），漏收时直接失败而不是发一个
+# 找不到无头入口的包。
+WEB_LAUNCHER="$DIST_DIR/Cubby/cubby-web.sh"
+if [ ! -f "$WEB_LAUNCHER" ]; then
+    error "产物里没有 cubby-web.sh：spec_common.web_only_launchers() 没生效"
+    exit 1
+fi
+chmod +x "$WEB_LAUNCHER"
 # PyInstaller 会在 COLLECT 外留下一个多余的可执行文件，清理掉
 rm -f "$DIST_DIR/Cubby.bin"
 

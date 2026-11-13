@@ -19,6 +19,9 @@ spec 文件顶部只要：
   - **不打运行时数据**：`data/`、`.config/`、`logs/` 属于用户数据，不进发行包。
 """
 
+import fnmatch
+import importlib.util
+import sys
 from pathlib import Path
 
 # ── 需要手动包含的隐藏模块 ──────────────────────────────────────────
@@ -100,6 +103,141 @@ HIDDEN_IMPORTS = [
     'concurrent.futures.thread',
     'sqlite3',
 ]
+
+# ── Linux 桌面窗口：PyGObject 绑定（gi + _gi）────────────────────────
+# 窗口由 pywebview 的 GTK 后端提供，它要 import gi（Python 绑定）。PyInstaller 的
+# 静态分析看不到窗口后端的选择：pywebview 在 guilib.initialize() 里逐个 try 导入
+# 平台模块，Linux 分支才轮到 GTK。因此 Linux 构建必须显式声明 gi；漏掉的表现是
+# 产物能起 --web-only，开窗时报 "GTK cannot be loaded"。
+#
+# 只在构建环境真的装了 PyGObject 时才声明：Windows 构建机不装它（Windows 走
+# edgechromium 后端），这里返回空列表，Windows 产物不引入绑定。Linux 构建在
+# debian:12 容器里先 pip 装 PyGObject，_gi 扩展就是对容器里那份 CPython 编译的，
+# 与冻结进产物的解释器 ABI 一致。
+#
+# GI_OVERRIDE_MODULES 与 GI_REPOSITORY_EXCLUDES 要成对理解：前者是 gi 包里的
+# 纯 Python 便捷封装（gi 钩子本来会按 typelib 依赖自动补上，排除钩子后得自己登记），
+# 后者是运行时才由系统 typelib 解析的命名空间；系统库靠排除 + 过滤两条规则挡在
+# 产物外。
+GI_OVERRIDE_MODULES = (
+    'gi.overrides.GObject',
+    'gi.overrides.Gio',
+    'gi.overrides.GLib',
+    'gi.overrides.Gdk',
+    'gi.overrides.Gtk',
+    'gi.overrides.Pango',
+    'gi.overrides.GdkPixbuf',
+)
+
+
+def gi_hidden_imports() -> list:
+    """构建环境有 PyGObject 时，PyInstaller 需要显式收集的模块。"""
+    if importlib.util.find_spec('gi') is None:
+        return []
+    return ['gi', 'gi.repository', 'gi.overrides', *GI_OVERRIDE_MODULES]
+
+
+# 分析阶段就排除的 GI 命名空间。它们一旦进入依赖图，PyInstaller 的 gi 钩子会按
+# typelib 里记录的 shared-library 把 libgtk-3、libwebkit2gtk 连同整条依赖链
+# （pango / harfbuzz / X11 …）收进产物，还会把构建容器里的 typelib 一并打进去。
+# 本项目的约束是 GTK / WebKitGTK / glib / girepository 一律由系统提供，产物里只放
+# Python 绑定，因此这些命名空间只允许在**运行时**由 gi 的 DynamicImporter 从系统
+# typelib 加载，分析阶段不收集 —— 排除它们就等于让 gi 钩子没有触发点。
+# 覆盖的是 pywebview GTK 后端导入的命名空间；窗口后端换成别的库时这里要同步。
+GI_REPOSITORY_EXCLUDES = (
+    'gi.repository.Gtk',
+    'gi.repository.Gdk',
+    'gi.repository.GLib',
+    'gi.repository.Gio',
+    'gi.repository.GObject',
+    'gi.repository.WebKit2',
+    'gi.repository.Soup',
+    # gi.overrides.Gdk 里有一条老分支会 import 它（Typelib 里没有 Gdk.Rectangle
+    # 时才真正执行，但静态分析看得到）。不排除的话 PyInstaller 会按 cairo 的
+    # typelib 把 libcairo.so.2 / libcairo-gobject 与构建机的 cairo-1.0.typelib
+    # 一起收进产物。
+    'gi.repository.cairo',
+)
+
+# 绝不能随产物分发的数据目录前缀（按产物内相对路径匹配）。
+# gi 钩子把 typelib 收集到 gi_typelibs/，而 typelib 必须与它描述的库版本匹配：
+# 构建容器里的那份落到版本不同的系统上，取 API 时会错位。产物只带 Python 绑定，
+# typelib 由用户系统的 girepository 默认搜索路径提供。
+SYSTEM_DATA_PREFIXES = ('gi_typelibs/',)
+
+# 必须由系统 dlopen、绝不能进产物的共享库（按产物内 basename 通配）。
+# 前 7 个是 glib 家族：同一进程里出现两份 glib 时，GType 与信号注册表互相不认识，
+# 表现为开窗后随机崩溃或白屏，GLib 明确不支持这种用法。GTK / WebKitGTK 同理必须
+# 与用户系统里的那份一致；把它们一并列出，是为了在 PyInstaller 的 gi 钩子行为变化
+# （重新按 typelib 收集共享库）时产物仍然守住"只带 Python 绑定"的边界。
+SYSTEM_LIBRARY_PATTERNS = (
+    'libgirepository*',        # _gi 的链接依赖：GI 运行时
+    'libglib-2.0*',
+    'libgobject-2.0*',
+    'libgio-2.0*',
+    'libgmodule-2.0*',
+    'libgthread-2.0*',
+    'libffi*',                 # libgirepository 的依赖
+    'libgtk-3*',
+    'libgdk-3*',
+    'libwebkit2gtk-*',
+    'libjavascriptcoregtk-*',
+    'libsoup-*',
+)
+
+
+def filter_system_libraries(binaries: list) -> list:
+    """从 PyInstaller 的 binaries TOC 里剔除 SYSTEM_LIBRARY_PATTERNS 命中的库。
+
+    TOC 每项的第一个元素是产物内相对路径（PyInstaller 6 的三元组），按 basename
+    匹配即可，不需要关心它是平铺在根目录还是收在子目录里。返回新的列表，不就地改。
+    """
+    return [
+        entry for entry in binaries
+        if not any(
+            fnmatch.fnmatch(_basename(str(entry[0])), pattern)
+            for pattern in SYSTEM_LIBRARY_PATTERNS
+        )
+    ]
+
+
+def _basename(dest: str) -> str:
+    """产物内路径的 basename；PyInstaller 在 Windows 上可能给反斜杠。"""
+    return dest.replace('\\', '/').rsplit('/', 1)[-1]
+
+
+def filter_system_data(datas: list) -> list:
+    """剔除 SYSTEM_DATA_PREFIXES 命中的数据（gi 钩子收集进来的 typelib）。"""
+    return [
+        entry for entry in datas
+        if not str(entry[0]).replace('\\', '/').startswith(SYSTEM_DATA_PREFIXES)
+    ]
+
+
+# ── 发布包里的「只跑 HTTP 服务」启动器 ───────────────────────────────
+# 主程序默认会尝试开桌面窗口；有些场景（NAS / 无头服务器 / 只用浏览器访问）需要
+# 一个"只起服务"的入口。两个脚本只做一件事：exec 主程序并透传调用方的参数 +
+# --web-only。刻意不加 cd、不探测、不复制降级逻辑 —— 降级判定属于 main.py，
+# 抄一份到这里就会与主程序漂移；也不改 cwd，便携模式靠 exe 旁的 portable.txt
+# 判定，cwd 必须保持调用方的语义。
+# 只随对应平台的产物分发：Windows 给 .cmd，Linux 给 .sh。路径按本文件位置算，
+# 不依赖 SPECPATH，两个 spec 调用时不需要传参。
+_WEB_ONLY_DIR = Path(__file__).resolve().parent / 'web-only'
+
+
+def web_only_launchers(platform_name: str | None = None) -> list:
+    """当前平台要随包分发的启动器，PyInstaller datas 格式：[(源文件, '.')]。
+
+    目标目录必须是 '.'：PyInstaller 6 用 `.` 表示"产物根目录"，空串会被直接拒绝
+    （`Invalid (SRC, DEST_DIR) tuple ... Empty DEST_DIR is not allowed`）—— 这条是
+    真实构建里暴露出来的，不是风格选择。放到根目录是为了让启动器与可执行文件同目录：
+    `Cubby-Web.cmd` 靠 `%~dp0`、`cubby-web.sh` 靠 `dirname $0` 找到主程序。
+    platform_name 仅供门禁脚本验证另一平台的分支，构建时不要传。
+    """
+    name = sys.platform if platform_name is None else platform_name
+    launcher = 'Cubby-Web.cmd' if name.startswith('win') else 'cubby-web.sh'
+    return [(str(_WEB_ONLY_DIR / launcher), '.')]
+
 
 # 收集时要跳过的目录名 / 后缀（构建噪声与用户数据）
 _SKIP_DIR_NAMES = {'__pycache__', '.git', '.cache', '.pytest_cache', '.ruff_cache', '.mypy_cache', '.dsh'}

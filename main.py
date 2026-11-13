@@ -15,15 +15,19 @@ limitations under the License.
 '''
 
 import atexit
+import importlib.util
 import json
 import logging
 import os
+import platform
 import re
 import sys
 import threading
 import time
+from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
+from typing import Any, cast
 
 import requests
 import webview
@@ -470,20 +474,101 @@ def _resolve_port(config) -> int:
         return port
 
 
-def _brand_icon_path() -> str:
-    """窗口图标（默认配色）。
+#: 品牌图标的源文件（多尺寸 ICO）：Windows 的 winforms/WebView2 只认 ICO，直接用它
+_BRAND_ICON_RELATIVE = Path('res') / 'brand' / 'cubby-blue.ico'
 
-    为什么必须显式传：不传时 pywebview 的 winforms 后端用 `ExtractIconW` 从
-    `sys.executable` 取图标 —— 打包后那是 Cubby.exe（构建期已带图标，没问题），
-    但开发态那是 python.exe，窗口会顶着 Python 的图标。传一份 `.ico` 让两者一致。
+#: Linux 上给 GTK 的窗口图标缓存文件名（放在配置目录下）
+_LINUX_ICON_CACHE_NAME = 'brand-icon.png'
 
-    为什么是 `.ico` 而不是 `.png`：winforms 后端用 `System.Drawing.Icon(path)` 读取，
-    该类型只认 ICO。
 
-    冻结形态下 `res/` 由 spec 收集到 `_MEIPASS`，与仓库里同构。
-    """
+def _brand_icon_source_path() -> Path:
+    """`res/brand/cubby-blue.ico` 的绝对路径；冻结形态在 `_MEIPASS` 下与仓库同构。"""
     root = Path(getattr(sys, '_MEIPASS', '')) if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
-    return str(root / 'res' / 'brand' / 'cubby-blue.ico')
+    return root / _BRAND_ICON_RELATIVE
+
+
+def _write_largest_ico_frame_as_png(source: Path, target: Path) -> None:
+    """把 ICO 里像素最多的一帧写成 PNG，原子替换到 `target`。
+
+    ICO 是多尺寸容器，窗口图标要最大的那份才清晰；Pillow 的 ICO 插件把各帧列在
+    `ico.sizes()` 里、按帧取图用 `ico.getimage()`（这两个属性不在 Pillow 的公开
+    类型声明里，故按 Any 访问；取不到就退回 Pillow 默认打开的那一帧）。
+    先写同目录的 `.tmp` 再 `os.replace`：中途失败不会留下半截 PNG 被下次当成缓存。
+    """
+    from PIL import Image  # 延迟导入：Windows 不需要转换，没必要付这个启动成本
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + '.tmp')
+    try:
+        with Image.open(source) as ico:
+            plugin: Any = getattr(ico, 'ico', None)
+            # 这两个属性不在 Pillow 的公开类型声明里（只在 IcoImageFile 实例上），
+            # 因此先按签名 cast，取不到（非 ICO 或有其他加载器）就退回默认帧。
+            sizes = cast(Callable[[], set[tuple[int, int]]] | None,
+                         getattr(plugin, 'sizes', None))
+            get_image = cast(Callable[[tuple[int, int]], Any] | None,
+                             getattr(plugin, 'getimage', None))
+            frame: Any = ico
+            if sizes is not None and get_image is not None:
+                largest = max(sizes(), key=lambda size: size[0] * size[1])
+                if tuple(largest) != tuple(ico.size):
+                    frame = get_image(largest)
+            try:
+                frame.save(tmp, format='PNG')
+            finally:
+                if frame is not ico:
+                    frame.close()
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _linux_window_icon(source: Path, target: Path) -> str | None:
+    """给 GTK 用的窗口图标：把 ICO 的最大帧转成 PNG 并缓存；失败返回 None。
+
+    为什么不能直接把 ICO 交给 GTK：仓库里的 `.ico` 是 PNG 压缩的多尺寸图标，
+    Windows 的 `System.Drawing.Icon` 能读，而 Debian 12 的 gdk-pixbuf ICO loader
+    不支持压缩帧 —— `set_icon_from_file` 会在 GUI 线程里抛 GError，pywebview 吞掉
+    异常后窗口不显示，进程一直挂到 CI 的超时。PNG 则一定读得出来。
+
+    为什么失败只给 None 不抛：图标是装饰，窗口必须能开。`create_window(icon=None)`
+    会跳过设置图标，其余行为不变。
+    """
+    try:
+        if (target.is_file() and target.stat().st_size > 0
+                and target.stat().st_mtime >= source.stat().st_mtime):
+            return str(target)
+    except OSError:
+        pass      # 缓存状态读不出来（或源文件不存在）就重新生成，生成失败再兜底
+    try:
+        _write_largest_ico_frame_as_png(source, target)
+    except Exception as error:
+        log.warning(f'[Cubby] 窗口图标转换失败，本次不设窗口图标: {error}')
+        return None
+    log.info(f'[Cubby] Linux 窗口图标: {target}')
+    return str(target)
+
+
+def _window_icon_path(platform_name: str | None = None) -> str | None:
+    """窗口图标路径：Windows / macOS 沿用 ICO，Linux（GTK）给转好的 PNG。
+
+    为什么必须显式传图标：不传时 winforms 后端用 `ExtractIconW` 从 `sys.executable`
+    取图标 —— 打包后那是 Cubby.exe（构建期已带图标），开发态却是 python.exe，窗口
+    会顶着 Python 的图标。Windows 上仍必须是 ICO：winforms 用
+    `System.Drawing.Icon(path)` 读取，该类型只认 ICO。
+
+    `--web-only` 不建窗，这条路径不会被调用。平台名可注入，因此 Windows 上也能
+    单测 Linux 分支（转换结果、失败兜底都不依赖显示器）。
+    """
+    source = _brand_icon_source_path()
+    name = platform.system() if platform_name is None else platform_name
+    if name in ('Linux', 'OpenBSD'):
+        return _linux_window_icon(source, Path(get_config_dir()) / _LINUX_ICON_CACHE_NAME)
+    return str(source)
 
 
 def _webview_storage_dir() -> str:
@@ -513,24 +598,303 @@ def _webview_storage_dir() -> str:
     return str(target)
 
 
-def _run_app(config, manager):
-    """启动应用（Web-only 或桌面窗口），阻塞到用户退出。"""
-    # Web-only 模式：不启动 PyWebView 桌面窗口，只运行 Flask 服务。
-    # 适用于通过 nginx/SSH 隧道在浏览器中访问 Cubby UI。
-    if '--web-only' in sys.argv:
-        app = create_app(config, manager)
-        host = config['server']['host']
-        port = _resolve_port(config)
-        log.info(f"[Cubby] Web-only 模式启动: http://{host}:{port}")
+# ============================================================
+# 桌面窗口后端探测与 --web-only 降级
+# ============================================================
+# 为什么要在建窗前主动探测：pywebview 在 Windows 缺 WebView2 Runtime 时会**静默**
+# 退回 mshtml（IE 内核），窗口能开、界面却错乱；在 Linux 缺 GTK/WebKitGTK 时则在
+# import 阶段抛异常，用户只看到一段 traceback。探测一次、把"缺什么、怎么装"写进
+# 日志、自动退回浏览器访问，比让人对着 traceback 猜依赖可行。
+
+#: WebView2 Runtime 在 EdgeUpdate 客户端里的产品 GUID（Evergreen 发行版）
+_WEBVIEW2_CLIENT_GUID = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+
+#: WebView2 版本的注册表落点。64 位系统上 32 位产品写在 WOW6432Node 下，64 位安装
+#: 也可能直接写在 SOFTWARE 下；两处都要查，HKCU（按用户安装）与 HKLM 都要查。
+_WEBVIEW2_REGISTRY_PATHS = (
+    rf'SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{_WEBVIEW2_CLIENT_GUID}',
+    rf'SOFTWARE\Microsoft\EdgeUpdate\Clients\{_WEBVIEW2_CLIENT_GUID}',
+)
+
+#: WebView2 Runtime 的官方下载页（安装提示里给这个，而不是任何镜像）
+_WEBVIEW2_DOWNLOAD_URL = 'https://developer.microsoft.com/microsoft-edge/webview2/'
+
+#: 冒烟钩子：正整数时，窗口建好后 N 毫秒自动关窗。CI 用它把"窗口真的能建起来"
+#: 变成一个可自动判定的退出码，而不是靠人盯着看。
+WINDOW_SMOKE_ENV = 'CUBBY_WINDOW_SMOKE_MS'
+
+#: 后端探测通过、日志里报的后端名。真名以 pywebview 的 renderer 为准，这里只是
+#: GUI 循环还没起来时的推断值。
+_WINDOW_BACKEND_NAMES = {
+    'Windows': 'edgechromium',
+    'Linux': 'gtk',
+    'OpenBSD': 'gtk',
+    'Darwin': 'cocoa',
+}
+
+
+def _linux_window_backend_probe() -> tuple[bool, str]:
+    """Linux：gi（PyGObject）在、且 WebKit2 4.1/4.0 的类型库能加载，才算可用。
+
+    pywebview 的 gtk 后端同时需要 Gtk 3.0 与 WebKit2（4.1 优先、4.0 兜底）。这里只
+    判最常缺的两样：gi 本身、WebKit2 typelib —— 缺任一个，建窗都会在 import 阶段
+    抛异常。先 `find_spec` 再 import，是为了把"根本没装 PyGObject"和"装了但导入失败"
+    区分成两条可读原因。
+    """
+    if importlib.util.find_spec('gi') is None:
+        return False, '缺少 PyGObject（gi 模块）'
+    try:
+        gi = importlib.import_module('gi')
+    except ImportError as error:
+        return False, f'无法导入 gi: {error}'
+
+    for version in ('4.1', '4.0'):
         try:
-            # threaded=True：单线程下大文件媒体流会阻塞所有请求（无法跳转/元数据读取/API），
-            # 流媒体（Range 请求）与后台扫描任务都需要并发处理。
-            app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
-        finally:
-            # 浏览器访问模式没有"关窗"事件：调用方停掉这个服务（Ctrl+C）就是安全退出。
-            # 放在 `finally` 是因为 `app.run()` 在收到停止信号时是抛异常退出的 ——
-            # 这一条与桌面模式的取舍不同，理由见 `_commit_last_route` 的说明。
-            _commit_last_route()
+            gi.require_version('WebKit2', version)
+        except ValueError:
+            continue
+        break
+    else:
+        return False, '缺少 WebKit2 4.1/4.0 的 GObject 类型库（webkit2gtk）'
+
+    try:
+        from gi.repository import WebKit2  # noqa: F401  # type: ignore  # 只验证类型库能加载
+    except (ImportError, ValueError) as error:
+        return False, f'无法加载 WebKit2 类型库: {error}'
+    return True, ''
+
+
+def _webview2_registry_version() -> str:
+    """从 EdgeUpdate 客户端注册表读 WebView2 Runtime 版本；读不到返回空串。
+
+    `ImportError` 是正常分支：这段代码在非 Windows 上也会被直接调用（用例验证分支），
+    而 `winreg` 只有 Windows 才有。
+    """
+    try:
+        winreg = importlib.import_module('winreg')
+    except ImportError:
+        return ''
+    for root_name in ('HKEY_CURRENT_USER', 'HKEY_LOCAL_MACHINE'):
+        root = getattr(winreg, root_name)
+        for path in _WEBVIEW2_REGISTRY_PATHS:
+            try:
+                with winreg.OpenKey(root, path) as key:
+                    version, _ = winreg.QueryValueEx(key, 'pv')
+            except OSError:
+                continue
+            text = str(version).strip()
+            if text:
+                return text
+    return ''
+
+
+def _webview2_install_roots() -> list[str]:
+    """WebView2 安装根目录候选：32 位程序目录优先，再 64 位（运行时可能在任一）。"""
+    roots = []
+    for name in ('ProgramFiles(x86)', 'ProgramFiles'):
+        value = os.environ.get(name)
+        if value:
+            roots.append(value)
+    return roots
+
+
+def _webview2_browser_executable() -> Path | None:
+    """注册表读不到时的兜底：找 `<root>\\Microsoft\\EdgeWebView\\Application\\*\\msedgewebview2.exe`。"""
+    for root in _webview2_install_roots():
+        application = Path(root) / 'Microsoft' / 'EdgeWebView' / 'Application'
+        try:
+            candidates = sorted(application.glob('*/msedgewebview2.exe'))
+        except OSError:
+            continue
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _windows_window_backend_probe() -> tuple[bool, str]:
+    """Windows：装了 WebView2 Runtime 才算可用。
+
+    不能等建窗失败再报错 —— 没有运行时时 pywebview 会悄悄退回 mshtml，窗口照开，
+    界面却是 IE 内核渲染的坏样子。注册表是权威来源，安装目录是"注册表被清理过但
+    文件还在"时的兜底。
+    """
+    if _webview2_registry_version():
+        return True, ''
+    if _webview2_browser_executable() is not None:
+        return True, ''
+    return False, ('未检测到 WebView2 Runtime（缺少它时 pywebview 会退回 mshtml/IE，'
+                   '界面无法正常显示）')
+
+
+def _probe_window_backend(platform_name: str | None = None) -> tuple[bool, str]:
+    """探测桌面窗口后端是否可用，返回 `(是否可用, 不可用原因)`。
+
+    平台判定与各平台探测实现分开、平台名可传入，因此 Windows 上也能单测 Linux 分支。
+    其余平台（含 macOS）按可用处理：那里没有"静默退回旧内核"的问题，真缺依赖时
+    pywebview 自己会报错，不需要预判。
+    """
+    name = platform.system() if platform_name is None else platform_name
+    if name in ('Linux', 'OpenBSD'):
+        return _linux_window_backend_probe()
+    if name == 'Windows':
+        return _windows_window_backend_probe()
+    return True, ''
+
+
+def _resolve_window_route(web_only: bool, probe: tuple[bool, str]) -> tuple[bool, str]:
+    """纯决策：返回 `(是否走 web-only, 降级原因)`。
+
+    显式 `--web-only` 是用户的选择、不是降级，原因留空；窗口后端可用时同理。
+    只有"没要 web-only、后端又不可用"才产生降级原因。
+    """
+    if web_only:
+        return True, ''
+    available, reason = probe
+    if available:
+        return False, ''
+    return True, reason
+
+
+def _resolve_startup_route() -> tuple[bool, str]:
+    """按命令行决定本次启动路线；显式 `--web-only` 时不做平台探测。"""
+    if '--web-only' in sys.argv:
+        return True, ''
+    return _resolve_window_route(False, _probe_window_backend())
+
+
+def _log_window_backend_install_hint(platform_name: str) -> None:
+    """把"缺什么、执行哪条命令"直接写进日志：用户看的是日志，不是文档。"""
+    if platform_name in ('Linux', 'OpenBSD'):
+        log.warning('[Cubby] 安装桌面窗口依赖: Debian/Ubuntu 执行 '
+                    '`sudo apt install gir1.2-gtk-3.0 gir1.2-webkit2-4.1`；Fedora 执行 '
+                    '`sudo dnf install gtk3 webkit2gtk4.1`；Arch 执行 '
+                    '`sudo pacman -S webkit2gtk-4.1`')
+        return
+    if platform_name == 'Windows':
+        log.warning(f'[Cubby] 安装 WebView2 Runtime: {_WEBVIEW2_DOWNLOAD_URL}')
+
+
+def _window_backend_label(platform_name: str) -> str:
+    """日志里的后端名：pywebview 已初始化过就取它的 renderer，否则按平台推断。"""
+    renderer = getattr(webview, 'renderer', None)
+    if isinstance(renderer, str) and renderer:
+        return renderer
+    return _WINDOW_BACKEND_NAMES.get(platform_name, platform_name.lower())
+
+
+def _window_smoke_delay_ms() -> int | None:
+    """解析 `CUBBY_WINDOW_SMOKE_MS`：未设置返回 None，非正整数记日志后返回 None。"""
+    raw = os.environ.get(WINDOW_SMOKE_ENV, '').strip()
+    if not raw:
+        return None
+    try:
+        delay_ms = int(raw)
+    except ValueError:
+        log.warning(f'[Cubby] {WINDOW_SMOKE_ENV} 不是整数，忽略: {raw!r}')
+        return None
+    if delay_ms <= 0:
+        log.warning(f'[Cubby] {WINDOW_SMOKE_ENV} 必须是正整数，忽略: {raw!r}')
+        return None
+    return delay_ms
+
+
+#: 冒烟钩子等窗口显示的秒数：超时说明窗口根本没起来（GTK 建窗异常会被 pywebview
+#: 吞掉），此时必须让 CI 快速失败，而不是让整条流水线挂到超时
+WINDOW_SHOW_TIMEOUT_SECONDS = 10
+
+
+def _exit_process(code: int) -> None:
+    """立即结束整个进程，不走解释器收尾（`atexit` 与插件卸载都不会执行）。
+
+    为什么必须这么退：冒烟钩子跑在 `webview.start(func=...)` 起的工作线程里，而 GUI
+    循环阻塞着主线程。工作线程里 `raise` / `sys.exit()` 只结束这个线程，GUI 循环照旧
+    挂着，CI 只能等超时 —— `os._exit` 是唯一能立刻把整个进程（含 GUI 线程）结束掉
+    的方式。冒烟是 CI 的一次性进程，图标缓存这类收尾本来也不需要。
+    """
+    os._exit(code)
+
+
+def _window_smoke_closer(window: webview.Window | None, delay_ms: int) -> Callable[[], None]:
+    """构造 `webview.start(func=...)` 的冒烟回调：窗口显示后延迟 N 毫秒关窗。
+
+    先等 shown 事件再计时：pywebview 的窗口对象要等 GUI 层把它建出来才有效，启动
+    回调与建窗之间存在这一段竞态，过早 destroy 是空操作。`window` 允许为 None：
+    `webview.create_window` 在窗口初始化失败时会返回 None。
+
+    窗口在 `WINDOW_SHOW_TIMEOUT_SECONDS` 秒内没显示（例如 GTK 建窗抛错被 pywebview
+    吞掉）时记错误并以非 0 退出：此时 destroy 是空操作，继续等下去只会把 CI 拖到
+    超时，早失败才能留下可读原因。
+    """
+    def close_after_delay() -> None:
+        if window is None:
+            log.error('[Cubby] 桌面窗口未能创建（create_window 返回空）')
+            _exit_process(1)
+            return
+        try:
+            shown = window.events.shown.wait(WINDOW_SHOW_TIMEOUT_SECONDS)
+        except Exception as error:
+            log.debug(f'[Cubby] 冒烟钩子等待窗口显示失败: {error}')
+            shown = False
+        if not shown:
+            log.error(f'[Cubby] 桌面窗口未能在 {WINDOW_SHOW_TIMEOUT_SECONDS} 秒内显示')
+            _exit_process(1)
+            return
+
+        # 先绑成不可选的局部名字：pyright 不会把外层的 None 收窄带进嵌套函数。
+        target = window
+
+        def destroy_window() -> None:
+            try:
+                target.destroy()
+            except Exception as error:
+                log.debug(f'[Cubby] 冒烟钩子关闭窗口失败: {error}')
+
+        timer = threading.Timer(delay_ms / 1000, destroy_window)
+        timer.daemon = True
+        timer.start()
+        log.info(f'[Cubby] 冒烟钩子: {delay_ms} ms 后关闭桌面窗口')
+
+    return close_after_delay
+
+
+def _run_web_only(config, manager, host: str, port: int) -> None:
+    """只起 HTTP 服务：显式 `--web-only` 与"窗口后端不可用"的降级共用这一份实现。
+
+    降级后必须与显式 web-only 完全一样可用（浏览器打开同一个地址），差异只在日志
+    里那条"已退回"的说明。
+    """
+    app = create_app(config, manager)
+    log.info(f"[Cubby] Web-only 模式启动: http://{host}:{port}")
+    try:
+        # threaded=True：单线程下大文件媒体流会阻塞所有请求（无法跳转/元数据读取/API），
+        # 流媒体（Range 请求）与后台扫描任务都需要并发处理。
+        app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
+    finally:
+        # 浏览器访问模式没有"关窗"事件：调用方停掉这个服务（Ctrl+C）就是安全退出。
+        # 放在 `finally` 是因为 `app.run()` 在收到停止信号时是抛异常退出的 ——
+        # 这一条与桌面模式的取舍不同，理由见 `_commit_last_route` 的说明。
+        _commit_last_route()
+
+
+def _run_app(config, manager, web_only: bool | None = None, fallback_reason: str = ''):
+    """启动应用（Web-only 或桌面窗口），阻塞到用户退出。
+
+    `web_only` / `fallback_reason` 由 `main()` 用 `_resolve_startup_route()` 算好传进来；
+    为 None 时按 `--web-only` 自行判定（保持既有调用方式，也让单测可以直接调本函数
+    而不触发平台探测）。
+    """
+    if web_only is None:
+        web_only = '--web-only' in sys.argv
+    host, port = config['server']['host'], _resolve_port(config)
+    # Web-only 模式：不启动 PyWebView 桌面窗口，只运行 Flask 服务。
+    # 适用于通过 nginx/SSH 隧道在浏览器中访问 Cubby UI，也用于窗口后端不可用时的降级。
+    if web_only:
+        if fallback_reason:
+            log.warning(f"[Cubby] 桌面窗口不可用: {fallback_reason}；"
+                        f"已退回 --web-only: http://{host}:{port}")
+            _log_window_backend_install_hint(platform.system())
+        _run_web_only(config, manager, host, port)
         return
 
     class ShellAPI:
@@ -594,7 +958,6 @@ def _run_app(config, manager):
     for method_name, method_fn in shell_methods.items():
         setattr(api, method_name, method_fn)
 
-    host, port = config['server']['host'], _resolve_port(config)
     _run_desktop_window(config, manager, api, host, port)
 
 
@@ -612,13 +975,20 @@ def _run_desktop_window(config, manager, api, host, port):
         log.warning("[Cubby] Flask 启动超时")
         return
 
-    webview.create_window('格子铺', f'http://{host}:{port}', js_api=api, width=1400, height=900, text_select=True)
+    log.info(f"[Cubby] 窗口后端: {_window_backend_label(platform.system())}")
+    window = webview.create_window('格子铺', f'http://{host}:{port}', js_api=api, width=1400, height=900, text_select=True)
     # 窗口已建：此后 system_*_window_fullscreen 才有对象可操作（--web-only 不会走到这里，
     # 那条通道因此继续给出"没有桌面窗口"的明确拒绝）
     register_desktop_window()
-    webview.start(debug=not getattr(sys, 'frozen', False), http_server=True,
+    log.info("[Cubby] 桌面窗口已创建")
+    # CI 冒烟钩子：CUBBY_WINDOW_SMOKE_MS 为正整数时，窗口显示后自动关窗。
+    # 回调交给 webview.start(func=...) 在 GUI 循环起来之后执行，未设置时为 None，
+    # 与原有行为完全一致（pywebview 对 func=None 就是什么都不做）。
+    smoke_ms = _window_smoke_delay_ms()
+    on_window_started = _window_smoke_closer(window, smoke_ms) if smoke_ms is not None else None
+    webview.start(on_window_started, debug=not getattr(sys, 'frozen', False), http_server=True,
                   private_mode=False, storage_path=str(_webview_storage_dir()),
-                  icon=_brand_icon_path())
+                  icon=_window_icon_path())
     # 这一行必须留在 `webview.start()` **之后**：它返回即"用户正常关窗退出"。
     # 异常展开（启动失败 / 崩溃）会跳过这里，进程被强杀同样不会执行 —— 「上次离开的
     # 页面」只记安全退出的值，正是要靠这个位置来保证。浏览器与
@@ -677,10 +1047,15 @@ def main():
     # 「上次离开的页面」的退出兜底（浏览器访问与 --web-only 没有关窗事件）
     atexit.register(_commit_last_route)
     manager.load_all()
+    # 启动路线在这里定：显式 --web-only 不动，否则先探测窗口后端，不可用就降级。
+    # 探测不放进 `_run_app` 里，是因为那两段启动路径（`_run_app` 的桌面分支、
+    # `_run_desktop_window`）已经被既有用例直接调用做替身测试；把探测放在入口，
+    # 单测替换掉建窗逻辑时不会被本机的窗口依赖左右。
+    web_only, fallback_reason = _resolve_startup_route()
     # 退出时必须回调 on_unload（关 SQLite/WAL、停插件线程、落盘最后一次状态）：
     # atexit 兜底 + finally 覆盖所有退出路径（正常关窗、Ctrl+C、异常）。
     try:
-        _run_app(config, manager)
+        _run_app(config, manager, web_only=web_only, fallback_reason=fallback_reason)
     finally:
         _unload_plugins(manager)
 

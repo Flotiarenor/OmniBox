@@ -150,12 +150,25 @@ WebView2 Runtime 在 Windows 10/11 上通常已经随系统或 Edge 安装；检
 在没有它的机器上提前给出可操作的提示，避免"装完打不开、也没有报错"。检测**只提示、
 不阻塞安装**：静默安装（`/VERYSILENT`）下没有界面，改为只记日志，不下载任何东西。
 
+装完之后还有一次运行期判定：`main.py` 的 `_resolve_startup_route()` 在注册表与安装目录
+两处都找不到 WebView2 时认为窗口后端不可用，启动日志打印
+`[Cubby] 桌面窗口不可用: <原因>；已退回 --web-only: http://<host>:<port>` 与
+`[Cubby] 安装 WebView2 Runtime: https://developer.microsoft.com/microsoft-edge/webview2/`，
+进程改按 `--web-only` 起服务，浏览器打开同一个地址即可；显式加 `--web-only` 时不做探测、
+行为不变。Linux 缺 GTK/WebKitGTK 走同一条降级路径，提示的是发行版包名（见
+[readme.md](../readme.md) 的「下载与安装」）。
+
 ### 3.2 便携版：zip 继续保留
 
 `Cubby-windows-x64.zip` 仍然发布，解压即用（不写注册表、不建快捷方式）。数据要跟着
 目录走时，在可执行文件旁放一个空的 `portable.txt`，数据就落在该目录（§2.1 第 3 条），
 整个目录拷走即完成迁移。不放 marker 时，解压目录里的程序也按默认数据根读写数据 ——
 zip 不再是"数据一定跟着目录走"的保证，而是"可以这样用"。
+
+zip 与安装器打的是同一棵树，两者在 `Cubby.exe` 同目录都带 `Cubby-Web.cmd`：双击它只起
+HTTP 服务（参数原样透传，例如 `Cubby-Web.cmd --port 9000`），浏览器打开它打印的地址；
+安装版不建它的开始菜单快捷方式，需要时到安装目录运行。`Cubby.exe` 本身仍先尝试桌面窗口，
+窗口后端不可用时才自动退回 `--web-only`。
 
 zip 与安装器的分工：
 
@@ -245,23 +258,34 @@ localStorage 里的旧偏好与播放进度不再读取 —— 这类设置丢�
 
 ## 4. Linux 分发
 
-### 4.1 为什么这次不做 AppImage
+### 4.1 本版不做 AppImage 的原因
 
-打包链里没有 GTK / PyGObject 依赖，PyInstaller 只收集 Python 与前端产物；而
-`main.py` 的桌面窗口在 Linux 上实际走不通。把 `--web-only` 的服务器形态塞进
-AppImage，得到的只是一个"需要浏览器的桌面应用"，不如直接给压缩包与说明。
+Linux 桌面窗口已可用：窗口由 pywebview 的 GTK 后端创建，运行时依赖系统的 GTK 3 与
+WebKitGTK（4.1 优先、4.0 兜底）。产物里只有 Python 绑定 `gi` / `_gi`；GTK、WebKitGTK、
+glib 与 girepository 一律由用户系统提供，构建与剔除规则见
+[ci-and-release.md](./ci-and-release.md) 的打包链路。
 
-Linux 上的真实用法是服务器 / NAS：
+AppImage 的定位是"自带运行时的双击即用"。要兑现这一点就得把 GTK/WebKitGTK/glib 打进包：
+跨发行版的版本匹配是一层，GLib 在同一进程里只能有一份是另一层 —— 自带的一份会与系统
+WebKitGTK 依赖的那份同时进进程，GType 与信号注册表互不认识。这条与"系统库不进产物"的
+边界冲突。体积与形态也不划算：服务形态已有 tar.gz、`install.sh` 与容器三条路，都不需要
+把自解压单文件当作分发单位；升级方式对常驻服务也不如 `systemctl restart` 与
+`compose pull` 清楚。
+
+Linux 上窗口与服务两种用法都保留：
 
 ```bash
-python main.py --web-only        # 默认 http://127.0.0.1:18080
+python main.py                   # 桌面窗口；系统缺 WebKitGTK 时自动退回 --web-only
+python main.py --web-only        # 只起 HTTP 服务，默认 http://127.0.0.1:18080
 ```
 
 ### 4.2 现在：tar.gz
 
-`Cubby-linux-x64.tar.gz`（带 `.sha256`）仍是 Linux 的唯一产物：解压后执行
-`Cubby/Cubby --web-only`（压缩包根目录是 `Cubby/`，可执行文件是其中的 `Cubby`），
-用浏览器访问。它与 1.x 的差别只在数据位置（§2.1 的 Linux 默认数据根）。
+`Cubby-linux-x64.tar.gz`（带 `.sha256`）仍是 Linux 的唯一产物：解压后执行 `Cubby/Cubby`
+打开桌面窗口，或 `Cubby/cubby-web.sh` 只起 HTTP 服务（压缩包根目录是 `Cubby/`，可执行文件
+是其中的 `Cubby`；启动器与主程序同目录，参数原样透传，例如 `./cubby-web.sh --port 9000`，
+`Cubby/Cubby --web-only` 等价）；缺系统 WebKitGTK 时主程序自动退回 `--web-only`，服务形态
+用浏览器访问日志里的地址。它与 1.x 的差别只在数据位置（§2.1 的 Linux 默认数据根）。
 
 ### 4.3 后续：`install.sh` 与容器镜像（设计已定稿，尚未实装）
 
@@ -328,14 +352,16 @@ Windows 构建（[release.yml](../.github/workflows/release.yml) 的 Windows bui
    runner 的默认安装位置），确认 `Cubby.exe` 与 `unins000.exe` 就位；在
    `%LOCALAPPDATA%\Cubby` 放一个哨兵文件，用同一 `/DIR` 再覆盖安装一次并断言哨兵仍在
    （升级不该搬动数据根），最后静默卸载、等安装目录真的消失、再断言哨兵仍在。
-   冒烟失败让 job 直接红，而不是只打印日志。
+   冒烟失败让 job 直接红，而不是只打印日志。同一 job 还会真跑一次产物里的
+   `Cubby-Web.cmd`（`--port 18090` 启动 → 轮询 `/health` → `taskkill /T /F`），
+   确认启动器把参数透传给了主程序，而不是只声明了文件。
 3. 安装器与 zip / tar.gz 分别上传 artifact，publish job 用 `merge-multiple: true`
    合并后按 `dist/*` 挂进草稿 Release。
 4. 安装器的编译与冒烟（第 1、2 步）抽在 `.github/actions/windows-installer` 里，
    `package-smoke.yml` 调用同一份 —— 改 `docs/Releases/**` 时就会真编一次，不必等到
    打 tag。
-5. Linux 分支改为在 `debian:12` 容器里构建（glibc 2.36），并在同一镜像里起一次
-   `--web-only` 探 `/health`；宿主的 setup-python 只服务工具脚本，不用于构建。
+5. Linux 分支改为在 `debian:12` 容器里构建（glibc 2.36），给包内 `cubby-web.sh` 补可执行位，
+   并在同一镜像里经它起服务探 `/health`；宿主的 setup-python 只服务工具脚本，不用于构建。
 6. publish job 在创建或刷新草稿 Release 之后，用
    `gh release upload "$TAG" docs/Releases/migrate-to-2.0.cmd docs/Releases/migrate-to-2.0.ps1 --clobber`
    把 1.4.0 → 2.0 的迁移脚本挂到同一个 Release 上；已发布过的 Release 在更早的分支里已经
@@ -351,8 +377,8 @@ Windows 构建（[release.yml](../.github/workflows/release.yml) 的 Windows bui
 
 | 资产 | 说明 | 校验文件 |
 | --- | --- | --- |
-| `Cubby-windows-x64.zip` | Windows 便携版 | `Cubby-windows-x64.zip.sha256` |
-| `Cubby-linux-x64.tar.gz` | Linux 服务端形态（`--web-only`） | `Cubby-linux-x64.tar.gz.sha256` |
+| `Cubby-windows-x64.zip` | Windows 便携版（含 `Cubby-Web.cmd`） | `Cubby-windows-x64.zip.sha256` |
+| `Cubby-linux-x64.tar.gz` | Linux 桌面窗口 / 服务端形态（`./Cubby` 或 `cubby-web.sh`） | `Cubby-linux-x64.tar.gz.sha256` |
 | `Cubby-Setup-<版本>.exe` | Windows per-user 安装器 | `Cubby-Setup-<版本>.exe.sha256` |
 | `migrate-to-2.0.cmd` `migrate-to-2.0.ps1` | 1.4.0 → 2.0 数据迁移脚本（不随主压缩包打包，由 publish job 单独上传） | — |
 
@@ -410,12 +436,14 @@ profile，以及本机访问令牌与设备身份；漫游目录会在每次登�
 | --- | --- | --- | --- |
 | M1：数据根与安装目录解耦（`CUBBY_HOME` / 开发模式 / 便携 marker / 默认数据根） | **已实装** | [paths.py](../shell/backend/paths.py)、`tests/test_paths_user_data.py` | 由发布说明告知用户"升级不需要搬数据" |
 | M2：Windows Inno Setup 安装器与发布链接入 | **已实装**（本机实测编译、静默安装与卸载） | [cubby.iss](Releases/cubby.iss)、[release.yml](../.github/workflows/release.yml) 的 Windows build（安装 + 冒烟 + `.sha256`） | CI 首跑确认 iscc 定位与冒烟；再做一次跨版本覆盖安装 |
+| 发布包内的 web-only 启动器（`Cubby-Web.cmd` / `cubby-web.sh`） | **已实装** | [spec_common.py](Releases/spec_common.py) 的 `web_only_launchers()`、[check_build_tree.py](../tools/check_build_tree.py) 对产物里启动器（含 `.sh` 可执行位）的断言、[release.yml](../.github/workflows/release.yml) 与 `package-smoke.yml` 的启动器冒烟 | 首个带启动器的产物发布后，在 Windows 安装版与 Linux tar.gz 里各跑一次，确认参数透传与打印的地址 |
 | 应用内检查更新（A 检查与提示 / B 下载与校验） | **已实装** | [update-check.md](./update-check.md)、`shell/backend/update_check.py`、`tests/test_update_check.py` | 真机点一次，确认 `cubby.log` 有一行检查结果 |
 | 应用内一键升级（安装器路径 / zip 自替换） | 设计定稿，排到 2.1 | [update-check.md](./update-check.md) §7、§12 的 C、D | 先在真机验证覆盖安装与目录改名 |
 | winget 清单 | 设计定稿，未实装 | [distribution-channels.md](./distribution-channels.md) | 先在临时机器用 `winget install --manifest` 试装 |
 | Scoop bucket | 设计定稿，未实装 | [distribution-channels.md](./distribution-channels.md) §4 | 建 `Flotiarenor/scoop-cubby` 并试装 |
 | Linux `install.sh` / systemd / `ghcr.io` 镜像 | 设计定稿，未实装 | [linux-distribution.md](./linux-distribution.md) | 按该文档 §8 的 A–E 段验收 |
 | Linux 产物的 glibc 基线 | **已实装** | [linux-distribution.md](./linux-distribution.md) §9、[ci-and-release.md](./ci-and-release.md) 的打包链路 | 首个用容器构建的 tar.gz 发布后，在 Debian 12 上实跑一次 |
+| Linux 桌面窗口（`gi` / `_gi` 绑定、启动探测与降级、CI 建窗冒烟） | **已实装**（构建容器实测 PyGObject 3.48.2 编译、Gtk/WebKit2 4.1 typelib 可加载） | [main.py](../main.py) 的 `_probe_window_backend()` / `_resolve_startup_route()`、[cubby-linux.spec](Releases/cubby-linux.spec)、[release.yml](../.github/workflows/release.yml) 的 Xvfb 步骤、`tests/test_main_window_fallback.py` | 在 Debian 12 / Fedora / Arch 上各开一次窗，核对提示里的包名与实际发行版一致 |
 | 1.4.0 → 2.0 数据迁移脚本 | **已实装**（本机按七类场景实测过） | [migrate-to-2.0.ps1](Releases/migrate-to-2.0.ps1)、[migrate-to-2.0.cmd](Releases/migrate-to-2.0.cmd)、[release.yml](../.github/workflows/release.yml) 的 publish job | 在一台真装过 1.4.0 的机器上先预演再落盘，确认 2.0 读到设置与索引 |
 
 「已实装」指代码与发布链在同一次改动里落地；「设计定稿」指方案与判据已写进对应文档、

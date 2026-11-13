@@ -1,6 +1,6 @@
 # 朗读端点契约（OpenAI 兼容）
 
-状态：**已实现**（document-reader 的 `tts_engine.py`）。适用于"自建本地模型服务"这一档朗读：
+状态：**已实现**（`plugins/document-reader/backend/tts_endpoint.py`）。适用于"自建本地模型服务"这一档朗读：
 插件只当客户端，**不含模型**。端点由使用者自行部署（Kokoro-FastAPI、GPT-SoVITS、Qwen3-TTS
 一类自定义音色服务，或云 API），地址填在设置项 `tts_base_url`。
 
@@ -88,5 +88,5 @@ def speech(req: dict):
     return Response(content=audio, media_type="audio/mpeg")
 ```
 
-`plugins/document-reader/backend/tts_engine.py` 中对应的实现为
-`openai_synthesize()`（合成）与 `endpoint_voices()`（清单）。
+`plugins/document-reader/backend/tts_endpoint.py` 中对应的实现为
+`synthesize()`（合成）与 `VoiceCatalog.endpoint_voices()`（清单）。

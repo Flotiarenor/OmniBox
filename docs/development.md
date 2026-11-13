@@ -131,7 +131,7 @@ cd Cubby
 > 是开发/构建工具。发布脚本会把当前打包机的 `pip freeze` 快照写到
 > `requirements.lock.txt`（仅供审计，不会覆盖依赖声明）。
 
-### Linux / Web-only 运行
+### Linux 运行（桌面窗口 / Web-only）
 
 ```bash
 git clone https://github.com/Flotiarenor/Cubby.git
@@ -139,15 +139,33 @@ cd Cubby
 
 bash setup-venv.sh           # 统一环境入口：创建 venv + 安装依赖
 
+# 桌面窗口：系统提供 GTK 3 与 WebKitGTK 的 typelib，venv 里要有 gi（PyGObject）。
+# Debian/Ubuntu 一条装齐系统侧；编译 PyGObject 还要开发包与 ninja。
+sudo apt install gir1.2-gtk-3.0 gir1.2-webkit2-4.1 \
+  libgirepository1.0-dev libcairo2-dev pkg-config python3-dev build-essential ninja-build
+venv/bin/pip install PyGObject
+
 cd shell/frontend
 npm ci                       # 按 package-lock.json 安装（可复现）
 npm run build
 cd ../..
 
-python main.py --web-only    # 或 venv/bin/python main.py --web-only
+venv/bin/python main.py              # 桌面窗口（pywebview 的 GTK 后端）
+venv/bin/python main.py --web-only   # 只起 HTTP 服务
 ```
 
-然后浏览器访问：
+Fedora / Arch 的 typelib 包名按启动日志里的提示（`gtk3 webkit2gtk4.1` / `webkit2gtk-4.1`），
+PyGObject 同样先装好各发行版的开发包再 `pip install`。
+
+窗口后端在启动时探测：`main.py` 的 `_probe_window_backend()` 找不到 `gi` 或 WebKit2
+4.1/4.0 的 typelib 时判定不可用，`_resolve_startup_route()` 改走 `--web-only`，日志打印
+`[Cubby] 桌面窗口不可用: <原因>；已退回 --web-only: http://<host>:<port>` 与上面那条安装
+命令，浏览器打开同一个地址即可；显式加 `--web-only` 时不做探测，只是少了这条降级日志。
+服务器、容器与 CI 没有显示会话，直接用 `--web-only`；要验证窗口真能建起来，用 `xvfb-run`
+起一次并设 `CUBBY_WINDOW_SMOKE_MS`（窗口显示后自动关窗），以日志里的
+`[Cubby] 桌面窗口已创建` 为准。
+
+`--web-only` 模式下浏览器访问：
 
 ```text
 http://127.0.0.1:18080

@@ -11,16 +11,16 @@
 
 ## 1. 目标与形态
 
-Linux 的定位是**服务器 / NAS 上常驻的 `--web-only` 服务**，不是桌面应用。已发布形态只有 `Cubby-linux-x64.tar.gz`（内含 `Cubby/` 与可执行文件 `Cubby`，由 [cubby-linux.spec](./Releases/cubby-linux.spec) 与 [build-release.sh](./Releases/build-release.sh) 产出），默认 `http://127.0.0.1:18080`。
+Linux 支持两种形态：桌面窗口（pywebview 的 GTK 后端，运行时依赖系统的 GTK 3 与 WebKitGTK，4.1 优先、4.0 兜底）与 `--web-only` 服务。窗口的 Python 绑定 `gi` / `_gi` 随产物发布，GTK / WebKitGTK / glib / girepository 的共享库与 typelib 一律由系统提供、**不进产物**（规则见 [ci-and-release.md](./ci-and-release.md) 的打包链路）；系统缺后端时 [main.py](../main.py) 的 `_resolve_startup_route()` 探测后打印安装命令、自动退回 `--web-only` 并打印访问地址。已发布形态只有 `Cubby-linux-x64.tar.gz`（内含 `Cubby/` 与可执行文件 `Cubby`，由 [cubby-linux.spec](./Releases/cubby-linux.spec) 与 [build-release.sh](./Releases/build-release.sh) 产出），默认 `http://127.0.0.1:18080`。
 
-桌面窗口在 Linux 上不可用：[requirements.txt](../requirements.txt) 没有 GTK/PyGObject（也没有 Qt），而 [main.py](../main.py) 的非 `--web-only` 分支依赖 pywebview 的窗口后端。因此所有分发形态都**固定**带 `--web-only`，写进启动器、unit 与镜像入口，不留给用户选。
+Linux 的主要使用场景仍是**服务器 / NAS 上常驻的 `--web-only` 服务**：那里没有显示会话，`install.sh`、systemd unit 与容器镜像因此固定带 `--web-only`，写进启动器、unit 与镜像入口；桌面用法不受影响，直接运行解压目录或 `current/` 里的 `Cubby` 即可。
 
 | 形态 | 输入 | 定位 | 状态 |
 | --- | --- | --- | --- |
-| tar.gz | PyInstaller 产物 | 底座，打包链不变 | 已实装 |
-| `install.sh` | tar.gz（下载 + `.sha256`） | 不装 Python / Node，一条命令起服务 | 本文定稿 |
-| 容器镜像 | 源码 + 依赖安装（§4.1） | NAS / 家庭服务器常驻 | 本文定稿 |
-| systemd unit | 由 `install.sh` 生成 | 跟着安装位置走，不是发布资产 | 本文定稿 |
+| tar.gz | PyInstaller 产物 | 底座，打包链不变；桌面窗口与 `--web-only` 两种启动方式 | 已实装 |
+| `install.sh` | tar.gz（下载 + `.sha256`） | 服务形态：不装 Python / Node，一条命令起 `--web-only` 服务 | 本文定稿 |
+| 容器镜像 | 源码 + 依赖安装（§4.1） | 服务形态：NAS / 家庭服务器常驻 | 本文定稿 |
+| systemd unit | 由 `install.sh` 生成 | 服务形态：跟着安装位置走，不是发布资产 | 本文定稿 |
 
 ## 2. `install.sh`
 
@@ -37,7 +37,7 @@ Linux 的定位是**服务器 / NAS 上常驻的 `--web-only` 服务**，不是�
 | 数据根 | `$XDG_DATA_HOME/cubby`（默认 `~/.local/share/cubby`） | `/var/lib/cubby` |
 
 - **版本目录 + `current` 链接**：升级是"加一个目录 + 换一个链接"，旧版本原样留在磁盘上，回滚就是切回去；Windows 侧只能覆盖同一安装目录（运行中的 onedir 被系统锁定），Linux 允许留多份、用链接选择。
-- **启动器固定加 `--web-only`，程序目录运行期只读**：直接暴露 `Cubby` 会让用户落到必然失败的窗口模式，启动器因此是 `#!/bin/sh` 包装 `exec "$ROOT/current/Cubby" --web-only "$@"`，参数原样透传；冻结产物只往数据根写（[paths.py](../shell/backend/paths.py) 的 `get_user_data_dir()`），故程序目录 `755`、属主为 root（system）或安装用户（user），不必对服务用户可写。
+- **启动器固定加 `--web-only`（服务形态），程序目录运行期只读**：这条安装路径面向常驻服务，没有显示会话，启动器因此是 `#!/bin/sh` 包装 `exec "$ROOT/current/Cubby" --web-only "$@"`，参数原样透传 —— 不给参数也不会停在窗口上；要桌面窗口就直接运行 `current/Cubby`（或 `versions/<版本>/Cubby`）。包内的 `cubby-web.sh` 与 `Cubby` 同目录（解压后落在 `versions/<版本>/`），生成的启动器不必自己重写这段 exec：`exec "$ROOT/current/cubby-web.sh" "$@"` 即可，脚本自身就是 `exec "$(dirname "$0")/Cubby" --web-only "$@"`，只多一层对 `current` 的解析。冻结产物只往数据根写（[paths.py](../shell/backend/paths.py) 的 `get_user_data_dir()`），故程序目录 `755`、属主为 root（system）或安装用户（user），不必对服务用户可写。
 
 ### 2.2 参数
 
@@ -49,6 +49,8 @@ Linux 的定位是**服务器 / NAS 上常驻的 `--web-only` 服务**，不是�
 | `--port <端口>` | 写进 unit 的 `ExecStart`，默认 `18080`；覆盖语义见 §3.3 |
 | `--data-dir <路径>` | 数据根；system 默认 `/var/lib/cubby`，user 默认不设（用 XDG 默认） |
 | `--uninstall` / `--purge` | 卸载；`--purge` 只与它同用，连数据根一起删（§2.5） |
+
+启动器与包内 `cubby-web.sh` 都不解析参数：`cubby-web.sh` 只有 `exec "$(dirname "$0")/Cubby" --web-only "$@"`，生成的启动器按 §2.1 转给它，因此上表参数一路传到主程序，脚本里不需要逐个声明。
 
 `--data-dir` 在 system 模式下落成 unit 的 `Environment=CUBBY_HOME=<路径>`，这是应用层唯一的**整根**覆盖（`USER_DATA_DIR_ENV`）。不要用应用的 `--data-root` 代替：它只覆盖 `data/`（索引与缓存），`.config/`（含令牌）仍在数据根，混用会把一份状态分裂到两处。
 
@@ -224,11 +226,11 @@ volumes: {cubby-data: {}}
 
 **结论：不做，且不作为 2.x 的目标。** 三条理由：
 
-1. 没有 GTK/PyGObject（[requirements.txt](../requirements.txt) 无 `pygobject` / `PyQt`），[main.py](../main.py) 的桌面窗口在 Linux 上起不来；AppImage 的价值是"双击即用的桌面应用"，这里兑现不了 —— 里面只能是一个需要浏览器访问的 `--web-only` 服务。
-2. 形态与体积错配：AppImage 要自带运行时，而服务形态已有更合适的容器与 `install.sh` 两条路，都不需要 root，也不需要打成自解压单文件。
+1. 窗口的运行时依赖必须来自系统：产物里只有 Python 绑定 `gi` / `_gi`，GTK 3、WebKitGTK 与 glib / girepository 一律由用户的系统提供（[spec_common.py](./Releases/spec_common.py) 的 `SYSTEM_LIBRARY_PATTERNS` 与 `SYSTEM_DATA_PREFIXES` 把这条边界挡在产物外）。AppImage 的定位是"自带运行时的双击即用"，要兑现就得把整条依赖链打进包：跨发行版的版本匹配是一层，GLib 在同一进程里只能有一份是另一层 —— 自带的一份会与系统 WebKitGTK 依赖的那份同时进进程，GType 与信号注册表互不认识。
+2. 形态与体积错配：服务形态已有容器与 `install.sh` 两条路，都不需要 root，也不需要打成自解压单文件；窗口形态本身就是一个解压即用的 tar.gz，缺的只是系统库，装库命令由启动日志直接给出。
 3. 更新方式：AppImage 的升级是"下载新的替换旧的"，对常驻服务不如 `systemctl restart` 与 `compose pull` 清楚。
 
-值得做的条件（要先有实现，不是先有包装）：[requirements.txt](../requirements.txt) 引入 `PyGObject`（或 Qt）且 Linux 上真能建窗；CI 能跑 xvfb 的真实窗口冒烟（现有 `tools/shell_e2e_smoke.py` 验的是壳在 Chrome 里的行为，不等于桌面窗口能开）；有用户明确要"无 root、无 Docker、无浏览器"的桌面捆绑包。
+值得做的条件（不是先有包装）：有用户明确要"无 root、无 Docker、无浏览器"的桌面捆绑包，且能接受"自带 GTK/WebKitGTK"带来的发行版差异与体积；或者 AppImage 只装 Python 侧、继续依赖系统 WebKitGTK —— 那它和现在的 tar.gz 只差一个自解压外壳。
 
 ## 7. 与检查更新的关系
 
@@ -278,7 +280,18 @@ docker exec cubby-test cat /data/.config/auth_token.txt            # 通过：�
 # F. arm64（仅在本期决定做时）：构建日志里 pythonnet / pillow / pycryptodome 都必须来自 wheel
 docker buildx build --platform linux/arm64 -t cubby:arm64 .
 docker run --rm --platform linux/arm64 cubby:arm64 python -c "import webview, flask; print('ok')"
+
+# G. 桌面窗口（解压后的产物 + xvfb 虚拟显示，不需要真实桌面）
+tar -xzf Cubby-linux-x64.tar.gz
+sudo apt install xvfb xauth dbus-x11 gir1.2-gtk-3.0 gir1.2-webkit2-4.1
+export WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 CUBBY_WINDOW_SMOKE_MS=8000
+export CUBBY_HOME="$(mktemp -d)" HOME="$(mktemp -d)"
+timeout 120 xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
+  ./Cubby/Cubby --port 18081 >/tmp/window.log 2>&1 \
+  && grep -F '[Cubby] 桌面窗口已创建' /tmp/window.log   # 通过：退出码 0 且日志有建窗那行
 ```
+
+G 段的判据是整条命令退出码为 0（`timeout` 以 124 结束说明降级成了 `--web-only` 一直服务）且日志里有 `[Cubby] 桌面窗口已创建`；缺系统 WebKitGTK 时会先打印 `[Cubby] 桌面窗口不可用: <原因>；已退回 --web-only: <地址>` 与安装命令。
 
 E 段另有两项人工判据：浏览器打开 `http://127.0.0.1:18080` 要能看到界面并列出插件（前端 dist 与 `res/` 都在）；用一个不在白名单的 Host 直连要得到 `400` 标记页（说明白名单生效、需要补 `trusted_hosts`）；`-v` 改成 bind mount 后 `ls -ln /data` 的属主必须是 `10001`，否则先 `chown`。
 
@@ -291,6 +304,11 @@ E 段另有两项人工判据：浏览器打开 `http://127.0.0.1:18080` 要能�
   `/health`，在 `ubuntu:22.04`（2.35）里仍失败 —— 该发行版的 `python3` 是 3.10，本来
   也不满足 `requires-python`。构建与冒烟步骤在 `release.yml` 与 `package-smoke.yml` 的
   Linux 分支，机制见 [ci-and-release.md](./ci-and-release.md) 的打包链路一节。
+- **桌面窗口依赖系统 WebKitGTK（已实装）**：产物只带 Python 绑定 `gi` / `_gi`，GTK 3 与
+  WebKitGTK 由用户系统提供，因此"能不能开窗"取决于发行版是否装了它们；缺的时候启动探测
+  打印安装命令并退回 `--web-only`（日志
+  `[Cubby] 桌面窗口不可用: <原因>；已退回 --web-only: <地址>`），不会停在打不开的窗口上。
+  绑定如何随产物发布、CI 如何建窗冒烟，见 [ci-and-release.md](./ci-and-release.md) 的打包链路。
 - **无签名**：`.sha256` + HTTPS 是唯一凭据，脚本与镜像都不验 GPG 签名，发布账号被接管时校验值也会一起被换；与 Windows 侧同一风险，脚本无法消除。
 - **镜像体积**：slim 基镜像 + 全量 `requirements.txt`（含 Linux 用不到的 `pywebview` / `pythonnet`）+ 前端 dist；瘦身要新增依赖文件，属独立改动。
 - **多架构维护成本**：每加一个架构就多一份要验收的运行时与本地无法复现的调试路径；本期只做 amd64。

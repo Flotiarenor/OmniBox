@@ -248,6 +248,9 @@ jobs:
       # Debian 12 / DSM 7 / TrueNAS SCALE（glibc 2.36）上会报
       # "version `GLIBC_2.36' not found"（已实测）。debian:12 的 python3 是 3.11，
       # 满足 requires-python；前端在宿主机构建后经挂载点进容器，容器里不需要 node。
+      #
+      # 桌面窗口的 Python 绑定也在这里编译（见下面的 PyGObject 安装）：冻结进产物的
+      # CPython 就是容器里的 python3，绑定必须在同一份解释器上编译才有 ABI 一致性。
       - name: PyInstaller 打包（Linux，debian:12 容器）
         if: runner.os == 'Linux'
         run: |
@@ -256,14 +259,37 @@ jobs:
             set -euo pipefail
             export DEBIAN_FRONTEND=noninteractive
             apt-get update -qq
-            apt-get install -y -qq python3 python3-venv python3-pip binutils
+            # build-essential / ninja-build：PyGObject 与 pycairo 只有源码包，pip 的
+            # build isolation 只装 meson 与 meson-python，编译器与 ninja 得由系统提供
+            # （debian:12 基础镜像两者都没有）。
+            # python3-dev / pkg-config / libgirepository1.0-dev / libcairo2-dev 是编译
+            # 所需的头文件与 pkg-config 描述；gir1.2-* 装上 GTK/WebKit2 的 typelib 与
+            # 运行库，让构建机里的 gi 能解析版本（运行时这些一律由用户系统提供，
+            # 不进产物）。bookworm 自带 gir1.2-webkit2-4.1（无需退回 4.0）。
+            apt-get install -y -qq python3 python3-venv python3-pip binutils \
+              build-essential ninja-build pkg-config python3-dev \
+              libgirepository1.0-dev libcairo2-dev \
+              gir1.2-gtk-3.0 gir1.2-webkit2-4.1
             python3 -m venv /tmp/venv
             /tmp/venv/bin/pip install -q --upgrade pip
             /tmp/venv/bin/pip install -q -r requirements-dev.txt
+            # PyGObject 只有源码包，pip 会现场用 meson 编译（上面装的那些 -dev 包）。
+            # 固定 3.48.2：bookworm 的 glib 是 2.74、gobject-introspection 是 1.74，
+            # 3.48.x 仍走 girepository-1.0（meson 要求 glib >= 2.64 / gi >= 1.64）。
+            # 不能上 3.50：它改用 girepository-2.0，而 girepository 2.0 已并入 glib，
+            # 要求 glib >= 2.80，在 bookworm 上编译不过。
+            /tmp/venv/bin/pip install -q "PyGObject==3.48.2"
             /tmp/venv/bin/python -m PyInstaller --workpath .build-work --distpath .build-dist --noconfirm --log-level WARN docs/Releases/cubby-linux.spec
             mv -f .build-dist/Cubby/Cubby.bin .build-dist/Cubby/Cubby
             chmod +x .build-dist/Cubby/Cubby
-            /tmp/venv/bin/pip freeze > .build-dist/Cubby/requirements.lock.txt
+            # 发布包里的"只跑 HTTP 服务"启动器随 datas 进来，datas 拷贝不保留可执行位
+            chmod +x .build-dist/Cubby/cubby-web.sh
+            # 依赖快照写到产物目录树之外：tar -C .build-dist Cubby 只收 Cubby/，写进
+            # Cubby/ 就会被一起分发。它只用于审计构建环境（含 pyright/ruff/pyinstaller
+            # 这类构建依赖），不能随包分发；同时打进日志供从运行页面复核。
+            /tmp/venv/bin/pip freeze > .build-dist/requirements.lock.txt
+            echo "--- requirements.lock.txt（仅审计，不随包分发）---"
+            cat .build-dist/requirements.lock.txt
           '
 
       - name: 校验产物内容
@@ -276,6 +302,8 @@ jobs:
       # 再由容器内的 python3 发一次 HTTP GET /health 并等 200 才算过（它在
       # _OPEN_ENDPOINTS 里，不需要令牌）。debian:12 基础镜像没有 curl，所以先装 python3。
       # 只连端口不算数：服务绑上了端口但 /health 返回 500 也是坏的。
+      # 这里刻意**通过发布包里的 cubby-web.sh 启动**（而不是直接跑可执行文件）：
+      # 启动器本身也是产物，路径解析与参数透传坏了必须在这里暴露。
       - name: Linux 产物在 debian:12 里起得来且 /health 返回 200
         if: runner.os == 'Linux'
         run: |
@@ -285,7 +313,8 @@ jobs:
             export DEBIAN_FRONTEND=noninteractive
             apt-get update -qq >/dev/null
             apt-get install -y -qq python3 >/dev/null
-            /srv/Cubby/Cubby --web-only --port 18080 >/tmp/cubby.log 2>&1 &
+            cd /srv/Cubby
+            ./cubby-web.sh --port 18080 >/tmp/cubby.log 2>&1 &
             pid=$!
             ok=0
             for _ in $(seq 1 40); do
@@ -305,11 +334,102 @@ jobs:
             echo "产物在 debian:12 里启动，且 /health 返回 200"
           '
 
+      # 能起 --web-only 不代表能开窗：Linux 桌面窗口走 pywebview 的 GTK 后端，
+      # 需要系统 WebKitGTK 与 X 显示。这里装 Xvfb 与系统 WebKitGTK，用 xvfb-run
+      # 起一次真实窗口；main.py 的冒烟钩子在 CUBBY_WINDOW_SMOKE_MS 毫秒后自动关窗，
+      # 所以进程应当自己以 0 退出。断言两条：超时时间内退出码为 0、日志里出现建窗
+      # 成功那一行。缺 WebKitGTK 时进程会降级到 --web-only 一直服务，被 timeout 杀掉，
+      # 两条断言都会失败。容器里没有 curl，判据只用 coreutils 与产物自身的日志。
+      - name: Linux 产物在 debian:12 里开得起 GTK 窗口
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/.build-dist/Cubby:/srv/Cubby:ro" -e CUBBY_HOME=/tmp/cubby-home debian:12 bash -lc '
+            set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq >/dev/null
+            # xvfb / xauth 提供虚拟显示；dbus-x11 提供会话总线的启动器（GTK 缺它会告警）；
+            # 系统 WebKitGTK 与 GTK 的 typelib 是运行时依赖，产物里只有 Python 绑定。
+            apt-get install -y -qq xvfb xauth dbus-x11 libwebkit2gtk-4.1-0 gir1.2-webkit2-4.1 gir1.2-gtk-3.0 >/dev/null
+            export HOME=/tmp/cubby-home
+            export XDG_RUNTIME_DIR=/tmp/xdg-runtime
+            mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
+            chmod 700 "$XDG_RUNTIME_DIR"
+            # Xvfb 没有 GPU：WebKitGTK 2.42 起默认的 DMA-BUF 渲染器在无 GPU 环境会失败，
+            # 显式走软件渲染路径。这只改合成方式，窗口本身仍由系统的 GTK 创建。
+            export WEBKIT_DISABLE_DMABUF_RENDERER=1
+            export LIBGL_ALWAYS_SOFTWARE=1
+            export CUBBY_WINDOW_SMOKE_MS=8000
+            status=0
+            timeout 120 xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" /srv/Cubby/Cubby --port 18081 >/tmp/window.log 2>&1 || status=$?
+            if [ "$status" != 0 ]; then
+              echo "::error::Linux 产物没能开窗：进程退出码 $status（124 表示超时，通常是降级成 --web-only 一直服务）"
+              tail -40 /tmp/window.log
+              exit 1
+            fi
+            if ! grep -Fq "[Cubby] 桌面窗口已创建" /tmp/window.log; then
+              echo "::error::Linux 产物日志里没有建窗成功那一行，窗口没有真正创建"
+              tail -40 /tmp/window.log
+              exit 1
+            fi
+            echo "Linux 产物在 debian:12 + Xvfb 里创建了 GTK 窗口，并按冒烟钩子自行退出"
+          '
+
+      # 发布包里的 Cubby-Web.cmd 是 Windows 上唯一"只跑 HTTP 服务"的入口（不加开始菜单
+      # 快捷方式、不提供 .ps1）。除了文件存在，这里还真跑一次：启动 → 轮询 /health →
+      # taskkill 整棵树，确认脚本把参数透传给了主程序（--port 生效），而不是只声明了文件。
+      - name: Windows 产物里的 web-only 启动器可用
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $launcher = Join-Path '.build-dist/Cubby' 'Cubby-Web.cmd'
+          if (-not (Test-Path -LiteralPath $launcher)) {
+            Write-Error "产物里没有 Cubby-Web.cmd"
+            exit 1
+          }
+          # 用户数据根放到 runner 临时目录，别把设置写进产物目录
+          $env:CUBBY_HOME = Join-Path $env:RUNNER_TEMP 'cubby-home'
+          $proc = Start-Process -FilePath $launcher -ArgumentList '--port', '18090' -PassThru -WindowStyle Hidden
+          try {
+            $ok = $false
+            for ($i = 0; $i -lt 60; $i++) {
+              try {
+                # -NoProxy：CI 环境里的 HTTP(S)_PROXY 会让本机探活被交给代理
+                $resp = Invoke-WebRequest -NoProxy -UseBasicParsing -Uri 'http://127.0.0.1:18090/health' -TimeoutSec 2
+                if ($resp.StatusCode -eq 200) { $ok = $true; break }
+              } catch {
+                Start-Sleep -Milliseconds 500
+              }
+            }
+            if (-not $ok) {
+              Write-Error "Cubby-Web.cmd 启动后 /health 没有返回 200"
+              exit 1
+            }
+            Write-Output 'Cubby-Web.cmd 启动成功，/health 返回 200'
+          } finally {
+            if ($null -ne $proc -and -not $proc.HasExited) {
+              # /T 连子进程一起杀：cmd.exe 下面才是 Cubby.exe
+              taskkill /PID $proc.Id /T /F | Out-Null
+            }
+          }
+
       # Windows 的依赖快照写在宿主；Linux 那份由构建容器写（记录的才是真正的构建环境）。
+      #
+      # 两处都写到产物目录树**外**的 .build-dist/：zip 用 Cubby/*、tar 用 -C .build-dist
+      # Cubby、安装器 [Files] 是 SourceDir\* 全收 —— 写进 .build-dist/Cubby 就会被一起
+      # 分发。这份快照只用于审计构建环境（里面是 pyright / ruff / pyinstaller 之类的
+      # 构建与开发依赖），不能随包分发。它同时打进任务日志，保留"从运行页面复核构建
+      # 环境"的价值；刻意不单独上传 artifact —— publish 用 dist/* 全收，多传一份会变成
+      # Release 资产。
       - name: 生成依赖快照（Windows）
         if: runner.os == 'Windows'
         continue-on-error: true
-        run: python -m pip freeze > .build-dist/Cubby/requirements.lock.txt
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path .build-dist | Out-Null
+          python -m pip freeze > .build-dist/requirements.lock.txt
+          Write-Output '--- requirements.lock.txt（仅审计，不随包分发）---'
+          Get-Content .build-dist/requirements.lock.txt
 
       - name: 打包（Windows → zip）
         if: runner.os == 'Windows'
@@ -331,8 +451,9 @@ jobs:
       # 编译、校验和与静默安装/卸载冒烟都在 .github/actions/windows-installer 里，
       # 与 package-smoke.yml 共用同一份：安装器的参数与冒烟判据只能有一个出处，
       # 否则"发布链改了、冒烟没改"要等到打 tag 才暴露。
-      # 为什么放在依赖快照之后：安装器铺的是同一个 .build-dist/Cubby，
-      # requirements.lock.txt 在那一步才写进去，这样它与 zip 里的内容一致。
+      # 为什么放在依赖快照之后：安装器铺的是同一个 .build-dist/Cubby。锁文件写在产物
+      # 树外的 .build-dist/，三者（zip / tar.gz / 安装器）都不带它，因此顺序不影响
+      # "安装器与 zip 的目录内容一致"这一条。
       - name: 构建 Windows 安装器
         if: runner.os == 'Windows'
         uses: ./.github/actions/windows-installer

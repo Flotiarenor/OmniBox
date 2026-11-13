@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -45,6 +46,12 @@ def _spec_common():
     spec.loader.exec_module(module)
     return module
 
+# 「只跑 HTTP 服务」的启动器：按构建平台只该有对应那一份，且必须与可执行文件同目录
+# （无头/浏览器场景靠它起服务，构建链漏收不会有测试变红，只能在这里判）。
+# 非 Windows 产物上的 .sh 还要求可执行位：打包步骤漏了 chmod +x 时用户跑
+# ./cubby-web.sh 会报 "Permission denied"，CI 里补 chmod 不能替代对产物的断言。
+WEB_ONLY_LAUNCHER = 'Cubby-Web.cmd' if os.name == 'nt' else 'cubby-web.sh'
+
 # 产物中必须存在的内容（相对产物根目录，用 / 分隔）
 #
 # 注意：内核的 Python 源码（shell/backend/*.py）**不会**以源码形式出现 ——
@@ -60,6 +67,7 @@ REQUIRED = [
     'plugins/media-player/manifest.json',
     'plugins/media-player/backend/main.py',
     'base_library.zip',
+    WEB_ONLY_LAUNCHER,
 ]
 
 # 产物中绝不允许出现的内容
@@ -67,6 +75,10 @@ FORBIDDEN_DIR_NAMES = {'__pycache__', 'node_modules', '.git', '.pytest_cache'}
 FORBIDDEN_SUFFIXES = {'.pyc', '.pyo'}
 # 用户数据/密钥不得进包
 FORBIDDEN_RELATIVE = {'data', '.config'}
+# 构建期审计文件：只用于复核构建环境（内容含 pyright / ruff / pyinstaller 之类的
+# 构建与开发依赖），不能随包分发。CI 把它写在产物树外的 .build-dist/ 下；这条断言
+# 兜住"又被写回产物树"的漂移（zip/tar.gz/安装器都是整目录全收，写进去就会带走）。
+FORBIDDEN_TOP_FILES = {'requirements.lock.txt'}
 
 
 def _pyz_module_names(exe: Path) -> set:
@@ -150,6 +162,13 @@ def main(argv: list) -> int:
         if not (dist / rel).is_file():
             errors.append(f'产物缺少必需文件: {rel}')
 
+    # .sh 启动器必须可执行（Windows 没有 POSIX 可执行位，只对非 Windows 产物判）
+    launcher = dist / WEB_ONLY_LAUNCHER
+    if (os.name != 'nt' and launcher.is_file()
+            and not os.access(launcher, os.X_OK)):
+        errors.append(f'产物里的 {WEB_ONLY_LAUNCHER} 没有可执行位'
+                      f'（打包步骤漏了 chmod +x，用户会报 Permission denied）')
+
     if args.expect_exe:
         exe = dist / args.expect_exe
         if not exe.is_file():
@@ -164,6 +183,9 @@ def main(argv: list) -> int:
                 errors.append(f'产物包含不该有的目录: {path.relative_to(dist)}')
         elif path.suffix.lower() in FORBIDDEN_SUFFIXES:
             errors.append(f'产物包含字节码文件: {path.relative_to(dist)}')
+        if len(rel_parts) == 1 and rel_parts[0] in FORBIDDEN_TOP_FILES:
+            errors.append(f'产物包含构建期审计文件: {path.relative_to(dist)}'
+                          f'（它只用于审计，不能随包分发）')
         if rel_parts and rel_parts[0] in FORBIDDEN_RELATIVE:
             errors.append(f'产物包含用户数据目录: {path.relative_to(dist)}')
 

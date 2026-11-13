@@ -118,6 +118,8 @@ jobs:
           --log-level WARN
           ${{ matrix.spec }}
 
+      # 与 release.yml 的 Linux 打包步骤同一条路：debian:12 容器（glibc 2.36 基线）+ 同一套
+      # 构建期依赖 + 同一个 PyGObject 版本，这样冒烟出来的产物与发布产物同构（都含 gi/_gi）。
       - name: PyInstaller 打包（Linux，debian:12 容器）
         if: runner.os == 'Linux'
         run: |
@@ -126,14 +128,33 @@ jobs:
             set -euo pipefail
             export DEBIAN_FRONTEND=noninteractive
             apt-get update -qq
-            apt-get install -y -qq python3 python3-venv python3-pip binutils
+            # build-essential / ninja-build：PyGObject 与 pycairo 只有源码包，pip 的
+            # build isolation 只装 meson 与 meson-python，编译器与 ninja 得由系统提供
+            # （debian:12 基础镜像两者都没有）。其余是编译所需的头文件、pkg-config
+            # 描述与 GTK/WebKit2 的 typelib。
+            apt-get install -y -qq python3 python3-venv python3-pip binutils \
+              build-essential ninja-build pkg-config python3-dev \
+              libgirepository1.0-dev libcairo2-dev \
+              gir1.2-gtk-3.0 gir1.2-webkit2-4.1
             python3 -m venv /tmp/venv
             /tmp/venv/bin/pip install -q --upgrade pip
             /tmp/venv/bin/pip install -q -r requirements-dev.txt
+            # 窗口的 Python 绑定：固定 3.48.2。bookworm 的 glib 是 2.74、
+            # gobject-introspection 是 1.74，3.48.x 仍走 girepository-1.0；3.50 起改用
+            # girepository-2.0（已并入 glib，要求 glib >= 2.80），这里编不过。
+            /tmp/venv/bin/pip install -q "PyGObject==3.48.2"
             /tmp/venv/bin/python -m PyInstaller --workpath .build-work --distpath .build-dist --noconfirm --log-level WARN docs/Releases/cubby-linux.spec
             mv -f .build-dist/Cubby/Cubby.bin .build-dist/Cubby/Cubby
             chmod +x .build-dist/Cubby/Cubby
-            /tmp/venv/bin/pip freeze > .build-dist/Cubby/requirements.lock.txt
+            # 发布包里的"只跑 HTTP 服务"启动器随 datas 进来，datas 拷贝不保留可执行位
+            chmod +x .build-dist/Cubby/cubby-web.sh
+            # 依赖快照写到产物目录树之外：本 workflow 会把 .build-dist/Cubby 整个传成
+            # artifact，而且 check_build_tree 会断言产物里没有 requirements.lock.txt。
+            # 它只用于审计构建环境（含 pyright/ruff/pyinstaller 这类构建依赖），不能随包
+            # 分发；同时打进日志供复核。
+            /tmp/venv/bin/pip freeze > .build-dist/requirements.lock.txt
+            echo "--- requirements.lock.txt（仅审计，不随包分发）---"
+            cat .build-dist/requirements.lock.txt
           '
 
       - name: 校验产物内容
@@ -145,6 +166,7 @@ jobs:
       # 与 release.yml 同一条判据：在 debian:12 里真起一次 --web-only，再由容器内的
       # python3 发 HTTP GET /health 并等 200。连得上端口不算数（服务绑上了端口但
       # /health 返回 500 也是坏的）；debian:12 基础镜像没有 curl，所以先装 python3。
+      # 通过发布包里的 cubby-web.sh 启动：启动器本身是产物，路径解析/参数透传坏了要在这里暴露。
       - name: Linux 产物在 debian:12 里起得来且 /health 返回 200
         if: runner.os == 'Linux'
         run: |
@@ -154,7 +176,8 @@ jobs:
             export DEBIAN_FRONTEND=noninteractive
             apt-get update -qq >/dev/null
             apt-get install -y -qq python3 >/dev/null
-            /srv/Cubby/Cubby --web-only --port 18080 >/tmp/cubby.log 2>&1 &
+            cd /srv/Cubby
+            ./cubby-web.sh --port 18080 >/tmp/cubby.log 2>&1 &
             pid=$!
             ok=0
             for _ in $(seq 1 40); do
@@ -173,6 +196,83 @@ jobs:
             fi
             echo "产物在 debian:12 里启动，且 /health 返回 200"
           '
+
+      # 与 release.yml 同一步、同一套断言：能起 --web-only 不代表能开窗。这里装 Xvfb 与
+      # 系统 WebKitGTK，用 xvfb-run 起一次真实窗口；main.py 的冒烟钩子在
+      # CUBBY_WINDOW_SMOKE_MS 毫秒后自动关窗，所以进程应当自己以 0 退出。断言两条：
+      # 超时时间内退出码为 0、日志里出现建窗成功那一行。缺 WebKitGTK 时进程会降级到
+      # --web-only 一直服务，被 timeout 杀掉，两条断言都会失败。
+      # 放在这里（而不是只在 release.yml）：这份冒烟在 PR 阶段跑，spec / PyGObject
+      # 版本 / 剔除规则出问题时，正好在改动它的 PR 上暴露，不必等打 tag。
+      - name: Linux 产物在 debian:12 里开得起 GTK 窗口
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/.build-dist/Cubby:/srv/Cubby:ro" -e CUBBY_HOME=/tmp/cubby-home debian:12 bash -lc '
+            set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq >/dev/null
+            # xvfb / xauth 提供虚拟显示；dbus-x11 提供会话总线的启动器（GTK 缺它会告警）；
+            # 系统 WebKitGTK 与 GTK 的 typelib 是运行时依赖，产物里只有 Python 绑定。
+            apt-get install -y -qq xvfb xauth dbus-x11 libwebkit2gtk-4.1-0 gir1.2-webkit2-4.1 gir1.2-gtk-3.0 >/dev/null
+            export HOME=/tmp/cubby-home
+            export XDG_RUNTIME_DIR=/tmp/xdg-runtime
+            mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
+            chmod 700 "$XDG_RUNTIME_DIR"
+            # Xvfb 没有 GPU：WebKitGTK 2.42 起默认的 DMA-BUF 渲染器在无 GPU 环境会失败，
+            # 显式走软件渲染路径。这只改合成方式，窗口本身仍由系统的 GTK 创建。
+            export WEBKIT_DISABLE_DMABUF_RENDERER=1
+            export LIBGL_ALWAYS_SOFTWARE=1
+            export CUBBY_WINDOW_SMOKE_MS=8000
+            status=0
+            timeout 120 xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" /srv/Cubby/Cubby --port 18081 >/tmp/window.log 2>&1 || status=$?
+            if [ "$status" != 0 ]; then
+              echo "::error::Linux 产物没能开窗：进程退出码 $status（124 表示超时，通常是降级成 --web-only 一直服务）"
+              tail -40 /tmp/window.log
+              exit 1
+            fi
+            if ! grep -Fq "[Cubby] 桌面窗口已创建" /tmp/window.log; then
+              echo "::error::Linux 产物日志里没有建窗成功那一行，窗口没有真正创建"
+              tail -40 /tmp/window.log
+              exit 1
+            fi
+            echo "Linux 产物在 debian:12 + Xvfb 里创建了 GTK 窗口，并按冒烟钩子自行退出"
+          '
+
+      # 与 release.yml 同一步：Cubby-Web.cmd 除了存在，还真跑一次（启动 → /health →
+      # taskkill 整棵树），确认脚本把参数透传给了主程序。
+      - name: Windows 产物里的 web-only 启动器可用
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $launcher = Join-Path '.build-dist/Cubby' 'Cubby-Web.cmd'
+          if (-not (Test-Path -LiteralPath $launcher)) {
+            Write-Error "产物里没有 Cubby-Web.cmd"
+            exit 1
+          }
+          $env:CUBBY_HOME = Join-Path $env:RUNNER_TEMP 'cubby-home'
+          $proc = Start-Process -FilePath $launcher -ArgumentList '--port', '18090' -PassThru -WindowStyle Hidden
+          try {
+            $ok = $false
+            for ($i = 0; $i -lt 60; $i++) {
+              try {
+                # -NoProxy：CI 环境里的 HTTP(S)_PROXY 会让本机探活被交给代理
+                $resp = Invoke-WebRequest -NoProxy -UseBasicParsing -Uri 'http://127.0.0.1:18090/health' -TimeoutSec 2
+                if ($resp.StatusCode -eq 200) { $ok = $true; break }
+              } catch {
+                Start-Sleep -Milliseconds 500
+              }
+            }
+            if (-not $ok) {
+              Write-Error "Cubby-Web.cmd 启动后 /health 没有返回 200"
+              exit 1
+            }
+            Write-Output 'Cubby-Web.cmd 启动成功，/health 返回 200'
+          } finally {
+            if ($null -ne $proc -and -not $proc.HasExited) {
+              taskkill /PID $proc.Id /T /F | Out-Null
+            }
+          }
 
       # 安装器只在 Windows 上有；它与 release.yml 共用同一个 composite action，
       # 所以改安装器的构建输入时这里就会真编译一次 iscc 并做静默安装/卸载冒烟 ——

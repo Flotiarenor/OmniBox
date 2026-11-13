@@ -9,6 +9,7 @@ PyInstaller 打包、产物校验与发布脚本。根 [AGENTS.md](../../AGENTS.
 | `build-release.ps1` `build-release.sh` | 本地打包脚本（Windows / Linux） |
 | `cubby.spec` `cubby-linux.spec` | 两份 PyInstaller 规格 |
 | `spec_common.py` | 两份 spec 共享的唯一一份收集逻辑与 `HIDDEN_IMPORTS` |
+| `web-only/` | 发布包里"只跑 HTTP 服务"的启动器：Windows `Cubby-Web.cmd`、Linux `cubby-web.sh`，由 `spec_common.web_only_launchers()` 按平台收进产物根目录，与可执行文件同目录。两者只做「找同目录的主程序 + 透传参数 + `--web-only`」：不 cd、不探测、不复制降级逻辑（降级判定在 `main.py`），也不改变 cwd（便携模式靠 exe 旁的 portable.txt）。加逻辑会与主程序行为漂移 |
 | `cubby.iss` | Windows 安装器（Inno Setup 6）：把 `.build-dist/Cubby` 打成 per-user 安装包；CI 传 `/DAppVersion=<版本>` `/DSourceDir=<产物目录>` `/O<输出目录>`，产物是 `Cubby-Setup-<版本>.exe` |
 | `ChineseSimplified.isl` | vendor 的 Inno Setup 官方简体中文语言包：Inno 自带的 `Languages\` 没有中文，向导与卸载器的中文全靠它。升 Inno 大版本时从上游同路径重新取，取回后补回文件顶部的来源说明，不要手改译文 |
 | `installer-banner-100.png` `-125` `-150` 与 `installer-small-100.png` `-125` `-150` | 向导图：由 `tools/build_brand.py` 生成的 3 档 DPI（100% 的图像区是 202×386 与 58×58，125%/150% 按 Inno 的缩放表）；入仓成品，构建期不重新生成、不依赖字体 |

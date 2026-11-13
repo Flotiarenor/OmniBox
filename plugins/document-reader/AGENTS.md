@@ -6,6 +6,7 @@
 - 形态：独立页插件，`frontend.route` 为 `/document-reader`；不承载 companion，也不内嵌进其它插件，`dependencies` 为空数组。
 - 页面 chrome：manifest 声明 `frontend.chrome`，品牌块、左栏导航、顶栏动作、搜索框、状态栏与侧栏分隔条由壳的 `PluginChrome.vue` 渲染；壳加载内容页时追加 `?content=1`，iframe 内只有内容（书架、阅读器、朗读设置整页、目录与阅读设置弹窗）。
 - 库外工具：`tool/tts_speed.py` 在命令行量「合成语音的速度能不能跟上播放速度」，复用本插件的引擎、切句与参数整理，只读设置与文档，不改任何状态。
+- 朗读端点契约：自建 OpenAI 兼容端点要实现的路由、请求字段、音色清单与失败语义见 [docs/document-reader-tts-endpoint.md](../../docs/document-reader-tts-endpoint.md)。
 
 
 ## 文件地图

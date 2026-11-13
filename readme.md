@@ -70,7 +70,7 @@
 | --- | --- | --- |
 | Windows x64（推荐） | `Cubby-Setup-<版本>.exe` | 双击安装，从开始菜单启动 |
 | Windows x64（便携版） | `Cubby-windows-x64.zip` | 解压后双击 `Cubby.exe` |
-| Linux x64 | `Cubby-linux-x64.tar.gz` | 解压后 `cd Cubby && ./Cubby --web-only`，用浏览器访问 |
+| Linux x64 | `Cubby-linux-x64.tar.gz` | 解压后 `cd Cubby && ./Cubby`：有系统 WebKitGTK 时开桌面窗口，缺时自动退回 `--web-only` 并打印访问地址 |
 
 每次发布同时提供 `.sha256` 校验文件，可用于核对下载是否完整：
 
@@ -95,11 +95,22 @@ sha256sum -c Cubby-linux-x64.tar.gz.sha256
 
 1. 下载对应压缩包；
 2. **完整解压**到你有写权限的目录（例如 `D:\Cubby`、`~/cubby`）；
-3. 运行可执行文件。Linux 用 `cd Cubby && ./Cubby --web-only` 起服务、浏览器访问；Windows 双击 `Cubby.exe`。
+3. 运行可执行文件。Linux 用 `cd Cubby && ./Cubby` 打开桌面窗口（缺系统 WebKitGTK 时自动退回 `--web-only` 并打印访问地址）；Windows 双击 `Cubby.exe`。
+
+> Linux 的桌面窗口由系统的 GTK 3 与 WebKitGTK 提供，下载包里不含这两套库。启动时检测不到
+> 它们会打印安装命令并退回 `--web-only`，浏览器打开日志里的地址即可；安装命令按发行版：
+> Debian/Ubuntu 执行 `sudo apt install gir1.2-gtk-3.0 gir1.2-webkit2-4.1`；Fedora 执行
+> `sudo dnf install gtk3 webkit2gtk4.1`；Arch 执行 `sudo pacman -S webkit2gtk-4.1`。
 
 > Windows 便携版默认也把数据写在用户数据目录。想让数据跟随程序目录（U 盘、多份副本），
 > 在 `Cubby.exe` 旁新建一个空的 `portable.txt` 再启动。完整规则见
 > [安装与更新](./docs/install-and-update.md)。
+
+**只跑服务（不开窗口）**：Windows 安装版与 zip、Linux tar.gz 里，主程序同目录还有一个只起
+HTTP 服务的启动器——Windows 双击 `Cubby-Web.cmd`，Linux 运行 `./cubby-web.sh`。参数原样透传
+（例如 `Cubby-Web.cmd --port 9000` 或 `./cubby-web.sh --port 9000`），浏览器打开它打印的地址
+即可；安装版不为它建开始菜单快捷方式，需要时到安装目录运行。两个脚本只做「找同目录的主程序
++ 透传参数 + `--web-only`」，不探测、不复制降级逻辑；要桌面窗口仍然运行 `Cubby.exe` / `./Cubby`。
 
 两个必须提前知道的事：
 

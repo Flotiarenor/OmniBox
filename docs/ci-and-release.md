@@ -198,8 +198,9 @@ spec + `check_build_tree.py` 产物校验。插件矩阵按插件拆分，失败
 `.github/actions/**` 与本文件 / `release.yml`。改 `docs/Releases/AGENTS.md` 这类文档不触发
 （那是"每次改文档烧 20 分钟"的来源）。目的是让"打包坏了"在 PR 阶段暴露，而不是等到打 tag。
 两条判据与发版完全一致：Windows 分支编译一次安装器并做静默安装/卸载冒烟（与
-`release.yml` 共用 `.github/actions/windows-installer`），Linux 分支在 `debian:12`
-容器里构建，并在同一镜像里起一次 `--web-only`、由容器内的 `python3` 发一次
+`release.yml` 共用 `.github/actions/windows-installer`），并把产物里的 `Cubby-Web.cmd`
+真跑一次（启动 → 轮询 `/health` → `taskkill /T /F`）；Linux 分支在 `debian:12` 容器里构建，
+chmod 启动器后在同一镜像里经 `cubby-web.sh` 起服务、由容器内的 `python3` 发一次
 HTTP `GET /health`、等到 200 才算过（只连端口不算数：端口通但 `/health` 返回 500
 同样是坏的）。
 
@@ -216,6 +217,10 @@ HTTP `GET /health`、等到 200 才算过（只连端口不算数：端口通但
 - **自动做完**：版本一致性校验（tag ↔ pyproject ↔ package.json ↔ package-lock.json）、ruff / 插件规范 /
   打包规则 / 图标 sprite 一致性 / 应用图标一致性（`build_brand.py --check-icons`）/ 测试文件可运行性 /
   全量单测 / 前端转义门禁、双平台 PyInstaller 构建、`check_build_tree.py` 产物校验、打 zip / tar.gz、
+  Linux 产物在 `debian:12` + Xvfb 里开一次 GTK 窗口（`CUBBY_WINDOW_SMOKE_MS` 到时自动关窗，
+  断言进程以 0 退出且日志出现 `[Cubby] 桌面窗口已创建`）、
+  Linux 的 `/health` 冒烟经包内 `cubby-web.sh` 启动、Windows 产物里的 `Cubby-Web.cmd`
+  真跑一次（启动 → 轮询 `/health` → `taskkill /T /F`）、
   Windows 用 Inno Setup 打 `Cubby-Setup-<版本>.exe` 并做一次静默安装/卸载冒烟、
   生成各产物的 `.sha256`、建**草稿** Release 并挂上产物。
   （向导图的逐字节比对不在发布链里：它要 Windows 系统字体，不同镜像渲染出的字节不同；
@@ -297,16 +302,45 @@ HTTP `GET /health`、等到 200 才算过（只连端口不算数：端口通但
   （含字节码与用户数据目录），并且会**解析产物 exe 里的 PYZ**，确认
   `HIDDEN_IMPORTS` 声明的纯 Python 模块真的打进去了 —— 插件是动态加载的，
   PyInstaller 找不到时只打一条 warning 就跳过，必须靠这道检查兜住。
+- **web-only 启动器也是产物**：`check_build_tree.py` 的 `WEB_ONLY_LAUNCHER` 断言产物根目录里
+  有对应平台的启动器（Windows `Cubby-Web.cmd`、Linux `cubby-web.sh`），非 Windows 产物还要求
+  `.sh` 带可执行位 —— 打包步骤漏了 `chmod +x` 时用户运行 `./cubby-web.sh` 会报
+  `Permission denied`，CI 里的 `chmod` 不能替代对产物本身的断言。
 - **Linux 产物在 `debian:12` 容器里构建**：PyInstaller 不打包 glibc，产物继承构建机的
   基线。runner 是 `ubuntu-latest`（24.04，glibc 2.39），在它上面构建出的 tar.gz 到
   Debian 12 / Synology DSM 7 / TrueNAS SCALE（glibc 2.36）上会报
   `version 'GLIBC_2.36' not found`（本机实测）。因此 `release.yml` 与
   `package-smoke.yml` 的 Linux 分支用 `docker run ... debian:12` 跑 PyInstaller：
   容器里装发行版 `python3`（3.11，满足 `requires-python`）+ venv，前端由宿主机构建后
-  经挂载点带进容器，产物基线因此是 2.36；再用同一个镜像起一次 `--web-only`，
-  由容器内的 `python3` 发一次 HTTP `GET /health` 并等到 200，证明它真的能跑，
-  而不是只"文件齐全"。只连端口不算判据：服务绑上了端口但 `/health` 返回 500
+  经挂载点带进容器，产物基线因此是 2.36；打包后再给启动器补可执行位
+  （`chmod +x .build-dist/Cubby/cubby-web.sh`，datas 拷贝不保留权限）。`/health` 冒烟
+  通过发布包里的 `cubby-web.sh` 启动（`cd /srv/Cubby && ./cubby-web.sh --port 18080`），
+  由容器内的 `python3` 发一次 HTTP `GET /health` 并等到 200：启动器本身也是产物，路径解析
+  与参数透传坏了必须在这里暴露。只连端口不算判据：服务绑上了端口但 `/health` 返回 500
   同样是坏的（debian:12 基础镜像没有 curl，探针先 `apt-get install python3`）。
+- **Linux 产物只带窗口的 Python 绑定**：`docs/Releases/spec_common.py` 的
+  `gi_hidden_imports()` 在构建环境装了 PyGObject 时才声明 `gi` / `gi.repository` /
+  `gi.overrides`；`GI_REPOSITORY_EXCLUDES` 让 PyInstaller 的 gi 钩子没有触发点（否则
+  它会按 typelib 把 GTK / WebKitGTK 连同整条依赖链收进产物），`filter_system_libraries()`
+  与 `filter_system_data()` 再把 glib / girepository / GTK / WebKit 的共享库与 `gi_typelibs/`
+  挡在产物外。实测发布产物 80.1 MB / 529 个文件，其中窗口相关的只有
+  `gi/_gi.cpython-311-x86_64-linux-gnu.so`：没有任何 typelib，也没有
+  libglib / libgirepository / GTK / WebKit 的库。GLib 在同一进程里只能有一份（两份同时在
+  进程里时 GType 与信号注册表互不认识），这条边界是把它排除在产物外的原因。
+- **构建容器里编 PyGObject**：`release.yml` 与 `package-smoke.yml` 的 Linux 打包步骤在
+  `debian:12` 里装
+  `build-essential ninja-build pkg-config python3-dev libgirepository1.0-dev libcairo2-dev`
+  与 `gir1.2-gtk-3.0 gir1.2-webkit2-4.1`，再 `pip install "PyGObject==3.48.2"`。绑定必须与
+  冻结进产物的 CPython 同一份（容器里的 python3.11）才有 ABI 一致性；固定 3.48.2 是因为
+  bookworm 的 glib 是 2.74、gobject-introspection 是 1.74，3.48.x 仍走 girepository-1.0，
+  而 3.50 起改用 girepository-2.0（已并入 glib）、要求 glib ≥ 2.80，在 bookworm 上编不过。
+- **Xvfb 里开一次真窗口**：`release.yml` 与 `package-smoke.yml` 的 Linux 分支都有
+  「Linux 产物在 debian:12 里开得起 GTK 窗口」步骤，装
+  `xvfb xauth dbus-x11 libwebkit2gtk-4.1-0 gir1.2-webkit2-4.1 gir1.2-gtk-3.0`，设
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1`（Xvfb 没有 GPU，WebKitGTK 2.42 起默认的 DMA-BUF
+  渲染器会失败）、`LIBGL_ALWAYS_SOFTWARE=1` 与 `CUBBY_WINDOW_SMOKE_MS=8000`，用
+  `xvfb-run` 运行产物。两条断言：退出码为 0；日志里出现 `[Cubby] 桌面窗口已创建`。
+  缺 WebKitGTK 时进程会降级成 `--web-only` 一直服务，被 `timeout` 杀掉，两条断言都失败。
 - **宿主机上的 `actions/setup-python` 只服务工具脚本**（`check_build_tree.py`、
   `sha256`、`pip freeze`），不用于构建：那份 libpython 与我们的 spec 不兼容，产物启动即报
   `Failed to load Python shared library .../libpython3.12.so.1.0`（它会让
@@ -323,6 +357,12 @@ powershell -ExecutionPolicy Bypass -File docs/Releases/build-release.ps1
 # Linux
 bash docs/Releases/build-release.sh
 ```
+
+Linux 本地构建不会自动装窗口绑定：`build-release.sh` 走 `setup-venv.sh --dev`，依赖里没有
+PyGObject，打出的产物与 CI 的差 `gi`/`_gi`（仍然能起 `--web-only`，只是开不了窗）。要与
+CI 产物一致，先按 [development.md](development.md) 的「Linux 运行」装好系统包并在项目
+venv 里 `pip install PyGObject`，再跑脚本。启动器由脚本自己补可执行位并检查存在
+（`cubby-web.sh` 不在产物里会直接报错），不需要手工 `chmod`。
 
 ### 产物目录里绝不能有你自己的用户数据
 
@@ -385,17 +425,25 @@ tar -tzf Cubby-linux-x64.tar.gz | grep -E '^Cubby/(\.config|data)'    # 应为�
    不占本地环境，且产物出自干净的 Linux 环境。
 2. **WSL2**（Windows 自带）：`wsl --install -d Ubuntu`，在发行版里
    `bash docs/Releases/build-release.sh`（需要 `python3-venv`、`node`/`npm`、`binutils`）。
-3. **Docker Desktop（与 CI 同一条路）**：在 `debian:12` 里跑 PyInstaller，前端先在宿主机构建：
+3. **Docker Desktop（与 CI 同一条路）**：在 `debian:12` 里跑 PyInstaller，前端先在宿主机构建。
+   容器里要装 PyGObject 的编译依赖与 GTK/WebKitGTK 的 typelib，否则产物里没有 `gi`/`_gi`、
+   开不了窗（`gi_hidden_imports()` 在构建环境没有 PyGObject 时返回空列表）：
    ```bash
    docker run --rm -v "$PWD:/src" -w /src debian:12 bash -lc '
-     apt-get update -qq && apt-get install -y -qq python3 python3-venv python3-pip binutils
+     export DEBIAN_FRONTEND=noninteractive
+     apt-get update -qq && apt-get install -y -qq python3 python3-venv python3-pip binutils \
+       build-essential ninja-build pkg-config python3-dev \
+       libgirepository1.0-dev libcairo2-dev gir1.2-gtk-3.0 gir1.2-webkit2-4.1
      python3 -m venv /tmp/venv && /tmp/venv/bin/pip install -q -r requirements-dev.txt
+     /tmp/venv/bin/pip install -q "PyGObject==3.48.2"
      /tmp/venv/bin/python -m PyInstaller --workpath .build-work --distpath .build-dist \
        --noconfirm --log-level WARN docs/Releases/cubby-linux.spec
-     mv -f .build-dist/Cubby/Cubby.bin .build-dist/Cubby/Cubby'
+     mv -f .build-dist/Cubby/Cubby.bin .build-dist/Cubby/Cubby
+     chmod +x .build-dist/Cubby/Cubby .build-dist/Cubby/cubby-web.sh'
    ```
    本机实测：产物在 `debian:12` 里正常启动并通过 `/health`，在 `ubuntu:22.04`
-   （glibc 2.35）里报 `version 'GLIBC_2.36' not found`。
+   （glibc 2.35）里报 `version 'GLIBC_2.36' not found`；开窗冒烟只在 CI 的 `release.yml`
+   里跑，本机要验窗口就按上面的 Xvfb 步骤自己起一次。
 
 **glibc 基线**：PyInstaller **不**打包 glibc，产物只对新版 glibc 前向兼容，所以要在
 "你想支持的最旧发行版"上构建。发布用的 Linux 产物统一在 `debian:12` 容器里构建
@@ -576,6 +624,14 @@ RUF100（未使用的 noqa）会把这些标注判为冗余并删除——它们
      安装器与草稿 Release 都不会产出 —— 不需要再到本机验证"装得上、卸得掉"。
      编译用的 Inno Setup 版本固定在 `.github/actions/windows-installer` 里
      （`choco install innosetup --version=…`），不取"最新"，否则安装器行为会随上游漂移。
+   - **Linux 建窗冒烟在 build job 里跑过**：`release.yml` 的 Linux 分支在 `debian:12` 容器里
+     装 Xvfb 与系统 WebKitGTK，用 `xvfb-run` 起一次真实窗口，`CUBBY_WINDOW_SMOKE_MS=8000`
+     让窗口到时自动关掉；任意一条失败（退出码非 0、日志里没有 `[Cubby] 桌面窗口已创建`）
+     都让 job 直接红。手工验证见 §4 的 Docker 命令。
+   - **web-only 启动器冒烟在 build job 里跑过**：Linux 的 `/health` 冒烟是经包内
+     `cubby-web.sh` 起的（启动器路径解析与参数透传坏了会直接失败），Windows 的
+     `Cubby-Web.cmd` 会被真跑一次（`--port 18090` 启动 → 轮询 `/health` →
+     `taskkill /T /F`）；`check_build_tree.py` 另外断言它在产物根目录、`.sh` 带可执行位。
    - **想先在自己机器上验证**，就从该次运行页面下载 artifact（Windows `zip` /
      `tar.gz` / `Setup.exe`，7 天内有效）。Windows 本机造不出 Linux 产物，见 §4。
    - 只想构建不想建草稿的场景，用手动触发 + 勾 `dry_run`。
