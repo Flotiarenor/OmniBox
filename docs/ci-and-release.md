@@ -26,7 +26,7 @@
 | 前端依赖漏洞 | `python tools/check_npm_audit.py` | **OK**（硬门禁；脚本内固定官方 registry，见下） |
 | 前端类型+构建 | `npm --prefix shell/frontend run build` | 通过（硬门禁） |
 | 图标 sprite 一致性 | `python tools/build_icons.py --check` | **OK**（硬门禁；校验 `res/icons/icons.svg` 与 `res/icons/icon_data.json` 同步，且模板/manifest 引用的图标全部已冻结） |
-| 图标与安装器图一致性 | 本地 `python tools/build_brand.py --check`（逐字节）；CI lint 跑 `--check-icons`（逐字节）与 `--check-banners`（形态：存在 / 可解码 / 尺寸） | **OK**（硬门禁；`res/brand/**` 的 6 套配色与 `docs/Releases/installer-*.png` 都要与 `tools/build_brand.py` 对得上。为什么 CI 不逐字节比对向导图：向导图里的中文用 `C:/Windows/Fonts` 的系统字体渲染，runner 上没有那套字体、Windows Server 镜像的字体版本也与开发机不同，同一份脚本渲染出的字节会不同 —— 逐字节只在生成它们的机器上有意义，因此留在本地 `--check`；CI 的 `--check-banners` 只查存在/可解码/尺寸三档 DPI） |
+| 图标与安装器图一致性 | 本地 `python tools/build_brand.py --check`（图标比像素、向导图比字节）；CI lint 跑 `--check-icons`（逐像素）与 `--check-banners`（形态：存在 / 可解码 / 尺寸） | **OK**（硬门禁；`res/brand/**` 的 6 套配色与 `docs/Releases/installer-*.png` 都要与 `tools/build_brand.py` 对得上。为什么图标比像素不比字节：PNG 由 zlib 压缩，同一份 pillow 在不同发行版里链的 zlib 版本不同，压缩流就不同而解码像素完全一致 —— 逐字节会在 runner 上整批误报。为什么 CI 不比对向导图内容：向导图里的中文用 `C:/Windows/Fonts` 的系统字体渲染，runner 上没有那套字体、Windows Server 镜像的字体版本也与开发机不同，同一份脚本渲染出的像素会不同 —— 内容比对只在生成它们的机器上有意义，因此留在本地 `--check`；CI 的 `--check-banners` 只查存在/可解码/尺寸三档 DPI） |
 | 打包冒烟 + 产物校验 | `python tools/check_build_tree.py <dist>/Cubby --expect-exe Cubby.exe` | 通过（硬门禁；CI 里只在 push main / 手动触发 / 打包路径变更时跑） |
 
 > `unittest` 这一行里包含插件前端的脚本契约用例：`tests/test_*_js.py` 包装器调用
@@ -110,7 +110,7 @@ node tools/check_frontend_escape.cjs
 | --- | --- | --- |
 | `changes` | ubuntu | 变更集判定：算出这次只动了文档还是动了代码，其余 job 靠它的输出决定跑不跑 |
 | `plugins` | ubuntu | 从 `plugins/*/manifest.json` 读出插件名，输出 JSON 矩阵；不维护第二份插件清单 |
-| `lint` | ubuntu | ruff + 插件规范 + 插件后端分层 + 打包规则 + 版本一致性 + 图标 sprite + 应用图标一致性（`build_brand.py --check-icons`，逐字节、不读字体）+ 安装器向导图形态（`--check-banners`：存在 / 可解码 / 尺寸）+ 测试文件可运行性 + 文档引用一致性 |
+| `lint` | ubuntu | ruff + 插件规范 + 插件后端分层 + 打包规则 + 版本一致性 + 图标 sprite + 应用图标一致性（`build_brand.py --check-icons`，逐像素、不读字体、不比字节）+ 安装器向导图形态（`--check-banners`：存在 / 可解码 / 尺寸）+ 测试文件可运行性 + 文档引用一致性 |
 | `docs` | ubuntu | **只在变更集含 `.md` 时跑**：文档引用一致性（`tools/check_docs.py`） |
 | `typecheck` | windows | pyright 内核 + 全部插件（零错误硬门禁） |
 | `test` | windows + ubuntu，py3.11 + 3.12 | 共享测试（`tools/plugin_ci.py --core`，不含插件专属测试） |
@@ -223,8 +223,10 @@ HTTP `GET /health`、等到 200 才算过（只连端口不算数：端口通但
   真跑一次（启动 → 轮询 `/health` → `taskkill /T /F`）、
   Windows 用 Inno Setup 打 `Cubby-Setup-<版本>.exe` 并做一次静默安装/卸载冒烟、
   生成各产物的 `.sha256`、建**草稿** Release 并挂上产物。
-  （向导图的逐字节比对不在发布链里：它要 Windows 系统字体，不同镜像渲染出的字节不同；
-  发布链靠 ISCC 编译 `.iss` 时校验向导图文件在位，逐字节留给本地 `--check`。）
+  （向导图的比对不在发布链里：它要 Windows 系统字体，不同镜像渲染出的字节/像素不同；
+  发布链靠 ISCC 编译 `.iss` 时校验向导图文件在位，逐字节留给本地 `--check`。图标则不同：
+  它只做几何绘制，像素跨平台一致，但 PNG 压缩字节随 zlib 版本变，所以 CI 的
+  `--check-icons` 比像素不比字节。）
 - **留给人**：只有"公开"这一下。草稿不进 Releases 列表、不产生 `latest`、不发通知，
   只有对仓库有写权限的人能看到。核对后点 **Publish release**
   即可（或 `gh release edit <tag> --draft=false`）。

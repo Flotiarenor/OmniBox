@@ -26,24 +26,30 @@ Inno Setup 6.6 起，100% DPI 的向导图区是 202×386（更早的版本是 1
 
 为什么校验分三档、深浅不同
 --------------------------
-图标（`res/brand/**`）只有几何绘制，不读字体，任何平台逐字节可复现；向导图里有
-"格子铺 / Cubby"文字，用 `C:/Windows/Fonts` 下的系统字体（微软雅黑 / Segoe UI）渲染。
-没有这些字体的机器上 `ImageFont.truetype` 直接抛 `OSError: cannot open resource`；
-而且不同 Windows 版本 / Server 镜像自带的字体版本不同，同一份脚本渲染出的 PNG 字节
-也会不同 —— "逐字节比对向导图"因此只在生成它们的机器上有意义，不能当 CI 门禁：
+图标的绘制只有几何、不读字体，**解码后的像素**在任何平台都一致；字节则不是：PNG 的
+压缩由 zlib 完成，zlib 的构建版本一变（同一份 pillow 在不同发行版里链不同 zlib），
+压缩流就不同，而解码出的像素完全相同。所以图标只能比像素、不能比字节 —— 拿逐字节
+比对图标当 CI 门禁，会随 runner 的 zlib 版本整批误报（实测：debian 12 的 zlib 1.2.13
+对 Windows 的 1.3.1，54 份产物字节全不同、像素全一致）。
 
-- `--check-icons`：逐字节比对图标；不读字体，任何平台都能跑（CI 的 lint 用这条）；
+向导图里还有"格子铺 / Cubby"文字，用 `C:/Windows/Fonts` 下的系统字体（微软雅黑 /
+Segoe UI）渲染：没有这些字体的机器上 `ImageFont.truetype` 直接抛
+`OSError: cannot open resource`，而且不同 Windows 版本 / Server 镜像的字体版本不同，
+同一份脚本渲染出的像素也会不同 —— 比对向导图只在生成它们的机器上有意义：
+
+- `--check-icons`：逐像素比对图标（PNG 比尺寸 + RGBA 数据；ICO 先比帧集合再逐帧比
+  RGBA）。不读字体、不比字节，任何平台都能跑（CI 的 lint 用这条）；
 - `--check-banners`：向导图的**形态**校验 —— 每份文件存在、能解码、尺寸等于
   `BANNER_DPI` / `SMALL_DPI` 里登记的值；不读字体、不比对内容，所以 Linux 上也能跑
   （CI 的 lint 用这条）。它兜的是"文件被删 / 改名 / 换错档位 / 截断"这类打包事故；
-- `--check`：图标与向导图都逐字节比对。向导图那一半要读系统字体，只在本机
+- `--check`：图标逐像素、向导图逐字节。向导图那一半要读系统字体，只在本机
   （Windows）提交前跑。
 
 用法
 ----
     venv/Scripts/python tools/build_brand.py                   # 生成全部产物（要 Windows 字体）
-    venv/Scripts/python tools/build_brand.py --check           # 逐字节校验全部（本地提交前，Windows）
-    venv/Scripts/python tools/build_brand.py --check-icons     # 逐字节校验图标（不读字体，任何平台）
+    venv/Scripts/python tools/build_brand.py --check           # 图标比像素 + 向导图比字节（本地提交前，Windows）
+    venv/Scripts/python tools/build_brand.py --check-icons     # 逐像素校验图标（不读字体，任何平台）
     venv/Scripts/python tools/build_brand.py --check-banners   # 向导图形态：存在/可解码/尺寸（不读字体）
 """
 from __future__ import annotations
@@ -277,7 +283,8 @@ def render_banner(w: int, h: int, theme: str = DEFAULT_THEME) -> Image.Image:
 def build_icon_outputs() -> dict[Path, bytes]:
     """图标产物：6 套配色 ×（1 份多尺寸 ICO + 8 份 PNG）。
 
-    只用几何绘制，不读字体，任何平台逐字节可复现 —— 所以可以挂在 Linux 的 lint 上。
+    只用几何绘制、不读字体，解码后的像素跨平台可复现；但 PNG 的**字节**随 zlib 构建
+    版本变化，所以校验比像素不比字节（见 `_check_icons`）。
     """
     outputs: dict[Path, bytes] = {}
     for theme in THEMES:
@@ -323,7 +330,10 @@ def _label(path: Path) -> str:
 
 
 def _check_outputs(build: Callable[[], dict[Path, bytes]], what: str) -> int:
-    """逐字节比对一组产物与生成脚本；0 = 一致，1 = 有差异（不写文件）。"""
+    """逐字节比对一组产物与生成脚本；0 = 一致，1 = 有差异（不写文件）。
+
+    只给向导图用：图标走 `_check_icons` 的像素比对（PNG 字节随 zlib 版本变）。
+    """
     outputs = build()
     stale = [path for path, data in outputs.items()
              if not path.is_file() or path.read_bytes() != data]
@@ -333,6 +343,64 @@ def _check_outputs(build: Callable[[], dict[Path, bytes]], what: str) -> int:
         print('        运行 venv/Scripts/python tools/build_brand.py 重新生成', file=sys.stderr)
         return 1
     print(f'brand: OK（{what}：{len(outputs)} 份产物均与脚本一致）')
+    return 0
+
+
+def _ico_frames(image: Image.Image) -> dict[tuple[int, int], bytes] | None:
+    """多帧 ICO 的 {尺寸: RGBA 像素}；不是 ICO 时返回 None。
+
+    `.ico` 只存在于 Pillow 的 IcoImageFile 上，基类类型里没有，故用 getattr 取。
+    """
+    ico = getattr(image, 'ico', None)
+    if ico is None:
+        return None
+    return {size: ico.getimage(size).convert('RGBA').tobytes() for size in ico.sizes()}
+
+
+def _same_icon_pixels(generated: bytes, committed: bytes) -> bool:
+    """两份图标文件的**解码像素**是否一致（不比原始字节）。
+
+    PNG 由 zlib 压缩：zlib 构建版本一变压缩流就不同，解码出的像素却完全相同。
+    ICO 是多帧容器：先比帧集合（尺寸），再逐帧比 RGBA 数据。
+    """
+    try:
+        with (
+            Image.open(io.BytesIO(generated)) as gen_img,
+            Image.open(io.BytesIO(committed)) as com_img,
+        ):
+            if gen_img.format != com_img.format:
+                return False
+            if gen_img.format == 'ICO':
+                gen_frames = _ico_frames(gen_img)
+                return gen_frames is not None and gen_frames == _ico_frames(com_img)
+            if gen_img.size != com_img.size:
+                return False
+            return gen_img.convert('RGBA').tobytes() == com_img.convert('RGBA').tobytes()
+    except (OSError, ValueError, SyntaxError):
+        # 坏文件 / 不是图像：按"与脚本不一致"处理，由调用方报错
+        return False
+
+
+def _icon_matches(path: Path, generated: bytes) -> bool:
+    """已提交的图标与生成结果像素一致；文件缺失或读不出时算不一致。"""
+    try:
+        committed = path.read_bytes()
+    except OSError:
+        return False
+    return _same_icon_pixels(generated, committed)
+
+
+def _check_icons() -> int:
+    """逐像素比对图标产物；0 = 一致，1 = 有差异（不写文件）。"""
+    outputs = build_icon_outputs()
+    stale = [path for path, data in outputs.items() if not _icon_matches(path, data)]
+    if stale:
+        for path in stale:
+            print(f'[error] {_label(path)} 与生成脚本不一致（按解码后的像素比对）',
+                  file=sys.stderr)
+        print('        运行 venv/Scripts/python tools/build_brand.py 重新生成', file=sys.stderr)
+        return 1
+    print(f'brand: OK（图标：{len(outputs)} 份产物像素均与脚本一致）')
     return 0
 
 
@@ -394,19 +462,19 @@ def main(argv: list[str] | None = None) -> int:
         description='生成应用图标与安装器向导图；--check* 只校验、不写文件')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--check', action='store_true',
-                      help='逐字节校验全部产物（图标 + 向导图）；向导图读系统字体，仅本机 Windows')
+                      help='校验全部产物：图标逐像素、向导图逐字节；向导图读系统字体，仅本机 Windows')
     mode.add_argument('--check-icons', action='store_true',
-                      help='逐字节校验图标（不读字体，任何平台都能跑；CI 的 lint 用这条）')
+                      help='逐像素校验图标（不读字体、不比字节，任何平台都能跑；CI 的 lint 用这条）')
     mode.add_argument('--check-banners', action='store_true',
                       help='校验安装器向导图的形态：存在、可解码、尺寸正确（不读字体；CI 的 lint 用这条）')
     args = parser.parse_args(argv)
 
     if args.check_icons:
-        return _check_outputs(build_icon_outputs, '图标')
+        return _check_icons()
     if args.check_banners:
         return _check_banner_shape()
     if args.check:
-        code = _check_outputs(build_icon_outputs, '图标')
+        code = _check_icons()
         if code:
             return code
         return _check_banner_bytes()

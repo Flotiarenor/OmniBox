@@ -18,8 +18,9 @@ venv/bin/python tools/check_version.py
 venv/bin/python tools/check_plugins.py
 venv/bin/python tools/check_plugin_layering.py
 venv/bin/python tools/build_icons.py --check
-venv/bin/python tools/build_brand.py --check          # 图标 + 向导图逐字节；向导图要 Windows 系统字体，
-                                                      # 只在本地跑（CI 的 lint 跑 --check-icons 与 --check-banners；后者只查存在/尺寸）
+venv/bin/python tools/build_brand.py --check          # 图标比像素 + 向导图比字节；向导图要 Windows 系统字体，
+                                                      # 只在本地跑（CI 的 lint 跑 --check-icons 与 --check-banners；前者比像素不
+                                                      # 比字节——PNG 压缩字节随 zlib 版本变；后者只查存在/尺寸）
 venv/bin/python tools/check_packaging.py
 venv/bin/python tools/check_npm_audit.py
 venv/bin/python tools/check_private_paths.py
